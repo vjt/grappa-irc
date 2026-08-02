@@ -119,6 +119,15 @@ defmodule Grappa.Application do
     # CLAUDE.md-designated boundary (mirrors `Grappa.Uploads.boot/1`).
     :ok = Grappa.Cic.Bundle.boot(cic_dist_root())
 
+    # #671: resolve the auto-away debounce window into `:persistent_term`
+    # so `Grappa.Session.start_session/3` injects it into every session's
+    # start opts lock-free (dynamic children have no static-child inject
+    # point; boot → persistent_term → spawn-boundary inject is the
+    # start_link-opts pattern for them). Prod sets no config key → the
+    # compile-time 600_000 default; the integration env (config/dev.exs)
+    # sets it short. Mirrors `Grappa.Uploads.boot/1`.
+    :ok = Grappa.Session.Server.boot()
+
     # Child order is load-bearing — see CLAUDE.md "Don't touch supervision
     # tree ordering casually." Each comment below documents the WHY so a
     # reorder is a deliberate choice.

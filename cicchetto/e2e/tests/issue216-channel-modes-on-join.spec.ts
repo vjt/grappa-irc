@@ -70,8 +70,13 @@ test("#216 — channel modes set before join are visible on join, and tapping op
     await expect(modal.locator(".mode-modal-toggle").first()).toBeVisible();
 
     // The "secret" (+s) toggle is a known bahamut flag mode → present in
-    // the available list derived from ISUPPORT.
-    await expect(modal.getByText("secret")).toBeVisible();
+    // the available list derived from ISUPPORT. Target the toggle by its
+    // accessible name ("secret (+s)", the button's aria-label) — a bare
+    // getByText("secret") now matches BOTH the label span and the
+    // HelpServ-verbatim description ("Channel is secret …", #667).
+    await expect(
+      modal.getByRole("button", { name: "secret (+s)" }),
+    ).toBeVisible();
 
     // The "topic lock" (+t) toggle is ACTIVE (pressed) — the peer set it.
     const topicLock = modal.getByLabel(/topic lock/i);

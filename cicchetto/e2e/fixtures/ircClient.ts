@@ -314,6 +314,14 @@ export class IrcPeer {
     await ack;
   }
 
+  // Fire a WHOIS at `nick`. Fire-and-forget: the caller witnesses the
+  // reply lines via `waitForLine` (e.g. a `301` RPL_AWAY when `nick` is
+  // currently away). Used by the #671 auto-away-on-disconnect e2e to
+  // witness the bouncer's upstream AWAY after its last socket dies stale.
+  whois(nick: string): void {
+    this.client.raw(["WHOIS", nick]);
+  }
+
   async part(channel: string, reason: string): Promise<void> {
     const parted = onceMatching(
       this.client,

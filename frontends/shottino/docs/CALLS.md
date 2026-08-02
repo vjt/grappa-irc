@@ -176,8 +176,10 @@ make -C frontends/shottino call
 ```
 
 ```
-usage: shottino-call --whip <url> [options]
-  --whip <url>     the WHIP endpoint to negotiate against (required)
+usage: shottino-call [--whip <url>] [--whep <url>] [options]
+  --whip <url>     publish here. Alone, the session is sendrecv
+  --whep <url>     subscribe here. With --whip, publishing becomes
+                   sendonly and this is the receiving session
   --stun <url>     a STUN server, e.g. stun:stun.example:19302
   --video          negotiate a video track as well as audio
   --timeout <ms>   how long to wait for ICE and for the answer (default 15000)
@@ -192,11 +194,58 @@ there**; events are one JSON object per line on **stderr**, and
 character. `--protocol` exists so shottino can refuse a helper left
 behind by an older install rather than misbehaving with it.
 
-What it does today is the full signalling round trip: gather ICE, build
-the offer, POST it, resolve the session resource, apply the answer,
-report the connection state, and DELETE the resource on the way out.
-Piping ffmpeg into and out of the tracks is the next stage; the tracks
-are already declared `sendrecv` with the codecs those legs will use.
+It does the full signalling round trip — gather ICE, build the offer,
+POST it, resolve the session resource, apply the answer, report the
+connection state, DELETE on the way out — and it now carries **media**.
+
+**The split: ffmpeg does codecs and packetisation, the helper does
+transport.** Nothing in the helper encodes, decodes, packetises or times
+a frame. Each direction is an ffmpeg process joined to a libdatachannel
+track by a loopback UDP socket:
+
+```
+send:  ffmpeg -f pulse -i default … -f rtp rtp://127.0.0.1:P
+           → helper drains P → rtcSendMessage(track)
+
+recv:  track callback → helper sends to 127.0.0.1:Q
+           → ffmpeg -i <sdp describing Q> … → speakers, or rgb24
+```
+
+The video receive leg writes rgb24 **straight to the helper's own
+stdout** — no copy, no framing layer to desynchronise — using the same
+scale-and-pad convention as shottino's inline decoder, so a call frame is
+byte-identical in shape to a clip frame. That is why stdout is reserved.
+
+Mute is local and instant: the capture keeps running and its packets are
+dropped on the way to the track. Tearing ffmpeg down instead would make
+unmuting take as long as a device open.
+
+**Verified end to end without an SFU**, using ffmpeg's synthetic sources
+(`lavfi`) through a loopback that exercises everything except the
+transport libdatachannel owns: **118 RTP packets captured and forwarded →
+117 frames of rgb24 decoded**, and the audio leg producing Opus RTP.
+
+Five bugs that cost real time and are worth not repeating:
+
+- **`-framerate` / `-video_size` are demuxer-specific.** v4l2 takes them;
+  lavfi refuses them outright and the capture dies with its stderr
+  discarded — a silent leg producing nothing. Rate and size belong in the
+  **filter graph**, which works for every input and also pins the
+  geometry whatever the device felt like giving.
+- **ffmpeg needs `-nostdin`.** Handed `/dev/null`, it reads EOF and quits
+  before a single packet arrives, reporting "Output file does not contain
+  any stream" — which reads like a codec problem and is not.
+- **Drain the socket, never one datagram per wakeup.** A video frame is a
+  BURST of RTP packets; one-per-poll delivers a fraction of each, no
+  keyframe ever assembles, and the far end fails every packet.
+- **No `-fflags nobuffer` / `-flags low_delay` on the receive leg.** They
+  look like the obvious choice for a call and they cost the whole
+  picture: they make the demuxer discard rather than reorder, so any
+  jitter loses the keyframe. Measured both ways — **0 frames with them,
+  117 without**, same packets. The tens of milliseconds are not worth a
+  blank window.
+- **The receive SDP cannot be unlinked right after the spawn.** The child
+  may not have exec'd, and the decoder then reads nothing, silently.
 
 The offer it generates, captured against a stub endpoint:
 
@@ -207,6 +256,25 @@ m=video 48832 UDP/TLS/RTP/SAVPF 96      a=rtpmap:96 VP8/90000       a=sendrecv
 
 Both m-lines on one port — BUNDLE with rtcp-mux — which is what an SFU
 expects and what makes the single-UDP-port firewall rule below possible.
+
+**One or two sessions, because SFUs come in two shapes.** This is the
+thing to get right before blaming the network:
+
+| invocation | sessions | for |
+|---|---|---|
+| `--whip` alone | one `sendrecv` | a single-endpoint SFU — Galène, LiveKit |
+| `--whip` + `--whep` | `sendonly` + `recvonly` | **MediaMTX**, whose WHIP is publish-ONLY and WHEP read-only |
+| `--whep` alone | one `recvonly` | watch a room; no camera or microphone is opened |
+
+Posting a lone `sendrecv` offer to MediaMTX's WHIP does not fail — it is
+accepted as a publish and simply never sends anything back, which is a
+call with no sound and no error. Hence the pair.
+
+Verified against a stub that reports the direction attributes of each
+offer: `--whip` alone negotiates `sendrecv`; the pair negotiates
+`sendonly` on the WHIP endpoint and `recvonly` on the WHEP one; `--whep`
+alone negotiates `recvonly`. Exactly one session is wired to the
+decoders — feeding both would hand your own echo to the speakers.
 
 **Vanilla ICE, not trickle.** WHIP is one POST with one body, so there is
 nowhere to trickle a late candidate to: the offer has to be complete
@@ -306,6 +374,58 @@ here well past the point it stops being viable for a normal video app,
 and is the reason a query call needs no host at all.
 
 ---
+
+## Running a call in the terminal
+
+```sh
+/set call.base_url http://sfu.example:8889   # a WHIP/WHEP SFU, not jitsi
+/set call.mode terminal
+/call                                        # or /videocall
+```
+
+`call.mode` defaults to **browser**, and that is not a lesser path — it
+works with any room-per-URL service and needs nothing installed. The
+terminal mode is opt-in because **nothing can tell from a URL whether a
+service speaks WHIP**; it has to be declared.
+
+shottino spawns `shottino-call`, looking for it in this order: the
+`call.helper` setting, then **beside the shottino binary** (they are
+built and installed together, so this is the usual answer), then
+`~/.local/share/shottino/bin/`, then PATH. If none is found, `/call`
+says so and opens the browser instead — the fallback is automatic, not
+an error.
+
+The invite still carries the ROOM URL; `whip` and `whep` are appended to
+it, so one link serves the browser and the terminal both.
+
+| verb | while a call runs |
+|---|---|
+| `/hangup` | ends it. Asks the helper first so it can DELETE the session — killing it outright leaves the SFU holding the slot |
+| `/mute`, `/unmute` | the microphone. Local and instant |
+
+Events from the helper are drained by a reader thread and shown in the
+window. That thread exists whether or not anyone reads the messages: an
+undrained stderr pipe fills and then BLOCKS the helper mid-call.
+
+Their picture is drawn **picture-in-picture**, top-right over the chat
+and under any overlay. Not a pane of its own: a call is temporary, and
+reserving layout for it would move everybody's scrollback the moment the
+phone rang.
+
+The frames go through the **same half-block renderer that draws clips** —
+a call is not a second kind of picture — which is also what clamps it, so
+a terminal that shrank mid-call letterboxes rather than writing past the
+region. The box is a share of the width (16–40 cells, 4:3 in pixels,
+where the pixel height is `rows*2` because half blocks pack two pixel
+rows per cell row), measured in shottino and handed to the helper as
+`--frame WxH`; the helper has no terminal and must never guess one.
+
+It is fixed for the call: the helper is told a size at exec and there is
+no way to retell it. A resize letterboxes rather than tearing.
+
+For an audio call the frame stream goes to /dev/null and must never
+inherit the terminal — rgb24 bytes painted over ncurses is a screen
+nobody can recover.
 
 ## Roadmap
 

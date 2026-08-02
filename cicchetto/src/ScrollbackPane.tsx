@@ -13,6 +13,7 @@ import {
 import LusersCard from "./LusersCard";
 import { isContentKind, ownNickForNetwork, postJoin, type ScrollbackMessage } from "./lib/api";
 import { token } from "./lib/auth";
+import { confirmJoinChannel } from "./lib/channelJoin";
 import { channelKey, decodeChannelKey } from "./lib/channelKey";
 import { type TopicJoinLine, topicByChannel, topicJoinLine } from "./lib/channelTopic";
 import { isDocumentVisible } from "./lib/documentVisibility";
@@ -610,6 +611,16 @@ const renderNumeric = (raw: NumericEvent): JSX.Element => {
 };
 
 const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element => {
+  // #648 — click-to-join affordance for a `#channel` in a CONTENT body. Passed
+  // ONLY to the privmsg / notice / action MircBody calls below — the same set
+  // the `.nick-clickable` sender affordance covers (#354), and the "user-typed
+  // text" surfaces (they pass `emphasis`). Presence/topic/raw-event lines and
+  // out-of-scope surfaces (topic bar, whois, /list) get no handler, so their
+  // `#channel` segments render as plain text. `confirmJoinChannel` owns the
+  // confirm-or-switch decision; here we only supply the network + raw channel.
+  const onChannelClick = (channel: string): void =>
+    confirmJoinChannel(handlers.networkSlug, channel);
+
   // UX-5 bucket BC2 + #25: per-message sender prefix glyph (@/%/+).
   //
   // For a CONTENT row (privmsg/action/notice) the SENDER's glyph is the
@@ -709,7 +720,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
         <>
           {senderSpan("<", ">", msg.sender)}{" "}
           <span class="scrollback-body">
-            <MircBody body={msg.body ?? ""} emphasis />
+            <MircBody body={msg.body ?? ""} emphasis onChannelClick={onChannelClick} />
           </span>
         </>
       );
@@ -777,7 +788,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
         <>
           {senderSpan("-", "-", msg.sender)}{" "}
           <span class="scrollback-body">
-            <MircBody body={msg.body ?? ""} emphasis />
+            <MircBody body={msg.body ?? ""} emphasis onChannelClick={onChannelClick} />
           </span>
         </>
       );
@@ -785,7 +796,8 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
     case "action":
       return (
         <span class="scrollback-body">
-          * {bareSenderSpan(msg.sender)} <MircBody body={stripCtcpAction(msg.body)} emphasis />
+          * {bareSenderSpan(msg.sender)}{" "}
+          <MircBody body={stripCtcpAction(msg.body)} emphasis onChannelClick={onChannelClick} />
         </span>
       );
     case "join":

@@ -81,14 +81,26 @@ test(
         ownNick: NETWORK_NICK,
       });
 
-      // Arm the /messages request collector from this point forward.
-      // Any /messages hit recorded after this point means the $list
-      // window selection bypassed the grappa-irc#81 kindHasScrollback
-      // guard — a real regression, not a stale initial fetch.
+      // Arm the /messages request collector from this point forward, SCOPED
+      // to the $list window under test (#534/#653). The regression the #81
+      // guard catches — a kindHasScrollback("list") slip — would fetch
+      // scrollback for the SELECTED window, i.e. cic's listMessages hits
+      // GET .../channels/%24list/messages (encodeURIComponent("$list")).
+      // Record ONLY that path: an unrelated forward gap-fill on the live
+      // autojoin #bofh (.../channels/%23bofh/messages?after=...) is legitimate
+      // background activity — a peer is connected and seed traffic is real —
+      // NOT the regression, and under full-gate load it can fire inside this
+      // window and trip a global-zero collector (the load-only flake).
+      // Keying on the $list channel segment keeps the assertion STRICT (a
+      // genuine $list scrollback fetch still reds it below) while making it
+      // deterministic — this is NOT a toHaveLength(<=1) relaxation nor a
+      // blanket substring filter that would blind the guard.
+      const listMessagesPath = `/channels/${encodeURIComponent(LIST_WINDOW_NAME)}/messages`;
       const messagesRequests: string[] = [];
       page.on("request", (req) => {
-        if (/\/messages(\?|$)/.test(req.url())) {
-          messagesRequests.push(req.url());
+        const url = req.url();
+        if (url.includes(listMessagesPath)) {
+          messagesRequests.push(url);
         }
       });
 

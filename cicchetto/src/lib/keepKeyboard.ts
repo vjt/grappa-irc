@@ -95,7 +95,14 @@ const SELECTABLE_TEXT_SURFACES = ".scrollback, .topic-modal-text";
 //     (inside `.scrollback`, not excluded), so a TAP dropped the keyboard and
 //     a LONG-PRESS select-all'd the row — both wrong for a control. Same
 //     class of bug as #350. See DESIGN_NOTES 2026-07-26 (#354).
-const SELECTABLE_TEXT_EXCLUDE = ".scrollback-invite-join, .scrollback-link, .nick-clickable";
+//   * `.channel-clickable` (#648 — a `#channel` in scrollback rendered inline
+//     as a click-to-join control, MircText.renderChannel) is the SAME class of
+//     inline control as `.nick-clickable`: a tap opens the join-confirm (keep
+//     the keyboard), its text stays copyable (NOT in the CSS `user-select`
+//     re-exclude, so a spanning drag-selection still grabs it), and a
+//     long-press must not select-all the row.
+const SELECTABLE_TEXT_EXCLUDE =
+  ".scrollback-invite-join, .scrollback-link, .nick-clickable, .channel-clickable";
 
 // #79 (2026-07-04) — long-press threshold, shared by BOTH the mousedown
 // tap-vs-hold split and the #366 touchend select-all. For a TAP, iOS

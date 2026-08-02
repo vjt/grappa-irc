@@ -88,6 +88,17 @@ config :grappa, Grappa.Vault,
 config :phoenix, :stacktrace_depth, 20
 config :phoenix, :plug_init_mode, :runtime
 
+# #671 — auto-away debounce, SHORT for the integration env only. The
+# cicchetto/e2e stack boots grappa-test under MIX_ENV=dev, so this is
+# how "the integration env sets it short" (Session.Server.boot/0 reads
+# it into :persistent_term; start_session/3 injects it). Production
+# (MIX_ENV=prod) sets no key and keeps the byte-identical 600_000 default.
+# The auto-away-on-disconnect e2e drops the client's visibility
+# heartbeats, waits out stale_ms (unchanged 60s — foreground push
+# suppression must stay fresh), drops the socket, and asserts a peer
+# observes AWAY after THIS window — so it must be short but non-zero.
+config :grappa, Grappa.Session.Server, auto_away_debounce_ms: 2_000
+
 # Push notifications cluster B5 (2026-05-14) — fixed VAPID keypair
 # for dev/e2e. The integration harness (cicchetto/e2e/compose.yaml)
 # boots grappa-test under MIX_ENV=dev; without this, Application.

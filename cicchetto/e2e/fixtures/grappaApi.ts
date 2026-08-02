@@ -665,17 +665,39 @@ export async function resetSubject(
     );
   }
 
-  const res = await fetch(`${GRAPPA_BASE_URL}/admin/test/reset-subject`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${adminToken}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-  if (res.status !== 204) {
+  // #277/#653 — the reset restarts vjt's Session.Server, which reconnects to
+  // bahamut-test and re-registers `vjt-grappa`. Under full-gate load an
+  // earlier spec's upstream session may not have released the nick yet, so
+  // the re-register hits 433 ERR_NICKNAMEINUSE and the reset 500s with
+  // `{:client_exit, {:nick_rejected, 433, "vjt-grappa"}}`. That 433 is the
+  // OBSERVABLE "nick not free yet" signal from the testnet — retry the whole
+  // reset on it with bounded backoff until bahamut releases the ghost (204).
+  // This is NOT a blind pre-sleep: we retry ONLY while the server reports the
+  // nick still taken, and ONLY that one signal — every other non-204
+  // (404 user_not_found, 504 timeout, any other 500) throws IMMEDIATELY, so a
+  // real reset failure is never masked. Known bahamut ghost-race tail (the
+  // #268 class; see feedback_integration_bahamut_ip_autokill_flake).
+  const maxAttempts = 8;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch(`${GRAPPA_BASE_URL}/admin/test/reset-subject`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 204) return;
+
     const text = await res.text().catch(() => "<no body>");
-    throw new Error(`resetSubject(${userName}) failed: ${res.status} ${text}`);
+    const nickStillTaken = res.status === 500 && text.includes("nick_rejected");
+    if (!nickStillTaken || attempt === maxAttempts) {
+      throw new Error(`resetSubject(${userName}) failed: ${res.status} ${text}`);
+    }
+    // Observed 433 → the ghosted nick isn't released yet. Back off (capped)
+    // then re-register; each reset attempt also reconnects, which itself
+    // gives bahamut time to reap the prior connection's ghost.
+    await sleep(Math.min(500 * attempt, 2_000));
   }
 }
 

@@ -920,6 +920,35 @@ struct app {
     /* Where a room lives, and when an arriving one rings. */
     char call_base_url[256];
     enum call_ring_policy call_ring;
+    /* Browser or terminal. `browser` is the permanent fallback and the
+     * default: it works with any room-per-URL service and needs nothing
+     * installed. `helper` requires call.base_url to be an SFU that
+     * speaks WHIP/WHEP, which nothing can detect from a URL — so it is
+     * declared, not guessed. */
+    bool call_in_terminal;
+    char call_helper[LLM_MAX_PATH];
+    /* The running call, if any. `in_fd` takes the control verbs; the
+     * reader thread drains the helper's event stream so a call that
+     * fails says why in the window instead of dying quietly. */
+    struct {
+        pid_t pid;
+        int in_fd;
+        int err_fd;
+        int out_fd; /* the helper's rgb24 frame stream */
+        pthread_t reader;
+        pthread_t vreader;
+        bool reading;
+        bool vreading;
+        bool video;
+        /* The live frame, as an inline_media so the SAME half-block
+         * renderer that draws clips draws this. A call is not a second
+         * kind of picture. Cell dims are fixed when the call starts:
+         * the helper was TOLD a size and cannot be retold mid-call. */
+        struct inline_media frame;
+        int cols, rows;
+        char network[MAX_SLUG];
+        char channel[MAX_CHANNEL];
+    } call_live;
     /* Most recent IMAGE/VIDEO link, for keyboard-driven /preview. */
     char last_media_url[MAX_LINE];
     bool last_media_is_video;
@@ -7564,6 +7593,31 @@ static void draw(struct app *app) {
             draw_text(2, members_x + 1, members - 2, CP_MUTED, 0, "(not seeded)");
     }
 
+    /* A live call's picture, over the chat and under the overlay.
+     *
+     * Picture-in-picture rather than a pane of its own: a call is
+     * temporary, and reserving layout for it would move everybody's
+     * scrollback the moment the phone rang. Drawn from the SAME
+     * half-block renderer that draws clips — a call is not a second
+     * kind of picture — and clamped by it, so a terminal that shrank
+     * mid-call letterboxes instead of writing past the region. */
+    if (app->call_live.pid > 0 && app->call_live.frame.state == IM_READY &&
+        app->call_live.cols > 0) {
+        int vw = app->call_live.cols, vh = app->call_live.rows;
+        if (vw > main_w - 2) vw = main_w - 2;
+        if (vh > rows - 4) vh = rows - 4;
+        if (vw > 0 && vh > 0) {
+            int vx = main_x + main_w - vw - 1;
+            int vy = 1;
+            draw_inline_media_locked(&app->call_live.frame, vy, vx, 0, vh, vw);
+            /* A one-line label under it: a picture with no caption in
+             * the corner of a chat client reads as a glitch. */
+            if (vy + vh < rows - 2)
+                draw_text(vy + vh, vx, vw, CP_MENTION, A_BOLD, " %.*s ", vw - 2,
+                          app->call_live.channel);
+        }
+    }
+
     /* The overlay is drawn LAST and over everything: it is modal, and a
      * pane border crossing a menu would read as part of the menu. */
     draw_overlay_locked(app, rows, cols, main_x, main_w);
@@ -9372,6 +9426,8 @@ static const struct setting_def SETTINGS[] = {
     { "llm.cdp_url", SET_TEXT, NULL, "browser_control: Chrome debug endpoint, e.g. http://127.0.0.1:9222" },
     { "call.base_url", SET_TEXT, NULL, "where /call makes a room; any room-per-URL service" },
     { "call.ring", SET_CHOICE, "off|queries|all", "when an arriving call interrupts you" },
+    { "call.mode", SET_CHOICE, "browser|terminal", "where a call runs; terminal needs a WHIP SFU" },
+    { "call.helper", SET_TEXT, NULL, "path to shottino-call (empty = found beside shottino)" },
     { "bot.dir", SET_TEXT, NULL, "where AGENT.md and the bot's notes live" },
     { "stt.enabled", SET_BOOL, NULL, "/stt speech to text (off: nothing is transcribed)" },
     { "stt.url", SET_TEXT, NULL, "whisper endpoint base; empty = local whisper only" },
@@ -9517,6 +9573,8 @@ static size_t setting_raw(struct app *app, const char *name, char *out, size_t o
     else if (strcmp(name, "video.source") == 0) src = app->video_source;
     else if (strcmp(name, "call.base_url") == 0) src = app->call_base_url;
     else if (strcmp(name, "call.ring") == 0) src = call_ring_word(app->call_ring);
+    else if (strcmp(name, "call.mode") == 0) src = app->call_in_terminal ? "terminal" : "browser";
+    else if (strcmp(name, "call.helper") == 0) src = app->call_helper;
     else if (strcmp(name, "bot.dir") == 0) src = app->bot_dir;
     snprintf(out, out_sz, "%.*s", (int)out_sz - 1, src);
     return strlen(src);
@@ -9689,6 +9747,16 @@ static bool setting_apply(struct app *app, const struct setting_def *def, const 
     else if (strcmp(def->name, "video.source") == 0)
         snprintf(app->video_source, sizeof(app->video_source), "%.*s",
                  (int)sizeof(app->video_source) - 1, value);
+    else if (strcmp(def->name, "call.mode") == 0) {
+        if (strcasecmp(value, "terminal") == 0) app->call_in_terminal = true;
+        else if (strcasecmp(value, "browser") == 0) app->call_in_terminal = false;
+        else {
+            log_line(app, "/set call.mode: `%.20s` is not one of %s", value, def->values);
+            return false;
+        }
+    } else if (strcmp(def->name, "call.helper") == 0)
+        snprintf(app->call_helper, sizeof(app->call_helper), "%.*s",
+                 (int)sizeof(app->call_helper) - 1, value);
     else if (strcmp(def->name, "call.base_url") == 0)
         snprintf(app->call_base_url, sizeof(app->call_base_url), "%.*s",
                  (int)sizeof(app->call_base_url) - 1, value);
@@ -11665,13 +11733,13 @@ static const char *commands[] = {
     "/hilight", "/hs", "/ignore", "/info", "/invite", "/j", "/join", "/kb", "/keys", "/kick",
     "/kickban", "/kill", "/kline", "/links", "/list", "/llm", "/llm-clear", "/llm-compact",
     "/locops", "/lusers", "/me",
-    "/media", "/members", "/mode", "/motd", "/mouse", "/ms", "/msg", "/names", "/nick",
+    "/media", "/members", "/mode", "/motd", "/mouse", "/ms", "/msg", "/mute", "/names", "/nick",
     "/notify", "/ns", "/op", "/open", "/oper", "/os", "/part", "/ping", "/preview",
     "/preview-ascii", "/q",
     "/query", "/quit", "/quote", "/rehash", "/restart", "/rs", "/sconnect", "/set", "/settings",
     "/share", "/split", "/splith", "/splitv", "/splitw", "/squit", "/stats", "/stt", "/topic",
     "/trace",
-    "/umode", "/unalias", "/unban", "/unblock", "/unignore", "/unkline", "/unset", "/unsplit",
+    "/umode", "/unalias", "/unban", "/unblock", "/unignore", "/unkline", "/unmute", "/unset", "/unsplit",
     "/upload",
     "/users", "/version", "/video", "/videocall", "/view", "/vmsg", "/voice", "/voicemsg", "/w",
     "/wallops", "/watch", "/who", "/whois",
@@ -12148,6 +12216,13 @@ static void open_external_url(struct app *app, const char *url) {
     log_line(app, "opened %s", url);
 }
 
+/* Defined with the media helper below, which needs the URL helpers this
+ * section declares. */
+static bool call_helper_start(struct app *app, const char *room_url, bool video,
+                              const char *network, const char *channel);
+static void call_helper_stop(struct app *app);
+static bool call_control(struct app *app, const char *verb);
+
 /* ── /call, /videocall, /answer, /hangup ───────────────────────────────
  *
  * Placing a call is: mint a room nobody can guess, post the invite as
@@ -12188,7 +12263,13 @@ static void call_command(struct app *app, enum call_kind kind) {
     enqueue_send(app, net, chan, message);
     log_line(app, "call: %s posted to %s — anyone there can join by opening the link",
              call_kind_word(kind), chan);
-    open_external_url(app, app->call_last.url);
+    /* The browser is the FALLBACK, not the lesser path: it works with
+     * any room-per-URL service and needs nothing installed. The helper
+     * is taken only when the operator has said their service speaks
+     * WHIP — nothing can tell that from a URL. */
+    if (!app->call_in_terminal ||
+        !call_helper_start(app, app->call_last.url, kind == CALL_VIDEO, net, chan))
+        open_external_url(app, app->call_last.url);
 }
 
 /* Join the call that came in — whether it rang or not.
@@ -12211,7 +12292,15 @@ static void call_answer(struct app *app) {
         return;
     }
     log_line(app, "call: joining %s's room", from[0] ? from : "the");
-    open_external_url(app, url);
+    bool want_video;
+    char net[MAX_SLUG], chan[MAX_CHANNEL];
+    pthread_mutex_lock(&app->lock);
+    want_video = app->call_last.kind == CALL_VIDEO;
+    snprintf(net, sizeof(net), "%s", app->call_last.network);
+    snprintf(chan, sizeof(chan), "%s", app->call_last.channel);
+    pthread_mutex_unlock(&app->lock);
+    if (!app->call_in_terminal || !call_helper_start(app, url, want_video, net, chan))
+        open_external_url(app, url);
 }
 
 /* Stop the ring. LOCAL: nothing is sent to the caller.
@@ -12221,12 +12310,363 @@ static void call_answer(struct app *app) {
  * there something they did not ask about. The caller learns you did not
  * join by your not being in the room, which is how a call has always
  * worked. */
+/* ── The media helper ──────────────────────────────────────────────────
+ *
+ * `shottino-call` is a separate PROGRAM, spawned like ffmpeg and
+ * whisper-cli already are. It is optional by construction: when it is
+ * not installed, or `call.mode` is left at `browser`, every verb here
+ * falls back to handing the URL to the desktop opener — which is the
+ * whole of stage 1 and stays the permanent fallback rather than a
+ * degraded mode.
+ *
+ * Where it is looked for, in order: the `call.helper` setting, then
+ * BESIDE this binary (the overwhelmingly common case — they are built
+ * and installed together), then PATH, then the per-user directory a
+ * downloaded one would land in. Nothing is searched that a user did not
+ * either configure or install. */
+/* Does `probe` name an executable that fits the caller's buffer? The
+ * fit check is not pedantry: a truncated path is a DIFFERENT path, and
+ * one that happens to name a directory passes X_OK. */
+static bool call_helper_accept(const char *probe, char *out, size_t out_sz) {
+    if (strlen(probe) + 1 > out_sz) return false;
+    if (access(probe, X_OK) != 0) return false;
+    snprintf(out, out_sz, "%s", probe);
+    return true;
+}
+
+static bool call_helper_path(struct app *app, char *out, size_t out_sz) {
+    /* One scratch buffer, comfortably larger than anything joined into
+     * it, so no candidate can be silently shortened on the way to
+     * access(). */
+    char probe[8192];
+
+    if (app->call_helper[0]) {
+        snprintf(probe, sizeof(probe), "%s", app->call_helper);
+        return call_helper_accept(probe, out, out_sz);
+    }
+    /* Beside this binary first: they are built and installed together,
+     * so this is the overwhelmingly common answer. */
+    char self[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    if (n > 0) {
+        self[n] = 0;
+        char *slash = strrchr(self, '/');
+        if (slash) {
+            *slash = 0;
+            snprintf(probe, sizeof(probe), "%s/shottino-call", self);
+            if (call_helper_accept(probe, out, out_sz)) return true;
+        }
+    }
+    /* Then where a downloaded one would land. */
+    const char *home = getenv("HOME");
+    if (home && home[0]) {
+        snprintf(probe, sizeof(probe), "%s/.local/share/shottino/bin/shottino-call", home);
+        if (call_helper_accept(probe, out, out_sz)) return true;
+    }
+    /* PATH last. execvp would find it anyway, but saying "not installed"
+     * before forking beats a child that exits 127 into a pipe. */
+    const char *path = getenv("PATH");
+    if (!path) return false;
+    char dirs[4096];
+    snprintf(dirs, sizeof(dirs), "%s", path);
+    for (char *save = NULL, *d = strtok_r(dirs, ":", &save); d; d = strtok_r(NULL, ":", &save)) {
+        snprintf(probe, sizeof(probe), "%s/shottino-call", d);
+        if (call_helper_accept(probe, out, out_sz)) return true;
+    }
+    return false;
+}
+
+/* The picture-in-picture box, in CELLS.
+ *
+ * A share of the width rather than a constant: on an 80-column terminal
+ * a 40-cell picture is the client, and on a 200-column one a 24-cell
+ * picture is a stamp. Half blocks mean two PIXEL rows per cell row, so
+ * the pixel height is rows*2 — which is also why the aspect arithmetic
+ * looks off by two and is not.
+ *
+ * Fixed for the whole call: the helper is TOLD a size at exec and there
+ * is no way to retell it, so a resize letterboxes (the draw clamps)
+ * rather than tearing. */
+static void call_video_box(int cols_total, int *cols, int *rows) {
+    int w = cols_total / 4;
+    if (w > 40) w = 40;
+    if (w < 16) w = 16;
+    /* 4:3, in pixels: px_h = px_w * 3/4, and px_h is rows*2. */
+    int r = (w * 3) / 8;
+    if (r < 6) r = 6;
+    *cols = w;
+    *rows = r;
+}
+
+/* Read the helper's rgb24 frames and publish the newest.
+ *
+ * One frame is cols x (rows*2) x 3 bytes with no header — the stream is
+ * raw by contract, which is what lets the decoder write it straight to
+ * the pipe. Read to a WHOLE frame before publishing: a partial one
+ * drawn is a band of garbage, and the pipe delivers whatever size it
+ * feels like. */
+static void *call_frame_main(void *arg) {
+    struct app *app = arg;
+    int cols = app->call_live.cols, rows = app->call_live.rows;
+    size_t need = (size_t)cols * (size_t)(rows * 2) * 3;
+    unsigned char *buf = malloc(need);
+    if (!buf) return NULL;
+    size_t have = 0;
+    for (;;) {
+        ssize_t n = read(app->call_live.out_fd, buf + have, need - have);
+        if (n <= 0) break; /* helper gone, or the call ended */
+        have += (size_t)n;
+        if (have < need) continue;
+        have = 0;
+        unsigned char *copy = malloc(need);
+        if (!copy) continue;
+        memcpy(copy, buf, need);
+        pthread_mutex_lock(&app->lock);
+        /* Swap, never append: this is a LIVE feed, so the newest frame
+         * is the only one worth keeping and the old one is freed here
+         * rather than accumulating a call's worth of video in memory. */
+        free(app->call_live.frame.rgb);
+        app->call_live.frame.rgb = copy;
+        app->call_live.frame.cols = cols;
+        app->call_live.frame.rows = rows;
+        app->call_live.frame.frame_count = 1;
+        app->call_live.frame.frame = 0;
+        app->call_live.frame.state = IM_READY;
+        pthread_mutex_unlock(&app->lock);
+    }
+    free(buf);
+    return NULL;
+}
+
+/* Drain the helper's event stream into the window it belongs to.
+ *
+ * The helper reports state and failures as JSON lines on stderr; without
+ * a reader they would fill a pipe and then BLOCK it mid-call. So this
+ * thread exists whether or not anyone is reading the messages — and
+ * since it has them anyway, it shows them. */
+static void *call_reader_main(void *arg) {
+    struct app *app = arg;
+    FILE *f = fdopen(app->call_live.err_fd, "r");
+    if (!f) return NULL;
+    char line[1024];
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (!line[0] || line[0] == '#') continue; /* a --verbose note */
+        char event[64] = "", value[512] = "";
+        json_top_string(line, strlen(line), "event", event, sizeof(event));
+        if (!json_top_string(line, strlen(line), "value", value, sizeof(value)))
+            json_top_string(line, strlen(line), "message", value, sizeof(value));
+        if (strcmp(event, "error") == 0) log_line(app, "call: %s", value);
+        else if (strcmp(event, "state") == 0) log_line(app, "call: %s", value);
+        else if (strcmp(event, "media") == 0) log_line(app, "call: carrying %s", value);
+        else if (strcmp(event, "closed") == 0) log_line(app, "call: ended");
+    }
+    fclose(f); /* owns err_fd */
+    pthread_mutex_lock(&app->lock);
+    app->call_live.err_fd = -1;
+    pthread_mutex_unlock(&app->lock);
+    return NULL;
+}
+
+static void call_helper_stop(struct app *app) {
+    pid_t pid;
+    int in_fd;
+    bool reading;
+    pthread_t reader;
+    pthread_mutex_lock(&app->lock);
+    pid = app->call_live.pid;
+    in_fd = app->call_live.in_fd;
+    reading = app->call_live.reading;
+    reader = app->call_live.reader;
+    app->call_live.pid = 0;
+    app->call_live.in_fd = -1;
+    app->call_live.reading = false;
+    pthread_mutex_unlock(&app->lock);
+    if (pid <= 0) return;
+    /* Ask first: the helper owes the SFU a DELETE, and killing it
+     * outright leaves the room slot held until the server times out. */
+    if (in_fd >= 0) {
+        ssize_t ignored = write(in_fd, "hangup\n", 7);
+        (void)ignored;
+        close(in_fd);
+    }
+    int status = 0;
+    for (int i = 0; i < 50; i++) { /* ~2.5s for the DELETE to go out */
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) { pid = 0; break; }
+        struct timespec tick = { .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000 };
+        nanosleep(&tick, NULL);
+    }
+    if (pid > 0) {
+        kill(pid, SIGTERM);
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+    }
+    if (reading) pthread_join(reader, NULL);
+    /* The frame reader is blocked in read(); closing the pipe is what
+     * ends it. Closed AFTER the helper is gone so a frame in flight
+     * cannot arrive to a freed buffer. */
+    pthread_mutex_lock(&app->lock);
+    int out_fd = app->call_live.out_fd;
+    bool vreading = app->call_live.vreading;
+    pthread_t vreader = app->call_live.vreader;
+    app->call_live.out_fd = -1;
+    app->call_live.vreading = false;
+    pthread_mutex_unlock(&app->lock);
+    if (out_fd >= 0) close(out_fd);
+    if (vreading) pthread_join(vreader, NULL);
+    pthread_mutex_lock(&app->lock);
+    free(app->call_live.frame.rgb);
+    app->call_live.frame.rgb = NULL;
+    app->call_live.frame.state = IM_IDLE;
+    pthread_mutex_unlock(&app->lock);
+}
+
+/* Start a call in the terminal. Returns false when the helper is not
+ * usable, so the caller falls back to the browser rather than leaving
+ * the user with nothing. */
+static bool call_helper_start(struct app *app, const char *room_url, bool video,
+                              const char *network, const char *channel) {
+    char helper[PATH_MAX];
+    if (!call_helper_path(app, helper, sizeof(helper))) {
+        log_line(app, "call: no media helper installed — opening the room in a browser instead "
+                      "(build it with `make call`, or /set call.helper <path>)");
+        return false;
+    }
+    if (app->call_live.pid > 0) {
+        log_line(app, "call: already in one — /hangup first");
+        return false;
+    }
+
+    /* The invite carries the ROOM, and WHIP/WHEP are paths under it.
+     * Both are posted so the helper negotiates the publish/subscribe
+     * pair, which is what an SFU that separates them needs and what a
+     * single-endpoint one tolerates. */
+    char whip[MAX_LINE], whep[MAX_LINE];
+    size_t len = strlen(room_url);
+    bool slash = len > 0 && room_url[len - 1] == '/';
+    snprintf(whip, sizeof(whip), "%s%swhip", room_url, slash ? "" : "/");
+    snprintf(whep, sizeof(whep), "%s%swhep", room_url, slash ? "" : "/");
+
+    int in_pipe[2], err_pipe[2], out_pipe[2] = { -1, -1 };
+    if (pipe(in_pipe) != 0) return false;
+    if (pipe(err_pipe) != 0) {
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        return false;
+    }
+    int vcols = 0, vrows = 0;
+    if (video) {
+        call_video_box(COLS > 0 ? COLS : 80, &vcols, &vrows);
+        if (pipe(out_pipe) != 0) {
+            close(in_pipe[0]); close(in_pipe[1]);
+            close(err_pipe[0]); close(err_pipe[1]);
+            return false;
+        }
+    }
+    char frame_arg[32];
+    snprintf(frame_arg, sizeof(frame_arg), "%dx%d", vcols, vrows * 2);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(in_pipe[0]); close(in_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        return false;
+    }
+    if (pid == 0) {
+        dup2(in_pipe[0], STDIN_FILENO);
+        dup2(err_pipe[1], STDERR_FILENO);
+        /* stdout is the FRAME stream. For an audio call nothing reads
+         * it, and it must NOT inherit this terminal — rgb24 bytes
+         * painted over ncurses is a screen nobody can recover. */
+        if (video) {
+            dup2(out_pipe[1], STDOUT_FILENO);
+        } else {
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) dup2(devnull, STDOUT_FILENO);
+        }
+        close(in_pipe[0]); close(in_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        if (out_pipe[0] >= 0) { close(out_pipe[0]); close(out_pipe[1]); }
+        /* Built as a list rather than a conditional initialiser: the
+         * device settings are the SAME ones /voicemsg and /video use, so
+         * one configured capture serves every feature here. */
+        char *argv[16];
+        size_t a = 0;
+        argv[a++] = helper;
+        argv[a++] = (char *)"--whip";
+        argv[a++] = whip;
+        argv[a++] = (char *)"--whep";
+        argv[a++] = whep;
+        argv[a++] = (char *)"--audio-source";
+        argv[a++] = app->voice_source;
+        if (video) {
+            argv[a++] = (char *)"--video";
+            argv[a++] = (char *)"--video-source";
+            argv[a++] = app->video_source;
+            /* The helper has no terminal and must never guess: the box
+             * is measured HERE, in cells, and handed over in pixels. */
+            argv[a++] = (char *)"--frame";
+            argv[a++] = frame_arg;
+        }
+        argv[a] = NULL;
+        execv(helper, argv);
+        _exit(127);
+    }
+    close(in_pipe[0]);
+    close(err_pipe[1]);
+    if (out_pipe[1] >= 0) close(out_pipe[1]);
+
+    pthread_mutex_lock(&app->lock);
+    app->call_live.out_fd = out_pipe[0];
+    app->call_live.cols = vcols;
+    app->call_live.rows = vrows;
+    app->call_live.frame.state = IM_IDLE;
+    app->call_live.pid = pid;
+    app->call_live.in_fd = in_pipe[1];
+    app->call_live.err_fd = err_pipe[0];
+    app->call_live.video = video;
+    snprintf(app->call_live.network, sizeof(app->call_live.network), "%s", network ? network : "");
+    snprintf(app->call_live.channel, sizeof(app->call_live.channel), "%s", channel ? channel : "");
+    app->call_live.reading =
+        pthread_create(&app->call_live.reader, NULL, call_reader_main, app) == 0;
+    app->call_live.vreading =
+        video && pthread_create(&app->call_live.vreader, NULL, call_frame_main, app) == 0;
+    pthread_mutex_unlock(&app->lock);
+
+    log_line(app, "call: connecting in the terminal (%s) — /hangup ends it, /mute and /unmute "
+                  "while it runs",
+             video ? "audio and video" : "audio");
+    if (video)
+        log_line(app, "call: their picture appears top-right while the call runs");
+    return true;
+}
+
+/* One control verb to a running call. */
+static bool call_control(struct app *app, const char *verb) {
+    pthread_mutex_lock(&app->lock);
+    int fd = app->call_live.pid > 0 ? app->call_live.in_fd : -1;
+    pthread_mutex_unlock(&app->lock);
+    if (fd < 0) return false;
+    char line[32];
+    int n = snprintf(line, sizeof(line), "%s\n", verb);
+    return n > 0 && write(fd, line, (size_t)n) == n;
+}
+
 static void call_hangup(struct app *app) {
     bool ringing;
+    bool live;
     pthread_mutex_lock(&app->lock);
     ringing = app->overlay.kind == OVERLAY_CALL;
     if (ringing) app->overlay.kind = OVERLAY_NONE;
+    live = app->call_live.pid > 0;
     pthread_mutex_unlock(&app->lock);
+    if (live) {
+        /* A running call outranks a ring: /hangup during one means "end
+         * this", not "dismiss the doorbell behind it". */
+        call_helper_stop(app);
+        log_line(app, "call: hung up");
+        return;
+    }
     /* Says what it OBSERVED: "dismissed" when a ring was up, and the
      * honest nothing-to-do when there wasn't. */
     if (ringing) log_line(app, "call: dismissed — the caller was not told");
@@ -13111,6 +13551,7 @@ static void show_command_help(struct app *app, const char *raw) {
     else if (strcmp(cmd, "call") == 0) log_line(app, "/call — start an audio call in this window: a room nobody can guess is minted, its link is posted as 📞 <url>, and your browser opens it. The link IS the credential, so the call is exactly as private as the window you posted it in. /set call.base_url picks the service");
     else if (strcmp(cmd, "videocall") == 0) log_line(app, "/videocall — /call with a camera: the same room, posted as 📹 <url> so the other side knows to expect video before joining");
     else if (strcmp(cmd, "answer") == 0) log_line(app, "/answer — join the last call that came in, ringing or not. A channel invite does not ring under the default /set call.ring, and this is how you take it");
+    else if (strcmp(cmd, "mute") == 0 || strcmp(cmd, "unmute") == 0) log_line(app, "/mute, /unmute — the microphone, while a call is running in the terminal. Local and instant: the capture keeps going and its packets are dropped, so unmuting does not wait for a device to open");
     else if (strcmp(cmd, "hangup") == 0) log_line(app, "/hangup — stop a ringing call. LOCAL: the caller is not told, the same way not picking up a phone tells nobody. /answer still reaches the call afterwards");
     else if (strcmp(cmd, "view") == 0) log_line(app, "/view [url] — download it and open the desktop viewer for that file TYPE; an audio URL PLAYS instead (mpv/ffplay); bare /view offers the last 20 pictures, clips and audio posted in this window");
     else if (strcmp(cmd, "preview") == 0) log_line(app, "/preview [url] — render it full-screen in the terminal; an audio URL PLAYS instead (mpv/ffplay, click-only — audio never plays on arrival); bare /preview offers the last 20 pictures, clips and audio posted in this window");
@@ -14674,6 +15115,12 @@ static void handle_command_dispatch(struct app *app, char *line) {
         call_answer(app);
     } else if (strcmp(line, "/hangup") == 0) {
         call_hangup(app);
+    } else if (strcmp(line, "/mute") == 0 || strcmp(line, "/unmute") == 0) {
+        bool on = line[1] == 'm';
+        if (call_control(app, on ? "mute" : "unmute"))
+            log_line(app, "call: microphone %s", on ? "muted" : "live");
+        else
+            log_line(app, "/%s: no call is running", on ? "mute" : "unmute");
     } else if (strcmp(line, "/clear") == 0) {
         clear_active_window_log(app);
     } else if (strcmp(line, "/close") == 0) {
@@ -18198,6 +18645,7 @@ int main(int argc, char **argv) {
     /* Queries ring, channels do not. A channel doorbell any member can
      * press is a doorbell that gets pressed. */
     app->call_ring = CALL_RING_QUERIES;
+    app->call_live.in_fd = app->call_live.err_fd = app->call_live.out_fd = -1;
     /* web_search needs somewhere to point, and the choice is decided by
      * what answers a plain socket rather than by brand.
      *

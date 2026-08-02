@@ -5,8 +5,9 @@ import type { IsupportEntry } from "./isupport";
 //
 // ISUPPORT (CHANMODES + PREFIX) tells cic WHICH mode letters exist on a
 // network and their param arity — but NOT what they mean. The human copy
-// ("secret · hidden from channel lists") is UI text and MUST live in cic,
-// never on the wire (CLAUDE.md "no localized strings server-side"). This
+// (a short label + the verbatim HelpServ CMODE help text) is UI text and
+// MUST live in cic, never on the wire (CLAUDE.md "no localized strings
+// server-side"). This
 // module is that copy table plus `availableModes/1`, which folds a
 // network's ISUPPORT capability set into the toggle list the modal
 // renders.
@@ -21,24 +22,105 @@ import type { IsupportEntry } from "./isupport";
 
 export type ModeInfo = { label: string; desc: string };
 
-// The bahamut/Azzurra channel-mode set. Keys are single mode letters.
-// Descriptions are terse: "<label> · <what it does>" reads well in the
-// modal's toggle button (label bold, desc muted).
+// #667 — reconciled with the letters the ircd (azzurra/bahamut) actually
+// advertises in its 005 (src/s_misc.c:1275):
+//   CHANMODES=bz,k,l,BcdijmMnOprRsStuU
+// ⇒ type B `k`, type C `l`, type D `B c d i j m M n O p r R s S t u U`
+//   (type A `b z` list modes + PREFIX `o h v` are excluded — see above).
+//
+// Every `desc` is VERBATIM from the network's HelpServ CMODE helpfile
+// (`azzurra/services` → run/data/helpfiles/us/helpserv/cmode), NOT
+// paraphrased from the ircd C source — with EXACTLY ONE exception, `+B`
+// (MODE_HIDEBANS): it is advertised but ABSENT from the helpfile, so it
+// carries authored copy (approved in-channel; see its inline note at the top
+// of the table). That verbatim text is what users are already told, so cic
+// must MATCH it — and paraphrasing the C source is exactly how `+d` was once
+// mislabelled "delayed" (it is MODE_NONICKCHG: no nick change) and `+u` a
+// "spam filter" (it blocks PART/QUIT). The `label` is cic's own short UI tag:
+// concise but truthful to the `desc`.
+//
+// Not here, on purpose:
+//   `+D` — DELETED: the ircd has no such mode (no `case 'D'`, not in
+//        CHANMODES); a phantom entry is what made a reader assume `+d` was
+//        its lowercase sibling. Delete, don't rewrite.
+//   `+C` (MODE_NOCTCP) — a real ircd mode with helpfile copy but NOT in the
+//        advertised CHANMODES, so `availableModes/1` never offers it; kept
+//        (harmless, unreachable) and aligned to the helpfile.
+//
+// Ordered as the helpfile lists them (case-insensitive) for easy audit.
 const MODE_DESCRIPTIONS: Record<string, ModeInfo> = {
-  n: { label: "no external", desc: "block messages from outside the channel" },
-  t: { label: "topic lock", desc: "only ops can change the topic" },
-  m: { label: "moderated", desc: "only voiced users and ops may speak" },
-  s: { label: "secret", desc: "hidden from channel lists and WHOIS" },
-  p: { label: "private", desc: "hidden from WHO / channel list" },
-  i: { label: "invite only", desc: "join requires an invite" },
-  k: { label: "key", desc: "join requires a password" },
-  l: { label: "limit", desc: "cap the number of members" },
-  r: { label: "registered", desc: "only registered (+r) nicks may join" },
-  R: { label: "reg'd only", desc: "only registered nicks may join" },
-  c: { label: "no colors", desc: "strip mIRC color codes from messages" },
-  C: { label: "no CTCP", desc: "block CTCP to the channel" },
-  D: { label: "delay join", desc: "hide joins until the user speaks" },
-  d: { label: "delayed", desc: "delayed-join related" },
+  // #667 — the SOLE non-verbatim entry. MODE_HIDEBANS (`+B`) is advertised
+  // (type D) but ABSENT from the HelpServ CMODE helpfile, so it has no
+  // verbatim text to match; this copy is authored, approved by vjt in-channel
+  // (2026-08-02). It is faithful to the ircd behaviour: the ban list is
+  // withheld from non-privileged users (bahamut src/channel.c:1559) and
+  // MODE +b/-b are routed to channel operators only (src/channel.c:3609,
+  // 3634). Every OTHER entry below is verbatim from the helpfile.
+  B: {
+    label: "hide bans",
+    desc: "Hides the channel ban list and ban changes from users who are not channel operators.",
+  },
+  c: {
+    label: "no colors",
+    desc: "Blocks all messages containing colors sent to the channel.",
+  },
+  C: { label: "no CTCP", desc: "Blocks all CTCPs sent to the channel." },
+  d: {
+    label: "no nick change",
+    desc: "Only channel operators and voices can change nick while in channel.",
+  },
+  i: { label: "invite only", desc: "Sets the channel invite only." },
+  j: {
+    label: "identified only",
+    desc: "Only users identified to a registered nick can join the channel.",
+  },
+  k: { label: "key", desc: "Sets a key to the channel." },
+  l: {
+    label: "limit",
+    desc: "Sets the maximum number of users allowed in the channel.",
+  },
+  m: {
+    label: "moderated",
+    desc: "Sets channel moderation; only operators, half-operators and voices can talk.",
+  },
+  M: {
+    label: "moderated (reg'd)",
+    desc: "Sets channel moderation; only users with a registered nick can talk.",
+  },
+  n: { label: "no external", desc: "Blocks all outside messages to channel." },
+  O: {
+    label: "opers only",
+    desc: "(IRCop Only) Only IRC Operators can join the channel.",
+  },
+  p: {
+    label: "private",
+    desc: "Channel is private (does not show in /WHOIS, topic is hidden in /LIST ).",
+  },
+  r: {
+    label: "registered",
+    desc: "(Services Only) Channel is registered with ChanServ.",
+  },
+  R: {
+    label: "reg'd only",
+    desc: "Only users with registered nicks can join the channel.",
+  },
+  s: {
+    label: "secret",
+    desc: "Channel is secret (does not show in /WHOIS or /LIST ).",
+  },
+  S: { label: "SSL only", desc: "Only SSL client can join the channel." },
+  t: {
+    label: "topic lock",
+    desc: "Only channel operators can change the topic.",
+  },
+  u: {
+    label: "no part/quit",
+    desc: "Blocks PART/QUIT messages sent to the channel.",
+  },
+  U: {
+    label: "allow unreg'd",
+    desc: "Allow users without a registered nick on .US and .EU robins to join the channel.",
+  },
 };
 
 /**

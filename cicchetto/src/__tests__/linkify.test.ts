@@ -245,4 +245,121 @@ describe("linkify", () => {
       ]);
     });
   });
+
+  // #648 — channel tokens (`#channel`) tokenised in the SAME single pass as
+  // URLs so the URL branch wins over a `#` inside a URL fragment and the
+  // trailing-punctuation cleanup is shared. Prefix decision: `#` ONLY —
+  // Azzurra (all prod) serves only `#`; `&`/`+`/`!` are false-positive
+  // magnets in prose (`&`=entities, `+`="C++", `!`=exclamations) so they
+  // stay PLAIN TEXT, the explicit non-silent handling.
+  describe("channel tokens (#648)", () => {
+    it("tokenises a bare #channel", () => {
+      expect(linkify("join #sniffo now")).toEqual([
+        { type: "text", value: "join " },
+        { type: "channel", value: "#sniffo" },
+        { type: "text", value: " now" },
+      ]);
+    });
+
+    it("tokenises multiple channels in one body", () => {
+      expect(linkify("#a and #beta")).toEqual([
+        { type: "channel", value: "#a" },
+        { type: "text", value: " and " },
+        { type: "channel", value: "#beta" },
+      ]);
+    });
+
+    it("allows hyphens in a channel name", () => {
+      expect(linkify("see #it-opers ok")).toEqual([
+        { type: "text", value: "see " },
+        { type: "channel", value: "#it-opers" },
+        { type: "text", value: " ok" },
+      ]);
+    });
+
+    it("allows underscores WITHOUT the emphasis pass eating them (charset)", () => {
+      expect(linkify("#foo_bar_baz")).toEqual([{ type: "channel", value: "#foo_bar_baz" }]);
+    });
+
+    it("tokenises a channel whose name STARTS with a digit but has letters", () => {
+      expect(linkify("play #7dtd tonight")).toEqual([
+        { type: "text", value: "play " },
+        { type: "channel", value: "#7dtd" },
+        { type: "text", value: " tonight" },
+      ]);
+    });
+
+    it("a # inside a URL fragment stays part of the URL (URL branch wins)", () => {
+      expect(linkify("https://example.org/page#section")).toEqual([
+        {
+          type: "url",
+          value: "https://example.org/page#section",
+          href: "https://example.org/page#section",
+        },
+      ]);
+    });
+
+    it("tokenises a channel AND a URL in the same body", () => {
+      expect(linkify("see #foo at https://x.example/y")).toEqual([
+        { type: "text", value: "see " },
+        { type: "channel", value: "#foo" },
+        { type: "text", value: " at " },
+        { type: "url", value: "https://x.example/y", href: "https://x.example/y" },
+      ]);
+    });
+
+    it("strips a trailing period from a sentence-final channel", () => {
+      expect(linkify("join #sniffo.")).toEqual([
+        { type: "text", value: "join " },
+        { type: "channel", value: "#sniffo" },
+        { type: "text", value: "." },
+      ]);
+    });
+
+    it("strips an unbalanced trailing ) from a parenthesised channel", () => {
+      expect(linkify("(#sniffo)")).toEqual([
+        { type: "text", value: "(" },
+        { type: "channel", value: "#sniffo" },
+        { type: "text", value: ")" },
+      ]);
+    });
+
+    it("stops a channel at a comma (multi-channel list)", () => {
+      expect(linkify("#foo,#bar")).toEqual([
+        { type: "channel", value: "#foo" },
+        { type: "text", value: "," },
+        { type: "channel", value: "#bar" },
+      ]);
+    });
+
+    it("does NOT tokenise a bare # with no name", () => {
+      expect(linkify("a lone # here")).toEqual([{ type: "text", value: "a lone # here" }]);
+    });
+
+    it("does NOT tokenise a digits-only #1 (issue ref / hashtag)", () => {
+      expect(linkify("see #1 for details")).toEqual([
+        { type: "text", value: "see #1 for details" },
+      ]);
+    });
+
+    it("does NOT tokenise a digits-only #123", () => {
+      expect(linkify("bug #123 filed")).toEqual([{ type: "text", value: "bug #123 filed" }]);
+    });
+
+    it("does NOT tokenise &, +, ! prefixes (prefix decision: # only)", () => {
+      expect(linkify("&local +modeless !safe stay text")).toEqual([
+        { type: "text", value: "&local +modeless !safe stay text" },
+      ]);
+    });
+
+    it("caps a channel at 50 chars (RFC 2812) and leaves the overflow as text", () => {
+      // `#` + 60 name chars → channel is the first 50 chars total, the
+      // remaining 11 name chars fall through as text.
+      const name = "a".repeat(60);
+      expect(linkify(`#${name}`)).toEqual([
+        { type: "channel", value: `#${"a".repeat(49)}` },
+        { type: "text", value: "a".repeat(11) },
+      ]);
+    });
+  });
 });

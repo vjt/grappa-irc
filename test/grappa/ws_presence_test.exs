@@ -252,6 +252,88 @@ defmodule Grappa.WSPresenceTest do
     end
   end
 
+  describe "#671 — a STALE :visible pid still arms auto-away (every door)" do
+    # #671 — read-time staleness (#318) was scoped to push suppression, but
+    # `any_visible_in?/2` (fresh) also sat on the `before?` side of every
+    # auto-away transition. So a device that stopped heartbeating (phone
+    # asleep, JS timers suspended) aged out silently — and when its socket
+    # finally died / closed / reported hidden, `before?` was ALREADY false,
+    # the `true → false` flip never happened, `:ws_all_hidden` never fired,
+    # and auto-away never armed. The transition predicate now reads RAW
+    # `:visible` membership (a reported-visible device is still present for
+    # auto-away purposes, however stale its push-suppression view). Push
+    # suppression (`any_visible?/1`) stays FRESH — the two invariants below.
+
+    test "a STALE :visible pid dying still fires :ws_all_hidden (arms auto-away)" do
+      p = stub_pid()
+      :ok = WSPresence.register_with_notify("ivan", p, self())
+      :ok = WSPresence.set_visibility("ivan", p, true)
+      assert_receive {:ws_visible, "ivan"}, 200
+
+      # Device stops reporting; it ages past @stale_ms with no write.
+      :ok = WSPresence.mark_stale_for_test("ivan", p)
+      # Push-suppression view discounts it immediately (the #318 contract)...
+      refute WSPresence.any_visible?("ivan")
+
+      # ...but its DEATH is still the last reported-visible device leaving.
+      Process.exit(p, :kill)
+      :timer.sleep(50)
+
+      assert WSPresence.ws_count("ivan") == 0
+      assert_receive {:ws_all_hidden, "ivan"}, 200
+    end
+
+    test "client_closing on a STALE :visible pid still fires :ws_all_hidden" do
+      p = stub_pid()
+      :ok = WSPresence.register_with_notify("judy", p, self())
+      :ok = WSPresence.set_visibility("judy", p, true)
+      assert_receive {:ws_visible, "judy"}, 200
+
+      :ok = WSPresence.mark_stale_for_test("judy", p)
+      # pagehide arriving after the pid already went stale.
+      :ok = WSPresence.client_closing("judy", p)
+      assert_receive {:ws_all_hidden, "judy"}, 200
+
+      send(p, :stop)
+    end
+
+    test "set_visibility(false) on a STALE :visible pid still fires :ws_all_hidden" do
+      p = stub_pid()
+      :ok = WSPresence.register_with_notify("kev", p, self())
+      :ok = WSPresence.set_visibility("kev", p, true)
+      assert_receive {:ws_visible, "kev"}, 200
+
+      :ok = WSPresence.mark_stale_for_test("kev", p)
+      # An explicit hidden report after the pid already aged out.
+      :ok = WSPresence.set_visibility("kev", p, false)
+      assert_receive {:ws_all_hidden, "kev"}, 200
+
+      send(p, :stop)
+    end
+
+    test "one STALE + one fresh visible pid: the fresh one dying does NOT fire :ws_all_hidden" do
+      # Guard the other direction — the raw predicate must not over-fire.
+      # A stale pid is still raw-visible, so the user is still present when a
+      # sibling fresh pid dies.
+      stale = stub_pid()
+      fresh = stub_pid()
+      :ok = WSPresence.register_with_notify("lena", stale, self())
+      :ok = WSPresence.register_with_notify("lena", fresh, self())
+      :ok = WSPresence.set_visibility("lena", stale, true)
+      :ok = WSPresence.set_visibility("lena", fresh, true)
+      assert_receive {:ws_visible, "lena"}, 200
+
+      :ok = WSPresence.mark_stale_for_test("lena", stale)
+
+      Process.exit(fresh, :kill)
+      :timer.sleep(50)
+      # `stale` is still raw-visible — the user has not gone all-hidden.
+      refute_receive {:ws_all_hidden, "lena"}, 100
+
+      send(stale, :stop)
+    end
+  end
+
   describe "client_closing/2 immediate path" do
     test "client_closing on the last VISIBLE socket fires immediate :ws_all_hidden" do
       p = stub_pid()

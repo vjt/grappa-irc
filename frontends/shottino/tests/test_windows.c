@@ -1983,6 +1983,35 @@ TEST(a_question_is_written_where_its_answer_will_land) {
     free_app(app);
 }
 
+/* The picture-in-picture box, in cells.
+ *
+ * Half blocks mean two PIXEL rows per cell row, so the pixel height is
+ * rows*2 — which is why the 4:3 arithmetic divides by 8 rather than 4
+ * and looks off by two without being. Getting it wrong does not crash:
+ * it silently stretches everybody's face. */
+TEST(the_call_picture_is_a_share_of_the_width) {
+    int c = 0, r = 0;
+
+    /* A share, not a constant: 40 cells on an 80-column terminal is the
+     * whole client; 24 on a 200-column one is a stamp. */
+    call_video_box(80, &c, &r);
+    CHECK_LONG(c, 20);
+    call_video_box(200, &c, &r);
+    CHECK_LONG(c, 40); /* capped */
+    call_video_box(40, &c, &r);
+    CHECK_LONG(c, 16); /* floored */
+
+    /* 4:3 in PIXELS, where the pixel height is rows*2. */
+    for (int total = 40; total <= 240; total += 8) {
+        call_video_box(total, &c, &r);
+        CHECK(c >= 16 && c <= 40);
+        CHECK(r >= 6);
+        /* Never taller than it is wide, in pixels — that would be a
+         * portrait box for a landscape camera. */
+        CHECK(r * 2 <= c);
+    }
+}
+
 /* ── Calls ─────────────────────────────────────────────────────────────
  *
  * The whole anti-annoyance posture of the feature lives in the parser:
@@ -2825,6 +2854,7 @@ int main(void) {
     RUN(a_tab_completed_verb_still_dispatches);
     RUN(the_settings_panel_lists_every_setting);
     RUN(a_ping_reply_we_did_not_time_is_still_shown_when_live);
+    RUN(the_call_picture_is_a_share_of_the_width);
     RUN(an_action_is_shown_as_words_not_control_characters);
     RUN(a_question_is_written_where_its_answer_will_land);
     RUN(only_a_marked_invite_is_a_call);

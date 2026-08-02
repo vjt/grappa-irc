@@ -195,3 +195,45 @@ describe("MircText textual emphasis markers (#455)", () => {
     });
   });
 });
+
+// #648 — a `#channel` linkify segment renders as a click-to-join affordance,
+// but ONLY on surfaces that pass `onChannelClick` (scrollback). Everywhere
+// else it degrades to plain text — exactly how a url segment renders on a
+// non-tappable surface. The crux is the emphasis exclusion: a channel token
+// MUST be exempt from the textual-emphasis pass the same way a url is, or
+// `#foo_bar_baz` gets its underscores eaten.
+describe("MircText channel affordance (#648)", () => {
+  it("renders a #channel as a .channel-clickable button; clicking calls onChannelClick with the RAW channel", () => {
+    const spy = vi.fn();
+    const { container } = render(() => (
+      <MircBody body="join #Sniffo now" emphasis onChannelClick={spy} />
+    ));
+    const btn = container.querySelector(".channel-clickable") as HTMLButtonElement;
+    expect(btn).not.toBeNull();
+    // display-cased, raw (keys fold downstream; the affordance shows what
+    // the sender typed).
+    expect(btn.textContent).toBe("#Sniffo");
+    btn.click();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith("#Sniffo");
+  });
+
+  it("excludes a channel from the emphasis pass — #foo_bar_baz keeps its underscores (THE TRAP)", () => {
+    const { container } = render(() => (
+      <MircBody body="#foo_bar_baz" emphasis onChannelClick={vi.fn()} />
+    ));
+    // The emphasis pass would have italic/underline-wrapped `_bar_`; a
+    // channel segment must never reach it.
+    expect(container.querySelector(".scrollback-mirc-underline")).toBeNull();
+    expect(container.querySelector(".scrollback-mirc-italic")).toBeNull();
+    const btn = container.querySelector(".channel-clickable") as HTMLButtonElement;
+    expect(btn?.textContent).toBe("#foo_bar_baz");
+    expect(container.textContent).toBe("#foo_bar_baz");
+  });
+
+  it("renders a channel as PLAIN TEXT (no button) on a surface WITHOUT onChannelClick", () => {
+    const { container } = render(() => <MircBody body="join #chan" emphasis />);
+    expect(container.querySelector(".channel-clickable")).toBeNull();
+    expect(container.textContent).toBe("join #chan");
+  });
+});

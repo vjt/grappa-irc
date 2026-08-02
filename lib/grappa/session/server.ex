@@ -135,7 +135,20 @@ defmodule Grappa.Session.Server do
   # twitchy for real mobile usage (a screen-lock immediately read as away).
   # The auto-away reason string itself lives on `AwayState.auto_away_reason/0`
   # (moved there in cluster #7 — single injection site is `set_auto_away/1`).
+  #
+  # This is the PRODUCTION DEFAULT, injectable per the CLAUDE.md
+  # start_link-opts pattern (#671): `boot/0` reads
+  # `config :grappa, Grappa.Session.Server, auto_away_debounce_ms: …` once
+  # at boot into `:persistent_term`; `Grappa.Session.start_session/3` (the
+  # spawn boundary) injects the value into the opts map; `do_init/1`
+  # stores it on `state.auto_away_debounce_ms`. Prod sets no config key, so
+  # the value stays byte-identical 600_000; the integration env
+  # (`config/dev.exs`, `MIX_ENV=dev`) sets it short so the auto-away
+  # disconnect e2e can observe the upstream AWAY without a 10-min wait.
   @auto_away_debounce_ms 600_000
+
+  # `:persistent_term` key holding the boot-resolved debounce default.
+  @auto_away_debounce_key {__MODULE__, :auto_away_debounce_ms}
 
   # 10s is generous for an upstream NickServ → +r MODE round-trip; even
   # a sluggish ircd should confirm in <2s. The timer is a fail-safe so
@@ -525,6 +538,10 @@ defmodule Grappa.Session.Server do
           # #347 deferred-autojoin fallback window — test seam. Production
           # omits it and inherits `@autojoin_defer_ms`.
           optional(:autojoin_defer_ms) => pos_integer(),
+          # #671 auto-away debounce window. Normally injected by
+          # `Grappa.Session.start_session/3` from the boot-resolved default;
+          # a test / integration env may substitute a short window.
+          optional(:auto_away_debounce_ms) => non_neg_integer(),
           # GH #189 / #509 — on-connect perform list + its `$oper_pass` /
           # `$nickserv_pass` secrets, decrypted plaintext from the credential
           # (nil when unset). Run at 001 before the built-in identify and before
@@ -645,6 +662,9 @@ defmodule Grappa.Session.Server do
           recover_settle_timer: reference() | nil,
           away_state: AwayState.t(),
           auto_away_timer: reference() | nil,
+          # #671 — the auto-away debounce window (ms), injected from
+          # `start_session/3` (boot-resolved default; opts override in tests).
+          auto_away_debounce_ms: non_neg_integer(),
           # S4.2: IRCv3 caps confirmed active by upstream CAP ACK. Keys are
           # lowercase cap names (e.g. "labeled-response"). Empty until the
           # upstream ACKs at least one cap. Caps added on ACK; never removed
@@ -890,6 +910,42 @@ defmodule Grappa.Session.Server do
   end
 
   @doc """
+  Reads the auto-away debounce config once at boot into
+  `:persistent_term`. Called from `Grappa.Application.start/2` (the
+  designated `Application.get_env` boundary — CLAUDE.md
+  "Application.{put,get}_env: boot-time only"). Mirrors the other
+  boot/0 DI-seams (`Grappa.Uploads.boot/1`, `Grappa.Admission.Config.boot/0`).
+
+  Absent config (prod) → the compile-time default (`600_000`), so
+  production stays byte-identical. The integration env
+  (`config/dev.exs`) overrides it short so the auto-away disconnect e2e
+  need not wait 10 minutes. `start_session/3` reads the resolved value
+  via `auto_away_debounce_ms/0` and injects it into the session's
+  start opts.
+  """
+  @spec boot() :: :ok
+  def boot do
+    debounce_ms =
+      :grappa
+      |> Application.get_env(__MODULE__, [])
+      |> Keyword.get(:auto_away_debounce_ms, @auto_away_debounce_ms)
+
+    :persistent_term.put(@auto_away_debounce_key, debounce_ms)
+  end
+
+  @doc """
+  Boot-resolved auto-away debounce (ms) — lock-free `:persistent_term`
+  read. Falls back to the compile-time default when `boot/0` has not run
+  (e.g. a unit test that starts a bare Server without the app tree).
+  Injected into the session opts by `Grappa.Session.start_session/3`;
+  a per-session opts override still wins in `do_init/1` (the test seam).
+  """
+  @spec auto_away_debounce_ms() :: non_neg_integer()
+  def auto_away_debounce_ms do
+    :persistent_term.get(@auto_away_debounce_key, @auto_away_debounce_ms)
+  end
+
+  @doc """
   Returns the registry key for `(subject, network_id)`. Single source
   of truth for the `{:session, subject, network_id}` shape — every
   caller that needs to look up or terminate a session by key must go
@@ -1124,6 +1180,10 @@ defmodule Grappa.Session.Server do
       # `maybe_resend_away/1` (the ircd connection is fresh and away-blind).
       away_state: restore_away_state(Map.get(opts, :restored_away)),
       auto_away_timer: nil,
+      # #671 — debounce window from the spawn boundary
+      # (`start_session/3`); an explicit opt still wins so a unit test can
+      # substitute a short window without runtime config tricks.
+      auto_away_debounce_ms: Map.get(opts, :auto_away_debounce_ms, @auto_away_debounce_ms),
       caps_active: MapSet.new(),
       labels_pending: %{},
       # S10 — sibling prime-stamp map for the labels_pending lazy TTL sweep.
@@ -2613,25 +2673,26 @@ defmodule Grappa.Session.Server do
   end
 
   # S3.2 / #182 — the last VISIBLE device for this user backgrounded or
-  # closed (sockets may still be connected but hidden). Schedule the 30s
-  # debounce before issuing auto-away. If already `:away_explicit`, skip
-  # entirely — the user intentionally went away.
+  # closed (sockets may still be connected but hidden). Schedule the
+  # `@auto_away_debounce_ms` (10-min) debounce before issuing auto-away.
+  # If already `:away_explicit`, skip entirely — the user intentionally
+  # went away.
   def handle_info({:ws_all_hidden, _}, %{away_state: %AwayState{state: :away_explicit}} = state) do
     {:noreply, state}
   end
 
   def handle_info({:ws_all_hidden, _}, state) do
     # Cancel any existing debounce timer + drain a possibly-already-fired
-    # :auto_away_debounce_fire from the mailbox. Two rapid hide transitions
-    # ~30s apart used to leave the OLD timer's fire queued ahead of the
-    # second handler, which then ran set_auto_away_internal at T=30s
-    # instead of T=60s — and the second timer would later fire again,
+    # :auto_away_debounce_fire from the mailbox. Two hide transitions
+    # within one debounce window used to leave the OLD timer's fire queued
+    # ahead of the second handler, which then ran set_auto_away_internal a
+    # full window early — and the second timer would later fire again,
     # producing a duplicate upstream AWAY + an away_started_at jump that
     # broke maybe_broadcast_mentions_bundle's window-boundary aggregation
     # (lifecycle review HIGH S3).
     :ok = cancel_and_drain(state.auto_away_timer, :auto_away_debounce_fire)
 
-    timer = Process.send_after(self(), :auto_away_debounce_fire, @auto_away_debounce_ms)
+    timer = Process.send_after(self(), :auto_away_debounce_fire, state.auto_away_debounce_ms)
     {:noreply, %{state | auto_away_timer: timer}}
   end
 

@@ -27,6 +27,7 @@ import { expect, test } from "../fixtures/test";
 import {
   composeSend,
   loginAs,
+  scrollbackLine,
   selectChannel,
   waitForDmListenerReady,
   waitForQueryWindowReady,
@@ -57,6 +58,22 @@ test("query window follows a peer NICK change — relabels, keeps history, route
     // Share a channel so grappa observes the peer's NICK (IRC only relays a
     // NICK to users sharing a channel with the renamer).
     await peer.join(CHANNEL);
+
+    // #530/#653 — the STEP-3 relabel under test fires ONLY when grappa emits
+    // {:peer_nick_renamed}, and event_router.ex gates that on the renamer
+    // being a tracked member of a shared channel (peer_rename_effects:
+    // `channels != []`, i.e. OLD_NICK present in grappa's state.members).
+    // `peer.join` above awaits only the peer's OWN join echo from bahamut —
+    // NOT grappa's observation of it. Under full-gate load grappa can process
+    // the peer's #bofh JOIN late; a rename that lands first leaves
+    // `channels == []` → no peer_nick_renamed → the sidebar never relabels
+    // and STEP 3 fails. Gate on the peer's JOIN line rendering in our #bofh
+    // scrollback: grappa broadcasts that row from the SAME apply that adds
+    // OLD_NICK to state.members, so its presence is the observable proof the
+    // shared-membership precondition holds before we drive the rename.
+    await expect(
+      scrollbackLine(page, "join", OLD_NICK).filter({ hasText: CHANNEL }).first(),
+    ).toBeVisible({ timeout: 10_000 });
 
     // STEP 1 — open + focus the query window with the OLD nick.
     await composeSend(page, `/q ${OLD_NICK}`);

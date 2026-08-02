@@ -25,6 +25,19 @@ import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
+// #520/#653 — key every message body on a value that cannot pre-exist. The
+// Phase-3 premise gate asserts the DURING-gap row is ABSENT (toHaveCount 0);
+// under full-gate load a residual `msg-159-*-during-gap` row persisted by a
+// PRIOR execution of this spec (a Playwright retry, or a slow `_vjtReset`
+// truncate that lost the DB-lock race under #506/#539 contention) can survive
+// into this run's #bofh scrollback and satisfy the `hasText` substring,
+// reddening the premise before the fix under test ever runs. A per-run UUID
+// makes THIS run's rows un-collidable with any neighbour's, so the premise
+// measures only the delivery gap it means to — never leftover state. Iso is
+// unaffected (the reset runs between repeats); this closes the load-only
+// residue class the issue flags ("cross-test residue / ordering").
+const RUN_ID = crypto.randomUUID().slice(0, 8);
+
 // Open the per-channel delivery gap: silence live `phx.on("event")` for
 // CHANNEL's topic while the socket + every other channel stay live.
 async function suppressChannelDelivery(
@@ -81,7 +94,7 @@ test("#159 — tab RE-SELECT after a socket-stays-open gap re-fetches the missed
 
     // Phase 1 — baseline live message. Rendered live sets the high-water
     // mark (recordSeen) that refreshScrollback's resume cursor uses.
-    const before = "msg-159-sel-before-gap";
+    const before = `msg-159-sel-before-gap-${RUN_ID}`;
     peer.privmsg(CHANNEL, before);
     await expect(scrollbackLine(page, "privmsg", before)).toBeVisible();
 
@@ -90,7 +103,7 @@ test("#159 — tab RE-SELECT after a socket-stays-open gap re-fetches the missed
 
     // Phase 3 — peer posts during the gap. Server persists + broadcasts;
     // this cic drops the push (topic suppressed), so it never renders.
-    const during = "msg-159-sel-during-gap";
+    const during = `msg-159-sel-during-gap-${RUN_ID}`;
     peer.privmsg(CHANNEL, during);
     // The gap is real: the row must NOT appear on its own. Settle window
     // long enough to rule out an in-flight push (delivery is deterministically
@@ -127,7 +140,7 @@ test("#159 — tab RE-FOREGROUND (hidden→visible) after a socket-stays-open ga
   try {
     await peer.join(CHANNEL);
 
-    const before = "msg-159-vis-before-gap";
+    const before = `msg-159-vis-before-gap-${RUN_ID}`;
     peer.privmsg(CHANNEL, before);
     await expect(scrollbackLine(page, "privmsg", before)).toBeVisible();
 
@@ -135,7 +148,7 @@ test("#159 — tab RE-FOREGROUND (hidden→visible) after a socket-stays-open ga
     await suppressChannelDelivery(page, NETWORK_SLUG, CHANNEL);
     await setTabHidden(page, true);
 
-    const during = "msg-159-vis-during-gap";
+    const during = `msg-159-vis-during-gap-${RUN_ID}`;
     peer.privmsg(CHANNEL, during);
     await page.waitForTimeout(750);
     await expect(scrollbackLine(page, "privmsg", during)).toHaveCount(0);

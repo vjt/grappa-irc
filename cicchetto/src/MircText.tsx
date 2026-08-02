@@ -83,13 +83,40 @@ const renderEmphasis = (text: string): JSX.Element => (
   </For>
 );
 
+// #648 — a linkify `channel` segment (`#sniffo`) renders as a click-to-join
+// affordance, but ONLY on surfaces that wire `onChannelClick` (scrollback
+// message bodies). Everywhere else (topic bar, whois cards, /list, service
+// modals) it degrades to plain text — the identical posture a url segment
+// takes on a non-tappable surface. A channel is ALWAYS exempt from the
+// textual-emphasis pass (like a url), so `#foo_bar_baz` never has its
+// underscores eaten, on ANY surface. Rendered as a <button> — not a styled
+// span — so it inherits keyboard focus + activation for free, mirroring the
+// `.nick-clickable` sender affordance (ScrollbackPane #354) and satisfying
+// biome's a11y rules without a manual keydown handler.
+const renderChannel = (
+  channel: string,
+  onChannelClick: ((channel: string) => void) | undefined,
+): JSX.Element => {
+  if (!onChannelClick) return channel;
+  return (
+    <button type="button" class="channel-clickable" onClick={() => onChannelClick(channel)}>
+      {channel}
+    </button>
+  );
+};
+
 // CP13 S10: render an IRC body string with mIRC formatting expanded into
 // per-run <span> elements. Plain text (no control chars) collapses into a
 // single Run and renders as one <span>; the no-formatting fast path is
 // the common case so this stays cheap. Each Run gets a class for each
 // active toggle attribute + inline style for fg/bg colors (the palette is
 // 16 fixed values — we don't generate per-color CSS classes).
-const renderRun = (run: Run, linkPolicy: LinkPolicy, emphasis: boolean): JSX.Element => {
+const renderRun = (
+  run: Run,
+  linkPolicy: LinkPolicy,
+  emphasis: boolean,
+  onChannelClick: ((channel: string) => void) | undefined,
+): JSX.Element => {
   const style: Record<string, string> = {};
   // Reverse swaps fg/bg. mIRC reverses the rendered colors AND falls back
   // to the terminal default when fg/bg aren't set, but in a web context
@@ -127,7 +154,10 @@ const renderRun = (run: Run, linkPolicy: LinkPolicy, emphasis: boolean): JSX.Ele
     >
       <For each={segments}>
         {(seg, i) => {
-          if (seg.type !== "url") return emphasis ? renderEmphasis(seg.value) : seg.value;
+          if (seg.type === "text") return emphasis ? renderEmphasis(seg.value) : seg.value;
+          // #648 — channel segment: click-to-join affordance (scrollback) or
+          // plain text (elsewhere). Structurally exempt from emphasis, like url.
+          if (seg.type === "channel") return renderChannel(seg.value, onChannelClick);
           // Media-link cluster (2026-06-11): same-origin media URLs get
           // a click intercept → in-app viewer modal (lib/mediaViewer),
           // because in-PWA-scope links navigate the iOS standalone
@@ -246,6 +276,13 @@ export const MircBody: Component<{
   // generated surfaces leave it off. Like linkPolicy, a per-surface flag
   // is inherently static — pass a stable literal, not a reactive signal.
   emphasis?: boolean;
+  // #648 — opt in to the click-to-join channel affordance. ONLY the
+  // scrollback message-body surfaces (privmsg / notice / action) pass this;
+  // when absent, `#channel` segments render as plain text (see
+  // renderChannel). The handler receives the RAW, display-cased channel
+  // (`#Sniffo`); the callee folds for keys. Same stable-value contract as
+  // linkPolicy / emphasis — a per-surface handler, not a reactive signal.
+  onChannelClick?: (channel: string) => void;
 }> = (props) => {
   const runs = (): Run[] => parseMircFormat(props.body);
   // Default "navigate" is the genuine config default — correct
@@ -259,7 +296,14 @@ export const MircBody: Component<{
   // documented so a future reactive caller isn't surprised by a stale one.
   return (
     <For each={runs()}>
-      {(run) => renderRun(run, props.linkPolicy ?? "navigate", props.emphasis ?? false)}
+      {(run) =>
+        renderRun(
+          run,
+          props.linkPolicy ?? "navigate",
+          props.emphasis ?? false,
+          props.onChannelClick,
+        )
+      }
     </For>
   );
 };

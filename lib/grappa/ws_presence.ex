@@ -16,7 +16,7 @@ defmodule Grappa.WSPresence do
   For brevity the rest of these docs say the page maps to the last visibility
   reported over the `"visibility"` channel event. When the set of
   VISIBLE devices for a user transitions, it notifies interested
-  listeners so `Session.Server`s can schedule / cancel their 30s
+  listeners so `Session.Server`s can schedule / cancel their 10-minute
   auto-away debounce.
 
   ## Why visibility, not connection count (#182)
@@ -29,8 +29,9 @@ defmodule Grappa.WSPresence do
 
   ## One raw signal, two consumers, two timings
 
-    * **Auto-away FSM** (`Session.Server`) — DEBOUNCED 30s. Transitions
-      on the `:ws_visible` / `:ws_all_hidden` lifecycle events below.
+    * **Auto-away FSM** (`Session.Server`) — DEBOUNCED (10 min,
+      `@auto_away_debounce_ms`). Transitions on the `:ws_visible` /
+      `:ws_all_hidden` lifecycle events below.
     * **Push suppression** (`Grappa.Push.Triggers`) — RAW/IMMEDIATE.
       Reads `any_visible?/1` synchronously at message time, no debounce
       (a debounced gate would miss mentions right after you set the
@@ -58,10 +59,18 @@ defmodule Grappa.WSPresence do
   and push resumes within `stale_ms` instead of ~90 min.
 
   Scope: read-time staleness fixes PUSH suppression only. The auto-away
-  FSM keys off the `any_visible?/1` TRANSITION (an emitted event), and no
-  event fires when a pid merely ages out with no write — so a stale
-  `:visible` pid does not itself trip auto-away. Auto-away stays bounded
-  by the real socket DOWN / `client_closing`, unchanged by this fix.
+  FSM keys off the visibility TRANSITION (an emitted event), and no event
+  fires when a pid merely ages out with no write — so a stale `:visible`
+  pid does not itself TRIP auto-away. But ageing out must not DISARM it
+  either: the transition doors (`set_visibility` / `client_closing` /
+  DOWN) compute `before?`/`after?` over RAW `:visible` membership
+  (`any_reported_visible_in?/2`), NOT the fresh push view — so a device
+  that went stale and THEN dies / closes / reports hidden still produces
+  the `true → false` flip that fires `:ws_all_hidden`. Auto-away stays
+  bounded by the real socket DOWN / `client_closing` / explicit hide;
+  the fresh filter is confined to `any_visible?/1` push suppression
+  (#671 — before this, a stale-then-dead socket lost the transition and
+  auto-away never armed).
 
   Efficacy caveat: whether a backgrounded iOS PWA actually stops sending
   fresh `visible` reports is unconfirmed off-device — the prod socket
@@ -81,8 +90,8 @@ defmodule Grappa.WSPresence do
     auto-away debounce + unaway.
   - **`:ws_all_hidden`** — the last visible device hid or left
     (`any_visible?` true → false, sockets may still be connected but
-    backgrounded). Session.Servers schedule a 30s debounce that fires
-    `set_auto_away`.
+    backgrounded). Session.Servers schedule a 10-minute debounce that
+    fires `set_auto_away`.
 
   Registering a socket defaults it to `:hidden`, so `register/2` alone
   never fires `:ws_visible` — a just-connected device is assumed
@@ -449,14 +458,14 @@ defmodule Grappa.WSPresence do
     existing = Map.get(state.sockets, user_name, %{})
 
     if Map.has_key?(existing, socket_pid) do
-      before? = any_visible_in?(state, user_name)
+      before? = any_reported_visible_in?(state, user_name)
       # #318 — stamp the monotonic freshness time on every visible report so
       # `any_visible?/1` can discount a stale-visible pid; a hidden report
       # clears the stamp (nil).
       entry = if visible, do: {:visible, now_ms()}, else: {:hidden, nil}
       updated = Map.put(existing, socket_pid, entry)
       state1 = put_user_sockets(state, user_name, updated)
-      after? = any_visible_in?(state1, user_name)
+      after? = any_reported_visible_in?(state1, user_name)
       emit_transition(user_name, before?, after?, state1)
       {:reply, :ok, state1}
     else
@@ -516,12 +525,12 @@ defmodule Grappa.WSPresence do
     existing = Map.get(state.sockets, user_name, %{})
 
     if Map.has_key?(existing, socket_pid) do
-      before? = any_visible_in?(state, user_name)
+      before? = any_reported_visible_in?(state, user_name)
       # A closing tab is not visible — mark it hidden now. The real pid
       # DOWN removes it later (idempotent).
       updated = Map.put(existing, socket_pid, {:hidden, nil})
       state1 = put_user_sockets(state, user_name, updated)
-      after? = any_visible_in?(state1, user_name)
+      after? = any_reported_visible_in?(state1, user_name)
       emit_transition(user_name, before?, after?, state1)
       {:reply, :ok, state1}
     else
@@ -573,13 +582,15 @@ defmodule Grappa.WSPresence do
       user_name ->
         state1 = %{state | refs_to_user: Map.delete(state.refs_to_user, ref)}
         existing = Map.get(state1.sockets, user_name, %{})
-        before? = any_visible_in?(state1, user_name)
+        before? = any_reported_visible_in?(state1, user_name)
         updated = Map.delete(existing, pid)
         state2 = put_user_sockets(state1, user_name, updated)
-        after? = any_visible_in?(state2, user_name)
-        # Only a VISIBLE pid leaving can flip any_visible? true→false. A
-        # hidden pid dying (or one already removed by client_closing) is a
-        # no-op transition — no duplicate :ws_all_hidden.
+        after? = any_reported_visible_in?(state2, user_name)
+        # Only a REPORTED-visible pid leaving can flip the transition
+        # predicate true→false (#671: raw membership, not the fresh push
+        # view). A hidden pid dying (or one already removed by
+        # client_closing) is a no-op transition — no duplicate
+        # :ws_all_hidden; a stale-but-visible pid dying DOES fire it.
         emit_transition(user_name, before?, after?, state2)
         {:noreply, state2}
     end
@@ -594,6 +605,11 @@ defmodule Grappa.WSPresence do
     %{state | sockets: Map.put(state.sockets, user_name, user_sockets)}
   end
 
+  # FRESH `:visible` membership — the PUSH-suppression predicate (#318).
+  # A `:visible` pid counts only while its last report is fresh, so a
+  # backgrounded PWA whose heartbeat suspended resumes push within
+  # `stale_ms`. Backs `any_visible?/1` + `snapshot/0`. NOT the auto-away
+  # transition predicate (see `any_reported_visible_in?/2`, #671).
   @spec any_visible_in?(t(), String.t()) :: boolean()
   defp any_visible_in?(state, user_name) do
     now = now_ms()
@@ -603,6 +619,27 @@ defmodule Grappa.WSPresence do
     |> Enum.any?(fn {_, {vis, last}} ->
       vis == :visible and fresh?(last, now, state.stale_ms)
     end)
+  end
+
+  # RAW `:visible` membership, IGNORING freshness — the AUTO-AWAY
+  # transition predicate (#671). The `before?`/`after?` of every
+  # lifecycle-event door (`set_visibility`, `client_closing`, DOWN) reads
+  # THIS, not `any_visible_in?/2`. Rationale: read-time staleness (#318)
+  # emits no event when a pid merely ages out, so a device that stopped
+  # heartbeating (phone asleep, JS timers suspended) is silently dropped
+  # from the FRESH view — and if `before?` also read the fresh view, the
+  # `true → false` flip on the eventual DOWN / close / hidden report would
+  # have ALREADY happened invisibly, so `emit_transition/4` saw
+  # `false → false` and never fired `:ws_all_hidden`, so auto-away never
+  # armed. A stale-but-still-`:visible` pid is a REPORTED-visible device:
+  # auto-away stays bounded by the real socket DOWN / close / explicit
+  # hide, NOT disarmed by silent ageout. (Ageout still does not TRIP
+  # auto-away — no event fires on ageout — it just no longer DISARMS it.)
+  @spec any_reported_visible_in?(t(), String.t()) :: boolean()
+  defp any_reported_visible_in?(state, user_name) do
+    state.sockets
+    |> Map.get(user_name, %{})
+    |> Enum.any?(fn {_, {vis, _}} -> vis == :visible end)
   end
 
   # A :visible pid counts as present only while its last report is fresh
