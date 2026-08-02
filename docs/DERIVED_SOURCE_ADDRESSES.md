@@ -2,7 +2,7 @@
 
 **Audience:** IRC network operators and staff evaluating whether to let a grappa instance connect to their network.
 
-> **Status: shipped, opt-in, and narrower than the design this document used to describe.** The derivation, the addressing mode that selects it, and the per-platform plumbing landed with [#543](https://github.com/vjt/grappa-irc/issues/543) (closed). It is **off by default** — an instance runs the pre-existing pool mode unless an operator switches it on. [#454](https://github.com/vjt/grappa-irc/issues/454), which framed the original hierarchical `/48` design, is still open and its title no longer matches what exists. Two things this document previously promised are **not** shipped, and are called out where they belong: the hierarchical ban-escalation ladder (the derivation is flat) and the blast-radius report before a prefix ban.
+> **Status: shipped and opt-in.** The derivation, the addressing mode that selects it, and the per-platform plumbing landed with [#543](https://github.com/vjt/grappa-irc/issues/543). It is **off by default** — an instance runs the pool mode unless an operator switches it on. Two limits are load-bearing enough to name up front, and both are stated in full below: the derivation is **flat**, so the ban ladder has two rungs and no intermediate aggregation; and the **blast-radius report** before a prefix-level ban is not implemented yet.
 
 ## The problem this solves
 
@@ -35,7 +35,7 @@ Two properties follow, and they are what the feature buys:
 - **Stable.** The same client network always arrives as the same address, so a ban you set stays effective and a throttle key keeps counting the right person, across reconnects and across privacy-extension rotations.
 - **Deterministic from the client's real address.** A user cannot shed their derived address without changing the address you would have banned anyway. That is the anti-evasion half: the bouncer stops laundering identity.
 
-### The ban ladder is two rungs, not four
+### The ban ladder is two rungs
 
 | ban this | catches |
 | --- | --- |
@@ -44,12 +44,12 @@ Two properties follow, and they are what the feature buys:
 
 **There is nothing in between, and that is a real limitation.** The derivation is *flat*: the whole client key goes through one hash and lands anywhere in the 48 host bits, so two `/64`s inside the same customer `/48` — or the same upstream `/32` — produce two completely unrelated derived addresses. Aggregating a range of derived addresses catches nothing meaningful.
 
-An earlier version of this document described a hierarchical derivation where the high bits came from the client's upstream allocation and offered `/120` and `/96` escalation rungs. **That design was not built.** Consequences, stated plainly:
+Two consequences, stated plainly:
 
 - A client with a large delegation (`/56`, `/48`) can hop `/64`s and collect a fresh derived address per hop, and there is **no intermediate prefix that covers the delegation**. Against a determined evader with a routed `/48`, per-address bans are a treadmill; the only backstop is banning the `/80`, which is exactly as blunt as banning a bouncer is today.
 - Conversely, the flat mapping leaks *less*: derived addresses that share high bits tell you nothing about the clients, because they share nothing but our block.
 
-If the escalation ladder matters to your network, it is fair to say so — it is a design that can be revisited, but do not plan around it existing today.
+A hierarchical derivation — high bits from the client's upstream allocation, giving intermediate rungs — is possible and would change that first bullet. It is not what runs today. If the escalation ladder matters to your network, say so; do not plan around it existing.
 
 ## What it does not do, stated plainly
 
@@ -57,7 +57,7 @@ If the escalation ladder matters to your network, it is fair to say so — it is
 - **Derived addresses have no PTR.** Reverse DNS is per-address and this space is combinatorial, so anything that expects forward-confirmed reverse DNS from a derived source will fail. Reserved, named addresses — the ones an instance grants to specific users — live outside the derived block, keep their PTR and their FCrDNS, and win over derivation. If your network requires FCrDNS, you get the reserved addresses, not the derived ones.
 - **IPv4 behind CGNAT collapses, and that limit is real.** Thousands of subscribers sharing one carrier address hash to one derived address, so for those clients the collateral problem is reduced to the same granularity your own IPv4 bans already have — no worse than today, but no better either. This is intended: clients sharing an upstream vantage point share an egress.
 - **The derived address is always IPv6, so this only applies to IPv6-reachable networks.** The connect path binds the derived source and then resolves the upstream in the *same* family; a network reachable only over IPv4 fails the bind with a source-family mismatch rather than silently falling back. An instance connecting to a v4-only network uses a different addressing mode.
-- **The blast-radius report is not implemented.** The previous version of this document placed a requirement on ourselves: any interface offering a prefix-level ban must report how many live sessions the candidate prefix would hit *before* it is set. That interface does not exist yet. The ingredient does: every session that binds a derived source registers under it in a Registry, and `Session.live_derived_sources/0` returns the live set on a node as a pure ETS read. The scan on top of it is still to be written. Since the ladder above only has two rungs, the missing report is currently less load-bearing than it was in the original design — but it is missing, and this document is not going to pretend otherwise.
+- **The blast-radius report is not implemented.** We place a requirement on ourselves, worth stating because it protects your users too: any interface that offers a prefix-level ban has to report **how many live sessions the candidate prefix would hit** before it is set. Escalation power without a blast-radius number is a footgun for everyone. That interface does not exist yet. The ingredient does — every session that binds a derived source registers under it in a Registry, and `Session.live_derived_sources/0` returns the live set on a node as a pure ETS read — but the scan on top of it is still to be written.
 - **It does not make the operator trustworthy.** It makes the operator's users *separable*, which is the part you can verify from the outside: ban one derived address, observe that exactly one client network loses its connection.
 
 ## Reservations, and what happens when derivation cannot run
