@@ -20,6 +20,7 @@ defmodule Grappa.Accounts.TOTPRecoveryCode do
     timestamps(type: :utc_datetime_usec, updated_at: false)
   end
 
+  @doc "Builds a changeset for a TOTP recovery code."
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(code, attrs) do
     code
