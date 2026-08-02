@@ -210,6 +210,10 @@ defmodule GrappaWeb.Router do
 
     post "/login", AuthController, :login
     post "/totp/verify", AuthController, :verify_totp
+    post "/passkeys/options", PasskeyController, :login_options
+    post "/passkeys/verify", PasskeyController, :login_verify
+    post "/passkeys/second-factor", PasskeyController, :second_factor_verify
+    post "/passkeys/recover", PasskeyController, :recover
     # Visitor session-sharing consume — unauthenticated by design. The
     # signed one-shot token IS the auth credential. Verified +
     # one-shot-checked + visitor-existence-checked inside the
@@ -268,6 +272,14 @@ defmodule GrappaWeb.Router do
     post "/me/totp/enrollment", TotpController, :start_enrollment
     post "/me/totp/enrollment/confirm", TotpController, :confirm_enrollment
     delete "/me/totp", TotpController, :delete
+    get "/me/passkeys", PasskeyController, :index
+    post "/me/passkeys/registration/options", PasskeyController, :registration_options
+    post "/me/passkeys/registration", PasskeyController, :register
+    post "/me/passkeys/mode/options", PasskeyController, :mode_options
+    post "/me/passkeys/passwordless/recovery", PasskeyController, :prepare_passwordless
+    post "/me/passkeys/passwordless/options", PasskeyController, :passwordless_options
+    post "/me/passkeys/mode", PasskeyController, :set_mode
+    delete "/me/passkeys/:id", PasskeyController, :delete
 
     # #157 — self-service account deletion: an explicit, IRREVERSIBLE
     # total wipe of the caller's OWN account + all state. Subject-routed

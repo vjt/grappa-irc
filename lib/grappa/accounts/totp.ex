@@ -10,12 +10,11 @@ defmodule Grappa.Accounts.TOTP do
   import Ecto.Query
   import Bitwise
 
-  alias Grappa.Accounts.{TOTPRecoveryCode, User}
+  alias Grappa.Accounts.{RecoveryCodes, TOTPRecoveryCode, User}
   alias Grappa.Repo
 
   @digits 6
   @period_seconds 30
-  @recovery_code_count 10
   @secret_bytes 20
 
   @type enrollment :: %{secret: String.t(), provisioning_uri: String.t()}
@@ -45,9 +44,8 @@ defmodule Grappa.Accounts.TOTP do
   def confirm_enrollment(%User{id: user_id}, secret, code, unix_seconds)
       when is_binary(secret) and is_binary(code) and is_integer(unix_seconds) do
     with {:ok, step} <- matching_step(secret, code, unix_seconds) do
-      recovery_codes = generate_recovery_codes()
       now = DateTime.utc_now()
-      Repo.transaction(fn -> arm(user_id, secret, step, recovery_codes, now) end)
+      Repo.transaction(fn -> arm(user_id, secret, step, now) end)
     end
   end
 
@@ -145,28 +143,7 @@ defmodule Grappa.Accounts.TOTP do
     value |> Integer.to_string() |> String.pad_leading(@digits, "0")
   end
 
-  defp generate_recovery_codes do
-    Enum.map(1..@recovery_code_count, fn _ ->
-      16 |> :crypto.strong_rand_bytes() |> Base.encode32(case: :lower, padding: false)
-    end)
-  end
-
-  defp insert_recovery_codes(user_id, codes, now) do
-    rows =
-      Enum.map(codes, fn code ->
-        %{
-          id: Ecto.UUID.generate(),
-          user_id: user_id,
-          code_hash: recovery_code_hash(code),
-          inserted_at: now
-        }
-      end)
-
-    {count, _} = Repo.insert_all(TOTPRecoveryCode, rows)
-    @recovery_code_count = count
-  end
-
-  defp arm(user_id, secret, step, recovery_codes, now) do
+  defp arm(user_id, secret, step, now) do
     query = from(u in User, where: u.id == ^user_id and is_nil(u.totp_enabled_at))
 
     case Repo.update_all(query,
@@ -178,8 +155,7 @@ defmodule Grappa.Accounts.TOTP do
            ]
          ) do
       {1, _} ->
-        insert_recovery_codes(user_id, recovery_codes, now)
-        recovery_codes
+        RecoveryCodes.rotate(user_id)
 
       {0, _} ->
         Repo.rollback(:already_enabled)

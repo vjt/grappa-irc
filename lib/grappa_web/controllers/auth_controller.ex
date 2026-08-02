@@ -40,7 +40,7 @@ defmodule GrappaWeb.AuthController do
   use GrappaWeb, :controller
 
   alias Grappa.{Accounts, AdminEvents, Networks, Session, Visitors}
-  alias Grappa.Accounts.TOTP
+  alias Grappa.Accounts.{TOTP, WebAuthn}
   alias Grappa.AdminEvents.Wire, as: AdminEventsWire
   alias Grappa.Auth.IdentifierClassifier
   alias Grappa.RateLimit.FailureWindow
@@ -379,19 +379,27 @@ defmodule GrappaWeb.AuthController do
 
     with :ok <- check_mode1_throttle(ip),
          {:ok, user} <- authenticate_mode1(name, password, ip) do
-      if TOTP.enabled?(user) do
-        challenge =
-          Phoenix.Token.sign(
-            GrappaWeb.Endpoint,
-            @totp_challenge_salt,
-            {user.id, format_ip(conn), conn.assigns[:current_client_id]}
-          )
+      cond do
+        user.passkey_mode == "passwordless" ->
+          {:error, :invalid_credentials}
 
-        conn
-        |> put_status(:accepted)
-        |> json(%{two_factor_required: true, challenge_token: challenge})
-      else
-        mint_user_session(conn, user)
+        user.passkey_mode == "second_factor" ->
+          passkey_second_factor(conn, user)
+
+        TOTP.enabled?(user) ->
+          challenge =
+            Phoenix.Token.sign(
+              GrappaWeb.Endpoint,
+              @totp_challenge_salt,
+              {user.id, format_ip(conn), conn.assigns[:current_client_id]}
+            )
+
+          conn
+          |> put_status(:accepted)
+          |> json(%{two_factor_required: true, challenge_token: challenge})
+
+        true ->
+          mint_user_session(conn, user)
       end
     end
   end
@@ -421,6 +429,35 @@ defmodule GrappaWeb.AuthController do
       {:error, _} = error -> error
     end
   end
+
+  defp optional_totp_challenge(user, conn) do
+    if TOTP.enabled?(user) do
+      Phoenix.Token.sign(
+        GrappaWeb.Endpoint,
+        @totp_challenge_salt,
+        {user.id, format_ip(conn), conn.assigns[:current_client_id]}
+      )
+    end
+  end
+
+  defp passkey_second_factor(conn, user) do
+    binding = %{ip: format_ip(conn), client_id: conn.assigns[:current_client_id]}
+
+    with {:ok, options} <-
+           WebAuthn.begin_authentication(user, :second_factor, binding, passkey_origin()) do
+      conn
+      |> put_status(:accepted)
+      |> json(%{
+        two_factor_required: true,
+        passkey_options: options,
+        totp_available: TOTP.enabled?(user),
+        challenge_token: optional_totp_challenge(user, conn)
+      })
+    end
+  end
+
+  defp passkey_origin,
+    do: Application.get_env(:grappa, :passkey_origin, GrappaWeb.Endpoint.url())
 
   defp check_totp_throttle(conn, user_id) do
     case FailureWindow.check(:totp_login, {format_ip(conn), user_id}, @totp_max_failures) do

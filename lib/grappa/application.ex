@@ -268,6 +268,9 @@ defmodule Grappa.Application do
         # never races a missing table. Reads are lock-free; failure
         # writes funnel through its GenServer.
         Grappa.RateLimit.FailureWindow,
+        # #442 — one-shot WebAuthn ceremonies. Ephemeral by design: a
+        # restart invalidates pending challenges but never credentials.
+        Grappa.Accounts.WebAuthnChallengeStore,
         # #340 — per-(subject, network) inbound message-send token bucket.
         # ETS-backed singleton, sibling of DailyQuota / FailureWindow: must
         # exist before Endpoint so MessagesController.create's send throttle

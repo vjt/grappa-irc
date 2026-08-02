@@ -46,6 +46,11 @@ extra_origins =
     raw -> raw |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
   end
 
+case System.get_env("GRAPPA_PASSKEY_ORIGIN") do
+  origin when origin in [nil, ""] -> :ok
+  origin -> config :grappa, :passkey_origin, origin
+end
+
 # Public-origin URL config — ALL envs, gated on PHX_HOST presence.
 # nginx terminates TLS at https://PHX_HOST, so URLs Phoenix generates
 # (today: only `UploadsController.public_url/1`, which lands in IRC

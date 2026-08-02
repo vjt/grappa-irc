@@ -33,6 +33,7 @@ defmodule Grappa.Accounts.User do
           totp_secret_encrypted: binary() | nil,
           totp_enabled_at: DateTime.t() | nil,
           totp_last_used_step: integer() | nil,
+          passkey_mode: String.t(),
           is_admin: boolean(),
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
@@ -46,6 +47,7 @@ defmodule Grappa.Accounts.User do
     field :totp_secret_encrypted, Grappa.EncryptedBinary, redact: true
     field :totp_enabled_at, :utc_datetime_usec
     field :totp_last_used_step, :integer
+    field :passkey_mode, :string, default: "disabled"
     field :is_admin, :boolean, default: false
 
     timestamps(type: :utc_datetime_usec)

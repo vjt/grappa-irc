@@ -87,6 +87,7 @@ services:
       GRAPPA_ENCRYPTION_KEY: ${GRAPPA_ENCRYPTION_KEY:-}
       PHX_HOST: ${PHX_HOST:-}
       EXTRA_CHECK_ORIGINS: ${EXTRA_CHECK_ORIGINS:-}
+      GRAPPA_PASSKEY_ORIGIN: ${GRAPPA_PASSKEY_ORIGIN:-}
       # BEAM resource caps (see bin/start.sh). Unset → defaults applied
       # (GRAPPA_MAX_USERS=100, GRAPPA_DIRTY_SCHEDULERS=$(nproc)).
       GRAPPA_MAX_USERS: ${GRAPPA_MAX_USERS:-}

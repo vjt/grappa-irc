@@ -150,6 +150,8 @@ const Login: Component = () => {
   const [captcha, setCaptcha] = createSignal<CaptchaChallenge | null>(null);
   const [totpChallenge, setTotpChallenge] = createSignal<string | null>(null);
   const [totpCode, setTotpCode] = createSignal("");
+  const [recoveryMode, setRecoveryMode] = createSignal(false);
+  const [recoveryCode, setRecoveryCode] = createSignal("");
   const navigate = useNavigate();
 
   // Cosmetic reassurance rotation. There is no server progress stream to
@@ -311,6 +313,40 @@ const Login: Component = () => {
     }
   };
 
+  const passkeyIdentifier = (): string | null => {
+    const classified = classifyLoginIdentifier(identifier());
+    if (classified.kind === "invalid") {
+      setError("Enter your account name or email first.");
+      return null;
+    }
+    setIdentifier(classified.value);
+    return classified.value;
+  };
+
+  const onPasskeyLogin = async (): Promise<void> => {
+    const id = passkeyIdentifier();
+    if (id === null) return;
+    setError(null);
+    try {
+      await auth.loginWithPasskey(id);
+      navigate("/", { replace: true });
+    } catch (err) {
+      handleError(err);
+    }
+  };
+
+  const onRecoveryLogin = async (): Promise<void> => {
+    const id = passkeyIdentifier();
+    if (id === null) return;
+    setError(null);
+    try {
+      await auth.loginWithRecoveryCode(id, recoveryCode());
+      navigate("/", { replace: true });
+    } catch (err) {
+      handleError(err);
+    }
+  };
+
   let nickInput: HTMLInputElement | undefined;
   onMount(() => {
     // Nick-first: focus the one field the minimal view shows.
@@ -466,6 +502,41 @@ const Login: Component = () => {
                   <button type="submit" class="login-connect" disabled={connecting()}>
                     Connect
                   </button>
+
+                  <button
+                    type="button"
+                    class="login-advanced-toggle"
+                    onClick={() => void onPasskeyLogin()}
+                  >
+                    Sign in with passkey
+                  </button>
+                  <button
+                    type="button"
+                    class="login-advanced-toggle"
+                    onClick={() => setRecoveryMode((value) => !value)}
+                  >
+                    Use recovery code
+                  </button>
+                  <Show when={recoveryMode()}>
+                    <div>
+                      <label for="login-recovery-code">Recovery code</label>
+                      <input
+                        id="login-recovery-code"
+                        type="text"
+                        autocomplete="one-time-code"
+                        value={recoveryCode()}
+                        onInput={(event) => setRecoveryCode(event.currentTarget.value)}
+                        required
+                      />
+                      <button
+                        type="button"
+                        class="login-connect"
+                        onClick={() => void onRecoveryLogin()}
+                      >
+                        Recover account
+                      </button>
+                    </div>
+                  </Show>
 
                   <Show when={captcha()} keyed>
                     {(c) => (

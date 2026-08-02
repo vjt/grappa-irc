@@ -245,6 +245,10 @@ defmodule Grappa.MixProject do
       # Telemetry so every downstream log + telemetry event sees the
       # rewritten IP.
       {:remote_ip, "~> 1.2"},
+      # WebAuthn relying-party verification for account passkeys (#442).
+      # Browser ceremony remains in cicchetto; this dependency verifies
+      # registration attestations and authentication assertions server-side.
+      {:wax_, "~> 0.7.0"},
 
       # ── Tooling (compile-time / dev-only)
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

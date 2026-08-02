@@ -403,6 +403,12 @@ defmodule GrappaWeb.FallbackController do
     |> json(%{error: "already_enabled"})
   end
 
+  def call(conn, {:error, :passkey_required}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "passkey_required"})
+  end
+
   # T31 admission errors. Status-code split:
   #
   #   * 503 — server-side capacity / upstream / dependency degradation.

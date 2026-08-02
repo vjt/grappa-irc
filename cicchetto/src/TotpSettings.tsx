@@ -10,6 +10,7 @@ import {
 import { token } from "./lib/auth";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { qrSvgWithLabel } from "./lib/qr";
+import PasskeySettings from "./PasskeySettings";
 
 type Props = { onBack: () => void };
 
@@ -180,6 +181,7 @@ const TotpSettings: Component<Props> = (props) => {
 
         <Show when={error()}>{(message) => <p role="alert">{message()}</p>}</Show>
       </div>
+      <PasskeySettings />
     </section>
   );
 };

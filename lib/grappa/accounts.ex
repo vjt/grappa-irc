@@ -47,11 +47,11 @@ defmodule Grappa.Accounts do
   use Boundary,
     top_level?: true,
     deps: [Grappa.Ecto.Like, Grappa.EncryptedBinary, Grappa.Repo, Grappa.Visitors.Visitor],
-    exports: [User, Session, Wire, AdminWire, TOTP, TOTPRecoveryCode]
+    exports: [User, Session, Wire, AdminWire, TOTP, TOTPRecoveryCode, Passkey, WebAuthn]
 
   import Ecto.Query
 
-  alias Grappa.Accounts.{Session, TOTP, TOTPRecoveryCode, User}
+  alias Grappa.Accounts.{Passkey, RecoveryCodes, Session, TOTP, TOTPRecoveryCode, User}
   alias Grappa.Ecto.Like
   alias Grappa.Repo
   alias Grappa.Visitors.Visitor
@@ -614,6 +614,50 @@ defmodule Grappa.Accounts do
     else
       {:error, :invalid_credentials}
     end
+  end
+
+  @doc "Consumes one account recovery code for passwordless login."
+  @spec consume_recovery_code(User.t(), String.t()) :: :ok | {:error, :invalid_recovery_code}
+  def consume_recovery_code(%User{id: user_id}, code) when is_binary(code) do
+    case Repo.BusyRetry.run(fn -> consume_recovery_code_once(user_id, code) end) do
+      {:ok, :consumed} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  @doc "Generates an unarmed recovery set for passwordless activation."
+  @spec prepare_recovery_codes() :: [String.t()]
+  def prepare_recovery_codes, do: RecoveryCodes.generate()
+
+  @doc "Operator recovery: removes passkeys, recovery codes, passwordless mode, and live sessions."
+  @spec reset_passkeys(String.t()) :: {:ok, User.t()} | {:error, :not_found | :db_unavailable}
+  def reset_passkeys(name) when is_binary(name) do
+    case get_user_by_name(name) do
+      nil ->
+        {:error, :not_found}
+
+      user ->
+        run_passkey_reset(user)
+    end
+  end
+
+  defp consume_recovery_code_once(user_id, code) do
+    case RecoveryCodes.consume(user_id, code) do
+      :ok -> {:ok, :consumed}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp run_passkey_reset(user) do
+    Repo.BusyRetry.run(fn -> Repo.transaction(fn -> reset_passkeys_transaction(user) end) end)
+  end
+
+  defp reset_passkeys_transaction(user) do
+    Passkey |> where([p], p.user_id == ^user.id) |> Repo.delete_all()
+    TOTPRecoveryCode |> where([r], r.user_id == ^user.id) |> Repo.delete_all()
+    {1, _} = User |> where([u], u.id == ^user.id) |> Repo.update_all(set: [passkey_mode: "disabled"])
+    :ok = revoke_sessions_for_user(user)
+    Repo.get!(User, user.id)
   end
 
   defp confirm_totp_transaction(user, current_session_id, secret, code, unix_seconds) do

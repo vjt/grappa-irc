@@ -1,6 +1,7 @@
 import { createSignal } from "solid-js";
 import * as api from "./api";
 import { setSeveredForFlood } from "./floodSever";
+import { getPasskey } from "./passkeys";
 
 // Auth state is a single module-level signal. The token is *the* identity
 // — REST calls attach it as `Authorization: Bearer ${token}`, the WS
@@ -106,18 +107,41 @@ export async function login(
   }
   const response = await api.login(req);
   if ("two_factor_required" in response) {
+    if ("passkey_options" in response) {
+      try {
+        const assertion = await getPasskey(response.passkey_options);
+        installLogin(await api.verifyPasskeySecondFactor(assertion));
+        return { kind: "authenticated" };
+      } catch (error) {
+        if (response.challenge_token !== null) {
+          return { kind: "totp", challengeToken: response.challenge_token };
+        }
+        throw error;
+      }
+    }
     return { kind: "totp", challengeToken: response.challenge_token };
   }
-  const { token: t, subject } = response;
-  localStorage.setItem(SUBJECT_KEY, JSON.stringify(subject));
-  setToken(t);
+  installLogin(response);
   return { kind: "authenticated" };
 }
 
-export async function verifyTotp(challengeToken: string, code: string): Promise<void> {
-  const { token: t, subject } = await api.verifyTotpLogin(challengeToken, code);
+function installLogin(response: api.AuthenticatedLoginResponse): void {
+  const { token: t, subject } = response;
   localStorage.setItem(SUBJECT_KEY, JSON.stringify(subject));
   setToken(t);
+}
+
+export async function verifyTotp(challengeToken: string, code: string): Promise<void> {
+  installLogin(await api.verifyTotpLogin(challengeToken, code));
+}
+
+export async function loginWithPasskey(identifier: string): Promise<void> {
+  const options = await api.getPasskeyLoginOptions(identifier);
+  installLogin(await api.verifyPasskeyLogin(await getPasskey(options)));
+}
+
+export async function loginWithRecoveryCode(identifier: string, code: string): Promise<void> {
+  installLogin(await api.recoverPasskeyLogin(identifier, code));
 }
 
 // Visitor session-sharing — install a bearer + subject pair minted via

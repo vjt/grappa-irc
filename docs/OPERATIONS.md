@@ -1371,3 +1371,22 @@ the retired `docs/todo.md`). Check the condition, then act or drop.
   contention between `async: true` Repo writes and the live dev container
   also writing `runtime/grappa_dev.db`. Benign noise during `ci.check`; not
   flaky on CI (fresh DB). No action unless it worsens.
+# Passkeys and account recovery
+
+Each Grappa instance is a separate WebAuthn relying party. A passkey enrolled
+for one hostname cannot authenticate against another hostname. Changing the
+public hostname invalidates existing passkeys because WebAuthn binds them to
+the RP ID and origin.
+
+Passwordless mode accepts a passkey or one-shot account recovery code. It does
+not accept the account password or TOTP, and shottino cannot complete WebAuthn.
+If a user loses both passkey and recovery codes, restore password login from the
+instance host:
+
+```sh
+scripts/mix.sh grappa.reset_passkeys --user ACCOUNT_NAME
+```
+
+The reset removes every passkey and recovery code and revokes all live sessions.
+It does not remove TOTP; an account with TOTP enabled returns to password plus
+TOTP login.

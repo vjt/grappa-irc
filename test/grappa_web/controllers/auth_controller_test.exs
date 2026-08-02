@@ -23,7 +23,7 @@ defmodule GrappaWeb.AuthControllerTest do
   import Mox
 
   alias Grappa.{Accounts, Accounts.Session, IRCServer, Repo, Visitors}
-  alias Grappa.Accounts.TOTP
+  alias Grappa.Accounts.{Passkey, TOTP}
   alias Grappa.AdmissionStateHelpers
   alias Grappa.Networks.Credential
   alias Grappa.RateLimit.FailureWindow
@@ -74,6 +74,40 @@ defmodule GrappaWeb.AuthControllerTest do
     {:ok, code} = TOTP.code_at(enrollment.secret, previous_step)
     {:ok, _} = TOTP.confirm_enrollment(user, enrollment.secret, code, previous_step)
     enrollment.secret
+  end
+
+  test "passkey second-factor options use the configured WebAuthn origin", %{conn: conn} do
+    {user, password} = user_fixture_with_password()
+    previous_origin = Application.get_env(:grappa, :passkey_origin)
+    Application.put_env(:grappa, :passkey_origin, "https://login.example:8443")
+
+    on_exit(fn ->
+      if previous_origin,
+        do: Application.put_env(:grappa, :passkey_origin, previous_origin),
+        else: Application.delete_env(:grappa, :passkey_origin)
+    end)
+
+    key = %{1 => 2, 3 => -7, -1 => 1, -2 => <<0::256>>, -3 => <<0::256>>}
+
+    Repo.insert!(
+      Passkey.changeset(%Passkey{}, %{
+        user_id: user.id,
+        credential_id: <<1, 2, 3>>,
+        public_key: :erlang.term_to_binary(key),
+        name: "phone"
+      })
+    )
+
+    user
+    |> Ecto.Changeset.change(passkey_mode: "second_factor")
+    |> Repo.update!()
+
+    pending =
+      conn
+      |> post("/auth/login", %{"identifier" => user.name, "password" => password})
+      |> json_response(202)
+
+    assert pending["passkey_options"]["public_key"]["rpId"] == "login.example"
   end
 
   describe "POST /auth/login (mode-1 admin via email)" do

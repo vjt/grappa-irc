@@ -162,7 +162,22 @@ export type TotpChallengeResponse = {
   challenge_token: string;
 };
 
-export type LoginResponse = AuthenticatedLoginResponse | TotpChallengeResponse;
+export type PasskeyOptions = {
+  challenge_id: string;
+  public_key: Record<string, unknown>;
+};
+
+export type PasskeyChallengeResponse = {
+  two_factor_required: true;
+  passkey_options: PasskeyOptions;
+  totp_available: boolean;
+  challenge_token: string | null;
+};
+
+export type LoginResponse =
+  | AuthenticatedLoginResponse
+  | TotpChallengeResponse
+  | PasskeyChallengeResponse;
 
 export type TotpEnrollment = {
   enrollment_token: string;
@@ -1458,6 +1473,97 @@ export async function confirmTotpEnrollment(
 
 export async function disableTotp(token: string, password: string): Promise<void> {
   const res = await fetch("/me/totp", {
+    method: "DELETE",
+    headers: buildHeaders(token),
+    body: JSON.stringify({ password }),
+  });
+  if (!res.ok) throw await readError(res, false);
+}
+
+async function passkeyRequest<T>(path: string, body: unknown, token?: string): Promise<T> {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await readError(res, false);
+  return (res.status === 204 ? undefined : await res.json()) as T;
+}
+
+export const getPasskeyLoginOptions = (identifier: string): Promise<PasskeyOptions> =>
+  passkeyRequest<PasskeyOptions>("/auth/passkeys/options", { identifier });
+export const verifyPasskeyLogin = (assertion: unknown): Promise<AuthenticatedLoginResponse> =>
+  passkeyRequest<AuthenticatedLoginResponse>("/auth/passkeys/verify", assertion);
+export const verifyPasskeySecondFactor = (
+  assertion: unknown,
+): Promise<AuthenticatedLoginResponse> =>
+  passkeyRequest<AuthenticatedLoginResponse>("/auth/passkeys/second-factor", assertion);
+export const recoverPasskeyLogin = (
+  identifier: string,
+  recoveryCode: string,
+): Promise<AuthenticatedLoginResponse> =>
+  passkeyRequest<AuthenticatedLoginResponse>("/auth/passkeys/recover", {
+    identifier,
+    recovery_code: recoveryCode,
+  });
+
+export type PasskeySummary = {
+  id: string;
+  name: string;
+  inserted_at: string;
+  last_used_at: string | null;
+};
+export type PasskeyStatus = {
+  mode: "disabled" | "second_factor" | "passwordless";
+  passkeys: PasskeySummary[];
+};
+export const getPasskeyStatus = async (token: string): Promise<PasskeyStatus> => {
+  const res = await fetch("/me/passkeys", { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  return await res.json();
+};
+export const startPasskeyRegistration = (
+  token: string,
+  password: string,
+  name: string,
+): Promise<PasskeyOptions> =>
+  passkeyRequest<PasskeyOptions>("/me/passkeys/registration/options", { password, name }, token);
+export const finishPasskeyRegistration = (
+  token: string,
+  credential: unknown,
+): Promise<PasskeySummary> =>
+  passkeyRequest<PasskeySummary>("/me/passkeys/registration", credential, token);
+export const startPasskeyModeChange = (
+  token: string,
+  password: string,
+  mode: "second_factor" | "passwordless",
+): Promise<PasskeyOptions> =>
+  passkeyRequest<PasskeyOptions>("/me/passkeys/mode/options", { password, mode }, token);
+export const preparePasswordless = (
+  token: string,
+  password: string,
+): Promise<{ recovery_codes: string[]; recovery_token: string }> =>
+  passkeyRequest<{ recovery_codes: string[]; recovery_token: string }>(
+    "/me/passkeys/passwordless/recovery",
+    { password },
+    token,
+  );
+export const startPasswordlessActivation = (
+  token: string,
+  recoveryToken: string,
+): Promise<PasskeyOptions> =>
+  passkeyRequest<PasskeyOptions>(
+    "/me/passkeys/passwordless/options",
+    { recovery_token: recoveryToken },
+    token,
+  );
+export const finishPasskeyModeChange = (
+  token: string,
+  assertion: unknown,
+): Promise<{ mode: string }> =>
+  passkeyRequest<{ mode: string }>("/me/passkeys/mode", assertion, token);
+export async function deletePasskey(token: string, id: string, password: string): Promise<void> {
+  const res = await fetch(`/me/passkeys/${encodeURIComponent(id)}`, {
     method: "DELETE",
     headers: buildHeaders(token),
     body: JSON.stringify({ password }),

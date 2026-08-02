@@ -14,7 +14,9 @@ defmodule Grappa.Accounts.TOTPRecoveryCode do
         }
 
   @primary_key {:id, :binary_id, autogenerate: true}
-  schema "user_totp_recovery_codes" do
+  # Historical module name retained for compatibility with the stacked TOTP
+  # change; passkeys promote these rows to account-level recovery codes.
+  schema "user_recovery_codes" do
     field :code_hash, :binary, redact: true
     belongs_to :user, User, type: :binary_id
     timestamps(type: :utc_datetime_usec, updated_at: false)
