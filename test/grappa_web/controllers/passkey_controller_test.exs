@@ -4,7 +4,7 @@ defmodule GrappaWeb.PasskeyControllerTest do
   import Grappa.AuthFixtures
   import Ecto.Query
 
-  alias Grappa.Accounts.{Session, TOTP, TOTPRecoveryCode, User}
+  alias Grappa.Accounts.{Passkey, Session, TOTP, TOTPRecoveryCode, User, WebAuthn}
   alias Grappa.Repo
 
   test "passwordless mode rejects password and accepts a one-shot recovery code", %{conn: conn} do
@@ -47,5 +47,37 @@ defmodule GrappaWeb.PasskeyControllerTest do
     assert Repo.get!(User, user.id).passkey_mode == "disabled"
     assert Repo.aggregate(TOTPRecoveryCode, :count, :id) == 0
     assert is_nil(Repo.get!(Session, session.id).revoked_at)
+  end
+
+  test "last passkey can be deleted after returning to password login", %{conn: conn} do
+    {user, password} = user_fixture_with_password()
+    session = session_fixture(user)
+
+    passkey =
+      Repo.insert!(
+        Passkey.changeset(%Passkey{}, %{
+          user_id: user.id,
+          credential_id: <<1, 2, 3>>,
+          public_key: CBOR.encode(%{1 => 2, 3 => -7}),
+          name: "phone"
+        })
+      )
+
+    assert {:ok, "passwordless"} =
+             WebAuthn.set_mode(user, "passwordless", session.id, Grappa.Accounts.prepare_recovery_codes())
+
+    blocked =
+      conn
+      |> put_req_header("authorization", "Bearer #{session.id}")
+      |> delete("/me/passkeys/#{passkey.id}", %{"password" => password})
+
+    assert json_response(blocked, 409) == %{"error" => "passkey_required"}
+
+    user = Repo.get!(User, user.id)
+    assert {:ok, "disabled"} = WebAuthn.set_mode(user, "disabled", session.id)
+
+    conn = recycle(conn) |> put_req_header("authorization", "Bearer #{session.id}")
+    assert response(delete(conn, "/me/passkeys/#{passkey.id}", %{"password" => password}), 204)
+    assert Repo.aggregate(Passkey, :count, :id) == 0
   end
 end

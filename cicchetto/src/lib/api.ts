@@ -1536,7 +1536,7 @@ export const finishPasskeyRegistration = (
 export const startPasskeyModeChange = (
   token: string,
   password: string,
-  mode: "second_factor" | "passwordless",
+  mode: "disabled" | "second_factor" | "passwordless",
 ): Promise<PasskeyOptions> =>
   passkeyRequest<PasskeyOptions>("/me/passkeys/mode/options", { password, mode }, token);
 export const preparePasswordless = (

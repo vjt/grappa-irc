@@ -2,7 +2,7 @@ defmodule Grappa.Accounts.WebAuthn do
   @moduledoc "Passkey registration and assertion ceremonies for durable accounts."
   import Ecto.Query
 
-  alias Grappa.Accounts.{Passkey, RecoveryCodes, User, WebAuthnChallengeStore}
+  alias Grappa.Accounts.{Passkey, RecoveryCodes, TOTPRecoveryCode, User, WebAuthnChallengeStore}
   alias Grappa.Repo
 
   @type binding :: %{ip: String.t() | nil, client_id: String.t() | nil}
@@ -118,6 +118,10 @@ defmodule Grappa.Accounts.WebAuthn do
     run_mode_transaction(user, mode, current_session_id, [])
   end
 
+  def set_mode(user, "disabled" = mode, current_session_id, []) do
+    run_mode_transaction(user, mode, current_session_id, [])
+  end
+
   def set_mode(_, "passwordless", _, _),
     do: {:error, :recovery_codes_required}
 
@@ -211,6 +215,10 @@ defmodule Grappa.Accounts.WebAuthn do
 
   defp set_mode_transaction(user, mode, current_session_id, recovery_codes) do
     if mode == "passwordless", do: :ok = RecoveryCodes.replace(user.id, recovery_codes)
+
+    if mode == "disabled" and user.passkey_mode == "passwordless",
+      do: TOTPRecoveryCode |> where([r], r.user_id == ^user.id) |> Repo.delete_all()
+
     {1, _} = User |> where([u], u.id == ^user.id) |> Repo.update_all(set: [passkey_mode: mode])
     :ok = Grappa.Accounts.revoke_other_sessions_for_user(user, current_session_id)
     mode

@@ -51,7 +51,7 @@ defmodule GrappaWeb.PasskeyController do
         %{assigns: %{current_subject: {:user, user}}} = conn,
         %{"password" => password, "mode" => mode}
       )
-      when mode == "second_factor" do
+      when mode in ["second_factor", "disabled"] do
     if Argon2.verify_pass(password, user.password_hash) do
       with {:ok, options} <-
              WebAuthn.begin_authentication(user, :mode_change, client_binding(conn), origin(), %{mode: mode}) do

@@ -69,4 +69,32 @@ defmodule Grappa.Accounts.PasskeyTest do
     assert is_nil(Repo.get!(Accounts.Session, current.id).revoked_at)
     assert %DateTime{} = Repo.get!(Accounts.Session, other.id).revoked_at
   end
+
+  test "disabling passkey login removes recovery codes and revokes other sessions" do
+    user = user_fixture()
+    current = session_fixture(user)
+    codes = Accounts.prepare_recovery_codes()
+
+    assert {:ok, "passwordless"} = WebAuthn.set_mode(user, "passwordless", current.id, codes)
+
+    other = session_fixture(user)
+    user = Repo.get!(Accounts.User, user.id)
+    assert {:ok, "disabled"} = WebAuthn.set_mode(user, "disabled", current.id)
+    assert Repo.aggregate(TOTPRecoveryCode, :count, :id) == 0
+    assert Repo.get!(Accounts.User, user.id).passkey_mode == "disabled"
+    assert is_nil(Repo.get!(Accounts.Session, current.id).revoked_at)
+    assert %DateTime{} = Repo.get!(Accounts.Session, other.id).revoked_at
+  end
+
+  test "disabling second-factor passkeys preserves TOTP recovery codes" do
+    user = user_fixture()
+    current = session_fixture(user)
+    codes = Accounts.prepare_recovery_codes()
+    :ok = Accounts.RecoveryCodes.replace(user.id, codes)
+    user |> Ecto.Changeset.change(passkey_mode: "second_factor") |> Repo.update!()
+
+    user = Repo.get!(Accounts.User, user.id)
+    assert {:ok, "disabled"} = WebAuthn.set_mode(user, "disabled", current.id)
+    assert Repo.aggregate(TOTPRecoveryCode, :count, :id) == 10
+  end
 end

@@ -62,6 +62,22 @@ const PasskeySettings: Component = () => {
     }
   };
 
+  const disablePasskeyLogin = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      const options = await startPasskeyModeChange(currentToken(), password(), "disabled");
+      await finishPasskeyModeChange(currentToken(), await getPasskey(options));
+      setCodes([]);
+      setRecoveryToken(null);
+      await reload();
+    } catch (value) {
+      setError(value instanceof Error ? value.message : String(value));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const preparePasswordlessMode = async (): Promise<void> => {
     setBusy(true);
     setError(null);
@@ -175,6 +191,15 @@ const PasskeySettings: Component = () => {
                 Passwordless mode disables password and TOTP login. Losing the passkey requires a
                 recovery code; without either, only the instance administrator can restore the
                 account. Shottino cannot log in.
+              </p>
+            </Show>
+            <Show when={current.mode !== "disabled"}>
+              <button type="button" disabled={busy()} onClick={() => void disablePasskeyLogin()}>
+                return to password login
+              </button>
+              <p role="note">
+                Requires your account password and current passkey. Passwordless recovery codes are
+                removed.
               </p>
             </Show>
           </>
