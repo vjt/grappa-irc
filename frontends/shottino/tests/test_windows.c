@@ -1338,7 +1338,15 @@ TEST(a_configured_setting_survives_save_and_load) {
     prefs_load(third);
     CHECK_STR(third->voice_source, "alsa:hw:2");
 
-    free(app); free(next); free(third);
+    /* free_app, not a bare free: each of the three apps captured the
+     * defaults above, and those are 28 heap strings per app hanging off
+     * setting_default[] that only settings_free_defaults (which free_app
+     * calls) gives back. The bare free released the struct and left 84
+     * allocations behind — LeakSanitizer failed the suite and main with
+     * it. */
+    free_app(app);
+    free_app(next);
+    free_app(third);
 }
 
 /* The grid the call helper publishes is what ties a rectangle of the
