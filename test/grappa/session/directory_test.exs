@@ -134,7 +134,12 @@ defmodule Grappa.Session.DirectoryTest do
     assert network_slug == network.slug
 
     # The broadcast proves 323 was processed; NOW the snapshot is durable.
-    page = ChannelDirectory.list({:user, user.id}, network.id, ttl_ms: 1_000)
+    # The TTL is deliberately far wider than one second: `captured_at` is a
+    # second-precision `:utc_datetime`, so a snapshot is born up to 999 ms old
+    # and a ~1s window would make `:fresh` depend on where the stamp fell in
+    # the wall-clock second — doubly so here, where the `assert_receive` above
+    # can burn most of that second before the read (#713).
+    page = ChannelDirectory.list({:user, user.id}, network.id, ttl_ms: 60_000)
     assert page.status == :fresh
     assert page.total == 2
     # Default sort is user_count DESC (1200 > 800), so #elixir precedes #ruby.
