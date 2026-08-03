@@ -229,3 +229,55 @@ jobs:
       # so adding a docs step here costs nothing extra.
       - name: Build docs (no warnings)
         run: mix docs
+
+  # cicchetto is TypeScript, so none of the gates above say anything about
+  # it. Before this job, CI ran zero lines of JavaScript on a JS change:
+  # the SPA is built only inside integration.yml (docker compose ->
+  # cicchetto-build-test + playwright-runner), which is path-filtered.
+  # A dependency bump that broke types, lint or the unit suite could reach
+  # main with three green Elixir checks (#714 — the path filter itself is
+  # fixed in #715; this job is the complement, not the substitute: it runs
+  # unconditionally and in ~2 min, where the e2e runs conditionally in ~30).
+  #
+  # Deliberately its own job, same reasoning as shottino: no BEAM
+  # toolchain, no deps cache, and a failure should read as "cicchetto
+  # broke" rather than as a red mark on the Elixir suite.
+  cicchetto:
+    name: cicchetto (types + lint + unit)
+    runs-on: ubuntu-latest
+    # The same digest-pinned oven/bun the cicchetto-build-test service uses
+    # in compose.yaml (#103 supply-chain). Checking types with the exact
+    # runtime that builds the bundle means one bump moves both, instead of
+    # CI and the build image drifting apart on separate bun versions.
+    # Refresh on an intentional bump:
+    #   docker buildx imagetools inspect oven/bun:1 --format '{{.Manifest.Digest}}'
+    container:
+      image: oven/bun:1@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4
+    defaults:
+      run:
+        working-directory: cicchetto
+    steps:
+      # No submodules: bats-core and friends are Elixir/shell-side only.
+      - uses: actions/checkout@v7
+
+      - name: Cache bun install
+        uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('cicchetto/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      # --frozen-lockfile so a lockfile that disagrees with package.json
+      # fails here instead of silently resolving to something else than
+      # what the build and the e2e runner install.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # `check` is biome check src && tsc --noEmit — the same gate the
+      # local pre-commit path runs, so CI and the developer see one rule.
+      - name: Biome + typecheck
+        run: bun run check
+
+      - name: Unit tests (vitest)
+        run: bun run test
