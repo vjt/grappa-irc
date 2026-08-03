@@ -653,6 +653,11 @@ defmodule Grappa.Session.Server do
           query_window_open?: EventRouter.query_window_open?(),
           ghost_recovery: GhostRecovery.t() | nil,
           ghost_timer: reference() | nil,
+          # #676 h14 — the `nick_fallback` advisory built at 001 but held
+          # back while `ghost_recovery` is in flight, because the rename it
+          # describes may be about to be undone. Released at either failure
+          # terminal, dropped on success. Nil whenever no ghost is armed.
+          parked_nick_fallback: {:persist, atom(), map()} | nil,
           # #581 — the visitor "recover my identity" FSM + its two timers
           # (overall deadline + the post-verb settle tick). All nil unless
           # a recovery is in flight; the FSM is a sibling to
@@ -1169,6 +1174,7 @@ defmodule Grappa.Session.Server do
       query_window_open?: Map.get(opts, :query_window_open?, &QueryWindows.open?/3),
       ghost_recovery: nil,
       ghost_timer: nil,
+      parked_nick_fallback: nil,
       # #581 — recover-identity FSM + timers idle until /recover (or the
       # home button) fires `handle_call(:recover_identity, ...)`.
       recover_identity: nil,
@@ -2994,10 +3000,12 @@ defmodule Grappa.Session.Server do
     advance_ghost(state, msg)
   end
 
+  # The SECOND failure terminal — `GhostRecovery.step(gr, :timeout)` is
+  # `:failed` by definition, so the parked advisory is released here too.
   def handle_info(:ghost_timeout, %{ghost_recovery: %GhostRecovery{} = gr} = state) do
     {_, _, lines} = GhostRecovery.step(gr, :timeout)
-    state = flush_lines(state, lines)
-    {:noreply, %{state | ghost_recovery: nil, ghost_timer: nil}}
+    state = state |> flush_lines(lines) |> release_nick_fallback()
+    {:noreply, clear_ghost(state)}
   end
 
   def handle_info(:ghost_timeout, state), do: {:noreply, state}
@@ -3943,14 +3951,42 @@ defmodule Grappa.Session.Server do
     state = flush_lines(state, lines)
 
     case next.phase do
-      terminal when terminal in [:succeeded, :failed] ->
+      # The nick came back, so the fallback the 001 wanted to announce never
+      # became true. Drop the parked row rather than announce a rename we
+      # just undid.
+      :succeeded ->
         :ok = cancel_and_drain(state.ghost_timer, :ghost_timeout)
+        {:noreply, clear_ghost(state)}
 
-        {:noreply, %{state | ghost_recovery: nil, ghost_timer: nil}}
+      :failed ->
+        :ok = cancel_and_drain(state.ghost_timer, :ghost_timeout)
+        {:noreply, state |> release_nick_fallback() |> clear_ghost()}
 
       _ ->
         {:noreply, %{state | ghost_recovery: next}}
     end
+  end
+
+  defp clear_ghost(state),
+    do: %{state | ghost_recovery: nil, ghost_timer: nil, parked_nick_fallback: nil}
+
+  # #676 h14 — release the advisory EventRouter parked at 001.
+  #
+  # Called from BOTH failure terminals. `advance_ghost/2` is the obvious
+  # one; `handle_info(:ghost_timeout, ...)` clears the FSM on its own and is
+  # the likeliest failure in the field — NickServ simply never answers. A
+  # release wired to only one of them is silent exactly when the underscore
+  # is most likely to be permanent, which is the accident #676 exists to
+  # prevent.
+  defp release_nick_fallback(%{parked_nick_fallback: nil} = state), do: state
+
+  defp release_nick_fallback(%{parked_nick_fallback: {:persist, kind, attrs}} = state) do
+    # Stamped at the terminal, not at 001. The row records that the fallback
+    # is now PERMANENT, which is decided here; a connect-time stamp would
+    # also sort it above the recovery's own $server chatter on reload while
+    # a live client had appended it below.
+    fresh = Map.put(attrs, :server_time, System.system_time(:millisecond))
+    apply_effects([{:persist, kind, fresh}], %{state | parked_nick_fallback: nil})
   end
 
   # Lines emitted by GhostRecovery bypass `handle_call({:send_privmsg,

@@ -1662,7 +1662,25 @@ defmodule Grappa.Session.EventRouter do
       {:cont, reconciled, []}
     else
       {reconciled, eff} = nick_fallback_row(reconciled, msg, state.nick, welcomed_nick)
-      {:cont, reconciled, [eff]}
+      announce_or_park(reconciled, eff)
+    end
+  end
+
+  # #676 h14 — while ghost recovery is in flight the underscore is a move we
+  # are already undoing, not a fact about who the user is. The row is an
+  # ADVISORY with no retraction, so announcing it here leaves it sitting
+  # there, false, for the life of the scrollback.
+  #
+  # What gets parked is the BUILT effect, not the facts to rebuild it later.
+  # The sender is the upstream server name and it exists only on this 001
+  # message; carrying it forward on session state or on the FSM would
+  # duplicate something the message already holds, and the FSM has no
+  # business knowing about scrollback rows. `Session.Server` releases it at
+  # either failure terminal and drops it when the nick comes back.
+  defp announce_or_park(state, eff) do
+    case Map.get(state, :ghost_recovery) do
+      nil -> {:cont, state, [eff]}
+      _ -> {:cont, Map.put(state, :parked_nick_fallback, eff), []}
     end
   end
 

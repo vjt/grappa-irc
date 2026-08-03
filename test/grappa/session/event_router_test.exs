@@ -12,7 +12,7 @@ defmodule Grappa.Session.EventRouterTest do
   use ExUnit.Case, async: true
 
   alias Grappa.IRC.Message
-  alias Grappa.Session.{EventRouter, ISupport, Wire}
+  alias Grappa.Session.{EventRouter, GhostRecovery, ISupport, Wire}
 
   @user_id "00000000-0000-0000-0000-000000000001"
   @subject {:user, @user_id}
@@ -2767,6 +2767,27 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.meta.nick_fallback == %{requested: "vjt", registered: "vjt_"}
       assert attrs.body =~ "vjt"
       assert attrs.body =~ "vjt_"
+    end
+
+    # While ghost recovery is in flight the underscore is a move we are
+    # already undoing, not a fact. The row is an ADVISORY with no retraction
+    # — emitted now, it outlives the collision and sits there false forever.
+    # Park it and let the recovery's outcome decide; Session.Server owns the
+    # release.
+    test "a live ghost recovery parks the row instead of announcing it" do
+      state = base_state(%{nick: "vjt", ghost_recovery: %GhostRecovery{phase: :awaiting_ghost_notice}})
+      m = msg({:numeric, 1}, ["vjt_", "Welcome to IRC"], {:server, "irc.test.org"})
+
+      assert {:cont, new_state, []} = EventRouter.route(m, state)
+      assert new_state.nick == "vjt_"
+
+      assert {:persist, :server_event, attrs} = new_state.parked_nick_fallback
+      assert attrs.channel == "$server"
+      assert attrs.meta.nick_fallback == %{requested: "vjt", registered: "vjt_"}
+
+      # The sender only exists on the 001 message, which is exactly why the
+      # BUILT effect is what gets parked rather than the facts to rebuild it.
+      assert attrs.sender == "irc.test.org"
     end
 
     # A pure case difference is the ircd normalising, not a collision — the

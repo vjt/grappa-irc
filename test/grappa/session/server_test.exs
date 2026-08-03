@@ -8077,6 +8077,113 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    # #676 h14 — the fallback advisory must wait for the recovery to settle.
+    # Announcing at 001 names an underscore the recovery is in the middle of
+    # undoing, and the row has no retraction: it stays, false, forever.
+    #
+    # Both failure terminals are asserted because they are genuinely two
+    # doors. `advance_ghost/2` is the obvious one; the 8s `:ghost_timeout`
+    # clears the FSM on its own and is the likeliest real failure — NickServ
+    # simply never answers. A release wired to one door goes silent on the
+    # other, which is the accident #676 exists to prevent.
+    defp ghosting_session(nick) do
+      {server, port} = start_server(ghost_handler(nick))
+      {anon_visitor, network} = visitor_with_network(port, nick: nick)
+      {:ok, _} = Grappa.Visitors.commit_password(anon_visitor.id, network.id, "s3cret")
+      visitor = Grappa.Repo.reload!(anon_visitor)
+
+      pid = start_visitor_session_for(visitor, network)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "NICK #{nick}_\r\n"), 1_000)
+
+      {:ok, _} =
+        IRCServer.wait_for_line(server, &(&1 == "PRIVMSG NickServ :GHOST #{nick} s3cret\r\n"), 1_000)
+
+      # The handler answers the underscore NICK with 001, and the parking
+      # happens on THAT message. Its arm ends in a `MODE <welcomed_nick>`
+      # umode query, so seeing that line on the wire is the barrier proving
+      # the 001 was processed — without it a test can race ahead and clear
+      # the ghost before there is anything parked to release.
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "MODE #{nick}_\r\n"), 1_000)
+
+      %{server: server, pid: pid, visitor: visitor, network: network, nick: nick}
+    end
+
+    # `IRCServer.feed/2` is async: a PING round-trip is the barrier proving
+    # the Session drained the fed line before state is read.
+    defp flush(server, tag) do
+      IRCServer.feed(server, "PING :#{tag}\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :#{tag}\r\n"), 1_000)
+      :ok
+    end
+
+    defp nick_fallback_rows(ctx) do
+      {:visitor, ctx.visitor.id}
+      |> Scrollback.fetch(ctx.network.id, "$server", nil, 50, nil, false)
+      |> Enum.filter(&is_map_key(&1.meta || %{}, :nick_fallback))
+    end
+
+    test "ghost recovery that gets the nick back announces nothing" do
+      ctx = ghosting_session("v_t18p_#{System.unique_integer([:positive])}")
+      nick = ctx.nick
+
+      IRCServer.feed(
+        ctx.server,
+        ":NickServ!services@services.azzurra.org NOTICE #{nick}_ :#{nick} has been ghosted.\r\n"
+      )
+
+      {:ok, _} = IRCServer.wait_for_line(ctx.server, &(&1 == "WHOIS #{nick}\r\n"), 1_000)
+
+      IRCServer.feed(ctx.server, ":server 401 #{nick}_ #{nick} :No such nick\r\n")
+      {:ok, _} = IRCServer.wait_for_line(ctx.server, &(&1 == "NICK #{nick}\r\n"), 1_000)
+      :ok = flush(ctx.server, "succeeded")
+
+      state = SessionStateHelpers.fetch(ctx.pid)
+      assert is_nil(SessionStateHelpers.ghost_recovery(state))
+      assert nick_fallback_rows(ctx) == []
+
+      :ok = GenServer.stop(ctx.pid, :normal, 1_000)
+    end
+
+    test "ghost recovery that loses the nick announces the fallback it kept" do
+      ctx = ghosting_session("v_t18f_#{System.unique_integer([:positive])}")
+      nick = ctx.nick
+
+      IRCServer.feed(
+        ctx.server,
+        ":NickServ!services@services.azzurra.org NOTICE #{nick}_ :#{nick} has been ghosted.\r\n"
+      )
+
+      {:ok, _} = IRCServer.wait_for_line(ctx.server, &(&1 == "WHOIS #{nick}\r\n"), 1_000)
+
+      # 311: the original nick is STILL there, so the ghost did not take and
+      # the underscore is what the user is stuck with.
+      IRCServer.feed(ctx.server, ":server 311 #{nick}_ #{nick} u h * :real\r\n")
+      :ok = flush(ctx.server, "failed")
+
+      state = SessionStateHelpers.fetch(ctx.pid)
+      assert is_nil(SessionStateHelpers.ghost_recovery(state))
+
+      assert [row] = nick_fallback_rows(ctx)
+      assert row.meta[:nick_fallback] == %{"requested" => nick, "registered" => "#{nick}_"}
+
+      :ok = GenServer.stop(ctx.pid, :normal, 1_000)
+    end
+
+    test "ghost recovery that times out announces the fallback too" do
+      ctx = ghosting_session("v_t18x_#{System.unique_integer([:positive])}")
+      nick = ctx.nick
+
+      send(ctx.pid, :ghost_timeout)
+
+      state = SessionStateHelpers.fetch(ctx.pid)
+      assert is_nil(SessionStateHelpers.ghost_recovery(state))
+
+      assert [row] = nick_fallback_rows(ctx)
+      assert row.meta[:nick_fallback] == %{"requested" => nick, "registered" => "#{nick}_"}
+
+      :ok = GenServer.stop(ctx.pid, :normal, 1_000)
+    end
+
     test "non-NickServ NOTICE during :awaiting_ghost_notice does NOT advance the FSM" do
       nick = "v_t18n_#{System.unique_integer([:positive])}"
 
