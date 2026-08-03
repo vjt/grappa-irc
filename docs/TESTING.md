@@ -139,7 +139,7 @@ The authoritative source is the comment block at the top of each
 * **`scripts/test.sh`** → `scripts/mix.sh --env=test test --warnings-as-errors "$@"`. Forces `MIX_ENV=test` (auto-detect would use the live container's env, usually dev/prod, breaking sandbox).
 * **`scripts/check.sh`** → `scripts/mix.sh --env=dev ci.check` + `mix grappa.gen_wire_types --check` (wireTypes drift gate) + `scripts/bats.sh`. The `ci.check` alias (in `mix.exs`) chains: compile (warnings as errors), format check, credo, deps.audit, hex.audit, sobelow, doctor, `cmd env MIX_ENV=test mix test --warnings-as-errors`, dialyzer, docs. Mirrors CI exactly.
 * **`scripts/bun.sh`** → oneshot `oven/bun:1` against `cicchetto/`. `run test` = vitest. `run check` = biome + tsc. `install`, `add`, etc. forward to bun.
-* **`scripts/bats.sh`** → host-side bats v1.9.0 (submodule at `vendor/bats-core`) against `test/bin/`. NOT containerised — bats tests host-side bash dispatchers (`bin/grappa`).
+* **`scripts/bats.sh`** → host-side bats v1.9.0 (submodule at `vendor/bats-core`) against `test/bin/`, `test/infra/` and `test/scripts/`. NOT containerised — bats tests host-side bash (`bin/grappa`, the deploy scripts, the cloud installer).
 * **`scripts/integration.sh`** → `scripts/testnet.sh up` → `docker compose run --rm playwright-runner npx playwright test "$@"` → trap-on-exit `scripts/testnet.sh down`. `KEEP_STACK=1` opts out of tear-down.
 * **`scripts/testnet.sh`** → manages the stack standalone. `up` boots hub + leaves + services + grappa-test + nginx-test + seeder. `down` tears down + wipes `runtime/e2e/`. `probe` connects an oper-up client to leaf4 for `/links` + `/stats l`.
 
@@ -312,6 +312,36 @@ the hard way on 2026-07-27.
    rsync -a /Users/mbarnaba/code/grappa/cicchetto/e2e/infra/ \
      <worktree>/cicchetto/e2e/infra/
    ```
+
+## Writing a bats assertion: never a bare `!` (#745)
+
+Bash suppresses `errexit` for a command whose status is inverted with
+`!`, and a bats body runs under `set -e`. So this assertion is a no-op
+unless it happens to be the last line of the test:
+
+```bash
+! grep -q "should not be here" "$LOG"     # DEAD mid-test — reports ok
+```
+
+Measured on the vendored bats 1.9.0: a mid-test `! true` reports `ok`;
+the identical line written last reports `not ok`. It cost the suites 23
+assertions that could not fail and 56 more that were live only by the
+accident of line order.
+
+Use `refute` (`test/bats_helpers.bash`, `load ../bats_helpers`). A
+function call is an ordinary command, so errexit applies anywhere in the
+body, and it prints what unexpectedly succeeded:
+
+```bash
+refute grep -q "should not be here" "$LOG"
+refute grep -q 'partial-release' <<<"$output"   # was a pipeline
+```
+
+`test/scripts/bats_assertion_style_test.bats` fails the gate if a bare
+one reappears. `if ! cmd`, `while ! cmd` and `[ ! -f x ]` are all fine
+and are not flagged — the first two are condition contexts, and in the
+third the `!` belongs to the test builtin, whose own non-zero return
+still trips errexit.
 
 ## Test isolation: the global `max_cases: 1` lane
 

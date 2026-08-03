@@ -27235,3 +27235,50 @@ display cannot hold two regions without lying about the space between them. Then
 check what else reads the state you just changed the meaning of: here a pane
 that renders rows it has NOT read broke the assumption every cursor writer and
 the unread badge were built on.
+
+## 2026-08-03 — #745: an assertion that cannot fail is not an assertion
+
+The bats suites carried 79 negated assertions written `! grep -q …`.
+Bash suppresses `errexit` for a command whose status is inverted with
+`!` — POSIX is explicit: the shell does not exit when the failing
+command's return status is being inverted. A bats body runs under
+`set -e`, so the only reason any of them ever failed a test was position:
+last line in the body, where the body's own exit status carries it.
+
+Measured, not reasoned about — the claim is exactly the kind that sounds
+plausible either way, so it went through the vendored bats 1.9.0 first: a
+mid-test `! true` reports `ok`, the identical line as the final statement
+reports `not ok`. 23 of the 79 were mid-test, i.e. dead. The other 56
+were live only because nobody had yet appended a line after them.
+
+Both halves got converted, and that is the load-bearing decision. Fixing
+the 23 would have read as fixing the bug; it would have left 56 traps
+armed, each disguised as a working assertion and each one appended line
+away from going quiet. The class is "a negation that depends on line
+order", not "these 23 lines".
+
+The cure is that a FUNCTION CALL is an ordinary command — its non-zero
+return is not an inverted status, so errexit fires wherever it sits.
+`refute` (`test/bats_helpers.bash`) is a four-line function, and the
+whole fix is that it is a function. It also prints what unexpectedly
+succeeded, which the bare `!` never could.
+
+Converting proved nothing was hiding: the full suite stayed green with
+every assertion live for the first time (260 passed, up from 257 by the
+three new guard cases). The dead ones had all been asserting things that
+happen to be true. That is the honest result — the change bought back the
+ability to catch a regression, it did not catch one.
+
+Which is also why the guard matters more than the conversion.
+`test/scripts/bats_assertion_style_test.bats` fails the gate if a bare
+`!` reappears, if a suite calls `refute` without loading the helper (a
+missing function is "command not found" = non-zero = a refute that always
+passes), or if `refute` itself stops failing on success. Without it the
+class regrows one copy-paste at a time, because the bad spelling is the
+natural one to write and nothing about it looks broken.
+
+The guard deliberately does not flag `if ! cmd`, `while ! cmd` or
+`[ ! -f x ]`. The first two are condition contexts where inverting is the
+point; in the third the `!` belongs to the `[` builtin, which returns
+non-zero itself, so errexit still fires. Flagging those would have taught
+people to work around the guard.
