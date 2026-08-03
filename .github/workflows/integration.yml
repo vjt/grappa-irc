@@ -14,6 +14,16 @@ name: integration
 # local mac dev (different bind-mount semantics). Operator scripts
 # (deploy.sh, observer.sh, etc.) stay out of scope deliberately.
 #
+# Dependency manifests are in scope on BOTH sides of the stack (#714).
+# mix.exs/mix.lock were already listed; cicchetto/package.json and
+# cicchetto/bun.lock were not, and the asymmetry meant a JavaScript
+# dependency bump ran no JavaScript at all — ci.yml's three jobs are
+# Elixir + bash only, and the SPA is built nowhere else but here. That
+# is how a bundler upgrade (vite 8.1.5 -> 8.2.0, #708) merged green on
+# `mix credo`. Same reasoning puts the root Dockerfile and compose.yaml
+# in scope: they define the images the suite boots. The e2e-local
+# Dockerfiles and compose files are already covered by cicchetto/e2e/**.
+#
 # Stack timing: cold ~6-8 min for the testnet+grappa+nginx images +
 # Playwright base pull; warm with cache it's faster but we don't cache
 # docker layers cross-runs (would need a registry push). Suite itself
@@ -34,6 +44,8 @@ on:
       - "lib/**"
       - "cicchetto/src/**"
       - "cicchetto/e2e/**"
+      - "cicchetto/package.json"
+      - "cicchetto/bun.lock"
       - "config/**"
       - "priv/**"
       - "scripts/integration.sh"
@@ -41,6 +53,8 @@ on:
       - "scripts/_lib.sh"
       - "mix.exs"
       - "mix.lock"
+      - "Dockerfile"
+      - "compose.yaml"
       - ".github/workflows/integration.yml"
   pull_request:
     branches: [main]
@@ -48,6 +62,8 @@ on:
       - "lib/**"
       - "cicchetto/src/**"
       - "cicchetto/e2e/**"
+      - "cicchetto/package.json"
+      - "cicchetto/bun.lock"
       - "config/**"
       - "priv/**"
       - "scripts/integration.sh"
@@ -55,6 +71,8 @@ on:
       - "scripts/_lib.sh"
       - "mix.exs"
       - "mix.lock"
+      - "Dockerfile"
+      - "compose.yaml"
       - ".github/workflows/integration.yml"
 
 # Avoid duplicate runs on PRs from same-repo branches; cancel an
