@@ -606,7 +606,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build multi-arch release image (push only on a real tag)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.release
