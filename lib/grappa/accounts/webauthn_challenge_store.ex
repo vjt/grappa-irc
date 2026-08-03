@@ -4,7 +4,7 @@ defmodule Grappa.Accounts.WebAuthnChallengeStore do
 
   @ttl_seconds 300
 
-  @type purpose :: :registration | :authentication | :mode_change
+  @type purpose :: :registration | :authentication | :mode_change | :passwordless | :second_factor
   @type metadata :: map()
 
   @doc false

@@ -93,7 +93,7 @@ defmodule GrappaWeb.AuthControllerTest do
       Passkey.changeset(%Passkey{}, %{
         user_id: user.id,
         credential_id: <<1, 2, 3>>,
-        public_key: :erlang.term_to_binary(key),
+        public_key: CBOR.encode(key),
         name: "phone"
       })
     )

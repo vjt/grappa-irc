@@ -617,7 +617,8 @@ defmodule Grappa.Accounts do
   end
 
   @doc "Consumes one account recovery code for passwordless login."
-  @spec consume_recovery_code(User.t(), String.t()) :: :ok | {:error, :invalid_recovery_code}
+  @spec consume_recovery_code(User.t(), String.t()) ::
+          :ok | {:error, :invalid_recovery_code | :db_unavailable}
   def consume_recovery_code(%User{id: user_id}, code) when is_binary(code) do
     case Repo.BusyRetry.run(fn -> consume_recovery_code_once(user_id, code) end) do
       {:ok, :consumed} -> :ok

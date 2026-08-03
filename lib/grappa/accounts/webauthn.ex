@@ -52,7 +52,7 @@ defmodule Grappa.Accounts.WebAuthn do
       |> Passkey.changeset(%{
         user_id: user.id,
         credential_id: credential.credential_id,
-        public_key: :erlang.term_to_binary(credential.credential_public_key),
+        public_key: CBOR.encode(credential.credential_public_key),
         sign_count: auth_data.sign_count,
         name: name,
         transports: %{"values" => List.wrap(params["transports"])}
@@ -142,7 +142,8 @@ defmodule Grappa.Accounts.WebAuthn do
   defp credentials(user_id), do: Passkey |> where([p], p.user_id == ^user_id) |> Repo.all()
 
   defp credential_tuple(passkey) do
-    {passkey.credential_id, :erlang.binary_to_term(passkey.public_key, [:safe])}
+    {:ok, public_key, ""} = CBOR.decode(passkey.public_key)
+    {passkey.credential_id, public_key}
   end
 
   defp registration_options(id, challenge, user) do

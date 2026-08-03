@@ -61,9 +61,9 @@ defmodule Grappa.Repo.BusyRetry do
   Runs `op` with bounded retry over transient SQLite write contention.
   See the moduledoc for the full contract.
   """
-  @spec run((-> {:ok, result} | {:error, Ecto.Changeset.t()})) ::
-          {:ok, result} | {:error, Ecto.Changeset.t()} | {:error, :db_unavailable}
-        when result: var
+  @spec run((-> {:ok, result} | {:error, error})) ::
+          {:ok, result} | {:error, error | :db_unavailable}
+        when result: var, error: var
   def run(op) when is_function(op, 0), do: run(op, [])
 
   @doc """
@@ -71,17 +71,17 @@ defmodule Grappa.Repo.BusyRetry do
 
     * `:on_contention` — an `t:on_contention/0` observer (see the type).
   """
-  @spec run((-> {:ok, result} | {:error, Ecto.Changeset.t()}), keyword()) ::
-          {:ok, result} | {:error, Ecto.Changeset.t()} | {:error, :db_unavailable}
-        when result: var
+  @spec run((-> {:ok, result} | {:error, error}), keyword()) ::
+          {:ok, result} | {:error, error | :db_unavailable}
+        when result: var, error: var
   def run(op, opts) when is_function(op, 0) and is_list(opts) do
     deadline = System.monotonic_time(:millisecond) + @budget_ms
     loop(op, opts, deadline, 1)
   end
 
-  @spec loop((-> {:ok, result} | {:error, Ecto.Changeset.t()}), keyword(), integer(), pos_integer()) ::
-          {:ok, result} | {:error, Ecto.Changeset.t()} | {:error, :db_unavailable}
-        when result: var
+  @spec loop((-> {:ok, result} | {:error, error}), keyword(), integer(), pos_integer()) ::
+          {:ok, result} | {:error, error | :db_unavailable}
+        when result: var, error: var
   defp loop(op, opts, deadline, attempt) do
     maybe_inject_fault()
     op.()

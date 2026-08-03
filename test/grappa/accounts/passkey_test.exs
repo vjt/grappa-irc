@@ -30,7 +30,7 @@ defmodule Grappa.Accounts.PasskeyTest do
       Passkey.changeset(%Passkey{}, %{
         user_id: user.id,
         credential_id: <<1, 2, 3>>,
-        public_key: :erlang.term_to_binary(key),
+        public_key: CBOR.encode(key),
         name: "phone"
       })
     )
@@ -39,7 +39,7 @@ defmodule Grappa.Accounts.PasskeyTest do
       Passkey.changeset(%Passkey{}, %{
         user_id: other.id,
         credential_id: <<4, 5, 6>>,
-        public_key: :erlang.term_to_binary(key),
+        public_key: CBOR.encode(key),
         name: "other"
       })
     )
