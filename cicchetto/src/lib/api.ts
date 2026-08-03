@@ -2151,6 +2151,35 @@ export async function listMessagesAfter(
   return (await res.json()) as ScrollbackMessage[];
 }
 
+// #693 — the gap probe. Mirror of `GrappaWeb.MessagesController.count/2`:
+// how many rows sit after `afterId`, uncapped and with the same presence
+// filter a fetch would apply.
+//
+// `listMessagesAfter` above cannot answer this. It returns at most one page,
+// so a full page means "at least 200 more" — which is the same answer for a
+// 201-row gap (drain it, the operator barely notices) and a 3000-row one
+// (abandon the anchor, the operator wants the present). The resume paths in
+// `scrollback.ts` need to tell those apart, so they ask.
+//
+// Throws like its siblings on a non-2xx. Callers treat a throw as "unknown
+// gap" and keep the pre-#693 cursor-anchored resume — an older server has no
+// such route, and a client that hard-failed on that would be worse than one
+// that degrades.
+export async function countMessagesAfter(
+  token: string,
+  networkSlug: string,
+  channelName: string,
+  afterId: number,
+): Promise<number> {
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channelName)}/messages/count?after=${afterId}`,
+    { headers: buildHeaders(token) },
+  );
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as { count: number };
+  return body.count;
+}
+
 // Mirror of `GrappaWeb.MessagesController.create/2`. Server hardcodes
 // `kind = :privmsg` — only `body` is in the request envelope. Returns
 // 201 + the persisted Wire row; the same row also fires on the

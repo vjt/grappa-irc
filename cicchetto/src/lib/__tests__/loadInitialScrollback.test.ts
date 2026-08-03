@@ -54,12 +54,14 @@ vi.mock("../auth", () => ({
 // exists) returns a server-shaped ASC page.
 const listMessagesSpy = vi.fn<(...a: unknown[]) => Promise<ScrollbackMessage[]>>();
 const listMessagesAfterSpy = vi.fn<(...a: unknown[]) => Promise<ScrollbackMessage[]>>();
+const countMessagesAfterSpy = vi.fn<(...a: unknown[]) => Promise<number>>();
 vi.mock("../api", async () => {
   const actual = await vi.importActual<typeof import("../api")>("../api");
   return {
     ...actual,
     listMessages: (...args: unknown[]) => listMessagesSpy(...args),
     listMessagesAfter: (...args: unknown[]) => listMessagesAfterSpy(...args),
+    countMessagesAfter: (...args: unknown[]) => countMessagesAfterSpy(...args),
   };
 });
 
@@ -96,6 +98,9 @@ describe("loadInitialScrollback cursor baseline", () => {
     listMessagesSpy.mockReset();
     listMessagesAfterSpy.mockReset();
     listMessagesAfterSpy.mockResolvedValue([]);
+    countMessagesAfterSpy.mockReset();
+    // Default: a small gap, i.e. the pre-#693 contiguous resume.
+    countMessagesAfterSpy.mockResolvedValue(0);
     mockTokenValue = "test-bearer";
   });
 
@@ -153,5 +158,175 @@ describe("loadInitialScrollback cursor baseline", () => {
     await loadInitialScrollback("net", "#empty");
 
     expect(setReadCursorSpy).not.toHaveBeenCalled();
+  });
+});
+
+// #693 — returning after a long absence must land at the TAIL, not 200 rows
+// into the past. The trigger is the GAP SIZE, not the absence: any gap bigger
+// than one page leaves the anchored resume loading `[cursor .. cursor+200]`,
+// the OLDEST end of the region, with the present hundreds of rows further on.
+describe("#693 far-behind resume", () => {
+  const tailOf = (rows: ScrollbackMessage[] | undefined): number | undefined =>
+    rows && rows.length > 0 ? rows[rows.length - 1]?.id : undefined;
+
+  beforeEach(async () => {
+    const { clearReadCursors } = await import("../readCursor");
+    clearReadCursors();
+    setReadCursorSpy.mockClear();
+    listMessagesSpy.mockReset();
+    listMessagesAfterSpy.mockReset();
+    listMessagesAfterSpy.mockResolvedValue([]);
+    countMessagesAfterSpy.mockReset();
+    countMessagesAfterSpy.mockResolvedValue(0);
+    mockTokenValue = "test-bearer";
+  });
+
+  it("cold load with a gap LARGER than a page lands on the server tail", async () => {
+    const { loadInitialScrollback, scrollbackByChannel } = await import("../scrollback");
+    const { applyJoinReply } = await import("../readCursor");
+    const { channelKey } = await import("../channelKey");
+    applyJoinReply("net", "#flood", 100);
+    // 3000 rows accumulated while the operator was away; the tail is 3100.
+    countMessagesAfterSpy.mockResolvedValue(3000);
+    listMessagesSpy.mockResolvedValue([row(3100), row(3099), row(3098)]);
+
+    await loadInitialScrollback("net", "#flood");
+
+    // The newest loaded row is the TAIL, not cursor + one page.
+    expect(tailOf(scrollbackByChannel()[channelKey("net", "#flood")])).toBe(3100);
+    // The gap was MEASURED, at the anchor this branch would have used.
+    expect(countMessagesAfterSpy).toHaveBeenCalledWith("test-bearer", "net", "#flood", 100);
+    // ...and the oldest-end anchored page was never fetched.
+    expect(listMessagesAfterSpy).not.toHaveBeenCalled();
+  });
+
+  it("records the missed count and the anchor so the jump affordance can show them", async () => {
+    const { loadInitialScrollback, farBehindByChannel } = await import("../scrollback");
+    const { applyJoinReply } = await import("../readCursor");
+    const { channelKey } = await import("../channelKey");
+    applyJoinReply("net", "#missed", 100);
+    countMessagesAfterSpy.mockResolvedValue(3000);
+    listMessagesSpy.mockResolvedValue([row(3100)]);
+
+    await loadInitialScrollback("net", "#missed");
+
+    expect(farBehindByChannel()[channelKey("net", "#missed")]).toEqual({
+      missed: 3000,
+      resumeFrom: 100,
+    });
+  });
+
+  it("cold load with a gap SMALLER than a page keeps the contiguous resume", async () => {
+    const { loadInitialScrollback, farBehindByChannel } = await import("../scrollback");
+    const { applyJoinReply } = await import("../readCursor");
+    const { channelKey } = await import("../channelKey");
+    applyJoinReply("net", "#small", 100);
+    countMessagesAfterSpy.mockResolvedValue(12);
+    listMessagesAfterSpy.mockResolvedValue([row(101), row(102)]);
+    listMessagesSpy.mockResolvedValue([row(100), row(99)]);
+
+    await loadInitialScrollback("net", "#small");
+
+    // Unchanged #156 shape: anchored after + before, no tail-only fetch.
+    expect(listMessagesAfterSpy).toHaveBeenCalledWith("test-bearer", "net", "#small", 100, 200);
+    expect(listMessagesSpy).toHaveBeenCalledWith("test-bearer", "net", "#small", 101);
+    expect(listMessagesSpy).not.toHaveBeenCalledWith("test-bearer", "net", "#small");
+    expect(farBehindByChannel()[channelKey("net", "#small")]).toBeUndefined();
+  });
+
+  it("keeps the contiguous resume when the gap probe is unavailable", async () => {
+    // An older server has no /messages/count route. Degrade to the
+    // pre-#693 behaviour rather than guessing — never throw away a pane on
+    // an unanswered question.
+    const { loadInitialScrollback, farBehindByChannel } = await import("../scrollback");
+    const { applyJoinReply } = await import("../readCursor");
+    const { channelKey } = await import("../channelKey");
+    applyJoinReply("net", "#oldserver", 100);
+    countMessagesAfterSpy.mockRejectedValue(new Error("not_found"));
+    listMessagesAfterSpy.mockResolvedValue([row(101)]);
+    listMessagesSpy.mockResolvedValue([row(100)]);
+
+    await loadInitialScrollback("net", "#oldserver");
+
+    expect(listMessagesAfterSpy).toHaveBeenCalledWith("test-bearer", "net", "#oldserver", 100, 200);
+    expect(farBehindByChannel()[channelKey("net", "#oldserver")]).toBeUndefined();
+  });
+
+  it("jumping back swaps the tail window for the anchor region and drops the flag", async () => {
+    const { loadInitialScrollback, jumpToUnread, farBehindByChannel, scrollbackByChannel } =
+      await import("../scrollback");
+    const { applyJoinReply } = await import("../readCursor");
+    const { channelKey } = await import("../channelKey");
+    const key = channelKey("net", "#jump");
+    applyJoinReply("net", "#jump", 100);
+    countMessagesAfterSpy.mockResolvedValue(3000);
+    listMessagesSpy.mockResolvedValue([row(3100), row(3099)]);
+    await loadInitialScrollback("net", "#jump");
+
+    // Now the operator takes the affordance: after(100) + before(101).
+    listMessagesAfterSpy.mockResolvedValue([row(101), row(102)]);
+    listMessagesSpy.mockResolvedValue([row(100), row(99)]);
+    await jumpToUnread("net", "#jump");
+
+    const rows = scrollbackByChannel()[key] ?? [];
+    expect(rows.map((m) => m.id)).toEqual([99, 100, 101, 102]);
+    // REPLACED, not merged: keeping the tail rows next to these would render
+    // a hole — 2998 missing rows drawn as if they were consecutive.
+    expect(rows.some((m) => m.id === 3100)).toBe(false);
+    expect(farBehindByChannel()[key]).toBeUndefined();
+  });
+
+  it("reconnect: a full backfill page with more than a page still missing lands at the tail", async () => {
+    const { refreshScrollback, scrollbackByChannel, farBehindByChannel } = await import(
+      "../scrollback"
+    );
+    const { applyJoinReply } = await import("../readCursor");
+    const { channelKey } = await import("../channelKey");
+    const key = channelKey("net", "#resume");
+    applyJoinReply("net", "#resume", 500);
+    // A full 200-row page — which says "at least 200 more", not how many.
+    const fullPage = Array.from({ length: 200 }, (_, i) => row(501 + i));
+    listMessagesAfterSpy.mockResolvedValue(fullPage);
+    // ...and the probe says 2000 rows still sit past the last one ingested.
+    countMessagesAfterSpy.mockResolvedValue(2000);
+    listMessagesSpy.mockResolvedValue([row(2900), row(2899)]);
+
+    await refreshScrollback("net", "#resume");
+
+    expect(countMessagesAfterSpy).toHaveBeenCalledWith("test-bearer", "net", "#resume", 700);
+    expect(tailOf(scrollbackByChannel()[key])).toBe(2900);
+    expect(farBehindByChannel()[key]).toEqual({ missed: 2000, resumeFrom: 700 });
+  });
+
+  it("reconnect: a full backfill page that drains the gap keeps its rows", async () => {
+    const { refreshScrollback, scrollbackByChannel, farBehindByChannel } = await import(
+      "../scrollback"
+    );
+    const { applyJoinReply } = await import("../readCursor");
+    const { channelKey } = await import("../channelKey");
+    const key = channelKey("net", "#drained");
+    applyJoinReply("net", "#drained", 500);
+    const fullPage = Array.from({ length: 200 }, (_, i) => row(501 + i));
+    listMessagesAfterSpy.mockResolvedValue(fullPage);
+    // Only 10 rows behind after that page — one more scroll closes it, so the
+    // pane must NOT be thrown away.
+    countMessagesAfterSpy.mockResolvedValue(10);
+
+    await refreshScrollback("net", "#drained");
+
+    expect(tailOf(scrollbackByChannel()[key])).toBe(700);
+    expect(farBehindByChannel()[key]).toBeUndefined();
+    expect(listMessagesSpy).not.toHaveBeenCalled();
+  });
+
+  it("reconnect: a SHORT backfill page never pays for the probe", async () => {
+    const { refreshScrollback } = await import("../scrollback");
+    const { applyJoinReply } = await import("../readCursor");
+    applyJoinReply("net", "#short", 500);
+    listMessagesAfterSpy.mockResolvedValue([row(501), row(502)]);
+
+    await refreshScrollback("net", "#short");
+
+    expect(countMessagesAfterSpy).not.toHaveBeenCalled();
   });
 });
