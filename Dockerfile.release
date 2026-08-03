@@ -47,7 +47,7 @@ RUN GRAPPA_VERSION="$(sh infra/packaging/version.sh)" \
 # Same toolchain tuple as the dev image + the .deb builder. build-base + git
 # for hex NIF compilation; exqlite bundles its own sqlite amalgamation, so no
 # sqlite-dev is needed (statically linked into the NIF).
-FROM elixir:1.19-otp-28-alpine AS build
+FROM elixir:1.20.1-otp-29-alpine AS build
 RUN apk add --no-cache build-base git
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
