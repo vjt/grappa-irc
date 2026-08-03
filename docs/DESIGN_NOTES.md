@@ -27134,3 +27134,70 @@ and pick its scope to match the thing you are measuring, because a
 device-shared key is not a document lifetime. Let the test suite refuse to
 advance a clock: if a timer can make the test pass, the production code is
 measuring something the real failure mode never gives it.
+## 2026-08-03 — #693: a resume that cannot be drained in one page anchors at the TAIL, not at the cursor
+
+**Field report.** After a day or more away, reopening the client did not show
+the recent scrollback: the pane sat on old rows, and scrolling to the bottom
+parked you at a stale position instead of the live tail.
+
+**The trigger is the GAP SIZE, not the absence.** Both recovery paths anchored
+at the read cursor and capped at 200 rows, so the client loaded
+`[cursor .. cursor+200]` — the OLDEST end of the gap — and never the tail. Cold
+load took `loadInitialScrollback`'s #156 anchored branch; a reconnect took
+`refreshScrollback` from `getResumeCursor`. The only thing that paged toward the
+present was `loadNewer`, at 200 rows per scroll-to-bottom gesture, so a busy
+channel took tens of gestures to reach now. A full page reload changed nothing:
+the read cursor is still there, so the reload re-entered the same branch (which
+is why #695 was filed WITH this and not before it).
+
+**A full page is not a measurement.** `page.length === limit` says "at least
+200 more" — the same answer for a 201-row gap (one more fetch drains it, keep
+the divider) and a 3000-row one (abandon the anchor, the operator wants the
+present). `Scrollback.count_after/6` already refuses the `@max_limit` cap for
+exactly this reason, but it had **no production caller** (its doc still claimed
+the join reply used it; that moved to `count_after_split/5` via `WindowCounts`
+long ago) and no door onto the wire. It gets one: `GET
+…/messages/count?after=<id>` → `{"count": N}`, additive, snake_case,
+`after` required and non-negative.
+
+**The count had to grow a `hide_presence` positional** to be the honest twin of
+`fetch_after/7`. The question is "how many rows would a fetch hand me", and a
+channel with 500 hidden JOINs and 5 messages is a 5-row gap for a client that
+renders neither. Required, not defaulted — the same rule `own_nick` follows.
+The badge path passes `false` explicitly: it counts events too.
+
+**Anchoring at the tail REPLACES the window, it does not extend it.** Store
+order IS display order in `ScrollbackPane` and there is no gap-marker row, so
+merging a tail page next to rows from thousands of messages ago would render a
+silent hole — two regions abutting as if consecutive. `anchorAtTail` therefore
+swaps the key's rows for the newest page, rolls the high-water mark to the tail
+(else the next refresh re-fetches the abandoned region and re-decides
+"far behind", forever), and clears the loadMore latch so scroll-up re-pages what
+was dropped. `jumpToUnread` is the same swap mirrored, back to the anchor.
+
+**Measured from the ANCHOR, never from the read cursor.** The cold-load anchor
+IS the cursor, so there the existing unread seed would have been exact — but the
+reconnect anchor is the high-water mark, and a busy window the operator never
+focused already holds every one of its "unread" rows. Deciding off the cursor
+there would throw away a perfectly good pane on a false premise. One probe, at
+whatever anchor the caller is about to use, is also one code path instead of two.
+
+**The probe's cost is gated, and its failure is not fatal.** Cold load pays one
+small GET per cursor-present open, behind the load-once gate, on a human click;
+the reconnect path pays only after a FULL page, which is the rare case. A throw
+(an older server with no such route, a transient error) returns `null` — not
+zero, not "far behind" — and the caller keeps the pre-#693 cursor-anchored
+resume. Degrading to wrong-but-familiar beats a destructive guess.
+
+**The divider stands down while far behind.** The cursor is below every loaded
+row, so the in-pane marker would slam to the top of the buffer labelled with the
+count of the ~50 rows that happen to be loaded — a confident wrong number in the
+one place the operator reads to find where they left off. The boundary row
+carries the true count instead, in-flow at the top of the buffer (the #270
+PeerAwayBanner precedent): it marks a position in the history, exactly like the
+divider it replaces.
+
+**Apply:** when a client decides between two recoveries, make it measure, not
+infer from a saturated page. And when the honest recovery is discontiguous with
+what is already loaded, drop the stale region — a store whose order IS its
+display cannot hold two regions without lying about the space between them.

@@ -2720,6 +2720,44 @@ html.resize-dragging * {
   user-select: none;
 }
 
+/* #693 — far-behind boundary row. Same horizontal-rule-with-label form as
+   the unread marker above, because it marks the same kind of thing: a
+   position in the history. It differs in being TAPPABLE (it loads the region
+   above it) and in sitting at the very top of the buffer, so it gets a
+   button reset, a pointer cursor, and a 44px minimum height — the tap target
+   floor in absolute px, since the root font-size is 14px and a rem-based
+   target would come out short on mobile. */
+
+.scrollback-far-behind {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 44px;
+  padding: 0.25rem 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.8em;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.scrollback-far-behind-line {
+  flex: 1;
+  height: 1px;
+  background: var(--accent);
+  opacity: 0.4;
+}
+
+.scrollback-far-behind-label {
+  white-space: nowrap;
+  text-decoration: underline;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 /* #280 — floating action stack at the lower-right of `.scrollback-pane`.
    The scroll-to-bottom button (C7.4) and, on mobile, the "jump to next
    active window" affordance (#235) render into ONE container-anchored,

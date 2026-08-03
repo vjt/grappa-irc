@@ -85,6 +85,11 @@ const pushOwnSend = (key: string) => setOwnSend(key);
 // stand-in; `pushOwnSendSubmitted` is the test verb that fires a submit.
 const [ownSubmitted, setOwnSubmitted] = createSignal<string | null>(null, { equals: false });
 const pushOwnSendSubmitted = (key: string) => setOwnSubmitted(key);
+// #693 — far-behind state for the pane under test (see the scrollback mock).
+const [farBehind, setFarBehind] = createSignal<
+  Record<string, { missed: number; resumeFrom: number }>
+>({});
+const jumpToUnreadSpy = vi.fn();
 vi.mock("../lib/scrollback", () => ({
   scrollbackByChannel: () => scrollback(),
   // BUGHUNT-2 B5: ScrollbackPane's onScroll calls `loadMore` when
@@ -105,6 +110,12 @@ vi.mock("../lib/scrollback", () => ({
   refreshScrollback: vi.fn(() => Promise.resolve()),
   lastOwnSend: () => ownSend(),
   ownSendSubmitted: () => ownSubmitted(),
+  // #693 — the far-behind record for the rendered window (empty by default,
+  // i.e. an ordinary contiguous pane) plus the jump verb the boundary row
+  // fires. Signal-backed so a spec can flip a window into the far-behind
+  // state after mount, the same way `setScrollback` drives the row list.
+  farBehindByChannel: () => farBehind(),
+  jumpToUnread: (...args: string[]) => jumpToUnreadSpy(...args),
 }));
 
 vi.mock("../lib/networks", () => ({
@@ -1964,6 +1975,71 @@ describe("ScrollbackPane", () => {
     afterEach(() => {
       localStorage.clear();
       setReadCursorStore({});
+    });
+
+    // #693 — a pane that gave up on contiguity and anchored at the tail.
+    // The cursor is still set (and still server-authoritative), but it points
+    // BELOW every loaded row, so the divider must stand down and the
+    // boundary row must carry the true count instead.
+    describe("far-behind boundary row (#693)", () => {
+      afterEach(() => {
+        setFarBehind({});
+        jumpToUnreadSpy.mockClear();
+      });
+
+      it("renders the jump affordance with the server's missed count", () => {
+        seedReadCursor("freenode", "#grappa", 1);
+        setScrollback({ "freenode #grappa": fixture });
+        setFarBehind({ "freenode #grappa": { missed: 3000, resumeFrom: 1 } });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        expect(screen.getByTestId("far-behind-jump")).toHaveTextContent("3000 unread");
+      });
+
+      it("suppresses the in-pane divider, whose count would describe the loaded rows", () => {
+        // Without the suppression this pane shows "2 unread" — the loaded
+        // rows past the cursor — while 3000 are actually missing.
+        seedReadCursor("freenode", "#grappa", 1);
+        setScrollback({ "freenode #grappa": fixture });
+        setFarBehind({ "freenode #grappa": { missed: 3000, resumeFrom: 1 } });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        expect(screen.queryByTestId("unread-marker")).toBeNull();
+      });
+
+      it("keeps the divider and shows no affordance for an ordinary pane", () => {
+        seedReadCursor("freenode", "#grappa", 1);
+        setScrollback({ "freenode #grappa": fixture });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        expect(screen.queryByTestId("far-behind-jump")).toBeNull();
+        expect(screen.getByTestId("unread-marker")).toHaveTextContent("2 unread");
+      });
+
+      it("does not leak another window's far-behind state into this pane", () => {
+        seedReadCursor("freenode", "#grappa", 1);
+        setScrollback({ "freenode #grappa": fixture });
+        setFarBehind({ "freenode #other": { missed: 3000, resumeFrom: 1 } });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        expect(screen.queryByTestId("far-behind-jump")).toBeNull();
+        expect(screen.getByTestId("unread-marker")).toBeInTheDocument();
+      });
+
+      it("tapping it asks for the anchor region of THIS window", () => {
+        seedReadCursor("freenode", "#grappa", 1);
+        setScrollback({ "freenode #grappa": fixture });
+        setFarBehind({ "freenode #grappa": { missed: 3000, resumeFrom: 1 } });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        screen.getByTestId("far-behind-jump").click();
+        expect(jumpToUnreadSpy).toHaveBeenCalledWith("freenode", "#grappa");
+      });
     });
 
     it("renders no unread-marker when no read cursor is set for the window", () => {

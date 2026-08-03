@@ -41,6 +41,8 @@ import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
 import { isSettled, nextFollowMode, resolveIntent, type ScrollIntent } from "./lib/scrollAuthority";
 import {
+  farBehindByChannel,
+  jumpToUnread,
   lastOwnSend,
   loadMore as loadMoreScrollback,
   loadNewer as loadNewerScrollback,
@@ -1357,7 +1359,19 @@ const ScrollbackPane: Component<Props> = (props) => {
     // Only inject the marker if there are unread messages AND some read messages
     // to show as context above it. When all messages are unread, put the marker
     // at the very top (before index 0). When none are unread, skip the marker.
-    const injectMarker = cursor !== null && sessionTop !== null && unreadCount > 0;
+    //
+    // #693 — except when this pane is FAR BEHIND. There the loader abandoned
+    // the cursor region and anchored at the tail, so the cursor sits below
+    // every loaded row: the divider would slam to the top of the buffer
+    // labelled with the count of the rows that happen to be loaded (~50)
+    // rather than the thousands actually unread — a confident wrong number in
+    // the one place the operator reads to decide where they left off. The
+    // jump-back affordance carries the true count instead.
+    const injectMarker =
+      cursor !== null &&
+      sessionTop !== null &&
+      unreadCount > 0 &&
+      farBehindByChannel()[key()] === undefined;
     const result: Row[] = [];
     let prevTime: number | null = null;
     let markerInjected = false;
@@ -3356,6 +3370,38 @@ const ScrollbackPane: Component<Props> = (props) => {
             the top even in an empty DM (the "no messages yet" fallback). */}
         <Show when={props.kind === "query"}>
           <PeerAwayBanner networkSlug={props.networkSlug} peer={props.channelName} />
+        </Show>
+        {/* #693 — the far-behind boundary row. This pane holds the tail
+            because the gap back to where the operator left off was bigger
+            than one page; everything above this line is loadable but NOT
+            loaded. In-flow at the top of the buffer (the #270 PeerAwayBanner
+            precedent) rather than floating: it marks a position in the
+            history, exactly like the unread divider it replaces, and it
+            belongs at the boundary it describes. Tapping it swaps this window
+            for the region around the anchor. */}
+        <Show when={farBehindByChannel()[key()]}>
+          {(far) => (
+            <button
+              type="button"
+              class="scrollback-far-behind"
+              data-testid="far-behind-jump"
+              onClick={() => {
+                // Arm the EXISTING marker-activation latch (#168) before the
+                // swap: clearing the far-behind flag re-injects the divider,
+                // and the rows-change that lands the anchor region is exactly
+                // the content change that latch scrolls to. Set synchronously
+                // so it is already armed when the awaited rows arrive — this
+                // is the "reuse the writer, add a trigger" shape, not a second
+                // scroll authority.
+                setMarkerActivationPending(true);
+                void jumpToUnread(props.networkSlug, props.channelName);
+              }}
+            >
+              <span class="scrollback-far-behind-line" />
+              <span class="scrollback-far-behind-label">{far().missed} unread — jump back</span>
+              <span class="scrollback-far-behind-line" />
+            </button>
+          )}
         </Show>
         <Show
           when={rows().length > 0}

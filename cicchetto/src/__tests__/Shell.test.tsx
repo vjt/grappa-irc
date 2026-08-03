@@ -174,6 +174,12 @@ vi.mock("../lib/scrollback", () => ({
   // and crashes every Shell render test. Static null is enough — Shell tests
   // don't exercise the send-snap (that's ScrollbackPane.test.tsx + the e2e).
   ownSendSubmitted: () => null,
+  // #693 — ScrollbackPane reads the far-behind record to decide between the
+  // in-pane divider and the jump-back boundary row. Empty map = an ordinary
+  // contiguous pane, which is what every Shell render test wants; the
+  // far-behind rendering itself is pinned in ScrollbackPane.test.tsx.
+  farBehindByChannel: () => ({}),
+  jumpToUnread: vi.fn(),
 }));
 
 vi.mock("../lib/members", () => ({
