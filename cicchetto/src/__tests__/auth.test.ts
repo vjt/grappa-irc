@@ -6,9 +6,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // `vi.resetModules()` the second test would observe the first test's
 // signal value because the module instance is cached across imports.
 
+// #736 — `lib/passkeys` is the browser-ceremony boundary (it calls
+// `navigator.credentials`, which jsdom does not implement). Mock it here
+// and keep the auth-side branching real: the passkey → TOTP degrade in
+// `login()` is the most conditional logic on the auth surface and it
+// shipped with no coverage at all.
+vi.mock("../lib/passkeys", () => ({
+  getPasskey: vi.fn(),
+}));
+
 vi.mock("../lib/api", () => ({
   login: vi.fn(),
   verifyTotpLogin: vi.fn(),
+  getPasskeyLoginOptions: vi.fn(),
+  verifyPasskeyLogin: vi.fn(),
+  verifyPasskeySecondFactor: vi.fn(),
+  recoverPasskeyLogin: vi.fn(),
   me: vi.fn(),
   logout: vi.fn(),
   setOn401Handler: vi.fn(),
@@ -95,6 +108,151 @@ describe("auth signal store", () => {
     await auth.verifyTotp("challenge-123", "123456");
     expect(api.verifyTotpLogin).toHaveBeenCalledWith("challenge-123", "123456");
     expect(auth.token()).toBe("tok-2fa");
+  });
+
+  // #736 — a passkey-second-factor login has FOUR outcomes off one server
+  // response, and which one you get depends on a browser ceremony that can
+  // fail for reasons the server never sees (no authenticator, user dismissed
+  // the prompt, timeout). The degrade is silent by design — the whole point
+  // is that the user reaches the TOTP form instead of a dead end — which is
+  // exactly why it needs pinning: a regression here shows up as "passkey
+  // users can't log in", with no error anywhere.
+  describe("login() — passkey second factor", () => {
+    const passkeyChallenge = (challengeToken: string | null) => ({
+      two_factor_required: true as const,
+      passkey_options: { challenge_id: "pk-1", public_key: { challenge: "AQID" } },
+      totp_available: challengeToken !== null,
+      challenge_token: challengeToken,
+    });
+
+    it("runs the ceremony and installs the session on a good assertion", async () => {
+      const api = await import("../lib/api");
+      const { getPasskey } = await import("../lib/passkeys");
+      vi.mocked(api.login).mockResolvedValue(passkeyChallenge("challenge-123"));
+      vi.mocked(getPasskey).mockResolvedValue({ raw_id: "AQ" });
+      vi.mocked(api.verifyPasskeySecondFactor).mockResolvedValue({
+        token: "tok-passkey",
+        subject: { kind: "user", id: "u1", name: "alice" },
+      });
+      const auth = await import("../lib/auth");
+
+      await expect(auth.login("alice", "secret")).resolves.toEqual({ kind: "authenticated" });
+
+      expect(getPasskey).toHaveBeenCalledWith({
+        challenge_id: "pk-1",
+        public_key: { challenge: "AQID" },
+      });
+      expect(api.verifyPasskeySecondFactor).toHaveBeenCalledWith({ raw_id: "AQ" });
+      expect(auth.token()).toBe("tok-passkey");
+    });
+
+    it("degrades to the TOTP challenge when the ceremony fails and a code is available", async () => {
+      const api = await import("../lib/api");
+      const { getPasskey } = await import("../lib/passkeys");
+      vi.mocked(api.login).mockResolvedValue(passkeyChallenge("challenge-123"));
+      vi.mocked(getPasskey).mockRejectedValue(new Error("Passkey authentication cancelled"));
+      const auth = await import("../lib/auth");
+
+      await expect(auth.login("alice", "secret")).resolves.toEqual({
+        kind: "totp",
+        challengeToken: "challenge-123",
+      });
+
+      expect(api.verifyPasskeySecondFactor).not.toHaveBeenCalled();
+      expect(auth.token()).toBeNull();
+    });
+
+    it("degrades to the TOTP challenge when the server rejects the assertion", async () => {
+      // A rejected assertion (replayed challenge, expired ceremony) is a
+      // ceremony failure like any other: the account still has a second
+      // factor the user can reach, so the form must offer it.
+      const api = await import("../lib/api");
+      const { getPasskey } = await import("../lib/passkeys");
+      vi.mocked(api.login).mockResolvedValue(passkeyChallenge("challenge-123"));
+      vi.mocked(getPasskey).mockResolvedValue({ raw_id: "AQ" });
+      vi.mocked(api.verifyPasskeySecondFactor).mockRejectedValue(new Error("challenge_expired"));
+      const auth = await import("../lib/auth");
+
+      await expect(auth.login("alice", "secret")).resolves.toEqual({
+        kind: "totp",
+        challengeToken: "challenge-123",
+      });
+      expect(auth.token()).toBeNull();
+    });
+
+    it("rethrows the ceremony error when the account has no TOTP fallback", async () => {
+      // `challenge_token: null` means the server minted no TOTP challenge —
+      // passkey is the ONLY second factor. Swallowing the error here would
+      // resolve the login as authenticated with no token.
+      const api = await import("../lib/api");
+      const { getPasskey } = await import("../lib/passkeys");
+      vi.mocked(api.login).mockResolvedValue(passkeyChallenge(null));
+      vi.mocked(getPasskey).mockRejectedValue(new Error("Passkey authentication cancelled"));
+      const auth = await import("../lib/auth");
+
+      await expect(auth.login("alice", "secret")).rejects.toThrow(
+        "Passkey authentication cancelled",
+      );
+      expect(auth.token()).toBeNull();
+      expect(localStorage.getItem("grappa-token")).toBeNull();
+    });
+  });
+
+  describe("passkey login entry points", () => {
+    it("loginWithPasskey() fetches options, signs them, and installs the session", async () => {
+      const api = await import("../lib/api");
+      const { getPasskey } = await import("../lib/passkeys");
+      const options = { challenge_id: "pk-1", public_key: { challenge: "AQID" } };
+      vi.mocked(api.getPasskeyLoginOptions).mockResolvedValue(options);
+      vi.mocked(getPasskey).mockResolvedValue({ raw_id: "AQ" });
+      vi.mocked(api.verifyPasskeyLogin).mockResolvedValue({
+        token: "tok-passwordless",
+        subject: { kind: "user", id: "u1", name: "alice" },
+      });
+      const auth = await import("../lib/auth");
+
+      await auth.loginWithPasskey("alice");
+
+      expect(api.getPasskeyLoginOptions).toHaveBeenCalledWith("alice");
+      expect(getPasskey).toHaveBeenCalledWith(options);
+      expect(api.verifyPasskeyLogin).toHaveBeenCalledWith({ raw_id: "AQ" });
+      expect(auth.token()).toBe("tok-passwordless");
+      expect(localStorage.getItem("grappa-subject")).toBe(
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+    });
+
+    it("loginWithPasskey() leaves no token behind when the ceremony is cancelled", async () => {
+      const api = await import("../lib/api");
+      const { getPasskey } = await import("../lib/passkeys");
+      vi.mocked(api.getPasskeyLoginOptions).mockResolvedValue({
+        challenge_id: "pk-1",
+        public_key: {},
+      });
+      vi.mocked(getPasskey).mockRejectedValue(new Error("Passkey authentication cancelled"));
+      const auth = await import("../lib/auth");
+
+      await expect(auth.loginWithPasskey("alice")).rejects.toThrow(
+        "Passkey authentication cancelled",
+      );
+
+      expect(api.verifyPasskeyLogin).not.toHaveBeenCalled();
+      expect(auth.token()).toBeNull();
+    });
+
+    it("loginWithRecoveryCode() installs the session for a good code", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.recoverPasskeyLogin).mockResolvedValue({
+        token: "tok-recovered",
+        subject: { kind: "user", id: "u1", name: "alice" },
+      });
+      const auth = await import("../lib/auth");
+
+      await auth.loginWithRecoveryCode("alice", "code-1234");
+
+      expect(api.recoverPasskeyLogin).toHaveBeenCalledWith("alice", "code-1234");
+      expect(auth.token()).toBe("tok-recovered");
+    });
   });
 
   it("logout() calls api.logout with current token and clears state", async () => {
