@@ -15,6 +15,7 @@ import ShareConsume from "./ShareConsume";
 import "./lib/subscribe";
 import "./lib/userTopic";
 import { mountBadgeReconcile, mountBadgeSync } from "./lib/badge";
+import { performRefresh } from "./lib/bundleHash";
 import { applyCachedCustomTheme, mountCustomThemeSync } from "./lib/customTheme";
 import { mountDisplayPrefsSync } from "./lib/displayPrefs";
 import { isDocumentVisible } from "./lib/documentVisibility";
@@ -26,6 +27,7 @@ import { installPushResubscribe } from "./lib/pushResubscribe";
 import { applyPushTargetFromUrl, installPushTargetListener } from "./lib/pushTarget";
 import { applySidebarWidthsFromStorage } from "./lib/sidebarWidths";
 import { notifyClientClosing, reportVisibility } from "./lib/socket";
+import { installStaleResumeReload } from "./lib/staleResume";
 import { recordSwRegError, recordSwRegistered } from "./lib/swRegistration";
 import { applyTheme } from "./lib/theme";
 import { installSmartScrollPin, installViewportHeightTracker } from "./lib/viewportHeight";
@@ -228,8 +230,29 @@ window.addEventListener("beforeunload", notifyClientClosing);
 // suspend OR whose visibilityState silently flips (reportVisibility re-reads
 // the live property each tick). Reuses the `visibility` verb — see
 // lib/visibilityHeartbeat.ts. Stops the interval when hidden.
+// #695 — throw the document away on resume after a prolonged absence (48h by
+// default). A long-lived PWA document degrades, and after two days suspended
+// it is worth reloading rather than resuming. Measured from a persisted
+// stamp — no timer can have run across the suspension — and reloaded through
+// `performRefresh`, the SAME SW-aware verb the #674 refresh banner uses,
+// never a second reload path beside it.
+//
+// The heartbeat below runs the returned CHECK, not a bare stamp write: on iOS
+// the background transition frequently never fires, so the interval is simply
+// frozen with the document and its first tick after the thaw is the only
+// trigger that can observe the absence at all. A tick that stamped without
+// checking would erase the evidence instead of acting on it.
 createRoot(() => {
-  const heartbeat = createVisibilityHeartbeat(reportVisibility);
+  const checkStaleResume = installStaleResumeReload({
+    isVisible: isDocumentVisible,
+    now: () => Date.now(),
+    reload: () => void performRefresh(),
+    win: window,
+  });
+  const heartbeat = createVisibilityHeartbeat(() => {
+    reportVisibility();
+    checkStaleResume();
+  });
   createEffect(() => {
     const visible = isDocumentVisible();
     reportVisibility();

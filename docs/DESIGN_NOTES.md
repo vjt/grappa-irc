@@ -26999,3 +26999,138 @@ share code, make the invariant testable instead of pretending a helper is
 possible. And when a value is derived for a deploy, derive it where it is USED:
 anything read before the pull describes the box you are leaving, and a stale
 number that still builds is harder to notice than one that crashes.
+---
+
+## 2026-08-03 — #695: a two-day absence is worth throwing the document away, and only a stamp can measure it
+
+**The ask.** Reload the whole cic client on reopen after a prolonged absence.
+Threshold **48h**; 24h was considered and rejected as too eager. Reason: a
+long-lived PWA document degrades — *"Safari goes mad after a while"* — so a
+document iOS has kept suspended for two days is worth discarding rather than
+resuming.
+
+**Filed together with #693 on purpose, and that pairing is now satisfied.**
+Shipping the reload alone "would look like a fix and change nothing the
+operator can see", because a reload re-entered the same cursor-anchored
+scrollback branch and put the operator back exactly where they were stuck.
+#693 landed the tail-anchored resume; this is the other half.
+
+**Only a persisted stamp can measure the interval.** The premise is a document
+with NO JS running for the whole window — frozen or suspended by the OS. Every
+in-page mechanism for counting elapsed time (a timer, an in-memory `bootedAt`,
+a heartbeat counter) is by construction unable to observe an interval during
+which it did not run. Storage is the only thing that crosses the suspension, so
+the stamp — not a clock — is the measurement. The unit tests encode that: none
+of them advance a fake timer, they move `now` and assert on the stamp. A test
+that needed a timer to trip the threshold would be proving the implementation
+measures the wrong thing.
+
+**Two stores, two different lifetimes.** The stamp lives in **sessionStorage**;
+the threshold override in **localStorage**. The stamp answers "when was THIS
+document last alive", and sessionStorage is exactly per-window-lifetime — it
+survives a reload and a suspension, and it does not leak between tabs. In
+localStorage a foreground desktop tab's heartbeat would keep refreshing the
+shared key every 30s and the suspended iPhone PWA — the degraded document this
+whole feature exists for — would never trip. That is a false negative aimed
+squarely at the reported scenario, so the store choice is load-bearing, not
+incidental. The threshold, by contrast, is device-wide operator config and must
+outlive any one window.
+
+**"Exactly once" is ONE rule, not a latch.** Every check stamps; the stale ones
+also reload. Because the stamp is refreshed *as* the reload is requested, no
+later trigger in the same document can see the same absence twice. The first
+draft used a boolean latch instead and it was worse in a way that only shows up
+when the reload does not land: `performRefresh` swallows every error and ends
+in a `window.location.reload()` that a blocked navigation (or the e2e
+`__refreshProbe`) can decline, and a latched document would then have the
+feature disabled for its entire remaining life. Stamping instead of latching
+self-heals — a later genuine 3-day absence in the same document still trips —
+and removes state rather than adding it.
+
+The second half of the guard is that `installStaleResumeReload` stamps
+**before** it arms any trigger. The stale stamp survives the reload (same
+window, same sessionStorage), so without the pre-arm write the fresh document
+would read it, trip, and reload again: the loop the issue calls out by name.
+
+Both guards were mutation-checked rather than assumed. Removing the pre-arm
+stamp fails *"stamps this document active at install…"* with `expected
+"vi.fn()" to not be called at all, but actually been called 1 times`; making
+the stamp conditional (skipping it on the reload path) fails *"refreshes the
+stamp as it reloads…"* with `expected "vi.fn()" to be called 1 times, but got 4
+times`.
+
+**The heartbeat runs the CHECK, not a stamp write — and that is the whole iOS
+path.** The #318 foreground visibility heartbeat already ticks every 30s, so
+#695 adds no timer of its own. The first draft had the tick call `markActive`.
+That was a real bug, and it killed the feature on its primary target: per
+#318's own module header, iOS does not reliably fire `visibilitychange`, so an
+app-switch can freeze the document with no hidden transition at all. The
+interval freezes with it; on thaw the pending callback fires, the stamp gets
+refreshed, `isDocumentVisible()` never changed value so the Solid effect never
+re-runs, and `pageshow` does not fire for a freeze/resume. The one trigger that
+could have seen the absence had just erased the evidence. `installStaleResumeReload`
+therefore **returns** the check verb and the heartbeat calls that — which also
+leaves the stamp with exactly one writer.
+
+**Triggers: the visibility signal, `pageshow`, and that heartbeat tick.**
+`documentVisibility.ts` is the SSOT for "is the operator looking at this?"
+(visibilitychange AND window focus/blur — raw visibilitychange alone misses the
+unfocused-but-visible desktop tab, #192), so the check hangs off that signal
+rather than registering parallel listeners. `pageshow` covers the bfcache/PWA
+restore whose computed visibility never changed. Overlap between the three is
+free: once the stamp is refreshed the check is idempotent, exactly #649's
+argument for its three viewport triggers. The check runs on the hidden
+transition too, which stamps the precise moment the operator left — a better
+baseline than the last heartbeat tick.
+
+**Reload through `performRefresh`, never a second path.** `bundleHash.ts`
+already owns the SW-aware reload, and it exists because a bare
+`location.reload()` took THREE presses to pick up a new bundle on iPhone PWA.
+Extending its use is vjt's standing "non facciamo strati su quel che c'è già"
+rule — the same argument #649 made for the viewport writer. It also inherits
+the `__refreshProbe` e2e seam for free. #674 (auto-refresh on a new bundle) is
+still OPEN and unimplemented, so there is no rival auto-reload to merge with;
+keeping #695 on this verb is what lets #674 land on top of it later.
+
+**Threshold configurable, per device.** `localStorage["cicchetto.staleResumeHours"]`,
+defaulting to 48. Absent / non-numeric / non-positive falls back to the default
+— a typo must never become "reload on every resume". An AdminDebugTab field for
+on-device tuning was considered and **declined**: the issue asked for a tunable
+number, not a UI, and Safari Web Inspector reaches a PWA's storage. It is a
+~15-line follow-up if vjt wants it on-device.
+
+**Compose drafts: discarded, and there was nothing to decide.** The issue
+ordered an explicit decision. `compose.ts` holds drafts in
+`identityScopedStore` signals with no storage backing, so *every* reload
+already discards them — including the #674 refresh banner's. #695 introduces no
+new loss class. Persisting drafts would be a new feature with its own
+identity-scoping and staleness questions, and after 48h away a draft is more
+likely stale than precious.
+
+**Two review findings declined, on evidence.**
+
+*A forward clock jump larger than the threshold reloads spuriously.* The
+proposed mitigations do not survive contact: an absurd-delta ceiling would
+suppress genuine very-long absences (a 40-day-old document SHOULD reload), and
+a `performance.now()` monotonic cross-check cannot cross the reload boundary
+the feature is built around — worse, if any engine pauses that clock while a
+page is frozen, the guard would silently disable the feature on exactly the
+platform it exists for. The cost of the bug is one reload; the cost of a wrong
+guard is the whole feature, failing quietly. Flagged rather than guessed at.
+
+*The boot-path storage write is unguarded and a throwing `sessionStorage`
+(Safari "Block All Cookies") would white-screen the app.* True, but not a new
+failure class: `applyFontSizeFromStorage` (`fontSize.ts:30`),
+`applySidebarWidthsFromStorage` (`sidebarWidths.ts:53`) and the bare
+`localStorage.getItem(INSTALL_CHOICE_KEY)` at `main.tsx:258` all already touch
+storage unguarded before `render()`, so such a browser is already broken before
+staleResume runs. Guarding one of four is the half-migrated state CLAUDE.md
+calls out by name; the real fix is a codebase-wide storage boundary, which is
+not a #695 change.
+
+**Apply:** when a requirement is "detect that time passed while we weren't
+running", the only correct instrument is something that outlives the process —
+and pick its scope to match the thing you are measuring, because a
+device-shared key is not a document lifetime. Let the test suite refuse to
+advance a clock: if a timer can make the test pass, the production code is
+measuring something the real failure mode never gives it.
