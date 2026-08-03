@@ -668,7 +668,7 @@ jobs:
           submodules: false
 
       - name: Download built artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: assets
 
