@@ -73,10 +73,10 @@ defmodule GrappaWeb.PasskeyControllerTest do
 
     assert json_response(blocked, 409) == %{"error" => "passkey_required"}
 
-    user = Repo.get!(User, user.id)
-    assert {:ok, "disabled"} = WebAuthn.set_mode(user, "disabled", session.id)
+    passwordless_user = Repo.get!(User, user.id)
+    assert {:ok, "disabled"} = WebAuthn.set_mode(passwordless_user, "disabled", session.id)
 
-    conn = recycle(conn) |> put_req_header("authorization", "Bearer #{session.id}")
+    conn = put_req_header(recycle(conn), "authorization", "Bearer #{session.id}")
     assert response(delete(conn, "/me/passkeys/#{passkey.id}", %{"password" => password}), 204)
     assert Repo.aggregate(Passkey, :count, :id) == 0
   end
