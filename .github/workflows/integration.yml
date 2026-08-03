@@ -67,12 +67,14 @@ jobs:
   e2e:
     name: cicchetto + grappa + azzurra-testnet
     runs-on: ubuntu-latest
-    # 30, not 25: the suite settled at ~23min of real work, which left a
-    # ~2min margin — close enough that an ordinary slow runner would be
-    # killed mid-suite and read as a genuine failure. A timeout is a
-    # runaway-job backstop, not a performance budget; it should only fire
-    # when something is actually wrong.
-    timeout-minutes: 30
+    # 45, not 30: the "~23min of real work, ~2min margin" figure this cap
+    # was set from is stale. Run 30774056306 (590 passed, clean branch,
+    # same runner class) took 25.5min of suite time with the job at
+    # 29m55s — five seconds under the old cap — and #696 was killed at
+    # test 589 of 590 by the timeout alone, not by a failure. A timeout is
+    # a runaway-job backstop, not a performance budget; it should only
+    # fire when something is actually wrong.
+    timeout-minutes: 45
     # `packages: read` so `docker login ghcr.io` can pull the
     # prebuilt bahamut + services images from `ghcr.io/vjt/*` (see
     # cicchetto/e2e/compose.ghcr-vjt.yaml). Default GITHUB_TOKEN has
