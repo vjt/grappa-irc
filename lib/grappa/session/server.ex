@@ -4129,19 +4129,19 @@ defmodule Grappa.Session.Server do
           RecoverIdentity.verb(),
           RecoverIdentity.reason()
         ) :: [{SessionWire.recover_step(), SessionWire.recover_status(), SessionWire.recover_reason() | nil}]
-  defp recover_terminal_steps(:awaiting_r, _verb, reason),
+  defp recover_terminal_steps(:awaiting_r, _, reason),
     do: [{:nick, :ok, nil}, {:identify, :failed, reason}]
 
   defp recover_terminal_steps(:awaiting_verb_settle, verb, reason) when verb in [:recover, :release],
     do: [{verb, :failed, reason}]
 
-  defp recover_terminal_steps(:awaiting_nick, _verb, reason),
+  defp recover_terminal_steps(:awaiting_nick, _, reason),
     do: [{:nick, :failed, reason}]
 
-  defp recover_terminal_steps(:awaiting_final_r, _verb, reason),
+  defp recover_terminal_steps(:awaiting_final_r, _, reason),
     do: [{:nick, :ok, nil}, {:identify, :failed, reason}]
 
-  defp recover_terminal_steps(_old, _verb, reason),
+  defp recover_terminal_steps(_, _, reason),
     do: [{:nick, :failed, reason}]
 
   # Build the IRC.Client opts map from the pre-resolved primitive
@@ -4342,8 +4342,7 @@ defmodule Grappa.Session.Server do
     # #623 — a self-NICK arrives as a :nick command → this delegate path (never
     # the numeric path). Feed the recover FSM `:nick_observed` when our nick
     # just landed on the credential nick the reclaim leg is chasing.
-    next_state = maybe_advance_recover_on_nick(state, next_state)
-    {:noreply, next_state}
+    {:noreply, maybe_advance_recover_on_nick(state, next_state)}
   end
 
   # CP24 bucket E web/S8: keep `seeded_channels` consistent with
@@ -4491,7 +4490,7 @@ defmodule Grappa.Session.Server do
     end
   end
 
-  defp maybe_advance_recover_on_nick(_prev, state), do: state
+  defp maybe_advance_recover_on_nick(_, state), do: state
 
   # #498 — mirror `state.nick` into this session's own SessionRegistry entry
   # value. The ONE writer of the cheap live-nick copy: it always writes

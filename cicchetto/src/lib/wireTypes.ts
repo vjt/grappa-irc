@@ -1153,12 +1153,8 @@ export type SessionWireRecoverStatus = (typeof SESSION_WIRE_RECOVER_STATUS)[numb
 export const SESSION_WIRE_RECOVER_REASON = [
   "wrong_password",
   "nick_unavailable",
-  // #623 — leg (b): the nick was reclaimed and the sameNick IDENTIFY went out,
-  // but +r never confirmed by the deadline (distinct from nick_unavailable, the
-  // nick-never-landed leg). RecoverModal has no bespoke copy for it yet → the
-  // generic reasonCopy fallback (additive-only, #447).
-  "identify_unconfirmed",
   "services_declined",
+  "identify_unconfirmed",
 ] as const;
 export type SessionWireRecoverReason = (typeof SESSION_WIRE_RECOVER_REASON)[number];
 
