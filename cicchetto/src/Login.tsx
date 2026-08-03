@@ -431,26 +431,46 @@ const Login: Component = () => {
                     registered account.
                   </p>
 
-                  {/* Alternate auth (passkey / recovery code) sits ABOVE the
-                Advanced toggle so Connect stays the LAST element of the form:
-                login-advanced-scroll-reachability keys off realname being the
-                field immediately above Connect (#284). Own class, not
+                  {/* Advanced toggle sits BETWEEN the password and Connect (vjt
+                layout fix). Real button + aria-expanded + conditional render
+                (not display:none) so a11y + tests see the truth.
+
+                #442 — the alternate-auth entry points (passkey / recovery
+                code) SHARE this row instead of stacking above it. Measured on
+                1024x900 with Advanced open: the card is 875px of a 900px
+                viewport, i.e. 25px of slack, so any extra full-width row
+                pushes Connect out of the viewport and reds
+                login-advanced-scroll-reachability:138 ("every field + Connect
+                visible with no scroll"). Riding the existing 44px row costs
+                zero height, so both that spec and the 390x480 one keep the
+                exact geometry they have on main. Own class, not
                 login-advanced-toggle — that one is a selector contract the
                 e2e clicks as a strict single match (issue281). */}
-                  <button
-                    type="button"
-                    class="login-alt-auth"
-                    onClick={() => void onPasskeyLogin()}
-                  >
-                    Sign in with passkey
-                  </button>
-                  <button
-                    type="button"
-                    class="login-alt-auth"
-                    onClick={() => setRecoveryMode((value) => !value)}
-                  >
-                    Use recovery code
-                  </button>
+                  <div class="login-alt-auth-row">
+                    <button
+                      type="button"
+                      class="login-advanced-toggle"
+                      aria-expanded={advanced() ? "true" : "false"}
+                      aria-controls="login-advanced"
+                      onClick={() => setAdvanced((v) => !v)}
+                    >
+                      {advanced() ? "▾ Advanced" : "▸ Advanced"}
+                    </button>
+                    <button
+                      type="button"
+                      class="login-alt-auth"
+                      onClick={() => void onPasskeyLogin()}
+                    >
+                      Passkey
+                    </button>
+                    <button
+                      type="button"
+                      class="login-alt-auth"
+                      onClick={() => setRecoveryMode((value) => !value)}
+                    >
+                      Recovery code
+                    </button>
+                  </div>
                   <Show when={recoveryMode()}>
                     <div>
                       <label for="login-recovery-code">Recovery code</label>
@@ -471,19 +491,6 @@ const Login: Component = () => {
                       </button>
                     </div>
                   </Show>
-
-                  {/* Advanced toggle sits BETWEEN the password and Connect (vjt
-                layout fix). Real button + aria-expanded + conditional render
-                (not display:none) so a11y + tests see the truth. */}
-                  <button
-                    type="button"
-                    class="login-advanced-toggle"
-                    aria-expanded={advanced() ? "true" : "false"}
-                    aria-controls="login-advanced"
-                    onClick={() => setAdvanced((v) => !v)}
-                  >
-                    {advanced() ? "▾ Advanced" : "▸ Advanced"}
-                  </button>
                   <Show when={advanced()}>
                     <div id="login-advanced" class="login-advanced">
                       {/* #152 — realname + ident, optional. Blank = server

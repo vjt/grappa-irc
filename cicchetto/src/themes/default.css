@@ -851,6 +851,23 @@ html.overlay-open #root > div {
   color: var(--fg);
 }
 
+/* #442 — the alt-auth entry points ride the Advanced toggle's row so they
+   add NO height to the card. On 1024x900 with Advanced open the form is
+   875px tall against a 900px viewport: 25px of slack, less than one 44px
+   tap target, so a stacked row pushes Connect off-screen and reds
+   login-advanced-scroll-reachability:138. */
+.login-alt-auth-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* Push the alt-auth pair to the trailing edge; the disclosure toggle keeps
+   the leading edge it has on main. */
+.login-alt-auth-row .login-advanced-toggle {
+  margin-right: auto;
+}
+
 /* #442 — alternate auth entry points (passkey / recovery code). Same quiet
    text-button look as the disclosure toggle, but a class of its own: the e2e
    clicks .login-advanced-toggle as a strict single match, so that selector
