@@ -15,7 +15,7 @@
     "gen:emoji": "bun scripts/gen-emoji.ts"
   },
   "dependencies": {
-    "@solidjs/router": "^0.16.2",
+    "@solidjs/router": "^1.0.0",
     "mediabunny": "^1.46.0",
     "phoenix": "^1.8.9",
     "solid-js": "^1.9.14",
