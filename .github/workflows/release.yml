@@ -593,7 +593,7 @@ jobs:
           image: tonistiigi/binfmt:latest
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to ghcr.io
         # Only on the tag-push (publishing) path — a docker_validation dry-run
