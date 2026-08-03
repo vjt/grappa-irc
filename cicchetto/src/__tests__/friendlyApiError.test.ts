@@ -152,6 +152,10 @@ const CASES: Array<{ code: string; matches: RegExp; info?: Record<string, unknow
   // #523 / #518 — a web-reachable write's typed 503 when SQLITE_BUSY exhausts
   // the BusyRetry budget (FallbackController :db_unavailable, retry-after 1).
   { code: "db_unavailable", matches: /service is momentarily busy/i },
+  // #696 — 409 refusing to delete the LAST passkey while passkey sign-in is
+  // still enabled (`PasskeyController.delete/2`). The copy has to name the
+  // two ways out, because the refusal is otherwise a dead end for the user.
+  { code: "passkey_required", matches: /only passkey/i },
 ];
 
 describe("friendlyApiError", () => {

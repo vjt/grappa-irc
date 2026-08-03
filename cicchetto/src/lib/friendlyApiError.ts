@@ -62,6 +62,12 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       return "Two-factor challenge expired. Enter your password again.";
     case "already_enabled":
       return "Two-factor authentication is already enabled.";
+    case "passkey_required":
+      // #696 — 409 from `PasskeyController.delete/2`: this is the LAST
+      // passkey and passkey sign-in is still enabled, so removing it would
+      // lock the account out. Name both exits — a bare refusal reads as a
+      // dead end.
+      return "That's your only passkey. Add another, or turn off passkey sign-in first.";
     case "too_many_sessions":
       // U-3 (UD3): ip_cap_exceeded — this source IP already holds
       // its allotted session(s) for this network (`max_per_ip`,
