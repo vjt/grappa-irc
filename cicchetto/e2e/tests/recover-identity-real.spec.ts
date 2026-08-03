@@ -32,7 +32,7 @@
 // bahamut's SILENT `+r`-strip on a self-rename — pre-fix grappa kept a phantom
 // `+r` and the button stayed hidden (that IS the state bug this e2e surfaced).
 //
-//   1. IrcPeer registers RECOVER_NICK with the real NickServ (REGISTER →
+//   1. IrcPeer registers the (stamped) recover nick with the real NickServ
 //      emailed AUTH code via mailpit → AUTH → `+r`), then DISCONNECTS — the
 //      nick is now FREE but REGISTERED (password known).
 //   2. The visitor logs in WITH that password (`loginVisitor`) → grappa
@@ -43,9 +43,9 @@
 //   3. The visitor voluntarily `/nick`s to a free Guest nick (composeSend from
 //      the $server window) → bahamut strips `+r` (silent), grappa MIRRORS it
 //      (the fix) → the visitor is now connected, POST-001, NON-`+r`, and
-//      RECOVER_NICK is FREE again. `recoverable` stays true → the 🔑 button
+//      the recover nick is FREE again. `recoverable` stays true → the 🔑 button
 //      APPEARS (the POST-001 barrier).
-//   4. IrcPeer RECONNECTS + IDENTIFYs RECOVER_NICK (a stable, legitimate hold).
+//   4. IrcPeer RECONNECTS + IDENTIFYs the recover nick (a stable, legitimate hold).
 //   5. Click 🔑 Recover → the server-driven RecoverModal → NICK(433, held) →
 //      RECOVER (services free IrcPeer's hold — SPIKE-PROVEN 2026-07-31, FREED)
 //      → settle → NICK + IDENTIFY → `+r` → the modal shows terminal SUCCESS.
@@ -67,10 +67,15 @@
 // network connection_state, so no visitor-token PATCH is needed here.
 //
 // ── RE-RUN NOTE ───────────────────────────────────────────────────────────
-// RECOVER_NICK registers exactly ONCE per fresh services container. CI is
-// fresh each run. For a LOCAL re-run against a persistent testnet the nick is
-// already registered — bring the testnet down + up first
-// (`scripts/testnet.sh down && scripts/integration.sh …`).
+// The recover nick + its registration email are STAMPED per test run, because
+// a NickServ registration is once-per-nick-per-services-container: a fixed
+// nick made the second run on a persistent testnet answer "already
+// registered", which resolves the register barrier instantly and then hangs
+// the mail wait — so `--repeat-each`, the iso-rerun discipline this project
+// mandates for flake triage (docs/TESTING.md), could not be used on the one
+// spec that needed it (#623). Stamped, every iteration registers its own nick
+// against the same container and the spec is re-runnable N times on ONE
+// stack.
 
 import { expect, test } from "@playwright/test";
 import type { Browser } from "@playwright/test";
@@ -115,9 +120,7 @@ async function bootVisitor(
 }
 
 const NETWORK_SLUG = "azzurra"; // visitor_enabled + real azzurra-services (bahamut-test hub)
-const RECOVER_NICK = "rec-id-nick";
 const RECOVER_PASSWORD = "recidpw1"; // 5–32 chars (NickServ floor)
-const REG_EMAIL = "rec-id@example.com"; // valid TLD (see EMAIL DOMAIN note)
 const AUTH_CODE_RE = /AUTH (\d+)/;
 
 // Poll GET /me until the `NETWORK_SLUG` home row's `recoverable` flag equals
@@ -199,6 +202,10 @@ test.describe("#581 recover-identity (real services)", () => {
     const admin = getSeededAdmin();
     const stamp = Date.now();
     const guestNick = `recguest${stamp % 100000}`; // free + unique per run
+    // Stamped so the registration is fresh on a persistent testnet too (see
+    // the RE-RUN NOTE): NickServ registers a nick exactly once per container.
+    const recoverNick = `recid${stamp % 100000}`;
+    const regEmail = `${recoverNick}@example.com`; // valid TLD (see EMAIL DOMAIN note)
     let visitor: Awaited<ReturnType<typeof loginVisitor>> | null = null;
     let ctx: Awaited<ReturnType<Browser["newContext"]>> | null = null;
     const peers: IrcPeer[] = [];
@@ -206,18 +213,18 @@ test.describe("#581 recover-identity (real services)", () => {
     try {
       await resetMailpit();
 
-      // ── Step 1: register RECOVER_NICK with the REAL NickServ, then free it ──
-      const registrar = await IrcPeer.connect({ nick: RECOVER_NICK });
+      // ── Step 1: register the stamped nick with the REAL NickServ, free it ──
+      const registrar = await IrcPeer.connect({ nick: recoverNick });
       peers.push(registrar);
-      await registrar.nickservRegister(RECOVER_PASSWORD, REG_EMAIL);
-      const mail = await awaitMail(REG_EMAIL, { timeoutMs: 45_000 });
+      await registrar.nickservRegister(RECOVER_PASSWORD, regEmail);
+      const mail = await awaitMail(regEmail, { timeoutMs: 45_000 });
       const code = extractFromMail(mail, AUTH_CODE_RE);
       await registrar.nickservAuth(code); // → +r on the registrar
       await registrar.disconnect("free the nick for the visitor"); // nick FREE, still REGISTERED
       peers.pop();
 
       // ── Step 2: visitor logs in WITH the password → connects free → +r → commit ──
-      visitor = await loginVisitor(RECOVER_NICK, RECOVER_PASSWORD, NETWORK_SLUG);
+      visitor = await loginVisitor(recoverNick, RECOVER_PASSWORD, NETWORK_SLUG);
       // The +r commit persists the :nickserv_identify credential → recoverable.
       await waitForRecoverable(visitor.token, NETWORK_SLUG, true);
 
@@ -234,8 +241,8 @@ test.describe("#581 recover-identity (real services)", () => {
       // a reconnect (which auto-ghost would reclaim PRE-001). bahamut strips +r
       // silently on the rename; the EventRouter fix mirrors it so cic's
       // canRecover() flips true. The credential is :nickserv_identify, so its
-      // nick is HELD at RECOVER_NICK (update_visitor_credential_nick is
-      // anon-gated → :held_identified) — recover still targets RECOVER_NICK.
+      // nick is HELD at the recover nick (update_visitor_credential_nick is
+      // anon-gated → :held_identified) — recover still targets that nick.
       await selectChannel(page, NETWORK_SLUG, "Server", { awaitWsReady: false });
       await composeSend(page, `/nick ${guestNick}`);
 
@@ -245,8 +252,8 @@ test.describe("#581 recover-identity (real services)", () => {
       const recoverBtn = page.getByTestId(`home-recover-identity-${NETWORK_SLUG}`);
       await expect(recoverBtn).toBeVisible({ timeout: 30_000 });
 
-      // ── Step 4: IrcPeer takes + IDENTIFYs RECOVER_NICK (now free) → 433 on recover ──
-      const holder = await IrcPeer.connect({ nick: RECOVER_NICK });
+      // ── Step 4: IrcPeer takes + IDENTIFYs the recover nick (free) → 433 on recover ──
+      const holder = await IrcPeer.connect({ nick: recoverNick });
       peers.push(holder);
       await holder.nickservIdentify(RECOVER_PASSWORD);
 
