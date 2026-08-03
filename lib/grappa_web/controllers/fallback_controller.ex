@@ -53,6 +53,7 @@ defmodule GrappaWeb.FallbackController do
            | :malformed_nick
            | :malformed_ident
            | :password_required
+           | :passkey_required
            | :password_mismatch
            | :network_not_visitor_enabled
            | :network_ambiguous

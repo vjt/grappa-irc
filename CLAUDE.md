@@ -36,6 +36,7 @@ Grappa.Application
 ├── Grappa.RateLimit.FailureWindow     (S6 per-(bucket, key) login-throttle window)
 ├── Grappa.RateLimit.TokenBucket       (#340 per-(subject, network) send token bucket)
 ├── Grappa.Net.PtrCache                (#252 vhost reverse-DNS (PTR) name cache)
+├── Grappa.Accounts.WebAuthnChallengeStore (short-lived WebAuthn ceremony challenges)
 ├── Task.Supervisor                    (name: Grappa.TaskSupervisor — detached tasks)
 ├── DynamicSupervisor                  (name: Grappa.SessionSupervisor)
 │   └── Grappa.Session.Server          (one per (user, network), :transient)

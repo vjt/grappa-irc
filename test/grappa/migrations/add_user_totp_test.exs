@@ -75,8 +75,8 @@ defmodule Grappa.Migrations.AddUserTotpTest do
     assert "totp_enabled_at" in user_columns()
     assert "totp_last_used_step" in user_columns()
 
-    assert %{name: "legacy-04200", password_hash: "legacy-secret"} =
-             SmokeRepo.get_by(Grappa.Accounts.User, name: "legacy-04200")
+    assert [["legacy-04200", "legacy-secret"]] ==
+             query!("SELECT name, password_hash FROM users WHERE name = 'legacy-04200'").rows
   end
 
   defp seed_legacy_rows do
