@@ -27301,3 +27301,67 @@ The guard deliberately does not flag `if ! cmd`, `while ! cmd` or
 point; in the third the `!` belongs to the `[` builtin, which returns
 non-zero itself, so errexit still fires. Flagging those would have taught
 people to work around the guard.
+## 2026-08-03 — #623: the post-RECOVER reclaim needed a retry, not a re-IDENTIFY
+
+**The failing signature.** `recover-identity-real.spec.ts:268` reddened in four
+CI runs across causally unrelated branches, always identically: modal
+`data-outcome="failed"`, step `nick=failed`, `recover=ok`, `identify=running`,
+~31s wall (the 30s assert burning down). Every reading of that shape was a
+guess, because the pre-#623 broadcast could not distinguish the two ways
+`:awaiting_final_r` dies: both mapped to `recover_failed_step = :nick` and the
+same `:nick_unavailable`.
+
+**Measured, not reasoned.** Ten local runs (six isolated, one full 588-spec
+suite, three with `azzurra-services` starved to 0.2 and 0.05 CPU) stayed GREEN
+— the flake wants a contended runner, not a laptop. What the wire trace showed
+instead is that the SUCCESS path was never the one the design assumed:
+
+* the initial leg's `NICK` + `IDENTIFY` go out together, the `NICK` earns a 433
+  (the holder has it), so the `IDENTIFY` is evaluated under the Guest nick.
+  Services answers `Password accepted for <nick>` ADDRESSED TO THE GUEST: no
+  `+r` (the sameNick rule), but the account IS authenticated;
+* `RECOVER` does not kill the holder — services force-renames it
+  (`NICK :Guest56004`), and completes on its own clock, 3-7s later;
+* when the rename lands, services volunteers `+r` ITSELF, 1ms after the NICK
+  echo and ~9ms BEFORE any IDENTIFY we could send in response.
+
+So `+r` is not ours in either design, and sequencing the reclaim leg cannot
+shorten it: the seconds belong to services. The sequencing (`NICK` alone →
+`:nick_observed` → `IDENTIFY`) is kept for what it demonstrably is — it stops
+firing an IDENTIFY that provably cannot commit `+r`, and leaves a sameNick one
+as the backstop for the day services stops volunteering. Backstop, not motor.
+
+**What actually failed.** The re-NICK can be refused with a 433 long after the
+settle beat — measured 5.0s after the send, in 1 run of 3 on one stack. F2 (the
+"one shot, terminal" rule from #581) treated that as permanent, so the run died
+exactly as CI dies. It is not permanent: it is a hold that has not cleared yet.
+A 433/437 in `:awaiting_nick` now re-arms the settle beat and re-sends the NICK,
+bounded by the untouched 15s deadline. That retry is the cure; the reproduction
+was a retry-absorbed red.
+
+**Diagnosability as a first-class deliverable.** Terminal legs are now distinct
+— `:nick_unavailable` (the re-NICK never landed) vs the new
+`:identify_unconfirmed` (reclaimed, `+r` never confirmed; distinct from
+`:wrong_password`, since RECOVER already proved the password) — and the
+terminal broadcast reconciles every in-flight step instead of one, so the modal
+stops stranding `identify` at `running`. Four reds told us nothing; the fifth
+will name its leg.
+
+**Both timing constants stay put.** 800ms settle, 15s overall. The happy path
+costs 3-7s of services clock, so the headroom is thinner than it reads — that
+is a FINDING for a real failing trace to settle, not a knob to turn while the
+suite is green (`server.ex` says as much in the comment above the constant).
+
+**Test ergonomics were part of the bug.** The spec pinned a constant recover
+nick, and a NickServ registration is once-per-nick-per-container: the second
+run on a persistent testnet answered "already registered", resolved the
+register barrier instantly and then hung the mail wait. So `--repeat-each` —
+the iso-rerun discipline `docs/TESTING.md` mandates for flake triage — was
+unusable on the one spec that needed it, and every attempt cost a full testnet
+cycle. Stamping the nick per run is what made the 433 show up at all.
+
+**Lesson.** A green test can be green for a reason nobody designed: here the
+success depended on services re-emitting `+r` after a foreign-nick IDENTIFY
+that the code believed was the thing committing it. Trace the wire before
+theorising about a flake, and when a spec cannot be re-run in place, fix that
+FIRST — the triage discipline is worthless against a spec that only runs once.
