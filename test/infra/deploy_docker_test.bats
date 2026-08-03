@@ -21,6 +21,8 @@
 # marker) and the self-modifying-script re-exec guard (+ DEPLOY_PREV_SHA
 # carry) — all now landed, bringing this substrate to parity with the jail.
 
+load ../bats_helpers
+
 setup() {
     # Normalize the tmpdir to its PHYSICAL path. On macOS $TMPDIR is a
     # symlink (/var/folders -> /private/var/folders); _lib.sh derives
@@ -136,7 +138,7 @@ run_deploy() {
     run_deploy
     [ "$status" -ne 0 ]
     [[ "$output" == *"branch"* ]]
-    ! grep -q "docker" "$ARGV_LOG"          # aborted before any docker call
+    refute grep -q "docker" "$ARGV_LOG"          # aborted before any docker call
 }
 
 # --- mode parsing ------------------------------------------------------------
@@ -162,7 +164,7 @@ run_deploy() {
 @test "--force-hot skips preflight and reloads" {
     run_deploy --force-hot
     [ "$status" -eq 0 ]
-    ! grep -q "run --no-start" "$ARGV_LOG"
+    refute grep -q "run --no-start" "$ARGV_LOG"
     grep -q "exec -T grappa curl.*reload" "$ARGV_LOG"
 }
 
@@ -170,7 +172,7 @@ run_deploy() {
     make_env
     run_deploy --force-cold
     [ "$status" -eq 0 ]
-    ! grep -q "run --no-start" "$ARGV_LOG"
+    refute grep -q "run --no-start" "$ARGV_LOG"
     grep -q "up -d --force-recreate" "$ARGV_LOG"
 }
 
@@ -193,7 +195,7 @@ run_deploy() {
     [ "$status" -eq 0 ]
     grep -q "exec -T grappa curl.*reload" "$ARGV_LOG"
     grep -q "exec -T grappa curl.*healthz" "$ARGV_LOG"
-    ! grep -q "up -d" "$ARGV_LOG"           # hot path never recreates
+    refute grep -q "up -d" "$ARGV_LOG"           # hot path never recreates
 }
 
 @test "hot reload reporting per-module failures aborts non-zero" {
@@ -203,7 +205,7 @@ run_deploy() {
     run_deploy
     [ "$status" -ne 0 ]
     [[ "$output" == *"failures"* ]]
-    ! grep -q "up -d" "$ARGV_LOG"
+    refute grep -q "up -d" "$ARGV_LOG"
 }
 
 # --- cold path ---------------------------------------------------------------
@@ -273,7 +275,7 @@ run_deploy() {
     run_deploy
     [ "$status" -eq 0 ]
     grep -q "cli(\[\"$marker\", \"$new\", \"docker\"\])" "$ARGV_LOG"
-    ! grep -q "cli(\[\"$prev\"" "$ARGV_LOG"
+    refute grep -q "cli(\[\"$prev\"" "$ARGV_LOG"
 }
 
 @test "garbage marker aborts loudly before preflight runs" {
@@ -283,7 +285,7 @@ run_deploy() {
     run_deploy
     [ "$status" -ne 0 ]
     [[ "$output" == *"last-deployed-sha"* ]]
-    ! grep -q "run --no-start" "$ARGV_LOG"
+    refute grep -q "run --no-start" "$ARGV_LOG"
 }
 
 # --- #503 enrich: self-modifying-script re-exec guard (+ prev-sha carry) ------
@@ -308,7 +310,7 @@ run_deploy() {
     # collapse the range to new..new (the re-pulled run's own pre-pull HEAD
     # equals new). The carry keeps the ORIGINAL pre-pull HEAD.
     grep -q "cli(\[\"$prev\", \"$new\", \"docker\"\])" "$ARGV_LOG"
-    ! grep -q "cli(\[\"$new\", \"$new\"" "$ARGV_LOG"
+    refute grep -q "cli(\[\"$new\", \"$new\"" "$ARGV_LOG"
 }
 
 @test "lib change (deploy_common.sh) in THIS pull also re-execs" {

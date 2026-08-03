@@ -15,6 +15,8 @@
 # this doubles as an integration check that the layout get.sh lays down is the
 # one deploy.sh resolves deploy_common.sh through.
 
+load ../bats_helpers
+
 setup() {
     REPO_SRC="$BATS_TEST_DIRNAME/../.."
     GETSH="$REPO_SRC/infra/docker/get.sh"
@@ -127,7 +129,7 @@ EOF
     [ "$status" -ne 0 ]
     [[ "$output" == *"download failed"* ]]
     [ ! -f "$GRAPPA_HOME/infra/docker/deploy.sh" ]
-    ! grep -q "inspect" "$ARGV_LOG"   # deploy.sh never ran
+    refute grep -q "inspect" "$ARGV_LOG"   # deploy.sh never ran
 }
 
 @test "missing curl fails loud" {

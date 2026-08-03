@@ -14,6 +14,8 @@
 # body marker — the bug-prone parts that must not live untested in YAML.
 # Pure filesystem + string logic; no docker, no network, no mix.
 
+load ../bats_helpers
+
 setup() {
     REPO_SRC="$BATS_TEST_DIRNAME/../.."
     SCRIPT="$REPO_SRC/infra/packaging/release_assets.sh"
@@ -143,7 +145,7 @@ seed_complete() {
     run bash -c "'$SCRIPT' apply-body '$ASSETS' < '$BATS_TEST_TMPDIR/body.md'"
     [ "$status" -eq 0 ]
     printf '%s\n' "$output" | grep -q 'a real changelog line'
-    ! printf '%s\n' "$output" | grep -q 'grappa:partial-release'
+    refute grep -q 'grappa:partial-release' <<<"$output"
 }
 
 @test "usage: an unknown subcommand fails loudly" {

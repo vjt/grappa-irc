@@ -10,6 +10,8 @@
 # Out of scope: this is NOT an integration test. The actual docker
 # compose API surface drift is caught by scripts/integration.sh.
 
+load ../bats_helpers
+
 setup() {
     BIN_GRAPPA="$BATS_TEST_DIRNAME/../../bin/grappa"
 
@@ -141,7 +143,7 @@ EOF
     run "$BIN_GRAPPA" open-db
     [ "$status" -eq 0 ]
     grep -q 'sqlite3' "$ARGV_LOG"
-    ! grep -q -- '-readonly' "$ARGV_LOG"
+    refute grep -q -- '-readonly' "$ARGV_LOG"
 }
 
 # --- boot-time verb dispatch ---------------------------------------------
@@ -176,7 +178,7 @@ EOF
     grep -q 'abc-uuid-1234' "$ARGV_LOG"
     # --rpc-eval (NOT --remsh which would eval on client) — same shape
     # as remote-shell --batch per T-2.
-    ! grep -q -- '--remsh' "$ARGV_LOG"
+    refute grep -q -- '--remsh' "$ARGV_LOG"
 }
 
 @test "delete-visitor with no args exits 64 with usage" {
@@ -208,7 +210,7 @@ EOF
     grep -q -- '--remsh' "$ARGV_LOG"
     grep -q -- 'grappa@grappa' "$ARGV_LOG"
     # Interactive mode — NO -T flag in the docker exec.
-    ! grep -qE 'docker .*compose .*exec -T grappa sh' "$ARGV_LOG"
+    refute grep -qE 'docker .*compose .*exec -T grappa sh' "$ARGV_LOG"
 }
 
 @test "remote-shell --batch -e <expr> invokes docker exec -T with --rpc-eval" {
@@ -220,7 +222,7 @@ EOF
     grep -q -- 'grappa@grappa' "$ARGV_LOG"
     # Batch uses --rpc-eval (eval on REMOTE), NOT --remsh (which would
     # eval on the client node before attaching the shell).
-    ! grep -q -- '--remsh' "$ARGV_LOG"
+    refute grep -q -- '--remsh' "$ARGV_LOG"
 }
 
 @test "remote-shell --batch without -e exits 64 with usage" {

@@ -15,6 +15,8 @@
 # the generated env file can be inspected (perms + contents). Secret VALUES
 # are asserted only for shape/idempotence, never trusted from the network.
 
+load ../bats_helpers
+
 setup() {
     REPO_SRC="$BATS_TEST_DIRNAME/../.."
     BOX="$BATS_TEST_TMPDIR/box"
@@ -194,7 +196,7 @@ EOF
     grep -q "pull ghcr.io/vjt/grappa:latest" "$ARGV_LOG"
     grep -q "eval Grappa.Release.migrate()" "$ARGV_LOG"
     grep -qE "run -d .*--name grappa" "$ARGV_LOG"
-    ! grep -q "reload" "$ARGV_LOG"
+    refute grep -q "reload" "$ARGV_LOG"
     [[ "$output" == *"cold"* ]]
 }
 
@@ -234,7 +236,7 @@ EOF
     run "$DEPLOY" stop
     [ "$status" -eq 0 ]
     [[ "$output" == *"nothing to stop"* ]]
-    ! grep -q "rm -f grappa" "$ARGV_LOG"
+    refute grep -q "rm -f grappa" "$ARGV_LOG"
 }
 
 @test "stop: --volumes drops the data volume" {

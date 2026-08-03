@@ -14,6 +14,8 @@
 # everything else silent). install + stop verbs live in
 # deploy_docker_verbs_test.bats (a box-skeleton harness, no pull).
 
+load ../bats_helpers
+
 setup() {
     # macOS $TMPDIR symlink normalization — REPO_ROOT is git's physical
     # path, keep the base physical too so the two agree.
@@ -145,8 +147,8 @@ run_update() {
     run_update
     [ "$status" -ne 0 ]
     [[ "$output" == *"install"* ]]
-    ! grep -q "run --no-start" "$ARGV_LOG"
-    ! grep -q "force-recreate" "$ARGV_LOG"
+    refute grep -q "run --no-start" "$ARGV_LOG"
+    refute grep -q "force-recreate" "$ARGV_LOG"
 }
 
 @test "update: a dirty working tree is refused before anything is pulled or recreated" {
@@ -157,7 +159,7 @@ run_update() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"uncommitted"* ]]
     [ "$(git -C "$REPO_ROOT" rev-parse HEAD)" != "$(git -C "$UPSTREAM" rev-parse HEAD)" ]
-    ! grep -q "force-recreate" "$ARGV_LOG"
+    refute grep -q "force-recreate" "$ARGV_LOG"
 }
 
 @test "update: a diverged branch fails loud instead of merging or recreating" {
@@ -167,7 +169,7 @@ run_update() {
 
     run_update
     [ "$status" -ne 0 ]
-    ! grep -q "force-recreate" "$ARGV_LOG"
+    refute grep -q "force-recreate" "$ARGV_LOG"
 }
 
 @test "update: a box owned by another checkout is refused, and the owner is named" {
@@ -178,7 +180,7 @@ run_update() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"$FAKE_OWNER_DIR"* ]]
     [ "$(git -C "$REPO_ROOT" rev-parse HEAD)" != "$(git -C "$UPSTREAM" rev-parse HEAD)" ]
-    ! grep -q "force-recreate" "$ARGV_LOG"
+    refute grep -q "force-recreate" "$ARGV_LOG"
 }
 
 # ───────────────────── hot-vs-cold via preflight (#503) ──────────────────
@@ -192,7 +194,7 @@ run_update() {
     [ "$status" -eq 0 ]
     grep -q "cli(\[\"$prev\", \"$new\", \"docker\"\])" "$ARGV_LOG"
     grep -q "exec -T grappa curl.*reload" "$ARGV_LOG"
-    ! grep -q "up -d" "$ARGV_LOG"                 # hot never recreates
+    refute grep -q "up -d" "$ARGV_LOG"                 # hot never recreates
 }
 
 @test "update: box up + code change + COLD verdict recreates, never reloads" {
@@ -202,7 +204,7 @@ run_update() {
     run_update
     [ "$status" -eq 0 ]
     grep -q "up -d --force-recreate" "$ARGV_LOG"
-    ! grep -q "exec -T grappa curl.*reload" "$ARGV_LOG"
+    refute grep -q "exec -T grappa curl.*reload" "$ARGV_LOG"
 }
 
 @test "update: the cold cic rebuild carries GRAPPA_VERSION from the VERSION file (#692)" {
@@ -228,7 +230,7 @@ run_update() {
     # PREVIOUS number into <meta cicchetto-version>, which is the silent
     # staleness #652 exists to prevent. Pin both halves.
     grep -Fqx "env GRAPPA_VERSION=99.99.99" "$ARGV_LOG"
-    ! grep -Fqx "env GRAPPA_VERSION=$was_on" "$ARGV_LOG"
+    refute grep -Fqx "env GRAPPA_VERSION=$was_on" "$ARGV_LOG"
 }
 
 @test "update: preflight non-verdict exit aborts and propagates the code" {
@@ -247,7 +249,7 @@ run_update() {
     run_update
     [ "$status" -ne 0 ]
     [[ "$output" == *"failures"* ]]
-    ! grep -q "up -d" "$ARGV_LOG"
+    refute grep -q "up -d" "$ARGV_LOG"
 }
 
 # ─────────────────── down box + --no-pull → cold (start again) ───────────
@@ -259,7 +261,7 @@ run_update() {
 
     run_update
     [ "$status" -eq 0 ]
-    ! grep -q "run --no-start" "$ARGV_LOG"        # down box skips preflight (forced cold)
+    refute grep -q "run --no-start" "$ARGV_LOG"        # down box skips preflight (forced cold)
     grep -q "up -d --force-recreate" "$ARGV_LOG"
 }
 
@@ -271,7 +273,7 @@ run_update() {
     run_update --no-pull
     [ "$status" -eq 0 ]
     [ "$(git -C "$REPO_ROOT" rev-parse HEAD)" = "$before" ]   # no pull
-    ! grep -q "run --no-start" "$ARGV_LOG"                    # empty range not classified
+    refute grep -q "run --no-start" "$ARGV_LOG"                    # empty range not classified
     grep -q "up -d --force-recreate" "$ARGV_LOG"
 }
 
@@ -281,7 +283,7 @@ run_update() {
     commit_upstream lib/base.txt > /dev/null
     run_update --force-hot
     [ "$status" -eq 0 ]
-    ! grep -q "run --no-start" "$ARGV_LOG"
+    refute grep -q "run --no-start" "$ARGV_LOG"
     grep -q "exec -T grappa curl.*reload" "$ARGV_LOG"
 }
 
@@ -290,7 +292,7 @@ run_update() {
     commit_upstream lib/base.txt > /dev/null
     run_update --force-cold
     [ "$status" -eq 0 ]
-    ! grep -q "run --no-start" "$ARGV_LOG"
+    refute grep -q "run --no-start" "$ARGV_LOG"
     grep -q "up -d --force-recreate" "$ARGV_LOG"
 }
 
@@ -320,7 +322,7 @@ run_update() {
     run_update
     [ "$status" -eq 0 ]
     grep -q "cli(\[\"$marker\", \"$new\", \"docker\"\])" "$ARGV_LOG"
-    ! grep -q "cli(\[\"$prev\"" "$ARGV_LOG"
+    refute grep -q "cli(\[\"$prev\"" "$ARGV_LOG"
 }
 
 @test "update: deploy.sh touched in THIS pull re-execs (verb preserved) and completes" {
@@ -353,7 +355,7 @@ EOF
 
     run_update
     [ "$status" -eq 0 ]
-    ! grep -q '^NGINX_PUBLISH=' "$REPO_ROOT/.env"
+    refute grep -q '^NGINX_PUBLISH=' "$REPO_ROOT/.env"
     grep -qE '^GRAPPA_PUBLISH=127\.0\.0\.1:3100$' "$REPO_ROOT/.env"
     [[ "$output" == *"NGINX_PUBLISH is deprecated"* ]]
 }

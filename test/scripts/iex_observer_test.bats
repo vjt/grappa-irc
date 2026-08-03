@@ -19,6 +19,8 @@
 # live-stack verification in scripts/integration.sh + a manual dev-stack
 # run — this suite guards the invocation contract.
 
+load ../bats_helpers
+
 setup() {
     IEX_SH="$BATS_TEST_DIRNAME/../../scripts/iex.sh"
     OBSERVER_SH="$BATS_TEST_DIRNAME/../../scripts/observer.sh"
@@ -56,14 +58,14 @@ EOF
     grep -q 'RELEASE_COOKIE' "$ARGV_LOG"
     # The bug being fixed: `iex -S mix` boots a whole new Grappa.Application.
     # remsh attaches to the LIVE node instead — assert we never `-S mix`.
-    ! grep -q -- '-S mix' "$ARGV_LOG"
+    refute grep -q -- '-S mix' "$ARGV_LOG"
 }
 
 @test "iex.sh attaches interactively (no docker exec -T)" {
     run "$IEX_SH"
     [ "$status" -eq 0 ]
     # remsh needs an interactive TTY — the docker exec must NOT carry -T.
-    ! grep -qE 'docker .*compose .*exec -T grappa' "$ARGV_LOG"
+    refute grep -qE 'docker .*compose .*exec -T grappa' "$ARGV_LOG"
 }
 
 # --- observer.sh ---------------------------------------------------------
@@ -89,5 +91,5 @@ EOF
     [ "$status" -eq 0 ]
     # The observer_cli TUI needs a TTY — the pre-#364 `in_container` path
     # used `exec -T` (no TTY). Assert the fix drops -T.
-    ! grep -qE 'docker .*compose .*exec -T grappa' "$ARGV_LOG"
+    refute grep -qE 'docker .*compose .*exec -T grappa' "$ARGV_LOG"
 }

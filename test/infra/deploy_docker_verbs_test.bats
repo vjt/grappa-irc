@@ -22,6 +22,8 @@
 # stubbed on PATH so no image is built and no container is touched — same
 # recording shape as the quickstart suites this replaces.
 
+load ../bats_helpers
+
 setup() {
     REPO_SRC="$BATS_TEST_DIRNAME/../.."
     BOX="$BATS_TEST_TMPDIR/box"
@@ -126,8 +128,8 @@ EOF
     [ "$status" -eq 0 ]
 
     grep -qE '^PHX_HOST=localhost$' "$BOX/.env"
-    ! grep -q 'grappa.create_user' "$ARGV_LOG"
-    ! grep -q 'grappa.bind_network' "$ARGV_LOG"
+    refute grep -q 'grappa.create_user' "$ARGV_LOG"
+    refute grep -q 'grappa.bind_network' "$ARGV_LOG"
 }
 
 @test "install: an explicitly passed PHX_HOST overwrites what a previous run left in .env" {
@@ -178,7 +180,7 @@ EOF
 
     conf="$BOX/runtime/nginx-frontend.conf"
     [ -f "$conf" ]
-    ! grep -q '<your-domain>' "$conf"
+    refute grep -q '<your-domain>' "$conf"
     [ "$(grep -c 'server_name staging.example.org;' "$conf")" -eq 2 ]
     grep -q 'server 127.0.0.1:3100;' "$conf"
     grep -q 'ssl_certificate     /tmp/cert.pem;' "$conf"
@@ -190,7 +192,7 @@ EOF
         run "$DEPLOY" install
     [ "$status" -eq 0 ]
     grep -q 'server 127.0.0.1:3000;' "$BOX/runtime/nginx-frontend.conf"
-    ! grep -q 'server 0.0.0.0:3000;' "$BOX/runtime/nginx-frontend.conf"
+    refute grep -q 'server 0.0.0.0:3000;' "$BOX/runtime/nginx-frontend.conf"
 }
 
 @test "install: SEED_USER creates the admin account and binds the network before the stack comes up" {
@@ -211,14 +213,14 @@ EOF
         run "$DEPLOY" install
     [ "$status" -eq 0 ]
     grep -q -- "grappa.create_user --name tester --password hunter2222" "$ARGV_LOG"
-    ! grep -q -- "grappa.create_user .* --admin" "$ARGV_LOG"
+    refute grep -q -- "grappa.create_user .* --admin" "$ARGV_LOG"
 }
 
 @test "install: built-in themes are seeded before the stack comes up, even with no account" {
     run "$DEPLOY" install
     [ "$status" -eq 0 ]
     grep -q 'grappa.seed_themes' "$ARGV_LOG"
-    ! grep -q 'grappa.create_user' "$ARGV_LOG"
+    refute grep -q 'grappa.create_user' "$ARGV_LOG"
 
     themes_line="$(grep -n 'grappa.seed_themes' "$ARGV_LOG" | head -n1 | cut -d: -f1)"
     up_line="$(grep -n 'up -d' "$ARGV_LOG" | head -n1 | cut -d: -f1)"
@@ -261,7 +263,7 @@ EOF
     [ "$status" -ne 0 ]
     [[ "$output" == *"$FAKE_OWNER_DIR"* ]]
     [ ! -f "$BOX/.env" ]
-    ! grep -qE 'compose .*(up|build|run)' "$ARGV_LOG"
+    refute grep -qE 'compose .*(up|build|run)' "$ARGV_LOG"
 }
 
 @test "install: a box owned by this checkout does not block a re-run" {
@@ -293,7 +295,7 @@ EOF
     run "$DEPLOY" stop
     [ "$status" -ne 0 ]
     [[ "$output" == *"/somewhere/else/grappa-irc-469"* ]]
-    ! grep -q ' down' "$ARGV_LOG"
+    refute grep -q ' down' "$ARGV_LOG"
 }
 
 @test "stop: source mode outside a grappa checkout refuses before touching docker" {
@@ -323,7 +325,7 @@ EOF
     : > "$ARGV_LOG"
     run "$DEPLOY" stop
     [ "$status" -eq 0 ]
-    ! grep -qE 'down .*(-v|--volumes)' "$ARGV_LOG"
+    refute grep -qE 'down .*(-v|--volumes)' "$ARGV_LOG"
 }
 
 @test "stop: an unknown flag is refused instead of being handed to compose" {

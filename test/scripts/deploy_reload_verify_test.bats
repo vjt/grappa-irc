@@ -19,6 +19,8 @@
 # (deploy.sh reloads via in_container curl, so curl runs "inside" the
 # stubbed container — no separate curl stub needed).
 
+load ../bats_helpers
+
 setup() {
     DEPLOY_SH="$BATS_TEST_DIRNAME/../../scripts/deploy.sh"
     LIB_SH="$BATS_TEST_DIRNAME/../../scripts/_lib.sh"
@@ -119,7 +121,7 @@ run_hot() {
     [[ "$output" != *"hot-deploy complete"* ]]
     [[ "$output" == *"failures"* ]]
     # Must bail BEFORE healthchecking a stale-code stack.
-    ! grep -q 'healthz' "$ARGV_LOG"
+    refute grep -q 'healthz' "$ARGV_LOG"
 }
 
 @test "reload ok but healthcheck never returns 200 FAILS the deploy" {

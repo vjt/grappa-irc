@@ -20,6 +20,8 @@
 # DEPLOY_PREV_SHA carry across re-exec — all now landed, bringing this
 # substrate to parity with the jail.
 
+load ../bats_helpers
+
 setup() {
     DEPLOY_SH="$BATS_TEST_DIRNAME/../../infra/linux/deploy.sh"
 
@@ -181,7 +183,7 @@ run_deploy() {
     run_deploy
     [ "$status" -eq 0 ]
     grep -q "cli(\[\"$marker\", \"$new\", \"linux\"\])" "$ARGV_LOG"
-    ! grep -q "cli(\[\"$prev\"" "$ARGV_LOG"
+    refute grep -q "cli(\[\"$prev\"" "$ARGV_LOG"
 }
 
 @test "garbage marker: deploy aborts loudly before preflight runs" {
@@ -191,7 +193,7 @@ run_deploy() {
     run_deploy
     [ "$status" -ne 0 ]
     [[ "$output" == *"last-deployed-sha"* ]]
-    ! grep -q "run --no-start" "$ARGV_LOG"
+    refute grep -q "run --no-start" "$ARGV_LOG"
 }
 
 @test "well-formed marker sha that is not a commit aborts loudly too" {
@@ -201,7 +203,7 @@ run_deploy() {
     run_deploy
     [ "$status" -ne 0 ]
     [[ "$output" == *"last-deployed-sha"* ]]
-    ! grep -q "run --no-start" "$ARGV_LOG"
+    refute grep -q "run --no-start" "$ARGV_LOG"
 }
 
 # --- hot path ----------------------------------------------------------------
@@ -213,7 +215,7 @@ run_deploy() {
     [ "$status" -eq 0 ]
     grep -q "curl .*-X POST.*reload" "$ARGV_LOG"
     [ "$(cat "$REPO_ROOT/runtime/last-deployed-sha")" = "$new" ]
-    ! grep -q "systemctl" "$ARGV_LOG"   # hot path never restarts
+    refute grep -q "systemctl" "$ARGV_LOG"   # hot path never restarts
 }
 
 @test "hot reload reporting per-module failures aborts non-zero, no marker" {
@@ -272,9 +274,9 @@ run_deploy() {
 
     run_deploy --force-hot
     [ "$status" -eq 0 ]
-    ! grep -q "run --no-start" "$ARGV_LOG"          # forced mode skips preflight
+    refute grep -q "run --no-start" "$ARGV_LOG"          # forced mode skips preflight
     grep -q "curl .*-X POST.*reload" "$ARGV_LOG"
-    ! grep -q "systemctl" "$ARGV_LOG"               # hot path never restarts
+    refute grep -q "systemctl" "$ARGV_LOG"               # hot path never restarts
     [ "$(cat "$REPO_ROOT/runtime/last-deployed-sha")" = "$new" ]
 }
 
@@ -284,7 +286,7 @@ run_deploy() {
 
     run_deploy --force-cold
     [ "$status" -eq 0 ]
-    ! grep -q "run --no-start" "$ARGV_LOG"
+    refute grep -q "run --no-start" "$ARGV_LOG"
     grep -q "systemctl stop grappa" "$ARGV_LOG"
     grep -q "systemctl start grappa" "$ARGV_LOG"
     [ "$(cat "$REPO_ROOT/runtime/last-deployed-sha")" = "$new" ]
@@ -304,9 +306,9 @@ run_deploy() {
     run_deploy
     [ "$status" -eq 0 ]
     [[ "$output" == *"nothing to do"* ]]
-    ! grep -q "mix deps.get" "$ARGV_LOG"       # build never runs
-    ! grep -q "systemctl" "$ARGV_LOG"
-    ! grep -q "run --no-start" "$ARGV_LOG"      # never reaches preflight
+    refute grep -q "mix deps.get" "$ARGV_LOG"       # build never runs
+    refute grep -q "systemctl" "$ARGV_LOG"
+    refute grep -q "run --no-start" "$ARGV_LOG"      # never reaches preflight
 }
 
 @test "--force-cold overrides the nothing-to-do fast path" {
@@ -321,7 +323,7 @@ run_deploy() {
     [[ "$output" == *"marker match"* ]]
     [[ "$output" == *"overrides"* ]]
     grep -q "systemctl stop grappa" "$ARGV_LOG"
-    ! grep -q "run --no-start" "$ARGV_LOG"      # forced mode skips preflight
+    refute grep -q "run --no-start" "$ARGV_LOG"      # forced mode skips preflight
 }
 
 # --- #503 enrich: DEPLOY_PREV_SHA carry across re-exec ------------------------
@@ -338,7 +340,7 @@ run_deploy() {
     # new..new and the real change silently drops out; the carry keeps the
     # ORIGINAL pre-pull HEAD as the base.
     grep -q "cli(\[\"$prev\", \"$new\", \"linux\"\])" "$ARGV_LOG"
-    ! grep -q "cli(\[\"$new\", \"$new\"" "$ARGV_LOG"
+    refute grep -q "cli(\[\"$new\", \"$new\"" "$ARGV_LOG"
 }
 
 # --- #541: deps sync precedes the preflight oneshot (Co-authored abonforti) ---

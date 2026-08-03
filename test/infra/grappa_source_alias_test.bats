@@ -18,6 +18,8 @@
 #     invocation (it is NEVER env_keep'd through sudoers);
 #   * unknown subcommands / bad argc are usage errors (64).
 
+load ../bats_helpers
+
 setup() {
 	WRAP="$BATS_TEST_DIRNAME/../../infra/freebsd/bin/grappa-source-alias"
 
@@ -74,7 +76,7 @@ EOF
 	[ "$status" -eq 69 ]
 	# the add was attempted; the delete must NOT run (nothing was added)
 	grep -q "ifconfig lo0 inet6 2a03:4000:20:2d3:cb::/128 alias" "$IFCONFIG_LOG"
-	! grep -q -- "-alias" "$IFCONFIG_LOG"
+	refute grep -q -- "-alias" "$IFCONFIG_LOG"
 }
 
 @test "probe REFUSES a canary outside the config-file prefix (drift, 65)" {

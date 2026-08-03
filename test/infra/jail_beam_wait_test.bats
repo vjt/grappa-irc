@@ -11,6 +11,8 @@
 # pkill'ing epmd while a BEAM is alive makes the BEAM respawn it and
 # races the new node's name registration (live-repro 2026-05-31).
 
+load ../bats_helpers
+
 setup() {
     BEAM_WAIT="$BATS_TEST_DIRNAME/../../infra/freebsd/jail_beam_wait.sh"
 
@@ -82,7 +84,7 @@ name_registered() { printf 'name %s at port 39559\n' "$1" > "$STATE/epmd_names";
     run "$BEAM_WAIT" wait-stopped grappa 1
     [ "$status" -eq 0 ]
     grep -q "pkill epmd" "$KILL_LOG"
-    ! grep -q "beam.smp" "$KILL_LOG"
+    refute grep -q "beam.smp" "$KILL_LOG"
 }
 
 @test "wait-stopped: other node names do not block" {

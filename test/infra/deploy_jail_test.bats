@@ -12,6 +12,8 @@
 # deploy exercises (rc.subr, run_erl, the live BEAM) is out of scope —
 # see the manual verification plan in the shipping commit.
 
+load ../bats_helpers
+
 setup() {
     DEPLOY_SH="$BATS_TEST_DIRNAME/../../infra/freebsd/deploy.sh"
 
@@ -151,7 +153,7 @@ run_deploy() {
     run_deploy
     [ "$status" -eq 0 ]
     grep -q "cli(\[\"$marker\", \"$new\", \"jail\"\])" "$ARGV_LOG"
-    ! grep -q "cli(\[\"$prev\"" "$ARGV_LOG"
+    refute grep -q "cli(\[\"$prev\"" "$ARGV_LOG"
 }
 
 @test "garbage marker: deploy aborts loudly before preflight runs" {
@@ -161,7 +163,7 @@ run_deploy() {
     run_deploy
     [ "$status" -ne 0 ]
     [[ "$output" == *"last-deployed-sha"* ]]
-    ! grep -q "run --no-start" "$ARGV_LOG"
+    refute grep -q "run --no-start" "$ARGV_LOG"
 }
 
 @test "well-formed marker sha that is not a commit aborts loudly too" {
@@ -171,7 +173,7 @@ run_deploy() {
     run_deploy
     [ "$status" -ne 0 ]
     [[ "$output" == *"last-deployed-sha"* ]]
-    ! grep -q "run --no-start" "$ARGV_LOG"
+    refute grep -q "run --no-start" "$ARGV_LOG"
 }
 
 @test "hot deploy completes and writes the marker as final step" {
@@ -213,7 +215,7 @@ EOF
     [ "$status" -eq 0 ]
     # base must be the bare marker sha — not "Last login...<marker>".
     grep -q "cli(\[\"$marker\", \"$new\", \"jail\"\])" "$ARGV_LOG"
-    ! grep -q "cli(\[\"Last login" "$ARGV_LOG"
+    refute grep -q "cli(\[\"Last login" "$ARGV_LOG"
 }
 
 # --- #7 caveat (a): re-exec guard stays keyed on the PRE-PULL range ---------
@@ -249,8 +251,8 @@ EOF
     run_deploy
     [ "$status" -eq 0 ]
     [[ "$output" == *"marker"* ]]
-    ! grep -q "service" "$ARGV_LOG"
-    ! grep -q "mix deps.get" "$ARGV_LOG"
+    refute grep -q "service" "$ARGV_LOG"
+    refute grep -q "mix deps.get" "$ARGV_LOG"
 }
 
 @test "--force-cold overrides the nothing-to-do fast path" {
@@ -262,7 +264,7 @@ EOF
     [[ "$output" == *"force"* ]]
     grep -q "service grappa stop" "$ARGV_LOG"
     grep -q "service grappa start" "$ARGV_LOG"
-    ! grep -q "run --no-start" "$ARGV_LOG"   # forced mode skips preflight
+    refute grep -q "run --no-start" "$ARGV_LOG"   # forced mode skips preflight
 }
 
 @test "--force-hot overrides the nothing-to-do fast path" {
@@ -272,7 +274,7 @@ EOF
     run_deploy --force-hot
     [ "$status" -eq 0 ]
     grep -q "mix deps.get --only prod" "$ARGV_LOG"
-    ! grep -q "run --no-start" "$ARGV_LOG"
+    refute grep -q "run --no-start" "$ARGV_LOG"
 }
 
 # --- #9 (deploy.sh side): cold path synchronizes on BEAM stop ----------------
@@ -311,8 +313,8 @@ EOF
     grep -q "service grappa stop" "$ARGV_LOG"
     grep -q "jail_beam_wait.sh wait-stopped grappa" "$ARGV_LOG"
     grep -q "jail_install_rcd.sh" "$ARGV_LOG"
-    ! grep -q "service grappa start" "$ARGV_LOG"
-    ! grep -q "curl" "$ARGV_LOG"                                   # no healthcheck
+    refute grep -q "service grappa start" "$ARGV_LOG"
+    refute grep -q "curl" "$ARGV_LOG"                                   # no healthcheck
     [ ! -f "$REPO_ROOT/runtime/last-deployed-sha" ]               # marker NOT written
     [[ "$output" == *"--defer-restart"* ]]
     [[ "$output" == *"bastille-restart"* ]]
@@ -324,7 +326,7 @@ EOF
     run_deploy --defer-restart --force-cold
     [ "$status" -eq 0 ]
     grep -q "jail_install_rcd.sh" "$ARGV_LOG"
-    ! grep -q "service grappa start" "$ARGV_LOG"
+    refute grep -q "service grappa start" "$ARGV_LOG"
     [ ! -f "$REPO_ROOT/runtime/last-deployed-sha" ]
     [[ "$output" == *"--defer-restart"* ]]
 }
@@ -332,7 +334,7 @@ EOF
 @test "--force-hot --defer-restart is a usage error (defer needs a stop)" {
     run_deploy --force-hot --defer-restart
     [ "$status" -eq 64 ]
-    ! grep -q "service grappa stop" "$ARGV_LOG"
+    refute grep -q "service grappa stop" "$ARGV_LOG"
 }
 
 @test "auto preflight HOT + --defer-restart is a usage error" {
@@ -341,7 +343,7 @@ EOF
 
     run_deploy --defer-restart
     [ "$status" -eq 64 ]
-    ! grep -q "service grappa stop" "$ARGV_LOG"
+    refute grep -q "service grappa stop" "$ARGV_LOG"
 }
 
 @test "unknown flag alongside a valid one is still a usage error (64)" {

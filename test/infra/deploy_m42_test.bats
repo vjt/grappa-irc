@@ -15,6 +15,8 @@
 # Scope: pure host-side sequencing. The real jail bounce (bastille, rc.d,
 # the live BEAM) is out of scope — bats proves the ssh call sequence only.
 
+load ../bats_helpers
+
 setup() {
     DEPLOY_M42="$BATS_TEST_DIRNAME/../../scripts/deploy-m42.sh"
 
@@ -86,7 +88,7 @@ run_m42() {
     grep -q "deploy.sh --force-cold --defer-restart" "$SSH_LOG"
     grep -q "bastille restart grappa" "$SSH_LOG"
     grep -q "healthz" "$SSH_LOG"
-    ! grep -q "last-deployed-sha" "$SSH_LOG"
+    refute grep -q "last-deployed-sha" "$SSH_LOG"
 }
 
 @test "--full-restart still refuses when local main is ahead of origin (push-guard)" {
@@ -123,8 +125,8 @@ EOF
     # --force-cold from --full-restart is the ABSENCE of a bastille bounce
     # and a marker write.
     grep -q "jail_install_nginx.sh" "$SSH_LOG"
-    ! grep -q "bastille restart" "$SSH_LOG"
-    ! grep -q "last-deployed-sha" "$SSH_LOG"
+    refute grep -q "bastille restart" "$SSH_LOG"
+    refute grep -q "last-deployed-sha" "$SSH_LOG"
     [ "$(grep -c '^ssh ' "$SSH_LOG")" -eq 2 ]   # app deploy + nginx refresh
 }
 

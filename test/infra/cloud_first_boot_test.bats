@@ -15,6 +15,8 @@
 # fetched snippet, grappa-tls helper + boot oneshot, and the LE-quota-safe
 # TLS-deferred-until-DNS behaviour.
 
+load ../bats_helpers
+
 setup() {
     REPO_SRC="$BATS_TEST_DIRNAME/../.."
     FBSH="$REPO_SRC/infra/cloud/first-boot.sh"
@@ -168,7 +170,7 @@ mode_of() {  # GNU-first, BSD fallback (macOS runner) — matches the packaging 
     grep -qx "PHX_HOST=irc.example.org" "$GRAPPA_ENV_FILE"
     grep -qx "VAPID_SUBJECT=mailto:ops@example.org" "$GRAPPA_ENV_FILE"
     # The template's REPLACE_ME host is gone.
-    ! grep -q "^PHX_HOST=REPLACE_ME$" "$GRAPPA_ENV_FILE"
+    refute grep -q "^PHX_HOST=REPLACE_ME$" "$GRAPPA_ENV_FILE"
 }
 
 @test "relocks the env file to 0640 after rewriting it" {
@@ -212,7 +214,7 @@ mode_of() {  # GNU-first, BSD fallback (macOS runner) — matches the packaging 
     [ "$status" -eq 0 ]
     [[ "$output" == *"DEFERRED"* ]]
     # certbot must NOT have been invoked at first boot.
-    ! grep -q "^certbot " "$ARGV_LOG"
+    refute grep -q "^certbot " "$ARGV_LOG"
 }
 
 @test "issues TLS immediately when DNS already resolves" {

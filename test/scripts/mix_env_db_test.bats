@@ -18,6 +18,8 @@
 # Stubs `docker` on PATH so no real container is touched; `git` is NOT
 # stubbed — _lib.sh derives SRC_ROOT/REPO_ROOT from the real checkout.
 
+load ../bats_helpers
+
 setup() {
     MIX_SH="$BATS_TEST_DIRNAME/../../scripts/mix.sh"
 
@@ -46,7 +48,7 @@ EOF
     grep -q 'MIX_ENV=prod' "$ARGV_LOG"
     grep -q 'DATABASE_PATH=/app/runtime/grappa_prod.db' "$ARGV_LOG"
     # The exact S5 bug: prod env with the dev db file. Must never happen.
-    ! grep -q 'grappa_dev.db' "$ARGV_LOG"
+    refute grep -q 'grappa_dev.db' "$ARGV_LOG"
 }
 
 @test "mix.sh --env=dev does NOT inject DATABASE_PATH (dev config owns the path)" {
@@ -55,12 +57,12 @@ EOF
     grep -q 'MIX_ENV=dev' "$ARGV_LOG"
     # dev reads config/dev.exs, not DATABASE_PATH — injecting would be
     # inert. Assert we don't pretend otherwise.
-    ! grep -q 'DATABASE_PATH' "$ARGV_LOG"
+    refute grep -q 'DATABASE_PATH' "$ARGV_LOG"
 }
 
 @test "mix.sh --env=test does NOT inject DATABASE_PATH (test config owns the path)" {
     run "$MIX_SH" --env=test test
     [ "$status" -eq 0 ]
     grep -q 'MIX_ENV=test' "$ARGV_LOG"
-    ! grep -q 'DATABASE_PATH' "$ARGV_LOG"
+    refute grep -q 'DATABASE_PATH' "$ARGV_LOG"
 }
