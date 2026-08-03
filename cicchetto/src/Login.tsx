@@ -431,6 +431,47 @@ const Login: Component = () => {
                     registered account.
                   </p>
 
+                  {/* Alternate auth (passkey / recovery code) sits ABOVE the
+                Advanced toggle so Connect stays the LAST element of the form:
+                login-advanced-scroll-reachability keys off realname being the
+                field immediately above Connect (#284). Own class, not
+                login-advanced-toggle — that one is a selector contract the
+                e2e clicks as a strict single match (issue281). */}
+                  <button
+                    type="button"
+                    class="login-alt-auth"
+                    onClick={() => void onPasskeyLogin()}
+                  >
+                    Sign in with passkey
+                  </button>
+                  <button
+                    type="button"
+                    class="login-alt-auth"
+                    onClick={() => setRecoveryMode((value) => !value)}
+                  >
+                    Use recovery code
+                  </button>
+                  <Show when={recoveryMode()}>
+                    <div>
+                      <label for="login-recovery-code">Recovery code</label>
+                      <input
+                        id="login-recovery-code"
+                        type="text"
+                        autocomplete="one-time-code"
+                        value={recoveryCode()}
+                        onInput={(event) => setRecoveryCode(event.currentTarget.value)}
+                        required
+                      />
+                      <button
+                        type="button"
+                        class="login-connect"
+                        onClick={() => void onRecoveryLogin()}
+                      >
+                        Recover account
+                      </button>
+                    </div>
+                  </Show>
+
                   {/* Advanced toggle sits BETWEEN the password and Connect (vjt
                 layout fix). Real button + aria-expanded + conditional render
                 (not display:none) so a11y + tests see the truth. */}
@@ -502,41 +543,6 @@ const Login: Component = () => {
                   <button type="submit" class="login-connect" disabled={connecting()}>
                     Connect
                   </button>
-
-                  <button
-                    type="button"
-                    class="login-advanced-toggle"
-                    onClick={() => void onPasskeyLogin()}
-                  >
-                    Sign in with passkey
-                  </button>
-                  <button
-                    type="button"
-                    class="login-advanced-toggle"
-                    onClick={() => setRecoveryMode((value) => !value)}
-                  >
-                    Use recovery code
-                  </button>
-                  <Show when={recoveryMode()}>
-                    <div>
-                      <label for="login-recovery-code">Recovery code</label>
-                      <input
-                        id="login-recovery-code"
-                        type="text"
-                        autocomplete="one-time-code"
-                        value={recoveryCode()}
-                        onInput={(event) => setRecoveryCode(event.currentTarget.value)}
-                        required
-                      />
-                      <button
-                        type="button"
-                        class="login-connect"
-                        onClick={() => void onRecoveryLogin()}
-                      >
-                        Recover account
-                      </button>
-                    </div>
-                  </Show>
 
                   <Show when={captcha()} keyed>
                     {(c) => (
