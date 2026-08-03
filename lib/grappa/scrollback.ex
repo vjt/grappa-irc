@@ -514,63 +514,73 @@ defmodule Grappa.Scrollback do
   Counts rows for `(subject, network_id, channel)` whose `id` is
   strictly greater than `after_id`. Returns an integer.
 
-  Sole consumer: the unread-badges-from-cursor refactor (2026-06-01).
-  Phoenix Channel `join_reply/1` calls `count_after(subject,
-  network.id, channel, cursor || 0, own_nick)` to seed cic's per-channel
-  unread badge with the server-authoritative count at sync time; cic then
-  derives the live count by counting local scrollback rows with `id >
-  cursor` and falls back to this seed when scrollback hasn't been
-  hydrated yet (or for channels the user has never opened in this
-  session).
+  Sole consumer: the #693 gap probe
+  (`GrappaWeb.MessagesController.count/2`). cic asks "how many rows are
+  there after the newest row I hold?" to decide whether the region it is
+  about to resume into can be drained in one page, or whether it is so far
+  behind that the honest thing is to anchor at the tail instead. The
+  decision needs the TRUE size: a full page proves only "≥ limit", which
+  cannot tell a 201-row gap from a 3000-row one.
 
-  Same predicates as `fetch_after/6` so the count exactly matches what
-  a `fetch_after(..., :infinity)` would return — modulo the
-  `@max_limit` cap, which `count_after/5` deliberately does not apply.
-  Counts unbounded by definition: a channel with 10k unread rows
-  must surface as `10000`, not `@max_limit`.
+  (The unread badge does NOT come through here — the join reply +
+  `/me` cold-load seed it from `count_after_split/5` via
+  `Grappa.WindowCounts`, which splits content from presence.)
+
+  Same predicates as `fetch_after/7` so the count exactly matches what a
+  `fetch_after(..., :infinity)` would return — modulo the `@max_limit`
+  cap, which this function deliberately does not apply. Counts unbounded
+  by definition: a channel with 10k rows after the anchor must surface as
+  `10000`, not `@max_limit`.
 
   ## `own_nick`
 
-  Mirrors the `fetch_after/6` contract (CP14 B3 narrowing rule). When
+  Mirrors the `fetch_after/7` contract (CP14 B3 narrowing rule). When
   `own_nick` equals `channel` (case-insensitive), the count restricts
   to self-msgs so every inbound DM doesn't inflate the own-nick
-  window's unread count. `own_nick` is a REQUIRED positional (no
+  window's count. `own_nick` is a REQUIRED positional (no
   defaulting wrapper — same rule as `fetch/6`, REV-J M12: a default
   silently re-opens the CP14-B3 leak for a caller that forgets to
   thread it — S2, 2026-07-08 review). Pass `nil` explicitly when the
   caller doesn't have a session; the channel-shape narrowing then
-  applies. The Phoenix Channel `join_reply` path threads the live
-  session nick when it can resolve one, `nil` otherwise; the `/me`
-  cold-load threads the LIVE nick (via `Push.BadgeCount.live_nick_windows/1`,
-  a cheap `Registry` lookup — #498).
+  applies.
+
+  ## `hide_presence`
+
+  Also a REQUIRED positional, for the same reason and with the same
+  meaning as in `fetch_after/7`: the count answers "how many rows would
+  a fetch hand me", so it must apply the caller's presence filter (#458).
+  A channel with 500 hidden JOINs and 5 messages is a 5-row gap, not a
+  505-row one, for a client that renders neither.
 
   Returns `0` for the past-tail case (`after_id >= max(id)`), `0` for
   the impossible-subject case (no rows match the subject + network),
   and the total count for `after_id = 0` (the initial-cursor case
   before the user has ever clicked).
   """
-  @spec count_after(subject(), integer(), String.t(), integer(), String.t() | nil) ::
+  @spec count_after(subject(), integer(), String.t(), integer(), String.t() | nil, boolean()) ::
           non_neg_integer()
-  def count_after(subject, network_id, channel, after_id, own_nick)
+  def count_after(subject, network_id, channel, after_id, own_nick, hide_presence)
       when is_integer(network_id) and is_integer(after_id) and
-             (is_binary(own_nick) or is_nil(own_nick)) do
+             (is_binary(own_nick) or is_nil(own_nick)) and is_boolean(hide_presence) do
     Message
     |> subject_where(subject)
     |> where([m], m.network_id == ^network_id)
     |> channel_or_dm_where(channel, own_nick)
+    |> maybe_exclude_presence(hide_presence)
     |> where([m], m.id > ^after_id)
     |> select([m], count(m.id))
     |> Repo.one()
   end
 
   @doc """
-  Same predicate as `count_after/5` but returns the count split into a
+  Same predicate as `count_after/6` — minus its `hide_presence` filter,
+  which would be self-defeating here — but returns the count split into a
   `{content, presence}` pair as `%{messages: integer, events: integer}`.
 
   Sole consumer: the `/me` `unread_counts` envelope (bucket C, 2026-06-01)
   — cic's per-channel sidebar badge renders messages (bold) and events
   (faint) separately, so the cold-load seed needs the split too. A
-  single query with a CASE-WHEN GROUP BY beats two `count_after/5`
+  single query with a CASE-WHEN GROUP BY beats two `count_after/6`
   round-trips per (slug, channel) cursor at login time.
 
   Content kinds (`:privmsg | :notice | :action`) match the cic
@@ -585,7 +595,7 @@ defmodule Grappa.Scrollback do
   subject / empty partition — never a missing key, so callers can
   pattern-match without a default.
 
-  `own_nick` is a REQUIRED positional (same rule as `count_after/5` /
+  `own_nick` is a REQUIRED positional (same rule as `count_after/6` /
   `fetch/6`): a defaulting wrapper silently re-opens the CP14-B3
   own-nick DM over-count for any caller that forgets to thread it
   (S2, 2026-07-08 review — the `/me` cold-load did exactly that).
@@ -1081,7 +1091,7 @@ defmodule Grappa.Scrollback do
   # `list_archive/3`'s GROUP BY already uses (in-house precedent). Because
   # the match lives ONLY here, every consumer of the shared predicate
   # (`fetch/6`, `fetch_after/6`, `fetch_around/6`, `unread_content_tail/6`,
-  # `count_after/5`, `count_after_split/5` via `channel_or_dm_where/3`, and
+  # `count_after/6`, `count_after_split/5` via `channel_or_dm_where/3`, and
   # `delete_for_dm/3` directly) becomes sargable in one shot.
   @spec where_dm_peer(Ecto.Query.t(), String.t()) :: Ecto.Query.t()
   defp where_dm_peer(query, folded_peer) when is_binary(folded_peer) do

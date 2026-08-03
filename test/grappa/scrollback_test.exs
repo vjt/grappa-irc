@@ -1014,17 +1014,16 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
-  # Cursor-derived unread-badge primitive (2026-06-01). Mirrors
-  # `fetch_after/6`'s predicate so the count exactly matches what an
-  # uncapped fetch would return — Phoenix Channel `join_reply` + cic
-  # fallback seed share the same source of truth as the local
-  # scrollback-derived count cic computes on its own.
-  describe "count_after/5" do
+  # The gap probe behind #693 (was the 2026-06-01 unread-badge primitive;
+  # the badge moved to `count_after_split/5` via `WindowCounts`). Mirrors
+  # `fetch_after/7`'s predicate — presence filter included — so the count
+  # is exactly what an uncapped fetch would hand the same caller.
+  describe "count_after/6" do
     test "zero cursor counts every row for (subject, network, channel)",
          %{user: user, network: net} do
       for i <- 0..4, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
-      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0, nil) == 5
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0, nil, false) == 5
     end
 
     test "cursor at the newest row id returns 0",
@@ -1036,13 +1035,13 @@ defmodule Grappa.ScrollbackTest do
         end
         |> List.last()
 
-      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", latest.id, nil) == 0
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", latest.id, nil, false) == 0
     end
 
     test "past-tail cursor returns 0", %{user: user, network: net} do
       for i <- 0..2, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
-      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 999_999_999, nil) == 0
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 999_999_999, nil, false) == 0
     end
 
     test "counts only rows strictly greater than after_id",
@@ -1055,7 +1054,7 @@ defmodule Grappa.ScrollbackTest do
 
       [_, _, m2 | _] = rows
 
-      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", m2.id, nil) == 2
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", m2.id, nil, false) == 2
     end
 
     test "isolated by (subject, network, channel) — same shape as fetch_after",
@@ -1068,7 +1067,7 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, other_net, 2, %{body: "wrong-net"}))
       {:ok, _} = ScrollbackHelpers.insert(sample(alice, net, 3, %{sender: "alice", body: "wrong-user"}))
 
-      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0, nil) == 1
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0, nil, false) == 1
     end
 
     test "DM bidirectional — peer target counts inbound + outbound after the cursor",
@@ -1104,7 +1103,8 @@ defmodule Grappa.ScrollbackTest do
                net.id,
                "peer",
                outbound.id - 1,
-               "vjt-grappa"
+               "vjt-grappa",
+               false
              ) == 2
     end
 
@@ -1141,7 +1141,8 @@ defmodule Grappa.ScrollbackTest do
                net.id,
                "vjt-grappa",
                0,
-               "vjt-grappa"
+               "vjt-grappa",
+               false
              ) == 1
     end
 
@@ -1152,7 +1153,32 @@ defmodule Grappa.ScrollbackTest do
       for i <- 0..(cap + 4), do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
       total = cap + 5
-      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0, nil) == total
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0, nil, false) == total
+    end
+
+    test "hide_presence: true counts only the rows a hiding fetch would return (#693)",
+         %{user: user, network: net} do
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 0))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :join, body: nil}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 2, %{kind: :quit, body: "bye"}))
+
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0, nil, true) == 1
+      assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0, nil, false) == 3
+    end
+
+    test "the presence-filtered count equals the length of the equivalent fetch (#693)",
+         %{user: user, network: net} do
+      for i <- 0..3 do
+        {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
+        {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i, %{kind: :part, body: nil}))
+      end
+
+      for hide <- [true, false] do
+        page = Scrollback.fetch_after({:user, user.id}, net.id, "#sniffo", 0, 100, nil, hide)
+
+        assert Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0, nil, hide) ==
+                 length(page)
+      end
     end
   end
 
@@ -2916,7 +2942,7 @@ defmodule Grappa.ScrollbackTest do
 
   # #379 (P0, 2026-07-22) — CP29 R-2 index regression. R-2 switched the
   # scrollback since-cursor key from `server_time` to monotonic `id`, so
-  # every incremental read path — `fetch_after/6`, `count_after/5`,
+  # every incremental read path — `fetch_after/6`, `count_after/6`,
   # `count_after_split/5`, `unread_content_tail/6` — now filters
   # `id > cursor ORDER BY id`. But the `messages` composites all still
   # END in `server_time`, so `id > ?` was NOT index-eligible: SQLite fell
@@ -2964,7 +2990,7 @@ defmodule Grappa.ScrollbackTest do
           })
       end
 
-      # Mirrors `fetch_after/6` / `count_after/5`'s channel-shape query
+      # Mirrors `fetch_after/6` / `count_after/6`'s channel-shape query
       # verbatim: WHERE visitor_id AND network_id AND channel AND id > ?
       # ORDER BY id.
       %Exqlite.Result{rows: rows} =

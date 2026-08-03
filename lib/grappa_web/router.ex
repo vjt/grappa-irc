@@ -431,6 +431,13 @@ defmodule GrappaWeb.Router do
     get "/channels/:channel_id/messages", MessagesController, :index
     post "/channels/:channel_id/messages", MessagesController, :create
 
+    # #693 — gap probe: how many rows are there after `?after=<id>`. The
+    # true size, uncapped, so cic can tell a drainable gap from one that
+    # has to be abandoned in favour of the tail. Declared AFTER the
+    # collection route: Phoenix matches in order and `/messages/count` has
+    # its own segment count, so the two never shadow each other.
+    get "/channels/:channel_id/messages/count", MessagesController, :count
+
     post "/channels/:channel_id/read-cursor", ReadCursorController, :create
 
     get "/channels/:channel_id/members", MembersController, :index

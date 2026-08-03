@@ -479,11 +479,18 @@ defmodule GrappaWeb.MeControllerTest do
       assert body["unread_counts"][network.slug][own_nick] ==
                %{"messages" => 1, "mentions" => 0, "events" => 0, "severity" => "message"}
 
-      # Door parity: the /me total equals what the WS `join_reply` seeds
-      # via the SAME predicate `Scrollback.count_after/5`, with own_nick
-      # resolved to the configured nick.
+      # Door parity: the /me total equals the SAME predicate read through
+      # `Scrollback.count_after/6`, with own_nick resolved to the configured
+      # nick. `hide_presence: false` — the badge counts events too.
       ws_count =
-        Grappa.Scrollback.count_after({:user, user.id}, network.id, own_nick, anchor.id, own_nick)
+        Grappa.Scrollback.count_after(
+          {:user, user.id},
+          network.id,
+          own_nick,
+          anchor.id,
+          own_nick,
+          false
+        )
 
       %{"messages" => m, "events" => e} = body["unread_counts"][network.slug][own_nick]
       assert m + e == ws_count

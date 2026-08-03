@@ -23,4 +23,13 @@ defmodule GrappaWeb.MessagesJSON do
   @doc "Renders the `:show` action — a single serialized message map."
   @spec show(%{message: Message.t()}) :: Wire.t()
   def show(%{message: message}), do: Wire.to_json(message)
+
+  @doc """
+  Renders the `:count` action (#693) — the uncapped row count after an
+  anchor. An object rather than a bare integer so the shape stays
+  additive: a future sibling figure (say, a tail id) is a new key, not a
+  breaking change of the response type.
+  """
+  @spec count(%{count: non_neg_integer()}) :: %{count: non_neg_integer()}
+  def count(%{count: n}), do: %{count: n}
 end

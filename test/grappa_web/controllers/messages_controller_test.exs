@@ -411,6 +411,106 @@ defmodule GrappaWeb.MessagesControllerTest do
     assert json_response(conn, 401) == %{"error" => "unauthorized"}
   end
 
+  # #693 — the gap probe. cic decides "am I more than one page behind?" from
+  # this count, NOT from `page.length == limit` (a full page says "≥ limit",
+  # which cannot distinguish a 201-row gap from a 3000-row one).
+  describe "GET /networks/:network_id/channels/:channel_id/messages/count (#693)" do
+    test "?after=0 returns the total row count for the channel",
+         %{conn: conn, user: user, network: network} do
+      seed(user, network)
+
+      conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages/count?after=0")
+
+      assert json_response(conn, 200) == %{"count" => 5}
+    end
+
+    test "the count is NOT capped at the page ceiling — a 201-row gap reads 201",
+         %{conn: conn, user: user, network: network} do
+      for i <- 0..200 do
+        {:ok, _} =
+          ScrollbackHelpers.insert(%{
+            user_id: user.id,
+            network_id: network.id,
+            channel: "#sniffo",
+            server_time: i,
+            kind: :privmsg,
+            sender: "vjt",
+            body: "m#{i}"
+          })
+      end
+
+      conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages/count?after=0")
+
+      assert json_response(conn, 200) == %{"count" => 201}
+    end
+
+    test "?after=<tail id> returns 0", %{conn: conn, user: user, network: network} do
+      seed(user, network)
+      rows = json_response(get(conn, "/networks/azzurra/channels/%23sniffo/messages"), 200)
+      tail = rows |> Enum.map(& &1["id"]) |> Enum.max()
+
+      conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages/count?after=#{tail}")
+
+      assert json_response(conn, 200) == %{"count" => 0}
+    end
+
+    test "counts only VISIBLE rows when the channel pref hides presence (#458)",
+         %{conn: conn, user: user, network: network} do
+      # The count feeds a "can I drain this in one page?" decision, so it MUST
+      # apply the same presence filter `index/2` applies — otherwise a channel
+      # with 500 hidden JOINs and 5 messages reads as a 505-row gap.
+      :ok = put_presence_pref(user, "azzurra #sniffo", "hide")
+      seed_mixed(user, network)
+
+      conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages/count?after=0")
+
+      assert json_response(conn, 200) == %{"count" => 1}
+    end
+
+    test "a missing ?after returns 400", %{conn: conn, user: user, network: network} do
+      seed(user, network)
+
+      conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages/count")
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    test "an unparseable ?after returns 400", %{conn: conn, user: user, network: network} do
+      seed(user, network)
+
+      conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages/count?after=banana")
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    test "a negative ?after returns 400", %{conn: conn, user: user, network: network} do
+      seed(user, network)
+
+      conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages/count?after=-1")
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    test "does not leak another channel's rows", %{conn: conn, user: user, network: network} do
+      seed(user, network)
+      seed(user, network, "#altro")
+
+      conn = get(conn, "/networks/azzurra/channels/%23altro/messages/count?after=0")
+
+      assert json_response(conn, 200) == %{"count" => 5}
+    end
+
+    test "without Bearer returns 401" do
+      conn =
+        get(
+          Phoenix.ConnTest.build_conn(),
+          "/networks/azzurra/channels/%23sniffo/messages/count?after=0"
+        )
+
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+  end
+
   describe "POST /networks/:network_id/channels/:channel_id/messages — input validation" do
     test "unknown network slug returns 404 not found", %{conn: conn} do
       # Sub-task 2g: slug → integer FK resolution short-circuits with

@@ -18,7 +18,7 @@ defmodule Grappa.WindowCounts do
     * `messages` — unread CONTENT rows (`:privmsg | :notice | :action`),
       the same set `Scrollback.count_after_split/5` buckets as
       `:messages`. Unbounded (exact) — a channel with 10k unread must
-      surface 10k, matching `count_after/5`.
+      surface 10k, matching `count_after/6`.
     * `events` — unread PRESENCE/CONTROL rows (`:join | :part | :quit |
       :nick_change | :mode | :topic | :kick | :server_event`). #265: this
       is a SEPARATE low tier — presence churn never inflates the message
@@ -104,7 +104,7 @@ defmodule Grappa.WindowCounts do
   (`last_read_message_id`; `nil` counts from the beginning).
 
   `own_nick` and `patterns` are REQUIRED positionals — no defaulting
-  wrapper (same rule as `Scrollback.count_after/5`): a default silently
+  wrapper (same rule as `Scrollback.count_after/6`): a default silently
   re-opens the CP14-B3 own-nick DM over-count and the mention-fold
   hazard. `own_nick` MAY be `nil` for the unbound-but-retained network
   case (`/me` seed for a network the subject holds no credential on) —

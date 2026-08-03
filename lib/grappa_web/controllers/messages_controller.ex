@@ -161,6 +161,58 @@ defmodule GrappaWeb.MessagesController do
   end
 
   @doc """
+  `GET /networks/:network_id/channels/:channel_id/messages/count?after=<id>`
+  — the #693 gap probe. Returns `{"count": N}`: how many rows this subject
+  would be handed by `index/2`'s `?after=<id>` page if that page had no
+  ceiling.
+
+  Exists because a full page is not a measurement. cic's resume paths
+  fetch `?after=<anchor>&limit=#{@max_http_limit}`; a full page proves
+  only "at least #{@max_http_limit} more", which cannot distinguish a gap
+  that one more fetch drains from one running to thousands of rows — and
+  the two want opposite recoveries (drain forward vs abandon the anchor
+  and land at the tail). `Grappa.Scrollback.count_after/6` is deliberately
+  uncapped, and applies the same subject / channel-or-DM / presence
+  predicates `index/2` applies, so the number describes the rows cic would
+  actually render.
+
+  `after` is REQUIRED and must be a non-negative integer — 400 otherwise.
+  There is no "count everything" default: every caller is asking about a
+  specific anchor it holds, and a silent `after=0` would answer a
+  question nobody asked.
+  """
+  @spec count(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request}
+  def count(conn, %{"channel_id" => channel} = params) do
+    subject = Subject.to_session(conn.assigns.current_subject)
+    network = conn.assigns.network
+
+    with :ok <- validate_target_name(channel),
+         {:ok, after_id} <- parse_after(params["after"]) do
+      # Same ingress fold as `index/2` (#537): the caller's spelling resolves
+      # to the one window the Server keyed folded.
+      channel = Identifier.canonical_target(channel, Session.casemapping(subject, network.id))
+
+      own_nick =
+        case Session.current_nick(subject, network.id) do
+          {:ok, nick} -> nick
+          {:error, :no_session} -> nil
+        end
+
+      count =
+        Scrollback.count_after(
+          subject,
+          network.id,
+          channel,
+          after_id,
+          own_nick,
+          resolve_hide_presence(subject, network, channel)
+        )
+
+      render(conn, :count, count: count)
+    end
+  end
+
+  @doc """
   `POST /networks/:network_id/channels/:channel_id/messages` —
   delegates to `Grappa.Session.send_privmsg/4` for the active session
   registered as `(subject, network.id)` where `subject` is the
@@ -325,6 +377,18 @@ defmodule GrappaWeb.MessagesController do
       _ -> {:error, :bad_request}
     end
   end
+
+  # #693 — `?after=` for the count probe: required, and non-negative because
+  # an anchor is a row id (or 0 for "from the beginning"). A negative anchor
+  # is a client bug, not a request to count everything.
+  defp parse_after(s) when is_binary(s) do
+    case parse_int(s) do
+      {:ok, n} when n >= 0 -> {:ok, n}
+      _ -> {:error, :bad_request}
+    end
+  end
+
+  defp parse_after(nil), do: {:error, :bad_request}
 
   defp parse_int(s) when is_binary(s) do
     case Integer.parse(s) do
