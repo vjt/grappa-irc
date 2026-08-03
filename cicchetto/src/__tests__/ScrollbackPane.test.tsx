@@ -89,7 +89,11 @@ const pushOwnSendSubmitted = (key: string) => setOwnSubmitted(key);
 const [farBehind, setFarBehind] = createSignal<
   Record<string, { missed: number; resumeFrom: number }>
 >({});
-const jumpToUnreadSpy = vi.fn();
+// Resolves TRUE by default (the swap happened) — the pane chains off the
+// result to stand the marker latch back down on a failed jump.
+const jumpToUnreadSpy = vi.fn((_slug: string, _name: string) => Promise.resolve(true));
+// Returns the id it marked read; the pane re-latches its frozen divider to it.
+const dismissFarBehindSpy = vi.fn((_slug: string, _name: string): number | null => 3);
 vi.mock("../lib/scrollback", () => ({
   scrollbackByChannel: () => scrollback(),
   // BUGHUNT-2 B5: ScrollbackPane's onScroll calls `loadMore` when
@@ -115,7 +119,10 @@ vi.mock("../lib/scrollback", () => ({
   // fires. Signal-backed so a spec can flip a window into the far-behind
   // state after mount, the same way `setScrollback` drives the row list.
   farBehindByChannel: () => farBehind(),
-  jumpToUnread: (...args: string[]) => jumpToUnreadSpy(...args),
+  // Wrapped, not passed by reference: `vi.mock` is hoisted above the spy
+  // declarations, so the factory may only DEFER to them.
+  jumpToUnread: (slug: string, name: string) => jumpToUnreadSpy(slug, name),
+  dismissFarBehind: (slug: string, name: string) => dismissFarBehindSpy(slug, name),
 }));
 
 vi.mock("../lib/networks", () => ({
@@ -1985,6 +1992,7 @@ describe("ScrollbackPane", () => {
       afterEach(() => {
         setFarBehind({});
         jumpToUnreadSpy.mockClear();
+        dismissFarBehindSpy.mockClear();
       });
 
       it("renders the jump affordance with the server's missed count", () => {
@@ -2039,6 +2047,52 @@ describe("ScrollbackPane", () => {
         ));
         screen.getByTestId("far-behind-jump").click();
         expect(jumpToUnreadSpy).toHaveBeenCalledWith("freenode", "#grappa");
+      });
+
+      it("offers the dismiss exit — the only way past the frozen cursor", () => {
+        // Without this the operator chats at the tail under a permanent
+        // "3000 unread": far-behind freezes the read cursor, so no amount of
+        // reading clears it.
+        seedReadCursor("freenode", "#grappa", 1);
+        setScrollback({ "freenode #grappa": fixture });
+        setFarBehind({ "freenode #grappa": { missed: 3000, resumeFrom: 1 } });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        screen.getByTestId("far-behind-dismiss").click();
+        expect(dismissFarBehindSpy).toHaveBeenCalledWith("freenode", "#grappa");
+      });
+
+      it("dismissing does not leave a top-slammed divider behind", async () => {
+        // The frozen `markerCursorId` snapshot is thousands of rows old. Un-
+        // suppressing the marker without re-latching would draw "2 unread"
+        // across the top of the buffer the instant the operator dismisses —
+        // the wrong number the suppression existed to prevent.
+        seedReadCursor("freenode", "#grappa", 1);
+        setScrollback({ "freenode #grappa": fixture });
+        setFarBehind({ "freenode #grappa": { missed: 3000, resumeFrom: 1 } });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        screen.getByTestId("far-behind-dismiss").click();
+        // The verb clears the flag server-side; mirror that here.
+        setFarBehind({});
+        await Promise.resolve();
+        expect(screen.queryByTestId("unread-marker")).toBeNull();
+      });
+
+      it("renders the bar OUTSIDE the scroll list so a tail-anchored pane shows it", () => {
+        // The pane opens at the BOTTOM (no divider to scroll to), so a row
+        // in the scroll flow would sit viewports above the fold — the one
+        // signal that a region was abandoned, where nobody looks.
+        seedReadCursor("freenode", "#grappa", 1);
+        setScrollback({ "freenode #grappa": fixture });
+        setFarBehind({ "freenode #grappa": { missed: 3000, resumeFrom: 1 } });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        const bar = screen.getByTestId("far-behind-bar");
+        expect(screen.getByTestId("scrollback").contains(bar)).toBe(false);
       });
     });
 

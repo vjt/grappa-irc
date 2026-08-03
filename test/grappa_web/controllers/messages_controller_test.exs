@@ -483,6 +483,16 @@ defmodule GrappaWeb.MessagesControllerTest do
       assert json_response(conn, 400)["error"] == "bad_request"
     end
 
+    test "a list-valued ?after returns 400, not a 500", %{conn: conn, user: user, network: network} do
+      # `?after[]=1` reaches the action as `["1"]`. A missing catch-all clause
+      # would raise FunctionClauseError — a stacktrace for a malformed request.
+      seed(user, network)
+
+      conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages/count?after[]=1")
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
     test "a negative ?after returns 400", %{conn: conn, user: user, network: network} do
       seed(user, network)
 

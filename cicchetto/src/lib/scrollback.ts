@@ -165,13 +165,14 @@ const exports = identityScopedStore((onIdentityChange) => {
   // ordinary live appends are CONTIGUOUS — each appended row IS the
   // server's newest, so `after(max)` stays empty and this latch stays
   // CORRECT even as `max` advances (we're still at the live tail). The
-  // ONLY way a forward gap re-opens after latching is a `refreshScrollback`
-  // batch that hit its 200-row cap on a >200-message reconnect: it appended
-  // a full page but the tail may be further ahead. So the latch is
-  // invalidated THERE (see `refreshScrollback`) and NOWHERE else —
-  // invalidating on every append would re-fire an empty forward probe on
-  // every auto-follow scroll at a busy live tail (a fetch-per-message
-  // storm). Cleared on identity transition alongside `loadedChannels`.
+  // way a forward gap re-opens after latching is a `refreshScrollback` batch
+  // that hit its 200-row cap on a >200-message reconnect: it appended a full
+  // page but the tail may be further ahead. So the latch is invalidated
+  // THERE — and, since #693, in `jumpToUnread`, the one verb that walks the
+  // pane AWAY from the tail on purpose. Nowhere else: invalidating on every
+  // append would re-fire an empty forward probe on every auto-follow scroll
+  // at a busy live tail (a fetch-per-message storm). Cleared on identity
+  // transition alongside `loadedChannels`.
   const loadNewerExhausted = new Set<ChannelKey>();
   const [scrollbackByChannel, setScrollbackByChannel] = createSignal<
     Record<ChannelKey, ScrollbackMessage[]>
@@ -323,6 +324,17 @@ const exports = identityScopedStore((onIdentityChange) => {
   // holds nothing (a member rename with no query window costs one lookup).
   const renameScrollbackKey = (oldKey: ChannelKey, newKey: ChannelKey): void => {
     if (oldKey === newKey) return;
+    // #693 — the far-behind record is nick-keyed for a DM, so it belongs to
+    // the #373 migration set (CLAUDE.md: a new nick-keyed store that skips it
+    // strands its old-nick rows). Stranded, the renamed pane loses its jump
+    // affordance AND its divider suppression — the marker comes back labelled
+    // with the loaded rows while thousands are missing, which is the wrong
+    // number the suppression exists to prevent.
+    setFarBehindByChannel((prev) => {
+      if (!(oldKey in prev)) return prev;
+      const { [oldKey]: moved, ...rest } = prev;
+      return moved === undefined ? rest : { ...rest, [newKey]: moved };
+    });
     setScrollbackByChannel((prev) => {
       if (!(oldKey in prev)) return prev;
       const oldRows = prev[oldKey] ?? [];
@@ -351,7 +363,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     try {
       return await countMessagesAfter(t, slug, name, anchor);
     } catch (err) {
-      console.warn("[scrollback] gap probe failed — resuming from the cursor", slug, name, err);
+      console.warn("[scrollback] gap probe failed — keeping the anchored resume", slug, name, err);
       return null;
     }
   };
@@ -369,6 +381,14 @@ const exports = identityScopedStore((onIdentityChange) => {
   // The high-water mark rolls to the tail (`recordSeen`) so the NEXT
   // `refreshScrollback` resumes from the present instead of re-fetching the
   // abandoned region and re-deciding it is far behind, forever.
+  //
+  // The replace KEEPS any row newer than the page it just fetched. A live WS
+  // row can land during the await, and `appendToScrollback` has already rolled
+  // the high-water mark past it — a blind overwrite would drop it from the
+  // pane while making it unfetchable by the very path meant to recover it
+  // (the next `?after=` starts above it). Those rows sit at/after the tail, so
+  // keeping them opens no hole; everything OLDER than the page is the
+  // abandoned region and must go.
   const anchorAtTail = async (
     t: string,
     slug: string,
@@ -379,10 +399,45 @@ const exports = identityScopedStore((onIdentityChange) => {
     const key = channelKey(slug, name);
     const page = await listMessages(t, slug, name);
     const rows = [...page].sort(byServerTimeThenId);
-    setScrollbackByChannel((prev) => ({ ...prev, [key]: rows }));
+    const newest = rows[rows.length - 1]?.id ?? 0;
+    setScrollbackByChannel((prev) => {
+      const live = (prev[key] ?? []).filter((m) => m.id > newest);
+      return { ...prev, [key]: [...rows, ...live].sort(byServerTimeThenId) };
+    });
     for (const msg of rows) recordSeen(key, msg);
     loadMoreExhausted.delete(key);
     setFarBehindByChannel((prev) => ({ ...prev, [key]: { missed, resumeFrom } }));
+  };
+
+  // #693 — the DECISION is measured at the anchor the resume was about to use
+  // (never at the read cursor: see `refreshScrollback`). The LABEL and the
+  // jump target belong to the operator's READ POSITION, which on the reconnect
+  // path sits further back — the anchor there is the high-water mark, one
+  // ingested page ahead of it.
+  //
+  // Conflating the two costs both honesty and the divider: the row would
+  // undercount by up to a page, and jumping to the high-water mark lands a
+  // window whose every row is already past the cursor, so the marker injects
+  // at index 0 labelled with the loaded count — the exact failure the
+  // suppression exists to prevent, relocated. So re-probe at the cursor when
+  // it differs. One extra small GET, only on the reconnect path, only when
+  // already far behind. A failed re-probe keeps the anchor: a slightly
+  // conservative jump target beats no affordance at all.
+  const resolveJumpTarget = async (
+    t: string,
+    slug: string,
+    name: string,
+    anchor: number,
+    missedAtAnchor: number,
+  ): Promise<{ missed: number; resumeFrom: number }> => {
+    const cursor = getReadCursor(slug, name);
+    if (cursor === null || cursor >= anchor) {
+      return { missed: missedAtAnchor, resumeFrom: anchor };
+    }
+    const missed = await probeGap(t, slug, name, cursor);
+    return missed === null
+      ? { missed: missedAtAnchor, resumeFrom: anchor }
+      : { missed, resumeFrom: cursor };
   };
 
   const clearFarBehind = (key: ChannelKey): void => {
@@ -394,34 +449,80 @@ const exports = identityScopedStore((onIdentityChange) => {
   };
 
   // #693 — the operator took the "N unread — jump back" affordance. Swap the
-  // tail window for the cursor-anchored one: exactly the fetch shape #156
-  // does on a small gap, so the in-pane divider lands between read context
-  // and the first unread row.
+  // tail window for the one anchored at their read position: exactly the fetch
+  // shape #156 does on a small gap, so the in-pane divider lands between read
+  // context and the first unread row.
   //
   // Replace rather than merge, for the same reason `anchorAtTail` does — the
-  // two windows are not contiguous. Leaving the tail is the point of the
-  // gesture; getting back to it is `loadNewer` (scroll to the bottom) or a
-  // fresh open, the same as any other window sitting on old history.
-  const jumpToUnread = async (slug: string, name: string): Promise<void> => {
+  // two windows are not contiguous. Unlike `anchorAtTail` this DROPS rows
+  // newer than the fetched region instead of keeping them: there they abutted
+  // the tail, here they would sit thousands of rows above it. Leaving the tail
+  // is the point of the gesture; getting back is `loadNewer` (scroll to the
+  // bottom), the same as any other window sitting on old history.
+  //
+  // Returns whether the swap happened, so the caller can stand down whatever
+  // it armed for the arriving rows. A failed fetch leaves the pane untouched.
+  const jumpInFlight = new Set<ChannelKey>();
+  const jumpToUnread = async (slug: string, name: string): Promise<boolean> => {
     const t = token();
-    if (!t) return;
+    if (!t) return false;
     const key = channelKey(slug, name);
     const far = farBehindByChannel()[key];
-    if (!far) return;
-    const [afterPage, beforePage] = await Promise.all([
-      listMessagesAfter(t, slug, name, far.resumeFrom, PAGE_LIMIT),
-      listMessages(t, slug, name, far.resumeFrom + 1),
-    ]);
-    // Disjoint by construction — `after(cursor)` is `id > cursor`,
-    // `before(cursor + 1)` is `id <= cursor` — so concat + sort needs no
-    // dedupe pass.
-    const rows = [...afterPage, ...beforePage].sort(byServerTimeThenId);
-    setScrollbackByChannel((prev) => ({ ...prev, [key]: rows }));
-    // The pane no longer holds the tail, and there IS older history below the
-    // new oldest row — both latches are stale.
-    loadNewerExhausted.delete(key);
-    loadMoreExhausted.delete(key);
+    if (!far) return false;
+    if (jumpInFlight.has(key)) return false;
+    jumpInFlight.add(key);
+    try {
+      const [afterPage, beforePage] = await Promise.all([
+        listMessagesAfter(t, slug, name, far.resumeFrom, PAGE_LIMIT),
+        listMessages(t, slug, name, far.resumeFrom + 1),
+      ]);
+      // Disjoint by construction — `after(cursor)` is `id > cursor`,
+      // `before(cursor + 1)` is `id <= cursor` — so concat + sort needs no
+      // dedupe pass.
+      const rows = [...afterPage, ...beforePage].sort(byServerTimeThenId);
+      setScrollbackByChannel((prev) => ({ ...prev, [key]: rows }));
+      // The pane no longer holds the tail, and there IS older history below
+      // the new oldest row — both latches are stale.
+      loadNewerExhausted.delete(key);
+      loadMoreExhausted.delete(key);
+      clearFarBehind(key);
+      return true;
+    } catch (err) {
+      console.error("[scrollback] jumpToUnread failed", slug, name, err);
+      return false;
+    } finally {
+      jumpInFlight.delete(key);
+    }
+  };
+
+  // #693 — the other exit: "I don't care about those, I'm caught up now."
+  //
+  // Needed because the far-behind state FREEZES the read cursor (see
+  // `setCursorIfAdvances`): reading at the tail must not silently mark the
+  // abandoned region read, so without a deliberate exit the operator would
+  // chat at the tail under a permanent "3000 unread". This is that exit, and
+  // it is the ONE place the cursor jumps a region the operator never read —
+  // by their own explicit gesture, which is the only thing that makes it
+  // honest. Advancing to the newest LOADED row (not to `missed`) keeps the
+  // existing forward-only cursor contract intact.
+  //
+  // Returns the id it marked read (null if it did nothing), so the caller can
+  // re-latch its frozen divider to the same position. Without that the pane
+  // would un-suppress the marker against a cursor snapshot taken thousands of
+  // rows ago and draw "50 unread" across the top of the buffer — the wrong
+  // number the suppression existed to prevent, arriving the moment the
+  // operator dismisses it.
+  const dismissFarBehind = (slug: string, name: string): number | null => {
+    const t = token();
+    if (!t) return null;
+    const key = channelKey(slug, name);
+    if (!farBehindByChannel()[key]) return null;
+    const rows = scrollbackByChannel()[key] ?? [];
+    const newest = rows[rows.length - 1];
     clearFarBehind(key);
+    if (!newest) return null;
+    void setReadCursor(t, slug, name, newest.id);
+    return newest.id;
   };
 
   const loadInitialScrollback = async (slug: string, name: string): Promise<void> => {
@@ -526,8 +627,16 @@ const exports = identityScopedStore((onIdentityChange) => {
             listMessagesAfter(t, slug, name, cursor, PAGE_LIMIT),
             listMessages(t, slug, name, cursor + 1),
           ]);
-          mergeIntoScrollback(key, afterPage);
-          mergeIntoScrollback(key, beforePage);
+          // A rejoin's `refreshScrollback` can have re-anchored this key at
+          // the tail while these two pages were in flight (nothing serialises
+          // the cold-load and the reconnect path for one key). Splicing the
+          // anchored region into a tail-anchored pane is exactly the silent
+          // hole `anchorAtTail` refuses to create, so the loser drops its
+          // pages — they describe a window the pane has deliberately left.
+          if (farBehindByChannel()[key] === undefined) {
+            mergeIntoScrollback(key, afterPage);
+            mergeIntoScrollback(key, beforePage);
+          }
         }
       }
     } catch {
@@ -580,11 +689,14 @@ const exports = identityScopedStore((onIdentityChange) => {
 
   // #161: forward-paging verb — symmetric to `loadMore` but pages NEWER
   // rows on scroll-to-bottom. After #156's anchored fetch, a channel with
-  // > 200 unread loads only the region [cursor .. cursor+200]; the rows
-  // past that (up to the true server tail) were UNREACHABLE — `loadMore`
-  // pages older on scroll-to-top and nothing paged newer, and the WS
-  // join-ok `refreshScrollback` hits the SAME 200 cap from the same resume
-  // cursor. This verb pulls `listMessagesAfter(highestLoadedId, 200)` and
+  // more unread than one page loaded only the region [cursor .. cursor+200];
+  // the rows past that (up to the true server tail) were UNREACHABLE —
+  // `loadMore` pages older on scroll-to-top and nothing paged newer, and the
+  // WS join-ok `refreshScrollback` hit the SAME cap from the same resume
+  // cursor. #693 removed the need to WALK that gap (a resume that cannot
+  // drain it now anchors at the tail outright), but this verb still owns the
+  // ordinary forward end: a jumped-back pane, and any gap under the
+  // threshold. It pulls `listMessagesAfter(highestLoadedId, 200)` and
   // merges via `mergeIntoScrollback` (id-dedupe + ASC — the SAME merge as
   // loadMore/refresh), so the loaded set stays contiguous and grows toward
   // the tail one page per scroll-to-bottom.
@@ -803,9 +915,10 @@ const exports = identityScopedStore((onIdentityChange) => {
       // the forward gap). Invalidate the forward-tail latch so the next
       // scroll-to-bottom pages forward again. A short page drained
       // everything after the resume cursor → no gap → the latch (if set)
-      // stays valid. This is the ONLY latch-invalidation site: ordinary
-      // live `appendToScrollback` rows are contiguous with the tail and
-      // must NOT thrash the latch (see `loadNewerExhausted`).
+      // stays valid. Ordinary live `appendToScrollback` rows are contiguous
+      // with the tail and must NOT thrash the latch (see
+      // `loadNewerExhausted`); the only other site that may clear it is
+      // `jumpToUnread` (#693), which deliberately leaves the tail.
       if (page.length === PAGE_LIMIT) {
         loadNewerExhausted.delete(key);
         // #693 — a full page says "at least one more page", which is not a
@@ -822,7 +935,8 @@ const exports = identityScopedStore((onIdentityChange) => {
         const anchor = last ? last.id : cursor;
         const gap = await probeGap(t, slug, name, anchor);
         if (gap !== null && isFarBehind(gap)) {
-          await anchorAtTail(t, slug, name, gap, anchor);
+          const target = await resolveJumpTarget(t, slug, name, anchor, gap);
+          await anchorAtTail(t, slug, name, target.missed, target.resumeFrom);
         }
       }
     } catch (err) {
@@ -904,6 +1018,7 @@ const exports = identityScopedStore((onIdentityChange) => {
   return {
     scrollbackByChannel,
     appendToScrollback,
+    dismissFarBehind,
     farBehindByChannel,
     jumpToUnread,
     loadInitialScrollback,
@@ -921,6 +1036,7 @@ const exports = identityScopedStore((onIdentityChange) => {
 
 export const scrollbackByChannel = exports.scrollbackByChannel;
 export const appendToScrollback = exports.appendToScrollback;
+export const dismissFarBehind = exports.dismissFarBehind;
 export const farBehindByChannel = exports.farBehindByChannel;
 export const jumpToUnread = exports.jumpToUnread;
 export const loadInitialScrollback = exports.loadInitialScrollback;

@@ -293,9 +293,12 @@ describe("#693 far-behind resume", () => {
 
     await refreshScrollback("net", "#resume");
 
+    // The DECISION is measured at the anchor just ingested (700)...
     expect(countMessagesAfterSpy).toHaveBeenCalledWith("test-bearer", "net", "#resume", 700);
     expect(tailOf(scrollbackByChannel()[key])).toBe(2900);
-    expect(farBehindByChannel()[key]).toEqual({ missed: 2000, resumeFrom: 700 });
+    // ...while the jump TARGET is the operator's read position (500) — see the
+    // re-probe case below.
+    expect(farBehindByChannel()[key]).toEqual({ missed: 2000, resumeFrom: 500 });
   });
 
   it("reconnect: a full backfill page that drains the gap keeps its rows", async () => {
@@ -328,5 +331,156 @@ describe("#693 far-behind resume", () => {
     await refreshScrollback("net", "#short");
 
     expect(countMessagesAfterSpy).not.toHaveBeenCalled();
+  });
+
+  it("reconnect: the jump target is the READ CURSOR, not the ingested high-water", async () => {
+    // Jumping back to the high-water mark would land a window whose every row
+    // is already past the cursor — the divider would inject at index 0
+    // labelled with the loaded count, the exact failure the suppression
+    // exists to prevent. So the target is where the operator actually left
+    // off, and the label is re-measured there rather than undercounting by
+    // the page already ingested.
+    const { refreshScrollback, farBehindByChannel } = await import("../scrollback");
+    const { applyJoinReply } = await import("../readCursor");
+    const { channelKey } = await import("../channelKey");
+    applyJoinReply("net", "#target", 500);
+    listMessagesAfterSpy.mockResolvedValue(Array.from({ length: 200 }, (_, i) => row(501 + i)));
+    // First probe (at the anchor 700) says 2000; the re-probe at the cursor
+    // says 2200 — the same region plus the 200 rows just ingested.
+    countMessagesAfterSpy.mockResolvedValueOnce(2000).mockResolvedValueOnce(2200);
+    listMessagesSpy.mockResolvedValue([row(2900)]);
+
+    await refreshScrollback("net", "#target");
+
+    expect(countMessagesAfterSpy).toHaveBeenNthCalledWith(1, "test-bearer", "net", "#target", 700);
+    expect(countMessagesAfterSpy).toHaveBeenNthCalledWith(2, "test-bearer", "net", "#target", 500);
+    expect(farBehindByChannel()[channelKey("net", "#target")]).toEqual({
+      missed: 2200,
+      resumeFrom: 500,
+    });
+  });
+
+  it("keeps a live row that landed while the tail page was in flight", async () => {
+    // `appendToScrollback` has already rolled the high-water mark past such a
+    // row, so a blind overwrite would drop it from the pane AND make it
+    // unfetchable — the next `?after=` starts above it. It sits at the tail,
+    // so keeping it opens no hole.
+    const { loadInitialScrollback, appendToScrollback, scrollbackByChannel } = await import(
+      "../scrollback"
+    );
+    const { applyJoinReply } = await import("../readCursor");
+    const { channelKey } = await import("../channelKey");
+    const key = channelKey("net", "#live");
+    applyJoinReply("net", "#live", 100);
+    countMessagesAfterSpy.mockResolvedValue(3000);
+    listMessagesSpy.mockImplementation(async () => {
+      // The WS delivers row 3101 while the tail page is in flight.
+      appendToScrollback(key, row(3101));
+      return [row(3100), row(3099)];
+    });
+
+    await loadInitialScrollback("net", "#live");
+
+    expect((scrollbackByChannel()[key] ?? []).map((m) => m.id)).toEqual([3099, 3100, 3101]);
+  });
+
+  it("drops a racing anchored page rather than splicing a hole into a tail-anchored pane", async () => {
+    // Cold-load and reconnect are not serialised for one key. If the refresh
+    // re-anchors at the tail while the anchored pages are in flight, merging
+    // them would draw [cursor+1..cursor+200] abutting the tail window with
+    // thousands of rows silently missing between them.
+    const { loadInitialScrollback, refreshScrollback, scrollbackByChannel } = await import(
+      "../scrollback"
+    );
+    const { applyJoinReply } = await import("../readCursor");
+    const { channelKey } = await import("../channelKey");
+    const key = channelKey("net", "#race");
+    applyJoinReply("net", "#race", 100);
+    // The cold load sees a small gap and takes the anchored branch...
+    countMessagesAfterSpy.mockResolvedValue(10);
+    let releaseAnchored: (rows: ScrollbackMessage[]) => void = () => {};
+    listMessagesAfterSpy.mockImplementation(
+      () =>
+        new Promise<ScrollbackMessage[]>((resolve) => {
+          releaseAnchored = resolve;
+        }),
+    );
+    listMessagesSpy.mockResolvedValue([row(100), row(99)]);
+    const cold = loadInitialScrollback("net", "#race");
+
+    // ...and while it is in flight, a reconnect anchors the same key at the tail.
+    const { farBehindByChannel } = await import("../scrollback");
+    expect(farBehindByChannel()[key]).toBeUndefined();
+    listMessagesSpy.mockResolvedValue([row(3100), row(3099)]);
+    countMessagesAfterSpy.mockResolvedValue(3000);
+    listMessagesAfterSpy.mockResolvedValueOnce(Array.from({ length: 200 }, (_, i) => row(101 + i)));
+    await refreshScrollback("net", "#race");
+    expect(farBehindByChannel()[key]).toBeDefined();
+
+    releaseAnchored([row(101), row(102)]);
+    await cold;
+
+    // The pane is the tail window the refresh left; the anchored pages are gone.
+    expect((scrollbackByChannel()[key] ?? []).map((m) => m.id)).toEqual([3099, 3100]);
+  });
+
+  it("a failed jump reports it, leaves the pane, and stays retryable", async () => {
+    const { loadInitialScrollback, jumpToUnread, farBehindByChannel, scrollbackByChannel } =
+      await import("../scrollback");
+    const { applyJoinReply } = await import("../readCursor");
+    const { channelKey } = await import("../channelKey");
+    const key = channelKey("net", "#flaky");
+    applyJoinReply("net", "#flaky", 100);
+    countMessagesAfterSpy.mockResolvedValue(3000);
+    listMessagesSpy.mockResolvedValue([row(3100)]);
+    await loadInitialScrollback("net", "#flaky");
+
+    listMessagesAfterSpy.mockRejectedValue(new Error("offline"));
+    const jumped = await jumpToUnread("net", "#flaky");
+
+    expect(jumped).toBe(false);
+    expect((scrollbackByChannel()[key] ?? []).map((m) => m.id)).toEqual([3100]);
+    // Still far behind → the affordance survives for a second attempt.
+    expect(farBehindByChannel()[key]).toBeDefined();
+  });
+
+  it("a peer rename carries the far-behind record with the window (#373 set)", async () => {
+    const { loadInitialScrollback, renameScrollbackKey, farBehindByChannel } = await import(
+      "../scrollback"
+    );
+    const { applyJoinReply } = await import("../readCursor");
+    const { channelKey } = await import("../channelKey");
+    applyJoinReply("net", "oldpeer", 100);
+    countMessagesAfterSpy.mockResolvedValue(3000);
+    listMessagesSpy.mockResolvedValue([row(3100)]);
+    await loadInitialScrollback("net", "oldpeer");
+
+    renameScrollbackKey(channelKey("net", "oldpeer"), channelKey("net", "newpeer"));
+
+    expect(farBehindByChannel()[channelKey("net", "newpeer")]).toEqual({
+      missed: 3000,
+      resumeFrom: 100,
+    });
+    expect(farBehindByChannel()[channelKey("net", "oldpeer")]).toBeUndefined();
+  });
+
+  it("dismissing marks the loaded tail read and drops the flag", async () => {
+    const { loadInitialScrollback, dismissFarBehind, farBehindByChannel } = await import(
+      "../scrollback"
+    );
+    const { applyJoinReply } = await import("../readCursor");
+    const { channelKey } = await import("../channelKey");
+    const key = channelKey("net", "#dismiss");
+    applyJoinReply("net", "#dismiss", 100);
+    countMessagesAfterSpy.mockResolvedValue(3000);
+    listMessagesSpy.mockResolvedValue([row(3100), row(3099)]);
+    await loadInitialScrollback("net", "#dismiss");
+
+    dismissFarBehind("net", "#dismiss");
+
+    // Advances to the newest LOADED row — the forward-only cursor contract
+    // still holds; nothing invents an id the pane never showed.
+    expect(setReadCursorSpy).toHaveBeenCalledWith("test-bearer", "net", "#dismiss", 3100);
+    expect(farBehindByChannel()[key]).toBeUndefined();
   });
 });

@@ -2162,9 +2162,10 @@ export async function listMessagesAfter(
 // `scrollback.ts` need to tell those apart, so they ask.
 //
 // Throws like its siblings on a non-2xx. Callers treat a throw as "unknown
-// gap" and keep the pre-#693 cursor-anchored resume — an older server has no
-// such route, and a client that hard-failed on that would be worse than one
-// that degrades.
+// gap" and keep whatever recovery they were already committed to — the
+// anchored pages on a cold load, the page just ingested on a reconnect. An
+// older server has no such route, and a client that hard-failed on that would
+// be worse than one that degrades.
 export async function countMessagesAfter(
   token: string,
   networkSlug: string,

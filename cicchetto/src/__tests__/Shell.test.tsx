@@ -179,7 +179,8 @@ vi.mock("../lib/scrollback", () => ({
   // contiguous pane, which is what every Shell render test wants; the
   // far-behind rendering itself is pinned in ScrollbackPane.test.tsx.
   farBehindByChannel: () => ({}),
-  jumpToUnread: vi.fn(),
+  jumpToUnread: vi.fn(() => Promise.resolve(true)),
+  dismissFarBehind: vi.fn(),
 }));
 
 vi.mock("../lib/members", () => ({

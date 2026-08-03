@@ -13,6 +13,7 @@ import { presenceRowVisible } from "./presenceFilter";
 import { queryWindowsByNetwork } from "./queryWindows";
 import { getReadCursor, readCursors, setReadCursor } from "./readCursor";
 import {
+  farBehindByChannel,
   loadInitialScrollback,
   refreshScrollback,
   scrollbackByChannel,
@@ -401,10 +402,19 @@ const exports = identityScopedStore((onIdentityChange) => {
     // Locally-hydrated channels — count rows past the cursor by kind.
     // Override any seed entry: local truth wins because the seed is
     // a sync-time snapshot that may be stale by the time we render.
+    const farBehind = farBehindByChannel();
     for (const [rawKey, rows] of Object.entries(sb)) {
       const key = rawKey as ChannelKey;
       const decoded = decodeChannelKey(key);
       if (decoded === null) continue;
+      // #693 — a far-behind window is the one case where local truth is the
+      // WORSE truth. Its rows are the tail, deliberately disjoint from the
+      // unread region, so counting them reports ~50 for a window that is
+      // thousands behind — and the operator would see a small, ignorable
+      // badge for the very state the change exists to surface. The seed
+      // (server-side, cursor-anchored, and the cursor is frozen while far
+      // behind) is the honest number here, so leave it standing.
+      if (farBehind[key]) continue;
       const cursorMapKey = `${decoded.slug} ${decoded.name}`;
       const cursor = cursors[cursorMapKey] ?? 0;
       const memberCount = (members[key] ?? []).length;
@@ -507,11 +517,24 @@ const exports = identityScopedStore((onIdentityChange) => {
   // them — kept as a single-source guard at the client boundary.
   //
   // Token guard: identity-rotation can null the bearer mid-effect.
+  // #693 — the far-behind freeze. A pane that anchored at the tail renders
+  // rows thousands of ids above the operator's real read position, and every
+  // writer that funnels through here (scroll-settle, focus-leave, the
+  // visibility-hide arm, the scroll-to-bottom gesture) offers the newest
+  // RENDERED id. Forward-only would happily take it and mark the entire
+  // abandoned region read — server-side, fanned to every other device,
+  // destroying the position the jump affordance exists to return to. Freeze
+  // the cursor for as long as the window is far behind; `dismissFarBehind`
+  // (scrollback.ts) is the one deliberate way past it.
+  //
+  // This is the single door for cursor advancement, so the guard belongs
+  // here, not in each of the four callers.
   const setCursorIfAdvances = (
     networkSlug: string,
     channelName: string,
     candidateId: number,
   ): void => {
+    if (farBehindByChannel()[channelKey(networkSlug, channelName)]) return;
     const current = getReadCursor(networkSlug, channelName);
     if (current !== null && candidateId <= current) return;
     const bearer = untrack(token);

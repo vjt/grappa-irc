@@ -57,12 +57,49 @@ vi.mock("../readCursor", async () => {
   };
 });
 
+// #693 — the far-behind freeze reads this map through selection.ts. Keep the
+// rest of scrollback live; the spec drives the one signal it needs.
+let farBehindMap: Record<string, { missed: number; resumeFrom: number }> = {};
+vi.mock("../scrollback", async () => {
+  const actual = await vi.importActual<typeof import("../scrollback")>("../scrollback");
+  return { ...actual, farBehindByChannel: () => farBehindMap };
+});
+
 describe("setCursorIfAdvances", () => {
   beforeEach(async () => {
     const { clearReadCursors } = await import("../readCursor");
     clearReadCursors();
     setReadCursorSpy.mockClear();
     mockTokenValue = null;
+    farBehindMap = {};
+  });
+
+  it("does NOT POST while the window is far behind (#693)", async () => {
+    // A tail-anchored pane renders rows thousands of ids past the operator's
+    // real read position. Taking one would mark the whole abandoned region
+    // read — server-side, on every device — destroying the position the jump
+    // affordance exists to return to. Only `dismissFarBehind` may do that.
+    const { setCursorIfAdvances } = await import("../selection");
+    const { applyJoinReply } = await import("../readCursor");
+    mockTokenValue = "test-bearer";
+    applyJoinReply("net", "#chan", 100);
+    farBehindMap = { "net #chan": { missed: 3000, resumeFrom: 100 } };
+
+    setCursorIfAdvances("net", "#chan", 3100);
+
+    expect(setReadCursorSpy).not.toHaveBeenCalled();
+  });
+
+  it("resumes POSTing for other windows while one is far behind", async () => {
+    const { setCursorIfAdvances } = await import("../selection");
+    const { applyJoinReply } = await import("../readCursor");
+    mockTokenValue = "test-bearer";
+    applyJoinReply("net", "#other", 100);
+    farBehindMap = { "net #chan": { missed: 3000, resumeFrom: 100 } };
+
+    setCursorIfAdvances("net", "#other", 150);
+
+    expect(setReadCursorSpy).toHaveBeenCalledWith("test-bearer", "net", "#other", 150);
   });
 
   it("POSTs when candidate is greater than current cursor", async () => {

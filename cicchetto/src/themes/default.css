@@ -2720,42 +2720,61 @@ html.resize-dragging * {
   user-select: none;
 }
 
-/* #693 — far-behind boundary row. Same horizontal-rule-with-label form as
-   the unread marker above, because it marks the same kind of thing: a
-   position in the history. It differs in being TAPPABLE (it loads the region
-   above it) and in sitting at the very top of the buffer, so it gets a
-   button reset, a pointer cursor, and a 44px minimum height — the tap target
-   floor in absolute px, since the root font-size is 14px and a rem-based
-   target would come out short on mobile. */
+/* #693 — far-behind bar. PINNED to the top of `.scrollback-pane`, not in the
+   scroll flow: a tail-anchored pane opens at the BOTTOM (there is no divider
+   to scroll to), so an in-flow row at the boundary it describes would sit
+   viewports above the fold and never be seen. Container-anchored like the
+   #133 overlay and the #280 float stack, at z-index 4 — one below the
+   overlay, whose cards are ephemeral and deliberately opened.
+
+   Opaque background: it paints OVER the first rows of the buffer, so it
+   cannot be translucent without both layers becoming unreadable. Both
+   buttons carry the 44px tap-target floor in absolute px — the root
+   font-size is 14px, so a rem-based target comes out short on mobile. */
 
 .scrollback-far-behind {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 4;
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  width: 100%;
-  min-height: 44px;
-  padding: 0.25rem 0;
-  border: none;
-  background: none;
+  padding: 0 0.5rem;
+  background: var(--bg);
+  border-bottom: 1px solid var(--accent);
   color: var(--accent);
-  font: inherit;
   font-size: 0.8em;
   font-weight: bold;
-  cursor: pointer;
 }
 
-.scrollback-far-behind-line {
+.scrollback-far-behind-jump {
   flex: 1;
-  height: 1px;
-  background: var(--accent);
-  opacity: 0.4;
-}
-
-.scrollback-far-behind-label {
-  white-space: nowrap;
+  min-height: 44px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   text-decoration: underline;
+  cursor: pointer;
   -webkit-user-select: none;
   user-select: none;
+}
+
+.scrollback-far-behind-dismiss {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 1.2em;
+  line-height: 1;
+  cursor: pointer;
 }
 
 /* #280 — floating action stack at the lower-right of `.scrollback-pane`.

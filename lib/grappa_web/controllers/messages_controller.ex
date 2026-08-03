@@ -388,7 +388,11 @@ defmodule GrappaWeb.MessagesController do
     end
   end
 
-  defp parse_after(nil), do: {:error, :bad_request}
+  # Absent, or any non-string shape Plug can hand us (`?after[]=1` parses to a
+  # LIST): 400, per this controller's documented "present and unparseable"
+  # contract. Without the catch-all the list case is a FunctionClauseError —
+  # a 500 with a stacktrace for what is plainly a malformed request.
+  defp parse_after(_), do: {:error, :bad_request}
 
   defp parse_int(s) when is_binary(s) do
     case Integer.parse(s) do

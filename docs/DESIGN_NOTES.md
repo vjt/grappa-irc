@@ -27192,12 +27192,46 @@ resume. Degrading to wrong-but-familiar beats a destructive guess.
 **The divider stands down while far behind.** The cursor is below every loaded
 row, so the in-pane marker would slam to the top of the buffer labelled with the
 count of the ~50 rows that happen to be loaded — a confident wrong number in the
-one place the operator reads to find where they left off. The boundary row
-carries the true count instead, in-flow at the top of the buffer (the #270
-PeerAwayBanner precedent): it marks a position in the history, exactly like the
-divider it replaces.
+one place the operator reads to find where they left off. A pinned bar carries
+the true count instead. It is NOT in-flow at the boundary it describes (the
+#270 PeerAwayBanner shape, which is where it semantically belongs): with no
+divider to scroll to, the activation routine parks the pane at the BOTTOM, so
+an in-flow row would sit viewports above the fold — the one signal that a
+region was abandoned, exactly where nobody looks.
+
+**Review found the change quietly destroying the thing it protects.** Every
+cursor writer — scroll-settle, focus-leave, the visibility-hide arm, the
+scroll-to-bottom gesture — funnels through `setCursorIfAdvances` and offers the
+newest RENDERED id. In a tail-anchored pane that is the tail, forward-only takes
+it, and one channel switch marks the whole abandoned region read, server-side
+and on every device. Three consequences follow, and all three are fixed here:
+
+* **The cursor freezes while far behind**, at that single door. Reading at the
+  tail cannot mark unread what was never shown.
+* **A frozen cursor needs a deliberate exit**, or the operator chats at the tail
+  under a permanent "3000 unread" that no amount of reading clears. Hence the
+  bar's second button: dismiss advances the cursor to the newest LOADED row and
+  drops the flag. It is the one place the cursor crosses a region the operator
+  never read — by their own gesture, which is what makes it honest.
+* **The badge has to stop deriving from the pane.** `unreadCounts` overrides the
+  server seed with a local count of rows past the cursor, which for a
+  tail-anchored pane is ~50 — a small ignorable number for the very state this
+  change exists to surface. Far-behind windows keep the seed.
+
+**Other review catches worth recording.** `anchorAtTail` keeps rows NEWER than
+the page it fetched: a live WS row landing during the await has already rolled
+the high-water mark past itself, so a blind overwrite would drop it from the
+pane AND make it unfetchable. The far-behind record joins the #373 rename
+migration set (it is nick-keyed for a DM). And the jump TARGET is the read
+cursor, not the anchor the decision was measured at — on the reconnect path the
+anchor is the high-water mark, one page ahead, and jumping there would land a
+window whose every row is past the cursor, re-creating the top-slammed divider
+one pane over.
 
 **Apply:** when a client decides between two recoveries, make it measure, not
 infer from a saturated page. And when the honest recovery is discontiguous with
 what is already loaded, drop the stale region — a store whose order IS its
-display cannot hold two regions without lying about the space between them.
+display cannot hold two regions without lying about the space between them. Then
+check what else reads the state you just changed the meaning of: here a pane
+that renders rows it has NOT read broke the assumption every cursor writer and
+the unread badge were built on.
