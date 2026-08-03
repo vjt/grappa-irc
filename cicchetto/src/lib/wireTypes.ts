@@ -1380,6 +1380,7 @@ export const ERROR_TOKENS_REST_ERROR_TOKEN = [
   "malformed_nick",
   "malformed_ident",
   "password_required",
+  "passkey_required",
   "password_mismatch",
   "network_not_visitor_enabled",
   "network_ambiguous",
