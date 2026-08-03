@@ -167,10 +167,11 @@ defmodule Grappa.Scrollback.Meta do
             | :ctcp_verb
             | :ctcp_args
             | :ctcp_target
+            | :nick_fallback
           ) => term()
         }
 
-  @known_keys ~w[target new_nick modes args numeric severity who who_target names names_target raw_verb raw_sender raw_params sender_user sender_host sender_prefix ctcp_verb ctcp_args ctcp_target]a
+  @known_keys ~w[target new_nick modes args numeric severity who who_target names names_target raw_verb raw_sender raw_params sender_user sender_host sender_prefix ctcp_verb ctcp_args ctcp_target nick_fallback]a
 
   @doc """
   The atom-key allowlist. Exposed so the test suite can assert that
@@ -198,7 +199,8 @@ defmodule Grappa.Scrollback.Meta do
           | :sender_prefix
           | :ctcp_verb
           | :ctcp_args
-          | :ctcp_target,
+          | :ctcp_target
+          | :nick_fallback,
           ...
         ]
   def known_keys, do: @known_keys

@@ -29,6 +29,21 @@ defmodule Grappa.Scrollback.MetaTest do
       assert {:ok, %{sender_prefix: "+"}} = Meta.load(%{"sender_prefix" => "+"})
     end
 
+    # #676 point 3 shipped a `$server` row carrying `meta.nick_fallback` and
+    # never added the key here, so EVERY one of those rows was rejected at
+    # the cast and swallowed by the "scrollback insert failed — session
+    # continues" arm. The advisory the issue exists to deliver has never
+    # reached a single user. Nothing caught it because the router test
+    # asserts the emitted EFFECT and stops there.
+    test "the nick-fallback advisory survives the cast that used to reject it" do
+      fallback = %{requested: "vjt", registered: "vjt_"}
+
+      assert {:ok, %{nick_fallback: ^fallback}} = Meta.cast(%{nick_fallback: fallback})
+
+      assert {:ok, %{nick_fallback: %{"requested" => "vjt"}}} =
+               Meta.load(%{"nick_fallback" => %{"requested" => "vjt", "registered" => "vjt_"}})
+    end
+
     test "string-keyed map: known keys atomized" do
       assert {:ok, %{target: "alice"}} = Meta.cast(%{"target" => "alice"})
 
