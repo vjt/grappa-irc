@@ -27238,7 +27238,7 @@ the unread badge were built on.
 
 ## 2026-08-03 — #745: an assertion that cannot fail is not an assertion
 
-The bats suites carried 79 negated assertions written `! grep -q …`.
+The bats suites carried 80 negated assertions written `! grep -q …`.
 Bash suppresses `errexit` for a command whose status is inverted with
 `!` — POSIX is explicit: the shell does not exit when the failing
 command's return status is being inverted. A bats body runs under
@@ -27248,7 +27248,7 @@ last line in the body, where the body's own exit status carries it.
 Measured, not reasoned about — the claim is exactly the kind that sounds
 plausible either way, so it went through the vendored bats 1.9.0 first: a
 mid-test `! true` reports `ok`, the identical line as the final statement
-reports `not ok`. 23 of the 79 were mid-test, i.e. dead. The other 56
+reports `not ok`. 23 of the 80 were mid-test, i.e. dead. The other 57
 were live only because nobody had yet appended a line after them.
 
 Both halves got converted, and that is the load-bearing decision. Fixing
@@ -27264,16 +27264,35 @@ whole fix is that it is a function. It also prints what unexpectedly
 succeeded, which the bare `!` never could.
 
 Converting proved nothing was hiding: the full suite stayed green with
-every assertion live for the first time (260 passed, up from 257 by the
-three new guard cases). The dead ones had all been asserting things that
+every assertion live for the first time (262 passed, up from 257 by the
+five new guard cases). The dead ones had all been asserting things that
 happen to be true. That is the honest result — the change bought back the
 ability to catch a regression, it did not catch one.
 
 Which is also why the guard matters more than the conversion.
 `test/scripts/bats_assertion_style_test.bats` fails the gate if a bare
-`!` reappears, if a suite calls `refute` without loading the helper (a
-missing function is "command not found" = non-zero = a refute that always
-passes), or if `refute` itself stops failing on success. Without it the
+`!` reappears anywhere a command can begin, if a suite calls `refute`
+without loading the helper (a missing function is "command not found" =
+non-zero = a refute that always passes), or if `refute` itself stops
+failing on success.
+
+Review hardened three things worth recording, all of them the same shape
+as the original bug. The guard's first pattern only matched a bang at the
+START of a line, so it missed `a && ! b`, `a; ! b`, `a || ! b` and
+`{ ! b; }` — and widening it immediately turned up an 80th site
+(`deploy_docker_release_image_test.bats:207`) that the narrow scan had
+walked straight past. The guard's greps swallowed their own exit status,
+so a renamed path would have made it pass while scanning nothing —
+fail-open, in the guard against silent failure. And `refute` originally
+treated ANY non-zero as a satisfied negation, including grep's 2, which
+means "I could not look": since most of these logs are created by a stub
+when it runs rather than by setup, an assertion against an absent file
+would have held vacuously. Each is the same lesson twice — the check that
+cannot fail is worse than no check, because it reads as coverage.
+
+The self-test earned its place immediately: the widened pattern lost its
+leading-whitespace branch in the rewrite, and the case that asserts the
+guard catches every dead spelling is what caught it, before the suite ran. Without it the
 class regrows one copy-paste at a time, because the bad spelling is the
 natural one to write and nothing about it looks broken.
 

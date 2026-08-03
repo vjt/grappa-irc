@@ -204,7 +204,7 @@ EOF
     run "$DEPLOY" update
     [ "$status" -ne 0 ]
     [[ "$output" == *"never installed"* ]]
-    [ ! -s "$ARGV_LOG" ] || ! grep -q "run -d" "$ARGV_LOG"
+    [ ! -s "$ARGV_LOG" ] || refute grep -q "run -d" "$ARGV_LOG"
 }
 
 @test "update: --force-cold is accepted (redundant)" {

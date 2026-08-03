@@ -49,7 +49,7 @@ scripts/mix.sh --env=dev hex.audit
 scripts/mix.sh --env=dev doctor
 
 # Bash dispatchers (bin/grappa)
-scripts/bats.sh                          # all bats specs under test/bin/
+scripts/bats.sh                          # all bats specs: test/bin/ test/infra/ test/scripts/
 scripts/bats.sh test/bin/grappa_test.bats
 
 # E2E (Playwright + real testnet)
@@ -323,9 +323,12 @@ unless it happens to be the last line of the test:
 ! grep -q "should not be here" "$LOG"     # DEAD mid-test — reports ok
 ```
 
+The same applies anywhere a command can begin, not just at the start of a
+line: `a && ! b`, `a; ! b`, `a || ! b` and `{ ! b; }` are equally dead.
+
 Measured on the vendored bats 1.9.0: a mid-test `! true` reports `ok`;
 the identical line written last reports `not ok`. It cost the suites 23
-assertions that could not fail and 56 more that were live only by the
+assertions that could not fail and 57 more that were live only by the
 accident of line order.
 
 Use `refute` (`test/bats_helpers.bash`, `load ../bats_helpers`). A
@@ -338,7 +341,7 @@ refute grep -q 'partial-release' <<<"$output"   # was a pipeline
 ```
 
 `test/scripts/bats_assertion_style_test.bats` fails the gate if a bare
-one reappears. `if ! cmd`, `while ! cmd` and `[ ! -f x ]` are all fine
+one reappears in any of those positions. `if ! cmd`, `while ! cmd` and `[ ! -f x ]` are all fine
 and are not flagged — the first two are condition contexts, and in the
 third the `!` belongs to the test builtin, whose own non-zero return
 still trips errexit.

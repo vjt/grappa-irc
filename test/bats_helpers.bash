@@ -33,10 +33,31 @@
 # subject in rather than piping into `refute`:
 #
 #     refute grep -q 'partial-release' <<<"$output"
+#
+# `cmd` must be a COMMAND, not a shell keyword: `[[ ... ]]` and
+# `(( ... ))` are parsed by the shell, not looked up, so `refute [[ -f x ]]`
+# dies with "command not found". Use `refute test -f x` (or `refute [ -f x ]`).
+#
+# An exit status of 2-or-more is treated as a FAILURE of the assertion,
+# not as a satisfied negation. For the greps these assertions are built
+# on, 1 means "looked, found nothing" while 2 means "could not look" —
+# a missing log file, a bad pattern. Passing on 2 would let an assertion
+# hold vacuously against a file that never existed, which is the same
+# class of silent no-op this helper was written to remove.
 refute() {
-    if "$@"; then
+    local rc=0
+    "$@" || rc=$?
+
+    if [ "$rc" -eq 0 ]; then
         printf 'refute: expected a non-zero exit, but this SUCCEEDED:\n    %s\n' "$*" >&2
         return 1
     fi
+
+    if [ "$rc" -gt 1 ]; then
+        printf 'refute: command ERRORED (rc=%s) so the assertion proves nothing:\n    %s\n' \
+            "$rc" "$*" >&2
+        return 1
+    fi
+
     return 0
 }
