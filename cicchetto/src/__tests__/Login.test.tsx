@@ -8,9 +8,16 @@ import { ApiError } from "../lib/api";
 // raw HTTP layer so the form test stays focused on form behavior, not
 // transport. The auth-store ⇄ api wiring is covered separately in
 // auth.test.ts.
+// #736 — the factory MUST declare every auth function `Login.tsx` reaches.
+// It used to omit `loginWithPasskey`/`loginWithRecoveryCode` (the #442
+// alternate-auth row), so the first click on either button raised
+// `TypeError: … is not a function` instead of a meaningful assertion — the
+// whole passkey surface was untestable from here.
 vi.mock("../lib/auth", () => ({
   login: vi.fn(),
   verifyTotp: vi.fn(),
+  loginWithPasskey: vi.fn(),
+  loginWithRecoveryCode: vi.fn(),
   logout: vi.fn(),
   token: vi.fn(() => null),
   isAuthenticated: vi.fn(() => false),
@@ -292,6 +299,109 @@ describe("Login — TOTP", () => {
     await waitFor(() => {
       expect(auth.verifyTotp).toHaveBeenCalledWith("challenge-123", "123456");
     });
+  });
+});
+
+// #736 — the #442 alternate-auth row (Passkey / Recovery code) shipped
+// untested, and the mock above made testing it impossible. Both buttons
+// share `passkeyIdentifier()`, which classifies the SAME field the main
+// form submits — so the sanitization the Connect path is pinned for must
+// hold here too, and an empty field must stop before the ceremony rather
+// than firing a request for the identifier "".
+const passkeyBtn = () => screen.getByRole("button", { name: "Passkey" });
+
+describe("Login — #442 alternate auth (passkey / recovery code)", () => {
+  it("signs in with the SANITIZED identifier when Passkey is clicked", async () => {
+    vi.mocked(auth.loginWithPasskey).mockResolvedValue(undefined);
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "my nick" } });
+    fireEvent.click(passkeyBtn());
+    await waitFor(() => {
+      expect(auth.loginWithPasskey).toHaveBeenCalledWith("my_nick");
+    });
+    // Same correction-is-visible contract as the Connect path.
+    expect((nickField() as HTMLInputElement).value).toBe("my_nick");
+  });
+
+  it("refuses to start the ceremony with an empty identifier", async () => {
+    renderLogin();
+    fireEvent.click(passkeyBtn());
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/account name or email first/i);
+    });
+    expect(auth.loginWithPasskey).not.toHaveBeenCalled();
+  });
+
+  it("shows the cancellation reason and keeps the form when the ceremony fails", async () => {
+    // A dismissed WebAuthn prompt rejects with a plain Error, not an
+    // ApiError — the non-ApiError arm of handleError must surface its
+    // message instead of the generic "login_failed".
+    vi.mocked(auth.loginWithPasskey).mockRejectedValue(
+      new Error("Passkey authentication cancelled"),
+    );
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.click(passkeyBtn());
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/passkey authentication cancelled/i);
+    });
+    expect(nickField()).toBeInTheDocument();
+  });
+
+  it("renders friendly copy for an ApiError from the ceremony", async () => {
+    vi.mocked(auth.loginWithPasskey).mockRejectedValue(new ApiError(401, "invalid_credentials"));
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.click(passkeyBtn());
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/invalid name or password/i);
+    });
+  });
+
+  it("keeps the recovery-code field collapsed until Recovery code is clicked", () => {
+    renderLogin();
+    expect(screen.queryByLabelText(/^recovery code$/i)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Recovery code" }));
+    expect(screen.getByLabelText(/^recovery code$/i)).toBeInTheDocument();
+  });
+
+  it("submits the identifier and the recovery code together", async () => {
+    vi.mocked(auth.loginWithRecoveryCode).mockResolvedValue(undefined);
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.click(screen.getByRole("button", { name: "Recovery code" }));
+    fireEvent.input(screen.getByLabelText(/^recovery code$/i), {
+      target: { value: "abcd-1234" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /recover account/i }));
+    await waitFor(() => {
+      expect(auth.loginWithRecoveryCode).toHaveBeenCalledWith("alice", "abcd-1234");
+    });
+  });
+
+  it("surfaces a spent or wrong recovery code as an error", async () => {
+    vi.mocked(auth.loginWithRecoveryCode).mockRejectedValue(
+      new ApiError(401, "invalid_credentials"),
+    );
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.click(screen.getByRole("button", { name: "Recovery code" }));
+    fireEvent.input(screen.getByLabelText(/^recovery code$/i), { target: { value: "nope" } });
+    fireEvent.click(screen.getByRole("button", { name: /recover account/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/invalid name or password/i);
+    });
+  });
+
+  it("refuses to recover with an empty identifier", async () => {
+    renderLogin();
+    fireEvent.click(screen.getByRole("button", { name: "Recovery code" }));
+    fireEvent.input(screen.getByLabelText(/^recovery code$/i), { target: { value: "abcd-1234" } });
+    fireEvent.click(screen.getByRole("button", { name: /recover account/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/account name or email first/i);
+    });
+    expect(auth.loginWithRecoveryCode).not.toHaveBeenCalled();
   });
 });
 
