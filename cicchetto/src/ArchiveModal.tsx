@@ -14,7 +14,7 @@ import { mentionCounts } from "./lib/mentions";
 import { networks } from "./lib/networks";
 import { normalizeNick } from "./lib/nickEquals";
 import { createOverlayLock } from "./lib/overlayScrollLock";
-import { openQueryWindowState } from "./lib/queryWindows";
+import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { eventsUnread, messagesUnread, setSelectedChannel } from "./lib/selection";
 import NickText from "./NickText";
 
@@ -116,13 +116,27 @@ const ArchiveModal: Component = () => {
     // server which persists the query_windows row and broadcasts
     // `query_window_opened`; cic's subscribe loop re-arms and joins
     // the per-channel topic. Idempotent — no-op if already open.
+    //
+    // #804 — resolve the peer casing FIRST, like the eight sibling
+    // call sites of openQueryWindowState. The archive row carries one
+    // arbitrary spelling out of the folded group (`dm_with` is stored
+    // RAW, #121/#372), so a window already open under another casing
+    // would otherwise take the selection to a ChannelKey no sidebar
+    // row knows — the #731 / #799 phantom-pane shape. Both legs get
+    // the resolved value, mirroring ScrollbackPane.handleNickClick.
+    // The `channel` kind needs none: `messages.channel` stores the
+    // folded channel, so there is no raw casing to carry.
+    let channelName = target;
     if (kind === "query") {
       const net = networks()?.find((n) => n.slug === slug);
-      if (net) openQueryWindowState(net.id, target, new Date().toISOString());
+      if (net) {
+        channelName = canonicalQueryNick(net.id, target);
+        openQueryWindowState(net.id, channelName, new Date().toISOString());
+      }
     }
     setSelectedChannel({
       networkSlug: slug,
-      channelName: target,
+      channelName,
       kind,
     });
     close();

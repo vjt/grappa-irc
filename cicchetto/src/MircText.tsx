@@ -99,7 +99,11 @@ const renderChannel = (
 ): JSX.Element => {
   if (!onChannelClick) return channel;
   return (
-    <button type="button" class="channel-clickable" onClick={() => onChannelClick(channel)}>
+    <button
+      type="button"
+      class="scrollback-inline-button channel-clickable"
+      onClick={() => onChannelClick(channel)}
+    >
       {channel}
     </button>
   );

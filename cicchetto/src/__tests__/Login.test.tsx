@@ -522,3 +522,31 @@ describe("Login — captcha flow (carried forward)", () => {
     expect(mountCaptchaWidget).not.toHaveBeenCalled();
   });
 });
+
+// #740 — the CSS half of this pair is pinned in sharedButtonRules.test.ts.
+// This is the other half: a shared rule that nothing wears is the #734
+// failure mode inverted, and the two buttons this rule unifies sit in one
+// flex row under align-items: center, so a class missing from one of them
+// is a visible height mismatch rather than a cosmetic nit.
+describe("Login — #740 the quiet text-buttons wear the shared class", () => {
+  it("puts .login-quiet-button on the Advanced toggle and on both alt-auth buttons", () => {
+    renderLogin();
+    const quiet = [
+      screen.getByRole("button", { name: /Advanced/ }),
+      passkeyBtn(),
+      screen.getByRole("button", { name: "Recovery code" }),
+    ];
+    for (const button of quiet) {
+      expect(button.classList.contains("login-quiet-button")).toBe(true);
+    }
+  });
+
+  it("keeps the per-instance classes the e2e clicks as strict single matches", () => {
+    // issue281: `.login-advanced-toggle` must stay ONE element per rendered
+    // branch and `.login-alt-auth` exactly two. Composing a second class
+    // must not disturb either count.
+    renderLogin();
+    expect(document.querySelectorAll(".login-advanced-toggle")).toHaveLength(1);
+    expect(document.querySelectorAll(".login-alt-auth")).toHaveLength(2);
+  });
+});
