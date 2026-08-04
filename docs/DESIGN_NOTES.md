@@ -28504,3 +28504,62 @@ per-page-load, so every reload re-pays upstream for an answer grappa already
 received. The precedent already exists — `userhost_cache` is nick-keyed, folded,
 fed passively from JOIN prefixes at zero upstream cost, and already migrated on
 NICK. Cache the answer, and the question of when to fetch mostly dissolves.
+
+---
+
+## 2026-08-04 — #788: a continuation that outlived its identity does nothing further
+
+`cicchetto/src/lib/scrollback.ts` scopes its state to the identity through
+`identityScopedStore`: nine resets fire on the `on(token)` transition and clear
+the pane, the load-once gate and the paging latches. The moduledoc used to read
+that as a race the store always wins. It never was. **The resets clear STATE;
+they cancel nothing in flight.** Every async verb captures `token()` at entry
+and then awaits, so a rotation or a detach landing inside one of those awaits
+leaves the continuation running under an identity that no longer exists.
+
+Measured, not argued: with the join-ok backfill held 400ms in a browser on the
+real bundle, a `/messages/count` went out **10ms after its own bearer was
+revoked**, through entirely production code paths.
+
+**Why a 401 is the least of it.** This is the #281 harm class reached through a
+different door. A request for the OLD identity's channel 404s when the new
+identity is not attached to that network, and the host's `http-404` fail2ban
+jail bans the client IP at the firewall. A routine account switch self-bans the
+operator.
+
+**The rule: check after the await, not in front of the request.** The stale
+continuation causes two harms, and only one of them is on the wire. The other
+needs no network at all — the page it already fetched merges into a map the
+rotation just purged, and the new identity renders the old one's scrollback.
+That harm happens *between* the resolved fetch and the next request, so the
+tidier-looking fix (one guarded wrapper around the module's REST calls, which
+the issue floated as the "reuse the verb" answer) cannot see it. Placing the
+check immediately after each await catches both, because everything downstream
+is unreachable. One shared predicate, `identityMoved(t)`, at eleven of the
+module's fifteen awaits; the four exempt are the ones with nothing after them,
+plus `resolveJumpTarget`, whose only successor is a pure value its caller checks
+before spending.
+
+Not hoisted into `identityScopedStore`: that factory owns the identity
+TRANSITION, while this owns a verb's own captured identity, which the factory
+never sees. `displayPrefs` and `customTheme` already inline the same comparison
+to drop a stale RESPONSE — this is the same predicate one step earlier, to
+refuse a stale REQUEST.
+
+**`refreshInFlight` and `jumpInFlight` join the reset list.** Both were declared
+beside the verbs that own them rather than beside the other five Sets, and both
+were consequently missing from the cleanup — a real defect, not untidiness: an
+in-flight refresh for identity A holds A's key until its continuation reaches
+the `finally`, and B's refresh for the same key short-circuits meanwhile, so B's
+window silently never backfills. Clearing mid-flight lets A's `finally` delete a
+key B has re-added, which can cost one redundant GET; `appendToScrollback`
+dedupes by id, so that is the cheaper side of the trade.
+
+**Two honest notes.** `sendMessage`'s post-await cursor POST was already
+unreachable past a rotation — but by accident, via the store purge emptying the
+pane so the #50 anti-poison gate declines. A guarantee owed to an unrelated
+invariant is one refactor from evaporating, so it is now stated. And the
+regression test mocks `../auth` with a REAL Solid signal: the flat
+`token: () => value` stub the sibling suites use is not reactive, so
+`createEffect(on(token))` never fires and the rotation the cases turn on would
+not exist.
