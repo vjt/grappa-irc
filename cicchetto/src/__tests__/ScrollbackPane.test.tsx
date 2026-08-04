@@ -1978,6 +1978,10 @@ describe("ScrollbackPane", () => {
       render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       const sender = document.querySelector(".scrollback-sender");
       expect(sender?.classList.contains("nick-clickable")).toBe(true);
+      // #740 — and the shared inline-button reset it now takes its shape
+      // from. The CSS half is pinned in sharedButtonRules.test.ts; a rule
+      // nothing wears is the #734 failure mode inverted.
+      expect(sender?.classList.contains("scrollback-inline-button")).toBe(true);
     });
   });
 
@@ -3092,6 +3096,8 @@ describe("ScrollbackPane", () => {
       const btn = line.querySelector(".scrollback-invite-join") as HTMLButtonElement;
       expect(btn).not.toBeNull();
       expect(btn.textContent).toContain("Join");
+      // #740 — wears the shared inline-button reset beside its own class.
+      expect(btn.classList.contains("scrollback-inline-button")).toBe(true);
     });
 
     it("INVITE [Join] click invokes postJoin + setSelectedChannel", async () => {
