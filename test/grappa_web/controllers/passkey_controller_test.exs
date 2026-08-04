@@ -5,6 +5,8 @@ defmodule GrappaWeb.PasskeyControllerTest do
   import Ecto.Query
 
   alias Grappa.Accounts.{Passkey, Session, TOTP, TOTPRecoveryCode, User, WebAuthn}
+  alias Grappa.WebAuthnCeremony
+  alias GrappaWeb.PasskeyOrigin
   alias Grappa.RateLimit.FailureWindow
   alias Grappa.Repo
 
@@ -25,6 +27,173 @@ defmodule GrappaWeb.PasskeyControllerTest do
       WebAuthn.set_mode(user, :passwordless, session.id, Grappa.Accounts.prepare_recovery_codes())
 
     {Repo.get!(User, user.id), password}
+  end
+
+  # #742 — the four routes that actually verify a ceremony had no test at
+  # all, so a forged assertion reaching `mint_session/2` would have been
+  # invisible. `WebAuthnCeremony` signs for real; every route here is
+  # driven twice, once with the signature it was given and once with one
+  # bit of it flipped.
+  describe "ceremony verification over the wire" do
+    @ceremony_origin "https://irc.example"
+
+    setup do
+      # The ceremony signs for a fixed origin, so the RP origin the server
+      # asserts has to be that one and not whatever the Endpoint derives.
+      PasskeyOrigin.put_test_origin(@ceremony_origin)
+      on_exit(fn -> PasskeyOrigin.put_test_origin(nil) end)
+
+      # `/auth/passkeys/options` counts EVERY call against a per-IP window
+      # shared by the whole module, so a ceremony test that opens one must
+      # hand the bucket back or it eats the throttle test's budget.
+      on_exit(fn -> FailureWindow.clear(:passkey_login_options, "127.0.0.1") end)
+
+      {user, password} = user_fixture_with_password()
+
+      %{
+        user: user,
+        password: password,
+        session: session_fixture(user),
+        authenticator: WebAuthnCeremony.new_authenticator(:crypto.strong_rand_bytes(16))
+      }
+    end
+
+    test "POST /me/passkeys/registration stores the credential a ceremony signed", ctx do
+      options =
+        authed(ctx.session)
+        |> post("/me/passkeys/registration/options", %{"password" => ctx.password, "name" => "phone"})
+        |> json_response(200)
+
+      params = registration_params(ctx, options, @ceremony_origin)
+
+      body = authed(ctx.session) |> post("/me/passkeys/registration", params) |> json_response(201)
+
+      assert body["name"] == "phone"
+      assert Repo.aggregate(Passkey, :count, :id) == 1
+    end
+
+    test "POST /me/passkeys/registration refuses a ceremony signed for another origin", ctx do
+      options =
+        authed(ctx.session)
+        |> post("/me/passkeys/registration/options", %{"password" => ctx.password, "name" => "phone"})
+        |> json_response(200)
+
+      params = registration_params(ctx, options, "https://phish.example")
+
+      assert authed(ctx.session) |> post("/me/passkeys/registration", params) |> json_response(401) ==
+               %{"error" => "invalid_two_factor"}
+
+      assert Repo.aggregate(Passkey, :count, :id) == 0
+    end
+
+    test "POST /auth/passkeys/verify mints a bearer for a signed assertion", ctx do
+      register_credential(ctx)
+      arm_mode(ctx, :passwordless)
+
+      options =
+        build_conn()
+        |> post("/auth/passkeys/options", %{"identifier" => ctx.user.name})
+        |> json_response(200)
+
+      params = assertion_params(ctx, options, 1)
+      body = build_conn() |> post("/auth/passkeys/verify", params) |> json_response(200)
+
+      assert is_binary(body["token"])
+    end
+
+    test "POST /auth/passkeys/verify refuses an assertion with a mutated signature", ctx do
+      register_credential(ctx)
+      arm_mode(ctx, :passwordless)
+
+      options =
+        build_conn()
+        |> post("/auth/passkeys/options", %{"identifier" => ctx.user.name})
+        |> json_response(200)
+
+      params = WebAuthnCeremony.tamper_signature(assertion_params(ctx, options, 1))
+
+      assert build_conn() |> post("/auth/passkeys/verify", params) |> json_response(401) ==
+               %{"error" => "invalid_two_factor"}
+    end
+
+    test "POST /auth/passkeys/second-factor refuses an assertion with a mutated signature", ctx do
+      register_credential(ctx)
+      arm_mode(ctx, :second_factor)
+
+      {:ok, options} =
+        WebAuthn.begin_authentication(
+          Repo.get!(User, ctx.user.id),
+          :second_factor,
+          %{ip: "127.0.0.1", client_id: nil},
+          @ceremony_origin,
+          %{}
+        )
+
+      params = assertion_params(ctx, stringify(options), 1)
+
+      assert build_conn() |> post("/auth/passkeys/second-factor", params) |> json_response(200)
+
+      assert build_conn()
+             |> post("/auth/passkeys/second-factor", WebAuthnCeremony.tamper_signature(params))
+             |> json_response(401) == %{"error" => "invalid_two_factor"}
+    end
+
+    test "POST /me/passkeys/mode refuses a mode change whose signature was mutated", ctx do
+      register_credential(ctx)
+
+      options =
+        authed(ctx.session)
+        |> post("/me/passkeys/mode/options", %{"password" => ctx.password, "mode" => "second_factor"})
+        |> json_response(200)
+
+      params = WebAuthnCeremony.tamper_signature(assertion_params(ctx, options, 1))
+
+      assert authed(ctx.session) |> post("/me/passkeys/mode", params) |> json_response(401) ==
+               %{"error" => "invalid_two_factor"}
+
+      assert Repo.get!(User, ctx.user.id).passkey_mode == :disabled
+    end
+
+    defp authed(session),
+      do: put_req_header(build_conn(), "authorization", "Bearer #{session.id}")
+
+    defp stringify(%{challenge_id: id, public_key: %{challenge: challenge}}),
+      do: %{"challenge_id" => id, "public_key" => %{"challenge" => challenge}}
+
+    defp registration_params(ctx, options, origin) do
+      WebAuthnCeremony.registration_params(
+        ctx.authenticator,
+        options["challenge_id"],
+        options["public_key"]["challenge"],
+        origin
+      )
+    end
+
+    defp assertion_params(ctx, options, sign_count) do
+      WebAuthnCeremony.assertion_params(
+        ctx.authenticator,
+        options["challenge_id"],
+        options["public_key"]["challenge"],
+        @ceremony_origin,
+        sign_count
+      )
+    end
+
+    defp register_credential(ctx) do
+      Repo.insert!(
+        Passkey.changeset(%Passkey{}, %{
+          user_id: ctx.user.id,
+          credential_id: ctx.authenticator.credential_id,
+          public_key: CBOR.encode(WebAuthnCeremony.cose_key(ctx.authenticator)),
+          name: "phone"
+        })
+      )
+    end
+
+    defp arm_mode(ctx, mode) do
+      codes = if mode == :passwordless, do: Grappa.Accounts.prepare_recovery_codes(), else: []
+      {:ok, ^mode} = WebAuthn.set_mode(ctx.user, mode, ctx.session.id, codes)
+    end
   end
 
   test "login_options is throttled even while it keeps succeeding", %{conn: conn} do
