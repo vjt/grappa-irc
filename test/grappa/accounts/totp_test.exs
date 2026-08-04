@@ -115,13 +115,34 @@ defmodule Grappa.Accounts.TOTPTest do
     assert %DateTime{} = Repo.get!(Session, other.id).revoked_at
   end
 
-  test "new enrollment URI contains issuer, account, and secret" do
+  # The label is what an authenticator app puts under the user's thumb, so
+  # it has to name the ACCOUNT, not merely be present: built from `user.id`
+  # instead of `user.name` the URI still parses, still carries the issuer,
+  # still round-trips the secret, and every enrolled account shows up as a
+  # UUID. The parameters are pinned for the same reason — RFC 6238 leaves
+  # SHA1/6/30 as defaults, but `code_at/2` is not written against defaults,
+  # so a URI that omits or contradicts them enrolls an app that computes
+  # codes this server will refuse.
+  test "new enrollment URI labels the account and pins the RFC 6238 parameters" do
     user = user_fixture(name: "alice")
     enrollment = TOTP.new_enrollment(user, "Grappa (irc.example)")
 
-    assert String.starts_with?(enrollment.provisioning_uri, "otpauth://totp/")
-    assert enrollment.provisioning_uri =~ "issuer=Grappa+%28irc.example%29"
-    assert enrollment.provisioning_uri =~ "secret=#{enrollment.secret}"
+    assert %URI{scheme: "otpauth", host: "totp", path: path, query: query} =
+             URI.parse(enrollment.provisioning_uri)
+
+    assert URI.decode(path) == "/Grappa (irc.example):alice"
+
+    params = URI.decode_query(query)
+    assert params["issuer"] == "Grappa (irc.example)"
+    assert params["algorithm"] == "SHA1"
+    assert params["digits"] == "6"
+    assert params["period"] == "30"
+
+    # Not just an echo of the struct: the URI has to carry a secret the
+    # authenticator can actually key on — 20 raw bytes, Base32, unpadded.
+    assert params["secret"] == enrollment.secret
+    assert {:ok, key} = Base.decode32(params["secret"], padding: false)
+    assert byte_size(key) == 20
   end
 
   # The recovery set is shared, so disarming TOTP must not destroy a
