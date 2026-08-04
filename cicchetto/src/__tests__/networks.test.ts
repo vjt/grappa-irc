@@ -529,5 +529,60 @@ describe("networks resources", () => {
         expect(networks.channelsBySlug()).toEqual({});
       });
     });
+
+    // #818 — the identity TRANSITION was already purged (the arm above, plus
+    // readCursor's own `on(token)`); what leaked is a write arriving AFTER it.
+    // `createResource` drops the stale VALUE but cannot cancel the await, so
+    // the fetcher's side-effects still run when account A's `/me` settles
+    // post-rotation — seeding B's cursor map (and badge) with A's numbers.
+    it("a /me still in flight from the OLD identity hydrates neither cursors nor badge", async () => {
+      localStorage.setItem("grappa-token", "tok-a");
+      await seedStubs();
+      const api = await import("../lib/api");
+      const auth = await import("../lib/auth");
+      const networks = await import("../lib/networks");
+      const readCursor = await import("../lib/readCursor");
+      const badge = await import("../lib/badge");
+
+      let releaseA: ((m: MeResponse) => void) | undefined;
+      const meA = new Promise<MeResponse>((resolve) => {
+        releaseA = resolve;
+      });
+      vi.mocked(api.me).mockImplementation((t: string) =>
+        t === "tok-a"
+          ? meA
+          : Promise.resolve({
+              kind: "user",
+              id: "u2",
+              name: "bob",
+              is_admin: false,
+              inserted_at: "x",
+              read_cursors: {},
+              badge_count: 0,
+            } as MeResponse),
+      );
+      networks.refetchUser();
+
+      auth.setToken("tok-b");
+      await vi.waitFor(() => {
+        expect(networks.user()?.id).toBe("u2");
+      });
+
+      releaseA?.({
+        kind: "user",
+        id: "u1",
+        name: "alice",
+        is_admin: false,
+        inserted_at: "x",
+        read_cursors: { freenode: { "#grappa": 5000 } },
+        badge_count: 42,
+      } as MeResponse);
+      await meA;
+      await Promise.resolve();
+
+      expect(readCursor.getReadCursor("freenode", "#grappa")).toBeNull();
+      // Same await, same leak: the badge seed is guarded by the same check.
+      expect(badge.badgeCount()).toBe(0);
+    });
   });
 });
