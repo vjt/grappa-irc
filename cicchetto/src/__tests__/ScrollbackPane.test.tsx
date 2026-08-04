@@ -192,6 +192,10 @@ vi.mock("../lib/socket", () => ({
 }));
 
 vi.mock("../lib/channelKey", () => ({
+  // Deliberately NOT folding, unlike prod: the fixtures in this file key
+  // `setScrollback` / `seedReadCursor` with raw names (`freenode NickServ`),
+  // so a folding composite key would orphan every one of them. The identity
+  // is safe here because no test drives two spellings of the same window.
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
   // Faithful to the `${slug} ${name}` mock shape: split on the first space.
   // Needed once a test drives a real channel switch (the key-change effects
@@ -201,7 +205,13 @@ vi.mock("../lib/channelKey", () => ({
     const i = key.indexOf(" ");
     return i < 0 ? null : { slug: key.slice(0, i), name: key.slice(i + 1) };
   },
-  canonicalChannel: (name: string) => name,
+  // #799 — this WAS the identity, which made the mock lie about the one thing
+  // the function exists to do, so no test could ever observe a missing fold.
+  // Spelled out inline rather than re-exporting the real `asciiFold`: a mock
+  // that delegates to the module it stands in for cannot catch that module
+  // regressing, and the `A-Z`-only fold table is one regex.
+  canonicalChannel: (name: string) =>
+    name.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32)),
 }));
 
 // C3.2: mock membersByChannel for JOIN-self banner tests
@@ -3099,6 +3109,54 @@ describe("ScrollbackPane", () => {
           kind: "channel",
         });
       });
+    });
+
+    // #799 — a pre-#537 INVITE row still carries a mixed-case `params[1]`:
+    // the ingress fold (EventRouter's `:invite` clause) IS the #537 fix, and
+    // per the #525 posture `refold_identifiers_ascii` does NOT rewrite stored
+    // values. Selection and `window_states` are keyed FOLDED, so focusing the
+    // raw name opens a phantom pane the sidebar can't match. Same split as
+    // every sibling (channelJoin.switchTo, compose.ts /join, DirectoryPane):
+    // the KEY folds, the wire argument stays RAW.
+    //
+    // The folded expectation is a LITERAL, not `canonicalChannel(...)` —
+    // routing both sides through the same helper would stay green if the
+    // helper itself regressed. `#Sbiffo` → `#sbiffo` is the whole contract.
+    const mixedCaseInviteRow: ScrollbackMessage = {
+      ...inviteRow,
+      id: 107,
+      server_time: 107,
+      body: "#Sbiffo",
+      meta: {
+        raw_verb: "INVITE",
+        raw_sender: "vjt",
+        raw_params: ["grappa", "#Sbiffo"],
+      },
+    };
+
+    it("INVITE [Join] focuses the FOLDED channel while postJoin gets the RAW one (#799)", async () => {
+      mockPostJoin.mockClear();
+      mockSetSelectedChannel.mockClear();
+      setScrollback({ "freenode $server": [mixedCaseInviteRow] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="$server" kind="channel" />);
+      const btn = document.querySelector(".scrollback-invite-join") as HTMLButtonElement;
+      btn.click();
+      await waitFor(() => {
+        expect(mockSetSelectedChannel).toHaveBeenCalledWith({
+          networkSlug: "freenode",
+          channelName: "#sbiffo",
+          kind: "channel",
+        });
+      });
+      // The wire keeps the invite's spelling — the ircd does its own
+      // casemapping, and cic never rewrites an outbound target.
+      expect(mockPostJoin).toHaveBeenCalledWith("test-token", "freenode", "#Sbiffo", null);
+    });
+
+    it("INVITE row renders the RAW channel spelling as its label (#799)", () => {
+      setScrollback({ "freenode $server": [mixedCaseInviteRow] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="$server" kind="channel" />);
+      expect(screen.getByTestId("scrollback-line").textContent).toContain("#Sbiffo");
     });
 
     it("INVITE with malformed channel param falls through to generic render (no [Join])", () => {
