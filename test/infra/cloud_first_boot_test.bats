@@ -29,8 +29,7 @@ setup() {
     export GRAPPA_TLS_HELPER="$BATS_TEST_TMPDIR/sbin/grappa-tls"
     export GRAPPA_TLS_UNIT="$BATS_TEST_TMPDIR/systemd/grappa-tls.service"
 
-    # ── Behaviour seams: never actually root, fast health loop ──────────────
-    export GRAPPA_SKIP_PRIVCHECK=1
+    # ── Behaviour seams: fast health loop ───────────────────────────────────
     export GRAPPA_HEALTH_RETRIES=3
     export GRAPPA_HEALTH_SLEEP=0
 
@@ -62,12 +61,18 @@ while [ $# -gt 0 ]; do
 done
 case "$url" in
   */releases/latest)
+    [ -n "${RELEASE_API_FAILS:-}" ] && exit 22
+    # RELEASE_HAS_NO_DEB=1 → a real release that shipped no amd64 asset.
+    [ -n "${RELEASE_HAS_NO_DEB:-}" ] \
+      && { printf '{"tag_name":"v9.9.9","assets":[{"browser_download_url":"https://github.com/vjt/grappa-irc/releases/download/v9.9.9/grappa_9.9.9_arm64.deb"}]}\n'; exit 0; }
     printf '{"tag_name":"v9.9.9","assets":[{"browser_download_url":"https://github.com/vjt/grappa-irc/releases/download/v9.9.9/grappa_9.9.9_amd64.deb"}]}\n' ;;
   *_amd64.deb)
+    [ -n "${DEB_FETCH_FAILS:-}" ] && exit 22
     [ -n "$dest" ] && printf 'FAKE DEB\n' > "$dest" ;;
   */infra/snippets/locations-api.conf)
     [ -n "$dest" ] && cp "$SRC_LOCATIONS" "$dest" ;;
   *healthz*)
+    [ -n "${HEALTH_NEVER_OK:-}" ] && exit 7
     exit 0 ;;
   *) printf 'fake curl: unexpected url: %s\n' "$url" >&2; exit 1 ;;
 esac
@@ -90,7 +95,29 @@ exit 0
 EOF
     chmod +x "$FAKE_DIR/apt-get"
 
-    for tool in systemctl nginx certbot; do
+    # id: root, like the box the script is written for. Stubbed on PATH
+    # rather than skipped through an env var, so require_root runs verbatim
+    # here and production carries no bypass (#747). A test that wants a
+    # non-root run overrides this stub.
+    cat > "$FAKE_DIR/id" <<'EOF'
+#!/usr/bin/env bash
+printf 'id %s\n' "$*" >> "$ARGV_LOG"
+printf '%s\n' "${FAKE_UID:-0}"
+EOF
+    chmod +x "$FAKE_DIR/id"
+
+    # certbot: separate from the log-only stubs because grappa-tls execs it,
+    # and CERTBOT_FAILS=1 is how a test drives the likeliest real failure —
+    # the Let's Encrypt rate limit.
+    cat > "$FAKE_DIR/certbot" <<'EOF'
+#!/usr/bin/env bash
+printf 'certbot %s\n' "$*" >> "$ARGV_LOG"
+[ -n "${CERTBOT_FAILS:-}" ] && exit 1
+exit 0
+EOF
+    chmod +x "$FAKE_DIR/certbot"
+
+    for tool in systemctl nginx; do
         cat > "$FAKE_DIR/$tool" <<EOF
 #!/usr/bin/env bash
 printf '$tool %s\n' "\$*" >> "$ARGV_LOG"
@@ -132,6 +159,25 @@ mode_of() {  # GNU-first, BSD fallback (macOS runner) — matches the packaging 
     [[ "$output" == *"GRAPPA_ADMIN_EMAIL is required"* ]]
 }
 
+# ───────────────────────────── privilege ─────────────────────────────────────
+
+# Until #747 this could not even be written: the suite exported
+# GRAPPA_SKIP_PRIVCHECK=1 in setup, so require_root returned before reading
+# the uid and no test could reach the refusal.
+@test "refuses to run as a non-root user" {
+    FAKE_UID=1000 run "$FBSH"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"must run as root"* ]]
+    # It refuses BEFORE touching the box.
+    refute grep -q "^apt-get " "$ARGV_LOG"
+}
+
+@test "checks the uid rather than trusting an env var" {
+    GRAPPA_SKIP_PRIVCHECK=1 FAKE_UID=1000 run "$FBSH"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"must run as root"* ]]
+}
+
 # ───────────────────────────── install path ──────────────────────────────────
 
 @test "installs the LATEST release .deb via apt (no pin)" {
@@ -159,7 +205,59 @@ mode_of() {  # GNU-first, BSD fallback (macOS runner) — matches the packaging 
 @test "fails loud if the env file is missing after install" {
     SKIP_ENV_SEED=1 run "$FBSH"
     [ "$status" -ne 0 ]
-    [[ "$output" == *"missing"* ]]
+    # Pin the PATH, not just the word: "missing" appears in more than one
+    # die, so the bare substring passed for a refusal it never saw.
+    [[ "$output" == *"$GRAPPA_ENV_FILE missing"* ]]
+}
+
+# ───────────────────────────── failure paths ─────────────────────────────────
+#
+# The happy path was covered and every way the bootstrap can FAIL was not, so
+# a box could report a successful first boot while serving nothing. Each of
+# these asserts the die AND that the run stopped there.
+
+# Both of these used to abort with a bare exit 1 and NO message: under
+# `set -o pipefail` a no-match grep failed the pipeline, and `set -e` killed
+# the script at the command substitution — before the die that names the
+# problem. An operator read a cloud-init that failed for no stated reason.
+@test "a release with no amd64 .deb asset says so instead of dying mute" {
+    RELEASE_HAS_NO_DEB=1 run "$FBSH"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"no grappa_*_amd64.deb asset"* ]]
+    refute grep -qE "apt-get install .*grappa\.deb" "$ARGV_LOG"
+}
+
+@test "an unreachable release API is reported as such, not as a missing asset" {
+    RELEASE_API_FAILS=1 run "$FBSH"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"could not read the latest release"* ]]
+    refute grep -qE "apt-get install .*grappa\.deb" "$ARGV_LOG"
+}
+
+@test "a failed .deb download aborts instead of installing a half-file" {
+    DEB_FETCH_FAILS=1 run "$FBSH"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"download failed"* ]]
+    refute grep -qE "apt-get install .*grappa\.deb" "$ARGV_LOG"
+}
+
+@test "health that never comes up is a failed boot, not a quiet one" {
+    HEALTH_NEVER_OK=1 run "$FBSH"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"did not become healthy"* ]]
+    # Exhausted the budget rather than giving up on the first miss.
+    [ "$(grep -c "curl .*healthz" "$ARGV_LOG")" -eq "$GRAPPA_HEALTH_RETRIES" ]
+    # And it stopped: TLS never got installed on a box that serves nothing.
+    [ ! -e "$GRAPPA_TLS_HELPER" ]
+}
+
+@test "a grappa-tls failure leaves the box up with a re-run instruction" {
+    # The likeliest real failure is the Let's Encrypt quota, and it must NOT
+    # fail the boot: grappa itself is already serving, only the cert is late.
+    GETENT_RESOLVES=1 CERTBOT_FAILS=1 run "$FBSH"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"grappa-tls failed"* ]]
+    [[ "$output" == *"sudo grappa-tls"* ]]
 }
 
 # ───────────────────────────── env force-set ─────────────────────────────────
@@ -189,6 +287,21 @@ mode_of() {  # GNU-first, BSD fallback (macOS runner) — matches the packaging 
     # The #485 SSOT snippet was fetched, not re-typed.
     grep -q "grappa_upstream" "$GRAPPA_NGINX_SNIPPETS/grappa-locations-api.conf"
     grep -q "curl .*/infra/snippets/locations-api.conf" "$ARGV_LOG"
+}
+
+# Writing sites-available and never linking it leaves nginx serving the stock
+# default: the site file reads perfect on disk, the box answers nothing, and
+# the ACME challenge goes to the wrong server_name.
+@test "enables the site and drops the stock default" {
+    mkdir -p "$GRAPPA_NGINX_SITES_ENABLED"
+    printf 'stock default\n' > "$GRAPPA_NGINX_SITES_ENABLED/default"
+
+    run "$FBSH"
+    [ "$status" -eq 0 ]
+
+    [ -L "$GRAPPA_NGINX_SITES_ENABLED/grappa" ]
+    [ "$(readlink "$GRAPPA_NGINX_SITES_ENABLED/grappa")" = "$GRAPPA_NGINX_SITES_AVAILABLE/grappa" ]
+    [ ! -e "$GRAPPA_NGINX_SITES_ENABLED/default" ]
 }
 
 # ───────────────────────────── TLS helper + defer ────────────────────────────

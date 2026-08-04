@@ -66,8 +66,13 @@ printf '\n' >> "$ARGV_LOG"
 # \`GRAPPA_VERSION: \${GRAPPA_VERSION:-}\` through from this environment — the
 # prod profile pulls the cicchetto-build oneshot in via depends_on, so \`up -d\`
 # counts as a cic build launch just like an explicit run does (#692).
+#
+# The profile is part of the pattern, not decoration: a bare \`up -d\` does NOT
+# pull cicchetto-build in and builds no bundle. Matching it anyway let the
+# #692 regression check pass with \`--profile prod\` deleted from cmd_install
+# — measured, 25/25 green while no bundle would have been built at all.
 case "\$*" in
-    *cicchetto-build*|*"up -d"*)
+    *cicchetto-build*|*"--profile prod"*"up -d"*)
         printf 'env GRAPPA_VERSION=%s\n' "\${GRAPPA_VERSION:-}" >> "$ARGV_LOG" ;;
 esac
 if [ "\$1" = inspect ]; then
@@ -94,8 +99,13 @@ printf '\n' >> "$ARGV_LOG"
 # \`GRAPPA_VERSION: \${GRAPPA_VERSION:-}\` through from this environment — the
 # prod profile pulls the cicchetto-build oneshot in via depends_on, so \`up -d\`
 # counts as a cic build launch just like an explicit run does (#692).
+#
+# The profile is part of the pattern, not decoration: a bare \`up -d\` does NOT
+# pull cicchetto-build in and builds no bundle. Matching it anyway let the
+# #692 regression check pass with \`--profile prod\` deleted from cmd_install
+# — measured, 25/25 green while no bundle would have been built at all.
 case "\$*" in
-    *cicchetto-build*|*"up -d"*)
+    *cicchetto-build*|*"--profile prod"*"up -d"*)
         printf 'env GRAPPA_VERSION=%s\n' "\${GRAPPA_VERSION:-}" >> "$ARGV_LOG" ;;
 esac
 for a in "\$@"; do
@@ -225,6 +235,16 @@ EOF
     themes_line="$(grep -n 'grappa.seed_themes' "$ARGV_LOG" | head -n1 | cut -d: -f1)"
     up_line="$(grep -n 'up -d' "$ARGV_LOG" | head -n1 | cut -d: -f1)"
     [ -n "$themes_line" ] && [ -n "$up_line" ] && [ "$themes_line" -lt "$up_line" ]
+}
+
+# cicchetto-build lives in the prod profile, so a bare `up -d` starts the
+# bouncer and builds no bundle at all — the box serves a stale or absent SPA.
+# Nothing asserted the profile before: it could be deleted from cmd_install
+# and the whole file stayed green.
+@test "install: brings the stack up under the prod profile, or no bundle is built" {
+    run "$DEPLOY" install
+    [ "$status" -eq 0 ]
+    grep -q -- "--profile prod up -d" "$ARGV_LOG"
 }
 
 @test "install: the stack comes up carrying GRAPPA_VERSION from the VERSION file (#692)" {

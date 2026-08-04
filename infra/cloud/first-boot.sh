@@ -85,8 +85,12 @@ require_env() {
 		|| die "GRAPPA_ADMIN_EMAIL ('$GRAPPA_ADMIN_EMAIL') is not a valid email address."
 }
 
+# No test escape hatch here on purpose: an env var that skips the privilege
+# check ships to production, where anything able to set it walks straight past
+# the check — and because the suite set it unconditionally, the check itself
+# was never once exercised (#747). The suite stubs `id` on PATH like it stubs
+# apt-get and systemctl, so this runs verbatim under test.
 require_root() {
-	[ "${GRAPPA_SKIP_PRIVCHECK:-}" = 1 ] && return 0
 	[ "$(id -u)" -eq 0 ] || die "first-boot.sh must run as root (apt, systemctl, /etc/grappa all need it)."
 }
 
@@ -104,13 +108,19 @@ fetch() {
 # fully into a var FIRST (not piped) so no early-terminating stage can SIGPIPE
 # the download under `set -o pipefail`; `sed -n '1p'` reads all input, so it
 # picks the first match without closing the pipe early either.
+# Non-zero means "could not read the API"; empty stdout means "read it, no
+# such asset". Keeping those apart needs the trailing `|| true`: no match makes
+# grep exit 1, `set -o pipefail` promotes that to the pipeline's status, and in
+# the caller's command substitution `set -e` then killed the whole script — so
+# the die naming the problem was unreachable and a release without an amd64
+# asset aborted first boot with exit 1 and not one word of explanation (#748).
 latest_deb_url() {
 	local json
 	json="$(curl -fsSL "$GITHUB_API")" || return 1
 	printf '%s\n' "$json" \
 		| grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*_amd64\.deb"' \
 		| sed 's/.*"\(https[^"]*_amd64\.deb\)".*/\1/' \
-		| sed -n '1p'
+		| sed -n '1p' || true
 }
 
 install_grappa_deb() {
@@ -123,7 +133,7 @@ install_grappa_deb() {
 	# but a minbase cloud image may lack curl before the .deb lands.
 	apt-get install -y -q nginx certbot python3-certbot-nginx ca-certificates curl
 
-	deb_url="$(latest_deb_url)"
+	deb_url="$(latest_deb_url)" || die "could not read the latest release from $GITHUB_API"
 	[ -n "$deb_url" ] || die "no grappa_*_amd64.deb asset in the latest release ($GITHUB_API)"
 	say "Latest .deb: $deb_url"
 
