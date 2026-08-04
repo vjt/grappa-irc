@@ -67,6 +67,27 @@ const exports = identityScopedStore((onIdentityChange) => {
   >(token, async (t) => {
     if (!t) return null;
     const m = await me(t);
+    // #818 — refuse to hydrate for an identity that is no longer current.
+    // `createResource` discards the stale VALUE (a rotation refetches and only
+    // the latest promise feeds `user()`), but it cannot cancel an await: the
+    // two SIDE-EFFECTS below run whenever this promise settles, even seconds
+    // after the token rotated. Both write module-global caches keyed by
+    // nothing but (slug, channel), so account A's `/me` landing after the
+    // switch seeds B's cursors and B's badge with A's numbers. The cursor half
+    // is the worse one: a channel B has never read gets a `read_cursor: null`
+    // join reply, which `applyJoinReply` deliberately no-ops on, so A's value
+    // is never corrected — B's backlog renders as already seen, and the
+    // inverse (A's lower cursor on B's window) can drive a spurious MARKREAD.
+    //
+    // The identity-TRANSITION is already handled (readCursor's own `on(token)`
+    // arm and the `onIdentityChange` purge below both fire on rotation); what
+    // was missing is refusing a write that arrives AFTER the purge. Same rule
+    // and same predicate as #788's `identityMoved` in `scrollback.ts`: check
+    // after the await, not in front of the request. Kept in the caller rather
+    // than inside `applyMeEnvelope` because the check guards the whole block —
+    // `setBadge` shares this await and this bug — and because `readCursor`
+    // cannot know which identity produced an envelope handed to it.
+    if (token() !== t) return m;
     // CP29 R-4: hydrate the readCursor signal map from the bulk envelope
     // BEFORE downstream consumers (subscribe.ts join effects, etc.)
     // observe `user()` and start joining channel topics. The join-reply
