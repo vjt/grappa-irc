@@ -100,7 +100,7 @@ defmodule Grappa.IRC.Client do
   """
   use GenServer
 
-  alias Grappa.IRC.{AuthFSM, Identifier, Message, Parser}
+  alias Grappa.IRC.{AuthFSM, FakeLag, Identifier, Message, Parser}
 
   require Logger
 
@@ -164,7 +164,11 @@ defmodule Grappa.IRC.Client do
           liveness_idle_ms: pos_integer(),
           liveness_timeout_ms: pos_integer(),
           idle_timer: reference() | nil,
-          ping_timer: reference() | nil
+          ping_timer: reference() | nil,
+          # #800 S7 — what this connection's own outbound traffic would
+          # cost it under bahamut's flood throttle. Diagnostic only:
+          # nothing reads it to make a decision.
+          fake_lag: FakeLag.t()
         }
 
   # `:socket` is intentionally NOT enforced — pre-connect (between `init/1`
@@ -176,7 +180,17 @@ defmodule Grappa.IRC.Client do
   # #100: `liveness_idle_ms` / `liveness_timeout_ms` ARE enforced — they are
   # always resolved in `init/1` and a `nil` would crash `Process.send_after/3`
   # at arm time. Timer refs (`idle_timer` / `ping_timer`) start nil.
-  @enforce_keys [:transport, :dispatch_to, :fsm, :liveness_idle_ms, :liveness_timeout_ms]
+  #
+  # #800 S7: `fake_lag` is enforced for the same reason — `init/1` always
+  # seeds it and a `nil` would crash the accounting on the first frame.
+  @enforce_keys [
+    :transport,
+    :dispatch_to,
+    :fsm,
+    :liveness_idle_ms,
+    :liveness_timeout_ms,
+    :fake_lag
+  ]
   defstruct [
     :socket,
     :transport,
@@ -185,7 +199,8 @@ defmodule Grappa.IRC.Client do
     :liveness_idle_ms,
     :liveness_timeout_ms,
     :idle_timer,
-    :ping_timer
+    :ping_timer,
+    :fake_lag
   ]
 
   # Cluster visitor-auth hotfix: pre-crash throttle when do_connect/5
@@ -995,7 +1010,8 @@ defmodule Grappa.IRC.Client do
           liveness_idle_ms: Map.get(opts, :liveness_idle_ms, @liveness_idle_ms),
           liveness_timeout_ms: Map.get(opts, :liveness_timeout_ms, @liveness_timeout_ms),
           idle_timer: nil,
-          ping_timer: nil
+          ping_timer: nil,
+          fake_lag: FakeLag.new()
         }
 
         {:ok, state, {:continue, {:connect, opts}}}
@@ -1039,10 +1055,10 @@ defmodule Grappa.IRC.Client do
         # would cascade through Session.Server's narrow exit-catch
         # list at session/server.ex:660-677 (U-cluster cleanup
         # 2026-05-17 root cause).
-        Enum.each(sends, &(_ = transport_send(connected, &1)))
+        sent = send_frames(connected, sends)
         # #100 — arm the liveness idle timer now that the socket is up. Every
         # inbound line resets it (arm_idle/1); if it ever elapses we self-PING.
-        {:noreply, arm_idle(%{connected | fsm: fsm})}
+        {:noreply, arm_idle(%{sent | fsm: fsm})}
 
       {:error, reason} ->
         Process.send_after(self(), {:connect_failed_giveup, reason}, @connect_failure_sleep_ms)
@@ -1070,9 +1086,9 @@ defmodule Grappa.IRC.Client do
   # the ping_timer will fire the stop anyway (or a `:tcp_closed` beats it);
   # either way the reconnect chain engages.
   def handle_info(:liveness_idle, state) do
-    _ = transport_send(state, "PING :grappa-liveness\r\n")
+    {_, probed} = send_frame(state, "PING :grappa-liveness\r\n")
     timer = Process.send_after(self(), :liveness_timeout, state.liveness_timeout_ms)
-    {:noreply, %{state | idle_timer: nil, ping_timer: timer}}
+    {:noreply, %{probed | idle_timer: nil, ping_timer: timer}}
   end
 
   # #100 — liveness phase 2: the self-PING went unanswered for the full
@@ -1115,7 +1131,8 @@ defmodule Grappa.IRC.Client do
     # siblings (run 25975442301, 2026-05-17). Returning the honest
     # tuple lets the caller decide (Session.Server.terminate/2
     # discards the result; an interactive caller can retry).
-    {:reply, transport_send(state, ensure_crlf(line)), state}
+    {result, sent} = send_frame(state, ensure_crlf(line))
+    {:reply, result, sent}
   end
 
   # IRC framing requires every line to end with CRLF. The high-level
@@ -1528,16 +1545,16 @@ defmodule Grappa.IRC.Client do
         # because it's a local opt change (no I/O) — it cannot fail
         # for a transport-level reason short of the socket already
         # being gone, in which case the next info-message will stop us.
-        Enum.each(sends, &(_ = transport_send(state, &1)))
+        sent = send_frames(state, sends)
         :ok = transport_setopts(state, active: :once)
-        {:noreply, %{state | fsm: fsm}}
+        {:noreply, %{sent | fsm: fsm}}
 
       {:stop, reason, fsm, sends} ->
         # Same discard rationale; the FSM has already decided to stop
         # so an outbound write failure changes nothing.
-        Enum.each(sends, &(_ = transport_send(state, &1)))
+        sent = send_frames(state, sends)
         log_stop_reason(reason, fsm)
-        {:stop, reason, %{state | fsm: fsm}}
+        {:stop, reason, %{sent | fsm: fsm}}
     end
   end
 
@@ -1599,6 +1616,93 @@ defmodule Grappa.IRC.Client do
 
   defp log_stop_reason({:nick_rejected, code, nick}, _) do
     Logger.error("upstream rejected nick", numeric: code, nick: nick)
+  end
+
+  # #800 S7 — the instrumented outbound choke point. EVERY frame this
+  # process writes goes through here: the registration burst, the
+  # liveness self-PING, the FSM's handshake replies, and the session's
+  # own commands. Accounting only the last of those would under-count the
+  # connection's cost, and an under-count is exactly what would retire
+  # the fake-lag hypothesis for the wrong reason.
+  #
+  # Behaviour is unchanged from the bare `transport_send/2` it wraps:
+  # same bytes, same order, same honest tagged-tuple return. The only
+  # addition is that the caller now threads the updated state back.
+  @spec send_frame(t(), iodata()) :: {send_result(), t()}
+  defp send_frame(state, data) do
+    # A binary in, a binary out — `IO.iodata_to_binary/1` hands a binary
+    # straight back, so this costs nothing on the common path while still
+    # letting an iolist caller be measured by what actually goes on the
+    # wire.
+    frame = IO.iodata_to_binary(data)
+    result = transport_send(state, frame)
+
+    {fake_lag, sample} =
+      FakeLag.record(state.fake_lag, byte_size(frame), System.monotonic_time(:millisecond))
+
+    log_outbound_cost(frame, sample)
+
+    {result, %{state | fake_lag: fake_lag}}
+  end
+
+  # #800 S7 — one line per frame, at DEBUG.
+  #
+  # Level, deliberately: production runs at `:info` (`config/prod.exs`,
+  # `LOG_LEVEL`), so this is silent there and costs only the fold above —
+  # the `Logger.debug/2` macro never evaluates its arguments when the
+  # level is off. The dev/compose stack (which the integration testnet
+  # runs) has no level override and so defaults to `:debug`, which is
+  # where the measurement is taken. A live node can also read the current
+  # bank straight off `:sys.get_state/1` without any log at all.
+  #
+  # `command` is the VERB ONLY. The parameters are the message body on a
+  # PRIVMSG and the base64 credential on an AUTHENTICATE; CLAUDE.md
+  # Security is explicit that what reaches stdout outlives the process.
+  # The byte count is what the model charges for, so it is the number
+  # worth having — not the content.
+  @spec log_outbound_cost(binary(), FakeLag.sample()) :: :ok
+  defp log_outbound_cost(frame, sample) do
+    Logger.debug("upstream send",
+      command: verb(frame),
+      sent_bytes: byte_size(frame),
+      commands_10s: sample.commands_10s,
+      penalty_10s_s: sample.penalty_10s_s,
+      bank_model_s: sample.bank_model_s,
+      headroom_s: sample.headroom_s
+    )
+  end
+
+  @doc false
+  # Test-only seam for the log-line verb extraction. Mirrors
+  # `__tls_connect_opts_for_test__/1` — greppable, absent from public
+  # docs. The emitted line is asserted end-to-end in
+  # `Grappa.IRC.ClientOutboundCostTest`; this lets the async client suite
+  # pin the never-log-the-params rule without touching the global level.
+  @spec __verb_for_test__(binary()) :: binary()
+  def __verb_for_test__(frame), do: verb(frame)
+
+  # Leading token, stripped of its terminator and bounded: a frame is
+  # attacker-influenced only via our own builders, but an unbounded slice
+  # of a 512-byte line in a log field is a needless hostage.
+  @spec verb(binary()) :: binary()
+  defp verb(frame) do
+    frame
+    |> :binary.split([" ", "\r", "\n"])
+    |> hd()
+    |> binary_slice(0, 32)
+  end
+
+  # Fold a batch of frames through the choke point. The write result is
+  # discarded for the same reason the pre-#800 `Enum.each` discarded it:
+  # a peer RST mid-handshake is benign and the recv-loop's `:tcp_closed`
+  # follows; an FSM that has already decided to stop cannot be helped by
+  # a failed write either.
+  @spec send_frames(t(), [iodata()]) :: t()
+  defp send_frames(state, frames) do
+    Enum.reduce(frames, state, fn frame, acc ->
+      {_, acc} = send_frame(acc, frame)
+      acc
+    end)
   end
 
   # Nil-socket guard: connect_failed before socket assignment, or
