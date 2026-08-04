@@ -33,25 +33,25 @@ import { getResumeCursor, recordSeen } from "./reconnectBackfill";
 // overlap in a small race window — the same row would otherwise
 // appear twice. `id` is monotonic per the schema's auto-increment column.
 //
-// Identity-scoped state via identityScopedStore (dup-A3 close): nine resets
+// Identity-scoped state via identityScopedStore (dup-A3 close): eleven resets
 // registered (see the registration block below). The factory preserves the A1
 // invariant — registration runs before any verb fires, so no rotation can be
 // missed for want of a registered reset.
 //
-// #769 — what that does NOT buy, and what this comment used to claim it
+// #788 — what the resets do NOT buy, and what this comment used to claim they
 // did ("a logout/rotation between `loadInitialScrollback` start and finish
-// always wins the race"): the resets clear STATE, they do not cancel a
-// verb already in flight. Every ASYNC verb here captures `token()` at entry
-// and then awaits, and nothing re-checks it afterwards — so a continuation
-// resuming past a rotation still holds the bearer it captured, and the
-// per-key in-flight guards that are NOT in the reset list (`refreshInFlight`,
-// `jumpInFlight`) still hold their keys. Ordering-with-cancellation was
-// never implemented; the wording promised it anyway.
+// always wins the race"): they clear STATE, they do not cancel a verb already
+// in flight. Every ASYNC verb here captures `token()` at entry and then
+// awaits, and nothing used to re-check it afterwards — so a continuation
+// resuming past a rotation still held the bearer it captured, and the per-key
+// in-flight guards that were NOT in the reset list (`refreshInFlight`,
+// `jumpInFlight`) still held their keys. Ordering-with-cancellation was never
+// implemented; the wording promised it anyway.
 //
-// That is not theoretical: delaying the reconnect backfill 400ms in a browser
+// That was not theoretical: delaying the reconnect backfill 400ms in a browser
 // put a `/messages/count` on the wire 10ms AFTER the detach, carrying the
-// revoked bearer. Tracked as its own defect (see #788) — #769 turned out to be
-// a spec race and is NOT that bug.
+// revoked bearer. (#769, which surfaced it, turned out to be a spec race and
+// is NOT that bug.) See `identityMoved` for the rule that closes it.
 //
 // ---------------------------------------------------------------------------
 // CP14 B3 — DM history is now bidirectional server-side.
@@ -150,6 +150,60 @@ const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): Scrollba
   return dropCount > 0 ? rows.slice(dropCount) : rows;
 };
 
+// #788 — THE rule for every async verb in this module: an `await` can span an
+// identity transition, and a continuation that outlived its identity must do
+// NOTHING further. Not one request on the wire, not one write into the store.
+//
+// `t` is the bearer the verb captured at entry — its identity, not merely its
+// credential. Re-read `token()` after the await and compare: if it moved, the
+// verb belongs to an identity that no longer exists here.
+//
+// Both halves of "nothing further" are load-bearing, which is why the check
+// sits after the await rather than in front of each REST call:
+//
+//   * the WIRE half is #788 proper. A request carrying a revoked bearer 401s
+//     at best; for a channel the NEW identity is not attached to it 404s, and
+//     the host's `http-404` fail2ban jail bans the client IP at the firewall.
+//     A routine account switch self-bans the operator — the #281 harm class,
+//     reached through a different door.
+//   * the STORE half is the same continuation without touching the network:
+//     the page it already fetched merges into a map the rotation just purged,
+//     so the new identity renders the old one's scrollback. A guard wrapped
+//     around the REST calls alone would not catch it — the poisoning happens
+//     between the resolved fetch and the next request.
+//
+// So: eleven of this module's fifteen awaits are followed by this check, and
+// the bail is whatever "did nothing" means for that verb's return type. Two
+// classes of await are exempt, four sites in all — the ones whose await is
+// their last act (`probeGap`, and the two tail calls into `anchorAtTail`), and
+// `resolveJumpTarget`, whose only successor is a pure value returned to a
+// caller that checks immediately. A new verb that awaits and skips the check
+// reopens the defect for its own call path only — which is exactly how this
+// one survived: it was never a whole-module property, just an unwritten habit
+// that the three verbs with a single await happened to keep.
+//
+// An await has THREE exits and all three are the verb's own conduct, so the
+// check belongs at each one that touches state:
+//
+//   * resolve — the eleven above.
+//   * reject — `api.ts` throws on any non-ok response, so a bearer revoked
+//     WHILE the request was in flight comes back as a 401 throw, which is the
+//     likelier arrival than a clean resolve. Only one catch in this module
+//     writes state (`loadInitialScrollback` releasing its load-once gate); the
+//     rest log and return, so only that one carries the check.
+//   * finally — the per-key in-flight locks. Past a rotation the reset has
+//     already cleared the Set, so an entry under this key belongs to the
+//     identity that replaced us: deleting it unlocks a fetch that is still
+//     running. Same for the `refreshScrollback` completion stamp, which would
+//     tell a spec that ITS backfill had landed.
+//
+// Not hoisted into `identityScopedStore`: that factory owns the identity
+// TRANSITION (fire the resets), while this owns a verb's own captured
+// identity, which the factory never sees. Sibling modules inline the same
+// comparison (`displayPrefs`, `customTheme`) to drop a stale RESPONSE; this is
+// the same predicate used one step earlier, to refuse a stale REQUEST.
+const identityMoved = (t: string): boolean => token() !== t;
+
 const exports = identityScopedStore((onIdentityChange) => {
   const loadedChannels = new Set<ChannelKey>();
   // CP14 B2: per-key in-flight Set guards against scroll-burst fan-out
@@ -246,16 +300,37 @@ const exports = identityScopedStore((onIdentityChange) => {
     equals: false,
   });
 
-  // Identity-transition cleanup. Nine registered resets fired by the
-  // factory's createEffect(on(token, ...)) — five Set.clear() (loadedChannels
-  // + loadMore{InFlight,Exhausted} + loadNewer{InFlight,Exhausted}, #161) +
-  // four signal flushes (scrollbackByChannel + lastOwnSend + ownSendSubmitted,
-  // #580 + farBehindByChannel, #693). Order matches the pre-A3 inline shape.
+  // Identity-transition cleanup, and the SSOT for what an identity transition
+  // clears. Eleven registered resets fired by the factory's
+  // createEffect(on(token, ...)) — seven Set.clear() (loadedChannels +
+  // loadMore{InFlight,Exhausted} + loadNewer{InFlight,Exhausted}, #161 +
+  // refreshInFlight + jumpInFlight, #788) + four signal flushes
+  // (scrollbackByChannel + lastOwnSend + ownSendSubmitted, #580 +
+  // farBehindByChannel, #693). Order matches the pre-A3 inline shape.
+  //
+  // #788 — the last two are registered here, away from their declarations
+  // beside the verbs that own them, precisely BECAUSE that distance is how
+  // they came to be missed: this list is the thing to read when asking "what
+  // survives a rotation", so a lock that is not on it is a lock nobody will
+  // remember. Left held, they were a real defect and not merely untidy — an
+  // in-flight refresh for identity A keeps A's key until its continuation
+  // reaches the `finally`, and B's `refreshScrollback` for the same key
+  // short-circuits in the meantime, so B's window silently never backfills.
+  //
+  // Clearing a Set mid-flight would otherwise let A's `finally` delete a key B
+  // has since re-added, unlocking a fetch that is still running. Every one of
+  // the four in-flight `finally` blocks therefore releases its key only while
+  // the identity still holds — past a rotation the reset owns the Set and the
+  // continuation owns nothing. (An id-dedupe argument covers only the two
+  // merge paths; `jumpToUnread` REPLACES the key's rows, so a second concurrent
+  // jump would discard whatever landed between the two writes.)
   onIdentityChange(() => loadedChannels.clear());
   onIdentityChange(() => loadMoreInFlight.clear());
   onIdentityChange(() => loadMoreExhausted.clear());
   onIdentityChange(() => loadNewerInFlight.clear());
   onIdentityChange(() => loadNewerExhausted.clear());
+  onIdentityChange(() => refreshInFlight.clear());
+  onIdentityChange(() => jumpInFlight.clear());
   onIdentityChange(() => setScrollbackByChannel({}));
   onIdentityChange(() => setLastOwnSend(null));
   onIdentityChange(() => setOwnSendSubmitted(null));
@@ -371,11 +446,13 @@ const exports = identityScopedStore((onIdentityChange) => {
   //
   // Three callers reach this verb and they are indistinguishable on the wire —
   // same URL shape, and two of the three anchor at the read cursor. They are
-  // also NOT symmetric with respect to identity, which is what #788 turns on:
+  // also NOT symmetric with respect to identity, which is what #788 turned on:
   // the cold-open call below runs with NO await between its `token()` capture
   // and this request (`getReadCursor` is a synchronous signal read), so it
   // cannot reach the wire under anything but the current bearer, while the two
-  // reconnect callers await first and can carry a revoked one.
+  // reconnect callers await first and could carry a revoked one. Each of those
+  // two now checks `identityMoved` before it gets here; this verb takes no
+  // check of its own because its await is its last act.
   const probeGap = async (
     t: string,
     slug: string,
@@ -420,6 +497,7 @@ const exports = identityScopedStore((onIdentityChange) => {
   ): Promise<void> => {
     const key = channelKey(slug, name);
     const page = await listMessages(t, slug, name);
+    if (identityMoved(t)) return;
     const rows = [...page].sort(byServerTimeThenId);
     const newest = rows[rows.length - 1]?.id ?? 0;
     setScrollbackByChannel((prev) => {
@@ -445,6 +523,11 @@ const exports = identityScopedStore((onIdentityChange) => {
   // it differs. One extra small GET, only on the reconnect path, only when
   // already far behind. A failed re-probe keeps the anchor: a slightly
   // conservative jump target beats no affordance at all.
+  //
+  // #788 exemption: no `identityMoved` check after the await here. This verb
+  // has no successor of its own — it returns two numbers, and the caller
+  // checks before spending them. Adding one would mean inventing a bail value
+  // for a function that cannot do harm.
   const resolveJumpTarget = async (
     t: string,
     slug: string,
@@ -498,6 +581,7 @@ const exports = identityScopedStore((onIdentityChange) => {
         listMessagesAfter(t, slug, name, far.resumeFrom, PAGE_LIMIT),
         listMessages(t, slug, name, far.resumeFrom + 1),
       ]);
+      if (identityMoved(t)) return false;
       // Disjoint by construction — `after(cursor)` is `id > cursor`,
       // `before(cursor + 1)` is `id <= cursor` — so concat + sort needs no
       // dedupe pass.
@@ -513,7 +597,7 @@ const exports = identityScopedStore((onIdentityChange) => {
       console.error("[scrollback] jumpToUnread failed", slug, name, err);
       return false;
     } finally {
-      jumpInFlight.delete(key);
+      if (!identityMoved(t)) jumpInFlight.delete(key);
     }
   };
 
@@ -569,6 +653,7 @@ const exports = identityScopedStore((onIdentityChange) => {
         // a brand-new window auto-scrolls to the tail, so the newest
         // rows are exactly what's wanted and there's no divider to anchor.
         const page = await listMessages(t, slug, name);
+        if (identityMoved(t)) return;
         mergeIntoScrollback(key, page);
         // RC2 (decouple-unread-badge) — baseline the read cursor to this
         // backlog's tail. Opening a fresh channel auto-scrolls to the
@@ -642,6 +727,7 @@ const exports = identityScopedStore((onIdentityChange) => {
         // behind the load-once gate, on a human click; the pane is empty here
         // so `anchorAtTail` has nothing to discard.
         const gap = await probeGap(t, slug, name, cursor);
+        if (identityMoved(t)) return;
         if (gap !== null && isFarBehind(gap)) {
           await anchorAtTail(t, slug, name, gap, cursor);
         } else {
@@ -649,6 +735,7 @@ const exports = identityScopedStore((onIdentityChange) => {
             listMessagesAfter(t, slug, name, cursor, PAGE_LIMIT),
             listMessages(t, slug, name, cursor + 1),
           ]);
+          if (identityMoved(t)) return;
           // A rejoin's `refreshScrollback` can have re-anchored this key at
           // the tail while these two pages were in flight (nothing serialises
           // the cold-load and the reconnect path for one key). Splicing the
@@ -664,6 +751,14 @@ const exports = identityScopedStore((onIdentityChange) => {
     } catch {
       // First-load failure leaves the empty seed in place; the pane
       // shows "no messages yet". A retry mechanism is Phase 5+.
+      //
+      // #788 — the reject path is the likelier arrival for a bearer revoked
+      // in flight (`api.ts` throws the 401), and this gate is identity-scoped
+      // state. Releasing it past a rotation releases the NEW identity's gate:
+      // its next re-select reads `wasLoaded` false, takes the fresh-open arm
+      // that deliberately does NOT fire `refreshScrollback` (#159), and so
+      // skips one live-delivery catch-up while re-paying for a cold load.
+      if (identityMoved(t)) return;
       loadedChannels.delete(key);
     }
   };
@@ -692,6 +787,7 @@ const exports = identityScopedStore((onIdentityChange) => {
       // a `messages.id` value, eliminating same-ms ties that straddled
       // page boundaries pre-flip.
       const page = await listMessages(t, slug, name, oldest.id);
+      if (identityMoved(t)) return;
       // CP14 B2: empty page from the server means there's no older
       // history to load. Latch the channel so subsequent scroll-to-
       // top events don't re-fetch.
@@ -705,7 +801,7 @@ const exports = identityScopedStore((onIdentityChange) => {
       // retry by scrolling again; the in-flight guard releases via
       // the finally clause below.
     } finally {
-      loadMoreInFlight.delete(key);
+      if (!identityMoved(t)) loadMoreInFlight.delete(key);
     }
   };
 
@@ -747,6 +843,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     loadNewerInFlight.add(key);
     try {
       const page = await listMessagesAfter(t, slug, name, newest.id, PAGE_LIMIT);
+      if (identityMoved(t)) return;
       // Empty forward page = the local tail IS the live server tail. Latch
       // so subsequent scroll-to-bottom events (including the auto-follow
       // scroll that fires when a live row appends at the tail) are no-ops.
@@ -759,7 +856,7 @@ const exports = identityScopedStore((onIdentityChange) => {
       // Transient error — do NOT latch. The user can retry by scrolling;
       // the in-flight guard releases via the `finally` below.
     } finally {
-      loadNewerInFlight.delete(key);
+      if (!identityMoved(t)) loadNewerInFlight.delete(key);
     }
   };
 
@@ -815,6 +912,11 @@ const exports = identityScopedStore((onIdentityChange) => {
     // is cheaper than hoisting `setCursorIfAdvances` to a leaf module
     // for a single second caller.
     const row = await apiSendMessage(t, slug, name, body, ctcpTarget);
+    // #788 — the cursor POST below was already unreachable past a rotation, but
+    // only by accident: the store purge empties the pane, `hasRenderedRow`
+    // goes false, and the anti-poison gate declines. That is a guarantee owed
+    // to an unrelated invariant, one refactor away from evaporating. State it.
+    if (identityMoved(t)) return;
     // Anti-poison gate (issue #50 / m6, 2026-06-09): only advance the
     // cursor when the local pane already holds a rendered row. Advancing
     // PAST an unrendered row poisons `refreshScrollback`'s resume cursor —
@@ -925,6 +1027,7 @@ const exports = identityScopedStore((onIdentityChange) => {
       // dynamic per-channel cap) doesn't have to thread through the
       // api.ts helper signature.
       const page = await listMessagesAfter(t, slug, name, cursor, PAGE_LIMIT);
+      if (identityMoved(t)) return;
       for (const msg of page) {
         appendToScrollback(key, msg);
         // Roll the high-water mark forward as we ingest so a second
@@ -956,8 +1059,10 @@ const exports = identityScopedStore((onIdentityChange) => {
         const last = page[page.length - 1];
         const anchor = last ? last.id : cursor;
         const gap = await probeGap(t, slug, name, anchor);
+        if (identityMoved(t)) return;
         if (gap !== null && isFarBehind(gap)) {
           const target = await resolveJumpTarget(t, slug, name, anchor, gap);
+          if (identityMoved(t)) return;
           await anchorAtTail(t, slug, name, target.missed, target.resumeFrom);
         }
       }
@@ -967,10 +1072,12 @@ const exports = identityScopedStore((onIdentityChange) => {
       // telemetry hook will replace this.
       console.error("[scrollback] refreshScrollback failed", slug, name, err);
     } finally {
-      refreshInFlight.delete(key);
-      // #552 — mark this backfill DONE (success or error): no more in-flight
-      // DOM recreation for this key, so a spec awaiting it can safely proceed.
-      stampScrollbackRefreshed(key);
+      if (!identityMoved(t)) {
+        refreshInFlight.delete(key);
+        // #552 — mark this backfill DONE (success or error): no more in-flight
+        // DOM recreation for this key, so a spec awaiting it can safely proceed.
+        stampScrollbackRefreshed(key);
+      }
     }
   };
 

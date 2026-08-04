@@ -129,6 +129,36 @@ describe("bootFetch (#717 — bounded, retrying boot transport)", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("retries an attempt whose BODY aborts, and hands back a body the caller can read", async () => {
+    // #779.4 — `fetch` resolves at the HEADERS and the signal stays live on the
+    // Response, but every caller (`me`, `listNetworks`, `listChannels`) reads
+    // the body AFTER bootFetch has returned. A body still streaming when the
+    // per-attempt budget expires aborted out there, where the retry loop could
+    // not see it: a boot that failed and never tried again. Plausible on a slow
+    // link with a large `/me` envelope (read_cursors + unread_counts).
+    const aborting = new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"partial":'));
+          controller.error(new DOMException("The operation was aborted.", "AbortError"));
+        },
+      }),
+      { status: 200 },
+    );
+    const fetchMock = vi
+      .fn<() => Promise<Response>>()
+      .mockResolvedValueOnce(aborting)
+      .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const promise = bootFetch("/me", {});
+    await vi.advanceTimersByTimeAsync(totalBackoffMs);
+    const res = await promise;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(res.json()).resolves.toEqual({ ok: true });
+  });
+
   it("gives each attempt its own signal, so attempt 1's timeout cannot abort attempt 2", async () => {
     const fetchMock = vi
       .fn<() => Promise<Response>>()

@@ -52,6 +52,10 @@ defmodule GrappaWeb.PasskeyController do
   def register(%{assigns: %{current_subject: {:user, user}}} = conn, params) do
     case WebAuthn.complete_registration(user, params, client_binding(conn)) do
       {:ok, passkey} -> conn |> put_status(:created) |> json(public_passkey(passkey))
+      # #768 — a saturated writer is not a bad authenticator. Without this the
+      # BusyRetry wrap around the insert would only downgrade the 500 into a
+      # LIE, telling the user their brand-new credential was rejected.
+      {:error, :db_unavailable} = err -> err
       _ -> {:error, :invalid_two_factor}
     end
   end
@@ -145,6 +149,13 @@ defmodule GrappaWeb.PasskeyController do
          {:ok, ^mode} <- WebAuthn.set_mode(user, mode, session_id, Map.get(metadata, :recovery_codes, [])) do
       json(conn, %{mode: mode})
     else
+      # #768 — `set_mode/4` rides out contention through `Repo.BusyRetry`, so
+      # `:db_unavailable` is a legitimate outcome here. Collapsing it into the
+      # oracle told the user their authenticator was wrong and sent them to
+      # retry a ceremony that could not succeed; the honest answer is the 503
+      # FallbackController already maps. Everything BELOW stays opaque on
+      # purpose — this is an authentication oracle, not a diagnostic surface.
+      {:error, :db_unavailable} = err -> err
       _ -> {:error, :invalid_two_factor}
     end
   end

@@ -560,7 +560,7 @@ const renderRawEvent = (
             *** {senderSpan(sender)} invited you to {invitedChannel}{" "}
             <button
               type="button"
-              class="scrollback-invite-join"
+              class="scrollback-inline-button scrollback-invite-join"
               onClick={() => handlers.onJoinChannel(invitedChannel)}
             >
               [Join]
@@ -660,7 +660,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
   const senderSpan = (bracketLeft: string, bracketRight: string, nick: string): JSX.Element => (
     <button
       type="button"
-      class="scrollback-sender nick-clickable"
+      class="scrollback-sender scrollback-inline-button nick-clickable"
       onClick={() => handlers.onNickClick(nick)}
       onContextMenu={(e: MouseEvent) => handlers.onNickContextMenu(nick, e)}
     >
@@ -677,7 +677,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
   const bareSenderSpan = (nick: string): JSX.Element => (
     <button
       type="button"
-      class="scrollback-sender nick-clickable"
+      class="scrollback-sender scrollback-inline-button nick-clickable"
       onClick={() => handlers.onNickClick(nick)}
       onContextMenu={(e: MouseEvent) => handlers.onNickContextMenu(nick, e)}
     >

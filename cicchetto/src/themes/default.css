@@ -832,10 +832,19 @@ html.overlay-open #root > div {
   cursor: not-allowed;
 }
 
-/* #204 — Advanced disclosure toggle. Quiet text-button between the nick
-   input and Connect (vjt layout fix). Full-width comfortable tap target,
-   left-aligned so the ▸/▾ affordance reads as a disclosure, not a CTA. */
-.login-advanced-toggle {
+/* #740 — the quiet text-button of the login card, declared ONCE. It was
+   two byte-identical rules (#204's Advanced disclosure and #442's alt-auth
+   pair): nine declarations copied, in the same flex row under
+   align-items: center, so a padding or min-height tweak landing on one and
+   not the other shows up as a height mismatch between buttons that sit
+   side by side.
+
+   Worn ALONGSIDE the per-instance class, never instead of it: both
+   `.login-advanced-toggle` and `.login-alt-auth` are selector contracts the
+   e2e clicks as strict single matches (issue281), so they keep their names
+   and their own rules — which now hold only what genuinely differs. Today
+   that is nothing; the rules stay as the documented place for a delta. */
+.login-quiet-button {
   background: transparent;
   color: var(--muted);
   border: none;
@@ -847,9 +856,16 @@ html.overlay-open #root > div {
   cursor: pointer;
 }
 
-.login-advanced-toggle:hover {
+.login-quiet-button:hover {
   color: var(--fg);
 }
+
+/* #204's Advanced disclosure toggle and #442's alt-auth pair keep their
+   class names — both are selector contracts the e2e clicks as strict single
+   matches (issue281) — but no longer carry a rule of their own: they wear
+   .login-quiet-button beside it for the shape, and have no delta to declare.
+   A future per-instance tweak goes in a rule reintroduced here, not by
+   re-copying the block above. */
 
 /* #442 — the alt-auth entry points ride the Advanced toggle's row so they
    add NO height to the card. On 1024x900 with Advanced open the form is
@@ -866,26 +882,6 @@ html.overlay-open #root > div {
    the leading edge it has on main. */
 .login-alt-auth-row .login-advanced-toggle {
   margin-right: auto;
-}
-
-/* #442 — alternate auth entry points (passkey / recovery code). Same quiet
-   text-button look as the disclosure toggle, but a class of its own: the e2e
-   clicks .login-advanced-toggle as a strict single match, so that selector
-   must stay one element per rendered branch. */
-.login-alt-auth {
-  background: transparent;
-  color: var(--muted);
-  border: none;
-  text-align: left;
-  padding: 0.6rem 0.25rem;
-  min-height: var(--tap-min);
-  font-family: var(--font-mono);
-  font-size: 0.9rem;
-  cursor: pointer;
-}
-
-.login-alt-auth:hover {
-  color: var(--fg);
 }
 
 .login-advanced {
@@ -2404,15 +2400,34 @@ html.resize-dragging * {
   color: var(--accent);
 }
 
-/* C7.6: clickable nick — pointer cursor + subtle hover underline.
-   Applied to <button> elements in scrollback so they render inline. */
-.nick-clickable {
+/* #740 — "render a <button> as inline text", declared ONCE. It was three
+   copies (.nick-clickable, .channel-clickable, .scrollback-invite-join),
+   each carrying the same five-declaration reset plus the same hover
+   underline. Worn ALONGSIDE the per-instance class, which keeps only what
+   genuinely differs — colour, padding, font-weight, and the #250
+   user-select the [Join] CTA deliberately does not take.
+
+   Deliberately NOT a `.scrollback :where(button)` floor in the #735 shape:
+   the scrollback also holds buttons that are not inline text (the
+   scroll-to-bottom badge, the far-behind jump/dismiss pair), and
+   `display: inline` would break them. The shape belongs to these three
+   controls, not to their container. */
+.scrollback-inline-button {
   cursor: pointer;
   background: none;
   border: none;
-  padding: 0;
   font: inherit;
   display: inline;
+}
+
+.scrollback-inline-button:hover {
+  text-decoration: underline;
+}
+
+/* C7.6: clickable nick — the inline-text button reset above, with no padding
+   and the #250 selection carve-out. */
+.nick-clickable {
+  padding: 0;
   /* #250 (2026-07-15): keep the nick INSIDE a drag text-selection on
      EVERY platform — unconditional, NOT gated behind `html.is-ios`. The
      nick is an interactive inline <button>; Android's native touch-
@@ -2435,50 +2450,27 @@ html.resize-dragging * {
   user-select: text;
 }
 
-.nick-clickable:hover {
-  text-decoration: underline;
-}
-
-/* #648: clickable #channel in scrollback — an inline <button> (same
-   transparent-inline shape as .nick-clickable) tinted with the accent so a
+/* #648: clickable #channel in scrollback — tinted with the accent so a
    channel token reads as a link-like join affordance, distinct from a plain
    nick. user-select: text mirrors .nick-clickable (#250): the token stays
    inside a drag text-selection on every platform while the tap-to-join
    handler stays intact; keyboard/focus policy is owned separately by
    keepKeyboard.ts's SELECTABLE_TEXT_EXCLUDE (#354, #648). */
 .channel-clickable {
-  cursor: pointer;
-  background: none;
-  border: none;
   padding: 0;
-  font: inherit;
-  display: inline;
   color: var(--accent);
   -webkit-user-select: text;
   user-select: text;
 }
 
-.channel-clickable:hover {
-  text-decoration: underline;
-}
-
 /* No-silent-drops bucket 2: [Join] CTA inline button on INVITE rows.
-   Same shape as .nick-clickable (transparent button rendered inline)
-   but with explicit accent color + bracketed visual weight so the
-   click affordance is loud against the muted notice row. */
+   Explicit accent color + bracketed visual weight so the click affordance is
+   loud against the muted notice row. No user-select: unlike the two text
+   tokens this is a control, not copyable text (keepKeyboard.ts). */
 .scrollback-invite-join {
-  cursor: pointer;
-  background: none;
-  border: none;
   padding: 0 0.25em;
-  font: inherit;
-  display: inline;
   color: var(--accent);
   font-weight: bold;
-}
-
-.scrollback-invite-join:hover {
-  text-decoration: underline;
 }
 
 /* No-silent-drops bucket 4: clickable URLs in scrollback bodies.
