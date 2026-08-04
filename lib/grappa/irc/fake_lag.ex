@@ -80,6 +80,30 @@ defmodule Grappa.IRC.FakeLag do
   find convenient would under-count, and an under-count is precisely what
   would kill the hypothesis for the wrong reason.
 
+  ## Why the accounting is UNGATED, and where the gate actually is
+
+  `record/3` runs on **every** outbound frame regardless of log level.
+  That is deliberate, not an oversight — do not "optimise" it behind a
+  flag. Keeping it always-on is what makes the bank readable on a live
+  node with `:sys.get_state/1`, with nothing switched on and nothing
+  restarted; a bank you must first enable is a bank you do not have when
+  the incident is happening. The cost bought with that is a filter over a
+  ten-second window plus a length and a sum, per frame.
+
+  The gate is the **Logger level**, and there is deliberately no second
+  one. Production runs at `:info`, where `Logger.debug/2` never even
+  evaluates its arguments, so the line costs nothing there. An operator
+  who sets `LOG_LEVEL=debug` has already accepted the firehose — Ecto's
+  per-query lines included — and one line per outbound frame is
+  consistent with what they asked for. A dedicated switch would duplicate
+  a gate that already exists, and a mechanism heavier than its problem is
+  the problem.
+
+  Volume, so that decision can be made with a number: one outbound frame
+  is one user message, one PONG roughly every 90 seconds per connection,
+  and the registration burst on each (re)connect. Modest per session;
+  multiply by sessions before enabling debug on a busy node.
+
   Diagnostic instrumentation: it changes nothing about what is sent or
   when. Pure — the caller supplies the clock reading.
   """
