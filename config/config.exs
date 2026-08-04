@@ -526,7 +526,20 @@ config :logger, :console,
     # allowlist beyond `Meta.known_keys/0` (the sync test is a subset
     # check: known_keys ⊆ metadata). `:new_nick` pre-exists above.
     :old_nick,
-    :rows_migrated
+    :rows_migrated,
+    # #800 S7 — `Grappa.IRC.Client`'s per-frame outbound-cost line, at
+    # DEBUG (silent in production, which runs at :info). `:sent_bytes` and
+    # `:commands_10s` are MEASURED — what this process put on the wire and
+    # how much of it is still inside the ten-second horizon. `:penalty_10s_s`,
+    # `:bank_model_s` and `:headroom_s` are MODELLED by `Grappa.IRC.FakeLag`
+    # from bahamut's published `2 + len/120` arithmetic and must never be
+    # quoted as a reading off an ircd. `:command` (the verb, pre-existing)
+    # rides the same line; the parameters deliberately do not.
+    :sent_bytes,
+    :commands_10s,
+    :penalty_10s_s,
+    :bank_model_s,
+    :headroom_s
   ]
 
 import_config "#{config_env()}.exs"

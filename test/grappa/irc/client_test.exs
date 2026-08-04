@@ -20,7 +20,7 @@ defmodule Grappa.IRC.ClientTest do
 
   import ExUnit.CaptureLog
 
-  alias Grappa.IRC.{Client, Message}
+  alias Grappa.IRC.{Client, FakeLag, Message}
   alias Grappa.IRCServer
 
   # Default handler: ignore everything; tests that need scripted replies
@@ -2171,6 +2171,40 @@ defmodule Grappa.IRC.ClientTest do
 
       # Every leaf in the set was attempted before give-up.
       assert :counters.get(attempts, 1) == length(@azzurra_aaaa)
+    end
+  end
+
+  describe "outbound cost accounting (#800 S7)" do
+    test "accounts every frame the server receives, registration burst included" do
+      # A bank fed only by session-issued commands would under-count, and
+      # an under-count is what would kill the fake-lag hypothesis for the
+      # wrong reason. The fake server's own tally is the oracle: whatever
+      # it received is what the model must have charged for.
+      {server, port} = start_server(rfc_handler())
+      client = start_client(port)
+      :ok = await_handshake(server)
+
+      :ok = Client.send_line(client, "PING :probe\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PING :probe\r\n"), 1_000)
+
+      %Client{fake_lag: %FakeLag{window: window}} = :sys.get_state(client, 1_000)
+
+      assert length(window) == length(IRCServer.sent_lines(server))
+      # Guard against the oracle and the model agreeing on nothing: the
+      # handshake alone puts several frames on the wire before the probe.
+      assert length(window) > 1
+    end
+
+    test "reports the verb alone, so a PRIVMSG body never reaches the log" do
+      # The line carries a byte count and a verb by design: a PRIVMSG's
+      # params are the message body and an AUTHENTICATE's are a base64
+      # credential, and CLAUDE.md Security is explicit that what reaches
+      # stdout outlives the process. The emitted line itself is covered by
+      # `Grappa.IRC.ClientOutboundCostTest` (async: false — it lowers the
+      # global log level); this pins the extraction that feeds it.
+      assert Client.__verb_for_test__("PRIVMSG #chan :sensitive body\r\n") == "PRIVMSG"
+      assert Client.__verb_for_test__("QUIT\r\n") == "QUIT"
+      assert Client.__verb_for_test__("AUTHENTICATE dXNlcgBwYXNz\r\n") == "AUTHENTICATE"
     end
   end
 end
