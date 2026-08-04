@@ -49,6 +49,22 @@ defmodule Grappa.IRC.ClientOutboundCostTest do
     {server, client}
   end
 
+  # The oracle (the fake server received the frame) fires BEFORE the log
+  # line exists: `send_frame/2` writes to the socket first and accounts
+  # afterwards, so the server can be woken while the client is still
+  # between the two. Waiting on the server alone reads the log a moment
+  # too early — the same shape of bug as the one being instrumented here.
+  #
+  # Two real barriers, no sleep and no retry:
+  #   * `:sys.get_state/2` is a GenServer call, so it can only be answered
+  #     once the callback that wrote the frame has RETURNED — by which
+  #     time that callback's `Logger.debug` has run.
+  #   * `Logger.flush/0` then drains the handler queue into the capture.
+  defp settle(client) do
+    _ = :sys.get_state(client, 1_000)
+    Logger.flush()
+  end
+
   test "reports the modelled bank AND the distance from the drain gate" do
     # Two numbers, not one. #800 claims the cost bites only on a
     # connection already near the ceiling — that is a claim about the
@@ -59,6 +75,7 @@ defmodule Grappa.IRC.ClientOutboundCostTest do
       capture_log(fn ->
         :ok = Client.send_line(client, "PING :probe\r\n")
         {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PING :probe\r\n"), 1_000)
+        settle(client)
       end)
 
     assert log =~ "upstream send"
@@ -77,8 +94,9 @@ defmodule Grappa.IRC.ClientOutboundCostTest do
     # fake-lag hypothesis for the wrong reason.
     log =
       capture_log(fn ->
-        {server, _} = start_pair()
+        {server, client} = start_pair()
         {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "), 1_000)
+        settle(client)
       end)
 
     assert log =~ "command=NICK"
@@ -92,6 +110,7 @@ defmodule Grappa.IRC.ClientOutboundCostTest do
       capture_log(fn ->
         :ok = Client.send_line(client, "PRIVMSG #chan :sensitive body\r\n")
         {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "PRIVMSG"), 1_000)
+        settle(client)
       end)
 
     assert log =~ "command=PRIVMSG"
