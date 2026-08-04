@@ -1793,12 +1793,37 @@ const ScrollbackPane: Component<Props> = (props) => {
     // fires → gate recomputes); (3) the post-mount settle timer below, an
     // event-independent re-measure for the no-box-change settle.
     let overflowObserver: ResizeObserver | undefined;
+    let lastContainerHeight: number | null = null;
     if (listRef && typeof ResizeObserver !== "undefined") {
+      lastContainerHeight = listRef.clientHeight;
       overflowObserver = new ResizeObserver(() => {
         measureOverflow();
         // #360 — a container box change (flex-chain propagation with no `resize`
         // event) also moves the fold; keep the mention badge in step here too.
         recomputeMentionsBelow();
+        // #778 — and a moved fold must RE-PIN a follower to the tail, exactly as
+        // the `onResize` arm above does. The window/visualViewport events fire
+        // only for VIEWPORT changes; chrome growing inside the shell shrinks THIS
+        // box with no event at all — measured on the #580 e2e, the 25px
+        // `.compose-box-error` line mounting after the tail write left the pane
+        // 32px short of the tail with the just-sent row clipped under the fold
+        // (an intermittent "own send does not scroll" in the field). Same gate
+        // (`followMode`, the follow INTENT: a reader parked above the tail is
+        // preserved), same verb, same precedence — the RO is simply the honest
+        // signal for the class the event arm cannot see.
+        //
+        // Height-CHANGE gated: RO also delivers a callback on observe() and on
+        // width-only changes, neither of which moves the fold, and tail-snapping
+        // there would fight the cold-mount marker activation.
+        //
+        // `withHide: false` (the resize arm passes true): this fires on every
+        // composer growth, and the #130 visibility hide would blink the whole
+        // pane on each wrapped line. The rAF×2 correction lands two frames later
+        // with no intervening reader-visible wrong-scroll state to hide.
+        const height = listRef?.clientHeight ?? null;
+        const moved = lastContainerHeight !== null && height !== lastContainerHeight;
+        lastContainerHeight = height;
+        if (moved && followMode()) applyActivation("tail-only", false);
       });
       overflowObserver.observe(listRef);
     }
