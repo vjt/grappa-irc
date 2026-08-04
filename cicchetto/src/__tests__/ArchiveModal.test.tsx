@@ -35,9 +35,19 @@ vi.mock("../lib/networks", () => ({
   ],
 }));
 
-vi.mock("../lib/queryWindows", () => ({
-  openQueryWindowState: vi.fn(),
-}));
+// #804 — `canonicalQueryNick` is NOT a stub here: an identity stub would
+// pass whatever the component hands it straight back and blind the test
+// to the casing it actually resolves. It mirrors the real resolver
+// (lib/queryWindows.ts) over `mockOpenQueryNicks()`, folding with the
+// production `nickEquals`.
+vi.mock("../lib/queryWindows", async () => {
+  const { nickEquals } = await import("../lib/nickEquals");
+  return {
+    openQueryWindowState: vi.fn(),
+    canonicalQueryNick: (_networkId: number, nick: string) =>
+      mockOpenQueryNicks().find((open) => nickEquals(open, nick)) ?? nick,
+  };
+});
 
 vi.mock("../lib/api", () => ({
   deleteArchiveEntry: vi.fn().mockResolvedValue(undefined),
@@ -62,6 +72,7 @@ const {
   mockMessagesUnread,
   mockEventsUnread,
   mockMentionCounts,
+  mockOpenQueryNicks,
 } = vi.hoisted(() => ({
   mockOpen: vi.fn<() => boolean>(() => false),
   mockEntries: vi.fn<
@@ -81,6 +92,7 @@ const {
   mockMessagesUnread: vi.fn<() => Record<string, number>>(() => ({})),
   mockEventsUnread: vi.fn<() => Record<string, number>>(() => ({})),
   mockMentionCounts: vi.fn<() => Record<string, number>>(() => ({})),
+  mockOpenQueryNicks: vi.fn<() => string[]>(() => []),
 }));
 
 vi.mock("../lib/archive", () => ({
@@ -104,6 +116,7 @@ beforeEach(() => {
   mockMessagesUnread.mockReturnValue({});
   mockEventsUnread.mockReturnValue({});
   mockMentionCounts.mockReturnValue({});
+  mockOpenQueryNicks.mockReturnValue([]);
 });
 
 describe("ArchiveModal (#473 grouped)", () => {
@@ -247,6 +260,29 @@ describe("ArchiveModal (#473 grouped)", () => {
     // per-channel topic, else server NOTICEs (e.g. 401) drop on the floor.
     expect(qwMod.openQueryWindowState).toHaveBeenCalledWith(2, "vjt-peer", expect.any(String));
     expect(setArchiveModalOpen).toHaveBeenCalledWith(false);
+  });
+
+  it("resolves a query entry's casing to the open window's, for BOTH legs (#804)", () => {
+    mockOpen.mockReturnValue(true);
+    // `dm_with` is stored RAW (#121/#372) and `list_archive` groups on the
+    // fold but selects one arbitrary row's spelling, so the archive row's
+    // casing need not match the window the peer is already open under.
+    mockOpenQueryNicks.mockReturnValue(["VJT-Peer"]);
+    mockEntries.mockImplementation((slug) =>
+      slug === "libera"
+        ? [{ target: "vjt-peer", kind: "query", last_activity: 100, row_count: 4 }]
+        : [],
+    );
+    render(() => <ArchiveModal />);
+    fireEvent.click(screen.getByText("vjt-peer"));
+    // Selection must land on the EXISTING row's key, not fork a phantom
+    // pane under the archive spelling (#731 / #799 shape).
+    expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
+      networkSlug: "libera",
+      channelName: "VJT-Peer",
+      kind: "query",
+    });
+    expect(qwMod.openQueryWindowState).toHaveBeenCalledWith(2, "VJT-Peer", expect.any(String));
   });
 
   it("renders the unread msg badge for an archived DM holding unread (#532 B)", () => {
