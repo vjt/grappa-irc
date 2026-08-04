@@ -13,7 +13,7 @@ import {
   setSort,
   triggerRefresh,
 } from "./lib/channelDirectory";
-import { channelKey } from "./lib/channelKey";
+import { canonicalChannel, channelKey } from "./lib/channelKey";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { closeToPreviousWindow, setSelectedChannel } from "./lib/selection";
 import { windowStateByChannel } from "./lib/windowState";
@@ -107,9 +107,16 @@ const DirectoryRow: Component<DirectoryRowProps> = (props) => {
       // device broadcast, pending→joined transition) can't steal focus. The
       // tap is the ONLY new focus origin. After the awaited postJoin so a
       // failed join (e.g. +i) never foregrounds a phantom window.
+      //
+      // #731 — the FOLDED name, like channelJoin.switchTo and compose.ts
+      // `/join`. `entry.name` is the raw `/LIST` spelling (the directory is
+      // the documented verbatim-casing exception) while selection and
+      // window_states are keyed folded, so a raw target focuses a window the
+      // sidebar can't match. Only the KEY folds: postJoin above and the
+      // rendered label below keep the display casing.
       setSelectedChannel({
         networkSlug: props.networkSlug,
-        channelName: props.entry.name,
+        channelName: canonicalChannel(props.entry.name),
         kind: "channel",
       });
     } catch (err) {
@@ -124,9 +131,12 @@ const DirectoryRow: Component<DirectoryRowProps> = (props) => {
   // channel you asked for. Automatic re-joins still never steal focus.
   const onActivate = () => {
     if (isJoined()) {
+      // #731 — folded, for the same reason as onJoin: `isJoined()` above
+      // already folds through `channelKey`, so focusing the raw name targets
+      // a different key than the one that just answered "joined".
       setSelectedChannel({
         networkSlug: props.networkSlug,
-        channelName: props.entry.name,
+        channelName: canonicalChannel(props.entry.name),
         kind: "channel",
       });
       return;

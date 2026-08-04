@@ -360,6 +360,69 @@ describe("DirectoryPane", () => {
     });
   });
 
+  // #731 — `channel_directory.name` is the documented verbatim-casing
+  // exception: it stores the `/LIST` spelling, and bahamut preserves the
+  // creation casing (`#Sniffo`). Selection + window_states are keyed FOLDED,
+  // so a raw focus target opens a phantom window the sidebar can't match.
+  // Same split every sibling uses (channelJoin.switchTo, compose.ts /join):
+  // the KEY folds, the wire argument and the visible label stay RAW.
+  //
+  // The folded expectation is a LITERAL, not `canonicalChannel(...)`: routing
+  // both sides through the same helper would keep this green if the helper
+  // itself regressed. `#Sniffo` → `#sniffo` is the whole contract, spelled out.
+  describe("focus folds the /LIST casing (#731)", () => {
+    const MIXED_PAGE: DirectoryPage = {
+      ...FRESH_PAGE,
+      entries: [{ name: "#Sniffo", topic: null, user_count: 5, featured: false }],
+      total: 1,
+    };
+
+    it("join-then-foreground focuses the FOLDED name while postJoin gets the RAW one", async () => {
+      directoryPageMock.mockReturnValue(MIXED_PAGE);
+      windowStateByChannelMock.mockReturnValue({});
+      render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /join #Sniffo/i }));
+
+      await waitFor(() => {
+        expect(setSelectedChannelMock).toHaveBeenCalledWith({
+          networkSlug: SLUG,
+          channelName: "#sniffo",
+          kind: "channel",
+        });
+      });
+      // The wire keeps the display spelling — the server does its own casemapping.
+      expect(postJoinMock).toHaveBeenCalledWith("test-token", SLUG, "#Sniffo", null);
+    });
+
+    it("tapping an already-joined mixed-case row focuses the FOLDED name", async () => {
+      directoryPageMock.mockReturnValue(MIXED_PAGE);
+      // channelKey folds internally, so this is the same entry window_states
+      // holds for the joined `#sniffo`.
+      windowStateByChannelMock.mockReturnValue({
+        [channelKey(SLUG, "#Sniffo")]: "joined",
+      });
+      render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /open #Sniffo/i }));
+
+      await waitFor(() => {
+        expect(setSelectedChannelMock).toHaveBeenCalledWith({
+          networkSlug: SLUG,
+          channelName: "#sniffo",
+          kind: "channel",
+        });
+      });
+      expect(postJoinMock).not.toHaveBeenCalled();
+    });
+
+    it("renders the RAW /LIST casing as the row label", () => {
+      directoryPageMock.mockReturnValue(MIXED_PAGE);
+      render(() => <DirectoryPane networkSlug={SLUG} />);
+      expect(screen.getByText("#Sniffo")).toBeInTheDocument();
+    });
+  });
+
   describe("close button (#125)", () => {
     it("renders a close button that returns to the previous window", async () => {
       directoryPageMock.mockReturnValue(FRESH_PAGE);
