@@ -3011,14 +3011,14 @@ TEST(only_a_marked_invite_is_a_call) {
 /* What /call posts is what a receiving shottino reads back. */
 TEST(an_invite_round_trips_through_its_own_parser) {
     char room[96];
-    call_room_name(room, sizeof(room));
+    CHECK(call_room_name(room, sizeof(room)));
     CHECK(strncmp(room, "shottino-", 9) == 0);
     CHECK_LONG((long)strlen(room), 9 + 32); /* 128 bits, as hex */
 
     /* Two rooms are two rooms — the name is the only thing standing
      * between a stranger and the call. */
     char second[96];
-    call_room_name(second, sizeof(second));
+    CHECK(call_room_name(second, sizeof(second)));
     CHECK(strcmp(room, second) != 0);
 
     for (int v = 0; v < 2; v++) {
@@ -3040,6 +3040,88 @@ TEST(an_invite_round_trips_through_its_own_parser) {
     CHECK(strstr(line, "//#") == NULL);
     call_invite_build(CALL_AUDIO, "https://meet.example", "r", line, sizeof(line));
     CHECK(strstr(line, "https://meet.example/#r=r") != NULL);
+}
+
+/* #761. The assertions above this comment cannot tell entropy from
+ * uninitialised stack: a garbage buffer is also 16 bytes long, and two
+ * garbage buffers also differ. `RAND_bytes` leaves the buffer UNTOUCHED
+ * when it fails, so on a host with no entropy source — a jail, a
+ * minimal container, an early-boot invocation — the room name was
+ * whatever the stack held, and every assertion still passed.
+ *
+ * So these go through the SOURCE instead of through the string's shape:
+ * a stub that produces KNOWN bytes proves the output was derived from
+ * it, and a stub that FAILS proves the refusal. Neither is satisfiable
+ * by an implementation that hexes the stack. */
+static int rand_calls;
+
+static int rand_counts_up(unsigned char *buf, size_t len) {
+    rand_calls++;
+    for (size_t i = 0; i < len; i++) buf[i] = (unsigned char)i;
+    return 1;
+}
+
+static int rand_refuses(unsigned char *buf, size_t len) {
+    (void)buf;
+    (void)len;
+    rand_calls++;
+    return 0; /* what OpenSSL returns with no entropy source */
+}
+
+TEST(random_bytes_are_the_sources_or_the_caller_is_told) {
+    int (*saved)(unsigned char *, size_t) = rand_source;
+
+    /* The door itself: what the source wrote, and true. */
+    rand_source = rand_counts_up;
+    rand_calls = 0;
+    unsigned char buf[4] = {9, 9, 9, 9};
+    CHECK(fill_random(buf, sizeof(buf)));
+    CHECK_LONG(rand_calls, 1);
+    CHECK_LONG(buf[0], 0);
+    CHECK_LONG(buf[3], 3);
+
+    /* A failed draw reports false AND leaves nothing that looks usable.
+     * Zeroed rather than left alone, because "16 bytes of stack" is the
+     * shape a caller cannot distinguish from a secret. */
+    rand_source = rand_refuses;
+    unsigned char stale[4] = {9, 9, 9, 9};
+    CHECK(!fill_random(stale, sizeof(stale)));
+    CHECK_LONG(stale[0], 0);
+    CHECK_LONG(stale[3], 0);
+
+    /* A room name IS those bytes, hex-encoded — not merely a string of
+     * the right length. */
+    rand_source = rand_counts_up;
+    char room[96];
+    CHECK(call_room_name(room, sizeof(room)));
+    CHECK_STR(room, "shottino-000102030405060708090a0b0c0d0e0f");
+
+    /* No entropy, no room: a guessable room is worse than no call, and
+     * nothing half-minted escapes for a caller to post by accident. */
+    rand_source = rand_refuses;
+    char none[96];
+    memset(none, 'x', sizeof(none));
+    none[sizeof(none) - 1] = 0;
+    CHECK(!call_room_name(none, sizeof(none)));
+    CHECK_STR(none, "");
+
+    /* The multipart boundary is the same class: the comment above it
+     * argues that 16 random bytes make a collision impossible, which is
+     * an argument about entropy that was never checked. A predictable
+     * boundary lets a file whose BYTES contain it split its own request. */
+    rand_source = rand_counts_up;
+    char boundary[64];
+    CHECK(multipart_boundary(boundary, sizeof(boundary)));
+    CHECK_STR(boundary, "----shottino000102030405060708090a0b0c0d0e0f");
+
+    rand_source = rand_refuses;
+    char nob[64];
+    memset(nob, 'x', sizeof(nob));
+    nob[sizeof(nob) - 1] = 0;
+    CHECK(!multipart_boundary(nob, sizeof(nob)));
+    CHECK_STR(nob, "");
+
+    rand_source = saved;
 }
 
 /* The room rides in the FRAGMENT, and a fragment is never sent to a
@@ -3968,6 +4050,7 @@ int main(void) {
     RUN(a_question_is_written_where_its_answer_will_land);
     RUN(only_a_marked_invite_is_a_call);
     RUN(an_invite_round_trips_through_its_own_parser);
+    RUN(random_bytes_are_the_sources_or_the_caller_is_told);
     RUN(a_call_already_running_here_is_the_call);
     RUN(an_invite_carries_its_room_in_the_fragment);
     RUN(a_call_in_a_query_with_yourself_lists_one_person);

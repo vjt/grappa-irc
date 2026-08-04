@@ -1559,6 +1559,41 @@ static char *xasprintf(const char *fmt, ...) {
     return s;
 }
 
+/* ── Entropy ───────────────────────────────────────────────────────────
+ *
+ * Every random byte this client draws comes through one door, for two
+ * reasons.
+ *
+ * `RAND_bytes` returns 1 on success and leaves the buffer UNTOUCHED
+ * otherwise, and five call sites ignored that. On a host with no
+ * entropy source — a jail, a minimal container, an early-boot
+ * invocation — a call room name was 16 bytes of uninitialised stack
+ * hex-encoded, and that name is the only thing standing between a
+ * stranger and the call (#761). There is deliberately NO fallback
+ * source: a time-seeded rand() is how this bug survives its own fix.
+ * A caller that needs a secret and cannot have one must REFUSE, and
+ * must say so where the user can read it.
+ *
+ * And a test cannot tell entropy from stack residue by looking at the
+ * result — garbage is the right length too, and two draws of it also
+ * differ. Drawing through a pointer is what lets a test substitute the
+ * source and assert the output CAME FROM IT. */
+static int rand_bytes_openssl(unsigned char *buf, size_t len) {
+    return RAND_bytes(buf, (int)len);
+}
+
+static int (*rand_source)(unsigned char *, size_t) = rand_bytes_openssl;
+
+/* True only when `len` bytes of CSPRNG output are in `buf`. A failed
+ * draw ZEROES rather than leaving the buffer as it found it: all-zero
+ * is visibly broken, while stack residue is precisely the shape a
+ * caller cannot tell from a secret. */
+static bool fill_random(unsigned char *buf, size_t len) {
+    if (rand_source(buf, len) == 1) return true;
+    memset(buf, 0, len);
+    return false;
+}
+
 static void log_line(struct app *app, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 static void log_line_mention(struct app *app, bool mention, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 static size_t focused_window_locked(struct app *app);
@@ -3254,18 +3289,24 @@ static const char *call_kind_word(enum call_kind kind) {
 
 /* A room nobody can guess: 16 bytes of CSPRNG as hex.
  *
- * Truncation is a real failure here rather than a cosmetic one — half a
- * room name is a different room — so the loop stops on the buffer and
- * the caller sizes it for the whole thing. */
-static void call_room_name(char *out, size_t out_sz) {
-    if (!out || out_sz == 0) return;
+ * False means there is no room, and the caller must not invent one. A
+ * short name is that same answer: truncation is a real failure here
+ * rather than a cosmetic one — half a room name is a different room,
+ * and a shorter one is a weaker secret — so the loop stops on the
+ * buffer, the caller sizes it for the whole thing, and anything less
+ * than the whole thing comes back empty. */
+static bool call_room_name(char *out, size_t out_sz) {
+    if (!out || out_sz == 0) return false;
+    out[0] = 0;
     unsigned char raw[16];
-    RAND_bytes(raw, sizeof(raw));
+    if (!fill_random(raw, sizeof(raw))) return false;
     int w = snprintf(out, out_sz, "shottino-");
-    if (w < 0) { out[0] = 0; return; }
+    if (w < 0) { out[0] = 0; return false; }
     size_t n = (size_t)w;
     for (size_t i = 0; i < sizeof(raw) && n + 2 < out_sz; i++)
         n += (size_t)snprintf(out + n, out_sz - n, "%02x", raw[i]);
+    if (n != (size_t)w + 2 * sizeof(raw)) { out[0] = 0; return false; }
+    return true;
 }
 
 /* The line an invite IS. One `/` between base and room however the base
@@ -5974,8 +6015,14 @@ static char *base64url_encode(const unsigned char *buf, size_t len) {
 
 static bool ws_connect(struct app *app) {
     if (!conn_open(app, &app->ws)) return false;
+    /* RFC 6455 wants a key the server cannot have seen coming; a
+     * constant one is how a cache that never learned about websockets
+     * hands somebody else's upgrade back to us. */
     unsigned char nonce[16];
-    RAND_bytes(nonce, sizeof(nonce));
+    if (!fill_random(nonce, sizeof(nonce))) {
+        log_line(app, "websocket handshake: no entropy for Sec-WebSocket-Key — not connecting");
+        return false;
+    }
     char *key = base64_encode(nonce, sizeof(nonce));
 
     /* The bearer rides the Sec-WebSocket-Protocol SUBPROTOCOL, never the
@@ -6096,8 +6143,12 @@ static bool ws_send_frame_locked(struct app *app, int opcode, const char *body, 
         hdr[hlen++] = 0x80 | 127;
         for (int i = 7; i >= 0; i--) hdr[hlen++] = (unsigned char)(len >> (i * 8));
     }
+    /* The mask is a security property of the protocol, not decoration:
+     * RFC 6455 requires it to be unpredictable so a client cannot be
+     * made to emit chosen bytes at an intermediary that mistakes them
+     * for a request. Unmaskable means unsendable. */
     unsigned char mask[4];
-    RAND_bytes(mask, sizeof(mask));
+    if (!fill_random(mask, sizeof(mask))) return false;
     memcpy(hdr + hlen, mask, 4);
     hlen += 4;
     unsigned char *frame = malloc(hlen + len);
@@ -7361,9 +7412,13 @@ static void ws_schedule_retry(struct app *app) {
         if (app->ws_backoff > WS_BACKOFF_MAX) app->ws_backoff = WS_BACKOFF_MAX;
     }
     /* Up to 25% jitter, so a fleet of clients does not resynchronise on a
-     * server restart and thunder back together. */
+     * server restart and thunder back together.
+     *
+     * The one draw in this file that is not a secret, and so the only
+     * one allowed to fail quietly: jitter buys spread, not safety, and
+     * a zero here is simply no jitter. */
     unsigned char r = 0;
-    RAND_bytes(&r, 1);
+    (void)fill_random(&r, sizeof(r));
     int jitter = (int)((unsigned)app->ws_backoff * r / (255 * 4));
     app->ws_retry_at = time(NULL) + app->ws_backoff + jitter;
 }
@@ -14157,8 +14212,17 @@ static void call_command(struct app *app, enum call_kind kind) {
         return;
     }
 
+    /* No room rather than a guessable one. The name IS the access
+     * control here, so a draw the CSPRNG could not serve is the end of
+     * this call, said out loud — degrading quietly to a weak room would
+     * hand the conversation to whoever tries the obvious URL. */
     char room[96];
-    call_room_name(room, sizeof(room));
+    if (!call_room_name(room, sizeof(room))) {
+        log_line(app, "/call: no entropy from the system CSPRNG — refusing to mint a room. The "
+                      "room name is the only thing keeping strangers out, so a guessable one is "
+                      "worse than no call");
+        return;
+    }
     char message[sizeof(app->call_base_url) + sizeof(room) + 640];
     call_invite_build(kind, app->call_base_url, room, message, sizeof(message));
     /* WHO IS IN THE CALL, for whoever opens this in a BROWSER.
@@ -15917,12 +15981,22 @@ static const char *mime_for_path(const char *path) {
  * CRLF in it would close the header early. Anything but the safe set
  * becomes '_', because a name is a label here, not an identifier — the
  * server decides what the upload is really called. */
-static void multipart_boundary(char *out, size_t out_sz) {
+static bool multipart_boundary(char *out, size_t out_sz) {
+    if (!out || out_sz == 0) return false;
+    out[0] = 0;
     unsigned char raw[16];
-    RAND_bytes(raw, sizeof(raw));
-    size_t n = snprintf(out, out_sz, "----shottino");
+    /* False means no boundary, and no boundary means no request: the
+     * argument above is entirely about entropy, so an unchecked draw
+     * would leave the smuggling door open while the comment claimed it
+     * was shut. */
+    if (!fill_random(raw, sizeof(raw))) return false;
+    int w = snprintf(out, out_sz, "----shottino");
+    if (w < 0) { out[0] = 0; return false; }
+    size_t n = (size_t)w;
     for (size_t i = 0; i < sizeof(raw) && n + 2 < out_sz; i++)
         n += (size_t)snprintf(out + n, out_sz - n, "%02x", raw[i]);
+    if (n != (size_t)w + 2 * sizeof(raw)) { out[0] = 0; return false; }
+    return true;
 }
 
 static void multipart_filename(const char *in, char *out, size_t out_sz) {
@@ -15982,7 +16056,12 @@ static void upload_file_to(struct app *app, const char *path, const char *marker
     const char *base = strrchr(path, '/');
     base = base ? base + 1 : path;
     char boundary[64];
-    multipart_boundary(boundary, sizeof(boundary));
+    if (!multipart_boundary(boundary, sizeof(boundary))) {
+        free(data);
+        log_line(app, "/upload: no entropy for a multipart boundary — refusing to send a request "
+                      "the file could split");
+        return;
+    }
     char safe_name[256];
     multipart_filename(base, safe_name, sizeof(safe_name));
     char *head = xasprintf("--%s\r\n"
@@ -16145,7 +16224,13 @@ static char *stt_transcribe_remote(struct app *app, const char *path) {
     const char *base = strrchr(path, '/');
     base = base ? base + 1 : path;
     char boundary[64];
-    multipart_boundary(boundary, sizeof(boundary));
+    if (!multipart_boundary(boundary, sizeof(boundary))) {
+        free(audio);
+        conn_close(&conn);
+        log_line(app, "/stt: no entropy for a multipart boundary — refusing to send a request the "
+                      "recording could split");
+        return NULL;
+    }
     char safe_name[256];
     multipart_filename(base, safe_name, sizeof(safe_name));
     char *head = xasprintf("--%s\r\n"
