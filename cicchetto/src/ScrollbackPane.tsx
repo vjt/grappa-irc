@@ -14,7 +14,7 @@ import LusersCard from "./LusersCard";
 import { isContentKind, ownNickForNetwork, postJoin, type ScrollbackMessage } from "./lib/api";
 import { token } from "./lib/auth";
 import { confirmJoinChannel } from "./lib/channelJoin";
-import { channelKey, decodeChannelKey } from "./lib/channelKey";
+import { canonicalChannel, channelKey, decodeChannelKey } from "./lib/channelKey";
 import { type TopicJoinLine, topicByChannel, topicJoinLine } from "./lib/channelTopic";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { highlightPatterns } from "./lib/highlightList";
@@ -1261,7 +1261,19 @@ const ScrollbackPane: Component<Props> = (props) => {
     // invite row; keyed-channel invites are rare and the operator can
     // still type `/join #chan key` in compose if needed).
     void postJoin(t, props.networkSlug, channel, null).then(() => {
-      setSelectedChannel({ networkSlug: props.networkSlug, channelName: channel, kind: "channel" });
+      // #799 — the FOLDED name, like channelJoin.switchTo, compose.ts `/join`
+      // and DirectoryPane. `channel` is `params[1]` off a stored INVITE row:
+      // ingress folds it today (EventRouter's `:invite` clause, the #537 fix),
+      // but per the #525 posture `refold_identifiers_ascii` does not rewrite
+      // stored values, so a pre-#537 row still carries mixed case. Selection
+      // and window_states are keyed folded — a raw target foregrounds a window
+      // the sidebar can't match. Only the KEY folds: the postJoin above and
+      // the rendered row label keep the invite's spelling.
+      setSelectedChannel({
+        networkSlug: props.networkSlug,
+        channelName: canonicalChannel(channel),
+        kind: "channel",
+      });
     });
   };
 
