@@ -209,6 +209,8 @@ describe("MircText channel affordance (#648)", () => {
       <MircBody body="join #Sniffo now" emphasis onChannelClick={spy} />
     ));
     const btn = container.querySelector(".channel-clickable") as HTMLButtonElement;
+    // #740 — wears the shared inline-button reset beside its own class.
+    expect(btn.classList.contains("scrollback-inline-button")).toBe(true);
     expect(btn).not.toBeNull();
     // display-cased, raw (keys fold downstream; the affordance shows what
     // the sender typed).
