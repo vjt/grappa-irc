@@ -26546,7 +26546,11 @@ Enabling or disabling TOTP revokes every other web session. Disabling requires
 the account password. TOTP failures share one public error and are limited to
 ten failures per IP/account over fifteen minutes.
 
-Passkeys, recovery-code regeneration, and email recovery remain out of scope.
+Recovery-code regeneration and email recovery remain out of scope. Passkeys did
+too when this was written — they shipped two days later, and the entry below
+(2026-08-04 — #442/#736) is the record. Amended in place rather than left
+standing with a correction bolted on: a decision log is a coherent account, not
+a wall of caveats, and the next session reads the sentence, not the thread.
 
 ### 2026-08-02 — #666 — multi-line paste is resumable + self-pacing; the send-door 429 carries a retry-after (P0, cross-stack)
 
@@ -28504,3 +28508,86 @@ per-page-load, so every reload re-pays upstream for an answer grappa already
 received. The precedent already exists — `userhost_cache` is nick-keyed, folded,
 fed passively from JOIN prefixes at zero upstream cost, and already migrated on
 NICK. Cache the answer, and the question of when to fetch mostly dissolves.
+
+---
+
+### 2026-08-04 — #442 / #736 — passkeys: the mode ladder, and why passwordless costs two steps
+
+Written retroactively (#740). The passkey surface shipped across #442 and #736
+while the only entry that mentioned passkeys said they were out of scope, so a
+session reading the log in good faith would have concluded passwordless login
+does not exist — and then re-litigated or re-implemented it. The #442 entry is
+amended above; this is the record it points at. Everything below is stated as
+BEHAVIOUR, verified against `main` @ `942f642b`.
+
+**One account, three modes.** `users.passkey_mode` is
+`:disabled | :second_factor | :passwordless`, default `:disabled`, and it is
+the account's whole passkey posture — not a per-credential property. What a
+password login does depends only on it:
+
+* `:disabled` — password authenticates; TOTP still applies if armed (#442).
+* `:second_factor` — password authenticates, then a passkey assertion
+  completes. It sits AHEAD of TOTP in the ladder: an account with both armed
+  is asked for the passkey, not the code.
+* `:passwordless` — a password login is **refused**, and refused with the same
+  `:invalid_credentials` answer a wrong password gets. The uniform oracle is
+  the point: which credential half is wrong, and whether an account is
+  passwordless at all, are both things the login door declines to say.
+
+**Registration always costs the password**, in every mode. A passkey is a
+credential being minted, so minting one is a re-authentication, not a
+setting toggle.
+
+**Passwordless is armed in two steps, and cannot be armed in one.** The
+mode-change door (`POST /me/passkeys/mode/options`) admits `:second_factor` and
+`:disabled` only; handing it `passwordless` is a `bad_request`, deliberately and
+permanently. Arming passwordless goes:
+
+1. `POST /me/passkeys/passwordless/recovery` — password re-checked, ten
+   recovery codes generated and **shown once**, returned with a recovery token.
+2. `POST /me/passkeys/passwordless/options` — the token is redeemed for the
+   ceremony challenge; the assertion then flips the mode and stores the code
+   hashes in the same transaction.
+
+The token IS the proof that step 1 happened. Without it the ladder could be
+climbed to a state where the password no longer works and the only fallback
+has never been displayed — an account locked out by a successful operation.
+It expires in ten minutes, and it is **encrypted rather than signed**: it
+carries the plaintext codes, and a signed token is tamper-proof but perfectly
+readable by anything it passes through. The invariant is enforced at the
+context boundary too, not just by route shape: `set_mode/4` accepts
+`:passwordless` only with exactly ten codes and the other two modes only with
+none, so a caller that skips the handshake fails loudly instead of arriving at
+a half-armed account.
+
+**A passkey belongs to THIS deployment's origin.** WebAuthn binds a credential
+to the origin that registered it, and it will refuse to answer for any other.
+So the origin grappa asserts is a durable property of the deployment, not of
+the request in flight: operators fronting the bouncer with a public origin
+Phoenix would not derive set `GRAPPA_PASSKEY_ORIGIN`, and everyone else gets
+the Endpoint's public URL. The relying-party id is that origin's host. Two
+consequences worth stating before someone rediscovers them the hard way:
+**changing the public origin of a live deployment invalidates every passkey
+already registered against it**, and an account in `:passwordless` mode whose
+origin moved has no password to fall back on — only its recovery codes. This is
+also why the value is resolved in one place rather than derived per controller:
+two derivations are two chances to disagree, and the disagreement would surface
+as an unexplained authenticator refusal on a user's device.
+
+Ceremonies are single-use and short-lived — challenges are held server-side for
+five minutes and swept, user verification is `required` (the authenticator must
+prove a human, not merely possession).
+
+**The recovery codes are ONE account-level set, shared with TOTP.** Not a
+passkey-specific pool that happens to look similar — the same ten codes, the
+same table, the same one-shot semantics as #442. So arming passwordless
+**replaces** whatever recovery codes a TOTP user was already holding, and the
+old printout stops working. That is deliberate (one fallback credential per
+account beats two that can disagree about which is current) and it is the
+sharpest edge on this surface: it is the one step that silently invalidates
+something the user was told to keep safe. The codes shown in step 1 above are
+the account's codes from that moment on.
+
+**Still out of scope**, and unchanged by any of this: recovery-code
+regeneration as its own verb — the set is replaced as a side effect of arming
+TOTP or passwordless, never on demand — and email recovery.
