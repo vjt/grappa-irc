@@ -165,6 +165,56 @@ defmodule GrappaWeb.PasskeyControllerTest do
       assert Repo.get!(User, ctx.user.id).passkey_mode == :disabled
     end
 
+    # #831 — #768 wrapped both ceremony writes in `Repo.BusyRetry` and put a
+    # `:db_unavailable` clause ahead of each catch-all, but could only pin the
+    # DELETE at the wire: reaching these two needs a ceremony, and nothing in
+    # the suite could sign one. `WebAuthnCeremony` can (#742), so the contract
+    # is provable now. Without the clause the degrade falls into the
+    # `:invalid_two_factor` catch-all and a saturated writer is reported as a
+    # bad authenticator — a lie the user answers by retrying a ceremony that
+    # cannot succeed.
+    test "POST /me/passkeys/registration behind a saturated writer is a 503, not a refused credential", ctx do
+      options =
+        json_response(
+          post(authed(ctx.session), "/me/passkeys/registration/options", %{
+            "password" => ctx.password,
+            "name" => "phone"
+          }),
+          200
+        )
+
+      params = registration_params(ctx, options, @ceremony_origin)
+
+      Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+      conn = post(authed(ctx.session), "/me/passkeys/registration", params)
+      Grappa.Repo.BusyRetry.inject_transient_faults(0)
+
+      assert json_response(conn, 503) == %{"error" => "db_unavailable"}
+      assert Repo.aggregate(Passkey, :count, :id) == 0
+    end
+
+    test "POST /me/passkeys/mode behind a saturated writer is a 503, not a refused assertion", ctx do
+      register_credential(ctx)
+
+      options =
+        json_response(
+          post(authed(ctx.session), "/me/passkeys/mode/options", %{
+            "password" => ctx.password,
+            "mode" => "second_factor"
+          }),
+          200
+        )
+
+      params = assertion_params(ctx, options, 1)
+
+      Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+      conn = post(authed(ctx.session), "/me/passkeys/mode", params)
+      Grappa.Repo.BusyRetry.inject_transient_faults(0)
+
+      assert json_response(conn, 503) == %{"error" => "db_unavailable"}
+      assert Repo.get!(User, ctx.user.id).passkey_mode == :disabled
+    end
+
     defp authed(session),
       do: put_req_header(build_conn(), "authorization", "Bearer #{session.id}")
 
