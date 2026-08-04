@@ -449,7 +449,7 @@ const Login: Component = () => {
                   <div class="login-alt-auth-row">
                     <button
                       type="button"
-                      class="login-advanced-toggle"
+                      class="login-quiet-button login-advanced-toggle"
                       aria-expanded={advanced() ? "true" : "false"}
                       aria-controls="login-advanced"
                       onClick={() => setAdvanced((v) => !v)}
@@ -458,14 +458,14 @@ const Login: Component = () => {
                     </button>
                     <button
                       type="button"
-                      class="login-alt-auth"
+                      class="login-quiet-button login-alt-auth"
                       onClick={() => void onPasskeyLogin()}
                     >
                       Passkey
                     </button>
                     <button
                       type="button"
-                      class="login-alt-auth"
+                      class="login-quiet-button login-alt-auth"
                       onClick={() => setRecoveryMode((value) => !value)}
                     >
                       Recovery code
@@ -591,7 +591,7 @@ const Login: Component = () => {
                   </button>
                   <button
                     type="button"
-                    class="login-advanced-toggle"
+                    class="login-quiet-button login-advanced-toggle"
                     onClick={() => {
                       setTotpChallenge(null);
                       setTotpCode("");

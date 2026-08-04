@@ -44,8 +44,9 @@ function sleep(ms: number): Promise<void> {
  * GET a boot-critical resource with a per-attempt timeout and bounded retry.
  *
  * Resolves with the `Response` for ANY completed request, including error
- * statuses — status handling stays with the caller. Rejects with the last
- * transport error once the attempts are exhausted.
+ * statuses — status handling stays with the caller. "Completed" means the body
+ * arrived too, not just the headers. Rejects with the last transport error once
+ * the attempts are exhausted.
  */
 export async function bootFetch(
   path: string,
@@ -68,7 +69,17 @@ export async function bootFetch(
     // abort attempt 2 the moment it started — a retry that can never win.
     const signal = AbortSignal.timeout(BOOT_FETCH_TIMEOUT_MS);
     try {
-      return await fetch(path, { ...init, signal });
+      const res = await fetch(path, { ...init, signal });
+      // The budget must cover the BODY too. `fetch` resolves at the headers
+      // while the signal stays live on the `Response`, and every caller reads
+      // the body (`res.json()`) after this function has returned — so a body
+      // still streaming at the deadline used to abort out there, where the
+      // retry loop could not see it: a boot that failed and never retried.
+      // Draining a clone pulls that read INSIDE the attempt, which both makes
+      // the abort retryable and leaves the returned `Response` fully buffered,
+      // so the caller's own read can no longer be cut by our signal.
+      await res.clone().arrayBuffer();
+      return res;
     } catch (error) {
       lastError = error;
       const backoff = BOOT_FETCH_BACKOFF_MS[attempt];

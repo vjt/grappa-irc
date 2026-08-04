@@ -26546,7 +26546,11 @@ Enabling or disabling TOTP revokes every other web session. Disabling requires
 the account password. TOTP failures share one public error and are limited to
 ten failures per IP/account over fifteen minutes.
 
-Passkeys, recovery-code regeneration, and email recovery remain out of scope.
+Recovery-code regeneration and email recovery remain out of scope. Passkeys did
+too when this was written — they shipped two days later, and the entry below
+(2026-08-04 — #442/#736) is the record. Amended in place rather than left
+standing with a correction bolted on: a decision log is a coherent account, not
+a wall of caveats, and the next session reads the sentence, not the thread.
 
 ### 2026-08-02 — #666 — multi-line paste is resumable + self-pacing; the send-door 429 carries a retry-after (P0, cross-stack)
 
@@ -28504,3 +28508,222 @@ per-page-load, so every reload re-pays upstream for an answer grappa already
 received. The precedent already exists — `userhost_cache` is nick-keyed, folded,
 fed passively from JOIN prefixes at zero upstream cost, and already migrated on
 NICK. Cache the answer, and the question of when to fetch mostly dissolves.
+
+---
+
+### 2026-08-04 — #442 / #736 — passkeys: the mode ladder, and why passwordless costs two steps
+
+Written retroactively (#740). The passkey surface shipped across #442 and #736
+while the only entry that mentioned passkeys said they were out of scope, so a
+session reading the log in good faith would have concluded passwordless login
+does not exist — and then re-litigated or re-implemented it. The #442 entry is
+amended above; this is the record it points at. Everything below is stated as
+BEHAVIOUR, verified against `main` @ `942f642b`.
+
+**One account, three modes.** `users.passkey_mode` is
+`:disabled | :second_factor | :passwordless`, default `:disabled`, and it is
+the account's whole passkey posture — not a per-credential property. What a
+password login does depends only on it:
+
+* `:disabled` — password authenticates; TOTP still applies if armed (#442).
+* `:second_factor` — password authenticates, then a passkey assertion
+  completes. It sits AHEAD of TOTP in the ladder: an account with both armed
+  is asked for the passkey, not the code.
+* `:passwordless` — a password login is **refused**, and refused with the same
+  `:invalid_credentials` answer a wrong password gets. The uniform oracle is
+  the point: which credential half is wrong, and whether an account is
+  passwordless at all, are both things the login door declines to say.
+
+**Registration always costs the password**, in every mode. A passkey is a
+credential being minted, so minting one is a re-authentication, not a
+setting toggle.
+
+**Passwordless is armed in two steps, and cannot be armed in one.** The
+mode-change door (`POST /me/passkeys/mode/options`) admits `:second_factor` and
+`:disabled` only; handing it `passwordless` is a `bad_request`, deliberately and
+permanently. Arming passwordless goes:
+
+1. `POST /me/passkeys/passwordless/recovery` — password re-checked, ten
+   recovery codes generated and **shown once**, returned with a recovery token.
+2. `POST /me/passkeys/passwordless/options` — the token is redeemed for the
+   ceremony challenge; the assertion then flips the mode and stores the code
+   hashes in the same transaction.
+
+The token IS the proof that step 1 happened. Without it the ladder could be
+climbed to a state where the password no longer works and the only fallback
+has never been displayed — an account locked out by a successful operation.
+It expires in ten minutes, and it is **encrypted rather than signed**: it
+carries the plaintext codes, and a signed token is tamper-proof but perfectly
+readable by anything it passes through. The invariant is enforced at the
+context boundary too, not just by route shape: `set_mode/4` accepts
+`:passwordless` only with exactly ten codes and the other two modes only with
+none, so a caller that skips the handshake fails loudly instead of arriving at
+a half-armed account.
+
+**A passkey belongs to THIS deployment's origin.** WebAuthn binds a credential
+to the origin that registered it, and it will refuse to answer for any other.
+So the origin grappa asserts is a durable property of the deployment, not of
+the request in flight: operators fronting the bouncer with a public origin
+Phoenix would not derive set `GRAPPA_PASSKEY_ORIGIN`, and everyone else gets
+the Endpoint's public URL. The relying-party id is that origin's host. Two
+consequences worth stating before someone rediscovers them the hard way:
+**changing the public origin of a live deployment invalidates every passkey
+already registered against it**, and an account in `:passwordless` mode whose
+origin moved has no password to fall back on — only its recovery codes. This is
+also why the value is resolved in one place rather than derived per controller:
+two derivations are two chances to disagree, and the disagreement would surface
+as an unexplained authenticator refusal on a user's device.
+
+Ceremonies are single-use and short-lived — challenges are held server-side for
+five minutes and swept, user verification is `required` (the authenticator must
+prove a human, not merely possession).
+
+**The recovery codes are ONE account-level set, shared with TOTP.** Not a
+passkey-specific pool that happens to look similar — the same ten codes, the
+same table, the same one-shot semantics as #442. So arming passwordless
+**replaces** whatever recovery codes a TOTP user was already holding, and the
+old printout stops working. That is deliberate (one fallback credential per
+account beats two that can disagree about which is current) and it is the
+sharpest edge on this surface: it is the one step that silently invalidates
+something the user was told to keep safe. The codes shown in step 1 above are
+the account's codes from that moment on.
+
+**Still out of scope**, and unchanged by any of this: recovery-code
+regeneration as its own verb — the set is replaced as a side effect of arming
+TOTP or passwordless, never on demand — and email recovery.
+## 2026-08-04 — #779: a timeout that stops at the headers is not a budget
+
+Two hardening items out of #717's review round 3, neither a live defect.
+
+**`bootFetch`'s per-attempt budget now covers the body.** `AbortSignal.timeout`
+starts at dispatch and stays live on the `Response`, but `fetch` resolves at
+the HEADERS and every caller — `me`, `listNetworks`, `listChannels` — reads the
+body with `res.json()` after `bootFetch` has already returned. A body still
+streaming at the 8s deadline therefore aborted OUTSIDE the retry loop: an
+`AbortError` the loop never saw, so an attempt the policy calls retryable was
+silently not retried. The fix drains a `res.clone()` inside the attempt. That
+pulls the body read into the budget (the abort becomes an ordinary retryable
+transport failure) and leaves the returned `Response` fully buffered, so the
+caller's own read can no longer be cut by our signal. Identity is preserved —
+the original `Response` is what comes back, not a reconstruction — which keeps
+`res.ok` / `res.status` / `readError` untouched. Plausible on a slow mobile
+link with a large `/me` envelope (`read_cursors` + `unread_counts`); on a LAN it
+never fires. The docstring's "ANY completed request" is now true: completed
+means the body arrived, not just the headers.
+
+**The `moduleRoot` guard enforces the invariant, not a spelling.** The #717
+invariant is "every module-lifetime computation has an error context". The
+guard enforced "no bare `createRoot`", which a module-scope `createEffect` /
+`createMemo` / `createResource` with NO root at all evades completely: it has
+`Owner === null`, so the throw propagates out of `runUpdates`, the queued render
+effects are discarded and the last frame freezes — the #717 signature exactly,
+with the regex reporting the file clean. Zero instances today; the point is that
+it is the EASIER thing for the next author to write.
+
+The rewrite splits one text predicate in two — an *owning root* (a `createRoot`
+whose callback ignores `dispose`, i.e. one that is never disposed) and an
+*unowned computation* (a reactive primitive at column 0 with no root on the
+line) — and both run through the same prose filter. Three consequences:
+
+- **A disposable root is now legal in production code.** `createRoot(dispose =>
+  …)` for a detached or portal render is normal Solid; the old guard flagged it
+  and left the next author choosing between `moduleRoot` (wrong — it never
+  disposes, so they leak a root) and an exclusion list, which CLAUDE.md forbids.
+  Binding `dispose` IS the invariant: a root with a handle ends.
+- **The anti-vacuity case can no longer be satisfied by a comment.** It runs
+  through the same classifier, so the literal `//   const exports_ =
+  createRoot(() => {` in `identityScopedStore`'s pattern-history comment stops
+  counting.
+- **The predicate is unit-tested against fixtures**, not only walked over a
+  clean tree. A guard that has never seen an offender proves nothing about what
+  it would catch.
+
+Module scope is detected as "starts at column 0" — a heuristic, pinned by the
+fact that biome owns the formatting, and one whose failure direction is a false
+positive the author fixes by moving the call into the root it belonged in.
+
+The test-file exemption stays, with a corrected justification: it is the ERROR
+CONTEXT that makes test roots out of scope (a test module's root dies with the
+worker and a throw surfaces as a failing test — the runner IS the context),
+not the shape. The comment used to claim every test root takes `dispose`; four
+do not.
+## 2026-08-04 — #788: a continuation that outlived its identity does nothing further
+
+`cicchetto/src/lib/scrollback.ts` scopes its state to the identity through
+`identityScopedStore`: nine resets fire on the `on(token)` transition and clear
+the pane, the load-once gate and the paging latches. The moduledoc used to read
+that as a race the store always wins. It never was. **The resets clear STATE;
+they cancel nothing in flight.** Every async verb captures `token()` at entry
+and then awaits, so a rotation or a detach landing inside one of those awaits
+leaves the continuation running under an identity that no longer exists.
+
+Measured, not argued: with the join-ok backfill held 400ms in a browser on the
+real bundle, a `/messages/count` went out **10ms after its own bearer was
+revoked**, through entirely production code paths.
+
+**Why a 401 is the least of it.** This is the #281 harm class reached through a
+different door. A request for the OLD identity's channel 404s when the new
+identity is not attached to that network, and the host's `http-404` fail2ban
+jail bans the client IP at the firewall. A routine account switch self-bans the
+operator.
+
+**The rule: check after the await, not in front of the request.** The stale
+continuation causes two harms, and only one of them is on the wire. The other
+needs no network at all — the page it already fetched merges into a map the
+rotation just purged, and the new identity renders the old one's scrollback.
+That harm happens *between* the resolved fetch and the next request, so the
+tidier-looking fix (one guarded wrapper around the module's REST calls, which
+the issue floated as the "reuse the verb" answer) cannot see it. Placing the
+check immediately after each await catches both, because everything downstream
+is unreachable. One shared predicate, `identityMoved(t)`, at eleven of the
+module's fifteen awaits; the four exempt are the ones with nothing after them,
+plus `resolveJumpTarget`, whose only successor is a pure value its caller checks
+before spending.
+
+Not hoisted into `identityScopedStore`: that factory owns the identity
+TRANSITION, while this owns a verb's own captured identity, which the factory
+never sees. `displayPrefs` and `customTheme` already inline the same comparison
+to drop a stale RESPONSE — this is the same predicate one step earlier, to
+refuse a stale REQUEST.
+
+**An await has three exits, and the first census walked one of them.** Review
+caught it: the resolve path is not even the likely arrival. `api.ts` throws on
+any non-ok response, so a bearer revoked *while the request was in flight*
+comes back as a 401 throw — straight past every guard, into the `catch`. Most
+catches here only log, but `loadInitialScrollback`'s releases the load-once
+gate, which is identity-scoped state: past a rotation it releases the NEW
+identity's gate, and that window's next re-select reads `wasLoaded` false,
+takes the fresh-open arm that deliberately does not fire `refreshScrollback`
+(#159), and so skips one live-delivery catch-up while re-paying for a cold
+load. The `finally` blocks are the third exit and the same story: they release
+per-key locks that, after the reset has cleared the Set, belong to whoever
+replaced us. All four now release only while the identity still holds, and the
+`refreshScrollback` completion stamp with them — stamping tells an e2e that
+ITS backfill landed. The rule is not "check after the await"; it is "every exit
+from the await that touches state".
+
+**`refreshInFlight` and `jumpInFlight` join the reset list.** Both were declared
+beside the verbs that own them rather than beside the other five Sets, and both
+were consequently missing from the cleanup — a real defect, not untidiness: an
+in-flight refresh for identity A holds A's key until its continuation reaches
+the `finally`, and B's refresh for the same key short-circuits meanwhile, so B's
+window silently never backfills. The first pass justified the unconditional
+`finally` delete with "`appendToScrollback` dedupes by id, so the worst case is
+one redundant GET" — true of the merge paths and false of `jumpToUnread`, which
+REPLACES the key's rows and would discard whatever landed between two
+concurrent writes. A rationale that does not cover the Set it is written beside
+is not a rationale, so the conditional release above replaced it and the trade
+disappeared.
+
+**Two honest notes.** `sendMessage`'s post-await cursor POST was already
+unreachable past a rotation — but by accident, via the store purge emptying the
+pane so the #50 anti-poison gate declines. A guarantee owed to an unrelated
+invariant is one refactor from evaporating, so it is now stated. And the
+regression test mocks `../auth` with a REAL Solid signal: the flat
+`token: () => value` stub the sibling suites use is not reactive, so
+`createEffect(on(token))` never fires and the rotation the cases turn on would
+not exist. Seven cases in all, each verified RED by removing exactly the guard
+it covers and watching only it fall — including a control case that fails
+loudly if the "full page" the stale-probe case releases ever stops being full,
+which would otherwise turn that assertion into one about a branch nobody
+entered.

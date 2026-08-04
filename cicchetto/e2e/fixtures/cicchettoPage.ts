@@ -819,7 +819,18 @@ export async function openRailMenu(page: Page): Promise<void> {
   const deadline = Date.now() + 15_000;
   for (;;) {
     try {
-      if ((await launcher.getAttribute("aria-expanded")) === "false") {
+      // #752 — the timeout is what makes the deadline reachable. `getAttribute`
+      // auto-waits for the element to ATTACH, and `playwright.config.ts` sets no
+      // `actionTimeout` (default 0 = no limit), so a launcher that never mounts
+      // leaves this call neither returning nor throwing: the `catch` below is
+      // never entered and the 15s deadline is never evaluated. The loop then
+      // hangs until the whole-test timeout — 60s to 150s in the specs that raise
+      // it — and reports `getAttribute` instead of "the rail menu never opened".
+      // Every other leg of this family is already bounded (see
+      // `openMembersDrawer`: `isVisible`/`count` do not wait, click and the
+      // visibility assert carry explicit 3s); this was the divergent one, and 86
+      // spec files come through this door.
+      if ((await launcher.getAttribute("aria-expanded", { timeout: 3_000 })) === "false") {
         await launcher.click({ timeout: 3_000 });
       }
       await expect(menu).toBeVisible({ timeout: 3_000 });
