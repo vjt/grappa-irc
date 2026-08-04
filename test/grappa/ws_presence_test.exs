@@ -35,6 +35,49 @@ defmodule Grappa.WSPresenceTest do
     end)
   end
 
+  # #753 — settle on the DOWN having been PROCESSED, never on the clock.
+  #
+  # `Process.exit/2` is asynchronous, so the monitor `:DOWN` races every call
+  # the test makes next. The old shape bet a fixed 50ms on winning that race
+  # and then asserted the post-death state; under load the mailbox has not
+  # drained in 50ms and the assertion reads the PRE-death value. That is the
+  # alone-green / gate-red class #653 spent four slices removing — and with the
+  # sleeps cut to 0 SIX of the nine cases in this file fail, which is the same
+  # race arriving early rather than a different bug.
+  #
+  # Two settles, in order of preference:
+  #
+  #   1. A settle MESSAGE, where one exists. `:ws_all_hidden` is emitted by the
+  #      very `handle_info` that processes the `:DOWN`, so receiving it IS the
+  #      barrier — assert it FIRST and the follow-up reads are guaranteed to see
+  #      the committed state (our call is queued behind that `handle_info`).
+  #   2. This helper, where no message is emitted (that being the point of the
+  #      case). The count is the observable the `:DOWN` moves; polling it is not
+  #      a longer wait but the SAME assertion, made once the state it describes
+  #      has arrived, and it still fails with the real value at the deadline.
+  @settle_timeout_ms 500
+  @settle_poll_ms 5
+
+  defp assert_ws_count(user_name, expected) do
+    assert_ws_count(user_name, expected, System.monotonic_time(:millisecond) + @settle_timeout_ms)
+  end
+
+  defp assert_ws_count(user_name, expected, deadline) do
+    actual = WSPresence.ws_count(user_name)
+
+    cond do
+      actual == expected ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        assert actual == expected
+
+      true ->
+        :timer.sleep(@settle_poll_ms)
+        assert_ws_count(user_name, expected, deadline)
+    end
+  end
+
   describe "register/2 and ws_count/1" do
     test "registering a socket pid bumps the count" do
       :ok = WSPresence.register("vjt", self())
@@ -198,9 +241,8 @@ defmodule Grappa.WSPresenceTest do
       assert WSPresence.ws_count("alice") == 2
 
       Process.exit(p1, :kill)
-      :timer.sleep(50)
 
-      assert WSPresence.ws_count("alice") == 1
+      assert_ws_count("alice", 1)
 
       send(p2, :stop)
     end
@@ -212,11 +254,12 @@ defmodule Grappa.WSPresenceTest do
       assert_receive {:ws_visible, "bob"}, 200
 
       Process.exit(p, :kill)
-      :timer.sleep(50)
 
+      # The message comes from the `handle_info` that processes the `:DOWN`, so
+      # it is the barrier — the reads below are then guaranteed post-commit.
+      assert_receive {:ws_all_hidden, "bob"}, 200
       assert WSPresence.ws_count("bob") == 0
       refute WSPresence.any_visible?("bob")
-      assert_receive {:ws_all_hidden, "bob"}, 200
     end
 
     test "a HIDDEN pid dying does NOT fire :ws_all_hidden (was never visible)" do
@@ -225,9 +268,10 @@ defmodule Grappa.WSPresenceTest do
       # p stays hidden (default)
 
       Process.exit(p, :kill)
-      :timer.sleep(50)
 
-      assert WSPresence.ws_count("bob") == 0
+      # No message to wait on — its absence is the point — so settle on the
+      # count, which is what makes the refute non-vacuous.
+      assert_ws_count("bob", 0)
       refute_receive {:ws_all_hidden, "bob"}, 100
     end
 
@@ -242,9 +286,8 @@ defmodule Grappa.WSPresenceTest do
       assert_receive {:ws_visible, "carol"}, 200
 
       Process.exit(p1, :kill)
-      :timer.sleep(50)
 
-      assert WSPresence.ws_count("carol") == 1
+      assert_ws_count("carol", 1)
       assert WSPresence.any_visible?("carol")
       refute_receive {:ws_all_hidden, "carol"}, 100
 
@@ -260,8 +303,12 @@ defmodule Grappa.WSPresenceTest do
       assert Map.has_key?(:sys.get_state(WSPresence).sockets, "visitor:mallory")
 
       Process.exit(p, :kill)
-      :timer.sleep(50)
 
+      # Settle on the count, then probe the map: the pid removal and the
+      # entry-drop decision happen in the same `handle_info`, so a count of 0
+      # means the choice between "dropped" and "left empty" has been made —
+      # which is the distinction this case exists to pin.
+      assert_ws_count("visitor:mallory", 0)
       refute Map.has_key?(:sys.get_state(WSPresence).sockets, "visitor:mallory")
     end
 
@@ -272,10 +319,9 @@ defmodule Grappa.WSPresenceTest do
       :ok = WSPresence.register("dave", p2)
 
       Process.exit(p1, :kill)
-      :timer.sleep(50)
 
+      assert_ws_count("dave", 1)
       assert Map.has_key?(:sys.get_state(WSPresence).sockets, "dave")
-      assert WSPresence.ws_count("dave") == 1
 
       send(p2, :stop)
     end
@@ -306,10 +352,12 @@ defmodule Grappa.WSPresenceTest do
 
       # ...but its DEATH is still the last reported-visible device leaving.
       Process.exit(p, :kill)
-      :timer.sleep(50)
 
-      assert WSPresence.ws_count("ivan") == 0
+      # Message first: it is emitted by the `handle_info` that handles the
+      # `:DOWN`, so it proves the transition ran. Asserting the count ahead of
+      # it read a state nothing had promised to have reached yet.
       assert_receive {:ws_all_hidden, "ivan"}, 200
+      assert WSPresence.ws_count("ivan") == 0
     end
 
     test "client_closing on a STALE :visible pid still fires :ws_all_hidden" do
@@ -355,7 +403,11 @@ defmodule Grappa.WSPresenceTest do
       :ok = WSPresence.mark_stale_for_test("lena", stale)
 
       Process.exit(fresh, :kill)
-      :timer.sleep(50)
+      # Settle on the fresh pid actually being GONE. The old sleep did not make
+      # this case flaky — the 100ms refute absorbed it — it made it VACUOUS:
+      # a refute that runs before the `:DOWN` is processed passes for the wrong
+      # reason. Now the death is a fact before the absence is asserted.
+      assert_ws_count("lena", 1)
       # `stale` is still raw-visible — the user has not gone all-hidden.
       refute_receive {:ws_all_hidden, "lena"}, 100
 
@@ -376,7 +428,7 @@ defmodule Grappa.WSPresenceTest do
 
       # Subsequent real DOWN is idempotent (already hidden → no re-fire)
       Process.exit(p, :kill)
-      :timer.sleep(50)
+      assert_ws_count("grace", 0)
       refute_receive {:ws_all_hidden, "grace"}, 100
     end
 
