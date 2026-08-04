@@ -28686,14 +28686,34 @@ never sees. `displayPrefs` and `customTheme` already inline the same comparison
 to drop a stale RESPONSE — this is the same predicate one step earlier, to
 refuse a stale REQUEST.
 
+**An await has three exits, and the first census walked one of them.** Review
+caught it: the resolve path is not even the likely arrival. `api.ts` throws on
+any non-ok response, so a bearer revoked *while the request was in flight*
+comes back as a 401 throw — straight past every guard, into the `catch`. Most
+catches here only log, but `loadInitialScrollback`'s releases the load-once
+gate, which is identity-scoped state: past a rotation it releases the NEW
+identity's gate, and that window's next re-select reads `wasLoaded` false,
+takes the fresh-open arm that deliberately does not fire `refreshScrollback`
+(#159), and so skips one live-delivery catch-up while re-paying for a cold
+load. The `finally` blocks are the third exit and the same story: they release
+per-key locks that, after the reset has cleared the Set, belong to whoever
+replaced us. All four now release only while the identity still holds, and the
+`refreshScrollback` completion stamp with them — stamping tells an e2e that
+ITS backfill landed. The rule is not "check after the await"; it is "every exit
+from the await that touches state".
+
 **`refreshInFlight` and `jumpInFlight` join the reset list.** Both were declared
 beside the verbs that own them rather than beside the other five Sets, and both
 were consequently missing from the cleanup — a real defect, not untidiness: an
 in-flight refresh for identity A holds A's key until its continuation reaches
 the `finally`, and B's refresh for the same key short-circuits meanwhile, so B's
-window silently never backfills. Clearing mid-flight lets A's `finally` delete a
-key B has re-added, which can cost one redundant GET; `appendToScrollback`
-dedupes by id, so that is the cheaper side of the trade.
+window silently never backfills. The first pass justified the unconditional
+`finally` delete with "`appendToScrollback` dedupes by id, so the worst case is
+one redundant GET" — true of the merge paths and false of `jumpToUnread`, which
+REPLACES the key's rows and would discard whatever landed between two
+concurrent writes. A rationale that does not cover the Set it is written beside
+is not a rationale, so the conditional release above replaced it and the trade
+disappeared.
 
 **Two honest notes.** `sendMessage`'s post-await cursor POST was already
 unreachable past a rotation — but by accident, via the store purge emptying the
@@ -28702,4 +28722,8 @@ invariant is one refactor from evaporating, so it is now stated. And the
 regression test mocks `../auth` with a REAL Solid signal: the flat
 `token: () => value` stub the sibling suites use is not reactive, so
 `createEffect(on(token))` never fires and the rotation the cases turn on would
-not exist.
+not exist. Seven cases in all, each verified RED by removing exactly the guard
+it covers and watching only it fall — including a control case that fails
+loudly if the "full page" the stale-probe case releases ever stops being full,
+which would otherwise turn that assertion into one about a branch nobody
+entered.

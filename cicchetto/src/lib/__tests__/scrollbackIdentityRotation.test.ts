@@ -2,7 +2,7 @@
 // further: no request on the wire, no write into the store.
 //
 // Every async verb in `scrollback.ts` captures `token()` at entry and then
-// awaits. The nine `onIdentityChange` resets clear STATE; they cancel nothing
+// awaits. The `onIdentityChange` resets clear STATE; they cancel nothing
 // in flight. So a rotation or a detach landing inside one of those awaits
 // leaves the continuation holding a bearer the server has already revoked —
 // and it sends it. Reproduced in a browser on the real bundle (see the issue):
@@ -81,19 +81,33 @@ const row = (id: number): ScrollbackMessage => ({
   meta: {},
 });
 
-// A full `PAGE_LIMIT` page — the shape that makes `refreshScrollback` probe
-// for the remainder, which is the measured #788 site.
-const fullPage = (): ScrollbackMessage[] => Array.from({ length: 200 }, (_, i) => row(i + 1));
+// A full page — the shape that makes `refreshScrollback` probe for the
+// remainder, which is the measured #788 site. The size is read back from the
+// limit the module ASKED for rather than hardcoded to today's `PAGE_LIMIT`:
+// a hardcoded 200 that drifts out of step would stop entering the probe
+// branch at all, and the case would pass because it tested nothing. The
+// "identity holds" control below fails loudly if that ever happens anyway.
+const fullPageFor = (spy: { mock: { calls: unknown[][] } }): ScrollbackMessage[] => {
+  const limit = spy.mock.calls[0]?.[4];
+  if (typeof limit !== "number") throw new Error("no page limit observed on the wire");
+  return Array.from({ length: limit }, (_, i) => row(i + 1));
+};
 
 // Hold a REST call open so the rotation can land strictly inside its await,
 // which is the whole point: the continuation resumes under a bearer the
 // server has already revoked.
-const gate = <T>(): { promise: Promise<T>; release: (value: T) => void } => {
+const gate = <T>(): {
+  promise: Promise<T>;
+  release: (value: T) => void;
+  fail: (err: Error) => void;
+} => {
   let release!: (value: T) => void;
-  const promise = new Promise<T>((resolve) => {
+  let fail!: (err: Error) => void;
+  const promise = new Promise<T>((resolve, reject) => {
     release = resolve;
+    fail = reject;
   });
-  return { promise, release };
+  return { promise, release, fail };
 };
 
 // Rotate and let Solid's effect queue run the identity resets before the
@@ -127,10 +141,25 @@ describe("#788 identity rotation mid-flight", () => {
 
     const pending = refreshScrollback("net", "#probe-stale");
     await rotateTo("tok-b");
-    page.release(fullPage());
+    page.release(fullPageFor(listMessagesAfterSpy));
     await pending;
 
     expect(bearersSeenBy(countMessagesAfterSpy)).not.toContain("tok-a");
+  });
+
+  // The control for the case above: same harness, same full page, no rotation.
+  // Without it, a full page that stopped being full would silently turn the
+  // stale-probe case into an assertion about a branch nobody entered.
+  it("does probe for the remainder when the identity holds", async () => {
+    const { refreshScrollback } = await import("../scrollback");
+    const page = gate<ScrollbackMessage[]>();
+    listMessagesAfterSpy.mockReturnValue(page.promise);
+
+    const pending = refreshScrollback("net", "#probe-live");
+    page.release(fullPageFor(listMessagesAfterSpy));
+    await pending;
+
+    expect(bearersSeenBy(countMessagesAfterSpy)).toContain("tok-a");
   });
 
   it("does not land a page fetched by the old identity in the purged store", async () => {
@@ -159,6 +188,55 @@ describe("#788 identity rotation mid-flight", () => {
     await Promise.all([pendingA, pendingB]);
 
     expect(bearersSeenBy(listMessagesAfterSpy)).toContain("tok-b");
+  });
+
+  // The other half of the lock question. Clearing the Set on rotation is only
+  // safe if the old continuation then keeps its hands off it: its `finally`
+  // would otherwise delete a key the NEW identity re-added, unlocking a fetch
+  // that is still running — and stamp that key as backfilled while it is not.
+  it("does not release or stamp the new identity's in-flight refresh", async () => {
+    const { refreshScrollback } = await import("../scrollback");
+    const { channelKey } = await import("../channelKey");
+    const stale = gate<ScrollbackMessage[]>();
+    const live = gate<ScrollbackMessage[]>();
+    listMessagesAfterSpy.mockReturnValueOnce(stale.promise);
+    listMessagesAfterSpy.mockReturnValueOnce(live.promise);
+
+    const pendingA = refreshScrollback("net", "#held");
+    await rotateTo("tok-b");
+    const pendingB = refreshScrollback("net", "#held");
+    // A's continuation resumes and unwinds while B is still on the wire.
+    stale.release([]);
+    await pendingA;
+
+    // B still holds the key, so a re-entrant call is still a no-op...
+    await refreshScrollback("net", "#held");
+    expect(bearersSeenBy(listMessagesAfterSpy).filter((b) => b === "tok-b")).toHaveLength(1);
+    // ...and nothing has told a spec that B's backfill landed.
+    const stamped = (window as Window & { __cic_scrollbackRefreshed?: Set<string> })
+      .__cic_scrollbackRefreshed;
+    expect(stamped?.has(channelKey("net", "#held"))).not.toBe(true);
+
+    live.release([]);
+    await pendingB;
+  });
+
+  // The reject path, which is the LIKELIER arrival: a bearer revoked while the
+  // request was in flight comes back as `api.ts`'s 401 throw, not as a clean
+  // resolve. `loadInitialScrollback`'s catch releases the load-once gate — the
+  // new identity's gate, past a rotation.
+  it("does not release the new identity's load-once gate when the old fetch 401s", async () => {
+    const { loadInitialScrollback, wasLoaded } = await import("../scrollback");
+    const stale = gate<ScrollbackMessage[]>();
+    listMessagesSpy.mockReturnValueOnce(stale.promise);
+
+    const pendingA = loadInitialScrollback("net", "#gate");
+    await rotateTo("tok-b");
+    const pendingB = loadInitialScrollback("net", "#gate");
+    stale.fail(new Error("401 Unauthorized"));
+    await Promise.all([pendingA, pendingB]);
+
+    expect(wasLoaded("net", "#gate")).toBe(true);
   });
 
   it("does not baseline the cold-open read cursor with a revoked bearer", async () => {
