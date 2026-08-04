@@ -250,6 +250,37 @@ defmodule GrappaWeb.PasskeyControllerTest do
     end
   end
 
+  # #768 — DELETE is the one passkey write a test can drive end-to-end without
+  # forging a WebAuthn ceremony, so it is where the 500-vs-503 contract gets
+  # pinned at the wire. `verify_password/2` ahead of it is pure Argon2 and
+  # touches no BusyRetry op, so the injected fault can only land on the delete.
+  test "deleting a passkey behind a saturated writer is a 503, not a 500", %{conn: conn} do
+    {user, password} = user_fixture_with_password()
+    session = session_fixture(user)
+
+    passkey =
+      Repo.insert!(
+        Passkey.changeset(%Passkey{}, %{
+          user_id: user.id,
+          credential_id: <<9, 9, 9>>,
+          public_key: CBOR.encode(%{1 => 2, 3 => -7}),
+          name: "phone"
+        })
+      )
+
+    Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+
+    conn =
+      conn
+      |> put_req_header("authorization", "Bearer #{session.id}")
+      |> delete("/me/passkeys/#{passkey.id}", %{"password" => password})
+
+    assert json_response(conn, 503) == %{"error" => "db_unavailable"}
+
+    Grappa.Repo.BusyRetry.inject_transient_faults(0)
+    assert Repo.aggregate(Passkey, :count, :id) == 1
+  end
+
   test "last passkey can be deleted after returning to password login", %{conn: conn} do
     {user, password} = user_fixture_with_password()
     session = session_fixture(user)

@@ -48,16 +48,24 @@ defmodule Grappa.Accounts.WebAuthn do
          {:ok, {auth_data, _}} <- Wax.register(attestation, client_data, challenge) do
       credential = auth_data.attested_credential_data
 
-      %Passkey{}
-      |> Passkey.changeset(%{
-        user_id: user.id,
-        credential_id: credential.credential_id,
-        public_key: CBOR.encode(credential.credential_public_key),
-        sign_count: auth_data.sign_count,
-        name: name,
-        transports: %{"values" => List.wrap(params["transports"])}
-      })
-      |> Repo.insert()
+      changeset =
+        Passkey.changeset(%Passkey{}, %{
+          user_id: user.id,
+          credential_id: credential.credential_id,
+          public_key: CBOR.encode(credential.credential_public_key),
+          sign_count: auth_data.sign_count,
+          name: name,
+          transports: %{"values" => List.wrap(params["transports"])}
+        })
+
+      # #768 — ride out a transient SQLITE_BUSY on the credential insert rather
+      # than raising a 500 at the end of a ceremony the user cannot cheaply
+      # repeat. `Repo.insert/1` already returns the `{:ok, _} | {:error,
+      # changeset}` shape `BusyRetry.run/1` wants, so the wrap is the whole
+      # change; sustained saturation degrades to `{:error, :db_unavailable}`.
+      # This is the `with` BODY, not a `<-` clause, so it bypasses the
+      # `:invalid_passkey` else and reaches the caller intact.
+      Repo.BusyRetry.run(fn -> Repo.insert(changeset) end)
     else
       false -> {:error, :invalid_passkey}
       {:error, _} -> {:error, :invalid_passkey}
@@ -155,7 +163,8 @@ defmodule Grappa.Accounts.WebAuthn do
   one statement the second request re-decides against the row the first
   already removed, and loses.
   """
-  @spec delete(User.t(), Ecto.UUID.t()) :: :ok | {:error, :not_found | :passkey_required}
+  @spec delete(User.t(), Ecto.UUID.t()) ::
+          :ok | {:error, :not_found | :passkey_required | :db_unavailable}
   def delete(%User{passkey_mode: :disabled} = user, id), do: run_delete(user, id, owned(user, id))
 
   def delete(user, id) do
@@ -166,10 +175,23 @@ defmodule Grappa.Accounts.WebAuthn do
 
   defp owned(user, id), do: from(p in Passkey, where: p.id == ^id and p.user_id == ^user.id)
 
+  # #768 — ride out a transient SQLITE_BUSY on the credential delete; sustained
+  # saturation degrades to `{:error, :db_unavailable}` (a 503 at the REST
+  # caller) rather than raising a 500. Wrap the delete in an `{:ok, _}` so the
+  # op honours the `BusyRetry.run/1` contract, as `QueryWindows.close/3` does.
+  # `refuse_delete/2` stays OUTSIDE the retry: it is a read, and re-running it
+  # per attempt would re-decide a question the delete already answered.
   defp run_delete(user, id, query) do
-    case Repo.delete_all(query) do
-      {1, _} -> :ok
-      {0, _} -> refuse_delete(user, id)
+    result =
+      Repo.BusyRetry.run(fn ->
+        {count, _} = Repo.delete_all(query)
+        {:ok, count}
+      end)
+
+    case result do
+      {:ok, 1} -> :ok
+      {:ok, 0} -> refuse_delete(user, id)
+      {:error, :db_unavailable} = err -> err
     end
   end
 

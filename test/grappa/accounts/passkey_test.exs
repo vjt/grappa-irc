@@ -270,6 +270,24 @@ defmodule Grappa.Accounts.PasskeyTest do
       assert Repo.aggregate(Passkey, :count, :id) == 0
     end
 
+    # #768 — the delete is a WRITE, so a transient SQLITE_BUSY under WAL with
+    # pool_size > 1 used to raise straight out of `Repo.delete_all/1` and land
+    # on the caller as a 500. Wrapped in `Repo.BusyRetry`, sustained saturation
+    # degrades to `{:error, :db_unavailable}` — the token FallbackController
+    # already turns into a clean 503. The pool_size:1 Sandbox cannot produce a
+    # real busy, so the engine's :test-only per-process fault seam forces one
+    # (same lever as the #523 themes-copy repro); ExUnit gives each test its
+    # own process, so the injection cannot leak.
+    test "a delete held off by a saturated writer degrades, it does not raise", ctx do
+      passkey = add_passkey(ctx.user, <<1>>)
+      Repo.BusyRetry.inject_transient_faults(10_000)
+
+      assert {:error, :db_unavailable} = WebAuthn.delete(ctx.user, passkey.id)
+
+      Repo.BusyRetry.inject_transient_faults(0)
+      assert Repo.aggregate(Passkey, :count, :id) == 1
+    end
+
     test "a credential owned by someone else is not found, armed or not", ctx do
       other = add_passkey(user_fixture(), <<3>>)
       {:ok, :passwordless} = WebAuthn.set_mode(ctx.user, :passwordless, ctx.session.id, codes())
