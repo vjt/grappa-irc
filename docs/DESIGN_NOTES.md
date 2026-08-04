@@ -28823,3 +28823,46 @@ Each new check was then reverted in isolation and only its own cases fell.
 parse used `s/^(GRAPPA_[A-Z0-9_]+)="\$\{\1:-\}".*/\1/p` and matched NOTHING on
 BSD sed. It surfaced as exit 2 rather than as a silently empty required set only
 because the empty-parse guard was written first — the same reason it stays.
+
+## 2026-08-05 — #828: a row in the registry is not a client on the network
+
+A visitor on grappa tried `/nick Cyber` on Azzurra and got 409 `nick_in_use`
+for a nick that was free upstream — no such client in `/whois`, NickServ
+enforcer not connected, confirmed independently by a second oper. Production,
+2026-08-04 ~23:21 CEST.
+
+The visitor branch of `POST /networks/:id/nick` ran a pre-check the user branch
+never had: a query over `network_credentials` for the folded nick on the
+network (`Visitors.nick_in_use?/3` → `Credentials.fetch_visitor_credential_by_nick/2`).
+The name said "in use"; the query said "recorded". Those are different
+questions, and the gap between them is a visitor who connected once, left, and
+whose ANON credential the reaper has not collected. That dead row held the nick
+against everyone else for as long as it lived.
+
+The authority on whether a nick is available is the ircd, and it was already
+answering. `433` during registration is classified `:nick_in_use` by
+`Visitors.Login.classify_down/1`; post-registration it lands on `$server`
+through the `NumericRouter` deny list (the rejected nick is not a routing
+destination). So on the "taken upstream" case the pre-check duplicated an
+answer we already get, and on the "free upstream" case it invented a refusal.
+
+The pre-check is now narrowed to IDENTIFIED holders rather than deleted,
+because there the question genuinely is different: the nick of an identified
+credential is its LOGIN KEY, bound at the proven `+r` (#561, held against a
+services-forced Guest), so handing it to another visitor is an identity
+problem, not a wire-availability one. `nick_in_use?/3` was renamed
+`nick_held_by_identified?/3` in the same change: the misleading name is the
+shape of the bug, and leaving it in place after narrowing the behaviour invites
+the next caller to make the same reading. The 409 wire token is unchanged.
+
+**Known incompleteness, deliberately not fixed here.** The folded-nick partial
+UNIQUE (`network_credentials_visitor_folded_nick_network_id_index`) still
+guards the persist. Against a stale ANON row that is no longer a
+near-zero-probability race but the steady state: the rename now succeeds on the
+wire, while `Credentials.update_visitor_credential_nick/3` fails the changeset
+and `Session.Server` logs and drops it — so the live session carries the new
+nick and the credential keeps the old one until the row is collected. The user's
+reported symptom (a refusal for a free nick) is gone either way. Closing the
+remaining half means deciding whether a live rename may RELEASE a dead ANON
+row's claim, which is the reaper-retention question #828 already defers as a
+follow-up, and it is a design call rather than a bug fix.

@@ -17,7 +17,8 @@ defmodule GrappaWeb.NickControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{IRCServer, Scrollback}
+  alias Grappa.{IRCServer, Scrollback, Visitors}
+  alias Grappa.Networks.Credentials
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
@@ -162,7 +163,7 @@ defmodule GrappaWeb.NickControllerTest do
       # handle_info reduction. Polling keeps the test honest under
       # mailbox latency.
       assert_eventually(fn ->
-        case Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network.id) do
+        case Credentials.get_visitor_credential(visitor.id, network.id) do
           {:ok, %{nick: ^new_nick}} -> true
           _ -> false
         end
@@ -248,7 +249,7 @@ defmodule GrappaWeb.NickControllerTest do
 
       # The rename did not happen: the credential still carries the old nick.
       assert {:ok, %{nick: ^old_nick}} =
-               Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network.id)
+               Credentials.get_visitor_credential(visitor.id, network.id)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -267,7 +268,7 @@ defmodule GrappaWeb.NickControllerTest do
       holder = visitor_fixture(nick: target_nick, network_slug: network.slug)
       # Promote the holder through the production verb — committing the
       # NickServ secret is what flips the credential to :nickserv_identify.
-      {:ok, _} = Grappa.Visitors.commit_password(holder.id, network.id, "s3cret")
+      {:ok, _} = Visitors.commit_password(holder.id, network.id, "s3cret")
 
       pid = start_visitor_session_for(visitor, network)
       :ok = await_handshake(server)
@@ -292,7 +293,7 @@ defmodule GrappaWeb.NickControllerTest do
 
       # DB unchanged — the per-network credential nick stays the original.
       assert {:ok, %{nick: nick}} =
-               Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network.id)
+               Credentials.get_visitor_credential(visitor.id, network.id)
 
       assert nick == old_nick
 
