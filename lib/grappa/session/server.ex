@@ -5336,7 +5336,8 @@ defmodule Grappa.Session.Server do
   # a services-forced `GuestNNNNN`; the identified nick is bound at +r via
   # `commit_identity/4`. The `(nick, network_slug)` UNIQUE constraint catches the
   # near-zero-probability concurrent-rename race; controller-boundary
-  # `Visitors.nick_in_use?/3` is the fast-path 409. User sessions
+  # `Visitors.nick_held_by_identified?/3` is the fast-path 409 for an
+  # identified holder (#828 — an ANON holder does not refuse). User sessions
   # don't carry a persister — their nick lives in `Networks.Credential`,
   # which is operator-driven and rotated via the user-side path
   # documented in `nick_controller.ex`.

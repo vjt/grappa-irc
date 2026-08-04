@@ -4,9 +4,11 @@ defmodule GrappaWeb.NickControllerTest do
   happy path 202; iso boundary (cross-user 404); no-session 404;
   bad_request guards. V9 (visitor-parity cluster, 2026-05-15) lifts
   the visitor short-circuit — visitors now traverse the same path
-  as users, with a per-(nick, network_slug) UNIQUE pre-check that
-  surfaces as 409 nick_in_use when another visitor row already holds
-  the target nick on the same network.
+  as users, with a per-network credential pre-check that surfaces as
+  409 nick_in_use when another visitor's IDENTIFIED credential holds
+  the target nick. #828 narrowed that pre-check to identified holders
+  only: an ANON row answers "recorded here once", not "in use on the
+  network now", and the ircd's 433 is the authority on the latter.
 
   `async: false` because Session uses singleton supervisors + Registry;
   see `Grappa.Session.ServerTest` for the same rationale.
@@ -15,12 +17,27 @@ defmodule GrappaWeb.NickControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.IRCServer
+  alias Grappa.{IRCServer, Scrollback}
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
-  defp start_server do
-    {:ok, server} = IRCServer.start_link(passthrough_handler())
+  # Completes registration (001) so the session is welcomed and inbound
+  # numerics traverse the post-registration path (NumericRouter) instead
+  # of AuthFSM's registration clauses.
+  defp welcoming_handler do
+    fn state, line ->
+      if String.starts_with?(line, "USER ") do
+        {:reply, ":irc.test.org 001 grappa-test :Welcome\r\n", state}
+      else
+        {:reply, nil, state}
+      end
+    end
+  end
+
+  defp start_server, do: start_server(passthrough_handler())
+
+  defp start_server(handler) do
+    {:ok, server} = IRCServer.start_link(handler)
     {server, IRCServer.port(server)}
   end
 
@@ -154,18 +171,103 @@ defmodule GrappaWeb.NickControllerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "visitor subject — 409 nick_in_use when another visitor row holds the target nick on the same network",
+    # #828 — a stale ANON credential is a registry artefact, not an
+    # authority on who holds the nick upstream. Pre-fix the boundary
+    # answered 409 off that row and the NICK frame never left the box,
+    # so a nick free on the network stayed unreachable forever (observed
+    # in production on Azzurra, 2026-08-04).
+    test "visitor subject — 202 + NICK upstream when only a stale ANON credential holds the target nick (#828)",
          %{conn: _conn} do
       {server, port} = start_server()
-      old_nick = "v9a-#{System.unique_integer([:positive])}"
+      old_nick = "v828a-#{System.unique_integer([:positive])}"
       {visitor, network} = visitor_with_network(port, nick: old_nick)
       session = visitor_session_fixture(visitor)
 
-      # Squat the target nick with ANOTHER visitor row on the same
-      # network. The pre-check at the controller boundary surfaces 409
-      # before the upstream NICK frame is sent.
-      target_nick = "v9b-#{System.unique_integer([:positive])}"
+      # A DIFFERENT visitor identity whose ANON credential still records
+      # the target nick — the shape the reaper has not collected yet.
+      target_nick = "v828b-#{System.unique_integer([:positive])}"
       _ = visitor_fixture(nick: target_nick, network_slug: network.slug)
+
+      pid = start_visitor_session_for(visitor, network)
+      :ok = await_handshake(server)
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/nick", %{"nick" => target_nick})
+
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      # The frame reaches the ircd — the only authority on the nick.
+      {:ok, line} = IRCServer.wait_for_line(server, &(&1 == "NICK #{target_nick}\r\n"), 1_000)
+      assert line == "NICK #{target_nick}\r\n"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # #828 — the other half of the same contract: dropping the ANON
+    # pre-check does not lose the refusal, it relocates it to the party
+    # that actually knows. A nick genuinely taken upstream comes back as
+    # the ircd's own 433, routed to `$server` by the NumericRouter deny
+    # list (`{:server, nil}` — the rejected nick is not a destination).
+    test "visitor subject — a nick taken upstream is refused by the ircd's 433, not by the controller (#828)",
+         %{conn: _conn} do
+      {server, port} = start_server(welcoming_handler())
+      old_nick = "v828c-#{System.unique_integer([:positive])}"
+      {visitor, network} = visitor_with_network(port, nick: old_nick)
+      session = visitor_session_fixture(visitor)
+      pid = start_visitor_session_for(visitor, network)
+      :ok = await_handshake(server)
+
+      # Free in the registry — nothing squats it locally. Upstream is the
+      # one that says no.
+      target_nick = "v828d-#{System.unique_integer([:positive])}"
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/nick", %{"nick" => target_nick})
+
+      assert json_response(conn, 202) == %{"ok" => true}
+
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "NICK #{target_nick}\r\n"), 1_000)
+
+      :ok =
+        IRCServer.feed(
+          server,
+          ":irc.test.org 433 #{old_nick} #{target_nick} :Nickname is already in use\r\n"
+        )
+
+      assert_eventually(fn ->
+        {:visitor, visitor.id}
+        |> Scrollback.fetch(network.id, "$server", nil, 10, nil, false)
+        |> Enum.any?(&(&1.body == "Nickname is already in use"))
+      end)
+
+      # The rename did not happen: the credential still carries the old nick.
+      assert {:ok, %{nick: ^old_nick}} =
+               Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network.id)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # #561/#828 — the pre-check SURVIVES for identified credentials: an
+    # identified visitor's nick is its login key, so handing it to another
+    # visitor is an identity problem, not a wire-availability question.
+    test "visitor subject — 409 nick_in_use when another visitor's IDENTIFIED credential holds the target nick",
+         %{conn: _conn} do
+      {server, port} = start_server()
+      old_nick = "v828e-#{System.unique_integer([:positive])}"
+      {visitor, network} = visitor_with_network(port, nick: old_nick)
+      session = visitor_session_fixture(visitor)
+
+      target_nick = "v828f-#{System.unique_integer([:positive])}"
+      holder = visitor_fixture(nick: target_nick, network_slug: network.slug)
+      # Promote the holder through the production verb — committing the
+      # NickServ secret is what flips the credential to :nickserv_identify.
+      {:ok, _} = Grappa.Visitors.commit_password(holder.id, network.id, "s3cret")
 
       pid = start_visitor_session_for(visitor, network)
       :ok = await_handshake(server)

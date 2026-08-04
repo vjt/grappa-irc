@@ -397,23 +397,37 @@ defmodule Grappa.VisitorsTest do
     end
   end
 
-  describe "nick_in_use?/3 (per-network credential folded lookup)" do
-    test "true when a DIFFERENT visitor holds the folded nick on the network", %{network: net} do
-      {:ok, _} = Visitors.find_or_provision_anon("Taken", @network, "1.2.3.4")
+  describe "nick_held_by_identified?/3 (per-network credential folded lookup)" do
+    test "true when a DIFFERENT visitor's IDENTIFIED credential holds the folded nick",
+         %{network: net} do
+      {:ok, holder} = Visitors.find_or_provision_anon("Taken", @network, "1.2.3.4")
+      {:ok, _} = Visitors.commit_password(holder.id, net.id, "s3cret")
       {:ok, other} = Visitors.find_or_provision_anon("other", @network, "5.6.7.8")
 
       # ASCII-folded: `taken` collides with `Taken`.
-      assert Visitors.nick_in_use?(other.id, "taken", net.id)
+      assert Visitors.nick_held_by_identified?(other.id, "taken", net.id)
     end
 
-    test "false when only the visitor itself holds the nick (idempotent rename)", %{network: net} do
+    # #828 — the ANON row answers "was recorded here once", not "is on the
+    # network now". Refusing off it stranded nicks that were free upstream.
+    test "false when the holder credential is ANON", %{network: net} do
+      {:ok, _} = Visitors.find_or_provision_anon("Taken", @network, "1.2.3.4")
+      {:ok, other} = Visitors.find_or_provision_anon("other", @network, "5.6.7.8")
+
+      refute Visitors.nick_held_by_identified?(other.id, "taken", net.id)
+    end
+
+    test "false when only the visitor itself holds the nick, even identified (idempotent rename)",
+         %{network: net} do
       {:ok, v} = Visitors.find_or_provision_anon("Self", @network, "1.2.3.4")
-      refute Visitors.nick_in_use?(v.id, "self", net.id)
+      {:ok, _} = Visitors.commit_password(v.id, net.id, "s3cret")
+
+      refute Visitors.nick_held_by_identified?(v.id, "self", net.id)
     end
 
     test "false when the slot is free", %{network: net} do
       {:ok, v} = Visitors.find_or_provision_anon("vjt-free", @network, "1.2.3.4")
-      refute Visitors.nick_in_use?(v.id, "nobody-here", net.id)
+      refute Visitors.nick_held_by_identified?(v.id, "nobody-here", net.id)
     end
   end
 

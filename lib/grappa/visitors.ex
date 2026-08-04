@@ -970,22 +970,41 @@ defmodule Grappa.Visitors do
   end
 
   @doc """
-  Visitor-side NICK rename pre-check (V9). Returns `true` if a
-  DIFFERENT visitor identity already holds `target_nick` on `network_id`;
-  the caller surfaces that as 409 nick_in_use BEFORE sending NICK
-  upstream. False if the slot is free, or if the only occupant IS the
-  visitor itself (idempotent rename to current nick).
+  Visitor-side NICK rename pre-check (V9, narrowed by #828). Returns
+  `true` if a DIFFERENT visitor identity holds `target_nick` on
+  `network_id` under an IDENTIFIED credential; the caller surfaces that
+  as 409 nick_in_use BEFORE sending NICK upstream. False if the slot is
+  free, if the only occupant IS the visitor itself (idempotent rename to
+  current nick), or if the occupant is ANON.
+
+  #828 — the ANON exemption is the whole point. This is a query over the
+  local credential registry: it answers "is this nick recorded against
+  some visitor row", NOT "is this nick in use on the network right now".
+  A visitor who connected once and left keeps its ANON row until the
+  reaper collects it, and pre-#828 that dead row refused the nick to
+  everyone else forever — observed in production on Azzurra
+  (2026-08-04), a nick free upstream that grappa would not hand out. The
+  only authority on wire availability is the ircd, which already answers
+  with `433` (classified `:nick_in_use` in `Visitors.Login`, routed to
+  `$server` post-registration), so the ANON pre-check bought nothing on
+  the taken case and lied on the free one.
+
+  An IDENTIFIED credential is a different question and keeps its
+  refusal: there the nick is the LOGIN KEY (#561 — bound at the proven
+  `+r`, held against a services-forced Guest), so letting another
+  visitor take it is an identity problem, not a wire-availability one.
 
   #211 phase 7 — folded lookup on the `(fold(nick), network_id)`
   credential (the same reader login uses), NOT the retired
   `visitors.(nick, network_slug)` row index.
   """
-  @spec nick_in_use?(Ecto.UUID.t(), String.t(), pos_integer()) :: boolean()
-  def nick_in_use?(visitor_id, target_nick, network_id)
+  @spec nick_held_by_identified?(Ecto.UUID.t(), String.t(), pos_integer()) :: boolean()
+  def nick_held_by_identified?(visitor_id, target_nick, network_id)
       when is_binary(visitor_id) and is_binary(target_nick) and is_integer(network_id) do
     case Credentials.fetch_visitor_credential_by_nick(target_nick, network_id) do
       {:error, :not_found} -> false
       {:ok, %Credential{visitor_id: ^visitor_id}} -> false
+      {:ok, %Credential{auth_method: :none}} -> false
       {:ok, %Credential{}} -> true
     end
   end
@@ -1004,8 +1023,10 @@ defmodule Grappa.Visitors do
   this is network-explicit. The credential-side folded-nick UNIQUE index
   (phase 4b) catches concurrent collisions (two visitors racing for the
   same nick on the same network) — the controller-boundary
-  `nick_in_use?/3` pre-check is the fast path; this is the second line of
-  defense for the near-zero-probability race.
+  `nick_held_by_identified?/3` pre-check is the fast path for an
+  identified holder (#828 — an ANON holder no longer refuses, so this
+  constraint is what a collision with a stale ANON row hits); this is the
+  second line of defense.
 
   #561 — the echo persist is GATED downstream: it rotates the nick only
   while the credential is ANON (`auth_method: :none`). An IDENTIFIED
