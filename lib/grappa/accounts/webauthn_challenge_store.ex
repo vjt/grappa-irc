@@ -28,10 +28,33 @@ defmodule Grappa.Accounts.WebAuthnChallengeStore do
     id
   end
 
+  @doc """
+  How long a stored ceremony stays claimable, single-sourced so a test
+  can position a clock relative to it instead of restating the number.
+  """
+  # `unquote(@ttl_seconds)` pins the spec to the compile-time singleton,
+  # mirroring `ChannelDirectory.ttl_ms/0`. A bare `pos_integer()` is a
+  # `:underspecs` supertype of the success typing and fails the gate.
+  @spec ttl_seconds() :: unquote(@ttl_seconds)
+  def ttl_seconds, do: @ttl_seconds
+
   @doc "Atomically consumes a live challenge with the expected purpose."
   @spec take(String.t(), purpose()) :: {:ok, Wax.Challenge.t(), metadata()} | {:error, :invalid_challenge}
   def take(id, purpose) when is_binary(id) do
-    GenServer.call(__MODULE__, {:take, id, purpose, System.monotonic_time(:second)})
+    take(id, purpose, System.monotonic_time(:second))
+  end
+
+  @doc """
+  Same as `take/2` with an explicit monotonic `now` — the test seam that
+  makes the TTL branch reachable without sleeping the real TTL. Sampling
+  the clock inside left the expiry guard the one rule here nothing could
+  cover, on the store that backs an unauthenticated login door. Mirrors
+  `Grappa.RateLimit.FailureWindow.check/4`.
+  """
+  @spec take(String.t(), purpose(), integer()) ::
+          {:ok, Wax.Challenge.t(), metadata()} | {:error, :invalid_challenge}
+  def take(id, purpose, now) when is_binary(id) and is_integer(now) do
+    GenServer.call(__MODULE__, {:take, id, purpose, now})
   end
 
   @impl GenServer
