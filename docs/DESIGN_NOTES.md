@@ -28433,21 +28433,52 @@ whereas a channel that silently stops being clickable has no recourse but
 ## 2026-08-04 — #800: a pane may not spend a budget it cannot see
 
 `#606`'s rail context fetched a WHOIS when a query window was selected. That
-call reddened `main` on `nick-follow-query` (#373): on bahamut every command
-costs `since += 2 + len/120` and the recvQ drain is gated on `since - now < 10`,
-so the rail's WHOIS landed head-of-line in front of the operator's next PRIVMSG
-and pushed it past the ircd's parse gate. Bisected by duration delta — the spec
-ran 2.7s on the pre-merge baseline, 5.7s with #613 alone, 6.7s (timeout) on the
-merged main — and confirmed by displacement: deleting the one call restored the
-baseline (2.0/5.5/4.5 vs 7.4/10.0/9.3 locally, `--repeat-each 3`). Full evidence
-in #800.
+call reddened `main` on `nick-follow-query` (#373).
+
+**Measured.** One extra WHOIS on the session's upstream connection delays the
+operator's NEXT message by seconds. The spec ran 2.7s on the pre-merge baseline,
+5.7s with #613 alone, and 6.7s — a timeout — on the merged main. Deleting the
+one call restores the baseline: 2.0/5.5/4.5 against 7.4/10.0/9.3 locally at
+`--repeat-each 3`. The red is intermittent (~7 of 9 post-merge runs, 0 of 4
+pre-merge), which is why the duration delta and the displacement result are the
+evidence rather than any single pass or fail. Full write-up in #800.
+
+**Inferred, NOT confirmed.** *Where* those seconds are spent is still open. The
+leading hypothesis — from reading bahamut source, not from measuring this
+system — is fake-lag: each command costs `since += 2 + len/120` and the recvQ
+drain is gated on `since - now < 10` (`parse.c:236`, `s_bsd.c:1657`), so past
+the ceiling the ircd keeps reading grappa's socket but stops parsing it. It fits
+(grappa emits the followup 357ms after the previous send, so the delay is not on
+our side) but nobody has instrumented the ircd to show it. The `5000ms` in the
+failing assertion is the **test helper's own wait budget**, not a measured
+bahamut latency — do not cite it as one. Anyone who wants to close this: measure
+the ircd, do not re-read the source.
+
+The distinction matters for what the entry is FOR. The rule below rests on the
+displacement result alone and needs no ircd-internal mechanism to justify it, so
+the hypothesis being wrong would not weaken it.
 
 **The general rule, which binds every future prefetch surface: cic does not
-decide to spend an upstream command.** It cannot see `since`, it cannot see what
-the session sent a moment ago, and it cannot see how close the connection is to
-the parse gate. Only the operator's own action spends that budget. This is not
-about tuning WHEN the rail fetches — every timing fix #606 tried (TTL, retry
-window, migrate-before-select ordering) was answering the wrong question.
+decide to spend an upstream command.** Whatever the ircd-side mechanism turns
+out to be, the client cannot see it — not what the session sent a moment ago,
+not what that cost, not how close the connection is to whatever ceiling it has.
+Only the operator's own action spends that budget. This is not about tuning WHEN
+the rail fetches — every timing fix #606 tried (TTL, retry window,
+migrate-before-select ordering) was answering the wrong question.
+
+**One WHOIS, not two — and why the near miss is worth recording.** The rail's
+effect fires on every query-identity change, so a #373 rename fires it a SECOND
+time; the pinning test in `RailContext.test.tsx` sees exactly that (`called 2
+times`, against a mocked store). On the wire it stayed at one: the instrumented
+run showed `WHOIS Guest…` and no `WHOIS NickTmp…`, because `subscribe.ts`
+migrates the rail cache old→new BEFORE `followQueryNick` swaps the selection, so
+the second call lands on a hit and short-circuits. That de-dupe held, but it was
+second-line defence under a rule that should not have existed: a cache miss
+there — empty bundle, peer offline, retry window elapsed — and the second
+command goes out for real. Nor is the rename what made this spec the one that
+fell; it fell because it is the only spec that opens a query window and then
+sends a timed message, which is the only shape that puts a speculative command
+in front of a stopwatch.
 
 **What was removed, and what deliberately was not.** Only the `createEffect` in
 `RailContext.tsx` is gone. The card, the `renameRailWhois` #373 migration, the

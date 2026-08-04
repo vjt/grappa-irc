@@ -19,11 +19,12 @@ import { whoisBundleHasFields } from "./whoisBundle";
 //
 // Fetch policy (#606 scope 2, then #800):
 //   * NOTHING in the rail asks on its own. #606 called `requestRailWhois` on
-//     first select of a query window; #800 removed that call, because a WHOIS
-//     costs upstream fake-lag budget cic cannot see and it was landing
-//     head-of-line in front of the operator's next PRIVMSG. The store now
-//     fills only from the user's OWN `/whois` (`userTopic.ts` routes a
-//     `source: "user"` bundle for the nick the rail is showing into here).
+//     first select of a query window; #800 removed that call, because that one
+//     extra command measurably delayed the operator's NEXT message by seconds
+//     (the ircd-side mechanism is unconfirmed — the fake-lag reading below is
+//     the leading hypothesis, not a measurement). The store now fills only
+//     from the user's OWN `/whois` (`userTopic.ts` routes a `source: "user"`
+//     bundle for the nick the rail is showing into here).
 //   * `requestRailWhois` therefore has NO production caller today. It is kept
 //     deliberately, not by oversight: it is the seam #782's explicit fetch
 //     control attaches to, and its de-dupe rules below are the ones that
@@ -34,7 +35,11 @@ import { whoisBundleHasFields } from "./whoisBundle";
 //     because the peer is offline) stands for `RAIL_WHOIS_RETRY_MS`, which
 //     de-dupes rapid re-asks and lets an offline peer resolve later.
 //
-// The freshness TTL this store shipped with is deliberately GONE. It was not
+// The freshness TTL this store shipped with is deliberately GONE. The reading
+// that follows is INFERRED FROM BAHAMUT SOURCE and has never been measured
+// against a running ircd (#800) — it is the best lead for WHY an extra command
+// delays the next one, not an established fact. What IS measured is the delay
+// itself. It was not
 // a cost problem: on bahamut a WHOIS and a PRIVMSG carry the same fake-lag
 // flag and the same `since += 2 + len/120` (src/parse.c:236). The problem is
 // the CEILING — `s_bsd.c:1657` gates the recvQ drain on

@@ -126,13 +126,17 @@ describe("RailContext query context (#606)", () => {
   });
 
   // #800 — THE RULE: the rail never spends an upstream command on its own.
-  // #606 shipped a fetch-on-select here; a WHOIS costs bahamut fake-lag
-  // (`since += 2 + len/120`, recvQ parse gated on `since - now < 10`), so it
-  // landed head-of-line in front of the operator's next PRIVMSG and pushed it
-  // past the ircd's parse gate — main went red on nick-follow-query. cic
-  // cannot see that budget, so it must not decide to spend it. These two pin
-  // the rule against the next prefetch surface; #782 adds a user-driven
-  // button, which is a different thing entirely.
+  // #606 shipped a fetch-on-select here, and it measurably delayed the
+  // operator's NEXT message by seconds — main went red on nick-follow-query.
+  // (Where those seconds go inside the ircd is still unconfirmed; fake-lag is
+  // the leading hypothesis, see DESIGN_NOTES 2026-08-04.) The rule does not
+  // depend on that: cic cannot see the connection's upstream cost at all, so
+  // it must not decide to spend it. These two pin the rule against the next
+  // prefetch surface; #782 adds a user-driven button, a different thing.
+  //
+  // The second test is not redundant: the effect fires again on a #373 rename,
+  // so the rule has two entry points, and on the wire only `railWhois`'s own
+  // de-dupe kept that from being a second command.
   it("issues NO WHOIS when a query window is selected", async () => {
     await setSelected(sel("query", "alice"));
     await renderContainer();

@@ -17,9 +17,9 @@ import WhoisCard from "./WhoisCard";
 //              single-slot `whoisCard` store the user-issued /whois owns) and
 //              carries no × affordance (persistent, like the server card).
 //              It RENDERS what is known and asks for nothing — #800 removed
-//              the fetch-on-select, because cic cannot see the upstream
-//              fake-lag budget a WHOIS spends and was charging it to the
-//              operator's next PRIVMSG. The cache fills from the user's own
+//              the fetch-on-select, because that WHOIS measurably delayed the
+//              operator's next message and cic cannot see the upstream cost it
+//              was spending. The cache fills from the user's own
 //              /whois (#606 routes a `source: user` bundle for the shown nick
 //              here); #782 adds the explicit fetch control.
 // It renders NOTHING for kinds with no context content (channel already has
