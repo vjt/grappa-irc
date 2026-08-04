@@ -28504,3 +28504,60 @@ per-page-load, so every reload re-pays upstream for an answer grappa already
 received. The precedent already exists — `userhost_cache` is nick-keyed, folded,
 fed passively from JOIN prefixes at zero upstream cost, and already migrated on
 NICK. Cache the answer, and the question of when to fetch mostly dissolves.
+
+## 2026-08-04 — #779: a timeout that stops at the headers is not a budget
+
+Two hardening items out of #717's review round 3, neither a live defect.
+
+**`bootFetch`'s per-attempt budget now covers the body.** `AbortSignal.timeout`
+starts at dispatch and stays live on the `Response`, but `fetch` resolves at
+the HEADERS and every caller — `me`, `listNetworks`, `listChannels` — reads the
+body with `res.json()` after `bootFetch` has already returned. A body still
+streaming at the 8s deadline therefore aborted OUTSIDE the retry loop: an
+`AbortError` the loop never saw, so an attempt the policy calls retryable was
+silently not retried. The fix drains a `res.clone()` inside the attempt. That
+pulls the body read into the budget (the abort becomes an ordinary retryable
+transport failure) and leaves the returned `Response` fully buffered, so the
+caller's own read can no longer be cut by our signal. Identity is preserved —
+the original `Response` is what comes back, not a reconstruction — which keeps
+`res.ok` / `res.status` / `readError` untouched. Plausible on a slow mobile
+link with a large `/me` envelope (`read_cursors` + `unread_counts`); on a LAN it
+never fires. The docstring's "ANY completed request" is now true: completed
+means the body arrived, not just the headers.
+
+**The `moduleRoot` guard enforces the invariant, not a spelling.** The #717
+invariant is "every module-lifetime computation has an error context". The
+guard enforced "no bare `createRoot`", which a module-scope `createEffect` /
+`createMemo` / `createResource` with NO root at all evades completely: it has
+`Owner === null`, so the throw propagates out of `runUpdates`, the queued render
+effects are discarded and the last frame freezes — the #717 signature exactly,
+with the regex reporting the file clean. Zero instances today; the point is that
+it is the EASIER thing for the next author to write.
+
+The rewrite splits one text predicate in two — an *owning root* (a `createRoot`
+whose callback ignores `dispose`, i.e. one that is never disposed) and an
+*unowned computation* (a reactive primitive at column 0 with no root on the
+line) — and both run through the same prose filter. Three consequences:
+
+- **A disposable root is now legal in production code.** `createRoot(dispose =>
+  …)` for a detached or portal render is normal Solid; the old guard flagged it
+  and left the next author choosing between `moduleRoot` (wrong — it never
+  disposes, so they leak a root) and an exclusion list, which CLAUDE.md forbids.
+  Binding `dispose` IS the invariant: a root with a handle ends.
+- **The anti-vacuity case can no longer be satisfied by a comment.** It runs
+  through the same classifier, so the literal `//   const exports_ =
+  createRoot(() => {` in `identityScopedStore`'s pattern-history comment stops
+  counting.
+- **The predicate is unit-tested against fixtures**, not only walked over a
+  clean tree. A guard that has never seen an offender proves nothing about what
+  it would catch.
+
+Module scope is detected as "starts at column 0" — a heuristic, pinned by the
+fact that biome owns the formatting, and one whose failure direction is a false
+positive the author fixes by moving the call into the root it belonged in.
+
+The test-file exemption stays, with a corrected justification: it is the ERROR
+CONTEXT that makes test roots out of scope (a test module's root dies with the
+worker and a throw surfaces as a failing test — the runner IS the context),
+not the shape. The comment used to claim every test root takes `dispose`; four
+do not.
