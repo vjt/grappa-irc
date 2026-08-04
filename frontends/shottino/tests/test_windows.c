@@ -3098,6 +3098,62 @@ TEST(an_invite_carries_its_room_in_the_fragment) {
     CHECK_STR(room, "shottino-99");
 }
 
+/* The room is a PATH SEGMENT, and it is the only one that used to reach
+ * the URL raw — the nick and the peers have always gone through the
+ * encoder. The room arrives in somebody else's PRIVMSG, so IRC framing
+ * already keeps CR, LF and space out of it; what it does NOT keep out is
+ * `?`, `#`, `%` and `..`, each of which means something to a URL. A room
+ * of `a?x` publishes to `/rtc/a` with a query, and `..` walks out of the
+ * room entirely.
+ *
+ * Encoding, not rejecting: the split is deterministic, so both ends of a
+ * call encode the same room to the same path and a strange room name
+ * still reaches a room — just its own. */
+TEST(a_room_is_a_path_segment_and_is_encoded_like_one) {
+    char base[MAX_LINE], room[160];
+
+    CHECK(call_invite_split("https://h/call/#r=a?x", base, sizeof(base), room, sizeof(room)));
+    CHECK_STR(room, "a%3fx");
+
+    /* The fragment starts at the FIRST `#`, so a second one is room. */
+    CHECK(call_invite_split("https://h/call/#r=a#b", base, sizeof(base), room, sizeof(room)));
+    CHECK_STR(room, "a%23b");
+
+    /* A percent is data here, not an escape we re-interpret: decoding
+     * somebody else's `%2e%2e` would be how `..` comes back. */
+    CHECK(call_invite_split("https://h/call/#r=a%2fb", base, sizeof(base), room, sizeof(room)));
+    CHECK_STR(room, "a%252fb");
+
+    CHECK(call_invite_split("https://h/call/#r=../../evil", base, sizeof(base), room,
+                            sizeof(room)));
+    CHECK_STR(room, "..%2f..%2fevil");
+
+    /* CR/LF cannot arrive over IRC — this is the day the room comes from
+     * a config value, a flag or a future transport instead. */
+    CHECK(call_invite_split("https://h/call/#r=a\r\nX", base, sizeof(base), room, sizeof(room)));
+    CHECK_STR(room, "a%0d%0aX");
+
+    /* Unreserved bytes pass through, so every room shottino generates is
+     * its own encoding and no existing invite changes meaning. */
+    char generated[96];
+    call_room_name(generated, sizeof(generated));
+    char line[512];
+    call_invite_build(CALL_AUDIO, "https://h/call", generated, line, sizeof(line));
+    enum call_kind kind;
+    char url[MAX_LINE];
+    CHECK(call_invite_parse(line, &kind, url, sizeof(url)));
+    CHECK(call_invite_split(url, base, sizeof(base), room, sizeof(room)));
+    CHECK_STR(room, generated);
+
+    /* CASE IS KEPT, which is where a room parts company with a nick. A
+     * nick folds because IRC says foo and FOO are one person; a room is
+     * a credential and a path, and the SFU compares it byte for byte —
+     * folding it would make somebody else's mixed-case room unjoinable. */
+    CHECK(call_invite_split("https://h/call/#r=Shottino-AB", base, sizeof(base), room,
+                            sizeof(room)));
+    CHECK_STR(room, "Shottino-AB");
+}
+
 TEST(a_call_in_a_query_with_yourself_lists_one_person) {
     struct app *app = window_app();
     CHECK(app != NULL);
@@ -3970,6 +4026,7 @@ int main(void) {
     RUN(an_invite_round_trips_through_its_own_parser);
     RUN(a_call_already_running_here_is_the_call);
     RUN(an_invite_carries_its_room_in_the_fragment);
+    RUN(a_room_is_a_path_segment_and_is_encoded_like_one);
     RUN(a_call_in_a_query_with_yourself_lists_one_person);
     RUN(rejoining_a_running_call_rebuilds_the_link_rather_than_replaying_it);
     RUN(a_query_rings_and_a_channel_only_announces);

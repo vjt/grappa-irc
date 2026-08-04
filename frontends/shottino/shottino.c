@@ -3268,6 +3268,48 @@ static void call_room_name(char *out, size_t out_sz) {
         n += (size_t)snprintf(out + n, out_sz - n, "%02x", raw[i]);
 }
 
+/* ONE path-segment encoder, RFC-3986 unreserved allowlist.
+ *
+ * Everything shottino puts between two slashes of a WHIP/WHEP URL comes
+ * through here, which is the whole point: the invariant is "every
+ * segment is encoded", and an invariant with one exception is a hole
+ * somebody finds later.
+ *
+ * `fold` is the one axis on which the two callers differ, and it is a
+ * domain difference, not a taste:
+ *
+ *   - a NICK folds, because IRC says `Alice` and `alice` are one person
+ *     and two paths would be two halves of one conversation.
+ *   - a ROOM does not. It is a credential compared byte for byte by the
+ *     SFU, so folding somebody else's mixed-case room would make it
+ *     unjoinable — and would halve the guessing space of a name whose
+ *     unguessability is the only thing keeping the call private.
+ *
+ * ESCAPE, never squash. A nick may legally contain [ ] \ ` ^ { | } and a
+ * room may contain anything at all; mapping them to `_` would be simpler
+ * and would silently put `foo[1]` and `foo{1}` in the SAME room. */
+static void call_path_encode(const char *in, bool fold, char *out, size_t out_sz) {
+    static const char hex[] = "0123456789abcdef";
+    size_t n = 0;
+    if (!out || out_sz == 0) return;
+    for (const unsigned char *p = (const unsigned char *)(in ? in : ""); *p; p++) {
+        unsigned char c = *p;
+        if (fold && c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
+        bool safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                    c == '-' || c == '_' || c == '.' || c == '~';
+        if (safe) {
+            if (n + 2 > out_sz) break;
+            out[n++] = (char)c;
+        } else {
+            if (n + 4 > out_sz) break;
+            out[n++] = '%';
+            out[n++] = hex[c >> 4];
+            out[n++] = hex[c & 15];
+        }
+    }
+    out[n] = 0;
+}
+
 /* The line an invite IS. One `/` between base and room however the base
  * was spelled — a doubled slash is a different path on some services and
  * a 404 on others. */
@@ -3302,17 +3344,28 @@ static bool call_invite_split(const char *url, char *base, size_t base_sz, char 
     memcpy(base, url, blen);
     base[blen] = 0;
 
-    room[0] = 0;
+    /* The room is a PATH SEGMENT and gets encoded like every other one.
+     *
+     * It is the only component of <base>/rtc/<room>/<nick>/whip that used
+     * to reach the URL raw, and it is the one that arrives in a stranger's
+     * PRIVMSG. IRC framing keeps CR, LF and space out; it does not keep
+     * out `?`, `#`, `%` or `..`, each of which redirects the publish.
+     * Encoded rather than refused because both ends of a call run this
+     * same function over the same fragment, so a strange room name still
+     * names ONE room — its own. */
+    char raw[256]; /* room as posted; the encoded form can be 3x and is bounded by room_sz */
+    raw[0] = 0;
     for (const char *p = hash + 1; *p;) {
         if (p[0] == 'r' && p[1] == '=') {
             size_t n = 0;
-            for (p += 2; *p && *p != '&' && n + 1 < room_sz; p++) room[n++] = *p;
-            room[n] = 0;
+            for (p += 2; *p && *p != '&' && n + 1 < sizeof(raw); p++) raw[n++] = *p;
+            raw[n] = 0;
             break;
         }
         while (*p && *p != '&') p++;
         if (*p == '&') p++;
     }
+    call_path_encode(raw, false, room, room_sz);
     return room[0] != 0;
 }
 
@@ -14326,25 +14379,7 @@ static bool call_helper_path(struct app *app, char *out, size_t out_sz) {
  *   two different people in one call, silently. Percent-encoding keeps
  *   them distinct. */
 static void call_path_nick(const char *nick, char *out, size_t out_sz) {
-    static const char hex[] = "0123456789abcdef";
-    size_t n = 0;
-    if (!out || out_sz == 0) return;
-    for (const unsigned char *p = (const unsigned char *)(nick ? nick : ""); *p; p++) {
-        unsigned char c = *p;
-        if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
-        bool safe = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
-                    c == '.' || c == '~';
-        if (safe) {
-            if (n + 2 > out_sz) break;
-            out[n++] = (char)c;
-        } else {
-            if (n + 4 > out_sz) break;
-            out[n++] = '%';
-            out[n++] = hex[c >> 4];
-            out[n++] = hex[c & 15];
-        }
-    }
-    out[n] = 0;
+    call_path_encode(nick, true, out, out_sz);
 }
 
 /* Append `&peers=…` — every folded nick that could be in this call,
