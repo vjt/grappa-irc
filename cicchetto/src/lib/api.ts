@@ -1362,10 +1362,14 @@ export function channelPushError(raw: unknown): ChannelPushError {
 // is fire-and-forget; api never awaits it. Cleared back to null in
 // tests via `setOn401Handler(null)` between cases.
 //
-// Login's own 401 ("invalid_credentials") triggers this too — but the
-// pre-login token is null, so setToken(null) is a no-op. Logout's
-// 401 already gets caught by `auth.logout`'s try/catch; the handler
-// firing first just clears the same state twice. Both benign.
+// Logout's 401 already gets caught by `auth.logout`'s try/catch; the
+// handler firing first just clears the same state twice. Benign.
+//
+// #739 — the LOGIN 401s used to reach here too, on the reasoning that
+// "the pre-login token is null, so setToken(null) is a no-op". That
+// holds for exactly one tab. localStorage is shared, so a live session
+// in another tab makes the token non-null while /login is open, and one
+// mistyped code logged it out. They now pass `false`; see the rule below.
 let on401Handler: (() => void) | null = null;
 
 export function setOn401Handler(fn: (() => void) | null): void {
@@ -1385,10 +1389,19 @@ export function setOn401Handler(fn: (() => void) | null): void {
 // and the #502 active-theme refresh (`getActiveThemePair`). Their transient 401
 // must NEVER clear a valid session's token — they still throw the decoded
 // `ApiError` so the caller keeps its boot cache, but they do not log the user
-// out. Everything else keeps the default: session-validating GETs (`/me`) and
-// on-demand user-action verbs, where a 401 genuinely means the token is dead.
-// A NEW boot cosmetic fetch MUST pass `false`, or a flaky-connection 401 at
-// boot will spuriously log the user out.
+// out.
+//
+// THE SECOND RULE (#739): pass `false` for every UNAUTHENTICATED endpoint —
+// the ones that send no `authorization` header at all (`buildHeaders()` with
+// no token). Their 401 answers "these credentials are wrong", never "the
+// stored bearer is dead", and the handler cannot tell the two apart. Today
+// that is `login`, `verifyTotpLogin` and `consumeShareToken`; the passkey
+// helpers get it from `passkeyRequest`.
+//
+// Everything else keeps the default: session-validating GETs (`/me`) and
+// on-demand user-action verbs that DO send the bearer, where a 401 genuinely
+// means the token is dead. A NEW boot cosmetic fetch or a NEW unauthenticated
+// endpoint MUST pass `false`, or someone else's live session gets logged out.
 export async function readError(res: Response, fireDeadTokenHandler = true): Promise<ApiError> {
   if (res.status === 401 && fireDeadTokenHandler && on401Handler !== null) on401Handler();
   let body: Record<string, unknown> = {};
@@ -1431,7 +1444,7 @@ export async function login(req: LoginRequest): Promise<LoginResponse> {
     headers: buildHeaders(),
     body: JSON.stringify(req),
   });
-  if (!res.ok) throw await readError(res);
+  if (!res.ok) throw await readError(res, false);
   return (await res.json()) as LoginResponse;
 }
 
@@ -1444,7 +1457,7 @@ export async function verifyTotpLogin(
     headers: buildHeaders(),
     body: JSON.stringify({ challenge_token: challengeToken, code }),
   });
-  if (!res.ok) throw await readError(res);
+  if (!res.ok) throw await readError(res, false);
   return (await res.json()) as AuthenticatedLoginResponse;
 }
 
@@ -1540,10 +1553,16 @@ export const finishPasskeyRegistration = (
   credential: unknown,
 ): Promise<PasskeySummary> =>
   passkeyRequest<PasskeySummary>("/me/passkeys/registration", credential, token);
+// #739 — `passwordless` is deliberately NOT reachable through this door and
+// never was: the server's `settings_mode/1` admits `:second_factor | :disabled`
+// and bad_requests everything else, because arming passwordless must go the
+// two-step route (`preparePasswordless` → `startPasswordlessActivation`) that
+// proves the recovery codes were shown BEFORE they became the only fallback.
+// Typing it here invited a caller to earn a bare 400 with no hint why.
 export const startPasskeyModeChange = (
   token: string,
   password: string,
-  mode: "disabled" | "second_factor" | "passwordless",
+  mode: "disabled" | "second_factor",
 ): Promise<PasskeyOptions> =>
   passkeyRequest<PasskeyOptions>("/me/passkeys/mode/options", { password, mode }, token);
 export const preparePasswordless = (
@@ -2891,6 +2910,6 @@ export async function consumeShareToken(shareToken: string): Promise<ShareTokenC
     headers: buildHeaders(),
     body: JSON.stringify({ token: shareToken }),
   });
-  if (!res.ok) throw await readError(res);
+  if (!res.ok) throw await readError(res, false);
   return (await res.json()) as ShareTokenConsumeResponse;
 }

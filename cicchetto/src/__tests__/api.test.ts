@@ -62,19 +62,20 @@ describe("api 401 handler", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
-  it("login 401 (invalid_credentials) also fires the handler — benign no-op when no token is set", async () => {
-    // Login is unauthenticated, so a 401 there means "wrong password,"
-    // not "expired token." The handler still fires; the auth-side
-    // setToken(null) is a no-op against an already-null token. Test
-    // pins the by-design behavior so future-Claude doesn't add a
-    // path-specific exception.
+  it("login 401 (invalid_credentials) does NOT fire the handler", async () => {
+    // #739 — this case used to assert the opposite, on the reasoning that
+    // "login is unauthenticated, so setToken(null) is a no-op against an
+    // already-null token". The premise is right and the conclusion wrong:
+    // localStorage is shared across tabs, so the token is NOT null when a
+    // second tab holds a live session. The test pinned the defect in place.
+    // See the #739 block at the bottom of this file for the whole class.
     const handler = vi.fn();
     api.setOn401Handler(handler);
     stubFetch(401, { error: "invalid_credentials" });
     await expect(api.login({ identifier: "x", password: "wrong" })).rejects.toBeInstanceOf(
       api.ApiError,
     );
-    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it("ApiError still carries the server-side error code on 401", async () => {
@@ -833,5 +834,92 @@ describe("#395 — unread kind projection (CONTENT_KINDS / NOTIFY_KINDS)", () =>
   it("notice counts as unread content but is NOT notify-worthy", () => {
     expect(api.CONTENT_KINDS.has("notice")).toBe(true);
     expect(api.NOTIFY_KINDS.has("notice")).toBe(false);
+  });
+});
+
+describe("#739 — an UNAUTHENTICATED endpoint's 401 must not wipe the shared bearer", () => {
+  // These three send NO Authorization header (`buildHeaders()` with no
+  // token), so their 401 answers "these credentials are wrong", never "the
+  // stored bearer is dead" — the two questions the dead-token handler
+  // conflates. localStorage is shared across tabs, so a live session in tab
+  // A is logged out by a mistyped code in tab B.
+  //
+  // The failure is invisible in the single-tab case the old `readError`
+  // comment reasoned about ("the pre-login token is null, so setToken(null)
+  // is a no-op") — which is exactly why it survived review: the assumption
+  // holds right up until a second tab exists.
+
+  it("verifyTotpLogin: a wrong TOTP code does not fire the dead-token handler", async () => {
+    const handler = vi.fn();
+    api.setOn401Handler(handler);
+    stubFetch(401, { error: "invalid_code" });
+    await expect(api.verifyTotpLogin("challenge", "000000")).rejects.toBeInstanceOf(api.ApiError);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("login: wrong credentials do not fire the dead-token handler", async () => {
+    const handler = vi.fn();
+    api.setOn401Handler(handler);
+    stubFetch(401, { error: "invalid_credentials" });
+    await expect(api.login({ identifier: "alice", password: "wrong" })).rejects.toBeInstanceOf(
+      api.ApiError,
+    );
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("consumeShareToken: a dead share link does not fire the dead-token handler", async () => {
+    const handler = vi.fn();
+    api.setOn401Handler(handler);
+    stubFetch(401, { error: "invalid_token" });
+    await expect(api.consumeShareToken("expired")).rejects.toBeInstanceOf(api.ApiError);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("still decodes the error body it did not fire the handler for", async () => {
+    api.setOn401Handler(vi.fn());
+    stubFetch(401, { error: "invalid_code", attempts_left: 2 });
+    await expect(api.verifyTotpLogin("challenge", "000000")).rejects.toMatchObject({
+      status: 401,
+      code: "invalid_code",
+      info: { attempts_left: 2 },
+    });
+  });
+
+  it("an AUTHENTICATED endpoint's 401 still fires it — the control", async () => {
+    const handler = vi.fn();
+    api.setOn401Handler(handler);
+    stubFetch(401, { error: "unauthorized" });
+    await expect(api.me("dead-token")).rejects.toBeInstanceOf(api.ApiError);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("#739 — startPasskeyModeChange only offers modes the server accepts", () => {
+  // A compile-time regression, not a runtime one: the defect is that the
+  // TYPE admitted a value the server always rejects, so the guard has to be
+  // `tsc`. `@ts-expect-error` is the assertion — it FAILS the typecheck as
+  // "unused" if the parameter ever widens back to accept "passwordless".
+  //
+  // The server truth is `PasskeyController.settings_mode/1`: it admits
+  // `:second_factor` and `:disabled`, and bad_requests everything else.
+  // Passwordless is armed through preparePasswordless →
+  // startPasswordlessActivation, whose recovery token proves the codes were
+  // shown first.
+
+  it("rejects `passwordless` at compile time", () => {
+    const call = () =>
+      // @ts-expect-error — "passwordless" is not a settable mode on this route
+      api.startPasskeyModeChange("token", "password", "passwordless");
+    expect(call).toBeTypeOf("function");
+  });
+
+  it("still accepts the two modes PasskeySettings actually sends", () => {
+    // Both are live callers (PasskeySettings.tsx enable + disable), so
+    // narrowing to the literal "second_factor" would have broken disable.
+    const modes: Array<Parameters<typeof api.startPasskeyModeChange>[2]> = [
+      "second_factor",
+      "disabled",
+    ];
+    expect(modes).toHaveLength(2);
   });
 });
