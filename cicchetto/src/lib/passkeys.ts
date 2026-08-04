@@ -1,7 +1,9 @@
-export type PasskeyOptions = {
-  challenge_id: string;
-  public_key: Record<string, unknown>;
-};
+// #739 — IMPORTED, not re-declared. This is a wire shape, so api.ts owns it.
+// A second identical declaration here typechecked only by structural
+// coincidence, and would have gone stale silently the day the server renamed
+// a field: `tsc` stays green while the unchanged subset still matches, and
+// the mismatch surfaces as a WebAuthn failure on device.
+import type { PasskeyOptions } from "./api";
 
 // The wire is snake_case without exception, but `navigator.credentials`
 // wants the camelCase WebAuthn shape. Both ceremonies already have to
