@@ -5,10 +5,9 @@ defmodule GrappaWeb.PasskeyControllerTest do
   import Ecto.Query
 
   alias Grappa.Accounts.{Passkey, Session, TOTP, TOTPRecoveryCode, User, WebAuthn}
-  alias Grappa.WebAuthnCeremony
-  alias GrappaWeb.PasskeyOrigin
   alias Grappa.RateLimit.FailureWindow
-  alias Grappa.Repo
+  alias Grappa.{Repo, WebAuthnCeremony}
+  alias GrappaWeb.PasskeyOrigin
 
   defp passwordless_user do
     {user, password} = user_fixture_with_password()
@@ -60,13 +59,17 @@ defmodule GrappaWeb.PasskeyControllerTest do
 
     test "POST /me/passkeys/registration stores the credential a ceremony signed", ctx do
       options =
-        authed(ctx.session)
-        |> post("/me/passkeys/registration/options", %{"password" => ctx.password, "name" => "phone"})
-        |> json_response(200)
+        json_response(
+          post(authed(ctx.session), "/me/passkeys/registration/options", %{
+            "password" => ctx.password,
+            "name" => "phone"
+          }),
+          200
+        )
 
       params = registration_params(ctx, options, @ceremony_origin)
 
-      body = authed(ctx.session) |> post("/me/passkeys/registration", params) |> json_response(201)
+      body = json_response(post(authed(ctx.session), "/me/passkeys/registration", params), 201)
 
       assert body["name"] == "phone"
       assert Repo.aggregate(Passkey, :count, :id) == 1
@@ -74,13 +77,17 @@ defmodule GrappaWeb.PasskeyControllerTest do
 
     test "POST /me/passkeys/registration refuses a ceremony signed for another origin", ctx do
       options =
-        authed(ctx.session)
-        |> post("/me/passkeys/registration/options", %{"password" => ctx.password, "name" => "phone"})
-        |> json_response(200)
+        json_response(
+          post(authed(ctx.session), "/me/passkeys/registration/options", %{
+            "password" => ctx.password,
+            "name" => "phone"
+          }),
+          200
+        )
 
       params = registration_params(ctx, options, "https://phish.example")
 
-      assert authed(ctx.session) |> post("/me/passkeys/registration", params) |> json_response(401) ==
+      assert json_response(post(authed(ctx.session), "/me/passkeys/registration", params), 401) ==
                %{"error" => "invalid_two_factor"}
 
       assert Repo.aggregate(Passkey, :count, :id) == 0
@@ -142,13 +149,17 @@ defmodule GrappaWeb.PasskeyControllerTest do
       register_credential(ctx)
 
       options =
-        authed(ctx.session)
-        |> post("/me/passkeys/mode/options", %{"password" => ctx.password, "mode" => "second_factor"})
-        |> json_response(200)
+        json_response(
+          post(authed(ctx.session), "/me/passkeys/mode/options", %{
+            "password" => ctx.password,
+            "mode" => "second_factor"
+          }),
+          200
+        )
 
       params = WebAuthnCeremony.tamper_signature(assertion_params(ctx, options, 1))
 
-      assert authed(ctx.session) |> post("/me/passkeys/mode", params) |> json_response(401) ==
+      assert json_response(post(authed(ctx.session), "/me/passkeys/mode", params), 401) ==
                %{"error" => "invalid_two_factor"}
 
       assert Repo.get!(User, ctx.user.id).passkey_mode == :disabled

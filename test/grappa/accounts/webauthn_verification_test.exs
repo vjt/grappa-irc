@@ -48,7 +48,7 @@ defmodule Grappa.Accounts.WebAuthnVerificationTest do
     # server still verifies is that the ceremony answers THIS challenge at
     # THIS origin, so those are the ones worth forging.
     test "a ceremony answering a different challenge is refused", ctx do
-      {challenge_id, _challenge} = begin_registration(ctx)
+      {challenge_id, _} = begin_registration(ctx)
       {_, other_challenge} = begin_registration(ctx)
 
       params =
