@@ -3,17 +3,26 @@
 # One canonical knob per line inside the KNOBS block below. This is the
 # provider-agnostic contract: whichever door an operator comes through (the
 # CloudFormation template today, a Terraform module later), the SAME answers
-# must produce the SAME machine. Two things keep the doors honest, both
-# enforced by infra/cloud/check-drift.sh (wired into CI):
+# must produce the SAME machine. Three things keep the doors honest, all
+# enforced by infra/cloud/check-drift.sh (wired into CI) and all read off each
+# door's EXECUTABLE surface — a comment satisfies none of them (#746):
 #
 #   1. Every provider wrapper (infra/aws/*.yaml today, infra/terraform/*.tf
-#      later) MUST reference the shared bootstrap by name: `first-boot.sh`.
+#      later) MUST INVOKE the shared bootstrap from its bootstrap block (CFN
+#      `UserData:`, Terraform `user_data`): `first-boot.sh`. Naming it in
+#      prose elsewhere in the file is not a bootstrap.
 #   2. Every wrapper MUST annotate the parameter that implements each knob
 #      with a machine-readable marker:  grappa-knob: <name>
-#      (a YAML comment in the CFN template, an HCL comment in Terraform). The
-#      guard greps for `grappa-knob: <name>` per door, so it is agnostic to
-#      each tool's own naming convention — CFN's `Domain` and Terraform's
-#      `domain` both satisfy the `domain` knob by carrying the same marker.
+#      (a YAML comment in the CFN template, an HCL comment in Terraform), and
+#      the marker must be BOUND to that parameter — the next non-comment line
+#      is the declaration it annotates, so a marker left behind by a deleted
+#      parameter reads as a missing knob. The guard is agnostic to each tool's
+#      own naming convention — CFN's `Domain` and Terraform's `domain` both
+#      satisfy the `domain` knob by carrying the same marker.
+#   3. Every wrapper MUST export EXACTLY the env vars first-boot.sh requires,
+#      from inside that same bootstrap block. This is the handshake that
+#      actually breaks: rename GRAPPA_DOMAIN on one side and both files stay
+#      individually valid while every launched stack dies in its bootstrap.
 #
 # What each knob means (the semantic contract, not tool syntax):
 #   domain         public hostname → PHX_HOST, nginx server_name, TLS SAN.

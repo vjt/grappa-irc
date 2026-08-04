@@ -122,9 +122,12 @@ jobs:
 
       - name: Cloud provider-door drift-guard (#665)
         # Prove every provider door (infra/aws today, infra/terraform later)
-        # references the shared infra/cloud/first-boot.sh AND exposes the same
-        # knob names from infra/cloud/params.contract. A hand-written second
-        # door that drifts from the contract fails here instead of silently.
+        # INVOKES the shared infra/cloud/first-boot.sh from its UserData/
+        # user_data block, binds every knob marker from infra/cloud/params.contract
+        # to a real parameter, and exports exactly the env the bootstrap
+        # requires. All three read the executable surface — a prose mention or
+        # an orphaned marker satisfies none of them (#746). A hand-written
+        # second door that drifts from the contract fails here, not silently.
         run: infra/cloud/check-drift.sh
 
       - name: Upload coverage

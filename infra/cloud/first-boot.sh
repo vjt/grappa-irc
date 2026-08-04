@@ -13,7 +13,8 @@
 # THIS script + the parameter names in infra/cloud/params.contract, and
 # nothing else; the resource graph (CFN YAML vs Terraform HCL) stays two
 # hand-written files. The CI drift-guard (infra/cloud/check-drift.sh) proves
-# both doors reference this script and expose the same knob names.
+# both doors INVOKE this script from their bootstrap block, bind every knob
+# marker to a real parameter, and export exactly the env this script requires.
 #
 # UNLIKE infra/linux/ (which sits BEHIND an upstream TLS box and runs a dumb
 # HTTP reverse proxy), a cloud box is the whole world: it terminates TLS
@@ -51,6 +52,12 @@
 set -euo pipefail
 
 # ── Required operator knobs ─────────────────────────────────────────────────
+# The SHAPE below is load-bearing, not style: check-drift.sh reads the
+# required-env set off these assignments — `GRAPPA_X="${GRAPPA_X:-}"`, an empty
+# default, means every provider door must export it, while the non-empty
+# defaults further down are config/test seams no door passes. It then fails CI
+# unless each door exports exactly this set. A new required knob written any
+# other way silently drops out of the handshake the guard defends (#746).
 GRAPPA_DOMAIN="${GRAPPA_DOMAIN:-}"
 GRAPPA_ADMIN_EMAIL="${GRAPPA_ADMIN_EMAIL:-}"
 

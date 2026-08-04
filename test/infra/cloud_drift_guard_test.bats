@@ -45,6 +45,12 @@ write_real_tf_door() {
     mkdir -p "$GRAPPA_REPO_ROOT/infra/terraform"
     TF_DOOR="$GRAPPA_REPO_ROOT/infra/terraform/main.tf"
     cat > "$TF_DOOR" <<'EOF'
+# grappa terraform door (#665). user_data curls the shared
+# infra/cloud/first-boot.sh at a git ref and execs it — it is NOT inlined
+# here, so this door and the CloudFormation one run the same bootstrap.
+# (This prose mirrors the shipped CFN template's: it must NOT be enough to
+# satisfy the guard on its own.)
+
 # grappa-knob: domain
 variable "domain" { type = string }
 
@@ -174,6 +180,8 @@ EOF
     write_real_tf_door
     grep -vE '^[[:space:]]*(curl|bash) .*first-boot' "$TF_DOOR" > "$TF_DOOR.tmp"
     mv "$TF_DOOR.tmp" "$TF_DOOR"
+    grep -q "first-boot.sh" "$TF_DOOR" # prose survives here too
+
     run "$GUARD"
     [ "$status" -eq 1 ]
     [[ "$output" == *"does not invoke first-boot.sh"* ]]

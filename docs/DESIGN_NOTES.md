@@ -28776,3 +28776,50 @@ gate rather than a delay — the send POST is held until the pane has tail-follo
 the echo, then released — which is deterministic without waiting on wall-clock:
 10/10 red before the fix, 10/10 green after, where case 1 stayed green through
 all six of those pre-fix runs.
+## 2026-08-04 — #746: the cloud drift-guard now checks the executable surface
+
+`infra/cloud/check-drift.sh` (#665) exists so the CloudFormation door and the
+shared `first-boot.sh` cannot drift apart. Every check it performed was
+satisfiable by a comment, so it defended nothing a launched stack depends on.
+All three defects were MEASURED against the shipped template before anything
+was written: delete the real `UserData` `curl`+`bash` and the four prose
+mentions of `first-boot.sh` (Description, two knob comments, one block comment)
+kept the whole-file grep happy — guard OK; delete the `SshCidr:` parameter and
+leave its `# grappa-knob: ssh_cidr` marker — guard OK; rename `GRAPPA_DOMAIN`
+on the template side alone — guard OK, bats green, and every launched stack
+dies in `UserData`.
+
+**The guard reads only what runs.** It extracts each door's bootstrap block —
+CFN `UserData:` / Terraform `user_data`, delimited by indentation — drops
+comment lines, and requires the invocation to live THERE. Knob markers must be
+BOUND: the first non-comment line after the marker (before the next marker) is
+the declaration it annotates, so an orphan reads as a missing knob rather than
+a passing one. And the env handshake, which did not exist at all, is now
+set-equality between the `GRAPPA_*` a door exports and what the bootstrap
+requires. Equality in BOTH directions on purpose: the missing side catches a
+door that never passes a required knob, the extra side catches the rename,
+which is otherwise invisible because each file stays individually valid.
+
+**Required-env is derived from code, never from a marker.** A knob is required
+iff `first-boot.sh` reads it with an EMPTY default (`GRAPPA_X="${GRAPPA_X:-}"`);
+a non-empty default is a production config default or a test seam no door
+passes. A `# grappa-env:` marker was the obvious alternative and is exactly the
+disease being cured — the orphaned `grappa-knob:` marker is what a detached
+comment decays into. The cost is that the assignment shape is now load-bearing;
+it is stated at both ends, and a parse that yields nothing exits 2 (misuse)
+rather than passing vacuously.
+
+**The RED cases mutate the shipped template, one defect at a time.** The old
+negative case wrote a synthetic door naming the bootstrap on exactly one line
+and removed every trace of it — a mutation the real template cannot undergo, so
+it proved the guard fails against a shape we do not ship. Each case now filters
+a COPY of the real file and asserts the mutated door STILL names `first-boot.sh`
+in prose; that assertion is what makes it a test of the fix rather than of the
+fixture. The Terraform fixture carries the same prose for the same reason: with
+it absent, the case passed under the OLD whole-file grep too and proved nothing.
+Each new check was then reverted in isolation and only its own cases fell.
+
+**`sed -E` with a backreference is a GNU extension.** The first required-env
+parse used `s/^(GRAPPA_[A-Z0-9_]+)="\$\{\1:-\}".*/\1/p` and matched NOTHING on
+BSD sed. It surfaced as exit 2 rather than as a silently empty required set only
+because the empty-parse guard was written first — the same reason it stays.
