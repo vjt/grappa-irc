@@ -4468,6 +4468,79 @@ describe("ScrollbackPane", () => {
     });
   });
 
+  // #778 — a container BOX change moves the fold, so a follower must be re-pinned
+  // to the tail. The window/visualViewport `resize` arm already does this, but
+  // chrome growing INSIDE the shell (the compose-box send-error line, a wrapping
+  // composer) shrinks this box with NO resize event: measured on the #580 e2e, a
+  // 25px `.compose-box-error` mounting after the tail write left the pane 32px
+  // short of the tail with the just-sent row clipped under it.
+  describe("#778 — a container box change re-pins a follower to the tail", () => {
+    const flushRaf = async (): Promise<void> => {
+      await new Promise((r) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => r(undefined))),
+      );
+    };
+
+    const renderWithFakeRO = async (): Promise<{
+      pane: HTMLDivElement;
+      fire: () => void;
+      scrollIntoViewSpy: ReturnType<typeof vi.fn>;
+    }> => {
+      let roCallback: ResizeObserverCallback | undefined;
+      class FakeResizeObserver {
+        constructor(cb: ResizeObserverCallback) {
+          roCallback = cb;
+        }
+        observe(): void {}
+        unobserve(): void {}
+        disconnect(): void {}
+      }
+      vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+      const scrollIntoViewSpy = vi.fn();
+      // biome-ignore lint/suspicious/noExplicitAny: jsdom Element type compat
+      (Element.prototype as any).scrollIntoView = scrollIntoViewSpy;
+      setScrollback({ "freenode #grappa": fixture });
+      const { container } = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+      ));
+      const pane = container.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+      if (!pane) throw new Error("scrollback DOM not found");
+      // No read cursor → no divider → the cold-mount activation tails and arms
+      // followMode from the (jsdom 0/0 ⇒ at-bottom) geometry.
+      await flushRaf();
+      scrollIntoViewSpy.mockClear();
+      return { pane, fire: () => roCallback?.([], {} as ResizeObserver), scrollIntoViewSpy };
+    };
+
+    it("re-pins the tail when the container SHRINKS under a follower", async () => {
+      try {
+        const { pane, fire, scrollIntoViewSpy } = await renderWithFakeRO();
+        // The shell chrome grew below the pane: same content, shorter box.
+        Object.defineProperty(pane, "scrollHeight", { value: 1650, configurable: true });
+        Object.defineProperty(pane, "clientHeight", { value: 187, configurable: true });
+        fire();
+        await flushRaf();
+        expect(scrollIntoViewSpy).toHaveBeenCalledWith({ block: "end" });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("does NOT scroll when the box did not change (the observe() baseline callback)", async () => {
+      try {
+        const { fire, scrollIntoViewSpy } = await renderWithFakeRO();
+        // ResizeObserver delivers a callback on observe() with the CURRENT size;
+        // a width-only change fires one too. Neither moved the fold, and
+        // tail-snapping on them would fight the cold-mount marker activation.
+        fire();
+        await flushRaf();
+        expect(scrollIntoViewSpy).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+  });
+
   // #230 (mobile) — the pure underfill-rescue DECISION seam. Both the desktop
   // wheel path and the mobile touch path funnel through this one function
   // (implement-once); it is the CORE proof because Playwright's webkit project

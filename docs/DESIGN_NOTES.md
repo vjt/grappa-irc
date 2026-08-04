@@ -28727,3 +28727,52 @@ it covers and watching only it fall — including a control case that fails
 loudly if the "full page" the stale-probe case releases ever stops being full,
 which would otherwise turn that assertion into one about a branch nobody
 entered.
+
+## 2026-08-04 — #778: the fold moves when the pane's own box moves, not only when the viewport does
+
+The #580 case-1 e2e failed roughly 2 in 60 with a shape no flake rate explains.
+The pane reported itself AT the bottom — distance-to-tail 32px, inside the 50px
+threshold — while the row just sent sat clipped under the fold, resolved by the
+locator on every retry, a real node with a real `data-msg-id`. Not a missing
+message, and not a snap that never fired.
+
+Measured on a reproduction, both failures byte-identical: `scrollTop` 1431,
+`scrollHeight` 1650, `clientHeight` **187** where the same container measured
+212 while the rows were being committed. The `.compose-box-error` "send failed"
+line is 25px tall, mounts BELOW the pane, and shrinks the scroll container by
+its own height. It landed AFTER the tail-follow write, so the pane was left
+short of the tail by exactly the shrink: under the 50px "at the bottom"
+threshold, and taller than a 21px row. Both quantities are needed to produce the
+paradox — a threshold coarser than a row is what lets "at the bottom" and "the
+newest row is invisible" be true at once.
+
+**The re-anchor already existed, on the wrong signal.** The onMount
+`window`/`visualViewport` `resize` arm re-pins a follower whenever the fold
+moves (#253 / UX-6 D9). Those events fire only for VIEWPORT changes. Chrome
+growing INSIDE the shell — the send-error line, a composer wrapping to a second
+line — moves the fold with no event whatsoever. The #285 container
+ResizeObserver is the honest signal for that whole class, and it was already
+carrying the same reasoning twice: the touch-action gate rides it (#285) and the
+mention-below-fold badge rides it (#360), both because a box change moves the
+fold. The tail re-anchor was simply never added. So the fix widens an existing
+rule to the class it always belonged to — same gate (`followMode`, the follow
+INTENT, so a reader parked above the tail is still preserved), same verb, same
+precedence — rather than introducing a second anchoring authority.
+
+Two deliberate details. The write is height-CHANGE gated: ResizeObserver
+delivers a callback on `observe()` and on width-only changes, neither of which
+moves the fold, and tail-snapping on them would fight the cold-mount marker
+activation. And it passes `withHide: false`, unlike the resize arm: this trigger
+fires on every composer growth, so the #130 visibility hide would blink the
+whole pane once per wrapped line, while the correction it protects lands two
+frames later with nothing reader-visible in between.
+
+**On proving a race.** The natural rate (2/60) cannot tell a fix from luck, and
+the first displacement attempt failed instructively: delaying the POST rejection
+by 400ms made the test pass 10/10, because the banner then mounted AFTER the
+assertion had already succeeded. Displacing the EVENT is not enough when the
+observation window moves with it. The spec now pins the ordering with a released
+gate rather than a delay — the send POST is held until the pane has tail-followed
+the echo, then released — which is deterministic without waiting on wall-clock:
+10/10 red before the fix, 10/10 green after, where case 1 stayed green through
+all six of those pre-fix runs.

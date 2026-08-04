@@ -243,6 +243,56 @@ describe("readCursor", () => {
     expect(getReadCursor("freenode", "#cicchetto")).toBeNull();
   });
 
+  // #818 — the `on(token)` arm at the foot of the module, which the file
+  // header has claimed as covered (point 7) since C7.3 without a case behind
+  // it: deleting the arm outright left all 25 cases green, and the whole
+  // 4217-test suite too. Read state is server-owned per (subject, network,
+  // channel), so this map is a per-subject CACHE; nothing but this arm tells
+  // it the subject changed. Without it A's cursors are applied to B's windows
+  // — B's unread backlog renders as already read, and A's lower cursor on B's
+  // window can drive a spurious MARKREAD upstream.
+  describe("#818 — identity-transition arm", () => {
+    it("wipes the map on a token ROTATION (A → B)", async () => {
+      const { setToken } = await import("../lib/auth");
+      const { applyMeEnvelope, getReadCursor } = await import("../lib/readCursor");
+      setToken("tok-a");
+      applyMeEnvelope({ freenode: { "#grappa": 5000 } });
+      expect(getReadCursor("freenode", "#grappa")).toBe(5000);
+
+      setToken("tok-b");
+
+      expect(getReadCursor("freenode", "#grappa")).toBeNull();
+    });
+
+    it("wipes the map on LOGOUT (A → null)", async () => {
+      const { setToken } = await import("../lib/auth");
+      const { applyMeEnvelope, getReadCursor } = await import("../lib/readCursor");
+      setToken("tok-a");
+      applyMeEnvelope({ freenode: { "#grappa": 5000 } });
+
+      setToken(null);
+
+      expect(getReadCursor("freenode", "#grappa")).toBeNull();
+    });
+
+    it("KEEPS the map on the cold-start login (null → A)", async () => {
+      // The `prev != null` half of the filter. A cold login must not wipe what
+      // the /me hydration seeded moments earlier in the same flush — the
+      // envelope lands before the token settles on some boot paths.
+      const { setToken } = await import("../lib/auth");
+      const { applyMeEnvelope, getReadCursor, clearReadCursors } = await import(
+        "../lib/readCursor"
+      );
+      setToken(null);
+      clearReadCursors();
+      applyMeEnvelope({ freenode: { "#grappa": 5000 } });
+
+      setToken("tok-a");
+
+      expect(getReadCursor("freenode", "#grappa")).toBe(5000);
+    });
+  });
+
   describe("Solid reactivity (unread-marker bug fix)", () => {
     it("getReadCursor is tracked: applyReadCursorSet invalidates a Solid effect", async () => {
       // Repro for the unread-marker pinning bug. ScrollbackPane's `rows`

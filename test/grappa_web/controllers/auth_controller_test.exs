@@ -335,6 +335,164 @@ defmodule GrappaWeb.AuthControllerTest do
     end
   end
 
+  # The second factor's own brute-force bound. The sibling mode-1 describe
+  # proves it for the PASSWORD door; this is the same claim for the TOTP
+  # door, which guards a 10^6 space and so needs it more, not less.
+  #
+  # Note what the loop below relies on: ONE challenge token answers all
+  # eleven requests. The challenge is a `Phoenix.Token`, so it is REUSABLE
+  # for its whole 300s window — only the TOTP code is one-shot (see
+  # "replayed TOTP is rejected" above). That is the intended UX (a typo
+  # must not cost the password round trip) and it is exactly why the
+  # window needs a counter: without one, a single post-password token is
+  # an unlimited oracle.
+  describe "POST /auth/totp/verify throttle (:totp_login)" do
+    test "the 11th attempt is 429 too_many_attempts even with the correct code", %{conn: conn} do
+      {user, password} = user_fixture_with_password()
+      secret = arm_totp(user)
+      wrong = wrong_totp_code(secret, System.system_time(:second))
+
+      pending =
+        conn
+        |> post("/auth/login", %{"identifier" => user.name, "password" => password})
+        |> json_response(202)
+
+      for _ <- 1..10 do
+        assert conn
+               |> post("/auth/totp/verify", %{
+                 "challenge_token" => pending["challenge_token"],
+                 "code" => wrong
+               })
+               |> json_response(401) == %{"error" => "invalid_two_factor"}
+      end
+
+      {:ok, code} = TOTP.code_at(secret, System.system_time(:second))
+
+      assert conn
+             |> post("/auth/totp/verify", %{
+               "challenge_token" => pending["challenge_token"],
+               "code" => code
+             })
+             |> json_response(429) == %{"error" => "too_many_attempts"}
+
+      assert session_count() == 0
+    end
+
+    test "a fresh account is unaffected by another's exhausted window", %{conn: conn} do
+      {spent, spent_password} = user_fixture_with_password()
+      spent_secret = arm_totp(spent)
+      wrong = wrong_totp_code(spent_secret, System.system_time(:second))
+
+      spent_pending =
+        conn
+        |> post("/auth/login", %{"identifier" => spent.name, "password" => spent_password})
+        |> json_response(202)
+
+      for _ <- 1..10 do
+        post(conn, "/auth/totp/verify", %{
+          "challenge_token" => spent_pending["challenge_token"],
+          "code" => wrong
+        })
+      end
+
+      {user, password} = user_fixture_with_password()
+      secret = arm_totp(user)
+
+      pending =
+        conn
+        |> post("/auth/login", %{"identifier" => user.name, "password" => password})
+        |> json_response(202)
+
+      {:ok, code} = TOTP.code_at(secret, System.system_time(:second))
+
+      assert conn
+             |> post("/auth/totp/verify", %{
+               "challenge_token" => pending["challenge_token"],
+               "code" => code
+             })
+             |> json_response(200)
+    end
+  end
+
+  # The post-password challenge is deliberately short-lived: it is handed
+  # out BEFORE the second factor is proven, so anything that leaks one — a
+  # proxy log, a crash report, a shared screen — hands over half a login.
+  # 300s is the whole bound, and nothing but `max_age:` enforces it.
+  #
+  # These mint the token directly because the age is the subject and a
+  # token obtained from `/auth/login` is always fresh. That duplicates the
+  # controller's private salt here, so the second test is not decoration:
+  # it runs the SAME helper with a current timestamp and demands a bearer.
+  # Drift the salt, the payload shape, or the binding and the control goes
+  # red — a wrong salt reads as `invalid_two_factor`, never as an accepted
+  # login, so this pair cannot quietly test nothing.
+  describe "POST /auth/totp/verify challenge lifetime" do
+    @totp_challenge_salt "account-totp-login-v1"
+    @totp_challenge_max_age_seconds 300
+
+    test "a challenge older than its window is refused as expired", %{conn: conn} do
+      {user, _} = user_fixture_with_password()
+      secret = arm_totp(user)
+      {:ok, code} = TOTP.code_at(secret, System.system_time(:second))
+      stale = System.system_time(:second) - @totp_challenge_max_age_seconds - 1
+
+      refused =
+        post(conn, "/auth/totp/verify", %{
+          "challenge_token" => totp_challenge_token(user, conn, stale),
+          "code" => code
+        })
+
+      assert json_response(refused, 401) == %{"error" => "two_factor_challenge_expired"}
+      assert session_count() == 0
+    end
+
+    test "a challenge inside its window still mints the bearer", %{conn: conn} do
+      {user, _} = user_fixture_with_password()
+      secret = arm_totp(user)
+      {:ok, code} = TOTP.code_at(secret, System.system_time(:second))
+      fresh = System.system_time(:second) - @totp_challenge_max_age_seconds + 30
+
+      body =
+        conn
+        |> post("/auth/totp/verify", %{
+          "challenge_token" => totp_challenge_token(user, conn, fresh),
+          "code" => code
+        })
+        |> json_response(200)
+
+      assert body["subject"]["id"] == user.id
+      assert session_count() == 1
+    end
+  end
+
+  defp totp_challenge_token(user, conn, signed_at) do
+    Phoenix.Token.sign(
+      GrappaWeb.Endpoint,
+      @totp_challenge_salt,
+      {user.id, GrappaWeb.RemoteIP.format(conn), conn.assigns[:current_client_id]},
+      signed_at: signed_at
+    )
+  end
+
+  # A code that no step in `matching_step/3`'s ±1 window accepts, and one
+  # step further out on each side so a 30s boundary crossed mid-test can't
+  # turn it valid. Derived from the production generator rather than
+  # hardcoded: "000000" is a real code once every 10^6 enrollments.
+  defp wrong_totp_code(secret, now) do
+    accepted =
+      for step_offset <- -2..2 do
+        {:ok, code} = TOTP.code_at(secret, now + step_offset * 30)
+        code
+      end
+
+    # Pigeonhole: five codes are accepted, so one of the first six
+    # numbers is not among them.
+    Enum.find_value(0..length(accepted), fn n ->
+      candidate = n |> Integer.to_string() |> String.pad_leading(6, "0")
+      if candidate not in accepted, do: candidate
+    end)
+  end
+
   # #404 — an account holder who types their BARE account name (no `@`)
   # must get an ACCOUNT session, not a silently-provisioned guest. Pre-fix
   # the dispatch keyed SOLELY on `@` presence, so a bare account name
