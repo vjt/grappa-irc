@@ -139,11 +139,21 @@ defmodule Grappa.WebAuthnCeremony do
 
   Everything else stays byte-identical, so an assertion that still passes
   proves the signature is not being checked.
+
+  The bit is flipped in the DECODED signature, never in the base64url
+  text. A DER ECDSA signature is most often 71 bytes, whose unpadded
+  base64 ends on a character carrying two padding bits — flip one of
+  those and the text differs while the bytes it decodes to do not. The
+  server then received the genuine assertion, verified it correctly and
+  minted a token, so the evil twin passed as itself roughly one run in
+  ten. Decoding first makes the mutation reach `s` every time.
   """
   @spec tamper_signature(map()) :: map()
   def tamper_signature(%{"signature" => signature} = params) do
-    <<head::binary-size(byte_size(signature) - 1), last>> = signature
-    Map.put(params, "signature", head <> <<bxor(last, 1)>>)
+    {:ok, raw} = Base.url_decode64(signature, padding: false)
+    <<head::binary-size(byte_size(raw) - 1), last>> = raw
+
+    Map.put(params, "signature", encode(head <> <<bxor(last, 1)>>))
   end
 
   defp authenticator_data(origin, flags, sign_count) do
