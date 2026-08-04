@@ -4,7 +4,15 @@ defmodule Grappa.Accounts.PasskeyTest do
   import ExUnit.CaptureLog
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, Accounts.Passkey, Accounts.TOTPRecoveryCode, Accounts.WebAuthn, Repo}
+  alias Grappa.{
+    Accounts,
+    Accounts.Passkey,
+    Accounts.TOTPRecoveryCode,
+    Accounts.WebAuthn,
+    Accounts.WebAuthnChallengeStore,
+    Repo,
+    WebAuthnCeremony
+  }
 
   test "registration options are RP-bound and password-gated" do
     {user, password} = user_fixture_with_password()
@@ -47,7 +55,7 @@ defmodule Grappa.Accounts.PasskeyTest do
         })
       )
 
-      %{user: user, binding: %{ip: "192.0.2.1", client_id: nil}}
+      %{user: user, other: other, binding: %{ip: "192.0.2.1", client_id: nil}}
     end
 
     test "passwordless stays discoverable and hands no credential id to an anonymous caller", ctx do
@@ -56,6 +64,15 @@ defmodule Grappa.Accounts.PasskeyTest do
 
       assert options.rp_id == "irc.example"
       refute Map.has_key?(options, :allow_credentials)
+    end
+
+    test "the challenge kept behind that silence still lists only the account's own credential", ctx do
+      assert {:ok, %{challenge_id: id}} =
+               WebAuthn.begin_authentication(ctx.user, :passwordless, ctx.binding, "https://irc.example", %{})
+
+      assert {:ok, challenge, %{user_id: user_id}} = WebAuthnChallengeStore.take(id, :passwordless)
+      assert user_id == ctx.user.id
+      assert [{<<1, 2, 3>>, _}] = challenge.allow_credentials
     end
 
     for purpose <- [:second_factor, :mode_change] do
@@ -77,6 +94,72 @@ defmodule Grappa.Accounts.PasskeyTest do
       assert [credential] = options.allow_credentials
       refute Map.has_key?(credential, :transports)
     end
+  end
+
+  # An authenticator belonging to one account must not open a session on
+  # another. Both ceremonies here are signed for real: the intruder's key
+  # is genuine, its signature verifies, its counter advances. The only
+  # thing that may refuse it is that the credential is not the challenged
+  # account's — which is why the rightful owner runs the identical
+  # ceremony as a control, or a refusal for some unrelated reason would
+  # read as the gate holding.
+  #
+  # Two gates enforce that, in AND: the challenge's `allow_credentials`
+  # (scoped by `credentials/1`) and the `user_id:` on the assertion's
+  # `get_by`. Removing either alone leaves this whole file green, because
+  # the survivor still refuses; removing both admits the intruder as the
+  # victim. So this test measures the conjunction, and no test isolates
+  # the `get_by` clause: with `allow_credentials` intact Wax refuses a
+  # foreign credential before the lookup runs, so the clause is only
+  # reachable through a mutation, never through `authenticate/3`.
+  describe "authenticate/3 cross-account ownership" do
+    setup do
+      victim = user_fixture()
+      intruder = user_fixture()
+      victim_key = WebAuthnCeremony.new_authenticator(<<1, 2, 3>>)
+      intruder_key = WebAuthnCeremony.new_authenticator(<<4, 5, 6>>)
+
+      seed_passkey(victim, victim_key)
+      seed_passkey(intruder, intruder_key)
+
+      %{
+        victim: victim,
+        victim_key: victim_key,
+        intruder_key: intruder_key,
+        binding: %{ip: "192.0.2.1", client_id: nil}
+      }
+    end
+
+    test "the account's own authenticator answers its ceremony", ctx do
+      params = signed_assertion(ctx, ctx.victim_key)
+
+      assert {:ok, user, %{}} = WebAuthn.authenticate(params, :passwordless, ctx.binding)
+      assert user.id == ctx.victim.id
+    end
+
+    test "another account's authenticator cannot answer it", ctx do
+      params = signed_assertion(ctx, ctx.intruder_key)
+
+      assert {:error, :invalid_passkey} = WebAuthn.authenticate(params, :passwordless, ctx.binding)
+    end
+  end
+
+  defp seed_passkey(user, authenticator) do
+    Repo.insert!(
+      Passkey.changeset(%Passkey{}, %{
+        user_id: user.id,
+        credential_id: authenticator.credential_id,
+        public_key: CBOR.encode(WebAuthnCeremony.cose_key(authenticator)),
+        name: "key"
+      })
+    )
+  end
+
+  defp signed_assertion(ctx, authenticator) do
+    {:ok, %{challenge_id: id, public_key: %{challenge: challenge}}} =
+      WebAuthn.begin_authentication(ctx.victim, :passwordless, ctx.binding, "https://irc.example", %{})
+
+    WebAuthnCeremony.assertion_params(authenticator, id, challenge, "https://irc.example", 1)
   end
 
   describe "consume_sign_count/2" do
