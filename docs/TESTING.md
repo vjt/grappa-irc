@@ -148,7 +148,7 @@ The authoritative source is the comment block at the top of each
 `scripts/integration.sh` orchestrates an all-in-one docker compose
 stack (`cicchetto/e2e/compose.yaml`):
 
-* **azzurra-testnet** (git submodule at `cicchetto/e2e/infra/`): hub + leaf-v4 + leaf-v6 + services. Bahamut IRCd + Anope-shape services so CAP/SASL/NickServ behave like real Azzurra.
+* **azzurra-testnet** (git submodule at `cicchetto/e2e/infra/`): hub + leaf-v4 + leaf-v6 + services. Bahamut IRCd + Anope-shape services so CAP/SASL/NickServ behave like real Azzurra. Note `cicchetto/` itself is **not** a submodule — it is a plain subdirectory of this repo; `.gitmodules` lists only `cicchetto/e2e/infra`, `vendor/bats-core` and `frontends/shottino/vendor/libdatachannel`.
 * **solanum-test2** (`cicchetto/e2e/infra-solanum/`, #221): a standalone **solanum** ircd — the ircd Libera.Chat runs — backing the second network `azzurra2`. Replaced the second bahamut so integration tests exercise grappa's parser against the real Libera-shaped WHOIS/usermode/WHO-mask surface, not a bahamut mock. Plaintext-only (grappa dials `--no-tls`), standalone (no S2S), built from the solanum tree via meson (pin with `SOLANUM_REF`, default `main`). Keeps the `bahamut-test2` docker-network alias so the azzurra2 seed + the #211 multi-network specs resolve the same hostname unchanged.
 * **grappa-e2e-seeder** (oneshot): runs `mix ecto.migrate` + seeds 3 users (`vjt`, `admin-vjt`, `m9b-test`, `m9b-victim`) + binds them to bahamut-test + seeds 200 scrollback lines on `#bofh`. Idempotent at clean-volume time only — re-seeding a non-fresh volume fails on duplicate user rows.
 * **grappa-test**: the bouncer, dev image, source bind-mounted, points at `bahamut-test:6667`.
@@ -298,20 +298,56 @@ the hard way on 2026-07-27.
    collected the *right* set. See `feedback_e2e_user_class_parity_matrix`
    + `feedback_playwright_webkit_not_ios_scroll`.
 
-5. **A fresh worktree's `cicchetto/e2e/infra` submodule is EMPTY, and
-   auto-init clones over SSH — which hangs.** Worktrees don't inherit
-   submodule checkouts, so `cicchetto/e2e/infra` is empty on first `up`.
-   Both `scripts/testnet.sh`'s auto-init AND
-   `git submodule update --init` re-clone it via **SSH**, which is
-   blocked in this environment (`feedback_git_push_via_gh_https_ssh_blocked`)
-   — the clone stalls with no output (hangs on the voyager host). Do NOT
-   re-clone; **rsync the already-checked-out submodule from the main
-   checkout** instead:
+5. **A fresh worktree's `cicchetto/e2e/infra` submodule is EMPTY — and
+   the repair everyone reaches for (rsync) POISONS git.** Worktrees
+   don't inherit submodule checkouts, so `cicchetto/e2e/infra` is empty
+   on first `up`. The tell is an abort **during submodule init**: no
+   tests run, no summary, exit 1, and a log tail naming
+   `azzurra-testnet.git`. That is an INFRA bootstrap failure, **not a
+   test red** — triaging it as a regression sends you hunting something
+   that does not exist.
+
+   **The scripts already handle it.** `scripts/testnet.sh:41` guards on
+   `[ ! -d "$E2E_DIR/infra/bahamut" ]` and auto-inits at `:52`;
+   `scripts/bats.sh:37` does the same for `vendor/bats-core`. Both pass
+   `-c protocol.file.allow=always` (#592, PR #616, merged 2026-08-01),
+   which is REQUIRED and not cosmetic: a worktree clones the submodule
+   from the superproject's **local module store** over `file://`, and
+   the CVE-2022-39253 mitigation blocks that transport by default. The
+   clone never touches the network, so **SSH is not involved and nothing
+   hangs**. Measured on a genuinely fresh worktree at `4f92701d`:
+   offline, rc 0, seconds. The manual equivalent, from the worktree
+   ROOT:
 
    ```bash
-   rsync -a /Users/mbarnaba/code/grappa/cicchetto/e2e/infra/ \
-     <worktree>/cicchetto/e2e/infra/
+   git -c protocol.file.allow=always submodule update --init cicchetto/e2e/infra
    ```
+
+   `git submodule status` says which state you are in: a **leading
+   space** = initialized, a leading `-` = still uninit.
+
+   ⛔ **Do NOT `rsync` the checked-out submodule from the main
+   checkout** (this runbook advised exactly that until 2026-08-04; it
+   was wrong). rsync copies main's `.git` **pointer file**, whose
+   *relative* gitdir `../../../.git/modules/cicchetto/e2e/infra`
+   resolves to `<worktree>/.git/modules/…` — but a linked worktree's
+   `.git` is a **file**, not a directory, so that path is literally `Not
+   a directory`. Every superproject git command then dies `fatal: not a
+   git repository`, exit 128, **including plain `git status`**. A
+   worktree's real pointer targets its OWN module dir
+   (`.git/worktrees/<name>/modules/cicchetto/e2e/infra`) — a different
+   path entirely, so main's pointer can never be right here. The testnet
+   still runs; only git is poisoned. And `submodule update --init`
+   **cannot repair it** ("could not get a repository handle") — it only
+   works on an EMPTY infra dir. **So: init FIRST, never
+   rsync-then-init.**
+
+   Already in the hole? `git status --ignore-submodules=all` reads clean
+   at rc 0, and `git add` + `git commit` both work — the breakage is
+   cosmetic for committing your own files, so you can still ship. Do NOT
+   `rm` the pointer (leaves the submodule detached) and do NOT
+   hand-write an absolute `gitdir:`. Escalate rather than improvise
+   git-state surgery.
 
 ## Writing a bats assertion: never a bare `!` (#745)
 
@@ -384,8 +420,8 @@ These bite during cluster work; check the memory before re-investigating.
 
 ## When the test stack itself is broken
 
-* **`vendor/bats-core` not found** → `git submodule update --init vendor/bats-core`.
-* **`cicchetto/e2e/infra` empty (fresh git worktree — worktrees don't inherit submodules)** → `scripts/testnet.sh`'s auto-init AND `git submodule update --init` both re-clone over **SSH**, which is blocked here and hangs with no output. **Rsync it from the main checkout instead** — see trap 5 in "Five e2e gate traps that fake a green (or a red)".
+* **`vendor/bats-core` not found** → `scripts/bats.sh` auto-inits it. By hand: `git -c protocol.file.allow=always submodule update --init vendor/bats-core` — the flag is REQUIRED in a worktree (see trap 5).
+* **`cicchetto/e2e/infra` empty (fresh git worktree — worktrees don't inherit submodules)** → nothing to do: `scripts/testnet.sh` auto-inits it **offline** from the local module store. By hand, from the worktree ROOT: `git -c protocol.file.allow=always submodule update --init cicchetto/e2e/infra`. **Never rsync it from the main checkout** — that poisons superproject git; see trap 5 in "Five e2e gate traps that fake a green (or a red)".
 * **`runtime/e2e/{cicchetto-dist,grappa-runtime}` left ROOT-OWNED → next `testnet up` aborts** (symptoms: cicchetto-dist `AccessDenied`, sqlite `database_open_failed`, `"Pool overlaps with other one on this address space"`). A prior run can write these as uid 0 despite the `--user` drop; a plain `rm` can't clear them. Now AUTO-cleaned: `testnet.sh up`/`down` use `e2e_force_rm` (plain rm → non-interactive `sudo` for root-owned survivors; see `scripts/_lib.sh`). No passwordless sudo → it warns and you run `sudo rm -rf runtime/e2e/* cicchetto/e2e/test-results/*` by hand. **`git worktree remove` blocked** by root-owned `cicchetto/e2e/test-results/*` (Playwright writes failure artifacts as root, intentionally kept) → `sudo rm -rf <worktree-dir>` then `git worktree prune`.
 * **`services.hub conflicts with imported resource`** (compose config parse) → docker compose is too old for the `include:` + per-service override pattern. Install **v5.0.2** (the CI pin in `.github/workflows/integration.yml`) into `~/.docker/cli-plugins/docker-compose` — user-local, no sudo. Stock distro plugins (e.g. Debian's 2.26.1) reject it.
 * **`checking context: no permission to read .../nginx-certs/nginx.key`** (image build) → running e2e as a NON-root user: `nginx-cert-init` writes the key root-owned 0600, and the classic (non-buildx) builder tars the context as the invoking user. Fixed in-repo via `.dockerignore` exclusions (root + `cicchetto/e2e/`); if it recurs, a new build context is pulling in the cert dir — add it to that context's `.dockerignore`. CI builds as root so never hits this.
