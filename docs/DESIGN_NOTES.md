@@ -28906,3 +28906,51 @@ parser in a TIGHT heap allocation rather than the 256 KB buffer production
 uses, so the over-read is an ASan abort instead of a quiet stroll; with the
 clamp reverted, the CRLF case trips at 0 bytes past a 19-byte region and the
 LF-only case, run alone, trips at 0 bytes past a 17-byte one.
+## 2026-08-05 — #761: a draw that can fail, at the one call that has nothing else
+
+`RAND_bytes` returns 1 on success and leaves the buffer UNTOUCHED otherwise.
+Five sites in `shottino.c` ignored the return, and the room name for `/call`
+is the one where that is a security defect rather than an untidy line: the
+room name IS the access control — the code says so — so on a host with no
+entropy source the invite posted to a channel carried 16 bytes of
+uninitialised stack, hex-encoded, plausibly repeatable across runs from the
+same code path.
+
+**Refuse, do not degrade.** A weak room is worse than no call, so
+`call_room_name` returns false and `/call` posts nothing and says why. That
+answer is stated where the user can read it, because a refusal nobody sees is
+the silent-degrade this was meant to remove. The same reasoning binds
+`multipart_boundary`: the comment above it argues that 16 random bytes make a
+boundary collision impossible, which is an argument entirely about entropy
+that nothing checked, and a predictable boundary is what lets a file whose
+BYTES contain it split its own request and smuggle form fields into grappa's
+upload endpoint — so `/upload` and `/stt` refuse rather than send. The
+websocket key and the frame mask are RFC 6455 security properties (an
+unpredictable mask is what stops a client being made to emit chosen bytes at
+an intermediary), so unmaskable means unsendable. Reconnect jitter is the one
+draw here that is not a secret, and therefore the only one allowed to fail
+quietly: it buys spread, not safety, and zero is simply no jitter.
+
+**One door, and it zeroes on the way out.** `fill_random` is the only place
+that draws. A failed draw returns false AND zeroes the buffer, because
+all-zero is visibly broken while stack residue is precisely the shape a caller
+cannot distinguish from a secret. There is deliberately NO fallback source: a
+`time(NULL)`-seeded `rand()` is the canonical way this class of bug survives
+its own fix.
+
+**The seam is half the fix, because the old test could not fail.** It asserted
+`strlen(room) == 9 + 32` and that two draws differ — and uninitialised stack
+has a length and differs too, so both assertions hold for garbage. That is how
+this shipped past a suite that looked like it covered it. The draw now goes
+through a function pointer, so the test substitutes the source and asserts the
+output CAME FROM IT: a counting stub must yield `shottino-000102…0f` exactly,
+and a failing stub must yield no room at all. Asserting the shape of a string
+is what #762 complains about generally; the fix for one instance of it must
+not add another.
+
+**The RED was measured, not assumed.** With the seam in place and only the
+`!= 1` check removed, the failing source still minted
+`shottino-00000000000000000000000000000000` and exactly the seven refusal
+assertions fell. The entropy-came-from-the-source half stayed green under that
+mutation, which is the honest reading: it pins the derivation, and the refusal
+assertions pin the check.
