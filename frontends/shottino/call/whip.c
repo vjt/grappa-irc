@@ -314,10 +314,33 @@ static int dial(const char *host, int port, int timeout_ms, char *err, size_t er
     return fd;
 }
 
+/* Anything that would end the request line early, i.e. every C0 byte,
+ * DEL, and the space that separates target from version. */
+static bool has_request_line_break(const char *s) {
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++)
+        if (*p <= ' ' || *p == 0x7f) return true;
+    return false;
+}
+
 bool whip_request(const struct whip_url *url, const char *method, const char *content_type,
                   const char *body, int timeout_ms, struct whip_response *out, char *err,
                   size_t err_sz) {
     if (!url || !method || !out) return false;
+
+    /* BELT AND BRACES over the encoding done by whoever built this URL.
+     *
+     * A request line is ONE line: a CR in the path is not a strange path,
+     * it is a second request the server will answer, and a CR in the host
+     * is an extra header. Today every caller encodes its path segments
+     * and the URL arrived in an IRC message, which cannot carry either
+     * byte — this gate is what keeps that true the day the URL comes from
+     * a config value, a flag, a redirect Location or a transport that is
+     * not IRC. Refused rather than encoded: at this depth we can no
+     * longer tell a path apart from its delimiters. */
+    if (has_request_line_break(url->path) || has_request_line_break(url->host)) {
+        set_err(err, err_sz, "refusing a URL with a control character in it");
+        return false;
+    }
 
     int fd = dial(url->host, url->port, timeout_ms, err, err_sz);
     if (fd < 0) return false;

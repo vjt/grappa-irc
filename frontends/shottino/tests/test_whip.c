@@ -208,10 +208,47 @@ TEST(a_header_block_can_be_empty_but_never_endless) {
     a_response_with_no_headers("HTTP/1.1 200 OK\n\n");
 }
 
+/* A request line is one line. Everything that builds a URL for this
+ * module encodes its path segments, so the only way a CR gets here is a
+ * caller that does not — and in the request line a CR is not a strange
+ * path, it is a second request the server will answer.
+ *
+ * The refusal has to be legible in `err`: dialling a dead port also
+ * returns false, so a test that only asserted false would pass with the
+ * gate deleted. */
+static void a_request_refuses(const char *url) {
+    struct whip_url u;
+    CHECK(whip_url_parse(url, &u)); /* the URL parser is not the gate */
+    struct whip_response resp;
+    char err[256] = "";
+    CHECK(!whip_request(&u, "POST", "application/sdp", "v=0\r\n", 100, &resp, err, sizeof(err)));
+    CHECK(strstr(err, "control character") != NULL);
+}
+
+TEST(a_control_character_never_reaches_the_request_line) {
+    a_request_refuses("http://127.0.0.1:9/rtc/a\r\nX-Evil: 1/whip");
+    a_request_refuses("http://127.0.0.1:9/rtc/a\nb/whip");
+    /* A space ends the path in a request line as surely as a CR ends the
+     * line, so it belongs to the same gate. */
+    a_request_refuses("http://127.0.0.1:9/rtc/a b/whip");
+    /* The host is interpolated into `Host:` by the same builder, and the
+     * URL parser stops the host only at `:` `/` `?` `#`. */
+    a_request_refuses("http://a\r\nX:9/whip");
+
+    /* The gate refuses control bytes, not ordinary encoded paths. */
+    struct whip_url ok;
+    CHECK(whip_url_parse("http://127.0.0.1:9/rtc/a%3fx/me%5b1%5d/whip", &ok));
+    struct whip_response resp;
+    char err[256] = "";
+    CHECK(!whip_request(&ok, "POST", "application/sdp", "v=0\r\n", 100, &resp, err, sizeof(err)));
+    CHECK(strstr(err, "control character") == NULL); /* refused by the socket, not the gate */
+}
+
 int main(void) {
     RUN(a_url_is_split_or_refused);
     RUN(a_location_resolves_against_the_request);
     RUN(a_response_is_parsed_or_refused);
     RUN(a_header_block_can_be_empty_but_never_endless);
+    RUN(a_control_character_never_reaches_the_request_line);
     return test_report();
 }
