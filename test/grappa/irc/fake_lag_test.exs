@@ -32,25 +32,22 @@ defmodule Grappa.IRC.FakeLagTest do
     end
 
     test "back-to-back commands stack, so a burst is what runs the bank up" do
-      state = FakeLag.new()
-      {state, _} = FakeLag.record(state, 64, @t0)
-      {_, sample} = FakeLag.record(state, 64, @t0)
+      {after_first, _} = FakeLag.record(FakeLag.new(), 64, @t0)
+      {_, sample} = FakeLag.record(after_first, 64, @t0)
 
       assert sample.bank_model_s == 4.0
     end
 
     test "wall-clock time between commands drains the bank" do
-      state = FakeLag.new()
-      {state, _} = FakeLag.record(state, 64, @t0)
-      {_, sample} = FakeLag.record(state, 64, @t0 + 1_500)
+      {after_first, _} = FakeLag.record(FakeLag.new(), 64, @t0)
+      {_, sample} = FakeLag.record(after_first, 64, @t0 + 1_500)
 
       assert sample.bank_model_s == 2.5
     end
 
     test "an idle gap longer than the bank clears it — no debt carries over" do
-      state = FakeLag.new()
-      {state, _} = FakeLag.record(state, 64, @t0)
-      {_, sample} = FakeLag.record(state, 64, @t0 + 9_000)
+      {after_first, _} = FakeLag.record(FakeLag.new(), 64, @t0)
+      {_, sample} = FakeLag.record(after_first, 64, @t0 + 9_000)
 
       assert sample.bank_model_s == 2.0
     end
@@ -122,18 +119,16 @@ defmodule Grappa.IRC.FakeLagTest do
     end
 
     test "keeps a command that is exactly ten seconds old" do
-      state = FakeLag.new()
-      {state, _} = FakeLag.record(state, 64, @t0)
-      {_, sample} = FakeLag.record(state, 64, @t0 + 10_000)
+      {after_first, _} = FakeLag.record(FakeLag.new(), 64, @t0)
+      {_, sample} = FakeLag.record(after_first, 64, @t0 + 10_000)
 
       assert sample.commands_10s == 2
       assert sample.penalty_10s_s == 4.0
     end
 
     test "drops a command that has aged out of the window" do
-      state = FakeLag.new()
-      {state, _} = FakeLag.record(state, 64, @t0)
-      {_, sample} = FakeLag.record(state, 64, @t0 + 10_001)
+      {after_first, _} = FakeLag.record(FakeLag.new(), 64, @t0)
+      {_, sample} = FakeLag.record(after_first, 64, @t0 + 10_001)
 
       assert sample.commands_10s == 1
       assert sample.penalty_10s_s == 2.0

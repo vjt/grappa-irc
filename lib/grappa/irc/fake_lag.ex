@@ -119,6 +119,12 @@ defmodule Grappa.IRC.FakeLag do
 
   @doc "A connection that has sent nothing yet."
   @spec new() :: t()
+  # Dialyzer flags the t() supertype (success typing infers the singleton
+  # `since_ms: nil, window: []`). Keep t(): the result is stored in a
+  # `Grappa.IRC.Client` state field typed as t(), and narrowing here would
+  # propagate a narrower-than-useful type upstream. Same call as
+  # `Grappa.Session.AwayState.new/0`.
+  @dialyzer {:nowarn_function, new: 0}
   def new, do: %__MODULE__{}
 
   @doc """
@@ -156,7 +162,9 @@ defmodule Grappa.IRC.FakeLag do
   @spec prune([{integer(), pos_integer()}], integer()) :: [{integer(), pos_integer()}]
   defp prune(window, now_ms), do: Enum.filter(window, fn {at, _} -> now_ms - at <= @window_ms end)
 
-  @spec sample([{integer(), pos_integer()}], integer(), integer()) :: sample()
+  # Non-empty by construction: the frame being recorded is prepended
+  # before the sample is taken, so there is always at least one entry.
+  @spec sample([{integer(), pos_integer()}, ...], integer(), integer()) :: sample()
   defp sample(window, since_ms, now_ms) do
     penalty_ms = Enum.reduce(window, 0, fn {_, cost}, acc -> acc + cost end)
     bank_s = to_s(since_ms - now_ms)
