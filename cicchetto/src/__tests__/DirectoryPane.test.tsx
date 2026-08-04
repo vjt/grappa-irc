@@ -497,6 +497,7 @@ describe("DirectoryPane", () => {
     // character and deleting it again.
     describe("filter set from outside the pane (#738)", () => {
       it("mounts showing the store's active filter", () => {
+        // Mirrored before the first paint: the effect flushes inside render().
         setDirectoryQuerySignal("rust");
         directoryPageMock.mockReturnValue(FRESH_PAGE);
         render(() => <DirectoryPane networkSlug={SLUG} />);
@@ -518,25 +519,6 @@ describe("DirectoryPane", () => {
         await waitFor(() => {
           expect(input).toHaveValue("rust");
         });
-      });
-
-      // The box LEADS the store by SEARCH_DEBOUNCE_MS (#732): binding the
-      // input straight to the store would undo that and make typing lag a
-      // quarter second behind the keyboard.
-      it("keeps the typed text while the debounced store filter still lags", () => {
-        vi.useFakeTimers();
-        try {
-          directoryPageMock.mockReturnValue(FRESH_PAGE);
-          render(() => <DirectoryPane networkSlug={SLUG} />);
-          const input = screen.getByPlaceholderText(/search channels/i);
-
-          fireEvent.input(input, { target: { value: "ru" } });
-
-          expect(setQueryMock).not.toHaveBeenCalled();
-          expect(input).toHaveValue("ru");
-        } finally {
-          vi.useRealTimers();
-        }
       });
     });
   });

@@ -184,12 +184,11 @@ const DirectoryRow: Component<DirectoryRowProps> = (props) => {
 };
 
 const DirectoryPane: Component<{ networkSlug: string }> = (props) => {
-  // #738 — seed the box from the store, like the sort toggle below: a control
-  // must not lie about the view the store is applying. The filter is cleared
-  // on window close, but `/list <pattern>` (compose.ts) calls setQuery from
-  // OUTSIDE the pane with no close in between — so mounting hard-coded "" put
-  // a filtered list under an empty box.
-  const [searchText, setSearchText] = createSignal(directoryQuery(props.networkSlug));
+  // #738 — the box renders this; the store's filter SEEDS it and keeps
+  // seeding it, via the mirror effect below (which runs before the first
+  // paint, so this initial value is never seen). Not a second rehydration
+  // point: one mechanism, or the two drift.
+  const [searchText, setSearchText] = createSignal("");
   // #677 — sort is a sticky PREFERENCE: rehydrate the toggle from the store so
   // a reopened pane's label matches the sorted list the store re-fetches (the
   // drop-page reset would otherwise re-fetch the stored sort while the toggle
