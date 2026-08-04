@@ -158,6 +158,13 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   // fetchInto produces on reopen. Defaults to "users".
   const directorySort = (slug: string): "users" | "name" => currentView(slug).sort;
 
+  // #738 — the filter the store is actually applying, for the pane's search
+  // box to render. The filter is NOT sticky (resetDirectory clears it on
+  // close), but it IS settable from outside the pane: compose.ts's
+  // `/list <pattern>` calls setQuery directly. Without this the box has no
+  // way to know, and shows an empty filter over a filtered list.
+  const directoryQuery = (slug: string): string => currentView(slug).q;
+
   // #677 — true while a loadMore for `slug` is in flight (sentinel spinner).
   const isLoadingMore = (slug: string): boolean => loadingMore()[slug] ?? false;
 
@@ -275,6 +282,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   return {
     directoryError,
     directoryPage,
+    directoryQuery,
     directorySort,
     isLoadingMore,
     loadDirectory,
@@ -291,6 +299,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 
 export const directoryError = exports_.directoryError;
 export const directoryPage = exports_.directoryPage;
+export const directoryQuery = exports_.directoryQuery;
 export const directorySort = exports_.directorySort;
 export const isLoadingMore = exports_.isLoadingMore;
 export const loadDirectory = exports_.loadDirectory;
