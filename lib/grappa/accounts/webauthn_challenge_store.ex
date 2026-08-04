@@ -32,7 +32,10 @@ defmodule Grappa.Accounts.WebAuthnChallengeStore do
   How long a stored ceremony stays claimable, single-sourced so a test
   can position a clock relative to it instead of restating the number.
   """
-  @spec ttl_seconds() :: pos_integer()
+  # `unquote(@ttl_seconds)` pins the spec to the compile-time singleton,
+  # mirroring `ChannelDirectory.ttl_ms/0`. A bare `pos_integer()` is a
+  # `:underspecs` supertype of the success typing and fails the gate.
+  @spec ttl_seconds() :: unquote(@ttl_seconds)
   def ttl_seconds, do: @ttl_seconds
 
   @doc "Atomically consumes a live challenge with the expected purpose."
