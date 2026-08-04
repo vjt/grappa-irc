@@ -33,7 +33,7 @@ import { getResumeCursor, recordSeen } from "./reconnectBackfill";
 // overlap in a small race window — the same row would otherwise
 // appear twice. `id` is monotonic per the schema's auto-increment column.
 //
-// Identity-scoped state via identityScopedStore (dup-A3 close): nine resets
+// Identity-scoped state via identityScopedStore (dup-A3 close): eleven resets
 // registered (see the registration block below). The factory preserves the A1
 // invariant — registration runs before any verb fires, so no rotation can be
 // missed for want of a registered reset.
@@ -182,6 +182,21 @@ const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): Scrollba
 // one survived: it was never a whole-module property, just an unwritten habit
 // that the three verbs with a single await happened to keep.
 //
+// An await has THREE exits and all three are the verb's own conduct, so the
+// check belongs at each one that touches state:
+//
+//   * resolve — the eleven above.
+//   * reject — `api.ts` throws on any non-ok response, so a bearer revoked
+//     WHILE the request was in flight comes back as a 401 throw, which is the
+//     likelier arrival than a clean resolve. Only one catch in this module
+//     writes state (`loadInitialScrollback` releasing its load-once gate); the
+//     rest log and return, so only that one carries the check.
+//   * finally — the per-key in-flight locks. Past a rotation the reset has
+//     already cleared the Set, so an entry under this key belongs to the
+//     identity that replaced us: deleting it unlocks a fetch that is still
+//     running. Same for the `refreshScrollback` completion stamp, which would
+//     tell a spec that ITS backfill had landed.
+//
 // Not hoisted into `identityScopedStore`: that factory owns the identity
 // TRANSITION (fire the resets), while this owns a verb's own captured
 // identity, which the factory never sees. Sibling modules inline the same
@@ -302,12 +317,13 @@ const exports = identityScopedStore((onIdentityChange) => {
   // reaches the `finally`, and B's `refreshScrollback` for the same key
   // short-circuits in the meantime, so B's window silently never backfills.
   //
-  // Clearing them mid-flight lets A's `finally` delete a key B has since
-  // re-added, which can let a third call for B fetch the same page twice.
-  // Benign and deliberate: `appendToScrollback` dedupes by id, so the cost is
-  // one redundant GET, against a window that otherwise stays empty. A
-  // conditional delete keyed on the captured identity would buy nothing the
-  // dedupe does not already cover.
+  // Clearing a Set mid-flight would otherwise let A's `finally` delete a key B
+  // has since re-added, unlocking a fetch that is still running. Every one of
+  // the four in-flight `finally` blocks therefore releases its key only while
+  // the identity still holds — past a rotation the reset owns the Set and the
+  // continuation owns nothing. (An id-dedupe argument covers only the two
+  // merge paths; `jumpToUnread` REPLACES the key's rows, so a second concurrent
+  // jump would discard whatever landed between the two writes.)
   onIdentityChange(() => loadedChannels.clear());
   onIdentityChange(() => loadMoreInFlight.clear());
   onIdentityChange(() => loadMoreExhausted.clear());
@@ -581,7 +597,7 @@ const exports = identityScopedStore((onIdentityChange) => {
       console.error("[scrollback] jumpToUnread failed", slug, name, err);
       return false;
     } finally {
-      jumpInFlight.delete(key);
+      if (!identityMoved(t)) jumpInFlight.delete(key);
     }
   };
 
@@ -735,6 +751,14 @@ const exports = identityScopedStore((onIdentityChange) => {
     } catch {
       // First-load failure leaves the empty seed in place; the pane
       // shows "no messages yet". A retry mechanism is Phase 5+.
+      //
+      // #788 — the reject path is the likelier arrival for a bearer revoked
+      // in flight (`api.ts` throws the 401), and this gate is identity-scoped
+      // state. Releasing it past a rotation releases the NEW identity's gate:
+      // its next re-select reads `wasLoaded` false, takes the fresh-open arm
+      // that deliberately does NOT fire `refreshScrollback` (#159), and so
+      // skips one live-delivery catch-up while re-paying for a cold load.
+      if (identityMoved(t)) return;
       loadedChannels.delete(key);
     }
   };
@@ -777,7 +801,7 @@ const exports = identityScopedStore((onIdentityChange) => {
       // retry by scrolling again; the in-flight guard releases via
       // the finally clause below.
     } finally {
-      loadMoreInFlight.delete(key);
+      if (!identityMoved(t)) loadMoreInFlight.delete(key);
     }
   };
 
@@ -832,7 +856,7 @@ const exports = identityScopedStore((onIdentityChange) => {
       // Transient error — do NOT latch. The user can retry by scrolling;
       // the in-flight guard releases via the `finally` below.
     } finally {
-      loadNewerInFlight.delete(key);
+      if (!identityMoved(t)) loadNewerInFlight.delete(key);
     }
   };
 
@@ -1048,10 +1072,12 @@ const exports = identityScopedStore((onIdentityChange) => {
       // telemetry hook will replace this.
       console.error("[scrollback] refreshScrollback failed", slug, name, err);
     } finally {
-      refreshInFlight.delete(key);
-      // #552 — mark this backfill DONE (success or error): no more in-flight
-      // DOM recreation for this key, so a spec awaiting it can safely proceed.
-      stampScrollbackRefreshed(key);
+      if (!identityMoved(t)) {
+        refreshInFlight.delete(key);
+        // #552 — mark this backfill DONE (success or error): no more in-flight
+        // DOM recreation for this key, so a spec awaiting it can safely proceed.
+        stampScrollbackRefreshed(key);
+      }
     }
   };
 
