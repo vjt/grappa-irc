@@ -17,13 +17,22 @@ import { whoisBundleHasFields } from "./whoisBundle";
 //     (opening two queries would stomp the card) nor forge a scrollback
 //     card the user never asked for.
 //
-// Fetch policy (issue #606 scope 2, revised):
-//   * ONE WHOIS per nick, on FIRST select (`requestRailWhois`). Once the nick
-//     is KNOWN it is never asked about again — there is NO staleness refetch;
-//   * an ask that produced nothing (reply in flight, or a reply carrying no
-//     fields because the peer is offline) stands for `RAIL_WHOIS_RETRY_MS`,
-//     which both de-dupes fast window switching and lets a peer who was
-//     offline at first select be resolved later in the session.
+// Fetch policy (#606 scope 2, then #800):
+//   * NOTHING in the rail asks on its own. #606 called `requestRailWhois` on
+//     first select of a query window; #800 removed that call, because a WHOIS
+//     costs upstream fake-lag budget cic cannot see and it was landing
+//     head-of-line in front of the operator's next PRIVMSG. The store now
+//     fills only from the user's OWN `/whois` (`userTopic.ts` routes a
+//     `source: "user"` bundle for the nick the rail is showing into here).
+//   * `requestRailWhois` therefore has NO production caller today. It is kept
+//     deliberately, not by oversight: it is the seam #782's explicit fetch
+//     control attaches to, and its de-dupe rules below are the ones that
+//     button will need. It is NOT to be wired to any automatic trigger.
+//   * When it IS called: ONE WHOIS per nick. Once the nick is KNOWN it is
+//     never asked about again — there is NO staleness refetch. An ask that
+//     produced nothing (reply in flight, or a reply carrying no fields
+//     because the peer is offline) stands for `RAIL_WHOIS_RETRY_MS`, which
+//     de-dupes rapid re-asks and lets an offline peer resolve later.
 //
 // The freshness TTL this store shipped with is deliberately GONE. It was not
 // a cost problem: on bahamut a WHOIS and a PRIVMSG carry the same fake-lag

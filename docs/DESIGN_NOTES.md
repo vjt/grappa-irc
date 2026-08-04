@@ -28429,3 +28429,47 @@ catch it, and would also reject `#facade`, `#decade`, `#cafe`, `#bad` and
 `#abc` — real channel shapes. The mis-tap still needs a confirmation dialog,
 whereas a channel that silently stops being clickable has no recourse but
 `/join`. Left alone pending a call.
+
+## 2026-08-04 — #800: a pane may not spend a budget it cannot see
+
+`#606`'s rail context fetched a WHOIS when a query window was selected. That
+call reddened `main` on `nick-follow-query` (#373): on bahamut every command
+costs `since += 2 + len/120` and the recvQ drain is gated on `since - now < 10`,
+so the rail's WHOIS landed head-of-line in front of the operator's next PRIVMSG
+and pushed it past the ircd's parse gate. Bisected by duration delta — the spec
+ran 2.7s on the pre-merge baseline, 5.7s with #613 alone, 6.7s (timeout) on the
+merged main — and confirmed by displacement: deleting the one call restored the
+baseline (2.0/5.5/4.5 vs 7.4/10.0/9.3 locally, `--repeat-each 3`). Full evidence
+in #800.
+
+**The general rule, which binds every future prefetch surface: cic does not
+decide to spend an upstream command.** It cannot see `since`, it cannot see what
+the session sent a moment ago, and it cannot see how close the connection is to
+the parse gate. Only the operator's own action spends that budget. This is not
+about tuning WHEN the rail fetches — every timing fix #606 tried (TTL, retry
+window, migrate-before-select ordering) was answering the wrong question.
+
+**What was removed, and what deliberately was not.** Only the `createEffect` in
+`RailContext.tsx` is gone. The card, the `renameRailWhois` #373 migration, the
+`whoisCard`/`railWhois` store split and the `source: "user" | "rail"` wire field
+all stay — the cache still fills from the user's own `/whois`, which #606's
+origin routing already delivers to the rail for the nick it is showing.
+`requestRailWhois` keeps its tests and its de-dupe rules with no production
+caller: it is the seam #782's explicit fetch control attaches to. Dead-but-kept
+is normally a smell, so it is stated in the module rather than left to be
+rediscovered.
+
+**What shipped was never what was asked for.** The request was to populate when
+the rail is OPENED on mobile / the window is VIEWED on desktop. Fetch-on-select
+is neither: on mobile the rail is off-screen, so #606 spent upstream budget
+filling a card the user could not see. Worth recording because the gap survived
+review, an e2e and a merge — the spec was read as "when the window becomes
+active" when it said "when the card becomes visible."
+
+**Where the answer should live (#802).** There is no server-side store for a
+WHOIS reply: `whois_pending` is an in-flight accumulator, drained by 318 into a
+broadcast and dropped. cic's `railWhois` cache is real but in-memory and
+per-page-load, so every reload re-pays upstream for an answer grappa already
+received. The precedent already exists — `userhost_cache` is nick-keyed, folded,
+fed passively from JOIN prefixes at zero upstream cost, and already migrated on
+NICK. Cache the answer, and the question of when to fetch mostly dissolves.

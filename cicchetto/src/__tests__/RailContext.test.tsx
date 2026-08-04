@@ -125,10 +125,18 @@ describe("RailContext query context (#606)", () => {
     expect(screen.queryByTestId("rail-server-info")).toBeNull();
   });
 
-  it("fires requestRailWhois(slug, nick) when a query is selected", async () => {
+  // #800 — THE RULE: the rail never spends an upstream command on its own.
+  // #606 shipped a fetch-on-select here; a WHOIS costs bahamut fake-lag
+  // (`since += 2 + len/120`, recvQ parse gated on `since - now < 10`), so it
+  // landed head-of-line in front of the operator's next PRIVMSG and pushed it
+  // past the ircd's parse gate — main went red on nick-follow-query. cic
+  // cannot see that budget, so it must not decide to spend it. These two pin
+  // the rule against the next prefetch surface; #782 adds a user-driven
+  // button, which is a different thing entirely.
+  it("issues NO WHOIS when a query window is selected", async () => {
     await setSelected(sel("query", "alice"));
     await renderContainer();
-    expect(requestRailWhoisMock).toHaveBeenCalledWith("libera", "alice");
+    expect(requestRailWhoisMock).not.toHaveBeenCalled();
   });
 
   it("updates the heading when the query's nick changes while open (followQueryNick)", async () => {
@@ -142,12 +150,11 @@ describe("RailContext query context (#606)", () => {
     expect(ctx.textContent).not.toContain("with alice "); // no stale nick
   });
 
-  it("re-fires requestRailWhois for the new nick after a rename", async () => {
+  it("issues NO WHOIS when a rename swaps the focused query's nick", async () => {
     await setSelected(sel("query", "alice"));
     await renderContainer();
     await setSelected(sel("query", "alice2"));
-    expect(requestRailWhoisMock).toHaveBeenCalledWith("libera", "alice");
-    expect(requestRailWhoisMock).toHaveBeenCalledWith("libera", "alice2");
+    expect(requestRailWhoisMock).not.toHaveBeenCalled();
   });
 
   it("renders the WhoisCard when a rail bundle exists for the selected nick", async () => {

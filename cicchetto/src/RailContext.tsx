@@ -1,15 +1,6 @@
-import {
-  type Component,
-  createEffect,
-  createSignal,
-  Match,
-  on,
-  onCleanup,
-  Show,
-  Switch,
-} from "solid-js";
+import { type Component, createSignal, Match, onCleanup, Show, Switch } from "solid-js";
 import { networkBySlug } from "./lib/networks";
-import { railWhoisFor, requestRailWhois } from "./lib/railWhois";
+import { railWhoisFor } from "./lib/railWhois";
 import { selectedChannel } from "./lib/selection";
 import ServerInfoCard from "./ServerInfoCard";
 import WhoisCard from "./WhoisCard";
@@ -20,12 +11,17 @@ import WhoisCard from "./WhoisCard";
 // grafts the matching context content:
 //   * server → ServerInfoCard (connection facts already in the store)
 //   * query  → the query context (#606, the deferred half of #474): a
-//              heading + a WHOIS card for the conversation partner,
-//              auto-fetched on select. The card REUSES the same `WhoisCard`
-//              presentation as the scrollback overlay but is fed by the
-//              per-nick `railWhois` cache (NOT the single-slot `whoisCard`
-//              store the user-issued /whois owns) and carries no × affordance
-//              (persistent, like the server card).
+//              heading + a WHOIS card for the conversation partner. The card
+//              REUSES the same `WhoisCard` presentation as the scrollback
+//              overlay but is fed by the per-nick `railWhois` cache (NOT the
+//              single-slot `whoisCard` store the user-issued /whois owns) and
+//              carries no × affordance (persistent, like the server card).
+//              It RENDERS what is known and asks for nothing — #800 removed
+//              the fetch-on-select, because cic cannot see the upstream
+//              fake-lag budget a WHOIS spends and was charging it to the
+//              operator's next PRIVMSG. The cache fills from the user's own
+//              /whois (#606 routes a `source: user` bundle for the shown nick
+//              here); #782 adds the explicit fetch control.
 // It renders NOTHING for kinds with no context content (channel already has
 // the MembersPane above; home/admin/list/mentions have none). Built as a
 // container, not a hardcoded server card, so the rail is the per-kind
@@ -46,32 +42,6 @@ const RailContext: Component = () => {
   onCleanup(() => clearInterval(timer));
 
   const sel = () => selectedChannel();
-
-  // #606 — fetch-on-select. When a query window is (re)focused, ask the rail
-  // WHOIS cache for its partner; the store decides whether that costs an
-  // upstream command (it does not, for a nick already known). Keyed on the
-  // composed (slug, nick) string so the effect fires ONLY when the focused
-  // query's identity actually changes, not on every unrelated selection
-  // churn. A nick cannot contain a space, so the separator is unambiguous.
-  //
-  // A #373 rename DOES fire this effect — `followQueryNick` swaps the
-  // selection — but it must NOT cost a WHOIS: `subscribe.ts` migrates the
-  // rail cache old→new BEFORE that swap, so this lands on a hit. Solid
-  // flushes effects at the end of the write, so the ordering there is what
-  // holds this true; reverse it and every rename asks the ircd again.
-  createEffect(
-    on(
-      () => {
-        const s = sel();
-        return s?.kind === "query" ? `${s.networkSlug} ${s.channelName}` : null;
-      },
-      (key) => {
-        if (key === null) return;
-        const sep = key.indexOf(" ");
-        requestRailWhois(key.slice(0, sep), key.slice(sep + 1));
-      },
-    ),
-  );
 
   return (
     <Switch>
