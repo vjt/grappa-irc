@@ -51,6 +51,11 @@ const windowStateByChannelMock = vi.fn<() => Record<string, string>>(() => ({}))
 // is the append verb the IntersectionObserver calls (observer is inert in
 // jsdom — see setupTests); resetDirectory is the on-close filter clear.
 const directorySortMock = vi.fn<(slug: string) => "users" | "name">(() => "users");
+// #738 — the store's active filter, SIGNAL-backed so a test can set it from
+// outside the pane (what compose.ts's `/list <pattern>` does) both before and
+// after mount, and the pane's rehydration has something reactive to follow.
+const [directoryQuerySignal, setDirectoryQuerySignal] = createSignal("");
+const directoryQueryMock = vi.fn<(slug: string) => string>(() => directoryQuerySignal());
 const isLoadingMoreMock = vi.fn<(slug: string) => boolean>(() => false);
 const loadMoreMock = vi.fn<(slug: string) => Promise<void>>(() => Promise.resolve());
 const resetDirectoryMock = vi.fn<(slug: string) => void>(() => {});
@@ -60,6 +65,7 @@ const directoryErrorMock = vi.fn<(slug: string) => string | null>(() => null);
 vi.mock("../lib/channelDirectory", () => ({
   directoryError: (slug: string) => directoryErrorMock(slug),
   directoryPage: (slug: string) => directoryPageMock(slug),
+  directoryQuery: (slug: string) => directoryQueryMock(slug),
   directorySort: (slug: string) => directorySortMock(slug),
   isLoadingMore: (slug: string) => isLoadingMoreMock(slug),
   loadDirectory: (slug: string) => loadDirectoryMock(slug),
@@ -157,6 +163,7 @@ describe("DirectoryPane", () => {
     setSelectedChannelMock.mockClear();
     closeToPreviousWindowMock.mockClear();
     directorySortMock.mockReturnValue("users");
+    setDirectoryQuerySignal("");
     directoryErrorMock.mockReturnValue(null);
     isLoadingMoreMock.mockReturnValue(false);
     loadMoreMock.mockClear();
@@ -480,6 +487,56 @@ describe("DirectoryPane", () => {
 
       await waitFor(() => {
         expect(setQueryMock).toHaveBeenCalledWith(SLUG, "grappa");
+      });
+    });
+
+    // #738 — `/list <pattern>` calls setQuery from compose.ts, so the store's
+    // filter is settable from OUTSIDE the pane with no window close in
+    // between. A box hard-initialised to "" then shows a short filtered list
+    // with no visible reason for it, and no way to clear it but typing a
+    // character and deleting it again.
+    describe("filter set from outside the pane (#738)", () => {
+      it("mounts showing the store's active filter", () => {
+        setDirectoryQuerySignal("rust");
+        directoryPageMock.mockReturnValue(FRESH_PAGE);
+        render(() => <DirectoryPane networkSlug={SLUG} />);
+
+        expect(screen.getByPlaceholderText(/search channels/i)).toHaveValue("rust");
+      });
+
+      // compose.ts selects the $list window FIRST and calls setQuery after,
+      // and a second `/list <pattern>` reaches an already-mounted pane — so a
+      // one-shot seed at mount is not enough. The box must FOLLOW the store.
+      it("follows a filter set after mount", async () => {
+        directoryPageMock.mockReturnValue(FRESH_PAGE);
+        render(() => <DirectoryPane networkSlug={SLUG} />);
+        const input = screen.getByPlaceholderText(/search channels/i);
+        expect(input).toHaveValue("");
+
+        setDirectoryQuerySignal("rust");
+
+        await waitFor(() => {
+          expect(input).toHaveValue("rust");
+        });
+      });
+
+      // The box LEADS the store by SEARCH_DEBOUNCE_MS (#732): binding the
+      // input straight to the store would undo that and make typing lag a
+      // quarter second behind the keyboard.
+      it("keeps the typed text while the debounced store filter still lags", () => {
+        vi.useFakeTimers();
+        try {
+          directoryPageMock.mockReturnValue(FRESH_PAGE);
+          render(() => <DirectoryPane networkSlug={SLUG} />);
+          const input = screen.getByPlaceholderText(/search channels/i);
+
+          fireEvent.input(input, { target: { value: "ru" } });
+
+          expect(setQueryMock).not.toHaveBeenCalled();
+          expect(input).toHaveValue("ru");
+        } finally {
+          vi.useRealTimers();
+        }
       });
     });
   });

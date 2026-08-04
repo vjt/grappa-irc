@@ -4,6 +4,7 @@ import { token } from "./lib/auth";
 import {
   directoryError,
   directoryPage,
+  directoryQuery,
   directorySort,
   isLoadingMore,
   loadDirectory,
@@ -35,17 +36,20 @@ import { MircBody } from "./MircText";
 // close button returns to the previously active window.
 //
 // Data layer: channelDirectory.ts (directoryPage / loadDirectory / loadMore /
-// resetDirectory / directorySort / isLoadingMore / setSort / setQuery /
-// triggerRefresh). DirectoryPane owns LOCAL signals for the search text and
-// active sort (to render the controls) but every control change routes
-// through the store verbs so subsequent ping-driven re-GETs use the correct
-// view.
+// resetDirectory / directoryQuery / directorySort / isLoadingMore / setSort /
+// setQuery / triggerRefresh). DirectoryPane owns LOCAL signals for the search
+// text and active sort (to render the controls) but every control change
+// routes through the store verbs so subsequent ping-driven re-GETs use the
+// correct view.
 //
 // Pagination (#677): the server keyset-paginates (100/page); the pane drives
 // load-more via a bottom sentinel + IntersectionObserver → loadMore, which
 // APPENDS the next page. Search text is cleared on window close
-// (resetDirectory in onCleanup) so a reopened directory is unfiltered with an
-// empty box; sort is a sticky preference and rehydrates from directorySort.
+// (resetDirectory in onCleanup) so a reopened directory is unfiltered; sort is
+// a sticky preference. Neither control holds an opinion of its own: the sort
+// toggle rehydrates from directorySort, and the box mirrors directoryQuery
+// (#738) so a filter set from outside the pane — `/list <pattern>` — is
+// visible and clearable.
 //
 // Failure + ordering (#732): the store never rejects — it parks per-slug
 // failure copy the pane renders as an alert with a Retry. The search box
@@ -180,14 +184,17 @@ const DirectoryRow: Component<DirectoryRowProps> = (props) => {
 };
 
 const DirectoryPane: Component<{ networkSlug: string }> = (props) => {
-  const [searchText, setSearchText] = createSignal("");
-  // #677 — the search key is cleared on window close (see the onCleanup /
-  // slug-switch resets below), so searchText always mounts "" and the store
-  // agrees. Sort, by contrast, is a sticky PREFERENCE: rehydrate the toggle
-  // from the store so a reopened pane's label matches the sorted list the
-  // store re-fetches (the drop-page reset would otherwise re-fetch the
-  // stored sort while the toggle showed the local default — a sibling of the
-  // very desync #677 fixes for the filter).
+  // #738 — seed the box from the store, like the sort toggle below: a control
+  // must not lie about the view the store is applying. The filter is cleared
+  // on window close, but `/list <pattern>` (compose.ts) calls setQuery from
+  // OUTSIDE the pane with no close in between — so mounting hard-coded "" put
+  // a filtered list under an empty box.
+  const [searchText, setSearchText] = createSignal(directoryQuery(props.networkSlug));
+  // #677 — sort is a sticky PREFERENCE: rehydrate the toggle from the store so
+  // a reopened pane's label matches the sorted list the store re-fetches (the
+  // drop-page reset would otherwise re-fetch the stored sort while the toggle
+  // showed the local default — a sibling of the very desync #677 fixes for
+  // the filter).
   const [activeSort, setActiveSort] = createSignal<"users" | "name">(
     directorySort(props.networkSlug),
   );
@@ -238,6 +245,19 @@ const DirectoryPane: Component<{ networkSlug: string }> = (props) => {
         prevEntryCount = directoryPage(s)?.entries.length ?? 0;
         if (directoryPage(s) === undefined) void loadDirectory(s);
       },
+    ),
+  );
+
+  // #738 — the box FOLLOWS the store's filter, it does not just sample it at
+  // mount: compose.ts's `/list <pattern>` selects the $list window FIRST and
+  // calls setQuery after, and a second `/list <pattern>` reaches a pane that
+  // is already mounted. Typing still LEADS — the debounced setQuery echoes
+  // the same text back ~250ms later, so the mirror write is a no-op — which
+  // is why the box keeps a local signal instead of binding to the store.
+  createEffect(
+    on(
+      () => directoryQuery(props.networkSlug),
+      (q) => setSearchText(q),
     ),
   );
 

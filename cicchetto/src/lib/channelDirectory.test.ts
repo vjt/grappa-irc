@@ -4,6 +4,7 @@ import { setToken } from "./auth";
 import {
   directoryError,
   directoryPage,
+  directoryQuery,
   directorySort,
   isLoadingMore,
   loadDirectory,
@@ -127,6 +128,18 @@ describe("channelDirectory store", () => {
     await setSort("freenode", "name");
     expect(spy).toHaveBeenCalledWith(TOKEN, "freenode", expect.objectContaining({ sort: "name" }));
     expect(directoryPage("freenode")?.total).toBe(12);
+  });
+
+  // #738 — the pane's search box renders this, so it must report the filter
+  // the store is actually applying, whoever set it (the box, or compose.ts's
+  // `/list <pattern>`).
+  test("directoryQuery reports the applied filter and defaults to empty", async () => {
+    expect(directoryQuery("dq1")).toBe("");
+    vi.spyOn(api, "listDirectory").mockResolvedValue(makePage({ total: 1 }));
+    await setQuery("dq1", "rust");
+    expect(directoryQuery("dq1")).toBe("rust");
+    resetDirectory("dq1");
+    expect(directoryQuery("dq1")).toBe("");
   });
 
   test("setQuery + subsequent loadDirectory uses the stored q", async () => {
