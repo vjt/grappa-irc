@@ -174,9 +174,44 @@ TEST(a_response_is_parsed_or_refused) {
     whip_response_free(&r);
 }
 
+/* Both spellings of a response carrying ZERO header lines. The blank-line
+ * terminator IS the status line's own newline, so the two pointers that
+ * bound the header block have CROSSED: subtracting them into a size_t
+ * wraps to about SIZE_MAX and the header scan then walks off the end of
+ * the response buffer, reading — and, on a "Location:" hit, COPYING into
+ * the session resource — whatever heap follows it.
+ *
+ * The bytes are handed over in a TIGHT heap allocation, so the over-read
+ * is a sanitizer abort here rather than the quiet stroll through the rest
+ * of a 256 KB buffer that it is in production. */
+static void a_response_with_no_headers(const char *bytes) {
+    size_t len = strlen(bytes);
+    char *tight = malloc(len);
+    CHECK(tight != NULL);
+    if (!tight) return;
+    memcpy(tight, bytes, len);
+
+    /* Well-formed, just useless: the status is reported and the caller
+     * decides what to do about the missing Location, exactly as it does
+     * for a 404. */
+    struct whip_response r;
+    CHECK(whip_response_parse(tight, len, &r));
+    CHECK_LONG(r.status, 200);
+    CHECK_STR(r.location, "");
+    CHECK_LONG((long)r.body_len, 0);
+    whip_response_free(&r);
+    free(tight);
+}
+
+TEST(a_header_block_can_be_empty_but_never_endless) {
+    a_response_with_no_headers("HTTP/1.1 200 OK\r\n\r\n");
+    a_response_with_no_headers("HTTP/1.1 200 OK\n\n");
+}
+
 int main(void) {
     RUN(a_url_is_split_or_refused);
     RUN(a_location_resolves_against_the_request);
     RUN(a_response_is_parsed_or_refused);
+    RUN(a_header_block_can_be_empty_but_never_endless);
     return test_report();
 }

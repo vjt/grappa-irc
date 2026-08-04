@@ -221,7 +221,15 @@ bool whip_response_parse(const char *raw, size_t len, struct whip_response *out)
     const char *first_eol = memchr(raw, '\n', len);
     if (!first_eol) return false;
     const char *hblock = first_eol + 1;
-    size_t hlen = (size_t)(hdr_end - hblock);
+    /* With ZERO header lines the blank-line terminator IS the status
+     * line's own newline, so hblock lands PAST hdr_end and the two
+     * pointers have crossed: subtracting them into a size_t wraps to
+     * about SIZE_MAX and the header scan below walks off the end of the
+     * buffer. Such a response has an EMPTY header block, which is what
+     * the clamp says. It is not refused: a response nobody can use is
+     * still a response, and the caller reports its status — same
+     * reasoning as the 404 that parses fine and has no Location. */
+    size_t hlen = hblock < hdr_end ? (size_t)(hdr_end - hblock) : 0;
 
     header_value(hblock, hlen, "Location", out->location, sizeof(out->location));
 

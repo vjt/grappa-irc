@@ -28866,3 +28866,43 @@ reported symptom (a refusal for a free nick) is gone either way. Closing the
 remaining half means deciding whether a live rename may RELEASE a dead ANON
 row's claim, which is the reaper-retention question #828 already defers as a
 follow-up, and it is a design call rather than a bug fix.
+## 2026-08-05 — #756: an empty header block is empty, not endless
+
+`whip_response_parse` bounds the header scan by subtracting two pointers it
+derives INDEPENDENTLY: `hdr_end`, the start of the blank-line terminator found
+by scanning for `\n\n` / `\r\n\r\n`, and `hblock`, one past the status line's
+first `\n`. With at least one header line those two agree. With ZERO header
+lines they CROSS, because the terminator's first newline IS the status line's
+own: `"HTTP/1.1 200 OK\r\n\r\n"` puts `hdr_end` at index 15 and `hblock` at 17,
+and `(size_t)(15 - 17)` is `SIZE_MAX - 1`. The LF-only spelling gives `SIZE_MAX`
+the same way. `header_value` is bounded by nothing else, so it walked off the
+end of the 256 KB response buffer hunting for `\n` and `Location:` — and on a
+hit, `memcpy`'d up to 2047 bytes of adjacent heap into `out->location`, which
+becomes the session resource and is later sent to the server in the `DELETE`.
+The responding host is attacker-choosable: a WHIP endpoint is named in a call
+invite, and an invite is an `http(s)://` URL arriving in an IRC message.
+
+**Clamped to 0, not refused.** Both are memory-safe; the choice is about who
+owns the policy. A header-less `200` is well-formed HTTP that happens to be
+useless, and this parser already says elsewhere that an unusable response is a
+SUCCESSFUL parse reporting its status — the 404 case, where the caller decides
+what 4xx means. Refusing would move that judgement into the parser AND destroy
+the status on the way out: `call/main.c` reports "the endpoint answered %d",
+which would degrade to the generic "malformed HTTP response from %s". The
+caller already handles an absent Location (`resp.location[0]` gates
+`have_resource`), so the clamp costs nothing and keeps the diagnosis honest.
+
+**The class was swept, not just the example.** Every other unsigned subtraction
+in `whip.c` has its operands ordered by a preceding guard — `sp - raw` and
+`slash - base->path` come from a forward scan of the same buffer; `len -
+body_at` is covered by the `i + 1 < len` / `i + 3 < len` loop conditions that
+set `body_at`; `line_end - v` is covered by the `line_end - pos > name_len`
+test that admitted the line. `http.c` has no header parser at all — only the
+chunked decoder, which already carries its own `SIZE_MAX` overflow guard. This
+crossing was the one place two pointers were derived by separate scans.
+
+**Both spellings are load-bearing in the test.** The bytes are handed to the
+parser in a TIGHT heap allocation rather than the 256 KB buffer production
+uses, so the over-read is an ASan abort instead of a quiet stroll; with the
+clamp reverted, the CRLF case trips at 0 bytes past a 19-byte region and the
+LF-only case, run alone, trips at 0 bytes past a 17-byte one.
