@@ -7,6 +7,7 @@ defmodule GrappaWeb.PasskeyControllerTest do
   alias Grappa.Accounts.{Passkey, Session, TOTP, TOTPRecoveryCode, User, WebAuthn}
   alias Grappa.RateLimit.FailureWindow
   alias Grappa.{Repo, WebAuthnCeremony}
+  alias Grappa.Repo.BusyRetry
   alias GrappaWeb.PasskeyOrigin
 
   defp passwordless_user do
@@ -185,9 +186,9 @@ defmodule GrappaWeb.PasskeyControllerTest do
 
       params = registration_params(ctx, options, @ceremony_origin)
 
-      Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+      BusyRetry.inject_transient_faults(10_000)
       conn = post(authed(ctx.session), "/me/passkeys/registration", params)
-      Grappa.Repo.BusyRetry.inject_transient_faults(0)
+      BusyRetry.inject_transient_faults(0)
 
       assert json_response(conn, 503) == %{"error" => "db_unavailable"}
       assert Repo.aggregate(Passkey, :count, :id) == 0
@@ -207,9 +208,9 @@ defmodule GrappaWeb.PasskeyControllerTest do
 
       params = assertion_params(ctx, options, 1)
 
-      Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+      BusyRetry.inject_transient_faults(10_000)
       conn = post(authed(ctx.session), "/me/passkeys/mode", params)
-      Grappa.Repo.BusyRetry.inject_transient_faults(0)
+      BusyRetry.inject_transient_faults(0)
 
       assert json_response(conn, 503) == %{"error" => "db_unavailable"}
       assert Repo.get!(User, ctx.user.id).passkey_mode == :disabled
@@ -498,7 +499,7 @@ defmodule GrappaWeb.PasskeyControllerTest do
         })
       )
 
-    Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+    BusyRetry.inject_transient_faults(10_000)
 
     conn =
       conn
@@ -507,7 +508,7 @@ defmodule GrappaWeb.PasskeyControllerTest do
 
     assert json_response(conn, 503) == %{"error" => "db_unavailable"}
 
-    Grappa.Repo.BusyRetry.inject_transient_faults(0)
+    BusyRetry.inject_transient_faults(0)
     assert Repo.aggregate(Passkey, :count, :id) == 1
   end
 
