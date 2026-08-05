@@ -29545,3 +29545,63 @@ than a parameter worth adding. And the guard remains a per-verb habit, not a
 whole-module property: a new `await` that captures the token and skips the
 check reopens the defect for its own call path — one owner makes the rule
 greppable, it does not make it automatic.
+
+## 2026-08-05 — #96: naming what the sidebar draws, and NOT declaring a tree
+
+Issue #96 asks for tree semantics on the channel sidebar, tap targets, and
+focus contrast. The tap targets landed earlier of their own accord (#204/#306/
+#459 put `--chrome-tap-min: 48px` / `--tap-min: 44px` on the sidebar rows).
+This entry is the other two thirds, and the one thing deliberately NOT done.
+
+**`role="tree"` is not shipped, on purpose, pending vjt.** A tree is the most
+keyboard-dependent role in ARIA: the APG pattern is a composite widget with a
+single tab stop, roving `tabindex`, and Up/Down/Home/End arrow navigation.
+Declaring the role without that contract tells an assistive tech "arrows work
+here" when they do not — the first rule of ARIA, no ARIA beats bad ARIA. And
+implementing the contract is not free here: roving tabindex takes every
+sidebar row's `×` OUT of the Tab sequence, which REMOVES a keyboard affordance
+operators have today. Every window row carries a `<CloseButton>` sibling
+inside its `<li>`; a tree makes those unreachable without inventing a second
+key binding for them.
+
+There is a second, smaller obstacle: the sidebar renders three or more
+sibling `<ul>`s (home, admin, one per network) inside an `<aside>` that also
+holds `NextActiveButton` and `ResizeHandle`, so a single `role="tree"` needs a
+new wrapper element — and `display: contents` on a role-bearing element has a
+history of dropping it out of the accessibility tree. A per-network tree with
+`aria-level` avoids that, but not the keyboard problem.
+
+**What shipped instead** carries the hierarchy that #96 actually complains
+about, with no DOM restructuring, no layout change, and no new affordance:
+each per-network `<ul>` is NAMED (`aria-label="<slug> windows"`), so it
+announces as "freenode windows, list, 6 items" instead of a bare list, and the
+network → window grouping stops being pure indentation. Home and admin stay
+unnamed: single identity-scoped rows, not groups.
+
+**Two more states were pixels-only and are now spoken.** `aria-current="true"`
+marks the open window (previously the `.selected` class alone), and the
+not-live state rides in the accessible name via an `sr-only` span. That second
+one is not just an AT gap: `.parted` and `.sidebar-window-greyed` are BOTH
+muted + italic, so "you left this channel" and "the network is parked" render
+identically for everyone. `isGreyed/2` became `greyedState/2` returning the
+word, with the boolean derived from it — one derivation behind both the class
+and the announcement, network-parked cascade keeping its precedence.
+
+**Focus.** The stylesheet had exactly two `:focus-visible` rules and both read
+`{ color: var(--fg); outline: none }` — suppressing the UA ring for keyboard
+users in favour of a colour shift with no area. The sidebar, the app's primary
+keyboard surface, had no authored focus style at all. Rings are
+`:focus-visible` (a ring on a mouse click is noise, presumably why the
+suppressions existed), inset on the edge-to-edge rows so the scrolling aside
+cannot clip them. The durable part is `focusRules()` +
+`focusVisible.test.ts`: no focus-state rule may drop the outline without
+supplying its own indicator — the text inputs legitimately swap it for an
+accent border and pass, and both original suppressions would have failed it.
+
+**Limits, stated rather than implied.** None of this proves a ring is painted,
+that it has contrast (`--accent` is per-theme and operators author themes), or
+that VoiceOver reads any of it. jsdom has no layout and nwsapi does not match
+`:focus-visible`; there is no browser on the authoring host. The ring geometry
+is argued, not measured, and everything here is a source-level invariant plus
+role/accessible-name queries — which is the layer an AT consumes, but not the
+layer a human with a screen reader experiences.
