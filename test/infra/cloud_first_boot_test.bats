@@ -139,10 +139,6 @@ EOF
     export PATH="$FAKE_DIR:$PATH"
 }
 
-mode_of() {  # GNU-first, BSD fallback (macOS runner) — matches the packaging probe.
-    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
-}
-
 # ───────────────────────────── required knobs ────────────────────────────────
 
 @test "hard-fails when GRAPPA_DOMAIN is unset" {
@@ -274,7 +270,7 @@ mode_of() {  # GNU-first, BSD fallback (macOS runner) — matches the packaging 
 @test "relocks the env file to 0640 after rewriting it" {
     run "$FBSH"
     [ "$status" -eq 0 ]
-    [ "$(mode_of "$GRAPPA_ENV_FILE")" = "640" ]
+    [ "$(file_mode "$GRAPPA_ENV_FILE")" = "640" ]
 }
 
 # ───────────────────────────── nginx site ────────────────────────────────────
