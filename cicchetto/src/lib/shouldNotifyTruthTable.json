@@ -290,5 +290,151 @@
     },
     "patterns": [],
     "expected": true
+  },
+  {
+    "name": "own row (#532 C): own channel message mentioning own nick never notifies",
+    "message": {
+      "kind": "privmsg",
+      "channel": "#sniffo",
+      "sender": "vjt",
+      "body": "vjt: note to self"
+    },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": true,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
+    "name": "own row (#532 C): beats channel_messages_all — the identity gate runs FIRST",
+    "message": { "kind": "privmsg", "channel": "#sniffo", "sender": "vjt", "body": "hello all" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": true,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
+    "name": "own row (#532 C): OUTBOUND DM is channel=peer, so only sender-identity catches it",
+    "message": {
+      "kind": "privmsg",
+      "channel": "alice",
+      "sender": "vjt",
+      "body": "vjt will be late"
+    },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": true,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
+    "name": "own row (#532 C): self-msg (channel=own_nick, sender=own_nick) beats private_messages_all",
+    "message": { "kind": "privmsg", "channel": "vjt", "sender": "vjt", "body": "reminder" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": true,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
+    "name": "own row (#532 C): the sender-identity compare FOLDS case (VJT is still me)",
+    "message": {
+      "kind": "privmsg",
+      "channel": "#sniffo",
+      "sender": "VJT",
+      "body": "vjt: note to self"
+    },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": true,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
+    "name": "own row (#532 C): a DIFFERENT sender is not me — the gate must not swallow real traffic",
+    "message": {
+      "kind": "privmsg",
+      "channel": "#sniffo",
+      "sender": "vjtx",
+      "body": "vjt: ping"
+    },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": true,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": true
+  },
+  {
+    "name": "DM shape (#537): channel is stored FOLDED, so a mixed-case own_nick still routes to the DM branch",
+    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "hello" },
+    "own_nick": "VJT",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": true,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": true
+  },
+  {
+    "name": "DM shape (#537): a mis-routed DM would notify via channel_mentions the user never asked for",
+    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "VJT: yo" },
+    "own_nick": "VJT",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": true,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
+    "name": "DM shape (#537): a real channel is NOT a DM even when own_nick folds into its name",
+    "message": { "kind": "privmsg", "channel": "#vjt", "sender": "alice", "body": "hello" },
+    "own_nick": "VJT",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": true,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": false
   }
 ]
