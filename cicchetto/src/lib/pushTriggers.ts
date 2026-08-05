@@ -25,7 +25,7 @@
 import { type MessageKind, NOTIFY_KINDS } from "./api";
 import { canonicalChannel } from "./channelKey";
 import { matchesWatchlist } from "./mentionMatch";
-import { asciiFold } from "./nickEquals";
+import { asciiFold, nickEquals } from "./nickEquals";
 import type { NotificationPrefs } from "./userSettings";
 
 // Minimal structural shape the predicate needs — a subset of the wire
@@ -46,10 +46,11 @@ export type ShouldNotifyMessage = {
  *   1. kind gate — only the shared `NOTIFY_KINDS` SSOT (privmsg|action,
  *      the "notify" subset of api's CONTENT_KINDS, #395) → everything else
  *      false. NOTICE (services chatter) counts as unread but never notifies.
- *   2. DM (channel === ownNick): private_messages_all OR
+ *   2. own row (#532 C) — a row this operator authored never notifies.
+ *   3. DM (channel folds to ownNick): private_messages_all OR
  *      asciiFold(sender) in private_messages_only (mirrors the
- *      server's `canonical_nick(sender) in ...`).
- *   3. channel: channel_messages_all OR canonicalChannel(channel) in
+ *      server's `canonical_target(sender) in ...`).
+ *   4. channel: channel_messages_all OR canonicalChannel(channel) in
  *      channel_messages_only OR (channel_mentions AND mention).
  */
 export function shouldNotify(
@@ -64,7 +65,25 @@ export function shouldNotify(
   // convention as `wireNarrow.ts`.
   if (!NOTIFY_KINDS.has(message.kind as MessageKind)) return false;
 
-  if (message.channel === ownNick) {
+  // #532 C, #868 — "is this row mine?" decided by sender IDENTITY, and asked
+  // BEFORE the window-shape test below. An OUTBOUND DM is persisted with
+  // `channel = peer` (only an INBOUND one carries `channel = own_nick`), so
+  // the shape test misroutes it to the channel branch, where the operator's
+  // own highlight patterns run over the operator's own body — self-notifying
+  // on every outgoing message that happens to contain their nick. The server
+  // has had this step since #532 C (`triggers.ex` `own_row?/2`); this port
+  // did not, and the shared fixture had no row that could see the gap.
+  if (nickEquals(message.sender, ownNick)) return false;
+
+  // Fold BOTH sides, mirroring the server's `dm?/2`. The `channel` KEY is
+  // folded at the persist boundary (`Message.canonicalize_channel/1`, #537)
+  // while `ownNick` is the RAW live nick off `net.nick` — so a raw `===`
+  // silently fails for any operator whose nick carries an uppercase letter,
+  // routing their inbound DMs into the channel branch. `canonicalChannel` is
+  // the client mirror of `Identifier.canonical_target/1` and folds a
+  // nick-shaped identifier exactly as it folds a channel (a sigil sits
+  // outside `A-Z`), which is why the same function serves both sides here.
+  if (canonicalChannel(message.channel) === canonicalChannel(ownNick)) {
     return dmMatch(message, prefs);
   }
   return channelMatch(message, prefs, ownNick, patterns);
@@ -89,8 +108,9 @@ function channelMatch(
   patterns: string[],
 ): boolean {
   return (
-    // canonicalChannel (sigil-gated ASCII fold), NOT a bare toLowerCase,
-    // mirroring the server's `Identifier.canonical_channel(channel) in
+    // canonicalChannel (the plain ASCII fold — #537 retired the sigil gate
+    // on both ports), NOT a bare toLowerCase, mirroring the server's
+    // `Identifier.canonical_target(channel) in
     // channel_messages_only` — the whitelist is stored channel-folded
     // (CASEMAPPING=ascii, A-Z only; #525). bahamut folds `A-Z` ONLY, so
     // `#Chan`/`#chan` are ONE channel but `#chan[1]` and `#chan{1}` are
