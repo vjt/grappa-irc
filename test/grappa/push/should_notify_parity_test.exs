@@ -42,8 +42,13 @@ defmodule Grappa.Push.ShouldNotifyParityTest do
     "channel_messages_only" => :channel_messages_only,
     "channel_mentions" => :channel_mentions,
     "private_messages_all" => :private_messages_all,
-    "private_messages_only" => :private_messages_only
+    "private_messages_only" => :private_messages_only,
+    "muted_targets" => :muted_targets
   }
+
+  # Only the TOP level is atomized. `muted_targets`' own keys + its `until`
+  # stay strings on purpose: that IS the post-JSON-roundtrip shape the
+  # predicate reads out of `user_settings.data` in production (#866).
 
   test "the shared fixture is non-empty (guards an accidental empty array)" do
     assert length(@truth_table) >= 10

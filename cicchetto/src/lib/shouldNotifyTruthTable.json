@@ -464,5 +464,170 @@
     },
     "patterns": [],
     "expected": false
+  },
+  {
+    "name": "mute (#866): a muted channel beats channel_messages_all",
+    "message": { "kind": "privmsg", "channel": "#noisy", "sender": "alice", "body": "chatter" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": true,
+      "channel_messages_only": [],
+      "channel_mentions": true,
+      "private_messages_all": true,
+      "private_messages_only": [],
+      "muted_targets": { "#noisy": { "until": null } }
+    },
+    "patterns": ["vjt"],
+    "expected": false
+  },
+  {
+    "name": "mute (#866 Q2): a muted channel beats a direct mention — the mute always wins",
+    "message": { "kind": "privmsg", "channel": "#noisy", "sender": "alice", "body": "vjt: ping" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": true,
+      "private_messages_all": true,
+      "private_messages_only": [],
+      "muted_targets": { "#noisy": { "until": null } }
+    },
+    "patterns": ["vjt"],
+    "expected": false
+  },
+  {
+    "name": "mute (#866): a muted channel beats its own channel_messages_only entry",
+    "message": { "kind": "privmsg", "channel": "#noisy", "sender": "alice", "body": "chatter" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": ["#noisy"],
+      "channel_mentions": false,
+      "private_messages_all": true,
+      "private_messages_only": [],
+      "muted_targets": { "#noisy": { "until": null } }
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
+    "name": "mute (#866): muting one channel leaves its unmuted sibling notifying",
+    "message": { "kind": "privmsg", "channel": "#quiet", "sender": "alice", "body": "vjt: ping" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": true,
+      "private_messages_all": true,
+      "private_messages_only": [],
+      "muted_targets": { "#noisy": { "until": null } }
+    },
+    "patterns": ["vjt"],
+    "expected": true
+  },
+  {
+    "name": "mute (#866): a muted DM peer beats private_messages_all",
+    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "ping" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": true,
+      "private_messages_only": [],
+      "muted_targets": { "alice": { "until": null } }
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
+    "name": "mute (#866): the DM mute keys on the PEER, so muting own_nick silences nothing",
+    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "ping" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": true,
+      "private_messages_only": [],
+      "muted_targets": { "vjt": { "until": null } }
+    },
+    "patterns": [],
+    "expected": true
+  },
+  {
+    "name": "mute (#866): muting one DM peer leaves another peer's DM notifying",
+    "message": { "kind": "privmsg", "channel": "vjt", "sender": "bob", "body": "ping" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": true,
+      "private_messages_only": [],
+      "muted_targets": { "alice": { "until": null } }
+    },
+    "patterns": [],
+    "expected": true
+  },
+  {
+    "name": "mute (#866): the incoming side folds A-Z, so a muted #noisy silences #NoIsY",
+    "message": { "kind": "privmsg", "channel": "#NoIsY", "sender": "alice", "body": "chatter" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": true,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": true,
+      "private_messages_only": [],
+      "muted_targets": { "#noisy": { "until": null } }
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
+    "name": "mute (#866): the DM peer folds A-Z too, so a muted alice silences ALICE",
+    "message": { "kind": "privmsg", "channel": "vjt", "sender": "ALICE", "body": "ping" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": true,
+      "private_messages_only": [],
+      "muted_targets": { "alice": { "until": null } }
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
+    "name": "mute (#866 #525): the fold is ASCII, so a muted #café does not silence #CAFÉ",
+    "message": { "kind": "privmsg", "channel": "#CAFÉ", "sender": "alice", "body": "chatter" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": true,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": true,
+      "private_messages_only": [],
+      "muted_targets": { "#café": { "until": null } }
+    },
+    "patterns": [],
+    "expected": true
+  },
+  {
+    "name": "mute (#866 Q3): until is opaque to the predicate — an elapsed one still silences, because expiry belongs to the reader",
+    "message": { "kind": "privmsg", "channel": "#noisy", "sender": "alice", "body": "chatter" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": true,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": true,
+      "private_messages_only": [],
+      "muted_targets": { "#noisy": { "until": 1000000000 } }
+    },
+    "patterns": [],
+    "expected": false
   }
 ]
