@@ -47,7 +47,7 @@ OBJS := shottino.o json.o wire.o alias.o mirc.o termcolor.o http.o media.o ircd.
 # reaches, which is the drawing primitives and nothing else. Do not trust
 # this net for changes elsewhere in that file; add a test or reason about
 # the path by hand.
-TESTS := tests/test_llm tests/test_ws tests/test_json tests/test_wire tests/test_alias tests/test_mirc tests/test_termcolor tests/test_http tests/test_media tests/test_whip tests/test_callmedia tests/test_layout tests/test_keys tests/test_ircd tests/test_commands tests/test_windows
+TESTS := tests/test_llm tests/test_ws tests/test_json tests/test_wire tests/test_alias tests/test_mirc tests/test_termcolor tests/test_http tests/test_media tests/test_whip tests/test_callmedia tests/test_callnote tests/test_layout tests/test_keys tests/test_ircd tests/test_commands tests/test_windows
 SANITIZE ?= -fsanitize=address,undefined -fno-omit-frame-pointer
 TEST_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O1 -g $(SANITIZE)
 
@@ -102,6 +102,12 @@ tests/test_whip: tests/test_whip.c tests/test.h call/whip.c call/whip.h http.c h
 # of the opt-in submodule.
 tests/test_callmedia: tests/test_callmedia.c tests/test.h call/media.c call/media.h
 	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) -o $@ tests/test_callmedia.c call/media.c
+
+# The helper's stderr is a PARSED stream with a reader at the other end,
+# so what it is allowed to write is a contract and not formatting. Links
+# note.c only, for the same reason test_callmedia links media.c only.
+tests/test_callnote: tests/test_callnote.c tests/test.h call/note.c call/note.h
+	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) -o $@ tests/test_callnote.c call/note.c
 
 tests/test_mirc: tests/test_mirc.c tests/test.h mirc.c mirc.h
 	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) -o $@ tests/test_mirc.c mirc.c
@@ -179,7 +185,7 @@ LDC_LIBS := $(LDC_BUILD)/libdatachannel.a \
             $(LDC_BUILD)/deps/libsrtp/libsrtp2.a \
             $(LDC_BUILD)/deps/usrsctp/usrsctplib/libusrsctp.a
 CALL_BIN := shottino-call
-CALL_SRC := call/main.c call/whip.c call/media.c http.c
+CALL_SRC := call/main.c call/whip.c call/media.c call/note.c http.c
 CALL_CFLAGS := $(CPPFLAGS) $(CFLAGS) -I$(LDC_DIR)/include
 
 .PHONY: call
@@ -202,11 +208,12 @@ $(LDC_LIBS): $(LDC_DIR)/CMakeLists.txt
 	  -DNO_WEBSOCKET=ON -DNO_EXAMPLES=ON -DNO_TESTS=ON
 	cmake --build $(LDC_BUILD) -j
 
-$(CALL_BIN): $(CALL_SRC) call/whip.h call/media.h http.h $(LDC_LIBS)
+$(CALL_BIN): $(CALL_SRC) call/whip.h call/media.h call/note.h http.h $(LDC_LIBS)
 	$(CC) $(CALL_CFLAGS) -c -o call/main.o call/main.c
 	$(CC) $(CALL_CFLAGS) -c -o call/whip.o call/whip.c
 	$(CC) $(CALL_CFLAGS) -c -o call/media.o call/media.c
-	$(CXX) -o $@ call/main.o call/whip.o call/media.o http.o $(LDC_LIBS) \
+	$(CC) $(CALL_CFLAGS) -c -o call/note.o call/note.c
+	$(CXX) -o $@ call/main.o call/whip.o call/media.o call/note.o http.o $(LDC_LIBS) \
 	  -static-libstdc++ -static-libgcc -lssl -lcrypto -lpthread -lm
 
 # The helper rides along WHEN IT HAS BEEN BUILT, and is not a
@@ -228,4 +235,4 @@ install: $(BIN)
 # libdatachannel from scratch is minutes, it is not what `clean` is for,
 # and it is already untracked. `rm -rf vendor/build` is the deliberate act.
 clean:
-	rm -f $(BIN) $(OBJS) $(OBJS:.o=.d) $(TESTS) $(CALL_BIN) call/main.o call/whip.o call/media.o
+	rm -f $(BIN) $(OBJS) $(OBJS:.o=.d) $(TESTS) $(CALL_BIN) call/main.o call/whip.o call/media.o call/note.o
