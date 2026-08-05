@@ -671,19 +671,11 @@ defmodule Grappa.Session.EventRouter do
       # The +r case is special: when NickServ-as-IDP confirms a visitor's
       # IDENTIFY (or register→auth-code) it sets +r on the nick. +r is the
       # cryptographic-proof signal that the captured secret was accepted;
-      # emit `:visitor_r_observed` carrying it so `Session.Server
-      # .apply_effects/2` can commit it atomically into the visitors row.
+      # `visitor_r_effects/3` emits `:visitor_r_observed` carrying it so
+      # `Session.Server.apply_effects/2` can commit it atomically into the
+      # visitors row. Orthogonal to the confirmation row above — both
+      # effects coexist.
       #
-      # ONE +r-observation primitive serves both capture slots (#90 / #129
-      # — do not build two detectors). Two slots feed it: the timed
-      # `pending_auth` (IDENTIFY-family) and the untimed
-      # `pending_registration_secret` (REGISTER). If BOTH are staged,
-      # REGISTER wins — it is correct-by-construction (a wrong register
-      # never gets +r), whereas a stale wrong identify could still be in its
-      # 10s window. Both are set on `Session.Server` state but are optional
-      # from the pure router's POV; pure unit tests on user sessions skip
-      # them (Map.get → nil). Orthogonal to the confirmation row above —
-      # both effects coexist.
       # #279 — ONE validity verdict for the token, shared by BOTH readers
       # below (the +r detector and the umode fold). A mode string that is
       # not signs + mode letters is a malformed LINE, not a partially
@@ -691,15 +683,7 @@ defmodule Grappa.Session.EventRouter do
       # once here because `set_r_mode?/1` walks the same bytes.
       prev_umodes = Map.get(state, :umodes, [])
       parsed_umodes = apply_umode_string(prev_umodes, modes)
-      well_formed_modes? = match?({:ok, _}, parsed_umodes)
-
-      r_effects =
-        case {well_formed_modes? and set_r_mode?(modes), Map.get(state, :pending_registration_secret),
-              Map.get(state, :pending_auth)} do
-          {true, reg, _} when is_binary(reg) -> [{:visitor_r_observed, reg}]
-          {true, _, {pwd, _}} -> [{:visitor_r_observed, pwd}]
-          _ -> []
-        end
+      r_effects = visitor_r_effects(state, parsed_umodes, modes)
 
       # #229: fold the delta into the queryable per-session umode set so the
       # /mode <nick> modal reflects mid-session changes (an explicit
@@ -710,12 +694,7 @@ defmodule Grappa.Session.EventRouter do
       # whose state predates the :umodes field self-heals rather than
       # KeyError-crashing (mirror of #216's :isupport hot-safety). Emit
       # `:umode_changed` only on an actual change to keep fan-out minimal.
-      next_umodes =
-        case parsed_umodes do
-          {:ok, parsed} -> parsed
-          :error -> prev_umodes
-        end
-
+      next_umodes = umodes_or_unchanged(parsed_umodes, prev_umodes)
       umode_effects = if next_umodes != prev_umodes, do: [{:umode_changed, next_umodes}], else: []
       state = Map.put(state, :umodes, next_umodes)
 
@@ -1100,13 +1079,7 @@ defmodule Grappa.Session.EventRouter do
        )
        when is_binary(mode_str) do
     prev_umodes = Map.get(state, :umodes, [])
-
-    next_umodes =
-      case apply_umode_string([], mode_str) do
-        {:ok, parsed} -> parsed
-        :error -> prev_umodes
-      end
-
+    next_umodes = umodes_or_unchanged(apply_umode_string([], mode_str), prev_umodes)
     effects = if next_umodes != prev_umodes, do: [{:umode_changed, next_umodes}], else: []
     {:cont, Map.put(state, :umodes, next_umodes), effects}
   end
@@ -1136,13 +1109,7 @@ defmodule Grappa.Session.EventRouter do
        )
        when is_binary(usermodes) do
     prev = Map.get(state, :supported_umodes, [])
-
-    next =
-      case parse_supported_umodes(usermodes) do
-        {:ok, parsed} -> parsed
-        :error -> prev
-      end
-
+    next = umodes_or_unchanged(parse_supported_umodes(usermodes), prev)
     effects = if next != prev, do: [{:supported_umodes_changed, next}], else: []
     {:cont, Map.put(state, :supported_umodes, next), effects}
   end
@@ -3177,6 +3144,30 @@ defmodule Grappa.Session.EventRouter do
 
   defp toggle_umode(set, letter, :add), do: MapSet.put(set, letter)
   defp toggle_umode(set, letter, :remove), do: MapSet.delete(set, letter)
+
+  # #279 — the two readers of a self-MODE token, each gated by the SAME
+  # parse verdict so a malformed line can never yield a conclusion.
+  #
+  # `visitor_r_effects/3` is the +r capture-confirmation slot (#90/#129):
+  # ONE +r-observation primitive serves both staged secrets. If BOTH are
+  # staged, REGISTER wins — it is correct-by-construction (a wrong register
+  # never gets +r), whereas a stale wrong identify could still be inside
+  # its 10s window. Both fields are optional from the pure router's POV
+  # (pure unit tests on user sessions skip them → `Map.get` nil).
+  @spec visitor_r_effects(state(), {:ok, [String.t()]} | :error, String.t()) :: [effect()]
+  defp visitor_r_effects(_, :error, _), do: []
+
+  defp visitor_r_effects(state, {:ok, _}, modes) do
+    case {set_r_mode?(modes), Map.get(state, :pending_registration_secret), Map.get(state, :pending_auth)} do
+      {true, reg, _} when is_binary(reg) -> [{:visitor_r_observed, reg}]
+      {true, _, {pwd, _}} -> [{:visitor_r_observed, pwd}]
+      _ -> []
+    end
+  end
+
+  @spec umodes_or_unchanged({:ok, [String.t()]} | :error, [String.t()]) :: [String.t()]
+  defp umodes_or_unchanged({:ok, parsed}, _), do: parsed
+  defp umodes_or_unchanged(:error, prev), do: prev
 
   # #249 — parse the 004 RPL_MYINFO supported-usermode token (a signless
   # concatenation of letters, e.g. "oiwgrsk") into a sorted, deduped
