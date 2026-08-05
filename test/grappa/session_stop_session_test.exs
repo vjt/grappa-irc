@@ -29,6 +29,7 @@ defmodule Grappa.SessionStopSessionTest.Holder do
   @registration_retry_ms 1
   @handshake_ms 1_000
 
+  @spec child_spec(map()) :: Supervisor.child_spec()
   def child_spec(opts) do
     %{
       id: {__MODULE__, opts.subject, opts.network_id, opts.generation},
@@ -37,6 +38,7 @@ defmodule Grappa.SessionStopSessionTest.Holder do
     }
   end
 
+  @spec start_link(map()) :: GenServer.on_start()
   def start_link(opts) do
     send(opts.observer, {:starting, opts.generation})
     Process.sleep(opts.register_delay_ms)
@@ -46,7 +48,7 @@ defmodule Grappa.SessionStopSessionTest.Holder do
   # The predecessor's Registry entry is cleaned asynchronously by the
   # Registry process, so a restart can legitimately lose the first
   # attempt at its own key. Retry rather than fail the whole start.
-  defp register(_opts, 0), do: {:error, :key_never_freed}
+  defp register(_, 0), do: {:error, :key_never_freed}
 
   defp register(opts, attempts) do
     case GenServer.start_link(__MODULE__, opts, name: Server.via(opts.subject, opts.network_id)) do
@@ -74,7 +76,7 @@ defmodule Grappa.SessionStopSessionTest.Holder do
   # Hand the key to a live stranger BEFORE dying, so the stopper's first
   # lookup after the `:DOWN` cannot mistake the situation for cleanup lag.
   @impl GenServer
-  def terminate(_reason, %{handoff: squatter} = opts) when is_pid(squatter) do
+  def terminate(_, %{handoff: squatter} = opts) when is_pid(squatter) do
     Registry.unregister(Grappa.SessionRegistry, Server.registry_key(opts.subject, opts.network_id))
     send(squatter, {:grab, self()})
 
@@ -85,7 +87,7 @@ defmodule Grappa.SessionStopSessionTest.Holder do
     end
   end
 
-  def terminate(_reason, %{refiller: refiller} = opts) when is_pid(refiller) do
+  def terminate(_, %{refiller: refiller} = opts) when is_pid(refiller) do
     send(refiller, {:refill, opts.generation + 1, self()})
 
     receive do
@@ -95,7 +97,7 @@ defmodule Grappa.SessionStopSessionTest.Holder do
     end
   end
 
-  def terminate(_reason, _opts), do: :ok
+  def terminate(_, _), do: :ok
 end
 
 defmodule Grappa.SessionStopSessionTest.Squatter do
@@ -118,6 +120,7 @@ defmodule Grappa.SessionStopSessionTest.Squatter do
 
   alias Grappa.Session.Server
 
+  @spec child_spec(map()) :: Supervisor.child_spec()
   def child_spec(opts) do
     %{
       id: {__MODULE__, opts.subject, opts.network_id},
@@ -126,6 +129,7 @@ defmodule Grappa.SessionStopSessionTest.Squatter do
     }
   end
 
+  @spec start_link(map()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
 
   @impl GenServer
@@ -166,8 +170,7 @@ defmodule Grappa.SessionStopSessionTest do
   import ExUnit.CaptureLog
 
   alias Grappa.Session
-  alias Grappa.SessionStopSessionTest.Holder
-  alias Grappa.SessionStopSessionTest.Squatter
+  alias Grappa.SessionStopSessionTest.{Holder, Squatter}
 
   setup do
     subject = {:visitor, Ecto.UUID.generate()}
@@ -329,7 +332,7 @@ defmodule Grappa.SessionStopSessionTest do
 
   # The refill chain outlives a failed stop by design, so the singleton
   # supervisor must be left clean for the next test.
-  defp drain_key(_subject, _network_id, 0), do: :ok
+  defp drain_key(_, _, 0), do: :ok
 
   defp drain_key(subject, network_id, attempts) do
     case Session.whereis(subject, network_id) do

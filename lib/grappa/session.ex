@@ -552,7 +552,7 @@ defmodule Grappa.Session do
   # clause was `_ ->` and the two cases were indistinguishable: the stop
   # slept out its whole budget against a session that was very much alive,
   # then reported success.
-  defp wait_until_unregistered(_subject, _network_id, _stopped_pid, 0), do: :ok
+  defp wait_until_unregistered(_, _, _, 0), do: :ok
 
   defp wait_until_unregistered(subject, network_id, stopped_pid, attempts) do
     case whereis(subject, network_id) do
@@ -563,7 +563,7 @@ defmodule Grappa.Session do
         Process.sleep(@registry_unregister_poll_ms)
         wait_until_unregistered(subject, network_id, stopped_pid, attempts - 1)
 
-      _refilled_by_a_restart ->
+      _ ->
         :ok
     end
   end
