@@ -613,6 +613,7 @@ defmodule Grappa.UserSettingsTest do
       # into a write. `Push.BadgeCount` calls the reader per recount, so a
       # pruning read would issue a write per badge refresh.
       settings = Repo.get_by!(Settings, user_id: user.id)
+
       assert %{"muted_targets" => %{"#noisy" => %{"until" => ^elapsed}}} =
                settings.data["notification_prefs"]
     end
