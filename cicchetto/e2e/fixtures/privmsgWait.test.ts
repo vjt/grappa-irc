@@ -94,6 +94,29 @@ describe("awaitPrivmsg", () => {
     await expect(wait).resolves.toBeUndefined();
   });
 
+  it("reports arrival offsets from the trigger, not from the arm", async () => {
+    // Same reason the deadline is clocked from the trigger: an offset
+    // measured from the arm silently includes however long the caller's
+    // trigger took, which is exactly the confusion this instrument exists
+    // to remove. Trigger costs 300ms, the noise lands 100ms after it.
+    const source = fakeSource();
+    const settled = failureOf(
+      awaitPrivmsg(source, {
+        fromNick: "vjt-grappa",
+        body: "followup",
+        timeoutMs: 1_000,
+        trigger: () => sleep(300),
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(100);
+    source.emit("someone-else", "noise");
+    await vi.advanceTimersByTimeAsync(5_000);
+    const failure = await settled;
+    expect(failure).toContain("+100ms");
+    expect(failure).not.toContain("+400ms");
+  });
+
   it("names the sender it actually saw when the message came from someone else", async () => {
     const source = fakeSource();
     const settled = failureOf(
