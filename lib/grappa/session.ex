@@ -82,11 +82,24 @@ defmodule Grappa.Session do
   # `stop_session/2` synchronisation budgets. The `:DOWN` window is the
   # OTP `terminate_child` round-trip plus a `terminate/2` callback ceiling;
   # the Registry-unregister window is the BEAM scheduler swap to drain the
-  # Registry process's own `{:DOWN, ...}` mailbox entry. 5s × 100 × 5ms is
-  # generous; in practice the budgets are exhausted in <10ms total.
+  # Registry process's own `{:DOWN, ...}` mailbox entry — a CORPSE-only
+  # wait since #854. A key held by a *live* pid is not cleanup lag, it is
+  # a supervisor restart that refilled the key, and no amount of polling
+  # frees it; pre-#854 the poll could not tell the two apart, so it burned
+  # its full 500 ms against a restarted session and then returned `:ok`
+  # with its post-condition unmet (measured: 63 leaked sessions across a
+  # 15-run batch, plateau band tracking this constant).
   @stop_down_timeout_ms 5_000
   @registry_unregister_attempts 100
   @registry_unregister_poll_ms 5
+
+  # How many times a stop re-terminates a key that a restart refilled
+  # under it. One round covers the measured case (an abnormal exit
+  # restarts the child exactly once); the spares cover a restart that
+  # lands after `flush_pending_restarts/0`. Bounded on purpose: a session
+  # respawning faster than we can stop it must end in a loud log, not an
+  # unbounded chase.
+  @stop_chase_rounds 3
 
   @typedoc """
   Tagged identifier for a session owner — a registered user or a
@@ -327,6 +340,14 @@ defmodule Grappa.Session do
   if any. Idempotent: returns `:ok` whether or not a session was
   registered for the key.
 
+  The post-condition is about the KEY, not about one pid: on return no
+  session is registered for `(subject, network_id)` — including one a
+  `:transient` restart spawned while the stop was running (#854). When
+  even that cannot be achieved (something respawns the session faster
+  than `@stop_chase_rounds` terminate rounds can remove it) the return
+  stays `:ok` — every caller pattern-matches it and none can recover —
+  but the unmet post-condition is a `Logger.error`, never silence.
+
   Used by `Grappa.Networks.Credentials.unbind_credential/2` to tear
   down the GenServer BEFORE the credential row is deleted (S29 H5).
   Without this, an unbind would leave the GenServer running with
@@ -381,111 +402,169 @@ defmodule Grappa.Session do
   end
 
   defp do_stop_session(subject, network_id) do
-    case whereis(subject, network_id) do
-      nil ->
+    stop_registered(subject, network_id, @stop_chase_rounds)
+  end
+
+  # The post-condition is about the KEY ("no session is registered for
+  # `(subject, network_id)`"), not about the pid we happened to look up.
+  # `Session.Server` is `restart: :transient`, so an abnormal exit — the
+  # 433 ladder's `{:client_exit, {:nick_rejected, 433, _}}` is the
+  # measured one (#854) — makes `Grappa.SessionSupervisor` restart the
+  # child, and the restarted child re-registers the SAME key from inside
+  # `GenServer.start_link/3`. Terminating one pid therefore does not free
+  # the key: each round re-reads the key and terminates whoever holds it
+  # now, and the last round says so out loud if the key is still taken.
+  defp stop_registered(subject, network_id, rounds_left) do
+    flush_pending_restarts()
+
+    case {whereis(subject, network_id), rounds_left} do
+      {nil, _} ->
         :ok
 
-      pid ->
-        # Monitor BEFORE terminate so we never miss the DOWN — even if
-        # the child dies between `whereis` and the monitor, the receive
-        # below gets an immediate DOWN with reason `:noproc`.
-        ref = Process.monitor(pid)
+      {pid, 0} ->
+        # CLAUDE.md "No silent-swallow at boundaries", and the sibling
+        # `:DOWN`-timeout path below already does exactly this. Pre-#854
+        # this case returned a bare `:ok`: a session survived its own
+        # tear-down and nothing anywhere said so.
+        Logger.error(
+          "stop_session post-condition FAILED — a session is STILL registered after " <>
+            "#{@stop_chase_rounds} terminate rounds; something keeps respawning it " <>
+            "(subject=#{inspect(subject)} network_id=#{network_id})",
+          pid: inspect(pid)
+        )
 
-        # `terminate_child` returns `:ok | {:error, :not_found}` for a
-        # `DynamicSupervisor` (the `:simple_one_for_one` error tag is
-        # impossible here — only plain Supervisor in legacy strategy
-        # mode emits it). The `:not_found` branch covers the race where
-        # the child died between `whereis` and this call; treat both
-        # branches as success since the post-condition (no session for
-        # the key) is what we promise. Pattern-match explicitly so an
-        # unexpected return shape from a future OTP would crash.
-        case DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid) do
-          :ok -> :ok
-          {:error, :not_found} -> :ok
-        end
+        :ok
+
+      {pid, rounds} ->
+        terminate_and_await_down(pid, subject, network_id)
+        wait_until_unregistered(subject, network_id, pid, @registry_unregister_attempts)
+        stop_registered(subject, network_id, rounds - 1)
+    end
+  end
+
+  # A `GenServer.call` into the supervisor is a MAILBOX BARRIER: the
+  # supervisor handles its mailbox in order, so any `{:EXIT, child, _}` it
+  # has already received — i.e. any `:transient` restart already triggered
+  # — is fully applied before this returns, and the restarted child is
+  # registered by then (`Session.Server.start_link/1` registers under its
+  # `via` name INSIDE `GenServer.start_link/3`, so the supervisor is not
+  # done restarting until the key is taken). Without the barrier,
+  # `whereis/2` answers `nil` for a key a restart is about to refill
+  # microseconds later and the stop returns `:ok` having freed nothing
+  # (#854). `count_children/1` is the cheapest such call — the result is
+  # deliberately unused, the round-trip IS the point.
+  defp flush_pending_restarts do
+    _ = DynamicSupervisor.count_children(Grappa.SessionSupervisor)
+    :ok
+  end
+
+  defp terminate_and_await_down(pid, subject, network_id) do
+    # Monitor BEFORE terminate so we never miss the DOWN — even if
+    # the child dies between `whereis` and the monitor, the receive
+    # below gets an immediate DOWN with reason `:noproc`.
+    ref = Process.monitor(pid)
+
+    # `terminate_child` returns `:ok | {:error, :not_found}` for a
+    # `DynamicSupervisor` (the `:simple_one_for_one` error tag is
+    # impossible here — only plain Supervisor in legacy strategy
+    # mode emits it). The `:not_found` branch covers the race where
+    # the child died between `whereis` and this call; treat both
+    # branches as success since the post-condition (no session for
+    # the key) is what we promise. Pattern-match explicitly so an
+    # unexpected return shape from a future OTP would crash.
+    case DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid) do
+      :ok -> :ok
+      {:error, :not_found} -> :ok
+    end
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _} -> :ok
+    after
+      @stop_down_timeout_ms ->
+        # A Session that refuses to die within the budget is a
+        # genuine bug (stuck `terminate/2`, runaway loop, link
+        # cycle). Surface it via Logger.error — silent timeout
+        # would leave the next `start_session/3` racing a zombie
+        # `:already_started` against the Registry. CLAUDE.md "Use
+        # infrastructure, don't bypass it." `:subject` and
+        # `:network_id` are NOT in the Logger metadata allowlist
+        # (see `config/config.exs`'s memory-pinned constraint —
+        # canonical session context uses `:user` = subject_label
+        # and `:network` = network_slug, threaded by
+        # `Log.set_session_context/2`). Inline into message body
+        # so allowlist stays tight.
+        Logger.error(
+          "session refused to die within #{@stop_down_timeout_ms}ms stop budget — " <>
+            "escalating to Process.exit :kill " <>
+            "(subject=#{inspect(subject)} network_id=#{network_id})",
+          pid: inspect(pid)
+        )
+
+        # spec-audit cascade hunt (2026-05-26): pre-fix the function
+        # demonitored and returned :ok WITHOUT killing the pid.
+        # CI run 26445436191 traced the AdminEventsTest cascade
+        # back here — visitor login_test's stop_session returned
+        # :ok despite the Session.Server still alive in
+        # reconnect-backoff (Client GenServer.call inside
+        # terminate/2 hangs ~5s on a wedged socket). The zombie
+        # then poisoned the SessionRegistry that the next
+        # singleton-lane test (AdminEventsTest) drains in setup,
+        # cascading 10+ unrelated failures.
+        #
+        # Fix: escalate to Process.exit/2 :kill — bypasses
+        # terminate/2, guarantees the pid dies. Re-wait briefly
+        # for the :DOWN so the Registry's own monitor cleanup
+        # has a chance to fire before we return, then proceed to
+        # wait_until_unregistered/3 below (which polls anyway).
+        #
+        # Note: this changes the post-condition of stop_session/2
+        # from "process MAY still be alive (with Logger.error
+        # noise) after 5s timeout" to "process WILL be dead". No
+        # caller relied on the zombie-alive case as a feature —
+        # the prior shape was always a bug.
+        Process.exit(pid, :kill)
 
         receive do
           {:DOWN, ^ref, :process, ^pid, _} -> :ok
         after
-          @stop_down_timeout_ms ->
-            # A Session that refuses to die within the budget is a
-            # genuine bug (stuck `terminate/2`, runaway loop, link
-            # cycle). Surface it via Logger.error — silent timeout
-            # would leave the next `start_session/3` racing a zombie
-            # `:already_started` against the Registry. CLAUDE.md "Use
-            # infrastructure, don't bypass it." `:subject` and
-            # `:network_id` are NOT in the Logger metadata allowlist
-            # (see `config/config.exs`'s memory-pinned constraint —
-            # canonical session context uses `:user` = subject_label
-            # and `:network` = network_slug, threaded by
-            # `Log.set_session_context/2`). Inline into message body
-            # so allowlist stays tight.
-            Logger.error(
-              "session refused to die within #{@stop_down_timeout_ms}ms stop budget — " <>
-                "escalating to Process.exit :kill " <>
-                "(subject=#{inspect(subject)} network_id=#{network_id})",
-              pid: inspect(pid)
-            )
-
-            # spec-audit cascade hunt (2026-05-26): pre-fix the function
-            # demonitored and returned :ok WITHOUT killing the pid.
-            # CI run 26445436191 traced the AdminEventsTest cascade
-            # back here — visitor login_test's stop_session returned
-            # :ok despite the Session.Server still alive in
-            # reconnect-backoff (Client GenServer.call inside
-            # terminate/2 hangs ~5s on a wedged socket). The zombie
-            # then poisoned the SessionRegistry that the next
-            # singleton-lane test (AdminEventsTest) drains in setup,
-            # cascading 10+ unrelated failures.
-            #
-            # Fix: escalate to Process.exit/2 :kill — bypasses
-            # terminate/2, guarantees the pid dies. Re-wait briefly
-            # for the :DOWN so the Registry's own monitor cleanup
-            # has a chance to fire before we return, then proceed to
-            # wait_until_unregistered/3 below (which polls anyway).
-            #
-            # Note: this changes the post-condition of stop_session/2
-            # from "process MAY still be alive (with Logger.error
-            # noise) after 5s timeout" to "process WILL be dead". No
-            # caller relied on the zombie-alive case as a feature —
-            # the prior shape was always a bug.
-            Process.exit(pid, :kill)
-
-            receive do
-              {:DOWN, ^ref, :process, ^pid, _} -> :ok
-            after
-              1_000 ->
-                # :kill is unmaskable; if we somehow still don't get
-                # :DOWN, the monitor itself is wedged (BEAM bug
-                # territory). Demonitor + proceed; downstream
-                # wait_until_unregistered/3 will surface the leak.
-                Process.demonitor(ref, [:flush])
-                :ok
-            end
+          1_000 ->
+            # :kill is unmaskable; if we somehow still don't get
+            # :DOWN, the monitor itself is wedged (BEAM bug
+            # territory). Demonitor + proceed; downstream
+            # wait_until_unregistered/3 will surface the leak.
+            Process.demonitor(ref, [:flush])
+            :ok
         end
-
-        # `Process.monitor` DOWN guarantees the process is dead, but
-        # `Grappa.SessionRegistry`'s OWN monitor on `pid` runs in the
-        # Registry process — it may not have unregistered the dead pid
-        # yet. Spin a tiny `Registry.lookup`-poll until the entry is
-        # gone or the budget expires; without this, callers chaining
-        # `stop_session/2` → `start_session/3` race a transient
-        # `:already_started` shape backed by a dead pid.
-        wait_until_unregistered(subject, network_id, @registry_unregister_attempts)
-        :ok
     end
   end
 
-  defp wait_until_unregistered(_, _, 0), do: :ok
+  # `Process.monitor` DOWN guarantees `stopped_pid` is dead, but
+  # `Grappa.SessionRegistry`'s OWN monitor on it runs in the Registry
+  # process — it may not have unregistered the corpse yet. Spin a tiny
+  # `Registry.lookup`-poll until the entry is gone or the budget expires;
+  # without this, callers chaining `stop_session/2` → `start_session/3`
+  # race a transient `:already_started` shape backed by a dead pid.
+  #
+  # #854: a DIFFERENT pid on the key is NOT that cleanup lag — it is a
+  # `:transient` restart that refilled the key while we were stopping its
+  # predecessor. Polling can never outlast a live holder, so return at
+  # once and let `stop_registered/3` terminate the newcomer. Pre-fix this
+  # clause was `_ ->` and the two cases were indistinguishable: the stop
+  # slept out its whole budget against a session that was very much alive,
+  # then reported success.
+  defp wait_until_unregistered(_subject, _network_id, _stopped_pid, 0), do: :ok
 
-  defp wait_until_unregistered(subject, network_id, attempts) do
+  defp wait_until_unregistered(subject, network_id, stopped_pid, attempts) do
     case whereis(subject, network_id) do
       nil ->
         :ok
 
-      _ ->
+      ^stopped_pid ->
         Process.sleep(@registry_unregister_poll_ms)
-        wait_until_unregistered(subject, network_id, attempts - 1)
+        wait_until_unregistered(subject, network_id, stopped_pid, attempts - 1)
+
+      _refilled_by_a_restart ->
+        :ok
     end
   end
 
