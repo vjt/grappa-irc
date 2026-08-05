@@ -345,7 +345,7 @@ help_top() {
     printf '    bin/grappa <verb> [args...]\n'
     printf '    bin/grappa help [verb]\n\n'
 
-    local group verb kind target g desc
+    local group verb g desc
     for group in "${GROUP_ORDER[@]}"; do
         printf '%s\n' "${GROUP_HEADERS[$group]}"
         # Iterate in insertion order via the GROUP_ORDER+VERBS pairing.
