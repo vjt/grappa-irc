@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "test.h"
@@ -525,9 +526,15 @@ TEST(a_start_succeeds_when_ffmpeg_is_on_the_path) {
     char saved[4096];
     snprintf(saved, sizeof(saved), "%s", getenv("PATH") ? getenv("PATH") : "");
     char dir[64];
-    /* Anything that execs and stays up: this is the spawn contract under
-     * test, not ffmpeg's own behaviour. */
-    CHECK(path_holding_ffmpeg("#!/bin/sh\nexec sleep 30\n", dir, sizeof(dir)));
+    /* Anything that execs and STAYS UP: this is the spawn contract under
+     * test, not ffmpeg's own behaviour.
+     *
+     * The inner PATH is not decoration. This one runs with PATH pointing
+     * at the scratch directory and nothing else, so a bare `sleep` is
+     * not found — the script then exits immediately, the check below
+     * still passes on a pid that is already a zombie, and the control
+     * proves nothing. Measured, not assumed. */
+    CHECK(path_holding_ffmpeg("#!/bin/sh\nPATH=/usr/bin:/bin\nexec sleep 30\n", dir, sizeof(dir)));
 
     struct media_config cfg = spawn_test_config();
     int slots[1] = { 0 };
@@ -535,6 +542,11 @@ TEST(a_start_succeeds_when_ffmpeg_is_on_the_path) {
     struct media_leg leg;
     CHECK(media_start_send(&leg, &cfg, false));
     CHECK(leg.pid > 0);
+    /* RUNNING, not merely forked. A child that exited the instant it
+     * started satisfies pid > 0 exactly as well — which is what made the
+     * bug this suite is about survive in the first place. */
+    int status = 0;
+    CHECK(waitpid(leg.pid, &status, WNOHANG) == 0);
     media_stop(&leg);
     CHECK(leg.pid == -1);
 
@@ -542,6 +554,7 @@ TEST(a_start_succeeds_when_ffmpeg_is_on_the_path) {
     mix_init(&amix);
     CHECK(media_start_audio_mix(&amix, slots, 1, &cfg));
     CHECK(amix.pid > 0);
+    CHECK(waitpid(amix.pid, &status, WNOHANG) == 0);
     media_mix_free(&amix);
 
     path_restore(dir, saved);
