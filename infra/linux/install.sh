@@ -48,6 +48,7 @@ run_as_grappa() {
 
 # $HOME resolves to grappa's own home once run_as_grappa's `sudo -u
 # ... -H` has switched user — no need to look it up here.
+# shellcheck disable=SC2016  # deferred expansion is the point (see above)
 asdf_path_export='export PATH="$HOME/.local/bin:$HOME/.asdf/shims:$PATH"'
 
 say "1/11 install_prereqs.sh"
@@ -179,14 +180,44 @@ gen() {
 	gen_raw "$1" | tail -n1
 }
 
+# Capture, CHECK, then write — never `set_env_if_blank KEY "$(gen ...)"`.
+#
+# In argument position a command substitution's failure cannot stop this
+# script: `gen_raw`'s `exit 1` exits the SUBSHELL, and the enclosing command's
+# status is `set_env_if_blank`'s, so neither `set -e` nor `pipefail` ever sees
+# it. So the loud ERROR the comment above promises got printed and the blank
+# was written anyway. Worse than the noise: if the failing generator was not
+# the VAPID one (whose explicit empty-check below is OUTSIDE a substitution,
+# and is the only reason any of this ever aborted), the run continued to
+# `systemctl start` and exited 0 announcing a healthy host — with
+# GRAPPA_ENCRYPTION_KEY set to the empty string, i.e. a Cloak vault keyed on
+# nothing. Measured, #441.
+#
+# Assigning first makes the failure real (`set -euo pipefail` fires on the
+# assignment), and the emptiness check additionally catches a generator that
+# exits 0 with nothing to say — the shape that killed VAPID in 2026-07-24.
+require_nonempty() {
+	local key="$1" what="$2" value="$3"
+	if [ -z "${value}" ]; then
+		echo "[install] ERROR: '${what}' produced an empty ${key} — refusing to write a blank secret" >&2
+		exit 1
+	fi
+}
+
 if ! grep -qE "^SECRET_KEY_BASE=.+$" "${ENV_FILE}" || grep -qE "^SECRET_KEY_BASE=REPLACE_ME$" "${ENV_FILE}"; then
-	set_env_if_blank SECRET_KEY_BASE "$(gen 'mix phx.gen.secret' | tail -n1)"
+	secret_key_base="$(gen 'mix phx.gen.secret')"
+	require_nonempty SECRET_KEY_BASE 'mix phx.gen.secret' "${secret_key_base}"
+	set_env_if_blank SECRET_KEY_BASE "${secret_key_base}"
 fi
 if ! grep -qE "^SECRET_SIGNING_SALT=.+$" "${ENV_FILE}" || grep -qE "^SECRET_SIGNING_SALT=REPLACE_ME$" "${ENV_FILE}"; then
-	set_env_if_blank SECRET_SIGNING_SALT "$(gen 'mix phx.gen.secret 32' | tail -n1)"
+	signing_salt="$(gen 'mix phx.gen.secret 32')"
+	require_nonempty SECRET_SIGNING_SALT 'mix phx.gen.secret 32' "${signing_salt}"
+	set_env_if_blank SECRET_SIGNING_SALT "${signing_salt}"
 fi
 if ! grep -qE "^GRAPPA_ENCRYPTION_KEY=.+$" "${ENV_FILE}" || grep -qE "^GRAPPA_ENCRYPTION_KEY=REPLACE_ME$" "${ENV_FILE}"; then
-	set_env_if_blank GRAPPA_ENCRYPTION_KEY "$(gen 'mix grappa.gen_encryption_key' | tail -n1)"
+	encryption_key="$(gen 'mix grappa.gen_encryption_key')"
+	require_nonempty GRAPPA_ENCRYPTION_KEY 'mix grappa.gen_encryption_key' "${encryption_key}"
+	set_env_if_blank GRAPPA_ENCRYPTION_KEY "${encryption_key}"
 fi
 # Regeneration trigger checks BOTH keys, not just the public one — a
 # guard on VAPID_PUBLIC_KEY alone would leave a
@@ -220,7 +251,11 @@ if vapid_key_needs_gen VAPID_PUBLIC_KEY || vapid_key_needs_gen VAPID_PRIVATE_KEY
 	force_set_env VAPID_PRIVATE_KEY "${vapid_private}"
 fi
 if ! grep -qE "^RELEASE_COOKIE=.+$" "${ENV_FILE}" || grep -qE "^RELEASE_COOKIE=REPLACE_ME$" "${ENV_FILE}"; then
-	set_env_if_blank RELEASE_COOKIE "$(openssl rand -hex 32)"
+	# Same capture-check-write shape as the mix generators above: openssl in
+	# argument position could fail into a blank cookie just as silently.
+	release_cookie="$(openssl rand -hex 32)"
+	require_nonempty RELEASE_COOKIE 'openssl rand -hex 32' "${release_cookie}"
+	set_env_if_blank RELEASE_COOKIE "${release_cookie}"
 fi
 force_set_env DATABASE_PATH "${REPO_ROOT}/runtime/grappa_prod.db"
 force_set_env UPLOADS_STORAGE_ROOT "${REPO_ROOT}/runtime/uploads"
