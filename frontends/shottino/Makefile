@@ -52,7 +52,7 @@ OBJS := shottino.o json.o wire.o alias.o mirc.o termcolor.o http.o media.o ircd.
 # reaches, which is the drawing primitives and nothing else. Do not trust
 # this net for changes elsewhere in that file; add a test or reason about
 # the path by hand.
-TESTS := tests/test_llm tests/test_ws tests/test_json tests/test_wire tests/test_alias tests/test_mirc tests/test_termcolor tests/test_http tests/test_media tests/test_whip tests/test_callmedia tests/test_callnote tests/test_layout tests/test_keys tests/test_ircd tests/test_commands tests/test_windows tests/test_call
+TESTS := tests/test_llm tests/test_ws tests/test_json tests/test_wire tests/test_alias tests/test_mirc tests/test_termcolor tests/test_http tests/test_media tests/test_whip tests/test_callmedia tests/test_callnote tests/test_callmain tests/test_layout tests/test_keys tests/test_ircd tests/test_commands tests/test_windows tests/test_call
 SANITIZE ?= -fsanitize=address,undefined -fno-omit-frame-pointer
 TEST_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O1 -g $(SANITIZE)
 
@@ -116,6 +116,29 @@ tests/test_callmedia: tests/test_callmedia.c tests/test.h call/media.c call/medi
 # note.c only, for the same reason test_callmedia links media.c only.
 tests/test_callnote: tests/test_callnote.c tests/test.h call/note.c call/note.h
 	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) -o $@ tests/test_callnote.c call/note.c
+
+# call/main.c, LINKED — the helper's main loop inside the sanitizers.
+#
+# `call-compile` below proves that file parses under -Werror and nothing
+# more, which left seven functions (session_negotiate, session_release,
+# on_state, video_retile, audio_retile, liveness_step, pump_main) outside
+# ASan/UBSan entirely — and #759 was exactly that class of defect. The
+# suite compiles main.c into itself with `main` renamed, the way
+# test_layout does with shottino.c, because every one of those is static.
+#
+# -Itests/stub puts tests/stub/rtc/rtc.h in front of <rtc/rtc.h>, so this
+# links the fake libdatachannel in tests/rtc_stub.c instead of the vendored
+# archives: the default gate must not need the opt-in submodule, exactly as
+# test_whip and test_callmedia do not. The stub's declarations are held to
+# the real ones by call-compile.
+#
+# -lssl -lcrypto because whip.c is real here — session_negotiate is driven
+# against an HTTP endpoint on loopback, not a mocked one.
+tests/test_callmain: tests/test_callmain.c tests/test.h tests/rtc_stub.c tests/rtc_stub.h \
+                     tests/stub/rtc/rtc.h call/main.c call/media.c call/media.h call/note.c \
+                     call/note.h call/whip.c call/whip.h http.c http.h
+	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) -Itests/stub -o $@ tests/test_callmain.c tests/rtc_stub.c \
+	  call/media.c call/note.c call/whip.c http.c -pthread -lssl -lcrypto
 
 tests/test_mirc: tests/test_mirc.c tests/test.h mirc.c mirc.h
 	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) -o $@ tests/test_mirc.c mirc.c
@@ -270,14 +293,25 @@ $(LDC_DIR)/CMakeLists.txt:
 # are already on disk beside the sources, no archive has to exist, and a
 # warning that fails the client build fails here the same way.
 #
-# What it does NOT cover, deliberately: no link runs, so the C++ link
-# driver, -static-libstdc++ and the four archives are still only proven
-# by someone typing `make call`.
+# THE SECOND HALF (#880) is the stub check. tests/test_callmain links
+# call/main.c against a hand-written <rtc/rtc.h> so `make check` can run
+# the helper's main loop under ASan without the vendored submodule. A stub
+# whose shape nobody verifies is a SECOND API, and a suite built on a
+# second API proves things about the second API — so the stub's definitions
+# are compiled against the REAL header here, in the one job that has it. A
+# signature that has drifted from upstream is a compile error, not a
+# discovery someone makes at `make call` time.
+#
+# What none of this covers, deliberately: no link of the helper runs, so
+# the C++ link driver, -static-libstdc++ and the four archives are still
+# only proven by someone typing `make call`.
 call-compile: $(LDC_DIR)/CMakeLists.txt
 	@for src in $(CALL_SRC); do \
 		echo "  CC (compile-only) $$src"; \
 		$(CC) $(CALL_CFLAGS) -c -o /dev/null "$$src" || exit 1; \
 	done
+	@echo "  CC (stub vs the real rtc.h) tests/rtc_stub.c"
+	@$(CC) $(CALL_CFLAGS) -c -o /dev/null tests/rtc_stub.c
 
 # USE_GNUTLS=OFF takes the OpenSSL already linked; USE_NICE=OFF takes the
 # bundled libjuice rather than adding a system libnice; NO_WEBSOCKET
