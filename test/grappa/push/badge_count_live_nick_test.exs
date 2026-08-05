@@ -220,7 +220,7 @@ defmodule Grappa.Push.BadgeCountLiveNickTest do
     end
 
     test "the unread DM keeps its badge credit across the rename" do
-      {subject, _network} = seed_dm_then_rename()
+      {subject, _} = seed_dm_then_rename()
 
       # RED before #514: the row's `channel` still tags the OLD nick, so
       # `dm?/2` compares it against the LIVE nick, misses, and routes the row

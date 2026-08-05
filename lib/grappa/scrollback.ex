@@ -1322,8 +1322,8 @@ defmodule Grappa.Scrollback do
   ## The predicate, and the corruption it exists to prevent
 
   Migrated rows are exactly `fold(channel) == fold(old)` AND
-  `dm_with IS NOT NULL` AND `fold(dm_with) != fold(old)` — "inbound,
-  received while we were `old`". The two extra conjuncts are load-bearing:
+  `fold(dm_with) != fold(old)` — "inbound, received while we were
+  `old`". The second conjunct carries two exclusions at once:
 
     * an OUTBOUND DM carries `channel == dm_with == peer`, so a bare
       `fold(channel) == fold(old)` would capture a conversation with a
@@ -1333,9 +1333,14 @@ defmodule Grappa.Scrollback do
       REAL carol under `dave`.
     * an ORPHAN row (`dm_with IS NULL`, e.g. a 401 NOTICE persisted at
       `channel = peer`) is the server talking ABOUT a nick, not a DM we
-      received. `is_nil` is checked explicitly rather than left to SQL's
-      `lower(NULL) != x → NULL → filtered`, so the domain rule ("must be
-      a DM row") survives a future rewrite of the fold expression.
+      received. It drops out on SQL three-valued logic:
+      `lower(NULL) != 'x'` is NULL, not true, so `WHERE` rejects the
+      row. An explicit `not is_nil(m.dm_with)` was written here first
+      and then deleted: mutation testing showed it changed no outcome
+      in the whole suite, and unmeasured code is a liability. The
+      orphan exclusion is pinned by test instead, so a future rewrite
+      of the fold fragment (a `COALESCE` that turns NULL into a value)
+      breaks loudly rather than silently sweeping orphans in.
 
   Channel rows need no exclusion: a sigil never folds to a bare nick.
 
@@ -1381,7 +1386,7 @@ defmodule Grappa.Scrollback do
         |> where([m], m.network_id == ^network_id)
         |> where(
           [m],
-          Identifier.nick_fold(m.channel) == ^folded_old and not is_nil(m.dm_with) and
+          Identifier.nick_fold(m.channel) == ^folded_old and
             Identifier.nick_fold(m.dm_with) != ^folded_old
         )
         |> Repo.update_all(set: [channel: folded_new])
