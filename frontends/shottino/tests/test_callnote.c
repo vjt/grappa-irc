@@ -20,32 +20,9 @@
 
 #include "test.h"
 
-/* stderr is what is under test AND what test.h reports failures on, so
- * it is captured to a file and put back BEFORE anything is asserted. */
-static int cap_saved = -1;
-static char cap_path[64];
-
-static void cap_start(void) {
-    snprintf(cap_path, sizeof(cap_path), "/tmp/shottino-note-XXXXXX");
-    int fd = mkstemp(cap_path);
-    if (fd < 0) abort();
-    fflush(stderr);
-    cap_saved = dup(STDERR_FILENO);
-    dup2(fd, STDERR_FILENO);
-    close(fd);
-}
-
-static void cap_end(char *out, size_t out_sz) {
-    fflush(stderr);
-    dup2(cap_saved, STDERR_FILENO);
-    close(cap_saved);
-    cap_saved = -1;
-    FILE *f = fopen(cap_path, "r");
-    size_t n = f ? fread(out, 1, out_sz - 1, f) : 0;
-    out[n] = 0;
-    if (f) fclose(f);
-    unlink(cap_path);
-}
+/* stderr is what is under test AND what test.h reports failures on, so it
+ * is captured to a file and put back BEFORE anything is asserted. The
+ * capture itself lives in test.h now that test_callmain needs it too. */
 
 /* True when every non-empty line the helper wrote is one the reader
  * will skip — i.e. nothing here can be mistaken for an event. */
@@ -63,16 +40,16 @@ TEST(a_note_comments_every_line_it_writes) {
     char got[8192];
     note_set_verbose(true);
 
-    cap_start();
+    test_capture_stderr_start();
     note("subscribe 0: joined late");
-    cap_end(got, sizeof(got));
+    test_capture_stderr_end(got, sizeof(got));
     CHECK_STR(got, "# subscribe 0: joined late\n");
 
     /* A MULTI-LINE note. The helper writes one for every answer it gets
      * at --verbose, and the reader comments out lines, not messages. */
-    cap_start();
+    test_capture_stderr_start();
     note("%s: answer\n%s", "publish", "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\n");
-    cap_end(got, sizeof(got));
+    test_capture_stderr_end(got, sizeof(got));
     CHECK(every_line_is_a_comment(got));
     CHECK(strstr(got, "# v=0") != NULL);
     CHECK(strstr(got, "# o=- 0 0 IN IP4 127.0.0.1") != NULL);
@@ -81,10 +58,10 @@ TEST(a_note_comments_every_line_it_writes) {
      * is a list of lines. One shaped like an event reaches the reader as
      * an event unless every line of the note is commented — which is a
      * remote peer closing the call window, or worse. */
-    cap_start();
+    test_capture_stderr_start();
     note("%s: answer\n%s", "subscribe 0",
          "v=0\r\na=x:{\"event\":\"closed\"}\r\n{\"event\":\"error\",\"message\":\"pwned\"}\r\n");
-    cap_end(got, sizeof(got));
+    test_capture_stderr_end(got, sizeof(got));
     CHECK(every_line_is_a_comment(got));
     CHECK(strstr(got, "\n{\"event\"") == NULL);
 
@@ -96,18 +73,18 @@ TEST(a_note_comments_every_line_it_writes) {
     big[sizeof(big) - 1] = 0;
     big[1000] = '\n';
     big[2000] = '\n';
-    cap_start();
+    test_capture_stderr_start();
     note("answer\n%s", big);
-    cap_end(got, sizeof(got));
+    test_capture_stderr_end(got, sizeof(got));
     CHECK(every_line_is_a_comment(got));
     CHECK(strlen(got) >= sizeof(big));
     CHECK(got[strlen(got) - 1] == '\n');
 
     /* Off means silent — the notes are the only thing --verbose adds. */
     note_set_verbose(false);
-    cap_start();
+    test_capture_stderr_start();
     note("%s", "not written");
-    cap_end(got, sizeof(got));
+    test_capture_stderr_end(got, sizeof(got));
     CHECK_STR(got, "");
     note_set_verbose(true);
 }
@@ -117,21 +94,21 @@ TEST(a_note_comments_every_line_it_writes) {
 TEST(an_event_value_cannot_escape_its_own_string) {
     char got[8192];
 
-    cap_start();
+    test_capture_stderr_start();
     emit_event("state", "value", "publish connected");
-    cap_end(got, sizeof(got));
+    test_capture_stderr_end(got, sizeof(got));
     CHECK_STR(got, "{\"event\":\"state\",\"value\":\"publish connected\"}\n");
 
-    cap_start();
+    test_capture_stderr_start();
     emit_event("closed", NULL, NULL);
-    cap_end(got, sizeof(got));
+    test_capture_stderr_end(got, sizeof(got));
     CHECK_STR(got, "{\"event\":\"closed\"}\n");
 
     /* Server text: quotes, backslashes and control bytes all come back
      * as one line with the braces still ours. */
-    cap_start();
+    test_capture_stderr_start();
     emit_event("error", "message", "he said \"no\" \\ then\nleft");
-    cap_end(got, sizeof(got));
+    test_capture_stderr_end(got, sizeof(got));
     CHECK_STR(got,
               "{\"event\":\"error\",\"message\":\"he said \\\"no\\\" \\\\ then\\u000aleft\"}\n");
     /* ONE line out, whatever went in. */
@@ -142,9 +119,9 @@ TEST(an_event_value_cannot_escape_its_own_string) {
     char loud[2048];
     memset(loud, '"', sizeof(loud) - 1);
     loud[sizeof(loud) - 1] = 0;
-    cap_start();
+    test_capture_stderr_start();
     emit_event("error", "message", loud);
-    cap_end(got, sizeof(got));
+    test_capture_stderr_end(got, sizeof(got));
     CHECK(strchr(got, '\n') == got + strlen(got) - 1);
     CHECK(strncmp(got, "{\"event\":\"error\",\"message\":\"", 27) == 0);
     CHECK(strstr(got, "\"}\n") == got + strlen(got) - 3);

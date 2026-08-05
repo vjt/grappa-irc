@@ -148,6 +148,36 @@ static inline void test_use_temp_home(void) {
     atexit(test_temp_home_remove);
 }
 
+/* CAPTURING STDERR, which two suites now need: it is the media helper's
+ * whole output contract (one JSON event per line, notes commented) and it
+ * is also where test.h reports failures. So it is put back BEFORE anything
+ * is asserted — a CHECK between start and end writes its own diagnosis
+ * into the buffer under test and then loses it. */
+static int test_capture_fd = -1;
+static char test_capture_path[64];
+
+static inline void test_capture_stderr_start(void) {
+    snprintf(test_capture_path, sizeof(test_capture_path), "/tmp/shottino-capture-XXXXXX");
+    int fd = mkstemp(test_capture_path);
+    if (fd < 0) abort();
+    fflush(stderr);
+    test_capture_fd = dup(STDERR_FILENO);
+    dup2(fd, STDERR_FILENO);
+    close(fd);
+}
+
+static inline void test_capture_stderr_end(char *out, size_t out_sz) {
+    fflush(stderr);
+    dup2(test_capture_fd, STDERR_FILENO);
+    close(test_capture_fd);
+    test_capture_fd = -1;
+    FILE *f = fopen(test_capture_path, "r");
+    size_t n = f ? fread(out, 1, out_sz - 1, f) : 0;
+    out[n] = 0;
+    if (f) fclose(f);
+    unlink(test_capture_path);
+}
+
 static int test_report(void) {
     if (test_failures) {
         fprintf(stderr, "\n%d/%d checks FAILED\n", test_failures, test_checks);
