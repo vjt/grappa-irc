@@ -29438,3 +29438,58 @@ real change to the generator is that `chown` now runs only as root: the
 container runs unprivileged as the user that already owns `/data`, and an
 unconditional root-only chown under `set -e` killed the script before it wrote
 a single secret.
+## 2026-08-05 — The deploy reconciles the source-alias wrapper, it does not classify it (#646)
+
+Shipping #610 disarmed mode 2 in production. The deploy pulled the new
+privilege wrapper and never installed it: `jail_install_rcd.sh` owned the
+install, `infra/freebsd/deploy.sh` invokes that script only from
+`substrate_restart`, and no `Preflight` class covers `infra/freebsd/bin/*`
+— so a wrapper-only change classifies HOT and the installer never ran. The
+new `arm_check` called `probe` against the pre-#610 wrapper, which only
+knew `check | add | del`, got exit 64 → `:wrapper_unavailable` → 44
+visitors rejected. Fixed by hand on the jail; the code that produced it
+was still live.
+
+**Widening the cold classification was the obvious cure and the wrong
+one.** It buys the install by paying a full session drop to copy one file
+— the wrapper is exec'd fresh by sudo on every call, so nothing about it
+is in the running BEAM and the restart is pure cost. And it cannot cover
+the other half of the same incident: `/usr/local/etc/grappa/source-alias.conf`
+is rendered from `ServerSettings.static_mapping_prefix`, so it has no
+changed PATH for any file-based verdict to see. A classifier answers "did
+this file change?", which is the wrong question for an artifact that must
+match the checkout unconditionally.
+
+**So the deploy reconciles instead.** `substrate_reconcile` is a new
+`deploy_common.sh` hook (toggle `DEPLOY_FEATURE_RECONCILE`, jail-only for
+now) that runs on BOTH paths, after the build and before either the reload
+or the restart. The jail's hook calls the extracted
+`jail_install_source_alias.sh`; `jail_install_rcd.sh` delegates to the same
+script, so the fresh-jail bootstrap stays one command and a cold deploy
+simply runs it twice — free, because the whole script is a copy plus a
+rendered file. Installed artifacts are now a function of the checkout and
+the DB, not of a verdict.
+
+**Ordering is asymmetric on purpose.** New code meeting an old wrapper is
+the outage (exit 64); an old BEAM meeting a new wrapper is a seconds-long
+window in which nothing re-arms on its own. The install therefore lands
+before the reload, never after.
+
+**What is measured and what is only read.** The bats suites are real: the
+deploy-level tests failed before the hook existed and pass after, and the
+installer's DB render is checked against an actual sqlite file. Root on
+the hot path is READ, not measured — there is no FreeBSD jail in CI. The
+reading: `bastille cmd` runs the jail script as root
+(`scripts/deploy-m42.sh:190`), the same invocation serves both modes since
+the mode is resolved inside the script, and the cold path's `install -o
+root -g wheel` has demonstrably worked in prod. Root is a property of the
+invocation, not of the mode.
+
+**Left standing.** Changing the prefix is still not a pure admin-UI
+operation: `PUT /admin/settings` probes before it persists, the probe reads
+the wrapper's current scope, so a new prefix 422s and writes nothing —
+leaving the installer nothing new to render. The cycle is broken from the
+substrate side (`jail_db_write.sh`, re-run the installer, then the UI), and
+that is now written down in `docs/OPERATIONS.md` rather than fixed here.
+`infra/linux/` has no source-alias wrapper at all, so it has no equivalent
+gap to close.

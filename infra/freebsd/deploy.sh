@@ -25,6 +25,10 @@
 #   git pull → mix release --overwrite → vite build → migrate →
 #   service grappa restart → healthcheck loop. Sessions reset.
 #
+# Both paths reconcile the out-of-repo artifacts (the source-alias
+# privilege wrapper + its DB-rendered prefix scope) after the build and
+# before the reload/restart — see substrate_reconcile and #646.
+#
 # Cic bundle is rebuilt on COLD only; on HOT, server-side reload doesn't
 # need the new bundle (cic deploys are orthogonal — jail_deploy_cic.sh).
 #
@@ -51,6 +55,7 @@ DEPLOY_FEATURE_NOTHING_TO_DO=1
 DEPLOY_FEATURE_REEXEC=1
 DEPLOY_FEATURE_MARKER=1
 DEPLOY_FEATURE_PREV_SHA_CARRY=1
+DEPLOY_FEATURE_RECONCILE=1
 
 # All build steps run as the grappa user. `su -l grappa -c` strips the
 # environment (login shell), so MIX_OS_CONCURRENCY_LOCK/PATH/MIX_ENV must
@@ -128,6 +133,23 @@ substrate_build() {
 	run_as_grappa 'mix compile --warnings-as-errors'
 	deploy_log "mix release --overwrite"
 	run_as_grappa 'mix release --overwrite'
+}
+
+substrate_reconcile() {
+	# The mode-2 privilege wrapper lives in the repo and is installed into
+	# /usr/local/sbin, with a scope config rendered from the DB. Nothing
+	# else keeps those two in step with the checkout — and #646 measured
+	# what that costs: the deploy that shipped #610 pulled the new wrapper,
+	# never installed it (the installer ran on the cold path only, and a
+	# wrapper-only change classifies HOT), so the new `probe` hit the old
+	# wrapper, exited 64, disarmed mode 2, and 44 visitors were rejected.
+	#
+	# Runs as root, like every non-build step here: the script is invoked
+	# `sudo bastille cmd grappa …`, and root is a property of that
+	# invocation, not of the mode — the cold path's `install -o root -g
+	# wheel` and `service grappa stop` already depend on it.
+	deploy_log "install source-alias wrapper + prefix scope (jail_install_source_alias.sh)"
+	"${REPO_ROOT}/infra/freebsd/jail_install_source_alias.sh"
 }
 
 substrate_reload() {

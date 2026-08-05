@@ -29,14 +29,15 @@ setup() {
     git -C "$UPSTREAM" config user.email test@grappa.local
     git -C "$UPSTREAM" config user.name "bats"
 
-    mkdir -p "$UPSTREAM/infra/freebsd" "$UPSTREAM/infra/lib" "$UPSTREAM/runtime" "$UPSTREAM/lib"
+    mkdir -p "$UPSTREAM/infra/freebsd/bin" "$UPSTREAM/infra/lib" "$UPSTREAM/runtime" "$UPSTREAM/lib"
     cp "$DEPLOY_SH" "$UPSTREAM/infra/freebsd/deploy.sh"
     # The ported consumer sources the shared algorithm lib (#503). It must
     # exist in the throwaway clone for the script to run — committed so
     # pulls stay clean. Assertions below are UNCHANGED by the extraction.
     cp "$BATS_TEST_DIRNAME/../../infra/lib/deploy_common.sh" "$UPSTREAM/infra/lib/deploy_common.sh"
+    echo wrapper > "$UPSTREAM/infra/freebsd/bin/grappa-source-alias"
     # jail_*.sh delegates → recorders. Committed so pulls stay clean.
-    for stub in jail_cic_build.sh jail_release.sh jail_install_rcd.sh jail_beam_wait.sh; do
+    for stub in jail_cic_build.sh jail_release.sh jail_install_rcd.sh jail_install_source_alias.sh jail_beam_wait.sh; do
         cat > "$UPSTREAM/infra/freebsd/$stub" <<EOF
 #!/bin/sh
 printf '%s %s\n' "$stub" "\$*" >> "\$ARGV_LOG"
@@ -294,6 +295,42 @@ EOF
     [ "$stop_line" -lt "$wait_line" ]
     [ "$wait_line" -lt "$rcd_line" ]
     [ "$rcd_line" -lt "$start_line" ]
+}
+
+# --- #646: the source-alias wrapper is reconciled on EVERY deploy ------------
+#
+# Shipping #610 pulled a new privilege wrapper and never installed it: the
+# install lived only in substrate_restart (cold), and no Preflight class
+# covers `infra/freebsd/bin/*`, so a wrapper-only change classifies HOT and
+# the installed wrapper stayed the pre-#610 one. The new code's `probe`
+# exited 64 → mode 2 disarmed → 44 visitors rejected in production.
+#
+# The cure is reconciliation, not classification: the deploy installs the
+# wrapper on BOTH paths, before the new code can call it.
+
+@test "#646: hot deploy installs the source-alias wrapper before the reload" {
+    commit_upstream infra/freebsd/bin/grappa-source-alias > /dev/null
+
+    run_deploy
+    [ "$status" -eq 0 ]
+    grep -q "jail_install_source_alias.sh" "$ARGV_LOG"
+    # Order matters in one direction only: new code + old wrapper is the
+    # outage (exit 64), old code + new wrapper is a benign seconds-long
+    # window. So the install must land BEFORE /admin/reload.
+    sa_line=$(grep -n "jail_install_source_alias.sh" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    reload_line=$(grep -n "curl .*reload" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    [ "$sa_line" -lt "$reload_line" ]
+}
+
+@test "#646: cold deploy installs the source-alias wrapper before the restart" {
+    export PREFLIGHT_RC=3
+    commit_upstream infra/freebsd/bin/grappa-source-alias > /dev/null
+
+    run_deploy
+    [ "$status" -eq 0 ]
+    sa_line=$(grep -n "jail_install_source_alias.sh" "$ARGV_LOG" | head -1 | cut -d: -f1)
+    start_line=$(grep -n "service grappa start" "$ARGV_LOG" | cut -d: -f1)
+    [ "$sa_line" -lt "$start_line" ]
 }
 
 # --- --defer-restart: build-only cold path (one-bounce vhost bind) -----------

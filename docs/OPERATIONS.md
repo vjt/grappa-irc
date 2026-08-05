@@ -371,7 +371,16 @@ downtime):
   routed-/64 jail has no proxy-NDP neighbour cache to keep warm, so
   `jail_install_rcd.sh` no longer installs or enables it and it is out
   of the boot path — no hot/cold classification applies while it ships
-  as no service (the script survives in-tree for a hand-resurrection). Deploy orchestrators
+  as no service (the script survives in-tree for a hand-resurrection).
+- `infra/freebsd/bin/*` (the source-alias privilege wrapper) — **HOT on
+  purpose (#646)**. It is exec'd fresh by sudo on every call, so nothing
+  about it lands in the running BEAM and a restart would buy nothing. It
+  is instead RECONCILED on every deploy, hot and cold, by
+  `jail_install_source_alias.sh` (deploy_common's `substrate_reconcile`
+  hook). Do not add it to a cold class: that would charge a full session
+  drop to copy a file, and would still miss the wrapper's prefix config,
+  which is rendered from the DB and so has no changed path to classify.
+  Deploy orchestrators
   (`scripts/deploy.sh`, `infra/freebsd/deploy.sh`),
   operator-on-demand verbs (`infra/freebsd/jail_*.sh`) and
   `grappa.env.example` are HOT on both substrates — nothing about
@@ -981,10 +990,14 @@ far end, where nothing you can see locally says why. Settle this first.
   (`jail` / `linux` / `docker`; unset ⇒ `docker` ⇒ Disabled adapter ⇒
   mode 2 refuses to arm). It is explicit, NOT `:os.type` autodetect —
   a Docker container reports linux yet cannot AnyIP-bind.
-- **FreeBSD jail (`GRAPPA_SUBSTRATE=jail`).** Install the argv-validated
-  wrapper `infra/freebsd/bin/grappa-source-alias` onto sudo's
-  `secure_path` (e.g. `/usr/local/sbin/grappa-source-alias`, `root:wheel`,
-  mode `0755`) and grant the grappa user a NOPASSWD line:
+- **FreeBSD jail (`GRAPPA_SUBSTRATE=jail`).** The argv-validated wrapper
+  `infra/freebsd/bin/grappa-source-alias` is installed onto sudo's
+  `secure_path` (`/usr/local/sbin/grappa-source-alias`, `root:wheel`,
+  mode `0555`) by `infra/freebsd/jail_install_source_alias.sh`, which
+  **every deploy runs on both the hot and the cold path** (#646 — it used
+  to run on cold only, and shipping #610 left the pre-#610 wrapper
+  installed: `probe` exited 64, mode 2 disarmed, 44 visitors rejected).
+  The one step still done by hand, once per jail, is the NOPASSWD grant:
 
   ```
   # /usr/local/etc/sudoers.d/grappa-source-alias
@@ -1001,9 +1014,22 @@ far end, where nothing you can see locally says why. Settle this first.
   PREFIX=2001:db8:1:2:cafe::/80
   ```
 
-  Render this file from `ServerSettings.static_mapping_prefix` as part of the
-  SAME deploy step that installs the wrapper + sudoers line, so the DB prefix
-  and the wrapper's scope cannot drift by hand — that drift is the #609 prod
+  `jail_install_source_alias.sh` renders this file from
+  `ServerSettings.static_mapping_prefix` in the SAME step that installs the
+  wrapper, so the DB prefix and the wrapper's scope cannot drift by hand.
+  The file is AUTO-GENERATED: a hand edit survives only until the next
+  deploy re-renders it from the DB.
+
+  **Changing the prefix is therefore not a pure admin-UI operation.**
+  `PUT /admin/settings` probes BEFORE it persists (`arm_if_static/2` runs
+  ahead of `persist_addressing_prefix/1`), and the probe's canary is derived
+  from the prefix in the BODY while the wrapper still reads the old scope —
+  so the PUT refuses with 422 `addressing_unusable` (`:prefix_mismatch`) and
+  writes nothing, which leaves the installer nothing new to render. Break
+  the cycle from the substrate side: write the row with
+  `infra/freebsd/jail_db_write.sh`, re-run
+  `jail_install_source_alias.sh` (or deploy), then use the UI. That drift
+  is the #609 prod
   incident (the wrapper still pinned `…:2d3:cb::/80` — a prefix the host does
   not route, confirmed 2026-08-05 against `/etc/rc.conf` — while the intended
   block was the routed `…:2d3:cafe::/80`, so every acquire failed exit 65 and

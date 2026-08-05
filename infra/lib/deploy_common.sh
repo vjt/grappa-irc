@@ -37,6 +37,8 @@
 #   substrate_changed_files A B  echoes `git diff --name-only A..B`
 #   substrate_preflight F T   runs the Preflight oneshot; exit 0=hot 3=cold
 #   substrate_build           deps/compile/release, or image build
+#   substrate_reconcile       install out-of-repo artifacts (both paths; opt-in
+#                             via DEPLOY_FEATURE_RECONCILE; MUST be idempotent)
 #   substrate_reload          echoes /admin/reload HTTP body; nonzero=POST failed
 #   substrate_cic             cic bundle build (cold only)
 #   substrate_migrate         ecto migrate (cold only)
@@ -53,6 +55,7 @@
 #   DEPLOY_FEATURE_REEXEC         self-modifying-script re-exec guard
 #   DEPLOY_FEATURE_MARKER         read/write runtime/last-deployed-sha
 #   DEPLOY_FEATURE_PREV_SHA_CARRY carry DEPLOY_PREV_SHA across re-exec
+#   DEPLOY_FEATURE_RECONCILE      run substrate_reconcile on BOTH paths
 #
 # ── Mode state exported to hooks ────────────────────────────────────
 #   MODE      auto|hot|cold (resolved before any build/restart hook runs)
@@ -79,6 +82,7 @@ _deploy_cold_sleep()   { printf '%s' "${COLD_HEALTHCHECK_SLEEP:-$HEALTHCHECK_SLE
 : "${DEPLOY_FEATURE_REEXEC:=0}"
 : "${DEPLOY_FEATURE_MARKER:=0}"
 : "${DEPLOY_FEATURE_PREV_SHA_CARRY:=0}"
+: "${DEPLOY_FEATURE_RECONCILE:=0}"
 
 # Path (repo-relative) of the consumer deploy script, for the re-exec
 # guard's diff match and the `exec` target. The lib appends its OWN path
@@ -344,6 +348,19 @@ deploy_main() {
 	echo
 
 	substrate_build
+
+	# Artifacts the substrate installs OUTSIDE the repo (privilege
+	# wrappers and the config they read) drift from the checkout unless
+	# something reconciles them. Classification cannot do it: it only sees
+	# changed PATHS, so it misses a config rendered from the DB, and it
+	# would charge a session-dropping cold restart just to copy a file
+	# (#646 — shipping #610 left the old wrapper installed and disarmed
+	# mode 2 in prod). So it runs on BOTH paths, after the build and
+	# before either the reload or the restart, so the new code never meets
+	# the old artifact. The hook must be idempotent: it runs every deploy.
+	if [ "$DEPLOY_FEATURE_RECONCILE" = 1 ]; then
+		substrate_reconcile
+	fi
 
 	if [ "$MODE" = hot ]; then
 		_deploy_hot
