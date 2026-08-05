@@ -1200,15 +1200,49 @@ int main(int argc, char **argv) {
         if (!still) break;
     }
 
+    /* TEARDOWN IS AN ORDER, and the order is: stop everything that can
+     * TOUCH a resource before releasing the resource.
+     *
+     * Every one of the three writers here reaches the media legs, and
+     * each is silenced in turn:
+     *
+     *   - the pump thread, joined;
+     *   - the RTP callbacks, which run on libdatachannel's threads and
+     *     stop only when the peer connections are gone and rtcCleanup()
+     *     has joined the pool;
+     *   - this thread, which then closes the sockets with nobody left
+     *     to race.
+     *
+     * The legs USED to go first, while the peer connections were still
+     * alive two lines below. media_stop() closes a leg's fd and blanks
+     * it as two separate stores, and media_feed()'s `fd < 0` guard is
+     * read before the sendto — so an RTP packet arriving during hangup
+     * could pass the guard, have the fd closed under it, and then write
+     * to a descriptor number session_release() had already recycled for
+     * its hangup socket. The callbacks take `vlock` with TRYLOCK, which
+     * is a BACKPRESSURE primitive (a re-tile is in progress, drop the
+     * packet) and not a lifetime barrier: teardown never held it, so it
+     * always succeeded, and the guard read as protection it was not
+     * giving.
+     *
+     * Wrapping the media teardown in `vlock` would also have closed the
+     * window, and is what the report suggested. Ordering is preferred
+     * because it deletes the concurrency instead of synchronising it:
+     * there is no window left to reason about, no future callback that
+     * has to remember the lock, and no interval during which live peer
+     * connections point at legs that have already been freed. The cost
+     * is that the decoders now outlive the hangup DELETEs by however
+     * long the SFU takes to answer them — ffmpeg processes reading
+     * loopback sockets that have gone quiet, killed a moment later. */
     stop_requested = 1; /* ends the pump */
     if (pumping) pthread_join(pump, NULL);
+    session_release(&call.pub);
+    for (int i = 0; i < CALL_MAX_PEERS; i++) session_release(&call.sub[i]);
+    rtcCleanup();
     media_stop(&call.send_audio);
     media_stop(&call.send_video);
     media_mix_free(&call.amix);
     media_mix_free(&call.vmix);
-    session_release(&call.pub);
-    for (int i = 0; i < CALL_MAX_PEERS; i++) session_release(&call.sub[i]);
-    rtcCleanup();
     emit_event("closed", NULL, NULL);
     return connected ? 0 : 1;
 }
