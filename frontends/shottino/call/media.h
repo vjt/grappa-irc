@@ -214,6 +214,24 @@ int media_grid_layout(const int *slots, int n, int frame_w, int frame_h, struct 
 bool media_mix_filter(const struct media_tile *tiles, int n, int fps, int frame_w, int frame_h,
                       char *out, size_t out_sz);
 
+/* THE GRID, PUBLISHED. Not a status line — a contract.
+ *
+ *     <frame_w>x<frame_h>;slot,x,y,w,h;slot,x,y,w,h...
+ *
+ * The composited frame is one picture on a byte pipe, so without these
+ * rectangles the other end cannot tell whose face is where. With them it
+ * can sample any cell into any box, which is what makes focus a drawing
+ * decision there instead of a decoder restart here. The slot number is
+ * enough to label a cell: shottino built the subscribe list, so it knows
+ * which nick each slot is.
+ *
+ * COMPLETE OR REFUSED — returns false and leaves `out` EMPTY when the
+ * whole grid does not fit. The other end adopts a grid wholesale or not
+ * at all, because a short one draws faces under the wrong names, which
+ * is worse than drawing none. Pure, and therefore tested. */
+bool media_tiles_describe(const struct media_tile *tiles, int n, int frame_w, int frame_h,
+                          char *out, size_t out_sz);
+
 /* Start (or restart) the composited video decoder. Ports already bound
  * in `mix->legs` are KEPT, so RTP arriving during a re-tile lands
  * somewhere valid rather than on a closed socket. Caller fills
