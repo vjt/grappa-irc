@@ -3,8 +3,9 @@
 # Bats suite for infra/docker/get.sh — the curl|bash one-liner bootstrap for
 # the checkout-less release-image Docker box (#503 unit D).
 #
-# get.sh mirrors the two shell files the release deploy path needs
-# (infra/docker/deploy.sh + the infra/lib/deploy_common.sh it sources) into
+# get.sh mirrors the three shell files the release deploy path needs
+# (infra/docker/deploy.sh, the infra/lib/deploy_common.sh it sources, and the
+# infra/packaging/gen-secrets.sh it generates secrets with — #862) into
 # $GRAPPA_HOME, then execs deploy.sh in RELEASE mode with the requested verb
 # (default: the bare "make it so" verb).
 #
@@ -28,6 +29,7 @@ setup() {
     # The "network": the real repo copies the stub curl serves back.
     export SRC_DEPLOY="$REPO_SRC/infra/docker/deploy.sh"
     export SRC_LIB="$REPO_SRC/infra/lib/deploy_common.sh"
+    export SRC_GEN="$REPO_SRC/infra/packaging/gen-secrets.sh"
 
     FAKE_DIR="$BATS_TEST_TMPDIR/fake"
     mkdir -p "$FAKE_DIR"
@@ -50,29 +52,24 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$url" in
-  */infra/lib/deploy_common.sh) cp "$SRC_LIB" "$dest" ;;
-  */infra/docker/deploy.sh)     cp "$SRC_DEPLOY" "$dest" ;;
+  */infra/lib/deploy_common.sh)     cp "$SRC_LIB" "$dest" ;;
+  */infra/packaging/gen-secrets.sh) cp "$SRC_GEN" "$dest" ;;
+  */infra/docker/deploy.sh)         cp "$SRC_DEPLOY" "$dest" ;;
   *) printf 'fake curl: unexpected url: %s\n' "$url" >&2; exit 1 ;;
 esac
 EOF
     chmod +x "$FAKE_DIR/curl"
 
     # Fake `docker`: same shape as the release-image suite — records calls,
-    # inspect reports the container only when FAKE_CONTAINER_EXISTS is set,
-    # `run … generate_key` prints the VAPID keypair the install parses.
+    # inspect reports the container only when FAKE_CONTAINER_EXISTS is set.
+    # Nothing answers a VAPID eval: #862 moved keypair generation into
+    # gen-secrets.sh, which the fake curl above serves for real.
     cat > "$FAKE_DIR/docker" <<'EOF'
 #!/usr/bin/env bash
 printf 'docker %s\n' "$*" >> "$ARGV_LOG"
 case "$1" in
   inspect)
     [ -n "${FAKE_CONTAINER_EXISTS:-}" ] || exit 1
-    exit 0 ;;
-  run)
-    case "$*" in
-      *generate_key*)
-        printf 'VAPID_PUBLIC_KEY=FAKEPUBLICKEY\n'
-        printf 'VAPID_PRIVATE_KEY=FAKEPRIVATEKEY\n' ;;
-    esac
     exit 0 ;;
 esac
 exit 0
@@ -83,18 +80,22 @@ EOF
 
 # ─────────────────────── mirror layout + hand-off ────────────────────────
 
-@test "lays down the mirrored infra/{docker,lib} layout" {
+@test "lays down the mirrored infra/{docker,lib,packaging} layout" {
     run "$GETSH" stop
     [ "$status" -eq 0 ]
     [ -x "$GRAPPA_HOME/infra/docker/deploy.sh" ]
     [ -f "$GRAPPA_HOME/infra/lib/deploy_common.sh" ]
+    # deploy.sh resolves the generator at ../packaging/ relative to itself, so
+    # the mirrored layout must carry it or `install` cannot write an env file.
+    [ -f "$GRAPPA_HOME/infra/packaging/gen-secrets.sh" ]
 }
 
-@test "fetches both shell files from raw.githubusercontent.com/vjt/grappa-irc" {
+@test "fetches all three shell files from raw.githubusercontent.com/vjt/grappa-irc" {
     run "$GETSH" stop
     [ "$status" -eq 0 ]
     grep -q "raw.githubusercontent.com/vjt/grappa-irc/main/infra/docker/deploy.sh" "$ARGV_LOG"
     grep -q "raw.githubusercontent.com/vjt/grappa-irc/main/infra/lib/deploy_common.sh" "$ARGV_LOG"
+    grep -q "raw.githubusercontent.com/vjt/grappa-irc/main/infra/packaging/gen-secrets.sh" "$ARGV_LOG"
 }
 
 @test "execs deploy.sh in RELEASE mode (release-only wording proves it)" {
@@ -122,6 +123,7 @@ EOF
     [ "$status" -eq 0 ]
     grep -q "https://example.test/gr/infra/docker/deploy.sh" "$ARGV_LOG"
     grep -q "https://example.test/gr/infra/lib/deploy_common.sh" "$ARGV_LOG"
+    grep -q "https://example.test/gr/infra/packaging/gen-secrets.sh" "$ARGV_LOG"
 }
 
 @test "a failed download aborts before laying down deploy.sh or exec'ing it" {
