@@ -14,6 +14,7 @@
  */
 #include "../call/media.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -513,6 +514,13 @@ TEST(a_start_reports_an_ffmpeg_that_cannot_be_exec_d) {
     CHECK(!media_start_video_mix(&vmix, &cfg, -1));
     CHECK(vmix.pid == -1);
     media_mix_free(&vmix);
+
+    /* AND NOT A CORPSE LEFT ANYWHERE. Nothing waits for a leg the caller
+     * was told does not exist, and the supervisor rebuilds both mixes on
+     * every tick — so on the machine this whole issue is about, a start
+     * that does not reap its own failed child leaks a zombie per tick
+     * for the length of the call. */
+    CHECK(waitpid(-1, NULL, WNOHANG) == -1 && errno == ECHILD);
 
     path_restore(dir, saved);
 }
