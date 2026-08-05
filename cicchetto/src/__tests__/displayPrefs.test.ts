@@ -526,3 +526,125 @@ describe("syncedSetChannelPresencePref — refetch on reveal (#458)", () => {
     expect(asMock(loadInitialScrollback)).not.toHaveBeenCalled();
   });
 });
+
+// #837 — the mid-flight identity guard, the OTHER door into the cross-account
+// bleed the clear-on-logout block above closes. That block covers the identity
+// TRANSITION (logout clears, so B never inherits A's residue). This one covers
+// what the transition cannot reach: a GET already in flight when the rotation
+// happens. The effect captured A's token at entry and nothing cancels its
+// request, so the continuation resumes holding a bearer the server has already
+// retired — and it acts on the response.
+//
+// Two distinct harms, one per case below:
+//   * server-wins applies A's prefs over B's freshly-loaded ones;
+//   * a never-persisted A response fires a seed-up PUT under A's retired
+//     bearer — a 401/404 on the host's fail2ban-watched surface (#281's class).
+//
+// The rotation must land strictly INSIDE the await: A's GET is held open until
+// setToken has already re-run the effect for B and B's own answer has applied.
+describe("mountDisplayPrefsSync — a response that outlives its identity (#837)", () => {
+  const OTHER = "B-bearer";
+
+  const A_PREFS: DisplayPrefs = {
+    time_format: "hm",
+    colored_nicklist: true,
+    presence_filter: { [KEY_A]: "hide" },
+  };
+  // Distinct from A on all three axes, so "B's state survived" is an assertion
+  // about B's values rather than about the module defaults.
+  const B_PREFS: DisplayPrefs = {
+    time_format: "hms",
+    colored_nicklist: false,
+    presence_filter: { [KEY_B]: "hide" },
+  };
+
+  const bearerOf = (init?: RequestInit): string | null =>
+    new Headers(init?.headers).get("authorization");
+
+  const methodOf = (init?: RequestInit): string => (init?.method ?? "GET").toUpperCase();
+
+  const jsonResponse = (body: unknown): Response =>
+    new Response(JSON.stringify(body), { status: 200 });
+
+  // Hold A's GET open; answer everything else immediately. B's GET carries
+  // B_PREFS persisted, so the only route by which A's values can reach the
+  // local state is the held continuation under test.
+  function stubWithHeldGetForA(): { release: (body: unknown) => void } {
+    let release!: (r: Response) => void;
+    const held = new Promise<Response>((r) => {
+      release = r;
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation((_url, init?: RequestInit) => {
+      if (methodOf(init) === "GET" && bearerOf(init) === `Bearer ${TOKEN}`) return held;
+      return Promise.resolve(jsonResponse({ display_prefs: B_PREFS, persisted: true }));
+    });
+    return { release: (body: unknown) => release(jsonResponse(body)) };
+  }
+
+  const putBearers = (): (string | null)[] =>
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .filter((c) => methodOf(c[1] as RequestInit | undefined) === "PUT")
+      .map((c) => bearerOf(c[1] as RequestInit | undefined));
+
+  // Disposal in afterEach, not at the end of each case: the effect under test
+  // writes module-singleton state, so a case that fails an assertion and skips
+  // its own dispose() would leave a live sync running against the NEXT case's
+  // fetch stub — the failure would then cascade into a neighbour that is fine.
+  let dispose: (() => void) | null = null;
+
+  function mountFor(t: string): void {
+    setToken(t);
+    createRoot((d) => {
+      dispose = d;
+      mountDisplayPrefsSync();
+    });
+  }
+
+  afterEach(() => {
+    dispose?.();
+    dispose = null;
+  });
+
+  // Drive A-login → mount → rotate to B → release A's held GET with `body`.
+  async function rotateUnderAHeldGet(body: unknown): Promise<void> {
+    const a = stubWithHeldGetForA();
+    mountFor(TOKEN);
+    await flush(); // A's GET is on the wire, held
+    setToken(OTHER); // rotation lands INSIDE A's await; B's own GET answers
+    await flush();
+    a.release(body);
+    await flush();
+  }
+
+  it("does not apply the previous subject's prefs when its GET lands after a rotation", async () => {
+    await rotateUnderAHeldGet({ display_prefs: A_PREFS, persisted: true });
+
+    expect(getTimeFormat()).toBe(B_PREFS.time_format);
+    expect(getColoredNicklist()).toBe(B_PREFS.colored_nicklist);
+    expect(getAllPresencePrefs()).toEqual(B_PREFS.presence_filter);
+  });
+
+  // The control for the case above. Same harness, same held GET, no rotation:
+  // if A's response stopped reaching the apply path at all (a broken gate, a
+  // changed wire shape), the case above would pass while testing nothing.
+  it("does apply that same response when the identity holds", async () => {
+    const a = stubWithHeldGetForA();
+    mountFor(TOKEN);
+    await flush();
+    a.release({ display_prefs: A_PREFS, persisted: true });
+    await flush();
+
+    expect(getTimeFormat()).toBe(A_PREFS.time_format);
+    expect(getColoredNicklist()).toBe(A_PREFS.colored_nicklist);
+    expect(getAllPresencePrefs()).toEqual(A_PREFS.presence_filter);
+  });
+
+  it("does not seed up under a bearer the rotation already retired", async () => {
+    // persisted:false is the seed-up branch — the one that PUTs. Under A's
+    // retired bearer that write is both a wrong-identity request and, if the
+    // server honoured it, A's local map landing on B's account.
+    await rotateUnderAHeldGet({ display_prefs: A_PREFS, persisted: false });
+
+    expect(putBearers()).not.toContain(`Bearer ${TOKEN}`);
+  });
+});

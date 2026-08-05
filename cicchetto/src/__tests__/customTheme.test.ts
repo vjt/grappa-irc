@@ -1,13 +1,18 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { createRoot } from "solid-js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setToken } from "../lib/auth";
 import {
+  activePair,
   applyCustomTheme,
   COLOR_KEYS,
   getAppliedThemePayload,
+  mountCustomThemeSync,
   setThemePreviewMode,
   tokenToCssVars,
 } from "../lib/customTheme";
 import { EDITOR_BASE_KEYS, EDITOR_MODE_KEYS, EDITOR_NICK_KEYS } from "../lib/themeEditor";
 import type { TokenColors, TokenPayload } from "../lib/themesApi";
+import type { ThemesWireT } from "../lib/wireTypes";
 
 // #75 producer path — apply-engine seams the editor depends on.
 //
@@ -171,5 +176,122 @@ describe("editor color vocabulary vs the canonical key set", () => {
       ...EDITOR_NICK_KEYS,
     ]);
     expect(editorKeys).toEqual(new Set<string>(COLOR_KEYS));
+  });
+});
+
+// #837 — the mid-flight identity guard in `mountCustomThemeSync`, which had no
+// test at all: the effect captured `token()` at entry, awaited GET /me/theme,
+// and re-checked before applying. Removing that re-check broke nothing, so the
+// rule was free to be dropped by anyone tidying the module.
+//
+// What it holds: `applyResolvedPair` is not a read — it paints documentElement
+// AND writes the boot cache. A response that lands after a rotation therefore
+// puts subject A's theme on subject B's screen and persists it as B's
+// FOUC-free boot theme, so it survives the reload that would otherwise correct
+// it. Identity-transition cleanup cannot reach this: A→B never runs the
+// logout-clear branch, and nothing cancels a request already on the wire.
+describe("mountCustomThemeSync — a response that outlives its identity (#837)", () => {
+  const A_TOKEN = "tok-a";
+  const B_TOKEN = "tok-b";
+  const A_BG = "#aa0000";
+  const B_BG = "#00bb00";
+
+  const themed = (bg: string): TokenPayload => {
+    const base = payload();
+    return { ...base, colors: { ...base.colors, bg } as TokenColors };
+  };
+
+  const themeRow = (id: number, bg: string): ThemesWireT => ({
+    id,
+    name: `theme-${id}`,
+    author: "tester",
+    built_in: false,
+    published: true,
+    apply_count: 0,
+    in_use: 0,
+    mine: true,
+    payload: themed(bg) as unknown as Record<string, unknown>,
+    inserted_at: "2026-01-01T00:00:00Z",
+  });
+
+  const bearerOf = (init?: RequestInit): string | null =>
+    new Headers(init?.headers).get("authorization");
+
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  // Hold A's GET open; answer any other bearer with B's theme immediately, so
+  // the only route by which A's theme can reach the DOM or the cache is the
+  // held continuation under test.
+  function stubWithHeldGetForA(): { release: (pair: unknown) => void } {
+    let release!: (r: Response) => void;
+    const held = new Promise<Response>((r) => {
+      release = r;
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation((_url, init?: RequestInit) => {
+      if (bearerOf(init) === `Bearer ${A_TOKEN}`) return held;
+      return Promise.resolve(
+        new Response(JSON.stringify({ light: themeRow(2, B_BG), dark: null }), { status: 200 }),
+      );
+    });
+    return {
+      release: (pair: unknown) => release(new Response(JSON.stringify(pair), { status: 200 })),
+    };
+  }
+
+  // Disposal in afterEach, not at the end of each case: the effect under test
+  // writes module-singleton state, so a case that fails an assertion and skips
+  // its own dispose() would leave a live sync running against the NEXT case's
+  // fetch stub — the failure would then cascade into a neighbour that is fine.
+  let dispose: (() => void) | null = null;
+
+  function mountFor(t: string): void {
+    setToken(t);
+    createRoot((d) => {
+      dispose = d;
+      mountCustomThemeSync();
+    });
+  }
+
+  beforeEach(() => {
+    setToken(null);
+    localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    dispose?.();
+    dispose = null;
+  });
+
+  it("does not paint or cache the previous subject's theme when its GET lands after a rotation", async () => {
+    const a = stubWithHeldGetForA();
+    mountFor(A_TOKEN);
+    await flush(); // A's GET is on the wire, held
+
+    setToken(B_TOKEN); // rotation lands INSIDE A's await; B's own theme applies
+    await flush();
+
+    a.release({ light: themeRow(1, A_BG), dark: null });
+    await flush();
+
+    expect(activePair()).toEqual({ light: 2, dark: null });
+    expect(getAppliedThemePayload()?.colors.bg).toBe(B_BG);
+    expect(document.documentElement.style.getPropertyValue("--bg")).toBe(B_BG);
+  });
+
+  // The control. Same harness, same held response, no rotation: without it a
+  // gate that never delivered A's pair would make the case above pass while
+  // asserting nothing.
+  it("does apply that same response when the identity holds", async () => {
+    const a = stubWithHeldGetForA();
+    mountFor(A_TOKEN);
+    await flush();
+
+    a.release({ light: themeRow(1, A_BG), dark: null });
+    await flush();
+
+    expect(activePair()).toEqual({ light: 1, dark: null });
+    expect(getAppliedThemePayload()?.colors.bg).toBe(A_BG);
+    expect(document.documentElement.style.getPropertyValue("--bg")).toBe(A_BG);
   });
 });
