@@ -127,9 +127,19 @@ FROM alpine:3.24 AS runtime
 #   exiftool ffmpeg — Grappa.Uploads.MetadataStrip (#39). It fails CLOSED —
 #                     without them uploads 422 — so a self-contained image
 #                     bundles them for working uploads out of the box.
+#   bash            — runs infra/packaging/gen-secrets.sh, the ONE secret
+#                     generator (#862). Alpine's /bin/sh is busybox ash, which
+#                     has no `trap … RETURN`; the generator also leans on
+#                     `set -o pipefail` to catch a failed openssl mid-pipeline,
+#                     which Debian's dash (the .deb host's /bin/sh) lacks. Both
+#                     could be worked around by POSIX-ifying the generator —
+#                     at the cost of dropping pipefail on a script that writes
+#                     the Cloak key. Cheaper and safer to ship the 1.6 MB shell
+#                     than to fork or weaken the generator.
 RUN apk add --no-cache \
         ncurses \
         openssl \
+        bash \
         libstdc++ \
         libgcc \
         ca-certificates \
@@ -177,12 +187,19 @@ RUN addgroup -S grappa \
 COPY --from=build --chown=grappa:grappa /src/_build/prod/rel/grappa ./
 COPY --from=cic   --chown=grappa:grappa /cic-dist ./cicchetto-dist
 COPY --chown=grappa:grappa infra/docker/release-entrypoint.sh /app/release-entrypoint.sh
-RUN chmod 0755 /app/release-entrypoint.sh
+# The .deb/.rpm secret generator, verbatim — the entrypoint runs it on first
+# boot against /data (#862). It resolves the path as `dirname $0`, so the two
+# files MUST stay siblings.
+COPY --chown=grappa:grappa infra/packaging/gen-secrets.sh /app/gen-secrets.sh
+RUN chmod 0755 /app/release-entrypoint.sh /app/gen-secrets.sh
 
-# Image-baked runtime defaults. SECRETS ARE NOT BAKED — SECRET_KEY_BASE,
-# SECRET_SIGNING_SALT, RELEASE_COOKIE, GRAPPA_ENCRYPTION_KEY, VAPID_*, PHX_HOST
-# stay unset, so config/runtime.exs RAISES and a bare `docker run` fails loudly
-# until they are supplied (unit D wires the compose/one-liner env). Paths
+# Image-baked runtime defaults. SECRETS ARE NOT BAKED — baking them would ship
+# one identical Cloak key and SECRET_KEY_BASE to every puller. They are
+# GENERATED per-install instead, on the /data volume, by the entrypoint's
+# first-boot bootstrap (#862); anything the operator supplies via `-e` /
+# `--env-file` wins and is never overwritten. PHX_HOST is the one exception —
+# it cannot be invented, so a bare `docker run` still RAISES in
+# config/runtime.exs for that alone. Paths
 # default under the /data volume; CIC_DIST_ROOT points at the baked SPA;
 # GRAPPA_SUBSTRATE=docker selects the source-alias no-op adapter (#543).
 ENV DATABASE_PATH=/data/grappa.db \
