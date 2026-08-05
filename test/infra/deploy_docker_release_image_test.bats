@@ -11,18 +11,22 @@
 #
 # Scope: mode detection, and the SHAPE of the docker invocations + the env
 # file each verb writes. `docker` is stubbed on PATH so no image is pulled
-# and no container is touched; `openssl`/`mktemp`/`chmod` run for real so
-# the generated env file can be inspected (perms + contents). Secret VALUES
-# are asserted only for shape/idempotence, never trusted from the network.
+# and no container is touched; the real infra/packaging/gen-secrets.sh runs,
+# so the generated env file can be inspected (perms + contents). Secret
+# VALUES are asserted only for shape/idempotence, never trusted from the
+# network. The keypair MATHS lives in test/infra/gen_secrets_test.bats.
 
 load ../bats_helpers
 
 setup() {
     REPO_SRC="$BATS_TEST_DIRNAME/../.."
     BOX="$BATS_TEST_TMPDIR/box"
-    mkdir -p "$BOX/infra/docker" "$BOX/infra/lib"
+    mkdir -p "$BOX/infra/docker" "$BOX/infra/lib" "$BOX/infra/packaging"
     cp "$REPO_SRC/infra/docker/deploy.sh" "$BOX/infra/docker/"
     cp "$REPO_SRC/infra/lib/deploy_common.sh" "$BOX/infra/lib/"
+    # The ONE secret generator (#862) — deploy.sh resolves it at
+    # ../packaging/ relative to itself, the same layout get.sh lays down.
+    cp "$REPO_SRC/infra/packaging/gen-secrets.sh" "$BOX/infra/packaging/"
     DEPLOY="$BOX/infra/docker/deploy.sh"
 
     # Release-mode state dir (the env file lives here) + a data volume name.
@@ -40,21 +44,15 @@ setup() {
     # Fake `docker`: records every call, answers the few readbacks the
     # script makes. `inspect` reports the container present only when
     # FAKE_CONTAINER_EXISTS is set (unset = no such container = empty host).
-    # `run … gen_vapid_env` prints a keypair on stdout (the only stdout the
-    # script parses); everything else exits 0.
+    # Nothing here answers a VAPID `eval` any more: #862 moved keypair
+    # generation to gen-secrets.sh, so a reintroduced throwaway container
+    # would get an empty reply and fail loudly instead of being humoured.
     cat > "$FAKE_DIR/docker" <<'EOF'
 #!/usr/bin/env bash
 printf 'docker %s\n' "$*" >> "$ARGV_LOG"
 case "$1" in
   inspect)
     [ -n "${FAKE_CONTAINER_EXISTS:-}" ] || exit 1
-    exit 0 ;;
-  run)
-    case "$*" in
-      *generate_key*)
-        printf 'VAPID_PUBLIC_KEY=FAKEPUBLICKEY\n'
-        printf 'VAPID_PRIVATE_KEY=FAKEPRIVATEKEY\n' ;;
-    esac
     exit 0 ;;
 esac
 exit 0
@@ -161,6 +159,37 @@ EOF
     [ "$status" -ne 0 ]
     [[ "$output" == *"PHX_HOST is required"* ]]
     [ ! -f "$ENV_FILE" ]
+}
+
+@test "install: the secrets come from gen-secrets.sh, not a throwaway container" {
+    # #862: write_env_file used to transcribe four `openssl rand` calls and
+    # then spend a whole `docker run … eval` on the VAPID pair, because it
+    # claimed host openssl could not produce a raw P-256 point. It can (the
+    # maths is measured in test/infra/gen_secrets_test.bats), so the
+    # transcription and the throwaway container are both gone.
+    PHX_HOST=x.example.org run "$DEPLOY" install
+    [ "$status" -eq 0 ]
+
+    refute grep -q 'generate_key' "$ARGV_LOG"
+    grep -q 'gen-secrets: secrets written' <<<"$output"
+
+    # base64url, unpadded: 65 raw bytes -> 87 chars, 32 -> 43.
+    pub="$(sed -n 's/^VAPID_PUBLIC_KEY=//p' "$ENV_FILE")"
+    priv="$(sed -n 's/^VAPID_PRIVATE_KEY=//p' "$ENV_FILE")"
+    [ "${#pub}" -eq 87 ]
+    [ "${#priv}" -eq 43 ]
+    refute grep -q '[+/=]' <<<"$pub$priv"
+}
+
+@test "install: a failed generator leaves NO env file behind" {
+    # A half-written file is worse than none: the next run would take the
+    # "reusing the existing env file" branch and boot a secret-less box.
+    printf '#!/bin/sh\nexit 3\n' > "$BOX/infra/packaging/gen-secrets.sh"
+
+    PHX_HOST=x.example.org run "$DEPLOY" install
+    [ "$status" -ne 0 ]
+    refute test -f "$ENV_FILE"
+    refute test -f "$ENV_FILE.partial"
 }
 
 @test "install: does not echo generated secrets to stdout" {

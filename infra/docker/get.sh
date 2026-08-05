@@ -44,10 +44,11 @@ command -v curl >/dev/null 2>&1 || die "curl not found — install it (it is wha
 
 DOCKER_DIR="$GRAPPA_HOME/infra/docker"
 LIB_DIR="$GRAPPA_HOME/infra/lib"
+PKG_DIR="$GRAPPA_HOME/infra/packaging"
 DEPLOY="$DOCKER_DIR/deploy.sh"
 
-# POSIX sh has no brace expansion — two explicit mkdir -p, not {docker,lib}.
-mkdir -p "$DOCKER_DIR" "$LIB_DIR"
+# POSIX sh has no brace expansion — explicit mkdir -p per directory.
+mkdir -p "$DOCKER_DIR" "$LIB_DIR" "$PKG_DIR"
 
 # fetch URL DEST — download to a temp then move into place, so a failed
 # download never leaves a half-written (yet executable) deploy.sh behind.
@@ -57,8 +58,12 @@ fetch() {
 	mv "$2.tmp" "$2"
 }
 
-fetch "$RAW_BASE/infra/lib/deploy_common.sh" "$LIB_DIR/deploy_common.sh"
-fetch "$RAW_BASE/infra/docker/deploy.sh"     "$DEPLOY"
+fetch "$RAW_BASE/infra/lib/deploy_common.sh"      "$LIB_DIR/deploy_common.sh"
+# The ONE secret generator (#862). deploy.sh resolves it at ../packaging/
+# relative to itself, mirroring the repo layout, and refuses to write an env
+# file without it — so it is fetched here, not lazily.
+fetch "$RAW_BASE/infra/packaging/gen-secrets.sh" "$PKG_DIR/gen-secrets.sh"
+fetch "$RAW_BASE/infra/docker/deploy.sh"         "$DEPLOY"
 chmod +x "$DEPLOY"
 
 # Hand off. RELEASE mode is forced: a curl'd copy in $GRAPPA_HOME has no
