@@ -1040,11 +1040,19 @@ static int decode_frames(struct app *app, const char *path, media_protocol proto
 
 TEST(the_decoder_says_what_animates_not_the_url) {
     if (!have_ffmpeg()) {
-        fprintf(stderr, "test_layout: no ffmpeg — skipping decode checks\n");
+        /* Not a skip by default. This test is the only thing in the tree
+         * that asks the real decoder what it produced, and every CI run
+         * so far printed "no ffmpeg — skipping" and reported green. */
+        if (!test_skip_allowed())
+            FAIL("ffmpeg is not on PATH: install it, or set SHOTTINO_TEST_ALLOW_SKIP=1");
+        else
+            fprintf(stderr, "test_layout: no ffmpeg — decode checks skipped on request\n");
         return;
     }
     char dir[] = "/tmp/shottino-test-XXXXXX";
-    if (!mkdtemp(dir)) return;
+    bool have_dir = mkdtemp(dir) != NULL;
+    CHECK(have_dir);
+    if (!have_dir) return;
     char gif[PATH_MAX], png[PATH_MAX], cmd[PATH_MAX * 2];
     snprintf(gif, sizeof(gif), "%s/a.bin", dir);  /* no extension to hint with */
     snprintf(png, sizeof(png), "%s/s.bin", dir);
@@ -1056,6 +1064,12 @@ TEST(the_decoder_says_what_animates_not_the_url) {
              "ffmpeg -y -loglevel error -f lavfi -i testsrc=size=32x24:duration=1 -frames:v 1 "
              "-f image2 -c:v png %s >/dev/null 2>&1", png);
     bool made_png = system(cmd) == 0;
+    /* An ffmpeg build without the gif or png encoder guarded away every
+     * assertion below and still passed. There IS an ffmpeg here — that it
+     * cannot produce these two files is a finding, not a reason to
+     * report nothing. */
+    CHECK(made_gif);
+    CHECK(made_png);
 
     struct app *app = test_app();
     CHECK(app != NULL);
@@ -1439,24 +1453,45 @@ TEST(the_sampling_draw_fills_its_box_rather_than_clipping) {
     free(m.rgb);
 }
 
+/* No screen: everything below the offscreen terminal is unrunnable, and
+ * saying so is the whole job. Returning 0 here reported a green suite
+ * that had asserted nothing at all on any host without a terminal
+ * database — see test_skip_allowed in test.h. */
+static int no_screen(const char *why) {
+    if (test_skip_allowed()) {
+        fprintf(stderr, "test_layout: %s — drawing tests skipped on request\n", why);
+        return test_report();
+    }
+    fprintf(stderr,
+            "test_layout: %s — the drawing tests cannot run. Install a terminal\n"
+            "database (ncurses-base), or set SHOTTINO_TEST_ALLOW_SKIP=1 to accept\n"
+            "a run that asserts only what needs no screen.\n",
+            why);
+    return 1;
+}
+
 int main(void) {
+    test_use_temp_home();
+
     /* Same as the real program does before it touches ncurses. Without
      * it ncursesw has no multibyte encoding to work with and writes a
      * SPACE where a half block was asked for — which makes every
      * assertion about drawn picture cells quietly vacuous. */
     setlocale(LC_ALL, "");
+
+    /* These two need no screen — one is arithmetic on a string, the
+     * other asks ffmpeg what it decoded. They run BEFORE the offscreen
+     * terminal so that a host that cannot provide one still checks them
+     * rather than reporting on nothing. */
+    RUN(the_topic_breaks_on_a_word);
+    RUN(the_decoder_says_what_animates_not_the_url);
+
     FILE *sink = fopen("/dev/null", "w");
-    if (!sink) {
-        fprintf(stderr, "test_layout: cannot open /dev/null — skipping\n");
-        return 0;
-    }
-    /* An offscreen screen: no TTY, no terminfo beyond the entry named
-     * here. A build host without terminfo skips rather than fails — the
-     * suite asserts shottino's layout, not the host's terminal database. */
+    if (!sink) return no_screen("cannot open /dev/null");
+    /* An offscreen screen: no TTY, no terminfo beyond the entry named here. */
     if (!newterm("xterm", sink, stdin)) {
-        fprintf(stderr, "test_layout: no usable terminfo entry — skipping\n");
         fclose(sink);
-        return 0;
+        return no_screen("no usable terminfo entry");
     }
     RUN(audio_is_clickable_but_not_drawn);
     RUN(the_sidebar_records_a_row_for_every_window);
@@ -1489,8 +1524,6 @@ int main(void) {
     RUN(roster_pane_draws_from_the_offset);
     RUN(the_topic_band_is_at_most_two_lines);
     RUN(a_short_channel_name_leaves_the_topic_the_width);
-    RUN(the_topic_breaks_on_a_word);
-    RUN(the_decoder_says_what_animates_not_the_url);
     RUN(an_action_is_drawn_louder_than_system_noise);
     RUN(a_source_rectangle_is_clamped_into_the_picture);
     RUN(a_cell_samples_across_the_whole_rectangle);
