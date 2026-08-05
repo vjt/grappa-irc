@@ -163,6 +163,19 @@ vi.mock("../lib/selection", () => ({
   selectedChannel: () => selectedChannelHolder.current,
 }));
 
+// #866 — the mute picker offers exactly the sidebar's window universe, which
+// `activeWindows.windowCandidates` derives from networks × channels × query
+// windows. Mocked at THAT boundary rather than by stubbing its three upstream
+// stores: the drawer's contract is "whatever the shared projection returns
+// becomes an option", and a test that rebuilt the projection would be
+// asserting its own arithmetic.
+const windowCandidatesHolder = vi.hoisted(() => ({
+  current: [] as { networkSlug: string; channelName: string; kind: "channel" | "query" }[],
+}));
+vi.mock("../lib/activeWindows", () => ({
+  windowCandidates: () => windowCandidatesHolder.current,
+}));
+
 vi.mock("../lib/push", () => ({
   enablePush: vi.fn().mockResolvedValue({ status: "enabled", subscriptionId: "sub-1" }),
   disablePush: vi.fn().mockResolvedValue(true),
@@ -265,6 +278,7 @@ beforeEach(() => {
   uploadTtlHolder.current = null;
   subjectHolder.current = null;
   selectedChannelHolder.current = null;
+  windowCandidatesHolder.current = [];
 });
 
 describe("SettingsDrawer", () => {
@@ -453,6 +467,141 @@ describe("SettingsDrawer notifications section", () => {
     await waitFor(() => {
       expect(screen.getByTestId("push-banner")).toBeInTheDocument();
     });
+  });
+});
+
+// #866 — the mute surface. vjt's Q5 ruled OUT a free-text field ("a long
+// free-text line of channel names is bad UX") in favour of a picker over the
+// conversations you actually have, with each mute rendered as its own
+// removable row.
+describe("SettingsDrawer muted conversations — #866", () => {
+  const optionValues = (): string[] =>
+    [...(screen.getByTestId("pref-mute-picker") as HTMLSelectElement).options].map((o) => o.value);
+
+  const lastPutPrefs = async (): Promise<Record<string, unknown>> => {
+    const userSettings = await import("../lib/userSettings");
+    const calls = (userSettings.putNotificationPrefs as ReturnType<typeof vi.fn>).mock.calls;
+    const last = calls[calls.length - 1] as [string, Record<string, unknown>];
+    return last[1];
+  };
+
+  const openPush = async () => {
+    const userSettings = await import("../lib/userSettings");
+    wrap(true);
+    openSub("push-settings-entry");
+    await waitFor(() => {
+      expect(userSettings.getNotificationPrefs).toHaveBeenCalled();
+    });
+  };
+
+  beforeEach(() => {
+    windowCandidatesHolder.current = [
+      { networkSlug: "azzurra", channelName: "#Sbiffo", kind: "channel" },
+      { networkSlug: "azzurra", channelName: "alice", kind: "query" },
+    ];
+  });
+
+  it("offers the conversations you are in, keyed by the folded name", async () => {
+    await openPush();
+
+    // "#Sbiffo" is offered under its FOLDED key — that is what gets stored and
+    // what the predicate compares against — while the option still READS as
+    // the operator typed it.
+    expect(optionValues()).toEqual(["", "#sbiffo", "alice"]);
+    expect(screen.getByRole("option", { name: "#Sbiffo" })).toBeInTheDocument();
+  });
+
+  it("collapses the same conversation on two networks into one option", async () => {
+    windowCandidatesHolder.current = [
+      { networkSlug: "azzurra", channelName: "#grappa", kind: "channel" },
+      { networkSlug: "libera", channelName: "#Grappa", kind: "channel" },
+    ];
+
+    await openPush();
+
+    // muted_targets is per-subject and carries no network, so offering the
+    // name twice would promise a per-network mute the store cannot keep.
+    expect(optionValues()).toEqual(["", "#grappa"]);
+  });
+
+  it("picking a conversation persists a permanent mute and adopts the server echo", async () => {
+    await openPush();
+
+    fireEvent.change(screen.getByTestId("pref-mute-picker"), { target: { value: "#sbiffo" } });
+
+    await waitFor(async () => {
+      expect(await lastPutPrefs()).toMatchObject({
+        muted_targets: { "#sbiffo": { until: null } },
+      });
+    });
+    // The row appears because the PUT's echo came back, not because the click
+    // optimistically drew it: the mock echoes what it was sent, and the store
+    // rule is that cic adopts the server's normalized map.
+    await waitFor(() => {
+      expect(screen.getByTestId("pref-muted-#sbiffo")).toBeInTheDocument();
+    });
+  });
+
+  it("drops an already-muted conversation from the picker", async () => {
+    const userSettings = await import("../lib/userSettings");
+    (userSettings.getNotificationPrefs as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ...userSettings.DEFAULT_NOTIFICATION_PREFS,
+      muted_targets: { "#sbiffo": { until: null } },
+    });
+
+    await openPush();
+
+    await waitFor(() => {
+      expect(optionValues()).toEqual(["", "alice"]);
+    });
+  });
+
+  it("the × removes just that mute and leaves the others stored", async () => {
+    const userSettings = await import("../lib/userSettings");
+    (userSettings.getNotificationPrefs as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ...userSettings.DEFAULT_NOTIFICATION_PREFS,
+      muted_targets: { "#sbiffo": { until: null }, alice: { until: null } },
+    });
+
+    await openPush();
+    await waitFor(() => {
+      expect(screen.getByTestId("pref-muted-#sbiffo")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByLabelText("Unmute #sbiffo"));
+
+    await waitFor(async () => {
+      expect(await lastPutPrefs()).toMatchObject({ muted_targets: { alice: { until: null } } });
+    });
+    // The removed key is ABSENT, not present-with-a-falsy-value: the predicate
+    // decides on key presence alone.
+    expect((await lastPutPrefs()).muted_targets).not.toHaveProperty("#sbiffo");
+  });
+
+  it("disables the picker when every conversation is already muted", async () => {
+    const userSettings = await import("../lib/userSettings");
+    (userSettings.getNotificationPrefs as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ...userSettings.DEFAULT_NOTIFICATION_PREFS,
+      muted_targets: { "#sbiffo": { until: null }, alice: { until: null } },
+    });
+
+    await openPush();
+
+    await waitFor(() => {
+      expect((screen.getByTestId("pref-mute-picker") as HTMLSelectElement).disabled).toBe(true);
+    });
+  });
+
+  it("tolerates a server response with no muted_targets at all", async () => {
+    const userSettings = await import("../lib/userSettings");
+    const legacy = { ...userSettings.DEFAULT_NOTIFICATION_PREFS };
+    delete legacy.muted_targets;
+    (userSettings.getNotificationPrefs as ReturnType<typeof vi.fn>).mockResolvedValueOnce(legacy);
+
+    await openPush();
+
+    expect(optionValues()).toEqual(["", "#sbiffo", "alice"]);
+    expect(screen.queryByTestId("pref-muted-list")).toBeNull();
   });
 });
 

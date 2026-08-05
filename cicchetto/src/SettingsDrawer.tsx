@@ -12,8 +12,10 @@ import {
 import AliasSettings from "./AliasSettings";
 import DeleteAccountModal from "./DeleteAccountModal";
 import InlineConfirmButton from "./InlineConfirmButton";
+import { windowCandidates } from "./lib/activeWindows";
 import { ApiError, displayNick, type Network, visitorNetworkNick } from "./lib/api";
 import { getSubject, isPersistentIdentity, token } from "./lib/auth";
+import { canonicalChannel } from "./lib/channelKey";
 import { getColoredNicklist } from "./lib/colorNicklist";
 import { syncedSetColoredNicklist, syncedSetTimeFormat } from "./lib/displayPrefs";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
@@ -495,6 +497,51 @@ const SettingsDrawer: Component<Props> = (props) => {
   const commitNicksOnly = () => {
     const next = { ...prefs(), private_messages_only: splitCsv(nicksOnlyText()) };
     void savePrefs(next);
+  };
+
+  // #866 — the per-conversation mute list, sorted by the stored (folded) key
+  // so the rows do not reshuffle when one is added.
+  const mutedConversations = (): { key: string; until: number | null }[] =>
+    Object.entries(prefs().muted_targets ?? {})
+      .map(([key, target]) => ({ key, until: target.until }))
+      .sort((a, b) => a.key.localeCompare(b.key));
+
+  // What the picker offers: the conversations the SIDEBAR shows (joined and
+  // parted channels, open queries), never a free-text field over all of IRC —
+  // vjt's Q5. Deduped by the folded key because `muted_targets` is per-subject
+  // and carries no network: `#grappa` on two networks is ONE mute, and
+  // offering it twice would imply otherwise. Already-muted keys drop out, so
+  // the picker cannot re-add a row that is on screen right below it.
+  const muteCandidates = (): { key: string; label: string }[] => {
+    const muted = prefs().muted_targets ?? {};
+    const byKey = new Map<string, string>();
+    for (const candidate of windowCandidates()) {
+      const key = canonicalChannel(candidate.channelName);
+      if (Object.hasOwn(muted, key) || byKey.has(key)) continue;
+      byKey.set(key, candidate.channelName);
+    }
+    return [...byKey]
+      .map(([key, label]) => ({ key, label }))
+      .sort((a, b) => a.key.localeCompare(b.key));
+  };
+
+  // `until: null` — permanent. The shape carries the snooze field from day
+  // one (Q1) but this cut exposes no picker for it, so every mute the UI
+  // creates is permanent until removed.
+  const muteConversation = (key: string) => {
+    if (key === "") return;
+    const current = prefs();
+    void savePrefs({
+      ...current,
+      muted_targets: { ...(current.muted_targets ?? {}), [key]: { until: null } },
+    });
+  };
+
+  const unmuteConversation = (key: string) => {
+    const current = prefs();
+    const next = { ...(current.muted_targets ?? {}) };
+    delete next[key];
+    void savePrefs({ ...current, muted_targets: next });
   };
 
   const onMasterToggle = async (checked: boolean) => {
@@ -1310,6 +1357,14 @@ const SettingsDrawer: Component<Props> = (props) => {
 
               <hr />
 
+              {/* #866 — the section used to be one flat run of four controls
+                  in which "only in channels" sat between two checkboxes about
+                  different things and "channel mentions" trailed the whitelist
+                  it does not belong to. Grouped under headings so each
+                  question ("when do channels notify me?", "when do DMs?",
+                  "what never does?") is answered in one place, and so the mute
+                  list has a home rather than being bolted onto the end. */}
+              <h3>channels</h3>
               <label>
                 <input
                   type="checkbox"
@@ -1349,6 +1404,8 @@ const SettingsDrawer: Component<Props> = (props) => {
                 />
                 channel mentions
               </label>
+
+              <h3>private messages</h3>
               <label>
                 <input
                   type="checkbox"
@@ -1376,6 +1433,54 @@ const SettingsDrawer: Component<Props> = (props) => {
                   data-testid="pref-nicks-only"
                 />
               </label>
+
+              <h3>muted conversations</h3>
+              <p class="prefs-hint">
+                A muted conversation never notifies — not even when someone says your nick. The name
+                applies on every network.
+              </p>
+              <label class="prefs-list">
+                mute:
+                <select
+                  disabled={savingPrefs() || muteCandidates().length === 0}
+                  // Value resets to "" so the same conversation can be muted,
+                  // removed, and muted again without the select getting stuck
+                  // on a stale selection.
+                  value=""
+                  onChange={(e) => {
+                    const el = e.currentTarget as HTMLSelectElement;
+                    const picked = el.value;
+                    el.value = "";
+                    muteConversation(picked);
+                  }}
+                  data-testid="pref-mute-picker"
+                >
+                  <option value="">pick a conversation…</option>
+                  <For each={muteCandidates()}>
+                    {(candidate) => <option value={candidate.key}>{candidate.label}</option>}
+                  </For>
+                </select>
+              </label>
+              <Show when={mutedConversations().length > 0}>
+                <ul class="watchlists-list" data-testid="pref-muted-list">
+                  <For each={mutedConversations()}>
+                    {(muted) => (
+                      <li class="watchlists-item" data-testid={`pref-muted-${muted.key}`}>
+                        <span class="watchlists-keyword">{muted.key}</span>
+                        <button
+                          type="button"
+                          class="watchlists-remove"
+                          disabled={savingPrefs()}
+                          aria-label={`Unmute ${muted.key}`}
+                          onClick={() => unmuteConversation(muted.key)}
+                        >
+                          ×
+                        </button>
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </Show>
 
               <Show when={prefsError() !== null}>
                 <p class="prefs-error" role="alert" data-testid="prefs-error">

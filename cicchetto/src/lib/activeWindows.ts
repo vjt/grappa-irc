@@ -134,7 +134,12 @@ export function classifyNextActive(
 // mentions windows are intentionally excluded — #235 cycles
 // "channel/query" windows only (server status buffers aren't activity
 // windows in the irssi sense).
-function buildCandidates(): ActiveWindow[] {
+//
+// Exported since #866: the per-conversation mute picker offers exactly the
+// conversations the sidebar shows, and the alternative was a second
+// walk over `networks()` × `channelsBySlug()` × `queryWindowsByNetwork()`
+// that would drift from this one the first time a window shape is added.
+export function windowCandidates(): ActiveWindow[] {
   const out: ActiveWindow[] = [];
   const cbs = channelsBySlug() ?? {};
   const qwbn = queryWindowsByNetwork();
@@ -169,7 +174,7 @@ function buildActivityIds(): Record<ChannelKey, number> {
 const root = moduleRoot(() => {
   const activeWindows = createMemo((): ActiveWindow[] =>
     orderUnreadWindows({
-      candidates: buildCandidates(),
+      candidates: windowCandidates(),
       unread: messagesUnread(),
       mentions: mentionCounts(),
       activityId: buildActivityIds(),

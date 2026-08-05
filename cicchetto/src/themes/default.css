@@ -4388,14 +4388,25 @@ html.resize-dragging * {
   gap: 0.25rem;
 }
 
-.settings-drawer label.prefs-list input[type="text"] {
+.settings-drawer label.prefs-list input[type="text"],
+.settings-drawer label.prefs-list select {
   color: var(--text);
   padding: 0.25rem 0.4rem;
 }
 
-.settings-drawer label.prefs-list input[type="text"]:disabled {
+.settings-drawer label.prefs-list input[type="text"]:disabled,
+.settings-drawer label.prefs-list select:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* #866 — the one line of prose in this fieldset. It carries two facts the
+   controls cannot: that a mute outranks a mention, and that the key has no
+   network in it. */
+.settings-drawer .prefs-hint {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin: 0 0 0.25rem;
 }
 
 .settings-drawer h3 {
