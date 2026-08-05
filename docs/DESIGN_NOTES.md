@@ -30209,3 +30209,62 @@ itself is unreachable while the failed channel holds focus. The e2e navigates
 back to a joined window before reaching for the archive, and says so. #402 gives
 the window a surface; #881 is what makes that surface reachable from where the
 operator is standing.
+
+## 2026-08-05 — #885: `$nick` binds to the configured nick, and the token is a whole word
+
+**The variable binds the CONFIGURED nick, never the live one.** The perform list
+grew a third variable so `NS IDENTIFY $nick $nickserv_pass` can name the account.
+The binding is `Session.Server`'s new immutable `configured_nick` (seeded from
+`opts.nick`, i.e. the credential's `nick` column), NOT `state.nick`. That is the
+entire point of the feature: it exists for the case where the live nick is the
+WRONG one — a 433 collision parked us on `vjt_` — so binding the live nick would
+expand to exactly the value that fails to identify. The feature would be the
+feature backwards.
+
+**A new field, because the equality that exists today is an ordering accident.**
+`state.nick` is seeded from `opts.nick`, and `run_perform_and_identify/1` runs
+BEFORE `EventRouter` reconciles 001, so on the ordinary connect path the two are
+equal and `state.nick` would have "worked". It is not a contract. `state.nick` is
+the LIVE nick — `on_own_nick_change/2` documents the three obligations that ride
+every rename — and the equality already breaks on the defensive re-welcome (a
+second 001 with no intervening crash, the case `cancel_and_drain` in the 001
+clause exists for) once a NICK has landed in between. That is the scenario the
+server-level test drives, because a test that only feeds one 001 passes under
+BOTH implementations and therefore constrains nothing. `configured_nick/1` reads
+via `Map.get` for #229 hot-reload safety; the fallback is the live nick, which is
+wrong in precisely the alt-nick case, but it is bounded to pre-upgrade processes
+reaching a SECOND 001 and beats crashing a live session on a hot deploy.
+
+**One guard, not two — and the first prose written here was wrong.** `nick` is a
+PREFIX of `nickserv_pass`, so the obvious worry is branch order: alternation is
+leftmost-first rather than longest-match, and `nick` first would expand
+`$nickserv_pass` to the nick plus a literal `serv_pass` tail, silently keeping
+the password off the wire. That was written down as load-bearing. Measuring the
+2×2 (order × boundary) says otherwise: `nick` also needs a trailing `\b`,
+because it is the only token short enough to prefix ordinary words (`$nickname`
+→ `vjtname`), and the boundary ALSO neutralises the ordering trap — at
+`$nickserv_pass` the `nick\b` branch fails on `k`→`s`, both word characters, so
+alternation falls through to the password branch regardless of position. So the
+`\b` is the guard; the order is a redundant second line for the day someone
+deletes it, and the comment now says so rather than crediting the wrong
+mechanism. The boundary sits INSIDE the group on that branch alone, so the two
+pre-existing tokens keep their exact previous matching behaviour rather than
+newly refusing to match `$nickserv_passX`.
+
+**`$nick` is not a secret, and nothing about secrecy moved.** The expanded lines
+remain unloggable (a line may carry a literal password the user pasted), and
+`consumed_nickserv_pass?` stays keyed on the NickServ password alone — a line
+using only `$nick` does not suppress the built-in identify. The bindings map was
+renamed from `secrets` to `bindings` for that reason: two of the three values are
+passwords and one is not, and a type called `secrets` invites the next reader to
+treat all of them the same way.
+
+**The wire consequence of an unbound value, stated rather than left implicit.**
+An unbound variable expands to the empty string by the pre-existing contract, and
+`$nick` follows it rather than falling back to the literal token. In production
+that arm is unreachable through the typed door: `nick` is `validate_required` on
+the credential and passes `Identity.validate_nick/2`, so it is a non-empty RFC
+nick — which is also why the expansion cannot inject a second wire command
+(and `Client.send_raw` CR/LF/NUL-guards the line regardless). The empty arm is
+kept and tested anyway, because the pure module must not be the place that
+assumes its caller validated.

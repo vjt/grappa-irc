@@ -13,7 +13,9 @@ import { networks } from "./lib/networks";
 // #385 aliases (the server has no slash interpreter; that's #288, out of
 // scope). The help blurb states this plainly so the honesty is in the UI,
 // not just the issue. `$nickserv_pass` / `$oper_pass` keep secrets out of
-// the text. Both passwords are WRITE-ONLY: the server returns only whether each
+// the text; #885's `$nick` is NOT a secret — it expands to the credential's
+// configured nick (not the live one), which is what makes an identify still
+// name the account after a collision parked the session on an alt nick. Both passwords are WRITE-ONLY: the server returns only whether each
 // is set, never the value; the inputs are leave-blank-to-keep, exactly like a
 // password field (mirrors AdminCredentialsTab's edit form). #509 gave
 // `$nickserv_pass` its own field, decoupled from auth_method, so it works even
@@ -179,11 +181,14 @@ const PerformSettings: Component<{ onBack: () => void }> = (props) => {
           — <code>/msg</code>, <code>/join</code> and <code>/alias</code> expansions do NOT work
           here. Write the wire command itself:{" "}
           <code>PRIVMSG NickServ :IDENTIFY $nickserv_pass</code>,{" "}
-          <code>OPER myname $oper_pass</code>, <code>MODE mynick +x</code>. Use{" "}
+          <code>OPER myname $oper_pass</code>, <code>MODE $nick +x</code>. Use{" "}
           <code>$nickserv_pass</code> and <code>$oper_pass</code> so passwords stay out of the text
           — each expands from its own write-only field below (leave blank to keep the stored value).{" "}
           <code>$nickserv_pass</code> works on any network, including one whose password is already
-          spent on the server password. Lines starting with <code>#</code> are comments.
+          spent on the server password. <code>$nick</code> expands to your{" "}
+          <strong>configured</strong> nick — not the one you happen to be wearing — so{" "}
+          <code>NS IDENTIFY $nick $nickserv_pass</code> still names your account after a nick
+          collision parked you on an alt nick. Lines starting with <code>#</code> are comments.
         </p>
         <Show
           when={(networks() ?? []).length > 0}

@@ -1550,6 +1550,21 @@ defmodule Grappa.Session.ServerTest do
 
     defp line_index(lines, line), do: Enum.find_index(lines, &(&1 == line))
 
+    # A fed line reaches `Session.Server` only after crossing the socket and
+    # the `Client` process, so a bare `:sys.get_state/1` — a direct call to the
+    # Server — races ahead of it. Poll the observed condition instead of
+    # guessing a sleep long enough to cover both hops.
+    defp await_live_nick(_pid, expected, 0), do: flunk("live nick never became #{expected}")
+
+    defp await_live_nick(pid, expected, attempts) do
+      if :sys.get_state(pid).nick == expected do
+        :ok
+      else
+        Process.sleep(10)
+        await_live_nick(pid, expected, attempts - 1)
+      end
+    end
+
     test "runs each perform line at 001, then the built-in identify (not consumed)" do
       {server, port} = start_server()
 
@@ -1725,6 +1740,59 @@ defmodule Grappa.Session.ServerTest do
           &(&1 == "PRIVMSG NickServ :IDENTIFY ns-secret\r\n"),
           1_000
         )
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "$nick expands to the CONFIGURED nick, not the nick the session is wearing (#885)" do
+      {server, port} = start_server()
+
+      {user, network, credential} =
+        setup_user_and_network(port, %{
+          nick: "grappa-test",
+          auth_method: :server_pass,
+          password: "server-pw",
+          autojoin_channels: []
+        })
+
+      # The DEDICATED `nickserv_pass` field, not the one-shot
+      # `pending_password`: the latter is cleared after the first pass by
+      # design, so the re-welcome below would expand it to empty and the two
+      # runs would not be comparable.
+      cred =
+        credential
+        |> put_nickserv_pass("ns-secret")
+        |> put_perform_list("NS IDENTIFY $nick $nickserv_pass")
+
+      pid = nickserv_plan(user, network, cred, 60_000)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "NS IDENTIFY grappa-test ns-secret\r\n"),
+          1_000
+        )
+
+      # Now make the LIVE nick diverge from the configured one — the whole
+      # reason the feature exists. Asserting the divergence landed is what
+      # makes the re-welcome below discriminate between the two bindings.
+      IRCServer.feed(server, ":grappa-test!u@h NICK :grappa-test_\r\n")
+      :ok = await_live_nick(pid, "grappa-test_", 100)
+
+      # Re-welcome (a second 001 with no intervening crash — the case
+      # `cancel_and_drain` in the 001 clause exists for) re-runs the perform
+      # list. The umode query is emitted AFTER the perform lines in that same
+      # clause, so it is an ordering-guaranteed barrier, not a sleep.
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test_ :Welcome\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "MODE grappa-test_\r\n"), 1_000)
+
+      lines = IRCServer.sent_lines(server)
+
+      assert Enum.count(lines, &(&1 == "NS IDENTIFY grappa-test ns-secret\r\n")) == 2
+      refute "NS IDENTIFY grappa-test_ ns-secret\r\n" in lines
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

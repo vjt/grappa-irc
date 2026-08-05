@@ -557,6 +557,14 @@ defmodule Grappa.Session.Server do
           network_id: integer(),
           network_slug: String.t(),
           nick: String.t(),
+          # #885 — the nick this session was CONFIGURED with (`opts.nick`,
+          # i.e. the credential's `nick` column). Never mutated: `nick` above
+          # is the LIVE nick and every rename path moves it (`on_own_nick_change/2`
+          # lists the three obligations that ride that trigger), so after a 433
+          # fallback, a services rename or a `/nick` the two diverge — and it is
+          # precisely then that `$nick` in the perform list has to still name the
+          # ACCOUNT. Read via `configured_nick/1`, never dot-access.
+          configured_nick: String.t(),
           members: %{String.t() => %{String.t() => [String.t()]}},
           seeded_channels: MapSet.t(String.t()),
           topics: %{String.t() => EventRouter.topic_entry()},
@@ -1100,6 +1108,7 @@ defmodule Grappa.Session.Server do
       network_id: opts.network_id,
       network_slug: opts.network_slug,
       nick: opts.nick,
+      configured_nick: opts.nick,
       members: %{},
       # CP24 bucket E web/S8: tracks per-channel "366 RPL_ENDOFNAMES
       # observed at least once" so `list_members/3` can discriminate
@@ -3753,7 +3762,8 @@ defmodule Grappa.Session.Server do
     %{lines: lines, consumed_nickserv_pass?: consumed?} =
       PerformList.expand(state.perform_list, %{
         nickserv_pass: effective_ns,
-        oper_pass: state.oper_pass
+        oper_pass: state.oper_pass,
+        nick: configured_nick(state)
       })
 
     # Redaction only — line COUNT + total bytes, never the text. A user may
@@ -3778,6 +3788,26 @@ defmodule Grappa.Session.Server do
   @spec nickserv_secret(t()) :: String.t() | nil
   defp nickserv_secret(%{nickserv_pass: pw}) when is_binary(pw) and pw != "", do: pw
   defp nickserv_secret(%{pending_password: pw}), do: pw
+
+  # GH #885 — the value bound to `$nick`. The CONFIGURED nick, never
+  # `state.nick`: the feature exists for the case where the live nick is the
+  # wrong one (`vjt_` after a 433 fallback), so binding the live nick would
+  # expand to exactly the value that fails to identify. Today `state.nick` and
+  # `state.configured_nick` happen to be equal on the ordinary connect path —
+  # `run_perform_and_identify/1` runs before EventRouter reconciles 001, and a
+  # dropped socket respawns the process with fresh opts — but that equality is
+  # an ORDERING accident, not the contract. It already breaks on the defensive
+  # re-welcome (a second 001 with no intervening crash, the case
+  # `cancel_and_drain` above exists for) after a rename.
+  #
+  # #229 hot-reload safety — `Map.get`, never dot-access: a process predating
+  # this field would KeyError here on its next 001. The fallback is the live
+  # nick, which is wrong in exactly the alt-nick case this feature exists for
+  # — but it is bounded to processes that predate the upgrade AND to a second
+  # 001 within them, and a degraded expansion beats crashing a live session on
+  # a hot deploy.
+  @spec configured_nick(t()) :: String.t()
+  defp configured_nick(state), do: Map.get(state, :configured_nick, state.nick)
 
   # Sends one expanded perform line through the outbound choke point: capture
   # any NickServ secret (stages the `+r` rendezvous), then `Client.send_raw`
