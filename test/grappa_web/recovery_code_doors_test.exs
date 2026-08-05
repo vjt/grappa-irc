@@ -22,10 +22,9 @@ defmodule GrappaWeb.RecoveryCodeDoorsTest do
   import Ecto.Query
   import Grappa.AuthFixtures
 
-  alias Grappa.Accounts
+  alias Grappa.{Accounts, Repo}
   alias Grappa.Accounts.{Passkey, Session, TOTP, TOTPRecoveryCode, User, WebAuthn}
   alias Grappa.RateLimit.FailureWindow
-  alias Grappa.Repo
 
   @states [
     :passwordless,
@@ -141,11 +140,11 @@ defmodule GrappaWeb.RecoveryCodeDoorsTest do
     {:ok, :passwordless} = WebAuthn.set_mode(user, :passwordless, session.id, codes)
     {:ok, :second_factor} = WebAuthn.set_mode(reload(user), :second_factor, session.id, [])
 
-    user = reload(user)
-    refute TOTP.enabled?(user)
-    assert codes_left(user) == 10
+    stranded = reload(user)
+    refute TOTP.enabled?(stranded)
+    assert codes_left(stranded) == 10
 
-    %{user: user, password: password, code: hd(codes), door: :post_password}
+    %{user: stranded, password: password, code: hd(codes), door: :post_password}
   end
 
   defp arm(:totp_only) do
@@ -155,7 +154,7 @@ defmodule GrappaWeb.RecoveryCodeDoorsTest do
     %{user: reload(user), password: password, code: hd(codes), door: :post_password}
   end
 
-  defp redeem(conn, :passwordless_recovery, user, _password, code) do
+  defp redeem(conn, :passwordless_recovery, user, _, code) do
     conn
     |> post("/auth/passkeys/recover", %{"identifier" => user.name, "recovery_code" => code})
     |> json_response(200)
@@ -203,9 +202,15 @@ defmodule GrappaWeb.RecoveryCodeDoorsTest do
 
   defp reload(user), do: Repo.get!(User, user.id)
 
-  defp codes_left(user),
-    do: Repo.aggregate(from(r in TOTPRecoveryCode, where: r.user_id == ^user.id), :count)
+  defp codes_left(user) do
+    TOTPRecoveryCode
+    |> where([r], r.user_id == ^user.id)
+    |> Repo.aggregate(:count)
+  end
 
-  defp session_count(user),
-    do: Repo.aggregate(from(s in Session, where: s.user_id == ^user.id and is_nil(s.revoked_at)), :count)
+  defp session_count(user) do
+    Session
+    |> where([s], s.user_id == ^user.id and is_nil(s.revoked_at))
+    |> Repo.aggregate(:count)
+  end
 end
