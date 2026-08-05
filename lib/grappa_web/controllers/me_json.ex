@@ -37,7 +37,7 @@ defmodule GrappaWeb.MeJSON do
   Nested map: `%{network_slug => %{channel => %{messages, mentions,
   events, severity}}}`. Same nesting as `read_cursors`; same
   nested-by-network grouping. Built inline by `MeController.show/2` from
-  `Grappa.WindowCounts.snapshot/6` per cursor (#267; slug→id index
+  `Grappa.WindowCounts.snapshot/7` per cursor (#267; slug→id index
   resolved controller-side to keep the count context free of a `Networks`
   dep edge). Channels without a cursor row are absent — cic falls
   back to the per-channel join reply seed (bucket B1) for those. Cic
@@ -76,7 +76,7 @@ defmodule GrappaWeb.MeJSON do
   @typedoc """
   Unread-count envelope: nested `%{slug => %{channel => %{messages,
   mentions, events, severity}}}`. #267 — the per-channel value is the
-  `Grappa.WindowCounts.snapshot/6` result (server-authoritative), so cic
+  `Grappa.WindowCounts.snapshot/7` result (server-authoritative), so cic
   renders the message / mention / event counts + severity colour without
   any client-side count derivation. Mirrors cic `selection.ts`'s
   `ServerWindowCounts` type byte-for-byte.

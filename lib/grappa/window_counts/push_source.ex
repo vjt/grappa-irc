@@ -6,7 +6,7 @@ defmodule Grappa.WindowCounts.PushSource do
   ## Why a behaviour + config injection
 
   `Grappa.Session.Server`'s `apply_effects/2` `:persist` arm wants to
-  push the fresh `WindowCounts.snapshot/6` for a `(subject, network,
+  push the fresh `WindowCounts.snapshot/7` for a `(subject, network,
   channel)` window right after a row lands, so a connected cic renders
   the new count without deriving it. But the snapshot needs the read
   cursor (`Grappa.ReadCursor`), which deps `Networks`, which deps

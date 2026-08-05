@@ -26,6 +26,7 @@ defmodule GrappaWeb.MeController do
 
   alias Grappa.{AccountDeletion, Networks, ReadCursor, UserSettings, WindowCounts}
   alias Grappa.Networks.Credentials
+  alias Grappa.PresenceFilter.Resolver
   alias Grappa.Push.BadgeCount
   alias GrappaWeb.UserSocket
 
@@ -64,9 +65,9 @@ defmodule GrappaWeb.MeController do
   are absent — cic falls back to the per-channel join-reply seed (bucket
   B1) for those.
 
-  #396 — built via `Grappa.WindowCounts.bulk_snapshot/3` in a CONSTANT
+  #396 — built via `Grappa.WindowCounts.bulk_snapshot/4` in a CONSTANT
   number of queries (2), NOT 2 per window. The old path issued
-  `count_after_split/5` + `unread_content_tail/6` per cursor (~2N ≈ 100
+  `count_after_split/6` + `unread_content_tail/6` per cursor (~2N ≈ 100
   round trips at a ~50-window logon); #393's single
   `nick_fold(COALESCE(dm_with, channel))` predicate unified channel + DM
   windows into ONE `read_cursors ⋈ messages` join (served by the live prod
@@ -195,7 +196,7 @@ defmodule GrappaWeb.MeController do
   end
 
   # Walks the cursor envelope and resolves each (slug, channel, cursor)
-  # to a `count_after_split/5` per-channel pair. Returns the nested
+  # to a `count_after_split/6` per-channel pair. Returns the nested
   # `%{slug => %{channel => %{messages, events}}}` shape that mirrors
   # the cursor envelope; missing slugs (stale cursor referencing a
   # network that's since been deleted) are dropped.
@@ -209,7 +210,7 @@ defmodule GrappaWeb.MeController do
   # from unread_counts"` — is "channels without a cursor are absent;
   # cic falls back to the per-channel join_reply seed (bucket B1)".
   # A nil cursor IS "no cursor", so skipping matches the contract.
-  # Without this guard, `count_after_split/5`'s `is_integer(after_id)`
+  # Without this guard, `count_after_split/6`'s `is_integer(after_id)`
   # head clause throws FunctionClauseError and the entire /me response
   # 500s — cic then has no `user()` value and the Shell renders the
   # cold "select a channel below" placeholder with no admin console.
@@ -221,9 +222,9 @@ defmodule GrappaWeb.MeController do
   defp build_unread_counts(_, cursor_envelope) when map_size(cursor_envelope) == 0,
     do: %{}
 
-  defp build_unread_counts(subject, _) do
+  defp build_unread_counts(subject, cursor_envelope) do
     # #396 — the ENTIRE cold-load unread envelope in a CONSTANT number of
-    # queries (2), not 2 per window. `WindowCounts.bulk_snapshot/3` drives
+    # queries (2), not 2 per window. `WindowCounts.bulk_snapshot/4` drives
     # both the count split and the mention tails from the read cursors via
     # #393's single `nick_fold(COALESCE(dm_with, channel))` predicate (one
     # join condition for channel + DM windows, served by the live prod
@@ -241,6 +242,21 @@ defmodule GrappaWeb.MeController do
     own_nicks = BadgeCount.live_nick_windows(subject)
     patterns = UserSettings.get_highlight_patterns(subject)
 
-    WindowCounts.bulk_snapshot(subject, own_nicks, patterns)
+    # #505 — the presence-hiding decision for EVERY window, resolved once
+    # and pushed into the same split statement. Without it this door seeds
+    # the faint `events` badge with join/part/quit rows the pane will never
+    # render, and the count visibly drops as soon as cic hydrates the
+    # channel and recomputes through `presenceRowVisible`. This is the door
+    # the #505 report describes first: a channel never opened this session
+    # is seeded HERE, not by `snapshot/7`.
+    #
+    # The cursor envelope is threaded in as the window universe — it is what
+    # lets the resolver skip the member-count call for a network whose every
+    # window is explicitly pinned, and it bounds the exclusion list to
+    # windows that can actually produce a row (the split is driven FROM
+    # read_cursors).
+    hidden = Resolver.hidden_channels(subject, own_nicks, cursor_envelope)
+
+    WindowCounts.bulk_snapshot(subject, own_nicks, patterns, hidden)
   end
 end

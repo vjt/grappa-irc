@@ -49,17 +49,20 @@ defmodule Grappa.ScrollbackTest do
   # rather than restated: a kind moving between `@content_kinds` /
   # `@suppressed_presence_kinds` must break the count assertions by CHANGING
   # THE NUMBERS, not silently agree with a hand-copied list.
+  # Every row carries a body, including the presence kinds that would
+  # normally persist `body: nil`. `Message.@body_required_kinds` is
+  # `content_kinds ∪ [:topic]`, and restating that here would be a second
+  # copy of a production list — while the changeset ACCEPTS a body on every
+  # kind, and these tests bucket rows by KIND and never read a body. So the
+  # uniform body is the choice that keeps the helper from forking an SSOT.
   defp seed_one_row_per_kind(user, net) do
     Message.kinds()
     |> Enum.with_index()
     |> Enum.each(fn {kind, i} ->
-      body = if kind in Message.content_kinds(), do: "msg #{i}", else: nil
       meta = if kind == :nick_change, do: %{new_nick: "bob#{i}"}, else: %{}
 
       {:ok, _} =
-        ScrollbackHelpers.insert(
-          sample(user, net, i, %{kind: kind, sender: "bob", body: body, meta: meta})
-        )
+        ScrollbackHelpers.insert(sample(user, net, i, %{kind: kind, sender: "bob", body: "row #{i}", meta: meta}))
     end)
   end
 
@@ -113,7 +116,7 @@ defmodule Grappa.ScrollbackTest do
   # (subject, network, <target>, id > cursor) grouped by content-vs-event
   # kind. Target-agnostic — `channel_or_dm_where/3` dispatches to the
   # `m.channel == ?` (channel) OR the folded-COALESCE `where_dm_peer/2` (DM)
-  # branch, so this proves BOTH count_after_split/5 paths are covered by the
+  # branch, so this proves BOTH count_after_split/6 paths are covered by the
   # respective `..._id_kind` index (kind at the tail = no per-row table
   # fetch). `kind` is read by the GROUP BY, so a covering plan requires it in
   # the index — this is the regression guard for the kind-at-tail claim.
@@ -1033,7 +1036,7 @@ defmodule Grappa.ScrollbackTest do
   end
 
   # The gap probe behind #693 (was the 2026-06-01 unread-badge primitive;
-  # the badge moved to `count_after_split/5` via `WindowCounts`). Mirrors
+  # the badge moved to `count_after_split/6` via `WindowCounts`). Mirrors
   # `fetch_after/7`'s predicate — presence filter included — so the count
   # is exactly what an uncapped fetch would hand the same caller.
   describe "count_after/6" do
@@ -1200,11 +1203,11 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
-  # Bucket C (2026-06-01) — `count_after_split/5` returns the count
+  # Bucket C (2026-06-01) — `count_after_split/6` returns the count
   # split into `%{messages, events}` via a single CASE-WHEN GROUP BY.
   # cic's `serverSeedCounts` consumes this shape (each badge renders
   # messages bold + events faint separately).
-  describe "count_after_split/5" do
+  describe "count_after_split/6" do
     test "zero cursor splits all rows by content vs presence kind",
          %{user: user, network: net} do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :privmsg}))
@@ -1214,13 +1217,13 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 4, %{kind: :part, body: nil}))
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 5, %{kind: :quit, body: nil}))
 
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil) ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil, false) ==
                %{messages: 3, events: 3}
     end
 
     test "returns %{messages: 0, events: 0} for empty partition",
          %{user: user, network: net} do
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "#empty", 0, nil) ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#empty", 0, nil, false) ==
                %{messages: 0, events: 0}
     end
 
@@ -1228,7 +1231,7 @@ defmodule Grappa.ScrollbackTest do
          %{user: user, network: net} do
       for i <- 0..2, do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, i))
 
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 999_999_999, nil) ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 999_999_999, nil, false) ==
                %{messages: 0, events: 0}
     end
 
@@ -1238,7 +1241,7 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :join, body: nil}))
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 2, %{kind: :privmsg}))
 
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", m0.id, nil) ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", m0.id, nil, false) ==
                %{messages: 1, events: 1}
     end
 
@@ -1247,7 +1250,7 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :privmsg}))
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :notice}))
 
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil) ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil, false) ==
                %{messages: 2, events: 0}
     end
 
@@ -1256,7 +1259,7 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :join, body: nil}))
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :mode, body: nil}))
 
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil) ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil, false) ==
                %{messages: 0, events: 2}
     end
 
@@ -1321,7 +1324,7 @@ defmodule Grappa.ScrollbackTest do
       # live own_nick would let #576's own-content exclusion drop the
       # outbound row and confound the arm-count — that exclusion has its own
       # tests below.
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "peer", 0, nil) ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "peer", 0, nil, false) ==
                %{messages: 3, events: 1}
     end
 
@@ -1345,7 +1348,7 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 2, %{kind: :privmsg, sender: "peer"}))
 
       # own_nick threaded → only the peer content row counts.
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, "vjt-grappa") ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, "vjt-grappa", false) ==
                %{messages: 1, events: 0}
     end
 
@@ -1358,7 +1361,7 @@ defmodule Grappa.ScrollbackTest do
 
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :privmsg, sender: "peer"}))
 
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, "vjt-grappa") ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, "vjt-grappa", false) ==
                %{messages: 1, events: 0}
     end
 
@@ -1370,7 +1373,7 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :privmsg, sender: "peer"}))
 
       # Unbound network / no live session → nothing to fold → both count.
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil) ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil, false) ==
                %{messages: 2, events: 0}
     end
 
@@ -1394,7 +1397,7 @@ defmodule Grappa.ScrollbackTest do
           dm_with: "vjt-grappa"
         })
 
-      assert Scrollback.count_after_split({:user, user.id}, net.id, "vjt-grappa", 0, "vjt-grappa") ==
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "vjt-grappa", 0, "vjt-grappa", false) ==
                %{messages: 1, events: 0}
     end
   end
@@ -1442,9 +1445,7 @@ defmodule Grappa.ScrollbackTest do
         meta = if kind == :nick_change, do: %{new_nick: "bob#{i}"}, else: %{}
 
         {:ok, _} =
-          ScrollbackHelpers.insert(
-            sample(user, net, i, %{kind: kind, sender: "bob", body: nil, meta: meta})
-          )
+          ScrollbackHelpers.insert(sample(user, net, i, %{kind: kind, sender: "bob", body: nil, meta: meta}))
       end
 
       assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil, true) ==
@@ -1459,7 +1460,10 @@ defmodule Grappa.ScrollbackTest do
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :join, body: nil}))
       {:ok, m1} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :privmsg}))
       {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 2, %{kind: :part, body: nil}))
-      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 3, %{kind: :topic, body: nil}))
+      # `:topic` is body-required (`Message.@body_required_kinds`) — it is a
+      # CONTROL row that carries text, which is exactly why it must survive
+      # the hide: the pane renders it.
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 3, %{kind: :topic, body: "new topic"}))
 
       assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", m1.id, nil, false) ==
                %{messages: 0, events: 2}
@@ -2132,11 +2136,11 @@ defmodule Grappa.ScrollbackTest do
 
   # #393 A — channel unread-count covering index (kind at the tail).
   #
-  # `count_after_split/5` for a CHANNEL window is a GROUP BY aggregate with
+  # `count_after_split/6` for a CHANNEL window is a GROUP BY aggregate with
   # NO LIMIT over `(subject, network_id, channel, id > cursor)` reading
   # `kind` per row. Appending `kind` to the `(subject, network, channel, id)`
   # composite makes it COVERING (prod 2026-07-25: 80ms → 6ms, ~15x, via
-  # WindowCounts.snapshot/6 ← MeController.build_unread_counts/2). The new
+  # WindowCounts.snapshot/7 ← MeController.build_unread_counts/2). The new
   # index shares the old one's prefix, so the redundant `..._channel_id_index`
   # composites are dropped. Both covering indexes were applied LIVE on prod
   # 07:52 UTC under the EXACT names asserted here; the migration reconciles
@@ -3031,7 +3035,7 @@ defmodule Grappa.ScrollbackTest do
   # #379 (P0, 2026-07-22) — CP29 R-2 index regression. R-2 switched the
   # scrollback since-cursor key from `server_time` to monotonic `id`, so
   # every incremental read path — `fetch_after/6`, `count_after/6`,
-  # `count_after_split/5`, `unread_content_tail/6` — now filters
+  # `count_after_split/6`, `unread_content_tail/6` — now filters
   # `id > cursor ORDER BY id`. But the `messages` composites all still
   # END in `server_time`, so `id > ?` was NOT index-eligible: SQLite fell
   # back to scanning the busiest network's post-cursor rows (via

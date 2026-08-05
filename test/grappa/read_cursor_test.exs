@@ -55,7 +55,7 @@ defmodule Grappa.ReadCursorTest do
 
   # Generic unread-content inserter: `sender: "peer"` so a row stands for
   # someone ELSE's message. #576 excludes the subject's OWN content from the
-  # unread count, and every `bulk_unread_split/2` test here threads
+  # unread count, and every `bulk_unread_split/3` test here threads
   # `own_nicks` as "vjt" — a "vjt" sender would fold to own and drop out,
   # silently zeroing the very counts these tests assert. Own-authored rows
   # are inserted explicitly (see the #532 A / #576 tests).
@@ -940,7 +940,7 @@ defmodule Grappa.ReadCursorTest do
       # outbound line + a peer reply. The reported bug is a DM badge whose
       # count is only the operator's own lines — content is read BY
       # DEFINITION, so the #396 cold-load twin must strip it exactly as
-      # count_after_split/5 does (one rule, both count doors).
+      # count_after_split/6 does (one rule, both count doors).
       a = dm_row(attrs, net.id, "vjt", "peer", 1, "anchor")
       {:ok, _} = ReadCursor.set(subject, net.id, "peer", a.id)
 

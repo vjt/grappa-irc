@@ -182,6 +182,7 @@ defmodule GrappaWeb.GrappaChannel do
   alias Grappa.Cic.Wire, as: CicWire
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
+  alias Grappa.PresenceFilter.Resolver
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Wire, as: ScrollbackWire
   alias Grappa.ServerSettings
@@ -293,7 +294,7 @@ defmodule GrappaWeb.GrappaChannel do
   # (no per-channel cursor concept; bulk fetch lives at `/me`).
   #
   # #267 (server-authoritative counters): the reply ALSO carries
-  # `:window_counts` — the full `Grappa.WindowCounts.snapshot/6`
+  # `:window_counts` — the full `Grappa.WindowCounts.snapshot/7`
   # (`%{messages, mentions, events, severity}`) for the window relative to
   # the cursor. This REPLACED the former scalar `:unread_count`: cic now
   # renders the message / mention / event counts + severity colour
@@ -333,13 +334,29 @@ defmodule GrappaWeb.GrappaChannel do
         end
 
       # #267 — the per-channel WS seed is the full server-authoritative
-      # `WindowCounts.snapshot/6` (messages/mentions/events + severity),
+      # `WindowCounts.snapshot/7` (messages/mentions/events + severity),
       # NOT the former scalar unread_count. cic renders these directly and
       # stops deriving counts client-side. cursor == nil → snapshot counts
       # from row 0 (all unread); cic treats `:read_cursor = nil` as "no
       # cursor yet". Highlight patterns feed the mention count (SSOT).
       patterns = UserSettings.get_highlight_patterns(subject)
-      counts = WindowCounts.snapshot(subject, network.id, channel, cursor, own_nick, patterns)
+
+      # #505 — the seed must apply the channel's presence filter, or the
+      # faint `events` count includes rows the pane never renders and drops
+      # the moment cic hydrates. Same resolver the history fetch uses
+      # (#458), so the seed and the page agree on which rows exist.
+      hide_presence = Resolver.hidden?(subject, network.slug, network.id, channel)
+
+      counts =
+        WindowCounts.snapshot(
+          subject,
+          network.id,
+          channel,
+          cursor,
+          own_nick,
+          patterns,
+          hide_presence
+        )
 
       %{read_cursor: cursor, window_counts: counts}
     else

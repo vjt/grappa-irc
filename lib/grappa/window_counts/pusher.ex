@@ -19,7 +19,7 @@ defmodule Grappa.WindowCounts.Pusher do
   disconnected subject costs nothing. When connected, it spawns an
   unlinked `Task` (like `Push.Triggers`) so the Session hot path never
   blocks on the snapshot's DB work, then `emit/1` computes the fresh
-  `WindowCounts.snapshot/6` (cursor from `ReadCursor`, highlight patterns
+  `WindowCounts.snapshot/7` (cursor from `ReadCursor`, highlight patterns
   from `UserSettings`) and broadcasts the `window_counts` event on the
   per-channel topic. cic replaces its stored snapshot verbatim.
   """
@@ -29,6 +29,7 @@ defmodule Grappa.WindowCounts.Pusher do
   use Boundary,
     top_level?: true,
     deps: [
+      Grappa.PresenceFilter.Resolver,
       Grappa.PubSub,
       Grappa.ReadCursor,
       Grappa.Subject,
@@ -37,6 +38,7 @@ defmodule Grappa.WindowCounts.Pusher do
       Grappa.WSPresence
     ]
 
+  alias Grappa.PresenceFilter.Resolver
   alias Grappa.PubSub.Topic
   alias Grappa.{ReadCursor, UserSettings, WindowCounts, WSPresence}
   alias Grappa.WindowCounts.{PushSource, Wire}
@@ -80,7 +82,23 @@ defmodule Grappa.WindowCounts.Pusher do
         _ -> nil
       end
 
-    counts = WindowCounts.snapshot(subject, network_id, channel, cursor, own_nick, patterns)
+    # #505 — same presence decision the seed doors use, so a live push can
+    # never contradict the `join_reply` / `/me` snapshot it replaces
+    # verbatim in cic's store. Safe from here: `push/1` runs `emit/1` in a
+    # spawned Task, so the `Session.list_members/3` call inside the resolver
+    # is a call INTO the Session from another process, not a self-call.
+    hide_presence = Resolver.hidden?(subject, network_slug, network_id, channel)
+
+    counts =
+      WindowCounts.snapshot(
+        subject,
+        network_id,
+        channel,
+        cursor,
+        own_nick,
+        patterns,
+        hide_presence
+      )
 
     _ =
       Grappa.PubSub.broadcast_event(

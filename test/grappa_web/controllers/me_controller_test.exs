@@ -348,7 +348,7 @@ defmodule GrappaWeb.MeControllerTest do
     # `c.last_read_message_id` as-is; the column is nullable so a row
     # with explicit-no-cursor or legacy-null state surfaces as a nil
     # in the envelope. Pre-fix `build_unread_counts/2` passed the nil
-    # straight to `Scrollback.count_after_split/5` whose head guard is
+    # straight to `Scrollback.count_after_split/6` whose head guard is
     # `is_integer(after_id)` → FunctionClauseError → 500 on the whole
     # /me response → cic's `user()` signal stays unresolved → Shell
     # renders the cold "select a channel below" placeholder with no

@@ -1240,6 +1240,32 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Returns `%{channel => member_count}` for every channel in this session
+  whose NAMES burst has landed — the bulk twin of `list_members/3`.
+
+  #505: the `/me` cold-load resolves the presence-hiding size default for
+  EVERY window at once. Doing that through `list_members/3` would be one
+  GenServer call per channel at logon, which is precisely the per-window
+  fan-out #396 collapsed. One call returns the whole map.
+
+  Carries the SAME seeded discrimination as `list_members/3`, because the
+  distinction is load-bearing for the caller: a channel that has not yet
+  observed its 366 RPL_ENDOFNAMES has an UNKNOWABLE count, not a count of
+  zero, so it is OMITTED from the map rather than reported as `0`. A
+  consumer reading `0` would conclude "small channel, show presence" for a
+  channel that is about to turn out to have 900 members.
+
+  Channel keys are the members-map keys, i.e. already network-folded at
+  ingress (#537) — the same keys `read_cursors.channel` carries.
+  """
+  @spec list_member_counts(subject(), integer()) ::
+          {:ok, %{String.t() => non_neg_integer()}} | {:error, :no_session}
+  def list_member_counts(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    call_session(subject, network_id, :list_member_counts)
+  end
+
+  @doc """
   Returns the cached topic for `channel` in the given session.
 
   Serves from the in-memory topic cache — no upstream TOPIC query is

@@ -34,7 +34,11 @@ defmodule GrappaWeb do
         Grappa.Notify,
         Grappa.Operator,
         Grappa.OutboundV6Pool,
-        Grappa.PresenceFilter,
+        # #505 — the web edge now reaches the presence decision only through
+        # the resolver (pref + live member count + the rule); the pure rule
+        # module `Grappa.PresenceFilter` sits behind it and is no longer
+        # called from here.
+        Grappa.PresenceFilter.Resolver,
         Grappa.Protocol,
         Grappa.PubSub,
         Grappa.Push,

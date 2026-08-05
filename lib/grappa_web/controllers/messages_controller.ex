@@ -57,8 +57,9 @@ defmodule GrappaWeb.MessagesController do
   import GrappaWeb.Validation, only: [validate_target_name: 1, validate_post_target_name: 1]
 
   alias Grappa.IRC.Identifier
-  alias Grappa.{PresenceFilter, Scrollback, Session, UserSettings}
+  alias Grappa.PresenceFilter.Resolver
   alias Grappa.RateLimit.TokenBucket
+  alias Grappa.{Scrollback, Session}
   alias GrappaWeb.{BodyLimit, Subject}
 
   @default_limit 50
@@ -327,38 +328,18 @@ defmodule GrappaWeb.MessagesController do
     |> json(%{ok: true})
   end
 
-  # #458 — resolve "should the history reads omit presence for this channel?"
-  # from the server-owned tri-state pref (#449) + live member count. The
-  # server evaluates the tri-state itself (issue paletto: never a client
-  # boolean) so every device converges on one decision. `Session.list_members/3`
-  # is called ONLY when the pref is unset — an explicit show/hide needs no
-  # count, so the common case skips the GenServer round-trip.
-  defp resolve_hide_presence(subject, network, channel) do
-    prefs = UserSettings.get_display_prefs(subject)
-    pref = Map.get(prefs.presence_filter, presence_channel_key(network, channel))
-    PresenceFilter.hidden?(pref, member_count_for_unset(pref, subject, network.id, channel))
-  end
-
-  # Rebuild cic's opaque ChannelKey (`cicchetto/src/lib/channelKey.ts`):
-  # "<slug> <canonical_channel>" — so a request in any casing resolves to the
-  # same stored pin. #537 — `index/2` already network-folded `channel` to the
-  # CASEMAPPING at the ingress, so on rfc1459 this matches cic's ChannelKey
-  # (built from the server's folded key); the fold here is the idempotent
-  # ASCII backstop (bahamut/ascii: byte-identical, prod unchanged).
-  defp presence_channel_key(network, channel),
-    do: "#{network.slug} #{Identifier.canonical_target(channel)}"
-
-  defp member_count_for_unset(nil, subject, network_id, channel) do
-    case Session.list_members(subject, network_id, channel) do
-      {:ok, members} when is_list(members) -> length(members)
-      # :uninitialized (names not yet seeded) or :no_session — count unknowable
-      # → decision D: PresenceFilter.hidden?/2 treats nil as SHOW.
-      _ -> nil
-    end
-  end
-
-  # Explicit show/hide: the count is irrelevant, skip the Session call.
-  defp member_count_for_unset(_, _, _, _), do: nil
+  # #458 — "should the history reads omit presence for this channel?",
+  # resolved from the server-owned tri-state pref (#449) + live member count.
+  # The server evaluates the tri-state itself (issue paletto: never a client
+  # boolean) so every device converges on one decision.
+  #
+  # #505 lifted the resolution out of this controller into
+  # `Grappa.PresenceFilter.Resolver`: the unread seed needs the identical
+  # answer from three more doors (`join_reply`, the per-message push, the
+  # `/me` cold-load), and two of them are not web modules. Four copies of
+  # the same tri-state is how a tri-state becomes four tri-states.
+  defp resolve_hide_presence(subject, network, channel),
+    do: Resolver.hidden?(subject, network.slug, network.id, channel)
 
   # Cursor mutex: at most one of `before` / `after` / `around`. Two or
   # more present together silently picking one would mask client bugs;

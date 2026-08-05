@@ -5430,8 +5430,21 @@ defmodule Grappa.Session.ServerTest do
   # `list_members/3` would be one GenServer call per channel at logon, which
   # is exactly the per-window fan-out #396 collapsed. One call, whole map.
   describe "list_member_counts/2" do
+    # The file's default `start_server/0` is a PASSTHROUGH: it never answers
+    # 001, so registration never completes and no JOIN is ever sent. These
+    # tests need the session to actually reach the channels.
+    defp counts_welcome_handler do
+      fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+    end
+
     test "returns the count per SEEDED channel in one call" do
-      {server, port} = start_server()
+      {server, port} = start_server(counts_welcome_handler())
 
       {user, network, _} =
         setup_user_and_network(port, %{autojoin_channels: ["#one", "#two"]})
@@ -5461,7 +5474,7 @@ defmodule Grappa.Session.ServerTest do
     # twin must OMIT the key, or the caller reads 0 members and shows presence
     # on a channel that is about to turn out to have 900.
     test "omits a channel that has not yet observed 366 (pre-NAMES)" do
-      {server, port} = start_server()
+      {server, port} = start_server(counts_welcome_handler())
 
       {user, network, _} =
         setup_user_and_network(port, %{autojoin_channels: ["#seeded", "#pending"]})

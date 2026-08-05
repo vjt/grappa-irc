@@ -218,7 +218,7 @@ defmodule Grappa.ReadCursor do
   Bulk unread-split envelope (#396): nested
   `%{network_slug => %{channel => %{messages: n, events: n}}}`. Same nesting
   as `bulk_envelope/0`; the value is the content-vs-presence split
-  `Scrollback.count_after_split/5` returns per window.
+  `Scrollback.count_after_split/6` returns per window.
   """
   @type bulk_split_envelope ::
           %{String.t() => %{String.t() => %{messages: non_neg_integer(), events: non_neg_integer()}}}
@@ -226,7 +226,7 @@ defmodule Grappa.ReadCursor do
   @doc """
   #396 — the ENTIRE subject's per-window unread `%{messages, events}` split
   in ONE query, driven by the read cursors (replaces the cold-load's
-  N × `Scrollback.count_after_split/5` fan-out — ~2 queries per window at
+  N × `Scrollback.count_after_split/6` fan-out — ~2 queries per window at
   logon).
 
   Drives `FROM read_cursors` LEFT JOIN `messages` on the SINGLE unified
@@ -240,7 +240,7 @@ defmodule Grappa.ReadCursor do
   (#364) and nicks raw (#372), so the fold is required on each side for a
   differently-cased DM peer to resolve to one window.
 
-  Semantics vs `count_after_split/5`: IDENTICAL for channel + DM-peer
+  Semantics vs `count_after_split/6`: IDENTICAL for channel + DM-peer
   windows. The own-nick SELF window (cursor channel == own nick) differs by
   design (#396): the single predicate folds `COALESCE` and so counts self
   rows the old `channel == own AND dm_with == own` narrowing missed —
@@ -271,15 +271,37 @@ defmodule Grappa.ReadCursor do
   "unread" to them, and a parted channel (or every `/nick`) used to strand
   a permanent "1" behind it. The fold is PER-NETWORK because a subject may
   hold a different nick on each.
-  This is the #396 cold-load twin of `Scrollback.count_after_split/5`'s
+  This is the #396 cold-load twin of `Scrollback.count_after_split/6`'s
   identical exclusion — one rule, both count doors. Content is untouched;
   legitimate unread that arrived before the leave survives (and #532 B
   surfaces it). A slug absent from `own_nicks` (or a `nil` nick) applies no
   exclusion for that network — its presence rows count as before.
+
+  ## #505 — `hidden_channels` excludes suppressed presence per window
+
+  `%{network_slug => MapSet.of(channel)}`, resolved once by the caller via
+  `Grappa.PresenceFilter.Resolver.hidden_channels/3`. For a window in that
+  set, the NARROW presence-noise kinds
+  (`Message.suppressed_presence_kinds/0`) do not join, so they never land in
+  its `events` bucket — the cold-load twin of `count_after_split/6`'s
+  `hide_presence`, and the door the #505 badge jump is actually reported
+  through.
+
+  Keyed by SLUG because the pref is (`"<slug> <channel>"`), and because a
+  network with no live session is absent from `own_nicks` yet must still
+  honour its pins. The term is built per-slug as a disjunction and folded
+  into the SAME join condition as the own-authored exclusion — one
+  statement, no extra query, and nothing is added to the SQL at all when
+  the map is empty (the overwhelmingly common case: no pins, no oversized
+  channels).
   """
-  @spec bulk_unread_split(subject(), %{String.t() => {integer(), String.t()}}) ::
-          bulk_split_envelope()
-  def bulk_unread_split(subject, own_nicks) when is_map(own_nicks) do
+  @spec bulk_unread_split(
+          subject(),
+          %{String.t() => {integer(), String.t()}},
+          %{String.t() => MapSet.t(String.t())}
+        ) :: bulk_split_envelope()
+  def bulk_unread_split(subject, own_nicks, hidden_channels)
+      when is_map(own_nicks) and is_map(hidden_channels) do
     content = Message.content_kinds()
     {sub_field, sub_id} = subject_pair(subject)
     own_authored = own_authored_dynamic(own_nicks, content)
@@ -303,12 +325,14 @@ defmodule Grappa.ReadCursor do
           not (^own_authored)
       )
 
+    full_join_on = exclude_hidden_presence(join_on, hidden_channels)
+
     query =
       from(rc in Cursor,
         join: n in Network,
         on: n.id == rc.network_id,
         left_join: m in Message,
-        on: ^join_on,
+        on: ^full_join_on,
         where: not is_nil(rc.last_read_message_id),
         group_by: [n.slug, rc.channel, fragment("CASE WHEN ? THEN 1 ELSE 0 END", m.kind in ^content)],
         select: {
@@ -346,7 +370,7 @@ defmodule Grappa.ReadCursor do
   — the two fields `WindowCounts` folds through `Mentions.mentioned?/3`.
 
   Same unified `nick_fold(COALESCE(...))` window predicate as
-  `bulk_unread_split/2`, restricted to content kinds. An INNER JOIN (a
+  `bulk_unread_split/3`, restricted to content kinds. An INNER JOIN (a
   window with no unread content contributes no rows → zero mentions,
   supplied by the caller's default). The per-window `cap` is enforced with a
   `ROW_NUMBER() OVER (PARTITION BY window ORDER BY id)` window function
@@ -383,7 +407,7 @@ defmodule Grappa.ReadCursor do
 
     # Scope the DRIVING `read_cursors` to the subject via the shared
     # `subject_filter/2` (binding 0 == `rc`), identical to
-    # `bulk_unread_split/2` + `bulk_for_subject/1` — one way to express
+    # `bulk_unread_split/3` + `bulk_for_subject/1` — one way to express
     # "these cursors are mine". `subject_pair/1` is still needed for the
     # `on:`-clause match on `messages` (a join-side filter belongs in `on:`,
     # not `where`, so the JOIN keeps its driving row).
@@ -473,6 +497,38 @@ defmodule Grappa.ReadCursor do
       _, acc ->
         acc
     end)
+  end
+
+  # #505 — folds the per-window presence exclusion into the join condition.
+  # Built as a per-slug disjunction, the same shape `own_authored_dynamic/2`
+  # uses per network, so a subject hiding 50 channels across 3 networks still
+  # produces ONE statement.
+  #
+  # The empty case returns `join_on` untouched rather than composing with a
+  # `dynamic(false)`: a subject with no pins and no oversized channels is the
+  # overwhelmingly common case, and it deserves the exact pre-#505 SQL rather
+  # than a tautology the planner has to see through.
+  @spec exclude_hidden_presence(Ecto.Query.dynamic_expr(), %{
+          String.t() => MapSet.t(String.t())
+        }) :: Ecto.Query.dynamic_expr()
+  defp exclude_hidden_presence(join_on, hidden_channels) do
+    hiding = Enum.reject(hidden_channels, fn {_, channels} -> Enum.empty?(channels) end)
+
+    case hiding do
+      [] ->
+        join_on
+
+      slugs ->
+        suppressed = Message.suppressed_presence_kinds()
+
+        hidden =
+          Enum.reduce(slugs, dynamic(false), fn {slug, channels}, acc ->
+            list = MapSet.to_list(channels)
+            dynamic([rc, n, _], ^acc or (n.slug == ^slug and rc.channel in ^list))
+          end)
+
+        dynamic([_, _, m], ^join_on and not (m.kind in ^suppressed and ^hidden))
+    end
   end
 
   @doc """

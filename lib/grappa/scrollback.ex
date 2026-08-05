@@ -93,7 +93,7 @@ defmodule Grappa.Scrollback do
 
   # Content-bearing kinds: the ones that carry a notification meaning.
   # S17 — derived from the schema SSOT (`Message.content_kinds/0`);
-  # feeds `count_after_split/5`'s `:messages` bucket, the content-row
+  # feeds `count_after_split/6`'s `:messages` bucket, the content-row
   # fetch, and the `dm_peer/4` guard here. Presence/control kinds
   # never notify.
   @content_kinds Message.content_kinds()
@@ -104,7 +104,7 @@ defmodule Grappa.Scrollback do
   # `maybe_exclude_presence/2`. A module attribute (compile-time list) so the
   # `not in ^...` interpolation renders `kind NOT IN (?, ?, ?)` with the atoms
   # dumped to their Ecto.Enum string values — same mechanism as
-  # `count_after_split/5`'s `^@content_kinds`.
+  # `count_after_split/6`'s `^@content_kinds`.
   @suppressed_presence_kinds Message.suppressed_presence_kinds()
 
   @doc """
@@ -522,9 +522,11 @@ defmodule Grappa.Scrollback do
   decision needs the TRUE size: a full page proves only "≥ limit", which
   cannot tell a 201-row gap from a 3000-row one.
 
-  (The unread badge does NOT come through here — the join reply +
-  `/me` cold-load seed it from `count_after_split/5` via
-  `Grappa.WindowCounts`, which splits content from presence.)
+  (The unread badge does NOT come through here. The join reply + the
+  per-message push seed it from `count_after_split/6` via
+  `Grappa.WindowCounts.snapshot/7`, which splits content from presence;
+  the `/me` cold-load does not touch this module at all since #396 —
+  it goes through `ReadCursor.bulk_unread_split/3`.)
 
   Same predicates as `fetch_after/7` so the count exactly matches what a
   `fetch_after(..., :infinity)` would return — modulo the `@max_limit`
@@ -573,9 +575,9 @@ defmodule Grappa.Scrollback do
   end
 
   @doc """
-  Same predicate as `count_after/6` — minus its `hide_presence` filter,
-  which would be self-defeating here — but returns the count split into a
-  `{content, presence}` pair as `%{messages: integer, events: integer}`.
+  Same predicate as `count_after/6`, including its `hide_presence` filter,
+  but returns the count split into a `{content, presence}` pair as
+  `%{messages: integer, events: integer}`.
 
   Sole consumer: the `/me` `unread_counts` envelope (bucket C, 2026-06-01)
   — cic's per-channel sidebar badge renders messages (bold) and events
@@ -599,12 +601,36 @@ defmodule Grappa.Scrollback do
   `fetch/6`): a defaulting wrapper silently re-opens the CP14-B3
   own-nick DM over-count for any caller that forgets to thread it
   (S2, 2026-07-08 review — the `/me` cold-load did exactly that).
+
+  ## `hide_presence` (#505)
+
+  Also a REQUIRED positional, same contract as `count_after/6`'s. It was
+  absent here until #505 on the reasoning that filtering a SPLIT count
+  would be self-defeating; the opposite turned out to be true. On a channel
+  that hides presence the pane never renders join/part/quit/nick_change, so
+  an `events` count that includes them is a badge the operator cannot clear
+  by reading — and because cic's hydrated count already excludes them
+  (`presenceRowVisible`, `cicchetto/src/lib/selection.ts`), the seed
+  visibly DROPS the moment the channel hydrates. That jump is the reported
+  bug.
+
+  The filter is NARROW: `Message.suppressed_presence_kinds/0` only. `:mode`,
+  `:topic`, `:kick` and `:server_event` still count under `events` when
+  hiding, because the pane still renders them. The content bucket is
+  unaffected either way — every suppressed kind is disjoint from
+  `@content_kinds`, so the exclusion can only ever shrink `events`.
   """
-  @spec count_after_split(subject(), integer(), String.t(), integer(), String.t() | nil) ::
-          %{messages: non_neg_integer(), events: non_neg_integer()}
-  def count_after_split(subject, network_id, channel, after_id, own_nick)
+  @spec count_after_split(
+          subject(),
+          integer(),
+          String.t(),
+          integer(),
+          String.t() | nil,
+          boolean()
+        ) :: %{messages: non_neg_integer(), events: non_neg_integer()}
+  def count_after_split(subject, network_id, channel, after_id, own_nick, hide_presence)
       when is_integer(network_id) and is_integer(after_id) and
-             (is_binary(own_nick) or is_nil(own_nick)) do
+             (is_binary(own_nick) or is_nil(own_nick)) and is_boolean(hide_presence) do
     # #576 — the own-nick SELF window (channel keyed to your own nick) is the
     # ONE window where own content is legitimate payload (notes-to-self, #396),
     # so own content is NOT excluded there — only in peer / channel windows.
@@ -617,6 +643,7 @@ defmodule Grappa.Scrollback do
       |> subject_where(subject)
       |> where([m], m.network_id == ^network_id)
       |> channel_or_dm_where(channel, own_nick)
+      |> maybe_exclude_presence(hide_presence)
       |> where([m], m.id > ^after_id)
       |> exclude_own_authored(own_nick, self_window?)
       # S17: the content bucket derives from `@content_kinds` (schema
@@ -670,7 +697,7 @@ defmodule Grappa.Scrollback do
   #
   # Derive-don't-duplicate: no cursor is moved, so any legitimate unread PEER
   # row that arrived before the own row survives, and it is timing-
-  # independent. Same rule applied in `ReadCursor.bulk_unread_split/2` (the
+  # independent. Same rule applied in `ReadCursor.bulk_unread_split/3` (the
   # #396 cold-load twin — the self-window test there is per-row on
   # `rc.channel`). Boundary: an INTERMEDIATE row of a multi-hop rename
   # (`alice→bob→vjt`) still counts and self-heals on the next view — a rare,
@@ -718,7 +745,7 @@ defmodule Grappa.Scrollback do
   `(subject, network_id, channel)` window, oldest-first.
 
   "Content" = `:privmsg | :notice | :action` — the same kind set
-  `count_after_split/5` buckets as `:messages` and the push-trigger
+  `count_after_split/6` buckets as `:messages` and the push-trigger
   predicate (`Grappa.Push.Triggers.should_notify?/4`) can act on.
   Presence/control kinds (`:join`, `:mode`, …) never carry a
   notification meaning, so they are excluded at the SQL layer rather
@@ -1091,7 +1118,7 @@ defmodule Grappa.Scrollback do
   # `list_archive/3`'s GROUP BY already uses (in-house precedent). Because
   # the match lives ONLY here, every consumer of the shared predicate
   # (`fetch/6`, `fetch_after/6`, `fetch_around/6`, `unread_content_tail/6`,
-  # `count_after/6`, `count_after_split/5` via `channel_or_dm_where/3`, and
+  # `count_after/6`, `count_after_split/6` via `channel_or_dm_where/3`, and
   # `delete_for_dm/3` directly) becomes sargable in one shot.
   @spec where_dm_peer(Ecto.Query.t(), String.t()) :: Ecto.Query.t()
   defp where_dm_peer(query, folded_peer) when is_binary(folded_peer) do
@@ -1129,7 +1156,7 @@ defmodule Grappa.Scrollback do
   # #458 — when hiding, exclude the narrow presence-noise kinds
   # (@suppressed_presence_kinds) in SQL so `limit` counts VISIBLE rows. The
   # `not in ^...` renders `kind NOT IN (?, ?, ?)` with the atoms dumped to
-  # their Ecto.Enum string values (same mechanism as count_after_split/5).
+  # their Ecto.Enum string values (same mechanism as count_after_split/6).
   # There is no index on `messages.kind` (#458 note): the predicate rides the
   # existing composite after the index scan — fine at current volumes.
   defp maybe_exclude_presence(query, false), do: query

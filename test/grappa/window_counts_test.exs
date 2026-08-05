@@ -1,7 +1,7 @@
 defmodule Grappa.WindowCountsTest do
   @moduledoc """
   Server-authoritative per-window unread/mention/severity snapshot
-  (#267). `snapshot/6` derives `%{messages, mentions, events,
+  (#267). `snapshot/7` derives `%{messages, mentions, events,
   severity}` for a `(subject, network, channel)` window from the read
   cursor + the messages table — no persisted counter, no client
   compute.
@@ -13,7 +13,7 @@ defmodule Grappa.WindowCountsTest do
   nil-cursor (count from 0), past-tail (all zero), and the mention
   scan cap.
 
-  `async: true` — every test mints fresh rows; `snapshot/6` is a pure
+  `async: true` — every test mints fresh rows; `snapshot/7` is a pure
   read over sandboxed Repo state.
   """
   use Grappa.DataCase, async: true
@@ -369,18 +369,18 @@ defmodule Grappa.WindowCountsTest do
     insert(c, "#chan", st: 2, sender: "bob", body: "vjt ping")
     insert(c, "#chan", st: 3, sender: "carol", kind: :join, body: nil)
 
-    result = WindowCounts.snapshot(c.subject, c.network.id, "#chan", anchor.id, nil, [])
+    result = WindowCounts.snapshot(c.subject, c.network.id, "#chan", anchor.id, nil, [], false)
     assert result == %{messages: 1, mentions: 0, events: 1, severity: :message}
   end
 
   # ---------------------------------------------------------------------------
-  # #396 — bulk_snapshot/3: the WHOLE subject's envelope in a CONSTANT number
-  # of queries. Identical to the per-window snapshot/6 loop for channel + DM
+  # #396 — bulk_snapshot/4: the WHOLE subject's envelope in a CONSTANT number
+  # of queries. Identical to the per-window snapshot/7 loop for channel + DM
   # windows; the own-nick SELF window count changes BY DESIGN (single COALESCE
   # predicate — see the two self-DM tests below + DESIGN_NOTES 2026-07-25).
   # ---------------------------------------------------------------------------
-  describe "bulk_snapshot/3 (#396 constant-query cold-load)" do
-    test "matches per-window snapshot/6 for channel + DM windows across networks" do
+  describe "bulk_snapshot/4 (#396 constant-query cold-load)" do
+    test "matches per-window snapshot/7 for channel + DM windows across networks" do
       user = AuthFixtures.user_fixture()
       subject = {:user, user.id}
       net_a = AuthFixtures.network_fixture()
@@ -408,13 +408,13 @@ defmodule Grappa.WindowCountsTest do
       bulk = WindowCounts.bulk_snapshot(subject, own_nicks, [], %{})
 
       assert bulk[net_a.slug]["#chan"] ==
-               WindowCounts.snapshot(subject, net_a.id, "#chan", a.id, own, [])
+               WindowCounts.snapshot(subject, net_a.id, "#chan", a.id, own, [], false)
 
       assert bulk[net_a.slug]["peer"] ==
-               WindowCounts.snapshot(subject, net_a.id, "peer", di.id, own, [])
+               WindowCounts.snapshot(subject, net_a.id, "peer", di.id, own, [], false)
 
       assert bulk[net_b.slug]["#ops"] ==
-               WindowCounts.snapshot(subject, net_b.id, "#ops", b.id, own, [])
+               WindowCounts.snapshot(subject, net_b.id, "#ops", b.id, own, [], false)
     end
 
     test "highlight patterns fold through the bulk mention path too" do
@@ -431,7 +431,7 @@ defmodule Grappa.WindowCountsTest do
       bulk = WindowCounts.bulk_snapshot(subject, %{net.slug => {net.id, own}}, ["grappa"], %{})
 
       assert bulk[net.slug]["#chan"] ==
-               WindowCounts.snapshot(subject, net.id, "#chan", a.id, own, ["grappa"])
+               WindowCounts.snapshot(subject, net.id, "#chan", a.id, own, ["grappa"], false)
 
       assert bulk[net.slug]["#chan"].mentions == 1
     end
@@ -462,7 +462,7 @@ defmodule Grappa.WindowCountsTest do
 
       # Explicit behaviour delta: the OLD per-window narrowing
       # (`channel == own AND dm_with == own`) MISSES the dm_with-NULL row.
-      assert WindowCounts.snapshot(subject, net.id, own, anchor.id, own, []).messages == 1
+      assert WindowCounts.snapshot(subject, net.id, own, anchor.id, own, [], false).messages == 1
     end
 
     test "own-nick self window: mixed-case self-msg COUNTS via fold (#396)" do
@@ -485,10 +485,10 @@ defmodule Grappa.WindowCountsTest do
       # #537/#372 reversed assert (was `== 0`): the own-nick self-window
       # narrowing in `Scrollback.channel_or_dm_where/3` now folds `dm_with`
       # via `nick_fold/1` (dm_with is stored RAW for display, so the MATCH
-      # must fold — the #121/#372 nick invariant), so `snapshot/6` counts the
-      # cased self-msg exactly like `bulk_snapshot/3` does. The pre-fold RAW
+      # must fold — the #121/#372 nick invariant), so `snapshot/7` counts the
+      # cased self-msg exactly like `bulk_snapshot/4` does. The pre-fold RAW
       # compare (`"VJT" != "vjt"` → 0) was the bug this line of work closes.
-      assert WindowCounts.snapshot(subject, net.id, own, anchor.id, own, []).messages == 1
+      assert WindowCounts.snapshot(subject, net.id, own, anchor.id, own, [], false).messages == 1
     end
 
     test "nil own_nick (unbound network) yields mentions 0 but counts messages/events" do
@@ -550,7 +550,7 @@ defmodule Grappa.WindowCountsTest do
 
   # #505 — the COLD-LOAD door. This is the one the issue's first symptom
   # ("never-opened-this-session: the badge comes from the server seed")
-  # actually goes through: #396 moved `/me` off `snapshot/6` onto
+  # actually goes through: #396 moved `/me` off `snapshot/7` onto
   # `bulk_snapshot`, so a fix that only taught `count_after_split/6` the
   # filter would leave the reported case untouched.
   describe "bulk_snapshot/4 — presence-hiding windows (#505)" do
@@ -593,7 +593,10 @@ defmodule Grappa.WindowCountsTest do
       anchor = ins(subject, net.id, "#chan", st: 1, body: "anchor")
       ins(subject, net.id, "#chan", st: 2, sender: "alice", body: "hi vjt")
       ins(subject, net.id, "#chan", st: 3, sender: "bob", kind: :part, body: nil)
-      ins(subject, net.id, "#chan", st: 4, sender: "bob", kind: :topic, body: nil)
+      # `:topic` is body-required, and is the CONTROL row that must survive
+      # the hide — without it this test cannot tell the narrow filter from a
+      # zeroed events bucket.
+      ins(subject, net.id, "#chan", st: 4, sender: "bob", kind: :topic, body: "new topic")
       cursor(subject, net.id, "#chan", anchor.id)
 
       hidden = %{net.slug => MapSet.new(["#chan"])}

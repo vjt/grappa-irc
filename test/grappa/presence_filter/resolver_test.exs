@@ -163,21 +163,28 @@ defmodule Grappa.PresenceFilter.ResolverTest do
     end
   end
 
-  describe "hidden_channels/2 — the /me cold-load fan-out" do
+  describe "hidden_channels/3 — the /me cold-load fan-out" do
     test "is the union of explicit hides and oversized unset channels, by slug" do
       user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
       subject = {:user, user.id}
       big = PresenceFilter.large_channel_threshold()
       {network, pid} = session_with_members(user, "#big", big)
 
-      # A small channel on the same live session: joined, seeded, under the
-      # threshold — must stay OUT of the set.
       :ok = pin(subject, key(network.slug, "#pinned"), "hide")
 
-      hidden = Resolver.hidden_channels(subject, %{network.slug => {network.id, "grappa-test"}})
+      hidden =
+        Resolver.hidden_channels(
+          subject,
+          %{network.slug => {network.id, "grappa-test"}},
+          %{network.slug => %{"#big" => 1, "#pinned" => 2, "#quiet" => 3}}
+        )
 
+      # `#big` hides by the size default (unset, oversized), `#pinned` by the
+      # explicit pin — two different routes into the same set.
       assert MapSet.member?(hidden[network.slug], "#big")
       assert MapSet.member?(hidden[network.slug], "#pinned")
+      # `#quiet` is unset with no live count (never joined) → decision D.
+      refute MapSet.member?(hidden[network.slug], "#quiet")
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -190,7 +197,12 @@ defmodule Grappa.PresenceFilter.ResolverTest do
 
       :ok = pin(subject, key(network.slug, "#big"), "show")
 
-      hidden = Resolver.hidden_channels(subject, %{network.slug => {network.id, "grappa-test"}})
+      hidden =
+        Resolver.hidden_channels(
+          subject,
+          %{network.slug => {network.id, "grappa-test"}},
+          %{network.slug => %{"#big" => 1}}
+        )
 
       refute MapSet.member?(Map.get(hidden, network.slug, MapSet.new()), "#big")
 
@@ -200,7 +212,9 @@ defmodule Grappa.PresenceFilter.ResolverTest do
     test "with no live session, only the explicit hides survive" do
       user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
       subject = {:user, user.id}
-      {network, _} = network_with_server(port: 6667, slug: "az-#{System.unique_integer([:positive])}")
+
+      {network, _} =
+        network_with_server(port: 6667, slug: "az-#{System.unique_integer([:positive])}")
 
       :ok = pin(subject, key(network.slug, "#pinned"), "hide")
       :ok = pin(subject, key(network.slug, "#shown"), "show")
@@ -208,16 +222,89 @@ defmodule Grappa.PresenceFilter.ResolverTest do
       # `own_nicks` carries only LIVE networks (`BadgeCount.live_nick_windows/1`),
       # so this network is absent from it — the pin must still be honoured,
       # because a pref outlives the session that motivated it.
-      hidden = Resolver.hidden_channels(subject, %{})
+      hidden =
+        Resolver.hidden_channels(
+          subject,
+          %{},
+          %{network.slug => %{"#pinned" => 1, "#shown" => 2}}
+        )
 
       assert MapSet.member?(hidden[network.slug], "#pinned")
       refute MapSet.member?(hidden[network.slug], "#shown")
     end
 
-    test "a subject with no pins and no sessions yields an empty map" do
+    test "a channel with a pin but NO window is not in the set" do
+      user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      subject = {:user, user.id}
+
+      {network, _} =
+        network_with_server(port: 6667, slug: "az-#{System.unique_integer([:positive])}")
+
+      :ok = pin(subject, key(network.slug, "#pinned"), "hide")
+
+      # The bulk split is driven FROM read_cursors, so a channel with no
+      # cursor produces no row to exclude. Carrying it would only inflate
+      # the SQL `IN` list.
+      assert Resolver.hidden_channels(subject, %{}, %{}) == %{}
+    end
+
+    test "a subject with no pins and no windows yields an empty map" do
       user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
 
-      assert Resolver.hidden_channels({:user, user.id}, %{}) == %{}
+      assert Resolver.hidden_channels({:user, user.id}, %{}, %{}) == %{}
+    end
+  end
+
+  # The member count is only ever consulted for an UNSET window. When a
+  # network has none, asking for it is pure waste — and "we skip the call"
+  # is invisible in the RESULT (a fully pinned network decides identically
+  # either way), so it has to be measured at the mailbox or not claimed.
+  #
+  # These two tests are the same setup with ONE variable moved: whether the
+  # second window carries a pin. If the guard were absent, both would see
+  # the call; if the guard were over-eager, neither would.
+  describe "hidden_channels/3 — the member-count call is skipped when useless" do
+    setup do
+      user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      subject = {:user, user.id}
+      {network, pid} = session_with_members(user, "#big", PresenceFilter.large_channel_threshold())
+      # No teardown: the trace flag lives ON the traced process, so it dies
+      # with the session the test body stops. Untracing in `on_exit` would
+      # run AFTER that and raise on a dead pid.
+      :erlang.trace(pid, true, [:receive])
+
+      %{subject: subject, network: network, pid: pid}
+    end
+
+    test "asks the session when at least one window is unset", ctx do
+      :ok = pin(ctx.subject, key(ctx.network.slug, "#big"), "hide")
+
+      _ =
+        Resolver.hidden_channels(
+          ctx.subject,
+          %{ctx.network.slug => {ctx.network.id, "grappa-test"}},
+          %{ctx.network.slug => %{"#big" => 1, "#unpinned" => 2}}
+        )
+
+      assert_receive {:trace, _, :receive, {:"$gen_call", _, :list_member_counts}}, 500
+
+      :ok = GenServer.stop(ctx.pid, :normal, 1_000)
+    end
+
+    test "does NOT ask the session when every window is pinned", ctx do
+      :ok = pin(ctx.subject, key(ctx.network.slug, "#big"), "hide")
+      :ok = pin(ctx.subject, key(ctx.network.slug, "#unpinned"), "show")
+
+      _ =
+        Resolver.hidden_channels(
+          ctx.subject,
+          %{ctx.network.slug => {ctx.network.id, "grappa-test"}},
+          %{ctx.network.slug => %{"#big" => 1, "#unpinned" => 2}}
+        )
+
+      refute_receive {:trace, _, :receive, {:"$gen_call", _, :list_member_counts}}, 300
+
+      :ok = GenServer.stop(ctx.pid, :normal, 1_000)
     end
   end
 end

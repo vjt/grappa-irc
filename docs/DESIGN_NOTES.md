@@ -21918,6 +21918,20 @@ one real wiring witness.
 `live_nick_index/1` (or `current_nick/2` directly) — never re-introduce a
 configured-nick shortcut "for the hot path"; the hot path is now cheap.
 
+**Scope correction (added 2026-08-05, #505).** Read the rejection of option
+(c) as being about the NICK, not as a blanket "no `GenServer.call` at
+cold-load". The trick that dissolved it — mirroring the value into the
+SessionRegistry entry — works precisely because a nick changes at ONE
+chokepoint and is a copy, never a parallel computation. #505 needed a live
+MEMBER COUNT for the presence size default, which changes on every
+JOIN/PART/QUIT/KICK; mirroring that would be a maintained parallel copy of
+`state.members`, i.e. the drifting duplicate state CLAUDE.md rule 1
+forbids. So #505 deliberately re-adds ONE call per live network per
+cold-load — bounded per network (not per window), skipped entirely when the
+network has no unset window, and never periodic. See DESIGN_NOTES
+2026-08-05 (#505) for the full argument. The rule above stands unchanged
+for own-nick-keyed counts.
+
 ## 2026-07-28 — #513: LINKS carries the requested mask, and a second in-flight /links is refused (not clobbered)
 
 Two distinct defects in the same place, both papered over by `SHOW_NETWORK_MAP = false` (#496 hid the 🗺 Map button "until /links is fixed"). #513 fixes both and flips the flag back on.
@@ -30038,3 +30052,99 @@ loses the negotiated codec rather than raising a use-after-free.
 YAML. State which files are compiled, which are linked into a sanitized binary,
 and which are neither — those are three different guarantees, and the middle one
 is the only one that catches lifetime and bounds defects.
+## 2026-08-05 — #505: the unread seed learns the presence filter, and buys it back with one call per network
+
+**Symptom.** On a channel hiding join/part/quit/nick_change, the faint
+`events` badge was seeded high by the server and visibly DROPPED when cic
+hydrated the channel. Two counts, two answers: the seed counted every row
+past the cursor, while cic's `perChannelUnread` routes the same rows through
+`presenceRowVisible` and skips the suppressed kinds. A badge the operator
+cannot clear by reading, until the act of opening the channel corrects it.
+
+**The issue's evidence named one door; there are two.** #505 was filed
+pointing at `WindowCounts.snapshot` → `Scrollback.count_after_split`, for
+both the `join_reply` seed and the `/me` cold-load. That was true when the
+observation was made and stale by the time it was fixed: #396 had already
+moved the cold-load onto `WindowCounts.bulk_snapshot` →
+`ReadCursor.bulk_unread_split`, a single `FROM read_cursors` statement that
+does not touch `count_after_split` at all. Since the FIRST symptom the issue
+describes ("never-opened-this-session") is served by exactly that door,
+teaching only the per-window path would have left the reported case
+untouched while looking fixed. Both doors now take the filter; the
+correction is recorded on the issue itself.
+
+**The rule is not forked.** #458 introduced
+`Grappa.PresenceFilter.hidden?/2` — the pure tri-state (`"hide"` wins,
+`"show"` wins, unset follows the live member count against the 50-member
+threshold, unknowable count SHOWS). #505 adds no second copy of it. What it
+adds is the I/O around it, lifted out of `GrappaWeb.MessagesController`
+(where #458 left it as three private helpers) into
+`Grappa.PresenceFilter.Resolver`.
+
+**Why the resolver needed its own top-level boundary.** No existing module
+had the deps. `Grappa.WindowCounts` is the natural-looking home, but
+`Grappa.Session` deps `Grappa.WindowCounts`, so `WindowCounts → Session`
+closes a cycle. `Grappa.PresenceFilter` is deliberately `deps: []` — giving
+the pure rule a Repo and a GenServer call would end its testability as a
+rule. `GrappaWeb` has the deps but is the web boundary, and
+`Grappa.WindowCounts.Pusher` (one of the four consumers) cannot depend on
+it. So the resolver sits ABOVE its callers in a boundary of its own —
+structurally identical to `Pusher`, which is there for the same reason.
+
+**The #498 tradeoff, partially bought back — deliberately, and bounded.**
+#498 (2026-07-28, above) converged the badge/unread doors onto the LIVE nick
+and explicitly rejected its option (c), "resolve through `Grappa.Session` at
+count time", because of the per-network `GenServer.call` it would add to the
+settle/cold-load path — citing #482, where ONE such call on a snapshot path
+reddened two timing specs. #498 dissolved that tradeoff by making the nick
+readable from the SessionRegistry entry value, a plain ETS read.
+
+The member count cannot follow the nick onto that trick. A nick changes at
+one chokepoint; a member count changes on every JOIN, PART, QUIT and KICK.
+Mirroring it into the registry value means maintaining a parallel copy of
+`state.members` with its own housekeeping — duplicated state that drifts,
+which CLAUDE.md's design-discipline rule 1 exists to prevent, and a worse
+trade than the call it saves. So #505 puts the call back, with three bounds
+that keep it a different order of magnitude from what #498 removed:
+
+- **Per network, not per window.** `Session.list_member_counts/2` is a new
+  bulk verb returning `%{channel => count}` in one call. The old shape
+  (`list_members/3` per channel) would have been ~50 calls at a 50-window
+  logon — the exact fan-out #396 collapsed.
+- **Only when a window is unset.** The resolver takes the caller's window
+  universe (`/me` threads its cursor envelope) so "does this network still
+  have an unset window?" is decidable without asking. A network whose every
+  window carries an explicit pin is never asked. Measured at the session
+  mailbox via `:erlang.trace`, not asserted: the skip is invisible in the
+  result, so a result-level test would have proved nothing.
+- **Cold-load only, never periodic.** The count is read once per `/me`, not
+  on a timer and not per message.
+
+The property #396 actually defends — a CONSTANT number of DB queries
+regardless of window count — is untouched: the exclusion rides the existing
+`join_on` dynamic, per slug, in the same two statements.
+
+**Seeded, not zero.** `list_member_counts/2` carries `list_members/3`'s
+seeded discrimination and OMITS a channel that has not yet observed its 366
+RPL_ENDOFNAMES. A pre-NAMES channel's count is UNKNOWABLE, not zero, and
+reporting `0` would read as "small channel, show presence" for a channel
+about to turn out to have 900 members. Absent → unset → decision D → SHOW.
+
+**Narrow, not "zero the events bucket".** The exclusion is
+`Message.suppressed_presence_kinds/0` only. `:mode`, `:topic`, `:kick` and
+`:server_event` still count under `events` when hiding, because the pane
+still renders them. Every test of the hiding path asserts one of those
+survives — without that assertion, "apply the narrow filter" and "zero the
+bucket" pass identically.
+
+**The hidden set is keyed by SLUG, not network id.** The pin itself is
+(`"<slug> <channel>"`), and `bulk_unread_split/3` already joins `networks`
+for the slug. It also matters for correctness: a network with no live
+session is absent from `own_nicks` (which comes from
+`live_nick_windows/1`), so an id-keyed set could not carry its pins — and a
+pref outlives the session that motivated it.
+
+**Empty set, byte-identical SQL.** When nothing hides, the exclusion term is
+not built at all rather than composed with a `dynamic(false)` tautology. The
+overwhelmingly common subject — no pins, no oversized channels — gets
+exactly the pre-#505 statement.

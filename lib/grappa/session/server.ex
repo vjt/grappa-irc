@@ -2341,6 +2341,26 @@ defmodule Grappa.Session.Server do
     end
   end
 
+  # Returns `%{channel => member_count}` for every SEEDED channel. Public via
+  # `Grappa.Session.list_member_counts/2`.
+  #
+  # #505 — the bulk twin of `{:list_members, channel}`, for the `/me`
+  # cold-load's per-window presence-hiding decision. Filters on
+  # `seeded_channels` for the same reason `list_members/3` returns
+  # `:uninitialized`: a pre-NAMES channel's count is unknowable, and
+  # reporting it as `0` would read as "small channel" to the caller. A
+  # channel the operator has PARTed is gone from `state.members` and so is
+  # absent here too — it has no live count either.
+  def handle_call(:list_member_counts, _, state) do
+    counts =
+      for {channel, members} <- state.members,
+          MapSet.member?(state.seeded_channels, channel),
+          into: %{},
+          do: {channel, map_size(members)}
+
+    {:reply, {:ok, counts}, state}
+  end
+
   # Returns a snapshot of the topic cache for `channel`. Serves from cache —
   # no upstream query. Public via `Grappa.Session.get_topic/3`.
   def handle_call({:get_topic, channel}, _, state) when is_binary(channel) do
