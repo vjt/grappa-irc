@@ -24,13 +24,14 @@
  *                        no microphone are opened: "it produced no
  *                        error" is not good enough for a device light.
  *
- * Output contract:
+ * Output contract, owned and enforced by note.c:
  *   stdout — the raw rgb24 frame stream. NOTHING else writes here.
  *   stderr — one JSON object per line: {"event":…}. With --verbose,
  *            human notes are interleaved as `#` comment lines, which a
  *            parser skips on the first character.
  */
 #include "media.h"
+#include "note.h"
 #include "whip.h"
 
 #include <errno.h>
@@ -38,7 +39,6 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
-#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,55 +101,6 @@
 #define CALL_TILE_MAX 3
 
 static volatile sig_atomic_t stop_requested;
-
-static bool verbose;
-static pthread_mutex_t out_lock = PTHREAD_MUTEX_INITIALIZER;
-
-/* Every line out of this process goes through one of these two, so the
- * "stdout is frames only" rule cannot be broken by a stray printf. */
-static void emit(const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    pthread_mutex_lock(&out_lock);
-    vfprintf(stderr, fmt, ap);
-    fputc('\n', stderr);
-    fflush(stderr);
-    pthread_mutex_unlock(&out_lock);
-    va_end(ap);
-}
-
-static void note(const char *fmt, ...) {
-    if (!verbose) return;
-    va_list ap;
-    va_start(ap, fmt);
-    pthread_mutex_lock(&out_lock);
-    fputs("# ", stderr);
-    vfprintf(stderr, fmt, ap);
-    fputc('\n', stderr);
-    fflush(stderr);
-    pthread_mutex_unlock(&out_lock);
-    va_end(ap);
-}
-
-/* JSON string escaping for the few fields that can carry server text. */
-static void emit_event(const char *event, const char *key, const char *value) {
-    char esc[512];
-    size_t n = 0;
-    for (const unsigned char *p = (const unsigned char *)(value ? value : "");
-         *p && n + 7 < sizeof(esc); p++) {
-        if (*p == '"' || *p == '\\') {
-            esc[n++] = '\\';
-            esc[n++] = (char)*p;
-        } else if (*p < 0x20) {
-            n += (size_t)snprintf(esc + n, sizeof(esc) - n, "\\u%04x", *p);
-        } else {
-            esc[n++] = (char)*p;
-        }
-    }
-    esc[n] = 0;
-    if (key) emit("{\"event\":\"%s\",\"%s\":\"%s\"}", event, key, esc);
-    else emit("{\"event\":\"%s\"}", event);
-}
 
 static void on_signal(int sig) {
     (void)sig;
@@ -909,7 +860,7 @@ int main(int argc, char **argv) {
             }
             break;
         case OPT_FPS: mcfg.fps = atoi(optarg); break;
-        case 'v': verbose = true; break;
+        case 'v': note_set_verbose(true); break;
         case 'p': printf("%d\n", CALL_PROTOCOL); return 0;
         case 'h': usage(stdout); return 0;
         default: usage(stderr); return 2;
@@ -930,7 +881,7 @@ int main(int argc, char **argv) {
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
-    rtcInitLogger(verbose ? RTC_LOG_WARNING : RTC_LOG_NONE, on_rtc_log);
+    rtcInitLogger(note_verbose() ? RTC_LOG_WARNING : RTC_LOG_NONE, on_rtc_log);
 
     struct call call;
     memset(&call, 0, sizeof(call));
