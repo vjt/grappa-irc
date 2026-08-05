@@ -3006,19 +3006,25 @@ TEST(the_call_picture_is_a_share_of_the_width) {
      * whole client; 24 on a 200-column one is a stamp. */
     call_video_box(80, &c, &r);
     CHECK_LONG(c, 20);
+    CHECK_LONG(r, 7);
     call_video_box(200, &c, &r);
     CHECK_LONG(c, 40); /* capped */
+    CHECK_LONG(r, 15);
     call_video_box(40, &c, &r);
     CHECK_LONG(c, 16); /* floored */
+    CHECK_LONG(r, 6);
 
-    /* 4:3 in PIXELS, where the pixel height is rows*2. */
+    /* 4:3 in PIXELS at every width, where the pixel height is rows*2.
+     * The rows are pinned to that ratio, not merely bounded by it: an
+     * inequality is no test here, because `r = w / 4` — every face
+     * stretched, at every width — satisfies "at least six rows and never
+     * taller than wide" exactly as well as the right answer does. The
+     * one-cell slack is the halving's rounding, and nothing more. */
     for (int total = 40; total <= 240; total += 8) {
         call_video_box(total, &c, &r);
         CHECK(c >= 16 && c <= 40);
-        CHECK(r >= 6);
-        /* Never taller than it is wide, in pixels — that would be a
-         * portrait box for a landscape camera. */
-        CHECK(r * 2 <= c);
+        CHECK(r * 2 <= (c * 3) / 4);
+        CHECK(r * 2 >= (c * 3) / 4 - 1);
     }
 }
 

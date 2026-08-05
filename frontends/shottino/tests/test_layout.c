@@ -1415,10 +1415,53 @@ static int count_blocks(int y0, int x0, int rows, int cols) {
     return n;
 }
 
-/* And the draw itself: it FILLS the box it was given. The colour of
- * each cell is unreadable here, but whether a cell was written at all
- * is not — and fill-versus-clip is the property that matters. */
-TEST(the_sampling_draw_fills_its_box_rather_than_clipping) {
+/* The (fg, bg) a drawn cell actually carries.
+ *
+ * The glyph is a half block in every cell of every picture, so the
+ * colours are the ONLY thing a sampled draw varies — read them back, or
+ * the draw is unobserved past "something was written here". */
+static bool cell_colors(int y, int x, short *fg, short *bg) {
+    cchar_t cc;
+    wchar_t wch[CCHARW_MAX];
+    attr_t attrs = 0;
+    short pair = 0;
+    if (mvin_wch(y, x, &cc) != OK) return false;
+    if (getcchar(&cc, wch, &attrs, &pair, NULL) != OK) return false;
+    return pair_content(pair, fg, bg) == OK;
+}
+
+/* Upper half block: the TOP source pixel is the foreground, the BOTTOM
+ * one the background. Quantised by the production quantiser rather than
+ * a second copy of it — this asserts which PIXEL was read, not how a
+ * colour is approximated. */
+#define CHECK_CELL_RGB(y, x, top_rgb, bot_rgb)                                                     \
+    do {                                                                                           \
+        short fg_ = -2, bg_ = -2;                                                                  \
+        CHECK(cell_colors((y), (x), &fg_, &bg_));                                                  \
+        CHECK_LONG(fg_, mirc_terminal_color(top_rgb));                                             \
+        CHECK_LONG(bg_, mirc_terminal_color(bot_rgb));                                             \
+    } while (0)
+
+/* And the draw itself: it FILLS the box it was given, out of the pixels
+ * the SAMPLER names.
+ *
+ * Fill-versus-clip needs only the glyphs, and an all-black picture
+ * answers it. Sampled-versus-not does not: a draw that ignored the
+ * source rectangle and painted the top-left corner of the picture over
+ * and over fills the box exactly as completely, and against a black
+ * buffer draws exactly the same screen. So the picture carries its own
+ * position in its colour — one saturated colour per quadrant — and the
+ * corners of the box say which quadrant they came from. */
+TEST(the_sampling_draw_fills_its_box_from_the_pixels_it_sampled) {
+    /* What the program does before it draws anything. Without it the
+     * offscreen screen has no colour pairs to allocate, every cell falls
+     * back to CP_MAIN, and the checks below compare a picture against
+     * itself. */
+    init_theme();
+    mirc_colors_init();
+    CHECK(has_colors());
+    CHECK(COLORS >= 8);
+
     struct inline_media m;
     memset(&m, 0, sizeof(m));
     m.state = IM_READY;
@@ -1426,12 +1469,33 @@ TEST(the_sampling_draw_fills_its_box_rather_than_clipping) {
     m.rows = 20; /* 40 x 40 pixels */
     m.frame_count = 1;
     m.rgb = calloc((size_t)40 * 40 * 3, 1);
+    CHECK(m.rgb != NULL);
+    if (!m.rgb) return;
+
+    /* Four quadrants, four colours far enough apart to survive an
+     * 8-colour terminal. */
+    const long tl = 0xff0000, tr = 0x00ff00, bl = 0x0000ff, br = 0xffffff;
+    for (int y = 0; y < 40; y++)
+        for (int x = 0; x < 40; x++) {
+            long rgb = y < 20 ? (x < 20 ? tl : tr) : (x < 20 ? bl : br);
+            unsigned char *p = m.rgb + (((size_t)y * 40) + x) * 3;
+            p[0] = (unsigned char)(rgb >> 16);
+            p[1] = (unsigned char)(rgb >> 8);
+            p[2] = (unsigned char)rgb;
+        }
 
     /* A box SMALLER than the picture in cells. The ordinary draw clips
      * to the picture's own cell size; this one must cover all 5x10. */
     erase();
     draw_media_region_locked(&m, 2, 3, 0, 0, 0, 0, 5, 10);
     CHECK(count_blocks(2, 3, 5, 10) == 50);
+    /* Its four corners hold the picture's four corners: the box is a
+     * tenth the picture's cell area, so a draw that walked the source
+     * one pixel per cell would put the top-left quadrant in all four. */
+    CHECK_CELL_RGB(2, 3, tl, tl);
+    CHECK_CELL_RGB(2, 3 + 9, tr, tr);
+    CHECK_CELL_RGB(2 + 4, 3, bl, bl);
+    CHECK_CELL_RGB(2 + 4, 3 + 9, br, br);
 
     /* A box BIGGER than the picture in cells: 20x60 from a 40x20-cell
      * picture, every one written (and it fits this 24x80 screen — a box
@@ -1441,6 +1505,11 @@ TEST(the_sampling_draw_fills_its_box_rather_than_clipping) {
     erase();
     draw_media_region_locked(&m, 0, 0, 0, 0, 0, 0, 20, 60);
     CHECK(count_blocks(0, 0, 20, 60) == 1200);
+    /* Stretched the other way, and still reading the whole picture. */
+    CHECK_CELL_RGB(0, 0, tl, tl);
+    CHECK_CELL_RGB(0, 59, tr, tr);
+    CHECK_CELL_RGB(19, 0, bl, bl);
+    CHECK_CELL_RGB(19, 59, br, br);
 
     /* Refusals draw nothing at all rather than a partial box. */
     erase();
@@ -1527,7 +1596,7 @@ int main(void) {
     RUN(an_action_is_drawn_louder_than_system_noise);
     RUN(a_source_rectangle_is_clamped_into_the_picture);
     RUN(a_cell_samples_across_the_whole_rectangle);
-    RUN(the_sampling_draw_fills_its_box_rather_than_clipping);
+    RUN(the_sampling_draw_fills_its_box_from_the_pixels_it_sampled);
     endwin();
     fclose(sink);
     return test_report();

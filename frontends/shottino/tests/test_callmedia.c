@@ -19,6 +19,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -36,6 +39,13 @@ TEST(the_receive_sdp_describes_what_was_negotiated) {
                                 .frame_w = 320,
                                 .frame_h = 240,
                                 .fps = 10,
+                                /* SPELLED OUT, though zero already means
+                                 * VP8: a designated initialiser that
+                                 * leaves it out puts the assertions below
+                                 * on whichever codec happens to sit at 0,
+                                 * so the enum's ORDER decides what this
+                                 * test is about. */
+                                .video_codec = MEDIA_VIDEO_VP8,
                                 .want_video = true };
     char sdp[512];
 
@@ -396,7 +406,8 @@ TEST(the_published_grid_is_complete_or_refused) {
 }
 
 /* Two legs must never be handed the same port, and the port has to be
- * one the caller can actually tell ffmpeg about. */
+ * one the caller can actually tell ffmpeg about — on the interface this
+ * function's name promises. */
 TEST(loopback_ports_are_distinct_and_reported) {
     int a = 0, b = 0;
     int fd_a = media_bind_loopback(&a);
@@ -405,7 +416,35 @@ TEST(loopback_ports_are_distinct_and_reported) {
     CHECK(fd_b >= 0);
     CHECK(a > 0);
     CHECK(b > 0);
+    /* Kept, but it is the KERNEL's promise and not this function's: two
+     * ephemeral sockets open at the same moment cannot be handed one
+     * port however badly the bind is written, so on its own this line
+     * would pass over an implementation that binds nothing at all. */
     CHECK(a != b);
+
+    /* So ask the socket. Both halves of what the caller is told:
+     *
+     * THE ADDRESS, because `INADDR_ANY` binds just as successfully and
+     * reports a port just as plausibly, and puts unauthenticated RTP on
+     * every interface the machine has — a silent, remote change of
+     * exposure that nothing else in the tree would notice.
+     *
+     * THE PORT, because the number is handed to ffmpeg as where to send;
+     * one that is not the bound port is a leg that receives nothing and
+     * says nothing about why. */
+    const int fds[2] = { fd_a, fd_b };
+    const int ports[2] = { a, b };
+    for (int i = 0; i < 2; i++) {
+        if (fds[i] < 0) continue;
+        struct sockaddr_in sa;
+        memset(&sa, 0, sizeof(sa));
+        socklen_t len = sizeof(sa);
+        CHECK(getsockname(fds[i], (struct sockaddr *)&sa, &len) == 0);
+        CHECK(sa.sin_family == AF_INET);
+        CHECK(sa.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
+        CHECK_LONG(ntohs(sa.sin_port), ports[i]);
+    }
+
     if (fd_a >= 0) close(fd_a);
     if (fd_b >= 0) close(fd_b);
 }
