@@ -1,6 +1,7 @@
 import { type ChannelKey, decodeChannelKey } from "./channelKey";
 import { channelsBySlug } from "./networks";
 import { queryWindowsByNetwork } from "./queryWindows";
+import { isMobile } from "./theme";
 import { windowStateByChannel } from "./windowState";
 
 // Synthetic window rows: keys with windowState != "joined" whose
@@ -44,11 +45,9 @@ import { windowStateByChannel } from "./windowState";
 // #71 INC-3 — this is the ONE shared projection (the single code path)
 // behind BOTH the desktop Sidebar pseudo-rows AND the mobile BottomBar
 // `:invited` tab. Extracted from Sidebar so the two navs derive from
-// the same source rather than two parallel projections. A consumer MAY
-// narrow the returned set by state as a presentation choice — BottomBar
-// renders only `invited` (see DESIGN_NOTES 2026-07-26 #71 INC-3) — but
-// that filter is a different rendering of one source, NOT a second
-// projection.
+// the same source rather than two parallel projections. What each form
+// factor actually DRAWS out of it is `navPseudoChannelsForNetwork`
+// below — never a filter open-coded at a call site.
 
 export type PseudoRow = {
   name: string;
@@ -75,4 +74,29 @@ export function pseudoChannelsForNetwork(slug: string, networkId: number): Pseud
     out.push({ name, state: state as PseudoRow["state"] });
   }
   return out;
+}
+
+// #402 — what the nav of the CURRENT form factor actually DRAWS, which is
+// NOT the same set as the projection above.
+//
+// UX-5 bucket BK reads "one window, one surface", and the archive filter
+// (`archive.ts` → `visibleArchiveForNetwork`) implements it by subtracting
+// the pseudo-rows — on the premise that a nav renders what it subtracts.
+// Desktop honours that premise: `Shell.tsx` mounts the Sidebar, which draws
+// every non-joined state. Mobile does not: the mobile branch has no Sidebar
+// at all (an absent JSX branch, not `display:none`) and the BottomBar is
+// space-scarce, so it draws only the `:invited` slice (#71 INC-3, DESIGN_NOTES
+// 2026-07-26). `pending` / `failed` / `kicked` / `parked` were therefore
+// subtracted by a surface that never drew them: one window, ZERO surfaces —
+// a window that vanished from the UI until a reload.
+//
+// So the form-factor narrowing lives HERE, in the same module the archive
+// subtracts from, and every nav consumes it: the filter can no longer drift
+// from what is on screen. `isMobile()` is the SAME signal `Shell.tsx` branches
+// its layout on, so "which nav exists" and "which rows it draws" cannot
+// disagree.
+export function navPseudoChannelsForNetwork(slug: string, networkId: number): PseudoRow[] {
+  const rows = pseudoChannelsForNetwork(slug, networkId);
+  if (!isMobile()) return rows;
+  return rows.filter((row) => row.state === "invited");
 }

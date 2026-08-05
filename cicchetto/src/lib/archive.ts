@@ -4,7 +4,7 @@ import { token } from "./auth";
 import { identityScopedStore } from "./identityScopedStore";
 import { channelsBySlug } from "./networks";
 import { normalizeNick } from "./nickEquals";
-import { pseudoChannelsForNetwork } from "./pseudoChannels";
+import { navPseudoChannelsForNetwork } from "./pseudoChannels";
 import { queryWindowsByNetwork } from "./queryWindows";
 
 // Per-network archive store. Source-of-truth for cic's per-network
@@ -159,8 +159,14 @@ export function visibleArchiveForNetwork(slug: string, networkId: number): Archi
   // Reuse the ONE shared pseudo-row projection — folding its names
   // (ASCII, #372/#525) for the archive's own compare. See the block comment
   // above for why this MUST NOT re-derive from raw windowState.
+  //
+  // #402: subtract what the nav of THIS form factor actually draws, not the
+  // whole projection. On mobile there is no Sidebar and the BottomBar draws
+  // only `:invited`, so subtracting `pending`/`failed`/`kicked`/`parked`
+  // there left the window with no surface at all. `navPseudoChannelsForNetwork`
+  // owns that narrowing for the navs too, so the two cannot drift.
   const pseudoNames = new Set(
-    pseudoChannelsForNetwork(slug, networkId).map((row) => normalizeNick(row.name)),
+    navPseudoChannelsForNetwork(slug, networkId).map((row) => normalizeNick(row.name)),
   );
   return entries.filter((entry) => {
     const folded = normalizeNick(entry.target);

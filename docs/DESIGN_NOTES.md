@@ -30148,3 +30148,64 @@ pref outlives the session that motivated it.
 not built at all rather than composed with a `dynamic(false)` tautology. The
 overwhelmingly common subject — no pins, no oversized channels — gets
 exactly the pre-#505 statement.
+
+## 2026-08-05 — #402: the archive subtracts what a nav DRAWS, not what a projection yields
+
+UX-5 bucket BK reads "one window, one surface", and `visibleArchiveForNetwork`
+implemented it by subtracting every row of the shared pseudo-row projection
+(`lib/pseudoChannels.ts`). That subtraction rests on a premise: some nav
+renders what the archive gives up. Desktop honours it — `Shell.tsx` mounts the
+Sidebar, which draws every non-joined state. Mobile never did. The mobile
+layout is a separate JSX branch with no Sidebar at all (an absent branch, not
+`display:none`), and the BottomBar draws the `:invited` slice alone (#71 INC-3,
+space scarcity). So on mobile the archive was subtracting rows on behalf of a
+surface that did not exist.
+
+**It is a class, and the class was measured, not argued.** The jsdom sibling of
+the repro counts the union of the two mobile surfaces per state: `pending`,
+`failed`, `kicked`, `parked` → **0**; `invited` → **1**. The report arrived as
+"`/cs invite` makes the channel vanish from Archive", and the ChanServ
+self-invite path (`{:rejoin_invited, _}` → `record_in_flight_join/2`) lands
+`:pending` — but `:pending` is one member of the set, not the defect. Fixing the
+invite arm would have left three states equally invisible.
+
+**The fix is (B): narrow the subtraction, not widen the bar.** The alternative
+(A) — have the BottomBar draw every non-joined state — was declined: it reverses
+the 2026-07-26 #71 INC-3 ruling on a bar that is space-scarce by construction,
+and `issue71-inc3-bottombar-invite.spec.ts` pins that ruling on the same
+viewport. So `navPseudoChannelsForNetwork/2` now answers "what does the nav of
+THIS form factor actually draw", and all three consumers read it: Sidebar,
+BottomBar, and the archive filter. The narrowing moved OUT of BottomBar's `<For>`
+and into the projection module.
+
+**That relocation is the actual repair.** A filter open-coded at a nav call site
+is invisible to the module that subtracts, which is precisely how the two came
+to disagree; one function makes the disagreement unrepresentable. The form-factor
+test is `isMobile()` — the SAME signal `Shell.tsx` branches its layout on — so
+"which nav is mounted" and "which rows it draws" cannot answer differently. In
+jsdom, absent `matchMedia`, it resolves desktop, which is the pre-existing
+behaviour; the mobile tests state the form factor explicitly rather than inherit
+it.
+
+**Declined: moving this to the server.** The tempting server-side arm is to stop
+offering the row — have `list_archive` exclude channels with a live non-joined
+window. It would have removed the only recovery that exists today.
+`Session.list_channels/2` is `Map.keys(state.members)` (server.ex), so a
+non-joined channel is never "live" and stays archive-eligible; the client's
+windowState map is memory-only, so a reload empties it and the archive row comes
+back. Hiding it server-side would make the disappearance permanent — worse
+mobile behaviour than the bug being fixed.
+
+**Kept honest by the counter-case.** The `invited` row must stay OUT of the
+archive, because the bar does draw it. Both the jsdom sibling and the e2e assert
+the union is exactly one, not at-least-one, so "stop subtracting" cannot pass:
+it would show `invited` on two surfaces and redden the same assertion the zeroes
+redden.
+
+**Adjacent and deliberately not crossed (#881).** On mobile a non-joined window
+hides every door to the rail — the TopicBar hamburger is `windowIsJoined`-gated
+and the ShellChrome opener renders only for `kind !== "channel"` — so Archive
+itself is unreachable while the failed channel holds focus. The e2e navigates
+back to a joined window before reaching for the archive, and says so. #402 gives
+the window a surface; #881 is what makes that surface reachable from where the
+operator is standing.

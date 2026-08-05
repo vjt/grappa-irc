@@ -14,8 +14,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // rationale; mobile mirrors the desktop wiring exactly).
 const isActiveSelectionMock = vi.hoisted(() => vi.fn<(next: unknown) => boolean>());
 
-// #71 INC-3 — controllable shared pseudo-row projection. Default [] so the
-// existing tests see no invited tabs; the invited tests override per network.
+// #71 INC-3 — controllable shared pseudo-row projection, in its #402
+// form-factor shape (`navPseudoChannelsForNetwork`): the narrowing to
+// `:invited` is the projection's job now, not this component's.
+// Default [] so the existing tests see no invited tabs; the invited tests
+// override per network.
 const pseudoRowsMock = vi.hoisted(() =>
   vi.fn<(slug: string, id: number) => Array<{ name: string; state: string }>>(),
 );
@@ -80,7 +83,7 @@ vi.mock("../lib/windowClose", () => ({
 
 // #71 INC-3 — the shared pseudo-row projection.
 vi.mock("../lib/pseudoChannels", () => ({
-  pseudoChannelsForNetwork: (slug: string, id: number) => pseudoRowsMock(slug, id),
+  navPseudoChannelsForNetwork: (slug: string, id: number) => pseudoRowsMock(slug, id),
 }));
 
 vi.mock("../lib/archive", () => ({
@@ -760,9 +763,16 @@ describe("BottomBar", () => {
   // `:invited` slice of the shared pseudo-row projection — an INTENTIONAL
   // narrowing vs the desktop Sidebar (which shows every non-joined state),
   // because the bottom bar is space-scarce and failed/kicked/parked are
-  // history best confined to the sidebar. The e2e asserts BOTH sides
-  // (invited appears; failed does not); these unit tests lock the filter +
-  // the tab affordances.
+  // history best confined to the sidebar.
+  //
+  // #402 moved that narrowing INTO the projection
+  // (`navPseudoChannelsForNetwork`, unit-tested in
+  // `lib/__tests__/pseudoChannels.test.ts`) because the archive filter has
+  // to subtract the same set; a filter open-coded here was invisible to it.
+  // So these tests lock the tab affordances and the fact that this bar
+  // applies NO policy of its own. The e2e still asserts both ends on a real
+  // mobile viewport (`issue71-inc3-bottombar-invite.spec.ts`: invited
+  // appears, failed does not).
   describe("#71 INC-3 — :invited virtual channel", () => {
     it("renders an :invited pseudo-channel as a tab carrying data-window-state='invited'", () => {
       pseudoRowsMock.mockImplementation((slug) =>
@@ -775,20 +785,24 @@ describe("BottomBar", () => {
       expect(tab?.textContent).toContain("#invited");
     });
 
-    it("renders ONLY :invited — a :failed or :kicked pseudo-channel does NOT appear (narrowing)", () => {
+    // #402 — the bar draws every row the nav projection hands it and applies
+    // no state filter of its own. A second filter here is precisely what
+    // desynced the bar from the archive: the archive subtracted rows the bar
+    // had silently dropped, and the window ended up on no surface at all.
+    // The narrowing itself is asserted where it now lives, on
+    // `navPseudoChannelsForNetwork`.
+    it("applies no narrowing of its own — it draws every row the nav projection yields", () => {
       pseudoRowsMock.mockImplementation((slug) =>
         slug === "freenode"
           ? [
               { name: "#invited", state: "invited" },
               { name: "#failed", state: "failed" },
-              { name: "#kicked", state: "kicked" },
             ]
           : [],
       );
       render(() => <BottomBar />);
       expect(screen.getByText("#invited")).toBeInTheDocument();
-      expect(screen.queryByText("#failed")).toBeNull();
-      expect(screen.queryByText("#kicked")).toBeNull();
+      expect(screen.getByText("#failed")).toBeInTheDocument();
     });
 
     it("tapping the invited tab selects it with kind 'channel'", () => {

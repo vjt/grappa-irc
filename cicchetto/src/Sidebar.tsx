@@ -6,7 +6,7 @@ import { channelKey } from "./lib/channelKey";
 import { mentionCounts } from "./lib/mentions";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
-import { pseudoChannelsForNetwork } from "./lib/pseudoChannels";
+import { navPseudoChannelsForNetwork } from "./lib/pseudoChannels";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { reconnectingByNetwork } from "./lib/reconnectingStatus";
 import { requestScrollToBottom } from "./lib/scrollToBottomCommand";
@@ -512,8 +512,14 @@ const Sidebar: Component<Props> = () => {
                   comment. PHASE 1.1's joined-arm produced ghost rows on
                   PART (no cross-topic ordering between channels_changed
                   and per-channel PART broadcasts). Reverted; cp15-b5
-                  gates on per-channel join-line wire-truth instead. */}
-                <For each={pseudoChannelsForNetwork(network.slug, network.id)}>
+                  gates on per-channel join-line wire-truth instead.
+
+                  #402 — via `navPseudoChannelsForNetwork`, the form-factor
+                  view of that projection, which is also what the archive
+                  filter subtracts. Shell mounts this Sidebar in the desktop
+                  branch only, so here it yields every non-joined state, as
+                  before. */}
+                <For each={navPseudoChannelsForNetwork(network.slug, network.id)}>
                   {(row) => (
                     <li
                       classList={{ selected: isSelected(network.slug, row.name) }}

@@ -3,7 +3,7 @@ import CloseButton from "./CloseButton";
 import { channelKey } from "./lib/channelKey";
 import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
-import { pseudoChannelsForNetwork } from "./lib/pseudoChannels";
+import { navPseudoChannelsForNetwork } from "./lib/pseudoChannels";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { requestScrollToBottom } from "./lib/scrollToBottomCommand";
 import {
@@ -230,23 +230,22 @@ const BottomBar: Component<Props> = (props) => {
 
               {/* #71 INC-3 — the /invite-opened `:invited` virtual channel.
                   The mobile BottomBar surfaces ONLY the `:invited` slice of
-                  the shared pseudo-row projection (lib/pseudoChannels.ts).
-                  The desktop Sidebar renders EVERY non-joined state
-                  (pending/failed/kicked/parked) as a greyed row; the bottom
-                  bar is space-scarce, so failed/kicked/parked history stays
-                  confined to the sidebar — an INTENTIONAL narrowing, not a
-                  second projection (DESIGN_NOTES 2026-07-26 #71 INC-3). The
+                  the shared pseudo-row projection; the desktop Sidebar
+                  renders EVERY non-joined state (pending/failed/kicked/
+                  parked) as a greyed row, because the bottom bar is
+                  space-scarce (DESIGN_NOTES 2026-07-26 #71 INC-3). #402 moved
+                  that narrowing OUT of this call site and into
+                  `navPseudoChannelsForNetwork` (lib/pseudoChannels.ts), where
+                  the archive filter reads it too: an open-coded filter here
+                  is what let the archive subtract rows this bar never drew,
+                  leaving a non-joined window with zero mobile surfaces. The
                   tab is greyed + tappable (opens the invite notice + JOIN
                   button in scrollback, kind "channel"); the × routes through
                   the shared `dismissPseudoWindow` verb (windowClose.ts) — the
                   SAME verb the desktop Sidebar's pseudo-row × uses, so a
                   dismiss lands focus identically on both surfaces ($server;
                   see DESIGN_NOTES 2026-07-26). */}
-              <For
-                each={pseudoChannelsForNetwork(network.slug, network.id).filter(
-                  (row) => row.state === "invited",
-                )}
-              >
+              <For each={navPseudoChannelsForNetwork(network.slug, network.id)}>
                 {(row) => (
                   <>
                     <button

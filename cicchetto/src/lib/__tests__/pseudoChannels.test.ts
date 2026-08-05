@@ -14,19 +14,24 @@ const state = vi.hoisted(() => ({
   ws: {} as Record<string, string>,
   cbs: undefined as Record<string, { name: string; joined: boolean }[]> | undefined,
   qw: {} as Record<number, { targetNick: string }[]>,
+  mobile: false,
 }));
 
 vi.mock("../windowState", () => ({ windowStateByChannel: () => state.ws }));
 vi.mock("../networks", () => ({ channelsBySlug: () => state.cbs }));
 vi.mock("../queryWindows", () => ({ queryWindowsByNetwork: () => state.qw }));
+// The form factor is an environment boundary (matchMedia); mocking the
+// signal is what lets one jsdom run exercise both navs.
+vi.mock("../theme", () => ({ isMobile: () => state.mobile }));
 
 import { channelKey } from "../channelKey";
-import { pseudoChannelsForNetwork } from "../pseudoChannels";
+import { navPseudoChannelsForNetwork, pseudoChannelsForNetwork } from "../pseudoChannels";
 
 beforeEach(() => {
   state.ws = {};
   state.cbs = {};
   state.qw = {};
+  state.mobile = false;
 });
 
 describe("pseudoChannelsForNetwork", () => {
@@ -90,5 +95,45 @@ describe("pseudoChannelsForNetwork", () => {
     expect(pseudoChannelsForNetwork("freenode", 1)).toEqual([
       { name: "#invited", state: "invited" },
     ]);
+  });
+});
+
+// #402 — the form-factor view. This is the set the navs render AND the set
+// the archive filter subtracts, so the two cannot disagree about which
+// window has a surface. The narrowing used to be open-coded in BottomBar,
+// where the archive could not see it.
+describe("navPseudoChannelsForNetwork", () => {
+  const everyNonJoinedState = () => {
+    state.ws = {
+      [channelKey("freenode", "#pending")]: "pending",
+      [channelKey("freenode", "#invited")]: "invited",
+      [channelKey("freenode", "#failed")]: "failed",
+      [channelKey("freenode", "#kicked")]: "kicked",
+      [channelKey("freenode", "#parked")]: "parked",
+    };
+  };
+
+  it("draws every non-joined state on desktop (the Sidebar renders them all)", () => {
+    everyNonJoinedState();
+    state.mobile = false;
+    expect(navPseudoChannelsForNetwork("freenode", 1)).toEqual(
+      pseudoChannelsForNetwork("freenode", 1),
+    );
+    expect(navPseudoChannelsForNetwork("freenode", 1)).toHaveLength(5);
+  });
+
+  it("draws ONLY :invited on mobile (#71 INC-3 — the BottomBar is the only nav)", () => {
+    everyNonJoinedState();
+    state.mobile = true;
+    expect(navPseudoChannelsForNetwork("freenode", 1)).toEqual([
+      { name: "#invited", state: "invited" },
+    ]);
+  });
+
+  it("inherits the base projection's exclusions on mobile (a live :invited dedups away)", () => {
+    state.ws = { [channelKey("freenode", "#dup")]: "invited" };
+    state.cbs = { freenode: [{ name: "#dup", joined: true }] };
+    state.mobile = true;
+    expect(navPseudoChannelsForNetwork("freenode", 1)).toEqual([]);
   });
 });
