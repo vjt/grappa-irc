@@ -101,28 +101,39 @@ jobs:
         # arg wiring the bare runner doesn't need.
         run: vendor/bats-core/bin/bats test/bin/ test/infra/ test/scripts/
 
-      - name: Shellcheck + POSIX-lint deploy scripts (#503 anti-drift)
-        # The shared deploy lib (infra/lib/deploy_common.sh) MUST stay
-        # strict POSIX sh so dash can run it on the FreeBSD jail (/bin/sh).
-        # Lint the lib as sh, the three consumers with -x (they source the
-        # lib), and dash -n parse the POSIX pieces so a reintroduced
-        # bashism in the shared algorithm fails CI instead of silently
-        # breaking the jail deploy — the exact copy-paste-drift class #503
-        # exists to kill.
+      - name: Shellcheck every shell script under bin/ infra/ scripts/ (#441)
+        # DERIVED, not listed. The list this replaces named eleven paths by
+        # hand and had been correct exactly once: `infra/linux/install.sh` —
+        # the file whose defects filed #441 — was never on it, `bin/` was not
+        # linted at all, and the next script added would have been uncovered
+        # for the same reason. scripts/shellcheck.sh enumerates instead
+        # (`--list` prints the set), so coverage is a property of being a
+        # shell script rather than of someone remembering.
+        #
+        # The linter is a digest-pinned container, not the runner's
+        # preinstalled shellcheck: findings change between minors, so a
+        # laptop and whatever ubuntu-latest ships that month must not
+        # disagree about what "clean" means.
+        run: scripts/shellcheck.sh
+
+      - name: POSIX-parse the shared deploy lib + its sh consumers (#503)
+        # A DIFFERENT property from the lint above, with a different tool:
+        # the shared deploy lib (infra/lib/deploy_common.sh) must stay strict
+        # POSIX sh so dash can run it as the FreeBSD jail's /bin/sh. dash -n
+        # parses; shellcheck lints. A reintroduced bashism in the shared
+        # algorithm fails here instead of silently breaking the jail deploy —
+        # the copy-paste-drift class #503 exists to kill.
+        #
+        # Still a hand-written list, deliberately: #441 derived the SHELLCHECK
+        # set, and this one is not the same question — "which files must parse
+        # under dash" is a claim about where they run, and the honest
+        # derivation for it is a separate piece of work.
         run: |
-          shellcheck -s sh infra/lib/deploy_common.sh infra/docker/assert-abi-lockstep.sh infra/docker/release-entrypoint.sh infra/docker/get.sh
-          shellcheck -x infra/freebsd/deploy.sh infra/linux/deploy.sh scripts/deploy.sh infra/docker/deploy.sh
-          # The ONE secret generator (#862): three consumers now (postinstall,
-          # the release image's entrypoint, infra/docker/deploy.sh), so a
-          # bashism-free-but-broken edit must fail here, not on someone's box.
-          shellcheck -x infra/packaging/gen-secrets.sh
           dash -n infra/lib/deploy_common.sh
           dash -n infra/freebsd/deploy.sh
           dash -n infra/docker/assert-abi-lockstep.sh
           dash -n infra/docker/release-entrypoint.sh
           dash -n infra/docker/get.sh
-          # #665 cloud bootstrap + drift-guard (bash, not the POSIX-sh lib).
-          shellcheck -x infra/cloud/first-boot.sh infra/cloud/check-drift.sh
 
       - name: Cloud provider-door drift-guard (#665)
         # Prove every provider door (infra/aws today, infra/terraform later)
