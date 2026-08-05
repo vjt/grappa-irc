@@ -29601,3 +29601,80 @@ about where a file RUNS, not about what it is; deriving it honestly means
 deciding whether every `#!/bin/sh` script in the tree is jail-bound, and that
 is separate work. It is now labelled as such in the workflow rather than
 sitting there looking like the same list.
+## 2026-08-05 — #766: the recovery set decides the door, not the factor that happens to be armed
+
+An account in passkey `second_factor` with TOTP disarmed held ten valid,
+armed recovery codes that no door would read. Both doors refused for their
+own reason: `PasskeyController.recover/2` matches only
+`%User{passkey_mode: :passwordless}` and everything else falls to the
+catch-all that records a throttle failure and answers `:invalid_two_factor`;
+the post-password door was offered only when `TOTP.enabled?/1`, and
+`TOTP.verify/3` rolls the whole exchange back with `:two_factor_not_enabled`
+when `totp_enabled_at` is nil. So the settings UI advertised a fallback that
+nothing on the server would honour.
+
+**The state is reachable through the supported UI path**, which is what
+makes it a defect rather than a curiosity: a passwordless account is the
+only mode that mints codes without TOTP, and switching it to second factor
+keeps them — `RecoveryCodes.drop_if_orphaned/1` deliberately counts
+`second_factor` as an armed factor. `Accounts.reset_totp/1` (the operator
+undo) reaches the same state from the other side.
+
+**Both halves of the fix ask about the SET, not about the factor.** The set
+is ONE flat account-level credential shared by every factor, so a door that
+keys on `passkey_mode` or on `TOTP.enabled?/1` is asking a question that was
+never about it. `Accounts.recovery_codes_armed?/1` now gates the
+post-password challenge alongside `TOTP.enabled?/1`, and
+`Accounts.verify_second_factor/3` spends a recovery code when TOTP is
+disarmed. The second branches on `TOTP.verify/3`'s own not-enabled answer
+rather than a `TOTP.enabled?/1` pre-check: one read decides, so a disarm
+racing the redemption cannot land between the question and the answer.
+
+**What was deliberately NOT widened, and why the issue's own text was not
+followed to the letter.** #766 proposed widening
+`PasskeyController.recover/2` to `second_factor`. That door mints a session
+from a recovery code ALONE. For a passwordless account this is the right
+trade — one factor in, one factor out, since password login is refused for
+the mode. For a `second_factor` account the password IS the first factor, so
+the same widening would have closed the lockout by demoting a two-credential
+account to a one-credential one, and it would have done so on an
+unauthenticated endpoint. The redemption a `second_factor` account gets is
+therefore the one a TOTP account already had: password first, code second,
+inside the existing `:totp_login` failure window. This also settles the
+"single passkey_mode-blind redemption path" the ruling preferred: the doors
+differ because the FACTOR COUNT differs, and collapsing them would be a
+downgrade dressed as a simplification.
+
+That refusal is pinned by a test rather than by this paragraph —
+`recovery_code_doors_test.exs` asserts that `/auth/passkeys/recover` still
+answers `invalid_two_factor` to a `second_factor` account, so a later
+"obvious" fix for the same issue fails the suite instead of quietly landing.
+
+**The guard is the class, not the instance.** The same file enumerates every
+state whose login demands a second factor — passwordless, second factor with
+and without TOTP, TOTP alone — and asserts each can spend an armed code and
+that the code is consumed by doing so. #766 was one row of that matrix; the
+matrix is the rule, so the next mode or factor added has a place that already
+fails if it strands its codes.
+
+**Throttle parity was measured, not asserted.** The widened branch shares
+`:totp_login` with the TOTP door: eleven attempts are refused even when the
+eleventh code is genuine, and the same code then opens the door once the
+counter is cleared — the second half is what stops the 429 from being
+satisfied by a code that was simply unredeemable. Both production halves
+were mutation-checked individually; each one reverted alone turns the suite
+red.
+
+**Nothing was destroyed and no teardown rule moved.** The first ruling on
+this issue was to clear the unusable codes; it was superseded once the
+lockout consequence was put in front of vjt — *"se sono ancora
+potenzialmente utilizzabili non vanno cancellati"*. The conservative line in
+`RecoveryCodes.drop_if_orphaned/1` stands unchanged and stops being a
+contradiction: the codes are preserved AND they can now be spent.
+
+**Adjacent, left standing, reported not fixed.**
+`Accounts.disable_totp/3` deletes the whole recovery set unconditionally
+rather than going through `drop_if_orphaned/1`, so a user who disables TOTP
+while passkey `second_factor` is armed loses the fallback that rule says to
+keep — the mirror image of this issue, and a teardown change, which this
+issue explicitly froze.
