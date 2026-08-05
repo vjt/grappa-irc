@@ -226,7 +226,7 @@ unmuting take as long as a device open.
 transport libdatachannel owns: **118 RTP packets captured and forwarded →
 117 frames of rgb24 decoded**, and the audio leg producing Opus RTP.
 
-Five bugs that cost real time and are worth not repeating:
+Six bugs that cost real time and are worth not repeating:
 
 - **`-framerate` / `-video_size` are demuxer-specific.** v4l2 takes them;
   lavfi refuses them outright and the capture dies with its stderr
@@ -247,6 +247,18 @@ Five bugs that cost real time and are worth not repeating:
   blank window.
 - **The receive SDP cannot be unlinked right after the spawn.** The child
   may not have exec'd, and the decoder then reads nothing, silently.
+- **A fork that succeeds says nothing about the exec.** `spawn_ffmpeg`
+  returned a pid whenever `fork()` did, so a host with no ffmpeg opened a
+  call window, published a tile map, and produced silence and a black
+  rectangle: `execvp` failing only set the CHILD's exit status to 127,
+  and the only `waitpid`s in the helper are on the teardown path. Every
+  *"cannot start …"* message here hangs off the false branch those start
+  functions were not returning — the diagnostics existed and were
+  unreachable code. The exec now reports back over an `FD_CLOEXEC` pipe:
+  a successful one closes the write end and the parent reads EOF, a
+  failed one writes its errno first. What that does NOT catch — an
+  ffmpeg that starts and then dies, a device that will not open — is
+  still invisible, and is documented as such rather than implied away.
 
 The offer it generates, captured against a stub endpoint:
 
