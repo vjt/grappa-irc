@@ -40,8 +40,22 @@ describe("splitMessageLines", () => {
     expect(splitMessageLines("only\n")).toEqual(["only"]);
   });
 
-  it("preserves a whitespace-only line (it is content on the wire, not empty)", () => {
-    expect(splitMessageLines("a\n \nb")).toEqual(["a", " ", "b"]);
+  // #863 — this case used to assert the OPPOSITE: that a whitespace-only line
+  // is preserved because it is "content on the wire, not empty". It is
+  // inverted rather than deleted, because the reversal is the decision worth
+  // keeping visible. The server never accepted such a line — Ecto trims before
+  // its empty-value test — so cic was sending something guaranteed to be
+  // refused, and one indented blank line in a paste aborted the rest of it.
+  it("drops a whitespace-only line — the server counts it as blank, so it is not content", () => {
+    expect(splitMessageLines("a\n \nb")).toEqual(["a", "b"]);
+  });
+
+  it("drops a tab-only line too — the shape a code paste actually produces", () => {
+    expect(splitMessageLines("a\n\t\nb")).toEqual(["a", "b"]);
+  });
+
+  it("keeps a line whose whitespace surrounds real content (indentation is content)", () => {
+    expect(splitMessageLines("def f():\n    return 1")).toEqual(["def f():", "    return 1"]);
   });
 });
 
@@ -54,12 +68,13 @@ describe("splitMessageLines", () => {
 // invisible until someone pastes a block with an indented blank line in it,
 // which is the ordinary shape of pasted code, logs and quoted text.
 //
-// This pin does NOT say which side is right — that is a product decision. It
-// says only that a line cic chooses to send must be one the server takes. It
-// holds either way: if the splitter starts dropping whitespace-only lines it
-// never emits one; if the server starts accepting them the model in
-// `serverBodyPredicate.ts` moves with it. What it forbids is fixing one half
-// and leaving the other to disagree in silence again.
+// This pin does not encode WHICH answer was chosen — the client moving onto
+// the server's notion was a product decision, and pinning the decision would
+// only restate the splitter's own code. It pins the AGREEMENT: a line cic
+// chooses to send must be one the server takes. It survives the server
+// changing its mind too (the model in `serverBodyPredicate.ts` moves, and the
+// splitter must follow or this fails). What it forbids is the state #863 was
+// filed from — one half moving and the other left to disagree in silence.
 describe("#863 — splitMessageLines agrees with the server on what is empty", () => {
   const pastes = [
     "a\n \nb", // the reported shape: a space between two content lines
