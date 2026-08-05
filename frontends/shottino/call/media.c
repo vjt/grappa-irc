@@ -74,16 +74,47 @@ static void split_source(const char *source, const char **fmt, const char **inpu
 }
 
 /* fork+exec ffmpeg with stdout wired to `stdout_fd` (or /dev/null) and
- * stderr discarded.
+ * stderr discarded. Returns -1 if the child could not be started AT ALL,
+ * having reaped it.
  *
  * ffmpeg's own diagnostics are dropped rather than merged into stderr:
  * stderr here is the JSON event stream shottino parses, and ffmpeg's
- * progress lines would be garbage in it. A failure shows as the process
- * dying, which the caller sees. */
+ * progress lines would be garbage in it. Which leaves the exec itself
+ * with nowhere to report from — so it gets a channel of its own.
+ *
+ * THE CLOEXEC PIPE IS THE DETECTOR. A successful exec closes the write
+ * end, so the parent reads EOF and knows only that the program started;
+ * a failed one leaves the child alive to write its errno first, so a
+ * non-empty read means the exec failed and nothing else does. The read
+ * blocks for exactly as long as the exec takes.
+ *
+ * This is not decoration. Without it fork() succeeding IS the answer,
+ * `execvp` failing sets an exit status of 127 that nobody in this
+ * program ever waits for, and every caller's "cannot start …" message
+ * hangs off a branch that cannot be reached — a machine with no ffmpeg
+ * gets a call window, silence, a black rectangle and no diagnostic
+ * anywhere. shottino already holds this line elsewhere: call_helper_path
+ * says "not installed" BEFORE forking, because a child that exits 127
+ * into a pipe tells nobody anything.
+ *
+ * What it does NOT cover: an ffmpeg that starts and then dies — a device
+ * that will not open, a filter graph it refuses. That is a different
+ * failure with a different lifetime (it can happen at any moment, not
+ * just at the start) and it is not detected here or anywhere else. */
 static pid_t spawn_ffmpeg(char *const argv[], int stdout_fd) {
+    int err_fds[2];
+    if (pipe(err_fds) != 0) return -1;
+    fcntl(err_fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(err_fds[1], F_SETFD, FD_CLOEXEC);
+
     pid_t pid = fork();
-    if (pid < 0) return -1;
+    if (pid < 0) {
+        close(err_fds[0]);
+        close(err_fds[1]);
+        return -1;
+    }
     if (pid == 0) {
+        close(err_fds[0]);
         int devnull = open("/dev/null", O_RDWR);
         if (devnull >= 0) {
             dup2(devnull, STDIN_FILENO);
@@ -92,9 +123,25 @@ static pid_t spawn_ffmpeg(char *const argv[], int stdout_fd) {
             if (devnull > STDERR_FILENO) close(devnull);
         }
         execvp("ffmpeg", argv);
+        int failed = errno;
+        (void)!write(err_fds[1], &failed, sizeof(failed));
         _exit(127);
     }
-    return pid;
+    close(err_fds[1]);
+
+    int child_errno = 0;
+    ssize_t got;
+    do {
+        got = read(err_fds[0], &child_errno, sizeof(child_errno));
+    } while (got < 0 && errno == EINTR);
+    close(err_fds[0]);
+    if (got <= 0) return pid;
+
+    /* Reaped here rather than left to the teardown: the caller is about
+     * to be told this leg does not exist, and a leg that does not exist
+     * has nobody to wait for it. */
+    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+    return -1;
 }
 
 bool media_start_send(struct media_leg *leg, const struct media_config *cfg, bool video) {

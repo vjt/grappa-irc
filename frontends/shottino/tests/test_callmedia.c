@@ -1,18 +1,24 @@
-/* test_callmedia — the one pure thing in the media legs.
+/* test_callmedia — the pure parts of the media legs, and the one
+ * question about the impure part that can be asked without a call: does
+ * a spawn that fails SAY so.
  *
- * Everything else in media.c is fork+exec and sockets, verified by
- * running it (see docs/CALLS.md). The SDP is the exception and the one
- * that most deserves a test: a wrong payload type or rtpmap here is a
- * decoder that sits SILENT with no error at all, which is the least
- * debuggable failure this design has.
+ * The rest of media.c is sockets and codec behaviour, verified by
+ * running it (see docs/CALLS.md). The SDP is the part that most deserves
+ * a test: a wrong payload type or rtpmap there is a decoder that sits
+ * SILENT with no error at all, which is the least debuggable failure
+ * this design has — and a spawn reported as started when it was not is
+ * the same failure one layer down.
  *
  * Links media.c only — no libdatachannel — so the default gate never
  * depends on the opt-in submodule having been built.
  */
 #include "../call/media.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "test.h"
@@ -402,6 +408,145 @@ TEST(loopback_ports_are_distinct_and_reported) {
     if (fd_b >= 0) close(fd_b);
 }
 
+/* A PATH containing exactly what `fake_ffmpeg` says — a script named
+ * `ffmpeg`, or nothing at all. The directory name is written back so the
+ * caller can take it down again.
+ *
+ * PATH rather than a real ffmpeg either way: the suite must decide the
+ * outcome itself, and "is ffmpeg installed on the machine running the
+ * tests" is exactly the question that must not affect it. */
+static bool path_holding_ffmpeg(const char *fake_ffmpeg, char *dir, size_t dir_sz) {
+    snprintf(dir, dir_sz, "/tmp/shottino-callmedia-XXXXXX");
+    if (!mkdtemp(dir)) return false;
+    if (fake_ffmpeg) {
+        char path[128];
+        snprintf(path, sizeof(path), "%s/ffmpeg", dir);
+        FILE *f = fopen(path, "w");
+        if (!f) return false;
+        fputs(fake_ffmpeg, f);
+        fclose(f);
+        if (chmod(path, 0755) != 0) return false;
+    }
+    return setenv("PATH", dir, 1) == 0;
+}
+
+static void path_restore(const char *dir, const char *saved) {
+    char path[128];
+    snprintf(path, sizeof(path), "%s/ffmpeg", dir);
+    unlink(path);
+    rmdir(dir);
+    setenv("PATH", saved, 1);
+}
+
+/* Exactly how main.c prepares a mix before starting it. A memset-zeroed
+ * one is NOT the same thing: its legs would own fd 0. */
+static void mix_init(struct media_mix *mix) {
+    memset(mix, 0, sizeof(*mix));
+    mix->pid = -1;
+    for (int i = 0; i < MEDIA_MAX_PEERS; i++) {
+        mix->legs[i].fd = -1;
+        mix->legs[i].pid = -1;
+    }
+}
+
+static struct media_config spawn_test_config(void) {
+    struct media_config cfg = { .audio_source = "pulse:default",
+                                .video_source = "v4l2:/dev/video0",
+                                .audio_sink = "pulse:default",
+                                .audio_payload_type = 111,
+                                .video_payload_type = 96,
+                                .audio_ssrc = 1,
+                                .video_ssrc = 2,
+                                .frame_w = 320,
+                                .frame_h = 240,
+                                .fps = 10,
+                                .capture_w = 640,
+                                .capture_h = 480,
+                                .capture_fps = 20,
+                                .video_kbps = 800,
+                                .video_codec = MEDIA_VIDEO_VP8,
+                                .want_video = true };
+    return cfg;
+}
+
+/* AN FFMPEG THAT CANNOT BE EXEC'D IS A START THAT FAILED.
+ *
+ * The helper is opt-in and its README does not make ffmpeg a hard
+ * dependency, so "not installed" is the ordinary case, not an exotic
+ * one. A fork that succeeds and an exec that does not is a child that
+ * exits 127 with its stderr discarded, and every caller's error message
+ * hangs off the false branch these functions were not returning: the
+ * call window opens, the tiles publish, and the user gets silence and a
+ * black rectangle with no diagnostic anywhere.
+ *
+ * All three start functions, because all three spawn and all three have
+ * their own message on the far side of the bool. */
+TEST(a_start_reports_an_ffmpeg_that_cannot_be_exec_d) {
+    char saved[4096];
+    snprintf(saved, sizeof(saved), "%s", getenv("PATH") ? getenv("PATH") : "");
+    char dir[64];
+    CHECK(path_holding_ffmpeg(NULL, dir, sizeof(dir)));
+
+    struct media_config cfg = spawn_test_config();
+    int slots[1] = { 0 };
+
+    struct media_leg leg;
+    CHECK(!media_start_send(&leg, &cfg, false));
+    /* And stopped, not half-started: the socket the capture would have
+     * been read from is closed, so nothing polls a leg that has no
+     * writer. */
+    CHECK(leg.pid == -1);
+    CHECK(leg.fd == -1);
+
+    struct media_mix amix;
+    mix_init(&amix);
+    CHECK(!media_start_audio_mix(&amix, slots, 1, &cfg));
+    CHECK(amix.pid == -1);
+    media_mix_free(&amix);
+
+    struct media_mix vmix;
+    mix_init(&vmix);
+    vmix.tile_count = media_grid_layout(slots, 1, cfg.frame_w, cfg.frame_h, vmix.tiles,
+                                        MEDIA_MAX_PEERS);
+    CHECK(vmix.tile_count == 1);
+    CHECK(!media_start_video_mix(&vmix, &cfg, -1));
+    CHECK(vmix.pid == -1);
+    media_mix_free(&vmix);
+
+    path_restore(dir, saved);
+}
+
+/* The other half of the same question, and the reason the one above
+ * means anything: a start that CAN exec still succeeds.
+ *
+ * Without this, "returns false" is satisfied just as well by a function
+ * that refuses everything. */
+TEST(a_start_succeeds_when_ffmpeg_is_on_the_path) {
+    char saved[4096];
+    snprintf(saved, sizeof(saved), "%s", getenv("PATH") ? getenv("PATH") : "");
+    char dir[64];
+    /* Anything that execs and stays up: this is the spawn contract under
+     * test, not ffmpeg's own behaviour. */
+    CHECK(path_holding_ffmpeg("#!/bin/sh\nexec sleep 30\n", dir, sizeof(dir)));
+
+    struct media_config cfg = spawn_test_config();
+    int slots[1] = { 0 };
+
+    struct media_leg leg;
+    CHECK(media_start_send(&leg, &cfg, false));
+    CHECK(leg.pid > 0);
+    media_stop(&leg);
+    CHECK(leg.pid == -1);
+
+    struct media_mix amix;
+    mix_init(&amix);
+    CHECK(media_start_audio_mix(&amix, slots, 1, &cfg));
+    CHECK(amix.pid > 0);
+    media_mix_free(&amix);
+
+    path_restore(dir, saved);
+}
+
 int main(void) {
     RUN(the_receive_sdp_describes_what_was_negotiated);
     RUN(the_receive_sdp_follows_the_negotiated_video_codec);
@@ -412,5 +557,7 @@ int main(void) {
     RUN(the_mix_filter_chains_every_tile_into_one_output);
     RUN(the_published_grid_is_complete_or_refused);
     RUN(loopback_ports_are_distinct_and_reported);
+    RUN(a_start_reports_an_ffmpeg_that_cannot_be_exec_d);
+    RUN(a_start_succeeds_when_ffmpeg_is_on_the_path);
     return test_report();
 }
