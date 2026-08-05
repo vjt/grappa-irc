@@ -587,7 +587,22 @@ visible on the next frame drawn.
 The tile map is adopted **all or nothing**. A cell that does not fit the
 frame it claims to belong to would sample somebody else's pixels, so a
 line that fails validation leaves the previous grid in place: a stale
-picture beats a mislabelled one.
+picture beats a mislabelled one. The refusal is reported in the call
+window — a grid that quietly stops following the call is indistinguishable
+from the video breaking.
+
+An **empty value** is not a refusal. It is how the helper says nobody is
+sending a picture any more, published when it stops the decoder, and the
+grid really does go away:
+
+```
+{"event":"tiles","value":""}
+```
+
+Those two outcomes are opposite instructions to the reader, so
+`call_tiles_parse` answers three ways — negative for refused, zero for an
+empty grid, positive for the tile count. They used to share `0`, and that
+is what let one malformed line blank a working picture.
 
 The filter graph (`media_mix_filter`) and the grid are both pure
 functions and unit-tested; the graph was additionally verified by

@@ -29161,3 +29161,69 @@ lives in the CALLER's judgement, not in the context function: `revoke_session/1`
 always returns the typed error, and the plug decides to continue. Absorbing
 inside the context would have taken the choice away from logout, which needs
 it.
+
+## 2026-08-05 — #760: a refusal and an empty answer are not the same zero
+
+`call_tiles_parse` decides which rectangle of the composited call frame
+belongs to which person, and it is deliberately all-or-nothing: a line that
+does not parse cleanly is refused whole, because a half-applied grid draws
+faces under the wrong names. That contract is stated three times — in the
+function's own comment, in the comment three lines above the `memcpy` that
+consumed it, and in `frontends/shottino/docs/CALLS.md`. The single call site
+did the opposite of all three: it adopted the refusal, count `0` and frame
+`0x0`, so one malformed line — a truncated pipe write, a re-grid racing a peer
+leaving — blanked the video grid mid-call and left it blank until the next good
+line arrived.
+
+**The fix the issue proposed would have introduced a second bug.** `if (n > 0)`
+reads as the obvious guard, and it is wrong, because `0` already had a second
+meaning: the helper publishes `{"event":"tiles","value":""}` when it stops the
+decoder because nobody is sending a picture (`call/main.c` `video_retile`), and
+that is an INSTRUCTION, not a failure. A count-only guard would hold the last
+two faces labelled over a frame stream that has stopped. The root cause is not
+the missing guard — it is that a lossy return value made the guard unwriteable:
+the caller could not distinguish "there is nothing to draw" from "I could not
+read this". So the parser now answers three ways (`< 0` refused, `0` an empty
+grid, `> 0` the tile count) and the caller does the opposite thing in each.
+
+**A bare frame size stays a refusal.** `"640x480"` with nothing after it is a
+line cut mid-write, and the helper never emits one: when `media_grid_layout`
+refuses, `media_start_video_mix` returns false on `tile_count <= 0` and the
+helper reports an `error` event instead of a tile-less grid. The empty grid has
+exactly two spellings, `""` and `"<w>x<h>;"`, and both are pinned.
+
+**The refusal is now said out loud.** One line into the call window, on a path
+that already narrates every other thing the helper reports. Unreported, a grid
+that silently stops following the call reaches us as "the video broke", which
+is unactionable — the same failure mode as #758's error strings that no branch
+could reach and #756's over-read that no one could observe. Not rate-limited
+and not latched: a `tiles` event is emitted when the grid CHANGES, not per
+frame, so the flood this would guard against does not exist, and a latch is a
+per-call field that needs resetting and will drift.
+
+**Second defect, same path: uninitialised stack into shared state.** The
+`tiles` local was uninitialised and the parser writes nothing to it on its
+early exits, so the `memcpy` under `app->lock` carried whatever the stack held
+— and still would past the tile count on a GOOD line, since the whole array is
+copied either way. Zeroed at declaration. It was harmless only because every
+reader gates on `tile_count`, which is a coincidence rather than a design.
+
+**The class was swept.** One structural twin: `admin_verb_run` copies an
+uninitialised `struct admin_field fields[ADMIN_FORM_MAX]` whole into
+`app->overlay.form` — but it is guarded by `if (nf)` and every reader is
+bounded by `form_count`, so it is latent, not live. The producer-side
+`video_retile` assigns `media_grid_layout`'s count straight into
+`c->vmix.tile_count` and leaves `tiles` stale on a refusal, which is safe for
+the same reason: the count gates every reader. No other all-or-nothing parser
+in `frontends/shottino` has a call site that adopts partial output.
+
+**Testability was the reason this site had none.** The per-line handling lived
+inside the reader thread, and a thread blocked in `fgets` on a pipe cannot be
+asserted about; it now lives in `call_event_apply`, driven from the test with
+the helper's real JSON. The RED was measured against five mutations rather than
+assumed: dropping the guard (9 checks), collapsing the parser back to one `0`
+(17), dropping the zero-init (35 — the assertions come back `0xAAAAAAAA`,
+because the test dirties the stack first on purpose, since a quiet stack is
+often already zero and would have made that check a green that proves nothing),
+writing the guard the way the issue words it (17, of which three are the
+camera-off regression), and keeping the guard while saying nothing (2).
