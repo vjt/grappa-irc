@@ -35,11 +35,14 @@ vi.mock("../lib/auth", () => ({ token: () => "test-token" }));
 const passkeys = vi.hoisted(() => ({
   createPasskey: vi.fn(),
   getPasskey: vi.fn(),
+  passkeysAvailable: vi.fn(() => true),
 }));
 
 vi.mock("../lib/passkeys", () => ({
   createPasskey: passkeys.createPasskey,
   getPasskey: passkeys.getPasskey,
+  PASSKEYS_UNAVAILABLE: "Passkeys need a secure (HTTPS) connection.",
+  passkeysAvailable: passkeys.passkeysAvailable,
 }));
 
 import { ApiError } from "../lib/api";
@@ -70,6 +73,7 @@ describe("PasskeySettings", () => {
     api.finishPasskeyRegistration.mockResolvedValue(undefined);
     passkeys.createPasskey.mockResolvedValue({ attestation: true });
     passkeys.getPasskey.mockResolvedValue({ assertion: true });
+    passkeys.passkeysAvailable.mockReturnValue(true);
   });
 
   const addPasskey = async (): Promise<void> => {
@@ -213,6 +217,25 @@ describe("PasskeySettings", () => {
       expect(screen.getByRole("alert")).toHaveTextContent("Invalid name or password."),
     );
     expect((screen.getByLabelText("Account password") as HTMLInputElement).value).toBe("");
+  });
+
+  // #725 — on a plain-http instance every ceremony in this pane is
+  // impossible. Offering the controls anyway meant a click ended in
+  // `TypeError: undefined is not an object (evaluating
+  // 'navigator.credentials.create')` on the card. Say why instead — and keep
+  // removal, which runs no ceremony and is the one thing still useful here.
+  it("replaces the ceremony controls with a reason when WebAuthn is unavailable", async () => {
+    passkeys.passkeysAvailable.mockReturnValue(false);
+    render(() => <PasskeySettings />);
+
+    await screen.findByText("Mode: passwordless");
+    expect(screen.getByTestId("passkeys-unavailable")).toHaveTextContent(/secure \(HTTPS\)/);
+    expect(screen.queryByRole("button", { name: "add passkey" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "require password + passkey" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "use passkey as primary login" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "return to password login" })).toBeNull();
+    // Deleting a stored credential needs no ceremony, so it stays offered.
+    expect(screen.getByTestId("passkey-remove-passkey-1")).toBeInTheDocument();
   });
 
   it("returns a passwordless account to password login with password and passkey", async () => {

@@ -14,7 +14,7 @@ import {
 import { token } from "./lib/auth";
 import { copyText } from "./lib/clipboard";
 import { errorMessage } from "./lib/friendlyApiError";
-import { createPasskey, getPasskey } from "./lib/passkeys";
+import { createPasskey, getPasskey, PASSKEYS_UNAVAILABLE, passkeysAvailable } from "./lib/passkeys";
 
 const PasskeySettings: Component = () => {
   const [status, setStatus] = createSignal<PasskeyStatus | null>(null);
@@ -29,6 +29,14 @@ const PasskeySettings: Component = () => {
   // existing two-tap InlineConfirmButton rather than firing on first tap.
   // One armed id across the whole list: arming a row disarms its siblings.
   const [armedRemoval, setArmedRemoval] = createSignal<string | null>(null);
+
+  // #725 — WebAuthn is either present for this whole page load or it is not
+  // (the browser withholds `navigator.credentials` off a secure context), so
+  // this is read ONCE at setup rather than made reactive. Every control that
+  // needs a ceremony hides behind it and a note names the reason; removal
+  // does NOT, because deleting a stored credential runs no ceremony and is
+  // the one useful thing left to do here on a plain-http instance.
+  const webauthn = passkeysAvailable();
 
   const currentToken = (): string => {
     const value = token();
@@ -166,6 +174,11 @@ const PasskeySettings: Component = () => {
             <p role="note">
               Every change below needs your account password. It is cleared after each one.
             </p>
+            <Show when={!webauthn}>
+              <p role="note" data-testid="passkeys-unavailable">
+                {PASSKEYS_UNAVAILABLE} You can still remove passkeys you already registered.
+              </p>
+            </Show>
             <ul>
               <For each={current.passkeys}>
                 {(passkey) => (
@@ -184,24 +197,26 @@ const PasskeySettings: Component = () => {
                 )}
               </For>
             </ul>
-            <form onSubmit={register}>
-              <label for="passkey-name">Passkey name</label>
-              <input
-                id="passkey-name"
-                autocomplete="off"
-                data-1p-ignore
-                data-bwignore="true"
-                data-lpignore="true"
-                data-protonpass-ignore="true"
-                value={name()}
-                onInput={(e) => setName(e.currentTarget.value)}
-                required
-              />
-              <button type="submit" disabled={busy()}>
-                add passkey
-              </button>
-            </form>
-            <Show when={current.passkeys.length > 0}>
+            <Show when={webauthn}>
+              <form onSubmit={register}>
+                <label for="passkey-name">Passkey name</label>
+                <input
+                  id="passkey-name"
+                  autocomplete="off"
+                  data-1p-ignore
+                  data-bwignore="true"
+                  data-lpignore="true"
+                  data-protonpass-ignore="true"
+                  value={name()}
+                  onInput={(e) => setName(e.currentTarget.value)}
+                  required
+                />
+                <button type="submit" disabled={busy()}>
+                  add passkey
+                </button>
+              </form>
+            </Show>
+            <Show when={webauthn && current.passkeys.length > 0}>
               <button type="button" disabled={busy()} onClick={() => void enableSecondFactor()}>
                 require password + passkey
               </button>
@@ -218,7 +233,7 @@ const PasskeySettings: Component = () => {
                 account. Shottino cannot log in.
               </p>
             </Show>
-            <Show when={current.mode !== "disabled"}>
+            <Show when={webauthn && current.mode !== "disabled"}>
               <button type="button" disabled={busy()} onClick={() => void disablePasskeyLogin()}>
                 return to password login
               </button>

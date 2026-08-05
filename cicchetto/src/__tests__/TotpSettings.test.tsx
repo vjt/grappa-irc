@@ -30,6 +30,8 @@ vi.mock("../lib/auth", () => ({ token: () => "test-token" }));
 vi.mock("../lib/passkeys", () => ({
   createPasskey: vi.fn(),
   getPasskey: vi.fn(),
+  PASSKEYS_UNAVAILABLE: "unavailable",
+  passkeysAvailable: () => true,
 }));
 
 import { ApiError } from "../lib/api";
