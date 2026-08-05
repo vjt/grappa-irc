@@ -2,7 +2,6 @@ import { createEffect, createMemo, createSignal, on, untrack } from "solid-js";
 import { isContentKind, ownNickForNetwork } from "./api";
 import { token } from "./auth";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
-import { isDocumentVisible } from "./documentVisibility";
 import { identityScopedStore } from "./identityScopedStore";
 import { saveLastFocused } from "./lastFocusedChannel";
 import { membersByChannel } from "./members";
@@ -47,14 +46,11 @@ import { windowIsPresent } from "./windowState";
 //   * Selection-change effect: fires `scrollback.loadInitialScrollback`
 //     to backfill history (the load-once gate lives in scrollback.ts)
 //     + clears mention counts for the focused window. As the cursor
-//     advances (via scroll-settle, focus-leave, browser-blur, send, and
-//     fresh-channel load-baseline in scrollback.ts) the derived counts
-//     fall on their own. The ONE count the cursor can't drop on its own
-//     is the focused-AND-visible window's: its cursor only moves on the
-//     NEXT settle, so `perChannelUnread` zeros that window's
-//     `{messages, events}` as a final overwrite (RC1, decouple-unread-
-//     badge) keyed on `selectedChannel` + `isDocumentVisible` — a
-//     backgrounded-but-selected tab keeps accruing.
+//     advances (via read-at-the-tail, scroll-settle, focus-leave,
+//     browser-blur, send, and fresh-channel load-baseline in
+//     scrollback.ts) the derived counts fall on their own — in the
+//     FOCUSED window exactly as in every other one (#887; the old
+//     focused-window zeroing overwrite is gone, see `perChannelUnread`).
 //
 // 2026-06-01 (unread-badges-from-cursor cluster, bucket B2): the four
 // increment stores (`unreadCounts`, `messagesUnread`, `eventsUnread`,
@@ -457,25 +453,27 @@ const exports = identityScopedStore((onIdentityChange) => {
       result[key] = { messages: msgs, events: evts };
     }
 
-    // 2026-06-02 — focused-window badge suppression. The operator is
-    // looking at this window (and the browser tab is visible), so it has
-    // nothing unread TO THEM right now: zero its count. Derived from
-    // selectedChannel + isDocumentVisible — the read cursor is NOT
-    // advanced, so the in-pane `── N unread ──` marker survives the
-    // select and clears on its own settle events (scroll / defocus /
-    // send). Gating on isDocumentVisible keeps a selected-but-backgrounded
-    // tab accruing its badge so a returning operator sees activity.
-    // Final overwrite so it covers both the seed-only and hydrated
-    // branches above. Spec:
-    // docs/superpowers/specs/2026-06-02-decouple-unread-badge-design.md
-    const focused = selectedChannel();
-    if (focused !== null && isDocumentVisible()) {
-      result[channelKey(focused.networkSlug, focused.channelName)] = {
-        messages: 0,
-        events: 0,
-      };
-    }
-
+    // #887 — the focused-window badge suppression is GONE (it used to sit
+    // here as a final overwrite zeroing the selected-AND-visible window's
+    // `{messages, events}`; 2026-06-02, decouple-unread-badge RC1).
+    //
+    // It drew "you are looking at this" and "you have read this" the same
+    // way — as no badge — while deliberately NOT advancing the cursor. On a
+    // window the operator was actively reading the badge therefore vanished
+    // on select and came back WHOLE (1832) on leave, which reads as a broken
+    // counter. Nothing was wrong; the display was lying by omission.
+    //
+    // The count is now the same question in every window, focused or not:
+    // "how much have you not read". It falls where it should because the
+    // cursor now advances WHILE the operator reads — ScrollbackPane's
+    // read-at-the-tail arm marks what is on screen at the tail read, on top
+    // of the pre-existing settle writers (scroll-settle, leave, blur, send).
+    // The in-pane `── N unread ──` divider is unaffected: it reads the FROZEN
+    // `markerCursorId` snapshot, not the live cursor (freeze contract).
+    //
+    // The one window whose count still cannot fall is a far-behind one
+    // (#693 freezes its cursor on purpose). That is now SAID rather than
+    // hidden — #888 marks the badge as a distance, not a stuck counter.
     return result;
   });
 

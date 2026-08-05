@@ -1493,17 +1493,23 @@ describe("selection store", () => {
     });
   });
 
-  // 2026-06-02 — decouple the sidebar badge from the read cursor. The
-  // badge means "have I opened this window?" and must clear on SELECT,
-  // independent of the cursor (which the in-pane marker still rides on,
-  // so the marker survives the select). selection.ts suppresses the
-  // focused-AND-visible window's message/event counts in perChannelUnread;
-  // the cursor is never written here (ScrollbackPane owns cursor writes).
-  // Spec: docs/superpowers/specs/2026-06-02-decouple-unread-badge-design.md
-  describe("focused-window badge suppression (2026-06-02)", () => {
+  // #887 — the focused window's badge is NOT special any more.
+  //
+  // It used to be zeroed by a final overwrite in `perChannelUnread` while the
+  // window was selected AND the tab visible (2026-06-02, decouple-unread-badge
+  // RC1). That drew "you are looking at this" and "you have read this"
+  // identically — as no badge — while deliberately leaving the cursor where it
+  // was, so the number vanished on select and came back whole on leave. These
+  // tests pin the reversal: the count answers "how much have you not read" in
+  // the selected window exactly as in every other one, and it moves only when
+  // the read cursor moves. (That the cursor DOES move while the operator reads
+  // is ScrollbackPane's read-at-the-tail arm, tested there; the falling badge
+  // itself is `unreadBadgeFocused.test.ts`, which drives the real cursor store
+  // this file mocks flat.)
+  describe("focused-window badge is not suppressed (#887)", () => {
     const seedRows = async (key: ReturnType<typeof channelKey>, kind: "privmsg" | "join") => {
       const scrollback = await import("../lib/scrollback");
-      const [, name] = key.split(" ");
+      const [, name] = key.split(" ");
       for (const id of [1, 2, 3]) {
         scrollback.appendToScrollback(key, {
           id,
@@ -1518,7 +1524,7 @@ describe("selection store", () => {
       }
     };
 
-    it("selecting a visible window zeros its own message badge", async () => {
+    it("keeps the message badge on the window the operator selects", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -1533,11 +1539,34 @@ describe("selection store", () => {
         kind: "channel",
       });
 
-      expect(selection.messagesUnread()[key]).toBeUndefined();
-      expect(selection.unreadCounts()[key]).toBeUndefined();
+      expect(selection.messagesUnread()[key]).toBe(3);
+      expect(selection.unreadCounts()[key]).toBe(3);
     });
 
-    it("does NOT suppress when the document is hidden (selected ≠ looking)", async () => {
+    it("keeps the event badge on the selected window too (presence kinds)", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      const selection = await import("../lib/selection");
+      const key = channelKey("freenode", "#grappa");
+      await seedRows(key, "join");
+      expect(selection.eventsUnread()[key]).toBe(3);
+
+      selection.setSelectedChannel({
+        networkSlug: "freenode",
+        channelName: "#grappa",
+        kind: "channel",
+      });
+
+      expect(selection.eventsUnread()[key]).toBe(3);
+    });
+
+    // The old suppression was gated on `isDocumentVisible` so a
+    // selected-but-BACKGROUNDED tab kept accruing. With the suppression gone
+    // the count no longer consults visibility AT ALL — which is the honest
+    // shape, but it means a regression re-introducing any focus/visibility
+    // special case would have to break this test to land.
+    it("reads the same whether the tab is hidden or visible", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -1556,28 +1585,10 @@ describe("selection store", () => {
 
       setVisibilityForTest(true);
       await Promise.resolve();
-      expect(selection.messagesUnread()[key]).toBeUndefined();
+      expect(selection.messagesUnread()[key]).toBe(3);
     });
 
-    it("suppresses the event badge too (presence kinds)", async () => {
-      localStorage.setItem("grappa-token", "tok");
-      const api = await import("../lib/api");
-      vi.mocked(api.listMessages).mockResolvedValue([]);
-      const selection = await import("../lib/selection");
-      const key = channelKey("freenode", "#grappa");
-      await seedRows(key, "join");
-      expect(selection.eventsUnread()[key]).toBe(3);
-
-      selection.setSelectedChannel({
-        networkSlug: "freenode",
-        channelName: "#grappa",
-        kind: "channel",
-      });
-
-      expect(selection.eventsUnread()[key]).toBeUndefined();
-    });
-
-    it("re-exposes the count when the operator leaves the window", async () => {
+    it("does not change when the operator leaves the window", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);
@@ -1589,8 +1600,11 @@ describe("selection store", () => {
         channelName: "#grappa",
         kind: "channel",
       });
-      expect(selection.messagesUnread()[key]).toBeUndefined();
+      expect(selection.messagesUnread()[key]).toBe(3);
 
+      // Pre-#887 this transition was the one that RE-EXPOSED the count (3
+      // arriving out of nowhere, the "badge came back at 1832" report). The
+      // cursor has not moved, so nothing about the number may move either.
       selection.setSelectedChannel({
         networkSlug: "freenode",
         channelName: "#other",
@@ -1600,7 +1614,7 @@ describe("selection store", () => {
       expect(selection.messagesUnread()[key]).toBe(3);
     });
 
-    it("does NOT suppress OTHER (non-selected) windows", async () => {
+    it("leaves OTHER (non-selected) windows alone", async () => {
       localStorage.setItem("grappa-token", "tok");
       const api = await import("../lib/api");
       vi.mocked(api.listMessages).mockResolvedValue([]);

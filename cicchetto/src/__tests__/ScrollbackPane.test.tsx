@@ -1891,7 +1891,11 @@ describe("ScrollbackPane", () => {
       });
 
       // A bare mount/activation is a PROGRAMMATIC scroll — it must NOT advance
-      // the cursor (that's the BUGHUNT-2 input-gate contract).
+      // the cursor (that's the BUGHUNT-2 input-gate contract). Read here and
+      // now: post-#887 the read-at-the-tail arm WILL advance it half a second
+      // later on this jsdom pane (zero geometry reads as at-the-tail), which
+      // is correct and unrelated — the claim being pinned is that the gesture
+      // below is what does it, not the mount.
       expect(mockSetCursorIfAdvances).not.toHaveBeenCalled();
 
       // THE GESTURE: the jump-to-bottom command the floating button + the #243
@@ -4126,6 +4130,17 @@ describe("ScrollbackPane", () => {
   // jsdom layout returns null for `lastFullyVisibleRowId` (no real
   // viewport) so a jsdom positive test would not exercise the POST
   // branch.
+  //
+  // #887 — the observation is now taken with the tab HIDDEN. Not a
+  // convenience: jsdom's zero geometry makes every pane read as "at the
+  // tail", so the read-at-the-tail arm fires on its own 500ms debounce and
+  // would land a cursor write inside this test's wait window — a write that
+  // has nothing to do with the input gate but is indistinguishable from one
+  // at the mock. Hiding the tab closes THAT arm (its `isDocumentVisible`
+  // gate) through production's own door and leaves the scroll-settle arm
+  // fully armed, so what the assertion sees is the gate under test and
+  // nothing else. The blur transition itself writes the cursor (the
+  // browser-blur arm), hence the explicit clear before the scroll.
   describe("BUGHUNT-2 input-event gate", () => {
     it("scroll without preceding pointerdown does NOT call setCursorIfAdvances", async () => {
       // Seed enough rows for the scroll-settle path to be considered.
@@ -4148,6 +4163,12 @@ describe("ScrollbackPane", () => {
       expect(list).not.toBeNull();
       if (!list) throw new Error("scrollback DOM not found");
 
+      // Close the #887 read-at-the-tail arm (visibility gate) and drop the
+      // cursor write the blur transition itself performs.
+      setDocVisible(false);
+      await new Promise((r) => setTimeout(r, 0));
+      mockSetCursorIfAdvances.mockClear();
+
       // Fire scroll without any prior pointerdown / wheel / touchmove /
       // keydown. The gate's `lastInputEventAtMs` stays null → settle
       // timer never arms.
@@ -4158,6 +4179,61 @@ describe("ScrollbackPane", () => {
       // suite doesn't enable fake timers).
       await new Promise((r) => setTimeout(r, 700));
 
+      expect(mockSetCursorIfAdvances).not.toHaveBeenCalled();
+    });
+  });
+
+  // #887 — read-at-the-tail. The arm that makes an UN-suppressed badge honest.
+  //
+  // Removing the focused-window suppression (selection.ts) left the badge with
+  // no way DOWN while the operator sits at the tail of a quiet window: every
+  // pre-existing writer fires when they stop looking (leave / blur / unmount)
+  // or when they scroll (settle, gated on a real input event). A message
+  // landing while they watch it land would have bumped the badge and left it
+  // there — a stuck number instead of a vanishing one, the same complaint
+  // wearing a different hat.
+  //
+  // So: tab visible + pane at the tail ⇒ what is rendered is being read.
+  // jsdom's zero geometry reads as at-the-tail via `lastFullyVisibleRowId`'s
+  // at-bottom short-circuit, which is exactly the state under test.
+  describe("#887 read-at-the-tail cursor advance", () => {
+    it("advances to the arriving row with NO operator input event", async () => {
+      seedReadCursor("freenode", "#grappa", 1);
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      await waitFor(() => {
+        expect(screen.getAllByTestId("scrollback-line")).toHaveLength(3);
+      });
+
+      // No pointerdown / wheel / touchmove / keydown, and no gesture: the
+      // scroll-settle arm can never fire here. The only thing that can move
+      // the cursor is the state "visible AND at the tail".
+      await waitFor(
+        () => {
+          expect(mockSetCursorIfAdvances).toHaveBeenCalledWith("freenode", "#grappa", 3);
+        },
+        { timeout: 2_000 },
+      );
+    });
+
+    it("stands down while the tab is hidden (a backgrounded tab is not being read)", async () => {
+      seedReadCursor("freenode", "#grappa", 1);
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      await waitFor(() => {
+        expect(screen.getAllByTestId("scrollback-line")).toHaveLength(3);
+      });
+
+      // Hide, and drop the write the blur arm itself performs — what is under
+      // test is whether the read-at-the-tail arm keeps firing afterwards.
+      setDocVisible(false);
+      await new Promise((r) => setTimeout(r, 0));
+      mockSetCursorIfAdvances.mockClear();
+
+      // Well past the debounce: a selected-but-backgrounded tab must keep
+      // accruing its badge (the one property of the old suppression's
+      // visibility gate worth keeping), so nothing may be marked read.
+      await new Promise((r) => setTimeout(r, 900));
       expect(mockSetCursorIfAdvances).not.toHaveBeenCalled();
     });
   });

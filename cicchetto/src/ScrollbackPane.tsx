@@ -156,9 +156,20 @@ const SCROLL_SETTLE_DEBOUNCE_MS = 500;
 // #239 — debounce for the trailing-hidden cursor advance (Facet B). Coalesces
 // join/part storms (netsplits on a large / presence-hidden channel) to a single
 // forward cursor POST once arrivals quiesce. Same magnitude as the scroll-settle
-// debounce; the badge is suppressed while focused so the operator never sees the
-// delay, and the DOM settle paths stay eager.
+// debounce; the DOM settle paths stay eager. #887 — the focused window's badge
+// is no longer suppressed, so this delay IS now visible as a badge that lingers
+// half a second over a hidden join burst before dropping. Deliberate: the
+// alternative is a POST per netsplit line.
 const PRESENCE_CURSOR_SETTLE_MS = 500;
+
+// #887 — debounce for the read-at-the-tail cursor advance. Coalesces a burst of
+// arrivals into one forward POST, and — the load-bearing part — outlasts the
+// activation routine's rAF-deferred geometry write: a cold open into an unread
+// window mounts with `atBottomNow` at its `createSignal(true)` default and only
+// learns it actually jumped to a far divider a frame or two later (~:2094).
+// Firing inside that window would mark the backlog read from under the
+// operator. 500ms is ~30 frames of margin; it is NOT a tuning knob.
+const READ_AT_TAIL_SETTLE_MS = 500;
 
 // BUGHUNT-2: input-event-recency window for the scroll-settle gate.
 // onScroll only arms the settle timer if a real operator input event
@@ -1000,6 +1011,21 @@ type Row = SeparatorRow | UnreadMarkerRow | MessageRow | InviteAckRow | TopicRow
 
 const ScrollbackPane: Component<Props> = (props) => {
   let listRef!: HTMLDivElement;
+  // Every settle writer in this component answers the SAME question — "what
+  // is the last row the operator can actually see?" — and hands the answer to
+  // the one forward-only door (`setCursorIfAdvances`, which owns the #233
+  // monotonic clamp and the #693 far-behind freeze). Unmount, channel-leave,
+  // browser-blur, scroll-settle, the scroll-to-bottom gesture and the #887
+  // read-at-the-tail arm all shared this three-line body verbatim; it lives
+  // here once so a future guard cannot land in four of the five.
+  const settleCursorToVisibleTail = (): void => {
+    // `listRef!` is a definite-assignment ref: typed non-null, but genuinely
+    // undefined until Solid assigns it at mount (and every caller guarded it).
+    if (!listRef) return;
+    const id = lastFullyVisibleRowId(listRef);
+    if (id === null) return;
+    setCursorIfAdvances(props.networkSlug, props.channelName, id);
+  };
   // UX-8 (b): scroll-settle debounce timer. Plain let — pure mutation,
   // no Solid reactivity. Cleared on the next scroll event; fires once
   // when scroll has been quiescent for SCROLL_SETTLE_DEBOUNCE_MS.
@@ -1618,12 +1644,7 @@ const ScrollbackPane: Component<Props> = (props) => {
   // CURRENT pane (props.networkSlug, props.channelName — captured in
   // the closure at component-init time, won't change before unmount
   // because the component IS this (slug, channel) instance).
-  onCleanup(() => {
-    if (!listRef) return;
-    const id = lastFullyVisibleRowId(listRef);
-    if (id === null) return;
-    setCursorIfAdvances(props.networkSlug, props.channelName, id);
-  });
+  onCleanup(settleCursorToVisibleTail);
 
   createEffect(
     on(
@@ -2399,10 +2420,12 @@ const ScrollbackPane: Component<Props> = (props) => {
   // and POSTs via setCursorIfAdvances. Mirror of the leave-arm in
   // A3's key-effect, but for the no-key-change case.
   //
-  // No false→true arm here — focus-regain does NOT write the live
-  // cursor. (The DISPLAY snapshot IS re-latched on focus-regain by the
-  // sibling activation effect above — freeze contract option (b) — but
-  // that re-reads the existing cursor, it doesn't advance it.)
+  // No false→true arm HERE — the hide edge is this effect's whole job. The
+  // return edge is owned by the #887 read-at-the-tail arm below, which reaches
+  // the same door under a geometry gate this one does not need. (The DISPLAY
+  // snapshot is re-latched on focus-regain by the sibling activation effect
+  // above — freeze contract option (b) — by re-reading the cursor, not
+  // advancing it; that stays true whichever arm advances it.)
   //
   // `prev === undefined` guards the initial-mount run (mirrors the
   // sibling effect's identical guard).
@@ -2410,12 +2433,60 @@ const ScrollbackPane: Component<Props> = (props) => {
     on(isDocumentVisible, (visible, prev) => {
       if (prev === undefined) return;
       if (prev !== true || visible !== false) return;
-      if (!listRef) return;
-      const id = lastFullyVisibleRowId(listRef);
-      if (id === null) return;
-      setCursorIfAdvances(props.networkSlug, props.channelName, id);
+      settleCursorToVisibleTail();
     }),
   );
+
+  // #887 — read-at-the-tail. THE arm that makes a visible badge honest.
+  //
+  // Removing the focused-window suppression (selection.ts) exposed a cadence
+  // the badge could not survive: the pre-existing writers all fire when the
+  // operator STOPS looking (leave, blur, unmount) or when they SCROLL
+  // (scroll-settle, gated on a real input event). An operator sitting at the
+  // tail of a quiet window generates neither — so a message arriving while
+  // they watch it land would bump the badge to 1 and leave it there until
+  // they walked away. Suppression used to hide that; without an arm here the
+  // change would just trade a vanishing badge for a stuck one, which is the
+  // same complaint in a different flavour (#887's own warning).
+  //
+  // The rule is the honest one: while the tab is visible AND the pane is at
+  // the tail, what is rendered is what the operator is reading, so mark it
+  // read. Both gates are load-bearing:
+  //   * `isDocumentVisible()` — a selected-but-BACKGROUNDED tab must keep
+  //     accruing (the property the old suppression's visibility gate had, and
+  //     the one thing about it worth keeping).
+  //   * `atBottomNow()` — the GEOMETRIC measurement, not the `followMode`
+  //     intent. A reader parked above the tail, and a cold activation that
+  //     jumped to a far `── N unread ──` divider (which sets both false, ~:2094),
+  //     are NOT reading the rows below the fold; their badge must stand.
+  // Everything dangerous past those gates is already refused downstream:
+  // `setCursorIfAdvances` freezes a far-behind window (#693 — the case #888
+  // then makes legible) and is forward-only (#233), so a scrolled-up snapshot
+  // can never rewind.
+  //
+  // Debounced, and the timer is cleared+re-armed on EVERY re-run BEFORE the
+  // guards, because the fire callback reads `props` at fire time — a schedule
+  // left over from the previous window must never write the switched-to one
+  // (same hazard, same shape, as the #239 presence arm below). `key()` is read
+  // for exactly that reason: a channel switch must re-arm, not inherit.
+  let readAtTailSettleTimer: number | undefined;
+  createEffect(() => {
+    key();
+    const rowCount = rows()?.length ?? 0;
+    const visible = isDocumentVisible();
+    const atTail = atBottomNow();
+    if (readAtTailSettleTimer !== undefined) {
+      window.clearTimeout(readAtTailSettleTimer);
+      readAtTailSettleTimer = undefined;
+    }
+    if (!visible || !atTail || rowCount === 0) return;
+    readAtTailSettleTimer = window.setTimeout(settleCursorToVisibleTail, READ_AT_TAIL_SETTLE_MS);
+  });
+  onCleanup(() => {
+    if (readAtTailSettleTimer !== undefined) {
+      window.clearTimeout(readAtTailSettleTimer);
+    }
+  });
 
   // #239 — advance the server read-cursor over the TRAILING run of hidden
   // control messages while this window is DISPLAYED. The #222 presence filter
@@ -3199,13 +3270,7 @@ const ScrollbackPane: Component<Props> = (props) => {
     if (scrollSettleTimer !== undefined) {
       window.clearTimeout(scrollSettleTimer);
     }
-    scrollSettleTimer = window.setTimeout(() => {
-      if (!listRef) return;
-      const id = lastFullyVisibleRowId(listRef);
-      if (id !== null) {
-        setCursorIfAdvances(props.networkSlug, props.channelName, id);
-      }
-    }, SCROLL_SETTLE_DEBOUNCE_MS);
+    scrollSettleTimer = window.setTimeout(settleCursorToVisibleTail, SCROLL_SETTLE_DEBOUNCE_MS);
   };
 
   // #310 — the scroll-to-bottom GESTURE, shared by the floating button's
@@ -3243,11 +3308,7 @@ const ScrollbackPane: Component<Props> = (props) => {
   const scrollToBottomGesture = () => {
     applyOperatorTail();
     setMarkerActivationPending(false);
-    if (!listRef) return;
-    const id = lastFullyVisibleRowId(listRef);
-    if (id !== null) {
-      setCursorIfAdvances(props.networkSlug, props.channelName, id);
-    }
+    settleCursorToVisibleTail();
   };
 
   // #360 — the floating button's tap handler (replaces the raw
