@@ -20,6 +20,7 @@ import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { detach, quit, updateIdentity } from "./lib/lifecycle";
 import { isAdmin, networks, user } from "./lib/networks";
+import { mirrorNotificationPrefs } from "./lib/notificationPrefs";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import {
   deletePushSubscription,
@@ -359,6 +360,10 @@ const SettingsDrawer: Component<Props> = (props) => {
     try {
       const loaded = await getNotificationPrefs(t);
       setPrefs(loaded);
+      // #868 — feed the live notify path the same authoritative map the form
+      // renders, so the beep obeys a pref the moment it is read, not on the
+      // next user-topic rejoin.
+      mirrorNotificationPrefs(loaded);
       setChannelsOnlyText(loaded.channel_messages_only.join(", "));
       setNicksOnlyText(loaded.private_messages_only.join(", "));
     } catch {
@@ -465,6 +470,9 @@ const SettingsDrawer: Component<Props> = (props) => {
     try {
       const saved = await putNotificationPrefs(t, next);
       setPrefs(saved);
+      // #868 — mirror the server's NORMALIZED echo (not `next`): the whitelists
+      // come back folded, which is the form the predicate compares against.
+      mirrorNotificationPrefs(saved);
     } catch (err) {
       const code = err instanceof Error ? err.message : "save_failed";
       setPrefsError(code);

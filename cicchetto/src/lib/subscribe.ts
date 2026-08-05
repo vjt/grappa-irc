@@ -10,7 +10,6 @@ import { isDocumentVisible } from "./documentVisibility";
 import { highlightPatterns } from "./highlightList";
 import { seedIsupport } from "./isupport";
 import { applyPresenceEvent, seedMembers } from "./members";
-import { matchesWatchlist } from "./mentionMatch";
 import { setServerMention } from "./mentions";
 import { moduleRoot } from "./moduleRoot";
 import {
@@ -22,9 +21,11 @@ import {
   user,
 } from "./networks";
 import { nickEquals } from "./nickEquals";
+import { notificationPrefs } from "./notificationPrefs";
 import { isOperatorActionEcho } from "./operatorActionEcho";
 import { isOwnPresenceEvent } from "./ownPresenceEvent";
 import { resolvePing } from "./pingCorrelation";
+import { shouldNotify } from "./pushTriggers";
 import { setEnsureQueryTopicJoined } from "./queryTopicJoin";
 import { canonicalQueryNick, queryWindowsByNetwork } from "./queryWindows";
 import { renameRailWhois } from "./railWhois";
@@ -286,58 +287,48 @@ moduleRoot(() => {
     // sidebar badge gate and the in-pane unread-marker stay aligned.
     if (isOperatorActionEcho(message)) return;
 
-    // Live mention alert (beep + optimistic PWA badge) — PRIVMSGs whose body
-    // matches the operator's watchlist (own nick ∪ /hilight keywords), on a
-    // non-effectively-focused window, not from own nick.
+    // Live notify alert (beep + optimistic PWA badge), for every window shape
+    // this function routes — channels, query windows, and the DM listener.
     //
-    // #267 — the mention COUNT is no longer bumped here. It is
-    // server-authoritative (`mentions.ts`, seeded by /me + join_reply and
-    // pushed on every new message + cursor advance via the `window_counts`
-    // event), so the client-side count regex is gone — that regex never
-    // rebuilt on reconnect / across tabs, the bug #267 fixes. What stays
-    // is the LIVE alert: `matchesWatchlist` fires the in-app beep + the
-    // optimistic desktop-title badge bump the instant a match lands on an
-    // unfocused window, before the server's window_counts push round-trips.
-    // These are transient live cues, not the count of record.
+    // #267 — the mention COUNT is not bumped here. It is server-authoritative
+    // (`mentions.ts`, seeded by /me + join_reply and pushed on every new
+    // message + cursor advance via the `window_counts` event). What stays is
+    // the LIVE alert: the in-app beep + the optimistic desktop-title bump the
+    // instant a notify-worthy row lands on an unfocused window, before the
+    // server's window_counts push round-trips. Transient live cues, not the
+    // count of record.
     //
-    // #370 — the SAME `matchesWatchlist` predicate the in-message visual
-    // highlight uses (own nick = just another entry in the watchlist source,
-    // NOT a special case). One notify path: a custom keyword beeps + bumps
-    // exactly like an own-nick mention, matching the server SSOT
-    // `Grappa.Mentions.mentioned?/3` that already drives OS push + the count.
+    // #868 — the DECISION is `pushTriggers.shouldNotify`, the mirror of the
+    // server's `Grappa.Push.Triggers.should_notify?/4`, and no longer a bare
+    // `matchesWatchlist` call. It used to be: this path read NO preference at
+    // all, so `channel_mentions: false` still beeped, `private_messages_all:
+    // false` still beeped, an `action` the server DID push never moved the
+    // title, and `channel_messages_all: true` never beeped. The push and the
+    // title answered the same question differently. Routing both through one
+    // predicate is what makes a preference mean one thing.
+    //
+    // The own-echo and kind gates now live INSIDE the predicate (its `own_row`
+    // step and `NOTIFY_KINDS`), so they are not repeated here — repeating them
+    // is how the two ports drifted in the first place. `ownNick` is non-null
+    // on every handler that carries content (the sole `ownNick = null` handler
+    // is $server); the guard makes that explicit rather than relying on
+    // `nickEquals` returning false for a null side. `u` keeps a not-yet-loaded
+    // /me from deciding.
+    //
+    // Single decision site: the DM listener used to beep at its own call site
+    // as well, so a DM whose body contained the operator's nick fired twice.
     //
     // UX-6-L (2026-05-20): the beep complements the SW's
     // visibility-anywhere OS-notification suppression (`lib/pushDedup.ts`).
+    const u = untrack(user);
     if (
-      message.kind === "privmsg" &&
+      u &&
+      ownNick !== null &&
       !effectivelyFocused(slug, displayName) &&
-      !nickEquals(message.sender, ownNick)
+      shouldNotify(message, ownNick, notificationPrefs(), highlightPatterns())
     ) {
-      const u = untrack(user);
-      // #211 phase 7 — match on the PER-NETWORK own nick (`ownNick`, already
-      // threaded into this handler), NOT the retired identity-wide
-      // `displayNick(u)` (a visitor has no single nick now). Guard on `u`
-      // so a not-yet-loaded /me still skips.
-      //
-      // #370 — the own-echo suppression above (`!nickEquals(sender, ownNick)`)
-      // is only sound while `ownNick` is non-null here (nickEquals returns
-      // false on a null side). That holds on every path that reaches this
-      // PRIVMSG beep: channel/DM handlers install with `ownNick = net.nick`
-      // (a required non-null field) only once the user→networks→channels
-      // resource chain has resolved, and the sole `ownNick=null` handler
-      // ($server) carries no PRIVMSGs. If channels ever become joinable
-      // before /me resolves, or `net.nick` is relaxed to nullable, restore an
-      // explicit own-nick guard here.
-      if (u && matchesWatchlist(message.body, ownNick, highlightPatterns())) {
-        playBeep();
-        // Optimistic foreground badge bump so the desktop `document.title`
-        // moves the instant a mention lands on an unfocused window, before
-        // the server sync. The per-channel mention COUNT + the global badge
-        // are both server-authoritative (`window_counts` push +
-        // `read_cursor_set` badge_count); this only nudges the title early
-        // and self-heals on the next sync.
-        incrementBadge();
-      }
+      playBeep();
+      incrementBadge();
     }
   };
 
@@ -690,19 +681,16 @@ moduleRoot(() => {
             // this is the live-WS mirror of that single window key.
             const peer = canonicalQueryNick(networkId, message.sender);
             const senderKey = channelKey(slug, peer);
-            // UX-6-L (2026-05-20) — inbound DM is operator-targeted by
-            // definition; beep at the call site so routeMessage's
-            // signature stays narrow (DM-specific audio policy is a
-            // DM-listener concern, not a shared-routing concern).
-            // `effectivelyFocused` is the single-source focus predicate
-            // (see helper at top of createRoot); anchor on the peer's
-            // canonical window name.
-            //
-            // sender !== ownNick gate: own self-msg echoes ride this
-            // topic too; suppress the audible alert for own typing.
-            if (!nickEquals(message.sender, ownNick) && !effectivelyFocused(slug, peer)) {
-              playBeep();
-            }
+            // #868 — no beep at this call site any more. It used to live here
+            // "so routeMessage's signature stays narrow", but routeMessage
+            // already ran its own mention-path beep over the same row, so a DM
+            // mentioning the operator's nick beeped twice. Worse, this site
+            // decided "inbound DM is operator-targeted by definition" and so
+            // ignored `private_messages_all` / `private_messages_only`
+            // entirely, while the server's push obeyed them. routeMessage is
+            // now the single decision site and it asks the shared predicate,
+            // which routes this row into the DM branch by folded window shape
+            // exactly as `Grappa.Push.Triggers.dm?/2` does.
             routeMessage(slug, senderKey, peer, message, ownNick);
             return;
           }
@@ -733,11 +721,16 @@ moduleRoot(() => {
             // #372: canonical peer re-key — see the PRIVMSG/ACTION arm.
             const peer = canonicalQueryNick(networkId, message.sender);
             const senderKey = channelKey(slug, peer);
-            // UX-6-L (2026-05-20): peer NOTICEs are inbound DM-shaped
-            // traffic — same beep policy as the PRIVMSG/ACTION arm.
-            // The sender !== ownNick check above already gates this
-            // branch.
-            if (!effectivelyFocused(slug, peer)) playBeep();
+            // #868 — a peer NOTICE no longer beeps. UX-6-L gave it the same
+            // audio policy as a PRIVMSG on the grounds that it is inbound
+            // DM-shaped traffic, but NOTICE is deliberately outside
+            // `notify_kinds` on the server (services chatter is the dominant
+            // inbound NOTICE shape), so the phone stayed silent while the
+            // desktop beeped on the very same row. This is the one
+            // user-visible subtraction in #868: the window still takes the
+            // unread, only the tone is gone. If peer NOTICEs should be
+            // audible, that is a preference, not a hard-coded exception —
+            // which is #866's territory, not this refactor's.
             routeMessage(slug, senderKey, peer, message, ownNick);
             return;
           }

@@ -1,6 +1,7 @@
 import { createEffect, createRoot, createSignal, on } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { channelKey } from "../lib/channelKey";
+import { DEFAULT_NOTIFICATION_PREFS, type NotificationPrefs } from "../lib/userSettings";
 
 // Boundary: mock REST (`lib/api`) + the socket helpers (`lib/socket`).
 // `subscribe.ts` is a side-effect module — the createRoot installs
@@ -36,6 +37,11 @@ vi.mock("../lib/api", () => ({
   // routeMessage path); the mock needs to expose the classifier.
   isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
   isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
+  // #868 — subscribe.ts now decides the beep through `pushTriggers.shouldNotify`,
+  // which reads the notify-worthy kind set from here. Same hand-mirrored
+  // convention as the two classifiers above: the notify subset is
+  // privmsg|action (NOTICE is unread but never notify-worthy).
+  NOTIFY_KINDS: new Set(["privmsg", "action"]),
   displayNick: (me: { kind: "user" | "visitor"; name?: string; nick?: string }) =>
     me.kind === "user" ? (me.name ?? "") : (me.nick ?? ""),
   // Mirror of production `ownNickForNetwork` — single source for
@@ -130,12 +136,33 @@ vi.mock("../lib/beep", () => ({
   playBeep: vi.fn(),
 }));
 
+// #868 — the optimistic `document.title` bump is the other half of the live
+// notify decision, so it is asserted alongside the beep. `setBadge` is stubbed
+// too: `networks.ts` seeds it from the `/me` envelope on every load here.
+vi.mock("../lib/badge", () => ({
+  incrementBadge: vi.fn(),
+  setBadge: vi.fn(),
+}));
+
 // #370 — the keyword-highlight list, signal-backed so a test can stage
 // custom /hilight patterns. Default empty so the own-nick beep tests are
 // unaffected. The live beep now matches own nick ∪ these patterns (one path).
 const [highlightPatternsSig, setHighlightPatternsForTest] = createSignal<string[]>([]);
 vi.mock("../lib/highlightList", () => ({
   highlightPatterns: () => highlightPatternsSig(),
+}));
+
+// #868 — the live notify path reads the subject's server notification prefs.
+// Signal-backed so a test can stage a pref and assert the beep obeys it. The
+// default is the PRODUCTION default (`channel_mentions: true`,
+// `private_messages_all: true`), so every pre-#868 beep test keeps its meaning.
+const [notificationPrefsSig, setNotificationPrefsForTest] = createSignal<NotificationPrefs>(
+  DEFAULT_NOTIFICATION_PREFS,
+);
+vi.mock("../lib/notificationPrefs", () => ({
+  notificationPrefs: () => notificationPrefsSig(),
+  refreshNotificationPrefs: vi.fn().mockResolvedValue(undefined),
+  mirrorNotificationPrefs: vi.fn(),
 }));
 
 vi.mock("../lib/queryWindows", () => ({
@@ -170,6 +197,7 @@ beforeEach(async () => {
   localStorage.clear();
   vi.clearAllMocks();
   setHighlightPatternsForTest([]);
+  setNotificationPrefsForTest(DEFAULT_NOTIFICATION_PREFS);
   // Reset H2 per-topic registry so cross-test handler counts don't
   // leak (each test that opts in via usePerTopicChannels gets a fresh
   // pool; tests that don't opt in fall back to the singleton mockChannel).
@@ -3218,8 +3246,15 @@ describe("subscribe - not-joined pre-subscribe loop (CP15 B5 fix + #78)", () => 
       // mirror the top-level vi.mock — selection.ts's badge memo now
       // imports `isContentKind` from api.ts; without it the doMock
       // bleeds a missing-export into UX-6-L beep tests downstream.
+      //
+      // #868 — the same bleed, second instance: this `doMock` outlives its
+      // own test (a `vi.doMock` registration survives `vi.resetModules`), so
+      // every api export any DOWNSTREAM test needs has to be mirrored here.
+      // `NOTIFY_KINDS` is now one of them, because subscribe.ts decides the
+      // beep through `pushTriggers.shouldNotify`.
       isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
       isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
+      NOTIFY_KINDS: new Set(["privmsg", "action"]),
       displayNick: (me: { kind: string; name?: string }) => me.name ?? "",
       ownNickForNetwork: (
         net: { slug: string; nick?: string },
@@ -3630,6 +3665,239 @@ describe("subscribe — UX-6-L foreground beep wiring", () => {
         kind: "privmsg",
         sender: "alice",
         body: "talking to myself",
+        meta: {},
+      },
+    });
+
+    expect(beep.playBeep).not.toHaveBeenCalled();
+  });
+});
+
+// #868 — the live path decides through the SHARED predicate.
+//
+// Before this issue, `subscribe.ts` called `matchesWatchlist` directly and
+// read no preference at all, while the OS push was decided server-side by
+// `Grappa.Push.Triggers.should_notify?/4`. One preference, two answers. Each
+// test below pins a case where the two surfaces used to disagree.
+describe("subscribe — #868 the beep obeys the notification prefs", () => {
+  const asAlice = async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const beep = await import("../lib/beep");
+    const badge = await import("../lib/badge");
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#cicchetto",
+      kind: "channel",
+    });
+    return { beep, badge };
+  };
+
+  it("channel_mentions:false silences a mention that the server would not push", async () => {
+    setNotificationPrefsForTest({ ...DEFAULT_NOTIFICATION_PREFS, channel_mentions: false });
+    const { beep, badge } = await asAlice();
+
+    fireMessageEvent("#grappa", { id: 800, kind: "privmsg", body: "alice ping" });
+
+    expect(beep.playBeep).not.toHaveBeenCalled();
+    expect(badge.incrementBadge).not.toHaveBeenCalled();
+  });
+
+  it("channel_messages_all:true beeps on a message with no mention at all", async () => {
+    setNotificationPrefsForTest({ ...DEFAULT_NOTIFICATION_PREFS, channel_messages_all: true });
+    const { beep } = await asAlice();
+
+    fireMessageEvent("#grappa", { id: 801, kind: "privmsg", body: "no mention here" });
+
+    expect(beep.playBeep).toHaveBeenCalledTimes(1);
+  });
+
+  it("channel_messages_only listing the channel beeps without a mention", async () => {
+    setNotificationPrefsForTest({
+      ...DEFAULT_NOTIFICATION_PREFS,
+      channel_messages_only: ["#grappa"],
+    });
+    const { beep } = await asAlice();
+
+    fireMessageEvent("#grappa", { id: 802, kind: "privmsg", body: "no mention here" });
+
+    expect(beep.playBeep).toHaveBeenCalledTimes(1);
+  });
+
+  it("an ACTION mentioning own nick beeps — the server pushes it, so the title must move too", async () => {
+    const { beep, badge } = await asAlice();
+
+    fireMessageEvent("#grappa", { id: 803, kind: "action", body: "waves at alice" });
+
+    expect(beep.playBeep).toHaveBeenCalledTimes(1);
+    expect(badge.incrementBadge).toHaveBeenCalledTimes(1);
+  });
+
+  it("an inbound DM mentioning own nick beeps ONCE, not once per decision site", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const beep = await import("../lib/beep");
+    const socket = await import("../lib/socket");
+    await loadStores();
+    await vi.waitFor(() => {
+      const topics = vi.mocked(socket.joinChannel).mock.calls.map((c) => `${c[1]}/${c[2]}`);
+      expect(topics).toContain("freenode/alice");
+    });
+
+    const joinCalls = vi.mocked(socket.joinChannel).mock.calls;
+    const dmJoinIdx = joinCalls.findIndex((c) => c[1] === "freenode" && c[2] === "alice");
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const dmHandler = eventCalls[dmJoinIdx]?.[1] as (p: unknown) => void;
+    // The DM listener used to beep at its own call site AND again inside
+    // routeMessage's mention path, so a DM whose body happened to contain the
+    // operator's nick fired two oscillators back to back. The existing
+    // DM-beep test hid it by using a body with no mention ("hey").
+    dmHandler({
+      kind: "message",
+      message: {
+        id: 804,
+        network: "freenode",
+        channel: "alice",
+        server_time: 0,
+        kind: "privmsg",
+        sender: "bob",
+        body: "alice ping",
+        meta: {},
+      },
+    });
+
+    expect(beep.playBeep).toHaveBeenCalledTimes(1);
+  });
+
+  it("private_messages_all:false silences an inbound DM the server would not push", async () => {
+    setNotificationPrefsForTest({
+      ...DEFAULT_NOTIFICATION_PREFS,
+      private_messages_all: false,
+      channel_mentions: true,
+    });
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const beep = await import("../lib/beep");
+    const socket = await import("../lib/socket");
+    await loadStores();
+    await vi.waitFor(() => {
+      const topics = vi.mocked(socket.joinChannel).mock.calls.map((c) => `${c[1]}/${c[2]}`);
+      expect(topics).toContain("freenode/alice");
+    });
+
+    const joinCalls = vi.mocked(socket.joinChannel).mock.calls;
+    const dmJoinIdx = joinCalls.findIndex((c) => c[1] === "freenode" && c[2] === "alice");
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const dmHandler = eventCalls[dmJoinIdx]?.[1] as (p: unknown) => void;
+    // Body carries the own nick on purpose: the DM branch owns this row, so
+    // `channel_mentions` must NOT rescue it. That is the server's `dm?/2`
+    // routing, and the client now agrees.
+    dmHandler({
+      kind: "message",
+      message: {
+        id: 805,
+        network: "freenode",
+        channel: "alice",
+        server_time: 0,
+        kind: "privmsg",
+        sender: "bob",
+        body: "alice ping",
+        meta: {},
+      },
+    });
+
+    expect(beep.playBeep).not.toHaveBeenCalled();
+  });
+
+  it("private_messages_only listing the sender beeps when private_messages_all is off", async () => {
+    setNotificationPrefsForTest({
+      ...DEFAULT_NOTIFICATION_PREFS,
+      private_messages_all: false,
+      private_messages_only: ["bob"],
+    });
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const beep = await import("../lib/beep");
+    const socket = await import("../lib/socket");
+    await loadStores();
+    await vi.waitFor(() => {
+      const topics = vi.mocked(socket.joinChannel).mock.calls.map((c) => `${c[1]}/${c[2]}`);
+      expect(topics).toContain("freenode/alice");
+    });
+
+    const joinCalls = vi.mocked(socket.joinChannel).mock.calls;
+    const dmJoinIdx = joinCalls.findIndex((c) => c[1] === "freenode" && c[2] === "alice");
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const dmHandler = eventCalls[dmJoinIdx]?.[1] as (p: unknown) => void;
+    dmHandler({
+      kind: "message",
+      message: {
+        id: 806,
+        network: "freenode",
+        channel: "alice",
+        server_time: 0,
+        kind: "privmsg",
+        sender: "bob",
+        body: "no mention here",
+        meta: {},
+      },
+    });
+
+    expect(beep.playBeep).toHaveBeenCalledTimes(1);
+  });
+
+  it("a peer NOTICE does not beep — NOTICE is unread-worthy but never notify-worthy", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const beep = await import("../lib/beep");
+    const socket = await import("../lib/socket");
+    await loadStores();
+    await vi.waitFor(() => {
+      const topics = vi.mocked(socket.joinChannel).mock.calls.map((c) => `${c[1]}/${c[2]}`);
+      expect(topics).toContain("freenode/alice");
+    });
+
+    const joinCalls = vi.mocked(socket.joinChannel).mock.calls;
+    const dmJoinIdx = joinCalls.findIndex((c) => c[1] === "freenode" && c[2] === "alice");
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const dmHandler = eventCalls[dmJoinIdx]?.[1] as (p: unknown) => void;
+    // Deliberate, user-visible subtraction (UX-6-L used to beep here). The
+    // server never pushes a NOTICE, so beeping made the desktop and the phone
+    // disagree on the same row. The window still takes the unread.
+    dmHandler({
+      kind: "message",
+      message: {
+        id: 807,
+        network: "freenode",
+        channel: "alice",
+        server_time: 0,
+        kind: "notice",
+        sender: "bob",
+        body: "heads up",
         meta: {},
       },
     });
