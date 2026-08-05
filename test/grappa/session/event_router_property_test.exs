@@ -114,11 +114,19 @@ defmodule Grappa.Session.EventRouterPropertyTest do
           assert Map.has_key?(entry, :set_by)
           assert Map.has_key?(entry, :set_at)
 
+        # #878 — `is_list/1` + `is_map/1` here certified only the CONTAINER:
+        # the measured pre-fix effect `%{modes: [" ", "$", "!", "n"]}` from a
+        # fuzzed `MODE #chan "+n!$ "` satisfied both. The entry carries mode
+        # LETTERS, keyed by the same letters, so the arm asserts the class —
+        # the same production predicate the handlers validate with, so a
+        # future ircd letter can never be green here and red there.
         {:channel_modes_changed, channel, entry} ->
           assert is_binary(channel)
           assert is_map(entry)
           assert is_list(entry.modes)
           assert is_map(entry.params)
+          assert Enum.all?(entry.modes, &Identifier.valid_mode_letter?/1)
+          assert Enum.all?(Map.keys(entry.params), &Identifier.valid_mode_letter?/1)
 
         {:away_confirmed, status} ->
           # Numerics 305 / 306 (RPL_UNAWAY / RPL_NOWAWAY) emit
@@ -384,6 +392,68 @@ defmodule Grappa.Session.EventRouterPropertyTest do
 
       assert attrs.channel == String.downcase(channel),
              "bare +channel #{channel} must not be stripped to #{body}, got #{attrs.channel}"
+    end
+  end
+
+  # #878 — the shape property above reaches a channel MODE / a 324 only when
+  # the seed draws one (one numeric in 999; a `:mode` whose first generated
+  # param happens to be channel-shaped), which is WHY the malformed
+  # `{:channel_modes_changed, "#chan", %{modes: [" ", "$", "!", "n"]}}` sat on
+  # main behind an `is_list/1` that could never see it. These two hit the
+  # channel-mode boundary on EVERY generated example, so the class is pinned
+  # by the test set rather than by the seed.
+  defp mode_letters?(entry) do
+    Enum.all?(entry.modes, &Identifier.valid_mode_letter?/1) and
+      Enum.all?(Map.keys(entry.params), &Identifier.valid_mode_letter?/1)
+  end
+
+  property "#878: no channel MODE token yields a non-letter channel mode" do
+    check all(
+            mode_str <- string(:ascii, min_length: 0, max_length: 32),
+            args <- list_of(string(:ascii, min_length: 0, max_length: 8), max_length: 3)
+          ) do
+      m = %Message{
+        command: :mode,
+        params: ["#chan" | [mode_str | args]],
+        prefix: {:nick, "op", "u", "h"},
+        tags: %{}
+      }
+
+      state = %{min_state() | members: %{"#chan" => %{"alice" => []}}}
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+
+      for {_chan, entry} <- new_state.channel_modes do
+        assert mode_letters?(entry), "malformed cached entry from token #{inspect(mode_str)}"
+      end
+
+      for {:channel_modes_changed, _, entry} <- effects do
+        assert mode_letters?(entry), "malformed effect from token #{inspect(mode_str)}"
+      end
+    end
+  end
+
+  property "#878: no 324 RPL_CHANNELMODEIS snapshot yields a non-letter channel mode" do
+    check all(
+            mode_str <- string(:ascii, min_length: 0, max_length: 32),
+            args <- list_of(string(:ascii, min_length: 0, max_length: 8), max_length: 3)
+          ) do
+      m = %Message{
+        command: {:numeric, 324},
+        params: ["self" | ["#chan" | [mode_str | args]]],
+        prefix: {:server, "irc.example.org"},
+        tags: %{}
+      }
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, min_state())
+
+      for {_chan, entry} <- new_state.channel_modes do
+        assert mode_letters?(entry), "malformed cached snapshot from token #{inspect(mode_str)}"
+      end
+
+      for {:channel_modes_changed, _, entry} <- effects do
+        assert mode_letters?(entry), "malformed snapshot effect from token #{inspect(mode_str)}"
+      end
     end
   end
 end

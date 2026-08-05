@@ -1952,6 +1952,74 @@ defmodule Grappa.Session.EventRouterTest do
       assert entry.params["k"] == "secret"
     end
 
+    # #878 — the CHANNEL half of the #279 mode-letter class. A channel MODE
+    # token is upstream-supplied bytes; the two readers of those same bytes
+    # (the member roster walk and the channel_modes walk) must share ONE
+    # verdict, and a token that is not signs + mode letters is a malformed
+    # LINE, not a partially usable delta.
+    test "#878 MODE with a non-letter mode token emits no :channel_modes_changed" do
+      state = base_state(%{members: %{"#chan" => %{"alice" => []}}})
+
+      # The measured shape on the pre-fix tree: `+n!$ ` folded into
+      # `%{modes: [" ", "$", "!", "n"]}` — punctuation and a SPACE published
+      # as channel modes the server never set.
+      m = msg(:mode, ["#chan", "+n!$ "], {:nick, "op", "u", "h"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+
+      refute Enum.any?(effects, &match?({:channel_modes_changed, _, _}, &1))
+      assert Map.get(new_state.channel_modes, "#chan") == nil
+    end
+
+    test "#878 a rejected channel MODE token still persists the raw echo row" do
+      # The row is the honest verbatim echo of what upstream sent — the
+      # reject withholds the derived STATE, never the transcript.
+      state = base_state(%{members: %{"#chan" => %{"alice" => []}}})
+      m = msg(:mode, ["#chan", "+n!$ "], {:nick, "op", "u", "h"})
+
+      assert {:cont, _, effects} = EventRouter.route(m, state)
+      assert {:persist, :mode, attrs} = Enum.find(effects, &match?({:persist, :mode, _}, &1))
+      assert attrs.meta == %{modes: "+n!$ ", args: []}
+    end
+
+    test "#878 one verdict, two readers: a rejected token leaves the member roster alone" do
+      # `walk_modes/5` (roster) and `walk_channel_modes/5` (channel entry)
+      # read the SAME bytes. Pre-fix the roster reader granted `alice` the
+      # op sigil off a token the channel reader would also have mangled.
+      state = base_state(%{members: %{"#chan" => %{"alice" => []}}})
+      m = msg(:mode, ["#chan", "+o!x", "alice"], {:nick, "op", "u", "h"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+
+      assert new_state.members["#chan"]["alice"] == []
+      refute Enum.any?(effects, &match?({:channel_modes_changed, _, _}, &1))
+    end
+
+    test "#878 an empty mode token asserts nothing and is rejected" do
+      state = base_state(%{members: %{"#chan" => %{}}})
+      m = msg(:mode, ["#chan", ""], {:nick, "op", "u", "h"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      refute Enum.any?(effects, &match?({:channel_modes_changed, _, _}, &1))
+      assert Map.get(new_state.channel_modes, "#chan") == nil
+    end
+
+    test "#878 a well-formed token is untouched by the class gate" do
+      # The gate must be invisible to every real ircd line: signs, mixed
+      # case, per-user modes with their nick args, param modes with theirs.
+      state = base_state(%{members: %{"#chan" => %{"alice" => []}}})
+      m = msg(:mode, ["#chan", "-l+koZ", "secret", "alice"], {:nick, "op", "u", "h"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+
+      entry = new_state.channel_modes["#chan"]
+      assert "k" in entry.modes
+      assert "Z" in entry.modes
+      assert entry.params["k"] == "secret"
+      assert new_state.members["#chan"]["alice"] == ["@"]
+      assert Enum.any?(effects, &match?({:channel_modes_changed, "#chan", _}, &1))
+    end
+
     test "MODE on user's own nick persists a $server confirmation row (#154b)" do
       # IRC user-MODE: `:vjt MODE vjt +i` — first param is the nick,
       # not a channel name. The user-MODE-on-self clause (matching
@@ -2165,6 +2233,53 @@ defmodule Grappa.Session.EventRouterTest do
 
       assert {:cont, _, effects} = EventRouter.route(m, state)
       assert {:visitor_r_observed, "regpass"} in effects
+    end
+  end
+
+  describe "route/2 — 324 RPL_CHANNELMODEIS (#878 mode-letter class)" do
+    test "a well-formed snapshot replaces the entry and emits the effect" do
+      state = base_state(%{})
+      m = msg({:numeric, 324}, ["vjt", "#chan", "+ntk", "secret"], {:server, "irc.test"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      entry = new_state.channel_modes["#chan"]
+      assert Enum.sort(entry.modes) == ["k", "n", "t"]
+      assert entry.params["k"] == "secret"
+      assert {:channel_modes_changed, "#chan", ^entry} = Enum.find(effects, &match?({:channel_modes_changed, _, _}, &1))
+    end
+
+    test "a bare + is a valid EMPTY snapshot — a modeless channel" do
+      state = base_state(%{channel_modes: %{"#chan" => %{modes: ["n"], params: %{}}}})
+      m = msg({:numeric, 324}, ["vjt", "#chan", "+"], {:server, "irc.test"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.channel_modes["#chan"] == %{modes: [], params: %{}}
+      assert Enum.any?(effects, &match?({:channel_modes_changed, "#chan", _}, &1))
+    end
+
+    test "a non-letter snapshot keeps the last authoritative entry and emits nothing" do
+      # A snapshot REPLACES; letting a malformed one through would publish a
+      # mode set the server never declared AND destroy the good one.
+      prev = %{modes: ["n", "t"], params: %{}}
+      state = base_state(%{channel_modes: %{"#chan" => prev}})
+      m = msg({:numeric, 324}, ["vjt", "#chan", "+n!$ "], {:server, "irc.test"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.channel_modes["#chan"] == prev
+      refute Enum.any?(effects, &match?({:channel_modes_changed, _, _}, &1))
+    end
+
+    test "an empty snapshot token cannot WIPE the entry" do
+      # `""` asserts nothing at all — distinct from `"+"`, which asserts an
+      # empty set. A truncated line must not read as "the channel lost every
+      # mode".
+      prev = %{modes: ["n", "t"], params: %{}}
+      state = base_state(%{channel_modes: %{"#chan" => prev}})
+      m = msg({:numeric, 324}, ["vjt", "#chan", ""], {:server, "irc.test"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.channel_modes["#chan"] == prev
+      refute Enum.any?(effects, &match?({:channel_modes_changed, _, _}, &1))
     end
   end
 

@@ -710,27 +710,20 @@ defmodule Grappa.Session.EventRouter do
       {:cont, state, [self_server_persist | r_effects] ++ umode_effects ++ identity_effects}
     else
       sender = Message.sender_nick(msg)
-      isupport = Map.get(state, :isupport, ISupport.default())
-      members = apply_mode_string(state.members, target, modes, args, isupport)
 
       # S2.3: split the mode string — per-user modes (matching the ISUPPORT
-      # PREFIX table) update state.members (above); channel-level
-      # modes update channel_modes cache. Walk once, produce two effects:
-      # members delta (done above) + channel_modes delta (done here). One
-      # channel_modes_changed broadcast per MODE event if the cache changed.
-      chan_key = normalize_channel(target, casemapping(state))
-      existing_entry = Map.get(Map.get(state, :channel_modes, %{}), chan_key, empty_mode_entry())
-      new_entry = apply_channel_mode_string(existing_entry, modes, args, isupport)
-
-      channel_modes =
-        Map.put(Map.get(state, :channel_modes, %{}), chan_key, new_entry)
-
-      mode_effects =
-        if new_entry != existing_entry do
-          [{:channel_modes_changed, target, new_entry}]
-        else
-          []
-        end
+      # PREFIX table) update state.members; channel-level modes update the
+      # channel_modes cache. Walk once, produce two effects: members delta +
+      # channel_modes delta. One channel_modes_changed broadcast per MODE
+      # event if the cache changed.
+      #
+      # #878 — both walks read the SAME upstream bytes, so they share ONE
+      # validity verdict (`apply_channel_mode_token/4`): a token that is not
+      # signs + mode letters is a malformed LINE, and neither reader may draw
+      # a conclusion from it. The raw `:persist` row below is emitted either
+      # way — the reject withholds derived STATE, never the transcript.
+      {members, channel_modes, mode_effects} =
+        apply_channel_mode_token(state, target, modes, args)
 
       {state, eff} =
         build_persist(
@@ -1047,16 +1040,27 @@ defmodule Grappa.Session.EventRouter do
   # 324 RPL_CHANNELMODEIS: initial mode snapshot after JOIN. Replaces the
   # channel_modes entry entirely with the parsed +modes [params] shape.
   # Mode string starts with '+'; args follow as separate params.
+  #
+  # #878 — a malformed mode param (anything but signs + mode letters) is NOT
+  # a snapshot: keep the last authoritative entry and emit nothing, rather
+  # than REPLACING it with parsed garbage. `""` is rejected for the same
+  # reason 221 rejects it — it asserts nothing, and a truncated line must not
+  # read as "the channel lost every mode". A bare `"+"` IS a valid empty
+  # snapshot (a modeless channel).
   defp do_route(
          %Message{command: {:numeric, 324}, params: [_, channel, mode_str | mode_args]},
          state
        )
        when is_binary(channel) and is_binary(mode_str) do
-    chan_key = normalize_channel(channel, casemapping(state))
-    isupport = Map.get(state, :isupport, ISupport.default())
-    entry = parse_mode_snapshot(mode_str, mode_args, isupport)
-    channel_modes = Map.put(Map.get(state, :channel_modes, %{}), chan_key, entry)
-    {:cont, %{state | channel_modes: channel_modes}, [{:channel_modes_changed, channel, entry}]}
+    if valid_mode_token?(mode_str) do
+      chan_key = normalize_channel(channel, casemapping(state))
+      isupport = Map.get(state, :isupport, ISupport.default())
+      entry = parse_mode_snapshot(mode_str, mode_args, isupport)
+      channel_modes = Map.put(Map.get(state, :channel_modes, %{}), chan_key, entry)
+      {:cont, %{state | channel_modes: channel_modes}, [{:channel_modes_changed, channel, entry}]}
+    else
+      {:cont, state, []}
+    end
   end
 
   # 221 RPL_UMODEIS (#229): the reply to a bare `MODE <selfnick>` query —
@@ -3216,6 +3220,62 @@ defmodule Grappa.Session.EventRouter do
           channel_mode_entry()
   defp apply_channel_mode_string(entry, mode_string, args, isupport) do
     walk_channel_modes(entry, mode_string, args, :add, isupport)
+  end
+
+  # #878 — the channel half of the #279 mode-letter class. A channel MODE
+  # token has TWO readers of the same bytes (`walk_modes/5` for the roster,
+  # `walk_channel_modes/5` for the entry), so unlike the umode walker the
+  # verdict is taken ONCE, up front, and both walks are gated on it: two
+  # walkers reaching two verdicts is how a rejected token still grants an op
+  # sigil. Reject the WHOLE token, never per-byte — a mode string is one
+  # atomic statement about the channel, and a half-parse publishes a set the
+  # server never declared.
+  #
+  # The CLASS is the RFC-2812 §3.2.3 grammar (signs + ALPHA), NOT the
+  # per-network ISUPPORT `CHANMODES`/`PREFIX` letter set: a server that
+  # under-announces would silently drop a real mode, exactly the argument
+  # #279 made for umodes. CHANMODES stays what it already is — the arg-ARITY
+  # classifier the walkers consult per letter (`ISupport.takes_param?/3`).
+  # A channel mode's PARAMETER (`+k key`, `+l 42`, `+b mask`) is a separate
+  # wire param, never a byte inside this token, so the letter class says
+  # nothing about it and validates none of it.
+  @spec valid_mode_token?(String.t()) :: boolean()
+  defp valid_mode_token?(""), do: false
+  defp valid_mode_token?(token) when is_binary(token), do: mode_token_letters?(token)
+
+  defp mode_token_letters?(""), do: true
+  defp mode_token_letters?("+" <> rest), do: mode_token_letters?(rest)
+  defp mode_token_letters?("-" <> rest), do: mode_token_letters?(rest)
+
+  defp mode_token_letters?(<<letter::binary-size(1), rest::binary>>),
+    do: Identifier.valid_mode_letter?(letter) and mode_token_letters?(rest)
+
+  # The gated channel-MODE application: on a valid token both readers run and
+  # the cache delta is emitted; on a rejected one the roster, the cache and
+  # the effect list are all left exactly as they were.
+  @spec apply_channel_mode_token(state(), String.t(), String.t(), [String.t()]) ::
+          {members(), %{String.t() => channel_mode_entry()}, [effect()]}
+  defp apply_channel_mode_token(state, target, modes, args) do
+    channel_modes = Map.get(state, :channel_modes, %{})
+
+    if valid_mode_token?(modes) do
+      isupport = Map.get(state, :isupport, ISupport.default())
+      members = apply_mode_string(state.members, target, modes, args, isupport)
+      chan_key = normalize_channel(target, casemapping(state))
+      existing_entry = Map.get(channel_modes, chan_key, empty_mode_entry())
+      new_entry = apply_channel_mode_string(existing_entry, modes, args, isupport)
+
+      effects =
+        if new_entry != existing_entry do
+          [{:channel_modes_changed, target, new_entry}]
+        else
+          []
+        end
+
+      {members, Map.put(channel_modes, chan_key, new_entry), effects}
+    else
+      {state.members, channel_modes, []}
+    end
   end
 
   # walk_channel_modes: same sticky-sign recursive pattern as walk_modes/5,
