@@ -29758,3 +29758,70 @@ neither was reproducible afterwards. Unit D's "verification pending a real
 tag" caveat is narrowed rather than deleted: the one-liner is measured
 against a locally built image; the PUBLISHED artifact and the job that
 pushes it are still unverified.
+
+## 2026-08-05 — #279: the mode-letter class, and the assertion that certified nothing
+
+A fuzzed `221 RPL_UMODEIS` param folded into the per-session umode set
+verbatim — `walk_umodes/3` did `MapSet.put` of ANY byte — so a garbage param
+produced `{:umode_changed, [" ", "!", "\"", …]}`. No ircd sends that, so it
+never fired in production; it fired in CI, on whichever seeds happened to draw
+numeric 221.
+
+**The production half was never fixed the first time.** `c45bf1b3` (a #373
+review commit) reddened on seed 671214 and answered it in the property test:
+it added a `{:umode_changed, modes}` arm asserting `is_list` +
+`Enum.all?(&is_binary/1)`. Half of that was legitimate — the arm did not exist
+at all, so before it EVERY `:umode_changed`, including `["i","w"]`, flunked as
+a malformed effect; the type union had genuinely outgrown the allowlist. The
+other half was the cerotto: `is_binary/1` is precisely what `" "` and `"!"`
+satisfy. So "restore the pre-widening allowlist" was not the fix either — that
+allowlist rejected the legitimate case. The narrowing that closes it is a
+STRICTER arm than either: assert the mode-letter class.
+
+**Where the class comes from.** The mode letter SET is per-ircd (bahamut
+`+iwxs`, solanum `+DQZagiow`, extension-registered letters) and grappa stays
+agnostic to it — `supported_umodes` was rejected as the validator for exactly
+that reason: an under-advertising 004 would then silently drop a real umode,
+and 221 can arrive before any 004. What IS closed is the GRAMMAR: an RFC-2812
+mode block is signs + ALPHA. That is the widest rule that still rejects the
+fuzz, so it is the boundary contract — `Identifier.valid_mode_letter?/1`, one
+predicate shared by the handlers and by the property that pins them, so a
+future ircd's new letter cannot be green in one and red in the other.
+
+**Reject the whole token, not the bad bytes.** A mode string is one atomic
+statement about the session; a half-parsed one publishes a set the server
+never claimed, which is worse than keeping the last authoritative one. Empty
+is a rejection for the same reason — it asserts nothing, and would let a
+truncated line WIPE the set. A bare `+` stays a valid empty snapshot: the
+server saying "you hold no umodes" is a claim, and it still takes effect.
+
+**One verdict, two readers.** In the self-MODE branch the same bytes are read
+twice: the umode fold and `set_r_mode?/1`, the `+r` detector that commits a
+staged registration secret as cryptographically confirmed. Gating only the
+fold would have left a malformed line able to confirm a secret. The verdict is
+computed once and both readers hang off it. The `$server` confirmation row
+still persists — rejecting the FOLD is not rejecting the LINE.
+
+**004 came along** because it is the same boundary one numeric over: param 3
+is upstream bytes, and un-validated it emitted the identical malformed effect
+as `:supported_umodes_changed`, which drives the #249 `/umode` modal's
+available toggles. No effect SHAPE changed anywhere, so the #249 coordination
+the issue asked for is a no-op: `{:umode_changed, [letters]}` is what it was.
+
+**Measured by displacement.** With production reverted and the restricted
+tests kept, `--seed 671214` reproduces the original counterexample exactly
+(numeric 221, after 80 successful runs) and the restricted arm catches it;
+same seed on the fixed handler is green, as are seeds 0/1/42/999999/123456.
+Two targeted properties hit the 221 and 004 params on EVERY generated example,
+so the class no longer depends on a seed drawing a 1-in-999 numeric.
+
+**Left standing, and measured too:** the CHANNEL-mode walker has the same
+hole. `MODE #chan "+n!$ "` yields
+`{:channel_modes_changed, "#chan", %{modes: [" ", "$", "!", "n"]}}`, and the
+property's arm for it (`is_list(entry.modes)`) cannot see it — the same
+certificate-of-nothing, one effect over. It is NOT fixed here: channel mode
+letters consume ARGS through the ISUPPORT CHANMODES/PREFIX tables, so a
+whole-token rejection has to be agreed by `walk_modes/5` (members) and
+`walk_channel_modes/5` (cache) and the 324 snapshot together, with the ban /
+key / limit arg-alignment as the risk surface. That is its own change with its
+own tests, not a rider on this one.
