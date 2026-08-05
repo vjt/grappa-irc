@@ -29545,3 +29545,83 @@ than a parameter worth adding. And the guard remains a per-verb habit, not a
 whole-module property: a new `await` that captures the token and skips the
 check reopens the defect for its own call path — one owner makes the rule
 greppable, it does not make it automatic.
+## 2026-08-05 — #867: the bare `docker run` migrates itself, and refuses to boot when it can't
+
+`docker run ghcr.io/vjt/grappa:<tag> start` on a fresh volume died on `no
+such table: admin_events`. #862 fixed the door before this one (secrets)
+and, by design, stopped there — so fixing it moved the failure one step
+later rather than making the documented one-liner work. Measured on a
+locally built image before the change: the container exits during
+`Grappa.Application.start`, `Grappa.AdminEvents` being simply the first
+child to touch a table that does not exist.
+
+**Where the switch lives, and why not in the BEAM.** The image ships the
+migrator (`Grappa.Release.migrate/0`) and nothing on the bare path invoked
+it; inside the image there is no mix, no checkout and no deploy script to
+invoke it with, so the operator has no door at all. An auto-migrate inside
+`Grappa.Application` would have been one line and wrong: the jail, the
+`.deb`/`.rpm` hosts and the linux systemd box each migrate deliberately
+from their own deploy script, BEFORE swapping code, and that ordering is
+load-bearing for a hot deploy (#41 — only "expand" migrations are
+hot-safe). It went in `infra/docker/release-entrypoint.sh`, which exists
+only for this image — the same reasoning that block already gives for
+sizing the BEAM caps through `ERL_ZFLAGS` instead of baking a
+`rel/vm.args` that would follow the release into every other substrate.
+
+**Why the default is ON.** The honest counter-argument is the race: two
+containers starting at once on one volume would migrate one sqlite file
+concurrently, which is corruption, not contention. It does not change the
+default, because the only shipped consumers of THIS image are
+single-container — the bare run of the docs and `infra/docker/deploy.sh`
+in release mode (one container name, one named volume) — and two BEAMs on
+one sqlite file is not a supported topology with or without migrations.
+Defaulting OFF would have broken the real path to protect a path that is
+already broken. **This is explicitly not a claim that concurrent starts
+are safe**: nothing serialises them, no lock was added, and an
+orchestrated deployment must set `GRAPPA_AUTO_MIGRATE=0` and run the
+migration as its own job. A `flock` was considered and dropped: it would
+have guarded one step of a configuration that is unsupported at every
+other step, and it could not cover `deploy.sh`'s host-side `eval` anyway.
+
+`deploy.sh` passes `GRAPPA_AUTO_MIGRATE=0` on its `docker run` rather than
+relying on "there will be nothing pending". That closes a real window —
+`--restart unless-stopped` on a crash-looping old container could restart
+it INTO a migration while `release_migrate` is running — and keeps the
+ordering decision in one place per path instead of being made twice,
+differently.
+
+**Rejected: "migrate only when I created the DB myself."** Attractive
+because it never touches an existing operator database, but the predicate
+lies: a crashed first boot leaves a zero-migration DB file behind, and
+every later attempt then skips forever. It also puts #867 straight back on
+the update path, where the acceptance criterion ("following only what the
+docs say ends with a serving instance") is identical.
+
+**Unknown values are rejected, empty means unset.** `GRAPPA_AUTO_MIGRATE`
+accepts `0` and `1`; anything else exits 1. Silently reading `true` as
+"not 1, so off" would reinstate the bug on a box whose operator believes
+they turned it on. Empty is unset — one meaning for `""` in that file,
+matching the secrets block and `config/runtime.exs`.
+
+**Failure is loud and non-destructive.** A failed migration exits 1 and
+never execs the release. Measured by deleting two `schema_migrations` rows
+on a populated volume so the migrator genuinely re-ran and blew up
+(`duplicate column name: totp_secret_encrypted`): the container exited 1,
+`/healthz` never answered, and the volume kept all 112 schema objects, its
+rows, and a truthful `schema_migrations` — Ecto's per-migration
+transaction rolled the attempt back. Restoring the rows brought the box
+back to `/healthz` 200 with the secrets file byte-identical throughout.
+The failure mode being refused is the one #441 had just found in
+`install.sh`: fail, print loudly, and exit 0 announcing a healthy host.
+
+**The measurements, and the wrapper that makes them repeatable.** Empty
+volume: red (`no such table: admin_events`) → green (79 migrations,
+`/healthz` 200). Populated volume: zero migrations re-applied, secrets
+untouched (sha256 identical before and after), `/healthz` 200. Both ran
+through the new `scripts/release-image.sh`, added because
+`docs/TESTING.md` forbids raw `docker` and no wrapper reached this
+artifact — which is exactly why #862 and #867 were both found by hand and
+neither was reproducible afterwards. Unit D's "verification pending a real
+tag" caveat is narrowed rather than deleted: the one-liner is measured
+against a locally built image; the PUBLISHED artifact and the job that
+pushes it are still unverified.

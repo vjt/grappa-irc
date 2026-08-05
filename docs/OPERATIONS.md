@@ -667,6 +667,35 @@ curl -fsSL https://raw.githubusercontent.com/vjt/grappa-irc/main/infra/docker/ge
   are **never rotated**: on a volume that already has the file it is reused
   byte-for-byte. **`/data/grappa.env` is a backup target** — losing
   `GRAPPA_ENCRYPTION_KEY` loses every stored upstream credential.
+- **The bare run also MIGRATES, by default (#867).** Past the secrets wall the
+  same one-liner used to die on `no such table: admin_events`: the image ships
+  the migrator but nothing on the bare path invoked it, and inside the image
+  there is no mix, no checkout and no deploy script to invoke it with. The
+  entrypoint now runs `Grappa.Release.migrate()` before it boots the release —
+  **only** for the verbs that boot one (`start`, `start_iex`, `daemon`,
+  `daemon_iex`), so `docker run … eval 'Grappa.Release.migrate()'` is never
+  nested inside itself.
+  - `GRAPPA_AUTO_MIGRATE=0` turns it off; anything other than `0`/`1` is
+    rejected loudly rather than guessed (reading `true` as false would put the
+    bug back on a box whose operator thinks it is on). Empty means unset, the
+    same as everywhere else in that file.
+  - `deploy.sh` passes `GRAPPA_AUTO_MIGRATE=0` on its own `docker run`: that
+    path migrates from the host, before recreating the container, which is the
+    ordering a schema change wants. **An orchestrated / multi-instance
+    deployment must do the same** and run the migration as its own job — the
+    default is ON because the only shipped consumers of this image are
+    single-container, NOT because concurrent starts are safe. Two BEAMs
+    migrating one sqlite file is corruption, and nothing here serialises them
+    (nor does anything else: one BEAM per DB file is the whole persistence
+    model).
+  - **A failed migration refuses to boot**, exit 1, with the migrator's error
+    on stderr. Nothing is dropped or re-created: Ecto runs each migration in
+    its own transaction, so the volume is left readable and `schema_migrations`
+    records exactly what applied. Measured — a deliberately failing migration
+    left all 112 schema objects and the user rows intact, and the box came back
+    with `/healthz` 200 once the cause was removed. Booting anyway and
+    answering healthy on a schema nobody vouched for is the failure mode this
+    refuses to have.
 - **State + secrets.** All config + every prod secret live in
   `$GRAPPA_HOME/grappa.env` (default `~/.grappa/grappa.env`, mode `0600`). It is
   generated ONCE on `install` and **never regenerated** — rotating
@@ -708,10 +737,12 @@ curl -fsSL https://raw.githubusercontent.com/vjt/grappa-irc/main/infra/docker/ge
 
 > **Verification of the PUBLISHED image is pending the first `vX.Y.Z` tag.** The
 > `docker` release job is tag-driven with zero prior real runs and ghcr carries
-> no grappa image yet; unit D was built + shell-tested against the image's SHAPE
-> (bats stub the daemon, `shellcheck`/`dash` gate the shell). Run a real
-> `docker run` of the published image once a tag has cut before trusting these
-> one-liners in anger.
+> no grappa image yet. The bare-run one-liner IS now measured end to end, but
+> against a **locally built** image: `scripts/release-image.sh build` then
+> `fresh-boot` / `warm-boot` (#867) — that is the reproduction, use it. What
+> remains unverified is the published artifact and the job that pushes it, so
+> run the same two verbs against the real tag once one has cut, with
+> `GRAPPA_TEST_IMAGE=ghcr.io/vjt/grappa:vX.Y.Z`.
 
 ### AWS one-click box (CloudFormation) — #665
 
