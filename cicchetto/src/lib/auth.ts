@@ -82,6 +82,31 @@ export function isAuthenticated(): boolean {
   return tokenSignal() !== null;
 }
 
+// #728 — the passkey-second-factor branch used to wrap BOTH the browser
+// ceremony and `verifyPasskeySecondFactor` in one `try` and return a bare
+// TOTP challenge from the `catch`, discarding the error entirely. Every
+// distinct failure — user cancel, no authenticator present, a 401 on a
+// genuinely invalid assertion, a network error — collapsed into the same
+// silent outcome: the passkey prompt vanishes and a bare "two-factor
+// authentication" form appears with no explanation. A user whose phone isn't
+// at hand concludes their passkey has stopped working.
+//
+// The FALLBACK ITSELF is right and is kept for every failure, including a
+// server-side 401: the account still has a second factor the user can reach,
+// and throwing instead would strand them at the login card with no way in.
+// What was wrong is that the reason was thrown away. It rides along now, and
+// `Login.tsx` renders it above the TOTP form.
+//
+// The issue also suggested swallowing `NotAllowedError` (user cancel) and
+// surfacing only the rest. Declined: that is exactly the scenario the issue
+// itself describes — "they dismissed the OS sheet by accident" — and it is
+// the case that most needs the note. Chrome also reports a ceremony TIMEOUT
+// as NotAllowedError, so the special case would silence two very different
+// events. `null` means no passkey was attempted at all.
+export type LoginOutcome =
+  | { kind: "authenticated" }
+  | { kind: "totp"; challengeToken: string; passkeyError: unknown };
+
 export async function login(
   identifier: string,
   password: string | null,
@@ -92,7 +117,7 @@ export async function login(
   // #363 — `incognito` rides the same advanced bundle; only a literal true
   // is sent (absent → an ordinary persistent session).
   advanced?: { ident?: string | null; realname?: string | null; incognito?: boolean },
-): Promise<{ kind: "authenticated" } | { kind: "totp"; challengeToken: string }> {
+): Promise<LoginOutcome> {
   const req: api.LoginRequest =
     password !== null && password !== "" ? { identifier, password } : { identifier };
   if (captchaToken !== undefined) req.captcha_token = captchaToken;
@@ -114,12 +139,18 @@ export async function login(
         return { kind: "authenticated" };
       } catch (error) {
         if (response.challenge_token !== null) {
-          return { kind: "totp", challengeToken: response.challenge_token };
+          return {
+            kind: "totp",
+            challengeToken: response.challenge_token,
+            passkeyError: error,
+          };
         }
+        // No TOTP challenge was minted: passkey is the ONLY second factor,
+        // so there is nothing to degrade to and the error must surface.
         throw error;
       }
     }
-    return { kind: "totp", challengeToken: response.challenge_token };
+    return { kind: "totp", challengeToken: response.challenge_token, passkeyError: null };
   }
   installLogin(response);
   return { kind: "authenticated" };

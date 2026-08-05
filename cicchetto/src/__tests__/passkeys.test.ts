@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createPasskey, getPasskey } from "../lib/passkeys";
+import { createPasskey, getPasskey, passkeysAvailable } from "../lib/passkeys";
 
 // The server speaks snake_case and `navigator.credentials` speaks the
 // camelCase WebAuthn shape; lib/passkeys.ts is the only place that
@@ -47,7 +47,59 @@ beforeEach(() => {
   vi.stubGlobal("navigator", { credentials: { create, get } });
 });
 
+// #725 — `CredentialsContainer` is [SecureContext]-only, so on a plain-http
+// deployment (grappa is self-hosted; an operator on `http://192.168.1.10` is
+// a supported reality) `navigator.credentials` is `undefined` and both entry
+// points threw `TypeError: undefined is not an object (evaluating
+// 'navigator.credentials.get')` — a JavaScript internal printed verbatim on
+// the login card and in the settings pane.
+describe("an origin or browser without WebAuthn", () => {
+  const refusalFrom = async (run: () => Promise<unknown>): Promise<unknown> =>
+    run().then(
+      () => {
+        throw new Error("expected the ceremony to be refused");
+      },
+      (value: unknown) => value,
+    );
+
+  beforeEach(() => {
+    // Exactly what a browser hands you over plain http: no `credentials`.
+    vi.stubGlobal("navigator", {});
+  });
+
+  it("reports itself unavailable", () => {
+    expect(passkeysAvailable()).toBe(false);
+  });
+
+  it("refuses registration by name rather than throwing a raw TypeError", async () => {
+    const refusal = await refusalFrom(() =>
+      createPasskey({ challenge_id: "cid", public_key: { challenge: b64([1]) } }),
+    );
+
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal).not.toBeInstanceOf(TypeError);
+    expect((refusal as Error).message).toMatch(/secure \(HTTPS\) connection/);
+  });
+
+  it("refuses authentication by name rather than throwing a raw TypeError", async () => {
+    const refusal = await refusalFrom(() =>
+      getPasskey({
+        challenge_id: "cid",
+        public_key: { challenge: b64([1]), rp_id: "irc.example" },
+      }),
+    );
+
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal).not.toBeInstanceOf(TypeError);
+    expect((refusal as Error).message).toMatch(/secure \(HTTPS\) connection/);
+  });
+});
+
 describe("createPasskey", () => {
+  it("reports itself available when the browser implements the ceremony", () => {
+    expect(passkeysAvailable()).toBe(true);
+  });
+
   const options = {
     challenge_id: "cid",
     public_key: {

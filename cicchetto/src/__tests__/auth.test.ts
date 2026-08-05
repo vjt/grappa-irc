@@ -93,6 +93,8 @@ describe("auth signal store", () => {
     await expect(auth.login("alice", "secret")).resolves.toEqual({
       kind: "totp",
       challengeToken: "challenge-123",
+      // #728 — no passkey was attempted, so there is nothing to explain.
+      passkeyError: null,
     });
     expect(auth.token()).toBeNull();
     expect(localStorage.getItem("grappa-token")).toBeNull();
@@ -156,6 +158,9 @@ describe("auth signal store", () => {
       await expect(auth.login("alice", "secret")).resolves.toEqual({
         kind: "totp",
         challengeToken: "challenge-123",
+        // #728 — the degrade is silent no longer: the reason rides along so
+        // the TOTP form can say why the passkey prompt vanished.
+        passkeyError: new Error("Passkey authentication cancelled"),
       });
 
       expect(api.verifyPasskeySecondFactor).not.toHaveBeenCalled();
@@ -176,6 +181,9 @@ describe("auth signal store", () => {
       await expect(auth.login("alice", "secret")).resolves.toEqual({
         kind: "totp",
         challengeToken: "challenge-123",
+        // A server-side rejection is as distinguishable as a user cancel —
+        // from the OUTSIDE they used to look identical.
+        passkeyError: new Error("challenge_expired"),
       });
       expect(auth.token()).toBeNull();
     });
