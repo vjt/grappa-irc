@@ -2227,6 +2227,84 @@ defmodule Grappa.Session.EventRouterTest do
       # Result is a sorted set — advertised order does not change the outcome.
       assert new_state.umodes == ["D", "Q", "Z", "i"]
     end
+
+    # #279 — the mode param is upstream-controlled bytes. A mode token is
+    # signs + ASCII letters and nothing else; anything else is not a
+    # partially-usable snapshot, it is a malformed line. Reject the WHOLE
+    # token at the boundary: keep the last authoritative set rather than
+    # publishing a half-parsed one.
+    test "221 with a garbage mode param is rejected whole — no effect, set untouched" do
+      state = base_state(%{nick: "vjt", umodes: ["i", "w"]})
+      # The literal counterexample from the #279 CI failure (seed 671214).
+      m = msg({:numeric, 221}, ["vjt", "]{@O& L#j|vH9_E"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.umodes == ["i", "w"]
+      refute Enum.any?(effects, &match?({:umode_changed, _}, &1))
+    end
+
+    test "221 with one stray byte among the letters is rejected whole (no silent drop)" do
+      state = base_state(%{nick: "vjt", umodes: ["i"]})
+      m = msg({:numeric, 221}, ["vjt", "+iw!"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.umodes == ["i"]
+      refute Enum.any?(effects, &match?({:umode_changed, _}, &1))
+    end
+
+    test "221 with an empty mode param does not wipe the set" do
+      state = base_state(%{nick: "vjt", umodes: ["i", "w"]})
+      m = msg({:numeric, 221}, ["vjt", ""], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.umodes == ["i", "w"]
+      refute Enum.any?(effects, &match?({:umode_changed, _}, &1))
+    end
+
+    test "221 carrying only a sign clears the set (a real empty snapshot)" do
+      # `+` alone is well-formed: the server says "you hold no umodes".
+      # Distinct from the garbage case above — this one MUST take effect.
+      state = base_state(%{nick: "vjt", umodes: ["i", "w"]})
+      m = msg({:numeric, 221}, ["vjt", "+"], {:server, "irc.azzurra.chat"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.umodes == []
+      assert {:umode_changed, []} in effects
+    end
+  end
+
+  describe "route/2 — #279 malformed user-mode tokens at the ingress boundary" do
+    test "a self-MODE echo with a garbage mode string does not pollute the umode set" do
+      state = base_state(%{nick: "vjt", umodes: ["i"]})
+      m = msg(:mode, ["vjt", "+w#$%"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.umodes == ["i"]
+      refute Enum.any?(effects, &match?({:umode_changed, _}, &1))
+    end
+
+    test "a self-MODE echo still persists the confirmation row on a garbage string" do
+      # Rejecting the FOLD is not rejecting the LINE: the operator still
+      # sees what the server said on the $server window. The persist meta
+      # is display, not a parsed key.
+      state = base_state(%{nick: "vjt", umodes: ["i"]})
+      m = msg(:mode, ["vjt", "+w#$%"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, _, effects} = EventRouter.route(m, state)
+      assert Enum.any?(effects, &match?({:persist, :mode, %{channel: "$server"}}, &1))
+    end
+
+    test "a garbage self-MODE echo cannot flip the +r identity signal" do
+      # session_identity_effects keys off the +r bit; a malformed string
+      # that happens to contain an `r` must not synthesise an identity
+      # transition out of upstream garbage.
+      state = base_state(%{nick: "vjt", umodes: []})
+      m = msg(:mode, ["vjt", "+r ?"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.umodes == []
+      refute Enum.any?(effects, &match?({:session_identity_changed, _}, &1))
+    end
   end
 
   describe "route/2 — 004 RPL_MYINFO supported umodes (#249)" do
@@ -2302,6 +2380,38 @@ defmodule Grappa.Session.EventRouterTest do
 
       assert {:cont, new_state, _} = EventRouter.route(m, state)
       assert new_state.supported_umodes == ["D", "Q", "Z", "a", "g", "i", "o", "w"]
+    end
+
+    # #279 — 004 param 3 is upstream bytes like the 221 param. Un-validated
+    # it emitted the SAME malformed effect one numeric over.
+    test "004 with a garbage usermodes token is rejected whole — set untouched" do
+      state = base_state(%{nick: "vjt", supported_umodes: ["i", "o", "w"]})
+
+      m =
+        msg(
+          {:numeric, 4},
+          ["vjt", "irc.azzurra.chat", "bahamut-2", "x]{K(<Sh", "beI,k,l,imnpst", "bklov"],
+          {:server, "irc.azzurra.chat"}
+        )
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.supported_umodes == ["i", "o", "w"]
+      refute Enum.any?(effects, &match?({:supported_umodes_changed, _}, &1))
+    end
+
+    test "004 with an empty usermodes token does not wipe the advertised set" do
+      state = base_state(%{nick: "vjt", supported_umodes: ["i", "o", "w"]})
+
+      m =
+        msg(
+          {:numeric, 4},
+          ["vjt", "irc.azzurra.chat", "bahamut-2", "", "beI,k,l,imnpst", "bklov"],
+          {:server, "irc.azzurra.chat"}
+        )
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, state)
+      assert new_state.supported_umodes == ["i", "o", "w"]
+      refute Enum.any?(effects, &match?({:supported_umodes_changed, _}, &1))
     end
 
     test "004 with too-few params does not match (no crash, no fold)" do
