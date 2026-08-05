@@ -1,4 +1,4 @@
-import { type ApiError, assertNever } from "./api";
+import { ApiError, assertNever } from "./api";
 import { formatBytes } from "./formatBytes";
 import { ERROR_TOKENS_REST_ERROR_TOKEN, type ErrorTokensRestErrorToken } from "./wireTypes";
 
@@ -50,6 +50,30 @@ function isKnownCode(code: string): code is ErrorTokensRestErrorToken {
 export function friendlyApiError(err: ApiError): string {
   if (!isKnownCode(err.code)) return err.message;
   return friendlyKnown(err, err.code);
+}
+
+// #726 — a `catch` block holds an `unknown`, and every pane that renders one
+// answers the same question: what copy does the user get? The two account
+// -security panes answered it differently. `TotpSettings` narrowed on
+// `ApiError`; `PasskeySettings` printed `value.message`, which for an
+// `ApiError` is the literal `${status} ${code}` — the raw wire token this
+// module exists to keep off the screen. One definition, three arms:
+//
+//   ApiError → the localized copy above (never `.message`, never the token)
+//   Error    → its own message; a WebAuthn/DOMException rejection already
+//              carries browser-authored human text, and `String(err)` would
+//              prefix it with a useless "Error: "
+//   anything → `String(value)`, so a non-Error throw is still loud
+//
+// DELIBERATELY not folded into `friendlyError` (lib/friendlyError.ts): that
+// one is the SEND door's dispatcher — it overrides `rate_limited` with the
+// throttle copy and collapses every untyped throw to "send failed", both of
+// which would be wrong here (a cancelled passkey ceremony must keep its own
+// message). Same verb, different domain.
+export function errorMessage(value: unknown): string {
+  if (value instanceof ApiError) return friendlyApiError(value);
+  if (value instanceof Error) return value.message;
+  return String(value);
 }
 
 function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {

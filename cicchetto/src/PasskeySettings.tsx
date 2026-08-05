@@ -12,6 +12,8 @@ import {
   startPasswordlessActivation,
 } from "./lib/api";
 import { token } from "./lib/auth";
+import { copyText } from "./lib/clipboard";
+import { errorMessage } from "./lib/friendlyApiError";
 import { createPasskey, getPasskey } from "./lib/passkeys";
 
 const PasskeySettings: Component = () => {
@@ -36,7 +38,7 @@ const PasskeySettings: Component = () => {
   const reload = async (): Promise<void> => {
     setStatus(await getPasskeyStatus(currentToken()));
   };
-  onMount(() => void reload().catch((value) => setError(String(value))));
+  onMount(() => void reload().catch((value) => setError(errorMessage(value))));
 
   const register = async (event: Event): Promise<void> => {
     event.preventDefault();
@@ -48,7 +50,7 @@ const PasskeySettings: Component = () => {
       setName("");
       await reload();
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
     } finally {
       setBusy(false);
     }
@@ -62,7 +64,7 @@ const PasskeySettings: Component = () => {
       await finishPasskeyModeChange(currentToken(), await getPasskey(options));
       await reload();
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
     } finally {
       setBusy(false);
     }
@@ -78,7 +80,7 @@ const PasskeySettings: Component = () => {
       setRecoveryToken(null);
       await reload();
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
     } finally {
       setBusy(false);
     }
@@ -92,7 +94,7 @@ const PasskeySettings: Component = () => {
       setCodes(prepared.recovery_codes);
       setRecoveryToken(prepared.recovery_token);
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
     } finally {
       setBusy(false);
     }
@@ -109,7 +111,7 @@ const PasskeySettings: Component = () => {
       setRecoveryToken(null);
       await reload();
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
     } finally {
       setBusy(false);
     }
@@ -118,9 +120,9 @@ const PasskeySettings: Component = () => {
   const copyRecoveryCodes = async (): Promise<void> => {
     setError(null);
     try {
-      await navigator.clipboard.writeText(codes().join("\n"));
+      await copyText(codes().join("\n"));
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
     }
   };
 
@@ -130,7 +132,7 @@ const PasskeySettings: Component = () => {
       await deletePasskey(currentToken(), id, password());
       await reload();
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
     } finally {
       setBusy(false);
       setArmedRemoval(null);

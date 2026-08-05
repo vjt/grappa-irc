@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@solidjs/testing-library";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 // #736 — the TOTP enrolment surface shipped with no component coverage: the
 // only tests over the security pane drove `auth.ts` (the store) or the
@@ -98,6 +98,60 @@ describe("TotpSettings — enrolment", () => {
     expect((screen.getByLabelText("Manual key") as HTMLInputElement).value).toBe(ENROLLMENT.secret);
     expect(screen.getByRole("button", { name: "confirm and enable" })).not.toBeDisabled();
     expect(screen.queryByTestId("totp-recovery-codes")).toBeNull();
+  });
+
+  // #726 — the recovery codes are shown EXACTLY once. A copy that fails and
+  // says nothing sends the user away believing ten one-shot codes are on the
+  // clipboard; the codes are gone the moment the pane re-renders. Both arms
+  // are reachable on a plain-http instance, where `navigator.clipboard` is
+  // `undefined` (the API is [SecureContext]-only) — not a hypothetical.
+  const showRecoveryCodes = async (): Promise<void> => {
+    api.confirmTotpEnrollment.mockResolvedValue({ recovery_codes: ["aaa-111", "bbb-222"] });
+    renderSettings();
+    await beginEnrollment();
+    await confirmCode("123456");
+    await screen.findByTestId("totp-recovery-codes");
+  };
+
+  const withClipboard = (value: unknown): void => {
+    const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { value, configurable: true });
+    onTestFinished(() => {
+      if (original === undefined) {
+        Reflect.deleteProperty(navigator, "clipboard");
+      } else {
+        Object.defineProperty(navigator, "clipboard", original);
+      }
+    });
+  };
+
+  it("names a rejected clipboard write instead of losing the codes silently", async () => {
+    withClipboard({ writeText: vi.fn().mockRejectedValue(new Error("Write permission denied.")) });
+    await showRecoveryCodes();
+
+    await fireEvent.click(screen.getByRole("button", { name: "copy recovery codes" }));
+
+    await waitFor(() =>
+      expect(within(screen.getByTestId("totp-settings")).getByRole("alert")).toHaveTextContent(
+        "Write permission denied.",
+      ),
+    );
+    // The codes stay on screen — the user's fallback is to copy them by hand.
+    expect(screen.getByText("aaa-111")).toBeInTheDocument();
+  });
+
+  it("names a missing clipboard API instead of throwing a raw TypeError", async () => {
+    withClipboard(undefined);
+    await showRecoveryCodes();
+
+    await fireEvent.click(screen.getByRole("button", { name: "copy recovery codes" }));
+
+    await waitFor(() =>
+      expect(within(screen.getByTestId("totp-settings")).getByRole("alert")).toHaveTextContent(
+        /secure/i,
+      ),
+    );
+    expect(screen.getByText("aaa-111")).toBeInTheDocument();
   });
 
   it("surfaces a rejected password when disabling instead of silently no-opping", async () => {
