@@ -19,6 +19,29 @@ export const themeCss = readFileSync("src/themes/default.css", "utf8");
  * so a rename can't silently pass the test — the #734 failure mode was a
  * class name with NO rule behind it at all.
  */
+/**
+ * Every rule whose selector list mentions a focus state (`:focus` or
+ * `:focus-visible`), as `{ selectors, body }` pairs with CSS comments
+ * stripped. Matches INNERMOST blocks only — the `[^{}]` classes can't span a
+ * brace, so an `@media` prelude is never captured as a selector, and a rule
+ * nested inside one still is.
+ *
+ * Grouped selector lists come back whole (`a:focus-visible,\n b:focus-visible`)
+ * rather than split, so a caller asking "is this surface covered?" must look
+ * inside the list — which is what `#96` needs: the sidebar's ring is one rule
+ * over five selectors on purpose.
+ */
+export function focusRules(): { selectors: string; body: string }[] {
+  const stripped = themeCss.replace(/\/\*[\s\S]*?\*\//g, "");
+  const out: { selectors: string; body: string }[] = [];
+  for (const match of stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selectors = match[1] ?? "";
+    const body = match[2] ?? "";
+    if (selectors.includes(":focus")) out.push({ selectors: selectors.trim(), body });
+  }
+  return out;
+}
+
 export function ruleBody(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(`^${escaped}\\s*\\{([^}]*)\\}`, "m");

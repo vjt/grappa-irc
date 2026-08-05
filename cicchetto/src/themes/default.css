@@ -1686,6 +1686,34 @@ html.resize-dragging * {
   padding-left: 0.75rem;
 }
 
+/* #96 — keyboard focus ring for every interactive sidebar surface. The
+   sidebar is the app's primary keyboard navigation surface and it shipped
+   with no authored focus style at all: whatever the UA drew was the cue, on
+   every theme, including operator-authored ones.
+
+   `:focus-visible`, NOT `:focus` — a ring on a mouse click is noise, and
+   these rows are clicked far more often than they are tabbed to.
+
+   `outline-offset: -2px` (INSET) because the window buttons are edge-to-edge
+   (`flex: 1 1 auto` inside a full-width `<li>`) inside a scrolling aside: an
+   outset ring gets clipped on the left and right by the container. The ×
+   and the umode chip are inset for the same reason — one ring geometry for
+   the whole surface, not two.
+
+   All three sections in ONE rule: home / admin / per-network rows are the
+   same affordance and must not drift into three focus treatments. The
+   section-qualified selectors keep specificity above the base
+   `.sidebar-*-section li .sidebar-window-btn` rules (biome
+   `noDescendingSpecificity`). */
+.sidebar-home-section li .sidebar-window-btn:focus-visible,
+.sidebar-admin-section li .sidebar-window-btn:focus-visible,
+.sidebar-network-section li .sidebar-window-btn:focus-visible,
+.sidebar-network-section li .sidebar-close:focus-visible,
+.sidebar-network-section li .sidebar-umode-indicator:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 /* #71 INC-1 — own-nick footer (per network). The operator's IRC nick was
    shown nowhere; surface it as a quiet identity line at the bottom of each
    network group, below the grouping rail. Muted frame + 👤 so it reads as
@@ -2235,7 +2263,18 @@ html.resize-dragging * {
 .shell-chrome-btn:hover,
 .shell-chrome-btn:focus-visible {
   color: var(--fg);
-  outline: none;
+}
+
+/* #96 — keyboard focus ring. `:focus-visible`, NOT `:focus`: a ring that
+   appears on a mouse click is noise, and these buttons are clicked far more
+   than they are tabbed to. The rule this REPLACES paired the colour lift with
+   `outline: none`, i.e. it suppressed the UA ring for keyboard users and left
+   a --muted → --fg colour shift as the only cue — a colour-only indicator with
+   no area (WCAG 1.4.11). Ring is offset OUTSIDE: chrome buttons sit in a row
+   with spare padding around them. */
+.shell-chrome-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* Scrollback (existing rules — minor additions for mention highlight) */
@@ -3449,7 +3488,14 @@ html.resize-dragging * {
 .settings-drawer-close:hover,
 .settings-drawer-close:focus-visible {
   color: var(--fg);
-  outline: none;
+}
+
+/* #96 — same suppression as `.shell-chrome-btn` (see the comment there):
+   the drawer × had `outline: none` under `:focus-visible`, leaving a bare
+   colour shift as the keyboard cue. */
+.settings-drawer-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* UX-4 bucket L — bottom "done" button (mobile thumb-reach surface). */
@@ -6943,6 +6989,18 @@ html.resize-dragging * {
   border: none;
   outline: none;
   padding: 0.25rem 0;
+}
+
+/* #96 — this input is the one focus surface in the app with NO cue at all:
+   `border: none` + `outline: none` above, and (unlike every other text field,
+   which swaps the UA outline for an accent border) nothing put back. Inset
+   ring so it can't be clipped by the prompt row's own frame. `:focus-visible`
+   always matches a focused text field, mouse or keyboard — the mouse-noise
+   argument that governs the buttons doesn't apply here; the spelling is for
+   consistency, not behaviour. */
+.service-modal-prompt-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .service-modal-prompt-input::placeholder {
