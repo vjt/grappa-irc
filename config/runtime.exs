@@ -190,12 +190,58 @@ if config_env() == :prod do
     synchronous: :normal,
     foreign_keys: :on
 
+  # Every missing-secret raise routes through here (#862). The per-site
+  # messages used to name `scripts/mix.sh …`, which exists in exactly ONE of
+  # the four install flavours — and NOT in the release image, where that line
+  # was the only guidance a `docker run ghcr.io/vjt/grappa:<tag> start`
+  # operator ever saw before the process died. The recipe is substrate-neutral
+  # (`openssl` is a hard dependency everywhere: the .deb/.rpm depend on it,
+  # the release image apk-installs it, the BEAM links libcrypto anyway) and
+  # the placement hints name all four rather than one.
+  #
+  # Keep the shapes in lockstep with infra/packaging/gen-secrets.sh, the ONE
+  # generator the packaged, containerised and deploy.sh paths all run.
+  env_placement = """
+    .deb / .rpm   /etc/grappa/grappa.env — or `sudo grappa gen-secrets`,
+                  which fills every missing secret in one go
+    docker image  docker run -e ... — or give the container a WRITABLE
+                  /data volume and it generates its own on first boot
+    FreeBSD jail  the grappa_env_file named in rc.conf
+    from source   .env beside compose.yaml\
+  """
+
+  missing_secret = fn var, recipe ->
+    raise """
+    environment variable #{var} is missing.
+
+    Generate one with:  #{recipe}
+
+    Then set #{var} where this install reads its environment:
+    #{env_placement}
+    """
+  end
+
+  # VAPID is the one secret openssl cannot produce as a one-liner, and the
+  # one where a half-answer is worse than none: a public key from one
+  # generation and a private key from another is a silently unusable pair.
+  missing_vapid = fn var ->
+    raise """
+    environment variable #{var} is missing (Web Push signing, RFC 8292).
+
+    VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY are two halves of ONE P-256
+    keypair — generate them together, never one at a time:
+      from source   scripts/mix.sh grappa.gen_vapid
+      .deb / .rpm   sudo grappa gen-secrets
+      docker image  give the container a writable /data volume
+
+    Then set BOTH where this install reads its environment:
+    #{env_placement}
+    """
+  end
+
   secret_key_base =
     System.get_env("SECRET_KEY_BASE") ||
-      raise """
-      environment variable SECRET_KEY_BASE is missing.
-      Generate one with: scripts/mix.sh phx.gen.secret
-      """
+      missing_secret.("SECRET_KEY_BASE", "openssl rand -base64 48")
 
   # T-2: enforce a real RELEASE_COOKIE in prod. The cookie itself is
   # consumed by the BEAM at boot via `-setcookie` (bin/start.sh) — Elixir
@@ -208,17 +254,14 @@ if config_env() == :prod do
   # gate is broken.
   case String.trim(System.get_env("RELEASE_COOKIE") || "") do
     "" ->
-      raise """
-      environment variable RELEASE_COOKIE is missing.
-      Generate a real value with: openssl rand -hex 32
-      Then set it in .env (or host shell) before scripts/deploy.sh.
-      """
+      missing_secret.("RELEASE_COOKIE", "openssl rand -hex 32")
 
     "grappa-dev-cookie-do-not-use-in-prod" ->
       raise """
-      RELEASE_COOKIE is set to the compose.yaml dev sentinel.
-      Generate a real value for prod with: openssl rand -hex 32
-      Then set it in .env (or host shell) before scripts/deploy.sh.
+      RELEASE_COOKIE is set to the compose.yaml dev sentinel — that value is
+      public, and it is the same-host operator gate.
+
+      Generate a real one with:  openssl rand -hex 32
       """
 
     # Operator-rotated value — proceed.
@@ -236,10 +279,7 @@ if config_env() == :prod do
   # load-bearing for real.
   secret_signing_salt =
     System.get_env("SECRET_SIGNING_SALT") ||
-      raise """
-      environment variable SECRET_SIGNING_SALT is missing.
-      Generate one with: scripts/mix.sh phx.gen.secret 64
-      """
+      missing_secret.("SECRET_SIGNING_SALT", "openssl rand -base64 32")
 
   config :grappa, GrappaWeb.Endpoint, session_signing_salt: secret_signing_salt
 
@@ -256,12 +296,21 @@ if config_env() == :prod do
   # same contract as DATABASE_PATH / SECRET_KEY_BASE above. The `//`
   # prefix in check_origin matches both http and https so the Phase 5
   # TLS upgrade does not silently break Channels.
+  # The one prod variable nothing can generate for you: it is the public
+  # hostname clients reach, and grappa cannot know it. Every other missing
+  # value has a generator (#862 wired the release image's); this one is the
+  # deliberate remaining stop on a bare `docker run`.
   phx_host =
     phx_host ||
       raise """
       environment variable PHX_HOST is missing.
-      Set it to the public hostname nginx serves the bouncer at
-      (e.g. PHX_HOST=grappa.example.org) — see .env.example.
+
+      Set it to the public hostname this bouncer is served at
+      (e.g. PHX_HOST=grappa.example.org). Unlike the secrets, it cannot be
+      generated — nothing knows your domain but you.
+
+      Where it goes:
+      #{env_placement}
       """
 
   # `extra_origins` (hoisted to the top of this file, all envs) feeds
@@ -290,12 +339,10 @@ if config_env() == :prod do
   # Losing the key means losing all stored upstream credentials.
   encryption_key =
     System.get_env("GRAPPA_ENCRYPTION_KEY") ||
-      raise """
-      environment variable GRAPPA_ENCRYPTION_KEY is missing.
-      Generate one with: scripts/mix.sh grappa.gen_encryption_key
-      Save the output into your .env as GRAPPA_ENCRYPTION_KEY=...
-      Back up the key separately — losing it loses all encrypted creds.
-      """
+      missing_secret.(
+        "GRAPPA_ENCRYPTION_KEY",
+        "openssl rand -base64 32   # BACK IT UP: losing it loses every stored credential"
+      )
 
   config :grappa, Grappa.Vault,
     ciphers: [
@@ -320,21 +367,10 @@ if config_env() == :prod do
   # sync at boot. The cic-facing controller reads from the SAME
   # `:web_push_elixir` namespace so the two consumers cannot drift.
   vapid_public_key =
-    System.get_env("VAPID_PUBLIC_KEY") ||
-      raise """
-      environment variable VAPID_PUBLIC_KEY is missing.
-      Generate a keypair with: scripts/mix.sh grappa.gen_vapid
-      Save the output into compose.override.yaml under the grappa
-      service's `environment:` block. Required for Web Push delivery.
-      """
+    System.get_env("VAPID_PUBLIC_KEY") || missing_vapid.("VAPID_PUBLIC_KEY")
 
   vapid_private_key =
-    System.get_env("VAPID_PRIVATE_KEY") ||
-      raise """
-      environment variable VAPID_PRIVATE_KEY is missing.
-      Generate alongside VAPID_PUBLIC_KEY via:
-      scripts/mix.sh grappa.gen_vapid
-      """
+    System.get_env("VAPID_PRIVATE_KEY") || missing_vapid.("VAPID_PRIVATE_KEY")
 
   vapid_subject =
     case System.get_env("VAPID_SUBJECT") do
