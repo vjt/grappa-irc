@@ -41,12 +41,20 @@ afterEach(() => {
 });
 
 describe("notificationPrefs store — #868", () => {
-  it("starts at the server defaults, so an un-hydrated client is not silently muted", () => {
-    expect(notificationPrefs()).toEqual(DEFAULT_NOTIFICATION_PREFS);
+  it("starts at the server defaults, so an un-hydrated client is not silently muted", async () => {
+    // A FRESH module instance, not the file-scope one: `beforeEach` mirrors a
+    // known map into the shared signal, which would make this test assert the
+    // mirror rather than the initial value. Mutating the store's initial value
+    // reddened nothing until this was re-imported per-test — the assertion was
+    // covering the line without constraining it.
+    vi.resetModules();
+    const fresh = await import("../lib/notificationPrefs");
+
+    expect(fresh.notificationPrefs()).toEqual(DEFAULT_NOTIFICATION_PREFS);
     // Pinned explicitly: these two are what make the un-hydrated state
     // deliver rather than swallow.
-    expect(notificationPrefs().channel_mentions).toBe(true);
-    expect(notificationPrefs().private_messages_all).toBe(true);
+    expect(fresh.notificationPrefs().channel_mentions).toBe(true);
+    expect(fresh.notificationPrefs().private_messages_all).toBe(true);
   });
 
   it("refreshNotificationPrefs hydrates the signal from GET (the rejoin-hydration path)", async () => {
