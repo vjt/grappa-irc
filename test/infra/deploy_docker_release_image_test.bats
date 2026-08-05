@@ -113,6 +113,16 @@ EOF
     [ -n "$migrate_line" ] && [ -n "$up_line" ] && [ "$migrate_line" -lt "$up_line" ]
 }
 
+@test "install: the container it starts does NOT re-migrate on boot (#867)" {
+    # The image auto-migrates on a bare run; this path migrated already, from
+    # the host, in the line above. Leaving the boot-time migrate armed lets a
+    # restarting old container race release_migrate on the same sqlite file.
+    PHX_HOST=x.example.org run "$DEPLOY" install
+    [ "$status" -eq 0 ]
+
+    grep -qE "run -d .*-e GRAPPA_AUTO_MIGRATE=0" "$ARGV_LOG"
+}
+
 @test "install: runs the container from the GRAPPA_IMAGE override" {
     PHX_HOST=x.example.org GRAPPA_IMAGE=ghcr.io/vjt/grappa:v9.9.9 \
         run "$DEPLOY" install
