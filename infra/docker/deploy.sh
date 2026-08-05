@@ -893,12 +893,22 @@ write_env_file() {
 # release_start_container — `docker run -d` the published image. Assumes the
 # container name is free (caller removed any prior one). All env (secrets +
 # runtime knobs) rides in via --env-file, so nothing lands on argv.
+#
+# GRAPPA_AUTO_MIGRATE=0 (#867): the image's entrypoint migrates on boot by
+# default, because a bare `docker run` has no other door. THIS path does have
+# one and already uses it — release_migrate runs from the host, before the
+# container is recreated, which is the ordering a schema change needs. Saying
+# so explicitly keeps the decision in ONE place per path: without it a
+# crash-looping old container could restart INTO a migration while
+# release_migrate is running, and two BEAMs migrating one sqlite file is
+# corruption, not contention.
 release_start_container() {
 	say "Starting $GRAPPA_CONTAINER from $GRAPPA_IMAGE"
 	docker run -d \
 		--name "$GRAPPA_CONTAINER" \
 		--restart unless-stopped \
 		--env-file "$ENV_FILE" \
+		-e GRAPPA_AUTO_MIGRATE=0 \
 		-v "${GRAPPA_DATA_VOLUME}:/data" \
 		-p "${GRAPPA_PUBLISH}:4000" \
 		"$GRAPPA_IMAGE" >&2

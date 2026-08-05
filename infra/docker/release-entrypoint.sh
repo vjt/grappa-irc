@@ -111,4 +111,71 @@ if [ -n "$missing" ]; then
          "GRAPPA_ENCRYPTION_KEY decrypts every stored upstream credential" >&2
 fi
 
+# ── Boot-time migration (#867) ──────────────────────────────────────────────
+#
+# With #862's secrets in place the documented one-liner got one step further
+# and died on `no such table: admin_events`: the image ships the migrator
+# (`eval 'Grappa.Release.migrate()'`) but nothing on the bare-run path ever
+# invoked it. The operator has no other door — there is no mix, no checkout
+# and no deploy script inside the image.
+#
+# WHERE the switch lives, and why here and not in the BEAM: this entrypoint
+# exists ONLY for this image. The jail, the .deb/.rpm hosts and the linux
+# systemd box each migrate deliberately from their own deploy script, BEFORE
+# swapping code — ordering that is load-bearing for a hot deploy (#41: only
+# "expand" migrations are hot-safe). An auto-migrate inside Grappa.Application
+# would change all of them at once. Same reasoning the ERL_ZFLAGS block above
+# gives for not baking a rel/vm.args.
+#
+# WHY the default is ON: the only shipped consumers of THIS image are
+# single-container — the bare `docker run` of the docs, and
+# infra/docker/deploy.sh in release mode (one container name, one named
+# volume). Two BEAMs sharing one sqlite file is not a supported topology with
+# or without migrations, so defaulting OFF would break the documented path to
+# protect a path that is already broken. This is NOT a claim that concurrent
+# starts are safe: they are not, and nothing here serialises them.
+# GRAPPA_AUTO_MIGRATE=0 is the door out, and deploy.sh passes exactly that on
+# its `docker run` — that path migrates itself, from the host, against the
+# still-running old container. One migrator per boot, and the ordering
+# decision stays in ONE place per path instead of being made twice.
+#
+# Unknown values are REJECTED rather than guessed: reading `true` as false
+# would silently reinstate the very bug this closes.
+auto_migrate="${GRAPPA_AUTO_MIGRATE:-1}"
+case "$auto_migrate" in
+    0 | 1) ;;
+    *)
+        echo "grappa: GRAPPA_AUTO_MIGRATE must be 0 or 1, got '$auto_migrate'" >&2
+        exit 1
+        ;;
+esac
+
+# Only the verbs that BOOT the release. `eval` / `rpc` / `remote` / `stop` /
+# `version` must never trigger it — deploy.sh's own
+# `eval 'Grappa.Release.migrate()'` runs through this very entrypoint, and a
+# nested migrate would be a second BEAM racing the first.
+boots_the_release=0
+case "${1:-}" in
+    start | start_iex | daemon | daemon_iex) boots_the_release=1 ;;
+esac
+
+if [ "$auto_migrate" = 1 ] && [ "$boots_the_release" = 1 ]; then
+    # "checking", not "applying": an up-to-date DB applies nothing and the
+    # migrator stays silent. Claiming work we did not do is the log-honesty
+    # rule in CLAUDE.md.
+    echo "grappa: checking for pending migrations (GRAPPA_AUTO_MIGRATE=0 to manage the schema yourself)" >&2
+
+    # NOT `$(...)` in argument position: a failure there does not stop the
+    # script (#441). The `if !` reads the real exit status.
+    if ! bin/grappa eval 'Grappa.Release.migrate()'; then
+        echo "grappa: MIGRATION FAILED — refusing to start." >&2
+        echo "grappa: nothing was dropped; Ecto runs each migration in its own" \
+             "transaction, so the database is readable and schema_migrations" \
+             "records exactly what applied. Fix the cause and restart, or roll" \
+             "back with: docker run --rm -v <volume>:/data <image> eval" \
+             "'Grappa.Release.rollback(Grappa.Repo, <version>)'" >&2
+        exit 1
+    fi
+fi
+
 exec bin/grappa "$@"
