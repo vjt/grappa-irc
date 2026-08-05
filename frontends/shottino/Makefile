@@ -296,11 +296,15 @@ $(LDC_DIR)/CMakeLists.txt:
 # THE SECOND HALF (#880) is the stub check. tests/test_callmain links
 # call/main.c against a hand-written <rtc/rtc.h> so `make check` can run
 # the helper's main loop under ASan without the vendored submodule. A stub
-# whose shape nobody verifies is a SECOND API, and a suite built on a
-# second API proves things about the second API — so the stub's definitions
-# are compiled against the REAL header here, in the one job that has it. A
-# signature that has drifted from upstream is a compile error, not a
-# discovery someone makes at `make call` time.
+# whose shape nobody verifies is a SECOND API, and a suite built on one
+# proves things about the second API — so the stub's DEFINITIONS are
+# compiled against the REAL header here, in the one job that has it.
+#
+# That is one link of two: `make check` already compiles the same file
+# against the stub header, which pins the definitions to the declarations.
+# Neither end alone would do — a signature changed in the stub header only
+# fails the test build, and changed in both header and definition it fails
+# HERE. Together they leave the stub header no room to drift from upstream.
 #
 # What none of this covers, deliberately: no link of the helper runs, so
 # the C++ link driver, -static-libstdc++ and the four archives are still

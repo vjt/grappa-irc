@@ -29098,12 +29098,15 @@ window. Latent only because `call_helper_start` never passes `--verbose`.
 Both ways this stream can break are byte-level and silent at runtime — a line
 that is neither comment nor JSON, and a value that escapes its own string — so
 both are now pinned. Worth recording separately: **no CI job compiles the call
-helper.** `make` builds `shottino`, `make check` builds the suites, and `make
-call` is opt-in behind cmake and the vendored submodule, so `call/main.c` is
-compiled by nobody in CI. That is how two `-Wformat-nonliteral` warnings sat in
-it unseen (the extraction gives the varargs helpers the format attribute the
-rest of the tree carries, and they are gone). It is also why the changes here
-were syntax-checked by hand against a stub `rtc/rtc.h`.
+helper** — true when this was written, and no longer; see the 2026-08-05 entry
+below for what is gated now, and for the distinction between COMPILED and
+LINKED that this sentence did not yet have to make. `make` builds `shottino`,
+`make check` builds the suites, and `make call` is opt-in behind cmake and the
+vendored submodule, so `call/main.c` was compiled by nobody in CI. That is how
+two `-Wformat-nonliteral` warnings sat in it unseen (the extraction gives the
+varargs helpers the format attribute the rest of the tree carries, and they are
+gone). It is also why the changes here were syntax-checked by hand against a
+stub `rtc/rtc.h`.
 
 **The class, swept.** shottino.c already applies this rule and says so:
 `call_helper_stop` joins the reader before closing the pipe it reads, closes
@@ -29960,3 +29963,78 @@ session's own nick down the channel path, including an empty string and
 another user's nick, caching modes under that key. With the class gate in
 place the effect is well-formed, so this is a window-keying question, not a
 mode-parsing one, and it predates both halves of this class.
+## 2026-08-05 — #880: compiled is not linked, and the gate must say which
+
+`call/main.c` is the media helper's whole main loop plus the entire
+libdatachannel integration. #754 gave it `make call-compile`, a `-Werror`
+compile of `CALL_SRC` in the `shottino` job, and that closed the half of the
+hole it was aimed at: the file no longer goes unbuilt, and a warning there
+fails CI like a warning anywhere else. What it does not do is LINK, and the
+distinction had already been lost — the note above still read "no CI job
+compiles the call helper" months after that stopped being true, which is the
+kind of drift that lets a compile gate be read as coverage.
+
+**A compile gate proves a file parses.** It says nothing about a use-after-free
+in `session_release` or an out-of-bounds in `video_retile`, and #759 was
+precisely that class — fds closed with callback threads still live, plus an
+out-of-bounds `shown[at]` — found by READING, because no sanitizer could reach
+the file. Seven functions were outside ASan/UBSan entirely: `session_negotiate`,
+`session_release`, `on_state`, `video_retile`, `audio_retile`, `liveness_step`,
+`pump_main`.
+
+**What is gated now, in three tiers, and the words matter.** `call/main.c`,
+`call/whip.c`, `call/media.c`, `call/note.c` and `http.c` are COMPILED under
+`-Werror` (`call-compile`). `call/media.c`, `call/note.c` and `call/whip.c` are
+LINKED INTO SANITIZED BINARIES on their own (`test_callmedia`, `test_callnote`,
+`test_whip`), and `call/main.c` now is too, via `tests/test_callmain`. Nothing
+LINKS THE REAL HELPER: the C++ link driver, `-static-libstdc++` and the four
+vendored archives are still proven only by someone typing `make call`. Three
+different claims, and a gate that promises the second while delivering the
+first is worse than no gate.
+
+**Reaching statics costs a rename, not a refactor.** All seven are `static`, so
+the suite compiles `main.c` into itself with `#define main call_main_unused` —
+the device `test_layout.c` already uses for `shottino.c`. Extracting them to a
+header would have changed the shape of the code under test to suit the test,
+which is the trade this project does not make.
+
+**libdatachannel is stubbed, and the stub cannot drift.** Linking the real
+library costs cmake, a C++ toolchain and minutes of build, so `make check` would
+have grown a dependency on the opt-in submodule — the line `test_whip`,
+`test_callmedia` and `test_callnote` all hold deliberately. So the C API is
+declared in `tests/stub/rtc/rtc.h` and implemented in `tests/rtc_stub.c`. A stub
+nobody verifies is a SECOND API and a suite built on one proves things about the
+second API, so the shape is pinned by a CHAIN of two compilations: `make check`
+builds `rtc_stub.c` against the stub header (definitions cannot leave the
+declarations), and `call-compile` builds the same file against the VENDORED
+header in the one job that has the submodule (definitions cannot leave
+upstream). Between them the stub header cannot leave upstream either. Both links
+were broken on purpose to check: a signature changed in the stub header alone
+fails the test build; changed in header and definition together it fails
+`call-compile`.
+
+**The stub MODELS two things, because a null implementation would gate nothing.**
+A peer connection is an allocation whose tracks die with it, and `rtcSendMessage`
+reads the bytes it is handed for the length it is TOLD. It refuses to follow an
+id it has already freed and counts the attempt instead — reporting the helper's
+mistake rather than crashing on it. `session_negotiate` is driven against a real
+HTTP endpoint on loopback, not a mock, so the WHIP answer is parsed while it is
+still allocated.
+
+**Proven by mutation, and the mechanisms were not the guessed ones.** Six
+defects, one at a time, each rebuilt from scratch: six reds, but only two are
+ASan (`liveness_step` walking one index past arrays that are SEPARATE
+allocations in the fixture; the pump reporting 64 bytes more than it read, which
+needs a datagram near the 2048-byte buffer edge to fire). Two are UBSan
+array-bounds, not ASan — an off-by-one on `c->vlive[8]` lands on the next member
+of the SAME allocation and touches no redzone, so what catches it is the
+declared type (`index 8 out of bounds for type 'bool[8]'`), a check that would
+not fire had the array been reached through a pointer. Two are ordinary
+assertions: dropping `s->pc = -1` in `session_release`, and freeing the WHIP
+answer before parsing it — `whip_response_free` NULLs the body, so that reorder
+loses the negotiated codec rather than raising a use-after-free.
+
+**The general rule.** A sanitizer job nobody has ever seen fail is a line of
+YAML. State which files are compiled, which are linked into a sanitized binary,
+and which are neither — those are three different guarantees, and the middle one
+is the only one that catches lifetime and bounds defects.

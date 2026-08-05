@@ -15,11 +15,20 @@
  * seven functions that were outside the sanitizers come inside them.
  *
  * THE DECLARATIONS ARE THE REAL ONES, and that is checked rather than
- * asserted: `make call-compile` compiles tests/rtc_stub.c against the
- * VENDORED <rtc/rtc.h> as well, so a definition here that has drifted from
- * upstream is a compile error in the job that already has the submodule.
- * A stub whose shape nobody verifies is a second API, and a test binary
- * built against a second API proves things about the second API.
+ * asserted — a stub whose shape nobody verifies is a second API, and a
+ * test binary built against a second API proves things about the second
+ * API. The check is a CHAIN of two compilations, because neither end is
+ * enough on its own:
+ *
+ *   - `make check` builds tests/rtc_stub.c against THIS header, so the
+ *     definitions cannot drift from these declarations;
+ *   - `make call-compile` builds the same file against the VENDORED
+ *     <rtc/rtc.h>, in the one job that has the submodule, so those same
+ *     definitions cannot drift from upstream's.
+ *
+ * Between them this header cannot drift from upstream either. Verified by
+ * breaking each link: a signature changed here alone fails the test build,
+ * and changed here AND in rtc_stub.c together fails call-compile.
  *
  * What it deliberately does NOT cover: the C++ link driver,
  * -static-libstdc++ and the four vendored archives. Those are still proven
