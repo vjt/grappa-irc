@@ -120,13 +120,14 @@ test("query window follows a peer NICK change — relabels, keeps history, route
 
     // STEP 4 — the core fix: a send in the focused window REACHES THE RENAMED
     // PEER. Pre-fix it routed to the vanished old nick → 401 and never
-    // arrived. Attach the peer's receive-listener BEFORE the send.
+    // arrived. The peer's receive-listener is attached before the send —
+    // `waitForPrivmsg` takes the send as its trigger and sequences the two.
     //
     // Gate on the NEW query topic being subscribed first: after the rename
     // the query-windows loop re-joins `(slug, NEW_NICK)`, and the server
     // fastlanes the own echo ONLY to a subscribed socket (no PubSub replay,
     // #254). Without this gate the own-echo render (line below) races the
-    // re-subscribe — the send still ROUTES (asserted via `received`), but
+    // re-subscribe — the send still ROUTES (asserted by the wait), but
     // its scrollback echo can miss the live push until the next refresh.
     await waitForQueryWindowReady(page, NETWORK_SLUG, NEW_NICK);
     // The send is the wait's trigger (#806): the peer is listening before
