@@ -7571,6 +7571,36 @@ html.resize-dragging * {
   flex: 0 0 auto;
 }
 
+/* #857 — the rail mount STACKS the pairs; the scrollback overlay keeps the
+   aligned two columns. `.whois-card-fields` is `max-content 1fr`, and
+   `max-content` sizes the label track to the LONGEST `<dt>` in the bundle
+   ("connecting from", WhoisCard.tsx). In a full-width centre pane that costs
+   nothing; inside the #605-capped 14rem rail it claims most of the card, and
+   the `word-break: break-word` on `dd` then breaks each value a few
+   characters at a time instead of overflowing. Label-over-value hands the
+   value the WHOLE card width, so it wraps on word boundaries like prose.
+
+   Mount-scoped, NOT a container query on `.whois-card`, deliberately:
+   `container-type: inline-size` applies inline-size containment, which zeroes
+   the element's intrinsic contribution — and this card sits in a
+   `fit-content(14rem)` track (#605) that is SIZED from that contribution. A
+   width-driven rule would therefore silently re-size the rail track it is
+   trying to fit into. The mount is the honest proxy for "narrow" here.
+
+   Row-gap is uniform across the grid, so a stacked pair needs its own
+   separation or every row reads equidistant: the label opens a group. */
+.rail-query-context .whois-card-fields {
+  grid-template-columns: 1fr;
+}
+
+.rail-query-context .whois-card-fields dt {
+  text-align: left;
+}
+
+.rail-query-context .whois-card-fields dt:not(:first-of-type) {
+  margin-top: 0.4rem;
+}
+
 /* Mirrors `.members-pane h3` (uppercased, muted) so the query rail's
    heading slot reads identically to the channel members slot. */
 .rail-query-heading {

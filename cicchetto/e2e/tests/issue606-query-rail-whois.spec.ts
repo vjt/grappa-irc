@@ -23,6 +23,7 @@
 // Feature logic is engine-agnostic → chromium only (no `@webkit`), mirroring
 // nick-follow-query.spec.ts.
 
+import { type Locator } from "@playwright/test";
 import {
   composeSend,
   loginAs,
@@ -39,6 +40,39 @@ const RUN_ID = crypto.randomUUID().slice(0, 8);
 const PEER = `Rail${RUN_ID}`;
 const PEER_RENAMED = `Rail2${RUN_ID}`;
 const CHANNEL = AUTOJOIN_CHANNELS[0];
+
+// #857 — read the card's RENDERED geometry: for every `<dd>`, its box width
+// and how many line boxes its text actually occupies (a Range's client rects
+// are one per line, so distinct tops = lines). Both the "value is starved"
+// defect and its fix are invisible to the DOM and to jsdom; this is the only
+// place in the suite that can see them.
+const measureFields = (card: Locator) =>
+  card.evaluate((el) => {
+    const dl = el.querySelector(".whois-card-fields");
+    if (dl === null) throw new Error("whois card has no .whois-card-fields");
+    const rows: { label: string; len: number; width: number; lines: number }[] = [];
+    let label = "";
+    for (const kid of Array.from(dl.children)) {
+      if (kid.tagName === "DT") {
+        label = kid.textContent ?? "";
+        continue;
+      }
+      const range = document.createRange();
+      range.selectNodeContents(kid);
+      const tops = new Set<number>();
+      for (const rect of Array.from(range.getClientRects())) {
+        if (rect.width === 0 && rect.height === 0) continue;
+        tops.add(Math.round(rect.top));
+      }
+      rows.push({
+        label,
+        len: (kid.textContent ?? "").length,
+        width: kid.getBoundingClientRect().width,
+        lines: Math.max(tops.size, 1),
+      });
+    }
+    return { dlWidth: dl.getBoundingClientRect().width, rows };
+  });
 
 test("query rail shows heading + auto-fetched WHOIS card, follows NICK, coexists with /whois", async ({
   page,
@@ -79,6 +113,31 @@ test("query rail shows heading + auto-fetched WHOIS card, follows NICK, coexists
     // point of the disjoint stores): none present in the overlay layer.
     await expect(page.locator(".scrollback-overlay").getByTestId("whois-card")).toHaveCount(0);
 
+    // #857 — the rail card's VALUES must be readable, not a column of single
+    // characters. `.whois-card-fields` is `max-content 1fr`, so the label
+    // track sizes to the longest `<dt>`; inside the #605-capped 14rem rail
+    // that starves the value track and `word-break: break-word` then chops
+    // every value a few characters at a time. Measured here rather than
+    // asserted on a class name because the defect IS the rendered geometry —
+    // jsdom has no layout, so only a real engine can see it.
+    const railFields = await measureFields(railCard);
+    expect(railFields.rows.length).toBeGreaterThan(1);
+    for (const row of railFields.rows) {
+      // Stacked: the value owns the WHOLE card width (two columns leave it a
+      // fraction, which is the bug).
+      expect(
+        row.width,
+        `rail value "${row.label}" is narrower than the card`,
+      ).toBeGreaterThanOrEqual(railFields.dlWidth - 0.5);
+      // vjt's acceptance: no value wraps below roughly one short word per
+      // line. 8 chars/line is that floor; a 15-char value may take 2 lines,
+      // not 3+. Expressed against the value's own length so short values
+      // (`+iwx`) are not held to a ratio they cannot reach.
+      expect(row.lines, `rail value "${row.label}" wraps too tightly`).toBeLessThanOrEqual(
+        Math.max(1, Math.ceil(row.len / 8)),
+      );
+    }
+
     // A peer NICK while the query is open re-labels the heading (live).
     await peer.changeNick(PEER_RENAMED);
     await expect(ctx.locator(".rail-query-heading")).toHaveText(
@@ -96,6 +155,18 @@ test("query rail shows heading + auto-fetched WHOIS card, follows NICK, coexists
     await expect(overlayCard.locator(".whois-card-close")).toHaveCount(1);
     // ...and the rail card is STILL present (two disjoint cards at once).
     await expect(railCard).toBeVisible();
+
+    // #857 — the stacking fix is scoped to the rail mount, so the overlay
+    // card must KEEP its aligned two columns. A leaked override would give
+    // every value the full dl width here too; a label track means it did not.
+    const overlayFields = await measureFields(overlayCard);
+    expect(overlayFields.rows.length).toBeGreaterThan(1);
+    for (const row of overlayFields.rows) {
+      expect(
+        row.width,
+        `overlay value "${row.label}" lost its label column`,
+      ).toBeLessThan(overlayFields.dlWidth);
+    }
   } finally {
     await peer.disconnect("#606 done");
   }

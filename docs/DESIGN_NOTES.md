@@ -29324,3 +29324,41 @@ the run intended to exercise the failure path was exercising the opt-out
 instead. Only `"1"` skips now; unset, empty, `0` and `yes` are all red. A
 reading of an opt-out must err towards red, or it becomes the silent
 degradation it was written to remove.
+
+---
+
+## 2026-08-05 — #857: the mount is the honest proxy, because the container query would re-size the container
+
+The query rail's WHOIS card rendered its values a few characters per line.
+The rail track is not at fault — `.shell-no-members` caps it at
+`fit-content(14rem)` (#605) and it measures as designed. The starvation is
+inside the card: `.whois-card-fields` is `grid-template-columns: max-content
+1fr`, and `max-content` sizes the label track to the LONGEST `<dt>` in the
+bundle — `connecting from`. In a full-width centre pane that costs nothing,
+which is why the same component in the scrollback `/whois` overlay has always
+looked right; in a 14rem column the label claims most of the card and the
+`word-break: break-word` on `dd` then chops each value rather than overflowing
+it. One component, two containers, and only one of them was ever measured.
+
+**The fix stacks label over value, scoped to `.rail-query-context`.** The
+tempting alternative — a container query on `.whois-card`, keying off actual
+width rather than mount — was rejected for a concrete reason:
+`container-type: inline-size` applies inline-size containment, which zeroes
+the element's intrinsic size contribution, and this card sits in a
+`fit-content(14rem)` track that is SIZED from exactly that contribution. A
+width-driven rule would have silently re-sized the track it was trying to fit
+into, converting a cosmetic bug into a layout one and re-opening the #605
+coupling that block already warns about. Where the card is mounted is the
+honest stand-in for how wide it is, precisely because the container's width is
+derived from the card.
+
+**The oracle has to be a real engine.** Reading the rule tells you it exists;
+it never tells you the rendered width, and jsdom has no layout at all, so the
+unit suite is structurally blind to both the defect and the fix. The guard
+therefore lives in `issue606-query-rail-whois.spec.ts`, which already stands up
+a real query window with a real upstream WHOIS: it reads each `<dd>`'s box and
+counts its line boxes (a Range's client rects are one per line), asserting the
+rail values span the whole card and wrap no tighter than roughly one short word
+per line — and, on the overlay card in the same page, that a label column is
+still there. A scoped override needs a test on BOTH sides of the scope, or the
+leak is the thing nobody notices.
