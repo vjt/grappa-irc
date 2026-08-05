@@ -167,6 +167,32 @@ describe("auth signal store", () => {
       expect(auth.token()).toBeNull();
     });
 
+    // #766 — the token and `totp_available` are no longer the same fact. The
+    // server hands out a challenge whenever the account can spend SOMETHING
+    // at that door, and for an account whose only remaining fallback is its
+    // recovery set that means a token with `totp_available: false`. The
+    // degrade must key on the token, because keying on `totp_available`
+    // rethrows and leaves an account with a valid code no way to type it.
+    it("degrades on a recovery-only challenge, where TOTP is unavailable", async () => {
+      const api = await import("../lib/api");
+      const { getPasskey } = await import("../lib/passkeys");
+      vi.mocked(api.login).mockResolvedValue({
+        two_factor_required: true as const,
+        passkey_options: { challenge_id: "pk-1", public_key: { challenge: "AQID" } },
+        totp_available: false,
+        challenge_token: "challenge-123",
+      });
+      vi.mocked(getPasskey).mockRejectedValue(new Error("Passkey authentication cancelled"));
+      const auth = await import("../lib/auth");
+
+      await expect(auth.login("alice", "secret")).resolves.toEqual({
+        kind: "totp",
+        challengeToken: "challenge-123",
+        passkeyError: new Error("Passkey authentication cancelled"),
+      });
+      expect(auth.token()).toBeNull();
+    });
+
     it("degrades to the TOTP challenge when the server rejects the assertion", async () => {
       // A rejected assertion (replayed challenge, expired ceremony) is a
       // ceremony failure like any other: the account still has a second
