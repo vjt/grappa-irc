@@ -522,6 +522,13 @@ describe("SettingsDrawer muted conversations — #866", () => {
     // muted_targets is per-subject and carries no network, so offering the
     // name twice would promise a per-network mute the store cannot keep.
     expect(optionValues()).toEqual(["", "#grappa"]);
+    // And the surviving LABEL is the first candidate's spelling, i.e. the one
+    // the sidebar is showing highest. Measured: without this assertion the
+    // dedupe guard was unconstrained — the Map collapses the key on its own,
+    // so dropping the guard only flipped which spelling won and nothing went
+    // red. The guard now has to earn its line.
+    expect(screen.getByRole("option", { name: "#grappa" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "#Grappa" })).toBeNull();
   });
 
   it("picking a conversation persists a permanent mute and adopts the server echo", async () => {
