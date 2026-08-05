@@ -29,6 +29,8 @@ case "$0" in
 esac
 printf '%s\n' "$@" > "${ARGS_FILE}"
 
+# shellcheck disable=SC2016  # the single quotes are the point: this body
+# is a script for the CHILD shell, where $PATH / $@ / $line resolve.
 exec su -l grappa -c '
 set -eu
 export PATH=/usr/local/lib/erlang28/bin:$PATH

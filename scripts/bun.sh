@@ -34,6 +34,7 @@
 # /tmp is a tmpfs so bun's tempdir writes succeed under the dropped
 # UID (the image's default /tmp is root-owned).
 
+# shellcheck source=scripts/_lib.sh
 . "$(dirname "$0")/_lib.sh"
 
 # oven/bun image, digest-pinned (#103 supply-chain: `oven/bun:1` is a

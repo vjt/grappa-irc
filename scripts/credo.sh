@@ -10,6 +10,7 @@
 # Pins MIX_ENV=dev via scripts/mix.sh because credo is `only: [:dev, :test]`
 # and unavailable under MIX_ENV=prod (the typical live-container env).
 
+# shellcheck source=scripts/_lib.sh
 . "$(dirname "$0")/_lib.sh"
 
 cd "$REPO_ROOT"

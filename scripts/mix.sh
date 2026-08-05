@@ -17,6 +17,7 @@
 # anywhere else it's passed through verbatim to mix (which will likely
 # reject it). Predictable parse path > flexible parse path.
 
+# shellcheck source=scripts/_lib.sh
 . "$(dirname "$0")/_lib.sh"
 
 cd "$REPO_ROOT"

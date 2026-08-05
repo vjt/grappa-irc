@@ -9,6 +9,7 @@
 # Defaults to dev when not set. Prod DBs open read-only via WAL-safe
 # attach.
 
+# shellcheck source=scripts/_lib.sh
 . "$(dirname "$0")/_lib.sh"
 
 cd "$REPO_ROOT"

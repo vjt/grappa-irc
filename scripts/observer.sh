@@ -30,6 +30,7 @@
 # Requires the dev image (MIX_ENV=dev): observer_cli is `only: [:dev]`, so
 # this does not work against a prod-profile container.
 
+# shellcheck source=scripts/_lib.sh
 . "$(dirname "$0")/_lib.sh"
 
 cd "$REPO_ROOT"

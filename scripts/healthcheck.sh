@@ -8,6 +8,7 @@
 # this probes grappa directly. The probe runs from INSIDE the container, so
 # it's independent of host port binding.
 
+# shellcheck source=scripts/_lib.sh
 . "$(dirname "$0")/_lib.sh"
 
 cd "$REPO_ROOT"

@@ -18,6 +18,8 @@
 
 set -eu
 
+# shellcheck disable=SC2016  # the single quotes are the point: this body
+# is a script for the CHILD shell, where $PATH / $@ / $line resolve.
 exec su -l grappa -c '
 set -eu
 cd /home/grappa/grappa/cicchetto

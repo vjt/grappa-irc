@@ -6,6 +6,7 @@
 #   scripts/monitor.sh -n 200         # custom line count
 #   scripts/monitor.sh --since 10m    # logs from 10 minutes ago
 
+# shellcheck source=scripts/_lib.sh
 . "$(dirname "$0")/_lib.sh"
 
 cd "$REPO_ROOT"
