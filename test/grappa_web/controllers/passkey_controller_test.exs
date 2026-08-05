@@ -194,8 +194,16 @@ defmodule GrappaWeb.PasskeyControllerTest do
       assert Repo.aggregate(Passkey, :count, :id) == 0
     end
 
+    # The fault is aimed PAST the assertion, and that is the whole point of the
+    # test. #815 wrapped the sign-counter commit inside `authenticate/3`, which
+    # made it the FIRST retried write this route performs — so an
+    # arm-everything fault degrades there and the request never reaches
+    # `set_mode/4` at all. The test would stay green and quietly stop proving
+    # the clause it was written for. `fire_on: 2` rides out the counter commit
+    # and fires on the mode transaction; the advanced counter is what proves it
+    # landed there, since a degrade at check 1 leaves the counter at zero.
     test "POST /me/passkeys/mode behind a saturated writer is a 503, not a refused assertion", ctx do
-      register_credential(ctx)
+      passkey = register_credential(ctx)
 
       options =
         json_response(
@@ -208,12 +216,67 @@ defmodule GrappaWeb.PasskeyControllerTest do
 
       params = assertion_params(ctx, options, 1)
 
-      BusyRetry.inject_transient_faults(10_000)
+      # Bound to a variable, never `self()` inside the closure: `on_exit` runs
+      # in its OWN process, so the closure would disarm the wrong pid and leave
+      # this one armed for whoever inherits it.
+      test_pid = self()
+      BusyRetry.arm_faults(test_pid, 10_000, fire_on: 2)
+      on_exit(fn -> BusyRetry.disarm_faults(test_pid) end)
       conn = post(authed(ctx.session), "/me/passkeys/mode", params)
-      BusyRetry.inject_transient_faults(0)
+      BusyRetry.disarm_faults(test_pid)
 
       assert json_response(conn, 503) == %{"error" => "db_unavailable"}
       assert Repo.get!(User, ctx.user.id).passkey_mode == :disabled
+      assert Repo.get!(Passkey, passkey.id).sign_count == 1
+    end
+
+    # #815 — the assertion routes reach a write of their own: the sign-counter
+    # commit inside `authenticate/3`. Wrapped, it degrades, and both actions
+    # closed on `_ -> {:error, :invalid_two_factor}` — a 401 telling the holder
+    # of a perfectly good passkey that their authenticator was rejected. These
+    # two pin the honest answer at the wire, and pin it SEPARATELY because
+    # `login_verify/2` and `second_factor_verify/2` are two `case`s: fixing one
+    # leaves the other lying.
+    test "POST /auth/passkeys/verify behind a saturated writer is a 503, not a refused assertion", ctx do
+      passkey = register_credential(ctx)
+      arm_mode(ctx, :passwordless)
+
+      options =
+        build_conn()
+        |> post("/auth/passkeys/options", %{"identifier" => ctx.user.name})
+        |> json_response(200)
+
+      params = assertion_params(ctx, options, 1)
+
+      BusyRetry.inject_transient_faults(10_000)
+      conn = post(build_conn(), "/auth/passkeys/verify", params)
+      BusyRetry.inject_transient_faults(0)
+
+      assert json_response(conn, 503) == %{"error" => "db_unavailable"}
+      assert Repo.get!(Passkey, passkey.id).sign_count == 0
+    end
+
+    test "POST /auth/passkeys/second-factor behind a saturated writer is a 503, not a refused assertion", ctx do
+      passkey = register_credential(ctx)
+      arm_mode(ctx, :second_factor)
+
+      {:ok, options} =
+        WebAuthn.begin_authentication(
+          Repo.get!(User, ctx.user.id),
+          :second_factor,
+          %{ip: "127.0.0.1", client_id: nil},
+          @ceremony_origin,
+          %{}
+        )
+
+      params = assertion_params(ctx, stringify(options), 1)
+
+      BusyRetry.inject_transient_faults(10_000)
+      conn = post(build_conn(), "/auth/passkeys/second-factor", params)
+      BusyRetry.inject_transient_faults(0)
+
+      assert json_response(conn, 503) == %{"error" => "db_unavailable"}
+      assert Repo.get!(Passkey, passkey.id).sign_count == 0
     end
 
     defp authed(session),

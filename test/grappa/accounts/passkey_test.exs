@@ -223,6 +223,27 @@ defmodule Grappa.Accounts.PasskeyTest do
       assert log =~ ctx.passkey.id
       assert log =~ ctx.user.id
     end
+
+    # #815 — the counter commit is the last unwrapped passkey write, so a
+    # transient SQLITE_BUSY under WAL with pool_size > 1 raised straight out of
+    # `Repo.update_all/2` and reached the caller as a 500. The reason #768 left
+    # it alone was the CAS: a write that lands and THEN reports an error would
+    # be retried, match zero rows against a counter that already moved, and be
+    # refused as a clone. That was measured and does not happen (see
+    # DESIGN_NOTES 2026-08-05), so the wrap goes in — and BOTH halves of the
+    # feared outcome are pinned here: the caller must see the DB fault, and the
+    # operator's log must NOT gain a clone alarm for a write that was never
+    # refused. A degrade routed through `refuse_clone/2` would pass the first
+    # assertion and fail the second.
+    test "a counter commit held off by a saturated writer degrades, it does not cry clone", ctx do
+      Repo.BusyRetry.inject_transient_faults(10_000)
+      {result, log} = with_log(fn -> WebAuthn.consume_sign_count(ctx.passkey, 6) end)
+      Repo.BusyRetry.inject_transient_faults(0)
+
+      assert result == {:error, :db_unavailable}
+      refute log =~ "sign counter did not advance"
+      assert Repo.get!(Passkey, ctx.passkey.id).sign_count == 5
+    end
   end
 
   test "passwordless activation persists the pre-shown recovery set only at commit" do

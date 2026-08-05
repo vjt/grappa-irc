@@ -98,7 +98,8 @@ defmodule Grappa.Accounts.WebAuthn do
   end
 
   @doc "Consumes and verifies a passkey assertion once."
-  @spec authenticate(map(), atom(), binding()) :: {:ok, User.t(), map()} | {:error, term()}
+  @spec authenticate(map(), atom(), binding()) ::
+          {:ok, User.t(), map()} | {:error, :invalid_passkey | :db_unavailable}
   def authenticate(params, purpose, binding) do
     with {:ok, challenge, %{user_id: user_id, binding: ^binding} = metadata} <-
            WebAuthnChallengeStore.take(params["challenge_id"], purpose),
@@ -109,6 +110,21 @@ defmodule Grappa.Accounts.WebAuthn do
          %User{} = user <- Repo.get(User, user_id) do
       {:ok, user, metadata}
     else
+      # #815 — the LAST clause reached here decides what a saturated writer
+      # looks like, and the catch-all below answers "your credential is bad".
+      # Since #815 wrapped the counter commit in `Repo.BusyRetry`, that answer
+      # would be a statement about a credential this function verified and
+      # accepted: everything ahead of the write passed, and only the write
+      # failed. It is the same lie #768 removed from `set_mode/2` and
+      # `register/2`, one layer down — and worse than the 500 the wrap replaced,
+      # because the user believes it and re-enrols a credential that was fine.
+      #
+      # ONE atom widens, not the else. `:cloned_authenticator` in particular
+      # stays collapsed below: the wire must never confirm to an attacker that
+      # their clone was spotted (see `refuse_clone/2`). A 503 here can only be
+      # read by someone who already produced a valid assertion for a credential
+      # we hold, so it tells them nothing they did not supply themselves.
+      {:error, :db_unavailable} = err -> err
       _ -> {:error, :invalid_passkey}
     end
   end
@@ -297,7 +313,8 @@ defmodule Grappa.Accounts.WebAuthn do
   The write is a compare-and-set on the stored counter, so two assertions
   racing on one credential cannot both win.
   """
-  @spec consume_sign_count(Passkey.t(), non_neg_integer()) :: :ok | {:error, :cloned_authenticator}
+  @spec consume_sign_count(Passkey.t(), non_neg_integer()) ::
+          :ok | {:error, :cloned_authenticator | :db_unavailable}
   def consume_sign_count(%Passkey{sign_count: 0} = passkey, 0), do: commit_counter(passkey, 0, 0)
 
   def consume_sign_count(%Passkey{sign_count: old_count} = passkey, new_count)
@@ -309,12 +326,34 @@ defmodule Grappa.Accounts.WebAuthn do
   # Compare-and-set against the counter we read. A concurrent assertion that
   # already moved the row wins and this one is refused, so a captured
   # assertion cannot be replayed alongside the genuine one.
+  #
+  # #815 — the last unwrapped passkey write, deliberately left out of #768
+  # because a CAS is not idempotent: an attempt that COMMITTED and then
+  # reported an error would be retried, match zero rows against the counter it
+  # had itself advanced, and be refused as a clone — a legitimate login denied
+  # and a false clone alarm in the operator's log. That sequence was measured
+  # rather than reasoned about (142 forced mid-flight connection kills, zero
+  # occurrences) and it cannot happen through this pool; the whole argument,
+  # its limits, and what must be re-measured if `db_connection`'s internals
+  # change are in DESIGN_NOTES 2026-08-05. Every retry therefore re-runs an
+  # attempt that left the row untouched, so the CAS still matches.
+  #
+  # `refuse_clone/2` stays on the `{:ok, 0}` branch only: a degrade is not a
+  # refusal, and routing it through the clone rule would write exactly the
+  # alarm this wrap was accused of manufacturing.
   defp commit_counter(%Passkey{id: id} = passkey, new_count, expected) do
     query = from(p in Passkey, where: p.id == ^id and p.sign_count == ^expected)
 
-    case Repo.update_all(query, set: [sign_count: new_count, last_used_at: DateTime.utc_now()]) do
-      {1, _} -> :ok
-      {0, _} -> refuse_clone(passkey, new_count)
+    result =
+      Repo.BusyRetry.run(fn ->
+        {count, _} = Repo.update_all(query, set: [sign_count: new_count, last_used_at: DateTime.utc_now()])
+        {:ok, count}
+      end)
+
+    case result do
+      {:ok, 1} -> :ok
+      {:ok, 0} -> refuse_clone(passkey, new_count)
+      {:error, :db_unavailable} = err -> err
     end
   end
 

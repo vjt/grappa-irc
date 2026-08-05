@@ -221,6 +221,10 @@ defmodule GrappaWeb.PasskeyController do
   def login_verify(conn, params) do
     case WebAuthn.authenticate(params, :passwordless, client_binding(conn)) do
       {:ok, %User{passkey_mode: :passwordless} = user, _} -> mint_session(conn, user)
+      # #815 — `authenticate/3` writes the sign counter, so a saturated writer
+      # is a legitimate outcome of a VERIFIED assertion. The catch-all below is
+      # the login oracle and stays opaque; a 503 is not part of it.
+      {:error, :db_unavailable} = err -> err
       _ -> {:error, :invalid_two_factor}
     end
   end
@@ -230,6 +234,9 @@ defmodule GrappaWeb.PasskeyController do
   def second_factor_verify(conn, params) do
     case WebAuthn.authenticate(params, :second_factor, client_binding(conn)) do
       {:ok, %User{passkey_mode: :second_factor} = user, _} -> mint_session(conn, user)
+      # #815 — as `login_verify/2`. Two actions, two `case`s: fixing one and
+      # not the other leaves the second door telling the same lie.
+      {:error, :db_unavailable} = err -> err
       _ -> {:error, :invalid_two_factor}
     end
   end

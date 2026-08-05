@@ -28954,3 +28954,83 @@ not add another.
 assertions fell. The entropy-came-from-the-source half stayed green under that
 mutation, which is the honest reading: it pins the derivation, and the refusal
 assertions pin the check.
+
+## 2026-08-05 — #815: wrapping a compare-and-set, once the hazard was measured
+
+`consume_sign_count/2` → `commit_counter/3` was the last passkey write still
+raising a 500 on transient SQLite contention. #768 wrapped the other three and
+deliberately skipped this one, because the wrap alone is not obviously safe and
+is arguably worse: the write is a **compare-and-set** (`where sign_count ==
+^expected`), so it is not idempotent under retry. An attempt that COMMITTED and
+then reported an error would be retried, match zero rows against the counter it
+had itself advanced, and fall into `refuse_clone/2` — a legitimate login refused
+and a false clone alarm, naming a user and a credential, written into the
+operator's log by the very mechanism meant to improve availability.
+
+**That premise was an inference about the code, so it was measured before
+anything was built.** 142 forced mid-flight connection kills across four shapes
+(lock contention; a long `UPDATE` interrupted mid-VDBE; the deadline swept
+across the commit boundary from both sides; the single-row CAS blocked on a lock
+released under a swept deadline), each attempt writing a unique marker read back
+through a **different pooled connection** so "did it land" is answered by the
+database and never by the return value. Result: **zero** cases of "caller sees a
+transient error *and* the row moved", including 63 where the pool had already
+destroyed the connection under the caller.
+
+The mechanism, not the luck: before the commit, `Exqlite.Connection.disconnect/2`
+calls `Sqlite3.cancel/1`, which wakes the busy handler (`SQLITE_BUSY` →
+`"Database busy"`, transient) or interrupts the VDBE (`"interrupted"`,
+non-transient → `BusyRetry` re-raises); either way SQLite rolls back and there is
+nothing to double-apply. After the commit, `DBConnection.Holder.holder_apply/4`
+fails its `:ets.update_element` on the deleted holder and `augment_disconnect/1`
+rewrites **only** `{:disconnect, …}` tuples — an `{:ok, …}` falls through
+unchanged, so a committed write is still reported as committed. Every retry
+therefore re-runs an attempt that left the row untouched, and the CAS still
+matches.
+
+**The wrap is half the change; the caller was the actual defect.**
+`authenticate/3` closed on `_ -> {:error, :invalid_passkey}`, so shipping the
+wrap alone would have relabelled a saturated writer as a forged credential — the
+exact lie #768 removed from `set_mode/2` and `register/2`, reintroduced one layer
+down, and a worse answer than the 500 it replaced because the user believes it
+and re-enrols a credential that was never wrong. A 503 on this path can only be
+observed by someone who already produced a valid assertion for a credential we
+hold, so it discloses nothing they did not supply. **One atom widens, not the
+else:** `:cloned_authenticator` stays collapsed, because the wire must never
+confirm to an attacker that their clone was spotted. The same clause was owed at
+the wire in `login_verify/2` and `second_factor_verify/2` — two separate `case`s,
+so fixing one leaves the other lying, and they are pinned separately.
+
+**The sketched retry-safe CAS is declined, and this is the reason.** #815
+proposed treating "0 rows matched *and* the stored counter already equals the
+value we tried to write" as success, "costing nothing". It does not cost nothing:
+two assertions racing on one credential both read `expected` and both present the
+same `new_count`, so the loser finds exactly that condition and would be
+**accepted** — which is precisely the captured-assertion-replayed-alongside-the-
+genuine-one that the CAS exists to refuse. It trades a measured-nonexistent
+hazard for a real hole in clone detection. Distinguishing "my own committed
+attempt" from "a concurrent genuine one" needs a per-attempt token in the row,
+which is heavier than the problem.
+
+**What is bounded by construction, and what is not.** The degrade path returns
+`{:error, :db_unavailable}` on its own branch and never reaches `refuse_clone/2`,
+so a saturated writer cannot produce a clone alarm no matter what the pool does.
+The residual exposure is only the committed-then-error sequence above, whose
+worst outcome is one spurious clone warning and one refused login on an already
+saturated database — not an auth bypass.
+
+**Re-measure when this moves.** The commit-survives-the-kill half rests on
+`holder_apply/4` + `augment_disconnect/1` in **db_connection 2.10.2**, and the
+rollback half on `Sqlite3.cancel/1` in **exqlite 0.38.0** (via ecto_sqlite3
+0.24.1) — internals, not documented contracts, so a bump can change them without
+a changelog line loud enough to notice. A bump of either in `mix.lock` is the
+trigger; the observable to re-run to zero is "caller raised **and** the row
+moved", read back through a second pooled connection under the prod pool posture
+(`pool_size: 3`, `busy_timeout: 30_000`, WAL) — never the `pool_size: 1` Sandbox,
+which cannot produce real contention. Two things were **not** measured and stay
+open: the FreeBSD jail (the logic is platform-independent, the timing is not),
+and multi-statement `Repo.transaction` boundaries, where a deadline can land
+after `COMMIT` but before the transaction returns. The latter is #768's
+`run_mode_transaction/4`, not this write — and it is safe for a different
+reason: replaying that transaction re-applies the same mode, the same recovery
+set and the same revocations, so unlike a CAS it is idempotent.

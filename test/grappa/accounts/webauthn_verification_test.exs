@@ -174,6 +174,37 @@ defmodule Grappa.Accounts.WebAuthnVerificationTest do
 
       assert Repo.get!(Passkey, ctx.passkey.id).sign_count == 5
     end
+
+    # #815 — the whole defect. `authenticate/3` closes on `_ -> {:error,
+    # :invalid_passkey}`, so wrapping the counter commit in `Repo.BusyRetry`
+    # WITHOUT this would hand every caller a saturated writer relabelled as a
+    # forged credential — the exact lie #768 removed one layer up, and a worse
+    # answer than the 500 the wrap replaced, because the user believes it and
+    # goes to re-enrol a credential that was never wrong.
+    #
+    # This assertion is signed and valid: everything ahead of the write passed,
+    # and the ONLY thing that failed is the write. So `:invalid_passkey` here
+    # would be a statement about the credential that the code never tested.
+    test "a saturated writer surfaces as a DB fault, not as a bad credential", ctx do
+      params = assert_params(ctx, 1)
+
+      Repo.BusyRetry.inject_transient_faults(10_000)
+      result = WebAuthn.authenticate(params, :second_factor, @binding)
+      Repo.BusyRetry.inject_transient_faults(0)
+
+      assert result == {:error, :db_unavailable}
+      assert Repo.get!(Passkey, ctx.passkey.id).sign_count == 0
+    end
+
+    # The oracle stays shut for everything else. `:cloned_authenticator` is the
+    # one fault the wire must never confirm — surfacing the DB fault must not
+    # widen the else into a diagnostic surface for the clone rule too.
+    test "the clone refusal stays collapsed into the opaque answer", ctx do
+      assert {:ok, _, _} = WebAuthn.authenticate(assert_params(ctx, 5), :second_factor, @binding)
+
+      assert {:error, :invalid_passkey} =
+               WebAuthn.authenticate(assert_params(ctx, 3), :second_factor, @binding)
+    end
   end
 
   defp begin_registration(ctx) do
