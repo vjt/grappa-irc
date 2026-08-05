@@ -37,9 +37,12 @@ const BADGE = '[data-testid="scroll-to-bottom-badge"]';
 
 // Desktop (width > 768px, the mobile breakpoint; height > 500px, above the
 // #319 landscape-compact tier) but narrow — the sidebar + members pane leave a
-// ~420px scroll pane, so a 380-char filler wraps to a ~250px-tall block. A
-// couple of those overflow the ~380px fold, keeping the peer message count
-// tiny (fewer sends = no flood; see PACE_MS).
+// scroll pane a few hundred px wide, so one filler wraps to a block tall enough
+// that a couple of them overflow the fold, keeping the peer message count tiny
+// (fewer sends = no flood; see PACE_MS). Deliberately no px figure for that
+// block: it depends on the runner's font metrics, this comment used to guess
+// ~250px while the buffer comment below guessed ~140px, and #903 was the bill
+// for reasoning about margins in numbers nobody had measured.
 test.use({ viewport: { width: 900, height: 560 } });
 
 // ~270-char body → wraps to a tall (~7-line) block at this pane width, WITHOUT
@@ -54,16 +57,33 @@ const MENTION_2 = `${NETWORK_NICK}: second ping i360 mention two`;
 
 // Buffer, oldest → newest. LEADING pushes MENTION_1 below the fold at
 // scroll-top; MIDDLE separates the two mentions by more than half the pane so
-// centering the first leaves the second below the fold; TRAILING keeps
-// MENTION_2 off the exact tail so the pane is still not-at-bottom after the
-// second jump (button stays up) and there is travel for the final snap. Each
-// filler is ~140px on a ~380px pane; counts chosen with generous margin over
-// every threshold so a small render-height variance can't flip an assertion
-// while keeping the send count (and thus the fake-lag pacing time) low — this
-// spec runs inside the 25-minute integration CI ceiling.
+// centering the first leaves the second below the fold; TRAILING keeps the pane
+// off the tail after the second jump (button stays up) and leaves travel for
+// the final snap.
+//
+// #903 — TRAILING is NOT a round number, it is the one constant this spec's
+// premise rests on, and it was wrong. The jump anchors on the message AFTER the
+// mention (#360 iOS, b208eebd), so what separates the resting centre from the
+// tail is TRAILING-1 fillers, not TRAILING — and that commit never revisited
+// this block. Measured from the failing run's trace (31046232909): after tap 2
+// the pane rested at scrollTop 941 against a tail of 945. FOUR pixels, against
+// a 50px threshold — so the button unmounted because the pane really was at the
+// bottom, and the "button remains" assertion below was asserting something
+// false. Not a race, and nothing to tolerate.
+//
+// Each added filler pushes the resting position a further ~1 filler off the
+// tail (the anchor does not move; only the tail does), so TRAILING 2 → 4 buys
+// roughly two filler-heights of margin over the threshold instead of 4px. The
+// filler's rendered height is the thing that varies per runner — this file used
+// to estimate it at ~250px in one comment and ~140px in another, which is
+// exactly the uncertainty that made the old margin a coin toss — so the margin
+// is sized in FILLERS, a unit that scales with whatever that height turns out
+// to be, rather than in pixels. Cost is 2 more paced sends (~4.4s) inside the
+// 25-minute integration CI ceiling. `expectSettledNotAtBottom` asserts the
+// premise outright, so if this ever drifts again the red says so with a number.
 const LEADING = 4;
 const MIDDLE = 2;
-const TRAILING = 2;
+const TRAILING = 4;
 const LAST_FILLER_IDX = LEADING + MIDDLE + TRAILING - 1;
 // Short unique prefix of the last filler — a 380-char `hasText` is brittle
 // under Playwright whitespace normalisation; this token pins the tail line.
