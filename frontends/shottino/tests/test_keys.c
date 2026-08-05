@@ -312,6 +312,8 @@ TEST(a_key_interrupting_an_escape_sequence_is_not_swallowed) {
 }
 
 int main(void) {
+    test_use_temp_home();
+
     RUN(the_input_line_has_a_cursor_you_can_move);
     RUN(modified_keys_decode_where_terminfo_describes_them);
     RUN(modified_keys_decode_where_terminfo_describes_nothing);

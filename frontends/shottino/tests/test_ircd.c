@@ -946,6 +946,8 @@ TEST(archive_mode_asks_grappa_only_when_the_ring_falls_short) {
 }
 
 int main(void) {
+    test_use_temp_home();
+
     RUN(bind_spec_reads_ports_addresses_and_both_families);
     RUN(loopback_is_the_whole_127_block_and_the_v6_one);
     RUN(client_lines_parse_into_command_and_params);

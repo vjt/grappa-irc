@@ -405,6 +405,8 @@ TEST(a_configured_helper_is_used_or_refused_never_quietly_replaced) {
 }
 
 int main(void) {
+    test_use_temp_home();
+
     RUN(a_nick_folds_to_one_path_and_two_people_never_fold_to_one);
     RUN(a_nick_that_does_not_fit_is_cut_between_escapes_and_never_past_the_end);
     RUN(the_nick_in_me_is_the_same_byte_string_as_the_nick_in_peers);

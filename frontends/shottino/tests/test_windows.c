@@ -4125,20 +4125,8 @@ TEST(the_settings_panel_lists_every_setting) {
 }
 
 int main(void) {
-    /* A HOME OF OUR OWN, before a single test runs.
-     *
-     * This suite calls the real prefs_save/prefs_load, and prefs_path
-     * resolves $HOME at call time — so without this it writes the
-     * developer's OWN ~/.local/share/shottino/shottino.conf, with
-     * whatever defaults a test app happens to hold. That is exactly
-     * what it did: vjt lost `voice.source = alsa:hw:2` to
-     * `pulse:default` on every `make check`, and blamed the reinstall
-     * that always happened alongside it.
-     *
-     * Set once here rather than per test, because the next test to call
-     * prefs_save is the one nobody remembers to guard. */
-    char test_home[] = "/tmp/shottino-test-home-XXXXXX";
-    if (mkdtemp(test_home)) setenv("HOME", test_home, 1);
+    /* This suite calls the real prefs_save/prefs_load. See test.h. */
+    test_use_temp_home();
 
     RUN(names_are_compared_under_the_ircds_casemapping);
     RUN(a_channel_opened_twice_in_two_spellings_is_one_window);
