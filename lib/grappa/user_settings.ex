@@ -1112,7 +1112,7 @@ defmodule Grappa.UserSettings do
     Map.update!(prefs, :muted_targets, fn muted ->
       # Every value is `%{"until" => nil | pos_integer}` by construction —
       # `sanitize_muted_read/1` dropped anything else — so this match is total.
-      Map.filter(muted, fn {_key, %{"until" => until}} -> is_nil(until) or until > now end)
+      Map.filter(muted, fn {_, %{"until" => until}} -> is_nil(until) or until > now end)
     end)
   end
 
@@ -1242,7 +1242,7 @@ defmodule Grappa.UserSettings do
   defp resolve_muted(:unchanged, subject),
     do: Map.fetch!(get_notification_prefs(subject), :muted_targets)
 
-  defp resolve_muted(muted, _subject) when is_map(muted), do: muted
+  defp resolve_muted(muted, _) when is_map(muted), do: muted
 
   defp normalize_muted_targets(map, subject) when map_size(map) > @muted_targets_max_count do
     {:error,
@@ -1258,7 +1258,7 @@ defmodule Grappa.UserSettings do
   # the first error returns immediately. Two raw keys that fold to the same
   # target collapse onto one entry, last one wins — the same collision the
   # picker prevents client-side by deduping before it offers the option.
-  defp collect_muted([], acc, _subject), do: {:ok, acc}
+  defp collect_muted([], acc, _), do: {:ok, acc}
 
   defp collect_muted([{key, value} | rest], acc, subject) do
     with {:ok, folded} <- cast_muted_key(key, subject),
@@ -1290,7 +1290,7 @@ defmodule Grappa.UserSettings do
     end
   end
 
-  defp cast_muted_key(_key, subject),
+  defp cast_muted_key(_, subject),
     do: {:error, prefs_changeset_error("muted_targets keys must be strings", subject)}
 
   # Rebuilt into EXACTLY `%{"until" => v}` — a sibling key the writer invented
@@ -1312,7 +1312,7 @@ defmodule Grappa.UserSettings do
     end
   end
 
-  defp cast_muted_value(_value, subject),
+  defp cast_muted_value(_, subject),
     do: {:error, prefs_changeset_error("muted_targets values must be maps", subject)}
 
   defp ensure_at_least_one_trigger(prefs, subject) do
