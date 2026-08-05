@@ -29,10 +29,28 @@ describe("#96 — focus indicators are never silently removed", () => {
   // inputs do this: they swap the outline for an accent border).
   const REPLACEMENTS = ["box-shadow", "border-color"];
 
+  // Declaration-level, not a regex over the block: a `/outline:\s*(?!none)/`
+  // "does it also set a real outline?" guard backtracks its own `\s*` to zero
+  // and matches `outline: none` itself, which made the first cut of this test
+  // unfalsifiable — the mutation that re-suppressed a ring left it green.
+  // Last write wins, as the cascade does inside one block.
+  const outlineValue = (body: string): string | null => {
+    let value: string | null = null;
+    for (const decl of body.split(";")) {
+      const colon = decl.indexOf(":");
+      if (colon < 0) continue;
+      if (decl.slice(0, colon).trim() !== "outline") continue;
+      value = decl.slice(colon + 1).trim();
+    }
+    return value;
+  };
+
   it("no focus rule suppresses the outline without supplying an indicator", () => {
     const offenders = focusRules()
-      .filter(({ body }) => /outline:\s*(none|0)\s*;/.test(body))
-      .filter(({ body }) => !/outline:\s*(?!none|0)/.test(body))
+      .filter(({ body }) => {
+        const outline = outlineValue(body);
+        return outline === "none" || outline === "0";
+      })
       .filter(({ body }) => !REPLACEMENTS.some((decl) => body.includes(decl)))
       .map(({ selectors }) => selectors);
 
@@ -56,7 +74,7 @@ describe("#96 — focus indicators are never silently removed", () => {
   it.each(RINGED)("%s declares a visible outline", (selector) => {
     const owning = focusRules().filter(({ selectors }) => selectors.includes(selector));
     expect(owning.length).toBeGreaterThan(0);
-    const withRing = owning.filter(({ body }) => /outline:\s*\d/.test(body));
+    const withRing = owning.filter(({ body }) => /^\d/.test(outlineValue(body) ?? ""));
     expect(withRing.length).toBeGreaterThan(0);
   });
 });
