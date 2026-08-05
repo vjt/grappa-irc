@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { channelKey } from "../lib/channelKey";
 import { LIST_WINDOW_NAME } from "../lib/windowKinds";
+import { BLANK_BODY_ERROR, serverAcceptsBody } from "./serverBodyPredicate";
 
 vi.mock("../lib/api", () => {
   class ApiError extends Error {
@@ -380,6 +381,53 @@ describe("compose submit — slash command dispatch", () => {
     // History records the WHOLE original paste (one recall entry), not per-line.
     compose.recallPrev(k);
     expect(compose.getDraft(k)).toBe("one\ntwo\nthree");
+  });
+
+  // #863 — a whitespace-only line must never abort the REST of a paste.
+  //
+  // This is the constraint that holds whichever way the fix goes, so it is the
+  // one worth pinning before the direction is chosen. If cic starts dropping
+  // whitespace-only lines, the line never reaches the door and the others go
+  // out. If the server starts accepting them, the line is delivered and the
+  // others go out. Only today's disagreement — cic sends it, the server calls
+  // it blank — stops the paste dead and mirrors the remainder back into the
+  // draft, which is what two users reported as a "scrambled" paste.
+  //
+  // The door here rejects exactly what the real server rejects
+  // (`serverBodyPredicate.ts`, which carries the derivation), with the real
+  // 422 envelope: `friendlyApiError` turns it into `Please fix: body: can't be
+  // blank.` — the string in the report.
+  //
+  // Deliberately NOT asserted: whether " " itself is sent. That is the product
+  // decision (#863's open question) and this test must survive either answer,
+  // so it asserts only that the CONTENT lines all got out and the composer was
+  // left empty.
+  it("#863 — a whitespace-only line does not abort the rest of the paste", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    const api = await import("../lib/api");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+
+    vi.mocked(sb.sendMessage).mockImplementation(async (_slug, _target, body) => {
+      if (!serverAcceptsBody(body)) {
+        throw new api.ApiError(
+          BLANK_BODY_ERROR.status,
+          BLANK_BODY_ERROR.code,
+          BLANK_BODY_ERROR.info,
+        );
+      }
+      return undefined as never;
+    });
+
+    // A code paste with an indented blank line in the middle — the reported shape.
+    compose.setDraft(k, "def f():\n \n    return 1");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    const sent = vi.mocked(sb.sendMessage).mock.calls.map((c) => c[2]);
+    expect(sent.filter((line) => line.trim() !== "")).toEqual(["def f():", "    return 1"]);
+    expect(compose.getDraft(k)).toBe("");
+    expect(result).toEqual({ ok: true });
   });
 
   // #666 — the CORE bug. A fatal mid-paste error must leave ONLY the unsent
