@@ -726,16 +726,19 @@ export async function composeSend(
 //   * channel window → TopicBar hamburger (aria-label "open members sidebar")
 //   * non-channel window (home/server/mentions/admin) → ShellChrome rail
 //     opener (☰, testid `shell-chrome-rail-opener`)
-// Exactly one of the two is rendered per window, so probe for the TopicBar
-// hamburger first and fall back to the rail opener. `.click()` (DevTools
+// Exactly one of the two is rendered per window — the split is on window KIND
+// alone (#881 removed the extra `windowIsJoined` gate that used to hide the
+// hamburger, and with it every rail door, on a `:failed`/`:kicked`/`:parked`
+// channel) — so probe for the TopicBar hamburger first and fall back to the
+// rail opener. `.click()` (DevTools
 // synthetic) over `.tap()` for the same WebKit synthesis-race reason as
 // closeMembersDrawer below.
 export async function openMembersDrawer(page: Page): Promise<void> {
   const drawer = page.locator(".shell-members.open");
   // #653/#519 — re-resolve per attempt instead of a single probe-then-click.
   // The opener that renders depends on the focused window kind (channel →
-  // TopicBar hamburger `<Show when={windowIsJoined}>`; non-channel → rail
-  // opener), and under full-gate load a settling selection redirect (e.g. the
+  // TopicBar hamburger; non-channel → rail opener), and under full-gate load a
+  // settling selection redirect (e.g. the
   // post-PART close-watcher moving focus) can swap the focused window — and
   // re-render the topic bar — BETWEEN the count probe and the click. The
   // hamburger then detaches mid-click; Playwright's built-in detach-retry
