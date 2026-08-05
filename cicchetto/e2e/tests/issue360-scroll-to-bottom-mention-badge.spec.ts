@@ -99,6 +99,45 @@ async function scrollToTop(page: Page): Promise<void> {
   });
 }
 
+// #903 — the pane's RESTING geometry, then the button. The button renders
+// under `<Show when={!atBottomNow()}>` and `atBottomNow` is DERIVED from
+// `scrollHeight - scrollTop - clientHeight` read in onScroll, so "the button is
+// there" is really a claim about where the pane came to rest. Checking the
+// premise separately makes a red name which half broke: the distance assertion
+// failing means the pane genuinely landed within the threshold (the buffer's
+// margin below the jump target is too thin — a fixture problem), while it
+// passing with the button still absent means the signal disagrees with the
+// settled geometry (a product problem — onScroll clears `atBottomNow` only when
+// scrollTop DECREASES, so a true reading taken mid-jump is never revised on the
+// way down). A bare "element(s) not found" distinguishes neither.
+//
+// The idle wait is a CONDITION, not a delay: two consecutive reads with an
+// identical scrollTop mean the smooth jump has stopped moving. It cannot be
+// spelled `expect.poll(distance).toBeGreaterThan(...)` — that succeeds on the
+// FIRST satisfying read, which during a downward jump is the first one taken,
+// constraining nothing about the resting position it is supposed to pin.
+async function expectSettledNotAtBottom(page: Page): Promise<void> {
+  let prev: number | null = null;
+  await expect
+    .poll(
+      async () => {
+        const top = await page.evaluate(() => {
+          const el = document.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+          return el === null ? null : Math.round(el.scrollTop);
+        });
+        const settled = top !== null && top === prev;
+        prev = top;
+        return settled;
+      },
+      { timeout: 10_000 },
+    )
+    .toBe(true);
+  expect(
+    (await distFromBottom(page)) ?? 0,
+    "the pane must come to rest above the at-bottom threshold, or the button is right to be gone",
+  ).toBeGreaterThan(SCROLL_BOTTOM_THRESHOLD_PX);
+}
+
 // True when the scrollback line whose body contains `needle` is fully within
 // the scroll container's visible box (the jump target landed in view). Read
 // against the CONTAINER rect (not the browser viewport) so an off-fold line
@@ -218,9 +257,7 @@ test.describe("#360 — mention-aware scroll-to-bottom badge", () => {
 
       // Precondition: scrolled up, the floating button shows, and the badge
       // counts BOTH mentions below the fold.
-      await expect
-        .poll(async () => (await distFromBottom(page)) ?? 0, { timeout: 5_000 })
-        .toBeGreaterThan(SCROLL_BOTTOM_THRESHOLD_PX);
+      await expectSettledNotAtBottom(page);
       await expect(page.locator(SCROLL_TO_BOTTOM)).toBeVisible({ timeout: 5_000 });
       await expect(page.locator(BADGE)).toHaveText("2", { timeout: 10_000 });
 
@@ -232,6 +269,7 @@ test.describe("#360 — mention-aware scroll-to-bottom badge", () => {
         .toBe(true);
       await expect(page.locator(BADGE)).toHaveText("1", { timeout: 10_000 });
       // Still not at bottom → the button stays up for the next jump.
+      await expectSettledNotAtBottom(page);
       await expect(page.locator(SCROLL_TO_BOTTOM)).toBeVisible();
 
       // Tap 2 → jump to MENTION_2; no mentions remain below → badge gone.
@@ -241,7 +279,10 @@ test.describe("#360 — mention-aware scroll-to-bottom badge", () => {
         .toBe(true);
       await expect(page.locator(BADGE)).toHaveCount(0, { timeout: 10_000 });
       // Trailing content is still below → the button remains (now a plain
-      // snap-to-bottom affordance).
+      // snap-to-bottom affordance). The thinnest margin in the spec: the jump
+      // anchors on the message AFTER the mention (#360 iOS, b208eebd), so only
+      // TRAILING-1 fillers separate the resting centre from the tail.
+      await expectSettledNotAtBottom(page);
       await expect(page.locator(SCROLL_TO_BOTTOM)).toBeVisible();
 
       // Tap 3 (empty badge) → classic snap-to-bottom: newest line, button hides.
