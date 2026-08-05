@@ -434,7 +434,7 @@ defmodule Grappa.Session.EventRouterPropertyTest do
 
       assert {:cont, new_state, effects} = EventRouter.route(m, state)
 
-      for {_chan, entry} <- new_state.channel_modes do
+      for {_, entry} <- new_state.channel_modes do
         assert mode_letters?(entry), "malformed cached entry from token #{inspect(mode_str)}"
       end
 
@@ -458,7 +458,7 @@ defmodule Grappa.Session.EventRouterPropertyTest do
 
       assert {:cont, new_state, effects} = EventRouter.route(m, min_state())
 
-      for {_chan, entry} <- new_state.channel_modes do
+      for {_, entry} <- new_state.channel_modes do
         assert mode_letters?(entry), "malformed cached snapshot from token #{inspect(mode_str)}"
       end
 
