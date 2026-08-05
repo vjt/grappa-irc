@@ -29354,11 +29354,31 @@ derived from the card.
 
 **The oracle has to be a real engine.** Reading the rule tells you it exists;
 it never tells you the rendered width, and jsdom has no layout at all, so the
-unit suite is structurally blind to both the defect and the fix. The guard
-therefore lives in `issue606-query-rail-whois.spec.ts`, which already stands up
-a real query window with a real upstream WHOIS: it reads each `<dd>`'s box and
-counts its line boxes (a Range's client rects are one per line), asserting the
-rail values span the whole card and wrap no tighter than roughly one short word
-per line — and, on the overlay card in the same page, that a label column is
-still there. A scoped override needs a test on BOTH sides of the scope, or the
-leak is the thing nobody notices.
+unit suite is structurally blind to both the defect and the fix. The guard is a
+shared e2e helper (`fixtures/railFieldGeometry.ts`) called from the two specs
+that already stand up the two rail cards: every `<dt>` and `<dd>` must span the
+whole card and wrap no tighter than roughly one short word per line, and the
+overlay card in the same page must still HAVE a label column. A scoped override
+needs a test on BOTH sides of the scope, or the leak is the thing nobody
+notices.
+
+**The rule is "no two columns in the rail", not "the WHOIS card".** A sweep of
+every `<dl>` in the client found four, of which exactly two mount in the rail —
+both from `RailContext`, both shipped `max-content 1fr`: WhoisCard on a query,
+ServerInfoCard on a server window. `.lusers-card-fields` and
+`.whowas-card-fields` are scrollback-overlay only and keep their columns. The
+list of surfaces someone happened to notice is a sample; the grep for the
+mechanism is the coverage.
+
+**A measurement can be wrong in the direction that looks like a bug.** The
+first CI run went red on `channels`: a five-character value (`#bofh`) reported
+as two line boxes in a 156px card — arithmetically impossible, and therefore
+about the counter rather than the layout. A `Range` over a `<dd>` returns the
+border box of a fully-contained element AND the text inside it, so the one
+`display: inline-block` channel span yielded two rects of identical width
+(t=329.72 h=16.66 w=35.69, the border box at the 1.4 line-height; t=330.72
+h=14.00 w=35.69, the text at the font box) one pixel of half-leading apart.
+Counting over text nodes only fixes it without touching the threshold. The
+tell was that the number was impossible, not that the test was inconvenient —
+and the same run's width assertion, which passed, is what ruled out "the
+override never reached that row" before a single line was changed.
