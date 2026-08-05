@@ -3542,29 +3542,48 @@ static bool call_ring_parse(const char *word, enum call_ring_policy *out) {
  * kind of bug that gets believed.
  *
  * All or nothing: a line that does not parse cleanly leaves the caller
- * with the grid it already had rather than a half-updated one. Returns
- * the tile count, or 0. */
+ * with the grid it already had rather than a half-updated one.
+ *
+ * THREE outcomes, not two, because "refused" and "nobody is sending a
+ * picture" are opposite instructions to the caller and both used to
+ * come back as 0:
+ *
+ *   < 0  refused — keep the grid you have, this line means nothing
+ *   = 0  a grid with no cells: everybody's camera is off. The helper
+ *        says this with an empty value when it stops the decoder, and
+ *        it is a real update — the caller CLEARS
+ *   > 0  the tile count, and only then are *frame_w / *frame_h written
+ *
+ * Collapsing those two into 0 is what let a malformed line blank the
+ * picture: the caller could not tell "there is nothing to draw" from
+ * "I could not read this". */
 static int call_tiles_parse(const char *value, int *frame_w, int *frame_h, struct call_tile *out,
                             int max) {
-    if (!value || !frame_w || !frame_h || !out || max <= 0) return 0;
+    if (!value || !frame_w || !frame_h || !out || max <= 0) return -1;
+    /* An empty value is how the helper reports that it stopped the
+     * decoder because nobody is publishing (call/main.c video_retile).
+     * Not a truncation — an instruction. */
+    if (!value[0]) return 0;
     int fw = 0, fh = 0, used = 0;
-    if (sscanf(value, "%dx%d%n", &fw, &fh, &used) != 2 || fw <= 0 || fh <= 0) return 0;
+    if (sscanf(value, "%dx%d%n", &fw, &fh, &used) != 2 || fw <= 0 || fh <= 0) return -1;
     const char *p = value + used;
+    /* The same empty grid, spelled with the frame it would have had. */
+    if (strcmp(p, ";") == 0) return 0;
     int n = 0;
     while (*p == ';' && n < max) {
         struct call_tile t;
         int adv = 0;
-        if (sscanf(p, ";%d,%d,%d,%d,%d%n", &t.slot, &t.x, &t.y, &t.w, &t.h, &adv) != 5) return 0;
+        if (sscanf(p, ";%d,%d,%d,%d,%d%n", &t.slot, &t.x, &t.y, &t.w, &t.h, &adv) != 5) return -1;
         /* A cell outside the frame it claims to be part of would sample
          * somebody else's pixels, or none. Refuse the whole line. */
-        if (t.slot < 0 || t.slot >= CALL_MAX_PEERS) return 0;
+        if (t.slot < 0 || t.slot >= CALL_MAX_PEERS) return -1;
         if (t.w <= 0 || t.h <= 0 || t.x < 0 || t.y < 0 || t.x + t.w > fw || t.y + t.h > fh)
-            return 0;
+            return -1;
         out[n++] = t;
         p += adv;
     }
-    if (*p) return 0; /* trailing junk: the line was not what we think */
-    if (n == 0) return 0;
+    if (*p) return -1; /* trailing junk: the line was not what we think */
+    if (n == 0) return -1; /* a frame size and nothing after it: truncated */
     *frame_w = fw;
     *frame_h = fh;
     return n;
@@ -14650,6 +14669,63 @@ static void *call_frame_main(void *arg) {
     return NULL;
 }
 
+/* One line of the helper's event stream, applied.
+ *
+ * Split out of the reader thread so the thing that DECIDES — which
+ * grid is adopted, which one is refused — can be driven from a test
+ * with the helper's real output. A thread reading a pipe cannot be
+ * asserted about; this can. */
+static void call_event_apply(struct app *app, const char *line) {
+    if (!line[0] || line[0] == '#') return; /* a --verbose note */
+    char event[64] = "", value[512] = "";
+    json_top_string(line, strlen(line), "event", event, sizeof(event));
+    if (!json_top_string(line, strlen(line), "value", value, sizeof(value)))
+        json_top_string(line, strlen(line), "message", value, sizeof(value));
+    if (strcmp(event, "error") == 0) log_line(app, "call: %s", value);
+    else if (strcmp(event, "state") == 0) log_line(app, "call: %s", value);
+    else if (strcmp(event, "media") == 0) log_line(app, "call: carrying %s", value);
+    else if (strcmp(event, "closed") == 0) log_line(app, "call: ended");
+    else if (strcmp(event, "tiles") == 0) {
+        /* The grid changed: somebody started or stopped sending a
+         * picture. Adopted wholesale or not at all — a half-applied
+         * grid draws faces under the wrong names.
+         *
+         * Zeroed at declaration, not merely filled by the parser: the
+         * whole array is copied below, so the cells PAST the tile count
+         * are copied too, and on a refusal the parser writes none of
+         * them. Every reader gates on `tile_count` today, which makes
+         * uninitialised stack in there harmless by coincidence rather
+         * than by design. */
+        struct call_tile tiles[CALL_MAX_PEERS] = {0};
+        int fw = 0, fh = 0;
+        int n = call_tiles_parse(value, &fw, &fh, tiles, CALL_MAX_PEERS);
+        /* REFUSED. The contract is the caller keeps what it had, and
+         * blanking the grid is not keeping it — a truncated pipe write
+         * mid-call would black out a working picture. Said out loud
+         * because a grid that silently stops following the call is the
+         * kind of thing nobody reports: they just say the video broke. */
+        if (n < 0) {
+            log_line(app, "call: refused a malformed tile grid — keeping the last one");
+            return;
+        }
+        pthread_mutex_lock(&app->lock);
+        memcpy(app->call_live.tiles, tiles, sizeof(tiles));
+        app->call_live.tile_count = n;
+        app->call_live.frame_w = fw;
+        app->call_live.frame_h = fh;
+        /* Keep looking at the same PERSON across a re-grid where we
+         * can: the cell they occupy moves when the set changes, and
+         * following the index instead would silently swap who you
+         * were watching. */
+        int keep = 0;
+        for (int i = 0; i < n; i++)
+            if (tiles[i].slot == app->call_live.focus_slot) keep = i;
+        app->call_live.focus = keep;
+        app->call_live.focus_slot = n > 0 ? tiles[keep].slot : -1;
+        pthread_mutex_unlock(&app->lock);
+    }
+}
+
 /* Drain the helper's event stream into the window it belongs to.
  *
  * The helper reports state and failures as JSON lines on stderr; without
@@ -14663,38 +14739,7 @@ static void *call_reader_main(void *arg) {
     char line[1024];
     while (fgets(line, sizeof(line), f)) {
         line[strcspn(line, "\r\n")] = 0;
-        if (!line[0] || line[0] == '#') continue; /* a --verbose note */
-        char event[64] = "", value[512] = "";
-        json_top_string(line, strlen(line), "event", event, sizeof(event));
-        if (!json_top_string(line, strlen(line), "value", value, sizeof(value)))
-            json_top_string(line, strlen(line), "message", value, sizeof(value));
-        if (strcmp(event, "error") == 0) log_line(app, "call: %s", value);
-        else if (strcmp(event, "state") == 0) log_line(app, "call: %s", value);
-        else if (strcmp(event, "media") == 0) log_line(app, "call: carrying %s", value);
-        else if (strcmp(event, "closed") == 0) log_line(app, "call: ended");
-        else if (strcmp(event, "tiles") == 0) {
-            /* The grid changed: somebody started or stopped sending a
-             * picture. Adopted wholesale or not at all — a half-applied
-             * grid draws faces under the wrong names. */
-            struct call_tile tiles[CALL_MAX_PEERS];
-            int fw = 0, fh = 0;
-            int n = call_tiles_parse(value, &fw, &fh, tiles, CALL_MAX_PEERS);
-            pthread_mutex_lock(&app->lock);
-            memcpy(app->call_live.tiles, tiles, sizeof(tiles));
-            app->call_live.tile_count = n;
-            app->call_live.frame_w = fw;
-            app->call_live.frame_h = fh;
-            /* Keep looking at the same PERSON across a re-grid where we
-             * can: the cell they occupy moves when the set changes, and
-             * following the index instead would silently swap who you
-             * were watching. */
-            int keep = 0;
-            for (int i = 0; i < n; i++)
-                if (tiles[i].slot == app->call_live.focus_slot) keep = i;
-            app->call_live.focus = keep;
-            app->call_live.focus_slot = n > 0 ? tiles[keep].slot : -1;
-            pthread_mutex_unlock(&app->lock);
-        }
+        call_event_apply(app, line);
     }
     fclose(f); /* owns err_fd */
     pthread_mutex_lock(&app->lock);

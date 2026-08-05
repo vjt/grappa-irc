@@ -2168,34 +2168,128 @@ TEST(the_call_tile_map_is_parsed_or_rejected_whole) {
     /* ALL OR NOTHING. A cell that does not fit the frame it claims to
      * belong to would sample somebody else's pixels, so the whole line
      * is refused and the caller keeps the grid it already had — better
-     * a stale picture than a mislabelled one. */
-    CHECK(call_tiles_parse("160x120;0,0,0,80,60;1,100,0,80,60", &fw, &fh, t, CALL_MAX_PEERS) == 0);
-    CHECK(call_tiles_parse("160x120;0,0,0,80,200", &fw, &fh, t, CALL_MAX_PEERS) == 0);
-    CHECK(call_tiles_parse("160x120;0,-1,0,80,60", &fw, &fh, t, CALL_MAX_PEERS) == 0);
-    CHECK(call_tiles_parse("160x120;0,0,0,0,60", &fw, &fh, t, CALL_MAX_PEERS) == 0);
+     * a stale picture than a mislabelled one.
+     *
+     * A refusal is NEGATIVE, not zero. Zero is a real grid with nobody
+     * in it, and the caller must be able to tell the two apart: one
+     * says keep drawing what you had, the other says stop. */
+    CHECK(call_tiles_parse("160x120;0,0,0,80,60;1,100,0,80,60", &fw, &fh, t, CALL_MAX_PEERS) < 0);
+    CHECK(call_tiles_parse("160x120;0,0,0,80,200", &fw, &fh, t, CALL_MAX_PEERS) < 0);
+    CHECK(call_tiles_parse("160x120;0,-1,0,80,60", &fw, &fh, t, CALL_MAX_PEERS) < 0);
+    CHECK(call_tiles_parse("160x120;0,0,0,0,60", &fw, &fh, t, CALL_MAX_PEERS) < 0);
     /* A slot outside the cap would index the nick table past its end. */
-    CHECK(call_tiles_parse("160x120;99,0,0,80,60", &fw, &fh, t, CALL_MAX_PEERS) == 0);
-    CHECK(call_tiles_parse("160x120;-1,0,0,80,60", &fw, &fh, t, CALL_MAX_PEERS) == 0);
+    CHECK(call_tiles_parse("160x120;99,0,0,80,60", &fw, &fh, t, CALL_MAX_PEERS) < 0);
+    CHECK(call_tiles_parse("160x120;-1,0,0,80,60", &fw, &fh, t, CALL_MAX_PEERS) < 0);
 
-    /* Malformed in the ways a truncated or reordered line actually is. */
-    CHECK(call_tiles_parse("", &fw, &fh, t, CALL_MAX_PEERS) == 0);
-    CHECK(call_tiles_parse("160x120", &fw, &fh, t, CALL_MAX_PEERS) == 0);
-    CHECK(call_tiles_parse("160x120;0,0,0,80", &fw, &fh, t, CALL_MAX_PEERS) == 0);
-    CHECK(call_tiles_parse("160x120;0,0,0,80,60;junk", &fw, &fh, t, CALL_MAX_PEERS) == 0);
-    CHECK(call_tiles_parse("160x120;0,0,0,80,60trailing", &fw, &fh, t, CALL_MAX_PEERS) == 0);
-    CHECK(call_tiles_parse("0x0;0,0,0,80,60", &fw, &fh, t, CALL_MAX_PEERS) == 0);
-    CHECK(call_tiles_parse(NULL, &fw, &fh, t, CALL_MAX_PEERS) == 0);
-    CHECK(call_tiles_parse("160x120;0,0,0,80,60", &fw, &fh, NULL, CALL_MAX_PEERS) == 0);
+    /* Malformed in the ways a truncated or reordered line actually is.
+     * A frame size with nothing after it is a line cut mid-write, not
+     * an empty grid — the helper spells THAT differently, below. */
+    CHECK(call_tiles_parse("160x120", &fw, &fh, t, CALL_MAX_PEERS) < 0);
+    CHECK(call_tiles_parse("160x120;0,0,0,80", &fw, &fh, t, CALL_MAX_PEERS) < 0);
+    CHECK(call_tiles_parse("160x120;0,0,0,80,60;junk", &fw, &fh, t, CALL_MAX_PEERS) < 0);
+    CHECK(call_tiles_parse("160x120;0,0,0,80,60trailing", &fw, &fh, t, CALL_MAX_PEERS) < 0);
+    CHECK(call_tiles_parse("0x0;0,0,0,80,60", &fw, &fh, t, CALL_MAX_PEERS) < 0);
+    CHECK(call_tiles_parse(NULL, &fw, &fh, t, CALL_MAX_PEERS) < 0);
+    CHECK(call_tiles_parse("160x120;0,0,0,80,60", &fw, &fh, NULL, CALL_MAX_PEERS) < 0);
 
     /* An empty grid — everybody turned their camera off — is reported
-     * as none rather than as a parse failure the caller would ignore. */
+     * as none rather than as a parse failure the caller would ignore.
+     * The empty VALUE is the spelling the helper actually emits when it
+     * stops the decoder (call/main.c video_retile); the frame-size-then
+     * -separator form is the same statement with the size still on it. */
+    CHECK(call_tiles_parse("", &fw, &fh, t, CALL_MAX_PEERS) == 0);
     CHECK(call_tiles_parse("160x120;", &fw, &fh, t, CALL_MAX_PEERS) == 0);
 
     /* The frame size is only adopted when the line as a whole was
      * good: a rejected line must not leave half of it applied. */
     fw = fh = 0;
-    CHECK(call_tiles_parse("640x480;0,0,0,999,999", &fw, &fh, t, CALL_MAX_PEERS) == 0);
+    CHECK(call_tiles_parse("640x480;0,0,0,999,999", &fw, &fh, t, CALL_MAX_PEERS) < 0);
     CHECK(fw == 0 && fh == 0);
+}
+
+/* Leave the stack where the tile array is about to live full of
+ * non-zero bytes.
+ *
+ * Only a test needs this: it is the difference between "the array
+ * happened to be zero" and "the array was zeroed". Without it the
+ * uninitialised-tiles check below passes on whatever the previous call
+ * left behind, which on a quiet stack is often zeros — a green that
+ * proves nothing. Sized past the tile array and marked noinline so the
+ * frame is really written and really reused. */
+__attribute__((noinline)) static void dirty_the_stack(void) {
+    volatile unsigned char scratch[sizeof(struct call_tile) * CALL_MAX_PEERS * 4];
+    for (size_t i = 0; i < sizeof(scratch); i++) scratch[i] = 0xAA;
+}
+
+/* The grid the helper publishes is applied WHOLE, or not at all — and
+ * "not at all" means the previous one stays up.
+ *
+ * The parser was written all-or-nothing and says so twice; its only
+ * caller adopted the refusal anyway, so one malformed line — a
+ * truncated pipe write, a re-grid racing a peer leaving — blanked the
+ * video grid mid-call and left it blank until the next good line. The
+ * caller is where the contract is kept or broken, so the caller is what
+ * this drives, through the same JSON the helper writes. */
+TEST(a_refused_grid_leaves_the_last_one_up) {
+    struct app *app = window_app();
+    CHECK(app != NULL);
+    app->call_live.focus_slot = -1;
+
+    /* Two people on camera. */
+    call_event_apply(app, "{\"event\":\"tiles\",\"value\":\"160x120;0,0,0,80,60;2,80,0,80,60\"}");
+    CHECK_LONG(app->call_live.tile_count, 2);
+    CHECK_LONG(app->call_live.frame_w, 160);
+    CHECK_LONG(app->call_live.tiles[1].slot, 2);
+    /* Nobody was being watched, so the first cell takes the focus. */
+    CHECK_LONG(app->call_live.focus_slot, 0);
+
+    /* A cell that does not fit the frame it claims to belong to. The
+     * whole line is refused — and refused means the picture that was
+     * being drawn a moment ago is still being drawn. */
+    size_t before = app->log_count;
+    call_event_apply(app, "{\"event\":\"tiles\",\"value\":\"160x120;0,0,0,80,60;1,100,0,80,60\"}");
+    CHECK_LONG(app->call_live.tile_count, 2);
+    CHECK_LONG(app->call_live.frame_w, 160);
+    CHECK_LONG(app->call_live.frame_h, 120);
+    CHECK_LONG(app->call_live.tiles[1].slot, 2);
+    CHECK_LONG(app->call_live.focus_slot, 0);
+    /* And it is SAID. A grid that quietly stops following the call is
+     * reported as "the video broke", which is unactionable. */
+    CHECK_LONG(app->log_count, before + 1);
+    CHECK(log_has(app, "refused a malformed tile grid"));
+
+    /* Truncated mid-write — the other shape a bad line arrives in. */
+    call_event_apply(app, "{\"event\":\"tiles\",\"value\":\"160x120;0,0,0,80\"}");
+    CHECK_LONG(app->call_live.tile_count, 2);
+    CHECK_LONG(app->call_live.tiles[1].slot, 2);
+
+    /* NOT a refusal: the helper stops the decoder and publishes an
+     * empty value when nobody is sending a picture. That one is an
+     * instruction and the grid really does go away — a guard that
+     * merely kept every zero-tile result would leave two faces labelled
+     * on a frame stream that has stopped. */
+    before = app->log_count;
+    call_event_apply(app, "{\"event\":\"tiles\",\"value\":\"\"}");
+    CHECK_LONG(app->call_live.tile_count, 0);
+    CHECK_LONG(app->call_live.focus_slot, -1);
+    CHECK_LONG(app->log_count, before);
+
+    /* Nothing beyond the tile count is carried in from the stack. Every
+     * reader gates on the count today, so this is not a live bug — it
+     * is uninitialised memory crossing into shared state under a mutex,
+     * which stops being harmless the first time a reader forgets. */
+    dirty_the_stack();
+    call_event_apply(app, "{\"event\":\"tiles\",\"value\":\"160x120;3,0,0,80,60\"}");
+    CHECK_LONG(app->call_live.tile_count, 1);
+    for (int i = 1; i < CALL_MAX_PEERS; i++) {
+        CHECK_LONG(app->call_live.tiles[i].slot, 0);
+        CHECK_LONG(app->call_live.tiles[i].x, 0);
+        CHECK_LONG(app->call_live.tiles[i].y, 0);
+        CHECK_LONG(app->call_live.tiles[i].w, 0);
+        CHECK_LONG(app->call_live.tiles[i].h, 0);
+    }
+
+    free_app(app);
 }
 
 /* A client-local window is never asked about over REST.
@@ -4114,6 +4208,7 @@ int main(void) {
     RUN(notifications_parse_refuse_and_persist);
     RUN(a_configured_setting_survives_save_and_load);
     RUN(the_call_tile_map_is_parsed_or_rejected_whole);
+    RUN(a_refused_grid_leaves_the_last_one_up);
     RUN(a_client_local_window_is_never_fetched_from_the_server);
     RUN(a_conversation_is_remembered_and_rolls_to_fit);
     RUN(the_context_budget_leaves_room_for_the_fixed_parts);
