@@ -682,6 +682,45 @@ defmodule Grappa.Accounts do
     end
   end
 
+  @doc """
+  Spends one post-password second factor: the TOTP code when TOTP is armed,
+  a recovery code otherwise.
+
+  The recovery set is ONE account-level credential shared by every factor,
+  so the door that spends it cannot be owned by TOTP. `TOTP.verify/3` speaks
+  for the account only while `totp_enabled_at` is set and otherwise refuses
+  the whole exchange — which stranded an account in passkey `second_factor`
+  with TOTP disarmed, holding codes no door would read (#766). Its
+  not-enabled answer is the branch condition here rather than a
+  `TOTP.enabled?/1` pre-check: one read decides, so a disarm racing the
+  redemption cannot land between the question and the answer.
+
+  The oracle stays as opaque as `TOTP.verify/3`'s own: a wrong recovery code
+  is `:invalid_two_factor`, indistinguishable from a wrong TOTP code.
+  """
+  @spec verify_second_factor(User.t(), String.t(), integer()) ::
+          {:ok, :totp | :recovery}
+          | {:error, :invalid_two_factor | :two_factor_replayed | :db_unavailable}
+  def verify_second_factor(%User{} = user, code, unix_seconds)
+      when is_binary(code) and is_integer(unix_seconds) do
+    case TOTP.verify(user, code, unix_seconds) do
+      {:error, :two_factor_not_enabled} -> spend_recovery_code(user, code)
+      result -> result
+    end
+  end
+
+  defp spend_recovery_code(user, code) do
+    case consume_recovery_code(user, code) do
+      :ok -> {:ok, :recovery}
+      {:error, :invalid_recovery_code} -> {:error, :invalid_two_factor}
+      {:error, :db_unavailable} = error -> error
+    end
+  end
+
+  @doc "Whether the account still holds an unspent recovery code."
+  @spec recovery_codes_armed?(User.t()) :: boolean()
+  def recovery_codes_armed?(%User{id: user_id}), do: RecoveryCodes.armed?(user_id)
+
   @doc "Generates an unarmed recovery set for passwordless activation."
   @spec prepare_recovery_codes() :: [String.t()]
   def prepare_recovery_codes, do: RecoveryCodes.generate()
