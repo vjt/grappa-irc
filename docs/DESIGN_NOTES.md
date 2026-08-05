@@ -29034,3 +29034,81 @@ after `COMMIT` but before the transaction returns. The latter is #768's
 `run_mode_transaction/4`, not this write — and it is safe for a different
 reason: replaying that transaction re-applies the same mode, the same recovery
 set and the same revocations, so unlike a CAS it is idempotent.
+## 2026-08-05 — #759: teardown is an order, and a trylock is not a lifetime barrier
+
+`shottino-call`'s hangup released the media legs before it stopped the threads
+that write them. `media_stop` closed each leg's socket while the peer
+connections were still alive two lines below, so RTP arriving mid-hangup ran on
+libdatachannel's thread against a leg being dismantled — `media_feed` tests
+`fd < 0` and then `sendto`s it as two steps, `media_stop` closes and blanks the
+fd as two more, and `session_release` opens a socket for its DELETE right
+after, so the descriptor number comes straight back and the write lands
+somewhere unrelated.
+
+**The `vlock` reads like the protection against this and is not.** The RTP
+callbacks take it with TRYLOCK on purpose: it is BACKPRESSURE, meaning "a
+re-tile is forking ffmpeg, drop this datagram rather than park a media thread".
+Teardown never took it, so the trylock always succeeded exactly when it
+mattered. A lock whose fast path is allowed to skip it cannot be a lifetime
+primitive, whatever the call sites look like.
+
+**Ordering over locking.** Both fixes were on the table. Wrapping the media
+block in `vlock` shuts the window; releasing the sessions and calling
+`rtcCleanup()` FIRST deletes it. The second is preferred because it removes the
+concurrency rather than synchronising it — no future callback has to remember
+the lock, and there is no interval in which live peer connections point at legs
+that have already been freed. The invariant is now one sentence: stop
+everything that can touch a resource before releasing the resource. The pump
+thread is joined, the callback threads are gone with `rtcCleanup()`, and only
+then do the fds close. The cost accepted is that the decoders outlive the
+hangup DELETEs by however long the SFU takes to answer them — ffmpeg processes
+reading loopback sockets that have gone quiet, killed a moment later.
+
+**No honest test, said plainly.** The failure needs a live SFU, a peer sending
+RTP, and a hangup inside a window of a few instructions. The only unit test
+available would assert the ORDER of the calls, which mirrors the implementation
+instead of checking it. The two siblings fixed alongside it DID admit honest
+tests, and both were written failing first against the old logic transcribed
+verbatim.
+
+**Sibling 1 — measure, do not reserve.** The published tile grid accumulated
+`snprintf`'s return, which is the length it WOULD have written, under a loop
+guard reserving a flat 40 bytes per record against a worst case of 55. The
+guard can pass on a record that does not fit, and `shown[at] = 0` then writes
+past the buffer: unreachable at `CALL_TILE_MAX 3`, an out-of-bounds stack write
+the day the cap is raised. The guard is now the return value itself. The
+builder moved to `media.c` beside the other pure builder over the same tiles,
+which is what let the suite reach it without the libdatachannel link — the
+transcribed-verbatim version fails three checks and trips ASan on precisely
+that terminator. It is also now COMPLETE OR REFUSED, because the reader adopts
+a grid wholesale: one record short says three people are in the call when four
+are, and draws faces under the wrong names.
+
+**Sibling 2 — the comment prefix is per LINE, because the reader is.** `note()`
+wrote `"# "` once and handed the rest to `vfprintf`, so a multi-line note
+commented its first line and emitted the rest bare — while `call_reader_main`
+skips a line only when `line[0] == '#'` and parses every other non-empty line
+as a JSON event. A note carrying a whole SDP answer therefore hands the event
+stream one server-controlled line per line the SFU sent, and an answer line
+shaped like `{"event":"closed"}` is a remote peer driving shottino's call
+window. Latent only because `call_helper_start` never passes `--verbose`.
+
+**The output contract got an owner.** `emit`/`note`/`emit_event` moved to
+`call/note.c`, which links without libdatachannel and is therefore testable.
+Both ways this stream can break are byte-level and silent at runtime — a line
+that is neither comment nor JSON, and a value that escapes its own string — so
+both are now pinned. Worth recording separately: **no CI job compiles the call
+helper.** `make` builds `shottino`, `make check` builds the suites, and `make
+call` is opt-in behind cmake and the vendored submodule, so `call/main.c` is
+compiled by nobody in CI. That is how two `-Wformat-nonliteral` warnings sat in
+it unseen (the extraction gives the varargs helpers the format attribute the
+rest of the tree carries, and they are gone). It is also why the changes here
+were syntax-checked by hand against a stub `rtc/rtc.h`.
+
+**The class, swept.** shottino.c already applies this rule and says so:
+`call_helper_stop` joins the reader before closing the pipe it reads, closes
+the frame pipe only after the helper is gone "so a frame in flight cannot
+arrive to a freed buffer", and `main` ends with a long comment about the model
+thread that was neither stopped nor joined while shutdown freed the mutex and
+SSL context underneath it. The helper's own teardown was the one place that had
+drifted from the rule the rest of the tree follows.

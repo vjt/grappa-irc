@@ -191,7 +191,8 @@ usage: shottino-call [--whip <url>] [--whep <url>] [options]
 **stdout is reserved for the raw frame stream and nothing else writes
 there**; events are one JSON object per line on **stderr**, and
 `--verbose` notes are `#` comment lines a parser skips on the first
-character. `--protocol` exists so shottino can refuse a helper left
+character — **every** line of a note, not just its first, because the
+reader decides line by line and a note can carry a whole SDP body. `--protocol` exists so shottino can refuse a helper left
 behind by an older install rather than misbehaving with it.
 
 It does the full signalling round trip — gather ICE, build the offer,
