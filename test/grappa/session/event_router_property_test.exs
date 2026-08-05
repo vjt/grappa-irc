@@ -120,6 +120,13 @@ defmodule Grappa.Session.EventRouterPropertyTest do
         # LETTERS, keyed by the same letters, so the arm asserts the class —
         # the same production predicate the handlers validate with, so a
         # future ircd letter can never be green here and red there.
+        #
+        # This arm is NOT seed-dependent, measured: with the letter check
+        # removed from the producer it reddens on 20/20 seeds, 3–34 examples
+        # in. `:mode` is one command in twelve and EVERY target that is not
+        # the session's own nick routes to the channel branch, so the
+        # generator reached this effect on every run — meaning the old
+        # `is_list/1` was certifying garbage continuously, not occasionally.
         {:channel_modes_changed, channel, entry} ->
           assert is_binary(channel)
           assert is_map(entry)
@@ -395,13 +402,17 @@ defmodule Grappa.Session.EventRouterPropertyTest do
     end
   end
 
-  # #878 — the shape property above reaches a channel MODE / a 324 only when
-  # the seed draws one (one numeric in 999; a `:mode` whose first generated
-  # param happens to be channel-shaped), which is WHY the malformed
-  # `{:channel_modes_changed, "#chan", %{modes: [" ", "$", "!", "n"]}}` sat on
-  # main behind an `is_list/1` that could never see it. These two hit the
-  # channel-mode boundary on EVERY generated example, so the class is pinned
-  # by the test set rather than by the seed.
+  # #878 — what the shape property above does NOT reach on its own is the
+  # SNAPSHOT: numeric 324 is one draw in 999, so the arm covers the delta
+  # path continuously and the 324 path essentially never. These two hit both
+  # boundaries on EVERY generated example, so neither is pinned by the seed.
+  #
+  # Neither pins the EMPTY token, and the mutation says so out loud: with
+  # `valid_mode_token?("")` flipped back to `true` the whole property file is
+  # green on 5/5 seeds while two unit tests redden. An empty token parses to
+  # an empty letter set, which satisfies the class trivially — the wipe it
+  # causes is a STATE claim, not a shape claim, so it belongs to the unit
+  # tests by construction.
   defp mode_letters?(entry) do
     Enum.all?(entry.modes, &Identifier.valid_mode_letter?/1) and
       Enum.all?(Map.keys(entry.params), &Identifier.valid_mode_letter?/1)
