@@ -18,25 +18,32 @@
  * test_callmedia and test_callnote do; the stub's declarations are checked
  * against the real header by `make call-compile`.
  *
- * WHAT MAKES THE SANITIZERS ABLE TO FAIL, which is the point of linking at
- * all — a test that calls a function and asserts nothing gives ASan a look
- * inside, but it is not evidence, and a sanitizer job nobody has ever seen
- * go red is a line of YAML:
+ * WHAT MAKES THIS ABLE TO FAIL, which is the point of linking at all — a
+ * test that calls a function and asserts nothing gives ASan a look inside,
+ * but it is not evidence, and a sanitizer job nobody has ever seen go red
+ * is a line of YAML. Six defects were introduced one at a time to find
+ * out, and the mechanism that caught each one is not the one that would be
+ * guessed:
  *
- *   - `struct call` is HEAP-allocated here, never a stack local, so every
- *     one of the per-peer arrays (vlive, vpkts, amisses, legs…) carries
- *     redzones and a stray index is a heap-buffer-overflow at the access;
+ *   - the four arrays liveness_step is handed are SEPARATE allocations
+ *     here, exactly CALL_MAX_PEERS long. One index too far is an ASan
+ *     heap-buffer-overflow. The per-peer arrays INSIDE `struct call` are
+ *     not: an off-by-one there lands on the next member of the same
+ *     allocation, so no redzone is touched — what catches those is UBSan's
+ *     array-bounds on the declared type (`index 8 out of bounds for type
+ *     'bool[8]'`), which is a different check with a different reach;
  *   - the rtc stub COPIES the bytes handed to rtcSendMessage for the
- *     length it is told, so a pump that reports more than it has is a read
- *     past its own buffer;
- *   - the stub FREES a peer connection and its tracks on delete, so a
- *     teardown that releases in the wrong order is a use-after-free;
- *   - session_negotiate runs against a real socket with a real answer
- *     body, so the parse of that body happens while it is still allocated
- *     — and stops happening the moment it is not.
- *
- * Proven by mutation rather than asserted: the defects introduced to turn
- * this suite red are recorded in the commit that adds it.
+ *     length it is TOLD, so a pump that reports more than it read is an
+ *     ASan global-buffer-overflow — but only if a packet gets near the
+ *     buffer's edge, which is why one 2048-byte datagram is sent;
+ *   - the rest is ordinary assertions, and deliberately so. The stub
+ *     refuses to follow a peer-connection id it has already freed and
+ *     COUNTS the attempt instead: it has to report the helper's mistake,
+ *     not crash on it, so a release that forgets `s->pc = -1` fails a
+ *     check rather than raising a use-after-free. Likewise freeing the
+ *     WHIP answer before parsing it: whip_response_free NULLs the body, so
+ *     that reordering loses the negotiated codec and fails a check with no
+ *     sanitizer involved at all.
  */
 #define main call_main_unused
 #include "../call/main.c"
