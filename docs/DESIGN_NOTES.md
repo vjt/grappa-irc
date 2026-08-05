@@ -29275,3 +29275,52 @@ a PATH holding only the scratch directory) could not find `sleep` and died
 instantly, closing the write end and handing the parent a clean EOF by
 accident. A positive control that admits a corpse is not a control: it now
 sets its own PATH and asserts the child is RUNNING, not merely forked.
+
+## 2026-08-05 — #763: a guard that cannot fail loudly, and a suite that cannot fail at all
+
+Three defects with one shape: a test that reads its own environment, decides
+quietly that it cannot do its job, and reports exactly what a passing test
+reports.
+
+**The HOME guard was conditional, so its failure restored the incident it
+prevented.** `894c3ec8` stopped `test_windows` rewriting the developer's
+`~/.local/share/shottino/shottino.conf` with
+`if (mkdtemp(test_home)) setenv("HOME", test_home, 1);` — which, when mkdtemp
+fails, runs the whole suite against the real `$HOME` again with nothing
+reported. Measured both ways by pointing the template at a directory that does
+not exist: the old line runs 1302 checks, prints "1302 checks passed", exits
+0, and leaves a rewritten `shottino.conf` and `llm.conf` in the home it was
+given; the replacement prints the errno and exits 1 before the first test.
+
+**And it guarded one suite of six.** Every suite that `#include`s
+`../shottino.c` inherits that file's reach into `$HOME`: anything calling
+`shottino_state_dir()` mkdirs there. The finding called this latent. It is
+not — `test_layout` reaches it TODAY through
+`a_modal_over_the_settings_panel_is_drawn`, so `make check` has been creating
+`~/.local/share/shottino` on every developer machine and every CI runner, as a
+container run of `origin/main` confirms. The setup moved to `test.h` and all
+six suites call it.
+
+**The class needed a mechanical check, not a resolution.** The guard was added
+to `test_windows.c` after the incident and `test_call.c` was then written
+beside it with none: the class re-opened once already, unnoticed, before
+anyone filed it. `make check-home-guard` compares two sets — "includes
+shottino.c" and "calls `test_use_temp_home()`" — and names the suite that
+forgot. The seventh suite is the one this is for.
+
+**A skip is requested, never inferred.** `test_layout` returned 0 for the
+WHOLE suite where `/dev/null` or a terminfo entry was missing, and its decode
+test returns having asserted nothing wherever ffmpeg is absent — which is
+every CI run to date: the last green run on main prints `test_layout: no
+ffmpeg — skipping decode checks`, so the one test that asks the real decoder
+what it produced has never executed there. Both now fail, `SHOTTINO_TEST_ALLOW_SKIP=1`
+is the way to say a host genuinely cannot, and CI installs ffmpeg rather than
+setting it. The two tests that need no screen run before `newterm`, so the
+opt-out still checks what does not depend on a terminal.
+
+**The opt-out is read strictly, and the mutation is why.** `SHOTTINO_TEST_ALLOW_SKIP=`
+— set, empty — enabled the skip under the first implementation, which meant
+the run intended to exercise the failure path was exercising the opt-out
+instead. Only `"1"` skips now; unset, empty, `0` and `yes` are all red. A
+reading of an opt-out must err towards red, or it becomes the silent
+degradation it was written to remove.

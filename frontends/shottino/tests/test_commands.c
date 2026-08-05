@@ -217,6 +217,8 @@ TEST(nothing_spells_its_own_version) {
 }
 
 int main(void) {
+    test_use_temp_home();
+
     source = read_source();
     if (!source) {
         fprintf(stderr, "test_commands: cannot read shottino.c (run from frontends/shottino)\n");

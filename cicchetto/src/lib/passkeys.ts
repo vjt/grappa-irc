@@ -48,6 +48,33 @@ const encode = (value: ArrayBuffer): string => {
   return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
 
+// #725 — `CredentialsContainer` is `[SecureContext]`-only. grappa is
+// self-hosted and an operator serving it over `http://` on a LAN is a
+// supported deployment, so `navigator.credentials` being `undefined` is not a
+// hypothetical: both ceremonies used to run into it and throw
+// `TypeError: undefined is not an object (evaluating
+// 'navigator.credentials.get')`, which the login card and the settings pane
+// then printed verbatim at the user.
+//
+// The predicate tests the two functions this module actually CALLS rather
+// than `isSecureContext`. Same answer — the browser withholds the whole
+// container off a secure context, which is the cause — but it is the honest
+// question ("can the ceremony run?") and it also covers a browser that simply
+// has no WebAuthn. `PublicKeyCredential` is deliberately NOT in the test: it
+// appears in this file only in type positions, so requiring it at runtime
+// would assert something we never touch.
+export const PASSKEYS_UNAVAILABLE =
+  "Passkeys need a secure (HTTPS) connection and a browser that supports them.";
+
+export function passkeysAvailable(): boolean {
+  const credentials = navigator.credentials as CredentialsContainer | undefined;
+  return typeof credentials?.create === "function" && typeof credentials.get === "function";
+}
+
+const requireWebAuthn = (): void => {
+  if (!passkeysAvailable()) throw new Error(PASSKEYS_UNAVAILABLE);
+};
+
 const toDescriptor = (item: DescriptorJSON): PublicKeyCredentialDescriptor => ({
   type: item.type,
   id: decode(item.id),
@@ -55,6 +82,7 @@ const toDescriptor = (item: DescriptorJSON): PublicKeyCredentialDescriptor => ({
 });
 
 export async function createPasskey(options: PasskeyOptions): Promise<Record<string, unknown>> {
+  requireWebAuthn();
   const json = options.public_key as CreationJSON;
   const publicKey: PublicKeyCredentialCreationOptions = {
     challenge: decode(json.challenge),
@@ -84,6 +112,7 @@ export async function createPasskey(options: PasskeyOptions): Promise<Record<str
 }
 
 export async function getPasskey(options: PasskeyOptions): Promise<Record<string, unknown>> {
+  requireWebAuthn();
   const json = options.public_key as RequestJSON;
   const publicKey: PublicKeyCredentialRequestOptions = {
     challenge: decode(json.challenge),

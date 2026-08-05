@@ -164,11 +164,18 @@ jobs:
       # package that ships ncursesw.pc — shottino links the WIDE build
       # (it is UTF-8 end to end), and the old libncursesw5-dev name no
       # longer exists on current Debian/Ubuntu.
+      #
+      # ffmpeg is a TEST dependency, and it is here because it was not:
+      # the runner has no ffmpeg, so every green run of this job printed
+      # "test_layout: no ffmpeg — skipping decode checks" and the one test
+      # that asks the real decoder what it produced asserted nothing. It
+      # now fails instead of skipping (#763), so the binary has to be here
+      # for the check to mean what its name says.
       - name: Install build dependencies
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
-            pkg-config libncurses-dev libssl-dev
+            pkg-config libncurses-dev libssl-dev ffmpeg
 
       - name: Configure
         run: ./configure

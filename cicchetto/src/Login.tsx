@@ -5,7 +5,7 @@ import * as auth from "./lib/auth";
 import { type CaptchaProvider, mountCaptchaWidget } from "./lib/captcha";
 import { CONNECTING_MESSAGES } from "./lib/connectingMessages";
 import { severedForFlood } from "./lib/floodSever";
-import { friendlyApiError } from "./lib/friendlyApiError";
+import { errorMessage, friendlyApiError } from "./lib/friendlyApiError";
 import { classifyLoginIdentifier } from "./lib/loginIdentifier";
 
 // Bare credential form. The walking-skeleton login surface is one card,
@@ -149,6 +149,10 @@ const Login: Component = () => {
   const [msgIndex, setMsgIndex] = createSignal(0);
   const [captcha, setCaptcha] = createSignal<CaptchaChallenge | null>(null);
   const [totpChallenge, setTotpChallenge] = createSignal<string | null>(null);
+  // #728 — why the passkey second factor didn't complete, carried over from
+  // `auth.login` so the TOTP form can explain itself. `null` = no passkey was
+  // attempted (an ordinary TOTP account).
+  const [passkeyFallback, setPasskeyFallback] = createSignal<string | null>(null);
   const [totpCode, setTotpCode] = createSignal("");
   const [recoveryMode, setRecoveryMode] = createSignal(false);
   const [recoveryCode, setRecoveryCode] = createSignal("");
@@ -196,51 +200,40 @@ const Login: Component = () => {
     }
   };
 
-  // Shared tail for both the plain submit and the captcha-solve retry: run
-  // the one blocking login request under the connecting view, navigate on
-  // success, revert to the form (with a friendly error) on failure.
-  const attemptLogin = async (
-    id: string,
-    pwd: string | null,
-    captchaToken?: string,
-  ): Promise<void> => {
+  // #727 — ONE in-flight latch for EVERY login flow this card offers.
+  //
+  // `connecting()` is not merely a spinner: the `<Show>` below swaps the form
+  // out for the connecting view, which is what makes a second click
+  // impossible. The password submit had it; the passkey and recovery-code
+  // doors did not, and neither button was ever disabled, so on a slow link
+  // the user got zero feedback and clicked again — sending a SECOND
+  // `POST /auth/passkeys/recover` with the same one-shot code. One request
+  // consumes it and navigates; the other comes back `invalid_two_factor` and
+  // books a hit in the server's `passkey_recovery` throttle window. An
+  // impatient double-click cost a recovery code AND a slice of the lockout
+  // budget. On the passkey button, the second ceremony is rejected outright
+  // by the browser ("A request is already pending").
+  //
+  // `run` returns whether the flow is DONE (navigate) or has handed off to
+  // another view on this card (the TOTP challenge — revert the latch, stay).
+  // Written as one helper rather than a fourth copy of the same
+  // try/stopRotation/handleError tail: the two copies that existed were
+  // already drifting.
+  const underConnecting = async (run: () => Promise<boolean>): Promise<void> => {
     setError(null);
     setConnecting(true);
     startRotation();
     try {
-      // #152 — thread login-Advanced ident/realname through the same
-      // boundary. Blank fields are omitted downstream (auth.login), so a
-      // guest/plain login stays a minimal request. Named `advancedFields`
-      // (not `advanced`) so it doesn't shadow the `advanced()` toggle
-      // signal accessor in this scope.
-      const advancedFields = { ident: ident(), realname: realname(), incognito: incognito() };
-      // Preserve the auth.login(id, pwd, captcha?) boundary shape: forward
-      // the captcha token only when present, so the plain path stays a
-      // 2-arg call (the captcha retry is the only 3-arg caller).
-      if (captchaToken === undefined) {
-        const result = await auth.login(id, pwd, undefined, advancedFields);
-        if (result.kind === "totp") {
-          stopRotation();
-          setConnecting(false);
-          setTotpChallenge(result.challengeToken);
-          setPassword("");
-          return;
-        }
-      } else {
-        const result = await auth.login(id, pwd, captchaToken, advancedFields);
-        if (result.kind === "totp") {
-          stopRotation();
-          setConnecting(false);
-          setTotpChallenge(result.challengeToken);
-          setPassword("");
-          return;
-        }
-      }
+      const navigateAway = await run();
       // Stop the cosmetic rotation before we leave — navigation unmounts
       // Login (onCleanup would catch it too), but being explicit means a
       // future route guard that bounces back to /login without unmounting
       // can't leave the interval running.
       stopRotation();
+      if (!navigateAway) {
+        setConnecting(false);
+        return;
+      }
       navigate("/", { replace: true });
     } catch (err) {
       setConnecting(false);
@@ -248,6 +241,32 @@ const Login: Component = () => {
       handleError(err);
     }
   };
+
+  // Shared tail for both the plain submit and the captcha-solve retry.
+  const attemptLogin = async (
+    id: string,
+    pwd: string | null,
+    captchaToken?: string,
+  ): Promise<void> =>
+    underConnecting(async () => {
+      // #152 — thread login-Advanced ident/realname through the same
+      // boundary. Blank fields are omitted downstream (auth.login), so a
+      // guest/plain login stays a minimal request. Named `advancedFields`
+      // (not `advanced`) so it doesn't shadow the `advanced()` toggle
+      // signal accessor in this scope.
+      const advancedFields = { ident: ident(), realname: realname(), incognito: incognito() };
+      const result = await auth.login(id, pwd, captchaToken, advancedFields);
+      if (result.kind === "totp") {
+        setTotpChallenge(result.challengeToken);
+        // #728 — a passkey second factor that failed hands its reason over
+        // with the challenge. Without it the prompt just vanishes and a bare
+        // 2FA form appears, which reads as "my passkey has stopped working".
+        setPasskeyFallback(result.passkeyError === null ? null : errorMessage(result.passkeyError));
+        setPassword("");
+        return false;
+      }
+      return true;
+    });
 
   const handleCaptchaSolve = async (token: string): Promise<void> => {
     // By the time the captcha is solved the identifier has already been
@@ -299,18 +318,10 @@ const Login: Component = () => {
     const challenge = totpChallenge();
     if (challenge === null) return;
 
-    setError(null);
-    setConnecting(true);
-    startRotation();
-    try {
+    await underConnecting(async () => {
       await auth.verifyTotp(challenge, totpCode());
-      stopRotation();
-      navigate("/", { replace: true });
-    } catch (err) {
-      setConnecting(false);
-      stopRotation();
-      handleError(err);
-    }
+      return true;
+    });
   };
 
   const passkeyIdentifier = (): string | null => {
@@ -326,25 +337,40 @@ const Login: Component = () => {
   const onPasskeyLogin = async (): Promise<void> => {
     const id = passkeyIdentifier();
     if (id === null) return;
-    setError(null);
-    try {
+    await underConnecting(async () => {
       await auth.loginWithPasskey(id);
-      navigate("/", { replace: true });
-    } catch (err) {
-      handleError(err);
-    }
+      return true;
+    });
   };
 
   const onRecoveryLogin = async (): Promise<void> => {
     const id = passkeyIdentifier();
     if (id === null) return;
-    setError(null);
-    try {
-      await auth.loginWithRecoveryCode(id, recoveryCode());
-      navigate("/", { replace: true });
-    } catch (err) {
-      handleError(err);
+    // #724 — this validation used to be a `required` attribute on the input.
+    // That attribute enlisted the field in the CREDENTIAL form's constraint
+    // validation, so an abandoned recovery field blocked an ordinary login.
+    // The recovery flow validates its own input instead.
+    const code = recoveryCode();
+    if (code === "") {
+      setError("Enter your recovery code.");
+      return;
     }
+    await underConnecting(async () => {
+      await auth.loginWithRecoveryCode(id, code);
+      return true;
+    });
+  };
+
+  // #724 — the recovery field sits inside the credential form (that is where
+  // the toggle that reveals it lives, and moving it below Connect would put
+  // it after the Advanced disclosure). It must not, however, reach that
+  // form's submission: Enter here used to implicitly submit the enclosing
+  // form, running `onSubmit` — the PASSWORD login — and never sending the
+  // code. Swallow the implicit submission and run the flow the user asked for.
+  const onRecoveryKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    void onRecoveryLogin();
   };
 
   let nickInput: HTMLInputElement | undefined;
@@ -480,7 +506,7 @@ const Login: Component = () => {
                         autocomplete="one-time-code"
                         value={recoveryCode()}
                         onInput={(event) => setRecoveryCode(event.currentTarget.value)}
-                        required
+                        onKeyDown={onRecoveryKeyDown}
                       />
                       <button
                         type="button"
@@ -574,6 +600,19 @@ const Login: Component = () => {
                 <form class="login-form" onSubmit={onTotpSubmit} data-testid="totp-login-form">
                   <Brand />
                   <h2>two-factor authentication</h2>
+                  {/* #728 — never let the passkey prompt vanish without a
+                      word. Every ceremony failure (cancel, wrong
+                      authenticator, a 401 on the assertion, a network error)
+                      lands the user here; without this line they cannot tell
+                      a dismissed sheet from a broken credential. */}
+                  <Show when={passkeyFallback()}>
+                    {(reason) => (
+                      <p class="login-advanced-hint" data-testid="totp-passkey-fallback">
+                        Passkey sign-in didn't complete. {reason()} Use your authenticator or a
+                        recovery code instead.
+                      </p>
+                    )}
+                  </Show>
                   <label for="login-totp-code">Authenticator or recovery code</label>
                   <input
                     id="login-totp-code"
@@ -596,6 +635,7 @@ const Login: Component = () => {
                       setTotpChallenge(null);
                       setTotpCode("");
                       setError(null);
+                      setPasskeyFallback(null);
                     }}
                   >
                     Back

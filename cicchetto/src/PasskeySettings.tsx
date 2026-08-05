@@ -12,7 +12,9 @@ import {
   startPasswordlessActivation,
 } from "./lib/api";
 import { token } from "./lib/auth";
-import { createPasskey, getPasskey } from "./lib/passkeys";
+import { copyText } from "./lib/clipboard";
+import { errorMessage } from "./lib/friendlyApiError";
+import { createPasskey, getPasskey, PASSKEYS_UNAVAILABLE, passkeysAvailable } from "./lib/passkeys";
 
 const PasskeySettings: Component = () => {
   const [status, setStatus] = createSignal<PasskeyStatus | null>(null);
@@ -28,6 +30,14 @@ const PasskeySettings: Component = () => {
   // One armed id across the whole list: arming a row disarms its siblings.
   const [armedRemoval, setArmedRemoval] = createSignal<string | null>(null);
 
+  // #725 — WebAuthn is either present for this whole page load or it is not
+  // (the browser withholds `navigator.credentials` off a secure context), so
+  // this is read ONCE at setup rather than made reactive. Every control that
+  // needs a ceremony hides behind it and a note names the reason; removal
+  // does NOT, because deleting a stored credential runs no ceremony and is
+  // the one useful thing left to do here on a plain-http instance.
+  const webauthn = passkeysAvailable();
+
   const currentToken = (): string => {
     const value = token();
     if (value === null) throw new Error("missing auth token");
@@ -36,67 +46,75 @@ const PasskeySettings: Component = () => {
   const reload = async (): Promise<void> => {
     setStatus(await getPasskeyStatus(currentToken()));
   };
-  onMount(() => void reload().catch((value) => setError(String(value))));
+  onMount(() => void reload().catch((value) => setError(errorMessage(value))));
+
+  // #729 — FIVE privileged actions consume the account password, and only one
+  // of them (add) used to sit inside the form that visually owned the field.
+  // The other four read the signal from elsewhere in the pane with no prompt
+  // of their own, so a user who never filled that form sent `""` and got a
+  // bare 401 back; and a password typed to ADD a passkey stayed live in the
+  // signal, silently re-usable to change how the account authenticates.
+  //
+  // One gate for all five: refuse locally when the field is empty (naming the
+  // blocker instead of spending a doomed request AND a slot in the server's
+  // login-throttle window), and clear the field in the `finally` — on success
+  // AND on failure, so neither a good password nor a wrong one lingers for
+  // the next click to reuse. Re-typing IS the per-action re-confirmation the
+  // pane owes for a change of this weight.
+  const withPassword = async (run: (accountPassword: string) => Promise<void>): Promise<void> => {
+    setError(null);
+    const accountPassword = password();
+    if (accountPassword === "") {
+      setError("Enter your account password to confirm this change.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await run(accountPassword);
+    } catch (value) {
+      setError(errorMessage(value));
+    } finally {
+      setBusy(false);
+      setPassword("");
+    }
+  };
 
   const register = async (event: Event): Promise<void> => {
     event.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const options = await startPasskeyRegistration(currentToken(), password(), name());
+    await withPassword(async (accountPassword) => {
+      const options = await startPasskeyRegistration(currentToken(), accountPassword, name());
       await finishPasskeyRegistration(currentToken(), await createPasskey(options));
       setName("");
       await reload();
-    } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
-    } finally {
-      setBusy(false);
-    }
+    });
   };
 
-  const enableSecondFactor = async (): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    try {
-      const options = await startPasskeyModeChange(currentToken(), password(), "second_factor");
+  const enableSecondFactor = async (): Promise<void> =>
+    withPassword(async (accountPassword) => {
+      const options = await startPasskeyModeChange(
+        currentToken(),
+        accountPassword,
+        "second_factor",
+      );
       await finishPasskeyModeChange(currentToken(), await getPasskey(options));
       await reload();
-    } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
-    } finally {
-      setBusy(false);
-    }
-  };
+    });
 
-  const disablePasskeyLogin = async (): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    try {
-      const options = await startPasskeyModeChange(currentToken(), password(), "disabled");
+  const disablePasskeyLogin = async (): Promise<void> =>
+    withPassword(async (accountPassword) => {
+      const options = await startPasskeyModeChange(currentToken(), accountPassword, "disabled");
       await finishPasskeyModeChange(currentToken(), await getPasskey(options));
       setCodes([]);
       setRecoveryToken(null);
       await reload();
-    } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
-    } finally {
-      setBusy(false);
-    }
-  };
+    });
 
-  const preparePasswordlessMode = async (): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    try {
-      const prepared = await preparePasswordless(currentToken(), password());
+  const preparePasswordlessMode = async (): Promise<void> =>
+    withPassword(async (accountPassword) => {
+      const prepared = await preparePasswordless(currentToken(), accountPassword);
       setCodes(prepared.recovery_codes);
       setRecoveryToken(prepared.recovery_token);
-    } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
-    } finally {
-      setBusy(false);
-    }
-  };
+    });
 
   const activatePasswordless = async (): Promise<void> => {
     const pending = recoveryToken();
@@ -109,7 +127,7 @@ const PasskeySettings: Component = () => {
       setRecoveryToken(null);
       await reload();
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
     } finally {
       setBusy(false);
     }
@@ -118,23 +136,18 @@ const PasskeySettings: Component = () => {
   const copyRecoveryCodes = async (): Promise<void> => {
     setError(null);
     try {
-      await navigator.clipboard.writeText(codes().join("\n"));
+      await copyText(codes().join("\n"));
     } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
+      setError(errorMessage(value));
     }
   };
 
   const remove = async (id: string): Promise<void> => {
-    setBusy(true);
-    try {
-      await deletePasskey(currentToken(), id, password());
+    await withPassword(async (accountPassword) => {
+      await deletePasskey(currentToken(), id, accountPassword);
       await reload();
-    } catch (value) {
-      setError(value instanceof Error ? value.message : String(value));
-    } finally {
-      setBusy(false);
-      setArmedRemoval(null);
-    }
+    });
+    setArmedRemoval(null);
   };
 
   return (
@@ -145,6 +158,27 @@ const PasskeySettings: Component = () => {
         {(current) => (
           <>
             <p>Mode: {current.mode}</p>
+            {/* #729 — ONE explicitly-labelled re-auth field, above every
+                control that consumes it, instead of a field nested in the
+                add-passkey form that four sibling buttons read behind the
+                user's back. It is cleared after each action (see
+                `withPassword`), so each one re-confirms. */}
+            <label for="passkey-password">Account password</label>
+            <input
+              id="passkey-password"
+              type="password"
+              autocomplete="current-password"
+              value={password()}
+              onInput={(e) => setPassword(e.currentTarget.value)}
+            />
+            <p role="note">
+              Every change below needs your account password. It is cleared after each one.
+            </p>
+            <Show when={!webauthn}>
+              <p role="note" data-testid="passkeys-unavailable">
+                {PASSKEYS_UNAVAILABLE} You can still remove passkeys you already registered.
+              </p>
+            </Show>
             <ul>
               <For each={current.passkeys}>
                 {(passkey) => (
@@ -163,33 +197,26 @@ const PasskeySettings: Component = () => {
                 )}
               </For>
             </ul>
-            <form onSubmit={register}>
-              <label for="passkey-name">Passkey name</label>
-              <input
-                id="passkey-name"
-                autocomplete="off"
-                data-1p-ignore
-                data-bwignore="true"
-                data-lpignore="true"
-                data-protonpass-ignore="true"
-                value={name()}
-                onInput={(e) => setName(e.currentTarget.value)}
-                required
-              />
-              <label for="passkey-password">Account password</label>
-              <input
-                id="passkey-password"
-                type="password"
-                autocomplete="current-password"
-                value={password()}
-                onInput={(e) => setPassword(e.currentTarget.value)}
-                required
-              />
-              <button type="submit" disabled={busy()}>
-                add passkey
-              </button>
-            </form>
-            <Show when={current.passkeys.length > 0}>
+            <Show when={webauthn}>
+              <form onSubmit={register}>
+                <label for="passkey-name">Passkey name</label>
+                <input
+                  id="passkey-name"
+                  autocomplete="off"
+                  data-1p-ignore
+                  data-bwignore="true"
+                  data-lpignore="true"
+                  data-protonpass-ignore="true"
+                  value={name()}
+                  onInput={(e) => setName(e.currentTarget.value)}
+                  required
+                />
+                <button type="submit" disabled={busy()}>
+                  add passkey
+                </button>
+              </form>
+            </Show>
+            <Show when={webauthn && current.passkeys.length > 0}>
               <button type="button" disabled={busy()} onClick={() => void enableSecondFactor()}>
                 require password + passkey
               </button>
@@ -206,7 +233,7 @@ const PasskeySettings: Component = () => {
                 account. Shottino cannot log in.
               </p>
             </Show>
-            <Show when={current.mode !== "disabled"}>
+            <Show when={webauthn && current.mode !== "disabled"}>
               <button type="button" disabled={busy()} onClick={() => void disablePasskeyLogin()}>
                 return to password login
               </button>

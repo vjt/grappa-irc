@@ -51,7 +51,7 @@ TESTS := tests/test_llm tests/test_ws tests/test_json tests/test_wire tests/test
 SANITIZE ?= -fsanitize=address,undefined -fno-omit-frame-pointer
 TEST_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O1 -g $(SANITIZE)
 
-.PHONY: all install clean check
+.PHONY: all install clean check check-home-guard
 
 all: $(BIN)
 
@@ -160,8 +160,31 @@ tests/test_call: tests/test_call.c tests/test.h shottino.c call/media.c call/med
 tests/test_keys: tests/test_keys.c tests/test.h shottino.c json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c
 	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_keys.c json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c $(LDLIBS) -lutil
 
+# Compiling shottino.c means inheriting its reach into $HOME: anything
+# that calls shottino_state_dir() mkdirs there, and prefs_save writes the
+# developer's own config. test.h's test_use_temp_home() is the answer, and
+# THIS is what stops the next suite from being written without it — the
+# guard was added to test_windows.c after the incident, and test_call.c
+# was then added beside it with no guard at all. A grep is enough: the two
+# sets are "includes shottino.c" and "takes a temp HOME", and they must be
+# the same set.
+check-home-guard:
+	@suites=$$(grep -l '#include "\.\./shottino\.c"' tests/*.c); \
+	if [ -z "$$suites" ]; then \
+		echo "check-home-guard: no suite includes shottino.c — wrong directory?" >&2; \
+		exit 2; \
+	fi; \
+	missing=$$(grep -L 'test_use_temp_home()' $$suites); \
+	if [ -n "$$missing" ]; then \
+		echo "check-home-guard: these suites compile shottino.c and run against the REAL \$$HOME:" >&2; \
+		for m in $$missing; do echo "  $$m" >&2; done; \
+		echo "add test_use_temp_home(); as the first statement of main (see tests/test.h)" >&2; \
+		exit 1; \
+	fi; \
+	echo "check-home-guard: $$(echo $$suites | wc -w | tr -d ' ') suites compile shottino.c, all take a temp HOME"
+
 # `make check` is the gate: build every suite, run every suite, fail loud.
-check: $(TESTS)
+check: check-home-guard $(TESTS)
 	@rc=0; for t in $(TESTS); do \
 		printf '== %s\n' "$$t"; \
 		./$$t || rc=1; \

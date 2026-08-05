@@ -1,6 +1,5 @@
 import { type Component, createSignal, For, onMount, Show } from "solid-js";
 import {
-  ApiError,
   confirmTotpEnrollment,
   disableTotp,
   getTotpStatus,
@@ -8,7 +7,8 @@ import {
   type TotpEnrollment,
 } from "./lib/api";
 import { token } from "./lib/auth";
-import { friendlyApiError } from "./lib/friendlyApiError";
+import { copyText } from "./lib/clipboard";
+import { errorMessage } from "./lib/friendlyApiError";
 import { qrSvgWithLabel } from "./lib/qr";
 import PasskeySettings from "./PasskeySettings";
 
@@ -30,7 +30,7 @@ const TotpSettings: Component<Props> = (props) => {
   };
 
   const reportError = (value: unknown): void => {
-    setError(value instanceof ApiError ? friendlyApiError(value) : String(value));
+    setError(errorMessage(value));
   };
 
   onMount(() => {
@@ -89,7 +89,12 @@ const TotpSettings: Component<Props> = (props) => {
   };
 
   const copyRecoveryCodes = async (): Promise<void> => {
-    await navigator.clipboard.writeText(recoveryCodes().join("\n"));
+    setError(null);
+    try {
+      await copyText(recoveryCodes().join("\n"));
+    } catch (value) {
+      reportError(value);
+    }
   };
 
   return (
