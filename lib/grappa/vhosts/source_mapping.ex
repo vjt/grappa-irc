@@ -5,7 +5,7 @@ defmodule Grappa.Vhosts.SourceMapping do
   `static_mapping_with_reservations` addressing mode.
 
   Each untrusted subject egresses from ONE stable address inside the
-  configured `::cb::/80`, derived from the subject's OWN client `/64`
+  configured derivation `/80`, derived from the subject's OWN client `/64`
   (v6) or `/32` (v4). This replaces the random pool for mode 2: an
   address is `derive(client_key(client_ip), prefix)` — same client, same
   address, forever (until the operator renumbers the prefix).

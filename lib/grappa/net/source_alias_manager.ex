@@ -260,7 +260,7 @@ defmodule Grappa.Net.SourceAliasManager do
   defp held_addresses(state), do: Map.keys(state.refcounts) ++ state.held_source_fn.()
 
   # #627 — with no prefix, mode 2 is unconfigured (the arm gate already
-  # disarmed it, see `compute_arm/2`): there is no `::cb::/80` block to
+  # disarmed it, see `compute_arm/2`): there is no derivation block to
   # reconcile against and nothing can be a managed alias, so the sweep is not
   # merely unnecessary — it has no business running. Doing it anyway shelled
   # `ifconfig lo0` and filtered `::1` through `in_cidr6?(_, nil)`, raising in

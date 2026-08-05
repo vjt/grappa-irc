@@ -1,7 +1,7 @@
 defmodule Grappa.Net.SourceAlias.FreeBSD do
   @moduledoc """
-  FreeBSD-jail source-alias adapter (#543). Binds a derived `::cb::/80`
-  address as a `/128` alias on `lo0` through the sudoers-scoped wrapper
+  FreeBSD-jail source-alias adapter (#543). Binds an address derived inside
+  the configured `/80` as a `/128` alias on `lo0` through the sudoers wrapper
   `infra/freebsd/bin/grappa-source-alias`, invoked via the hardened command
   seam (`Grappa.Net.SourceAlias.Config.cmd/0`).
 
@@ -102,7 +102,7 @@ defmodule Grappa.Net.SourceAlias.FreeBSD do
   end
 
   # Extract the inet6 addresses from `ifconfig lo0` output that fall inside
-  # `prefix`. Lines look like `\tinet6 2a03:4000:20:2d3:cb::1 prefixlen 128`;
+  # `prefix`. Lines look like `\tinet6 2001:db8:1:2:cafe::1 prefixlen 128`;
   # a link-local carries a `%lo0` zone we strip before the membership test.
   #
   # Each address is CANONICALIZED (`IpLiteral.canonicalize/1`, i.e. the same

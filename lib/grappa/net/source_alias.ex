@@ -1,7 +1,7 @@
 defmodule Grappa.Net.SourceAlias do
   @moduledoc """
   Platform adapter behaviour for binding a derived outbound source address
-  (`::cb::/80`, #543 `static_mapping_with_reservations`) to the local host so
+  (the derivation `/80`, #543 `static_mapping_with_reservations`) to the host so
   the upstream socket can `bind()` to it.
 
   Each substrate provisions a source address differently:
@@ -32,7 +32,7 @@ defmodule Grappa.Net.SourceAlias do
 
   ## Prefix is threaded, never stored
 
-  Every callback that touches an address takes the configured `::cb::/80`
+  Every callback that touches an address takes the configured derivation
   prefix explicitly (there is ONE prefix — the DB `ServerSettings.static_mapping_prefix/0`
   the manager arms against; no env duplicate). `ensure_source/2` /
   `release_source/2` guard `IpLiteral.in_cidr6?/2` BEFORE shelling: refusing

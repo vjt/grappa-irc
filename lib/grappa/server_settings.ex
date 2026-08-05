@@ -245,8 +245,8 @@ defmodule Grappa.ServerSettings do
 
   @doc """
   Returns the configured static-mapping derived-source prefix as a
-  canonical IPv6 CIDR string, or `nil` when unset. This is the `::cb::/80`
-  untrusted block the source derivation maps client `/64`s into.
+  canonical IPv6 CIDR string, or `nil` when unset. This is the untrusted
+  `/80` the source derivation maps client `/64`s into.
   """
   @spec static_mapping_prefix() :: String.t() | nil
   def static_mapping_prefix, do: get_raw(@key_static_mapping_prefix)

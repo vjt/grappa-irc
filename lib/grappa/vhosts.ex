@@ -299,7 +299,7 @@ defmodule Grappa.Vhosts do
   Distinct from `granted_vhost_ids/1` (ids, for the self-service `granted`
   flag) and from `allowed_vhosts/2` (which in mode 1 also folds in `in_pool`
   + generally-available — both INERT in mode 2). Reserved grant addresses
-  live OUTSIDE the `::cb::/80` derivation block by operator convention, so
+  live OUTSIDE the derivation `/80` by operator convention, so
   a grant can never collide with a derived address.
   """
   @spec granted_vhost_addresses(Subject.t()) :: [String.t()]
