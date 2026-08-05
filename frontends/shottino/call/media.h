@@ -253,7 +253,15 @@ int media_bind_loopback(int *port_out);
 
 /* Start capturing and packetising. The caller pumps `leg->fd` and hands
  * each datagram to the track. Returns false and leaves the leg stopped
- * if ffmpeg cannot be started. */
+ * if ffmpeg cannot be started.
+ *
+ * WHICH INCLUDES AN FFMPEG THAT IS NOT INSTALLED, and that is the whole
+ * value of the bool: a fork that succeeds says nothing about the exec
+ * that follows it, so this used to return true on a machine with no
+ * ffmpeg and the caller's error message was unreachable code. Every
+ * start function here answers the same question the same way — see
+ * spawn_ffmpeg for how the exec reports back, and for the failure it
+ * still does not cover (a child that starts and dies later). */
 bool media_start_send(struct media_leg *leg, const struct media_config *cfg, bool video);
 
 /* Forward one RTP packet a track delivered to the decoder. */
