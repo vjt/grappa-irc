@@ -424,6 +424,34 @@
     "expected": false
   },
   {
+    "name": "channel fold is ASCII, not Unicode: #CAFÉ does not hit a #café whitelist entry (#525)",
+    "message": { "kind": "privmsg", "channel": "#CAFÉ", "sender": "alice", "body": "hello" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": ["#café"],
+      "channel_mentions": false,
+      "private_messages_all": false,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
+    "name": "sender fold is ASCII, not Unicode: CAFÉ does not hit a café whitelist entry (#525)",
+    "message": { "kind": "privmsg", "channel": "vjt", "sender": "CAFÉ", "body": "hello" },
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": false,
+      "private_messages_only": ["café"]
+    },
+    "patterns": [],
+    "expected": false
+  },
+  {
     "name": "DM shape (#537): a real channel is NOT a DM even when own_nick folds into its name",
     "message": { "kind": "privmsg", "channel": "#vjt", "sender": "alice", "body": "hello" },
     "own_nick": "VJT",
