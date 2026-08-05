@@ -481,6 +481,29 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// GET /networks/:slug/archive — the server-side archive list (mirrors
+// `cicchetto/src/lib/api.ts`'s `listArchive`). Returns the archived
+// TARGET names only; callers assert membership.
+//
+// #402 uses it as the PRECONDITION of a client-side disappearance: cic
+// filters this list through `visibleArchiveForNetwork`, so "the row is
+// nowhere in the UI" only indicts the client once the server is on
+// record as offering it. Without this probe a spec asserting absence
+// stays green when the row stops being archive-eligible at all — passing
+// for the wrong reason.
+export async function listArchiveTargets(
+  token: string,
+  networkSlug: string,
+): Promise<string[]> {
+  const url = `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/archive`;
+  const res = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    throw new Error(`listArchiveTargets: unexpected status ${res.status}`);
+  }
+  const body = (await res.json()) as { archive: Array<{ target: string }> };
+  return body.archive.map((entry) => entry.target);
+}
+
 // PART a channel via REST DELETE (mirrors `cicchetto/src/lib/api.ts`'s
 // `postPart`, but framed for the runner's GRAPPA_BASE_URL). Used by
 // test cleanup hooks to undo `/join`'s autojoin-persistence side-effect
