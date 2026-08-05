@@ -56,6 +56,7 @@ export const SESSION_LOG_EVENT = [
   "deidentified",
   "disconnected",
   "backoff",
+  "nick_changed",
 ] as const;
 export type SessionLogEvent = (typeof SESSION_LOG_EVENT)[number];
 
@@ -1224,6 +1225,7 @@ export type SessionLogWireT = {
   network_id: number;
   network_slug: string | null;
   nick: string | null;
+  old_nick: string | null;
   reason: string | null;
   clean: boolean | null;
   duration_ms: number | null;

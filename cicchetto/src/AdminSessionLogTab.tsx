@@ -132,6 +132,8 @@ function eventLabel(event: SessionLogEvent): string {
       return "disconnected";
     case "backoff":
       return "reconnect backoff";
+    case "nick_changed":
+      return "nick changed";
     default:
       return assertNever(event);
   }
@@ -143,9 +145,9 @@ function subjectLabel(ev: SessionLogWireT): string {
   return `${ev.subject_kind} ${nick} @ ${networkLabel(ev.network_slug, ev.network_id)}`;
 }
 
-// Event-specific detail. Only disconnected + backoff carry extra fields;
-// the identity events (connect / register / (de)identify) render an empty
-// detail (the label + subject already say everything).
+// Event-specific detail. Only disconnected, backoff and nick_changed carry
+// extra fields; the identity events (connect / register / (de)identify)
+// render an empty detail (the label + subject already say everything).
 function renderDetail(ev: SessionLogWireT): string {
   switch (ev.event) {
     case "connected":
@@ -165,6 +167,11 @@ function renderDetail(ev: SessionLogWireT): string {
       const delay = ev.delay_ms !== null ? `retry in ${ev.delay_ms}ms` : "retry scheduled";
       return ev.attempt !== null ? `${delay} (attempt ${ev.attempt})` : delay;
     }
+    // #618 — subjectLabel already renders the nick the session answers to
+    // NOW, so the detail carries the one thing the row would otherwise
+    // lose: what it moved away from.
+    case "nick_changed":
+      return ev.old_nick !== null ? `was ${ev.old_nick}` : "";
     default:
       return assertNever(ev.event);
   }

@@ -75,14 +75,15 @@ defmodule Grappa.SessionLog do
     [:grappa, :session, :log, :identified],
     [:grappa, :session, :log, :deidentified],
     [:grappa, :session, :log, :disconnected],
-    [:grappa, :session, :log, :backoff]
+    [:grappa, :session, :log, :backoff],
+    [:grappa, :session, :log, :nick_changed]
   ]
 
   defstruct retention: @default_retention
 
   @type t :: %__MODULE__{retention: pos_integer()}
 
-  @typedoc "Closed set of session-lifecycle events (#215)."
+  @typedoc "Closed set of session-lifecycle events (#215, #618)."
   @type event ::
           :connected
           | :registered
@@ -90,6 +91,7 @@ defmodule Grappa.SessionLog do
           | :deidentified
           | :disconnected
           | :backoff
+          | :nick_changed
 
   @typedoc "The `(subject, network_id)` identity a session log entry is keyed on."
   @type subject :: {:user | :visitor, String.t()}
@@ -115,6 +117,10 @@ defmodule Grappa.SessionLog do
     * `:disconnected` → `reason` (string), `clean` (boolean),
       `duration_ms` (integer)
     * `:backoff` → `delay_ms` (integer), `attempt` (integer)
+    * `:nick_changed` → `old_nick` (string); `nick` is the new one, read
+      off the post-change state the caller passes as `fields`. Key named
+      for #373's already-allowlisted Logger vocabulary, so the line needs
+      no `config/config.exs` metadata change (and the feature stays HOT).
 
   No default arguments — every caller passes `extra` explicitly (`[]` when
   the event has no extras).
@@ -131,7 +137,15 @@ defmodule Grappa.SessionLog do
           keyword()
         ) :: :ok
   def emit(event, %{subject: {kind, _} = subject, network_id: nid, network_slug: slug, nick: nick}, extra)
-      when event in [:connected, :registered, :identified, :deidentified, :disconnected, :backoff] and
+      when event in [
+             :connected,
+             :registered,
+             :identified,
+             :deidentified,
+             :disconnected,
+             :backoff,
+             :nick_changed
+           ] and
              is_list(extra) do
     metadata = %{
       session_id: session_id(subject, nid),
@@ -140,6 +154,7 @@ defmodule Grappa.SessionLog do
       network_id: nid,
       network_slug: slug,
       nick: nick,
+      old_nick: Keyword.get(extra, :old_nick),
       reason: Keyword.get(extra, :reason),
       clean: Keyword.get(extra, :clean),
       duration_ms: Keyword.get(extra, :duration_ms),
@@ -327,6 +342,20 @@ defmodule Grappa.SessionLog do
     Logger.warning("session lost identification (-r)",
       session_id: md.session_id,
       event: md.event,
+      nick: md.nick
+    )
+  end
+
+  # #618 — the session is answering to a nick other than the one it started
+  # under. Reported as an OBSERVATION, not an alarm: a 433 fallback, a
+  # services rename and a deliberate /nick are the same fact to an operator
+  # ("who does this session answer to now"), and only the pair prev→new
+  # tells them whether it still matches what was configured.
+  defp log(:nick_changed, md) do
+    Logger.info("session nick changed",
+      session_id: md.session_id,
+      event: md.event,
+      old_nick: md.old_nick,
       nick: md.nick
     )
   end

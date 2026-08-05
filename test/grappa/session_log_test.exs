@@ -98,6 +98,21 @@ defmodule Grappa.SessionLogTest do
       assert md.delay_ms == 5000
       assert md.attempt == 3
     end
+
+    # #618 — `nick` alone cannot answer "is this session still on the nick
+    # it was configured with"; only the pair can. `old_nick` is deliberately
+    # #373's already-allowlisted Logger key, so the line needs no
+    # config/config.exs metadata change.
+    test "nick_changed carries the pair: old_nick + the new nick" do
+      ref = attach_capture([[:grappa, :session, :log, :nick_changed]])
+
+      :ok = SessionLog.emit(:nick_changed, base_state({:user, "u-3"}), old_nick: "vjt-old")
+
+      assert_receive {:telemetry, ^ref, [:grappa, :session, :log, :nick_changed], _m, md}
+      assert md.old_nick == "vjt-old"
+      assert md.nick == "vjt"
+      assert md.event == :nick_changed
+    end
   end
 
   describe "emit/3 Logger line" do
@@ -118,9 +133,11 @@ defmodule Grappa.SessionLogTest do
     end
 
     test "deidentified (+r lost) logs a warning line" do
-      # The other warning-level clause (info-level connected/registered are
-      # covered transitively: their telemetry test would fail if log/2
-      # raised, since emit fires telemetry AFTER the Logger line).
+      # The other warning-level clause (info-level connected / registered /
+      # nick_changed are covered transitively: `config/test.exs` pins Logger
+      # at :warning so capture_log sees nothing of them, but their telemetry
+      # test would fail if log/2 raised, since emit fires telemetry AFTER
+      # the Logger line).
       log =
         capture_log(fn ->
           SessionLog.emit(:deidentified, base_state({:user, "u-4"}), [])

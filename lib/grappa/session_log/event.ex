@@ -5,8 +5,10 @@ defmodule Grappa.SessionLog.Event do
   A uniform shape across all lifecycle events (`event` is the closed-set
   discriminator); event-specific extras are nullable columns
   (`reason`/`clean`/`duration_ms` on disconnect, `delay_ms`/`attempt` on
-  backoff). Typed columns (not an untyped `meta` blob) so the operator can
-  query "this network's error disconnects" directly.
+  backoff, `old_nick` on nick_changed). Typed columns (not an untyped
+  `meta` blob) so the operator can query "this network's error
+  disconnects" — or "which sessions moved off the nick they connected
+  under" (#618) — directly.
 
   Public API on `Grappa.SessionLog`; callers receive `%Event{}` structs by
   type. Wire projection lives in `Grappa.SessionLog.Wire`.
@@ -18,17 +20,26 @@ defmodule Grappa.SessionLog.Event do
   # set) — Ecto.Enum needs a compile-time literal list, so the set is
   # duplicated here; the cast rejects any unknown value at the persist
   # boundary, and the emit guard rejects it at the emit boundary.
-  @events [:connected, :registered, :identified, :deidentified, :disconnected, :backoff]
+  @events [
+    :connected,
+    :registered,
+    :identified,
+    :deidentified,
+    :disconnected,
+    :backoff,
+    :nick_changed
+  ]
   @subject_kinds [:user, :visitor]
 
   @type t :: %__MODULE__{
           id: integer() | nil,
           session_id: String.t() | nil,
-          event: :connected | :registered | :identified | :deidentified | :disconnected | :backoff | nil,
+          event: Grappa.SessionLog.event() | nil,
           subject_kind: :user | :visitor | nil,
           network_id: integer() | nil,
           network_slug: String.t() | nil,
           nick: String.t() | nil,
+          old_nick: String.t() | nil,
           reason: String.t() | nil,
           clean: boolean() | nil,
           duration_ms: integer() | nil,
@@ -44,6 +55,7 @@ defmodule Grappa.SessionLog.Event do
     field :network_id, :integer
     field :network_slug, :string
     field :nick, :string
+    field :old_nick, :string
     field :reason, :string
     field :clean, :boolean
     field :duration_ms, :integer
@@ -59,6 +71,7 @@ defmodule Grappa.SessionLog.Event do
     :network_id,
     :network_slug,
     :nick,
+    :old_nick,
     :reason,
     :clean,
     :duration_ms,

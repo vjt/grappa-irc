@@ -3356,7 +3356,7 @@ defmodule Grappa.Session.Server do
         {:cont, next_state, effects} = EventRouter.route(msg, persist_state)
         final_state = effects |> apply_effects(next_state) |> prune_seeded_channels()
         maybe_broadcast_channels_changed(state, final_state)
-        maybe_broadcast_own_nick_changed(state, final_state)
+        on_own_nick_change(state, final_state)
         {:noreply, final_state}
     end
   end
@@ -4387,7 +4387,7 @@ defmodule Grappa.Session.Server do
     {:cont, derived_state, effects} = EventRouter.route(msg, state)
     next_state = effects |> apply_effects(derived_state) |> prune_seeded_channels()
     maybe_broadcast_channels_changed(state, next_state)
-    maybe_broadcast_own_nick_changed(state, next_state)
+    on_own_nick_change(state, next_state)
     # #623 — a self-NICK arrives as a :nick command → this delegate path (never
     # the numeric path). Feed the recover FSM `:nick_observed` when our nick
     # just landed on the credential nick the reclaim leg is chasing.
@@ -4493,9 +4493,9 @@ defmodule Grappa.Session.Server do
     end
   end
 
-  # On a live-nick change (NICK event, 001 RPL_WELCOME reconciliation), two
+  # On a live-nick change (NICK event, 001 RPL_WELCOME reconciliation), three
   # obligations fire together off the SAME trigger (`prev != next`) so
-  # neither can drift onto a nick change the other misses:
+  # none can drift onto a nick change the others miss:
   #   1. #498 — publish the new nick into this session's SessionRegistry
   #      entry value so `Grappa.Session.current_nick/2` is a cheap ETS
   #      lookup, not a GenServer.call. The badge / `/me` unread seed /
@@ -4505,17 +4505,26 @@ defmodule Grappa.Session.Server do
   #   2. Broadcast `own_nick_changed` on the user topic — cicchetto's
   #      userTopic handler updates the per-network nick, re-subscribing to
   #      the correct own-nick DM topic (else DMs to the new nick drop).
+  #   3. #618 — record it in `SessionLog`. cic learns via (2), but the
+  #      OPERATOR surface had nothing: a failed ghost recovery leaves the
+  #      session answering to `<nick>_` for its whole life and the log's
+  #      last word stayed the `:registered` row. Riding the SAME trigger is
+  #      what makes it total — the 433 fallback, the AuthFSM ladder, a
+  #      services rename and a deliberate /nick all move `state.nick`, and
+  #      none of them is a special case worth its own emit site.
   # Publish BEFORE broadcast so a consumer reacting to the event reads the
   # fresh registry value.
-  @spec maybe_broadcast_own_nick_changed(t(), t()) :: :ok
-  defp maybe_broadcast_own_nick_changed(%{nick: prev_nick}, %{nick: next_nick} = next_state)
+  @spec on_own_nick_change(t(), t()) :: :ok
+  defp on_own_nick_change(%{nick: prev_nick}, %{nick: next_nick} = next_state)
        when prev_nick != next_nick do
     :ok = publish_live_nick(next_state.subject, next_state.network_id, next_state.nick)
 
     :ok = Broadcaster.to_user(next_state, SessionWire.own_nick_changed(next_state.network_id, next_nick))
+
+    SessionLog.emit(:nick_changed, next_state, old_nick: prev_nick)
   end
 
-  defp maybe_broadcast_own_nick_changed(_, _), do: :ok
+  defp on_own_nick_change(_, _), do: :ok
 
   # #623 — feed the recover FSM `:nick_observed` when our OWN nick just changed
   # to the credential nick the reclaim leg is chasing. This is the sequencing
@@ -4545,7 +4554,7 @@ defmodule Grappa.Session.Server do
   # value. The ONE writer of the cheap live-nick copy: it always writes
   # `state.nick` (a copy, never a parallel computation) and is called at
   # EXACTLY the points `state.nick` is set — `do_init/1` (initial) and
-  # `maybe_broadcast_own_nick_changed/2` (001 reconcile + self-NICK) — so
+  # `on_own_nick_change/2` (001 reconcile + self-NICK) — so
   # the copy cannot fork from the authoritative nick (the identity-fork bug
   # class #498 fixes). Runs in the process that OWNS the entry, so
   # `Registry.update_value/3` is a direct ETS write with no message
