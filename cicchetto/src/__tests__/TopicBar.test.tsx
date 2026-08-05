@@ -5,10 +5,11 @@ vi.mock("../lib/channelKey", () => ({
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
 }));
 
-// windowState mock — TopicBar gates the members hamburger AND (since #263) the
-// modal ✏️ edit toggle on `windowIsJoined(key)` (via canEditTopic). Default the
-// predicate to `true` so the joined-state UI (hamburger + editable topic) is
-// exercised; the not-joined branch is set explicitly where tested.
+// windowState mock — since #881 the ONLY thing TopicBar gates on
+// `windowIsJoined(key)` is the modal ✏️ edit toggle (via canEditTopic, #263):
+// a real IRC permission, not chrome. The ☰ rail door is unconditional.
+// Default the predicate to `true` so the editable-topic path is exercised;
+// the not-joined branch is set explicitly where tested.
 const mockWindowIsJoined = vi.fn((_key: string) => true);
 vi.mock("../lib/windowState", () => ({
   windowIsJoined: (key: string) => mockWindowIsJoined(key),
@@ -118,22 +119,38 @@ describe("TopicBar", () => {
   // into ShellChrome (covered in Shell.test.tsx). TopicBar no longer
   // renders ⚙ — the corresponding test moved to ShellChrome.test.tsx.
 
-  describe("members hamburger + nick count visibility (joined-only)", () => {
-    it("hides the right hamburger when the channel is not joined", () => {
+  // #881 — the hamburger is the ONLY rail door a mobile channel window has
+  // (ShellChrome's opener renders for `kind !== "channel"`), and the rail is
+  // where Archive / Settings / Rooms / Admin live. Gating it on joinedness
+  // took the whole nav away from a `:failed` / `:kicked` / `:parked` window.
+  // vjt's ruling: a non-joined window is not a different window shape — it
+  // shows what a joined one shows MINUS the members list. So the ONLY
+  // joinedness gate left in this component is `canEditTopic` (a real IRC
+  // permission), and the members list itself is gated in Shell.tsx.
+  describe("#881 — the rail door is not conditioned on joinedness", () => {
+    it("renders the right hamburger even when the channel is not joined", () => {
       mockWindowIsJoined.mockReturnValue(false);
       render(() => <TopicBar {...baseProps()} />);
-      expect(screen.queryByLabelText(/open members sidebar/i)).not.toBeInTheDocument();
+      expect(screen.getByLabelText(/open members sidebar/i)).toBeInTheDocument();
     });
 
-    // UX-5 bucket BT (2026-05-19) — "X nicks" strip was dropped. The
-    // joined-gated visibility test is now redundant; the strip is
-    // gone everywhere. Kept as negative guard for the not-joined
-    // path so a resurrection would surface.
-    it("UX-5 bucket BT — never renders nick count, joined or not", () => {
+    it("the not-joined hamburger still fires onToggleMembers", () => {
       mockWindowIsJoined.mockReturnValue(false);
-      render(() => <TopicBar {...baseProps()} />);
-      expect(screen.queryByText(/\d+ nicks/i)).not.toBeInTheDocument();
+      const props = baseProps();
+      render(() => <TopicBar {...props} />);
+      fireEvent.click(screen.getByLabelText(/open members sidebar/i));
+      expect(props.onToggleMembers).toHaveBeenCalled();
     });
+  });
+
+  // UX-5 bucket BT (2026-05-19) — "X nicks" strip was dropped. The
+  // joined-gated visibility test is now redundant; the strip is
+  // gone everywhere. Kept as negative guard for the not-joined
+  // path so a resurrection would surface.
+  it("UX-5 bucket BT — never renders nick count, joined or not", () => {
+    mockWindowIsJoined.mockReturnValue(false);
+    render(() => <TopicBar {...baseProps()} />);
+    expect(screen.queryByText(/\d+ nicks/i)).not.toBeInTheDocument();
   });
 
   it("shows topic text when topic is set", () => {

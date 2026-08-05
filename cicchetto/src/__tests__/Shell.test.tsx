@@ -943,6 +943,41 @@ describe("Shell — mobile layout (isMobile = true)", () => {
       expect(container.querySelector(".shell-members .mobile-panel-actions")).toBeNull();
     });
 
+    // #881 — the composition, both halves of vjt's ruling in one test. A
+    // NON-joined channel window is the case with no second door: `.shell-chrome`
+    // is suppressed for `kind === "channel"`, so the TopicBar ☰ is the only way
+    // into the rail, and the rail is where Archive / Settings / Rooms / Admin
+    // live. Gating that ☰ on joinedness therefore deleted the navigation, not a
+    // members toggle. Asserted here as the OUTCOME (the doors are reachable),
+    // together with the half that must NOT change: no members list.
+    it("#881 mobile NON-joined channel: the rail doors are reachable and the members list stays absent", async () => {
+      mobileState.value = true;
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
+      mockWindowIsJoined.mockReturnValue(false);
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector(".topic-bar")).toBeInTheDocument();
+      });
+      // The channel branch mounts no `.shell-chrome`, so there is no fallback
+      // opener — if the hamburger is gone, the rail is unreachable, full stop.
+      expect(container.querySelector(".shell-chrome")).toBeNull();
+      const hamburger = container.querySelector(".topic-bar .topic-bar-hamburger");
+      expect(hamburger).not.toBeNull();
+
+      fireEvent.click(hamburger as HTMLElement);
+      expect(container.querySelector(".shell-members")?.classList.contains("open")).toBe(true);
+
+      openRailMenu();
+      const menu = container.querySelector(".shell-members .rail-actions-menu");
+      expect(menu?.querySelector("[data-testid='mobile-panel-archive']")).not.toBeNull();
+      expect(menu?.querySelector("[data-testid='action-cluster-cog']")).not.toBeNull();
+      expect(menu?.querySelector("[data-testid='mobile-panel-list']")).not.toBeNull();
+
+      // The other half of the ruling: only the members list is genuinely
+      // absent. This is what the joinedness predicate is FOR.
+      expect(container.querySelector(".shell-members .members-pane")).toBeNull();
+    });
+
     it("mobile home window: standalone .shell-chrome row STAYS (no TopicBar / drawer to absorb buttons)", async () => {
       mobileState.value = true;
       selectionState.setSelSig({ networkSlug: "$home", channelName: "$home", kind: "home" });

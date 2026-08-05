@@ -167,23 +167,34 @@ export const setKicked = exports_.setKicked;
 export const setParted = exports_.setParted;
 export const forceParted = exports_.forceParted;
 
-// Render-time predicates for "show member-list-shaped UI?".
+// Render-time predicates for "show the member LIST?" — and nothing else.
 //
-// Member list UI (right pane + the right hamburger toggle in TopicBar)
-// only makes sense when the window is an actively-joined channel.
-// Servers, DMs, mentions/list pseudo-windows, and parked/failed/kicked
-// channels do NOT have a live member list — showing the pane there
-// either reserves grid space for nothing (desktop) or surfaces a stale
-// "not joined" stub through a hamburger that should never have been
-// offered in the first place.
+// A live member list only exists for an actively-joined channel. Servers,
+// DMs, mentions/list pseudo-windows, and parked/failed/kicked channels do
+// not have one, so `MembersPane` is `<Show>`-gated on these predicates in
+// both Shell.tsx branches; on desktop the same signal narrows the rail
+// column (`.shell-no-members`) rather than reserving grid space for
+// nothing.
+//
+// #881 — SCOPE, and it is load-bearing: joinedness gates the LIST, never
+// the CHROME AROUND IT. This comment used to name "the right hamburger
+// toggle in TopicBar" as member-list UI, and TopicBar believed it. That ☰
+// is the rail DOOR (`.shell-members` has been the permanent Archive /
+// Settings / Rooms / Admin rail since #71 INC-2 / #473, and it is a
+// channel window's ONLY door), so gating it here deleted the whole
+// navigation for a non-joined window. vjt's ruling: a non-joined window
+// renders what a joined one renders MINUS the members list. Before adding
+// a caller, ask whether the thing you are gating IS the list — if it only
+// sits near it, this is the wrong predicate.
 //
 // `windowIsJoined(key)` is the primitive over the state map; absence
 // (parted / never-joined / non-channel pseudo-window) is treated as
 // "not joined" — no member list. `isActiveChannelJoined()` composes
-// it with the active selection's `kind` to gate the render-time
-// branches in Shell.tsx + TopicBar.tsx — exposed as a derived signal
+// it with the active selection's `kind` — exposed as a derived signal
 // (no arg) so each consumer just reads it without rebuilding the
-// channelKey itself.
+// channelKey itself. TopicBar's remaining `windowIsJoined` call is
+// `canEditTopic`: a genuine IRC permission (you cannot TOPIC a channel
+// you are not on), not chrome.
 
 export const windowIsJoined = (key: ChannelKey): boolean =>
   windowStateByChannel()[key] === "joined";

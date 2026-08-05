@@ -354,20 +354,25 @@ const TopicBar: Component<Props> = (props) => {
       </div>
       {/* #71 INC-2 — the presence-filter toggle (👁/🙈) moved to the right-rail
           RailActions drawer (channel-gated). It is no longer rendered here. */}
-      {/* Members hamburger only when actively joined. Parked / failed
-          / kicked channels have stale or absent member lists; the
-          right pane is suppressed in Shell.tsx for the same reason —
-          this hides the toggle that would otherwise dangle. */}
-      <Show when={windowIsJoined(key())}>
-        <button
-          type="button"
-          class="topic-bar-hamburger shell-chrome-btn"
-          aria-label="open members sidebar"
-          onClick={props.onToggleMembers}
-        >
-          ☰
-        </button>
-      </Show>
+      {/* #881 — UNCONDITIONAL. This ☰ is not a members toggle, it is the
+          rail door: on mobile it opens `.shell-members`, which since #71
+          INC-2 / #473 is the permanent right rail hosting Archive, Settings,
+          Rooms and Admin — and it is the ONLY door a channel window has
+          (ShellChrome's opener renders for `kind !== "channel"`). It used to
+          sit behind `windowIsJoined`, on the premise that it toggled a member
+          list; the member list is gated in Shell.tsx and this gate took the
+          whole navigation with it, stranding a `:failed`/`:kicked`/`:parked`
+          window with no way out. vjt's ruling: a non-joined window is not a
+          different window shape — same surface as a joined one, MINUS the
+          members list. So joinedness gates the list, never the door. */}
+      <button
+        type="button"
+        class="topic-bar-hamburger shell-chrome-btn"
+        aria-label="open members sidebar"
+        onClick={props.onToggleMembers}
+      >
+        ☰
+      </button>
 
       {/* Topic modal (#263) — opens read-only for everyone on strip click;
           shows full topic, setter, timestamp. An op (canEditTopic) also sees a
