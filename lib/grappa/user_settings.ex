@@ -89,20 +89,6 @@ defmodule Grappa.UserSettings do
   alias Grappa.{Accounts.User, IRC.Identifier, Repo, Subject, UserSettings.Settings, Visitors.Visitor}
 
   @typedoc """
-  Per-subject notification preferences — push-notifications cluster B3.
-
-  Five booleans + two string-list whitelists. Whitelist semantics:
-  IF `channel_messages_all` is true the `channel_messages_only` list
-  is ignored at trigger-eval time (UI greys it out, server still
-  stores the value so toggling `_all` off restores the prior list).
-  Same for `private_messages_all` / `private_messages_only`.
-
-  Channel names + nicks are stored lowercased + trimmed (set via
-  `put_notification_prefs/2`). Trigger eval (B4) uses
-  `String.downcase` on incoming message fields so the comparison
-  is case-insensitive end-to-end.
-  """
-  @typedoc """
   Per-conversation notification mutes (#866) — the one DENY-list in
   `notification_prefs()`, where everything else is an allow-list.
 
@@ -127,6 +113,24 @@ defmodule Grappa.UserSettings do
   """
   @type muted_targets :: %{String.t() => %{String.t() => pos_integer() | nil}}
 
+  @typedoc """
+  Per-subject notification preferences — push-notifications cluster B3.
+
+  Three booleans + two string-list whitelists + one mute map (#866).
+  Whitelist semantics: IF `channel_messages_all` is true the
+  `channel_messages_only` list is ignored at trigger-eval time (UI greys
+  it out, server still stores the value so toggling `_all` off restores
+  the prior list). Same for `private_messages_all` /
+  `private_messages_only`.
+
+  `muted_targets` is the only DENY side and it OUTRANKS all of the above,
+  a mention included (vjt's Q2) — see `t:muted_targets/0`.
+
+  Channel names + nicks are stored folded + trimmed (set via
+  `put_notification_prefs/2`) through `Identifier.canonical_target/1`,
+  and trigger eval folds the incoming message fields the same way, so the
+  comparison is case-insensitive end-to-end under CASEMAPPING=ascii.
+  """
   @type notification_prefs :: %{
           channel_messages_all: boolean(),
           channel_messages_only: [String.t()],
