@@ -12,7 +12,7 @@ defmodule Grappa.Session.EventRouterPropertyTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias Grappa.IRC.Message
+  alias Grappa.IRC.{Identifier, Message}
   alias Grappa.Session.EventRouter
 
   defp ascii_nick_gen do
@@ -207,13 +207,20 @@ defmodule Grappa.Session.EventRouterPropertyTest do
         {:invited, channel} ->
           assert is_binary(channel)
 
+        # #279 — `is_binary/1` here was a CERTIFICATE OF NOTHING: it is
+        # exactly what a fuzzed 221 param full of spaces and punctuation
+        # satisfies, and adding it is how the malformed-effect red got
+        # silenced without the handler changing. The effect carries mode
+        # LETTERS, so the arm asserts the letter class — the same
+        # production predicate the 221/004 handlers validate with, so a
+        # future ircd letter can never be green here and red there.
         {:umode_changed, modes} ->
           assert is_list(modes)
-          assert Enum.all?(modes, &is_binary/1)
+          assert Enum.all?(modes, &Identifier.valid_mode_letter?/1)
 
         {:supported_umodes_changed, modes} ->
           assert is_list(modes)
-          assert Enum.all?(modes, &is_binary/1)
+          assert Enum.all?(modes, &Identifier.valid_mode_letter?/1)
 
         {:session_identity_changed, transition} ->
           assert transition in [:acquired, :lost]
@@ -291,6 +298,52 @@ defmodule Grappa.Session.EventRouterPropertyTest do
       channel_modes: %{},
       userhost_cache: %{}
     }
+  end
+
+  # #279 — the property above reaches numeric 221 / 004 only when the seed
+  # draws them (one numeric in 999, a handful of numerics per run): that is
+  # WHY the malformed `{:umode_changed, [" ", "!", …]}` lived on main as an
+  # INTERMITTENT red instead of a deterministic one. These two hit the umode
+  # boundary on every generated example, so the class is pinned by the test
+  # set rather than by the seed.
+  defp umode_letters?(modes) do
+    is_list(modes) and Enum.all?(modes, &Identifier.valid_mode_letter?/1)
+  end
+
+  property "#279: no 221 RPL_UMODEIS param yields a non-letter umode" do
+    check all(mode_str <- string(:ascii, min_length: 0, max_length: 32)) do
+      m = %Message{
+        command: {:numeric, 221},
+        params: ["self", mode_str],
+        prefix: {:server, "irc.example.org"},
+        tags: %{}
+      }
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, min_state())
+      assert umode_letters?(Map.get(new_state, :umodes, []))
+
+      for {:umode_changed, modes} <- effects do
+        assert umode_letters?(modes), "malformed umode set from param #{inspect(mode_str)}"
+      end
+    end
+  end
+
+  property "#279: no 004 RPL_MYINFO usermodes token yields a non-letter umode" do
+    check all(token <- string(:ascii, min_length: 0, max_length: 32)) do
+      m = %Message{
+        command: {:numeric, 4},
+        params: ["self", "irc.example.org", "ircd-1", token, "beI,k,l,imnpst", "bklov"],
+        prefix: {:server, "irc.example.org"},
+        tags: %{}
+      }
+
+      assert {:cont, new_state, effects} = EventRouter.route(m, min_state())
+      assert umode_letters?(Map.get(new_state, :supported_umodes, []))
+
+      for {:supported_umodes_changed, modes} <- effects do
+        assert umode_letters?(modes), "malformed supported set from token #{inspect(token)}"
+      end
+    end
   end
 
   property "#218: a STATUSMSG-prefixed NOTICE target routes to the underlying channel" do

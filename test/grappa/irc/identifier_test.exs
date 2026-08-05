@@ -672,6 +672,41 @@ defmodule Grappa.IRC.IdentifierTest do
     end
   end
 
+  describe "valid_mode_letter?/1 (#279 mode-token boundary class)" do
+    test "accepts every single ASCII letter, both cases" do
+      for c <- ?a..?z, do: assert(Identifier.valid_mode_letter?(<<c>>))
+      for c <- ?A..?Z, do: assert(Identifier.valid_mode_letter?(<<c>>))
+    end
+
+    test "rejects the punctuation/space/control bytes a fuzzed mode param carries" do
+      for s <- [" ", "!", "\"", "$", "'", "(", ")", ",", "~", "\x01", "\x7f"] do
+        refute Identifier.valid_mode_letter?(s), "expected #{inspect(s)} to be rejected"
+      end
+    end
+
+    test "rejects digits — no ircd registers a numeric mode char" do
+      for s <- ~w(0 1 9), do: refute(Identifier.valid_mode_letter?(s))
+    end
+
+    test "rejects the signs themselves (a sign is not a mode letter)" do
+      refute Identifier.valid_mode_letter?("+")
+      refute Identifier.valid_mode_letter?("-")
+    end
+
+    test "rejects multi-byte and non-ASCII input (one letter means one byte)" do
+      refute Identifier.valid_mode_letter?("iw")
+      refute Identifier.valid_mode_letter?("")
+      refute Identifier.valid_mode_letter?("à")
+      refute Identifier.valid_mode_letter?("é")
+    end
+
+    test "rejects non-binary input" do
+      refute Identifier.valid_mode_letter?(nil)
+      refute Identifier.valid_mode_letter?(:i)
+      refute Identifier.valid_mode_letter?(?i)
+    end
+  end
+
   describe "member_prefix/1 (#25 grade-snapshot helper)" do
     test "returns the highest-precedence sigil (@ > % > +)" do
       assert Identifier.member_prefix(["@"]) == "@"

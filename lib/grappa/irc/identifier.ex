@@ -453,6 +453,28 @@ defmodule Grappa.IRC.Identifier do
   def valid_network_slug?(_), do: false
 
   @doc """
+  True iff the input is exactly one IRC mode letter — a single ASCII
+  letter, either case.
+
+  The mode LETTER SET is per-ircd (bahamut's `+iwxs`, solanum's
+  `+DQZagiow`, extension-registered letters) and grappa deliberately
+  stays agnostic to it — but the mode letter CLASS is closed by the
+  RFC-2812 §3.1.5/§3.2.3 grammar: a mode block is a run of signs and
+  ALPHA, nothing else. That class is the boundary contract for every
+  upstream-supplied mode token (#279), and it is the widest rule that
+  still rejects the fuzzed `221 RPL_UMODEIS` param (spaces, punctuation,
+  control bytes) which used to fold into the per-session umode set
+  verbatim.
+
+  Digits and the signs themselves are NOT mode letters: `+`/`-` are the
+  sign alphabet the walkers consume separately, and no ircd registers a
+  numeric mode char.
+  """
+  @spec valid_mode_letter?(term()) :: boolean()
+  def valid_mode_letter?(<<c>>) when c in ?a..?z or c in ?A..?Z, do: true
+  def valid_mode_letter?(_), do: false
+
+  @doc """
   True iff the input is a non-empty hostname-or-IP-shaped string. DNS
   validity is not checked — the connect attempt is the canonical
   authority.

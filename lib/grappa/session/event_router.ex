@@ -684,8 +684,18 @@ defmodule Grappa.Session.EventRouter do
       # from the pure router's POV; pure unit tests on user sessions skip
       # them (Map.get → nil). Orthogonal to the confirmation row above —
       # both effects coexist.
+      # #279 — ONE validity verdict for the token, shared by BOTH readers
+      # below (the +r detector and the umode fold). A mode string that is
+      # not signs + mode letters is a malformed LINE, not a partially
+      # usable delta: neither reader may draw a conclusion from it. Parsed
+      # once here because `set_r_mode?/1` walks the same bytes.
+      prev_umodes = Map.get(state, :umodes, [])
+      parsed_umodes = apply_umode_string(prev_umodes, modes)
+      well_formed_modes? = match?({:ok, _}, parsed_umodes)
+
       r_effects =
-        case {set_r_mode?(modes), Map.get(state, :pending_registration_secret), Map.get(state, :pending_auth)} do
+        case {well_formed_modes? and set_r_mode?(modes), Map.get(state, :pending_registration_secret),
+              Map.get(state, :pending_auth)} do
           {true, reg, _} when is_binary(reg) -> [{:visitor_r_observed, reg}]
           {true, _, {pwd, _}} -> [{:visitor_r_observed, pwd}]
           _ -> []
@@ -700,8 +710,12 @@ defmodule Grappa.Session.EventRouter do
       # whose state predates the :umodes field self-heals rather than
       # KeyError-crashing (mirror of #216's :isupport hot-safety). Emit
       # `:umode_changed` only on an actual change to keep fan-out minimal.
-      prev_umodes = Map.get(state, :umodes, [])
-      next_umodes = apply_umode_string(prev_umodes, modes)
+      next_umodes =
+        case parsed_umodes do
+          {:ok, parsed} -> parsed
+          :error -> prev_umodes
+        end
+
       umode_effects = if next_umodes != prev_umodes, do: [{:umode_changed, next_umodes}], else: []
       state = Map.put(state, :umodes, next_umodes)
 
@@ -1075,13 +1089,24 @@ defmodule Grappa.Session.EventRouter do
   # #216 hot-reload-safety contract. Emit `:umode_changed` only on a real
   # change to keep fan-out minimal. Umodes are per-session (no channel), so
   # `apply_umode_string/2` folds the +/- string into a sorted letter list.
+  #
+  # #279 — a malformed mode param (anything but signs + mode letters) is
+  # NOT a snapshot: keep the last authoritative set and emit nothing,
+  # rather than replacing it with parsed garbage. `Map.put` still runs on
+  # the reject path so a hot-reloaded proc predating the field self-heals.
   defp do_route(
          %Message{command: {:numeric, 221}, params: [_, mode_str | _]},
          state
        )
        when is_binary(mode_str) do
     prev_umodes = Map.get(state, :umodes, [])
-    next_umodes = apply_umode_string([], mode_str)
+
+    next_umodes =
+      case apply_umode_string([], mode_str) do
+        {:ok, parsed} -> parsed
+        :error -> prev_umodes
+      end
+
     effects = if next_umodes != prev_umodes, do: [{:umode_changed, next_umodes}], else: []
     {:cont, Map.put(state, :umodes, next_umodes), effects}
   end
@@ -1111,7 +1136,13 @@ defmodule Grappa.Session.EventRouter do
        )
        when is_binary(usermodes) do
     prev = Map.get(state, :supported_umodes, [])
-    next = parse_supported_umodes(usermodes)
+
+    next =
+      case parse_supported_umodes(usermodes) do
+        {:ok, parsed} -> parsed
+        :error -> prev
+      end
+
     effects = if next != prev, do: [{:supported_umodes_changed, next}], else: []
     {:cont, Map.put(state, :supported_umodes, next), effects}
   end
@@ -3112,23 +3143,40 @@ defmodule Grappa.Session.EventRouter do
   # empty base = replace) and the self-MODE echo (from the current set =
   # delta). A snapshot from an ircd starts with `+`; a mid-session echo
   # may mix signs (`-i+w`).
-  @spec apply_umode_string([String.t()], String.t()) :: [String.t()]
+  #
+  # #279 — the mode string is upstream-supplied bytes, so the walk
+  # VALIDATES: a token is signs + `Identifier.valid_mode_letter?/1`
+  # letters and nothing else. Anything else is `:error` — the WHOLE token
+  # is rejected, not per-byte filtered. Rationale: a mode string is one
+  # atomic statement about the session, so a half-parsed one would publish
+  # a umode set the server never claimed (worse than keeping the last
+  # authoritative one). An empty token is `:error` for the same reason —
+  # it asserts nothing, and letting it through would let a truncated line
+  # WIPE the set. A bare sign (`"+"`) IS a valid empty snapshot.
+  @spec apply_umode_string([String.t()], String.t()) :: {:ok, [String.t()]} | :error
+  defp apply_umode_string(modes, "") when is_list(modes), do: :error
+
   defp apply_umode_string(modes, mode_string) when is_list(modes) and is_binary(mode_string) do
-    modes
-    |> MapSet.new()
-    |> walk_umodes(mode_string, :add)
-    |> Enum.sort()
+    case walk_umodes(MapSet.new(modes), mode_string, :add) do
+      {:ok, set} -> {:ok, Enum.sort(set)}
+      :error -> :error
+    end
   end
 
-  defp walk_umodes(set, "", _), do: set
+  defp walk_umodes(set, "", _), do: {:ok, set}
   defp walk_umodes(set, "+" <> rest, _), do: walk_umodes(set, rest, :add)
   defp walk_umodes(set, "-" <> rest, _), do: walk_umodes(set, rest, :remove)
 
-  defp walk_umodes(set, <<letter::binary-size(1), rest::binary>>, :add),
-    do: walk_umodes(MapSet.put(set, letter), rest, :add)
+  defp walk_umodes(set, <<letter::binary-size(1), rest::binary>>, direction) do
+    if Identifier.valid_mode_letter?(letter) do
+      walk_umodes(toggle_umode(set, letter, direction), rest, direction)
+    else
+      :error
+    end
+  end
 
-  defp walk_umodes(set, <<letter::binary-size(1), rest::binary>>, :remove),
-    do: walk_umodes(MapSet.delete(set, letter), rest, :remove)
+  defp toggle_umode(set, letter, :add), do: MapSet.put(set, letter)
+  defp toggle_umode(set, letter, :remove), do: MapSet.delete(set, letter)
 
   # #249 — parse the 004 RPL_MYINFO supported-usermode token (a signless
   # concatenation of letters, e.g. "oiwgrsk") into a sorted, deduped
@@ -3137,13 +3185,24 @@ defmodule Grappa.Session.EventRouter do
   # applies, so it does NOT share that walker (same wire SHAPE, different
   # MEANING; CLAUDE.md design-discipline #6). Any stray sign char is dropped
   # defensively (the token is signless by spec).
-  @spec parse_supported_umodes(String.t()) :: [String.t()]
+  #
+  # #279 — what the two DO share is the mode-letter CLASS at the boundary
+  # (`Identifier.valid_mode_letter?/1`): 004 param 3 is upstream-supplied
+  # bytes exactly like the 221 param, and un-validated it fed
+  # `{:supported_umodes_changed, [" ", "!", …]}` — the same malformed
+  # effect #279 was filed for, one numeric over. Reject the WHOLE token on
+  # any non-letter byte (`:error`), for the same reason 221 does: the
+  # availability set is one atomic advertisement, and a half-parsed one
+  # would grey out real toggles in cic's #249 /umode modal.
+  @spec parse_supported_umodes(String.t()) :: {:ok, [String.t()]} | :error
   defp parse_supported_umodes(token) when is_binary(token) do
-    token
-    |> String.graphemes()
-    |> Enum.reject(&(&1 in ["+", "-"]))
-    |> Enum.uniq()
-    |> Enum.sort()
+    letters = token |> String.graphemes() |> Enum.reject(&(&1 in ["+", "-"]))
+
+    if letters != [] and Enum.all?(letters, &Identifier.valid_mode_letter?/1) do
+      {:ok, letters |> Enum.uniq() |> Enum.sort()}
+    else
+      :error
+    end
   end
 
   # Parse a full mode snapshot string (e.g. "+nt" or "+ntk") plus arg list
