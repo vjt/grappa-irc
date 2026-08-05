@@ -13,6 +13,7 @@
 # Pins MIX_ENV=dev via scripts/mix.sh because dialyxir is
 # `only: [:dev, :test]` and unavailable under MIX_ENV=prod.
 
+# shellcheck source=scripts/_lib.sh
 . "$(dirname "$0")/_lib.sh"
 
 cd "$REPO_ROOT"

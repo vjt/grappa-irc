@@ -29,6 +29,7 @@
 
 set -euo pipefail
 
+# shellcheck source=scripts/_lib.sh
 . "$(dirname "$0")/_lib.sh"
 
 E2E_DIR="$SRC_ROOT/cicchetto/e2e"

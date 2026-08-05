@@ -33,6 +33,7 @@
 #
 # Canonical "which test runner do I use?" docs: docs/TESTING.md.
 
+# shellcheck source=scripts/_lib.sh
 . "$(dirname "$0")/_lib.sh"
 
 cd "$REPO_ROOT"

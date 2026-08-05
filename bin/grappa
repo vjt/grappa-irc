@@ -38,6 +38,7 @@
 
 set -euo pipefail
 
+# shellcheck source=scripts/_lib.sh
 . "$(dirname "$0")/../scripts/_lib.sh"
 
 # Test seam: bats overrides SCRIPTS_DIR to point at a tmpdir with
@@ -139,6 +140,7 @@ rpc_eval() {
 
 die_unknown_verb() {
     printf 'bin/grappa: unknown verb %q\n' "$1" >&2
+    # shellcheck disable=SC2016  # backticks are literal prose in the message
     printf 'Run `bin/grappa help` for the full verb table.\n' >&2
     exit 64
 }
@@ -192,6 +194,7 @@ verb_remote_shell() {
         --batch)
             shift
             if [ "${1:-}" != "-e" ] || [ -z "${2:-}" ]; then
+                # shellcheck disable=SC2016  # backticks are literal prose
                 printf 'remote-shell --batch requires `-e <expr>`.\n' >&2
                 printf 'Usage: bin/grappa remote-shell --batch -e <expr>\n' >&2
                 exit 64

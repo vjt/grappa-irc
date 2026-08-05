@@ -27,6 +27,7 @@
 
 set -euo pipefail
 
+# shellcheck source=scripts/_lib.sh
 . "$(dirname "$0")/_lib.sh"
 
 # #364 docker S10: assert main-checkout + main-branch BEFORE the dist

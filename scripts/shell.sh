@@ -7,6 +7,7 @@
 # Use for ad-hoc debugging. Don't add it to any docs flow — IEx is the
 # normal entry point (scripts/iex.sh).
 
+# shellcheck source=scripts/_lib.sh
 . "$(dirname "$0")/_lib.sh"
 
 cd "$REPO_ROOT"

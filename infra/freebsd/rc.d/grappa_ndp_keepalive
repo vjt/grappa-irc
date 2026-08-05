@@ -1,5 +1,15 @@
 #!/bin/sh
 #
+# shellcheck disable=SC1091,SC2034,SC2223
+# File-wide, and each code is the rc.subr CONTRACT rather than a defect:
+#   SC1091 — /etc/rc.subr exists on the FreeBSD host, never on the linter's.
+#   SC2034 — rcvar/pidfile/command/extra_commands/*_cmd are READ BY rc.subr
+#            after we set them; "unused here" is how the interface works.
+#   SC2223 — `: ${var:="default"}` is THE rc.d default-assignment idiom, used
+#            by every script under /usr/local/etc/rc.d.
+# Everything else stays linted: this mutes three known-idiomatic codes, not
+# the file (#441).
+#
 # PROVIDE: grappa_ndp_keepalive
 # REQUIRE: NETWORKING
 # KEYWORD: shutdown

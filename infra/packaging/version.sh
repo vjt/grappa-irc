@@ -25,7 +25,14 @@ set -eu
 
 # No `dirname --` / `cd --`: BSD dirname (the FreeBSD jail) doesn't accept the
 # end-of-options `--`, and $0 is always an invoked path (never starts with -).
+#
+# `CDPATH= cd` is an env-prefixed command (clear CDPATH for this cd only), not
+# a botched assignment — shellcheck's SC1007 heuristic cannot tell the two
+# apart, and the prefix form is the portable way to keep a user's CDPATH from
+# teleporting `cd` somewhere else and silently mis-rooting the repo.
+# shellcheck disable=SC1007
 SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1007
 REPO_ROOT="$(CDPATH= cd "${SCRIPT_DIR}/../.." && pwd)"
 
 # `head -1` + `tr -d` strips any trailing newline / CR the file carries so the

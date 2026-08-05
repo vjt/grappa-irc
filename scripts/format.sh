@@ -9,6 +9,7 @@
 # dev-tooling family — `.formatter.exs` may pull dev-only formatter
 # plugins in the future.
 
+# shellcheck source=scripts/_lib.sh
 . "$(dirname "$0")/_lib.sh"
 
 cd "$REPO_ROOT"
