@@ -50,11 +50,10 @@ test("#604 — connect survives a 433 collision, reconciling peer.nick so a DM r
       // reaches THIS peer, not the holder and not a phantom. If reconcile were
       // missing, `peer.nick` would still be the held nick — the DM would land
       // on the holder (irc-framework doesn't echo own sends) and this would
-      // time out. Arm the listener BEFORE the send.
+      // time out. The send is the wait's trigger, so the listener is
+      // attached before it goes out (#806).
       const token = `dm604-${crypto.randomUUID().slice(0, 8)}`;
-      const received = peer.waitForPrivmsg(holder.nick, token);
-      holder.privmsg(peer.nick, token);
-      await received;
+      await peer.waitForPrivmsg(holder.nick, token, () => holder.privmsg(peer.nick, token));
     } finally {
       await peer.disconnect("bye #604");
     }

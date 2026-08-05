@@ -129,9 +129,12 @@ test("query window follows a peer NICK change — relabels, keeps history, route
     // re-subscribe — the send still ROUTES (asserted via `received`), but
     // its scrollback echo can miss the live push until the next refresh.
     await waitForQueryWindowReady(page, NETWORK_SLUG, NEW_NICK);
-    const received = peer.waitForPrivmsg(NETWORK_NICK, FOLLOWUP_BODY);
-    await composeSend(page, FOLLOWUP_BODY);
-    await received; // times out if grappa still routed to the stale nick
+    // The send is the wait's trigger (#806): the peer is listening before
+    // it fires, and the delivery budget starts once it has fired — the
+    // round trip inside `composeSend` is not charged to delivery.
+    await peer.waitForPrivmsg(NETWORK_NICK, FOLLOWUP_BODY, () =>
+      composeSend(page, FOLLOWUP_BODY),
+    ); // fails with cause SILENCE if grappa still routed to the stale nick
     await expect(
       page.locator('[data-testid="scrollback-line"]', { hasText: FOLLOWUP_BODY }),
     ).toBeVisible({ timeout: 5_000 });

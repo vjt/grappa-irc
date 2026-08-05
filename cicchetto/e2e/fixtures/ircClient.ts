@@ -15,6 +15,7 @@
 // peer leaks out of the runner between tests.
 
 import { Client } from "irc-framework";
+import { awaitPrivmsg } from "./privmsgWait";
 
 const HOST = process.env.E2E_IRC_HOST ?? "bahamut-test";
 const PORT = Number(process.env.E2E_IRC_PORT ?? "6667");
@@ -55,6 +56,11 @@ const TOPIC_TIMEOUT_MS = 15_000;
 // genuine routing regression (#373's stale-nick 401 — nothing arrives, ever)
 // still fails, just 10s later. What it stops doing is failing when the
 // message is merely queued behind the harness's own reconnect burst.
+//
+// This is the DEFAULT, not the only option: `waitForPrivmsg` takes a
+// `timeoutMs` like its sibling `waitForLine` does, so a spec that needs a
+// different budget asks for one instead of retuning everyone's (#806
+// defect 2).
 const PRIVMSG_TIMEOUT_MS = 15_000;
 const OPER_TIMEOUT_MS = 5_000;
 const NICKSERV_TIMEOUT_MS = 5_000;
@@ -174,22 +180,27 @@ export class IrcPeer {
   }
 
   // Await an inbound PRIVMSG to this peer from `fromNick` whose message
-  // contains `body`. Attaches the listener synchronously, so callers set
-  // it up BEFORE triggering the send:
-  //   const got = peer.waitForPrivmsg(nick, body); await composeSend(...);
-  //   await got;
+  // contains `body`, having issued `trigger` (the send that is supposed
+  // to produce it):
+  //   await peer.waitForPrivmsg(nick, body, () => composeSend(page, body));
+  //
+  // The trigger is an ARGUMENT rather than something the caller runs
+  // between an arm and an await (#806 defect 1). That is what lets the
+  // listener be attached before the trigger — so a fast reply cannot race
+  // it — while the deadline is clocked from the trigger, instead of the
+  // caller's trigger silently eating the delivery budget. Everything the
+  // wait saw is reported on failure; see `privmsgWait.ts`.
+  //
   // #373 — proves grappa routed an operator's DM to the LIVE (renamed)
   // nick with NO 401: if routing had followed the stale old nick the peer
-  // never receives it and this times out.
-  waitForPrivmsg(fromNick: string, body: string): Promise<void> {
-    return onceMatching(
-      this.client,
-      "privmsg",
-      (event: { nick: string; message: string }) =>
-        event.nick === fromNick && event.message.includes(body),
-      PRIVMSG_TIMEOUT_MS,
-      `privmsg from ${fromNick} containing "${body}"`,
-    );
+  // never receives it and this fails with cause SILENCE.
+  waitForPrivmsg(
+    fromNick: string,
+    body: string,
+    trigger: () => void | Promise<void>,
+    timeoutMs = PRIVMSG_TIMEOUT_MS,
+  ): Promise<void> {
+    return awaitPrivmsg(this.client, { fromNick, body, timeoutMs, trigger });
   }
 
   // Send a raw NOTICE to a target. `target` may be a nick, a channel, or
@@ -518,10 +529,10 @@ export class IrcPeer {
   // it.
   waitForLine(pattern: RegExp, label: string, timeoutMs = 8_000): Promise<string> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error(`IrcPeer: timeout waiting for ${label} (${timeoutMs}ms)`)),
-        timeoutMs,
-      );
+      const timer = setTimeout(() => {
+        this.client.removeListener("raw", handler);
+        reject(new Error(`IrcPeer: timeout waiting for ${label} (${timeoutMs}ms)`));
+      }, timeoutMs);
       const handler = (event: { line: string; from_server: boolean }) => {
         if (!event.from_server || !pattern.test(event.line)) return;
         clearTimeout(timer);
@@ -540,6 +551,11 @@ export class IrcPeer {
   }
 }
 
+// #806 — every wait below detaches its handler on the TIMEOUT branch too,
+// not just on the match. Rejecting without detaching leaves the handler
+// attached for the life of the peer: harmless-looking, but `waitForLine`'s
+// runs a regex over every wire line thereafter, and the next helper written
+// in this shape inherits it.
 function once<T = unknown>(
   client: Client,
   event: string,
@@ -547,14 +563,16 @@ function once<T = unknown>(
   label: string,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`IrcPeer: timeout waiting for ${label} (${timeoutMs}ms)`)),
-      timeoutMs,
-    );
-    client.once(event, (payload: T) => {
+    const timer = setTimeout(() => {
+      client.removeListener(event, handler);
+      reject(new Error(`IrcPeer: timeout waiting for ${label} (${timeoutMs}ms)`));
+    }, timeoutMs);
+    const handler = (payload: T) => {
       clearTimeout(timer);
+      client.removeListener(event, handler);
       resolve(payload);
-    });
+    };
+    client.on(event, handler);
   });
 }
 
@@ -566,10 +584,10 @@ function onceMatching<T>(
   label: string,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`IrcPeer: timeout waiting for ${label} (${timeoutMs}ms)`)),
-      timeoutMs,
-    );
+    const timer = setTimeout(() => {
+      client.removeListener(event, handler);
+      reject(new Error(`IrcPeer: timeout waiting for ${label} (${timeoutMs}ms)`));
+    }, timeoutMs);
     const handler = (payload: T) => {
       if (!predicate(payload)) return;
       clearTimeout(timer);
