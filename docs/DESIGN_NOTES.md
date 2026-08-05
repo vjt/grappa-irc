@@ -29112,3 +29112,51 @@ arrive to a freed buffer", and `main` ends with a long comment about the model
 thread that was neither stopped nor joined while shutdown freed the mutex and
 SSL context underneath it. The helper's own teardown was the one place that had
 drifted from the rule the rest of the tree follows.
+## 2026-08-05 — #758: a primitive that cannot fail makes its callers' error handling dead code
+
+`spawn_ffmpeg` in the call helper returned a pid whenever `fork()` succeeded.
+`execvp` failing set the CHILD's exit status to 127 and nothing ever inspected
+it — the only `waitpid`s in the helper are the blocking reaps on the teardown
+path — so all three start functions reported success unconditionally. On a
+machine with no ffmpeg the call connected, the tile map published, the UI drew
+a call window, and the user got silence and a black rectangle with no
+diagnostic anywhere. ffmpeg is an OPT-IN dependency of an opt-in feature, so
+this is the ordinary case rather than an exotic one.
+
+**The callers were already right; the primitive underneath them lied.**
+`media_start_send` closes its socket and returns false on -1, and both mixes
+`return mix->pid > 0`. Three error messages were written for that false branch
+and none of them could be reached. That is the general shape worth naming: a
+function that cannot report failure does not merely lose an error, it converts
+every caller's error handling into unreachable code that reads, in review, as
+though the case were handled.
+
+**The exec gets a channel of its own: an `FD_CLOEXEC` pipe.** A successful
+exec closes the write end, so the parent reads EOF; a failed one leaves the
+child alive to write its errno first, so a non-empty read means the exec
+failed and nothing else does. Chosen over polling `waitpid(WNOHANG)` on the
+supervisor tick for three reasons: it answers at the start, where the callers
+already test a bool (a tick poll has no bool and would need new messages,
+leaving the existing ones dead — i.e. not fixing the defect); it cannot
+confuse "ffmpeg is not installed" with "ffmpeg died at second thirty"; and it
+is testable without a call, because PATH decides the outcome, whereas the tick
+lives in `call/main.c`, which no test links.
+
+**The boundary is stated, not implied.** An ffmpeg that starts and then dies —
+a device that will not open, a filter graph it refuses — is still invisible.
+The header used to claim "a failure shows as the process dying, which the
+caller sees" over code where nobody looked; the replacement says what is
+detected and what is not, because a comment promising a guarantee nobody
+implements is the bug, not the documentation of one (the same lesson as #754's
+job comment promising `-Werror` over a file it never compiled).
+
+**Two mutations, two different lessons.** Deleting the reap left every check
+green — and an unreaped failure is one zombie per supervisor tick for the
+length of the call, since the tick rebuilds both mixes, so the suite now
+asserts `waitpid(-1, WNOHANG) == ECHILD` after a failed start. And dropping
+`FD_CLOEXEC` from the write end should have hung the parent's read forever;
+the suite passed in one second, because the fake ffmpeg (`exec sleep 30` under
+a PATH holding only the scratch directory) could not find `sleep` and died
+instantly, closing the write end and handing the parent a clean EOF by
+accident. A positive control that admits a corpse is not a control: it now
+sets its own PATH and asserts the child is RUNNING, not merely forked.
