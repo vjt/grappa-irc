@@ -37,6 +37,11 @@ vi.mock("../lib/api", () => ({
   // transitively) needs the classifier in its api mock.
   isContentKind: (k: string) => k === "privmsg" || k === "notice" || k === "action",
   isPresenceKind: (k: string) => !(k === "privmsg" || k === "notice" || k === "action"),
+  // #868 — this file drives real messages through subscribe.ts, which now
+  // decides the beep via `pushTriggers.shouldNotify` and so reads the
+  // notify-worthy kind set from api.ts. Same mirror the classifiers above
+  // needed when selection.ts started importing them.
+  NOTIFY_KINDS: new Set(["privmsg", "action"]),
   displayNick: (me: { kind: "user" | "visitor"; name?: string; nick?: string }) =>
     me.kind === "user" ? (me.name ?? "") : (me.nick ?? ""),
   // Mirror of production `ownNickForNetwork` — see subscribe.test.ts

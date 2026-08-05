@@ -32,6 +32,7 @@ import { moduleRoot } from "./moduleRoot";
 import { setNamesReply } from "./namesModal";
 import { mutateNetworkNick, refetchChannels, refetchNetworks } from "./networks";
 import { nickEquals } from "./nickEquals";
+import { refreshNotificationPrefs } from "./notificationPrefs";
 import {
   applyPresenceChange,
   applyPresenceError,
@@ -1033,6 +1034,19 @@ moduleRoot(() => {
       // of a server-synced, cross-device alias layer.
       void refreshAliases().catch((err) =>
         console.warn("[userTopic] alias-list hydrate failed", err),
+      );
+      // #868 — hydrate the notification prefs on every user-topic (re)join,
+      // for the SAME reason as the two above: they live in server
+      // user_settings with NO broadcast, and the live notify path
+      // (`subscribe.ts` → `shouldNotify`) now reads them to decide the in-app
+      // beep and the optimistic `document.title` bump. Without this the store
+      // sits on `DEFAULT_NOTIFICATION_PREFS` for the whole session and a
+      // subject who muted channel mentions would keep hearing them until they
+      // opened the settings drawer. The signal defaults to the SERVER's own
+      // defaults, so a failed hydrate degrades to "behaves like a subject who
+      // never configured anything" — never to silence.
+      void refreshNotificationPrefs().catch((err) =>
+        console.warn("[userTopic] notification-prefs hydrate failed", err),
       );
     });
     channel.on("event", (raw: unknown) => {
