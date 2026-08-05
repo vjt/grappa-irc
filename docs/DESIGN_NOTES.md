@@ -29382,3 +29382,59 @@ Counting over text nodes only fixes it without touching the threshold. The
 tell was that the number was impossible, not that the test was inconvenient —
 and the same run's width assertion, which passed, is what ruled out "the
 override never reached that row" before a single line was changed.
+
+## 2026-08-05 — #862: the fourth copy of a generator, and the comment that was wrong
+
+`docker run ghcr.io/vjt/grappa:v0.11.0 start` died on a missing
+`SECRET_KEY_BASE` and told the operator to run `scripts/mix.sh phx.gen.secret`
+— a path that exists in exactly one of the four install flavours, and not in
+the image printing the message. Reproduced verbatim against the published
+image before a line was changed; that is the only reason the fix could be
+aimed at the right thing.
+
+**The image was secret-less by design, but the design only ever shipped one
+door.** `Dockerfile.release` deliberately bakes no secrets — baking them would
+give every puller the same Cloak key — and `deploy.sh` generated them on the
+host. Nobody wired the door that a ghcr package page actually invites you
+through. The entrypoint now generates the six secrets on first boot onto the
+`/data` volume, with the operator's env winning over anything generated and a
+volume that already has the file reused byte-for-byte. Rotation is the danger
+here, not absence: a re-rolled `SECRET_KEY_BASE` logs everyone out and a
+re-rolled `GRAPPA_ENCRYPTION_KEY` orphans every Cloak-encrypted credential, so
+"never regenerate" is a data-loss guard, not tidiness.
+
+**`PHX_HOST` stays the one thing that raises.** Every other missing value has
+a generator; a public hostname does not. Keeping the bare run fatal on exactly
+that variable is what makes the remaining raise informative instead of noise.
+
+**Four flavours, four wrong messages if you pick a substrate to name.**
+`GRAPPA_SUBSTRATE` looked like the discriminator and is not: it defaults to
+`docker` when unset, so a `.deb` host that never set it and the dev compose
+stack both read as "docker" while wanting entirely different advice. The
+messages route through one closure instead, giving a substrate-neutral
+`openssl` recipe (openssl is a hard dependency of all four) plus a placement
+block naming all four. Swapping one flavour's wrong hint for another's is not
+a fix.
+
+**One of two comments in `main` was lying, and the measurement said which.**
+`gen-secrets.sh` claimed its openssl VAPID keypair was byte-for-byte what
+`mix grappa.gen_vapid` emits; `deploy.sh` claimed "host openssl cannot safely
+reproduce a raw P-256 point" and spent a throwaway `--env-file` plus a whole
+`docker run … eval` avoiding it. gen-secrets was right: over 100 generated
+pairs the emitted 32-byte scalar re-derives the emitted 65-byte uncompressed
+point exactly, through an independent openssl path whose own arithmetic is
+pinned to the published FIPS 186-4 P-256 vector. The packaged `.deb`/`.rpm`
+hosts had been relying on the correct one all along. `write_env_file()` now
+calls the same generator; the transcription and the throwaway container are
+gone.
+
+**The container needed `bash`, and that was measured too.** The generator uses
+`trap … RETURN` and `set -o pipefail`. Busybox ash (alpine, the image) has
+pipefail but rejects a `RETURN` trap; Debian dash (a `.deb` host's `/bin/sh`)
+rejects `set -o pipefail`. Both were run to confirm rather than recalled. POSIX-
+ifying would therefore have meant dropping pipefail from the script that writes
+the Cloak key — so the 1.6 MB shell is the cheaper half of that trade. The one
+real change to the generator is that `chown` now runs only as root: the
+container runs unprivileged as the user that already owns `/data`, and an
+unconditional root-only chown under `set -e` killed the script before it wrote
+a single secret.

@@ -627,8 +627,9 @@ compose, no source, no `mix`. `infra/docker/deploy.sh` in **release mode**
 (auto-selected when there is no `compose.yaml` two levels up, or forced with
 `GRAPPA_DEPLOY_MODE=release`) grows the same `install`/`update`/`stop`/bare
 verbs against `docker run`. The `curl | bash` bootstrap `infra/docker/get.sh`
-lays the two shell files it needs (`deploy.sh` + the `deploy_common.sh` it
-sources) into `$GRAPPA_HOME`, then hands off:
+lays the three shell files it needs (`deploy.sh`, the `deploy_common.sh` it
+sources, and the `infra/packaging/gen-secrets.sh` it generates secrets with)
+into `$GRAPPA_HOME`, then hands off:
 
 ```sh
 # install — asks for PHX_HOST, or set it inline to skip the prompt
@@ -637,17 +638,43 @@ curl -fsSL https://raw.githubusercontent.com/vjt/grappa-irc/main/infra/docker/ge
 curl -fsSL https://raw.githubusercontent.com/vjt/grappa-irc/main/infra/docker/get.sh | bash -s -- update
 ```
 
+- **Bare `docker run` works too (#862).** The first thing anyone types on
+  seeing a ghcr package is `docker run ghcr.io/vjt/grappa:<tag> start`, and
+  until #862 it died on a missing `SECRET_KEY_BASE` pointing at a
+  `scripts/mix.sh` the image does not ship. The entrypoint now generates the
+  six secrets on first boot with the same `gen-secrets.sh`, onto the `/data`
+  volume as `grappa.env` (0600, beside the DB, so it follows a relocated
+  `DATABASE_PATH`):
+
+  ```sh
+  docker run -v grappa-data:/data -p 127.0.0.1:4000:4000 \
+      -e PHX_HOST=grappa.example.org ghcr.io/vjt/grappa:latest
+  ```
+
+  `PHX_HOST` is still required and still raises — nothing can invent your
+  domain. Everything the operator passes with `-e` / `--env-file` WINS and is
+  never overwritten; when the environment already carries all six (the
+  `deploy.sh` path) the entrypoint writes nothing to `/data` at all. Secrets
+  are **never rotated**: on a volume that already has the file it is reused
+  byte-for-byte. **`/data/grappa.env` is a backup target** — losing
+  `GRAPPA_ENCRYPTION_KEY` loses every stored upstream credential.
 - **State + secrets.** All config + every prod secret live in
   `$GRAPPA_HOME/grappa.env` (default `~/.grappa/grappa.env`, mode `0600`). It is
   generated ONCE on `install` and **never regenerated** — rotating
   `SECRET_KEY_BASE` / `GRAPPA_ENCRYPTION_KEY` under a live box invalidates every
   session and makes Cloak-encrypted upstream creds undecryptable, so a re-run of
   `install` on an existing box reuses it untouched. Back it up.
-- **Secret generation (fork C).** The four random secrets (`SECRET_KEY_BASE`,
-  `SECRET_SIGNING_SALT`, `GRAPPA_ENCRYPTION_KEY`, `RELEASE_COOKIE`) are minted on
-  the host with `openssl`; the VAPID keypair is minted by the image's OWN
-  `:crypto` (a `docker run … eval` mirroring `mix grappa.gen_vapid` — the release
-  image has no `mix`). No secret ever touches argv or stdout.
+- **Secret generation — ONE generator (#862).** All six secrets come from
+  `infra/packaging/gen-secrets.sh`, the same openssl-only, idempotent script the
+  `.deb`/`.rpm` postinstall runs and the release image's entrypoint runs on
+  first boot. No secret ever touches argv or stdout: the generator writes
+  straight into the env file, which is built as `grappa.env.partial` and only
+  `mv`'d into place once every secret is in (a half-written file would be worse
+  than none — the next run would take the "reusing the existing env file"
+  branch and boot a secret-less box). It replaced two divergent openssl
+  transcriptions plus a throwaway `docker run … eval` for the VAPID pair; the
+  claim that host openssl "cannot safely reproduce a raw P-256 point" was false
+  and is now measured in `test/infra/gen_secrets_test.bats`.
 - **`PHX_HOST`** is required and asked interactively on `/dev/tty` (a piped
   one-liner reads the answer from your terminal, NOT the pipe); set `PHX_HOST=…`
   to skip the prompt. There is no silent `localhost` fallback — a wrong
