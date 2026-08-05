@@ -20,8 +20,14 @@ defmodule Grappa.Session.GhostRecovery do
      to `:failed`.
   5. `:timeout` in any non-terminal phase → `:failed`.
 
-  No cached password OR `:failed` terminal = visitor stays on
-  `<nick>_` (anon-shape until next session restart).
+  `:failed` terminal = the visitor stays on `<nick>_` (anon-shape until
+  the next session restart).
+
+  A cached password is a PRECONDITION, not a branch: the sole production
+  entry point is `Session.Server`'s `:nickserv_identify` 433 arm, guarded
+  `when is_binary(pwd)` on the one-shot `state.pending_password`. A 433
+  without one is the bounded `Grappa.IRC.AuthFSM` nick ladder's job (#676)
+  — this FSM is never armed for it.
 
   Boundary: inherits the parent `Grappa.Session` boundary — same
   pattern as sibling submodules `Server`, `EventRouter`,
@@ -43,17 +49,18 @@ defmodule Grappa.Session.GhostRecovery do
         }
 
   @doc """
-  Builds an initial FSM state pinned to a given original nick and an
-  optional cached NickServ password.
+  Builds an initial FSM state pinned to a given original nick and the
+  cached NickServ password the GHOST verb will be issued under.
 
-  Anon visitors (no cached password) still get an FSM so a 433 collision
-  still drives the underscore-append fallback. Without a password the
-  GHOST verb can't be issued, so the FSM transitions straight to
-  `:failed` after emitting the underscore NICK.
+  The password is REQUIRED. A no-password variant used to exist and was
+  reachable only from this module's own test file — the underscore
+  fallback for a passwordless 433 belongs to `Grappa.IRC.AuthFSM`'s
+  bounded ladder (#676), which is exactly why that ladder skips
+  `:nickserv_identify`: a ladder NICK there would race the GHOST
+  sequence off its own nick.
   """
-  @spec init(String.t(), String.t() | nil) :: t()
-  def init(orig_nick, password)
-      when is_binary(orig_nick) and (is_binary(password) or is_nil(password)) do
+  @spec init(String.t(), String.t()) :: t()
+  def init(orig_nick, password) when is_binary(orig_nick) and is_binary(password) do
     %__MODULE__{phase: :idle, orig_nick: orig_nick, password: password}
   end
 
@@ -81,14 +88,6 @@ defmodule Grappa.Session.GhostRecovery do
 
     {:cont, %{s | phase: :awaiting_ghost_notice, try_nick: try_nick},
      ["NICK #{try_nick}\r\n", "PRIVMSG NickServ :GHOST #{orig} #{pwd}\r\n"]}
-  end
-
-  def step(
-        %__MODULE__{phase: :idle, orig_nick: orig, password: nil} = s,
-        %Message{command: {:numeric, 433}}
-      ) do
-    try_nick = orig <> "_"
-    {:stop, %{s | phase: :failed, try_nick: try_nick}, ["NICK #{try_nick}\r\n"]}
   end
 
   def step(

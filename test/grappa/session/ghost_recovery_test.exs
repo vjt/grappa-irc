@@ -17,14 +17,18 @@ defmodule Grappa.Session.GhostRecoveryTest do
       assert "PRIVMSG NickServ :GHOST vjt s3cret\r\n" in lines
     end
 
-    test ":idle on 433 without cached password → :failed + only NICK underscore" do
-      state = GhostRecovery.init("vjt", nil)
+    # #618 (d) — the passwordless 433 is NOT this FSM's job. `AuthFSM`'s
+    # bounded ladder owns it for every auth_method except
+    # `:nickserv_identify`, and this FSM is only ever armed for that one.
+    # A hand-built nil-password struct (which `init/2` now refuses) must
+    # fall through to the no-op catch-all, never emit a NICK: the GHOST
+    # that makes the underscore temporary cannot be sent without a password,
+    # so a NICK here would strand the session on `vjt_` with no way back.
+    test ":idle on 433 with no password is a no-op, not a bare NICK underscore" do
+      state = %GhostRecovery{phase: :idle, orig_nick: "vjt", password: nil}
       msg = %Message{command: {:numeric, 433}, params: ["*", "vjt", "Nickname is already in use."]}
 
-      assert {:stop, next, lines} = GhostRecovery.step(state, msg)
-
-      assert next.phase == :failed
-      assert lines == ["NICK vjt_\r\n"]
+      assert {:cont, ^state, []} = GhostRecovery.step(state, msg)
     end
 
     test ":awaiting_ghost_notice on NickServ NOTICE → :awaiting_whois + WHOIS emitted" do
@@ -177,9 +181,15 @@ defmodule Grappa.Session.GhostRecoveryTest do
              } = GhostRecovery.init("vjt", "s3cret")
     end
 
-    test "accepts nil password (anon-shape recovery without ghosting capacity)" do
-      assert %GhostRecovery{phase: :idle, orig_nick: "vjt", password: nil} =
-               GhostRecovery.init("vjt", nil)
+    # #618 (d) — a cached password is a PRECONDITION. The FSM used to accept
+    # nil and carry a dedicated no-password 433 clause; the only caller that
+    # ever reached it was this test file, because the one production entry
+    # point (`Session.Server`'s `:nickserv_identify` 433 arm) is guarded
+    # `when is_binary(pwd)` and `pending_password` is only ever staged for
+    # `:nickserv_identify`. This asserts the guard, so a future caller cannot
+    # quietly resurrect the untested branch by passing nil.
+    test "rejects a nil password rather than building a ghost-less FSM" do
+      assert_raise FunctionClauseError, fn -> GhostRecovery.init("vjt", nil) end
     end
   end
 end

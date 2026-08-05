@@ -2977,18 +2977,17 @@ defmodule Grappa.Session.Server do
         %{pending_password: pwd, ghost_recovery: nil} = state
       )
       when is_binary(pwd) do
-    fsm = GhostRecovery.init(state.nick, pwd)
+    # #618 — a hard match, not a `case`. `:idle` + 433 + a binary password has
+    # exactly one edge (underscore NICK + GHOST → `:awaiting_ghost_notice`);
+    # the `:stop` arm that used to sit here served the passwordless clause,
+    # which was reachable only from the FSM's own test file and is gone. If a
+    # future terminal lands on this transition, crashing loudly beats silently
+    # arming no timer and stranding the FSM.
+    {:cont, next, lines} = GhostRecovery.step(GhostRecovery.init(state.nick, pwd), msg)
 
-    case GhostRecovery.step(fsm, msg) do
-      {:cont, next, lines} ->
-        state = flush_lines(state, lines)
-        timer = Process.send_after(self(), :ghost_timeout, @ghost_recovery_timeout_ms)
-        {:noreply, %{state | ghost_recovery: next, ghost_timer: timer}}
-
-      {:stop, _, lines} ->
-        state = flush_lines(state, lines)
-        {:noreply, state}
-    end
+    state = flush_lines(state, lines)
+    timer = Process.send_after(self(), :ghost_timeout, @ghost_recovery_timeout_ms)
+    {:noreply, %{state | ghost_recovery: next, ghost_timer: timer}}
   end
 
   # NickServ NOTICE while ghost recovery is armed — feed into the FSM.
