@@ -45,6 +45,11 @@ describe("DEFAULT_NOTIFICATION_PREFS", () => {
       channel_mentions: true,
       private_messages_all: true,
       private_messages_only: [],
+      // #866 — nothing muted by default. This map must stay byte-identical to
+      // the server's `UserSettings.default_notification_prefs/0`: it is what
+      // an un-hydrated client decides beeps with, so a divergence here means
+      // the client is silently stricter (or looser) than the push it mirrors.
+      muted_targets: {},
     });
   });
 });
