@@ -196,51 +196,40 @@ const Login: Component = () => {
     }
   };
 
-  // Shared tail for both the plain submit and the captcha-solve retry: run
-  // the one blocking login request under the connecting view, navigate on
-  // success, revert to the form (with a friendly error) on failure.
-  const attemptLogin = async (
-    id: string,
-    pwd: string | null,
-    captchaToken?: string,
-  ): Promise<void> => {
+  // #727 — ONE in-flight latch for EVERY login flow this card offers.
+  //
+  // `connecting()` is not merely a spinner: the `<Show>` below swaps the form
+  // out for the connecting view, which is what makes a second click
+  // impossible. The password submit had it; the passkey and recovery-code
+  // doors did not, and neither button was ever disabled, so on a slow link
+  // the user got zero feedback and clicked again — sending a SECOND
+  // `POST /auth/passkeys/recover` with the same one-shot code. One request
+  // consumes it and navigates; the other comes back `invalid_two_factor` and
+  // books a hit in the server's `passkey_recovery` throttle window. An
+  // impatient double-click cost a recovery code AND a slice of the lockout
+  // budget. On the passkey button, the second ceremony is rejected outright
+  // by the browser ("A request is already pending").
+  //
+  // `run` returns whether the flow is DONE (navigate) or has handed off to
+  // another view on this card (the TOTP challenge — revert the latch, stay).
+  // Written as one helper rather than a fourth copy of the same
+  // try/stopRotation/handleError tail: the two copies that existed were
+  // already drifting.
+  const underConnecting = async (run: () => Promise<boolean>): Promise<void> => {
     setError(null);
     setConnecting(true);
     startRotation();
     try {
-      // #152 — thread login-Advanced ident/realname through the same
-      // boundary. Blank fields are omitted downstream (auth.login), so a
-      // guest/plain login stays a minimal request. Named `advancedFields`
-      // (not `advanced`) so it doesn't shadow the `advanced()` toggle
-      // signal accessor in this scope.
-      const advancedFields = { ident: ident(), realname: realname(), incognito: incognito() };
-      // Preserve the auth.login(id, pwd, captcha?) boundary shape: forward
-      // the captcha token only when present, so the plain path stays a
-      // 2-arg call (the captcha retry is the only 3-arg caller).
-      if (captchaToken === undefined) {
-        const result = await auth.login(id, pwd, undefined, advancedFields);
-        if (result.kind === "totp") {
-          stopRotation();
-          setConnecting(false);
-          setTotpChallenge(result.challengeToken);
-          setPassword("");
-          return;
-        }
-      } else {
-        const result = await auth.login(id, pwd, captchaToken, advancedFields);
-        if (result.kind === "totp") {
-          stopRotation();
-          setConnecting(false);
-          setTotpChallenge(result.challengeToken);
-          setPassword("");
-          return;
-        }
-      }
+      const navigateAway = await run();
       // Stop the cosmetic rotation before we leave — navigation unmounts
       // Login (onCleanup would catch it too), but being explicit means a
       // future route guard that bounces back to /login without unmounting
       // can't leave the interval running.
       stopRotation();
+      if (!navigateAway) {
+        setConnecting(false);
+        return;
+      }
       navigate("/", { replace: true });
     } catch (err) {
       setConnecting(false);
@@ -248,6 +237,28 @@ const Login: Component = () => {
       handleError(err);
     }
   };
+
+  // Shared tail for both the plain submit and the captcha-solve retry.
+  const attemptLogin = async (
+    id: string,
+    pwd: string | null,
+    captchaToken?: string,
+  ): Promise<void> =>
+    underConnecting(async () => {
+      // #152 — thread login-Advanced ident/realname through the same
+      // boundary. Blank fields are omitted downstream (auth.login), so a
+      // guest/plain login stays a minimal request. Named `advancedFields`
+      // (not `advanced`) so it doesn't shadow the `advanced()` toggle
+      // signal accessor in this scope.
+      const advancedFields = { ident: ident(), realname: realname(), incognito: incognito() };
+      const result = await auth.login(id, pwd, captchaToken, advancedFields);
+      if (result.kind === "totp") {
+        setTotpChallenge(result.challengeToken);
+        setPassword("");
+        return false;
+      }
+      return true;
+    });
 
   const handleCaptchaSolve = async (token: string): Promise<void> => {
     // By the time the captcha is solved the identifier has already been
@@ -299,18 +310,10 @@ const Login: Component = () => {
     const challenge = totpChallenge();
     if (challenge === null) return;
 
-    setError(null);
-    setConnecting(true);
-    startRotation();
-    try {
+    await underConnecting(async () => {
       await auth.verifyTotp(challenge, totpCode());
-      stopRotation();
-      navigate("/", { replace: true });
-    } catch (err) {
-      setConnecting(false);
-      stopRotation();
-      handleError(err);
-    }
+      return true;
+    });
   };
 
   const passkeyIdentifier = (): string | null => {
@@ -326,13 +329,10 @@ const Login: Component = () => {
   const onPasskeyLogin = async (): Promise<void> => {
     const id = passkeyIdentifier();
     if (id === null) return;
-    setError(null);
-    try {
+    await underConnecting(async () => {
       await auth.loginWithPasskey(id);
-      navigate("/", { replace: true });
-    } catch (err) {
-      handleError(err);
-    }
+      return true;
+    });
   };
 
   const onRecoveryLogin = async (): Promise<void> => {
@@ -347,13 +347,10 @@ const Login: Component = () => {
       setError("Enter your recovery code.");
       return;
     }
-    setError(null);
-    try {
+    await underConnecting(async () => {
       await auth.loginWithRecoveryCode(id, code);
-      navigate("/", { replace: true });
-    } catch (err) {
-      handleError(err);
-    }
+      return true;
+    });
   };
 
   // #724 — the recovery field sits inside the credential form (that is where

@@ -319,8 +319,11 @@ describe("Login — #442 alternate auth (passkey / recovery code)", () => {
     await waitFor(() => {
       expect(auth.loginWithPasskey).toHaveBeenCalledWith("my_nick");
     });
-    // Same correction-is-visible contract as the Connect path.
-    expect((nickField() as HTMLInputElement).value).toBe("my_nick");
+    // #727 — a succeeding ceremony now holds the connecting view and leaves,
+    // exactly like Connect, so the form is gone by here. The
+    // correction-is-visible half of this contract is asserted on the FAILURE
+    // path below, which is where the user still has a form to read.
+    expect(screen.getByTestId("login-connecting")).toBeInTheDocument();
   });
 
   it("refuses to start the ceremony with an empty identifier", async () => {
@@ -340,12 +343,15 @@ describe("Login — #442 alternate auth (passkey / recovery code)", () => {
       new Error("Passkey authentication cancelled"),
     );
     renderLogin();
-    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.input(nickField(), { target: { value: "my nick" } });
     fireEvent.click(passkeyBtn());
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent(/passkey authentication cancelled/i);
     });
     expect(nickField()).toBeInTheDocument();
+    // Same correction-is-visible contract as the Connect path: the field the
+    // user comes back to shows what was actually sent.
+    expect((nickField() as HTMLInputElement).value).toBe("my_nick");
   });
 
   it("renders friendly copy for an ApiError from the ceremony", async () => {
@@ -355,6 +361,84 @@ describe("Login — #442 alternate auth (passkey / recovery code)", () => {
     fireEvent.click(passkeyBtn());
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent(/invalid name or password/i);
+    });
+  });
+
+  // #727 — `onSubmit` swaps in the connecting view while the password login
+  // is in flight; its two siblings did not, and neither button was ever
+  // disabled. Both are fired as `void`, so the user got zero feedback and a
+  // second click went straight through.
+  describe("#727 the alternative doors share the in-flight latch", () => {
+    const pending = <T,>(): Promise<T> => new Promise<T>(() => {});
+
+    it("a double click on Recover account spends the one-shot code once", async () => {
+      // Two `POST /auth/passkeys/recover` with the SAME code: one consumes
+      // it and navigates, the other returns `invalid_two_factor` AND books a
+      // hit in the server's `passkey_recovery` throttle window (10 failures /
+      // 15 min). One impatient double-click burns a recovery code and a slice
+      // of the lockout budget.
+      vi.mocked(auth.loginWithRecoveryCode).mockReturnValue(pending<void>());
+      renderLogin();
+      fireEvent.input(nickField(), { target: { value: "alice" } });
+      fireEvent.click(screen.getByRole("button", { name: "Recovery code" }));
+      fireEvent.input(screen.getByLabelText(/^recovery code$/i), {
+        target: { value: "abcd-1234" },
+      });
+
+      const recover = screen.getByRole("button", { name: /recover account/i });
+      fireEvent.click(recover);
+      fireEvent.click(recover);
+
+      expect(auth.loginWithRecoveryCode).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("login-connecting")).toBeInTheDocument();
+    });
+
+    it("a double click on Passkey starts one ceremony", async () => {
+      // A second ceremony while the first is pending is rejected outright by
+      // Chrome ("A request is already pending").
+      vi.mocked(auth.loginWithPasskey).mockReturnValue(pending<void>());
+      renderLogin();
+      fireEvent.input(nickField(), { target: { value: "alice" } });
+
+      const button = passkeyBtn();
+      fireEvent.click(button);
+      fireEvent.click(button);
+
+      expect(auth.loginWithPasskey).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("login-connecting")).toBeInTheDocument();
+    });
+
+    it("gives the recovery flow the same in-flight feedback the password login has", async () => {
+      vi.mocked(auth.loginWithRecoveryCode).mockReturnValue(pending<void>());
+      renderLogin();
+      fireEvent.input(nickField(), { target: { value: "alice" } });
+      fireEvent.click(screen.getByRole("button", { name: "Recovery code" }));
+      fireEvent.input(screen.getByLabelText(/^recovery code$/i), {
+        target: { value: "abcd-1234" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /recover account/i }));
+
+      await waitFor(() => expect(screen.getByTestId("login-connecting")).toBeInTheDocument());
+      expect(screen.queryByLabelText(/nick or email/i)).toBeNull();
+    });
+
+    it("hands the card back when the alternative door fails", async () => {
+      // The latch must not strand the user in the spinner: a refused code
+      // reverts to the form with the reason, exactly like Connect does.
+      vi.mocked(auth.loginWithRecoveryCode).mockRejectedValue(
+        new ApiError(401, "invalid_two_factor"),
+      );
+      renderLogin();
+      fireEvent.input(nickField(), { target: { value: "alice" } });
+      fireEvent.click(screen.getByRole("button", { name: "Recovery code" }));
+      fireEvent.input(screen.getByLabelText(/^recovery code$/i), { target: { value: "nope" } });
+      fireEvent.click(screen.getByRole("button", { name: /recover account/i }));
+
+      await waitFor(() => {
+        expect(screen.getByRole("alert")).toHaveTextContent(/invalid or already-used/i);
+      });
+      expect(screen.queryByTestId("login-connecting")).toBeNull();
+      expect(nickField()).toBeInTheDocument();
     });
   });
 
