@@ -1679,25 +1679,33 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     }
 
     setOutbox(key, { queued: null });
+    // Whatever the pump is holding when it leaves. A dead link fires nothing
+    // further: the queued line is handed back unsent rather than delivered
+    // minutes late, and it comes back AFTER the line that failed — the order
+    // they were typed in.
+    let inHand: string | null = null;
     try {
       let text = takeDraft(key);
       for (;;) {
+        inHand = text;
         const outcome = await dispatchDraft(key, networkSlug, channelName, text);
-        if ("error" in outcome) {
-          // A dead link fires nothing further: the queued line is handed back
-          // unsent rather than delivered minutes late, and it comes back
-          // AFTER the line that failed — the order they were typed in.
-          const owed = "keptBuffer" in outcome ? [] : [text];
-          const queued = takeQueued(key);
-          if (queued !== null) owed.push(queued);
-          handBack(key, owed);
-          return outcome;
-        }
+        // A drain that kept the buffer already put its own residue there.
+        inHand = "error" in outcome && !("keptBuffer" in outcome) ? text : null;
+        if ("error" in outcome) return outcome;
         const queued = takeQueued(key);
         if (queued === null) return outcome;
         text = queued;
       }
     } finally {
+      // …including the exit nobody plans for. `dispatchDraft` catches around
+      // its dispatch switch, but the parse ahead of it is outside that net,
+      // and the pump owes the composer its text back on EVERY path — a throw
+      // that evaporated it would be this issue's own defect, wearing a stack
+      // trace. The throw still propagates; only the text is rescued.
+      const owed = inHand === null ? [] : [inHand];
+      const queued = takeQueued(key);
+      if (queued !== null) owed.push(queued);
+      handBack(key, owed);
       setOutbox(key, null);
     }
   };

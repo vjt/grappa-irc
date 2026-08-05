@@ -1915,6 +1915,31 @@ describe("#904 — one-deep send queue", () => {
     expect(compose.getDraft(k)).toBe("b\nc");
   });
 
+  // #904 — the pump took the text OUT of the composer, so it owes it back on
+  // every exit, including the one nobody plans for. `dispatchDraft` catches
+  // around its dispatch switch, but the parse ahead of it is outside that net:
+  // a throw there used to leave the draft untouched and now would evaporate it,
+  // which is the exact destruction this issue is about. It must come back, and
+  // the throw must still surface — swallowing it would hide the next bug.
+  it("#904 — a throw out of dispatch hands the text back instead of eating it", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    vi.doMock("../lib/slashCommands", () => ({
+      parseSlash: () => {
+        throw new Error("parser exploded");
+      },
+    }));
+    try {
+      const compose = await import("../lib/compose");
+      compose.setDraft(k, "precious text");
+      await expect(compose.submit(k, "freenode", "#a")).rejects.toThrow("parser exploded");
+      expect(compose.getDraft(k)).toBe("precious text");
+      expect(compose.isSending(k)).toBe(false);
+    } finally {
+      vi.doUnmock("../lib/slashCommands");
+      vi.resetModules();
+    }
+  });
+
   it("#904 — a queued line is recallable from history the moment it leaves the composer", async () => {
     localStorage.setItem("grappa-token", "tok");
     const acks = await deferredSend();

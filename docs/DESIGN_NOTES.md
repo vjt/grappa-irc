@@ -30396,3 +30396,71 @@ reason is that it defends an impossible state. `windowStateByChannel` mirrors
 `Session.Server`'s `window_states`, which is channel-keyed by construction; a
 DM lives in `queryWindows`. The measurement is recorded in the code comment so
 the next reader does not re-add it.
+
+## 2026-08-06 — #904: the composer buffer gets one owner, and a queue exactly one deep
+
+peluche, on a phone over a bad link: send a line, type the follow-up while the
+first is still going out, press Enter — nothing happens, and when the first
+ack lands the composer empties and the follow-up is gone. vjt: "happens
+absolutely always."
+
+**#737 fixed this class and only half its instances.** That guard is keyed on
+`isDraining`, which ONLY the #666 paced multi-line drain raises. A single slow
+send never raised it, so the textarea stayed writable, `setDraft` accepted the
+typing, Enter early-returned on ComposeBox's own `sending()`, and the shared
+end-of-submit clear then wiped a message that was typed, un-sendable, and
+never even reached history. The lesson generalises: a guard keyed on ONE
+mechanism's flag protects that mechanism, not the invariant behind it. The
+invariant is *the composer buffer has exactly one owner at a time*.
+
+**While a send is in flight that owner is the OPERATOR.** So the message must
+leave the composer at DISPATCH, not on the 201 — which is also what makes the
+end-of-submit clear disappear rather than get a condition bolted onto it.
+`submit` becomes a pump around a `dispatchDraft` that never touches the
+buffer: the pump takes the text out, dispatches it, and hands it back on any
+failure. That is why ~40 dispatch arms can keep returning a bare `{error}` and
+still preserve the draft; each one no longer has to remember to.
+
+**One deep, and the third is refused where you can see it.** The general send
+queue was rejected in the same conversation: a backlog over a dead link fires
+stale lines into the channel minutes later. One line cannot go that stale, and
+if the link is down there is exactly one line to hand back. Full → the
+textarea goes readOnly (the #737 refusal shape; never `disabled`, which blurs
+and collapses the on-screen keyboard, #59). A visible refusal is the point —
+the defect being replaced was a silent eat.
+
+**Hand-back is a prepend, never a clobber.** The failed line comes back in
+FRONT of whatever is in the box, because the operator typed that afterwards;
+a queued line that never flew comes back after it. Order beats delivery: a
+failed first send does NOT fire the queued second. And the pump hands back
+from a `finally`, so even a throw out of the parse (which sits outside
+`dispatchDraft`'s catch) returns the text instead of evaporating it — that
+exit would otherwise be this issue's own defect wearing a stack trace.
+
+**The multi-line drain keeps its buffer, and says so.** It claims the window
+(#737) and mirrors its own finer-grained residue (#666/#723), so it returns
+`keptBuffer` and the pump does not drop the whole paste on top of the
+remainder. A single line has no partial state to mirror — it either acked or
+none of it went out — so it writes nothing and lets the operator keep typing.
+That split retired two writes that were clobbers the moment the operator
+regained the buffer: the source-emptying write (`/msg` awaits its query-topic
+join first, so there IS a window to type in) and the successful single-line
+send's residue write of `""`. It also simplified the #723 re-addressing for
+single lines away: the ORIGINAL text still carries its own `/me ` / `/msg
+<peer> `, so handing the raw submission back needs no prefix reconstruction —
+only the copy branch changed, from "which window won the residue" to "did the
+focus move away from where the text lands".
+
+**Deliberately NOT built: pending rows and a correlation token.** The issue
+notes a token is only needed if pending rows interleave into confirmed order.
+No pending rows were built at all — cic never originates state, and the
+server echo stays the sole render path (the #254 / #251 rule). The cost is
+real and accepted: between dispatch and echo the queued line is visible
+nowhere except history (ArrowUp), with the send-button spinner as the only
+in-flight affordance.
+
+**In-flight state moved into the store, keyed on the window.** Same reason as
+the drain lock: a ComposeBox-local flag dies on unmount (home / mentions /
+$list, the desktop↔mobile swap) and follows the operator to the wrong
+composer. The #241 send spinner is keyed on it too now, so it stops lying
+after a window switch.
