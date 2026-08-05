@@ -34,10 +34,36 @@ import {
   type NotificationPrefs,
 } from "./userSettings";
 
+// #866 Q3 — expiry lives in the READ, on both ports. The server drops
+// elapsed mutes inside `UserSettings.get_notification_prefs/1`; this is its
+// client twin, because the mirrored signal is only refreshed on a user-topic
+// (re)join and a snooze can elapse with the tab open. Doing it here rather
+// than in `shouldNotify` is what keeps that predicate pure `/4` and the
+// shared truth-table free of a `now` column.
+//
+// A malformed `until` fails OPEN (the entry is dropped, so the conversation
+// notifies) rather than silently muting forever.
+//
+// `until` is unix SECONDS, so `Date.now()` is divided, not compared raw.
+const withLiveMutes = (prefs: NotificationPrefs): NotificationPrefs => {
+  const muted = prefs.muted_targets;
+  if (muted === undefined) return prefs;
+
+  const now = Math.floor(Date.now() / 1000);
+  const entries = Object.entries(muted);
+  const live = entries.filter(([, m]) => m.until === null || m.until > now);
+  // Same object back when nothing elapsed — the common case, and it keeps
+  // referential identity for anything memoising on the prefs.
+  if (live.length === entries.length) return prefs;
+  return { ...prefs, muted_targets: Object.fromEntries(live) };
+};
+
 const exports_ = identityScopedStore((onIdentityChange) => {
-  const [notificationPrefs, setNotificationPrefs] = createSignal<NotificationPrefs>(
+  const [storedPrefs, setNotificationPrefs] = createSignal<NotificationPrefs>(
     DEFAULT_NOTIFICATION_PREFS,
   );
+
+  const notificationPrefs = (): NotificationPrefs => withLiveMutes(storedPrefs());
 
   // Logout / account switch — back to the server's own defaults.
   onIdentityChange(() => setNotificationPrefs(DEFAULT_NOTIFICATION_PREFS));

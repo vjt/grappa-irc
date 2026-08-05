@@ -47,10 +47,13 @@ export type ShouldNotifyMessage = {
  *      the "notify" subset of api's CONTENT_KINDS, #395) → everything else
  *      false. NOTICE (services chatter) counts as unread but never notifies.
  *   2. own row (#532 C) — a row this operator authored never notifies.
- *   3. DM (channel folds to ownNick): private_messages_all OR
+ *   3. muted conversation (#866) — the folded channel, or the folded PEER
+ *      for a DM, present in `muted_targets`. Beats every reason below it,
+ *      mentions included.
+ *   4. DM (channel folds to ownNick): private_messages_all OR
  *      asciiFold(sender) in private_messages_only (mirrors the
  *      server's `canonical_target(sender) in ...`).
- *   4. channel: channel_messages_all OR canonicalChannel(channel) in
+ *   5. channel: channel_messages_all OR canonicalChannel(channel) in
  *      channel_messages_only OR (channel_mentions AND mention).
  */
 export function shouldNotify(
@@ -83,10 +86,43 @@ export function shouldNotify(
   // the client mirror of `Identifier.canonical_target/1` and folds a
   // nick-shaped identifier exactly as it folds a channel (a sigil sits
   // outside `A-Z`), which is why the same function serves both sides here.
-  if (canonicalChannel(message.channel) === canonicalChannel(ownNick)) {
+  const isDm = canonicalChannel(message.channel) === canonicalChannel(ownNick);
+
+  // #866 — the per-conversation mute, and it wins over EVERY reason below,
+  // including a direct mention (vjt's Q2: the mute always wins, because the
+  // polite default for "I silenced this room" is that it stays silent).
+  // That is why it sits here and not inside the two branches.
+  if (isMuted(prefs, conversationKey(message, isDm))) return false;
+
+  if (isDm) {
     return dmMatch(message, prefs);
   }
   return channelMatch(message, prefs, ownNick, patterns);
+}
+
+// The identity of the CONVERSATION the row belongs to — the thing an
+// operator points at when they say "mute this tab". For a channel that is
+// the channel; for a DM it is the PEER, never `message.channel`, which an
+// inbound DM sets to own_nick (so keying on it would collapse every DM
+// onto one mute). Same fold as the two whitelists: `canonicalChannel` is
+// the mirror of `Identifier.canonical_target/1` and folds a nick exactly
+// as it folds a channel.
+function conversationKey(message: ShouldNotifyMessage, isDm: boolean): string {
+  return canonicalChannel(isDm ? message.sender : message.channel);
+}
+
+// `until` is deliberately NOT read here. Expiry belongs to the READER
+// (`notificationPrefs()` client-side, `get_notification_prefs/1` on the
+// server) so this predicate stays pure and the shared truth-table needs no
+// `now` column — vjt's Q3. A stored-but-elapsed mute reaching this point
+// still silences; that only happens to a caller that bypassed the reader.
+//
+// `Object.hasOwn`, not `muted[key] !== undefined`: the map arrives from
+// `JSON.parse`, so it carries Object.prototype and a peer legitimately
+// nicked `constructor` or `toString` would otherwise read as muted.
+function isMuted(prefs: NotificationPrefs, key: string): boolean {
+  const muted = prefs.muted_targets;
+  return muted !== undefined && Object.hasOwn(muted, key);
 }
 
 function dmMatch(message: ShouldNotifyMessage, prefs: NotificationPrefs): boolean {

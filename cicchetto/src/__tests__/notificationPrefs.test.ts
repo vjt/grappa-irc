@@ -106,3 +106,75 @@ describe("notificationPrefs store — #868", () => {
     expect(notificationPrefs()).toEqual(MUTED_MENTIONS);
   });
 });
+
+// #866 Q3 — snooze expiry belongs to the READER, on both ports. The server
+// drops elapsed entries inside `get_notification_prefs/1`; this signal is its
+// client twin. It matters here and not only there because the mirror is
+// refreshed on a user-topic (re)join and nothing else: a snooze set at 09:00
+// for one hour must stop silencing at 10:00 in a tab that has been open the
+// whole time, without a round-trip.
+describe("notificationPrefs muted_targets expiry — #866", () => {
+  const NOW_SECONDS = 1_800_000_000;
+
+  const withMutes = (muted: NotificationPrefs["muted_targets"]): NotificationPrefs => ({
+    ...DEFAULT_NOTIFICATION_PREFS,
+    muted_targets: muted,
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW_SECONDS * 1000);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps a permanent mute (until: null)", () => {
+    mirrorNotificationPrefs(withMutes({ "#noisy": { until: null } }));
+
+    expect(notificationPrefs().muted_targets).toEqual({ "#noisy": { until: null } });
+  });
+
+  it("keeps a snooze whose until is still ahead", () => {
+    mirrorNotificationPrefs(withMutes({ "#noisy": { until: NOW_SECONDS + 60 } }));
+
+    expect(notificationPrefs().muted_targets).toEqual({ "#noisy": { until: NOW_SECONDS + 60 } });
+  });
+
+  it("drops a snooze whose until has elapsed, leaving the conversation audible again", () => {
+    mirrorNotificationPrefs(withMutes({ "#noisy": { until: NOW_SECONDS - 1 } }));
+
+    expect(notificationPrefs().muted_targets).toEqual({});
+  });
+
+  it("expires at the READ, not at the mirror — the same stored map answers differently as the clock moves", () => {
+    // The discriminating one. Nothing re-hydrates between the two reads, so a
+    // filter applied in `mirrorNotificationPrefs` (or in the settings drawer)
+    // would keep silencing `#noisy` forever and leave this red.
+    mirrorNotificationPrefs(withMutes({ "#noisy": { until: NOW_SECONDS + 60 } }));
+    expect(notificationPrefs().muted_targets).toEqual({ "#noisy": { until: NOW_SECONDS + 60 } });
+
+    vi.setSystemTime((NOW_SECONDS + 61) * 1000);
+
+    expect(notificationPrefs().muted_targets).toEqual({});
+  });
+
+  it("expires per entry — an elapsed snooze does not take a permanent mute with it", () => {
+    mirrorNotificationPrefs(
+      withMutes({ "#noisy": { until: NOW_SECONDS - 1 }, alice: { until: null } }),
+    );
+
+    expect(notificationPrefs().muted_targets).toEqual({ alice: { until: null } });
+  });
+
+  it("tolerates a server that sends no muted_targets at all (cic ships ahead of the BEAM)", () => {
+    const legacy = { ...DEFAULT_NOTIFICATION_PREFS };
+    delete legacy.muted_targets;
+
+    mirrorNotificationPrefs(legacy);
+
+    expect(notificationPrefs().muted_targets).toBeUndefined();
+    expect(notificationPrefs().channel_mentions).toBe(true);
+  });
+});

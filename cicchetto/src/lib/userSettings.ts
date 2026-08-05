@@ -18,12 +18,32 @@ import { ApiError, readError } from "./api";
 import type { PresencePref } from "./presenceFilter";
 import type { TimeFormatKey } from "./timeFormat";
 
+// #866 — one muted conversation. `until` is a unix timestamp in SECONDS
+// (the `upload_ttl_seconds` unit, not JS milliseconds); `null` means the
+// mute is permanent. The field exists from day one even though this cut
+// exposes no snooze picker, so a later "mute for 8 hours" needs no second
+// structure beside this one — vjt's Q1 ruling.
+export type MutedTarget = {
+  until: number | null;
+};
+
+// Keyed by the FOLDED conversation: `canonicalChannel(channel)` for a
+// channel, `canonicalChannel(peer)` for a DM. NOT by the row's `channel`
+// field — an inbound DM carries `channel = own_nick`, so that key would
+// make "mute me" mean "mute every DM I ever receive".
+export type MutedTargets = Record<string, MutedTarget>;
+
 export type NotificationPrefs = {
   channel_messages_all: boolean;
   channel_messages_only: string[];
   channel_mentions: boolean;
   private_messages_all: boolean;
   private_messages_only: string[];
+  // Optional because cic ships independently of the server (#618): a bundle
+  // newer than the BEAM it talks to must tolerate the field being absent
+  // rather than crash the predicate on every arriving message. Present in
+  // DEFAULT_NOTIFICATION_PREFS, and every reader defaults it to `{}`.
+  muted_targets?: MutedTargets;
 };
 
 export type NotificationPrefsResponse = {
@@ -36,6 +56,7 @@ export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
   channel_mentions: true,
   private_messages_all: true,
   private_messages_only: [],
+  muted_targets: {},
 };
 
 export async function getNotificationPrefs(token: string): Promise<NotificationPrefs> {
