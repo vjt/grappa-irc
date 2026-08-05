@@ -2,12 +2,14 @@
 // the client-side suites can be held against it.
 //
 // THIS IS THE HALF THAT MUST BE UPDATED IF THE SERVER CHANGES. The
-// disagreement #863 reports is silent precisely because the two predicates
-// live in two languages with nothing tying them together: the client's is
-// `splitMessageLines`' `!== ""` filter (`src/lib/messageLines.ts`), the
-// server's is an emergent property of Ecto rather than a written rule.
-// Whichever way the fix goes, both halves move together — and the suites
-// that import this file fail until they do.
+// disagreement #863 reported was silent precisely because the two predicates
+// live in two languages with nothing tying them together: the client's, in
+// `splitMessageLines` (`src/lib/messageLines.ts`), and the server's, an
+// emergent property of Ecto rather than a written rule. #863 closed the gap
+// by moving the CLIENT onto the server's notion — it now drops a line that
+// trims to nothing. This file is what keeps them from drifting apart again:
+// if the server's half moves, this model moves with it, and the suites that
+// import it fail until the splitter follows.
 //
 // Where the server's behaviour comes from (read on origin/main, measured on
 // prod by the #863 reporter — NOT executed from this suite):
