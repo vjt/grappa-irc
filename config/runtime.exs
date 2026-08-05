@@ -239,9 +239,7 @@ if config_env() == :prod do
     """
   end
 
-  secret_key_base =
-    System.get_env("SECRET_KEY_BASE") ||
-      missing_secret.("SECRET_KEY_BASE", "openssl rand -base64 48")
+  secret_key_base = System.get_env("SECRET_KEY_BASE") || missing_secret.("SECRET_KEY_BASE", "openssl rand -base64 48")
 
   # T-2: enforce a real RELEASE_COOKIE in prod. The cookie itself is
   # consumed by the BEAM at boot via `-setcookie` (bin/start.sh) — Elixir
@@ -366,11 +364,9 @@ if config_env() == :prod do
   # parallel `:grappa, :vapid` mirror that would have to be kept in
   # sync at boot. The cic-facing controller reads from the SAME
   # `:web_push_elixir` namespace so the two consumers cannot drift.
-  vapid_public_key =
-    System.get_env("VAPID_PUBLIC_KEY") || missing_vapid.("VAPID_PUBLIC_KEY")
+  vapid_public_key = System.get_env("VAPID_PUBLIC_KEY") || missing_vapid.("VAPID_PUBLIC_KEY")
 
-  vapid_private_key =
-    System.get_env("VAPID_PRIVATE_KEY") || missing_vapid.("VAPID_PRIVATE_KEY")
+  vapid_private_key = System.get_env("VAPID_PRIVATE_KEY") || missing_vapid.("VAPID_PRIVATE_KEY")
 
   vapid_subject =
     case System.get_env("VAPID_SUBJECT") do
