@@ -15,7 +15,13 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/setupTests.ts"],
-    include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    // `e2e/fixtures/**/*.test.ts` — the e2e peer/page fixtures are their
+    // own package (e2e/package.json, playwright-only), but the pieces of
+    // them that carry LOGIC rather than driver calls are unit-testable and
+    // worth testing here (#806). Matched on `.test.ts` alone, never
+    // `.spec.ts`: `e2e/tests/*.spec.ts` are playwright specs and must not
+    // be picked up by vitest.
+    include: ["src/**/*.{test,spec}.{ts,tsx}", "e2e/fixtures/**/*.test.ts"],
   },
   resolve: {
     conditions: ["development", "browser"],
