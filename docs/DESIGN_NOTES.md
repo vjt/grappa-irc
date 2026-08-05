@@ -30268,3 +30268,79 @@ nick — which is also why the expansion cannot inject a second wire command
 (and `Client.send_raw` CR/LF/NUL-guards the line regardless). The empty arm is
 kept and tested anyway, because the pure module must not be the place that
 assumes its caller validated.
+## 2026-08-05 — #866: the mute is keyed on the CONVERSATION, and it outranks the mention
+
+Per-conversation notification mute, the way Telegram does it. Every list in
+`notification_prefs` was an allow-list, so a noisy channel could not be
+silenced at all: even with `channel_messages_all: false` and the channel
+absent from `channel_messages_only`, the third disjunct still fired, because
+`channel_mentions` is a GLOBAL boolean. The only way to quieten one room was
+to turn mentions off in every room.
+
+**The key is the conversation, not `message.channel`.** This is the decision
+the whole feature turns on, and the obvious reading is the wrong one. An
+INBOUND DM is persisted with `channel = own_nick` (only an outbound one
+carries `channel = peer`), so a mute keyed on the `channel` field would have
+made a single "mute vjt" entry silence every DM the subject ever receives,
+while "mute alice" silenced nothing at all. So `Triggers.muted?/3` folds the
+CHANNEL for a channel row and the PEER for a DM — the same
+`canonical_target/1` the two whitelists already fold through, and the same
+one `UserSettings` applies at write, because a write that folded differently
+would store a key no message can match. Both ports carry a truth-table row
+that expects TRUE for a mute on own_nick: a port that keys on `channel`
+turns it red.
+
+**The mute always wins (vjt's Q2).** Telegram makes "notify me on a mention
+anyway" an option for muted groups; this does not. The mute sits in the
+`cond` ABOVE both branches rather than as one more conjunct inside
+`channel_match?/4`, so the next disjunct someone adds cannot forget to
+exclude it. His reasoning: it is the more polite default.
+
+**One map, not two deny-lists (Q1).** `%{folded_target => %{"until" =>
+unix_seconds | nil}}` — `nil` permanent, an integer a snooze. Two
+`string[]` deny-lists would have been the smaller change and would have
+needed a parallel structure the first time anyone wanted "for 8 hours". The
+field carries `until` from day one even though this cut ships no snooze
+picker; there is deliberately no network in the key, exactly like
+`channel_messages_only` beside it, because `user_settings` is per-SUBJECT.
+The drawer picker dedupes by folded key for that reason — offering `#grappa`
+once per network would promise a per-network mute the shape cannot keep.
+
+**Expiry is a read PROJECTION (Q3).** Elapsed entries are dropped in
+`get_notification_prefs/1` and nowhere else: no sweeper, no clock in the
+predicate, no `now` column in the shared truth-table, and `should_notify?/4`
+stays a pure `/4`. It is not a write, because `Push.BadgeCount` calls that
+reader per badge recount and pruning there would turn every badge refresh
+into a DB write; the elapsed row leaves storage on the next PUT, since the
+client writes back the map it read. cic mirrors the rule at ITS read —
+`notificationPrefs()` filters on every access, because the signal only
+re-hydrates on a user-topic (re)join and a one-hour snooze has to stop
+silencing an hour later in a tab nobody reloaded. A filter at
+`mirrorNotificationPrefs` would have looked equivalent and never expired.
+
+**The one departure from full-replace.** An ABSENT `muted_targets` on PUT
+means "unchanged"; every other key stays full-replace, which is still the
+documented contract for the five the endpoint shipped with. cic deploys
+independently of the BEAM and an installed PWA can run a cached bundle for
+weeks, so a client that has never heard of the field is saying nothing about
+the subject's mutes rather than asserting there are none — clearing them
+would be silent data loss the first time such a client ticked any other
+checkbox. An explicit `{}` still clears.
+
+**Both readers fail OPEN.** A stored entry with an uninterpretable `until`
+is dropped, not honoured. A mute nobody can expire must not be a mute; the
+failure direction is "you get notified", never "you are silenced forever by
+a value no one can read".
+
+**Out of scope, ruled explicitly (Q4).** `WindowCounts` mention counts and
+the sidebar severity dot are untouched — a muted conversation still COUNTS,
+it just does not push, beep, or move the icon badge. The badge follows
+because it is derived from this same predicate (`Push.BadgeCount`), not
+because it was wired separately.
+
+**Measured, not assumed.** The dedupe guard in the picker was written with a
+test that appeared to cover it; mutating the guard away left all 87 drawer
+tests green, because the `Map` collapses the key on its own and the test read
+option VALUES, which are folded and identical either way. The guard only
+decides which SPELLING survives. The assertion now pins that, and the
+mutation reddens one test.
