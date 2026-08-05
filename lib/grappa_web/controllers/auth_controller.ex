@@ -403,16 +403,9 @@ defmodule GrappaWeb.AuthController do
           passkey_second_factor(conn, user)
 
         TOTP.enabled?(user) ->
-          challenge =
-            Phoenix.Token.sign(
-              GrappaWeb.Endpoint,
-              @totp_challenge_salt,
-              {user.id, format_ip(conn), conn.assigns[:current_client_id]}
-            )
-
           conn
           |> put_status(:accepted)
-          |> json(%{two_factor_required: true, challenge_token: challenge})
+          |> json(%{two_factor_required: true, challenge_token: sign_challenge(user, conn)})
 
         true ->
           mint_user_session(conn, user)
@@ -446,14 +439,31 @@ defmodule GrappaWeb.AuthController do
     end
   end
 
-  defp optional_totp_challenge(user, conn) do
-    if TOTP.enabled?(user) do
-      Phoenix.Token.sign(
-        GrappaWeb.Endpoint,
-        @totp_challenge_salt,
-        {user.id, format_ip(conn), conn.assigns[:current_client_id]}
-      )
+  # #766 — the post-password code door is offered whenever it can redeem
+  # something, and the recovery set is one of those things. Gating the
+  # challenge on `TOTP.enabled?/1` alone left an account in passkey
+  # `second_factor` with TOTP disarmed holding ten valid codes and no door
+  # that would look at them: the passwordless door refuses the mode, and
+  # this one handed out no token to knock with. The set is account-level
+  # and shared (`Grappa.Accounts.RecoveryCodes`), so what decides the door
+  # is whether the account HAS a second factor to spend — not which one.
+  #
+  # `challenge_token` is not repurposed by this: `/auth/totp/verify` has
+  # always spent a recovery code as readily as a TOTP one, and cic's form
+  # has always been labelled "Authenticator or recovery code". Only the
+  # condition under which the token is minted widens.
+  defp second_factor_challenge(user, conn) do
+    if TOTP.enabled?(user) or Accounts.recovery_codes_armed?(user) do
+      sign_challenge(user, conn)
     end
+  end
+
+  defp sign_challenge(user, conn) do
+    Phoenix.Token.sign(
+      GrappaWeb.Endpoint,
+      @totp_challenge_salt,
+      {user.id, format_ip(conn), conn.assigns[:current_client_id]}
+    )
   end
 
   defp passkey_second_factor(conn, user) do
@@ -467,7 +477,7 @@ defmodule GrappaWeb.AuthController do
         two_factor_required: true,
         passkey_options: options,
         totp_available: TOTP.enabled?(user),
-        challenge_token: optional_totp_challenge(user, conn)
+        challenge_token: second_factor_challenge(user, conn)
       })
     end
   end
@@ -480,10 +490,18 @@ defmodule GrappaWeb.AuthController do
   end
 
   defp verify_second_factor(user, code, conn) do
-    case TOTP.verify(user, code, System.system_time(:second)) do
+    case Accounts.verify_second_factor(user, code, System.system_time(:second)) do
       {:ok, _} = ok ->
         :ok = FailureWindow.clear(:totp_login, {format_ip(conn), user.id})
         ok
+
+      # #815's rule, one door over: a saturated writer is not a bad
+      # credential. Recovery-code redemption commits through
+      # `Repo.BusyRetry`, so sustained saturation reaches here — and the
+      # catch-all below would charge the user's throttle for the server's
+      # problem, then tell them to re-type a code that was never wrong.
+      {:error, :db_unavailable} = error ->
+        error
 
       {:error, _} ->
         _ =

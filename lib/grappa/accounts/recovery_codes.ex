@@ -44,6 +44,17 @@ defmodule Grappa.Accounts.RecoveryCodes do
     :ok
   end
 
+  @doc """
+  Whether the account still holds an unspent recovery code.
+
+  The question a door asks before offering itself (#766): the set is armed
+  independently of which factor is, so "is TOTP on" is not the same
+  question and answering with it strands the codes.
+  """
+  @spec armed?(Ecto.UUID.t()) :: boolean()
+  def armed?(user_id) when is_binary(user_id),
+    do: TOTPRecoveryCode |> where([r], r.user_id == ^user_id) |> Repo.exists?()
+
   @doc "Rotates all recovery codes and returns their plaintext values once."
   @spec rotate(Ecto.UUID.t()) :: [String.t()]
   def rotate(user_id) when is_binary(user_id) do
