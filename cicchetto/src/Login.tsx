@@ -338,13 +338,34 @@ const Login: Component = () => {
   const onRecoveryLogin = async (): Promise<void> => {
     const id = passkeyIdentifier();
     if (id === null) return;
+    // #724 — this validation used to be a `required` attribute on the input.
+    // That attribute enlisted the field in the CREDENTIAL form's constraint
+    // validation, so an abandoned recovery field blocked an ordinary login.
+    // The recovery flow validates its own input instead.
+    const code = recoveryCode();
+    if (code === "") {
+      setError("Enter your recovery code.");
+      return;
+    }
     setError(null);
     try {
-      await auth.loginWithRecoveryCode(id, recoveryCode());
+      await auth.loginWithRecoveryCode(id, code);
       navigate("/", { replace: true });
     } catch (err) {
       handleError(err);
     }
+  };
+
+  // #724 — the recovery field sits inside the credential form (that is where
+  // the toggle that reveals it lives, and moving it below Connect would put
+  // it after the Advanced disclosure). It must not, however, reach that
+  // form's submission: Enter here used to implicitly submit the enclosing
+  // form, running `onSubmit` — the PASSWORD login — and never sending the
+  // code. Swallow the implicit submission and run the flow the user asked for.
+  const onRecoveryKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    void onRecoveryLogin();
   };
 
   let nickInput: HTMLInputElement | undefined;
@@ -480,7 +501,7 @@ const Login: Component = () => {
                         autocomplete="one-time-code"
                         value={recoveryCode()}
                         onInput={(event) => setRecoveryCode(event.currentTarget.value)}
-                        required
+                        onKeyDown={onRecoveryKeyDown}
                       />
                       <button
                         type="button"

@@ -393,6 +393,73 @@ describe("Login — #442 alternate auth (passkey / recovery code)", () => {
     });
   });
 
+  // #724 — the recovery block used to render INSIDE the credential form. Its
+  // input carries `required` and its button is `type="button"`, so the form's
+  // implicit submission target stayed `onSubmit` (the PASSWORD login) while
+  // the recovery input still took part in the form's constraint validation.
+  // Two user-visible consequences, one per test.
+  const recoveryField = () => screen.getByLabelText(/^recovery code$/i) as HTMLInputElement;
+
+  it("Enter in the recovery field runs recovery, NOT the password login", async () => {
+    // The user types a code and presses Enter. Implicit submission used to
+    // fire the ENCLOSING form's onSubmit — the password login — with whatever
+    // was in the credential fields, and the recovery code was never sent at
+    // all. With a nick and an empty password that is the guest path: a fresh
+    // anonymous session instead of a recovered account.
+    //
+    // jsdom implements no implicit submission, so the wrong-flow half of that
+    // is not observable here; what IS pinned is the fix's contract — Enter in
+    // this field runs recovery, and never the password login.
+    vi.mocked(auth.loginWithRecoveryCode).mockResolvedValue(undefined);
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.click(screen.getByRole("button", { name: "Recovery code" }));
+    fireEvent.input(recoveryField(), { target: { value: "abcd-1234" } });
+
+    fireEvent.keyDown(recoveryField(), { key: "Enter" });
+
+    await waitFor(() => {
+      expect(auth.loginWithRecoveryCode).toHaveBeenCalledWith("alice", "abcd-1234");
+    });
+    expect(auth.login).not.toHaveBeenCalled();
+  });
+
+  it("names an empty recovery code instead of posting it", async () => {
+    // `required` used to supply this, from inside the wrong form. Dropping it
+    // without replacement would silently POST an empty code.
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.click(screen.getByRole("button", { name: "Recovery code" }));
+    fireEvent.click(screen.getByRole("button", { name: /recover account/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/recovery code/i);
+    });
+    expect(auth.loginWithRecoveryCode).not.toHaveBeenCalled();
+  });
+
+  it("an abandoned recovery field does not block an ordinary login", async () => {
+    // Toggle recovery on, think better of it, leave it empty, click Connect.
+    // `required` inside the credential form made native validation refuse the
+    // submit and point at a field unrelated to the credentials just typed.
+    vi.mocked(auth.login).mockResolvedValue({ kind: "authenticated" });
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice" } });
+    fireEvent.input(screen.getByLabelText(/password/i), { target: { value: "secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Recovery code" }));
+    expect(recoveryField().value).toBe("");
+
+    fireEvent.click(connectBtn());
+
+    await waitFor(() => {
+      expect(auth.login).toHaveBeenCalledWith("alice", "secret", undefined, {
+        ident: "",
+        realname: "",
+        incognito: false,
+      });
+    });
+  });
+
   it("refuses to recover with an empty identifier", async () => {
     renderLogin();
     fireEvent.click(screen.getByRole("button", { name: "Recovery code" }));
