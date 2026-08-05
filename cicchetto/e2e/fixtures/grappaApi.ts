@@ -525,6 +525,35 @@ export async function partChannel(
   }
 }
 
+// #866 — drop every per-conversation mute for `token`'s subject.
+//
+// notification_prefs live in `user_settings` and OUTLIVE the spec that wrote
+// them: the seeded vjt is shared by the whole suite, so a mute left behind
+// silences a channel for every later spec that expects a push or a beep. That
+// is the shared-stack poisoning class, and it is silent — the victim spec
+// fails on a missing notification with nothing pointing back here.
+//
+// Read-modify-write rather than PUT-the-defaults: the endpoint has no PATCH
+// semantics, so writing a fresh default map would also clobber whatever
+// whitelists / toggles another fixture had set.
+export async function clearMutedConversations(token: string): Promise<void> {
+  const url = `${GRAPPA_BASE_URL}/me/settings/notification-prefs`;
+  const headers = { authorization: `Bearer ${token}` };
+
+  const current = await fetch(url, { headers });
+  if (!current.ok) throw new Error(`clearMutedConversations: GET ${current.status}`);
+  const { notification_prefs: prefs } = (await current.json()) as {
+    notification_prefs: Record<string, unknown>;
+  };
+
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ ...prefs, muted_targets: {} }),
+  });
+  if (!res.ok) throw new Error(`clearMutedConversations: PUT ${res.status}`);
+}
+
 // JOIN a channel via REST POST (mirrors `cicchetto/src/lib/api.ts`'s
 // `postJoin`). Used by tests that PART a seeded channel and need to
 // restore it for subsequent specs (M9, in particular — without restore,
