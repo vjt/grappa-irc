@@ -1554,7 +1554,7 @@ defmodule Grappa.Session.ServerTest do
     # the `Client` process, so a bare `:sys.get_state/1` — a direct call to the
     # Server — races ahead of it. Poll the observed condition instead of
     # guessing a sleep long enough to cover both hops.
-    defp await_live_nick(_pid, expected, 0), do: flunk("live nick never became #{expected}")
+    defp await_live_nick(_, expected, 0), do: flunk("live nick never became #{expected}")
 
     defp await_live_nick(pid, expected, attempts) do
       if :sys.get_state(pid).nick == expected do
