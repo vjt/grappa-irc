@@ -15,7 +15,7 @@ Both problems have the same root: the network cannot tell the bouncer's users ap
 
 ## The mechanism
 
-The instance is given a routed IPv6 block — a **`/80`** — and **derives one address inside it per client network**, deterministically, from that client's own real source address:
+The instance is given a **routed** IPv6 block and dedicates a **`/80`** inside it to derivation — **one address per client network**, deterministically, from that client's own real source address:
 
 ```
 derived = block_prefix (80 bits) || first 48 bits of SHA-256("grappa/source-mapping/v1" || client_key)
@@ -29,6 +29,8 @@ The hash is **not keyed**. There is no secret and no key management: the mapping
 The interface id is deliberately ignored because RFC 8981 rotates it (privacy extensions) roughly daily; hashing the full 128 bits would silently expire every ban you set.
 
 For a `/80` the host part is 48 bits, so by the birthday bound the first collision is expected around `2^24 ≈ 16.7M` distinct client prefixes. Real instances map thousands, not millions.
+
+**That `/80` is not the whole allocation, and "routed" is not a figure of speech.** An instance carves its block into several `/80`s by role: the derivation block is one of them, and the reserved named addresses described below — the ones that keep a PTR — live in a *different* one, which is why they can never collide with a derived address. The reference instance routes two `/80`s to the bouncer for exactly that split. The **routed** part is load-bearing: on an on-link block a derived address leaves the host fine and the reply is never delivered, so mode 2 fails per session with nothing locally to see. How an operator gets a block into that state, and how they tell which kind they have, is a deployment prerequisite — `docs/OPERATIONS.md` covers it.
 
 Two properties follow, and they are what the feature buys:
 

@@ -808,26 +808,147 @@ ssh root@m42 'jexec grappa cp /home/grappa/grappa/infra/freebsd/rc.d/grappa \
   /usr/local/etc/rc.d/grappa && jexec grappa service grappa restart'
 ```
 
-**Jail outbound source IPs.** The jail is shared-IP
-(`jail.conf ip6=new`, `interface=vtnet0`); pool + per-server
-`source_address` IPs are `/128` aliases in `jail.conf ip6.addr`. To add
-a new source the jail can bind: append `vtnet0|<ip>/<prefix>` to
-`ip6.addr` (persist) + `jail -m jid=6 ip6.addr="…,vtnet0|<ip>/<prefix>"`
-(apply live, no restart). **Validated 2026-06-04: a shared-IP jail can
-bind a host-owned address, and jail teardown does NOT strip an address
-the host already owned** (jail(8) only removes what it added) — so the
-host's primary `::42` (rDNS `m42.openssl.it`, owned by `/etc/rc.conf`)
-is safe to share into the jail. Match the host's prefixlen (`::42/64`,
-not `/128`, or you collide with the host's on-link route).
+**Jail outbound source IPs.** The jail runs **VNET** on `bridge0`
+(`/etc/rc.conf:108`, "trasloco 2026-08-01" — measured 2026-08-05),
+reached over a `/126` transfer net: `…:2d3:fffe::1` / `…:fffe::5` host
+side, `…:fffe::6` jail side. It has its own network stack, so it
+configures its own addresses — which is also what lets mode 2 alias on
+`lo0` at all (`A VNET jail is REQUIRED`, below).
+
+> **Stale procedure, deliberately not replaced.** Until the
+> 2026-08-01 move this jail was **shared-IP** (`jail.conf ip6=new`,
+> `interface=vtnet0`), and a new bindable source was added by appending
+> `vtnet0|<ip>/<prefix>` to `jail.conf ip6.addr` plus `jail -m jid=6
+> ip6.addr="…"` to apply it live. That procedure belongs to the old
+> topology and does not describe the VNET jail. The finding it recorded
+> still holds for anyone running shared-IP (validated 2026-06-04: a
+> shared-IP jail can bind a host-owned address, and jail teardown does
+> not strip an address the host already owned — jail(8) removes only
+> what it added, so the host's primary `::42`, rDNS `m42.openssl.it`,
+> was safe to share in; match the host's prefixlen or collide with its
+> on-link route). **The VNET-era replacement has not been written**: it
+> was not measured when this correction was made (#860), so nothing is
+> asserted in its place.
 
 **Static-mapping source aliases (#543 mode 2).** The
 `static_mapping_with_reservations` addressing mode derives ONE stable
-`::cb::/80` source per untrusted client `/64` and binds it for the
-session lifetime. This is OFF by default (`addressing_mode` in
+source per untrusted client `/64`, inside the configured derivation
+`/80` (`addressing.static_mapping_prefix`), and binds it for the
+session lifetime.
+
+> **Addresses in this section, and why they are not interchangeable.**
+> Anything shown as a **template you would adapt** uses the RFC 3849
+> documentation prefix `2001:db8::/32` — never routable, so a
+> copy-paste cannot silently become a plausible-looking prefix that
+> goes nowhere. Anything shown as a **measured reading of m42** is real
+> and carries the date it was read. On m42, the live derivation block
+> is `2a03:4000:20:2d3:cafe::/80` (`addressing.static_mapping_prefix`,
+> measured 2026-08-05). The examples here used to name a
+> `…:2d3:cb::/80` that **is not routed on the reference host** — the
+> exact shape of the #609 incident, sitting in the runbook as the thing
+> to copy (#860). This is OFF by default (`addressing_mode` in
 `server_settings` defaults to `pool_with_reservations`); it must be
 armed per substrate before an admin flips the mode, or every mode-2
 session is HELD (`:mode2_disarmed`, credential marked failed) rather
 than egressing from the shared kernel-default source.
+
+**PREREQUISITE — the block must be ROUTED to your host, not on-link
+(#860).** Everything below assumes the provider already delivers the
+whole prefix to the machine. If it does not, every step still succeeds,
+`arm_check` still passes, and mode 2 still fails — per session, at the
+far end, where nothing you can see locally says why. Settle this first.
+
+- **The distinction, and why mode 2 needs the routed kind.** An
+  **on-link** prefix lives on the upstream L2 segment: the router reaches
+  each address by NDP, so only the addresses your host actually answers
+  for exist. Mode 2 derives addresses across the whole block on demand —
+  the outbound packet leaves fine, and the return traffic is dropped by a
+  router that never got a neighbour advertisement for that address. A
+  **routed** prefix is handed to your host as a next-hop; every address
+  inside it reaches you with no NDP involved. Only the second kind works.
+- **How to tell which you have.** Ask the provider, in these words: *is
+  this prefix routed to my host, and if so, to which next-hop address?*
+  The answer, not an inspection, is authoritative — but two checks give
+  you the shape:
+
+  ```sh
+  # FreeBSD                             # Linux
+  ifconfig -a | grep inet6              ip -6 addr
+  netstat -rn6                          ip -6 route
+  ```
+
+  The prefix your host's own address sits in, with the default route
+  pointing at a router inside it (or at a `fe80::` on that link), is your
+  on-link segment. A routed block is a **different** prefix, one that
+  appears in no interface's on-link scope and only exists because the
+  provider says it points at you. If a prefix is only ever mentioned in
+  the provider's control panel and never appears on an interface, that is
+  the routed one — or a claim you have not tested yet.
+
+  The empirical test, when you want to be sure before arming: put an
+  **arbitrary** address from the block (not the one the panel names) on
+  the host, and see whether traffic sent to it from outside arrives.
+  Routed blocks answer for any address; on-link ones only for the address
+  the segment already knows. Pick something that is not silently filtered
+  in transit — a listening TCP port is a better probe than ICMP.
+- **A routed block usually needs a next-hop address you have to
+  configure, and it is not inside the block.** This is the step that is
+  easiest to miss, because nothing about the routed prefix hints at it:
+  the provider routes toward an address on your **on-link** segment, and
+  if your host does not hold that address the entire prefix is dark for
+  everyone. On the reference host (m42, netcup "failover subnet"), that
+  next-hop is a `/128` alias of the host's EUI-64 on the upstream
+  interface — measured 2026-08-05 in `/etc/rc.conf`:
+
+  ```sh
+  # the on-link /64 the host lives in
+  ifconfig_vtnet0_ipv6="inet6 2a03:4000:2:33c::42 prefixlen 64"
+  # next-hop for the routed 2a03:4000:20:2d3::/64 (netcup failover subnet)
+  ifconfig_vtnet0_alias0="inet6 2a03:4000:2:33c:5837:69ff:fe76:1f8e prefixlen 128"
+  ```
+
+  Note the two prefixes have nothing in common: `2a03:4000:2:33c::/64` is
+  the on-link segment, `2a03:4000:20:2d3::/64` is the routed block, and
+  the address that ties them together belongs to the **former**. Which
+  address your provider expects is their choice — EUI-64, the panel's
+  stated gateway peer, whatever they tell you — so this is a question to
+  ask, not a value to copy. What generalises is the shape: *a routed
+  block is reachable only while the host answers on the next-hop the
+  provider routes to.*
+- **Getting the block from the host to the process.** With the prefix
+  arriving, the substrate steps below (FreeBSD alias wrapper / Linux
+  AnyIP route) are what let grappa bind inside it. On m42 the jail sits
+  behind a point-to-point link and the host static-routes `/80`s into it
+  — same `/etc/rc.conf` reading:
+
+  ```sh
+  ifconfig_bridge0_ipv6="inet6 2a03:4000:20:2d3:fffe::1 prefixlen 126"
+  ifconfig_bridge0_alias0="inet6 2a03:4000:20:2d3:fffe::5 prefixlen 126"
+  ipv6_static_routes="gvhbabe gvhcafe"
+  ipv6_route_gvhbabe="2a03:4000:20:2d3:babe:: -prefixlen 80 2a03:4000:20:2d3:fffe::6"
+  ipv6_route_gvhcafe="2a03:4000:20:2d3:cafe:: -prefixlen 80 2a03:4000:20:2d3:fffe::6"
+  ```
+
+  `fffe::6` is the jail side of the `/126`; `fffe::1` / `fffe::5` are the
+  host side. A single-machine install (no jail, no container) skips this
+  entirely — the block terminates on the host and the AnyIP route or the
+  alias wrapper is the whole path.
+- **If your block is on-link, mode 2 does not work on it.** Said plainly
+  because the failure is invisible until sessions are held: do not arm it
+  and hope. What is actually available:
+  - **Ask the provider for a routed prefix.** Frequently a separate
+    product from the on-link `/64` that came with the machine, and the
+    only path that is not fragile. This is the recommendation.
+  - **Proxy NDP over the prefix**, if you must. Per-address `neigh proxy`
+    entries cannot cover a `/80` (2^48 addresses), so this means a daemon
+    answering for the whole prefix — `net/ndppd` on FreeBSD, packaged on
+    most Linux distributions. It puts a userland process in the path of
+    every neighbour solicitation for your egress addresses, and #628
+    retired grappa's own NDP-keepalive service precisely because the
+    routed setup made it unnecessary. Treat it as the fragile option.
+  - **Stay on mode 1** (`pool_with_reservations`, the default). Reserved
+    named addresses and the shared pool need only ordinary on-link
+    addresses. It gives up per-client derivation, not the bouncer.
 
 - **Substrate select.** Set `GRAPPA_SUBSTRATE` in the deploy env
   (`jail` / `linux` / `docker`; unset ⇒ `docker` ⇒ Disabled adapter ⇒
@@ -850,14 +971,15 @@ than egressing from the shared kernel-default source.
 
   ```
   # /usr/local/etc/grappa/source-alias.conf   root:wheel, 0444
-  PREFIX=2a03:4000:20:2d3:cb::/80
+  PREFIX=2001:db8:1:2:cafe::/80
   ```
 
   Render this file from `ServerSettings.static_mapping_prefix` as part of the
   SAME deploy step that installs the wrapper + sudoers line, so the DB prefix
   and the wrapper's scope cannot drift by hand — that drift is the #609 prod
-  incident (the wrapper still pinned `cb::/80` while the intended block was
-  `cafe::/80`, which was not even routed, so every acquire failed exit 65 and
+  incident (the wrapper still pinned `…:2d3:cb::/80` — a prefix the host does
+  not route, confirmed 2026-08-05 against `/etc/rc.conf` — while the intended
+  block was the routed `…:2d3:cafe::/80`, so every acquire failed exit 65 and
   sessions stayed held). A missing / unreadable / malformed file makes the
   wrapper exit 66 (fail closed), never a wildcard fallback.
 
@@ -892,7 +1014,7 @@ than egressing from the shared kernel-default source.
   an AnyIP local route makes the whole block bindable at once. Provision
   BOTH (persist in your netplan/rc): `sysctl -w
   net.ipv6.ip_nonlocal_bind=1` and `ip -6 route add local
-  2a03:4000:20:2d3:cb::/80 dev lo`. `arm_check` verifies both; a missing
+  2001:db8:1:2:cafe::/80 dev lo`. `arm_check` verifies both; a missing
   route disarms with `:anyip_route_missing`, a disabled sysctl with
   `:ip_nonlocal_bind_disabled`.
 - **Boot reconcile.** At startup (after the HTTP surface is up, before
