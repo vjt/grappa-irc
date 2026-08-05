@@ -47,7 +47,7 @@ OBJS := shottino.o json.o wire.o alias.o mirc.o termcolor.o http.o media.o ircd.
 # reaches, which is the drawing primitives and nothing else. Do not trust
 # this net for changes elsewhere in that file; add a test or reason about
 # the path by hand.
-TESTS := tests/test_llm tests/test_ws tests/test_json tests/test_wire tests/test_alias tests/test_mirc tests/test_termcolor tests/test_http tests/test_media tests/test_whip tests/test_callmedia tests/test_callnote tests/test_layout tests/test_keys tests/test_ircd tests/test_commands tests/test_windows
+TESTS := tests/test_llm tests/test_ws tests/test_json tests/test_wire tests/test_alias tests/test_mirc tests/test_termcolor tests/test_http tests/test_media tests/test_whip tests/test_callmedia tests/test_callnote tests/test_layout tests/test_keys tests/test_ircd tests/test_commands tests/test_windows tests/test_call
 SANITIZE ?= -fsanitize=address,undefined -fno-omit-frame-pointer
 TEST_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O1 -g $(SANITIZE)
 
@@ -148,6 +148,14 @@ tests/test_commands: tests/test_commands.c tests/test.h shottino.c json.c wire.c
 # question every other bug in the sidebar has turned out to be.
 tests/test_windows: tests/test_windows.c tests/test.h shottino.c json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c
 	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_windows.c json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c $(LDLIBS)
+
+# test_call is the only suite linked against BOTH binaries: it compiles
+# shottino.c for the call helpers and links call/media.c so the codec
+# word shottino puts in the helper's argv can be handed to the helper's
+# own parser. Asserting that word against a literal here would only say
+# what this side already believes.
+tests/test_call: tests/test_call.c tests/test.h shottino.c call/media.c call/media.h json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c
+	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_call.c call/media.c json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c $(LDLIBS)
 
 tests/test_keys: tests/test_keys.c tests/test.h shottino.c json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c
 	$(CC) $(CPPFLAGS) $(TEST_CFLAGS) $(CFLAGS_DEPS) -o $@ tests/test_keys.c json.c wire.c alias.c mirc.c termcolor.c http.c media.c ircd.c ws.c llm.c $(LDLIBS) -lutil
