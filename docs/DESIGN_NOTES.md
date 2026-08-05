@@ -29885,3 +29885,78 @@ that VoiceOver reads any of it. jsdom has no layout and nwsapi does not match
 is argued, not measured, and everything here is a source-level invariant plus
 role/accessible-name queries — which is the layer an AT consumes, but not the
 layer a human with a screen reader experiences.
+
+## 2026-08-05 — #878: the channel mode token, and the second reader that made it different
+
+#279 closed the mode-letter class on the umode half. The channel half was
+measured at the same time and deliberately left standing: `MODE #chan "+n!$ "`
+emitted `{:channel_modes_changed, "#chan", %{modes: [" ", "$", "!", "n"]}}`,
+and `324 RPL_CHANNELMODEIS` did the same for a snapshot. This is that half.
+
+**The rule was not re-argued.** Same class (RFC-2812 signs + ALPHA, via
+`Identifier.valid_mode_letter?/1`), same refusal to promote the per-network
+letter set to a validator, same whole-token reject. Re-deriving it would have
+risked deriving it differently.
+
+**Where the channel domain is NOT symmetric: the number of readers.** A umode
+token has one walker. A channel MODE token has two — `walk_modes/5` folds the
+per-user modes into the member roster, `walk_channel_modes/5` folds the
+channel-level ones into the mode entry — over the SAME bytes. Validating
+inside each walker would have produced two independent verdicts, and the
+measurement shows what that costs: with only the entry walker gated, a
+rejected `+o!x alice` still handed `alice` the op sigil. So the verdict is
+taken ONCE, before either walk, and both are gated on it
+(`apply_channel_mode_token/4`). #279's "one token, two readers" lesson,
+arrived at from the other direction: there the second reader was a secret
+committer, here it is a roster.
+
+**Where it is NOT asymmetric, against first appearance: the parameters.** The
+obvious trap in this issue is that channel modes take arguments — `+k key`,
+`+l 42`, `+b mask`, `+o nick` — and that their arity comes from ISUPPORT
+`CHANMODES`. It does not follow that the class must consult CHANMODES. A
+parameter travels as its own wire param; it is never a byte inside the mode
+token. The letter class therefore neither sees nor validates any parameter,
+and CHANMODES keeps its single job — arg ARITY per letter, via
+`takes_param?/3`. The domains touch the same letters and answer different
+questions.
+
+**And where the umode precedent must NOT be extended: 005 CHANMODES itself.**
+It is tempting to treat `CHANMODES=beI,k,l,imnpst` as the channel twin of the
+004 usermodes token that #279 did tighten — it is upstream bytes, split into
+characters, and it does reach the wire (`isupport_changed`'s `chanmodes_a..d`).
+The asymmetry is in the consequence of a reject. The 004 token is published
+and nothing else; rejecting it costs a greyed-out modal. CHANMODES is ALSO the
+arg-arity classifier every subsequent MODE line is parsed with, so rejecting
+the whole token silently falls back to the bahamut defaults and misaligns the
+args of REAL modes on a network that is merely eccentric. A token that is a
+published assertion should be rejected atomically; a token that is a lookup
+table is better partially right than replaced by another network's. Left
+unchanged on purpose.
+
+**What the reject withholds.** Derived state only. The `:persist` row still
+carries the verbatim `%{modes: "+n!$ ", args: []}` echo — the operator sees
+what upstream actually sent; only the state the client would act on is
+withheld. The 324 arm keeps the last authoritative entry and emits nothing,
+and `""` is a rejection there too: it asserts nothing, so a truncated line
+must not read as "the channel lost every mode". A bare `+` remains a valid
+empty snapshot.
+
+**Measured, not assumed, and one of the two claims came back wrong.** The
+first draft of the property comments said the channel arm was seed-dependent
+the way the umode one had been. Removing the letter check from the producer
+reddens the shape property on 20/20 seeds, 3–34 examples in — `:mode` is one
+generated command in twelve and every target that is not the session's own
+nick lands in the channel branch, so the pre-existing `is_list/1` arm was
+certifying garbage continuously. What IS seed-starved is 324 (one numeric draw
+in 999), which the dedicated snapshot property covers. And the empty-token
+clause is pinned by unit tests alone: flipped back to accepting `""`, the
+whole property file stays green on 5/5 seeds while exactly two unit tests
+redden, because an empty token parses to an empty letter set and satisfies the
+class trivially.
+
+**Collateral, measured, out of scope.** The generator reaches the channel
+branch with `MODE "" " "` — the clause routes ANY target that is not the
+session's own nick down the channel path, including an empty string and
+another user's nick, caching modes under that key. With the class gate in
+place the effect is well-formed, so this is a window-keying question, not a
+mode-parsing one, and it predates both halves of this class.
