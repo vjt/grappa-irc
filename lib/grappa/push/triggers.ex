@@ -26,6 +26,20 @@ defmodule Grappa.Push.Triggers do
        their own message body. Excluding by sender-identity kills that for
        both self-authored shapes (outbound DM + own channel message).
 
+    0b. **Muted conversation** (#866) — the row's CONVERSATION (the folded
+       channel, or the folded PEER for a DM) is a key of
+       `prefs.muted_targets` — never notify. This beats every reason below,
+       INCLUDING a direct mention: vjt's Q2 ruling is that the mute always
+       wins, because "I silenced this room" staying silent is the polite
+       default. The mute is keyed on the conversation and NOT on
+       `message.channel` for the same reason step 0 exists — an inbound DM
+       carries `channel = own_nick`, so that key would collapse every DM
+       onto a single mute.
+
+       `until` is not read here. Expiry happens on READ, in
+       `UserSettings.get_notification_prefs/1`, so this predicate stays pure
+       and needs no clock.
+
   Otherwise returns `true` for one of three reasons:
 
     1. **DM** (`message.channel == own_nick`):
@@ -211,6 +225,12 @@ defmodule Grappa.Push.Triggers do
       # This is the ONE predicate `Push.BadgeCount` folds over the unread
       # tail, so the badge and the OS notification can never disagree.
       own_row?(message, own_nick) -> false
+      # #866 — the per-conversation mute, and it OUTRANKS every reason below,
+      # a direct mention included (vjt's Q2: the mute always wins). Placing it
+      # in the `cond` rather than inside the two branches is what makes that
+      # true structurally instead of by remembering to add `and not muted?` to
+      # each new disjunct.
+      muted?(message, prefs, own_nick) -> false
       dm?(message, own_nick) -> dm_match?(message, prefs)
       true -> channel_match?(message, prefs, own_nick, patterns)
     end
@@ -261,6 +281,26 @@ defmodule Grappa.Push.Triggers do
     do: Identifier.canonical_target(channel) == Identifier.canonical_target(own_nick)
 
   defp dm?(_, _), do: false
+
+  # #866 — is this row's CONVERSATION muted?
+  #
+  # The key is the conversation, NOT the row's `channel` field. An inbound DM
+  # is persisted with `channel = own_nick`, so keying on `channel` would make
+  # one "mute vjt" entry silence every DM the operator ever receives, while
+  # "mute alice" silenced nothing. So: the folded channel for a channel row,
+  # the folded PEER for a DM. Same `canonical_target/1` fold the two
+  # whitelists use, matching the fold `UserSettings` applies at write.
+  #
+  # `until` is deliberately not consulted. Expiry belongs to the READER
+  # (`UserSettings.get_notification_prefs/1`, Q3), which is what keeps this
+  # predicate pure and the shared truth-table free of a `now` column.
+  defp muted?(%Message{channel: channel, sender: sender} = message, prefs, own_nick)
+       when is_binary(channel) and is_binary(sender) do
+    key = if dm?(message, own_nick), do: sender, else: channel
+    Map.has_key?(Map.get(prefs, :muted_targets, %{}), Identifier.canonical_target(key))
+  end
+
+  defp muted?(_, _, _), do: false
 
   defp dm_match?(%Message{} = message, prefs) do
     Map.get(prefs, :private_messages_all, false) or

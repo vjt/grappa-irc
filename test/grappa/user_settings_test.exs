@@ -283,7 +283,12 @@ defmodule Grappa.UserSettingsTest do
                channel_messages_only: [],
                channel_mentions: true,
                private_messages_all: true,
-               private_messages_only: []
+               private_messages_only: [],
+               # #866 — nothing muted by default. This map is also mirrored
+               # byte-for-byte by cic's DEFAULT_NOTIFICATION_PREFS, so an
+               # un-hydrated client behaves like a subject who configured
+               # nothing rather than one who muted everything.
+               muted_targets: %{}
              }
     end
   end
@@ -368,7 +373,8 @@ defmodule Grappa.UserSettingsTest do
         channel_messages_only: ["#sbiffo"],
         channel_mentions: true,
         private_messages_all: false,
-        private_messages_only: ["alice"]
+        private_messages_only: ["alice"],
+        muted_targets: %{"#noisy" => %{"until" => nil}}
       }
 
       assert {:ok, %Settings{}} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
@@ -524,6 +530,203 @@ defmodule Grappa.UserSettingsTest do
 
       assert {:ok, _} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
       assert UserSettings.get_highlight_patterns({:user, user.id}) == ["foo", "bar"]
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # muted_targets — per-conversation mute (#866)
+  # ---------------------------------------------------------------------------
+
+  defp base_prefs(muted) do
+    %{
+      channel_messages_all: false,
+      channel_messages_only: [],
+      channel_mentions: true,
+      private_messages_all: true,
+      private_messages_only: [],
+      muted_targets: muted
+    }
+  end
+
+  defp put_muted(user, muted),
+    do: UserSettings.put_notification_prefs({:user, user.id}, base_prefs(muted))
+
+  defp read_muted(user),
+    do: UserSettings.get_notification_prefs({:user, user.id}).muted_targets
+
+  describe "notification_prefs muted_targets (#866)" do
+    test "folds keys with canonical_target/1, so the stored key is the one a row matches" do
+      user = user_fixture()
+
+      assert {:ok, _} =
+               put_muted(user, %{
+                 "  #SBiffo " => %{"until" => nil},
+                 "Alice" => %{"until" => nil}
+               })
+
+      # A-Z only, and trimmed. The same fold `Triggers.muted?/3` applies to the
+      # incoming channel/sender — a write that folded differently would store a
+      # key no message can ever match.
+      assert read_muted(user) == %{
+               "#sbiffo" => %{"until" => nil},
+               "alice" => %{"until" => nil}
+             }
+    end
+
+    test "does not over-fold non-ASCII, so #CAFÉ and #café stay two mutes (#525)" do
+      user = user_fixture()
+
+      assert {:ok, _} =
+               put_muted(user, %{
+                 "#CAFÉ" => %{"until" => nil},
+                 "#café" => %{"until" => nil}
+               })
+
+      assert map_size(read_muted(user)) == 2
+    end
+
+    test "keeps a snooze whose until is still ahead" do
+      user = user_fixture()
+      until = System.os_time(:second) + 3_600
+
+      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => until}})
+      assert read_muted(user) == %{"#noisy" => %{"until" => until}}
+    end
+
+    test "drops a snooze whose until has elapsed, on READ (Q3)" do
+      user = user_fixture()
+      elapsed = System.os_time(:second) - 1
+
+      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => elapsed}})
+
+      assert read_muted(user) == %{}
+    end
+
+    test "expiry is a read projection — the elapsed row is still in the column" do
+      user = user_fixture()
+      elapsed = System.os_time(:second) - 1
+
+      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => elapsed}})
+      assert read_muted(user) == %{}
+
+      # The point of Q3 being "on read": no sweeper, and the GET does not turn
+      # into a write. `Push.BadgeCount` calls the reader per recount, so a
+      # pruning read would issue a write per badge refresh.
+      settings = Repo.get_by!(Settings, user_id: user.id)
+      assert %{"muted_targets" => %{"#noisy" => %{"until" => ^elapsed}}} =
+               settings.data["notification_prefs"]
+    end
+
+    test "an elapsed entry disappears from storage on the next write, without a sweeper" do
+      user = user_fixture()
+      elapsed = System.os_time(:second) - 1
+
+      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => elapsed}})
+      # A client PUTs back what it read, and what it read had the entry gone.
+      assert {:ok, _} = put_muted(user, read_muted(user))
+
+      settings = Repo.get_by!(Settings, user_id: user.id)
+      assert settings.data["notification_prefs"]["muted_targets"] == %{}
+    end
+
+    test "an ABSENT muted_targets key leaves the stored mutes alone" do
+      user = user_fixture()
+      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => nil}})
+
+      # A cic bundle predating #866 saves an unrelated checkbox. It is saying
+      # nothing about mutes, not asserting there are none — clearing them here
+      # would be silent data loss for the whole rollout window.
+      legacy = Map.delete(base_prefs(%{}), :muted_targets)
+      assert {:ok, _} = UserSettings.put_notification_prefs({:user, user.id}, legacy)
+
+      assert read_muted(user) == %{"#noisy" => %{"until" => nil}}
+    end
+
+    test "an EXPLICIT empty map does clear them — that is how the client unmutes" do
+      user = user_fixture()
+      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => nil}})
+
+      assert {:ok, _} = put_muted(user, %{})
+
+      assert read_muted(user) == %{}
+    end
+
+    test "rejects a non-integer until rather than storing a mute nobody can expire" do
+      user = user_fixture()
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               put_muted(user, %{"#noisy" => %{"until" => "tomorrow"}})
+
+      assert errors_on(cs)[:notification_prefs] != nil
+    end
+
+    test "rejects a non-positive until" do
+      user = user_fixture()
+
+      assert {:error, %Ecto.Changeset{}} = put_muted(user, %{"#noisy" => %{"until" => 0}})
+    end
+
+    test "rejects a value that is not a map" do
+      user = user_fixture()
+
+      assert {:error, %Ecto.Changeset{}} = put_muted(user, %{"#noisy" => true})
+    end
+
+    test "rejects a muted_targets that is not a map" do
+      user = user_fixture()
+
+      assert {:error, %Ecto.Changeset{}} =
+               UserSettings.put_notification_prefs(
+                 {:user, user.id},
+                 %{base_prefs(%{}) | muted_targets: ["#noisy"]}
+               )
+    end
+
+    test "rejects a key that folds to empty" do
+      user = user_fixture()
+
+      assert {:error, %Ecto.Changeset{}} = put_muted(user, %{"   " => %{"until" => nil}})
+    end
+
+    test "bounds the entry count, because the column is a user-writable blob" do
+      user = user_fixture()
+
+      too_many =
+        Map.new(1..2_001, fn n -> {"#chan#{n}", %{"until" => nil}} end)
+
+      assert {:error, %Ecto.Changeset{}} = put_muted(user, too_many)
+    end
+
+    test "drops a sibling key the writer invented rather than persisting an unmodelled shape" do
+      user = user_fixture()
+
+      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => nil, "reason" => "loud"}})
+
+      assert read_muted(user) == %{"#noisy" => %{"until" => nil}}
+    end
+
+    test "the reader survives a malformed stored map, failing OPEN" do
+      user = user_fixture()
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
+
+      # Hand-written column, the shape a future/miscoded writer could leave.
+      data = %{
+        "notification_prefs" => %{
+          "channel_mentions" => true,
+          "muted_targets" => %{
+            "#good" => %{"until" => nil},
+            "#bad-until" => %{"until" => "soon"},
+            "#not-a-map" => 42,
+            "" => %{"until" => nil}
+          }
+        }
+      }
+
+      {:ok, _} = settings |> Settings.changeset(%{data: data}) |> Repo.update()
+
+      # Only the intelligible entry survives. The unreadable ones NOTIFY rather
+      # than silence forever — a mute nobody can interpret must not be a mute.
+      assert read_muted(user) == %{"#good" => %{"until" => nil}}
     end
   end
 

@@ -31,7 +31,10 @@ defmodule GrappaWeb.UserSettingsControllerTest do
       "channel_messages_only" => [],
       "channel_mentions" => true,
       "private_messages_all" => true,
-      "private_messages_only" => []
+      "private_messages_only" => [],
+      # #866 — nothing muted by default; the wire carries the key so a client
+      # can tell "no mutes" from "a server that predates the field".
+      "muted_targets" => %{}
     }
   end
 
@@ -90,7 +93,8 @@ defmodule GrappaWeb.UserSettingsControllerTest do
                "channel_messages_only" => ["#sbiffo"],
                "channel_mentions" => true,
                "private_messages_all" => false,
-               "private_messages_only" => ["alice"]
+               "private_messages_only" => ["alice"],
+               "muted_targets" => %{}
              }
     end
   end
@@ -149,6 +153,21 @@ defmodule GrappaWeb.UserSettingsControllerTest do
 
       stored = UserSettings.get_notification_prefs({:user, user.id})
       assert stored.channel_messages_only == ["#sbiffo", "#italia"]
+    end
+
+    # #866 — the nested mute map has to survive the wire in BOTH directions.
+    # Everything else in this envelope is a flat boolean or a list of strings;
+    # this is the first key whose value is an object, so the atom-vs-string
+    # round-trip through the `:map` column has one more level to get wrong.
+    test "round-trips the nested muted_targets map, folded", %{conn: conn, user: user} do
+      body = valid_prefs_wire(%{"muted_targets" => %{"#NOISY" => %{"until" => nil}}})
+      conn = put(conn, "/me/settings/notification-prefs", body)
+
+      assert %{"notification_prefs" => returned} = json_response(conn, 200)
+      assert returned["muted_targets"] == %{"#noisy" => %{"until" => nil}}
+
+      stored = UserSettings.get_notification_prefs({:user, user.id})
+      assert stored.muted_targets == %{"#noisy" => %{"until" => nil}}
     end
   end
 

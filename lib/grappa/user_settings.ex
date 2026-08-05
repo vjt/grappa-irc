@@ -102,12 +102,38 @@ defmodule Grappa.UserSettings do
   `String.downcase` on incoming message fields so the comparison
   is case-insensitive end-to-end.
   """
+  @typedoc """
+  Per-conversation notification mutes (#866) — the one DENY-list in
+  `notification_prefs()`, where everything else is an allow-list.
+
+  Keyed by the FOLDED conversation (`Identifier.canonical_target/1`, the
+  channel pattern: fold at write, compare `==` at read): a channel by its
+  name, a DM by its PEER's nick. NOT by the row's `channel` field — an
+  inbound DM is persisted with `channel = own_nick`, so that key would make
+  a single entry silence every DM the subject receives.
+
+  There is deliberately no network in the key. `user_settings` is
+  per-SUBJECT, exactly like `channel_messages_only` beside it, so `#grappa`
+  is one mute across every network the subject is on.
+
+  The value is the closed shape `%{"until" => unix_seconds | nil}`, string
+  keys because that is what survives the `:map` JSON round-trip. `nil` is a
+  permanent mute; an integer is a snooze. The field carries `until` from day
+  one (vjt's Q1) even though no UI sets it yet, so adding a snooze picker
+  later needs no second structure and no migration.
+
+  Elapsed entries are dropped by the READER (`get_notification_prefs/1`),
+  never by a sweeper and never by the predicate — see that function.
+  """
+  @type muted_targets :: %{String.t() => %{String.t() => pos_integer() | nil}}
+
   @type notification_prefs :: %{
           channel_messages_all: boolean(),
           channel_messages_only: [String.t()],
           channel_mentions: boolean(),
           private_messages_all: boolean(),
-          private_messages_only: [String.t()]
+          private_messages_only: [String.t()],
+          muted_targets: muted_targets()
         }
 
   @typedoc """
@@ -180,6 +206,12 @@ defmodule Grappa.UserSettings do
   # needs a boundary (same rationale as @aliases_max_count / @upload_ttl_seconds_max).
   @presence_filter_max_count 2_000
   @channel_key_max_bytes 256
+
+  # #866 — same rationale as @presence_filter_max_count: `muted_targets` is a
+  # user-writable JSON blob, so it needs a ceiling or it is a storage vector.
+  # Generous against reality — the picker only offers conversations the
+  # subject actually has, and nobody is in 2000 of them.
+  @muted_targets_max_count 2_000
 
   # Upper bound for upload_ttl_seconds: one year. Image hosts (litterbox,
   # 0x0.st) cap at days; nobody legitimately wants a year-long TTL token
@@ -343,7 +375,8 @@ defmodule Grappa.UserSettings do
       channel_messages_only: [],
       channel_mentions: true,
       private_messages_all: true,
-      private_messages_only: []
+      private_messages_only: [],
+      muted_targets: %{}
     }
   end
 
@@ -359,6 +392,21 @@ defmodule Grappa.UserSettings do
   previous shape revision), missing keys are filled from defaults
   so the returned shape is ALWAYS a complete `notification_prefs()`.
   Reader is side-effect-free.
+
+  ## Snooze expiry happens HERE (#866, vjt's Q3)
+
+  A `muted_targets` entry whose `until` has elapsed is dropped from the
+  returned map. This is the ONLY place a mute expires — there is no
+  sweeper, and `Push.Triggers.should_notify?/4` never looks at the clock,
+  which is what keeps it a pure `/4` predicate and keeps the shared
+  cic/Elixir truth-table free of a `now` column.
+
+  Expiry is a READ-side projection, not a write: the stored row keeps the
+  elapsed entry. It disappears from storage on the next
+  `put_notification_prefs/2`, because the client PUTs back the map it read
+  from here. That costs nothing and keeps this reader side-effect-free —
+  pruning here would make a GET issue a write, and `Push.BadgeCount` calls
+  this per badge recount.
   """
   @spec get_notification_prefs(Subject.t()) :: notification_prefs()
   def get_notification_prefs({_, _} = subject) do
@@ -368,7 +416,7 @@ defmodule Grappa.UserSettings do
 
       %Settings{data: data} ->
         case data[@notification_prefs_key] do
-          %{} = stored -> merge_with_defaults(stored)
+          %{} = stored -> stored |> merge_with_defaults() |> drop_elapsed_mutes()
           _ -> default_notification_prefs()
         end
     end
@@ -395,6 +443,17 @@ defmodule Grappa.UserSettings do
       fallback at trigger-eval time. Storing means flipping `_all`
       off restores the subject's last list — better UX than
       discarding.
+    * `muted_targets` (#866) is the ONE key whose ABSENCE means "leave it
+      alone" rather than "set it to empty". Every other key is
+      full-replace, and that is still the contract for the five the
+      endpoint shipped with. The exception exists because cic deploys
+      independently of the BEAM and an installed PWA can run a cached
+      bundle for weeks: a client that has never heard of `muted_targets`
+      is saying nothing about the subject's mutes, not asserting they have
+      none, and reading its silence as "clear them" would delete an
+      operator's mutes the first time they tick any other checkbox. Keys
+      are folded (`Identifier.canonical_target/1`) and `until` must be
+      `null` or a positive unix timestamp in seconds.
 
   Returns `{:ok, %Settings{}}` on persistence; `{:error, changeset}`
   with descriptive errors on either validation failure path.
@@ -995,7 +1054,62 @@ defmodule Grappa.UserSettings do
         {key, read_list(stored, key, Map.fetch!(defaults, key))}
       end)
 
-    Map.merge(bools, lists)
+    bools
+    |> Map.merge(lists)
+    |> Map.put(:muted_targets, read_muted_targets(stored))
+  end
+
+  # #866 — defensive read of the mute map, the twin of `sanitize_aliases_read/1`.
+  # A row written by a future (or miscoded) writer must not reach the predicate
+  # half-shaped: an entry survives only with a non-empty binary key and a value
+  # that yields a usable `until`, and it is rebuilt into EXACTLY
+  # `%{"until" => v}` so no stray sibling key rides along. Keys are NOT re-folded
+  # — they were folded at write, which is the channel pattern.
+  @spec read_muted_targets(map()) :: muted_targets()
+  defp read_muted_targets(stored) do
+    case Map.get(stored, :muted_targets, Map.get(stored, "muted_targets")) do
+      map when is_map(map) -> sanitize_muted_read(map)
+      _ -> %{}
+    end
+  end
+
+  defp sanitize_muted_read(map) do
+    map
+    |> Enum.flat_map(fn {key, value} ->
+      case {is_binary(key) and key != "", read_until(value)} do
+        {true, {:ok, until}} -> [{key, %{"until" => until}}]
+        _ -> []
+      end
+    end)
+    |> Map.new()
+  end
+
+  # `nil`/absent is a PERMANENT mute, not a malformed one. Anything else that
+  # is not a positive integer is malformed and drops the whole entry —
+  # failing OPEN (the conversation notifies) rather than silencing forever on
+  # a value nobody can interpret.
+  defp read_until(value) when is_map(value) do
+    case Map.get(value, "until", Map.get(value, :until)) do
+      nil -> {:ok, nil}
+      n when is_integer(n) and n > 0 -> {:ok, n}
+      _ -> :error
+    end
+  end
+
+  defp read_until(_), do: :error
+
+  # #866 Q3 — the ONE place a snooze expires. Read-side only: see
+  # `get_notification_prefs/1`'s doc for why this is not a write and not a
+  # sweeper.
+  @spec drop_elapsed_mutes(notification_prefs()) :: notification_prefs()
+  defp drop_elapsed_mutes(prefs) do
+    now = System.os_time(:second)
+
+    Map.update!(prefs, :muted_targets, fn muted ->
+      # Every value is `%{"until" => nil | pos_integer}` by construction —
+      # `sanitize_muted_read/1` dropped anything else — so this match is total.
+      Map.filter(muted, fn {_key, %{"until" => until}} -> is_nil(until) or until > now end)
+    end)
   end
 
   defp read_bool(stored, key, default) do
@@ -1021,7 +1135,9 @@ defmodule Grappa.UserSettings do
   defp validate_and_normalize_prefs(prefs, subject) do
     with {:ok, bools} <- cast_bools(prefs, subject),
          {:ok, lists} <- cast_lists(prefs, subject),
-         normalized = Map.merge(bools, lists),
+         {:ok, muted} <- cast_muted_targets(prefs, subject),
+         normalized =
+           bools |> Map.merge(lists) |> Map.put(:muted_targets, resolve_muted(muted, subject)),
          :ok <- ensure_at_least_one_trigger(normalized, subject) do
       {:ok, normalized}
     end
@@ -1100,6 +1216,100 @@ defmodule Grappa.UserSettings do
   # for real channels and corrective for a nick-shaped key.
   defp list_fold(:private_messages_only), do: &Identifier.canonical_target/1
   defp list_fold(:channel_messages_only), do: &Identifier.canonical_target/1
+
+  # #866 — the one key whose ABSENCE means "unchanged" rather than "empty".
+  # See `put_notification_prefs/2`'s doc: a cic bundle older than this BEAM is
+  # not asserting the subject has no mutes, and clearing them on its first
+  # checkbox save would be silent data loss during any rollout window. An
+  # explicit `null` reads the same as absent — a client that means "clear
+  # them" sends `{}`, which is a map and takes the normalize path.
+  defp cast_muted_targets(prefs, subject) do
+    case Map.get(prefs, :muted_targets, Map.get(prefs, "muted_targets")) do
+      nil -> {:ok, :unchanged}
+      map when is_map(map) -> normalize_muted_targets(map, subject)
+      _ -> {:error, prefs_changeset_error("muted_targets must be a map", subject)}
+    end
+  end
+
+  # Resolving :unchanged costs one extra SELECT, and only on the absent path.
+  # It reads through `get_notification_prefs/1` ON PURPOSE rather than off the
+  # raw column: that reader is also where snoozes expire, so an old client's
+  # save prunes elapsed entries as a side effect instead of writing them back.
+  defp resolve_muted(:unchanged, subject),
+    do: Map.fetch!(get_notification_prefs(subject), :muted_targets)
+
+  defp resolve_muted(muted, _subject) when is_map(muted), do: muted
+
+  defp normalize_muted_targets(map, subject) when map_size(map) > @muted_targets_max_count do
+    {:error,
+     prefs_changeset_error(
+       "muted_targets must have at most #{@muted_targets_max_count} entries",
+       subject
+     )}
+  end
+
+  defp normalize_muted_targets(map, subject), do: collect_muted(Map.to_list(map), %{}, subject)
+
+  # Collect-or-bail traversal per CLAUDE.md: success extends the accumulator,
+  # the first error returns immediately. Two raw keys that fold to the same
+  # target collapse onto one entry, last one wins — the same collision the
+  # picker prevents client-side by deduping before it offers the option.
+  defp collect_muted([], acc, _subject), do: {:ok, acc}
+
+  defp collect_muted([{key, value} | rest], acc, subject) do
+    with {:ok, folded} <- cast_muted_key(key, subject),
+         {:ok, target} <- cast_muted_value(value, subject) do
+      collect_muted(rest, Map.put(acc, folded, target), subject)
+    end
+  end
+
+  # Folded through `canonical_target/1`, the same fold `normalize_list/2`
+  # applies to the two whitelists and the same one `Triggers.muted?/3` applies
+  # to the incoming row — a write that folded differently would store a key no
+  # message can ever match.
+  defp cast_muted_key(key, subject) when is_binary(key) do
+    folded = key |> String.trim() |> Identifier.canonical_target()
+
+    cond do
+      folded == "" ->
+        {:error, prefs_changeset_error("muted_targets keys must be non-empty strings", subject)}
+
+      byte_size(folded) > @channel_key_max_bytes ->
+        {:error,
+         prefs_changeset_error(
+           "muted_targets keys must be at most #{@channel_key_max_bytes} bytes",
+           subject
+         )}
+
+      true ->
+        {:ok, folded}
+    end
+  end
+
+  defp cast_muted_key(_key, subject),
+    do: {:error, prefs_changeset_error("muted_targets keys must be strings", subject)}
+
+  # Rebuilt into EXACTLY `%{"until" => v}` — a sibling key the writer invented
+  # is dropped here rather than persisted into a shape the readers don't model.
+  defp cast_muted_value(value, subject) when is_map(value) do
+    case Map.get(value, "until", Map.get(value, :until)) do
+      nil ->
+        {:ok, %{"until" => nil}}
+
+      n when is_integer(n) and n > 0 ->
+        {:ok, %{"until" => n}}
+
+      _ ->
+        {:error,
+         prefs_changeset_error(
+           "muted_targets until must be null or a positive unix timestamp in seconds",
+           subject
+         )}
+    end
+  end
+
+  defp cast_muted_value(_value, subject),
+    do: {:error, prefs_changeset_error("muted_targets values must be maps", subject)}
 
   defp ensure_at_least_one_trigger(prefs, subject) do
     if Enum.any?(@prefs_trigger_keys, &Map.fetch!(prefs, &1)) do
