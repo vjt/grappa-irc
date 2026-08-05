@@ -45,6 +45,24 @@ defmodule Grappa.ScrollbackTest do
     )
   end
 
+  # #505 — one row per kind in `Message.kinds/0`, read from the schema SSOT
+  # rather than restated: a kind moving between `@content_kinds` /
+  # `@suppressed_presence_kinds` must break the count assertions by CHANGING
+  # THE NUMBERS, not silently agree with a hand-copied list.
+  defp seed_one_row_per_kind(user, net) do
+    Message.kinds()
+    |> Enum.with_index()
+    |> Enum.each(fn {kind, i} ->
+      body = if kind in Message.content_kinds(), do: "msg #{i}", else: nil
+      meta = if kind == :nick_change, do: %{new_nick: "bob#{i}"}, else: %{}
+
+      {:ok, _} =
+        ScrollbackHelpers.insert(
+          sample(user, net, i, %{kind: kind, sender: "bob", body: body, meta: meta})
+        )
+    end)
+  end
+
   # #393 — EXPLAIN QUERY PLAN text for an Ecto query, rendered from the
   # PRODUCTION SQL (`Repo.to_sql`) so the plan reflects exactly what runs.
   defp explain_plan(query) do
@@ -1378,6 +1396,76 @@ defmodule Grappa.ScrollbackTest do
 
       assert Scrollback.count_after_split({:user, user.id}, net.id, "vjt-grappa", 0, "vjt-grappa") ==
                %{messages: 1, events: 0}
+    end
+  end
+
+  # #505 — the unread SEED must apply the same presence filter the fetch
+  # applies (#458), or a hiding channel's faint `events` badge counts rows the
+  # pane will never render and visibly DROPS the moment the channel hydrates.
+  # `hide_presence` here is the exact twin of `count_after/6`'s: same narrow
+  # kind set (`Message.suppressed_presence_kinds/0`), same required-positional
+  # rule (no defaulting wrapper).
+  describe "count_after_split/6 — hide_presence (#505)" do
+    test "hiding drops ONLY the narrow suppressed kinds from events",
+         %{user: user, network: net} do
+      seed_one_row_per_kind(user, net)
+
+      content = length(Message.content_kinds())
+      suppressed = length(Message.suppressed_presence_kinds())
+      all_events = length(Message.kinds()) - content
+
+      # The set is non-trivial in BOTH directions, else the two asserts below
+      # cannot tell "narrow filter" from "events bucket zeroed".
+      assert suppressed > 0
+      assert all_events > suppressed
+
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil, false) ==
+               %{messages: content, events: all_events}
+
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil, true) ==
+               %{messages: content, events: all_events - suppressed}
+    end
+
+    test "hiding never touches the content bucket", %{user: user, network: net} do
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :privmsg}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :notice}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 2, %{kind: :action}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 3, %{kind: :join, body: nil}))
+
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil, true) ==
+               %{messages: 3, events: 0}
+    end
+
+    test "a channel whose only unread is hidden presence seeds events: 0",
+         %{user: user, network: net} do
+      for {kind, i} <- Enum.with_index(Message.suppressed_presence_kinds()) do
+        meta = if kind == :nick_change, do: %{new_nick: "bob#{i}"}, else: %{}
+
+        {:ok, _} =
+          ScrollbackHelpers.insert(
+            sample(user, net, i, %{kind: kind, sender: "bob", body: nil, meta: meta})
+          )
+      end
+
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", 0, nil, true) ==
+               %{messages: 0, events: 0}
+    end
+
+    # The filter must ride the SAME cursor predicate, not replace it: a
+    # suppressed row BELOW the cursor was already excluded, so hiding must not
+    # change the answer for the read region.
+    test "hide_presence composes with the after_id predicate",
+         %{user: user, network: net} do
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 0, %{kind: :join, body: nil}))
+      {:ok, m1} = ScrollbackHelpers.insert(sample(user, net, 1, %{kind: :privmsg}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 2, %{kind: :part, body: nil}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 3, %{kind: :topic, body: nil}))
+
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", m1.id, nil, false) ==
+               %{messages: 0, events: 2}
+
+      assert Scrollback.count_after_split({:user, user.id}, net.id, "#sniffo", m1.id, nil, true) ==
+               %{messages: 0, events: 1}
     end
   end
 

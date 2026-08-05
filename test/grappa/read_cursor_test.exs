@@ -812,7 +812,7 @@ defmodule Grappa.ReadCursorTest do
       {:ok, _} = ReadCursor.set(subject, net_b.id, "#ops", b.id)
 
       own_nicks = %{net_a.slug => {net_a.id, "vjt"}, net_b.slug => {net_b.id, "vjt"}}
-      split = ReadCursor.bulk_unread_split(subject, own_nicks)
+      split = ReadCursor.bulk_unread_split(subject, own_nicks, %{})
 
       assert split[net_a.slug]["#chan"] == %{messages: 2, events: 1}
       assert split[net_a.slug]["peer"] == %{messages: 1, events: 0}
@@ -829,13 +829,13 @@ defmodule Grappa.ReadCursorTest do
 
       own_nicks = %{net.slug => {net.id, "vjt"}}
 
-      assert ReadCursor.bulk_unread_split(subject, own_nicks)[net.slug]["#chan"] ==
+      assert ReadCursor.bulk_unread_split(subject, own_nicks, %{})[net.slug]["#chan"] ==
                %{messages: 0, events: 0}
     end
 
     test "returns an empty envelope for a subject with no cursors" do
       user = user_fixture()
-      assert ReadCursor.bulk_unread_split({:user, user.id}, %{}) == %{}
+      assert ReadCursor.bulk_unread_split({:user, user.id}, %{}, %{}) == %{}
     end
 
     test "excludes the subject's OWN presence rows from events (#532 A)" do
@@ -877,7 +877,7 @@ defmodule Grappa.ReadCursorTest do
 
       own_nicks = %{net.slug => {net.id, "vjt"}}
 
-      assert ReadCursor.bulk_unread_split(subject, own_nicks)[net.slug]["#chan"] ==
+      assert ReadCursor.bulk_unread_split(subject, own_nicks, %{})[net.slug]["#chan"] ==
                %{messages: 0, events: 1}
     end
 
@@ -926,7 +926,7 @@ defmodule Grappa.ReadCursorTest do
 
       own_nicks = %{net.slug => {net.id, "vjt"}}
 
-      assert ReadCursor.bulk_unread_split(subject, own_nicks)[net.slug]["#chan"] ==
+      assert ReadCursor.bulk_unread_split(subject, own_nicks, %{})[net.slug]["#chan"] ==
                %{messages: 0, events: 1}
     end
 
@@ -963,7 +963,7 @@ defmodule Grappa.ReadCursorTest do
 
       own_nicks = %{net.slug => {net.id, "vjt"}}
 
-      assert ReadCursor.bulk_unread_split(subject, own_nicks)[net.slug]["peer"] ==
+      assert ReadCursor.bulk_unread_split(subject, own_nicks, %{})[net.slug]["peer"] ==
                %{messages: 1, events: 0}
     end
 
@@ -996,7 +996,7 @@ defmodule Grappa.ReadCursorTest do
 
       own_nicks = %{net.slug => {net.id, "vjt"}}
 
-      assert ReadCursor.bulk_unread_split(subject, own_nicks)[net.slug]["#chan"] ==
+      assert ReadCursor.bulk_unread_split(subject, own_nicks, %{})[net.slug]["#chan"] ==
                %{messages: 1, events: 0}
     end
 
@@ -1041,7 +1041,7 @@ defmodule Grappa.ReadCursorTest do
 
       own_nicks = %{net.slug => {net.id, "vjt"}}
 
-      assert ReadCursor.bulk_unread_split(subject, own_nicks)[net.slug]["vjt"] ==
+      assert ReadCursor.bulk_unread_split(subject, own_nicks, %{})[net.slug]["vjt"] ==
                %{messages: 1, events: 0}
     end
   end

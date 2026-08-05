@@ -5425,6 +5425,78 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  # #505 — the /me cold-load needs the member count for EVERY window at once
+  # to resolve the presence-hiding size default. Doing it with
+  # `list_members/3` would be one GenServer call per channel at logon, which
+  # is exactly the per-window fan-out #396 collapsed. One call, whole map.
+  describe "list_member_counts/2" do
+    test "returns the count per SEEDED channel in one call" do
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#one", "#two"]})
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#one\r\n")
+      IRCServer.feed(server, ":irc 353 grappa-test = #one :grappa-test alice bob\r\n")
+      IRCServer.feed(server, ":irc 366 grappa-test #one :End\r\n")
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#two\r\n")
+      IRCServer.feed(server, ":irc 353 grappa-test = #two :grappa-test carol\r\n")
+      IRCServer.feed(server, ":irc 366 grappa-test #two :End\r\n")
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+
+      assert {:ok, %{"#one" => 3, "#two" => 2}} =
+               Session.list_member_counts({:user, user.id}, network.id)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # A channel joined but pre-NAMES has an UNKNOWABLE count, not a count of
+    # zero. `list_members/3` discriminates that as `:uninitialized`; the bulk
+    # twin must OMIT the key, or the caller reads 0 members and shows presence
+    # on a channel that is about to turn out to have 900.
+    test "omits a channel that has not yet observed 366 (pre-NAMES)" do
+      {server, port} = start_server()
+
+      {user, network, _} =
+        setup_user_and_network(port, %{autojoin_channels: ["#seeded", "#pending"]})
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#seeded\r\n")
+      IRCServer.feed(server, ":irc 353 grappa-test = #seeded :grappa-test alice\r\n")
+      IRCServer.feed(server, ":irc 366 grappa-test #seeded :End\r\n")
+      # #pending: joined, 353 delivered, but NO 366 — still uninitialized.
+      IRCServer.feed(server, ":grappa-test!u@h JOIN :#pending\r\n")
+      IRCServer.feed(server, ":irc 353 grappa-test = #pending :grappa-test bob carol\r\n")
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+
+      assert {:ok, counts} = Session.list_member_counts({:user, user.id}, network.id)
+      assert counts == %{"#seeded" => 2}
+
+      # The discrimination this test rests on: the same channel reads
+      # :uninitialized through the per-channel door.
+      assert {:ok, :uninitialized} =
+               Session.list_members({:user, user.id}, network.id, "#pending")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "no session for (user, network) returns {:error, :no_session}" do
+      assert {:error, :no_session} =
+               Session.list_member_counts({:user, Ecto.UUID.generate()}, 999_999_999)
+    end
+  end
+
   describe "list_channels via GenServer.call" do
     test "returns Map.keys(SessionStateHelpers.members(state)) sorted alphabetically" do
       {_, port} = start_server()

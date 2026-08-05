@@ -74,9 +74,17 @@ defmodule Grappa.WindowCountsTest do
 
   defp reject_nil(map), do: :maps.filter(fn _, v -> v != nil end, map)
 
-  # snapshot with no highlight patterns unless overridden.
+  # snapshot with no highlight patterns unless overridden. `hide_presence:
+  # false` is the SHOWING channel — every pre-#505 test is that case, so it
+  # stays the shape of this helper; the hiding case has its own helper below
+  # so a reader can see at a glance which tests exercise the filter.
   defp snap(ctx, channel, cursor, own_nick, patterns \\ []) do
-    WindowCounts.snapshot(ctx.subject, ctx.network.id, channel, cursor, own_nick, patterns)
+    WindowCounts.snapshot(ctx.subject, ctx.network.id, channel, cursor, own_nick, patterns, false)
+  end
+
+  # #505 — the same window seen by a channel that is HIDING presence.
+  defp snap_hiding(ctx, channel, cursor, own_nick, patterns \\ []) do
+    WindowCounts.snapshot(ctx.subject, ctx.network.id, channel, cursor, own_nick, patterns, true)
   end
 
   # ---------------------------------------------------------------------------
@@ -194,6 +202,60 @@ defmodule Grappa.WindowCountsTest do
     result = snap(c, "#chan", anchor.id, "vjt")
     assert result.messages == 0
     assert result.severity == :event
+  end
+
+  # ---------------------------------------------------------------------------
+  # #505 — hide_presence: the seed applies the channel's presence filter
+  #
+  # The reported bug is a VISIBLE JUMP: on a hiding channel the faint `events`
+  # badge is seeded high by the server and drops when cic hydrates and
+  # recomputes locally through `presenceRowVisible`. These tests pin the seed
+  # to the hydrated answer.
+  # ---------------------------------------------------------------------------
+
+  test "hiding excludes the narrow suppressed kinds from events (#505)" do
+    c = ctx()
+    anchor = insert(c, "#chan", st: 1, body: "anchor")
+    insert(c, "#chan", st: 2, sender: "bob", kind: :join, body: nil)
+    insert(c, "#chan", st: 3, sender: "bob", kind: :part, body: nil)
+    insert(c, "#chan", st: 4, sender: "bob", kind: :mode, body: nil)
+
+    # Showing: all three. This is the pre-#505 answer and must not move.
+    assert snap(c, "#chan", anchor.id, "vjt") ==
+             %{messages: 0, mentions: 0, events: 3, severity: :event}
+
+    # Hiding: join + part go, :mode STAYS. If the filter were "zero the events
+    # bucket" instead of "apply the narrow kind set", this would read 0.
+    assert snap_hiding(c, "#chan", anchor.id, "vjt") ==
+             %{messages: 0, mentions: 0, events: 1, severity: :event}
+  end
+
+  # The payload of the whole issue: a channel whose only unread is hidden
+  # churn must seed a badge the operator actually sees as empty — severity
+  # falls off the ladder entirely, it does not merely shrink.
+  test "a hiding channel with only suppressed churn seeds severity :none (#505)" do
+    c = ctx()
+    anchor = insert(c, "#chan", st: 1, body: "anchor")
+    for i <- 2..10, do: insert(c, "#chan", st: i, sender: "bob", kind: :join, body: nil)
+    insert(c, "#chan", st: 11, sender: "bob", kind: :part, body: nil)
+    insert(c, "#chan", st: 12, sender: "old", kind: :nick_change, body: nil, meta: %{new_nick: "new"})
+    insert(c, "#chan", st: 13, sender: "bob", kind: :quit, body: nil)
+
+    assert snap(c, "#chan", anchor.id, "vjt").severity == :event
+
+    assert snap_hiding(c, "#chan", anchor.id, "vjt") ==
+             %{messages: 0, mentions: 0, events: 0, severity: :none}
+  end
+
+  test "hiding leaves messages, mentions and severity :mention untouched (#505)" do
+    c = ctx()
+    anchor = insert(c, "#chan", st: 1, body: "anchor")
+    insert(c, "#chan", st: 2, sender: "alice", body: "hey vjt")
+    insert(c, "#chan", st: 3, sender: "bob", body: "plain")
+    insert(c, "#chan", st: 4, sender: "bob", kind: :join, body: nil)
+
+    assert snap_hiding(c, "#chan", anchor.id, "vjt") ==
+             %{messages: 2, mentions: 1, events: 0, severity: :mention}
   end
 
   # ---------------------------------------------------------------------------
@@ -343,7 +405,7 @@ defmodule Grappa.WindowCountsTest do
       cursor(subject, net_b.id, "#ops", b.id)
 
       own_nicks = %{net_a.slug => {net_a.id, own}, net_b.slug => {net_b.id, own}}
-      bulk = WindowCounts.bulk_snapshot(subject, own_nicks, [])
+      bulk = WindowCounts.bulk_snapshot(subject, own_nicks, [], %{})
 
       assert bulk[net_a.slug]["#chan"] ==
                WindowCounts.snapshot(subject, net_a.id, "#chan", a.id, own, [])
@@ -366,7 +428,7 @@ defmodule Grappa.WindowCountsTest do
       ins(subject, net.id, "#chan", st: 3, sender: "bob", body: "unrelated")
       cursor(subject, net.id, "#chan", a.id)
 
-      bulk = WindowCounts.bulk_snapshot(subject, %{net.slug => {net.id, own}}, ["grappa"])
+      bulk = WindowCounts.bulk_snapshot(subject, %{net.slug => {net.id, own}}, ["grappa"], %{})
 
       assert bulk[net.slug]["#chan"] ==
                WindowCounts.snapshot(subject, net.id, "#chan", a.id, own, ["grappa"])
@@ -393,7 +455,7 @@ defmodule Grappa.WindowCountsTest do
       # A genuine self-message.
       ins(subject, net.id, own, st: 3, sender: own, body: "to self", dm_with: own)
 
-      bulk = WindowCounts.bulk_snapshot(subject, %{net.slug => {net.id, own}}, [])
+      bulk = WindowCounts.bulk_snapshot(subject, %{net.slug => {net.id, own}}, [], %{})
 
       # #396: COALESCE(dm_with, channel) folds the NULL row's channel=own in.
       assert bulk[net.slug][own].messages == 2
@@ -415,7 +477,7 @@ defmodule Grappa.WindowCountsTest do
       # casing — display-preserved, so the fold is required to match.
       ins(subject, net.id, own, st: 2, sender: own, body: "cased self", dm_with: "VJT")
 
-      bulk = WindowCounts.bulk_snapshot(subject, %{net.slug => {net.id, own}}, [])
+      bulk = WindowCounts.bulk_snapshot(subject, %{net.slug => {net.id, own}}, [], %{})
 
       # #396: both sides fold → "VJT" resolves to the own window.
       assert bulk[net.slug][own].messages == 1
@@ -441,7 +503,7 @@ defmodule Grappa.WindowCountsTest do
       ins(subject, net.id, "#chan", st: 3, sender: "bob", kind: :join, body: nil)
 
       # own_nicks WITHOUT this slug → own_nick_for_slug resolves nil.
-      bulk = WindowCounts.bulk_snapshot(subject, %{}, [])
+      bulk = WindowCounts.bulk_snapshot(subject, %{}, [], %{})
 
       assert bulk[net.slug]["#chan"] ==
                %{messages: 1, mentions: 0, events: 1, severity: :message}
@@ -456,7 +518,7 @@ defmodule Grappa.WindowCountsTest do
       m = ins(subject, net.id, "#chan", st: 1, body: "only")
       cursor(subject, net.id, "#chan", m.id)
 
-      bulk = WindowCounts.bulk_snapshot(subject, %{net.slug => {net.id, own}}, [])
+      bulk = WindowCounts.bulk_snapshot(subject, %{net.slug => {net.id, own}}, [], %{})
 
       assert bulk[net.slug]["#chan"] ==
                %{messages: 0, mentions: 0, events: 0, severity: :none}
@@ -466,7 +528,7 @@ defmodule Grappa.WindowCountsTest do
       user = AuthFixtures.user_fixture()
       subject = {:user, user.id}
 
-      assert WindowCounts.bulk_snapshot(subject, %{}, []) == %{}
+      assert WindowCounts.bulk_snapshot(subject, %{}, [], %{}) == %{}
     end
 
     test "issues a CONSTANT number of queries (2) regardless of window count" do
@@ -476,13 +538,124 @@ defmodule Grappa.WindowCountsTest do
       subject_3 = seed_windows(3)
       subject_30 = seed_windows(30)
 
-      q3 = count_repo_queries(fn -> WindowCounts.bulk_snapshot(subject_3, %{}, []) end)
-      q30 = count_repo_queries(fn -> WindowCounts.bulk_snapshot(subject_30, %{}, []) end)
+      q3 = count_repo_queries(fn -> WindowCounts.bulk_snapshot(subject_3, %{}, [], %{}) end)
+      q30 = count_repo_queries(fn -> WindowCounts.bulk_snapshot(subject_30, %{}, [], %{}) end)
 
       assert q3 == 2, "expected exactly 2 queries for 3 windows, got #{q3}"
       assert q30 == 2, "expected exactly 2 queries for 30 windows, got #{q30}"
       # Sanity: the 30-window subject really has 30 windows in the envelope.
-      assert map_size(hd(Map.values(WindowCounts.bulk_snapshot(subject_30, %{}, [])))) == 30
+      assert map_size(hd(Map.values(WindowCounts.bulk_snapshot(subject_30, %{}, [], %{})))) == 30
+    end
+  end
+
+  # #505 — the COLD-LOAD door. This is the one the issue's first symptom
+  # ("never-opened-this-session: the badge comes from the server seed")
+  # actually goes through: #396 moved `/me` off `snapshot/6` onto
+  # `bulk_snapshot`, so a fix that only taught `count_after_split/6` the
+  # filter would leave the reported case untouched.
+  describe "bulk_snapshot/4 — presence-hiding windows (#505)" do
+    test "hides suppressed churn for the hidden window ONLY, in one call" do
+      user = AuthFixtures.user_fixture()
+      subject = {:user, user.id}
+      net = AuthFixtures.network_fixture()
+      own = "vjt"
+
+      # Two channels on ONE network, identical row shapes. Only #big hides.
+      for chan <- ["#big", "#small"] do
+        anchor = ins(subject, net.id, chan, st: 1, body: "anchor")
+        ins(subject, net.id, chan, st: 2, sender: "alice", body: "hello")
+        ins(subject, net.id, chan, st: 3, sender: "bob", kind: :join, body: nil)
+        ins(subject, net.id, chan, st: 4, sender: "bob", kind: :quit, body: nil)
+        ins(subject, net.id, chan, st: 5, sender: "bob", kind: :mode, body: nil)
+        cursor(subject, net.id, chan, anchor.id)
+      end
+
+      own_nicks = %{net.slug => {net.id, own}}
+      hidden = %{net.slug => MapSet.new(["#big"])}
+
+      bulk = WindowCounts.bulk_snapshot(subject, own_nicks, [], hidden)
+
+      # #big: join + quit dropped, :mode survives.
+      assert bulk[net.slug]["#big"] ==
+               %{messages: 1, mentions: 0, events: 1, severity: :message}
+
+      # #small: untouched — the exclusion is PER WINDOW, not a global switch.
+      assert bulk[net.slug]["#small"] ==
+               %{messages: 1, mentions: 0, events: 3, severity: :message}
+    end
+
+    test "agrees with snapshot/7 for the same window" do
+      user = AuthFixtures.user_fixture()
+      subject = {:user, user.id}
+      net = AuthFixtures.network_fixture()
+      own = "vjt"
+
+      anchor = ins(subject, net.id, "#chan", st: 1, body: "anchor")
+      ins(subject, net.id, "#chan", st: 2, sender: "alice", body: "hi vjt")
+      ins(subject, net.id, "#chan", st: 3, sender: "bob", kind: :part, body: nil)
+      ins(subject, net.id, "#chan", st: 4, sender: "bob", kind: :topic, body: nil)
+      cursor(subject, net.id, "#chan", anchor.id)
+
+      hidden = %{net.slug => MapSet.new(["#chan"])}
+      bulk = WindowCounts.bulk_snapshot(subject, %{net.slug => {net.id, own}}, [], hidden)
+
+      assert bulk[net.slug]["#chan"] ==
+               WindowCounts.snapshot(subject, net.id, "#chan", anchor.id, own, [], true)
+    end
+
+    # The hidden set is keyed by SLUG because the pref itself is
+    # (`"<slug> <channel>"`). Same channel name on two networks, hidden on
+    # one: a set that leaked across networks would zero both.
+    test "the hidden set does not leak across networks" do
+      user = AuthFixtures.user_fixture()
+      subject = {:user, user.id}
+      net_a = AuthFixtures.network_fixture()
+      net_b = AuthFixtures.network_fixture()
+      own = "vjt"
+
+      for net <- [net_a, net_b] do
+        anchor = ins(subject, net.id, "#chan", st: 1, body: "anchor")
+        ins(subject, net.id, "#chan", st: 2, sender: "bob", kind: :join, body: nil)
+        cursor(subject, net.id, "#chan", anchor.id)
+      end
+
+      own_nicks = %{net_a.slug => {net_a.id, own}, net_b.slug => {net_b.id, own}}
+      hidden = %{net_a.slug => MapSet.new(["#chan"])}
+
+      bulk = WindowCounts.bulk_snapshot(subject, own_nicks, [], hidden)
+
+      assert bulk[net_a.slug]["#chan"].events == 0
+      assert bulk[net_b.slug]["#chan"].events == 1
+    end
+
+    # A hidden window whose churn is ALL suppressed must vanish from the
+    # badge, not shrink — the cold-load twin of the `snapshot/7` :none test.
+    test "an all-churn hidden window seeds severity :none" do
+      user = AuthFixtures.user_fixture()
+      subject = {:user, user.id}
+      net = AuthFixtures.network_fixture()
+
+      anchor = ins(subject, net.id, "#chan", st: 1, body: "anchor")
+      for i <- 2..6, do: ins(subject, net.id, "#chan", st: i, sender: "bob", kind: :join, body: nil)
+      cursor(subject, net.id, "#chan", anchor.id)
+
+      hidden = %{net.slug => MapSet.new(["#chan"])}
+      bulk = WindowCounts.bulk_snapshot(subject, %{net.slug => {net.id, "vjt"}}, [], hidden)
+
+      assert bulk[net.slug]["#chan"] ==
+               %{messages: 0, mentions: 0, events: 0, severity: :none}
+    end
+
+    # #396's whole point must survive #505: the exclusion rides the SAME two
+    # statements, it does not add a query per hidden window.
+    test "stays at a CONSTANT 2 queries with a non-empty hidden set" do
+      subject = seed_windows(30)
+      [slug] = Map.keys(WindowCounts.bulk_snapshot(subject, %{}, [], %{}))
+      hidden = %{slug => MapSet.new(for i <- 1..30, do: "#c#{i}")}
+
+      q = count_repo_queries(fn -> WindowCounts.bulk_snapshot(subject, %{}, [], hidden) end)
+
+      assert q == 2, "expected exactly 2 queries with 30 hidden windows, got #{q}"
     end
   end
 
