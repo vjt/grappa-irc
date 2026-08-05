@@ -77,11 +77,16 @@ bool whip_url_parse(const char *url, struct whip_url *out) {
      * malformed, so this is normalised here rather than at every use. */
     if (*p != '/') {
         if (*p && *p != '?' && *p != '#') return false;
-        snprintf(out->path, sizeof(out->path), "/%s", *p == '?' ? p : "");
-        return true;
+        /* Refused rather than cut to length, like the branch below: a
+         * truncated query is a DIFFERENT request — another session id,
+         * a token that is no longer the token — and it would go out
+         * looking like the one that was asked for. */
+        if (strlen(p) + 2 > sizeof(out->path)) return false;
+        snprintf(out->path, sizeof(out->path), "/%s", p);
+    } else {
+        if (strlen(p) + 1 > sizeof(out->path)) return false;
+        snprintf(out->path, sizeof(out->path), "%s", p);
     }
-    if (strlen(p) + 1 > sizeof(out->path)) return false;
-    snprintf(out->path, sizeof(out->path), "%s", p);
     /* A fragment is a client-side concept and is never sent. */
     char *hash = strchr(out->path, '#');
     if (hash) *hash = 0;
