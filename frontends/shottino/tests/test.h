@@ -88,8 +88,16 @@ static const char *test_current;
  * missing, and its decode test returns having asserted nothing wherever
  * ffmpeg is absent — which is every CI run to date. So a missing test
  * dependency FAILS, and an operator who knows their host cannot have it
- * says so with SHOTTINO_TEST_ALLOW_SKIP=1. */
-static inline bool test_skip_allowed(void) { return getenv("SHOTTINO_TEST_ALLOW_SKIP") != NULL; }
+ * says so with SHOTTINO_TEST_ALLOW_SKIP=1.
+ *
+ * Exactly "1", not merely set: an empty SHOTTINO_TEST_ALLOW_SKIP= in a CI
+ * env block would otherwise disable the gate while looking like it turns
+ * nothing on, and a typo'd value should fail loudly rather than skip
+ * quietly. Whichever way this reading errs, it must err towards red. */
+static inline bool test_skip_allowed(void) {
+    const char *v = getenv("SHOTTINO_TEST_ALLOW_SKIP");
+    return v && strcmp(v, "1") == 0;
+}
 
 /* A HOME OF OUR OWN, before a single test runs.
  *
