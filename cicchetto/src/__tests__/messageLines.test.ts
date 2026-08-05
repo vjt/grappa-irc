@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { splitMessageLines } from "../lib/messageLines";
+import { serverAcceptsBody } from "./serverBodyPredicate";
 
 // IRC frames are newline-delimited, so a PRIVMSG body cannot carry an
 // embedded LF — `splitMessageLines` turns a multiline compose into one
@@ -42,4 +43,36 @@ describe("splitMessageLines", () => {
   it("preserves a whitespace-only line (it is content on the wire, not empty)", () => {
     expect(splitMessageLines("a\n \nb")).toEqual(["a", " ", "b"]);
   });
+});
+
+// #863 — the two halves of "what is an empty line" must agree.
+//
+// The splitter decides what cic PUTS ON THE WIRE; the server decides what it
+// will accept. Nothing connects the two, so they drifted: the splitter keeps a
+// whitespace-only line on purpose ("content on the wire, not empty", the test
+// directly above), and the server refuses it as blank. The disagreement is
+// invisible until someone pastes a block with an indented blank line in it,
+// which is the ordinary shape of pasted code, logs and quoted text.
+//
+// This pin does NOT say which side is right — that is a product decision. It
+// says only that a line cic chooses to send must be one the server takes. It
+// holds either way: if the splitter starts dropping whitespace-only lines it
+// never emits one; if the server starts accepting them the model in
+// `serverBodyPredicate.ts` moves with it. What it forbids is fixing one half
+// and leaving the other to disagree in silence again.
+describe("#863 — splitMessageLines agrees with the server on what is empty", () => {
+  const pastes = [
+    "a\n \nb", // the reported shape: a space between two content lines
+    "a\n\t\nb", // same, tab-indented — a code paste
+    "first\n   \nsecond\n\nthird", // mixed: indented blank, truly empty
+    "  leading\ntrailing  ", // content with edge whitespace stays content
+    "plain", // the single-line common path
+  ];
+
+  for (const paste of pastes) {
+    it(`every line emitted for ${JSON.stringify(paste)} is a body the server accepts`, () => {
+      const emitted = splitMessageLines(paste);
+      expect(emitted.filter((line) => !serverAcceptsBody(line))).toEqual([]);
+    });
+  }
 });
