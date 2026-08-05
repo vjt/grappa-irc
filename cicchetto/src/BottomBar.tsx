@@ -1,18 +1,11 @@
-import { type Component, createEffect, For, on, Show } from "solid-js";
+import { type Component, createEffect, For, on } from "solid-js";
 import CloseButton from "./CloseButton";
 import { channelKey } from "./lib/channelKey";
-import { mentionCounts } from "./lib/mentions";
 import { channelsBySlug, networks } from "./lib/networks";
 import { pseudoChannelsForNetwork } from "./lib/pseudoChannels";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { requestScrollToBottom } from "./lib/scrollToBottomCommand";
-import {
-  eventsUnread,
-  isActiveSelection,
-  messagesUnread,
-  selectedChannel,
-  setSelectedChannel,
-} from "./lib/selection";
+import { isActiveSelection, selectedChannel, setSelectedChannel } from "./lib/selection";
 import {
   closeQueryWindow,
   confirmDisconnectNetwork,
@@ -22,6 +15,7 @@ import {
 import type { WindowKind } from "./lib/windowKinds";
 import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import NickText from "./NickText";
+import WindowBadges from "./WindowBadges";
 
 // BottomBar: mobile-only window picker rendered UNDER ComposeBox.
 //
@@ -168,15 +162,7 @@ const BottomBar: Component<Props> = (props) => {
                   ⚙️
                 </span>
                 <span class="bottom-bar-network-name">{network.slug}</span>
-                <Show when={(messagesUnread()[headerKey] ?? 0) > 0}>
-                  <span class="bottom-bar-msg-unread">{messagesUnread()[headerKey]}</span>
-                </Show>
-                <Show when={(eventsUnread()[headerKey] ?? 0) > 0}>
-                  <span class="bottom-bar-events-unread">{eventsUnread()[headerKey]}</span>
-                </Show>
-                <Show when={(mentionCounts()[headerKey] ?? 0) > 0}>
-                  <span class="bottom-bar-mention">@{mentionCounts()[headerKey]}</span>
-                </Show>
+                <WindowBadges channelKey={headerKey} variant="bottom-bar" />
               </button>
               {/* Disconnect × — sibling of the header, same flat-flex
                   discipline as channel/query closes (post-UX-3-DEC).
@@ -208,15 +194,7 @@ const BottomBar: Component<Props> = (props) => {
                         onClick={() => handleClick(network.slug, channel.name, "channel")}
                       >
                         {channel.name}
-                        <Show when={(messagesUnread()[key] ?? 0) > 0}>
-                          <span class="bottom-bar-msg-unread">{messagesUnread()[key]}</span>
-                        </Show>
-                        <Show when={(eventsUnread()[key] ?? 0) > 0}>
-                          <span class="bottom-bar-events-unread">{eventsUnread()[key]}</span>
-                        </Show>
-                        <Show when={(mentionCounts()[key] ?? 0) > 0}>
-                          <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>
-                        </Show>
+                        <WindowBadges channelKey={key} variant="bottom-bar" />
                       </button>
                       <CloseButton
                         class="bottom-bar-close"
@@ -284,15 +262,7 @@ const BottomBar: Component<Props> = (props) => {
                         onClick={() => handleClick(network.slug, qw.targetNick, "query")}
                       >
                         <NickText nick={qw.targetNick} extraClass="bottom-bar-tab-nick" />
-                        <Show when={(messagesUnread()[key] ?? 0) > 0}>
-                          <span class="bottom-bar-msg-unread">{messagesUnread()[key]}</span>
-                        </Show>
-                        <Show when={(eventsUnread()[key] ?? 0) > 0}>
-                          <span class="bottom-bar-events-unread">{eventsUnread()[key]}</span>
-                        </Show>
-                        <Show when={(mentionCounts()[key] ?? 0) > 0}>
-                          <span class="bottom-bar-mention">@{mentionCounts()[key]}</span>
-                        </Show>
+                        <WindowBadges channelKey={key} variant="bottom-bar" />
                       </button>
                       <CloseButton
                         class="bottom-bar-close"

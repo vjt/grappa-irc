@@ -3,20 +3,13 @@ import CloseButton from "./CloseButton";
 import { ownNickForNetwork } from "./lib/api";
 import { awayByNetwork } from "./lib/awayStatus";
 import { channelKey } from "./lib/channelKey";
-import { mentionCounts } from "./lib/mentions";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
 import { pseudoChannelsForNetwork } from "./lib/pseudoChannels";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { reconnectingByNetwork } from "./lib/reconnectingStatus";
 import { requestScrollToBottom } from "./lib/scrollToBottomCommand";
-import {
-  eventsUnread,
-  isActiveSelection,
-  messagesUnread,
-  selectedChannel,
-  setSelectedChannel,
-} from "./lib/selection";
+import { isActiveSelection, selectedChannel, setSelectedChannel } from "./lib/selection";
 import { openUmodeModal } from "./lib/umodeModal";
 import { umodesForNetwork } from "./lib/umodes";
 import {
@@ -36,6 +29,7 @@ import {
 } from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
 import NickText from "./NickText";
+import WindowBadges from "./WindowBadges";
 
 // Left-pane sidebar: network → window tree. Renders ordered windows:
 //   1. Server (always present, not closeable)
@@ -345,22 +339,10 @@ const Sidebar: Component<Props> = () => {
                     {/* CP13 — server-window receives :notice rows for server-routed
                       numerics + NickServ + MOTD + ChanServ-fallback. Same badge
                       treatment as channels so unread counts surface uniformly. */}
-                    {(() => {
-                      const key = channelKey(network.slug, SERVER_WINDOW_NAME);
-                      return (
-                        <>
-                          <Show when={(messagesUnread()[key] ?? 0) > 0}>
-                            <span class="sidebar-msg-unread">{messagesUnread()[key]}</span>
-                          </Show>
-                          <Show when={(eventsUnread()[key] ?? 0) > 0}>
-                            <span class="sidebar-events-unread">{eventsUnread()[key]}</span>
-                          </Show>
-                          <Show when={(mentionCounts()[key] ?? 0) > 0}>
-                            <span class="sidebar-mention">@{mentionCounts()[key]}</span>
-                          </Show>
-                        </>
-                      );
-                    })()}
+                    <WindowBadges
+                      channelKey={channelKey(network.slug, SERVER_WINDOW_NAME)}
+                      variant="sidebar"
+                    />
                   </button>
                   {/* #229 — umode indicator + tap target. Shows the
                     operator's own umodes compactly (e.g. "+iS") and opens
@@ -478,15 +460,7 @@ const Sidebar: Component<Props> = () => {
                               the only way either is distinguishable at all. */}
                           <RowState state={channel.joined ? null : "parted"} />
                           <RowState state={greyedState(network.slug, channel.name)} />
-                          <Show when={(messagesUnread()[key] ?? 0) > 0}>
-                            <span class="sidebar-msg-unread">{messagesUnread()[key]}</span>
-                          </Show>
-                          <Show when={(eventsUnread()[key] ?? 0) > 0}>
-                            <span class="sidebar-events-unread">{eventsUnread()[key]}</span>
-                          </Show>
-                          <Show when={(mentionCounts()[key] ?? 0) > 0}>
-                            <span class="sidebar-mention">@{mentionCounts()[key]}</span>
-                          </Show>
+                          <WindowBadges channelKey={key} variant="sidebar" />
                         </button>
                         <CloseButton
                           class="sidebar-close"
@@ -595,15 +569,7 @@ const Sidebar: Component<Props> = () => {
                         >
                           <NickText nick={qw.targetNick} extraClass="sidebar-channel-name" />
                           <RowState state={greyedState(network.slug, qw.targetNick)} />
-                          <Show when={(messagesUnread()[key] ?? 0) > 0}>
-                            <span class="sidebar-msg-unread">{messagesUnread()[key]}</span>
-                          </Show>
-                          <Show when={(eventsUnread()[key] ?? 0) > 0}>
-                            <span class="sidebar-events-unread">{eventsUnread()[key]}</span>
-                          </Show>
-                          <Show when={(mentionCounts()[key] ?? 0) > 0}>
-                            <span class="sidebar-mention">@{mentionCounts()[key]}</span>
-                          </Show>
+                          <WindowBadges channelKey={key} variant="sidebar" />
                         </button>
                         <CloseButton
                           class="sidebar-close"

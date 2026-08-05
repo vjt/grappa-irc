@@ -1579,6 +1579,30 @@ html.resize-dragging * {
   font-weight: bold;
 }
 
+/* #888 — the FAR-BEHIND unread badge. The read cursor of a far-behind
+   window is frozen on purpose (#693), so its number does not move while
+   the operator reads; drawn as the normal solid pill it reads as a broken
+   counter. Outlined instead of filled: same size, same position, same
+   number, but it stops claiming to be a live count and reads as a
+   distance — paired with the pane's own far-behind bar + jump control,
+   which is what actually clears it. Padding compensates the 1px border so
+   the pill does not resize when the state flips (the sidebar row would
+   reflow under a stationary number, which is its own kind of lie).
+   Written as `.sidebar-msg-unread.far-behind`, not a bare `.far-behind`,
+   so the modifier can never bleed onto an unrelated element. */
+.sidebar-msg-unread.far-behind {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 0 calc(0.4rem - 1px);
+  font-weight: normal;
+}
+
+.sidebar-events-unread.far-behind {
+  border: 1px solid var(--muted);
+  padding: 0 calc(0.3rem - 1px);
+}
+
 /* CP15 B5 — greyed window-row treatment for failed/kicked/parked
    channels and DM targets. Italic + dim mirror `.sidebar-channel-name.parted`
    (the per-channel "you've parted" visual) but apply at the row button
@@ -4974,6 +4998,24 @@ html.resize-dragging * {
   font-size: 0.7rem;
   line-height: 1.4;
   font-weight: bold;
+}
+
+/* #888 — the mobile twin of the sidebar far-behind badge. Same reasoning,
+   same outlined treatment, the bottom bar's own metrics. The strip is
+   horizontally scrolled and space-scarce, so the border-compensated
+   padding matters more here than on the sidebar: a tab that changes width
+   when the state flips shifts every tab to its right. */
+.bottom-bar-msg-unread.far-behind {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  padding: 0 calc(0.3rem - 1px);
+  font-weight: normal;
+}
+
+.bottom-bar-events-unread.far-behind {
+  border: 1px solid var(--muted);
+  padding: 0 calc(0.2rem - 1px);
 }
 
 /* UX-3 DEC: dropped `.bottom-bar-tab-wrap` <span> — tab + close ×
