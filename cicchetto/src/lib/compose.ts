@@ -14,7 +14,7 @@ import { token } from "./auth";
 import { openBanlistModal } from "./banlistModal";
 import { buildBanMask } from "./banMask";
 import { setQuery } from "./channelDirectory";
-import { type ChannelKey, canonicalChannel, channelKey } from "./channelKey";
+import { type ChannelKey, canonicalChannel, channelKey, decodeChannelKey } from "./channelKey";
 import { friendlyError } from "./friendlyError";
 import { addHighlight, delHighlight } from "./highlightList";
 import { identityScopedStore } from "./identityScopedStore";
@@ -67,6 +67,17 @@ import {
 import { openUmodeModal } from "./umodeModal";
 import { closeQueryWindow } from "./windowClose";
 import { LIST_WINDOW_NAME, SERVER_WINDOW_NAME } from "./windowKinds";
+import { windowStateByChannel } from "./windowState";
+
+// RFC 2812 channel sigils. The CORRECT source is the server's ISUPPORT
+// `CHANTYPES`, but nothing in this stack parses it: `Grappa.Session.ISupport`
+// carries CHANMODES / PREFIX / STATUSMSG / CASEMAPPING only, and cic's
+// `isupport.ts` store mirrors just chanmodes + prefix. So this is the same
+// literal class already open-coded across cic (slashCommands, linkify,
+// pushPayload, ScrollbackPane) — hoisted here so this file has ONE copy.
+// TODO(#30): plumb CHANTYPES through `isupport_changed` and read it per
+// network instead of assuming the RFC set.
+const CHANNEL_SIGIL = /^[#&+!]/;
 
 // Per-channel compose state. Owns:
 //   * `composeByChannel` — { draft, history, historyCursor } per key.
@@ -510,7 +521,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       // Channel windows start with '#', '&', '+', or '!' per IRC spec.
       // Query windows use a nick (no # prefix). Server/list/mentions
       // pseudo-windows use synthetic keys that don't start with '#'.
-      if (!/^[#&+!]/.test(name)) return null;
+      if (!CHANNEL_SIGIL.test(name)) return null;
       return name;
     };
 
@@ -1539,13 +1550,43 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     return result;
   };
 
-  // Tab-complete: members-only. Cycles nick matches for the word at the
-  // cursor, irssi-style. Cycle space is [match0 … matchN-1, <typed>]: after
-  // the last match the next forward step restores the originally-typed text,
-  // then wraps to match0. Writes the completed draft itself via writeState
-  // (NOT setDraft, which nulls tabCycle and would kill the cycle) — callers
-  // only place the caret. Returns the new input + caret, or null when
-  // there's nothing to complete.
+  // #30 — the channel candidate set: every channel JOINED on the same
+  // network as the window being typed in. Derived from the server-owned
+  // `windowStateByChannel` projection (no parallel client-side list to
+  // drift); a pending / invited / parked / failed / kicked window is NOT
+  // offered, mirroring the nick rule that you complete who is actually
+  // here. Scope is deliberately narrower than the issue's "optionally
+  // channels seen via /list or mentioned in the buffer" — those are a
+  // separate cut. The decoded name is already ASCII-folded (channelKey
+  // folds at construction) and for channels the folded key IS the display
+  // (the #537/#525 channel invariant), so it is inserted verbatim.
+  const joinedChannelsOnNetwork = (key: ChannelKey): string[] => {
+    const here = decodeChannelKey(key);
+    if (here === null) return [];
+    const states = windowStateByChannel();
+    const out: string[] = [];
+    for (const [candidate, state] of Object.entries(states)) {
+      if (state !== "joined") continue;
+      const there = decodeChannelKey(candidate as ChannelKey);
+      if (there === null || there.slug !== here.slug) continue;
+      if (!CHANNEL_SIGIL.test(there.name)) continue;
+      out.push(there.name);
+    }
+    return out;
+  };
+
+  // Tab-complete. Cycles matches for the word at the cursor, irssi-style.
+  // Cycle space is [match0 … matchN-1, <typed>]: after the last match the
+  // next forward step restores the originally-typed text, then wraps to
+  // match0. Writes the completed draft itself via writeState (NOT setDraft,
+  // which nulls tabCycle and would kill the cycle) — callers only place the
+  // caret. Returns the new input + caret, or null when there's nothing to
+  // complete.
+  //
+  // #30 — the token's leading sigil picks the candidate SET (channels vs
+  // members) and the suffix; the cycle, the revert slot and the anchor are
+  // shared. There is ONE completion engine, deliberately: a parallel one
+  // would drift on the re-tap/anchor rules that took #737 to get right.
   const tabComplete = (
     key: ChannelKey,
     input: string,
@@ -1555,8 +1596,6 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // #737 — tab-complete writes the draft directly (see writeState below),
     // so it needs the same refusal as setDraft / the history walk.
     if (isDraining(key)) return null;
-    const all = membersByChannel()[key] ?? [];
-    if (all.length === 0) return null;
 
     const continuing =
       tabCycle !== null &&
@@ -1591,14 +1630,19 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       // Unicode-over-folds non-ASCII (`CAFÉ`→`café`), not the brackets.
       // Mirror of `Grappa.IRC.Identifier.canonical_nick/1`.
       prefix = asciiFold(typedWord);
-      // ": " only when the word is the first token on the line.
-      suffix = input.slice(0, anchorStart).trim() === "" ? ": " : " ";
+      // ": " only when the word is the first token on the line — and only
+      // for a NICK. A channel is a topic of conversation, never an
+      // addressee, so `#chan: ` would be wrong at line start (#30).
+      suffix =
+        !CHANNEL_SIGIL.test(typedWord) && input.slice(0, anchorStart).trim() === "" ? ": " : " ";
       oldEnd = cursor;
     }
 
-    const matches = all
-      .filter((m) => asciiFold(m.nick).startsWith(prefix))
-      .map((m) => m.nick)
+    const candidates = CHANNEL_SIGIL.test(typedWord)
+      ? joinedChannelsOnNetwork(key)
+      : (membersByChannel()[key] ?? []).map((m) => m.nick);
+    const matches = candidates
+      .filter((c) => asciiFold(c).startsWith(prefix))
       .sort((a, b) => a.localeCompare(b));
     if (matches.length === 0) return null;
 

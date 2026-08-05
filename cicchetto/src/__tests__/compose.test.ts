@@ -1826,6 +1826,117 @@ describe("compose tabComplete (members-only, irssi-exact)", () => {
   });
 });
 
+// #30 — Tab on a token carrying a channel sigil draws from the channels
+// JOINED on this window's network instead of the member list. Same cycle,
+// same revert slot, same anchor; only the candidate set and the suffix
+// differ (a channel is never addressed, so never a `": "`).
+describe("compose tabComplete — channel names (#30)", () => {
+  const k = channelKey("freenode", "#a");
+
+  const setJoinedWindows = async (states: Record<string, string>) => {
+    const ws = await import("../lib/windowState");
+    vi.mocked(ws.windowStateByChannel).mockReturnValue(
+      states as unknown as ReturnType<typeof ws.windowStateByChannel>,
+    );
+  };
+
+  const setMembers = async (nicks: string[]) => {
+    const members = await import("../lib/members");
+    vi.mocked(members.membersByChannel).mockReturnValue({
+      [k]: nicks.map((nick) => ({ nick, modes: [] })),
+    });
+  };
+
+  it("completes a joined channel from its prefix", async () => {
+    await setJoinedWindows({
+      [channelKey("freenode", "#sniffo")]: "joined",
+      [channelKey("freenode", "#other")]: "joined",
+    });
+    const compose = await import("../lib/compose");
+    const r = compose.tabComplete(k, "#sni", 4, true);
+    expect(r?.newInput).toBe("#sniffo ");
+    expect(r?.newCursor).toBe(8);
+  });
+
+  it("never appends ': ' — a channel is not addressed like a nick", async () => {
+    await setJoinedWindows({ [channelKey("freenode", "#sniffo")]: "joined" });
+    const compose = await import("../lib/compose");
+    // Line start: the nick path would produce "…: " here.
+    expect(compose.tabComplete(k, "#sni", 4, true)?.newInput).toBe("#sniffo ");
+  });
+
+  it("offers only channels on THIS window's network", async () => {
+    await setJoinedWindows({
+      [channelKey("freenode", "#sniffo")]: "joined",
+      [channelKey("azzurra", "#sniffonauti")]: "joined",
+    });
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "#sni", 4, true)?.newInput).toBe("#sniffo ");
+    const draft = compose.getDraft(k);
+    // Only one candidate on freenode → next step is the revert slot, NOT
+    // the same-prefix channel that lives on the other network.
+    expect(compose.tabComplete(k, draft, draft.length, true)?.newInput).toBe("#sni");
+  });
+
+  it("offers only JOINED windows — not pending/parked/failed/kicked", async () => {
+    await setJoinedWindows({
+      [channelKey("freenode", "#sniffo")]: "pending",
+      [channelKey("freenode", "#sniper")]: "parked",
+      [channelKey("freenode", "#snitch")]: "failed",
+      [channelKey("freenode", "#snoop")]: "kicked",
+    });
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "#sni", 4, true)).toBeNull();
+  });
+
+  it("folds case on the match and inserts the folded key (the channel display)", async () => {
+    await setJoinedWindows({ [channelKey("freenode", "#Sniffo")]: "joined" });
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "#SNI", 4, true)?.newInput).toBe("#sniffo ");
+  });
+
+  it("cycles matches then reverts to the typed text, then wraps", async () => {
+    await setJoinedWindows({
+      [channelKey("freenode", "#sniffo")]: "joined",
+      [channelKey("freenode", "#snitch")]: "joined",
+    });
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "#sn", 3, true)?.newInput).toBe("#sniffo ");
+    let draft = compose.getDraft(k);
+    expect(compose.tabComplete(k, draft, draft.length, true)?.newInput).toBe("#snitch ");
+    draft = compose.getDraft(k);
+    expect(compose.tabComplete(k, draft, draft.length, true)?.newInput).toBe("#sn");
+    draft = compose.getDraft(k);
+    expect(compose.tabComplete(k, draft, draft.length, true)?.newInput).toBe("#sniffo ");
+  });
+
+  it("completes mid-sentence, leaving the rest of the line alone", async () => {
+    await setJoinedWindows({ [channelKey("freenode", "#sniffo")]: "joined" });
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "vieni su #sni", 13, true)?.newInput).toBe("vieni su #sniffo ");
+  });
+
+  it("returns null when no joined channel matches the token", async () => {
+    await setJoinedWindows({ [channelKey("freenode", "#other")]: "joined" });
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "#sni", 4, true)).toBeNull();
+  });
+
+  it("a sigil-less token still completes NICKS, not channels", async () => {
+    await setJoinedWindows({ [channelKey("freenode", "#sniffo")]: "joined" });
+    await setMembers(["sniper"]);
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "sni", 3, true)?.newInput).toBe("sniper: ");
+  });
+
+  it("works from a query window (channel candidates come from the network)", async () => {
+    await setJoinedWindows({ [channelKey("freenode", "#sniffo")]: "joined" });
+    const compose = await import("../lib/compose");
+    const q = channelKey("freenode", "mezmerize");
+    expect(compose.tabComplete(q, "#sni", 4, true)?.newInput).toBe("#sniffo ");
+  });
+});
+
 // #268 — /away lifecycle: GOING-away clears this network's mentions bundle
 // (moved off the reorder-prone away_confirmed:"away" echo); bare /away
 // (un-away) does NOT clear (the return path re-SETs the bundle).
