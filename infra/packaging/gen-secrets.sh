@@ -145,7 +145,9 @@ if needs_gen VAPID_PUBLIC_KEY || needs_gen VAPID_PRIVATE_KEY; then
 	pair="$(gen_vapid)"
 	vpub="$(printf '%s' "$pair" | sed -n '1p')"
 	vpriv="$(printf '%s' "$pair" | sed -n '2p')"
-	[ -n "$vpub" ] && [ -n "$vpriv" ] || die "VAPID generation produced an empty key"
+	if [ -z "$vpub" ] || [ -z "$vpriv" ]; then
+		die "VAPID generation produced an empty key"
+	fi
 	set_env VAPID_PUBLIC_KEY "$vpub"
 	set_env VAPID_PRIVATE_KEY "$vpriv"
 	changed=1
