@@ -27,7 +27,7 @@ defmodule Grappa.SessionStopSessionTest.Holder do
 
   @registration_attempts 200
   @registration_retry_ms 1
-  @refill_handshake_ms 1_000
+  @handshake_ms 1_000
 
   def child_spec(opts) do
     %{
@@ -71,17 +71,74 @@ defmodule Grappa.SessionStopSessionTest.Holder do
   @impl GenServer
   def handle_info(:crash, opts), do: {:stop, :boom, opts}
 
+  # Hand the key to a live stranger BEFORE dying, so the stopper's first
+  # lookup after the `:DOWN` cannot mistake the situation for cleanup lag.
   @impl GenServer
-  def terminate(_reason, %{refiller: nil}), do: :ok
+  def terminate(_reason, %{handoff: squatter} = opts) when is_pid(squatter) do
+    Registry.unregister(Grappa.SessionRegistry, Server.registry_key(opts.subject, opts.network_id))
+    send(squatter, {:grab, self()})
 
-  def terminate(_reason, opts) do
-    send(opts.refiller, {:refill, opts.generation + 1, self()})
+    receive do
+      {:grabbed, ^squatter} -> :ok
+    after
+      @handshake_ms -> :ok
+    end
+  end
+
+  def terminate(_reason, %{refiller: refiller} = opts) when is_pid(refiller) do
+    send(refiller, {:refill, opts.generation + 1, self()})
 
     receive do
       {:refilling, _} -> :ok
     after
-      @refill_handshake_ms -> :ok
+      @handshake_ms -> :ok
     end
+  end
+
+  def terminate(_reason, _opts), do: :ok
+end
+
+defmodule Grappa.SessionStopSessionTest.Squatter do
+  @moduledoc """
+  A supervised child that takes the session key over from a `Holder`
+  that is dying — the stand-in for a restart that lands INSIDE
+  `stop_session/2`'s unregister poll, which is the #653 plateau: the
+  poll finds a LIVE pid on the key and, pre-#854, could not tell that
+  from the Registry's cleanup lag on the corpse it had just buried.
+
+  The hand-off is a handshake driven from the holder's `terminate/2`,
+  not a race for the key: the holder unregisters itself, this process
+  registers, and only then does the holder die. So the stopper's very
+  first post-`:DOWN` lookup is GUARANTEED to see a live stranger on the
+  key — the observation the plateau is made of — instead of it being a
+  coin toss with the Registry's cleanup.
+  """
+
+  use GenServer, restart: :temporary
+
+  alias Grappa.Session.Server
+
+  def child_spec(opts) do
+    %{
+      id: {__MODULE__, opts.subject, opts.network_id},
+      start: {__MODULE__, :start_link, [opts]},
+      restart: :temporary
+    }
+  end
+
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+
+  @impl GenServer
+  def init(opts), do: {:ok, opts}
+
+  @impl GenServer
+  def handle_info({:grab, from}, opts) do
+    {:ok, _} =
+      Registry.register(Grappa.SessionRegistry, Server.registry_key(opts.subject, opts.network_id), nil)
+
+    send(from, {:grabbed, self()})
+    send(opts.observer, {:squatted, self()})
+    {:noreply, opts}
   end
 end
 
@@ -110,6 +167,7 @@ defmodule Grappa.SessionStopSessionTest do
 
   alias Grappa.Session
   alias Grappa.SessionStopSessionTest.Holder
+  alias Grappa.SessionStopSessionTest.Squatter
 
   setup do
     subject = {:visitor, Ecto.UUID.generate()}
@@ -122,7 +180,7 @@ defmodule Grappa.SessionStopSessionTest do
 
   describe "stop_session/2 post-condition" do
     test "the key is free and the process dead for a session nobody restarts", ctx do
-      {:ok, pid} = start_holder(ctx, generation: 0, register_delay_ms: 0, refiller: nil)
+      {:ok, pid} = start_holder(ctx, generation: 0, register_delay_ms: 0, refiller: nil, handoff: nil)
       assert_receive {:ready, 0, ^pid}, 1_000
 
       log = capture_log(fn -> assert :ok = Session.stop_session(ctx.subject, ctx.network_id) end)
@@ -140,7 +198,7 @@ defmodule Grappa.SessionStopSessionTest do
     # the restarted session outlives the tear-down that promised to
     # remove it.
     test "a :transient restart in flight does not survive stop_session/2", ctx do
-      {:ok, gen0} = start_holder(ctx, generation: 0, register_delay_ms: 50, refiller: nil)
+      {:ok, gen0} = start_holder(ctx, generation: 0, register_delay_ms: 50, refiller: nil, handoff: nil)
       assert_receive {:starting, 0}, 1_000
       assert_receive {:ready, 0, ^gen0}, 1_000
 
@@ -171,7 +229,7 @@ defmodule Grappa.SessionStopSessionTest do
     test "an unwinnable refill chase logs an error instead of a silent :ok", ctx do
       refiller = start_refiller(ctx, max_generation: 4)
 
-      {:ok, gen0} = start_holder(ctx, generation: 0, register_delay_ms: 0, refiller: refiller)
+      {:ok, gen0} = start_holder(ctx, generation: 0, register_delay_ms: 0, refiller: refiller, handoff: nil)
       assert_receive {:ready, 0, ^gen0}, 1_000
 
       log = capture_log(fn -> assert :ok = Session.stop_session(ctx.subject, ctx.network_id) end)
@@ -179,6 +237,40 @@ defmodule Grappa.SessionStopSessionTest do
       assert log =~ "[error]"
       assert log =~ "post-condition"
       assert log =~ inspect(ctx.subject)
+    end
+
+    # The #653 plateau, and the ONLY test that constrains the poll's
+    # corpse-vs-refill discriminator: the squatter holds the key for the
+    # whole stop, so a poll that cannot tell it from cleanup lag sleeps
+    # out its entire budget (100 × 5 ms) before the chase can act.
+    test "the unregister poll does not sleep out its budget against a refilled key", ctx do
+      {:ok, squatter} =
+        DynamicSupervisor.start_child(
+          Grappa.SessionSupervisor,
+          Squatter.child_spec(%{subject: ctx.subject, network_id: ctx.network_id, observer: self()})
+        )
+
+      {:ok, gen0} =
+        start_holder(ctx, generation: 0, register_delay_ms: 0, refiller: nil, handoff: squatter)
+
+      assert_receive {:ready, 0, ^gen0}, 1_000
+
+      {elapsed_us, :ok} =
+        :timer.tc(fn -> Session.stop_session(ctx.subject, ctx.network_id) end)
+
+      assert_receive {:squatted, ^squatter}, 1_000
+
+      refute Process.alive?(gen0)
+      refute Process.alive?(squatter)
+      assert Session.whereis(ctx.subject, ctx.network_id) == nil
+
+      # Half an unregister budget. Measured ~5 ms once the poll stops
+      # waiting on a live holder; ~505 ms when it cannot tell one from a
+      # corpse — so the bound is not a timing guess, it sits 2× away from
+      # both the behaviour it allows and the one it rules out.
+      assert div(elapsed_us, 1_000) < 250,
+             "stop_session burned #{div(elapsed_us, 1_000)}ms — the unregister poll cannot " <>
+               "tell a Registry corpse from a key a restart refilled (#854/#653)"
     end
   end
 
@@ -193,7 +285,8 @@ defmodule Grappa.SessionStopSessionTest do
       observer: self(),
       generation: Keyword.fetch!(opts, :generation),
       register_delay_ms: Keyword.fetch!(opts, :register_delay_ms),
-      refiller: Keyword.fetch!(opts, :refiller)
+      refiller: Keyword.fetch!(opts, :refiller),
+      handoff: Keyword.fetch!(opts, :handoff)
     }
   end
 
@@ -209,7 +302,8 @@ defmodule Grappa.SessionStopSessionTest do
             observer: test_pid,
             generation: generation,
             register_delay_ms: 0,
-            refiller: self()
+            refiller: self(),
+            handoff: nil
           }
         end,
         max
