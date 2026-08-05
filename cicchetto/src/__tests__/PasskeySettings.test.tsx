@@ -151,6 +151,70 @@ describe("PasskeySettings", () => {
     expect(screen.queryByText(/409 passkey_required/)).toBeNull();
   });
 
+  // #729 — the password field used to live INSIDE the add-passkey form while
+  // four other privileged actions read the same signal from outside it. A
+  // user who never filled that form and clicks "remove" sent `""` as their
+  // password and got a 401 back, with nothing on screen saying a password was
+  // expected. Refuse locally and name the blocker.
+  it("refuses a privileged action with no password instead of firing a doomed request", async () => {
+    render(() => <PasskeySettings />);
+
+    await screen.findByText("Mode: passwordless");
+    await fireEvent.click(screen.getByTestId("passkey-remove-passkey-1"));
+    await fireEvent.click(screen.getByTestId("passkey-remove-passkey-1"));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/account password/i));
+    expect(api.deletePasskey).not.toHaveBeenCalled();
+  });
+
+  it("refuses a mode change with no password", async () => {
+    render(() => <PasskeySettings />);
+
+    await screen.findByText("Mode: passwordless");
+    await fireEvent.click(screen.getByRole("button", { name: "require password + passkey" }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/account password/i));
+    expect(api.startPasskeyModeChange).not.toHaveBeenCalled();
+  });
+
+  // The other half of #729: the password stayed live in the signal and in the
+  // DOM for the whole drawer session, so a password typed to ADD a passkey
+  // was silently reused to change HOW THE ACCOUNT AUTHENTICATES. Clearing it
+  // after every action that consumed it makes the second action re-confirm.
+  it("clears the password after an action so the next one must re-confirm", async () => {
+    render(() => <PasskeySettings />);
+
+    await screen.findByText("Mode: passwordless");
+    await addPasskey();
+    // The clear lands in the action's `finally`, one `reload()` after the
+    // registration call — wait for the field itself, not for the call.
+    await waitFor(() =>
+      expect((screen.getByLabelText("Account password") as HTMLInputElement).value).toBe(""),
+    );
+    expect(api.finishPasskeyRegistration).toHaveBeenCalled();
+
+    await fireEvent.click(screen.getByRole("button", { name: "use passkey as primary login" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/account password/i));
+    expect(api.preparePasswordless).not.toHaveBeenCalled();
+  });
+
+  it("clears the password after a REFUSED action too", async () => {
+    // A wrong password must not linger for the next click to reuse.
+    api.startPasskeyModeChange.mockRejectedValue(new ApiError(401, "invalid_credentials"));
+    render(() => <PasskeySettings />);
+
+    await screen.findByText("Mode: passwordless");
+    await fireEvent.input(screen.getByLabelText("Account password"), {
+      target: { value: "wrong" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "require password + passkey" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("Invalid name or password."),
+    );
+    expect((screen.getByLabelText("Account password") as HTMLInputElement).value).toBe("");
+  });
+
   it("returns a passwordless account to password login with password and passkey", async () => {
     render(() => <PasskeySettings />);
 

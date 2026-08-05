@@ -152,13 +152,26 @@ describe("#735 each passkey remove button names its own passkey", () => {
   it("arms before deleting, so one mis-tap cannot destroy a credential", async () => {
     render(() => <PasskeySettings />);
 
-    await fireEvent.click(await screen.findByRole("button", { name: "remove phone" }));
+    // #729 — this used to confirm with an untouched password field and assert
+    // `deletePasskey(…, "")`, PINNING the defect: a removal fired with an
+    // empty password and came back 401. The arming contract under test here
+    // is unchanged; the password is now supplied because the pane refuses
+    // without one.
+    await fireEvent.input(await screen.findByLabelText("Account password"), {
+      target: { value: "correct horse battery staple" },
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "remove phone" }));
     expect(api.deletePasskey).not.toHaveBeenCalled();
 
     // The armed label names the passkey too — a screen reader hears WHICH
     // credential the confirmation destroys, not a bare "confirm".
     await fireEvent.click(screen.getByRole("button", { name: "confirm removing phone" }));
-    expect(api.deletePasskey).toHaveBeenCalledWith("test-token", "passkey-1", "");
+    expect(api.deletePasskey).toHaveBeenCalledWith(
+      "test-token",
+      "passkey-1",
+      "correct horse battery staple",
+    );
   });
 
   it("arming one row disarms the other", async () => {

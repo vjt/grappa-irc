@@ -40,65 +40,73 @@ const PasskeySettings: Component = () => {
   };
   onMount(() => void reload().catch((value) => setError(errorMessage(value))));
 
+  // #729 — FIVE privileged actions consume the account password, and only one
+  // of them (add) used to sit inside the form that visually owned the field.
+  // The other four read the signal from elsewhere in the pane with no prompt
+  // of their own, so a user who never filled that form sent `""` and got a
+  // bare 401 back; and a password typed to ADD a passkey stayed live in the
+  // signal, silently re-usable to change how the account authenticates.
+  //
+  // One gate for all five: refuse locally when the field is empty (naming the
+  // blocker instead of spending a doomed request AND a slot in the server's
+  // login-throttle window), and clear the field in the `finally` — on success
+  // AND on failure, so neither a good password nor a wrong one lingers for
+  // the next click to reuse. Re-typing IS the per-action re-confirmation the
+  // pane owes for a change of this weight.
+  const withPassword = async (run: (accountPassword: string) => Promise<void>): Promise<void> => {
+    setError(null);
+    const accountPassword = password();
+    if (accountPassword === "") {
+      setError("Enter your account password to confirm this change.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await run(accountPassword);
+    } catch (value) {
+      setError(errorMessage(value));
+    } finally {
+      setBusy(false);
+      setPassword("");
+    }
+  };
+
   const register = async (event: Event): Promise<void> => {
     event.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const options = await startPasskeyRegistration(currentToken(), password(), name());
+    await withPassword(async (accountPassword) => {
+      const options = await startPasskeyRegistration(currentToken(), accountPassword, name());
       await finishPasskeyRegistration(currentToken(), await createPasskey(options));
       setName("");
       await reload();
-    } catch (value) {
-      setError(errorMessage(value));
-    } finally {
-      setBusy(false);
-    }
+    });
   };
 
-  const enableSecondFactor = async (): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    try {
-      const options = await startPasskeyModeChange(currentToken(), password(), "second_factor");
+  const enableSecondFactor = async (): Promise<void> =>
+    withPassword(async (accountPassword) => {
+      const options = await startPasskeyModeChange(
+        currentToken(),
+        accountPassword,
+        "second_factor",
+      );
       await finishPasskeyModeChange(currentToken(), await getPasskey(options));
       await reload();
-    } catch (value) {
-      setError(errorMessage(value));
-    } finally {
-      setBusy(false);
-    }
-  };
+    });
 
-  const disablePasskeyLogin = async (): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    try {
-      const options = await startPasskeyModeChange(currentToken(), password(), "disabled");
+  const disablePasskeyLogin = async (): Promise<void> =>
+    withPassword(async (accountPassword) => {
+      const options = await startPasskeyModeChange(currentToken(), accountPassword, "disabled");
       await finishPasskeyModeChange(currentToken(), await getPasskey(options));
       setCodes([]);
       setRecoveryToken(null);
       await reload();
-    } catch (value) {
-      setError(errorMessage(value));
-    } finally {
-      setBusy(false);
-    }
-  };
+    });
 
-  const preparePasswordlessMode = async (): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    try {
-      const prepared = await preparePasswordless(currentToken(), password());
+  const preparePasswordlessMode = async (): Promise<void> =>
+    withPassword(async (accountPassword) => {
+      const prepared = await preparePasswordless(currentToken(), accountPassword);
       setCodes(prepared.recovery_codes);
       setRecoveryToken(prepared.recovery_token);
-    } catch (value) {
-      setError(errorMessage(value));
-    } finally {
-      setBusy(false);
-    }
-  };
+    });
 
   const activatePasswordless = async (): Promise<void> => {
     const pending = recoveryToken();
@@ -127,16 +135,11 @@ const PasskeySettings: Component = () => {
   };
 
   const remove = async (id: string): Promise<void> => {
-    setBusy(true);
-    try {
-      await deletePasskey(currentToken(), id, password());
+    await withPassword(async (accountPassword) => {
+      await deletePasskey(currentToken(), id, accountPassword);
       await reload();
-    } catch (value) {
-      setError(errorMessage(value));
-    } finally {
-      setBusy(false);
-      setArmedRemoval(null);
-    }
+    });
+    setArmedRemoval(null);
   };
 
   return (
@@ -147,6 +150,22 @@ const PasskeySettings: Component = () => {
         {(current) => (
           <>
             <p>Mode: {current.mode}</p>
+            {/* #729 — ONE explicitly-labelled re-auth field, above every
+                control that consumes it, instead of a field nested in the
+                add-passkey form that four sibling buttons read behind the
+                user's back. It is cleared after each action (see
+                `withPassword`), so each one re-confirms. */}
+            <label for="passkey-password">Account password</label>
+            <input
+              id="passkey-password"
+              type="password"
+              autocomplete="current-password"
+              value={password()}
+              onInput={(e) => setPassword(e.currentTarget.value)}
+            />
+            <p role="note">
+              Every change below needs your account password. It is cleared after each one.
+            </p>
             <ul>
               <For each={current.passkeys}>
                 {(passkey) => (
@@ -176,15 +195,6 @@ const PasskeySettings: Component = () => {
                 data-protonpass-ignore="true"
                 value={name()}
                 onInput={(e) => setName(e.currentTarget.value)}
-                required
-              />
-              <label for="passkey-password">Account password</label>
-              <input
-                id="passkey-password"
-                type="password"
-                autocomplete="current-password"
-                value={password()}
-                onInput={(e) => setPassword(e.currentTarget.value)}
                 required
               />
               <button type="submit" disabled={busy()}>
