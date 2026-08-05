@@ -30344,3 +30344,55 @@ tests green, because the `Map` collapses the key on its own and the test read
 option VALUES, which are folded and identical either way. The guard only
 decides which SPELLING survives. The assertion now pins that, and the
 mutation reddens one test.
+
+## 2026-08-05 — #30: the completion trigger picks a candidate SET, not a second engine
+
+Tab completed nicks and did nothing on a `#…` token. `compose.tabComplete`
+read `membersByChannel()` unconditionally, so a sigil'd word simply had no
+candidate set. Mezmerize reported it on #it-opers.
+
+**One engine, two candidate sets.** The obvious shape — a second
+`channelComplete` beside the nick one — was rejected. The cycle space
+(`[match0 … matchN-1, <typed>]`), the revert slot, and the re-tap anchor
+detection (continuation is detected by RANGE, the thing #737 had to get
+right) are the hard part, and they are identical for both. The sigil on the
+typed token now selects the candidate array and the suffix; everything
+downstream is untouched. A parallel engine would have drifted on the anchor
+rules the first time either side changed.
+
+**Candidates are JOINED channels on this window's network.** They are derived
+from `windowStateByChannel`, the existing server-owned projection, rather than
+a new client-side "channels I have heard of" list that would need its own
+housekeeping and would drift. The issue floats "optionally channels seen via
+/list or mentioned in the buffer"; that is deliberately NOT in this cut. Least
+surprise is that Tab offers what you are actually in — exactly the rule the
+nick path already follows by offering who is actually here. Network scope
+comes from decoding the window's own `ChannelKey`, so completion works from a
+query or server window too: the candidate set belongs to the network, not to
+the window you are looking at.
+
+**The suffix is the one place the two paths genuinely differ.** A first-token
+nick gets `": "` because you are addressing someone. A channel is a topic of
+conversation, never an addressee, so it always gets a plain `" "`. That is the
+20% that did not fit the shared verb, and it is the only branch taken.
+
+**CHANTYPES is the right source and does not exist.** ISUPPORT `CHANTYPES`
+is what should define the prefix set, but nothing in this stack parses it:
+`Grappa.Session.ISupport` carries CHANMODES / PREFIX / STATUSMSG /
+CASEMAPPING only, and cic's `isupport.ts` store mirrors just chanmodes +
+prefix. Inventing that plumbing inside a completion fix would have been the
+wrong cut, so this reuses the RFC 2812 class `[#&+!]` that cic already
+open-codes in `slashCommands`, `linkify`, `pushPayload` and `ScrollbackPane`
+— hoisted to ONE constant in `compose.ts` (which held a copy of its own) with
+a named TODO. Worth knowing for whoever picks the TODO up: those existing
+copies are not even in agreement — `slashCommands.ts:564` omits `+`.
+
+**A guard was written, measured at zero, and deleted.** The candidate loop
+first filtered decoded names on the channel sigil. Mutation-testing the
+implementation one conjunct at a time (remove the channel branch: 7 red;
+apply the nick suffix rule to channels: 6 red; drop the network filter: 1
+red; accept any window state: 1 red) put that filter at ZERO red — and the
+reason is that it defends an impossible state. `windowStateByChannel` mirrors
+`Session.Server`'s `window_states`, which is channel-keyed by construction; a
+DM lives in `queryWindows`. The measurement is recorded in the code comment so
+the next reader does not re-add it.

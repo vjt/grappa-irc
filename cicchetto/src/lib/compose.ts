@@ -1560,6 +1560,12 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   // separate cut. The decoded name is already ASCII-folded (channelKey
   // folds at construction) and for channels the folded key IS the display
   // (the #537/#525 channel invariant), so it is inserted verbatim.
+  //
+  // No sigil filter on the candidate name: this map mirrors the server's
+  // `Session.Server` `window_states`, which is channel-keyed by
+  // construction (a DM lives in `queryWindows`, not here), so a
+  // "joined" non-channel key cannot occur. A guard for it was written,
+  // measured against the suite at ZERO failing tests, and deleted.
   const joinedChannelsOnNetwork = (key: ChannelKey): string[] => {
     const here = decodeChannelKey(key);
     if (here === null) return [];
@@ -1569,7 +1575,6 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       if (state !== "joined") continue;
       const there = decodeChannelKey(candidate as ChannelKey);
       if (there === null || there.slug !== here.slug) continue;
-      if (!CHANNEL_SIGIL.test(there.name)) continue;
       out.push(there.name);
     }
     return out;
