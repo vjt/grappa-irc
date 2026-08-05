@@ -4,6 +4,8 @@ import { channelKey } from "./lib/channelKey";
 import {
   getDraft,
   isDraining,
+  isQueueFull,
+  isSending,
   recallNext,
   recallPrev,
   setDraft,
@@ -109,7 +111,6 @@ type Feedback = { text: string; severity: "error" | "notice" };
 const ComposeBox: Component<Props> = (props) => {
   const key = () => channelKey(props.networkSlug, props.channelName);
   const [feedback, setFeedback] = createSignal<Feedback | null>(null);
-  const [sending, setSending] = createSignal(false);
   // Auto-dismiss handle for a shown NOTICE. Held so a new input / new submit /
   // unmount can cancel a pending fire — otherwise a stale timer would clear a
   // freshly-shown notice (or fire after the ComposeBox is gone).
@@ -404,24 +405,23 @@ const ComposeBox: Component<Props> = (props) => {
 
   // ---- Submit ------------------------------------------------------
 
+  // #904 — no component-local in-flight gate any more. The store owns the
+  // one-deep queue keyed on the WINDOW, and it is the only thing that can
+  // tell a second Enter (queue it) from a third (refuse it) — a `sending()`
+  // here answered "no" to both after any unmount, and answered "yes" to the
+  // second one, which is how the operator's next message got eaten.
   const doSubmit = async (): Promise<void> => {
-    if (sending()) return;
-    setSending(true);
     clearFeedback();
-    try {
-      const result = await submit(key(), props.networkSlug, props.channelName);
-      // #356 — three outcomes:
-      //   {error}          → sticky red alert (except the "empty" no-op marker).
-      //   {ok: string}     → green auto-dismissing notice (the /notify + /hilight
-      //                      confirmation output, previously computed + discarded).
-      //   {ok: true}       → silent success (draft cleared upstream, no seam).
-      if ("error" in result) {
-        if (result.error !== "empty") setFeedback({ text: result.error, severity: "error" });
-      } else if (typeof result.ok === "string") {
-        showNotice(result.ok);
-      }
-    } finally {
-      setSending(false);
+    const result = await submit(key(), props.networkSlug, props.channelName);
+    // #356 — three outcomes:
+    //   {error}          → sticky red alert (except the "empty" no-op marker).
+    //   {ok: string}     → green auto-dismissing notice (the /notify + /hilight
+    //                      confirmation output, previously computed + discarded).
+    //   {ok: true}       → silent success (draft cleared upstream, no seam).
+    if ("error" in result) {
+      if (result.error !== "empty") setFeedback({ text: result.error, severity: "error" });
+    } else if (typeof result.ok === "string") {
+      showNotice(result.ok);
     }
   };
 
@@ -515,8 +515,14 @@ const ComposeBox: Component<Props> = (props) => {
           // prevent. Keyed on the WINDOW, not the component-local sending():
           // that one would follow the operator to whatever window they switch
           // to mid-drain and freeze the wrong composer.
-          readOnly={isDraining(key())}
-          aria-busy={isDraining(key())}
+          //
+          // #904 — the second refusal, same shape: one send in flight plus one
+          // queued behind it is the whole depth, and the third message is
+          // refused HERE, visibly, instead of being accepted and then eaten.
+          // A single in-flight send does NOT lock the box — composing the next
+          // one while this one goes out is the feature.
+          readOnly={isDraining(key()) || isQueueFull(key())}
+          aria-busy={isDraining(key()) || isQueueFull(key())}
           placeholder={composePlaceholder(props.networkSlug, props.channelName)}
           rows={1}
           aria-label="compose message"
@@ -538,8 +544,8 @@ const ComposeBox: Component<Props> = (props) => {
           // itself is decorative (aria-hidden), so aria-busy is the a11y twin
           // of the visual swap. Screen readers announce the busy state instead
           // of only the disabled state.
-          aria-busy={sending()}
-          disabled={sending() || getDraft(key()).trim() === ""}
+          aria-busy={isSending(key())}
+          disabled={getDraft(key()).trim() === ""}
           // #59: keep the textarea focused when sending via the button.
           // Tapping a <button> moves focus off the textarea, which collapses
           // the native on-screen keyboard (Android especially). preventDefault
@@ -547,8 +553,9 @@ const ComposeBox: Component<Props> = (props) => {
           // submits. Same trick as the image-picker button.
           onPointerDown={(e) => e.preventDefault()}
         >
-          {/* #241 — in-flight feedback. While a send is in flight
-              (`sending()` true — POST-scoped: cleared on the send's 201
+          {/* #241 — in-flight feedback. While a send is in flight for THIS
+              window (#904 moved that truth into the store, where it survives
+              the unmount a window switch causes; it clears on the send's 201
               ack, the server persisting+broadcasting atomically) the
               paper-plane arrow is swapped for a CSS spinner; it reverts
               to the arrow on resolution. Non-optimistic: the spinner
@@ -557,7 +564,7 @@ const ComposeBox: Component<Props> = (props) => {
               (`aria-hidden`) ring like the arrow it replaces — the
               button's `aria-label` carries the a11y name in both states. */}
           <Show
-            when={sending()}
+            when={isSending(key())}
             fallback={
               <svg
                 width="16"

@@ -225,6 +225,10 @@ vi.mock("../lib/compose", () => ({
   tabComplete: vi.fn(),
   // #737 — ComposeBox reads the per-window paced-drain lock for its readOnly.
   isDraining: () => false,
+  // #904 — …and the one-deep send queue's in-flight + full signals, for the
+  // send-button spinner and the queue-full refusal.
+  isSending: () => false,
+  isQueueFull: () => false,
 }));
 
 vi.mock("../lib/theme", () => ({

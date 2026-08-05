@@ -1,5 +1,13 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+// #904 — the send queue lives in the store, keyed on the window, and
+// ComposeBox is a VIEW over it: the spinner, the readOnly refusal and the
+// Enter path all read these. Real signals (not plain mock returns) so a flip
+// re-renders exactly as the store's own signal does in production.
+const [mockSending, setMockSending] = createSignal(false);
+const [mockQueueFull, setMockQueueFull] = createSignal(false);
 
 vi.mock("../lib/compose", () => ({
   getDraft: vi.fn(() => ""),
@@ -11,6 +19,9 @@ vi.mock("../lib/compose", () => ({
   // #737 — the per-window paced-drain lock the textarea's readOnly is keyed
   // on. Default false: every pre-existing case is a window nobody is draining.
   isDraining: vi.fn(() => false),
+  // #904 — per-window in-flight state + the one-deep queue's full signal.
+  isSending: () => mockSending(),
+  isQueueFull: () => mockQueueFull(),
 }));
 
 vi.mock("../lib/channelKey", () => ({
@@ -87,6 +98,8 @@ beforeEach(() => {
   // Reset the module-singleton confirm-dialog store so a prior test's
   // pending request never leaks into the next one.
   dismissConfirm();
+  setMockSending(false);
+  setMockQueueFull(false);
 });
 
 describe("ComposeBox", () => {
@@ -122,14 +135,20 @@ describe("ComposeBox", () => {
   it("#241 — send button swaps arrow→spinner while a send is in flight, reverts on resolve", async () => {
     const compose = await import("../lib/compose");
     vi.mocked(compose.getDraft).mockReturnValue("hello");
-    // Deferred submit: holds `sending()` true across the in-flight
-    // assertions; resolving it drives the revert-to-arrow.
+    // Deferred submit standing in for the store: #904 moved the in-flight
+    // truth OUT of this component (a local `sending()` dies on unmount and
+    // follows the operator to the wrong window), so the mock raises and
+    // lowers the per-window flag exactly where the store does.
     let resolveSubmit: (r: { ok: true }) => void = () => {};
-    vi.mocked(compose.submit).mockReturnValue(
-      new Promise<{ ok: true }>((res) => {
-        resolveSubmit = res;
-      }),
-    );
+    vi.mocked(compose.submit).mockImplementation(() => {
+      setMockSending(true);
+      return new Promise<{ ok: true }>((res) => {
+        resolveSubmit = (r) => {
+          setMockSending(false);
+          res(r);
+        };
+      });
+    });
     try {
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const btn = screen.getByRole("button", { name: /send message/i });
@@ -456,6 +475,55 @@ describe("ComposeBox", () => {
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
     const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
     expect(ta.readOnly).toBe(false);
+  });
+
+  // #904 — one in flight plus one queued is the whole depth. The THIRD
+  // message is refused where the operator can see it: the textarea goes
+  // read-only, the same visible refusal #737 uses, rather than accepting
+  // keystrokes that Enter would then silently eat.
+  it("#904 — textarea goes readOnly when the one-deep queue is full", () => {
+    setMockQueueFull(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+    expect(ta.readOnly).toBe(true);
+    expect(ta.getAttribute("aria-busy")).toBe("true");
+    // Never `disabled`: that blurs the textarea and collapses the on-screen
+    // keyboard (#59).
+    expect(ta.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("#904 — textarea stays writable while ONE send is in flight", () => {
+    setMockSending(true);
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+    // The whole point of the queue: compose the next one while this one flies.
+    expect(ta.readOnly).toBe(false);
+  });
+
+  // #904 — the guard that used to swallow this Enter was ComposeBox's own
+  // `sending()`. A second Enter during a slow send did nothing at all; the
+  // typed line then died in the end-of-submit clear. It must reach the store,
+  // which is the only thing that knows whether the queue has room.
+  it("#904 — a second Enter during an in-flight send reaches the store", async () => {
+    const compose = await import("../lib/compose");
+    vi.mocked(compose.getDraft).mockReturnValue("hello");
+    let pending = 0;
+    vi.mocked(compose.submit).mockImplementation(() => {
+      pending += 1;
+      setMockSending(true);
+      return new Promise<{ ok: true }>(() => {});
+    });
+    try {
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i);
+      fireEvent.keyDown(ta, { key: "Enter" });
+      await waitFor(() => expect(pending).toBe(1));
+      fireEvent.keyDown(ta, { key: "Enter" });
+      await waitFor(() => expect(pending).toBe(2));
+    } finally {
+      vi.mocked(compose.getDraft).mockReturnValue("");
+      vi.mocked(compose.submit).mockReset();
+    }
   });
 
   // #177 removed the custom on-screen IRC keyboard. The compose textarea no

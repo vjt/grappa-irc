@@ -113,6 +113,19 @@ type ComposeState = {
 // error: string = failure, displayed inline; draft preserved.
 type SubmitResult = { ok: true | string } | { error: string };
 
+// #904 — `submit` (the pump) OWNS the composer buffer: it takes the text out
+// at dispatch and hands it back if the submission fails, so every failure
+// path preserves the draft without each of the ~40 arms knowing about it.
+// The multi-line #666 drain is the ONE exception — it claims the buffer
+// (#737) and mirrors its own, finer-grained residue into it, so it says
+// `keptBuffer` and the pump keeps its hands off instead of dropping the whole
+// paste back on top of the remainder.
+type DispatchOutcome = SubmitResult | { error: string; keptBuffer: true };
+
+// #904 — one window's send queue: an entry exists while a submission from it
+// is in flight, and `queued` holds the at-most-one message sent behind it.
+type Outbox = { queued: string | null };
+
 const empty = (): ComposeState => ({
   draft: "",
   history: [],
@@ -313,6 +326,71 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     });
   };
 
+  // #904 — the send queue, exactly ONE message deep, per WINDOW. An entry
+  // exists for as long as a submission from that window is in flight; its
+  // `queued` slot holds the at-most-one message the operator sent behind it.
+  //
+  // One deep, not unbounded: a backlog over a dead link fires stale lines into
+  // the channel minutes later. One line cannot go that stale, and if the link
+  // is down there is exactly one line to hand back. Full → the composer is
+  // refused VISIBLY (ComposeBox turns the textarea readOnly), which is the
+  // whole point — the defect this replaces ate the third message in silence.
+  //
+  // Keyed on the window, like the #737 drain lock and for the same reason: a
+  // ComposeBox-local `sending()` dies on unmount (home / mentions / $list, the
+  // desktop↔mobile swap) and follows the operator to the wrong composer.
+  const [outboxByKey, setOutboxByKey] = createSignal<Record<ChannelKey, Outbox>>({});
+
+  // Same lifetime hazard as the drain lock: a send that never settles never
+  // runs its release, and a stale entry would leave the composer refusing
+  // writes across a logout/login.
+  onIdentityChange(() => setOutboxByKey({}));
+
+  const isSending = (key: ChannelKey): boolean => outboxByKey()[key] !== undefined;
+
+  const isQueueFull = (key: ChannelKey): boolean => outboxByKey()[key]?.queued != null;
+
+  const setOutbox = (key: ChannelKey, box: Outbox | null): void => {
+    setOutboxByKey((prev) => {
+      const next = { ...prev };
+      if (box === null) delete next[key];
+      else next[key] = box;
+      return next;
+    });
+  };
+
+  // Take the queued message out of the slot, freeing it for the next Enter.
+  const takeQueued = (key: ChannelKey): string | null => {
+    const queued = outboxByKey()[key]?.queued ?? null;
+    if (queued !== null) setOutbox(key, { queued: null });
+    return queued;
+  };
+
+  // #904 — the submission LEAVES the composer here: history first (so a line
+  // that is queued, or dies on a dead link, is recallable the moment it is
+  // out of the box — pre-fix an eaten message never reached history at all),
+  // then the buffer is emptied for the next message.
+  const takeDraft = (key: ChannelKey): string => {
+    const text = getState(key).draft;
+    if (text.trim() !== "") pushHistory(key, text);
+    writeState(key, (s) => ({ ...s, draft: "", historyCursor: null }));
+    tabCycle = null;
+    return text;
+  };
+
+  // …and comes back here when it could not be sent. IN FRONT of whatever the
+  // composer holds now: the operator typed that AFTER the failed line, so it
+  // belongs after it. Never a clobber — that is the destruction #904 is about.
+  const handBack = (key: ChannelKey, owed: string[]): void => {
+    const text = owed.filter((t) => t !== "").join("\n");
+    if (text === "") return;
+    writeState(key, (s) => ({
+      ...s,
+      draft: s.draft === "" ? text : `${text}\n${s.draft}`,
+      historyCursor: null,
+    }));
+  };
+
   const setDraft = (key: ChannelKey, value: string): void => {
     if (isDraining(key)) return;
     // Any explicit edit (typing, paste, clear) breaks the tab-cycle
@@ -404,10 +482,12 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   //     so an unconditional write silently ate it. When it is non-empty the
   //     redirect is refused and `source` keeps the remainder (re-addressed by
   //     its own prefix, so it still resends to the intended peer).
-  //   * Whoever does NOT own the residue is emptied. Redirecting used to leave
-  //     the WHOLE `/msg bob …` command in `source` — the error arm returns
-  //     before the shared clear — so the remainder existed twice and hitting
-  //     Enter back in the source window re-delivered every line.
+  //   * Whoever does NOT own the residue is emptied — so the remainder never
+  //     exists twice and Enter back in the source window cannot re-deliver
+  //     every line. #904 moved that emptying UPSTREAM: the pump takes the
+  //     source draft out at dispatch, before this runs at all. Re-clearing it
+  //     here would be a clobber now, not a tidy-up — `/msg` awaits its query
+  //     topic join first, and the operator can type into `source` during it.
   //
   // Resolved ONCE, before the first line: per-tick resolution would flip after
   // the first residue write makes `preferred` non-empty, hopping windows
@@ -420,29 +500,39 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     target: string,
     body: string,
     action: boolean,
-  ): Promise<SubmitResult> => {
+  ): Promise<DispatchOutcome> => {
     const home =
       preferred.key === source.key || getDraft(preferred.key) === "" ? preferred : source;
-    if (home.key !== source.key) {
-      writeState(source.key, (s) => ({ ...s, draft: "", historyCursor: null }));
-    }
     let sentCount = 0;
     let totalCount = 0;
-    // #737 — the drain owns this draft until it stops, however long the
-    // pacing takes. Released in `finally` so a fatal mid-fan-out unlocks the
-    // window too: a lock that outlives its drain leaves the composer dead
-    // until reload, which is worse than the overwrite it prevents.
+    // #904 — the two buffer regimes of a free-text send, told apart by the ONE
+    // property that decides who needs the composer:
+    //
+    //   * MULTI-LINE — a #666 paced drain. It owns the buffer for as long as
+    //     the pacing lasts (a 429 ladder can hold it a minute), mirroring the
+    //     shrinking remainder into it, so it CLAIMS the window (#737) and the
+    //     operator is refused rather than overwritten.
+    //   * SINGLE LINE — the #904 domain. There is no partial state to mirror:
+    //     it either acked (residue "") or none of it went out. So the buffer
+    //     goes straight back to the operator, who is typing the next message
+    //     into it while this one flies; a residue write here would clobber
+    //     exactly the text this issue exists to stop losing.
+    const multi = splitMessageLines(body).length > 1;
     // #737 × #723 — lock BOTH ends of the drain: the residue home, whose draft
     // the pacing callback rewrites on every acked line, and the window the
     // operator submitted from, so a second Enter there cannot start a rival
     // drain that fans the same remainder out twice. They collapse to one key
-    // whenever the residue stays in the window it was typed in.
-    const locked = [...new Set([source.key, home.key])];
+    // whenever the residue stays in the window it was typed in. Released in
+    // `finally` so a fatal mid-fan-out unlocks the window too: a lock that
+    // outlives its drain leaves the composer dead until reload, which is worse
+    // than the overwrite it prevents.
+    const locked = multi ? [...new Set([source.key, home.key])] : [];
     claimDrafts(locked);
     try {
       await sendBodyLines(slug, target, body, action, (sent, total, residue) => {
         sentCount = sent;
         totalCount = total;
+        if (!multi) return;
         // Residue-only draft, reset to the live bottom (historyCursor null):
         // we're typing the remainder, not walking history. A drained send
         // leaves "" — never a bare prefix the operator would have to erase.
@@ -463,39 +553,38 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       // whether or not the body was multi-line.
       const reason = friendlyError(e);
       const sentOf = totalCount > 1 ? ` — sent ${sentCount} of ${totalCount} lines` : "";
-      if (home.key !== preferred.key) {
+      // #904 — a single line has no residue to relocate: the pump hands the
+      // ORIGINAL text back to the window it was typed in, which needs no
+      // re-addressing because it still carries its own `/me ` / `/msg <peer> `.
+      // So the "your eyes are elsewhere" test is the FOCUS switch (`/msg`
+      // moved them to the query window), not which window won the residue.
+      const relocated = multi ? home.key !== preferred.key : preferred.key !== source.key;
+      if (relocated) {
         // "The rest" presumes something went out; on a single-line body
         // nothing did, so name the whole message instead.
         const what = totalCount > 1 ? "the rest are" : "your message is";
-        return { error: `${reason}${sentOf}; ${what} in the window you sent from` };
+        const error = `${reason}${sentOf}; ${what} in the window you sent from`;
+        return multi ? { error, keptBuffer: true } : { error };
       }
-      return totalCount > 1
-        ? { error: `${reason}${sentOf}; the rest are in the box` }
-        : { error: reason };
+      if (!multi) return { error: reason };
+      return { error: `${reason}${sentOf}; the rest are in the box`, keptBuffer: true };
     } finally {
       releaseDrafts(locked);
     }
   };
 
-  const submit = async (
+  // #904 — dispatch ONE submission. It never reads or writes the composer
+  // buffer: the pump (`submit`, below) hands it the text and owns the
+  // put-back, which is what lets every failure arm here just `return {error}`.
+  const dispatchDraft = async (
     key: ChannelKey,
     networkSlug: string,
     channelName: string,
-  ): Promise<SubmitResult> => {
-    // #737 — a drain already owns this window's draft, and that draft holds
-    // the residue it has NOT sent yet. Re-submitting would fan the same
-    // remainder out a second time (the #666 duplicate this whole mechanism
-    // exists to prevent) and hand two drains one lock, so the first to finish
-    // would unlock a window the other is still rewriting. The guard lives
-    // here, not in ComposeBox: that component's `sending()` dies with it, and
-    // it unmounts whenever the operator visits home / mentions / $list or the
-    // desktop↔mobile layouts swap — after which Enter (keydown still fires on
-    // a readOnly textarea) started a fresh drain.
-    if (isDraining(key)) return { error: "still sending the previous paste" };
-    const state = getState(key);
+    text: string,
+  ): Promise<DispatchOutcome> => {
     // #385 — expand user-defined aliases (from the aliasList store) before
     // dispatch; the parser stays pure and takes the map as an argument.
-    const cmd = parseSlash(state.draft, aliases());
+    const cmd = parseSlash(text, aliases());
     // Empty short-circuits before the token check — an empty submit is
     // a no-op regardless of session state, and the consumer (ComposeBox)
     // wants the same outcome whether or not a token is in play.
@@ -1516,8 +1605,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         }
       }
     } catch (e) {
-      // REST/PubSub failure surfaces here. Preserve the draft (no
-      // history push, no draft clear) so the user can retry without
+      // REST/PubSub failure surfaces here. The pump hands the text back to
+      // the composer on this {error}, so the user can retry without
       // re-typing; the {error} arm fires the ComposeBox alert banner.
       //
       // U-3 (UD3): typed ApiErrors get the shared `friendlyApiError`
@@ -1535,11 +1624,6 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       return { error: friendlyError(e) };
     }
 
-    // Success: push the original draft (NOT the parsed cmd) onto history,
-    // clear the draft, reset cursor.
-    if (state.draft.trim() !== "") pushHistory(key, state.draft);
-    writeState(key, (s) => ({ ...s, draft: "", historyCursor: null }));
-    tabCycle = null;
     // #356: a string `result.ok` (the /notify + /hilight confirmation /
     // list output) IS now surfaced — ComposeBox routes it through the
     // severity-tagged feedback signal as a green, auto-dismissing
@@ -1548,6 +1632,74 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // removed the numericInline row that used to render it and never
     // rewired a consumer — the gap #356 closed.)
     return result;
+  };
+
+  // #904 — the pump. Submitting is now two distinct jobs, and this owns the
+  // one `dispatchDraft` must not: the composer buffer.
+  //
+  //   * IDLE — take the text out (it leaves the composer AT DISPATCH, not on
+  //     the 201: that clear-at-ack is what wiped the operator's next message),
+  //     dispatch it, then keep dispatching whatever the operator queued behind
+  //     it until the slot is empty.
+  //   * IN FLIGHT — this Enter is the operator's SECOND message. Park it in
+  //     the one-deep slot; the in-flight pump picks it up on the ack. Enter
+  //     means something again during a slow send, which is half the defect.
+  //   * QUEUE FULL — refuse, and leave the text in the composer where the
+  //     operator can see it (ComposeBox turns the textarea readOnly at the
+  //     same moment, so this is the belt to that pair of braces: Enter still
+  //     fires on a readOnly textarea, and on a remounted ComposeBox).
+  //
+  // The whole chain settles on the FIRST Enter's promise, so a queued line
+  // that dies still surfaces its error to a caller that is watching.
+  const submit = async (
+    key: ChannelKey,
+    networkSlug: string,
+    channelName: string,
+  ): Promise<SubmitResult> => {
+    // #737 — a drain already owns this window's draft, and that draft holds
+    // the residue it has NOT sent yet. Re-submitting would fan the same
+    // remainder out a second time (the #666 duplicate this whole mechanism
+    // exists to prevent) and hand two drains one lock, so the first to finish
+    // would unlock a window the other is still rewriting. The guard lives
+    // here, not in ComposeBox: that component's `sending()` dies with it, and
+    // it unmounts whenever the operator visits home / mentions / $list or the
+    // desktop↔mobile layouts swap — after which Enter (keydown still fires on
+    // a readOnly textarea) started a fresh drain.
+    if (isDraining(key)) return { error: "still sending the previous paste" };
+
+    if (isSending(key)) {
+      if (isQueueFull(key)) {
+        return { error: "one message is already waiting — hold on until it goes out" };
+      }
+      // A blank Enter is the same no-op it is anywhere else; it must not
+      // burn the slot and lock the composer for nothing.
+      if (getDraft(key).trim() === "") return { error: "empty" };
+      setOutbox(key, { queued: takeDraft(key) });
+      return { ok: true };
+    }
+
+    setOutbox(key, { queued: null });
+    try {
+      let text = takeDraft(key);
+      for (;;) {
+        const outcome = await dispatchDraft(key, networkSlug, channelName, text);
+        if ("error" in outcome) {
+          // A dead link fires nothing further: the queued line is handed back
+          // unsent rather than delivered minutes late, and it comes back
+          // AFTER the line that failed — the order they were typed in.
+          const owed = "keptBuffer" in outcome ? [] : [text];
+          const queued = takeQueued(key);
+          if (queued !== null) owed.push(queued);
+          handBack(key, owed);
+          return outcome;
+        }
+        const queued = takeQueued(key);
+        if (queued === null) return outcome;
+        text = queued;
+      }
+    } finally {
+      setOutbox(key, null);
+    }
   };
 
   // #30 — the channel candidate set: every channel JOINED on the same
@@ -1685,6 +1837,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     submit,
     tabComplete,
     isDraining,
+    isSending,
+    isQueueFull,
   };
 });
 
@@ -1696,3 +1850,5 @@ export const recallNext = exports_.recallNext;
 export const submit = exports_.submit;
 export const tabComplete = exports_.tabComplete;
 export const isDraining = exports_.isDraining;
+export const isSending = exports_.isSending;
+export const isQueueFull = exports_.isQueueFull;

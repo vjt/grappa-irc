@@ -1716,6 +1716,227 @@ describe("compose submit — slash command dispatch", () => {
   });
 });
 
+// #904 — the composer buffer and the send machinery used to share one slot for
+// a SINGLE send too: the draft stayed put for the whole in-flight window and
+// the end-of-submit clear wiped whatever the operator had typed meanwhile.
+// #737 only closed the multi-line drain half of that class. The fix is a send
+// queue exactly ONE message deep, owned by the store and keyed on the WINDOW:
+// the submission leaves the composer at DISPATCH, the operator types the next
+// one, a second Enter queues it, and the third is refused where they can see
+// it. Nothing is ever silently eaten.
+describe("#904 — one-deep send queue", () => {
+  const k = channelKey("freenode", "#a");
+
+  // A send whose ack the test controls: the resolver is handed back so the
+  // in-flight window is a real, observable state rather than a timing guess.
+  const deferredSend = async () => {
+    const sb = await import("../lib/scrollback");
+    const acks: Array<{ body: string; resolve: () => void; reject: (e: unknown) => void }> = [];
+    vi.mocked(sb.sendMessage).mockImplementation(
+      (_slug: string, _target: string, body: string) =>
+        new Promise<void>((resolve, reject) => {
+          acks.push({ body, resolve, reject });
+        }),
+    );
+    return acks;
+  };
+
+  it("#904 — the message leaves the composer at dispatch, not at the ack", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const acks = await deferredSend();
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "first");
+    const done = compose.submit(k, "freenode", "#a");
+    await Promise.resolve();
+
+    // In flight: the composer is EMPTY and belongs to the operator again.
+    expect(compose.isSending(k)).toBe(true);
+    expect(compose.getDraft(k)).toBe("");
+    expect(compose.isQueueFull(k)).toBe(false);
+
+    acks[0]?.resolve();
+    expect(await done).toEqual({ ok: true });
+    expect(compose.isSending(k)).toBe(false);
+  });
+
+  it("#904 — what the operator types during a slow send survives the ack", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const acks = await deferredSend();
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "first");
+    const done = compose.submit(k, "freenode", "#a");
+    await Promise.resolve();
+
+    // The defect: this used to be destroyed by the end-of-submit clear.
+    compose.setDraft(k, "ok also bring the charger");
+    acks[0]?.resolve();
+    await done;
+
+    expect(compose.getDraft(k)).toBe("ok also bring the charger");
+  });
+
+  it("#904 — a second Enter queues the next message and it goes out on the ack", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const acks = await deferredSend();
+    const sb = await import("../lib/scrollback");
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "first");
+    const done = compose.submit(k, "freenode", "#a");
+    await Promise.resolve();
+
+    compose.setDraft(k, "second");
+    expect(await compose.submit(k, "freenode", "#a")).toEqual({ ok: true });
+    // Queued, so it left the composer too — and nothing went out yet.
+    expect(compose.getDraft(k)).toBe("");
+    expect(compose.isQueueFull(k)).toBe(true);
+    expect(vi.mocked(sb.sendMessage).mock.calls.length).toBe(1);
+
+    acks[0]?.resolve();
+    // The queued line is dispatched by the pump on the ack — wait for the
+    // send it makes, don't guess a microtask count.
+    await vi.waitFor(() => expect(acks.length).toBe(2));
+    acks[1]?.resolve();
+    await done;
+
+    expect(vi.mocked(sb.sendMessage).mock.calls.map((c) => c[2])).toEqual(["first", "second"]);
+    expect(compose.isSending(k)).toBe(false);
+    expect(compose.isQueueFull(k)).toBe(false);
+  });
+
+  it("#904 — a THIRD submission is refused visibly, not eaten", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const acks = await deferredSend();
+    const sb = await import("../lib/scrollback");
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "first");
+    const done = compose.submit(k, "freenode", "#a");
+    await Promise.resolve();
+    compose.setDraft(k, "second");
+    await compose.submit(k, "freenode", "#a");
+
+    compose.setDraft(k, "third");
+    const refused = await compose.submit(k, "freenode", "#a");
+
+    expect(refused).toHaveProperty("error");
+    // Refused means REFUSED: the text stays in the composer, unsent.
+    expect(compose.getDraft(k)).toBe("third");
+    expect(vi.mocked(sb.sendMessage).mock.calls.length).toBe(1);
+
+    acks[0]?.resolve();
+    await vi.waitFor(() => expect(acks.length).toBe(2));
+    acks[1]?.resolve();
+    await done;
+    expect(vi.mocked(sb.sendMessage).mock.calls.map((c) => c[2])).toEqual(["first", "second"]);
+  });
+
+  it("#904 — a failed send hands the line back IN FRONT of what was typed meanwhile", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const acks = await deferredSend();
+    const api = await import("../lib/api");
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "first");
+    const done = compose.submit(k, "freenode", "#a");
+    await Promise.resolve();
+    compose.setDraft(k, "typed later");
+
+    acks[0]?.reject(new api.ApiError(400, "invalid_line"));
+    expect(await done).toHaveProperty("error");
+
+    // Both survive, in the order they were written.
+    expect(compose.getDraft(k)).toBe("first\ntyped later");
+  });
+
+  it("#904 — a failed send hands the QUEUED line back too and never fires it", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const acks = await deferredSend();
+    const sb = await import("../lib/scrollback");
+    const api = await import("../lib/api");
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "first");
+    const done = compose.submit(k, "freenode", "#a");
+    await Promise.resolve();
+    compose.setDraft(k, "second");
+    await compose.submit(k, "freenode", "#a");
+
+    acks[0]?.reject(new api.ApiError(400, "invalid_line"));
+    expect(await done).toHaveProperty("error");
+
+    // A dead link fires nothing further; both lines come back, in order.
+    expect(vi.mocked(sb.sendMessage).mock.calls.length).toBe(1);
+    expect(compose.getDraft(k)).toBe("first\nsecond");
+    expect(compose.isQueueFull(k)).toBe(false);
+    expect(compose.isSending(k)).toBe(false);
+  });
+
+  it("#904 — the queue is per WINDOW: a sibling composer is untouched", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const acks = await deferredSend();
+    const compose = await import("../lib/compose");
+    const other = channelKey("freenode", "#b");
+
+    compose.setDraft(k, "first");
+    const done = compose.submit(k, "freenode", "#a");
+    await Promise.resolve();
+
+    expect(compose.isSending(other)).toBe(false);
+    compose.setDraft(other, "elsewhere");
+    expect(compose.getDraft(other)).toBe("elsewhere");
+
+    acks[0]?.resolve();
+    await done;
+    expect(compose.getDraft(other)).toBe("elsewhere");
+  });
+
+  // #904 × #666/#737 — the multi-line drain is the ONE submission that keeps
+  // the buffer: it claims the window (readOnly) and mirrors its own, finer-
+  // grained residue there. The pump must not hand the whole paste back on top
+  // of that remainder.
+  it("#904 — a failed multi-line drain leaves ONLY its residue, not the whole paste", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    const api = await import("../lib/api");
+    const compose = await import("../lib/compose");
+
+    let n = 0;
+    vi.mocked(sb.sendMessage).mockImplementation(async () => {
+      n += 1;
+      if (n === 2) throw new api.ApiError(400, "invalid_line");
+      return undefined as never;
+    });
+
+    compose.setDraft(k, "a\nb\nc");
+    expect(await compose.submit(k, "freenode", "#a")).toHaveProperty("error");
+    expect(compose.getDraft(k)).toBe("b\nc");
+  });
+
+  it("#904 — a queued line is recallable from history the moment it leaves the composer", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const acks = await deferredSend();
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "first");
+    const done = compose.submit(k, "freenode", "#a");
+    await Promise.resolve();
+
+    // The composer is empty (the line left at dispatch) — so a recall that
+    // returns the line proves history holds it BEFORE any ack. Pre-fix the
+    // push happened on the 201 and this walked into an empty history.
+    expect(compose.getDraft(k)).toBe("");
+    compose.recallPrev(k);
+    expect(compose.getDraft(k)).toBe("first");
+
+    compose.setDraft(k, "");
+    acks[0]?.resolve();
+    await done;
+  });
+});
+
 describe("compose tabComplete (members-only, irssi-exact)", () => {
   const k = channelKey("freenode", "#a");
 
