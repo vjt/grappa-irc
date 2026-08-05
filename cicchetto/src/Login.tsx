@@ -5,7 +5,7 @@ import * as auth from "./lib/auth";
 import { type CaptchaProvider, mountCaptchaWidget } from "./lib/captcha";
 import { CONNECTING_MESSAGES } from "./lib/connectingMessages";
 import { severedForFlood } from "./lib/floodSever";
-import { friendlyApiError } from "./lib/friendlyApiError";
+import { errorMessage, friendlyApiError } from "./lib/friendlyApiError";
 import { classifyLoginIdentifier } from "./lib/loginIdentifier";
 
 // Bare credential form. The walking-skeleton login surface is one card,
@@ -149,6 +149,10 @@ const Login: Component = () => {
   const [msgIndex, setMsgIndex] = createSignal(0);
   const [captcha, setCaptcha] = createSignal<CaptchaChallenge | null>(null);
   const [totpChallenge, setTotpChallenge] = createSignal<string | null>(null);
+  // #728 — why the passkey second factor didn't complete, carried over from
+  // `auth.login` so the TOTP form can explain itself. `null` = no passkey was
+  // attempted (an ordinary TOTP account).
+  const [passkeyFallback, setPasskeyFallback] = createSignal<string | null>(null);
   const [totpCode, setTotpCode] = createSignal("");
   const [recoveryMode, setRecoveryMode] = createSignal(false);
   const [recoveryCode, setRecoveryCode] = createSignal("");
@@ -254,6 +258,10 @@ const Login: Component = () => {
       const result = await auth.login(id, pwd, captchaToken, advancedFields);
       if (result.kind === "totp") {
         setTotpChallenge(result.challengeToken);
+        // #728 — a passkey second factor that failed hands its reason over
+        // with the challenge. Without it the prompt just vanishes and a bare
+        // 2FA form appears, which reads as "my passkey has stopped working".
+        setPasskeyFallback(result.passkeyError === null ? null : errorMessage(result.passkeyError));
         setPassword("");
         return false;
       }
@@ -592,6 +600,19 @@ const Login: Component = () => {
                 <form class="login-form" onSubmit={onTotpSubmit} data-testid="totp-login-form">
                   <Brand />
                   <h2>two-factor authentication</h2>
+                  {/* #728 — never let the passkey prompt vanish without a
+                      word. Every ceremony failure (cancel, wrong
+                      authenticator, a 401 on the assertion, a network error)
+                      lands the user here; without this line they cannot tell
+                      a dismissed sheet from a broken credential. */}
+                  <Show when={passkeyFallback()}>
+                    {(reason) => (
+                      <p class="login-advanced-hint" data-testid="totp-passkey-fallback">
+                        Passkey sign-in didn't complete. {reason()} Use your authenticator or a
+                        recovery code instead.
+                      </p>
+                    )}
+                  </Show>
                   <label for="login-totp-code">Authenticator or recovery code</label>
                   <input
                     id="login-totp-code"
@@ -614,6 +635,7 @@ const Login: Component = () => {
                       setTotpChallenge(null);
                       setTotpCode("");
                       setError(null);
+                      setPasskeyFallback(null);
                     }}
                   >
                     Back

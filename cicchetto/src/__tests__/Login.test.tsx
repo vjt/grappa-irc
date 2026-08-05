@@ -284,6 +284,7 @@ describe("Login — TOTP", () => {
     vi.mocked(auth.login).mockResolvedValue({
       kind: "totp",
       challengeToken: "challenge-123",
+      passkeyError: null,
     });
     vi.mocked(auth.verifyTotp).mockResolvedValue(undefined);
     renderLogin();
@@ -553,6 +554,58 @@ describe("Login — #442 alternate auth (passkey / recovery code)", () => {
       expect(screen.getByRole("alert")).toHaveTextContent(/account name or email first/i);
     });
     expect(auth.loginWithRecoveryCode).not.toHaveBeenCalled();
+  });
+});
+
+// #728 — the passkey second factor used to degrade to this form with the
+// error discarded. Cancel, no authenticator, a 401 on the assertion, a
+// network blip: all four vanished the prompt and produced a bare 2FA form.
+// From the outside they were indistinguishable, and a user without their
+// phone to hand concludes the passkey itself is broken.
+describe("Login — #728 the TOTP fallback says why the passkey didn't run", () => {
+  const totpAfterPasskeyFailure = (passkeyError: unknown) => {
+    vi.mocked(auth.login).mockResolvedValue({
+      kind: "totp",
+      challengeToken: "challenge-123",
+      passkeyError,
+    });
+    renderLogin();
+    fireEvent.input(nickField(), { target: { value: "alice@example.com" } });
+    fireEvent.input(screen.getByLabelText(/password/i), { target: { value: "secret" } });
+    fireEvent.click(connectBtn());
+  };
+
+  it("names a dismissed prompt above the code field", async () => {
+    totpAfterPasskeyFailure(new Error("Passkey authentication cancelled"));
+
+    const note = await screen.findByTestId("totp-passkey-fallback");
+    expect(note).toHaveTextContent(/Passkey authentication cancelled/);
+    expect(note).toHaveTextContent(/authenticator or a recovery code/i);
+  });
+
+  it("renders a server refusal as friendly copy, not a wire token", async () => {
+    totpAfterPasskeyFailure(new ApiError(401, "invalid_credentials"));
+
+    const note = await screen.findByTestId("totp-passkey-fallback");
+    expect(note).toHaveTextContent("Invalid name or password.");
+    expect(screen.queryByText(/401 invalid_credentials/)).toBeNull();
+  });
+
+  it("says nothing when no passkey was attempted", async () => {
+    totpAfterPasskeyFailure(null);
+
+    await screen.findByTestId("totp-login-form");
+    expect(screen.queryByTestId("totp-passkey-fallback")).toBeNull();
+  });
+
+  it("drops the note when the user backs out to the credential form", async () => {
+    totpAfterPasskeyFailure(new Error("Passkey authentication cancelled"));
+    await screen.findByTestId("totp-passkey-fallback");
+
+    fireEvent.click(screen.getByRole("button", { name: /back/i }));
+
+    expect(screen.queryByTestId("totp-passkey-fallback")).toBeNull();
+    expect(nickField()).toBeInTheDocument();
   });
 });
 
