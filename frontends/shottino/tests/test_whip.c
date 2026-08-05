@@ -44,9 +44,41 @@ TEST(a_url_is_split_or_refused) {
     CHECK_STR(u.host, "2001:db8::1");
     CHECK_LONG(u.port, 9000);
 
-    /* A fragment is a client-side concept and is never sent. */
+    /* A fragment is a client-side concept and is never sent. Asserted
+     * on both branches: a URL with a path, and one with only a query. */
     CHECK(whip_url_parse("https://sfu.example/whip#frag", &u));
     CHECK_STR(u.path, "/whip");
+
+    CHECK(whip_url_parse("http://sfu.example?a=1#frag", &u));
+    CHECK_STR(u.path, "/?a=1");
+
+    CHECK(whip_url_parse("http://sfu.example#frag", &u));
+    CHECK_STR(u.path, "/");
+
+    CHECK(whip_url_parse("http://sfu.example?a=1", &u));
+    CHECK_STR(u.path, "/?a=1");
+
+    /* A query that does not fit is REFUSED, never cut to length: a
+     * truncated query is a DIFFERENT request — a different session id,
+     * a token that is now the wrong token — and it would go out looking
+     * like the one that was asked for. */
+    char query[WHIP_MAX_URL + 64];
+    memset(query, 'a', sizeof(query) - 1);
+    query[sizeof(query) - 1] = 0;
+    memcpy(query, "http://sfu.example?", 19);
+    CHECK(!whip_url_parse(query, &u));
+
+    /* The largest query that DOES fit still parses, so the refusal
+     * above is a bound and not a blanket. `path` holds the leading '/'
+     * plus the query plus the NUL. */
+    char fitting[WHIP_MAX_URL + 64];
+    memset(fitting, 'a', sizeof(fitting) - 1);
+    memcpy(fitting, "http://sfu.example?", 19);
+    fitting[19 + (WHIP_MAX_URL - 2)] = 0; /* query is '?' + WHIP_MAX_URL-2 bytes... */
+    CHECK(!whip_url_parse(fitting, &u));  /* ...one too many */
+    fitting[19 + (WHIP_MAX_URL - 3)] = 0;
+    CHECK(whip_url_parse(fitting, &u));
+    CHECK_LONG((long)strlen(u.path), WHIP_MAX_URL - 1);
 
     /* Every other scheme is refused rather than guessed: this URL
      * arrived in a message somebody else wrote. */
