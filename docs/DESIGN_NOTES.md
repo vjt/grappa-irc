@@ -29493,3 +29493,55 @@ substrate side (`jail_db_write.sh`, re-run the installer, then the UI), and
 that is now written down in `docs/OPERATIONS.md` rather than fixed here.
 `infra/linux/` has no source-alias wrapper at all, so it has no equivalent
 gap to close.
+
+## 2026-08-05 — #837: one identity predicate, and the two guards nobody was holding
+
+`identityMoved` — "the identity that started this continuation is not the
+identity that will receive its result" — was written inline in four modules:
+`scrollback.ts` (#788), `networks.ts` (#818), `displayPrefs.ts`, and
+`customTheme.ts`. Consolidating them was filed as a timing decision, not a
+merit one, and this is the pickup.
+
+**The refactor was the smaller half.** #788 and #818 each shipped a test for
+their own guard; the other two had none. Deleting `if (token() !== t) return;`
+from `displayPrefs.ts` left all 4258 cases green, and the same deletion in
+`customTheme.ts` left them green too. Extracting one predicate over two
+unpinned call sites would have moved untested code from four places to one and
+bought nothing — the shared owner would have been just as free to be dropped,
+now in one edit instead of four. So the tests came first, and they are the
+deliverable the issue predicted they would be.
+
+**What those two guards actually hold**, which is more than the 401 on the
+wire. `displayPrefs`: subject A's prefs applied over B's freshly-loaded ones,
+and — on the `persisted: false` seed-up branch — a PUT under A's retired
+bearer, which is #281's fail2ban harm class. `customTheme`: `applyResolvedPair`
+paints `documentElement` AND writes the FOUC boot cache, so A's theme lands on
+B's screen and then survives the reload that would otherwise correct it.
+Neither is reachable by identity-TRANSITION cleanup — an A→B rotation never
+runs the logout-clear branch that the existing cross-account-bleed tests cover,
+and nothing cancels a request already on the wire. Each new case has a
+no-rotation control releasing the SAME held response, so a gate that stopped
+delivering it fails loudly instead of passing vacuously.
+
+**Placement: its own module, not `auth.ts`.** `auth.ts` owns `token`, so it
+looked like the owner. But 38 test files stub `../auth`, and a partial stub
+would then replace the guard with `undefined` — the rule under test would stop
+existing wherever a suite meant to control only the token. A separate module
+that imports `token` keeps the predicate real while still resolving through
+those mocks. Confirmed, not assumed: under the mutation below the #788 suite,
+which mocks `../auth` with its own Solid signal, goes red like the rest.
+Not folded into `identityScopedStore` either — that factory owns the identity
+TRANSITION (fire the resets), while this owns a verb's OWN captured identity,
+which the factory never sees. Complements, not duplicates.
+
+**Measured.** Neutering the shared predicate turns 9 cases red across exactly
+the four adopters and nothing else: scrollback 5, networks 1, displayPrefs 2,
+customTheme 1. Restored: 235 files / 4263 tests green.
+
+**Left standing.** The four sites adopted the predicate unchanged, so no
+variant surfaced and none was invented; a fifth await site that needs a
+DIFFERENT comparison has found a domain boundary worth saying out loud rather
+than a parameter worth adding. And the guard remains a per-verb habit, not a
+whole-module property: a new `await` that captures the token and skips the
+check reopens the defect for its own call path — one owner makes the rule
+greppable, it does not make it automatic.
