@@ -23,6 +23,7 @@ const entry = (overrides: Partial<SessionLogWireT>): SessionLogWireT => {
     network_id: 1,
     network_slug: "azzurra",
     nick: "vjt",
+    old_nick: null,
     reason: null,
     clean: null,
     duration_ms: null,

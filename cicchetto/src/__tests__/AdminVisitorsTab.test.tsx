@@ -53,6 +53,7 @@ const ALIVE: AdminVisitor = {
       nick: "alice",
       connection_state: "connected",
       live_state: {
+        nick: "alice",
         alive: true,
         pid_inspect: "#PID<0.123.0>",
         mailbox_len: 0,
@@ -95,6 +96,7 @@ const DEAD: AdminVisitor = {
       nick: "carol",
       connection_state: "connected",
       live_state: {
+        nick: "alice",
         alive: false,
         pid_inspect: "#PID<0.999.0>",
         mailbox_len: 0,
@@ -122,6 +124,7 @@ const NICKSERV_IDENTIFIED: AdminVisitor = {
       nick: "M\\Grappa",
       connection_state: "connected",
       live_state: {
+        nick: "alice",
         alive: true,
         pid_inspect: "#PID<0.555.0>",
         mailbox_len: 0,
@@ -155,6 +158,7 @@ const REGISTERED_WITH_TTL: AdminVisitor = {
       nick: "RegdGrappa",
       connection_state: "connected",
       live_state: {
+        nick: "alice",
         alive: true,
         pid_inspect: "#PID<0.777.0>",
         mailbox_len: 0,
@@ -472,6 +476,7 @@ describe("AdminVisitorsTab", () => {
           nick: "toggler",
           connection_state: "connected",
           live_state: {
+            nick: "alice",
             alive: true,
             pid_inspect: "#PID<0.269.0>",
             mailbox_len: 0,

@@ -486,6 +486,20 @@ function isNullableString(v: unknown): boolean {
   return v === null || typeof v === "string";
 }
 
+// A nullable string field ADDED to an already-shipped wire shape.
+//
+// The narrowers are otherwise strict — a missing field drops the row — and
+// that is right for fields present since the shape was born. It is wrong for
+// a field added later: cic deploys independently of the server
+// (`deploy-m42.sh --cic`), so a new cic against a not-yet-deployed server
+// would drop EVERY row of that shape. The wire contract says a new field may
+// appear at any time and that unknown-is-never-fatal in BOTH directions;
+// requiring a field the peer predates is the same breakage wearing the other
+// hat. Absent normalises to null at the call site.
+function isAddedNullableString(v: unknown): boolean {
+  return v === undefined || isNullableString(v);
+}
+
 function isNullableNumber(v: unknown): boolean {
   return v === null || typeof v === "number";
 }
@@ -941,6 +955,8 @@ export function narrowSessionLogEntry(raw: unknown): SessionLogWireT | null {
     typeof r.network_id !== "number" ||
     !isNullableString(r.network_slug) ||
     !isNullableString(r.nick) ||
+    // #618 — added after #215 shipped this shape, so absent is tolerated.
+    !isAddedNullableString(r.old_nick) ||
     !isNullableString(r.reason) ||
     !isNullableBoolean(r.clean) ||
     !isNullableNumber(r.duration_ms) ||
@@ -957,6 +973,7 @@ export function narrowSessionLogEntry(raw: unknown): SessionLogWireT | null {
     network_id: r.network_id,
     network_slug: r.network_slug as string | null,
     nick: r.nick as string | null,
+    old_nick: (r.old_nick ?? null) as string | null,
     reason: r.reason as string | null,
     clean: r.clean as boolean | null,
     duration_ms: r.duration_ms as number | null,

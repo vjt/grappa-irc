@@ -38,6 +38,7 @@ const USER_SESSION: AdminSession = {
   last_seen_at: null,
   network_id: 1,
   live_state: {
+    nick: "vjt",
     alive: true,
     pid_inspect: "#PID<0.123.0>",
     mailbox_len: 3,
@@ -57,6 +58,7 @@ const VISITOR_SESSION: AdminSession = {
   last_seen_at: null,
   network_id: 1,
   live_state: {
+    nick: "vjt",
     alive: true,
     pid_inspect: "#PID<0.456.0>",
     mailbox_len: 0,
@@ -76,6 +78,7 @@ const DEGRADED_SESSION: AdminSession = {
   last_seen_at: null,
   network_id: 2,
   live_state: {
+    nick: "vjt",
     alive: true,
     pid_inspect: "#PID<0.789.0>",
     mailbox_len: 0,
@@ -98,6 +101,7 @@ const DEAD_SESSION: AdminSession = {
   last_seen_at: null,
   network_id: 1,
   live_state: {
+    nick: "vjt",
     alive: false,
     pid_inspect: "#PID<0.999.0>",
     mailbox_len: 0,
@@ -126,6 +130,7 @@ const ORPHAN_SESSION: AdminSession = {
   last_seen_at: null,
   network_id: 1,
   live_state: {
+    nick: "vjt",
     alive: true,
     pid_inspect: "#PID<0.777.0>",
     mailbox_len: 0,

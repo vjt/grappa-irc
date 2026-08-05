@@ -82,6 +82,7 @@ const CRED: AdminCredential = {
   inserted_at: "2026-05-31T00:00:00Z",
   updated_at: "2026-05-31T00:00:00Z",
   live_state: {
+    nick: "vjt",
     alive: true,
     pid_inspect: "#PID<0.1.0>",
     mailbox_len: 0,

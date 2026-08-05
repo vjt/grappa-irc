@@ -42,6 +42,7 @@ const entry = (overrides: Partial<SessionLogWireT>): SessionLogWireT => {
     network_id: 1,
     network_slug: "azzurra",
     nick: "vjt",
+    old_nick: null,
     reason: null,
     clean: null,
     duration_ms: null,
@@ -83,6 +84,7 @@ describe("AdminSessionLogTab — per-kind rendering", () => {
       entry({ event: "identified" }),
       entry({ event: "registered" }),
       entry({ event: "connected" }),
+      entry({ event: "nick_changed", old_nick: "vjt" }),
     ]);
 
     render(() => <AdminSessionLogTab />);
@@ -90,6 +92,7 @@ describe("AdminSessionLogTab — per-kind rendering", () => {
     await waitFor(() => {
       expect(screen.getByTestId("session-log-row-connected")).toBeInTheDocument();
     });
+    expect(screen.getByTestId("session-log-row-nick_changed")).toBeInTheDocument();
     expect(screen.getByTestId("session-log-row-registered")).toBeInTheDocument();
     expect(screen.getByTestId("session-log-row-identified")).toBeInTheDocument();
     expect(screen.getByTestId("session-log-row-deidentified")).toBeInTheDocument();
@@ -122,6 +125,23 @@ describe("AdminSessionLogTab — per-kind rendering", () => {
     const row = await screen.findByTestId("session-log-row-backoff");
     expect(row.textContent).toContain("8000");
     expect(row.textContent).toContain("4");
+  });
+
+  // #618 — the row has to carry BOTH nicks. `nick` is who the session
+  // answers to now (it rides the subject label); the detail supplies the one
+  // the row would otherwise lose. A row showing only `vjt_` cannot tell an
+  // operator whether that is the configured nick or a stranded fallback.
+  it("nick_changed row shows the nick it moved away from, next to the new one", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminListSessionLog).mockResolvedValue([
+      entry({ event: "nick_changed", nick: "vjt_", old_nick: "vjt" }),
+    ]);
+
+    render(() => <AdminSessionLogTab />);
+
+    const row = await screen.findByTestId("session-log-row-nick_changed");
+    expect(row.textContent).toContain("was vjt");
+    expect(row.textContent).toContain("vjt_");
   });
 
   it("renders the session_id + nick on a row", async () => {
