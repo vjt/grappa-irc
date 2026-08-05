@@ -393,7 +393,7 @@ defmodule Grappa.Accounts.WebAuthn do
     # TOTP user's codes and left the second_factor exits unconsidered.
     :ok = RecoveryCodes.drop_if_orphaned(user.id)
 
-    :ok = Grappa.Accounts.revoke_other_sessions_for_user(user, current_session_id)
+    :ok = Grappa.Accounts.revoke_other_sessions_for_user!(user, current_session_id)
     mode
   end
 end

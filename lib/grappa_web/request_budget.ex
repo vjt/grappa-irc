@@ -75,7 +75,7 @@ defmodule GrappaWeb.RequestBudget do
     #    degrades to :db_unavailable — logged, then the teardown CONTINUES so
     #    the live socket still closes (the stale bearer is throttled on its
     #    next request). Never crash the guard.
-    case Accounts.revoke_session_resilient(session_id) do
+    case Accounts.revoke_session(session_id) do
       :ok ->
         :ok
 

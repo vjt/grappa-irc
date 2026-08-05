@@ -1009,7 +1009,7 @@ defmodule Grappa.Networks.Credentials do
   /connect), never the `:connected`-with-no-session wedge. A NON-transient
   fault (syntax / corruption) still re-raises — `Repo.BusyRetry`'s contract,
   CLAUDE.md "no silent-swallow". Sibling of
-  `Accounts.revoke_session_resilient/1` (#630), which had the same "must
+  `Accounts.revoke_session/1` (#630, #636), which had the same "must
   degrade, not crash under peak write load" need. The delete is idempotent, so
   a retried statement is safe.
   """

@@ -132,14 +132,24 @@ defmodule GrappaWeb.Admin.UsersController do
   forced reset. Only the TARGET's sessions are revoked; an admin
   rotating another account's password keeps their own session (an admin
   self-rotating is forced to re-login, the secure default).
+
+  #636: the revoke IS the eviction, so it may not degrade quietly. Under a
+  saturated DB `Accounts.revoke_sessions_for_user/1` returns
+  `{:error, :db_unavailable}` and this action surfaces the typed 503 —
+  answering 200 would tell the operator the compromised account was
+  evicted while every attacker bearer is still live. The rotation itself
+  has already committed; the operator retries and the second pass is
+  idempotent. (Before #636 the same saturation raised a MatchError 500 —
+  same half-applied state, indistinguishable from a real bug.)
   """
   @spec update_password(Plug.Conn.t(), map()) ::
-          Plug.Conn.t() | {:error, :not_found | :bad_request | Ecto.Changeset.t()}
+          Plug.Conn.t()
+          | {:error, :not_found | :bad_request | :db_unavailable | Ecto.Changeset.t()}
   def update_password(conn, %{"id" => id} = params) when is_binary(id) do
     with {:ok, attrs} <- password_attrs(params),
          %Grappa.Accounts.User{} = user <- Accounts.get_user(id),
-         {:ok, updated} <- Accounts.update_password(user, attrs) do
-      :ok = Accounts.revoke_sessions_for_user(updated)
+         {:ok, updated} <- Accounts.update_password(user, attrs),
+         :ok <- Accounts.revoke_sessions_for_user(updated) do
       :ok = UserSocket.disconnect_subject({:user, updated})
       :ok = emit_user_password_changed(updated, conn)
       counts = LiveIntrospection.count_sessions_by_user()

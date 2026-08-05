@@ -29112,3 +29112,52 @@ arrive to a freed buffer", and `main` ends with a long comment about the model
 thread that was neither stopped nor joined while shutdown freed the mutex and
 SSL context underneath it. The helper's own teardown was the one place that had
 drifted from the rule the rest of the tree follows.
+## 2026-08-05 — #636: a revoke either owns a retry budget or its caller does
+
+`Accounts.revoke_session/1` was a bare `Repo.update_all` with no busy-retry,
+and every caller bound it with `:ok = ...`. Under SQLite write contention the
+UPDATE raises `SQLITE_BUSY`, the match blows up, and the request dies with a
+500 — at precisely the peak-write moments (a flood, a reconnect burst, a
+migration) when a revoke matters most. #630 had already fixed its own path by
+adding `revoke_session_resilient/1` beside it, which left two spellings of the
+same verb where one is a trap.
+
+**The pair collapsed rather than being propagated.** `revoke_session/1` now IS
+the resilient one and `revoke_session_resilient/1` is gone. The suffix was
+never a distinction worth keeping: `revoke_sessions_for_visitor/1` (#523/#518)
+has been busy-resilient with no suffix since it shipped, so the codebase
+already said resilient-is-the-default. Leaving a second, fail-hard spelling in
+place is how the next caller picks the wrong one.
+
+**The class is not "wrap every revoke".** Half the family — the two `reset_*`
+transactions, TOTP enrolment/disable, the passkey mode change — calls the
+revoke from INSIDE a `Repo.BusyRetry.run(fn -> Repo.transaction(…) end)`. There
+a nested retry is actively wrong: it would sleep holding the open
+transaction's connection, extending the contention it is waiting on, and would
+convert a raise the transaction needs into a return value. The correct unit of
+retry is the whole transaction, and the enclosing engine already retries it.
+So the rule is per-ROLE, not per-function: **every revoke either owns a
+`BusyRetry` budget and returns `{:error, :db_unavailable}`, or it raises and
+says so in its name.** The in-transaction members are now
+`revoke_other_sessions_for_user!/2` and the private
+`revoke_sessions_for_user!/1`; the bang is the contract, and the family
+contract is written out on `revoke_session/1`.
+
+**What a degraded revoke does is a per-caller judgement, and it splits.** The
+`Plugs.Authn` co-terminus cleanup logs and CONTINUES: the plug has already
+decided to reject, denial is the safe direction, and the visitor is still
+expired so the next request re-attempts the revoke. `DELETE /auth/logout` and
+`PUT /admin/users/:id/password` do the opposite and surface a typed 503 —
+there the success answer is a claim (you are logged out / the compromised
+account is evicted) that the degrade did not make true. This is the same axis
+as #815 but resolved differently at each door: the question is never "crash or
+swallow", it is "does the caller's success response become a lie". The one
+thing none of them may do is what they all did before, which is raise.
+
+**The asymmetry is deliberate and #590 is the precedent.** `purge_if_anon/1`
+absorbs a sustained busy to `:ok` + a log because the reaper will collect the
+row anyway — best-effort cleanup with no client waiting on it. That absorption
+lives in the CALLER's judgement, not in the context function: `revoke_session/1`
+always returns the typed error, and the plug decides to continue. Absorbing
+inside the context would have taken the choice away from logout, which needs
+it.

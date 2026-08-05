@@ -196,6 +196,35 @@ defmodule GrappaWeb.Plugs.AuthnTest do
       assert reloaded_session == nil or reloaded_session.revoked_at != nil
     end
 
+    # #636 — the co-terminus revoke above used to be a bare
+    # `:ok = Accounts.revoke_session(session_id)` over an unretried
+    # `update_all`: a SQLITE_BUSY raised a MatchError and the whole request
+    # died with a 500. The plug has ALREADY decided to reject at this point,
+    # and denial is the safe direction, so a degraded revoke must not change
+    # the verdict — it logs and lets the 401 through. Self-healing, too: the
+    # visitor is still expired, so the next request retries the revoke.
+    test "expired ANON visitor still 401s when the revoke degrades under a busy DB",
+         %{conn: conn, session: session} do
+      past = DateTime.add(DateTime.utc_now(), -1, :hour)
+      query = from(v in Visitor, where: v.id == ^session.visitor_id)
+      {1, _} = Repo.update_all(query, set: [expires_at: past])
+
+      Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+
+      result =
+        conn
+        |> put_req_header("authorization", "Bearer #{session.id}")
+        |> Authn.call(Authn.init([]))
+
+      assert result.halted
+      assert result.status == 401
+      assert result.resp_body =~ "unauthorized"
+
+      # The degrade is honest: nothing was revoked. The bearer is dead anyway
+      # (the visitor is expired), so the next request re-attempts the cleanup.
+      assert %Session{revoked_at: nil} = Repo.get(Session, session.id)
+    end
+
     # #211 phase 7 — the "expired REGISTERED visitor → 401 + row STAYS"
     # test was DELETED: registration is DERIVED from the credentials now
     # (`Credentials.visitor_registered?/1`), and `Visitors.touch/1`

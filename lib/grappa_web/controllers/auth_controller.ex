@@ -252,14 +252,30 @@ defmodule GrappaWeb.AuthController do
   `c:Phoenix.Endpoint.broadcast/3` (PubSub server unreachable) is logged
   and swallowed since the session row is already revoked, so the WS
   will be rejected on its next message anyway.
+
+  #636: the revoke is the one step here that may not be degraded quietly.
+  A 204 is a promise that the bearer is dead; answering it while the
+  revoke never landed would leave the browser believing it is logged out
+  with a token that still authenticates. So a `{:error, :db_unavailable}`
+  from `Accounts.revoke_session/1` propagates to `FallbackController` as a
+  typed 503 + `retry-after` and the client retries. (Before #636 the same
+  saturation was a MatchError 500 — same half-applied state, no way for
+  the client to tell it apart from a real bug.) The anon teardown ordering
+  above is NOT flipped to revoke-first to shrink that window: draining the
+  `Session.Server` before the row goes is what keeps an in-flight
+  scrollback persist off the `messages.visitor_id` FK, and the surviving
+  bearer self-heals — its next request finds the visitor purged and takes
+  the `Plugs.Authn` cleanup branch.
   """
-  @spec logout(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  @spec logout(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :db_unavailable}
   def logout(conn, _) do
     subject = conn.assigns[:current_subject]
     :ok = maybe_terminate_sessions(subject)
-    :ok = Accounts.revoke_session(conn.assigns.current_session_id)
-    :ok = maybe_disconnect_socket(subject)
-    send_resp(conn, :no_content, "")
+
+    with :ok <- Accounts.revoke_session(conn.assigns.current_session_id) do
+      :ok = maybe_disconnect_socket(subject)
+      send_resp(conn, :no_content, "")
+    end
   end
 
   # #126 — detach is the ABSENCE of teardown. `DELETE /auth/logout` for a

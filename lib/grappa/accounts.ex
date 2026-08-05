@@ -468,34 +468,46 @@ defmodule Grappa.Accounts do
 
   @doc """
   Marks the session row's `revoked_at` to now. Idempotent and safe to
-  call with an unknown id — both paths return `:ok` (no-op for the
-  unknown id) so callers don't need to branch on existence. The
-  affected-row count is logged so a typo'd revoke (zero matches)
-  remains greppable in operator logs without changing the API
-  contract.
-  """
-  @spec revoke_session(Ecto.UUID.t()) :: :ok
-  def revoke_session(id) when is_binary(id) do
-    {affected, _} = Repo.update_all(session_by_id_query(id), set: [revoked_at: DateTime.utc_now()])
-    Logger.info("session revoked", session_ref: session_handle(id), affected: affected)
-    :ok
-  end
+  call with an unknown id — both land on `:ok` (no-op for the unknown id)
+  so callers don't need to branch on existence. The affected-row count is
+  logged so a typo'd revoke (zero matches) remains greppable in operator
+  logs without changing the API contract.
 
-  @doc """
-  As `revoke_session/1`, but rides out a transient SQLITE_BUSY via
-  `Repo.BusyRetry` and degrades to `{:error, :db_unavailable}` on sustained
-  saturation instead of the MatchError-crash a bare `:ok = <update_all>`
-  would raise. The #630 web-session SEVER path
-  (`GrappaWeb.RequestBudget.sever/3`) calls this: it fires at PEAK DB write
-  contention (a flood IS the load) and, because the flood ladder severs
-  exactly ONCE at the crossing, a crash here would both skip the socket
-  close AND permanently defeat enforcement for the window. Sibling of
-  `revoke_sessions_for_visitor/1` (#523/#518), whose login door had the same
-  "must degrade, not crash" need. A single idempotent UPDATE, so a retried
-  statement is safe.
+  Rides out a transient SQLITE_BUSY via `Repo.BusyRetry` and degrades to
+  `{:error, :db_unavailable}` on sustained saturation instead of the
+  MatchError-crash a bare `:ok = <update_all>` raises. Every door that
+  revokes a single session hits the DB at exactly the wrong moment: the
+  #630 SEVER path (`GrappaWeb.RequestBudget.sever/3`) fires at PEAK write
+  contention (a flood IS the load) and severs exactly ONCE at the
+  crossing, so a crash there both skips the socket close AND permanently
+  defeats enforcement for the window; `DELETE /auth/logout` and the
+  `Plugs.Authn` co-terminus visitor cleanup are the same shape. A single
+  idempotent UPDATE, so a retried statement is safe.
+
+  ## The family contract (#636)
+
+  Every revoke in this module is in exactly one of two roles, and the
+  spelling says which:
+
+    * **caller-facing** — `revoke_session/1`, `revoke_sessions_for_user/1`,
+      `revoke_sessions_for_visitor/1`. Reached from a plug, a controller,
+      or an operator verb with no enclosing retry, so each owns its own
+      `Repo.BusyRetry` budget and returns `{:error, :db_unavailable}`.
+    * **in-transaction** — the `!` variants
+      (`revoke_other_sessions_for_user!/2` and the private
+      `revoke_sessions_for_user!/1`). Reached only from inside a
+      `Repo.BusyRetry.run(fn -> Repo.transaction(…) end)`, where the
+      enclosing engine retries the WHOLE transaction. They deliberately do
+      NOT retry: a nested retry would sleep while holding the open
+      transaction's connection, extending the very contention it waits on,
+      and would convert a raise the transaction needs into a return value.
+      The bang is the contract — it raises, and its caller owns the budget.
+
+  #636 collapsed the former `revoke_session_resilient/1` into this
+  function. There is no fail-hard spelling left to copy by mistake.
   """
-  @spec revoke_session_resilient(Ecto.UUID.t()) :: :ok | {:error, :db_unavailable}
-  def revoke_session_resilient(id) when is_binary(id) do
+  @spec revoke_session(Ecto.UUID.t()) :: :ok | {:error, :db_unavailable}
+  def revoke_session(id) when is_binary(id) do
     case Repo.BusyRetry.run(fn ->
            {:ok, Repo.update_all(session_by_id_query(id), set: [revoked_at: DateTime.utc_now()])}
          end) do
@@ -563,9 +575,26 @@ defmodule Grappa.Accounts do
   zero. The affected count rides the audit log so a user with zero prior
   sessions stays distinguishable from one whose sessions were all already
   revoked. Sibling of `revoke_sessions_for_visitor/1`.
+
+  Caller-facing, so it owns its `Repo.BusyRetry` budget and degrades to
+  `{:error, :db_unavailable}` — see the family contract on
+  `revoke_session/1`. The in-transaction users of the same UPDATE call
+  `revoke_sessions_for_user!/1` instead.
   """
-  @spec revoke_sessions_for_user(User.t()) :: :ok
-  def revoke_sessions_for_user(%User{id: user_id}) do
+  @spec revoke_sessions_for_user(User.t()) :: :ok | {:error, :db_unavailable}
+  def revoke_sessions_for_user(%User{} = user) do
+    case Repo.BusyRetry.run(fn -> {:ok, revoke_sessions_for_user!(user)} end) do
+      {:ok, :ok} -> :ok
+      {:error, :db_unavailable} = err -> err
+    end
+  end
+
+  # In-transaction twin of `revoke_sessions_for_user/1`: no retry of its
+  # own, RAISES on SQLITE_BUSY so the raise aborts the enclosing
+  # transaction and reaches the outer `Repo.BusyRetry`, which re-runs the
+  # whole unit. See the family contract on `revoke_session/1`.
+  @spec revoke_sessions_for_user!(User.t()) :: :ok
+  defp revoke_sessions_for_user!(%User{id: user_id}) do
     query = from(s in Session, where: s.user_id == ^user_id and is_nil(s.revoked_at))
 
     {affected, _} = Repo.update_all(query, set: [revoked_at: DateTime.utc_now()])
@@ -579,9 +608,19 @@ defmodule Grappa.Accounts do
     :ok
   end
 
-  @doc "Revokes every live bearer for `user` except the current session."
-  @spec revoke_other_sessions_for_user(User.t(), Ecto.UUID.t()) :: :ok
-  def revoke_other_sessions_for_user(%User{id: user_id}, current_session_id)
+  @doc """
+  Revokes every live bearer for `user` except the current session.
+
+  In-transaction only — every caller (TOTP enrolment/disable, the passkey
+  mode transaction) already runs inside a
+  `Repo.BusyRetry.run(fn -> Repo.transaction(…) end)`, so this RAISES on
+  SQLITE_BUSY rather than retrying: the raise is what aborts the
+  transaction and hands the retry to the enclosing engine. See the family
+  contract on `revoke_session/1`. A caller with no such enclosure wants a
+  caller-facing revoke, not this one.
+  """
+  @spec revoke_other_sessions_for_user!(User.t(), Ecto.UUID.t()) :: :ok
+  def revoke_other_sessions_for_user!(%User{id: user_id}, current_session_id)
       when is_binary(current_session_id) do
     query =
       from(s in Session,
@@ -707,7 +746,7 @@ defmodule Grappa.Accounts do
       )
 
     :ok = RecoveryCodes.drop_if_orphaned(user.id)
-    :ok = revoke_sessions_for_user(user)
+    :ok = revoke_sessions_for_user!(user)
     Repo.get!(User, user.id)
   end
 
@@ -726,14 +765,14 @@ defmodule Grappa.Accounts do
     Passkey |> where([p], p.user_id == ^user.id) |> Repo.delete_all()
     user |> User.passkey_mode_changeset(%{passkey_mode: :disabled}) |> Repo.update!()
     :ok = RecoveryCodes.drop_if_orphaned(user.id)
-    :ok = revoke_sessions_for_user(user)
+    :ok = revoke_sessions_for_user!(user)
     Repo.get!(User, user.id)
   end
 
   defp confirm_totp_transaction(user, current_session_id, secret, code, unix_seconds) do
     case TOTP.confirm_enrollment(user, secret, code, unix_seconds) do
       {:ok, recovery_codes} ->
-        :ok = revoke_other_sessions_for_user(user, current_session_id)
+        :ok = revoke_other_sessions_for_user!(user, current_session_id)
         recovery_codes
 
       {:error, reason} ->
@@ -764,7 +803,7 @@ defmodule Grappa.Accounts do
 
     recovery_query = from(r in TOTPRecoveryCode, where: r.user_id == ^user.id)
     Repo.delete_all(recovery_query)
-    :ok = revoke_other_sessions_for_user(user, current_session_id)
+    :ok = revoke_other_sessions_for_user!(user, current_session_id)
     Repo.get!(User, user.id)
   end
 

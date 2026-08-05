@@ -102,7 +102,7 @@ defmodule GrappaWeb.Plugs.Authn do
         # tombstone while waiting for the Reaper's 60s tick. Registered
         # visitors keep their row (purge_if_anon is a no-op) but the
         # session still revokes.
-        :ok = Accounts.revoke_session(session_id)
+        :ok = revoke_stale_session(session_id, :expired_visitor)
         :ok = Visitors.purge_if_anon(visitor_id)
         {:error, :expired_visitor}
 
@@ -113,8 +113,33 @@ defmodule GrappaWeb.Plugs.Authn do
         # if the visitor row disappeared mid-request we want the
         # operator log to flag it AND revoke the orphan session so the
         # bearer dies immediately.
-        :ok = Accounts.revoke_session(session_id)
+        :ok = revoke_stale_session(session_id, :visitor_missing)
         {:error, :visitor_missing}
+    end
+  end
+
+  # #636 — co-terminus cleanup on a request the plug has ALREADY decided to
+  # reject. Denial is the safe direction, so a revoke that degrades under
+  # SQLITE_BUSY must not change the verdict — and must not crash it either,
+  # which is what the former `:ok = Accounts.revoke_session(...)` binding did
+  # over an unretried `update_all`. It logs and the 401 proceeds. Self-healing:
+  # the visitor is expired or gone, so the very next request re-enters this
+  # branch and re-attempts the revoke. Deliberately the OPPOSITE call from
+  # `AuthController.logout/2`, which surfaces the same degrade as a 503 —
+  # there a 204 would promise a logout that did not happen; here the caller
+  # is being denied either way.
+  @spec revoke_stale_session(Ecto.UUID.t(), :expired_visitor | :visitor_missing) :: :ok
+  defp revoke_stale_session(session_id, reason) do
+    case Accounts.revoke_session(session_id) do
+      :ok ->
+        :ok
+
+      {:error, :db_unavailable} ->
+        Logger.warning(
+          "authn: stale visitor session revoke degraded (db unavailable) — " <>
+            "request still rejected, revoke retried on the next request",
+          authn_failure: reason
+        )
     end
   end
 

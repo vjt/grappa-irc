@@ -338,6 +338,34 @@ defmodule GrappaWeb.Admin.UsersControllerTest do
       assert {:error, :revoked} = Accounts.authenticate(target_session.id)
     end
 
+    # #636 — the S8 revoke was a bare `:ok = Accounts.revoke_sessions_for_user/1`
+    # over an unretried `update_all`, so a SQLITE_BUSY crashed the operator's
+    # request with a MatchError 500. Degrading quietly would be worse than the
+    # crash: a 200 would tell the operator the compromised account was evicted
+    # when every attacker bearer is still live. Typed 503, retry.
+    test "PUT /password returns 503 when the session revoke degrades under a busy DB",
+         %{conn: conn} do
+      {target, target_session} = user_and_session()
+      admin_sess = admin_session()
+
+      Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+
+      conn =
+        conn
+        |> put_bearer(admin_sess.id)
+        |> put_req_header("content-type", "application/json")
+        |> put(
+          "/admin/users/#{target.id}/password",
+          Jason.encode!(%{password: "rotated horse staple"})
+        )
+
+      assert json_response(conn, 503) == %{"error" => "db_unavailable"}
+
+      # The 503 is honest about the half-applied state: the password DID
+      # rotate, and the bearers the rotation was meant to evict did NOT.
+      assert {:ok, _} = Accounts.authenticate(target_session.id)
+    end
+
     test "PUT /password closes the target's live WebSocket (S8)", %{conn: conn} do
       target = user_fixture(name: "wspw-#{System.unique_integer([:positive])}")
       topic = "user_socket:" <> target.name

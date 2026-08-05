@@ -914,6 +914,28 @@ defmodule GrappaWeb.AuthControllerTest do
       assert json_response(conn, 401) == %{"error" => "unauthorized"}
     end
 
+    # #636 — logout used to bind the revoke with `:ok = ...` over an
+    # unretried `update_all`, so a SQLITE_BUSY became a MatchError 500. It is
+    # ALSO the one caller in the family that must not degrade quietly: a 204
+    # here tells the browser it is logged out while the bearer still
+    # authenticates. So it surfaces the typed 503 and the client retries.
+    test "returns 503 db_unavailable when the revoke degrades, leaving the bearer live",
+         %{conn: conn} do
+      {_, session} = user_and_session()
+      Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> delete("/auth/logout")
+
+      assert json_response(conn, 503) == %{"error" => "db_unavailable"}
+      assert Enum.member?(Plug.Conn.get_resp_header(conn, "retry-after"), "1")
+
+      # No lie: the session really is still usable, and the response said so.
+      assert {:ok, _} = Accounts.authenticate(session.id)
+    end
+
     test "with revoked Bearer returns 401", %{conn: conn} do
       {_, session} = user_and_session()
       :ok = Accounts.revoke_session(session.id)

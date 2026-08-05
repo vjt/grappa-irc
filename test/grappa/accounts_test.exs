@@ -3,6 +3,7 @@ defmodule Grappa.AccountsTest do
 
   alias Grappa.Accounts
   alias Grappa.Accounts.User
+  alias Grappa.Repo.BusyRetry
 
   @password "correct horse battery staple"
 
@@ -416,7 +417,11 @@ defmodule Grappa.AccountsTest do
   # {:error, :db_unavailable} rather than the MatchError-crash a bare
   # `:ok = <bare update_all>` raises. Sibling of
   # `revoke_sessions_for_visitor/1` (#523/#518).
-  describe "revoke_session_resilient/1" do
+  #
+  # #636 — this WAS `revoke_session_resilient/1`, a second spelling living
+  # beside a fail-hard `revoke_session/1`. The pair collapsed: there is one
+  # caller-facing single-session revoke and it is this one.
+  describe "revoke_session/1" do
     setup do
       {:ok, user} = Accounts.create_user(%{name: "sever-revoke", password: @password})
       {:ok, session} = Accounts.create_session({:user, user.id}, "127.0.0.1", "ua", [])
@@ -424,29 +429,89 @@ defmodule Grappa.AccountsTest do
     end
 
     test "revokes the session with no contention", %{session: session} do
-      assert :ok = Accounts.revoke_session_resilient(session.id)
+      assert :ok = Accounts.revoke_session(session.id)
       assert {:error, :revoked} = Accounts.authenticate(session.id)
     end
 
     test "rides out a transient busy within the retry budget, then revokes", %{session: session} do
       # 3 injected faults clear well inside the 1500ms budget → the revoke
       # still lands (proves the BusyRetry wiring, not just the degrade arm).
-      Grappa.Repo.BusyRetry.inject_transient_faults(3)
+      BusyRetry.inject_transient_faults(3)
 
-      assert :ok = Accounts.revoke_session_resilient(session.id)
+      assert :ok = Accounts.revoke_session(session.id)
       assert {:error, :revoked} = Accounts.authenticate(session.id)
     end
 
     test "degrades to :db_unavailable under sustained busy, never raising, bearer left intact", %{
       session: session
     } do
-      Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+      BusyRetry.inject_transient_faults(10_000)
 
-      assert {:error, :db_unavailable} = Accounts.revoke_session_resilient(session.id)
+      assert {:error, :db_unavailable} = Accounts.revoke_session(session.id)
 
       # The revoke never landed, so the bearer is untouched — the caller's
       # retry starts from the same state, no half-applied session churn.
       assert {:ok, _} = Accounts.authenticate(session.id)
+    end
+  end
+
+  # #636 — the bulk user revoke is the same class as the single-session one:
+  # `PUT /admin/users/:id/password` calls it OUTSIDE any transaction, so it
+  # owns its own retry budget and degrades rather than raising a MatchError
+  # into the operator's request.
+  describe "revoke_sessions_for_user/1" do
+    setup do
+      {:ok, user} = Accounts.create_user(%{name: "bulk-revoke", password: @password})
+      {:ok, first} = Accounts.create_session({:user, user.id}, "127.0.0.1", "ua", [])
+      {:ok, second} = Accounts.create_session({:user, user.id}, "127.0.0.1", "ua", [])
+      %{user: user, first: first, second: second}
+    end
+
+    test "revokes every live bearer with no contention", ctx do
+      assert :ok = Accounts.revoke_sessions_for_user(ctx.user)
+      assert {:error, :revoked} = Accounts.authenticate(ctx.first.id)
+      assert {:error, :revoked} = Accounts.authenticate(ctx.second.id)
+    end
+
+    test "rides out a transient busy within the retry budget, then revokes", ctx do
+      BusyRetry.inject_transient_faults(3)
+
+      assert :ok = Accounts.revoke_sessions_for_user(ctx.user)
+      assert {:error, :revoked} = Accounts.authenticate(ctx.first.id)
+    end
+
+    test "degrades to :db_unavailable under sustained busy, never raising", ctx do
+      BusyRetry.inject_transient_faults(10_000)
+
+      assert {:error, :db_unavailable} = Accounts.revoke_sessions_for_user(ctx.user)
+
+      # Nothing was revoked, so the retry starts from the same state.
+      assert {:ok, _} = Accounts.authenticate(ctx.first.id)
+      assert {:ok, _} = Accounts.authenticate(ctx.second.id)
+    end
+
+    # The in-transaction members of the family (`reset_totp/1`,
+    # `reset_passkeys/1`, the TOTP/passkey mode transactions) must NOT own a
+    # retry of their own: they already run inside
+    # `BusyRetry.run(Repo.transaction(…))`, where the enclosing engine retries
+    # the WHOLE transaction. #636 therefore hands them a `!` primitive that
+    # RAISES, so the raise can abort the transaction and reach that outer
+    # engine. These two pin both halves of that contract from the caller's
+    # side: the revoke still lands, and the degrade is still the outer
+    # engine's typed tuple rather than a MatchError on a `:ok =` binding.
+    test "reset_totp/1 still revokes the user's bearers via the in-transaction revoke", ctx do
+      assert {:ok, _} = Accounts.reset_totp(ctx.user.name)
+
+      assert {:error, :revoked} = Accounts.authenticate(ctx.first.id)
+      assert {:error, :revoked} = Accounts.authenticate(ctx.second.id)
+    end
+
+    test "reset_totp/1 degrades to :db_unavailable — the OUTER engine owns the retry", ctx do
+      BusyRetry.inject_transient_faults(10_000)
+
+      assert {:error, :db_unavailable} = Accounts.reset_totp(ctx.user.name)
+
+      assert {:ok, _} = Accounts.authenticate(ctx.first.id)
     end
   end
 
