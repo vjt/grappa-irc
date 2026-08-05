@@ -43,6 +43,14 @@ defmodule Grappa.Networks.Credentials.AdminWire do
   `:connected` but BEAM has no pid registered → operator sees the
   divergence prominently.
 
+  #618 extends the same two-sources posture to the identity itself: the
+  row's top-level `nick` is what the operator CONFIGURED, `live_state.nick`
+  is who upstream is actually talking to. A failed ghost recovery leaves
+  the session on `<nick>_` for its whole life, and before this the wire
+  had no way to say so. The two are rendered side by side and never
+  reconciled — computing one from the other is exactly the tidying-up
+  CLAUDE.md forbids.
+
   ## Preload contract
 
   Caller MUST preload `:network` on the credential — the wire shape
@@ -56,6 +64,7 @@ defmodule Grappa.Networks.Credentials.AdminWire do
   alias Grappa.Networks.{Credential, Network}
 
   @type live_state_json :: %{
+          nick: String.t() | nil,
           alive: boolean(),
           pid_inspect: String.t(),
           mailbox_len: non_neg_integer(),
@@ -136,6 +145,7 @@ defmodule Grappa.Networks.Credentials.AdminWire do
 
   defp live_state_to_json(%SessionEntry{} = entry) do
     %{
+      nick: entry.nick,
       alive: entry.alive,
       pid_inspect: inspect(entry.pid),
       mailbox_len: entry.mailbox_len,

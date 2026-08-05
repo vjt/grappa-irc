@@ -40,6 +40,7 @@ defmodule Grappa.LiveIntrospection.AdminWire do
   alias Grappa.LiveIntrospection.SessionEntry
 
   @type live_state_json :: %{
+          nick: String.t() | nil,
           alive: boolean(),
           pid_inspect: String.t(),
           mailbox_len: non_neg_integer(),
@@ -84,6 +85,14 @@ defmodule Grappa.LiveIntrospection.AdminWire do
   explicitly excludes `Accounts` / `Visitors` / `Net.PtrCache` deps.
   Keeps the pure live-state module DB- and resolver-free.
 
+  ## Live nick (#618)
+
+  `live_state.nick` is who upstream is talking to RIGHT NOW. This wire
+  has no configured-nick column to compare it against — `GET
+  /admin/credentials` and `GET /admin/visitors` carry both halves side by
+  side. Here it is the answer to "which of these pids is the one flying
+  `vjt_`", which the operator previously could not ask at all.
+
   ## Upstream peer (#550)
 
   `live_state.peer_address` (string) + `peer_port` come straight off
@@ -115,6 +124,7 @@ defmodule Grappa.LiveIntrospection.AdminWire do
       last_seen_at: encode_last_seen(last_seen_at),
       network_id: entry.network_id,
       live_state: %{
+        nick: entry.nick,
         alive: entry.alive,
         pid_inspect: inspect(entry.pid),
         mailbox_len: entry.mailbox_len,

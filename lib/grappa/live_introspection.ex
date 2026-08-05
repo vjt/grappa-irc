@@ -14,7 +14,8 @@ defmodule Grappa.LiveIntrospection do
   ## Public surface
 
     * `list_sessions/0` — full registry scan; one
-      `LiveIntrospection.SessionEntry` per live `Session.Server`.
+      `LiveIntrospection.SessionEntry` per live `Session.Server`,
+      carrying the live nick alongside the process vitals (#618).
     * `lookup_session/2` — single-pid variant. Used by the visitor
       admin endpoint to attach live state per visitor row without
       scanning the whole registry.
@@ -115,6 +116,7 @@ defmodule Grappa.LiveIntrospection do
       subject: subject,
       network_id: network_id,
       pid: pid,
+      nick: fetch_live_nick(subject, network_id),
       alive: Process.alive?(pid),
       mailbox_len: Keyword.get(info, :message_queue_len, 0),
       memory_bytes: Keyword.get(info, :memory, 0),
@@ -123,6 +125,20 @@ defmodule Grappa.LiveIntrospection do
       peer_port: peer_port,
       introspection_degraded: channels_degraded ++ peer_degraded
     }
+  end
+
+  # #618 — the live half of "who does this session answer to". Deliberately
+  # NOT a `Session.call`: `current_nick/2` reads the SessionRegistry entry
+  # value (#498), so unlike joined_channels / peer_address there is no
+  # timeout budget to spend and no `introspection_degraded` marker to earn.
+  # `:no_session` here is the pid deregistering between the registry scan
+  # and this read — nil, never a fabricated fallback to the configured nick,
+  # which is precisely the value the operator needs to compare against.
+  defp fetch_live_nick(subject, network_id) do
+    case Session.current_nick(subject, network_id) do
+      {:ok, nick} -> nick
+      {:error, :no_session} -> nil
+    end
   end
 
   defp fetch_joined_channels(subject, network_id) do

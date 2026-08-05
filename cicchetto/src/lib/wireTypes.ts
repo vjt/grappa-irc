@@ -452,6 +452,7 @@ export type CicWireBundleHashPayload = {
 // === Grappa.LiveIntrospection.AdminWire ===
 
 export type LiveIntrospectionAdminWireLiveStateJson = {
+  nick: string | null;
   alive: boolean;
   pid_inspect: string;
   mailbox_len: number;
@@ -490,6 +491,7 @@ export type NetworksAdminWireT = {
 // === Grappa.Networks.Credentials.AdminWire ===
 
 export type NetworksCredentialsAdminWireLiveStateJson = {
+  nick: string | null;
   alive: boolean;
   pid_inspect: string;
   mailbox_len: number;
@@ -1288,6 +1290,7 @@ export type VhostsAdminWireGrantJson = {
 // === Grappa.Visitors.AdminWire ===
 
 export type VisitorsAdminWireLiveStateJson = {
+  nick: string | null;
   alive: boolean;
   pid_inspect: string;
   mailbox_len: number;

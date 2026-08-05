@@ -22,6 +22,11 @@ defmodule Grappa.Visitors.AdminWire do
   BEAM `live_state` join (`nil` = the U-0 honesty signal: DB intent exists,
   BEAM doesn't). A visitor with no credentials yields `networks: []`.
 
+  #618 — each network entry carries BOTH nicks: the credential's `nick`
+  (configured) and `live_state.nick` (who upstream answers to now). They
+  diverge on a 433 fallback or a failed ghost recovery, and the pair is
+  the only way an operator can see it. Never reconciled into one field.
+
   ## Defensive field exclusion (CRITICAL)
 
   No credential secret (`:password_encrypted`) or `:auth_method` is ever in
@@ -35,6 +40,7 @@ defmodule Grappa.Visitors.AdminWire do
   alias Grappa.Visitors.Visitor
 
   @type live_state_json :: %{
+          nick: String.t() | nil,
           alive: boolean(),
           pid_inspect: String.t(),
           mailbox_len: non_neg_integer(),
@@ -105,6 +111,7 @@ defmodule Grappa.Visitors.AdminWire do
 
   defp live_state_to_json(%SessionEntry{} = entry) do
     %{
+      nick: entry.nick,
       alive: entry.alive,
       pid_inspect: inspect(entry.pid),
       mailbox_len: entry.mailbox_len,

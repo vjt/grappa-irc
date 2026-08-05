@@ -68,6 +68,10 @@ defmodule Grappa.Networks.Credentials.AdminWireTest do
         subject: {:user, c.user_id},
         network_id: c.network_id,
         pid: pid,
+        # #618 — deliberately NOT `c.nick`: a session stranded on `<nick>_`
+        # by a failed ghost recovery is exactly the divergence this wire has
+        # to keep visible.
+        nick: c.nick <> "_",
         alive: true,
         mailbox_len: 0,
         memory_bytes: 12_345,
@@ -78,7 +82,9 @@ defmodule Grappa.Networks.Credentials.AdminWireTest do
       }
 
       assert %{
+               nick: configured_nick,
                live_state: %{
+                 nick: live_nick,
                  alive: true,
                  pid_inspect: pid_str,
                  mailbox_len: 0,
@@ -90,6 +96,13 @@ defmodule Grappa.Networks.Credentials.AdminWireTest do
 
       assert is_binary(pid_str)
       assert String.starts_with?(pid_str, "#PID<")
+
+      # #618 — both halves survive the render, unreconciled. If a future
+      # tidy-up computed one from the other this pair would collapse and
+      # the operator would lose the only signal that the session is not
+      # answering to the nick it was configured with.
+      assert configured_nick == c.nick
+      assert live_nick == c.nick <> "_"
     end
 
     test "NEVER includes password_encrypted or password (credential material exclusion)" do

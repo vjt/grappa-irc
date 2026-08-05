@@ -18,6 +18,7 @@ defmodule Grappa.LiveIntrospection.AdminWireTest do
       subject: {:user, Ecto.UUID.generate()},
       network_id: 1,
       pid: self(),
+      nick: "vjt",
       alive: true,
       mailbox_len: 0,
       memory_bytes: 512,
@@ -95,6 +96,28 @@ defmodule Grappa.LiveIntrospection.AdminWireTest do
     assert json.live_state.peer_port == nil
     assert json.live_state.peer_name == nil
     assert json.live_state.introspection_degraded == [:peer_address]
+  end
+
+  # #618 — the live nick is the answer to "which of these pids is flying
+  # `vjt_`". `subject_label` is the DB display name and is NOT it: the two
+  # are asserted to differ here so a future refactor cannot quietly render
+  # the label into `live_state.nick` and still pass.
+  test "session_to_admin_json/4 projects the live nick, distinct from subject_label" do
+    entry = entry(nick: "vjt_")
+
+    json = AdminWire.session_to_admin_json(entry, "vjt", nil, nil)
+
+    assert json.live_state.nick == "vjt_"
+    assert json.subject_label == "vjt"
+  end
+
+  test "session_to_admin_json/4 renders a nil live nick rather than inventing one" do
+    # The pid deregistered between the registry scan and the nick read.
+    # nil is the honest answer; a fallback to the configured nick would
+    # destroy the one comparison this field exists to enable.
+    json = AdminWire.session_to_admin_json(entry(nick: nil), "vjt", nil, nil)
+
+    assert json.live_state.nick == nil
   end
 
   test "peer_name nil while peer_address present is the cold-cache / no-PTR shape" do

@@ -13,6 +13,17 @@ defmodule Grappa.LiveIntrospection.SessionEntry do
     * `pid` — live BEAM pid; the wire layer renders it via
       `inspect/1` for human-readable display only (cic must NEVER
       re-parse it).
+    * `nick` — the nick the session ACTUALLY answers to upstream,
+      read off the SessionRegistry entry value via
+      `Grappa.Session.current_nick/2` (#498 — a cheap ETS read, not a
+      `GenServer.call`, so it needs no timeout budget and can never
+      degrade). This is the LIVE half of the two-sources rule: the
+      credential row's `nick` is what the operator CONFIGURED, this is
+      who upstream is talking to. They diverge whenever a 433 fallback,
+      a failed ghost recovery (#618), a services rename or a plain
+      `/nick` moved the session — silently, until now. `nil` only on the
+      lost race where the pid deregistered between the scan and this
+      read; the entry as a whole is then already stale.
     * `alive` — `Process.alive?/1` snapshot at sampling time.
     * `mailbox_len` — `:message_queue_len` from `Process.info/2`.
       The #1 thing operators chase on a stuck session.
@@ -41,6 +52,7 @@ defmodule Grappa.LiveIntrospection.SessionEntry do
     :subject,
     :network_id,
     :pid,
+    :nick,
     :alive,
     :mailbox_len,
     :memory_bytes,
@@ -54,6 +66,7 @@ defmodule Grappa.LiveIntrospection.SessionEntry do
     :subject,
     :network_id,
     :pid,
+    :nick,
     :alive,
     :mailbox_len,
     :memory_bytes,
@@ -69,6 +82,7 @@ defmodule Grappa.LiveIntrospection.SessionEntry do
           subject: Grappa.Session.subject(),
           network_id: pos_integer(),
           pid: pid(),
+          nick: String.t() | nil,
           alive: boolean(),
           mailbox_len: non_neg_integer(),
           memory_bytes: non_neg_integer(),

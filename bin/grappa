@@ -257,9 +257,11 @@ verb_help_list_sessions() { cat <<'EOF'
 list-sessions
     Print every live Session.Server in Grappa.SessionRegistry as a
     tab-separated table. Columns:
-        subject_kind  subject_id  network_id  pid  alive  mailbox_len  memory_kb
+        subject_kind  subject_id  network_id  nick  pid  alive  mailbox_len  memory_kb
     The mailbox_len + memory_kb columns surface bloat / leaks on a
-    stuck session.
+    stuck session. nick is the LIVE nick upstream answers to, which is
+    not always the configured one: compare it against list-credentials
+    to spot a session stranded on <nick>_ by a failed ghost recovery.
 EOF
 }
 

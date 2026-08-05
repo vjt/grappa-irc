@@ -43,6 +43,9 @@ defmodule Grappa.Visitors.AdminWireTest do
         subject: {:visitor, v.id},
         network_id: network.id,
         pid: self(),
+        # #618 — the visitor was provisioned as "alpha" but a 433 moved the
+        # live session to "alpha_". Both must reach the operator.
+        nick: "alpha_",
         alive: true,
         mailbox_len: 0,
         memory_bytes: 12_345,
@@ -65,6 +68,8 @@ defmodule Grappa.Visitors.AdminWireTest do
       assert net.network_slug == network.slug
       assert net.connection_state == cred.connection_state
       assert is_map(net.live_state)
+      # #618 — configured vs live, side by side and unreconciled.
+      assert net.live_state.nick == "alpha_"
       assert net.live_state.alive == true
       assert net.live_state.memory_bytes == 12_345
       assert net.live_state.mailbox_len == 0

@@ -802,6 +802,10 @@ defmodule Grappa.Operator do
         Atom.to_string(subject_kind),
         subject_id,
         Integer.to_string(entry.network_id),
+        # nil = the pid deregistered between the scan and the nick read.
+        # Rendered as "-" rather than blank so the tab-separated columns
+        # stay aligned for `cut -f`.
+        entry.nick || "-",
         inspect(entry.pid),
         to_string(entry.alive),
         Integer.to_string(entry.mailbox_len),
@@ -888,8 +892,21 @@ defmodule Grappa.Operator do
   defp credential_columns,
     do: ["user_id", "network_slug", "nick", "state", "connection_state_reason"]
 
+  # #618 — `nick` is the LIVE nick, not the configured one. It sits next to
+  # subject_id because "who does this pid answer to upstream" is identity,
+  # not a vital sign, and a `<nick>_` here against a different credential
+  # nick is the whole tell that a ghost recovery failed.
   defp session_columns,
-    do: ["subject_kind", "subject_id", "network_id", "pid", "alive", "mailbox_len", "memory_kb"]
+    do: [
+      "subject_kind",
+      "subject_id",
+      "network_id",
+      "nick",
+      "pid",
+      "alive",
+      "mailbox_len",
+      "memory_kb"
+    ]
 
   defp query_latency_columns,
     do: ["source", "op", "n", "total_ms", "queue_ms", "mean_ms"]
