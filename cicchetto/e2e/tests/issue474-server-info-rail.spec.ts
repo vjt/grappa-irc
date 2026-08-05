@@ -28,6 +28,7 @@
 
 import { expect, test } from "../fixtures/test";
 import { loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
+import { expectRailFieldsStacked } from "../fixtures/railFieldGeometry";
 import { getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 const SERVER_WINDOW_LABEL = "Server";
@@ -83,5 +84,12 @@ test.describe("#474 server-info rail card", () => {
     // `identified` row: "no" — --auth none means no SASL/NickServ handshake,
     // so the nick never gains the +r umode connection_info reads.
     await expect(card.locator("[data-testid=rail-server-info-identified]")).toHaveText("no");
+
+    // #857 — nothing in the rail may render as two columns. This card shipped
+    // as `max-content 1fr`, which inside the #605-capped 14rem rail leaves
+    // each value a fraction of the card; every `<dt>` and `<dd>` must now own
+    // a full-width row of its own. Same helper guards the query-window card
+    // (`issue606-query-rail-whois.spec.ts`) — one rule, one assertion.
+    await expectRailFieldsStacked(card, ".rail-server-info-fields");
   });
 });

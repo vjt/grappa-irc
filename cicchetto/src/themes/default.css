@@ -7540,16 +7540,31 @@ html.resize-dragging * {
   word-break: break-all;
 }
 
+/* #857 — STACKED, like every definition list mounted in the rail: label on
+   its own row, value beneath at the full card width. The two-column
+   `max-content 1fr` this shipped with sizes the label track to the longest
+   `<dt>` ("identified"), which inside the #605-capped 14rem rail leaves the
+   value a fraction of the card and lets `word-break: break-word` chop it. No
+   mount scoping needed here, unlike the sibling rule on
+   `.rail-query-context .whois-card-fields`: this card renders ONLY in the
+   rail, where WhoisCard is shared with the full-width scrollback overlay.
+
+   Row gap is uniform across the grid, so a stacked pair needs its own
+   separation or every row reads equidistant: the label opens a group. */
 .rail-server-info-fields {
   display: grid;
-  grid-template-columns: max-content 1fr;
+  grid-template-columns: 1fr;
   gap: 0.15rem 0.75rem;
   margin: 0;
 }
 
 .rail-server-info-fields dt {
   color: var(--muted);
-  text-align: right;
+  text-align: left;
+}
+
+.rail-server-info-fields dt:not(:first-of-type) {
+  margin-top: 0.4rem;
 }
 
 .rail-server-info-fields dd {
@@ -7572,7 +7587,10 @@ html.resize-dragging * {
 }
 
 /* #857 — the rail mount STACKS the pairs; the scrollback overlay keeps the
-   aligned two columns. `.whois-card-fields` is `max-content 1fr`, and
+   aligned two columns. Same rule as `.rail-server-info-fields` above — those
+   are the only two `<dl>`s the rail mounts (the other two, `.lusers-card-
+   fields` and `.whowas-card-fields`, are scrollback-overlay only and keep
+   their columns). `.whois-card-fields` is `max-content 1fr`, and
    `max-content` sizes the label track to the LONGEST `<dt>` in the bundle
    ("connecting from", WhoisCard.tsx). In a full-width centre pane that costs
    nothing; inside the #605-capped 14rem rail it claims most of the card, and
