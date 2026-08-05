@@ -8,6 +8,7 @@ import {
 } from "./api";
 import { token } from "./auth";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
+import { identityMoved } from "./identityMoved";
 import { identityScopedStore } from "./identityScopedStore";
 import { getReadCursor, setReadCursor } from "./readCursor";
 import { getResumeCursor, recordSeen } from "./reconnectBackfill";
@@ -150,27 +151,14 @@ const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): Scrollba
   return dropCount > 0 ? rows.slice(dropCount) : rows;
 };
 
-// #788 — THE rule for every async verb in this module: an `await` can span an
-// identity transition, and a continuation that outlived its identity must do
-// NOTHING further. Not one request on the wire, not one write into the store.
+// #788 — how THE identity rule applies to this module. The predicate itself,
+// and why a continuation that outlived its identity must do nothing further
+// (the wire half and the store half), live in `identityMoved.ts`; below is
+// only what is specific to these verbs.
 //
-// `t` is the bearer the verb captured at entry — its identity, not merely its
-// credential. Re-read `token()` after the await and compare: if it moved, the
-// verb belongs to an identity that no longer exists here.
-//
-// Both halves of "nothing further" are load-bearing, which is why the check
-// sits after the await rather than in front of each REST call:
-//
-//   * the WIRE half is #788 proper. A request carrying a revoked bearer 401s
-//     at best; for a channel the NEW identity is not attached to it 404s, and
-//     the host's `http-404` fail2ban jail bans the client IP at the firewall.
-//     A routine account switch self-bans the operator — the #281 harm class,
-//     reached through a different door.
-//   * the STORE half is the same continuation without touching the network:
-//     the page it already fetched merges into a map the rotation just purged,
-//     so the new identity renders the old one's scrollback. A guard wrapped
-//     around the REST calls alone would not catch it — the poisoning happens
-//     between the resolved fetch and the next request.
+// The store half is why the check sits after the await rather than in front of
+// each REST call: a guard wrapped around the requests alone would not catch it
+// — the poisoning happens between the resolved fetch and the next request.
 //
 // So: eleven of this module's fifteen awaits are followed by this check, and
 // the bail is whatever "did nothing" means for that verb's return type. Two
@@ -197,12 +185,9 @@ const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): Scrollba
 //     running. Same for the `refreshScrollback` completion stamp, which would
 //     tell a spec that ITS backfill had landed.
 //
-// Not hoisted into `identityScopedStore`: that factory owns the identity
-// TRANSITION (fire the resets), while this owns a verb's own captured
-// identity, which the factory never sees. Sibling modules inline the same
-// comparison (`displayPrefs`, `customTheme`) to drop a stale RESPONSE; this is
-// the same predicate used one step earlier, to refuse a stale REQUEST.
-const identityMoved = (t: string): boolean => token() !== t;
+// The sibling adopters (`networks`, `displayPrefs`, `customTheme`) use the
+// same predicate to drop a stale RESPONSE; this module uses it one step
+// earlier, to refuse a stale REQUEST.
 
 const exports = identityScopedStore((onIdentityChange) => {
   const loadedChannels = new Set<ChannelKey>();

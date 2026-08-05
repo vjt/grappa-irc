@@ -2,6 +2,7 @@ import { createEffect } from "solid-js";
 import { token } from "./auth";
 import { type ChannelKey, decodeChannelKey } from "./channelKey";
 import { getColoredNicklist, setColoredNicklist } from "./colorNicklist";
+import { identityMoved } from "./identityMoved";
 import {
   getAllPresencePrefs,
   type PresencePref,
@@ -127,8 +128,9 @@ export function mountDisplayPrefsSync(): void {
     }
     void getDisplayPrefs(t)
       .then((resp) => {
-        // Token rotated mid-flight — a later effect run owns the state now.
-        if (token() !== t) return;
+        // Token rotated mid-flight — a later effect run owns the state now,
+        // and the seed-up PUT below would carry a retired bearer (#837).
+        if (identityMoved(t)) return;
         // PUSH the LOCAL state up (never let the server clobber it) when either:
         //   * an earlier `syncedSet*` write is still UNCONFIRMED (its PUT never
         //     ACKed — e.g. a reload raced the fire-and-forget PUT). Without this
