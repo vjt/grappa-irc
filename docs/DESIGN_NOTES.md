@@ -29545,3 +29545,59 @@ than a parameter worth adding. And the guard remains a per-verb habit, not a
 whole-module property: a new `await` that captures the token and skips the
 check reopens the defect for its own call path — one owner makes the rule
 greppable, it does not make it automatic.
+## 2026-08-05 — #441: the shellcheck set is derived, and the first gate found two real defects
+
+`infra/linux` had no automated gate at all: `integration.yml` is path-filtered
+to `lib/ cicchetto/ config/ priv/ mix.*`, and `ci.yml`'s shellcheck step named
+**eleven paths by hand**. #503 later added `test/infra/` to the bats discovery
+set and `infra/linux/deploy.sh` to that list — but a hand list is a snapshot,
+not a gate. `infra/linux/install.sh`, the file whose defects filed this issue,
+was never on it. `bin/` was not linted at all.
+
+**Derived, not listed.** `scripts/shellcheck.sh` enumerates every regular file
+under `bin/`, `infra/`, `scripts/` that ends in `.sh` or opens with a shell
+shebang — 71 files against the old eleven. The shebang half is load-bearing:
+it picks up `bin/grappa`, `grappa-source-alias`, and the two `rc.d` services,
+which a `*.sh` glob cannot see. There is deliberately **no dialect table**:
+every script already declares its shell (shebang, or a `# shellcheck shell=`
+directive on the two sourced libs), and a table here would be a second place
+for that to drift — the removed defect, reintroduced one level down.
+
+**The linter is a digest-pinned container**, not the runner's preinstalled
+binary. shellcheck's findings change between minors, so a laptop and whatever
+`ubuntu-latest` ships that month otherwise disagree about what "clean" means,
+and the laptop's green is the one a contributor trusts before pushing. Same
+posture as the #103 base-image pins.
+
+**What the first run found.** 22 of 70 files failed, and only ONE was a
+defect. Fifteen were missing the `# shellcheck source=scripts/_lib.sh`
+directive that `scripts/deploy.sh` had carried all along; unfollowed,
+shellcheck also cannot see the lib's `set -euo pipefail`, so it reported every
+`cd "$REPO_ROOT"` as unguarded — one directive cleared both codes. Six were
+deliberate idioms, annotated at the site with the reason rather than dropped
+from the set: the `su -c '...'` bodies whose single quotes ARE the point,
+literal backticks in a printf'd help message, `CDPATH= cd`, and — file-wide on
+the two rc.d services — the four codes that ARE the rc.subr contract. The
+defect was two dead `local`s in `bin/grappa`'s `help_top`.
+
+**The more valuable finding came from the bats, not the linter.**
+`install.sh`'s comments say the 2026-07-22 incident was closed with "fail loud
+... rather than let a blank secret slip into the env file". It fails loud and
+writes the blank: `set_env_if_blank KEY "$(gen ...)"` puts the failure in
+ARGUMENT position, where `gen_raw`'s `exit 1` exits only the subshell and the
+enclosing command's status is `set_env_if_blank`'s — so neither `set -e` nor
+`pipefail` ever sees it, and the redundant second `| tail -n1` made even the
+substitution's status 0. Measured: with every generator failing, three secrets
+land blank; with ONLY `gen_encryption_key` failing, the script **exits 0**,
+starts the unit, passes its healthcheck and prints "grappa is up and healthy"
+with the Cloak vault keyed on the empty string. The single reason the first
+case aborted at all is VAPID's empty-check — the one empty-test in the file
+that sits outside a substitution. Fixed by capture-CHECK-write at all five
+generator sites, which is the shape the VAPID branch already used.
+
+**Left standing, deliberately.** The `dash -n` POSIX-parse list stays
+hand-written in its own step. "Which files must parse under dash" is a claim
+about where a file RUNS, not about what it is; deriving it honestly means
+deciding whether every `#!/bin/sh` script in the tree is jail-bound, and that
+is separate work. It is now labelled as such in the workflow rather than
+sitting there looking like the same list.
