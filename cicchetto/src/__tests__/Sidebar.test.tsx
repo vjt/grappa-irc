@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, within } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 let mockNetworkConnectionState: Record<string, string | undefined> = {};
@@ -75,8 +75,15 @@ vi.mock("../lib/networks", () => ({
   user: () => mockUser,
 }));
 
+// #96 — aria-current marks the OPEN window row. The pre-#96 mock pinned
+// `selectedChannel` to null forever, so nothing in this file could ever drive
+// the selected branch; make it a holder like the other mutable mocks (reset
+// to null in beforeEach, so every pre-#96 test keeps its "nothing selected"
+// world unchanged).
+let mockSelectedChannel: { networkSlug: string; channelName: string; kind: string } | null = null;
+
 vi.mock("../lib/selection", () => ({
-  selectedChannel: () => null,
+  selectedChannel: () => mockSelectedChannel,
   setSelectedChannel: vi.fn(),
   isActiveSelection: (next: unknown) => isActiveSelectionMock(next),
   unreadCounts: () => ({ "freenode #bnc": 3 }),
@@ -202,16 +209,32 @@ import * as qwMod from "../lib/queryWindows";
 import * as scrollCmd from "../lib/scrollToBottomCommand";
 import * as selMod from "../lib/selection";
 // windowKinds is NOT mocked — import constants from the real module.
-import { LIST_WINDOW_NAME } from "../lib/windowKinds";
+import {
+  HOME_WINDOW_NAME,
+  HOME_WINDOW_SLUG,
+  LIST_WINDOW_NAME,
+  SERVER_WINDOW_NAME,
+} from "../lib/windowKinds";
 import Sidebar from "../Sidebar";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // #96 — `clearAllMocks` clears CALL HISTORY but keeps a spy's
+  // implementation, so the two `vi.spyOn(selMod, "selectedChannel")
+  // .mockReturnValue(...)` in the pseudo-row × block leaked their return
+  // value into every test that ran after them: from that point on the
+  // sidebar believed `#italia` was the open window. Nothing noticed while
+  // selection had no observable output beyond a CSS class no later test
+  // asserted — the #96 `aria-current` tests are its first readers, and they
+  // failed in-suite while passing in isolation. Restore the real binding
+  // between tests.
+  vi.restoreAllMocks();
   mockWindowState = {};
   mockNetworkConnectionState = {};
   mockNetworkConnectionReason = {};
   mockAwayByNetwork = {};
   mockMentionsBundles = {};
+  mockSelectedChannel = null;
   adminHolder.value = false;
   // #71 INC-1 — default logged-in user so the own-nick footer renders; the
   // logged-out test flips this to null.
@@ -1043,6 +1066,117 @@ describe("Sidebar", () => {
       const { container } = render(() => <Sidebar />);
       const footer = container.querySelector('[data-testid="sidebar-own-nick-freenode"]');
       expect(footer?.querySelector(".sidebar-window-btn")).toBeNull();
+    });
+  });
+
+  // #96 — accessibility pass. Every assertion below queries by ROLE and by
+  // ACCESSIBLE NAME: that is the thing an assistive tech actually consumes.
+  // Asserting `getAttribute("aria-current")` or the presence of a `.sr-only`
+  // node would pass just as happily with the attribute on the wrong element,
+  // or on an element the name computation ignores — it would prove markup,
+  // not announceability.
+  describe("#96 — accessibility", () => {
+    it("each network's windows are a group a screen reader can enter BY NAME", () => {
+      render(() => <Sidebar />);
+      const group = screen.getByRole("list", { name: "freenode windows" });
+      // Named AND owning the rows — a label on an empty/wrong list would
+      // satisfy the name alone.
+      expect(within(group).getByRole("button", { name: /^#italia/ })).toBeInTheDocument();
+      expect(within(group).getByRole("button", { name: /^alice/ })).toBeInTheDocument();
+    });
+
+    it("the open window is the one row discoverable as current", () => {
+      mockSelectedChannel = { networkSlug: "freenode", channelName: "#bnc", kind: "channel" };
+      render(() => <Sidebar />);
+      const current = screen.getAllByRole("button", { current: true });
+      expect(current).toHaveLength(1);
+      expect(current[0]).toHaveTextContent("#bnc");
+    });
+
+    it("no row claims to be current when nothing is selected", () => {
+      render(() => <Sidebar />);
+      expect(screen.queryAllByRole("button", { current: true })).toHaveLength(0);
+    });
+
+    it("current-ness follows the selection onto a non-channel row (home)", () => {
+      mockSelectedChannel = {
+        networkSlug: HOME_WINDOW_SLUG,
+        channelName: HOME_WINDOW_NAME,
+        kind: "home",
+      };
+      render(() => <Sidebar />);
+      const current = screen.getAllByRole("button", { current: true });
+      expect(current).toHaveLength(1);
+      // The home row's LABEL is "Home" (the `$home` slug is the routing key,
+      // never shown) — assert what a screen reader would read out.
+      expect(current[0]).toHaveTextContent("Home");
+    });
+
+    it("current-ness follows the selection onto the network's server row", () => {
+      mockSelectedChannel = {
+        networkSlug: "freenode",
+        channelName: SERVER_WINDOW_NAME,
+        kind: "server",
+      };
+      render(() => <Sidebar />);
+      const current = screen.getAllByRole("button", { current: true });
+      expect(current).toHaveLength(1);
+      expect(current[0]).toHaveTextContent("freenode");
+    });
+
+    it("a live row's name carries no state suffix", () => {
+      render(() => <Sidebar />);
+      expect(screen.getByRole("button", { name: /^#italia/ })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^#italia\s*\(/ })).toBeNull();
+    });
+
+    it("a parted channel SAYS parted — the muted+italic cue is silent", () => {
+      render(() => <Sidebar />);
+      // #azzurra is joined: false in the channelsBySlug mock.
+      expect(screen.getByRole("button", { name: /^#azzurra\s*\(parted\)/ })).toBeInTheDocument();
+    });
+
+    it("a greyed row stays in the list AND names its state (invited)", () => {
+      mockWindowState = { "freenode #italia": "invited" };
+      render(() => <Sidebar />);
+      // Still a reachable row — greying must never remove a window from the
+      // sidebar (its scrollback is the reason the row survives a failed JOIN).
+      expect(screen.getByRole("button", { name: /^#italia\s*\(invited\)/ })).toBeInTheDocument();
+    });
+
+    it("each not-joined state names ITSELF, not a generic 'unavailable'", () => {
+      for (const state of ["invited", "failed", "kicked", "parked"]) {
+        mockWindowState = { "freenode #bnc": state };
+        const { unmount } = render(() => <Sidebar />);
+        expect(
+          screen.getByRole("button", { name: new RegExp(`^#bnc\\s*\\(${state}\\)`) }),
+        ).toBeInTheDocument();
+        unmount();
+      }
+    });
+
+    it("a pending row names itself pending (it is not greyed, and not silent)", () => {
+      mockWindowState = { "freenode #new": "pending" };
+      render(() => <Sidebar />);
+      expect(screen.getByRole("button", { name: /^#new\s*\(pending\)/ })).toBeInTheDocument();
+    });
+
+    it("a parked NETWORK speaks the cascade on the header AND on every row under it", () => {
+      mockNetworkConnectionState = { freenode: "parked" };
+      render(() => <Sidebar />);
+      expect(screen.getByRole("button", { name: /^freenode\s*\(parked\)/ })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^#italia\s*\(parked\)/ })).toBeInTheDocument();
+      // The DM row derives from the same cascade — a parked network takes the
+      // query windows down with it.
+      expect(screen.getByRole("button", { name: /^alice\s*\(parked\)/ })).toBeInTheDocument();
+    });
+
+    it("the network cascade OUTRANKS a row's own state (parked network, invited window)", () => {
+      mockNetworkConnectionState = { freenode: "failed" };
+      mockWindowState = { "freenode #italia": "invited" };
+      render(() => <Sidebar />);
+      expect(screen.getByRole("button", { name: /^#italia\s*\(failed\)/ })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^#italia\s*\(invited\)/ })).toBeNull();
     });
   });
 });

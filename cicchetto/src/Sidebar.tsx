@@ -86,6 +86,17 @@ import NickText from "./NickText";
 const NOT_JOINED_STATES = new Set(["invited", "failed", "kicked", "parked"]);
 const NETWORK_GREYED_STATES = new Set(["parked", "failed"]);
 
+// #96 — a row's state, spoken. Every non-live sidebar row is rendered muted +
+// italic and NOTHING else: a screen reader gets no signal at all, and the
+// greyed (parked / failed / invited / kicked) and parted treatments are
+// pixel-identical, so a sighted operator can't tell them apart either. This
+// folds the word into the button's accessible name ("#italia (parked)")
+// without touching a single pixel. Renders nothing when there's no state to
+// report, so a live row's name is unchanged.
+const RowState: Component<{ state: string | null }> = (props) => (
+  <Show when={props.state}>{(state) => <span class="sr-only"> ({state()})</span>}</Show>
+);
+
 export type Props = Record<string, never>;
 
 const Sidebar: Component<Props> = () => {
@@ -94,24 +105,49 @@ const Sidebar: Component<Props> = () => {
     return s !== null && s.networkSlug === slug && s.channelName === name;
   };
 
+  // #96 — the row a keyboard/screen-reader operator is ON. Selection was
+  // conveyed by the `.selected` class alone (background + accent colour), so
+  // an assistive tech had no way to tell which of N rows is the open window.
+  // `aria-current` is the annotation for "the one in a set that is current";
+  // it goes on the <button> (the focusable node the AT lands on), not the
+  // <li> that carries the class.
+  const ariaCurrent = (slug: string, name: string): "true" | undefined =>
+    isSelected(slug, name) ? "true" : undefined;
+
   // CP19 T32: network-level greyed when the credential is parked or
   // failed. Drives both the network header `.sidebar-network-greyed`
   // class AND the cascading per-channel/per-query overlay in
-  // `isGreyed/2` below.
+  // `greyedState/2` below.
   //
   // Bucket F H4: only UserNetwork carries connection_state. Narrow on
   // network.kind first; visitor networks are never greyed at the
   // network level (visitors have no credential row to park / fail).
-  const isNetworkGreyed = (slug: string): boolean => {
+  //
+  // #96 — returns the STATE WORD, not a boolean: the greyed treatment is
+  // muted + italic, which is (a) invisible to a screen reader and (b)
+  // pixel-identical to the `.parted` treatment, so not even a sighted
+  // operator can tell "network parked" from "you left this channel". One
+  // derivation feeds both consumers — the class (colour) and the sr-only
+  // word (announced) — so the two can never disagree.
+  const networkGreyedState = (slug: string): string | null => {
     const net = networkBySlug(slug);
-    return net?.kind === "user" && NETWORK_GREYED_STATES.has(net.connection_state);
+    if (net?.kind !== "user") return null;
+    return NETWORK_GREYED_STATES.has(net.connection_state) ? net.connection_state : null;
   };
 
-  const isGreyed = (slug: string, name: string): boolean => {
-    if (isNetworkGreyed(slug)) return true;
-    const s = windowStateByChannel()[channelKey(slug, name)];
-    return s !== undefined && NOT_JOINED_STATES.has(s);
+  const isNetworkGreyed = (slug: string): boolean => networkGreyedState(slug) !== null;
+
+  // Network cascade wins over the per-window state deliberately: when the
+  // credential is parked, EVERY row under it is unreachable regardless of
+  // what its own window state last said. Same precedence the boolean had.
+  const greyedState = (slug: string, name: string): string | null => {
+    const cascade = networkGreyedState(slug);
+    if (cascade !== null) return cascade;
+    const own = windowStateByChannel()[channelKey(slug, name)];
+    return own !== undefined && NOT_JOINED_STATES.has(own) ? own : null;
   };
+
+  const isGreyed = (slug: string, name: string): boolean => greyedState(slug, name) !== null;
 
   const networkReason = (slug: string): string | undefined => {
     const net = networkBySlug(slug);
@@ -187,6 +223,7 @@ const Sidebar: Component<Props> = () => {
           <button
             type="button"
             class="sidebar-window-btn sidebar-home-btn"
+            aria-current={ariaCurrent(HOME_WINDOW_SLUG, HOME_WINDOW_NAME)}
             onClick={() => handleClick(HOME_WINDOW_SLUG, HOME_WINDOW_NAME, "home")}
           >
             <span class="sidebar-home-emoji" aria-hidden="true">
@@ -210,6 +247,7 @@ const Sidebar: Component<Props> = () => {
             <button
               type="button"
               class="sidebar-window-btn sidebar-admin-btn"
+              aria-current={ariaCurrent(ADMIN_WINDOW_SLUG, ADMIN_WINDOW_NAME)}
               data-testid="sidebar-admin-row"
               onClick={() => handleClick(ADMIN_WINDOW_SLUG, ADMIN_WINDOW_NAME, "admin")}
             >
@@ -229,8 +267,18 @@ const Sidebar: Component<Props> = () => {
         <For each={networks()}>
           {(network) => (
             <>
+              {/* #96 — the per-network <ul> is the grouping the sidebar draws
+                  with a rail and a tinted header row; unnamed, a screen
+                  reader announced it as a bare "list, 6 items" and the
+                  network→window hierarchy was carried by pixels only. Naming
+                  the list is the whole of that hierarchy expressible without
+                  restructuring the DOM (see the tree-role note in the #96 PR
+                  body). The home + admin <ul>s stay unnamed on purpose: they
+                  are identity-scoped SINGLE rows, not groups — a name there
+                  would just repeat the row's own label. */}
               <ul
                 class={`sidebar-network-section${isNetworkGreyed(network.slug) ? " sidebar-network-greyed" : ""}`}
+                aria-label={`${network.slug} windows`}
               >
                 {/* UX-4 bucket C — network header + server window collapsed
                   into a single row. The old per-network `<h3>` is gone; this
@@ -248,6 +296,7 @@ const Sidebar: Component<Props> = () => {
                     type="button"
                     onClick={() => handleClick(network.slug, SERVER_WINDOW_NAME, "server")}
                     class="sidebar-window-btn"
+                    aria-current={ariaCurrent(network.slug, SERVER_WINDOW_NAME)}
                   >
                     {/* #71 INC-1 — the leading ⚙️ network-emoji is REMOVED.
                       It made the server line read reverse-indented against the
@@ -265,6 +314,10 @@ const Sidebar: Component<Props> = () => {
                     >
                       {network.slug}
                     </span>
+                    {/* #96 — the greyed network header's only cue is
+                        muted+italic (`.sidebar-network-greyed`) plus a `title`
+                        tooltip, and a tooltip is mouse-only. Speak the state. */}
+                    <RowState state={networkGreyedState(network.slug)} />
                     {/* C8.3 — away visual indicator. Surfaces on the
                       collapsed network-header row when the user is in away
                       state on this network. Driven by `away_confirmed`
@@ -358,6 +411,7 @@ const Sidebar: Component<Props> = () => {
                     type="button"
                     onClick={() => handleClick(network.slug, LIST_WINDOW_NAME, "list")}
                     class="sidebar-window-btn"
+                    aria-current={ariaCurrent(network.slug, LIST_WINDOW_NAME)}
                   >
                     <span class="sidebar-network-emoji" aria-hidden="true">
                       📇
@@ -385,6 +439,7 @@ const Sidebar: Component<Props> = () => {
                       type="button"
                       onClick={() => handleClick(network.slug, "", "mentions")}
                       class="sidebar-window-btn"
+                      aria-current={ariaCurrent(network.slug, "")}
                     >
                       <span class="sidebar-network-emoji" aria-hidden="true">
                         @
@@ -407,6 +462,7 @@ const Sidebar: Component<Props> = () => {
                           type="button"
                           onClick={() => handleClick(network.slug, channel.name, "channel")}
                           class={`sidebar-window-btn${isGreyed(network.slug, channel.name) ? " sidebar-window-greyed" : ""}`}
+                          aria-current={ariaCurrent(network.slug, channel.name)}
                         >
                           <span
                             class="sidebar-channel-name"
@@ -414,6 +470,14 @@ const Sidebar: Component<Props> = () => {
                           >
                             {channel.name}
                           </span>
+                          {/* #96 — two independent colour-only states on this
+                              one row: `.parted` (we left, window kept open) and
+                              the greyed overlay (network parked/failed, or the
+                              window's own not-joined state). They render
+                              IDENTICALLY (muted + italic), so speaking them is
+                              the only way either is distinguishable at all. */}
+                          <RowState state={channel.joined ? null : "parted"} />
+                          <RowState state={greyedState(network.slug, channel.name)} />
                           <Show when={(messagesUnread()[key] ?? 0) > 0}>
                             <span class="sidebar-msg-unread">{messagesUnread()[key]}</span>
                           </Show>
@@ -473,6 +537,7 @@ const Sidebar: Component<Props> = () => {
                             ? "sidebar-window-btn sidebar-window-pending"
                             : "sidebar-window-btn sidebar-window-greyed"
                         }
+                        aria-current={ariaCurrent(network.slug, row.name)}
                       >
                         <span
                           class="sidebar-channel-name"
@@ -480,6 +545,12 @@ const Sidebar: Component<Props> = () => {
                         >
                           {row.name}
                         </span>
+                        {/* #96 — the pseudo row IS its state (pending /
+                            invited / failed / kicked / parked) and carries it
+                            in `data-window-state` for e2e, but rendered it to
+                            the operator as opacity + italic only. Speak the
+                            same word the test seam already exposes. */}
+                        <RowState state={row.state} />
                       </button>
                       {/* UX-5 bucket BK (2026-05-19): × on every pseudo-row.
                         Pre-BK pseudo-rows were uncloseable — a failed JOIN
@@ -520,8 +591,10 @@ const Sidebar: Component<Props> = () => {
                           type="button"
                           onClick={() => handleClick(network.slug, qw.targetNick, "query")}
                           class={`sidebar-window-btn${isGreyed(network.slug, qw.targetNick) ? " sidebar-window-greyed" : ""}`}
+                          aria-current={ariaCurrent(network.slug, qw.targetNick)}
                         >
                           <NickText nick={qw.targetNick} extraClass="sidebar-channel-name" />
+                          <RowState state={greyedState(network.slug, qw.targetNick)} />
                           <Show when={(messagesUnread()[key] ?? 0) > 0}>
                             <span class="sidebar-msg-unread">{messagesUnread()[key]}</span>
                           </Show>
