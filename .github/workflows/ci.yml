@@ -143,6 +143,11 @@ jobs:
   # first surface in the release workflow, on a tag, when the packages
   # tried to build a client that no longer compiled.
   #
+  # What it covers, exactly: the client is built and its suites run, and
+  # the media helper's sources are COMPILED but never linked and never
+  # packaged — the shipped .deb/AUR carry the client alone and fall back
+  # to a browser for calls, so nothing here proves a helper binary works.
+  #
   # Deliberately its own job rather than a step on `test`: it shares no
   # toolchain with the BEAM jobs (no Elixir, no deps cache), it runs in
   # well under a minute, and a failure should read as "shottino broke"
@@ -177,6 +182,20 @@ jobs:
         run: |
           make -C frontends/shottino clean
           make -C frontends/shottino \
+            CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2 $(sed -n 's/^CFLAGS_DEPS := //p' config.mk)"
+
+      # The media helper is a separate opt-in target (`make call`) because
+      # linking it wants cmake, a C++ toolchain and a multi-minute
+      # libdatachannel build. So `make` above never touched call/main.c —
+      # 1214 lines, the helper's main loop and the whole libdatachannel
+      # integration — and no other job did either (#754). Compiling it is
+      # what that guarantee costs here: the vendored headers arrived with
+      # the recursive checkout, nothing has to be built, and the flags are
+      # the ones above so the helper cannot warn where the client may not.
+      # The link stays unproven on purpose — see the Makefile comment.
+      - name: Compile the media helper (warnings are errors)
+        run: |
+          make -C frontends/shottino call-compile \
             CFLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -O2 $(sed -n 's/^CFLAGS_DEPS := //p' config.mk)"
 
       # Suites build with ASan+UBSan (see the Makefile): this is C parsing
