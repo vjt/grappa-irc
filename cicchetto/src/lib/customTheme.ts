@@ -1,5 +1,6 @@
 import { createEffect, createSignal } from "solid-js";
 import { token } from "./auth";
+import { identityMoved } from "./identityMoved";
 import { moduleRoot } from "./moduleRoot";
 import { prefersDark } from "./theme";
 import type { ActiveThemePair, TokenPayload } from "./themesApi";
@@ -285,8 +286,9 @@ export function mountCustomThemeSync(): void {
     }
     void getActiveThemePair(t)
       .then((pair) => {
-        // Token rotated mid-flight — a later effect run owns the DOM now.
-        if (token() !== t) return;
+        // Token rotated mid-flight — a later effect run owns the DOM and the
+        // boot cache now (#837).
+        if (identityMoved(t)) return;
         applyResolvedPair(pair);
       })
       .catch((e) => {
