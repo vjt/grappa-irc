@@ -112,6 +112,10 @@ jobs:
         run: |
           shellcheck -s sh infra/lib/deploy_common.sh infra/docker/assert-abi-lockstep.sh infra/docker/release-entrypoint.sh infra/docker/get.sh
           shellcheck -x infra/freebsd/deploy.sh infra/linux/deploy.sh scripts/deploy.sh infra/docker/deploy.sh
+          # The ONE secret generator (#862): three consumers now (postinstall,
+          # the release image's entrypoint, infra/docker/deploy.sh), so a
+          # bashism-free-but-broken edit must fail here, not on someone's box.
+          shellcheck -x infra/packaging/gen-secrets.sh
           dash -n infra/lib/deploy_common.sh
           dash -n infra/freebsd/deploy.sh
           dash -n infra/docker/assert-abi-lockstep.sh

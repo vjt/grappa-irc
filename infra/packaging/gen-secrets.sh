@@ -9,8 +9,15 @@
 # still has to prove works on the packaged ERTS (see infra/linux/install.sh
 # for the native-Linux `bin/grappa eval` boot crash this sidesteps).
 #
-# Installed to /usr/share/grappa/gen-secrets.sh; invoked by postinstall on
-# first install, and re-runnable by an operator via `sudo grappa gen-secrets`.
+# THREE consumers, one generator (#862 — before it, the docker paths each
+# had their own openssl transcription and the two had already drifted):
+#   .deb/.rpm  — installed to /usr/share/grappa/gen-secrets.sh, run by
+#                postinstall on first install, re-runnable as
+#                `sudo grappa gen-secrets`. Root; 0640 root:grappa.
+#   release image — copied to /app/gen-secrets.sh, run by
+#                infra/docker/release-entrypoint.sh on first boot against
+#                the /data volume. Unprivileged; 0600.
+#   infra/docker/deploy.sh — writes $GRAPPA_HOME/grappa.env. 0600.
 #
 # IDEMPOTENT: only fills keys that are missing, blank, or literal
 # REPLACE_ME. Existing real values are never touched (rotate by resetting
@@ -24,19 +31,34 @@ set -euo pipefail
 
 ENV_FILE="${GRAPPA_ENV_FILE:-/etc/grappa/grappa.env}"
 GRAPPA_USER="${GRAPPA_USER:-grappa}"
+# Permission the env file is left at. 0640 is the packaged-host contract
+# (root:grappa, daemon reads it group-only). The release container (#862)
+# asks for 0600: it runs AS the grappa user, so the file's owner IS the
+# reader and a group bit would only widen it.
+ENV_MODE="${GRAPPA_ENV_MODE:-0640}"
 
 die() { printf 'gen-secrets: %s\n' "$*" >&2; exit 1; }
 
 command -v openssl >/dev/null 2>&1 || die "openssl not found on PATH"
 [ -f "$ENV_FILE" ] || die "env file $ENV_FILE does not exist"
 
-# Re-lock to 0640 root:<grappa>. group-read lets the daemon read it; not
-# world-readable. Tolerant if the group does not exist yet (chown falls
-# back to root:root — postinstall runs preinstall's user creation first,
-# so in the package flow the group always exists).
+# Re-lock to $ENV_MODE, owned root:<grappa> where that is possible. Tolerant
+# if the group does not exist yet (chown falls back to root:root —
+# postinstall runs preinstall's user creation first, so in the package flow
+# the group always exists).
+#
+# chown is a root-only syscall, so it is attempted only as root. The packaged
+# (.deb/.rpm) flow IS root — postinstall — and keeps its root:grappa 0640
+# contract unchanged. The release container (#862) runs unprivileged as the
+# grappa user on a volume it already owns: there is nobody to chown to, and
+# an unconditional chown made `set -e` kill the script before it wrote a
+# single secret. Skipping it there loosens nothing — the caller asks for
+# 0600, which is tighter than the packaged 0640.
 relock() {
-	chown "root:${GRAPPA_USER}" "$ENV_FILE" 2>/dev/null || chown root:root "$ENV_FILE"
-	chmod 0640 "$ENV_FILE"
+	if [ "$(id -u)" = "0" ]; then
+		chown "root:${GRAPPA_USER}" "$ENV_FILE" 2>/dev/null || chown root:root "$ENV_FILE"
+	fi
+	chmod "$ENV_MODE" "$ENV_FILE"
 }
 
 # True when KEY is absent, empty, or the literal REPLACE_ME sentinel.
@@ -73,6 +95,13 @@ rand_hex() { openssl rand -hex "$1" | tr -d '\n'; }
 # both unpadded. openssl produces an EQUIVALENT keypair in that exact
 # encoding, so web_push_elixir (which reads the same raw shapes) accepts
 # it without a BEAM in the loop.
+#
+# That claim is MEASURED, not asserted: test/infra/gen_secrets_test.bats
+# re-derives the public point from the emitted scalar alone and requires a
+# byte-exact match, with its own derivation pinned to the published FIPS
+# 186-4 P-256 vector. deploy.sh used to claim the opposite ("host openssl
+# cannot safely reproduce a raw P-256 point") and spent a throwaway
+# container avoiding this function; #862 measured it and deleted that path.
 gen_vapid() {
 	local pem pub hex
 	pem="$(mktemp)"
@@ -123,7 +152,7 @@ if needs_gen VAPID_PUBLIC_KEY || needs_gen VAPID_PRIVATE_KEY; then
 fi
 
 if [ "$changed" -eq 1 ]; then
-	printf 'gen-secrets: secrets written to %s (0640 root:%s)\n' "$ENV_FILE" "$GRAPPA_USER"
+	printf 'gen-secrets: secrets written to %s (mode %s)\n' "$ENV_FILE" "$ENV_MODE"
 else
 	printf 'gen-secrets: all secrets already set in %s — nothing to do\n' "$ENV_FILE"
 fi
