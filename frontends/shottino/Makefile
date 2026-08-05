@@ -182,7 +182,7 @@ CALL_BIN := shottino-call
 CALL_SRC := call/main.c call/whip.c call/media.c http.c
 CALL_CFLAGS := $(CPPFLAGS) $(CFLAGS) -I$(LDC_DIR)/include
 
-.PHONY: call
+.PHONY: call call-compile
 call: $(CALL_BIN)
 
 # A checked-out submodule is a precondition with a readable failure. The
@@ -192,6 +192,23 @@ $(LDC_DIR)/CMakeLists.txt:
 	@echo "  git submodule update --init --recursive \\" >&2
 	@echo "      frontends/shottino/vendor/libdatachannel" >&2
 	@exit 1
+
+# The share of `call` that a gate can afford (#754). Linking the helper
+# costs cmake, a C++ toolchain and minutes of libdatachannel build, so no
+# CI or packaging job runs `call` — which left call/main.c, the helper's
+# whole main loop and the entire libdatachannel integration, compiled by
+# nothing in the tree. Compiling it costs a second: the vendored headers
+# are already on disk beside the sources, no archive has to exist, and a
+# warning that fails the client build fails here the same way.
+#
+# What it does NOT cover, deliberately: no link runs, so the C++ link
+# driver, -static-libstdc++ and the four archives are still only proven
+# by someone typing `make call`.
+call-compile: $(LDC_DIR)/CMakeLists.txt
+	@for src in $(CALL_SRC); do \
+		echo "  CC (compile-only) $$src"; \
+		$(CC) $(CALL_CFLAGS) -c -o /dev/null "$$src" || exit 1; \
+	done
 
 # USE_GNUTLS=OFF takes the OpenSSL already linked; USE_NICE=OFF takes the
 # bundled libjuice rather than adding a system libnice; NO_WEBSOCKET
