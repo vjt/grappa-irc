@@ -342,34 +342,24 @@ static void video_retile(struct call *c) {
         media_grid_layout(slots, n, c->cfg->frame_w, c->cfg->frame_h, c->vmix.tiles,
                           CALL_TILE_MAX);
     bool ok = media_start_video_mix(&c->vmix, c->cfg, c->frame_fd);
-    /* THE GRID, PUBLISHED. Not a status line — a contract.
-     *
-     * The composited frame is one picture on a byte pipe, so without
-     * these rectangles the other end cannot tell whose face is where.
-     * With them it can sample any cell into any box, which is what
-     * makes focus a drawing decision there instead of a decoder restart
-     * here.
-     *
-     *     <frame_w>x<frame_h>;slot,x,y,w,h;slot,x,y,w,h...
-     *
-     * shottino knows which nick each slot is — it built the subscribe
-     * list — so the slot number is enough to label a cell. Fewer tiles
-     * here than peers in the call is also how the cap is REPORTED
-     * rather than silently applied. */
+    /* `drawn` can be fewer than the peers who are sending: the cap is
+     * REPORTED — the note at the end of this function — rather than
+     * silently applied. */
     char shown[64 + CALL_MAX_PEERS * 32];
-    size_t at = 0;
     int drawn = c->vmix.tile_count;
-    at += (size_t)snprintf(shown + at, sizeof(shown) - at, "%dx%d", c->cfg->frame_w,
-                           c->cfg->frame_h);
-    for (int i = 0; i < drawn && at + 40 < sizeof(shown); i++)
-        at += (size_t)snprintf(shown + at, sizeof(shown) - at, ";%d,%d,%d,%d,%d",
-                               c->vmix.tiles[i].slot, c->vmix.tiles[i].x, c->vmix.tiles[i].y,
-                               c->vmix.tiles[i].w, c->vmix.tiles[i].h);
-    shown[at] = 0;
+    bool described = media_tiles_describe(c->vmix.tiles, drawn, c->cfg->frame_w, c->cfg->frame_h,
+                                          shown, sizeof(shown));
     pthread_mutex_unlock(&c->vlock);
 
     if (!ok) {
         emit_event("error", "message", "cannot start video decoding");
+        return;
+    }
+    if (!described) {
+        /* The grid is all-or-nothing at the other end, so a grid that
+         * did not fit is reported as a failure rather than published
+         * short: half a grid draws faces under the wrong names. */
+        emit_event("error", "message", "the tile grid could not be published");
         return;
     }
     emit_event("tiles", "value", shown);

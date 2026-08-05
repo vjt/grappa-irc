@@ -332,6 +332,61 @@ TEST(the_mix_filter_chains_every_tile_into_one_output) {
     CHECK(!media_mix_filter(NULL, 2, 10, 640, 480, f, sizeof(f)));
 }
 
+/* The grid, as shottino is told about it. The other end adopts it
+ * WHOLESALE or not at all, so the only two honest outcomes here are a
+ * complete grid and no grid — a short one draws faces under the wrong
+ * names, which is worse than drawing none. */
+TEST(the_published_grid_is_complete_or_refused) {
+    struct media_tile t[MEDIA_MAX_PEERS];
+    const int slots[4] = { 0, 2, 5, 7 };
+    char g[320];
+
+    CHECK(media_grid_layout(slots, 1, 640, 480, t, MEDIA_MAX_PEERS) == 1);
+    CHECK(media_tiles_describe(t, 1, 640, 480, g, sizeof(g)));
+    CHECK_STR(g, "640x480;0,0,0,640,480");
+
+    CHECK(media_grid_layout(slots, 4, 640, 480, t, MEDIA_MAX_PEERS) == 4);
+    CHECK(media_tiles_describe(t, 4, 640, 480, g, sizeof(g)));
+    CHECK_STR(g, "640x480;0,0,0,320,240;2,320,0,320,240;5,0,240,320,240;7,320,240,320,240");
+
+    /* A layout that fitted nobody — media_grid_layout refuses a frame
+     * with no room for even one usable cell — still publishes the frame
+     * size. The other end needs it to know what it is not drawing. */
+    CHECK(media_tiles_describe(t, 0, 640, 480, g, sizeof(g)));
+    CHECK_STR(g, "640x480");
+
+    /* REFUSED, not shortened. The buffer holds the header and the first
+     * record and nothing more; a builder that stops when it runs out
+     * hands over a grid that says one peer is in the call when four
+     * are. Reachable the day CALL_TILE_MAX is raised. */
+    char small[32];
+    CHECK(media_grid_layout(slots, 4, 640, 480, t, MEDIA_MAX_PEERS) == 4);
+    CHECK(!media_tiles_describe(t, 4, 640, 480, g, 32));
+    CHECK(!media_tiles_describe(t, 4, 640, 480, small, sizeof(small)));
+    /* Emptied on refusal, so a caller that ignores the answer publishes
+     * nothing rather than the half it happened to fit. */
+    CHECK_STR(small, "");
+
+    /* Not even the header fits: still refused, still empty, still no
+     * write past the end — the one that ASan is here for. */
+    char nano[4];
+    CHECK(!media_tiles_describe(t, 1, 640, 480, nano, sizeof(nano)));
+    CHECK_STR(nano, "");
+
+    /* A record wider than any slack the old length guard reserved. The
+     * builder must measure what snprintf WOULD have written, not assume
+     * a record's worst case: the guard was a constant, and a constant
+     * that is smaller than the truth is an out-of-bounds terminator. */
+    struct media_tile wide[1] = { { 2147483647, 2147483647, 2147483647, 2147483647, 2147483647 } };
+    char sixty[64];
+    CHECK(!media_tiles_describe(wide, 1, 2147483647, 2147483647, sixty, sizeof(sixty)));
+    CHECK_STR(sixty, "");
+
+    CHECK(!media_tiles_describe(NULL, 2, 640, 480, g, sizeof(g)));
+    CHECK(!media_tiles_describe(t, 1, 640, 480, NULL, sizeof(g)));
+    CHECK(!media_tiles_describe(t, 1, 640, 480, g, 0));
+}
+
 /* Two legs must never be handed the same port, and the port has to be
  * one the caller can actually tell ffmpeg about. */
 TEST(loopback_ports_are_distinct_and_reported) {
@@ -355,6 +410,7 @@ int main(void) {
     RUN(the_answer_says_which_codec_this_peer_publishes);
     RUN(the_grid_is_even_and_independent_of_focus);
     RUN(the_mix_filter_chains_every_tile_into_one_output);
+    RUN(the_published_grid_is_complete_or_refused);
     RUN(loopback_ports_are_distinct_and_reported);
     return test_report();
 }

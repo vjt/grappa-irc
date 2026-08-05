@@ -493,6 +493,34 @@ bool media_mix_filter(const struct media_tile *tiles, int n, int fps, int frame_
     return true;
 }
 
+bool media_tiles_describe(const struct media_tile *tiles, int n, int frame_w, int frame_h,
+                          char *out, size_t out_sz) {
+    if (!out || out_sz == 0) return false;
+    out[0] = 0;
+    if (!tiles || n < 0) return false;
+    /* Measured on what snprintf WOULD have written, every record, rather
+     * than on a constant reserved per record. A constant is a guess at a
+     * record's worst case, and the day it guesses low the cursor walks
+     * past the end of the buffer and the terminator is written there. */
+    size_t at = 0;
+    int w = snprintf(out, out_sz, "%dx%d", frame_w, frame_h);
+    if (w < 0 || (size_t)w >= out_sz) {
+        out[0] = 0;
+        return false;
+    }
+    at = (size_t)w;
+    for (int i = 0; i < n; i++) {
+        w = snprintf(out + at, out_sz - at, ";%d,%d,%d,%d,%d", tiles[i].slot, tiles[i].x,
+                     tiles[i].y, tiles[i].w, tiles[i].h);
+        if (w < 0 || (size_t)w >= out_sz - at) {
+            out[0] = 0;
+            return false;
+        }
+        at += (size_t)w;
+    }
+    return true;
+}
+
 /* Give a leg a loopback port and an SDP, without starting anything.
  * The port SURVIVES a re-tile: the RTP callback keeps writing to it
  * while the decoder behind it is being replaced, so a focus change
