@@ -90,7 +90,7 @@ EOF
     [ "$status" -eq 0 ]
 
     [ -f "$ENV_FILE" ]
-    [ "$(stat -c '%a' "$ENV_FILE" 2>/dev/null || stat -f '%Lp' "$ENV_FILE")" = "600" ]
+    [ "$(file_mode "$ENV_FILE")" = "600" ]
     grep -qE '^PHX_HOST=grappa\.example\.org$' "$ENV_FILE"
     grep -qE '^SECRET_KEY_BASE=.+' "$ENV_FILE"
     grep -qE '^SECRET_SIGNING_SALT=.+' "$ENV_FILE"

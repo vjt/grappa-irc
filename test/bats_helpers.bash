@@ -61,3 +61,27 @@ refute() {
 
     return 0
 }
+
+# Numeric permission bits of a file ("640"), on both userlands.
+#
+# NOT `stat -f '%Lp' f || stat -c '%a' f`. `-f` is the FORMAT flag on BSD
+# stat and `--file-system` on GNU stat, so on Linux that spelling asks for
+# filesystem status, treats the format string as a second file operand, and
+# exits non-zero — AFTER printing six lines of filesystem status to stdout.
+# `||` then appends the fallback's "640" to them, and the caller compares a
+# seven-line blob against "640". Measured on ubuntu:24.04 (GNU coreutils
+# 9.4): the assertion could not pass on a Linux runner, and was green on
+# the maintainer's darwin box only because BSD stat reads `-f` the other way.
+#
+# So: probe GNU FIRST (the failing spelling there is `-c`, which BSD rejects
+# as an illegal option without writing to stdout), and CAPTURE rather than
+# chain — a fallback must replace the first attempt's output, never be
+# concatenated onto it.
+file_mode() {
+    local mode
+    if mode="$(stat -c '%a' "$1" 2>/dev/null)"; then
+        printf '%s\n' "$mode"
+        return 0
+    fi
+    stat -f '%Lp' "$1"
+}

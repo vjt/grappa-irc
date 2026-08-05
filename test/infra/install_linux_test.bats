@@ -174,11 +174,6 @@ env_value() {
     sed -n "s/^$1=//p" "$ENV_FILE" | tail -n1
 }
 
-file_mode() {
-    # BSD stat (macOS dev host) vs GNU stat (Linux CI).
-    stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"
-}
-
 @test "a missing PHX_HOST aborts before anything is written (#441)" {
     unset PHX_HOST
 
