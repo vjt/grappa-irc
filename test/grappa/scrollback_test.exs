@@ -2840,6 +2840,156 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
+  describe "rename_own_nick/4 (#514 — inbound DM rows re-key on a SELF nick change)" do
+    # An INBOUND DM is persisted at `channel = <own nick at receipt>,
+    # dm_with = peer` (`Scrollback.dm_peer/4`). That `channel` value is not
+    # the window key of anything — the peer window resolves off `dm_with` —
+    # it is a TAG recording who the subject was when the row arrived, and
+    # `Push.Triggers.dm?/2` reads it back against the LIVE own_nick (#498).
+    # A self-rename makes every such tag stale, so the row stops classifying
+    # as a DM. This migration moves the tag; nothing else about the row (or
+    # the window it belongs to) moves.
+    test "an inbound DM received under the old nick re-keys to the new nick",
+         %{user: user, network: net} do
+      {:ok, inb} =
+        Scrollback.persist_event(sample(user, net, 100, %{channel: "oldme", sender: "alice", dm_with: "alice"}))
+
+      assert {:ok, 1} = Scrollback.rename_own_nick({:user, user.id}, net.id, "oldme", "NewMe")
+
+      row = Repo.get!(Message, inb.id)
+      # `channel` is the window KEY column → stored FOLDED, exactly like
+      # `rename_dm_peer/4`'s channel update (#537). `dm_with` is the PEER
+      # (a display column) and has nothing to do with our rename.
+      assert row.channel == "newme"
+      assert row.dm_with == "alice"
+    end
+
+    # THE corruption guard, and the reason the predicate is not the bare
+    # `fold(channel) == fold(old)`: I was `alice`, I DM'd `carol`, `carol`
+    # vanished, I took the nick `carol`, and now I rename `carol -> dave`.
+    # The bare predicate would file my history with the REAL carol under
+    # `dave`. An OUTBOUND row is recognised by `channel == dm_with` — the
+    # nick in `channel` is the PEER's there, not mine.
+    test "does NOT touch an outbound DM to a peer that bears the old nick",
+         %{user: user, network: net} do
+      {:ok, out} =
+        Scrollback.persist_event(sample(user, net, 100, %{channel: "carol", sender: "alice", dm_with: "carol"}))
+
+      assert {:ok, 0} = Scrollback.rename_own_nick({:user, user.id}, net.id, "carol", "dave")
+
+      row = Repo.get!(Message, out.id)
+      assert row.channel == "carol"
+      assert row.dm_with == "carol"
+    end
+
+    # Same guard, orphan shape: a 401 NOTICE for a nick that happens to
+    # equal our old one is the SERVER talking about a peer, not a DM we
+    # received. `dm_with IS NULL` excludes it.
+    test "does NOT touch an orphan row (dm_with IS NULL) keyed at the old nick",
+         %{user: user, network: net} do
+      {:ok, orphan} =
+        Scrollback.persist_event(
+          sample(user, net, 200, %{
+            channel: "oldme",
+            sender: "server.azzurra.chat",
+            kind: :notice,
+            body: "No such nick/channel",
+            dm_with: nil
+          })
+        )
+
+      assert {:ok, 0} = Scrollback.rename_own_nick({:user, user.id}, net.id, "oldme", "newme")
+
+      assert Repo.get!(Message, orphan.id).channel == "oldme"
+    end
+
+    test "leaves channel rows alone", %{user: user, network: net} do
+      {:ok, chan} =
+        Scrollback.persist_event(sample(user, net, 100, %{channel: "#sniffo", sender: "alice", dm_with: nil}))
+
+      assert {:ok, 0} = Scrollback.rename_own_nick({:user, user.id}, net.id, "#sniffo", "newme")
+
+      assert Repo.get!(Message, chan.id).channel == "#sniffo"
+    end
+
+    test "ASCII-folded match: rows tagged 'oldme' migrate when matched via 'OldMe' (#525)",
+         %{user: user, network: net} do
+      {:ok, inb} =
+        Scrollback.persist_event(sample(user, net, 100, %{channel: "oldme", sender: "alice", dm_with: "alice"}))
+
+      assert {:ok, 1} = Scrollback.rename_own_nick({:user, user.id}, net.id, "OldMe", "newme")
+
+      assert Repo.get!(Message, inb.id).channel == "newme"
+    end
+
+    test "case-only fold (old == new) is a noop, returns {:ok, 0}", %{user: user, network: net} do
+      {:ok, inb} =
+        Scrollback.persist_event(sample(user, net, 100, %{channel: "Foo", sender: "alice", dm_with: "alice"}))
+
+      assert {:ok, 0} = Scrollback.rename_own_nick({:user, user.id}, net.id, "Foo", "FOO")
+
+      assert Repo.get!(Message, inb.id).channel == "foo"
+    end
+
+    test "isolated by subject and network", %{user: user, network: net} do
+      {:ok, other_net} = Networks.find_or_create_network(%{slug: "other-#{uniq()}"})
+      {:ok, alice} = Accounts.create_user(%{name: "alice-#{uniq()}", password: "correct horse battery"})
+
+      {:ok, other_net_row} =
+        Scrollback.persist_event(sample(user, other_net, 100, %{channel: "oldme", sender: "bob", dm_with: "bob"}))
+
+      {:ok, alice_row} =
+        Scrollback.persist_event(sample(alice, net, 100, %{channel: "oldme", sender: "bob", dm_with: "bob"}))
+
+      assert {:ok, 0} = Scrollback.rename_own_nick({:user, user.id}, net.id, "oldme", "newme")
+
+      assert Repo.get!(Message, other_net_row.id).channel == "oldme"
+      assert Repo.get!(Message, alice_row.id).channel == "oldme"
+    end
+
+    test "idempotent — returns {:ok, 0} on empty matches", %{user: user, network: net} do
+      assert {:ok, 0} = Scrollback.rename_own_nick({:user, user.id}, net.id, "ghost", "phantom")
+    end
+
+    # #514 REFUTATION PIN. The issue flagged the DM-window FETCH as
+    # "possibly also affected". It is not, and this test is what makes that
+    # a measurement rather than an opinion: `channel_or_dm_where/3` resolves
+    # a peer window through `where_dm_peer/2`, which matches
+    # `COALESCE(dm_with, channel)` — on an inbound row that is `dm_with`,
+    # the PEER, which a self-rename never touches. The history reads
+    # identically on BOTH sides of the migration. If someone ever re-keys
+    # the DM read off the own-nick tag, this breaks and tells them why.
+    test "the peer DM window reads the same rows BEFORE and AFTER the migration",
+         %{user: user, network: net} do
+      {:ok, inb} =
+        Scrollback.persist_event(sample(user, net, 100, %{channel: "oldme", sender: "alice", dm_with: "alice"}))
+
+      before_ids = user |> read_dm(net, "alice", "oldme") |> Enum.map(& &1.id)
+      assert before_ids == [inb.id]
+
+      assert {:ok, 1} = Scrollback.rename_own_nick({:user, user.id}, net.id, "oldme", "newme")
+
+      # Read with the LIVE (new) own_nick, as production would post-rename.
+      after_ids = user |> read_dm(net, "alice", "newme") |> Enum.map(& &1.id)
+      assert after_ids == before_ids
+    end
+
+    # The migrated tag must not leak the peer's DMs into the subject's OWN
+    # self-window: `channel_or_dm_where/3`'s own-nick branch narrows to
+    # `dm_with == own_nick` precisely so inbound peer DMs (now tagged with
+    # the new nick) stay out. Pinned here because the migration is what
+    # makes those rows tagged with the live nick in the first place.
+    test "migrated rows do not leak into the own-nick self window",
+         %{user: user, network: net} do
+      {:ok, _} =
+        Scrollback.persist_event(sample(user, net, 100, %{channel: "oldme", sender: "alice", dm_with: "alice"}))
+
+      assert {:ok, 1} = Scrollback.rename_own_nick({:user, user.id}, net.id, "oldme", "newme")
+
+      assert read_dm(user, net, "newme", "newme") == []
+    end
+  end
+
   describe "delete_for_channel/3 (UX-1)" do
     test "drops all rows for (subject, network, channel) — channel-shaped", %{
       user: user,

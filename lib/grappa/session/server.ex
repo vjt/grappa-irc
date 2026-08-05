@@ -5489,6 +5489,39 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, state)
   end
 
+  # #514: WE renamed. Deliberately NOT the peer arm above with the arguments
+  # swapped — our own nick is not a window key, so nothing moves: an inbound
+  # DM's window is `dm_with` (the peer) and its read cursor is keyed there
+  # too, both untouched by our rename. What goes stale is the own-nick TAG
+  # each inbound row carries in `channel`, which `Push.Triggers.dm?/2`
+  # compares to the LIVE nick (#498) when `Push.BadgeCount` folds the notify
+  # predicate back over history. One store, one UPDATE, and no
+  # `query_windows_list` broadcast — there is no window whose identity
+  # changed, so a barrier event would announce something that did not happen.
+  #
+  # `state` here is the POST-route state, so `state.nick` already reads the
+  # NEW nick. The arm never consults it — both nicks travel in the effect —
+  # which is why it cannot be bitten by which side of the rename it sees.
+  #
+  # Ordering against the per-channel `:persist` nick_change rows queued ahead
+  # of this effect is immaterial: those are `channel = #chan` / `$server`
+  # with `dm_with = nil`, and the migration predicate requires a non-nil
+  # `dm_with`, so they can never be swept up.
+  defp apply_effects([{:own_nick_renamed, old_nick, new_nick} | rest], state) do
+    {:ok, migrated} =
+      Scrollback.rename_own_nick(state.subject, state.network_id, old_nick, new_nick)
+
+    if migrated > 0 do
+      Logger.info("inbound DM rows re-keyed to our new nick",
+        old_nick: old_nick,
+        new_nick: new_nick,
+        rows_migrated: migrated
+      )
+    end
+
+    apply_effects(rest, state)
+  end
+
   # #349 — commit-on-+r for USER sessions, scoped to the REGISTER case. A
   # staged `pending_registration_secret` means this +r confirms a wizard-
   # driven REGISTER, so promote the credential (password + auth_method →

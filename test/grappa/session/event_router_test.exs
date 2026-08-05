@@ -1706,6 +1706,43 @@ defmodule Grappa.Session.EventRouterTest do
       refute Enum.any?(effects, &match?({:peer_nick_renamed, _, _}, &1))
     end
 
+    test "NICK-self emits {:own_nick_renamed} so inbound DM rows re-key (#514)" do
+      state = base_state(%{members: %{"#italia" => %{"vjt" => ["@"], "alice" => []}}})
+      m = msg(:nick, ["vjt_"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, _, effects} = EventRouter.route(m, state)
+      assert {:own_nick_renamed, "vjt", "vjt_"} in effects
+    end
+
+    # No `channels != []` gate, unlike the peer arm: a peer's NICK only ever
+    # reaches us through a shared channel, but OUR OWN rename is echoed
+    # regardless — and the rows it invalidates are DMs, which need no shared
+    # channel to exist. Gating on membership would strand exactly the
+    # channel-less DM-only session #514 is about.
+    test "NICK-self emits {:own_nick_renamed} with ZERO channels joined (#514)" do
+      state = base_state(%{members: %{}})
+      m = msg(:nick, ["vjt_"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, _, effects} = EventRouter.route(m, state)
+      assert {:own_nick_renamed, "vjt", "vjt_"} in effects
+    end
+
+    test "NICK-self that is a case-only change emits NO {:own_nick_renamed} (#514)" do
+      state = base_state(%{members: %{"#italia" => %{"vjt" => ["@"]}}})
+      m = msg(:nick, ["VJT"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, _, effects} = EventRouter.route(m, state)
+      refute Enum.any?(effects, &match?({:own_nick_renamed, _, _}, &1))
+    end
+
+    test "NICK-other does NOT emit {:own_nick_renamed} (#514)" do
+      state = base_state(%{members: %{"#italia" => %{"vjt" => [], "alice" => ["@"]}}})
+      m = msg(:nick, ["alice_"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, _, effects} = EventRouter.route(m, state)
+      refute Enum.any?(effects, &match?({:own_nick_renamed, _, _}, &1))
+    end
+
     test "NICK-self updates state.nick + fans out per channel PLUS a $server row (#61)" do
       state =
         base_state(%{
@@ -1724,14 +1761,18 @@ defmodule Grappa.Session.EventRouterTest do
       # #61: the per-channel rename line PLUS an always-visible $server
       # confirmation so the operator sees their own rename even from a
       # channel they're not currently looking at.
+      # A self-rename also emits {:own_nick_renamed} (#514), so narrow to the
+      # persist effects this test is about rather than mapping the whole list.
+      persists = Enum.filter(effects, &match?({:persist, :nick_change, _}, &1))
+
       channels =
-        effects
+        persists
         |> Enum.map(fn {:persist, :nick_change, a} -> a.channel end)
         |> Enum.sort()
 
       assert channels == Enum.sort(["#italia", "$server"])
 
-      Enum.each(effects, fn {:persist, :nick_change, attrs} ->
+      Enum.each(persists, fn {:persist, :nick_change, attrs} ->
         assert attrs.sender == "vjt"
         assert attrs.meta == %{new_nick: "vjt_"}
       end)
@@ -1744,7 +1785,10 @@ defmodule Grappa.Session.EventRouterTest do
       # The bug: a self-rename with no shared channels produced no effects
       # at all — no visible confirmation anywhere. It must surface on the
       # synthetic "$server" window, which always exists.
-      assert {:cont, new_state, [{:persist, :nick_change, attrs}]} =
+      # The $server row comes FIRST; {:own_nick_renamed} (#514) rides behind
+      # it — the list stays exact so a third effect appearing here is a
+      # deliberate decision, not a silent one.
+      assert {:cont, new_state, [{:persist, :nick_change, attrs}, {:own_nick_renamed, "vjt", "vjt_"}]} =
                EventRouter.route(m, state)
 
       assert new_state.nick == "vjt_"

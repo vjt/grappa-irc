@@ -221,6 +221,7 @@ defmodule Grappa.Session.EventRouter do
           | {:presence_error, :list_full, detail :: String.t()}
           | {:presence_command_unknown, :monitor | :watch}
           | {:peer_nick_renamed, old_nick :: String.t(), new_nick :: String.t()}
+          | {:own_nick_renamed, old_nick :: String.t(), new_nick :: String.t()}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -831,6 +832,29 @@ defmodule Grappa.Session.EventRouter do
         []
       end
 
+    # #514: OUR OWN rename is not the mirror image of a peer's. A peer nick
+    # is a WINDOW KEY, so the peer arm above moves three stores and then
+    # broadcasts the move. Our own nick keys nothing: an inbound DM's window
+    # is `dm_with` (the peer), which a self-rename never touches. What our
+    # nick DOES leave behind is a TAG — every inbound DM row is persisted at
+    # `channel = <own nick at receipt>`, and `Push.Triggers.dm?/2` reads that
+    # back against the LIVE nick (#498), so a stale tag drops those rows out
+    # of the notify set. Hence ONE store to re-key, no query window, no read
+    # cursor, and nothing to broadcast (no window changed identity).
+    #
+    # Genuine renames only (`old ≢ new` under the fold) — a case-only change
+    # reads back equal and needs no rewrite. And NO `channels != []` gate,
+    # unlike the peer arm: that gate encodes "IRC only delivers a peer's NICK
+    # through a shared channel", which says nothing about our own echo, and
+    # the rows at stake are DMs — a DM-only session with zero channels joined
+    # is precisely the case #514 was filed from.
+    own_rename_effects =
+      if nick_eq?(old_nick, state.nick) and not nick_eq?(old_nick, new_nick) do
+        [{:own_nick_renamed, old_nick, new_nick}]
+      else
+        []
+      end
+
     # #581 — mirror bahamut's SILENT +r-strip on our own genuine self-rename
     # (see strip_r_on_self_rename/4) so the per-session umode set stays truthful.
     {final_state, self_umode_effects} =
@@ -838,7 +862,8 @@ defmodule Grappa.Session.EventRouter do
 
     {:cont, final_state,
      persist_effects ++
-       self_server_effects ++ visitor_persist_effects ++ peer_rename_effects ++ self_umode_effects}
+       self_server_effects ++
+       visitor_persist_effects ++ peer_rename_effects ++ own_rename_effects ++ self_umode_effects}
   end
 
   # Unsolicited TOPIC: a channel operator changed the topic mid-session.

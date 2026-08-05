@@ -1292,6 +1292,105 @@ defmodule Grappa.Scrollback do
   end
 
   @doc """
+  #514 — re-keys the subject's OWN inbound DM rows from `old_nick` to
+  `new_nick` in `(subject, network_id)` after a SELF nick change.
+
+  An inbound DM is persisted at `channel = <own nick at receipt>,
+  dm_with = peer` (`dm_peer/4`). That `channel` value is NOT a window key
+  — the peer window resolves off `dm_with` via `where_dm_peer/2`, so the
+  history reads fine either way — it is a TAG recording who the subject
+  was when the row arrived, and `Push.Triggers.dm?/2` reads it back
+  against the LIVE own nick (#498). Leave it stale and every pre-rename
+  inbound DM stops classifying as a DM, falls into the channel branch of
+  `should_notify?/4`, and silently loses its badge / notify credit.
+
+  ## Why this is NOT `rename_dm_peer/4` with different arguments
+
+  The two UPDATEs would look alike; the GUARD is what differs, and the
+  difference is semantic, not cosmetic. `rename_dm_peer/4` counts through
+  `where_dm_peer/2` (`COALESCE(dm_with, channel)`), which on an inbound
+  row yields `dm_with` — the PEER — never our own nick. Called with a
+  self-rename it counts `0` and skips both UPDATEs: a silent no-op.
+
+  Nor can that guard simply be widened to cover both. The same column
+  holds two different roles and a nick can move between them over time:
+  once we vacate `old`, a peer may take it. A widened peer rename
+  `old -> new` would then also rewrite OUR inbound tag, and this
+  migration must conversely leave the peer's rows alone — hence the
+  narrow predicate below rather than a shared one.
+
+  ## The predicate, and the corruption it exists to prevent
+
+  Migrated rows are exactly `fold(channel) == fold(old)` AND
+  `dm_with IS NOT NULL` AND `fold(dm_with) != fold(old)` — "inbound,
+  received while we were `old`". The two extra conjuncts are load-bearing:
+
+    * an OUTBOUND DM carries `channel == dm_with == peer`, so a bare
+      `fold(channel) == fold(old)` would capture a conversation with a
+      peer who merely bears our old nick. Concretely: we were `alice`,
+      we DM'd `carol`, `carol` vanished, we took `carol`, we now rename
+      `carol -> dave` — the bare predicate files our history with the
+      REAL carol under `dave`.
+    * an ORPHAN row (`dm_with IS NULL`, e.g. a 401 NOTICE persisted at
+      `channel = peer`) is the server talking ABOUT a nick, not a DM we
+      received. `is_nil` is checked explicitly rather than left to SQL's
+      `lower(NULL) != x → NULL → filtered`, so the domain rule ("must be
+      a DM row") survives a future rewrite of the fold expression.
+
+  Channel rows need no exclusion: a sigil never folds to a bare nick.
+
+  Sets the FOLDED new nick — `channel` is a KEY column and
+  `Repo.update_all` bypasses the changeset fold
+  (`Message.canonicalize_channel/1`), so a raw value here would re-fork
+  the tag against every freshly-persisted row (same trap #537 fixed in
+  `rename_dm_peer/4`).
+
+  Returns `{:ok, count}` of re-keyed rows; `{:ok, 0}` on a case-only
+  change (`fold(old) == fold(new)` — the tag already reads back equal) or
+  an empty match.
+
+  Sole production caller: `Grappa.Session.Server.apply_effects/2` on the
+  `{:own_nick_renamed, old, new}` effect.
+
+  ## Deliberately out of scope
+
+  Two things a self-rename does NOT recover, both by nature rather than
+  omission:
+
+    * a mention of the old nick in a message BODY — prose, not a key;
+      rewriting it would falsify history.
+    * the own-nick SELF window (`/msg <ownnick>`, `channel == dm_with ==
+      own`), whose row shape is indistinguishable from an outbound DM to
+      a peer bearing our old nick without also folding `sender`. That is
+      a window-key migration (the peer-rename set: window row + cursor),
+      a different defect from this stale tag, and it is tracked apart.
+  """
+  @spec rename_own_nick(subject(), integer(), String.t(), String.t()) ::
+          {:ok, non_neg_integer()}
+  def rename_own_nick(subject, network_id, old_nick, new_nick)
+      when is_integer(network_id) and is_binary(old_nick) and is_binary(new_nick) do
+    folded_old = Identifier.canonical_target(old_nick)
+    folded_new = Identifier.canonical_target(new_nick)
+
+    if folded_old == folded_new do
+      {:ok, 0}
+    else
+      {count, _} =
+        Message
+        |> subject_where(subject)
+        |> where([m], m.network_id == ^network_id)
+        |> where(
+          [m],
+          Identifier.nick_fold(m.channel) == ^folded_old and not is_nil(m.dm_with) and
+            Identifier.nick_fold(m.dm_with) != ^folded_old
+        )
+        |> Repo.update_all(set: [channel: folded_new])
+
+      {:ok, count}
+    end
+  end
+
+  @doc """
   UX-1 (2026-05-17) — deletes all scrollback rows for a channel in a
   `(subject, network_id)` pair. Case-insensitive on the channel name
   (IRC channels are case-insensitive per RFC 1459 §2.2).
