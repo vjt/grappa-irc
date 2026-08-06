@@ -11,12 +11,27 @@ defmodule Grappa.Session.NumericRouter do
 
   Priority order (highest → lowest):
 
-  1. **Delegated**: away acks (305/306, #276), WHOIS (311–319),
-     WHO (352/315), NAMES (353/366), MOTD (375/372/376) — owned by
-     dedicated handlers in `EventRouter`. We return `:delegated`; the
-     caller skips the matrix. Delegation wins even over a matching label
-     (see `route/2` — `labels_pending` holds only away labels, so a
-     labeled away-ack must not resurrect the row #276 suppresses).
+  1. **Delegated**: numerics owned by dedicated handlers in
+     `EventRouter` (and, for a few terminal ones, `Session.Server`). We
+     return `:delegated`; the caller skips the matrix. Delegation wins
+     even over a matching label (see `route/2` — `labels_pending` holds
+     only away labels, so a labeled away-ack must not resurrect the row
+     #276 suppresses).
+
+     **The inventory is `@delegated_numerics` below, not this note
+     (#922).** An earlier revision named five families here — away acks,
+     WHOIS, WHO, NAMES, MOTD — reading as some twenty codes, against the
+     71 the attribute actually held. LUSERS, WHOWAS, LINKS, BANLIST,
+     INFO/VERSION, UMODEIS, INVITE-ack, channel-state, join-failure,
+     presence and BOTH WHOIS legs were all absent, and the "311–319"
+     range quietly swallowed 314 RPL_WHOWASUSER and 315 RPL_ENDOFWHO —
+     WHOWAS and WHO, not WHOIS. Under-describing the set is not merely
+     misleading: it invites the next reader to conclude a numeric is
+     unhandled and add a parallel path — the same alibi #910 found in
+     item 3 below, in this same moduledoc, about a family it named BY
+     NUMBER. So this note names no codes at all. The attribute's
+     per-family comment blocks are the authority; restating them is
+     precisely what drifted.
 
   2. **Label-based** (IRCv3 `labeled-response` cap): if the numeric carries
      a `label` message-tag AND the label is registered in `labels_pending`,

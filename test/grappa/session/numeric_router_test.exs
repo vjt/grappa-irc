@@ -379,6 +379,15 @@ defmodule Grappa.Session.NumericRouterTest do
   # Delegated numerics → :delegated
   # ---------------------------------------------------------------------------
 
+  # #922 — this mirror is EXHAUSTIVE, and that is load-bearing. It used to
+  # hold 44 of the router's 71 delegated codes, so the property below
+  # asserted delegation for barely three fifths of the set: UMODEIS,
+  # INVITE-ack, LUSERS, presence and the whole bahamut WHOIS-leg family
+  # could all have been dropped from production with every test still
+  # green. The same undercount #922 found in the moduledoc, one layer
+  # down — a mirror that mirrors PART of the thing is worse than none,
+  # because it reads as coverage. A code added to `@delegated_numerics`
+  # MUST be added here too.
   @delegated_numerics [
     # #276 — away acks. RPL_UNAWAY (305) / RPL_NOWAWAY (306) are owned by
     # EventRouter's away_confirmed handler (fires the typed away STATE
@@ -456,7 +465,46 @@ defmodule Grappa.Session.NumericRouterTest do
     # leaks the trailing set-timestamp as a bare `:notice` row — same
     # disease as 333.
     367,
-    368
+    368,
+    # ---- added by #922: the 27 codes this mirror had drifted away from ----
+    # #229 — 221 RPL_UMODEIS (EventRouter parses the umode string into
+    # the per-session set and emits {:umode_changed, modes}).
+    221,
+    # 341 RPL_INVITING — INVITE ack.
+    341,
+    # LUSERS bundle.
+    251,
+    252,
+    253,
+    254,
+    255,
+    265,
+    266,
+    # P-0a — the bahamut/Azzurra WHOIS legs EventRouter folds into
+    # whois_pending (275 SSL, 301 AWAY, 307 regnick, 308/309 admin,
+    # 310 helper, 316 chanop, 325 agent, 326 modes, 339 java,
+    # 378 actually).
+    275,
+    301,
+    307,
+    308,
+    309,
+    310,
+    316,
+    325,
+    326,
+    339,
+    378,
+    # #247 — /notify presence numerics (MONITOR 730/731, WATCH 600–605).
+    # The ERROR numerics 512/734 are NOT here: they stay on the deny list
+    # so their raw text persists on $server.
+    730,
+    731,
+    600,
+    601,
+    602,
+    604,
+    605
   ]
 
   describe "delegated numerics → :delegated" do
