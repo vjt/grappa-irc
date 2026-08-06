@@ -163,8 +163,12 @@ defmodule Grappa.Session.NumericRouterTest do
   # token (watched nick / rejected MONITOR target) that is metadata, not a
   # query destination. The EventRouter toast is transient; the raw numeric
   # must land on $server (durable "list full" record).
+  # #908 — TRACE reply family (200–210, 261–262) folded in: `params[1]` is
+  # the reply TYPE token ("Operator", "Server", "Class", …), the third
+  # instance of the #184 stats-letter disease.
   @active_numerics [4, 42, 263, 421, 432, 433, 437, 461, 512, 734] ++
-                     Enum.to_list(211..219) ++ Enum.to_list(240..250)
+                     Enum.to_list(211..219) ++ Enum.to_list(240..250) ++
+                     Enum.to_list(200..210) ++ [261, 262]
 
   describe "@active_numerics deny list → {:server, nil}" do
     property "all @active_numerics route to {:server, nil} regardless of params" do
@@ -264,6 +268,62 @@ defmodule Grappa.Session.NumericRouterTest do
 
     test "242 RPL_STATSUPTIME: trailing-only STATS reply stays on $server" do
       m = msg(242, ["vjt", "Server Up 12 days, 03:45:12"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    # #908 — TRACE reply family. `params[1]` is the reply TYPE token, never
+    # a destination: the third instance of the same disease as #184's stats
+    # letter and bucket I's connect-storm metadata. The params below are
+    # VERBATIM `meta.raw_params` from a single `/trace nightwish.azzurra.chat`
+    # against Azzurra/bahamut on 2026-08-05 — which minted three query
+    # windows named "Operator", "Server" and "Class".
+    test "204 RPL_TRACEOPERATOR: reply type is NOT a query destination (#908 headline)" do
+      m = msg(204, ["vjt", "Operator", "1", "vjt[~user@host]", "0"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "206 RPL_TRACESERVER: reply type wins over later dotted params" do
+      # Eight params, and the FIRST nick-shaped candidate is the type token
+      # — the later `raptor.azzurra.chat[...]` / `*!*@...` fields are already
+      # rejected by the `.`-exclusion and the `!`/`@` charset.
+      m =
+        msg(206, [
+          "vjt",
+          "Server",
+          "0",
+          "8S",
+          "172C",
+          "raptor.azzurra.chat[unknown@0::0]",
+          "*!*@nightwish.azzurra.chat",
+          "94086917687820"
+        ])
+
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "209 RPL_TRACECLASS: reply type is NOT a query destination" do
+      # No trailing param in bahamut's format, so the persisted body is the
+      # bare class size ("2"). Display is #424/#569's problem; routing is ours.
+      m = msg(209, ["vjt", "Class", "0", "2"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "261 RPL_TRACELOG: the 'File' type token is NOT a query destination" do
+      m = msg(261, ["vjt", "File", "/var/log/ircd.log", "3"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "200 RPL_TRACELINK: the 'Link' type token is NOT a query destination" do
+      m = msg(200, ["vjt", "Link", "bahamut-2.2.1", "nightwish.azzurra.chat"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    # 262 already reached $server before #908, but only by the accident of a
+    # DOTTED server name hitting `query_candidate?/2`'s `.`-exclusion. Pin the
+    # dotless spelling too: the family is server-directed as a whole, so the
+    # decision must not depend on how the traced server happens to be named.
+    test "262 RPL_ENDOFTRACE: stays on $server even for a DOTLESS server name" do
+      m = msg(262, ["vjt", "services", "End of TRACE"])
       assert {:server, nil} = NumericRouter.route(m, state())
     end
   end

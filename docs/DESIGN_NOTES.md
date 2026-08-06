@@ -30464,3 +30464,48 @@ the drain lock: a ComposeBox-local flag dies on unmount (home / mentions /
 $list, the desktop↔mobile swap) and follows the operator to the wrong
 composer. The #241 send spinner is keyed on it too now, so it stops lying
 after a window switch.
+
+## 2026-08-06 — #908: TRACE is a report family, and the deny list is a patch on the wrong question
+
+`/trace nightwish.azzurra.chat` against Azzurra opened three query windows
+named `Operator`, `Server` and `Class`. `NumericRouter.scan_params/2` walks a
+numeric's middle params and takes the first nick-shaped, dotless, non-own
+token as a destination; every TRACE reply puts its **reply TYPE** in
+`params[1]` (`Link`, `Attempt`, `Operator`, `Server`, `Class`, `File`, …), so
+the scan routed the reply KIND. 200–210 + 261–262 join `@active_numerics`.
+
+**262 is covered even though it already worked.** Its `params[1]` is the
+traced server's name and `query_candidate?/2` excludes tokens containing a
+`.` — so the correct outcome rested on that server happening to be spelled
+with a dot. A family-wide rule cannot depend on a naming accident; the
+dotless spelling is pinned by test. 207/210 are `NULL` in bahamut and fix
+nothing today, but every reading of those slots (RPL_TRACESERVICE,
+RPL_TRACERECONNECT, ircu's RPL_STATSHELP) is server-directed, so the
+contiguous range costs nothing and leaves no hole for a network that emits
+them.
+
+**The moduledoc was lying about the failure mode, and that was the real
+finding.** It claimed the scan is a safe default — "at worst a row lands on
+`$server` instead of a more specific window". True of the channel branch;
+false of the query branch, whose failure mode is a row landing in the wrong
+CONVERSATION, and — before #640's `resolve_numeric_query_window/2` — MINTING
+a ghost window that then leaked into Archive via `list_archive`'s
+`COALESCE(dm_with, channel)`. #640 is a backstop, not a correct decision: a
+`/trace` issued while a query window named `Operator` is open still misroutes
+today.
+
+**Why a third patch instead of the root-cause fix.** The scan asks a
+syntactic question ("could this token be a nick?") of a semantic slot.
+Whether `params[1]` is a destination is a per-numeric FACT with no syntactic
+discriminant — a target for the error class, a channel for the channel class,
+DATA for every report class. So the table can only be keyed by the CODE,
+which both lists already are: a deny list and an allow list differ ONLY in
+which side the unknown falls on, and today the unknown falls on the guessing
+side. Three families have now been patched in (#184 STATS, UX-4 bucket I
+connect-storm, #908 TRACE) and the deny list stands at 43 codes against the
+two or three the query branch genuinely serves (401, plus the legacy 2-param
+shape). That ratio is the argument for inverting the default. Not done here:
+it changes behaviour for every numeric in neither list, and #221's WHOIS-leg
+guard is defined as "a `:scan`-class numeric" and would have to be re-sited
+first. Deny-list entries stay the right size of cut for one reported family;
+they are not a substitute for the inversion.

@@ -23,13 +23,15 @@ defmodule Grappa.Session.NumericRouter do
      the recorded `origin_window` wins over the param scan and active-deny —
      perfect-correlation path (but NOT over delegation, per #276 above).
 
-  3. **Active deny list** (`@active_numerics`): a small set of numerics
-     whose params look nick-shaped but the "nick" is not a routing
-     destination — it's the rejected nick (433/432), the unknown command
-     name (421), the offending command's argument list (461), or an
-     ack (437). These ALWAYS go to `{:server, nil}`. Without this
-     deny list, the param-scan below would happily route 433's
-     "BLEH-as-nick" to a query window.
+  3. **Active deny list** (`@active_numerics`): numerics whose params look
+     nick-shaped but the "nick" is not a routing destination — it's the
+     rejected nick (433/432), the unknown command name (421), the
+     offending command's argument list (461), an ack (437), or a whole
+     server-directed REPORT family whose middles are data and type labels
+     (`@stats_numerics` #184, `@trace_numerics` #908, the connect-storm
+     tokens). These ALWAYS go to `{:server, nil}`. Without this deny
+     list, the param-scan below would happily route 433's "BLEH-as-nick"
+     to a query window.
 
   4. **Param scan** (the general case): walk `params`, skipping
      `params[0]` (own-nick echo) and the last element (trailing
@@ -45,8 +47,33 @@ defmodule Grappa.Session.NumericRouter do
   * The deny list is closed-set on purpose — adding a numeric to it is a
     deliberate "this looks routable but isn't" call. Unknown numerics fall
     through the param scan; if they have a channel-shaped param they go
-    there, otherwise `$server`. This is the safe default — at worst a row
-    lands on `$server` instead of a more specific window. No silent loss.
+    there, otherwise `$server`. Nothing is ever lost: every decision ends
+    at a real window.
+
+  * **The default is inverted, and this module knows it (#908).** An
+    earlier revision of this note claimed the scan's failure mode was
+    benign — "at worst a row lands on `$server` instead of a more specific
+    window". That is true of the channel branch and FALSE of the query
+    branch, whose failure mode is a row landing in the wrong CONVERSATION
+    (and, before #640's `resolve_numeric_query_window/2`, MINTING a ghost
+    window for it). The scan asks a syntactic question — "could this token
+    be a nick?" — of a semantic slot; whether `params[1]` is a destination
+    is a per-numeric FACT with no syntactic discriminant (a target for the
+    error class, a channel for the channel class, DATA for every report
+    class). So the routing table can only be keyed by the CODE, which is
+    what both lists already do — the deny list and an allow list differ
+    only in which side the UNKNOWN falls on, and we currently put it on
+    the guessing side. Three families have now been patched in
+    (#184 STATS, UX-4 bucket I connect-storm, #908 TRACE) and the deny
+    list stands at 43 codes against the two or three the scan's query
+    branch genuinely serves (401 and the legacy 2-param shape) — that
+    ratio IS the argument. The root-cause fix is to invert: enumerate the
+    target-bearing numerics and default the rest to `$server`. It is not
+    done here because it changes behaviour for every numeric in neither
+    list, and because #221's WHOIS-leg guard is defined as "a `:scan`-class
+    numeric" and would have to be re-sited first. Deny-list entries remain
+    the right size of cut for a single reported family; they are not a
+    substitute for that change.
   * `last_command_window` resolution is gone from this module. It survives
     in `Server.ex` only for labeled-response correlation bookkeeping.
     Pre-CP13 the router used it as the `:active` fallback target, but the
@@ -143,6 +170,36 @@ defmodule Grappa.Session.NumericRouter do
   # here if a bound network emits them.
   @stats_numerics Enum.to_list(211..219) ++ Enum.to_list(240..250)
 
+  # #908 — TRACE reply family (200–210, 261–262). The THIRD instance of the
+  # @stats_numerics disease (#184's stats letter; UX-4 bucket I's
+  # connect-storm metadata): a middle param that is a TYPE LABEL, whose
+  # syntax happens to satisfy `Identifier.valid_nick?/1`. For TRACE the
+  # label sits in `params[1]` on every member of the family — "Link",
+  # "Attempt", "Handshaking", "????", "Operator", "User", "Server",
+  # "<newtype>", "Class", "File" — so the param scan takes the reply KIND
+  # for a destination. Measured against Azzurra/bahamut on 2026-08-05: one
+  # `/trace <server>` opened three query windows named "Operator", "Server"
+  # and "Class". TRACE is server-directed by definition; the whole family
+  # belongs on `$server`.
+  #
+  # 262 RPL_ENDOFTRACE is covered even though `query_candidate?/2`'s
+  # `.`-exclusion already saves the observed reply: there the token is the
+  # traced SERVER's name, and the save depends on that name carrying a dot.
+  # A family-wide rule must not rest on how a server happens to be spelled.
+  #
+  # 207 and 210 are NULL in bahamut's table, so nothing is being fixed
+  # there today; they are covered because every reading of those slots is
+  # still server-directed (RFC 2812 RPL_TRACESERVICE / RPL_TRACERECONNECT;
+  # ircu reuses 210 as RPL_STATSHELP). A contiguous range costs nothing and
+  # leaves no hole for a bound network that does emit them.
+  #
+  # NB these bahamut replies carry NO trailing param, so
+  # `List.last(msg.params)` picks a data field and the persisted body is a
+  # bare "0" / "31" / "94086917687820". That is a DISPLAY concern, already
+  # covered by #424's `meta.raw_params` (rendered by #569) — the routing
+  # fix here neither causes nor repairs it.
+  @trace_numerics Enum.to_list(200..210) ++ [261, 262]
+
   # #785 — the RFC error range (4xx command failures, 5xx server errors).
   # Distinct from `severity/1`'s `>= 400` cut, which also lands the 6xx
   # vendor replies on `:error`; absorption keys off the RANGE instead, so a
@@ -158,6 +215,7 @@ defmodule Grappa.Session.NumericRouter do
   # ack. Always go to `{:server, nil}`. Closed set; expand deliberately.
   @active_numerics MapSet.new(
                      @stats_numerics ++
+                       @trace_numerics ++
                        [
                          # UX-4 bucket I (2026-05-19): connect-storm numerics
                          # whose middle params are server metadata (own ID,
