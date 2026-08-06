@@ -37,6 +37,183 @@ defmodule Grappa.Session.NumericRouterTest do
   end
 
   # ---------------------------------------------------------------------------
+  # Mirrors of NumericRouter's two class tables.
+  #
+  # Hoisted above every describe (#911) because a THIRD hand-maintained copy
+  # of these sets had grown below — the channel-prefix property's "codes that
+  # short-circuit before the param scan" exclusion — and it drifted the way
+  # the other two did. It is derived from these now. Module attributes read
+  # in SOURCE ORDER, so the definitions have to come first for that to work.
+  # ---------------------------------------------------------------------------
+
+  # Mirror of NumericRouter's @active_numerics. #184 folded the STATS
+  # reply family (211–219 RPL_STATS* + RPL_ENDOFSTATS, 240–250) in — the
+  # stats letter (`/stats o` → 219 `[nick, "o", "End of /STATS report"]`)
+  # is a nick-shaped metadata token, NOT a query destination.
+  # #276 — 305/306 moved OUT of the active deny list into
+  # @delegated_numerics: RPL_UNAWAY / RPL_NOWAWAY are pure away-state
+  # acks owned by EventRouter's away_confirmed handler and must NEVER
+  # persist a scrollback row (the away STATE is the signal, the numeric
+  # is noise). See the delegated-numerics section below.
+  # #247 — 512/734 presence-watch list-full errors folded in: nick-shaped
+  # token (watched nick / rejected MONITOR target) that is metadata, not a
+  # query destination. The EventRouter toast is transient; the raw numeric
+  # must land on $server (durable "list full" record).
+  # #908 — TRACE reply family (200–210, 261–262) folded in: `params[1]` is
+  # the reply TYPE token ("Operator", "Server", "Class", …), the third
+  # instance of the #184 stats-letter disease.
+  # #910 — LIST reply family (321–323) folded in: 321's `params[1]` is the
+  # literal column header "Channel" and 322's is the LISTED channel, neither
+  # of which is a destination for the reply. This property is what pins the
+  # MEMBERSHIP of all three; the real-wire-shape tests below document what
+  # each one actually routed to pre-fix.
+  # #911 — the audit families. STATS grew to the contiguous 211–250 (less
+  # 221 RPL_UMODEIS, which is delegated), and ADMIN (256–259), HELP
+  # (704–706), SASL (900–908) and the MONITOR list pair (732/733) joined,
+  # alongside 410 ERR_INVALIDCAPCMD and 472 ERR_UNKNOWNMODE. Each was read
+  # out of a bound ircd's numeric FORMAT TABLE — azzurra/bahamut @ 3b6ccff
+  # `src/s_err.c` and solanum @ 115b1e2 `include/messages.h` — not out of
+  # an RFC. The per-family tests below carry the measured wire shape and
+  # the emitting file:line; this property pins the MEMBERSHIP.
+  @active_numerics [4, 42, 263, 410, 421, 432, 433, 437, 461, 472, 512, 734] ++
+                     (Enum.to_list(211..250) -- [221]) ++
+                     Enum.to_list(200..210) ++
+                     [261, 262] ++
+                     Enum.to_list(321..323) ++
+                     Enum.to_list(256..259) ++
+                     Enum.to_list(704..706) ++
+                     Enum.to_list(900..908) ++
+                     [732, 733]
+
+  # #922 — this mirror is EXHAUSTIVE, and that is load-bearing. It used to
+  # hold 44 of the router's 71 delegated codes, so the property below
+  # asserted delegation for barely three fifths of the set: UMODEIS,
+  # INVITE-ack, LUSERS, presence and the whole bahamut WHOIS-leg family
+  # could all have been dropped from production with every test still
+  # green. The same undercount #922 found in the moduledoc, one layer
+  # down — a mirror that mirrors PART of the thing is worse than none,
+  # because it reads as coverage. A code added to `@delegated_numerics`
+  # MUST be added here too.
+  @delegated_numerics [
+    # #276 — away acks. RPL_UNAWAY (305) / RPL_NOWAWAY (306) are owned by
+    # EventRouter's away_confirmed handler (fires the typed away STATE
+    # effect); the numeric itself is content-free noise that must NEVER
+    # persist as a scrollback row. Delegated so Server.handle_info routes
+    # them via `delegate/2` (EventRouter only, no notice persist).
+    305,
+    306,
+    # WHOIS / WHO / NAMES / MOTD (pre-CP15)
+    311,
+    312,
+    313,
+    317,
+    318,
+    319,
+    352,
+    315,
+    353,
+    366,
+    # No-silent-drops B6.1 HIGH-3 (2026-05-14): LIST (321/322/323)
+    # REMOVED from @delegated_numerics (no EventRouter handler; the cic
+    # directory UI consumes the REST snapshot). #238 — LINKS (364/365)
+    # took the OTHER branch: a dedicated EventRouter clause now folds them
+    # into a :links_bundle, so they ARE delegated (added below).
+    364,
+    365,
+    375,
+    372,
+    376,
+    # #127 — MOTD 422 ERR_NOMOTD + INFO (371/374) + VERSION (351) delegated
+    # so the EventRouter #127 clauses own them (drain a server_reply modal
+    # when the matching command primed the session; $server persist when not).
+    # #374 — 402 ERR_NOSUCHSERVER joins the MOTD family: the terminator for
+    # `/motd <target>` to an unknown server, drained by the same clause.
+    422,
+    402,
+    371,
+    374,
+    351,
+    # CP15 B2 — JOIN failure numerics (EventRouter handles them now)
+    471,
+    473,
+    474,
+    475,
+    403,
+    405,
+    # Channel-state numerics (EventRouter caches into state.topics /
+    # state.channel_modes / state.channels_created — must be delegated
+    # so Server.handle_info doesn't double-persist them as `:notice`
+    # rows with body=trailing-param (which for 333 leaks the unix_ts
+    # as user-visible noise).
+    324,
+    329,
+    331,
+    332,
+    333,
+    # P-0c — WHOWAS bundle (314, 369, 406). 312 already in the WHOIS
+    # leg above; the EventRouter conflict-gates between whois_pending
+    # and whowas_pending so 312 still routes correctly.
+    314,
+    369,
+    406,
+    # #221 — solanum (Libera.Chat) WHOIS-leg numerics. EventRouter folds
+    # them into the whois_pending accumulator (typed 330/338/671/276,
+    # free-form 320, bot 335). Source: solanum include/numeric.h @ a4998b5.
+    276,
+    320,
+    330,
+    335,
+    338,
+    671,
+    # #376 — BANLIST bundle (367 RPL_BANLIST, 368 RPL_ENDOFBANLIST).
+    # EventRouter accumulates {mask, setter, set_ts} per 367 and emits
+    # :banlist_bundle on 368. Without delegation the param-derived scan
+    # leaks the trailing set-timestamp as a bare `:notice` row — same
+    # disease as 333.
+    367,
+    368,
+    # ---- added by #922: the 27 codes this mirror had drifted away from ----
+    # #229 — 221 RPL_UMODEIS (EventRouter parses the umode string into
+    # the per-session set and emits {:umode_changed, modes}).
+    221,
+    # 341 RPL_INVITING — INVITE ack.
+    341,
+    # LUSERS bundle.
+    251,
+    252,
+    253,
+    254,
+    255,
+    265,
+    266,
+    # P-0a — the bahamut/Azzurra WHOIS legs EventRouter folds into
+    # whois_pending (275 SSL, 301 AWAY, 307 regnick, 308/309 admin,
+    # 310 helper, 316 chanop, 325 agent, 326 modes, 339 java,
+    # 378 actually).
+    275,
+    301,
+    307,
+    308,
+    309,
+    310,
+    316,
+    325,
+    326,
+    339,
+    378,
+    # #247 — /notify presence numerics (MONITOR 730/731, WATCH 600–605).
+    # The ERROR numerics 512/734 are NOT here: they stay on the deny list
+    # so their raw text persists on $server.
+    730,
+    731,
+    600,
+    601,
+    602,
+    604,
+    605
+  ]
+
+  # ---------------------------------------------------------------------------
   # Param scan: channel-prefix wins
   # ---------------------------------------------------------------------------
 
@@ -80,35 +257,22 @@ defmodule Grappa.Session.NumericRouterTest do
     property "any channel-prefix in any candidate position wins over later params" do
       check all(
               numeric <- integer(400..499),
-              # Pre-CP13 active/deny + CP15 B2 join-failure delegated codes
-              # + channel-state numerics (324/329/331/332/333 delegated post
-              # cluster `channel-created-notice`) + P-0c WHOWAS not-found
-              # (406 delegated post numeric-delegation-p0) + #127 MOTD
-              # 422 ERR_NOMOTD + #374 402 ERR_NOSUCHSERVER (both delegated to
-              # the server-reply modal clause) short-circuit before the param
-              # scan; exclude all classes so the property exercises the
-              # channel-prefix fallthrough only.
-              numeric not in [
-                421,
-                432,
-                433,
-                437,
-                461,
-                471,
-                473,
-                474,
-                475,
-                403,
-                405,
-                324,
-                329,
-                331,
-                332,
-                333,
-                406,
-                422,
-                402
-              ],
+              # Deny-listed and delegated codes short-circuit ahead of the
+              # param scan, so they are excluded and the property exercises
+              # the channel-prefix fallthrough only.
+              #
+              # #911 — DERIVED, not restated. This used to be a hand-written
+              # list of the nineteen 4xx codes that were short-circuiting at
+              # the time, and it was the third hand-maintained mirror of the
+              # class tables in this file. It went red the moment #911 added
+              # 410 and 472 — correctly red, and for a reason that had
+              # nothing to do with the channel branch this property is about.
+              # A list that has to be edited whenever an unrelated set grows
+              # is not a precondition, it is a liability: the failure it
+              # produces points at the wrong code. It reads the mirrors now,
+              # so it cannot drift out of step with them again.
+              numeric not in @active_numerics,
+              numeric not in @delegated_numerics,
               chan_body <- string(:alphanumeric, min_length: 1, max_length: 20)
             ) do
         chan = "#" <> chan_body
@@ -150,44 +314,6 @@ defmodule Grappa.Session.NumericRouterTest do
   # Active deny list: nick-shaped tokens that are NOT destinations
   # ---------------------------------------------------------------------------
 
-  # Mirror of NumericRouter's @active_numerics. #184 folded the STATS
-  # reply family (211–219 RPL_STATS* + RPL_ENDOFSTATS, 240–250) in — the
-  # stats letter (`/stats o` → 219 `[nick, "o", "End of /STATS report"]`)
-  # is a nick-shaped metadata token, NOT a query destination.
-  # #276 — 305/306 moved OUT of the active deny list into
-  # @delegated_numerics: RPL_UNAWAY / RPL_NOWAWAY are pure away-state
-  # acks owned by EventRouter's away_confirmed handler and must NEVER
-  # persist a scrollback row (the away STATE is the signal, the numeric
-  # is noise). See the delegated-numerics section below.
-  # #247 — 512/734 presence-watch list-full errors folded in: nick-shaped
-  # token (watched nick / rejected MONITOR target) that is metadata, not a
-  # query destination. The EventRouter toast is transient; the raw numeric
-  # must land on $server (durable "list full" record).
-  # #908 — TRACE reply family (200–210, 261–262) folded in: `params[1]` is
-  # the reply TYPE token ("Operator", "Server", "Class", …), the third
-  # instance of the #184 stats-letter disease.
-  # #910 — LIST reply family (321–323) folded in: 321's `params[1]` is the
-  # literal column header "Channel" and 322's is the LISTED channel, neither
-  # of which is a destination for the reply. This property is what pins the
-  # MEMBERSHIP of all three; the real-wire-shape tests below document what
-  # each one actually routed to pre-fix.
-  # #911 — the audit families. STATS grew to the contiguous 211–250 (less
-  # 221 RPL_UMODEIS, which is delegated), and ADMIN (256–259), HELP
-  # (704–706), SASL (900–908) and the MONITOR list pair (732/733) joined,
-  # alongside 410 ERR_INVALIDCAPCMD and 472 ERR_UNKNOWNMODE. Each was read
-  # out of a bound ircd's numeric FORMAT TABLE — azzurra/bahamut @ 3b6ccff
-  # `src/s_err.c` and solanum @ 115b1e2 `include/messages.h` — not out of
-  # an RFC. The per-family tests below carry the measured wire shape and
-  # the emitting file:line; this property pins the MEMBERSHIP.
-  @active_numerics [4, 42, 263, 410, 421, 432, 433, 437, 461, 472, 512, 734] ++
-                     (Enum.to_list(211..250) -- [221]) ++
-                     Enum.to_list(200..210) ++
-                     [261, 262] ++
-                     Enum.to_list(321..323) ++
-                     Enum.to_list(256..259) ++
-                     Enum.to_list(704..706) ++
-                     Enum.to_list(900..908) ++
-                     [732, 733]
 
   describe "@active_numerics deny list → {:server, nil}" do
     property "all @active_numerics route to {:server, nil} regardless of params" do
@@ -512,133 +638,6 @@ defmodule Grappa.Session.NumericRouterTest do
   # Delegated numerics → :delegated
   # ---------------------------------------------------------------------------
 
-  # #922 — this mirror is EXHAUSTIVE, and that is load-bearing. It used to
-  # hold 44 of the router's 71 delegated codes, so the property below
-  # asserted delegation for barely three fifths of the set: UMODEIS,
-  # INVITE-ack, LUSERS, presence and the whole bahamut WHOIS-leg family
-  # could all have been dropped from production with every test still
-  # green. The same undercount #922 found in the moduledoc, one layer
-  # down — a mirror that mirrors PART of the thing is worse than none,
-  # because it reads as coverage. A code added to `@delegated_numerics`
-  # MUST be added here too.
-  @delegated_numerics [
-    # #276 — away acks. RPL_UNAWAY (305) / RPL_NOWAWAY (306) are owned by
-    # EventRouter's away_confirmed handler (fires the typed away STATE
-    # effect); the numeric itself is content-free noise that must NEVER
-    # persist as a scrollback row. Delegated so Server.handle_info routes
-    # them via `delegate/2` (EventRouter only, no notice persist).
-    305,
-    306,
-    # WHOIS / WHO / NAMES / MOTD (pre-CP15)
-    311,
-    312,
-    313,
-    317,
-    318,
-    319,
-    352,
-    315,
-    353,
-    366,
-    # No-silent-drops B6.1 HIGH-3 (2026-05-14): LIST (321/322/323)
-    # REMOVED from @delegated_numerics (no EventRouter handler; the cic
-    # directory UI consumes the REST snapshot). #238 — LINKS (364/365)
-    # took the OTHER branch: a dedicated EventRouter clause now folds them
-    # into a :links_bundle, so they ARE delegated (added below).
-    364,
-    365,
-    375,
-    372,
-    376,
-    # #127 — MOTD 422 ERR_NOMOTD + INFO (371/374) + VERSION (351) delegated
-    # so the EventRouter #127 clauses own them (drain a server_reply modal
-    # when the matching command primed the session; $server persist when not).
-    # #374 — 402 ERR_NOSUCHSERVER joins the MOTD family: the terminator for
-    # `/motd <target>` to an unknown server, drained by the same clause.
-    422,
-    402,
-    371,
-    374,
-    351,
-    # CP15 B2 — JOIN failure numerics (EventRouter handles them now)
-    471,
-    473,
-    474,
-    475,
-    403,
-    405,
-    # Channel-state numerics (EventRouter caches into state.topics /
-    # state.channel_modes / state.channels_created — must be delegated
-    # so Server.handle_info doesn't double-persist them as `:notice`
-    # rows with body=trailing-param (which for 333 leaks the unix_ts
-    # as user-visible noise).
-    324,
-    329,
-    331,
-    332,
-    333,
-    # P-0c — WHOWAS bundle (314, 369, 406). 312 already in the WHOIS
-    # leg above; the EventRouter conflict-gates between whois_pending
-    # and whowas_pending so 312 still routes correctly.
-    314,
-    369,
-    406,
-    # #221 — solanum (Libera.Chat) WHOIS-leg numerics. EventRouter folds
-    # them into the whois_pending accumulator (typed 330/338/671/276,
-    # free-form 320, bot 335). Source: solanum include/numeric.h @ a4998b5.
-    276,
-    320,
-    330,
-    335,
-    338,
-    671,
-    # #376 — BANLIST bundle (367 RPL_BANLIST, 368 RPL_ENDOFBANLIST).
-    # EventRouter accumulates {mask, setter, set_ts} per 367 and emits
-    # :banlist_bundle on 368. Without delegation the param-derived scan
-    # leaks the trailing set-timestamp as a bare `:notice` row — same
-    # disease as 333.
-    367,
-    368,
-    # ---- added by #922: the 27 codes this mirror had drifted away from ----
-    # #229 — 221 RPL_UMODEIS (EventRouter parses the umode string into
-    # the per-session set and emits {:umode_changed, modes}).
-    221,
-    # 341 RPL_INVITING — INVITE ack.
-    341,
-    # LUSERS bundle.
-    251,
-    252,
-    253,
-    254,
-    255,
-    265,
-    266,
-    # P-0a — the bahamut/Azzurra WHOIS legs EventRouter folds into
-    # whois_pending (275 SSL, 301 AWAY, 307 regnick, 308/309 admin,
-    # 310 helper, 316 chanop, 325 agent, 326 modes, 339 java,
-    # 378 actually).
-    275,
-    301,
-    307,
-    308,
-    309,
-    310,
-    316,
-    325,
-    326,
-    339,
-    378,
-    # #247 — /notify presence numerics (MONITOR 730/731, WATCH 600–605).
-    # The ERROR numerics 512/734 are NOT here: they stay on the deny list
-    # so their raw text persists on $server.
-    730,
-    731,
-    600,
-    601,
-    602,
-    604,
-    605
-  ]
 
   describe "delegated numerics → :delegated" do
     property "all delegated numerics return :delegated" do
