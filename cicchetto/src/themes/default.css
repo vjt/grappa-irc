@@ -1913,8 +1913,12 @@ html.resize-dragging * {
   touch-action: pan-y;
 }
 
-/* #913 — descendant gesture carve-out, mirroring `.members-pane *` (UX-6
-   bucket A v2) and the same pair on `.settings-drawer` / `.archive-modal`.
+/* #913 — descendant gesture carve-out. Scroller-level `pan-y` is the common
+   case here (`.settings-drawer`, `.archive-modal`, `.image-upload-modal`,
+   `.home-pane` … all carry it, most with a comment about the same trap), but
+   the DESCENDANT form has exactly ONE precedent: `.members-pane *`, added by
+   UX-6 bucket A v2 (2026-05-20) precisely because the scroller-only version
+   had shipped and did not work.
    touch-action does NOT inherit, so the action rows sit at the default `auto`
    while their ancestors are under the `touch-action: none` blanket
    (`.shell-mobile`, plus `html.overlay-open #root > div` — this menu holds the

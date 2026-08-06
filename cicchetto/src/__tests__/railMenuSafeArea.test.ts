@@ -61,14 +61,14 @@ describe("#913 rail actions menu safe-area cap", () => {
   it(".rail-actions-menu carries the overlay-scroller touch-action carve-out", () => {
     // The menu is an overlay scroller living inside the `touch-action: none`
     // blanket (`.shell-mobile`, and `html.overlay-open #root > div` while the
-    // rail lock is held). Every sibling scroller in this stylesheet —
-    // `.members-pane`, `.settings-drawer`, `.archive-modal` — re-asserts
-    // `pan-y` on the scroller AND on its descendants, because touch-action does
-    // not inherit and iOS elects the gesture consumer from the hit-test
-    // target's own value (UX-6 bucket A v2). The action rows ARE the hit-test
-    // targets here. Without the carve-out, shrinking the cap makes the menu
-    // overflow but the pan can still be refused — the same symptom, a second
-    // cause.
+    // rail lock is held). Scroller-level `pan-y` is what every sibling scroller
+    // carries (`.settings-drawer`, `.archive-modal`, `.home-pane` …); the
+    // DESCENDANT half has one precedent, `.members-pane *`, added by UX-6
+    // bucket A v2 after the scroller-only form had shipped and did not work —
+    // touch-action does not inherit, and iOS elects the gesture consumer from
+    // the hit-test target's own value. The action rows ARE the hit-test targets
+    // here. Without the carve-out, shrinking the cap makes the menu overflow
+    // but the pan can still be refused — the same symptom, a second cause.
     expect(ruleBody(".rail-actions-menu")).toMatch(/touch-action:\s*pan-y/);
     expect(themeCss).toMatch(/\.rail-actions-menu \*\s*\{[^}]*touch-action:\s*pan-y/);
   });

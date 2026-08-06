@@ -30552,12 +30552,17 @@ engine, handing back the uncapped #588 overflow.
 inset, straightforwardly. The no-scroll half is a CONSEQUENCE in the reported
 configuration — a cap one inset too generous means the rows fit, so
 `overflow-y: auto` never engages — but it has a second, independent blocker:
-`.rail-actions-menu` carried no `touch-action` carve-out. Every sibling overlay
-scroller in the stylesheet (`.members-pane`, `.settings-drawer`,
-`.archive-modal`) re-asserts `pan-y` on the scroller AND its descendants, each
-with a comment about the same trap, because touch-action does not inherit and
-iOS elects the gesture consumer from the hit-test target's own value (UX-6
-bucket A v2). The menu holds the overlay lock while open, so it sits under the
+`.rail-actions-menu` carried no `touch-action` carve-out. Scroller-level
+`pan-y` is near-universal in that stylesheet — `.settings-drawer`,
+`.archive-modal`, `.image-upload-modal`, `.admin-pane`, `.who-modal-body`,
+`.home-pane` all carry it, five of them under a comment naming the same trap.
+The DESCENDANT form has exactly ONE precedent, `.members-pane *`, and that is
+the instructive one: UX-6 bucket A v2 added it *after* the scroller-only
+version had shipped and failed, because touch-action does not inherit and iOS
+elects the gesture consumer from the hit-test target's own value. (An earlier
+draft of this entry claimed three surfaces carried the descendant form; that
+was wrong — grep says one.) The menu holds the overlay lock while open, so it
+sits under the
 `touch-action: none` blanket, and its action rows are the hit-test target
 across most of its area. Capping correctly makes it overflow; the carve-out
 makes the overflow pannable. Added here for that reason — pattern-derived, NOT
