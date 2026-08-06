@@ -30679,3 +30679,58 @@ The banner is derived straight off the same map, so it restores the barrier
 in kind; `BannerSlot` exposes `data-banner-id` (the per-entry identity), which
 names the exact (network, channel) and is therefore a strictly tighter
 observation than the old `data-window-state="invited"`.
+
+---
+
+## 2026-08-06 — #915: the denoise cutoff is one number in two languages, and nothing was watching it
+
+> *"denoise va attivato in automatico dai chan con 200 persone in su. non 50 son
+> troppo pochi."* — vjt
+
+`LARGE_CHANNEL_THRESHOLD` moves 50 → 200. A 50-member channel does not drown in
+join/part/quit; auto-denoising it hid traffic the operator wanted. The decision
+is vjt's and the tune is one line — the work was everything the tune exposed.
+
+**It was never a cic-only change.** #458 gave the rule a server twin:
+`Grappa.PresenceFilter.@large_channel_threshold` (`lib/grappa/
+presence_filter.ex`) applies the SAME size default to the REST history fetch so
+`limit` counts VISIBLE rows, while cic keeps the render-layer filter for the
+live WS tail. Both moduledocs say the two MUST stay equal — and **nothing in
+the repo fails if they don't**. There is no drift guard: no test reads the
+`.ts` from Elixir, no codegen, no shared manifest. Two prose cross-references
+are the entire mechanism. Had this landed cic-only, every channel sized 50–199
+would have shown J/P/Q on the live tail and lost it on page-up, silently, with
+a green suite. Both constants move here.
+
+**The literals that would have passed on the opposite branch.** The issue
+claimed every reference already read the exported constant. Measured, it did
+not: `presenceFilter.test.ts` carried `49`, `50`, `80`, `100`. Two of those go
+RED at 200 and would have forced the edit anyway; the interesting one is
+`resolvePresenceVisible("show", 100)` under the name *"explicit 'show'
+overrides the size default even on a huge channel"* — at 200 that count is
+**small**, so an unset pref returns `true` as well and the assertion stops
+distinguishing the override from the default. Green, named for a property it no
+longer tests. Every count in that file now derives from the constant, and each
+"explicit pin" case is placed where the size default answers the OPPOSITE, so
+the pin is what the assertion pins. The Elixir side was already written this
+way throughout (`PresenceFilter.large_channel_threshold()`), which is why it
+needed no test edits at all.
+
+**The size default is unreachable from the e2e — before and after.** #222's own
+moduledoc records why: spawning that many nicks from one IP trips the bahamut
+same-host autokill, and the harness exposes no member-count seam to inflate
+membership. So the boundary was already gated by vitest alone at 50, and 200
+neither improves nor degrades that — the e2e owns the interactive toggle and
+persistence path, not the cutoff. The stale prose that said "50 members" in
+four places (`issue222`, `issue239`, `selection.test.ts`, and the
+`presenceFilter.test.ts` header) now names the constant instead: a comment
+carrying a number the code no longer holds is the alibi that stops the next
+reader from checking, which is exactly how #910's moduledoc bug survived.
+
+**Swept and settled, not skipped.** The four e2e loops flagged as suspicious
+(`issue211-phase6-matrix:95`, `issue211-phase7-multinet-reconnect:176,197`,
+`issue260-sticky-network-tab:162`, `marker-target-window-regression:132`) all
+seed poll ATTEMPTS or pad MESSAGES, never members — none change meaning. The
+only member-count sources in the whole stack are `membersByChannel` (unit-
+mocked) and a live NAMES burst (`session_with_members`), and both already
+derive from the constant.

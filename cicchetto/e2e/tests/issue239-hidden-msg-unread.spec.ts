@@ -69,9 +69,10 @@ test("#239 — hidden control message does NOT bump the unread badge; reading cl
   // for the auto-joined self-JOIN line, proving REST + WS both landed.
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
-  // Pin #bofh to HIDE presence via the production toggle (no need to seed 50
-  // members — the size-default math is unit-tested; this is the interactive
-  // hide path). #500 folded the denoise toggle behind the rail launcher menu;
+  // Pin #bofh to HIDE presence via the production toggle (no need to seed
+  // LARGE_CHANNEL_THRESHOLD members — the size-default math is unit-tested;
+  // this is the interactive hide path). #500 folded the denoise toggle behind
+  // the rail launcher menu;
   // open it (desktop: taps the launcher) to reach the toggle.
   await openRailMenu(page);
   const toggle = page.locator('.rail-actions-menu [data-testid="presence-toggle"]');

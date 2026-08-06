@@ -13,8 +13,12 @@ import { channelKey } from "../lib/channelKey";
 // The "tough" part the issue flagged: an automatic size-based default and a
 // manual per-channel override need a clear precedence — explicit choice WINS
 // over the size default. That precedence is the pure `resolvePresenceVisible`
-// truth table tested here (the size-default math the e2e deliberately does NOT
-// exercise with 50 real peers — flood/autokill risk).
+// truth table tested here — and ONLY here: the size default is not reachable
+// from the e2e at any threshold value (spawning LARGE_CHANNEL_THRESHOLD real
+// peers trips the bahamut same-host autokill, and the harness exposes no
+// member-count seam), so these cases are the sole gate on the cutoff. Every
+// count is derived from the constant, never a literal: a literal keeps passing
+// on the OPPOSITE branch after a tune (#915 raised 50 → 200).
 
 describe("presenceFilter module", () => {
   beforeEach(() => {
@@ -26,18 +30,22 @@ describe("presenceFilter module", () => {
 
   describe("resolvePresenceVisible() — pure precedence truth table", () => {
     it("unset pref: visible below the LARGE_CHANNEL_THRESHOLD", async () => {
-      const { resolvePresenceVisible } = await import("../lib/presenceFilter");
-      expect(resolvePresenceVisible(undefined, 49)).toBe(true);
+      const { resolvePresenceVisible, LARGE_CHANNEL_THRESHOLD } = await import(
+        "../lib/presenceFilter"
+      );
+      // Well below the cutoff, not the boundary (that pair has its own case).
+      expect(resolvePresenceVisible(undefined, Math.floor(LARGE_CHANNEL_THRESHOLD / 2))).toBe(true);
     });
 
     it("unset pref: hidden at-or-above the LARGE_CHANNEL_THRESHOLD", async () => {
-      const { resolvePresenceVisible } = await import("../lib/presenceFilter");
-      // 50 is the boundary: >= threshold hides.
-      expect(resolvePresenceVisible(undefined, 50)).toBe(false);
-      expect(resolvePresenceVisible(undefined, 500)).toBe(false);
+      const { resolvePresenceVisible, LARGE_CHANNEL_THRESHOLD } = await import(
+        "../lib/presenceFilter"
+      );
+      expect(resolvePresenceVisible(undefined, LARGE_CHANNEL_THRESHOLD)).toBe(false);
+      expect(resolvePresenceVisible(undefined, LARGE_CHANNEL_THRESHOLD * 10)).toBe(false);
     });
 
-    it("boundary is exactly LARGE_CHANNEL_THRESHOLD (49 shown, 50 hidden)", async () => {
+    it("boundary is exactly LARGE_CHANNEL_THRESHOLD: one below shown, at it hidden", async () => {
       const { resolvePresenceVisible, LARGE_CHANNEL_THRESHOLD } = await import(
         "../lib/presenceFilter"
       );
@@ -46,9 +54,13 @@ describe("presenceFilter module", () => {
     });
 
     it("explicit 'show' overrides the size default even on a huge channel", async () => {
-      const { resolvePresenceVisible } = await import("../lib/presenceFilter");
-      expect(resolvePresenceVisible("show", 100)).toBe(true);
-      expect(resolvePresenceVisible("show", 5000)).toBe(true);
+      const { resolvePresenceVisible, LARGE_CHANNEL_THRESHOLD } = await import(
+        "../lib/presenceFilter"
+      );
+      // Counts must sit ABOVE the threshold or the case degenerates: an unset
+      // pref would return true too and the override would go unconstrained.
+      expect(resolvePresenceVisible("show", LARGE_CHANNEL_THRESHOLD)).toBe(true);
+      expect(resolvePresenceVisible("show", LARGE_CHANNEL_THRESHOLD * 25)).toBe(true);
     });
 
     it("explicit 'hide' overrides the size default even on a tiny channel", async () => {
@@ -142,19 +154,22 @@ describe("presenceFilter module", () => {
 
   describe("channelPresenceVisible() — reactive wrapper reading the signal", () => {
     it("follows the size default when the pref is unset", async () => {
-      const { channelPresenceVisible } = await import("../lib/presenceFilter");
-      expect(channelPresenceVisible(key(), 10)).toBe(true);
-      expect(channelPresenceVisible(key(), 80)).toBe(false);
+      const { channelPresenceVisible, LARGE_CHANNEL_THRESHOLD } = await import(
+        "../lib/presenceFilter"
+      );
+      expect(channelPresenceVisible(key(), LARGE_CHANNEL_THRESHOLD - 1)).toBe(true);
+      expect(channelPresenceVisible(key(), LARGE_CHANNEL_THRESHOLD)).toBe(false);
     });
 
     it("reflects an explicit pin regardless of member count", async () => {
-      const { channelPresenceVisible, setChannelPresencePref } = await import(
-        "../lib/presenceFilter"
-      );
+      const { channelPresenceVisible, setChannelPresencePref, LARGE_CHANNEL_THRESHOLD } =
+        await import("../lib/presenceFilter");
+      // Both counts are chosen so the SIZE DEFAULT would answer the opposite —
+      // otherwise the pin would be indistinguishable from the default.
       setChannelPresencePref(key(), "hide");
       expect(channelPresenceVisible(key(), 3)).toBe(false);
       setChannelPresencePref(key(), "show");
-      expect(channelPresenceVisible(key(), 999)).toBe(true);
+      expect(channelPresenceVisible(key(), LARGE_CHANNEL_THRESHOLD)).toBe(true);
     });
   });
 
@@ -182,19 +197,23 @@ describe("presenceFilter module", () => {
     });
 
     it("suppressed kinds hidden when the channel hides presence, visible otherwise", async () => {
-      const { presenceRowVisible, setChannelPresencePref, clearChannelPresencePref } = await import(
-        "../lib/presenceFilter"
-      );
+      const {
+        presenceRowVisible,
+        setChannelPresencePref,
+        clearChannelPresencePref,
+        LARGE_CHANNEL_THRESHOLD,
+      } = await import("../lib/presenceFilter");
       // Small channel, pref unset → follow-size default → visible.
       expect(presenceRowVisible(key(), 3, "join")).toBe(true);
       // Large channel, pref unset → hidden by the size default.
-      expect(presenceRowVisible(key(), 80, "join")).toBe(false);
-      // Explicit hide on a tiny channel → hidden.
+      expect(presenceRowVisible(key(), LARGE_CHANNEL_THRESHOLD, "join")).toBe(false);
+      // Explicit hide on a tiny channel → hidden (unset would SHOW here, so
+      // the override is what the assertion pins).
       setChannelPresencePref(key(), "hide");
       expect(presenceRowVisible(key(), 3, "part")).toBe(false);
-      // Explicit show on a huge channel → visible.
+      // Explicit show on a huge channel → visible (unset would HIDE here).
       setChannelPresencePref(key(), "show");
-      expect(presenceRowVisible(key(), 999, "quit")).toBe(true);
+      expect(presenceRowVisible(key(), LARGE_CHANNEL_THRESHOLD, "quit")).toBe(true);
       clearChannelPresencePref(key());
     });
   });

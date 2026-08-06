@@ -39,19 +39,23 @@ defmodule Grappa.PresenceFilter do
 
   use Boundary, top_level?: true, deps: [], exports: []
 
-  # MUST equal cic's `LARGE_CHANNEL_THRESHOLD` (presenceFilter.ts): 50+ member
+  # MUST equal cic's `LARGE_CHANNEL_THRESHOLD` (presenceFilter.ts): 200+ member
   # channels drown in join/part/quit, so an unset channel that has grown this
-  # large hides presence by the size default.
-  @large_channel_threshold 50
+  # large hides presence by the size default. Raised from 50 to 200 in #915 —
+  # a 50-member channel does not drown, and auto-denoising it hid traffic the
+  # operator wanted. Nothing FAILS if this drifts from cic's constant: the
+  # server would omit presence from the REST history page while cic renders it
+  # on the live tail, for every channel sized between the two values.
+  @large_channel_threshold 200
 
   @doc """
   The member-count cutoff for the unset size default. Exposed so callers and
-  tests reference the constant instead of hard-coding `50` (which would drift
-  from cic's `LARGE_CHANNEL_THRESHOLD` silently).
+  tests reference the constant instead of hard-coding its value (which would
+  drift from cic's `LARGE_CHANNEL_THRESHOLD` silently).
   """
-  # Constant accessor — Dialyzer narrows the success typing to the literal `50`,
+  # Constant accessor — Dialyzer narrows the success typing to the literal,
   # so the honest `pos_integer()` spec reads as a supertype. Keep the general
-  # spec (the value is a tunable, not a contract on `50`) and silence the noise.
+  # spec (the value is a tunable, not a contract on it) and silence the noise.
   @dialyzer {:nowarn_function, large_channel_threshold: 0}
   @spec large_channel_threshold() :: pos_integer()
   def large_channel_threshold, do: @large_channel_threshold

@@ -465,8 +465,8 @@ describe("selection store", () => {
   // settle event advances the cursor over them). The count and the pane MUST
   // reconcile to the ONE shared presence predicate (presenceRowVisible):
   // count over VISIBLE rows only. Explicit "hide" pin stands in for a large
-  // channel so we don't seed 50 members (flood/autokill risk in the e2e; the
-  // size-default math lives in presenceFilter.test.ts).
+  // channel so we don't seed LARGE_CHANNEL_THRESHOLD members (flood/autokill
+  // risk in the e2e; the size-default math lives in presenceFilter.test.ts).
   describe("presence-filter-hidden rows excluded from the badge (#239)", () => {
     it("hidden join/part do NOT count toward eventsUnread when the channel hides presence", async () => {
       localStorage.setItem("grappa-token", "tok");

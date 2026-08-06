@@ -5,13 +5,14 @@
 //
 // This e2e is the interactive witness for the per-channel toggle + the
 // render-layer filter + localStorage persistence. It exercises REAL presence
-// events (a peer joins + parts #bofh) — NOT 50 spawned peers: 50 nicks from
-// one IP risks bahamut flood/autokill (feedback_e2e_multinet_live_needs_
-// distinct_nicks), and there is no window-exposed member-count seam in the e2e
-// harness to inflate membership. The size-default MATH (49 shown / 50 hidden +
-// the precedence truth table) is proven authoritatively in the vitest boundary
-// test (src/__tests__/presenceFilter.test.ts); this spec owns the interactive
-// toggle/persistence path.
+// events (a peer joins + parts #bofh) — NOT LARGE_CHANNEL_THRESHOLD spawned
+// peers: that many nicks from one IP risks bahamut flood/autokill
+// (feedback_e2e_multinet_live_needs_distinct_nicks), and there is no
+// window-exposed member-count seam in the e2e harness to inflate membership.
+// So the size-default MATH (the boundary pair + the precedence truth table) is
+// UNREACHABLE from here at any threshold value and is proven authoritatively
+// in the vitest boundary test (src/__tests__/presenceFilter.test.ts); this
+// spec owns the interactive toggle/persistence path.
 //
 // Assertions (all VISIBLE outcomes, CLAUDE.md "assert outcomes not calls"):
 //   1. small channel, default shown → a peer join + part row IS visible
@@ -65,7 +66,8 @@ test("#222 — per-channel toggle hides join/part rows, persists across reload, 
       .locator('[data-testid="scrollback-line"][data-kind="privmsg"]')
       .filter({ hasText: privmsgBody });
 
-    // 1. small channel (< 50 members), pref unset → presence shown by default.
+    // 1. small channel (a handful of members, far below
+    //    LARGE_CHANNEL_THRESHOLD), pref unset → presence shown by default.
     await expect(joinRow).toHaveCount(1, { timeout: 10_000 });
     await expect(partRow).toHaveCount(1, { timeout: 10_000 });
     await expect(privmsgRow).toHaveCount(1, { timeout: 10_000 });

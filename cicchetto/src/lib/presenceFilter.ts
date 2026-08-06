@@ -57,10 +57,17 @@ import { moduleRoot } from "./moduleRoot";
 // keeping this client-only — that was a mis-application: that memory is about
 // i18n, not display-pref persistence.)
 
-// "large" cutoff. Named constant, one-line tune. 50+ member channels drown
+// "large" cutoff. Named constant, one-line tune. 200+ member channels drown
 // in J/P/Q; smaller channels keep them visible. A channel whose live member
-// count crosses this while the pref is unset auto-flips.
-export const LARGE_CHANNEL_THRESHOLD = 50;
+// count crosses this while the pref is unset auto-flips. Raised from 50 to
+// 200 in #915: a 50-member channel does not drown, and auto-denoising it hid
+// traffic the operator wanted. MUST equal the server twin
+// `Grappa.PresenceFilter`'s `@large_channel_threshold` (lib/grappa/
+// presence_filter.ex) — the server applies the SAME size default to the REST
+// history fetch (#458), so a divergence makes page-up disagree with the live
+// tail on any channel sized between the two values. No gate pins them; the
+// two moduledocs cross-reference and that is the whole guard.
+export const LARGE_CHANNEL_THRESHOLD = 200;
 
 // The NARROW noise set — join/part/quit/nick_change ONLY. Deliberately NOT
 // ScrollbackPane's `PRESENCE_KINDS` (which also holds mode/topic/kick/
