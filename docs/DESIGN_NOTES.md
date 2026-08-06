@@ -10627,8 +10627,11 @@ toggle re-shows; the choice persists. grappa STILL delivers the events —
 cic decides whether to RENDER. Client-only, no wire/server change (#217
 precedent + `feedback_no_localized_strings_server_side`).
 
-**Four defaults:** (1) "large" = `LARGE_CHANNEL_THRESHOLD = 50` members —
-ONE named constant in `lib/presenceFilter.ts`, one-line tune. (2) Toggle
+**Four defaults:** (1) "large" = `LARGE_CHANNEL_THRESHOLD` members — ONE
+named constant in `lib/presenceFilter.ts`, one-line tune. Set to 50 HERE;
+**raised to 200 by #915 (2026-08-06), which also found the constant had
+grown a server twin — read that entry for the value in force.** The
+constant is the SSOT; this number is the choice made on 2026-07-13. (2) Toggle
 scope = per-channel CLIENT preference, localStorage — NOT a server/shared
 setting. (3) NICK changes ARE in the suppression set. (4) Persistence
 keyed by `channelKey` — case-folds, so `#Chan`/`#chan` share one pref
@@ -10667,8 +10670,8 @@ onClick trips biome `noStaticElementInteractions` (#220 lesson) and loses
 keyboard access.
 
 **Tests.** `presenceFilter.test.ts` owns the size-default + precedence
-truth table. The size-default MATH is NOT e2e'd — 50 real peers from one
-IP risks bahamut flood/autokill
+truth table. The size-default MATH is NOT e2e'd — `LARGE_CHANNEL_THRESHOLD`
+real peers from one IP risks bahamut flood/autokill
 (`feedback_e2e_multinet_live_needs_distinct_nicks`) and there is no
 member-count seam in the harness; `issue222-presence-filter.spec.ts` owns
 the interactive path.
@@ -21466,8 +21469,12 @@ decision, server-owned, so every device converges.
 
 **SSOT + the mirrored threshold.** `Grappa.PresenceFilter.hidden?/2` is the
 inverted twin of cic's `resolvePresenceVisible` (show=visible ⇔ hidden=false);
-`@large_channel_threshold 50` mirrors cic's `LARGE_CHANNEL_THRESHOLD` and MUST
-stay equal (both moduledocs cross-reference). The suppressed set is a NARROW
+`@large_channel_threshold` mirrors cic's `LARGE_CHANNEL_THRESHOLD` and MUST
+stay equal. Set to 50 HERE, **raised to 200 by #915 (2026-08-06)** — read that
+entry for the value in force. At the time of this entry the equality was held by
+prose alone (both moduledocs cross-reference); #915 measured that nothing failed
+on drift and replaced the prose with an executable guard in
+`presence_filter_test.exs`. The suppressed set is a NARROW
 SSOT — `Message.suppressed_presence_kinds/0` = `[:join, :part, :quit,
 :nick_change]`, sitting beside `content_kinds`/`notify_kinds` — deliberately NOT
 the wider render-layer `PRESENCE_KINDS` (mode/topic/kick/server_event stay
@@ -21491,9 +21498,10 @@ render filter drops rows already in the store, for free. No import cycle
 table), `message_test.exs` (the narrow set), `scrollback_test.exs` (each fetch
 arity excludes the suppressed kinds under `hide_presence: true`),
 `messages_controller_test.exs` (hide / show / unset-no-session / channel
-canonicalization) + an outbound test proving unset + ≥50 members → hide (break-
-verified that it bites). cic: `displayPrefs.test.ts` asserts SHOW
-purges-then-reloads (with the order guard) and HIDE does neither. e2e
+canonicalization) + an outbound test proving unset + at-or-above
+`large_channel_threshold/0` members → hide (break-verified that it bites).
+cic: `displayPrefs.test.ts` asserts SHOW purges-then-reloads (with the order
+guard) and HIDE does neither. e2e
 (`issue458-presence-page-yield.spec.ts`) proves the visible-yield: a channel
 with many presence rows + few content rows, pref=hide, page-up renders a full
 screen of content instead of an empty page.
@@ -30734,3 +30742,25 @@ seed poll ATTEMPTS or pad MESSAGES, never members — none change meaning. The
 only member-count sources in the whole stack are `membersByChannel` (unit-
 mocked) and a live NAMES burst (`session_with_members`), and both already
 derive from the constant.
+
+**200 is a judgement call, not a measurement — and the guard is built for
+that.** Nobody produced a member-count distribution from prod or a J/P/Q-rate-
+versus-channel-size curve; vjt picked the number from operating the thing, the
+same way 50 was picked in #222. So the honest posture is that the VALUE is
+soft and the INVARIANT is hard: the drift guard pins the two languages EQUAL
+and deliberately does NOT pin 200, which means it survives him changing his
+mind again — the next tune stays two lines and one test that fails if you only
+do one of them. No gate in the repo asserts the cutoff is 200, and that is the
+design, not a hole.
+
+**The two entries above were corrected at the source, not annotated around.**
+#222 (2026-07-13) said `LARGE_CHANNEL_THRESHOLD = 50` and #458 (2026-07-28)
+said `@large_channel_threshold 50`; both now name the constant, record the
+value chosen THEN as the decision it was, and point here for the value in
+force. A decision log is a coherent record, not a caveat-wall: an old entry
+asserting a stale value as live is a false statement about the system that the
+next reader will cite — precisely how `numeric_router.ex`'s moduledoc, which
+asserted 321/322/323 take the default path, became the alibi that hid #910 for
+months. #458's line about the equality being held by "both moduledocs
+cross-reference" was also corrected: that WAS the mechanism, and this entry is
+where it stopped being.
