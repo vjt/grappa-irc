@@ -108,8 +108,23 @@ const NOTICE_DISMISS_MS = 3_000;
 //                strings built in compose.ts, previously computed + discarded).
 type Feedback = { text: string; severity: "error" | "notice" };
 
+// #925 — did the pointer come up inside the box it went down on? The one
+// piece of geometry in the send button's pointer-driven activation, kept
+// pure so the abort-by-sliding-off case is decidable without touch physics.
+// Inclusive on all four edges: a release exactly on the boundary is a
+// release on the control.
+function releasedInside(rect: DOMRect, x: number, y: number): boolean {
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
 const ComposeBox: Component<Props> = (props) => {
   const key = () => channelKey(props.networkSlug, props.channelName);
+
+  // #925 — send-button press bookkeeping. Plain `let`s, not signals: nothing
+  // renders off them, they only carry state from one event to the next within
+  // a single press.
+  let pressedPointerId: number | null = null;
+  let sentFromPointer = false;
   const [feedback, setFeedback] = createSignal<Feedback | null>(null);
   // Auto-dismiss handle for a shown NOTICE. Held so a new input / new submit /
   // unmount can cancel a pending fire — otherwise a stale timer would clear a
@@ -548,10 +563,46 @@ const ComposeBox: Component<Props> = (props) => {
           disabled={getDraft(key()).trim() === ""}
           // #59: keep the textarea focused when sending via the button.
           // Tapping a <button> moves focus off the textarea, which collapses
-          // the native on-screen keyboard (Android especially). preventDefault
-          // on pointerdown stops the focus steal — the click still fires +
-          // submits. Same trick as the image-picker button.
-          onPointerDown={(e) => e.preventDefault()}
+          // the native on-screen keyboard (Android especially). The cancel
+          // lands on `mousedown` — the legacy focus-shift carrier — and NEVER
+          // on `pointerdown`, which is also iOS's gesture-start signal
+          // (lib/keepKeyboard.ts states the rule and the bug that wrote it).
+          // The document-level keepKeyboard listener already does this on
+          // iOS; this one is what covers Android, where that listener is
+          // isIos()-gated and so does nothing at all.
+          onMouseDown={(e) => e.preventDefault()}
+          // #925 — activation rides the POINTER, not the click. A `type=
+          // "submit"` button sends only when a `click` reaches the form, and
+          // on real iOS a press the OS routes into a long-press gesture
+          // synthesizes no mouse events at all (vjt measured exactly that for
+          // #366, 2026-07-21): `:active` lights up, no click ever arrives, the
+          // text stays in the field. `pointerup` fires either way.
+          onPointerDown={(e) => {
+            pressedPointerId = e.pointerId;
+            // Re-arm: the previous press may have sent without ever producing
+            // a click to consume the swallow flag.
+            sentFromPointer = false;
+          }}
+          onPointerUp={(e) => {
+            if (pressedPointerId !== e.pointerId) return;
+            pressedPointerId = null;
+            // Touch pointers are implicitly captured by the element the press
+            // landed on, so a release anywhere still targets this button.
+            // Sliding off to abort is the platform's cancel affordance and it
+            // must keep working for an irreversible action — hit-test it.
+            if (!releasedInside(e.currentTarget.getBoundingClientRect(), e.clientX, e.clientY)) {
+              return;
+            }
+            sentFromPointer = true;
+            void doSubmit();
+          }}
+          // The synthetic click that follows a normal tap would submit the
+          // form a second time. Swallow it — but only a pointer-generated
+          // click (`detail > 0`): a keyboard activation reports detail 0 and
+          // must always reach the form, since no pointerup carried its send.
+          onClick={(e) => {
+            if (sentFromPointer && e.detail > 0) e.preventDefault();
+          }}
         >
           {/* #241 — in-flight feedback. While a send is in flight for THIS
               window (#904 moved that truth into the store, where it survives

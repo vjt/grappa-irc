@@ -30830,3 +30830,63 @@ currently pinned only by `issue443-colored-nicklist.spec.ts` in a real browser.
 Recorded here rather than fixed in #914's diff — the finding is worth more than
 the two-line edit, and widening an unrelated PR to bury it is how findings get
 lost.
+
+## 2026-08-06 — #925: the send button waits for a click that iOS does not always send
+
+**The report.** On iPhone (installed PWA, keyboard up) a tap on the compose
+send button sometimes did nothing: `:active` lit up, the message did not go,
+and the text stayed in the field. That last detail is the discriminator — the
+draft is cleared by the send path, so a still-full field means the send never
+ran, not that the render lied.
+
+**The suspicion vjt filed, and what reading the code actually established.**
+`ComposeBox.tsx` wired the button with `onPointerDown={(e) =>
+e.preventDefault()}` — the one place in the app doing what `lib/keepKeyboard.ts`
+was written to forbid, since `pointerdown` is also iOS's gesture-start signal
+(that same mistake cost the un-scrollable archive modal, 2026-05-18). Reading
+the code proves the path EXISTS. It does not prove it fires. It was left
+labelled as a suspicion, and it is not what this change is justified on.
+
+**What the code already knew.** The mechanism that predicts this symptom
+exactly was measured on a real device eleven days earlier, for #366, and is
+written down in `keepKeyboard.ts`: on real iOS Safari a press the OS routes
+into a long-press gesture *synthesizes no mouse events at all* — only taps do.
+A `type="submit"` button sends only when a `click` reaches the form. No mouse
+events means no click means no submit, while `:active` (driven by touch, not
+by mouse) still lights up. The field report and the repro log both feature
+presses in the 650–980 ms band. So the send button's activation was resting on
+an event iOS is documented — in this repo, from this project's own dogfood —
+to withhold.
+
+**The fix: activation rides `pointerup`, focus retention rides `mousedown`.**
+`pointerup` fires whether or not the OS decides to synthesize mouse events;
+the repro log shows it on all six long presses. The synthetic click that
+follows a normal tap is swallowed so a tap cannot send twice — gated on
+`detail > 0`, because a keyboard activation reports `detail 0` and has no
+pointerup to have sent for it, so swallowing that one would drop the send
+outright. Release is hit-tested against the button's box (`releasedInside`):
+touch pointers are implicitly captured by the element the press landed on, so
+without the test, pressing send and sliding away to abort would still fire —
+and a message to a channel is not undoable.
+
+**Why the button keeps a focus-retention handler at all, on `mousedown`.**
+The issue proposed simply deleting the per-button wiring and letting the
+global `keepKeyboard` listener do its job. It cannot: that listener is
+`isIos()`-gated, and #59 was reported on Android ("Android especially"). On
+iOS the button's `mousedown` cancel is redundant with the global one and
+harmless; on Android it is the only thing there is.
+
+**Stated plainly: not reproduced.** Playwright webkit does not reproduce iOS
+touch physics, so the failing arm was not observed here — only field-reported,
+plus a device log of the *proposed* wiring succeeding 6/6. What is NOT
+established is that the old `pointerdown` cancel was the thing losing the send;
+a control run with the old wiring on the same device is what would close that.
+The fix is justified on the click's absence being the failure mode the repo had
+already measured, not on the suspicion the issue opened with.
+
+**Two comments were lying, and comments are what write this class of bug.**
+`main.tsx` described the global preserve listener as "preventDefault on
+pointerdown" (it hooks `mousedown`), and the send button's own comment claimed
+"same trick as the image-picker button" (that button has carried a plain
+`onClick` for some time). Both were fixed here. A comment that misnames the
+event is how the next person re-adds a `pointerdown` cancel.

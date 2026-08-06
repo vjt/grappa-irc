@@ -144,7 +144,9 @@ installSmartScrollPin();
 // UX-3 preserve-keyboard — single document-level capture listener.
 // When compose <input> has focus and the user taps anywhere that
 // isn't another input/textarea, suppress the implicit focus shift
-// (preventDefault on pointerdown) so iOS doesn't dismiss the
+// (preventDefault on MOUSEDOWN — never pointerdown, which is also
+// iOS's gesture-start signal; the module header carries the rule and
+// the bugs that wrote it) so iOS doesn't dismiss the
 // keyboard. Replaces per-button onPointerDown wiring (UX-3 NON +
 // BIS-DEC) — every new tappable surface inherits the behavior
 // automatically.

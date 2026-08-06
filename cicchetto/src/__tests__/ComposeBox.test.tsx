@@ -84,6 +84,10 @@ vi.mock("../lib/networks", () => ({
 }));
 
 import ComposeBox from "../ComposeBox";
+// Static handle on the mocked module (vi.mock is hoisted, so this IS the
+// mock). The older cases reach for it via `await import` case-by-case; the
+// #925 block asserts on `submit` in every one of its tests.
+import * as compose_ from "../lib/compose";
 // #80 — the paste flood guard reuses the REAL confirm-dialog store (not a
 // mock): ComposeBox calls requestConfirm, and these tests assert on the
 // store signal + drive accept/dismiss exactly as ConfirmModal.test.tsx does.
@@ -178,22 +182,128 @@ describe("ComposeBox", () => {
     }
   });
 
-  // #59 — tapping the send button must NOT steal focus from the textarea
-  // (that collapses the on-screen keyboard). The handler preventDefaults
-  // the pointerdown; the click still submits. Needs a non-empty draft —
-  // the button is disabled (un-tappable) while the draft is empty.
-  it("#59 — send button preventDefaults pointerdown (no focus steal)", async () => {
-    const compose = await import("../lib/compose");
-    vi.mocked(compose.getDraft).mockReturnValue("hi");
-    try {
+  // #925 — the send button's activation path. Two independent contracts:
+  //
+  //   focus retention (#59) rides `mousedown`, never `pointerdown` — the
+  //   invariant lib/keepKeyboard.ts was written to enforce;
+  //
+  //   activation rides `pointerup`, so a press that iOS declines to
+  //   synthesize mouse events for still sends. The synthetic click that
+  //   follows a normal tap must NOT send a second time.
+  //
+  // Needs a non-empty draft throughout — the button is disabled (and so
+  // fires no pointer events at all) while the draft is empty.
+  describe("#925 — send button activation", () => {
+    // jsdom's getBoundingClientRect returns an all-zero rect, which the
+    // release-inside guard reads as "the pointer came up off the button".
+    // Give the button a real box so the geometry under test is the one the
+    // production predicate sees, not a degenerate one.
+    const BUTTON_RECT = { left: 300, right: 344, top: 500, bottom: 544 };
+
+    function renderWithDraft(): HTMLElement {
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
       const btn = screen.getByRole("button", { name: /send message/i });
-      const ev = new Event("pointerdown", { bubbles: true, cancelable: true });
-      btn.dispatchEvent(ev);
-      expect(ev.defaultPrevented).toBe(true);
-    } finally {
-      vi.mocked(compose.getDraft).mockReturnValue("");
+      Object.defineProperty(btn, "getBoundingClientRect", {
+        configurable: true,
+        value: () => ({
+          ...BUTTON_RECT,
+          width: BUTTON_RECT.right - BUTTON_RECT.left,
+          height: BUTTON_RECT.bottom - BUTTON_RECT.top,
+          x: BUTTON_RECT.left,
+          y: BUTTON_RECT.top,
+          toJSON() {},
+        }),
+      });
+      return btn;
     }
+
+    // jsdom's PointerEvent constructor is unreliable (same workaround as
+    // ResizeHandle.test.tsx): a MouseEvent carries every field the handlers
+    // read — clientX/clientY, pointerId, preventDefault.
+    function pointer(type: string, x: number, y: number): Event {
+      const e = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y });
+      Object.defineProperty(e, "pointerId", { value: 1 });
+      return e;
+    }
+
+    const CENTRE: [number, number] = [322, 522];
+
+    beforeEach(() => {
+      vi.mocked(compose_.getDraft).mockReturnValue("hi");
+      vi.mocked(compose_.submit).mockResolvedValue({ ok: true });
+    });
+
+    it("does NOT cancel pointerdown — that is the gesture-start signal", () => {
+      const btn = renderWithDraft();
+      const e = pointer("pointerdown", ...CENTRE);
+      btn.dispatchEvent(e);
+      expect(e.defaultPrevented).toBe(false);
+    });
+
+    it("#59 — cancels mousedown instead, so focus never leaves the textarea", () => {
+      const btn = renderWithDraft();
+      const e = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+      btn.dispatchEvent(e);
+      expect(e.defaultPrevented).toBe(true);
+    });
+
+    it("sends on pointerup, without waiting for a click", () => {
+      const btn = renderWithDraft();
+      btn.dispatchEvent(pointer("pointerdown", ...CENTRE));
+      btn.dispatchEvent(pointer("pointerup", ...CENTRE));
+      expect(compose_.submit).toHaveBeenCalledTimes(1);
+    });
+
+    it("swallows the synthetic click that follows, so a tap sends ONCE", () => {
+      const btn = renderWithDraft();
+      btn.dispatchEvent(pointer("pointerdown", ...CENTRE));
+      btn.dispatchEvent(pointer("pointerup", ...CENTRE));
+      // detail=1 is what a pointer-generated click reports.
+      const click = new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 });
+      btn.dispatchEvent(click);
+      expect(compose_.submit).toHaveBeenCalledTimes(1);
+      expect(click.defaultPrevented).toBe(true);
+    });
+
+    it("lets a keyboard activation through even while the swallow is armed", () => {
+      // A keyboard click reports detail 0 and carries no pointerup to have
+      // sent for it, so swallowing it would drop the send outright. Armed
+      // first, deliberately: this is the state a click-less pointer send
+      // leaves behind, and the one an Enter must survive.
+      const btn = renderWithDraft();
+      btn.dispatchEvent(pointer("pointerdown", ...CENTRE));
+      btn.dispatchEvent(pointer("pointerup", ...CENTRE));
+      const click = new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 });
+      btn.dispatchEvent(click);
+      expect(click.defaultPrevented).toBe(false);
+      // The form's own onSubmit carries the send for this path; the button
+      // must simply keep out of the way of its default activation behaviour.
+    });
+
+    it("does not send when the finger slides off the button before release", () => {
+      const btn = renderWithDraft();
+      btn.dispatchEvent(pointer("pointerdown", ...CENTRE));
+      btn.dispatchEvent(pointer("pointerup", BUTTON_RECT.left - 60, BUTTON_RECT.top - 60));
+      expect(compose_.submit).not.toHaveBeenCalled();
+    });
+
+    it("re-arms after a press that produced no click, so the next tap still sends", () => {
+      const btn = renderWithDraft();
+      // First press: sends on pointerup, and iOS synthesizes no click for it.
+      btn.dispatchEvent(pointer("pointerdown", ...CENTRE));
+      btn.dispatchEvent(pointer("pointerup", ...CENTRE));
+      // Second press: the swallow flag must not still be armed from the first,
+      // or this tap's own click would be eaten as a duplicate.
+      btn.dispatchEvent(pointer("pointerdown", ...CENTRE));
+      btn.dispatchEvent(pointer("pointerup", ...CENTRE));
+      expect(compose_.submit).toHaveBeenCalledTimes(2);
+    });
+
+    it("ignores a pointerup whose pointerdown never landed on the button", () => {
+      const btn = renderWithDraft();
+      btn.dispatchEvent(pointer("pointerup", ...CENTRE));
+      expect(compose_.submit).not.toHaveBeenCalled();
+    });
   });
 
   it("typing fires compose.setDraft", async () => {
