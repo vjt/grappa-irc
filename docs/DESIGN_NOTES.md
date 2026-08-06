@@ -30764,3 +30764,69 @@ asserted 321/322/323 take the default path, became the alibi that hid #910 for
 months. #458's line about the equality being held by "both moduledocs
 cross-reference" was also corrected: that WAS the mechanism, and this entry is
 where it stopped being.
+
+## 2026-08-06 — #914: the jump button is per-DEVICE, so its pref stays out of the synced set
+
+#914 asked for a toggle hiding the #235 `»N` jump-to-next-active button, and
+proposed `lib/displayPrefs` as "the natural home". **It landed somewhere else,
+on purpose:** `cicchetto/src/lib/hideNextActive.ts`, client-local, localStorage
+plus a module signal. A future reader will find it sitting outside the synced
+set and reasonably suspect an oversight. It is not one.
+
+**The split already existed and this pref falls on the other side of it.**
+`Grappa.UserSettings`'s `display_prefs` typedoc records it: font size is
+"deliberately excluded — it is per-DEVICE (vjt, #449) and stays client-local".
+The three prefs that ARE synced (time format, colored nicklist, presence
+filter) have no device axis; #449 was filed because a desktop toggle stayed
+invisible on the iOS PWA, which is a convergence complaint about a
+device-NEUTRAL setting. #914 is the mirror image: the reporter is a phone user,
+and the thing complained about is the viewport-fixed MOBILE overlay. Nobody
+objected to the desktop sidebar control. One synced preference governing both
+variants would therefore blank the desktop button on a device the user never
+mentioned — a larger behaviour change than the one requested, applied
+silently. Device-shaped pref, device-local storage, same rule as `fontSize`.
+
+**The asymmetry decided the tie.** Local → synced is additive whenever someone
+wants convergence: add the key, seed up, done. Synced → local is a migration
+with a persisted blob to unwind. When the argument is close, take the branch
+that stays cheap to reverse. It is reversible in one review comment, which is
+why the divergence is stated in the PR body rather than buried.
+
+**Two consequences fell out in the same direction, and neither was the
+argument.** A fourth key needs an Elixir leg, and
+`validate_and_normalize_display_prefs/2` builds an explicit three-key whitelist
+— an unknown key is DROPPED, not rejected — so a cic shipped ahead of its
+server (they deploy separately, `deploy-m42.sh --cic`) would PUT the pref, get
+a 200, and have the reconcile's server-wins apply quietly reset it. That is the
+`wireNarrow` additive-field trap wearing the other hat, and it is guardable,
+but only if you remember to guard it. This was REASONED from the whitelist, not
+observed against an old server; it is recorded as a consequence of the choice,
+not evidence for it.
+
+**PRESENTATIONAL is the invariant, not the feature.** The pref ANDs into the
+existing `<Show>` gate and stops there. `jumpToNextActiveWindow()` is shared
+with Alt+A and Ctrl+N and #235 keeps exactly one code path, so hiding the
+button must never disarm the verb; `activeWindowCount()` / `nextActiveKind()`
+keep feeding the same single source, so unread accounting is untouched. On
+mobile the hidden button deliberately leaves no jump affordance — that IS the
+request, not a gap. A future change that gates the verb on this flag breaks the
+contract. The e2e asserts it directly and by name: button hidden, Alt+A still
+jumps to the unread DM. "The button is absent" would have passed against a
+build that also killed the keybinding.
+
+**Shape: `colorNicklist.ts`, not `fontSize.ts`.** Font size gets away with a
+plain localStorage read because it applies itself as a boot-time CSS-var write.
+This flag is read at RENDER time inside the gate, so it needs the
+module-singleton signal or a mounted button stays stale until reload. That
+distinction was MEASURED, not assumed: the module was first written the wrong
+way on purpose, and six of the seven unit assertions passed against it —
+including the set-then-get round-trip. Only the tracked-read assertion failed.
+
+**Which indicts a sibling test, left standing deliberately.**
+`colorNicklist.test.ts:54`, named "updates the reactive getter so subsequent
+reads reflect the change", is that same set-then-get round-trip: it does not
+constrain `colorNicklist`'s signal shape either. That module's reactivity is
+currently pinned only by `issue443-colored-nicklist.spec.ts` in a real browser.
+Recorded here rather than fixed in #914's diff — the finding is worth more than
+the two-line edit, and widening an unrelated PR to bury it is how findings get
+lost.
