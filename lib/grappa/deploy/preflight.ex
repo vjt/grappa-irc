@@ -31,12 +31,16 @@ defmodule Grappa.Deploy.Preflight do
   stack via `scripts/deploy.sh`, `:jail` for the m42 bastille jail via
   `infra/freebsd/deploy.sh`, `:linux` for a native systemd host via
   `infra/linux/deploy.sh`). Most classes are substrate-independent
-  (deps, supervision tree, migrations, nginx, config, state-shape),
+  (deps, supervision tree, migrations, config, state-shape, and the
+  shared `infra/snippets/*` proxy surface),
   but the boot-substrate files are not: a `Dockerfile` diff is COLD
   on Docker and irrelevant to the jail or a systemd host,
   `infra/freebsd/rc.d/grappa` is COLD on the jail and irrelevant
-  elsewhere, and `infra/linux/systemd/grappa.service` is COLD on
-  `:linux` and irrelevant elsewhere. The 2026-06-10 metadata-strip
+  elsewhere, `infra/linux/systemd/grappa.service` is COLD on
+  `:linux` and irrelevant elsewhere, and each substrate's OWN
+  `nginx.conf` is COLD only there (#923 — the shared
+  `infra/snippets/*` proxy surface stays substrate-independent,
+  because every surviving nginx includes it). The 2026-06-10 metadata-strip
   deploy cold-restarted prod (ALL IRC sessions dropped) for a
   Dockerfile diff the jail never reads — on an always-on bouncer
   every needless restart is incident-grade, so the substrate is an
@@ -101,7 +105,7 @@ defmodule Grappa.Deploy.Preflight do
       |> add_reason(:rc_d, filter_on(:jail, substrate, paths, &rc_d?/1))
       |> add_reason(:systemd_unit, filter_on(:linux, substrate, paths, &systemd_unit?/1))
       |> add_reason(:migration, Enum.filter(paths, &migration?/1))
-      |> add_reason(:nginx, Enum.filter(paths, &nginx?/1))
+      |> add_reason(:nginx, Enum.filter(paths, &nginx?(&1, substrate)))
       |> add_reason(:config, Enum.filter(paths, &config?/1))
       |> Enum.reverse()
 
@@ -358,13 +362,31 @@ defmodule Grappa.Deploy.Preflight do
   # Docker `infra/nginx.conf` (that substrate no longer runs nginx — the
   # BEAM is published directly). The surviving nginx substrates are both
   # dumb reverse proxies: the bastille jail's `infra/freebsd/nginx.conf`
-  # and the native-Linux host's `infra/linux/nginx.conf` (the latter was a
-  # pre-existing classification gap this change closes), plus the shared
-  # proxy snippet under infra/snippets/. A change to any needs a cold
-  # nginx reload (install script re-run + reload), never a hot BEAM swap.
-  defp nginx?("infra/freebsd/nginx.conf"), do: true
-  defp nginx?("infra/linux/nginx.conf"), do: true
-  defp nginx?(path), do: String.starts_with?(path, "infra/snippets/")
+  # and the native-Linux host's `infra/linux/nginx.conf`, plus the shared
+  # proxy snippet under infra/snippets/.
+  #
+  # The two per-substrate CONFIGS are substrate-scoped (#923), like their
+  # siblings `rc_d?/1` (:jail), `systemd_unit?/1` (:linux) and
+  # `docker_image?/1` (:docker) — nginx was the only boot-substrate class
+  # that was not. Unscoped, editing `infra/linux/nginx.conf` classified
+  # COLD on the JAIL: a restart that drops every live IRC session on m42
+  # prod, for a file the jail never opens. That is precisely the
+  # 2026-06-10 incident (a Dockerfile diff cold-restarting the jail) the
+  # substrate argument exists to prevent — see the moduledoc.
+  #
+  # Scoped HERE via a 2-arity predicate rather than `filter_on/4` because
+  # this class is MIXED: two substrate-scoped literals plus a genuinely
+  # shared prefix. Routing it through `filter_on/4` would need the class
+  # split across concatenated filters, which reorders the reported file
+  # list for no gain. `infra/snippets/*` stays substrate-independent: it
+  # IS included by every surviving nginx (jail, linux, and the e2e conf).
+  #
+  # COLD means the BEAM must not be hot-swapped past this change; the
+  # nginx bytes themselves are refreshed by the substrate's own install
+  # script, not by the restart.
+  defp nginx?("infra/freebsd/nginx.conf", :jail), do: true
+  defp nginx?("infra/linux/nginx.conf", :linux), do: true
+  defp nginx?(path, _substrate), do: String.starts_with?(path, "infra/snippets/")
 
   # Class 7 (H20+H21): ALL config/*.exs. SECRET_SIGNING_SALT was
   # silently HOT'd before this rule because config/config.exs didn't

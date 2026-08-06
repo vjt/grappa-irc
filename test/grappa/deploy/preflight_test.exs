@@ -179,7 +179,7 @@ defmodule Grappa.Deploy.PreflightTest do
     end
   end
 
-  describe "classify_paths/2 — Class 6: nginx + infra/snippets (substrate-independent)" do
+  describe "classify_paths/2 — Class 6: nginx (substrate-scoped) + infra/snippets (shared)" do
     test "infra/snippets/locations-api.conf → cold on both substrates" do
       file = "infra/snippets/locations-api.conf"
 
@@ -195,22 +195,38 @@ defmodule Grappa.Deploy.PreflightTest do
       assert {:nginx, [^file]} = List.keyfind(reasons, :nginx, 0)
     end
 
-    test "infra/freebsd/nginx.conf → cold on both substrates (jail dumb-proxy config)" do
-      file = "infra/freebsd/nginx.conf"
+    # #923 — the per-substrate nginx CONFIGS are scoped like their siblings
+    # (:rc_d, :systemd_unit, :image_substrate); only infra/snippets/ above is
+    # shared. Before the scoping, editing the LINUX nginx.conf classified COLD
+    # on the JAIL — a session-dropping restart on m42 prod for a file the jail
+    # never reads, the same incident class as the 2026-06-10 Dockerfile COLD.
+    @jail_nginx "infra/freebsd/nginx.conf"
+    @linux_nginx "infra/linux/nginx.conf"
 
-      for substrate <- @substrates do
-        assert {:cold, reasons} = Preflight.classify_paths([file], substrate)
-        assert {:nginx, [^file]} = List.keyfind(reasons, :nginx, 0)
-      end
+    test "#{@jail_nginx} → cold (:nginx) on jail (the jail's own proxy config)" do
+      assert {:cold, reasons} = Preflight.classify_paths([@jail_nginx], :jail)
+      assert {:nginx, [@jail_nginx]} = List.keyfind(reasons, :nginx, 0)
     end
 
-    test "infra/linux/nginx.conf → cold on both substrates (#485 closed classification gap)" do
-      file = "infra/linux/nginx.conf"
+    test "#{@jail_nginx} → hot on linux (a systemd host never reads the jail's config)" do
+      assert {:hot, []} = Preflight.classify_paths([@jail_nginx], :linux)
+    end
 
-      for substrate <- @substrates do
-        assert {:cold, reasons} = Preflight.classify_paths([file], substrate)
-        assert {:nginx, [^file]} = List.keyfind(reasons, :nginx, 0)
-      end
+    test "#{@jail_nginx} → hot on docker (#485 left the docker substrate no nginx)" do
+      assert {:hot, []} = Preflight.classify_paths([@jail_nginx], :docker)
+    end
+
+    test "#{@linux_nginx} → cold (:nginx) on linux (the host's own proxy config)" do
+      assert {:cold, reasons} = Preflight.classify_paths([@linux_nginx], :linux)
+      assert {:nginx, [@linux_nginx]} = List.keyfind(reasons, :nginx, 0)
+    end
+
+    test "#{@linux_nginx} → hot on jail (m42 prod must NOT restart for a file it never reads)" do
+      assert {:hot, []} = Preflight.classify_paths([@linux_nginx], :jail)
+    end
+
+    test "#{@linux_nginx} → hot on docker (#485 left the docker substrate no nginx)" do
+      assert {:hot, []} = Preflight.classify_paths([@linux_nginx], :docker)
     end
   end
 
