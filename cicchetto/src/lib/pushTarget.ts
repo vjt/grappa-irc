@@ -23,9 +23,10 @@
 // applies the same routing. Deferred until networks() seed so the
 // selection doesn't fire on a still-loading store.
 
-import { createEffect, on } from "solid-js";
+import { createEffect, untrack } from "solid-js";
+import { parseInviteLinkPath, routeInviteTarget } from "./inviteLink";
 import { moduleRoot } from "./moduleRoot";
-import { networkBySlug, networks } from "./networks";
+import { channelsBySlug, networkBySlug, networks } from "./networks";
 import { type PushTarget, parsePushTargetUrl } from "./pushPayload";
 import { canonicalQueryNick, openQueryWindowState } from "./queryWindows";
 import { setSelectedChannel } from "./selection";
@@ -128,7 +129,9 @@ export function installPushTargetListener(): void {
 }
 
 /**
- * Cold-path reader: when the SW opens a fresh window via
+ * THE boot-time deep-link reader — one reader, two URL shapes.
+ *
+ * Cold-path push (UX-6-J): when the SW opens a fresh window via
  * `openWindow(url)`, the URL ships the deep-link params but there's
  * no message-to-listener handshake (the page hasn't installed the
  * listener yet at openWindow time). Read `location.href` at boot,
@@ -153,36 +156,98 @@ export function installPushTargetListener(): void {
  * ergonomics. The selection store's UX-5 BU tuple-equality
  * short-circuit means a re-fire would no-op anyway, but cleaning
  * the URL removes the question entirely.
+ *
+ * Invite link (#793): the second shape, `/<network>/<channel>`, read
+ * from `location.pathname` by `lib/inviteLink.ts` into the SAME
+ * `PushTarget` and deferred by the SAME mechanism. What differs is
+ * only what the target DOES on arrival — a confirm-then-join instead
+ * of a selection — and when the URL is cleaned. The two shapes cannot
+ * co-occur meaningfully; a push payload wins, since it carries an
+ * explicit notification the operator just tapped.
  */
-export function applyPushTargetFromUrl(): void {
+export function applyDeepLinkFromUrl(): void {
   if (typeof window === "undefined" || !window.location) return;
-  const target = parsePushTargetUrl(window.location.href);
-  if (target === null) return;
-  deferUntilNetworksSeed(target);
+
+  const push = parsePushTargetUrl(window.location.href);
+  if (push !== null) {
+    deferUntilReady({
+      target: push,
+      route: routePushTarget,
+      // A push target names a channel the operator is already in, so the
+      // routing needs the live list — an empty store cannot resolve it.
+      ready: () => {
+        const nets = networks();
+        return nets !== undefined && nets.length > 0;
+      },
+      flag: "__cicPushTargetApplied",
+    });
+    return;
+  }
+
+  // #793 — the same reader, second URL shape: `/<network>/<channel>`.
+  const invite = parseInviteLinkPath(window.location.pathname);
+  if (invite === null) return;
+  // Cleaned HERE rather than after the routing (the push path's timing),
+  // because this call happens BEFORE `render()` and the router has no route
+  // for a two-segment path: left in place, the address bar would mount the
+  // app on nothing at all. It also satisfies the same requirement the push
+  // path cleans for — a refresh must not re-fire the invite.
+  if (window.history) window.history.replaceState({}, "", "/");
+  deferUntilReady({
+    target: invite,
+    route: routeInviteTarget,
+    // Waits on the CHANNEL LIST, not on `networks()`, because that is the
+    // source the invite route actually reads to decide whether we are
+    // already in the channel. `channelsBySlug` is keyed on `networks`, so it
+    // resolves strictly LATER — firing on the earlier signal read an
+    // unresolved list, concluded "not in it", and asked for consent to join
+    // a channel the operator was already sitting in (caught by the #793 e2e,
+    // which is why that spec exists).
+    //
+    // RESOLVED, not non-empty: a recipient with nothing bound still gets an
+    // answer (the not-bound notice) instead of silence. Unauthenticated, the
+    // resource never resolves at all, so the invite simply waits out the
+    // login round-trip and applies once the session is up.
+    ready: () => channelsBySlug() !== undefined,
+    flag: "__cicInviteLinkApplied",
+  });
 }
 
 declare global {
   interface Window {
     __cicPushTargetApplied?: boolean;
+    __cicInviteLinkApplied?: boolean;
   }
 }
 
-function deferUntilNetworksSeed(target: PushTarget): void {
+type DeepLink = {
+  target: PushTarget;
+  route: (target: PushTarget) => void;
+  // Reads whatever store the route depends on; the effect tracks it, so each
+  // deep-link shape declares its OWN readiness rather than sharing one that
+  // happens to fit the older caller.
+  ready: () => boolean;
+  flag: "__cicPushTargetApplied" | "__cicInviteLinkApplied";
+};
+
+function deferUntilReady(link: DeepLink): void {
   let applied = false;
   moduleRoot(() => {
-    createEffect(
-      on(networks, (nets) => {
-        if (applied) return;
-        if (!nets || nets.length === 0) return;
-        applied = true;
-        routePushTarget(target);
-        if (typeof window !== "undefined") {
-          window.__cicPushTargetApplied = true;
-          if (window.history && window.location) {
-            window.history.replaceState({}, "", "/");
-          }
+    createEffect(() => {
+      if (applied) return;
+      if (!link.ready()) return;
+      applied = true;
+      // `untrack`: the routing reads several stores, and none of them should
+      // become a dependency of the gate — the one-shot `applied` flag makes a
+      // re-run harmless, but a gate that re-fires on unrelated traffic is a
+      // gate nobody can reason about.
+      untrack(() => link.route(link.target));
+      if (typeof window !== "undefined") {
+        window[link.flag] = true;
+        if (window.history && window.location) {
+          window.history.replaceState({}, "", "/");
         }
-      }),
-    );
+      }
+    });
   });
 }

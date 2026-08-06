@@ -29,7 +29,7 @@ import { installGlobalPaste } from "./lib/globalPaste";
 import { installKeyboardPreserve } from "./lib/keepKeyboard";
 import { applyIosClass, isStandalonePwa } from "./lib/platform";
 import { installPushResubscribe } from "./lib/pushResubscribe";
-import { applyPushTargetFromUrl, installPushTargetListener } from "./lib/pushTarget";
+import { applyDeepLinkFromUrl, installPushTargetListener } from "./lib/pushTarget";
 import { browserProbePerformance, installResumeProbe } from "./lib/resumeProbe";
 import { applySidebarWidthsFromStorage } from "./lib/sidebarWidths";
 import { notifyClientClosing, reportVisibility } from "./lib/socket";
@@ -183,11 +183,17 @@ bootstrapAuth();
 // from its `notificationclick` handler; this listener parses the URL
 // and routes `setSelectedChannel`. Cold-path: when SW opens a fresh
 // window via `openWindow(url)`, the URL carries the deep-link params;
-// `applyPushTargetFromUrl` reads them at boot and defers selection
+// `applyDeepLinkFromUrl` reads them at boot and defers selection
 // until `networks()` seeds. Pre-J, the SW's `existing.navigate(url)`
 // reloaded the SPA at `/` and dropped the deep-link entirely.
+//
+// #793 — the same boot reader also consumes an invite link
+// (`/<network>/<channel>`), which is why it is no longer named after
+// push alone. It MUST stay above `render()`: the invite path is not a
+// route, so the reader rewrites the address bar to `/` before the
+// router ever looks at it.
 installPushTargetListener();
-applyPushTargetFromUrl();
+applyDeepLinkFromUrl();
 
 // #181 — auto-renew a dropped push subscription on the SW-update /
 // app-resume seams. iOS silently drops `pushManager.getSubscription()`

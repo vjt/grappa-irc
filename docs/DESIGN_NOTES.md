@@ -31195,3 +31195,70 @@ tags. And the dry-run paragraph keeps its mechanism — validating the shipping
 job pre-merge is still right — it just loses the false premise that the job is
 unproven; the reason to run it is now "you changed the Dockerfile or the job",
 not "it has never run".
+## 2026-08-06 — #793: an invite link is a second door into the deep-link reader
+
+`irc.sindro.me/azzurra/sniffo` — paste it to a normal person, they click, they
+are asked, they land in the channel. The machinery for that already existed
+twice over, so the shipment is mostly about NOT building it a third time.
+
+**Two of the issue's five open decisions were already answered by the code.**
+Decision 4 (an index.html fallback so the SPA can be served on a two-segment
+path) has been true since #399: `SpaController`'s `GET /*path` catch-all serves
+the shell for any browser navigation that matched no static file and no API
+route, and since #485 every nginx substrate is a dumb `location / → BEAM`
+proxy, so there is no allowlist to extend either. Nothing server-side was
+written for this feature. And the issue's pointer to the join path —
+`slashCommands.ts` `{kind:"join"}` via `compose.ts` — was aimed one verb short:
+`channelJoin.ts`'s `confirmJoinChannel` (#648) already IS confirm → `postJoin`
+→ switch, including the already-in-the-channel case that switches with no
+modal. The invite route delegates to it and adds nothing.
+
+**What was genuinely new is the reader.** `pushTarget.ts` read
+`location.search` only. It now reads both shapes and dispatches:
+`?network=&channel=` routes a selection as before, `/<network>/<channel>`
+normalises into the SAME `PushTarget` and routes a join. One boot reader, one
+defer-until-`networks()`-seeds, two routes — hence the rename to
+`applyDeepLinkFromUrl`. The two gates differ on purpose: a push target must
+resolve against a non-empty list, while an invite fires as soon as the resource
+RESOLVES, so a recipient with nothing bound gets an answer instead of silence.
+
+**The URL is cleaned before `render()`, not after routing.** The push path
+cleans once the selection lands; the invite cannot wait that long, because the
+router has no route for a two-segment path and would mount the app on nothing
+at all. Cleaning early also satisfies the requirement the push path cleans for
+— a refresh must not re-fire the invite — and it is why no new `<Route>` was
+added. The pending invite then survives the login round-trip in memory: cic's
+login is a client-side navigate, and `networks()` cannot resolve before the
+session is up, so the existing defer IS the auth round-trip handling. A hard
+refresh while sitting on `/login` does lose it; that corner was accepted rather
+than given a sessionStorage store of its own.
+
+**Encoding (decision 2) is where the bytes matter.** A literal `#` is a
+fragment delimiter and never reaches the server, so the shareable spelling is
+bare (`/azzurra/sniffo`) and the parser implies the sigil; `%23` is accepted
+and not doubled; `& + !` pass through. The segment is percent-decoded once,
+and a channel name carrying anything at or below 0x20, a comma, or DEL is
+REJECTED rather than escaped. The comma is the load-bearing one: JOIN takes a
+comma-separated LIST, so an unfiltered `/azzurra/a,b` would turn one invite
+into a two-channel join nobody wrote. `/share/:token` is reserved — it is the
+only other two-segment client route, and without the exclusion a visitor share
+link would parse as an invite to a network called `share`.
+
+**Keyed channels (decision 3) stay out of scope**, as the issue defaults: a key
+in a path lands in history, logs and referrers.
+
+**Decision 1 was NOT settled here.** `networkBySlug` resolves against this
+user's bound networks and an invite is cross-user by definition, so the
+recipient may not have `azzurra` at all. Whether the segment becomes a globally
+resolvable identifier or the flow grows an "add this network, then join" step
+is a product call that has not been taken. The branch therefore joins nothing
+and says so, in one toast naming the network — a visible dead end, because the
+silent one is indistinguishable from a broken link.
+
+**The already-in check reads the channel LIST, not the window states.** That is
+the one place the invite deliberately diverges from `confirmJoinChannel`'s own
+source: an invite fires at BOOT, and `windowStateByChannel` is filled later,
+per channel, off the per-channel WS join replies that `channelsBySlug` itself
+drives. Asking the live projection at boot would race it and pop a modal for a
+channel the operator is already sitting in. Same fact, read from the source
+that is ready at the moment the question is asked.

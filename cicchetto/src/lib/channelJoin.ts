@@ -31,7 +31,10 @@ import { windowStateByChannel } from "./windowState";
 // `channelKey`, which folds internally), because window_states + selection are
 // keyed folded — a mixed-case focus target opens a phantom window.
 
-function switchTo(networkSlug: string, rawChannel: string): void {
+// Exported for #793's invite-link route, which reaches the already-in-the-
+// channel outcome from a URL instead of a tap and must not grow a second
+// spelling of "focus this channel window".
+export function switchToChannelWindow(networkSlug: string, rawChannel: string): void {
   setSelectedChannel({
     networkSlug,
     channelName: canonicalChannel(rawChannel),
@@ -47,7 +50,7 @@ async function performJoin(networkSlug: string, rawChannel: string): Promise<voi
     await postJoin(t, networkSlug, rawChannel, null);
     // Focus originates HERE (the tap), AFTER the awaited join — a rejected
     // join (+i / +k / +b) never foregrounds a phantom window (#244).
-    switchTo(networkSlug, rawChannel);
+    switchToChannelWindow(networkSlug, rawChannel);
   } catch (err) {
     // Fire-and-forget UI action with no dedicated error surface (unlike the
     // DirectoryPane row's inline error signal). Log, don't throw — the same
@@ -85,7 +88,7 @@ export function acceptInvite(networkSlug: string, rawChannel: string): void {
 export function confirmJoinChannel(networkSlug: string, rawChannel: string): void {
   const joined = windowStateByChannel()[channelKey(networkSlug, rawChannel)] === "joined";
   if (joined) {
-    switchTo(networkSlug, rawChannel);
+    switchToChannelWindow(networkSlug, rawChannel);
     return;
   }
   requestConfirm({

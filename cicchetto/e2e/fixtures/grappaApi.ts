@@ -602,6 +602,25 @@ export async function joinChannel(
   }
 }
 
+// GET /networks/:slug/channels — the channel list cic itself reads at boot
+// (`networks.ts` `channelsBySlug`). A spec whose PRECONDITION is "already in
+// this channel" must wait on THIS list rather than on `joinChannel` returning:
+// the POST only asks, and the row lands once the upstream JOIN completes. A
+// spec that races it is testing the boot ordering, not the behaviour it names
+// (#793, where the invite's already-in branch was scored against a channel the
+// server had not listed yet).
+export async function listChannelNames(token: string, networkSlug: string): Promise<string[]> {
+  const url = `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/channels`;
+  const res = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    throw new Error(`listChannelNames: unexpected status ${res.status}`);
+  }
+  // The response IS the array (no named wrapper) — same shape cic's
+  // `api.ts` `listChannels` reads.
+  const body = (await res.json()) as Array<{ name: string }>;
+  return body.map((c) => c.name);
+}
+
 // PATCH /networks/:slug — T32 connection_state transition. Mirrors
 // `cicchetto/src/lib/api.ts`'s `patchNetwork`. Used by the parked-
 // flow e2e: setting `connection_state: "parked"` triggers
