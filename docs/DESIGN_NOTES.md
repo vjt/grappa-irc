@@ -31195,3 +31195,48 @@ tags. And the dry-run paragraph keeps its mechanism — validating the shipping
 job pre-merge is still right — it just loses the false premise that the job is
 unproven; the reason to run it is now "you changed the Dockerfile or the job",
 not "it has never run".
+## 2026-08-06 — #149: the derogation grew from two advisories to four, unread
+
+`mix hex.audit` was demoted to advisory-only in #147 for two cowlib advisories
+that no version fixes. Two more have landed under it since — one of them a
+network-reachable availability-HIGH — and nobody re-read the note. The measured
+state, from OSV rather than from the note:
+
+- **cowlib 2.18.0** carries THREE. `CVE-2026-43966` (response splitting in
+  `cow_http_struct_hd:escape_string/2`) and `CVE-2026-43969`
+  (`cow_cookie:cookie/1` injection) have **no fixed release at any version** —
+  2.19.0 is explicitly enumerated as affected. `CVE-2026-59248` (unbounded
+  HPACK/QPACK integer decode → memory exhaustion, AV:N VA:H) **is fixed in
+  2.19.0**.
+- **cowboy 2.17.0** carries `CVE-2026-65624` (max_headers bypass via duplicate
+  header names), **fixed in 2.18.0**.
+
+**So the issue's question has a number: no bump closes all four.** A bump to
+cowlib 2.19.0 + cowboy 2.18.0 closes exactly two, and the two survivors are the
+ones that keep hex.audit red. The hard gate cannot be restored, and #149 stays
+open. That is why this change is a comment and not a lock file.
+
+**The justification was also wrong, not just stale.** #147 recorded both
+unfixable advisories as `cow_cookie:cookie/1` request-cookie *composition*
+issues, N/A because grappa only consumes Cookie headers via Plug. 43966 is a
+response-header path in `cow_http_struct_hd`, so that argument never covered
+it. The honest one is narrower and stronger: **cowboy and cowlib enter the tree
+ONLY through `bypass` (`only: :test`, via plug_cowboy)**, prod serves on Bandit,
+and the release is built at `MIX_ENV=prod` — so none of the four is present in
+a deployed grappa at all. Reachability, not severity, is what holds the
+derogation up, and that is what makes it falsifiable: it dies the moment
+cowboy/cowlib become a runtime dep or grappa moves off Bandit, independently of
+whether anything gets patched.
+
+**One list, three readers.** The derogation was described in three places —
+the `ci.check` alias, the ci.yml step, and CLAUDE.md's security section, which
+still called `mix hex.audit` a blocking gate two months after it stopped being
+one. The full advisory list now lives ONCE, on the alias in `mix.exs`; the other
+two state the posture and point at it. Three copies of a list is how this drifted
+in the first place.
+
+**Declined, and why:** taking the two available fixes is a `mix.lock` change,
+which the deploy preflight reads as COLD — for packages that are not in the
+prod release, so the COLD buys no production security. Worth folding into the
+next COLD-forcing change rather than shipping alone. `mix deps.audit` remains
+the hard CVE gate throughout and is untouched.

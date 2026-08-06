@@ -298,11 +298,41 @@ defmodule Grappa.MixProject do
         "cmd mix format --check-formatted",
         "cmd mix credo --strict",
         "cmd mix deps.audit",
-        # hex.audit is advisory-only (non-fatal): cowlib has two UNFIXABLE
-        # cow_cookie advisories (CVE-2026-43969 LOW + CVE-2026-43966 MED,
-        # fixed=None) that are N/A to grappa and that hex.audit can't ignore
-        # per-advisory. deps.audit above stays the hard CVE gate. Mirrors the
-        # `continue-on-error` on the CI step. Restore to fatal on cowlib patch — #149.
+        # hex.audit is advisory-only (non-fatal). FOUR advisories sit under
+        # this derogation today (OSV, 2026-08-06), not the two it was written
+        # for — it was never re-read as new ones landed:
+        #
+        #   cowlib 2.18.0
+        #     CVE-2026-43966  response splitting via non-VCHAR bytes in
+        #                     cow_http_struct_hd:escape_string/2 (CWE-113,
+        #                     SI:L) — NO fixed release
+        #     CVE-2026-43969  request-cookie injection in cow_cookie:cookie/1
+        #                     (CWE-93, AV:L) — NO fixed release
+        #     CVE-2026-59248  unbounded HPACK/QPACK prefixed-integer decode,
+        #                     memory-exhaustion DoS (CWE-770, AV:N VA:H)
+        #                     — FIXED in cowlib 2.19.0, not taken (#149)
+        #   cowboy 2.17.0
+        #     CVE-2026-65624  max_headers bypass via duplicate header names,
+        #                     memory exhaustion (CWE-770, AV:N VA:L)
+        #                     — FIXED in cowboy 2.18.0, not taken (#149)
+        #
+        # WHY THE DEROGATION HOLDS, and it is not the severities: cowboy and
+        # cowlib enter the tree ONLY through `bypass` (`only: :test`, via
+        # plug_cowboy). Production serves on Bandit, and a prod release built
+        # at MIX_ENV=prod contains neither — so none of the four is reachable
+        # by a deployed grappa. The pre-existing note claimed both unfixable
+        # advisories were cow_cookie COMPOSITION issues; 43966 is a response-
+        # header path, so "we never compose request cookies" never covered it.
+        # Reachability does.
+        #
+        # WHAT MAKES IT FALL: (a) cowlib shipping a release that fixes 43966 +
+        # 43969 — every version >= 2.9.0 is affected today, 2.19.0 included,
+        # so no bump can close them and hex.audit has no per-advisory ignore
+        # to express the N/A; (b) cowboy/cowlib becoming reachable at runtime
+        # (a non-test dep, or a move off Bandit), which voids the whole
+        # argument regardless of what is fixed. Either one, and the `|| true`
+        # goes — that is #149. deps.audit above stays the hard CVE gate, and
+        # this mirrors `continue-on-error` on the CI step.
         "cmd sh -c 'mix hex.audit || true'",
         "cmd mix sobelow --config --exit Medium",
         "cmd mix doctor",
