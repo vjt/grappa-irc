@@ -373,7 +373,8 @@ defmodule Grappa.Session.Wire do
           kind: :window_invited,
           network: String.t(),
           channel: String.t(),
-          state: :invited
+          state: :invited,
+          inviter: String.t()
         }
 
   @type join_failed_payload :: %{
@@ -1146,11 +1147,28 @@ defmodule Grappa.Session.Wire do
   per-channel topic AFTER seeing the state in `windowStateByChannel`, and
   the user-topic is joined from boot so delivery is guaranteed. Same
   `window_`-namespaced naming convention.
+
+  #902 — carries `inviter`, the nick that sent the INVITE. ADDITIVE field,
+  so no `Grappa.Protocol` version bump (the wire contract is additive-only
+  and a client ignores what it does not know). The greyed tab this event
+  used to open is gone; cic now renders a dismissable banner reading
+  "<nick> is inviting you to #chan", which needs the nick at event time —
+  the persisted INVITE row it used to be read from lives in a channel
+  buffer that is not fetched until the operator opens the window.
+
+  `inviter` is never nil: producers pass `IRC.Message.sender_nick/1`, total
+  by construction (`"*"` for a prefix-less source).
   """
-  @spec window_invited(String.t(), String.t()) :: window_invited_payload()
-  def window_invited(network_slug, channel)
-      when is_binary(network_slug) and is_binary(channel) do
-    %{kind: :window_invited, network: network_slug, channel: channel, state: :invited}
+  @spec window_invited(String.t(), String.t(), String.t()) :: window_invited_payload()
+  def window_invited(network_slug, channel, inviter)
+      when is_binary(network_slug) and is_binary(channel) and is_binary(inviter) do
+    %{
+      kind: :window_invited,
+      network: network_slug,
+      channel: channel,
+      state: :invited,
+      inviter: inviter
+    }
   end
 
   @doc """

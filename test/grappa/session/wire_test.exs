@@ -410,16 +410,22 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
-  describe "window_invited/2" do
-    test "carries kind=window_invited + state=invited on the user-topic shape" do
+  describe "window_invited/3" do
+    test "carries kind=window_invited + state=invited + inviter on the user-topic shape" do
       # #78 — inbound INVITE to a not-joined channel surfaces an :invited
       # window. Same user-topic origination shape + naming convention as
       # window_pending (cic subscribes per-channel after seeing the state).
-      assert Wire.window_invited("azzurra", "#grappa") == %{
+      #
+      # #902 — `inviter` is the nick cic's replacement surface (a banner
+      # reading "<nick> is inviting you to #chan") renders. Additive field:
+      # no protocol bump, and asserting the WHOLE map means a silent drop of
+      # it fails here.
+      assert Wire.window_invited("azzurra", "#grappa", "vjt") == %{
                kind: :window_invited,
                network: "azzurra",
                channel: "#grappa",
-               state: :invited
+               state: :invited,
+               inviter: "vjt"
              }
     end
   end

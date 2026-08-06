@@ -983,14 +983,21 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert modes == ["S", "i", "w"]
     end
 
-    test "after-join snapshot: replays window_invited for every :invited window on the user topic (#482)" do
+    test "after-join snapshot: replays window_invited — inviter included — for every :invited window on the user topic (#482/#902)" do
       # #482 cold-WS-subscribe: an inbound INVITE we didn't request flips the
-      # channel to a greyed :invited tab and broadcasts window_invited on the
-      # USER topic ONCE, at INVITE time. A client that subscribes later
-      # (reload, backgrounded PWA, WS re-subscribe) misses that single
-      # broadcast and the bottom-bar tab evaporates — the invite survives
-      # only in scrollback, invisible. The user-topic snapshot must
-      # re-surface it, mirroring the umode / query_windows backfill.
+      # channel to :invited and broadcasts window_invited on the USER topic
+      # ONCE, at INVITE time. A client that subscribes later (reload,
+      # backgrounded PWA, WS re-subscribe) misses that single broadcast and
+      # the surface evaporates — the invite survives only in scrollback,
+      # invisible. The user-topic snapshot must re-surface it, mirroring the
+      # umode / query_windows backfill.
+      #
+      # #902 — the replay must carry `inviter` too. There is no INVITE
+      # message in hand on this path, so the nick can only come from the
+      # `invited_by` window metadata; if it were still a scrollback-only
+      # field, the banner would come back nameless after every reload. This
+      # is the assertion that makes that storage load-bearing rather than
+      # incidental.
       {irc_server, port} = start_irc_server()
       {user, network} = setup_user_and_network_with_session(port)
 
@@ -1013,7 +1020,8 @@ defmodule GrappaWeb.GrappaChannelTest do
         kind: :window_invited,
         network: net_slug,
         channel: "#random",
-        state: :invited
+        state: :invited,
+        inviter: "someguy"
       })
 
       assert net_slug == network.slug

@@ -4627,22 +4627,23 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "inbound non-awaiting INVITE broadcasts window_invited + records :invited + persists rows at BOTH the channel AND $server (#78/#482)" do
+    test "inbound non-awaiting INVITE broadcasts window_invited with the inviter + records :invited + persists ONE row at the channel, none at $server (#78/#902)" do
       # #78 / folds #128: an inbound INVITE we did NOT request surfaces the
       # invited channel as a not-joined :invited window. EventRouter emits
-      # {:invited, ch}; Server.apply_effects flips window_states[ch] to
-      # :invited, broadcasts SessionWire.window_invited/2 on Topic.user/1
+      # {:invited, ch, inviter}; Server.apply_effects flips window_states[ch]
+      # to :invited, broadcasts SessionWire.window_invited/3 on Topic.user/1
       # (same chicken-and-egg user-topic origination as window_pending),
       # and the INVITE row persists AT THE CHANNEL (route-by-channel-
-      # reference) so cic renders it in the channel buffer with the [Join]
-      # affordance.
+      # reference) — the invite's history.
       #
-      # #482: the SAME INVITE ALSO persists a second $server copy so the
-      # status window keeps a durable, snapshot-independent record with the
-      # [Join now] CTA (the channel row is invisible on a cold reload until
-      # the user-topic :invited backfill re-surfaces the greyed tab). Both
-      # rows are :server_event (event-tier) so neither doubles the unread
-      # badge.
+      # #902 asserts BOTH halves of the surface change end-to-end:
+      #   * the broadcast carries `inviter`, which cic renders as the banner
+      #     subject ("<nick> is inviting you to #chan");
+      #   * #482's second $server copy is GONE. That negative is the point of
+      #     the revert — with a banner carrying [Join], the status-window
+      #     duplicate was a second place to look for what is already on
+      #     screen. Asserting absence here is what keeps it from creeping
+      #     back as an "extra effect, harmless" edit.
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
 
@@ -4659,7 +4660,8 @@ defmodule Grappa.Session.ServerTest do
                          kind: :window_invited,
                          network: net_slug,
                          channel: "#random",
-                         state: :invited
+                         state: :invited,
+                         inviter: "someguy"
                        }
                      },
                      1_000
@@ -4672,7 +4674,13 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
 
       state = SessionStateHelpers.fetch(pid)
-      assert WindowState.state_of(SessionStateHelpers.window_state(state), "#random") == :invited
+      window_state = SessionStateHelpers.window_state(state)
+      assert WindowState.state_of(window_state, "#random") == :invited
+
+      # #902 — the nick is recorded as window metadata, not only in the row.
+      # This is what lets the cold-subscribe backfill re-emit it on a reload,
+      # when no INVITE message is in hand.
+      assert WindowState.invited_by(window_state, "#random") == "someguy"
 
       # #78: the INVITE row landed in the CHANNEL buffer.
       [row] = Scrollback.fetch({:user, user.id}, network.id, "#random", nil, 10, nil, false)
@@ -4680,16 +4688,12 @@ defmodule Grappa.Session.ServerTest do
       assert row.sender == "someguy"
       assert row.meta.raw_verb == "INVITE"
 
-      # #482: a durable copy of the SAME INVITE also landed in $server so the
-      # status window carries the record (+ [Join now] CTA) independent of
-      # the cold-subscribe snapshot. `any?` (not exact-one) is defensive
-      # against incidental status-window rows from the session lifecycle.
-      srv_rows = Scrollback.fetch({:user, user.id}, network.id, "$server", nil, 10, nil, false)
+      # #902: and NOWHERE else. The PING/PONG above already flushed the
+      # router, so $server holding no INVITE row is a settled observation,
+      # not a race against a write still in flight.
+      srv_rows = Scrollback.fetch({:user, user.id}, network.id, "$server", nil, 50, nil, false)
 
-      assert Enum.any?(srv_rows, fn r ->
-               r.kind == :server_event and r.sender == "someguy" and
-                 r.meta.raw_verb == "INVITE"
-             end)
+      refute Enum.any?(srv_rows, fn r -> r.meta[:raw_verb] == "INVITE" end)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

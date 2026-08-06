@@ -2464,9 +2464,16 @@ defmodule Grappa.Session.Server do
   # :transient proc on the next after-join snapshot (see the #229 / #249
   # hot-reload safety tests, which still exercise the same defaults via the
   # untouched get_umodes / get_supported_umodes point accessors). Invited
-  # windows funnel through the SAME `SessionWire.window_invited/2` verb the
-  # event-time `{:invited, _}` broadcast uses, so snapshot + event payloads
-  # stay byte-identical.
+  # windows funnel through the SAME `SessionWire.window_invited/3` verb the
+  # event-time `{:invited, _, _}` broadcast uses, so snapshot + event payloads
+  # stay byte-identical — including #902's `inviter`, which is why the nick
+  # had to become window state rather than stay a scrollback-row field.
+  #
+  # No `Map.get` shim for `window_state`'s own #902 field: `WindowState` is
+  # listed in `HotReload.LongLivedModules` `@state_helpers`, so
+  # `Deploy.Preflight` reads the changed `defstruct` and refuses a hot
+  # deploy. The COLD restart is what guarantees no pre-#902 struct is left
+  # in a live proc for `invited_windows/2` to pattern-match against.
   def handle_call(:session_snapshot, _, state) do
     {:reply,
      {:ok,
@@ -5094,14 +5101,20 @@ defmodule Grappa.Session.Server do
   end
 
   # #78 / folds #128: an inbound INVITE we did NOT request (not a ChanServ
-  # relay of our own gated /join) surfaces the invited channel as a
-  # not-joined `:invited` window — a greyed sidebar tab the operator can
-  # `/join` on their own time. Broadcast `window_invited` on `Topic.user/1`
+  # relay of our own gated /join) records the invited channel as a
+  # not-joined `:invited` window. Broadcast `window_invited` on `Topic.user/1`
   # (same chicken-and-egg user-topic origination as `window_pending`: cic
   # subscribes to the per-channel topic only AFTER seeing the state). The
   # `:persist :server_event` INVITE row alongside (emitted by EventRouter
-  # at `channel = #chan`) is the single unread item cic renders with the
-  # existing `[Join]` affordance — NO auto-focus.
+  # at `channel = #chan`) keeps the invite in the channel's own history —
+  # NO auto-focus.
+  #
+  # #902 — what cic DRAWS off this changed: the greyed sidebar tab is gone,
+  # replaced by a dismissable top banner with a [Join] action. The state
+  # itself is unchanged (server-owned, per the CLAUDE.md window-state
+  # invariant); only the client projection moved. The `inviter` now rides
+  # both the broadcast and the stored state so that banner can name who
+  # invited you on a cold subscribe as well as live.
   #
   # Guard against downgrading a window the operator is already engaging
   # with: `:joined` (already in the room) and `:pending` (a JOIN in
@@ -5112,7 +5125,7 @@ defmodule Grappa.Session.Server do
   # invite-while-joined / invite-while-joining is a legitimate in-channel
   # event. A repeat INVITE while already `:invited` re-affirms the state
   # (idempotent value + broadcast); harmless.
-  defp apply_effects([{:invited, channel} | rest], state) do
+  defp apply_effects([{:invited, channel, inviter} | rest], state) do
     state =
       case WindowState.state_of(state.window_state, channel) do
         joined_or_pending when joined_or_pending in [:joined, :pending] ->
@@ -5121,10 +5134,13 @@ defmodule Grappa.Session.Server do
         _ ->
           broadcast_window_state(
             state,
-            SessionWire.window_invited(state.network_slug, channel)
+            SessionWire.window_invited(state.network_slug, channel, inviter)
           )
 
-          %{state | window_state: WindowState.set_invited(state.window_state, channel)}
+          %{
+            state
+            | window_state: WindowState.set_invited(state.window_state, channel, inviter)
+          }
       end
 
     apply_effects(rest, state)

@@ -966,6 +966,7 @@ export type SessionWireWindowInvitedPayload = {
   network: string;
   channel: string;
   state: "invited";
+  inviter: string;
 };
 
 export type SessionWireJoinFailedPayload = {

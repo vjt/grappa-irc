@@ -5160,62 +5160,80 @@ defmodule Grappa.Session.EventRouterTest do
       assert effects == [{:rejoin_invited, "#secret"}]
     end
 
-    test "inbound INVITE for a NON-awaiting channel persists BOTH a channel row AND a $server row + emits {:invited, ch} (#78/#482)" do
+    test "inbound INVITE for a NON-awaiting channel persists ONE channel row + emits {:invited, ch, inviter} (#78/#902)" do
       state = base_state(%{awaiting_invite: MapSet.new()})
       m = msg(:invite, ["vjt", "#random"], {:nick, "someguy", "u", "h"})
       {:cont, _, effects} = EventRouter.route(m, state)
       # #78 route-by-channel-reference: the INVITE row lands in the invited
-      # channel's own buffer, and {:invited, ch} flips the greyed tab.
-      # #482 restores a SECOND $server copy so the status window carries a
-      # durable, snapshot-independent record with the [Join now] CTA — the
-      # channel-only row is invisible until the user-topic :invited backfill
-      # re-surfaces the tab. BOTH rows are :server_event (event-tier, NEITHER
-      # content nor notify) so neither doubles the unread badge (RULING 2).
+      # channel's own buffer — history, kept. The row is :server_event
+      # (event-tier, NEITHER content nor notify) so it does not move the
+      # unread badge (RULING 2).
+      #
+      # #902 REVERTS #482's second $server copy: the invite is announced by a
+      # banner carrying [Join] now, so a status-window duplicate is a second
+      # place to look for what is already on screen. Asserting the EXACT
+      # effect list is what makes this a real guard — a re-added third effect
+      # fails here rather than silently restoring the duplicate.
       assert [
                {:persist, :server_event, chan_attrs},
-               {:persist, :server_event, srv_attrs},
-               {:invited, "#random"}
+               {:invited, "#random", "someguy"}
              ] = effects
 
       assert chan_attrs.channel == "#random"
-      assert srv_attrs.channel == "$server"
-
-      # Both rows carry the identical INVITE meta so cic renders [Join now]
-      # off either window (the CTA keys off the row, not its target window).
-      for attrs <- [chan_attrs, srv_attrs] do
-        assert attrs.sender == "someguy"
-        assert attrs.meta.raw_verb == "INVITE"
-        assert attrs.meta.raw_params == ["vjt", "#random"]
-      end
+      assert chan_attrs.sender == "someguy"
+      assert chan_attrs.meta.raw_verb == "INVITE"
+      assert chan_attrs.meta.raw_params == ["vjt", "#random"]
     end
 
-    test "inbound INVITE with absent awaiting_invite key (pre-#116 state) emits BOTH rows + {:invited}, no crash" do
+    test "the {:invited, _, _} inviter is the row's own sender — one source, not two" do
+      # The banner names the inviter and the persisted row attributes it.
+      # Both come from Message.sender_nick/1; asserting they are EQUAL (not
+      # merely both "someguy") is what stops a future edit from deriving one
+      # of them some other way.
+      state = base_state(%{awaiting_invite: MapSet.new()})
+      m = msg(:invite, ["vjt", "#random"], {:nick, "someguy", "u", "h"})
+
+      {:cont, _, [{:persist, :server_event, attrs}, {:invited, _, inviter}]} =
+        EventRouter.route(m, state)
+
+      assert inviter == attrs.sender
+    end
+
+    test "a prefix-less INVITE carries the anonymous-sender sentinel, never nil" do
+      # sender_nick/1 is total. The wire field is String.t() with no nil arm,
+      # so a server-originated or malformed INVITE must degrade to "*" rather
+      # than crash the effect or push a null through the banner.
+      state = base_state(%{awaiting_invite: MapSet.new()})
+      m = msg(:invite, ["vjt", "#random"], nil)
+      {:cont, _, effects} = EventRouter.route(m, state)
+
+      assert [_, {:invited, "#random", inviter}] = effects
+      assert inviter == Message.anonymous_sender()
+    end
+
+    test "inbound INVITE with absent awaiting_invite key (pre-#116 state) emits the row + {:invited}, no crash" do
       state = base_state()
       m = msg(:invite, ["vjt", "#random"], {:nick, "someguy", "u", "h"})
       {:cont, _, effects} = EventRouter.route(m, state)
 
       assert [
                {:persist, :server_event, %{channel: "#random"}},
-               {:persist, :server_event, %{channel: "$server"}},
-               {:invited, "#random"}
+               {:invited, "#random", "someguy"}
              ] = effects
     end
 
-    test "inbound non-awaiting INVITE folds a MIXED-CASE channel for the channel row + {:invited}; the $server copy stays literal (#78 case-fold / #482)" do
+    test "inbound non-awaiting INVITE folds a MIXED-CASE channel for the channel row + {:invited} (#78 case-fold)" do
       # Channel case-fold invariant: INVITE's channel is at param 1, so it
       # MUST be canonicalised like every other channel param — otherwise the
       # :invited window (keyed on the raw channel) forks from the persisted
       # row (folded by the changeset) and the per-channel topic cic joins.
-      # The #482 $server copy is the synthetic status window — it is NOT a
-      # channel and stays the literal "$server".
       state = base_state(%{awaiting_invite: MapSet.new()})
       m = msg(:invite, ["vjt", "#MixedCase"], {:nick, "someguy", "u", "h"})
       {:cont, _, effects} = EventRouter.route(m, state)
 
       assert [
                {:persist, :server_event, %{channel: "#mixedcase"}},
-               {:persist, :server_event, %{channel: "$server"}},
-               {:invited, "#mixedcase"}
+               {:invited, "#mixedcase", "someguy"}
              ] = effects
     end
   end

@@ -54,13 +54,86 @@ defmodule Grappa.Session.WindowStateTest do
     end
   end
 
-  describe "set_invited/2" do
-    test "marks the channel as :invited without touching sibling maps (#78)" do
-      ws = WindowState.set_invited(WindowState.new(), "#grappa")
+  describe "set_invited/3" do
+    test "marks the channel as :invited without touching failure / kicked maps (#78)" do
+      ws = WindowState.set_invited(WindowState.new(), "#grappa", "inviter")
 
       assert WindowState.state_of(ws, "#grappa") == :invited
       assert WindowState.failure_meta(ws, "#grappa") == nil
       assert WindowState.kicked_meta(ws, "#grappa") == nil
+    end
+
+    # #902 — the inviter is window metadata now, not only a scrollback row.
+    # The banner that replaced the greyed tab renders "<nick> is inviting you
+    # to #chan" the moment `window_invited` lands, BEFORE the channel buffer
+    # holding the persisted INVITE row is ever fetched — so the nick has to
+    # ride the window state, or the cold-subscribe backfill below cannot
+    # reproduce it.
+    test "records the inviter (#902)" do
+      ws = WindowState.set_invited(WindowState.new(), "#grappa", "vjt")
+
+      assert WindowState.invited_by(ws, "#grappa") == "vjt"
+    end
+
+    test "a repeat INVITE overwrites the recorded inviter" do
+      ws =
+        WindowState.new()
+        |> WindowState.set_invited("#grappa", "first")
+        |> WindowState.set_invited("#grappa", "second")
+
+      assert WindowState.invited_by(ws, "#grappa") == "second"
+    end
+
+    test "invited_by/2 is nil for a channel that was never invited" do
+      ws = WindowState.set_joined(WindowState.new(), "#grappa")
+
+      assert WindowState.invited_by(ws, "#grappa") == nil
+    end
+  end
+
+  # #902 — the ONE invariant that keeps `invited_by` from becoming a parallel
+  # structure that drifts (CLAUDE.md: "don't duplicate state that already
+  # exists — every parallel structure needs housekeeping"). The map is not a
+  # second source of truth for invitedness: `states` is. So the key exists in
+  # `invited_by` IF AND ONLY IF `states[channel] == :invited`, and EVERY
+  # mutator that moves a channel out of `:invited` drops it. Asserted per
+  # mutator, because a full-struct-literal rebuild (`set_joined`, `set_parted`)
+  # that forgets the new field silently resets the WHOLE map, not one key.
+  describe "invited_by is dropped by every transition out of :invited (#902)" do
+    setup do
+      %{invited: WindowState.set_invited(WindowState.new(), "#grappa", "vjt")}
+    end
+
+    test "set_pending/2 clears the recorded inviter", %{invited: ws} do
+      assert WindowState.invited_by(WindowState.set_pending(ws, "#grappa"), "#grappa") == nil
+    end
+
+    test "set_joined/2 clears the recorded inviter", %{invited: ws} do
+      assert WindowState.invited_by(WindowState.set_joined(ws, "#grappa"), "#grappa") == nil
+    end
+
+    test "set_failed/4 clears the recorded inviter", %{invited: ws} do
+      ws = WindowState.set_failed(ws, "#grappa", "Cannot join (+i)", 473)
+      assert WindowState.invited_by(ws, "#grappa") == nil
+    end
+
+    test "set_kicked/4 clears the recorded inviter", %{invited: ws} do
+      ws = WindowState.set_kicked(ws, "#grappa", "op", "bye")
+      assert WindowState.invited_by(ws, "#grappa") == nil
+    end
+
+    test "set_parted/2 clears the recorded inviter", %{invited: ws} do
+      assert WindowState.invited_by(WindowState.set_parted(ws, "#grappa"), "#grappa") == nil
+    end
+
+    test "a transition on ANOTHER channel leaves this channel's inviter intact" do
+      ws =
+        WindowState.new()
+        |> WindowState.set_invited("#grappa", "vjt")
+        |> WindowState.set_joined("#elsewhere")
+        |> WindowState.set_parted("#gone")
+
+      assert WindowState.invited_by(ws, "#grappa") == "vjt"
     end
   end
 
@@ -235,7 +308,7 @@ defmodule Grappa.Session.WindowStateTest do
       # seeing it), so its cold-load backfill rides `invited_windows/2` on
       # the user topic — NOT to_wire/3, which would push a user-topic-shaped
       # payload on the per-channel topic (cic drops it as malformed).
-      ws = WindowState.set_invited(WindowState.new(), "#grappa")
+      ws = WindowState.set_invited(WindowState.new(), "#grappa", "vjt")
       assert WindowState.to_wire(ws, "azzurra", "#grappa") == {:error, :not_tracked}
     end
 
@@ -258,17 +331,29 @@ defmodule Grappa.Session.WindowStateTest do
     test "returns a window_invited payload for EVERY :invited channel, nothing else" do
       ws =
         WindowState.new()
-        |> WindowState.set_invited("#random")
-        |> WindowState.set_invited("#other")
+        |> WindowState.set_invited("#random", "alice")
+        |> WindowState.set_invited("#other", "bob")
         |> WindowState.set_pending("#joining")
         |> WindowState.set_joined("#here")
         |> WindowState.set_failed("#nope", "Cannot join (+i)", 473)
 
       assert MapSet.new(WindowState.invited_windows(ws, "azzurra")) ==
                MapSet.new([
-                 SessionWire.window_invited("azzurra", "#random"),
-                 SessionWire.window_invited("azzurra", "#other")
+                 SessionWire.window_invited("azzurra", "#random", "alice"),
+                 SessionWire.window_invited("azzurra", "#other", "bob")
                ])
+    end
+
+    # #902 — the whole reason the inviter became window metadata. On a cold
+    # WS subscribe there is no live INVITE echo, so this backfill is the ONLY
+    # source the banner can render its "<nick> is inviting you" copy from.
+    # Pre-#902 the nick lived exclusively in the persisted scrollback row and
+    # this payload could not carry it at all.
+    test "each payload carries the inviter recorded at INVITE time" do
+      ws = WindowState.set_invited(WindowState.new(), "#random", "alice")
+
+      assert [%{channel: "#random", inviter: "alice"}] =
+               WindowState.invited_windows(ws, "azzurra")
     end
 
     test "returns [] when no channel is :invited" do

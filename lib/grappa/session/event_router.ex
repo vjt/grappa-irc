@@ -209,7 +209,7 @@ defmodule Grappa.Session.EventRouter do
           | {:peer_away, peer :: String.t(), away_message :: String.t()}
           | {:invite_ack, channel :: String.t(), peer :: String.t()}
           | {:rejoin_invited, channel :: String.t()}
-          | {:invited, channel :: String.t()}
+          | {:invited, channel :: String.t(), inviter :: String.t()}
           | {:lusers_bundle, accum :: map()}
           | {:whowas_bundle, target :: String.t(), accum :: map()}
           | {:banlist_bundle, channel :: String.t(), accum :: map()}
@@ -2310,12 +2310,10 @@ defmodule Grappa.Session.EventRouter do
   # invite landed upstream — re-JOIN keyless (the invite bypasses both
   # +i and +k: bahamut-azzurra channel.c can_join short-circuits on the
   # invited list). Channel is at param 1 (`:src INVITE <target> <chan>`).
-  # #78/#482: any OTHER (non-awaiting) inbound INVITE persists the INVITE
-  # row TWICE — at the invited channel (route-by-channel-reference) AND at
-  # $server (the status window's durable copy #482 restores) — then emits
-  # {:invited, channel}. Both rows are :server_event (event-tier, NEITHER
-  # content nor notify) so neither doubles the unread badge; cic's [Join]
-  # CTA renders off either row (it keys on the INVITE verb, not the window).
+  # #78: any OTHER (non-awaiting) inbound INVITE persists the INVITE row at
+  # the invited channel (route-by-channel-reference) and emits
+  # {:invited, channel, inviter}. The row is :server_event (event-tier,
+  # NEITHER content nor notify) so it does not move the unread badge.
   # Map.get keeps it safe on a pre-#116 state map (no awaiting_invite key).
   defp do_route(%Message{command: :invite, params: [_, channel | _]} = msg, state)
        when is_binary(channel) do
@@ -2324,19 +2322,21 @@ defmodule Grappa.Session.EventRouter do
     if MapSet.member?(awaiting, normalize_channel(channel, casemapping(state))) do
       {:cont, state, [{:rejoin_invited, channel}]}
     else
-      # #78 route-by-channel-reference: the INVITE row lands in the invited
-      # channel's own buffer and {:invited, channel} flips the window to a
-      # not-joined, greyed tab the operator can /join on their own time.
+      # #902 REVERTS #482's second $server copy. #482 existed because an
+      # invite left no trace an operator would stumble onto: the channel row
+      # is invisible until its window is opened, and the greyed tab that
+      # announced it evaporated on reload. #902 replaces that whole surface
+      # with a top banner carrying [Join], so a $server duplicate is now a
+      # SECOND place to look for something already in front of the operator.
+      # The channel's own row STAYS — that one is history, not notification,
+      # and it is what the archive surfaces once the banner is gone.
       #
-      # #482 restores a SECOND $server copy so the status window keeps a
-      # durable, snapshot-independent record with the [Join now] CTA — the
-      # channel row alone is invisible until the user-topic :invited backfill
-      # (WindowState.invited_windows/2) re-surfaces the greyed tab on a cold
-      # reload. persist_raw_event/3 is parametrized on the target, so this is
-      # an extra effect, not new plumbing. No auto-focus.
+      # The inviter rides the effect (#902): the banner names who invited
+      # you, and by the time apply_effects runs, this Message — the only
+      # thing that knows — is out of scope. sender_nick/1 is total ("*" for
+      # a prefix-less source), so the field is never nil.
       {state, chan_eff} = persist_raw_event(msg, state, channel)
-      {state, srv_eff} = persist_raw_event(msg, state, "$server")
-      {:cont, state, [chan_eff, srv_eff, {:invited, channel}]}
+      {:cont, state, [chan_eff, {:invited, channel, Message.sender_nick(msg)}]}
     end
   end
 
@@ -2411,7 +2411,7 @@ defmodule Grappa.Session.EventRouter do
   # a `:server_event` row on `$server` so it's never invisible. The persist
   # shape is in `persist_raw_event/3` (parametrized on target) so the #78
   # inbound-INVITE clause can route the same row to the invited channel
-  # instead, then append its own `{:invited, channel}` effect.
+  # instead, then append its own `{:invited, channel, inviter}` effect.
   @spec route_unhandled_command(Message.t(), state()) :: {:cont, state(), [effect()]}
   defp route_unhandled_command(%Message{} = msg, state) do
     {state, eff} = persist_raw_event(msg, state, "$server")
@@ -2423,7 +2423,9 @@ defmodule Grappa.Session.EventRouter do
   # reference. `route_unhandled_command/2` targets `$server`; the #78
   # inbound-INVITE clause targets the invited channel itself. Returns the
   # bare `{state, effect}` (not the `{:cont, ...}` envelope) so callers can
-  # append sibling effects — the INVITE clause adds `{:invited, channel}`.
+  # append sibling effects — the INVITE clause adds
+  # `{:invited, channel, inviter}`, whose nick is this same
+  # `Message.sender_nick/1` value the persisted row stores as its sender.
   @spec persist_raw_event(Message.t(), state(), String.t()) :: {state(), effect()}
   defp persist_raw_event(%Message{command: command, params: params} = msg, state, channel) do
     sender = Message.sender_nick(msg)

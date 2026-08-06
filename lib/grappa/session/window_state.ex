@@ -79,13 +79,15 @@ defmodule Grappa.Session.WindowState do
           states: %{String.t() => window_state()},
           failure_reasons: %{String.t() => String.t()},
           failure_numerics: %{String.t() => pos_integer()},
-          kicked_meta: %{String.t() => %{by: String.t(), reason: String.t() | nil}}
+          kicked_meta: %{String.t() => %{by: String.t(), reason: String.t() | nil}},
+          invited_by: %{String.t() => String.t()}
         }
 
   defstruct states: %{},
             failure_reasons: %{},
             failure_numerics: %{},
-            kicked_meta: %{}
+            kicked_meta: %{},
+            invited_by: %{}
 
   @doc """
   Returns an empty `WindowState`. Used by `Session.Server.init/1`.
@@ -107,10 +109,19 @@ defmodule Grappa.Session.WindowState do
   `set_kicked/4` clears the failure path implicitly because failures
   and kicks are mutually exclusive in a single window-state cycle)
   resolves it.
+
+  Drops `invited_by` (#902): a JOIN in flight is no longer an invite, and the
+  key exists IF AND ONLY IF the state is `:invited` — see the invariant note
+  on `invited_by/2`. Unlike the failure metadata, there is nothing to preserve
+  across a retry; the nick is re-recorded by the next INVITE.
   """
   @spec set_pending(t(), String.t()) :: t()
   def set_pending(%__MODULE__{} = ws, channel) when is_binary(channel) do
-    %{ws | states: Map.put(ws.states, channel, :pending)}
+    %{
+      ws
+      | states: Map.put(ws.states, channel, :pending),
+        invited_by: Map.delete(ws.invited_by, channel)
+    }
   end
 
   @doc """
@@ -120,14 +131,31 @@ defmodule Grappa.Session.WindowState do
   the window appears as a not-joined, greyed sidebar tab the operator can
   `/join` on their own time.
 
-  Like `set_pending/2`, does NOT touch the failure / kicked sibling maps:
-  an invite carries no failure reason or kicker. The inviter is conveyed by
-  the persisted `:server_event` scrollback row, not window metadata, so no
-  sibling map is needed.
+  Does NOT touch the failure / kicked sibling maps: an invite carries no
+  failure reason or kicker.
+
+  It DOES record `inviter` in the `invited_by` sibling map (#902). Pre-#902
+  the nick was carried exclusively by the persisted `:server_event`
+  scrollback row and this function took no inviter at all — fine while the
+  surface was a greyed sidebar tab whose only job was to exist. #902 replaced
+  that tab with a banner reading "<nick> is inviting you to #chan", rendered
+  the instant `window_invited` lands and BEFORE the channel's buffer is ever
+  fetched; and the cold-subscribe backfill (`invited_windows/2`) rebuilds its
+  payloads from this struct alone, with no message in hand. So the nick has to
+  be window metadata — same shape, same reason, as `kicked_meta`'s kicker.
+
+  `inviter` is total, never nil: callers pass `IRC.Message.sender_nick/1`,
+  which collapses a prefix-less or malformed source to the `"*"`
+  anonymous-sender sentinel.
   """
-  @spec set_invited(t(), String.t()) :: t()
-  def set_invited(%__MODULE__{} = ws, channel) when is_binary(channel) do
-    %{ws | states: Map.put(ws.states, channel, :invited)}
+  @spec set_invited(t(), String.t(), String.t()) :: t()
+  def set_invited(%__MODULE__{} = ws, channel, inviter)
+      when is_binary(channel) and is_binary(inviter) do
+    %{
+      ws
+      | states: Map.put(ws.states, channel, :invited),
+        invited_by: Map.put(ws.invited_by, channel, inviter)
+    }
   end
 
   @doc """
@@ -148,7 +176,8 @@ defmodule Grappa.Session.WindowState do
       states: Map.put(ws.states, channel, :joined),
       failure_reasons: Map.delete(ws.failure_reasons, channel),
       failure_numerics: Map.delete(ws.failure_numerics, channel),
-      kicked_meta: Map.delete(ws.kicked_meta, channel)
+      kicked_meta: Map.delete(ws.kicked_meta, channel),
+      invited_by: Map.delete(ws.invited_by, channel)
     }
   end
 
@@ -171,7 +200,8 @@ defmodule Grappa.Session.WindowState do
       ws
       | states: Map.put(ws.states, channel, :failed),
         failure_reasons: Map.put(ws.failure_reasons, channel, reason),
-        failure_numerics: Map.put(ws.failure_numerics, channel, numeric)
+        failure_numerics: Map.put(ws.failure_numerics, channel, numeric),
+        invited_by: Map.delete(ws.invited_by, channel)
     }
   end
 
@@ -192,7 +222,8 @@ defmodule Grappa.Session.WindowState do
     %{
       ws
       | states: Map.put(ws.states, channel, :kicked),
-        kicked_meta: Map.put(ws.kicked_meta, channel, %{by: by, reason: reason})
+        kicked_meta: Map.put(ws.kicked_meta, channel, %{by: by, reason: reason}),
+        invited_by: Map.delete(ws.invited_by, channel)
     }
   end
 
@@ -208,7 +239,7 @@ defmodule Grappa.Session.WindowState do
   line.
 
   No-op for unknown channels — `Map.delete/2` returns the map
-  unchanged when the key is absent, so all four maps stay equal-by-
+  unchanged when the key is absent, so all five maps stay equal-by-
   identity.
   """
   @spec set_parted(t(), String.t()) :: t()
@@ -217,7 +248,8 @@ defmodule Grappa.Session.WindowState do
       states: Map.delete(ws.states, channel),
       failure_reasons: Map.delete(ws.failure_reasons, channel),
       failure_numerics: Map.delete(ws.failure_numerics, channel),
-      kicked_meta: Map.delete(ws.kicked_meta, channel)
+      kicked_meta: Map.delete(ws.kicked_meta, channel),
+      invited_by: Map.delete(ws.invited_by, channel)
     }
   end
 
@@ -254,6 +286,30 @@ defmodule Grappa.Session.WindowState do
       reason ->
         %{reason: reason, numeric: Map.get(ws.failure_numerics, channel)}
     end
+  end
+
+  @doc """
+  Returns the nick that INVITEd us to `channel`, or `nil` when the channel
+  is not currently `:invited` (#902).
+
+  ## Invariant
+
+  A key exists here IF AND ONLY IF `states[channel] == :invited`. `states`
+  is the single source of truth for invitedness; this map only carries the
+  extra datum, exactly as `kicked_meta` does for `:kicked`. Every mutator
+  that moves a channel out of `:invited` (`set_pending/2`, `set_joined/2`,
+  `set_failed/4`, `set_kicked/4`, `set_parted/2`) deletes the key, so the map
+  cannot accumulate unreadable entries that drift from the state it decorates
+  (CLAUDE.md: a parallel structure without housekeeping is the bug).
+
+  Enforced per-mutator by `WindowStateTest` — note that the two mutators
+  which rebuild the struct with a FULL literal (`set_joined/2`,
+  `set_parted/2`) would reset the entire map, not one key, if a future field
+  were added without extending them.
+  """
+  @spec invited_by(t(), String.t()) :: String.t() | nil
+  def invited_by(%__MODULE__{} = ws, channel) when is_binary(channel) do
+    Map.get(ws.invited_by, channel)
   end
 
   @doc """
@@ -327,13 +383,24 @@ defmodule Grappa.Session.WindowState do
   survives a reload — otherwise the state, broadcast once at INVITE time, is
   absent from the snapshot and the tab evaporates (the #482 symptom).
 
-  Funnels through the SAME `SessionWire.window_invited/2` verb the
-  event-time broadcast (`Session.Server.apply_effects([{:invited, _} | _])`)
+  Funnels through the SAME `SessionWire.window_invited/3` verb the
+  event-time broadcast (`Session.Server.apply_effects([{:invited, _, _} | _])`)
   uses, so backfill + event payloads are byte-identical (the CP15 B7
   invariant, extended to `:invited`).
+
+  #902 — each payload carries the inviter out of the `invited_by` sibling
+  map. This is the whole reason that map exists: on a cold subscribe there
+  is no INVITE message in hand, so a nick that lived only in the persisted
+  scrollback row could not be reproduced here, and the banner that replaced
+  the greyed tab would render nameless after every reload.
+  `Map.fetch!/2` is deliberate — the key-iff-`:invited` invariant
+  (`invited_by/2`) makes an absent key a mutator bug, and a loud one beats a
+  silently anonymous invite.
   """
   @spec invited_windows(t(), String.t()) :: [SessionWire.window_invited_payload()]
-  def invited_windows(%__MODULE__{states: states}, network_slug) when is_binary(network_slug) do
-    for {channel, :invited} <- states, do: SessionWire.window_invited(network_slug, channel)
+  def invited_windows(%__MODULE__{states: states, invited_by: invited_by}, network_slug)
+      when is_binary(network_slug) do
+    for {channel, :invited} <- states,
+        do: SessionWire.window_invited(network_slug, channel, Map.fetch!(invited_by, channel))
   end
 end

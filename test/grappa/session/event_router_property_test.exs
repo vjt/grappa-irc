@@ -219,8 +219,13 @@ defmodule Grappa.Session.EventRouterPropertyTest do
         {:rejoin_invited, channel} ->
           assert is_binary(channel)
 
-        {:invited, channel} ->
+        # #902 — the inviter must be a NON-EMPTY binary on every fuzzed
+        # input: cic renders it as the banner's subject, and sender_nick/1's
+        # "*" sentinel is what a prefix-less INVITE degrades to. An empty
+        # string would render a banner with no one in it.
+        {:invited, channel, inviter} ->
           assert is_binary(channel)
+          assert is_binary(inviter) and inviter != ""
 
         # #279 — `is_binary/1` here was a CERTIFICATE OF NOTHING: it is
         # exactly what a fuzzed 221 param full of spaces and punctuation
