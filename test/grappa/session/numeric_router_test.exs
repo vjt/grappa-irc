@@ -526,17 +526,29 @@ defmodule Grappa.Session.NumericRouterTest do
   # ---------------------------------------------------------------------------
 
   describe "@active_numerics deny list — the #911 audit families" do
-    property "@active_numerics and @delegated_numerics are DISJOINT" do
-      # A code in both sets is masked by `numeric_class/1`'s
-      # delegated-first order, so it never misbehaves — it just reads as
-      # two deliberate and contradictory decisions. #911 made this real:
-      # extending STATS to the contiguous 211–250 swallows 221 RPL_UMODEIS,
-      # which #229 delegates. It is subtracted in production; this is what
-      # keeps it subtracted.
-      check all(numeric <- member_of(@active_numerics)) do
-        refute numeric in @delegated_numerics
-      end
-    end
+    # There is NO disjointness property here, and the absence is deliberate.
+    #
+    # #911 shipped one, on the reasoning that extending STATS to a
+    # contiguous 211–250 swallows delegated 221 RPL_UMODEIS and something
+    # ought to pin the subtraction. Mutation testing killed it: putting 221
+    # back into production's `@active_numerics` left the whole file GREEN.
+    # The property compared the two MIRRORS in this file against each other,
+    # so it could only ever restate an invariant the test file already
+    # satisfied by construction — a green that constrained nothing.
+    #
+    # It cannot be repaired behaviourally either, and that is the real
+    # finding. `numeric_class/1` checks delegated FIRST, so a code sitting
+    # in both sets is INDISTINGUISHABLE through `route/2` from a code
+    # sitting in delegated alone. Double-membership has no observable
+    # consequence; it is an intent defect, not a behaviour defect, and no
+    # test driven through the public API can see it.
+    #
+    # What IS pinned: the "221 RPL_UMODEIS is delegated" test below fails if
+    # 221 ever drops out of `@delegated_numerics` while the STATS range
+    # covers it, and the deny property above fails if a delegated code is
+    # added to the deny mirror in step with production. The subtraction
+    # itself rests on the comment in `NumericRouter`, and this note is here
+    # so the next reader does not re-add the same reassuring green.
 
     test "225 RPL_STATSZLINE: the Z-line class letter is NOT a query destination" do
       # bahamut `s_err.c:253` — `":%s 225 %s %c %s %s"` — emitted from
