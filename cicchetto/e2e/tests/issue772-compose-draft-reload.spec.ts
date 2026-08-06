@@ -23,7 +23,7 @@
 // reload (#772)") pins the store rules, including that history does NOT cross.
 
 import { expect, test } from "@playwright/test";
-import { composeTextarea, loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import { composeTextarea, loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 
 // The seeder autojoins exactly one channel; `?? ""` satisfies
@@ -61,9 +61,18 @@ test.describe("#772 compose drafts survive a reload", () => {
     const body = `issue772 sent ${Date.now()}`;
     await composer.fill(body);
     await composer.press("Enter");
-    // The clear IS the success signal (compose.ts empties the draft on a
-    // successful submit), so waiting for it also waits for the dispatch.
+    // The clear is the DISPATCH signal, not the success signal: post-#904
+    // `takeDraft` empties the buffer synchronously as the pump takes the text,
+    // before the POST is even issued, and the pump's `finally` hands it BACK if
+    // that POST fails. So an empty textarea alone still leaves the send in
+    // flight — and `page.reload()` aborts it (`TypeError: Failed to fetch`),
+    // which IS a failure, so the body is handed back and mirrored to
+    // sessionStorage during teardown. Measured on a fast host: reload landed
+    // ~35ms after dispatch against an ~87ms POST, and the spec lost by ~50ms
+    // (#951). Wait for the row the send produces — that is what "SENT" means
+    // here, and it cannot be true while the request is still open.
     await expect(composer).toHaveValue("");
+    await expect(scrollbackLine(page, "privmsg", body)).toBeVisible();
 
     await page.reload();
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
