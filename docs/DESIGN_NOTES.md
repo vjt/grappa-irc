@@ -31195,3 +31195,59 @@ tags. And the dry-run paragraph keeps its mechanism — validating the shipping
 job pre-merge is still right — it just loses the false premise that the job is
 unproven; the reason to run it is now "you changed the Dockerfile or the job",
 not "it has never run".
+## 2026-08-06 — #816: a multi-line body is a burst, and a burst needs consent
+
+**The hazard.** A newline cannot travel inside a `PRIVMSG` — CRLF terminates
+the frame — so honouring one means splitting into N messages. N messages at
+once is precisely what upstream flood protection closes the connection for,
+the limits differ per network, and users with the right usermode are exempt,
+so there is no safe value to assume. The composer had two routes onto that and
+neither asked the operator anything.
+
+**Shift+Enter is a no-op, not a line break.** `preventDefault` with no send:
+the composer stays single-line. It used to insert a newline, which is a burst
+requested by holding a modifier, and there is no precedent to match — mIRC's
+editbox is single-line and pops a "paste N lines?" dialog, hexchat splits
+paste line by line. Closing this door is what makes the remaining one
+sufficient: paste is now the ONLY way a multi-line body reaches the box, and
+paste is guarded. `composeSend` in the e2e fixtures fills the textarea
+programmatically, so the fan-out spec still exercises the split — the
+behaviour is untouched, only the keyboard route to it is gone.
+
+**The guard trips on the second message, not the fourth line.** #80 carved out
+1–3 lines as frictionless, reasoning that short pastes (a URL, an address) are
+the overwhelming common case and should not cost a dialog. The ruling withdrew
+the carve-out: every multi-message paste is a burst the operator did not
+compose by hand, and the dialog is where they learn what it will become.
+
+**It counts MESSAGES, and that is a reversal worth recording.** #80's counter
+was deliberately *not* `splitMessageLines`: it counted lines as SEEN in the
+box, blank interior lines included, and its comment defended the difference —
+"how big is this paste" was held to be a different question from the send-time
+fan-out. That was right while the dialog only warned about size. It stopped
+being right the moment the dialog has to state how many *messages* the paste
+becomes, because that number is a promise about what the send path will do. So
+the guard now calls `splitMessageLines` itself and `pasteFlood.test.ts` pins
+the two together with an equality assertion rather than restating the rule —
+if the send-side notion of "blank" moves again (#863 moved it once, from
+`!== ""` to a trim), the dialog cannot silently start lying. Visible effects: a
+lone trailing newline, the commonest copy artifact, no longer costs a dialog;
+and a block with a blank line between paragraphs quotes the real frame count
+instead of an inflated one.
+
+**What this deliberately does NOT ship.** The ruling also sets a hard constant
+cap (5 lines) above which the operator gets a paste service *or* cancel. The
+cap cannot be built without its doors, and the service's mechanism was
+unspecified — so it is proposed rather than guessed at. The proposal, and the
+reason it is cheap: `text/plain` is ALREADY an accepted upload MIME in the
+`document` category (`uploadCategory.ts`, mirroring the server's
+`@mime_categories`), so a paste service needs no new category, no new server
+surface and no new taxonomy — it is the pasted text wrapped in a `File` and
+handed to the existing `dropUpload`, which posts the URL as a clickable link
+in the body, the same shape as the 📸 image-upload pattern CLAUDE.md names as
+the model. Recorded here so the next reader does not re-derive the survey.
+
+**Known gap, flagged not closed.** The cap, when it lands, is per-paste. Two
+consecutive within-limit pastes still accumulate in the draft, so a paste-time
+cap is not a send-time guarantee. Whether the limit belongs at submit instead
+of (or as well as) at paste is a design question, not an oversight.
