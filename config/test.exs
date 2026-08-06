@@ -95,6 +95,22 @@ config :grappa, :start_bootstrap, false
 # app-boot ServerSettings arm-read out of the test tree too.
 config :grappa, :start_source_alias_manager, false
 
+# #893 — the three ambient sweepers (Visitors / Uploads / Accounts
+# Reaper) are started by the application supervisor in EVERY env,
+# including test, and `Grappa.DataCase` puts the Sandbox in SHARED mode
+# for `async: false` tests. An ambient 60s tick therefore runs its
+# `delete_all` / soft-delete on the CURRENT test's connection: a
+# cross-test writer nobody armed, firing at wall-clock. It reaped the
+# row out from under `Uploads.ReaperTest`'s sustained-busy case (1 in
+# 5185 on CI) — that test's own sweep degraded exactly as designed while
+# the ambient reaper flipped `deleted_at` behind it. Push the cadence
+# past any suite runtime so NO ambient sweep fires during `mix test`;
+# the reapers still boot (Uploads.Reaper's `init/1` mkdir_p's the global
+# storage root) and every reaper unit test drives `sweep/2` directly or
+# starts its OWN instance with an explicit short interval. Not a
+# timeout bump: it REMOVES a nondeterministic writer from the suite.
+config :grappa, :reaper_interval_ms, :timer.hours(24)
+
 # UX-6-B1 (2026-05-20): embedded image uploader storage dir for
 # `mix test`. The Reaper child in the application supervisor mkdir_p's
 # this at boot; per-test isolation comes from `start_supervised`-ing

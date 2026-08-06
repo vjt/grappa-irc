@@ -30830,3 +30830,52 @@ currently pinned only by `issue443-colored-nicklist.spec.ts` in a real browser.
 Recorded here rather than fixed in #914's diff — the finding is worth more than
 the two-line edit, and widening an unrelated PR to bury it is how findings get
 lost.
+
+## 2026-08-06 — #893: the flaky test was right; the suite had an unarmed writer
+
+`Uploads.ReaperTest`'s sustained-busy case failed once in 5185 tests on CI and
+was filed as a tracked flake with the two candidate causes left explicitly
+undecided: load-sensitive setup, or a genuine mishandling of sustained BUSY.
+
+**It was neither.** The CI log settles it. The failing assertion was
+`assert is_nil(reloaded.deleted_at)` — and BOTH degrade lines were logged in
+the same block (`db write unavailable … 300ms retry budget (31 attempts)` and
+`uploads reaper failure error=:db_unavailable`). So the resilience path did
+exactly what the test claims it does: the injected fault fired on all 31
+attempts, the budget expired, the flip degraded, the sweep returned `{:ok, 0}`.
+The row was nonetheless soft-deleted. `BusyRetry` injects its fault BEFORE the
+op, so the test process never ran that `UPDATE`. Something else did.
+
+**The three ambient reapers tick during `mix test`.** The application
+supervisor starts `Visitors.Reaper`, `Uploads.Reaper` and `Accounts.Reaper` in
+every env, each on a 60s timer, and `Grappa.DataCase` puts the Sandbox in
+SHARED mode for `async: false` tests. A shared-mode connection belongs to
+whichever test is live, so an ambient tick runs its `delete_all` /
+soft-delete on THAT test's connection and mutates rows it just created. The
+reaper does not even need the file: `File.rm` returns `:enoent` for a row whose
+bytes live under some other test's temp root, and the enoent arm soft-deletes
+anyway. Wall-clock 60s landing inside a ~300ms window is the 1-in-thousands.
+
+**Proven by displacement, not by re-rolling the dice.** A probe test created an
+expired upload, sent the app-supervised reaper a single `:tick`, and read the
+row back: `deleted_at` set, the exact CI signature, first try. Twenty green
+repeats of the original test would have proven nothing — the failure needs a
+timer coincidence, not a code path. What is NOT claimed: the original 1-in-5185
+timing was never reproduced, and no attempt was made to.
+
+**Fix: remove the writer, do not soften the reader.** The cadence moves to a
+`:reaper_interval_ms` knob read once at the application boot boundary, pushed
+past any suite runtime in `config/test.exs`. The reapers still boot — that
+matters, `Uploads.Reaper.init/1` mkdir_p's the global storage root, and every
+reaper unit test either calls `sweep/2` directly or starts its own instance
+with an explicit short interval. No assert was weakened and no timeout raised;
+a nondeterministic cross-test writer was taken out of the suite.
+
+**Widened past the one test that noticed.** All three reapers get the knob, not
+just Uploads: the exposure is any `async: false` test whose rows match an
+expired-visitor, expired-upload, or idle-session predicate, and only one of
+those three had rolled a bad tick yet. The pin
+(`application_ambient_reapers_test.exs`) derives its set from
+`Supervisor.which_children/1` rather than a hand-written list, so a fourth
+reaper is covered on the day it is added, and asserts set-equality against the
+known three so the filter cannot silently match nothing.

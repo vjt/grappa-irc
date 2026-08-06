@@ -350,11 +350,12 @@ defmodule Grappa.Application do
           # public surface is up — Reaper's sweep deletes rows that REST/WS
           # might reach for; ordering it after Endpoint keeps the
           # "everything visible to clients is also visible to Reaper"
-          # invariant honest). The default 60s interval is far longer
-          # than boot, so the first sweep waits anyway — ordering is
+          # invariant honest). The `reaper_interval_ms/0` cadence (60s in
+          # prod) is far longer than boot, so the first sweep waits
+          # anyway — ordering is
           # belt-and-braces. Reaper consumes Grappa.Visitors; the
           # Application boundary has it listed in deps for that reason.
-          Grappa.Visitors.Reaper,
+          {Grappa.Visitors.Reaper, interval_ms: reaper_interval_ms()},
 
           # UX-6-B1 (2026-05-20): embedded image uploader Reaper. Same
           # rationale as Visitors.Reaper for the ordering: after Repo
@@ -367,7 +368,7 @@ defmodule Grappa.Application do
           # the controller + Reaper read from `:persistent_term`
           # thereafter (CLAUDE.md "Application.{put,get}_env: boot-time
           # only").
-          {Grappa.Uploads.Reaper, storage_root: uploads_storage_root()},
+          {Grappa.Uploads.Reaper, storage_root: uploads_storage_root(), interval_ms: reaper_interval_ms()},
 
           # #223: auth-session housekeeping GC. Sibling of Visitors.Reaper
           # / Uploads.Reaper — a THIRD domain (Accounts) gets its OWN
@@ -378,9 +379,10 @@ defmodule Grappa.Application do
           # the sweep removes idle-expired rows). Bulk `delete_all` over
           # USER sessions past the 7-day idle window that `authenticate/1`
           # already rejects; visitor sessions are out of scope (they
-          # CASCADE from the visitor row via Visitors.Reaper). Default
-          # 60s interval >> boot, so the first sweep waits anyway.
-          Grappa.Accounts.Reaper
+          # CASCADE from the visitor row via Visitors.Reaper). The
+          # `reaper_interval_ms/0` cadence (60s in prod) >> boot, so the
+          # first sweep waits anyway.
+          {Grappa.Accounts.Reaper, interval_ms: reaper_interval_ms()}
 
           # Bootstrap is appended LAST below: it depends on Registry +
           # SessionSupervisor existing so it can spawn sessions. Conditional
@@ -460,6 +462,22 @@ defmodule Grappa.Application do
   # reads from `:persistent_term`.
   defp uploads_storage_root do
     Application.fetch_env!(:grappa, :uploads_storage_root)
+  end
+
+  # #893: the shared tick cadence of the three ambient sweepers
+  # (Visitors / Uploads / Accounts). 60s everywhere except `:test`,
+  # where it is pushed past any suite runtime so NO ambient sweep ever
+  # fires during `mix test`. The application supervisor starts these
+  # three in every env, and `Grappa.DataCase` puts the Sandbox in
+  # SHARED mode for `async: false` tests — so an ambient tick runs its
+  # `delete_all` / soft-delete on the CURRENT test's connection and can
+  # mutate rows that test just created. That is what reaped the row out
+  # from under `Uploads.ReaperTest`'s sustained-busy case on CI (1 in
+  # 5185): the test's own sweep degraded exactly as designed while the
+  # ambient reaper flipped `deleted_at` behind it. Read at THIS boot
+  # boundary only (CLAUDE.md "Application.get_env: boot-time only").
+  defp reaper_interval_ms do
+    Application.get_env(:grappa, :reaper_interval_ms, 60_000)
   end
 
   # #399: the built cicchetto SPA dist root. Configured via
