@@ -17,6 +17,21 @@ import { createSignal } from "solid-js";
 //
 // Cancel is the safe default: NO destructive default button. Backdrop click,
 // Esc, and the Cancel button all dismiss WITHOUT firing the action.
+//
+// #816 added an OPTIONAL third door: an alternative way to get what the
+// operator wanted, offered ALONGSIDE Cancel and the affirmative instead of
+// replacing either. The paste guard is its first caller — "send this block as
+// a .txt upload" is not a yes and not a no, it is a different route to the
+// same intent — and the store stays domain-agnostic by carrying a second
+// closure rather than learning about uploads.
+
+// The third door. `null` on a request means a plain two-button yes/no dialog.
+export type ConfirmAlternative = {
+  // Label of the alternative button (e.g. "Upload as .txt").
+  label: string;
+  // Fired ONLY when the operator picks this door — never on confirm/dismiss.
+  onSelect: () => void;
+};
 
 export type ConfirmRequest = {
   // Short dialog heading (e.g. "Leave channel").
@@ -28,6 +43,10 @@ export type ConfirmRequest = {
   confirmLabel: string;
   // Fired ONLY on affirmative confirm — never on cancel/dismiss.
   onConfirm: () => void;
+  // Explicit `null` rather than an optional field: every call site declares
+  // whether its dialog has a third door, so a reader never has to check the
+  // type to find out that a two-button modal was intended.
+  alternative: ConfirmAlternative | null;
 };
 
 const [confirmRequest, setConfirmRequest] = createSignal<ConfirmRequest | null>(null);
@@ -51,4 +70,15 @@ export function acceptConfirm(): void {
   if (req === null) return;
   setConfirmRequest(null);
   req.onConfirm();
+}
+
+// #816 — the alternative door. Same clear-then-fire order as acceptConfirm,
+// and exclusive with it: picking this one never runs onConfirm. A request
+// with no alternative resolves to NOTHING — the dialog stays open, because
+// nothing was chosen.
+export function chooseAlternative(): void {
+  const alt = confirmRequest()?.alternative;
+  if (alt === undefined || alt === null) return;
+  setConfirmRequest(null);
+  alt.onSelect();
 }

@@ -227,6 +227,7 @@ const ThemeGallery: Component<Props> = (props) => {
       body: `Delete "${theme.name}"? This can't be undone.`,
       confirmLabel: "Delete",
       onConfirm: () => void remove(theme),
+      alternative: null,
     });
 
   // #333 — split the merged list into "your themes" (owned copies/creates)

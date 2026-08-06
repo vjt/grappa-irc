@@ -48,16 +48,22 @@ export function insertPastedText(
   });
 }
 
-// #816 — the second door above the hard cap. A block too big to send as a
-// burst becomes a `text/plain` File and rides the EXISTING upload path: the
-// orchestrator posts the resulting URL as a 📄-prefixed PRIVMSG, one frame
-// instead of N, and the recipient clicks through. No new category, no new
-// server surface — `text/plain` is already an accepted `document` MIME
-// (uploadCategory.ts, a 1:1 mirror of the server's @mime_categories), so this
-// reuses the upload VERB rather than inventing a paste service. Same shape as
-// the 📸 image path CLAUDE.md names as the model for "media is a link, and
-// IRC stays text".
+// #816 — the second door. A pasted block becomes a `text/plain` File and
+// rides the EXISTING upload path: the orchestrator posts the resulting URL as
+// a 📄-prefixed PRIVMSG, one frame instead of N, and the recipient clicks
+// through. No new category, no new server surface — `text/plain` is already
+// an accepted `document` MIME (uploadCategory.ts, a 1:1 mirror of the
+// server's @mime_categories), so this reuses the upload VERB rather than
+// inventing a paste service. Same shape as the 📸 image path CLAUDE.md names
+// as the model for "media is a link, and IRC stays text".
+//
+// vjt's ruling (2026-08-06) made it a CHOICE, not a punishment: it is offered
+// on EVERY guarded paste (as the confirm dialog's alternative door), not only
+// once the operator has already been refused by the hard cap. Above the cap
+// it is the affirmative, because the paste door is gone — same verb, same
+// label, so the two arms read as one action and not two.
 export const PASTE_UPLOAD_FILENAME = "paste.txt";
+export const PASTE_UPLOAD_LABEL = "Upload as .txt";
 
 export function uploadPastedText(text: string, networkSlug: string, channelName: string): void {
   const file = new File([text], PASTE_UPLOAD_FILENAME, { type: "text/plain" });
@@ -133,9 +139,16 @@ export function routeClipboardPaste(
         // Target-neutral copy: `channelName` is a nick on a query (DM)
         // window, so "flood the channel" would misdescribe a DM. "it" carries
         // both.
-        body: `This paste will be sent to ${channelName} as ${messages} separate messages. Sending can flood it with a burst.`,
+        body: `This paste will be sent to ${channelName} as ${messages} separate messages. Sending can flood it with a burst — or send it as one text file instead.`,
         confirmLabel: "Paste",
         onConfirm: () => insertPastedText(ta, networkSlug, channelName, text),
+        // The third door, offered BEFORE any refusal: an operator who reads
+        // "4 separate messages" and thinks better of it can post one link
+        // instead, without having to hit the cap first to be told it exists.
+        alternative: {
+          label: PASTE_UPLOAD_LABEL,
+          onSelect: () => uploadPastedText(text, networkSlug, channelName),
+        },
       });
       return;
     case "over-limit":
@@ -145,8 +158,11 @@ export function routeClipboardPaste(
         // Both numbers: what they pasted and where the ceiling is. "Too many"
         // without the limit leaves the operator guessing what would fit.
         body: `This paste would be ${messages} separate messages to ${channelName} — more than the ${PASTE_HARD_MESSAGE_LIMIT} a burst may be. Upload it as a text file instead and post the link.`,
-        confirmLabel: "Upload as file",
+        confirmLabel: PASTE_UPLOAD_LABEL,
         onConfirm: () => uploadPastedText(text, networkSlug, channelName),
+        // No third door here: the paste door is what the cap closed, so
+        // uploading IS the affirmative and there is nothing else to offer.
+        alternative: null,
       });
       return;
     case "insert":

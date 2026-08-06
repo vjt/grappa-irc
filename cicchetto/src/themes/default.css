@@ -3888,6 +3888,7 @@ html.resize-dragging * {
 
 .confirm-modal-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 0.5rem;
 }
@@ -3905,6 +3906,20 @@ html.resize-dragging * {
   background: #c00;
   color: #fff;
   border: 1px solid #c00;
+  padding: 0.5rem 1rem;
+  font-family: var(--font-mono);
+  cursor: pointer;
+}
+
+/* #816 — the optional third door (e.g. "Upload as .txt" on the paste guard).
+   Neither destructive nor a dismissal, so it takes neither the red of the
+   affirmative nor the bare outline of Cancel: an accent-bordered button that
+   reads as a peer choice. Actions wrap on narrow screens (three buttons do
+   not fit 24rem at large font sizes) — see .confirm-modal-actions. */
+.confirm-modal-alternative {
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
   padding: 0.5rem 1rem;
   font-family: var(--font-mono);
   cursor: pointer;

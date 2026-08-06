@@ -315,6 +315,14 @@ export async function confirmModalCancel(page: Page): Promise<void> {
   await page.locator('[data-testid="confirm-modal-cancel"]').click();
 }
 
+// #816 — the optional THIRD button: a different route to what the operator
+// wanted, offered beside Cancel and the affirmative (the paste guard's
+// "Upload as .txt"). A Locator, not a click helper, so a spec can also assert
+// its ABSENCE on a plain two-button dialog.
+export function confirmModalAlternative(page: Page): Locator {
+  return page.locator('[data-testid="confirm-modal-alternative"]');
+}
+
 // Click the window to focus it. Solid's reactive flush + the shell's
 // auto-close-sidebar effect happen synchronously; the channel becomes
 // selected before this resolves.

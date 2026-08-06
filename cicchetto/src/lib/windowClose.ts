@@ -164,6 +164,7 @@ export function confirmLeaveChannel(networkSlug: string, channelName: string): v
     body: `Do you want to leave ${channelName}?`,
     confirmLabel: "Yes",
     onConfirm: () => closeChannelWindow(networkSlug, channelName),
+    alternative: null,
   });
 }
 
@@ -176,5 +177,6 @@ export function confirmDisconnectNetwork(networkSlug: string): void {
     body: `Disconnect from ${networkSlug}?`,
     confirmLabel: "Yes",
     onConfirm: () => disconnectNetwork(networkSlug),
+    alternative: null,
   });
 }

@@ -91,7 +91,12 @@ import * as compose_ from "../lib/compose";
 // #80 — the paste flood guard reuses the REAL confirm-dialog store (not a
 // mock): ComposeBox calls requestConfirm, and these tests assert on the
 // store signal + drive accept/dismiss exactly as ConfirmModal.test.tsx does.
-import { acceptConfirm, confirmRequest, dismissConfirm } from "../lib/confirmDialog";
+import {
+  acceptConfirm,
+  chooseAlternative,
+  confirmRequest,
+  dismissConfirm,
+} from "../lib/confirmDialog";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -324,14 +329,16 @@ describe("ComposeBox", () => {
     expect(compose.submit).toHaveBeenCalledWith(expect.anything(), "freenode", "#a");
   });
 
-  // #816 — Shift+Enter is a NO-OP: it neither submits nor inserts a line
-  // break. The composer stays single-line, because a newline cannot travel
-  // inside a PRIVMSG and the only way to honour one is to split into N
-  // messages — a flood hazard the operator never asked for by pressing a
-  // modifier. No client sets the precedent either (mIRC's editbox is
-  // single-line; hexchat splits paste). Paste remains the ONE way a
-  // multi-line body reaches the box, and paste is guarded.
-  it("#816 — Shift+Enter is a no-op: no submit and no line break", async () => {
+  // #816 — Shift+Enter inserts NOTHING and submits NOTHING, and now SAYS SO.
+  // The composer stays single-line, because a newline cannot travel inside a
+  // PRIVMSG and the only way to honour one is to split into N messages — a
+  // flood hazard the operator never asked for by pressing a modifier. No
+  // client sets the precedent either (mIRC's editbox is single-line; hexchat
+  // splits paste). What vjt's ruling (2026-08-06) changed is that the refusal
+  // is no longer SILENT: a key that does nothing reads as a broken key, so
+  // the composer explains itself on the existing feedback seam. Paste remains
+  // the ONE way a multi-line body reaches the box, and paste is guarded.
+  it("#816 — Shift+Enter submits nothing, inserts no line break, and says why", async () => {
     const compose = await import("../lib/compose");
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
     const ta = screen.getByPlaceholderText(/message #a/i);
@@ -347,6 +354,20 @@ describe("ComposeBox", () => {
     // asserting "no submit" alone passed against the old behaviour too.
     expect(ev.defaultPrevented).toBe(true);
     expect(compose.setDraft).not.toHaveBeenCalled();
+    // The ruling's copy, verbatim. This is the assertion the old test
+    // INVERTED (it pinned the silence), so it is what proves the change.
+    expect(screen.getByText("IRC does not support multi-line messages")).toBeInTheDocument();
+  });
+
+  // A plain Enter must not trip the multi-line explanation — otherwise the
+  // notice would fire on every ordinary send and mean nothing.
+  it("#816 — a plain Enter shows no multi-line explanation", async () => {
+    const compose = await import("../lib/compose");
+    vi.mocked(compose.submit).mockResolvedValue({ ok: true });
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const ta = screen.getByPlaceholderText(/message #a/i);
+    fireEvent.keyDown(ta, { key: "Enter" });
+    expect(screen.queryByText("IRC does not support multi-line messages")).toBeNull();
   });
 
   it("Up arrow on first-line cursor calls recallPrev", async () => {
@@ -1276,6 +1297,60 @@ describe("ComposeBox", () => {
       expect(confirmRequest()?.title).toContain("2");
     });
 
+    // #816 (vjt's ruling, 2026-08-06) — the .txt upload is a CHOICE, not a
+    // punishment. Before the ruling it appeared only ABOVE the hard cap, i.e.
+    // only once the operator had already been refused; the ruling makes it an
+    // alternative offered on every guarded paste. An operator who sees "4
+    // separate messages" and thinks better of it can send one link instead,
+    // without first having to hit a ceiling.
+    describe("#816 — the .txt door under the cap", () => {
+      it("the under-cap confirm carries the .txt upload as an alternative", async () => {
+        render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+        const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+        ta.dispatchEvent(makeTextPaste(FOUR_LINES));
+
+        const req = confirmRequest();
+        expect(req).not.toBeNull();
+        // Both doors are open: paste the burst, or send it as a file.
+        expect(req?.confirmLabel).toBe("Paste");
+        expect(req?.alternative?.label).toBe("Upload as .txt");
+      });
+
+      it("choosing it uploads the paste as text/plain and never touches the draft", async () => {
+        const compose = await import("../lib/compose");
+        const orch = await import("../lib/uploadOrchestrator");
+        render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+        const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+        ta.dispatchEvent(makeTextPaste(FOUR_LINES));
+
+        chooseAlternative();
+
+        expect(orch.triggerUploads).toHaveBeenCalledTimes(1);
+        const files = vi.mocked(orch.triggerUploads).mock.calls[0]?.[3] as File[];
+        expect(files).toHaveLength(1);
+        expect(files[0]?.type).toBe("text/plain");
+        // The bytes are the paste itself — an upload that dropped or mangled
+        // the text would still satisfy "a file was uploaded".
+        await expect(files[0]?.text()).resolves.toBe(FOUR_LINES);
+        // Picking the file door means the burst never enters the composer.
+        expect(compose.setDraft).not.toHaveBeenCalled();
+        expect(confirmRequest()).toBeNull();
+      });
+
+      it("the affirmative still pastes — the alternative does not displace it", async () => {
+        const compose = await import("../lib/compose");
+        const orch = await import("../lib/uploadOrchestrator");
+        render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+        const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+        ta.dispatchEvent(makeTextPaste(FOUR_LINES));
+
+        acceptConfirm();
+
+        expect(compose.setDraft).toHaveBeenCalledWith(expect.any(String), FOUR_LINES);
+        expect(orch.triggerUploads).not.toHaveBeenCalled();
+      });
+    });
+
     // #816 — above the hard cap the paste does not land in the box at all.
     // The operator gets two doors instead: upload the block as a file and
     // post the link (the same shape as the 📸 image path — `text/plain` is
@@ -1284,7 +1359,7 @@ describe("ComposeBox", () => {
     describe("#816 — over the hard cap", () => {
       const OVER_CAP = Array.from({ length: 6 }, (_, i) => `riga ${i}`).join("\n");
 
-      it("offers 'Upload as file' instead of the paste affirmative", async () => {
+      it("offers the .txt upload as the affirmative — the paste door is gone", async () => {
         render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
         const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
         const paste = makeTextPaste(OVER_CAP);
@@ -1293,7 +1368,12 @@ describe("ComposeBox", () => {
         expect(paste.defaultPrevented).toBe(true);
         const req = confirmRequest();
         expect(req).not.toBeNull();
-        expect(req?.confirmLabel).toBe("Upload as file");
+        // Same label as the under-cap alternative: it is the same door, and
+        // two spellings would read as two different actions.
+        expect(req?.confirmLabel).toBe("Upload as .txt");
+        // Above the cap the paste door is GONE — there is no alternative to
+        // offer beside it, because uploading IS the affirmative here.
+        expect(req?.alternative).toBeNull();
         // The copy has to carry BOTH numbers: what they pasted and where the
         // ceiling is. "Too many" without the limit leaves them guessing.
         expect(req?.body).toContain("6");
@@ -1328,7 +1408,7 @@ describe("ComposeBox", () => {
         ta.dispatchEvent(makeTextPaste(OVER_CAP));
         // Pin WHICH dialog was dismissed — without this the case passes
         // against a build that never grew the over-cap arm at all.
-        expect(confirmRequest()?.confirmLabel).toBe("Upload as file");
+        expect(confirmRequest()?.confirmLabel).toBe("Upload as .txt");
 
         dismissConfirm();
 

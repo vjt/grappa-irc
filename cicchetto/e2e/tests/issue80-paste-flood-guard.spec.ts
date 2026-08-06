@@ -26,6 +26,7 @@ import { expect, test } from "../fixtures/test";
 import {
   composeTextarea,
   confirmModal,
+  confirmModalAlternative,
   confirmModalBody,
   confirmModalCancel,
   confirmModalYes,
@@ -163,6 +164,9 @@ test("#816 — a paste over the hard cap uploads as a file instead of flooding",
   // Both numbers, so the operator knows what would fit.
   await expect(confirmModalBody(page)).toContainText("6");
   await expect(confirmModalBody(page)).toContainText("5");
+  // No third door up here: the paste door is exactly what the cap closed, so
+  // uploading IS the affirmative. Two buttons, not three.
+  await expect(confirmModalAlternative(page)).toHaveCount(0);
 
   // Cancel first: the safe default drops the paste with no upload and no
   // text in the box. Asserted before the affirmative so a handler that
@@ -186,4 +190,87 @@ test("#816 — a paste over the hard cap uploads as a file instead of flooding",
   // channel as its own message. Without this, an implementation that
   // uploaded AND pasted would still be green above.
   await expect(scrollbackLine(page, "privmsg", `over ${tag} riga 0`)).toHaveCount(0);
+});
+
+// #816, vjt's ruling (2026-08-06) — the .txt upload is a CHOICE, not a
+// punishment.
+//
+// Before the ruling this door existed only ABOVE the hard cap: the operator
+// had to be REFUSED before being told there was another way. The ruling makes
+// it an alternative offered on every guarded paste, so a block of four lines
+// — perfectly sendable as a burst — can still go out as one link if that is
+// what the operator prefers.
+//
+// jsdom (ComposeBox.test.tsx) can only assert that the request CARRIES an
+// alternative and that firing the store verb calls triggerUploads. This is
+// the gate that proves the button RENDERS as a third choice beside the other
+// two and that picking it drives the whole upload chain to a link in the
+// channel, with the paste door still there and still working.
+test("#816 — an under-cap paste offers the .txt upload beside Paste, and it works", async ({
+  page,
+  browserName,
+}) => {
+  test.skip(
+    browserName !== "chromium",
+    "shares the upload plumbing gated to chromium by the uploads specs",
+  );
+  if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+  const vjt = getSeededVjt();
+  await loginAs(page, vjt);
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+  // Pre-ack the embedded-host privacy modal so the upload runs unattended
+  // (that flow is covered by ux-6-b-embedded-upload).
+  await page.evaluate(() =>
+    localStorage.setItem("image-upload-privacy-acknowledged:embedded", "1"),
+  );
+
+  const ta = composeTextarea(page);
+  await expect(ta).toBeVisible();
+  await expect(ta).toHaveValue("");
+
+  // FOUR messages — well under the ceiling of five, i.e. a paste the guard
+  // would happily let through. That is the whole point: the door is open
+  // before any refusal.
+  const tag = crypto.randomUUID().slice(0, 8);
+  const block = Array.from({ length: 4 }, (_, i) => `under ${tag} riga ${i}`).join("\n");
+
+  await pasteText(page, block);
+  await expect(confirmModal(page)).toBeVisible();
+  await expect(confirmModalBody(page)).toContainText("4");
+  // Three doors, not two: the affirmative still pastes, and the alternative
+  // is a peer choice next to it. A build that kept the .txt door cap-only
+  // reds right here.
+  const alt = confirmModalAlternative(page);
+  await expect(alt).toBeVisible();
+  await expect(alt).toHaveText("Upload as .txt");
+
+  // Cancel first — the safe default still fires NEITHER door. Asserted before
+  // the alternative so a handler that uploaded unconditionally cannot pass.
+  await confirmModalCancel(page);
+  await expect(confirmModal(page)).toHaveCount(0);
+  await expect(ta).toHaveValue("");
+
+  // Now take the third door: the block leaves as one 📄-prefixed link and
+  // never enters the composer.
+  await pasteText(page, block);
+  await expect(confirmModal(page)).toBeVisible();
+  await confirmModalAlternative(page).click();
+  await expect(confirmModal(page)).toHaveCount(0);
+  await expect(ta).toHaveValue("");
+
+  const rows = scrollbackLine(page, "privmsg", "📄");
+  await expect.poll(async () => await rows.count(), { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
+  // The burst never happened — an implementation that uploaded AND pasted
+  // would still be green above.
+  await expect(scrollbackLine(page, "privmsg", `under ${tag} riga 0`)).toHaveCount(0);
+
+  // …and the paste door is still a door: the same block, confirmed, lands in
+  // the composer verbatim. The alternative ADDED a choice, it did not replace
+  // the affirmative.
+  await pasteText(page, block);
+  await expect(confirmModal(page)).toBeVisible();
+  await confirmModalYes(page);
+  await expect(confirmModal(page)).toHaveCount(0);
+  await expect(ta).toHaveValue(block);
 });

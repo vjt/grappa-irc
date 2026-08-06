@@ -1,5 +1,10 @@
 import { type Component, createEffect, Show } from "solid-js";
-import { acceptConfirm, confirmRequest, dismissConfirm } from "./lib/confirmDialog";
+import {
+  acceptConfirm,
+  chooseAlternative,
+  confirmRequest,
+  dismissConfirm,
+} from "./lib/confirmDialog";
 import { createOverlayLock } from "./lib/overlayScrollLock";
 
 // #195 — explicit confirm modal for destructive window actions (leave
@@ -71,6 +76,22 @@ const ConfirmModal: Component = () => {
               >
                 Cancel
               </button>
+              {/* #816 — the optional third door, between Cancel and the
+                  affirmative: a DIFFERENT route to what the operator wanted,
+                  not a softer yes. Placed here so the affirmative keeps the
+                  last (default-reading) slot and Cancel keeps the first. */}
+              <Show when={req().alternative}>
+                {(alt) => (
+                  <button
+                    type="button"
+                    class="confirm-modal-alternative"
+                    data-testid="confirm-modal-alternative"
+                    onClick={chooseAlternative}
+                  >
+                    {alt().label}
+                  </button>
+                )}
+              </Show>
               <button
                 type="button"
                 class="confirm-modal-confirm"

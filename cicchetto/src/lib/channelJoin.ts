@@ -96,5 +96,6 @@ export function confirmJoinChannel(networkSlug: string, rawChannel: string): voi
     body: `Join ${rawChannel}?`,
     confirmLabel: "Join",
     onConfirm: () => void performJoin(networkSlug, rawChannel),
+    alternative: null,
   });
 }

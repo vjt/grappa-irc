@@ -100,6 +100,11 @@ const NETWORK_GREYED_STATES = new Set(["parked", "failed"]);
 // you have to read them.
 const NOTICE_DISMISS_MS = 3_000;
 
+// #816 — what Shift+Enter says instead of doing nothing. vjt's wording
+// (2026-08-06), verbatim: it names the PROTOCOL as the thing that refuses, so
+// the operator stops looking for a broken key or a cic setting to flip.
+const SHIFT_ENTER_REFUSAL = "IRC does not support multi-line messages";
+
 // #356 — the compose-box feedback line, discriminated by severity:
 //   * "error"  → red, role=alert, STICKY (survives until the next submit /
 //                input). The failure the operator must read.
@@ -442,16 +447,25 @@ const ComposeBox: Component<Props> = (props) => {
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter") {
-      // #816 — Shift+Enter is a NO-OP: preventDefault with no send, so the
-      // textarea inserts no line break and the composer stays single-line. A
-      // newline cannot travel inside a PRIVMSG (CRLF terminates the frame),
-      // so honouring one means splitting into N messages — a flood the
-      // operator never asked for by holding a modifier, and one no client
-      // sets the precedent for (mIRC's editbox is single-line, hexchat
-      // splits paste). Paste is left as the ONE route a multi-line body can
-      // take into the box, and paste is guarded (lib/pasteFlood).
+      // #816 — Shift+Enter inserts NOTHING and sends nothing: preventDefault
+      // with no submit, so the textarea takes no line break and the composer
+      // stays single-line. A newline cannot travel inside a PRIVMSG (CRLF
+      // terminates the frame), so honouring one means splitting into N
+      // messages — a flood the operator never asked for by holding a
+      // modifier, and one no client sets the precedent for (mIRC's editbox is
+      // single-line, hexchat splits paste). Paste is left as the ONE route a
+      // multi-line body can take into the box, and paste is guarded
+      // (lib/pasteFlood).
+      //
+      // vjt's ruling (2026-08-06): the refusal must SPEAK. Silence is
+      // indistinguishable from a broken key — the operator presses the
+      // combination their other chat clients honour, sees nothing happen, and
+      // has no way to learn that the protocol is what refused. It rides the
+      // existing #356 feedback seam as a NOTICE (role=status, self-clearing):
+      // nothing failed, so an assertive red alert would overstate it.
       e.preventDefault();
-      if (!e.shiftKey) void doSubmit();
+      if (e.shiftKey) showNotice(SHIFT_ENTER_REFUSAL);
+      else void doSubmit();
       return;
     }
     if (e.key === "ArrowUp") {
