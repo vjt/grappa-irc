@@ -46,6 +46,7 @@ import {
   lastOwnSend,
   loadMore as loadMoreScrollback,
   loadNewer as loadNewerScrollback,
+  measuredUnreadByChannel,
   ownSendSubmitted,
   refreshScrollback,
   scrollbackByChannel,
@@ -1383,6 +1384,22 @@ const ScrollbackPane: Component<Props> = (props) => {
               !isOwnPresenceEvent(m, ownNick),
           ).length
         : 0;
+    // #947 — the LABEL, which is not always the count above. `unreadCount`
+    // can only see rows the pane holds, and a pane resumed by a #693 jump
+    // holds one page out of a gap that was >200 by definition — so it would
+    // read exactly the page size, the fetch cap surfacing as a fact about the
+    // conversation. When the fetch that filled this pane measured the region
+    // server-side, that measurement is the label. Its `at` stamp is what
+    // makes spending it safe: it answers "how many rows follow THIS cursor",
+    // so it applies only while the divider is still frozen against that same
+    // cursor and expires by itself the moment the freeze re-latches.
+    //
+    // PLACEMENT stays with `unreadCount` and the loop below: the divider has
+    // to sit between the last read row and the first unread row actually in
+    // the pane, and no server count knows where that is.
+    const measured = measuredUnreadByChannel()[key()];
+    const unreadLabel =
+      measured !== undefined && measured.at === cursor ? measured.count : unreadCount;
     // Only inject the marker if there are unread messages AND some read messages
     // to show as context above it. When all messages are unread, put the marker
     // at the very top (before index 0). When none are unread, skip the marker.
@@ -1420,7 +1437,7 @@ const ScrollbackPane: Component<Props> = (props) => {
         !isOperatorActionEcho(msg) &&
         !isOwnPresenceEvent(msg, ownNick)
       ) {
-        result.push({ type: "unread-marker", count: unreadCount, id: "unread-marker" });
+        result.push({ type: "unread-marker", count: unreadLabel, id: "unread-marker" });
         markerInjected = true;
         // Day-separator logic: if the previous message (last read) and this first
         // unread message are on different days, the day-separator goes AFTER the

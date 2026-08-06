@@ -274,6 +274,38 @@ describe("selection store", () => {
       expect(selection.unreadCounts()[seedKey]).toBe(9);
     });
 
+    // #947 — the seed is NOT an unbounded authority once the pane hydrates.
+    // Filed under the belief that `messagesUnread()` stays server-true while
+    // only the in-pane divider saturates at the fetch cap, so the divider
+    // could simply read the badge. It cannot: the local-rows branch below
+    // OVERRIDES the seed for any key holding rows (local truth wins — the
+    // seed is a sync-time snapshot), so a pane holding a capped page reports
+    // the capped number on BOTH surfaces. Pinned because it is the reason the
+    // divider's honest count has to be carried from the fetch that measured
+    // it rather than read off the badge.
+    it("local rows override a LARGER seed once the key is hydrated", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const selection = await import("../lib/selection");
+      const scrollback = await import("../lib/scrollback");
+      const key = channelKey("freenode", "#capped");
+      selection.setServerSeedCount(key, { messages: 5000, events: 0 });
+
+      for (let id = 1; id <= 200; id++) {
+        scrollback.appendToScrollback(key, {
+          id,
+          network: "freenode",
+          channel: "#capped",
+          server_time: id,
+          kind: "privmsg",
+          sender: "bob",
+          body: "x",
+          meta: {},
+        });
+      }
+
+      expect(selection.messagesUnread()[key]).toBe(200);
+    });
+
     it("memo splits scrollback rows by content vs presence kind", async () => {
       localStorage.setItem("grappa-token", "tok");
       const selection = await import("../lib/selection");

@@ -89,6 +89,13 @@ const pushOwnSendSubmitted = (key: string) => setOwnSubmitted(key);
 const [farBehind, setFarBehind] = createSignal<
   Record<string, { missed: number; resumeFrom: number }>
 >({});
+// #947 — the server-measured unread count for a pane whose loaded unread
+// region is truncated (set by a jump that could only carry one page back).
+// Stamped with the cursor it was measured `at`, so the pane spends it only
+// while its frozen divider is still anchored to that same cursor.
+const [measuredUnread, setMeasuredUnread] = createSignal<
+  Record<string, { at: number; count: number }>
+>({});
 // Resolves TRUE by default (the swap happened) — the pane chains off the
 // result to stand the marker latch back down on a failed jump.
 const jumpToUnreadSpy = vi.fn((_slug: string, _name: string) => Promise.resolve(true));
@@ -119,6 +126,9 @@ vi.mock("../lib/scrollback", () => ({
   // fires. Signal-backed so a spec can flip a window into the far-behind
   // state after mount, the same way `setScrollback` drives the row list.
   farBehindByChannel: () => farBehind(),
+  // #947 — signal-backed for the same reason as `farBehindByChannel`: a spec
+  // drives the post-jump state (rows swapped, flag cleared, count carried).
+  measuredUnreadByChannel: () => measuredUnread(),
   // Wrapped, not passed by reference: `vi.mock` is hoisted above the spy
   // declarations, so the factory may only DEFER to them.
   jumpToUnread: (slug: string, name: string) => jumpToUnreadSpy(slug, name),
@@ -2111,6 +2121,71 @@ describe("ScrollbackPane", () => {
         ));
         const bar = screen.getByTestId("far-behind-bar");
         expect(screen.getByTestId("scrollback").contains(bar)).toBe(false);
+      });
+    });
+
+    // #947 — the notch after #693. The operator took the jump, so the flag is
+    // gone and the divider is back; but the jump could only carry ONE page of
+    // the gap, so counting the loaded rows reports the page size. The number
+    // they tapped ("3000 unread — jump back") and the number they land on must
+    // be the same number.
+    describe("truncated unread region (#947)", () => {
+      afterEach(() => setMeasuredUnread({}));
+
+      it("labels the divider with the server's count, not the loaded rows", () => {
+        seedReadCursor("freenode", "#grappa", 1);
+        setScrollback({ "freenode #grappa": fixture });
+        setMeasuredUnread({ "freenode #grappa": { at: 1, count: 3000 } });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        expect(screen.getByTestId("unread-marker")).toHaveTextContent("3000 unread messages");
+      });
+
+      it("still PLACES the divider by the loaded rows", () => {
+        // Only the label is carried. Placement stays loaded-row math — the
+        // divider has to sit between the last read row and the first unread
+        // row that is actually in the pane, and no server count can say where
+        // that is.
+        seedReadCursor("freenode", "#grappa", 1);
+        setScrollback({ "freenode #grappa": fixture });
+        setMeasuredUnread({ "freenode #grappa": { at: 1, count: 3000 } });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        const flow = Array.from(
+          screen
+            .getByTestId("scrollback")
+            .querySelectorAll('[data-testid="unread-marker"], .scrollback-line[data-msg-id]'),
+        );
+        const markerAt = flow.findIndex((n) => n.getAttribute("data-testid") === "unread-marker");
+        expect(markerAt).toBeGreaterThan(0); // read context above it
+        expect(flow[markerAt - 1]?.getAttribute("data-msg-id")).toBe(String(fixture[0]?.id));
+        expect(flow[markerAt + 1]?.getAttribute("data-msg-id")).toBe(String(fixture[1]?.id));
+      });
+
+      it("ignores a measurement taken at a DIFFERENT cursor", () => {
+        // Self-invalidating by construction: the count answers "how many rows
+        // are after id 1", so it is meaningless once the divider re-freezes
+        // somewhere else. Falling back to the loaded rows understates; reusing
+        // a stale 3000 would be a confident wrong number that never expires.
+        seedReadCursor("freenode", "#grappa", 1);
+        setScrollback({ "freenode #grappa": fixture });
+        setMeasuredUnread({ "freenode #grappa": { at: 999, count: 3000 } });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        expect(screen.getByTestId("unread-marker")).toHaveTextContent("2 unread messages");
+      });
+
+      it("does not leak another window's measurement into this pane", () => {
+        seedReadCursor("freenode", "#grappa", 1);
+        setScrollback({ "freenode #grappa": fixture });
+        setMeasuredUnread({ "freenode #other": { at: 1, count: 3000 } });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        expect(screen.getByTestId("unread-marker")).toHaveTextContent("2 unread messages");
       });
     });
 

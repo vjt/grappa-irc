@@ -276,6 +276,59 @@ describe("#693 far-behind resume", () => {
     expect(farBehindByChannel()[key]).toBeUndefined();
   });
 
+  // #947 — the jump refetches ONE page out of a gap that is >200 by the very
+  // definition of far-behind, then clears the flag, which un-suppresses the
+  // #693 divider. Its count is recomputed from the loaded rows, so it reads
+  // exactly the page size — the operator taps "3000 unread — jump back" and
+  // lands on "── 200 unread messages ──". The fetch cap leaking into a
+  // user-visible number, one notch earlier than the case #693 suppressed.
+  //
+  // The honest number is already in hand at that moment (`far.missed`,
+  // measured server-side at `far.resumeFrom`), so keep it instead of dropping
+  // it. Stamped WITH the cursor it was measured at so it self-invalidates: it
+  // applies only while the divider is still frozen against that same cursor.
+  it("a truncated jump keeps the server's count for the divider to label with", async () => {
+    const { loadInitialScrollback, jumpToUnread, measuredUnreadByChannel } = await import(
+      "../scrollback"
+    );
+    const { applyJoinReply } = await import("../readCursor");
+    const { channelKey } = await import("../channelKey");
+    const key = channelKey("net", "#truncated");
+    applyJoinReply("net", "#truncated", 100);
+    countMessagesAfterSpy.mockResolvedValue(3000);
+    listMessagesSpy.mockResolvedValue([row(3100)]);
+    await loadInitialScrollback("net", "#truncated");
+
+    // The jump can only carry ONE page of the 3000 back into the pane.
+    listMessagesAfterSpy.mockResolvedValue(Array.from({ length: 200 }, (_, i) => row(101 + i)));
+    listMessagesSpy.mockResolvedValue([row(100)]);
+    await jumpToUnread("net", "#truncated");
+
+    expect(measuredUnreadByChannel()[key]).toEqual({ at: 100, count: 3000 });
+  });
+
+  it("a jump that drained the whole region records nothing — the rows ARE the count", async () => {
+    // A short page means the pane now holds every unread row, so the
+    // loaded-row count is the truth and a carried number could only go stale
+    // against it. Recording one unconditionally is how a cache starts lying.
+    const { loadInitialScrollback, jumpToUnread, measuredUnreadByChannel } = await import(
+      "../scrollback"
+    );
+    const { applyJoinReply } = await import("../readCursor");
+    const { channelKey } = await import("../channelKey");
+    const key = channelKey("net", "#drained");
+    applyJoinReply("net", "#drained", 100);
+    countMessagesAfterSpy.mockResolvedValue(3000);
+    listMessagesSpy.mockResolvedValue([row(3100)]);
+    await loadInitialScrollback("net", "#drained");
+
+    listMessagesAfterSpy.mockResolvedValue([row(101), row(102)]);
+    listMessagesSpy.mockResolvedValue([row(100)]);
+    await jumpToUnread("net", "#drained");
+
+    expect(measuredUnreadByChannel()[key]).toBeUndefined();
+  });
+
   it("reconnect: a full backfill page with more than a page still missing lands at the tail", async () => {
     const { refreshScrollback, scrollbackByChannel, farBehindByChannel } = await import(
       "../scrollback"

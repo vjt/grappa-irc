@@ -252,6 +252,37 @@ const exports = identityScopedStore((onIdentityChange) => {
     Record<ChannelKey, { missed: number; resumeFrom: number }>
   >({});
 
+  // #947 — "the pane's unread region is TRUNCATED, and here is what the server
+  // said it really holds." Set by a jump that could only carry one page back
+  // out of a gap that is >200 by the definition of far-behind: the flag comes
+  // off, the #693 divider suppression lifts, and a count recomputed from the
+  // loaded rows would read exactly the page size. The operator taps
+  // "3000 unread — jump back" and lands on "── 200 unread messages ──" — the
+  // fetch cap leaking into a user-visible number, one notch after the case
+  // #693 suppressed.
+  //
+  //   * `count` — the same server measurement the jump affordance advertised
+  //     (`far.missed`). Deliberately the SAME number and not a second one:
+  //     it counts rows the divider's predicate would exclude (own-presence,
+  //     operator echoes), so it can run slightly high, and the alternative is
+  //     showing the operator a third figure for one question.
+  //   * `at` — the cursor it was measured after. The record is spent only
+  //     while the frozen divider is still anchored there, which is what makes
+  //     it self-invalidating rather than a cache somebody has to remember to
+  //     sweep: once the freeze re-latches, the answer stops applying on its
+  //     own and the pane falls back to counting rows.
+  const [measuredUnreadByChannel, setMeasuredUnreadByChannel] = createSignal<
+    Record<ChannelKey, { at: number; count: number }>
+  >({});
+
+  const clearMeasuredUnread = (key: ChannelKey): void => {
+    setMeasuredUnreadByChannel((prev) => {
+      if (!(key in prev)) return prev;
+      const { [key]: _drop, ...rest } = prev;
+      return rest;
+    });
+  };
+
   // Send-relatch (2026-06-09): the channel-key of THIS device's most
   // recent own send. `sendMessage` writes it; ScrollbackPane reads it to
   // hide the frozen unread-marker on a focused send ("marker showing +
@@ -286,12 +317,13 @@ const exports = identityScopedStore((onIdentityChange) => {
   });
 
   // Identity-transition cleanup, and the SSOT for what an identity transition
-  // clears. Eleven registered resets fired by the factory's
+  // clears. Twelve registered resets fired by the factory's
   // createEffect(on(token, ...)) — seven Set.clear() (loadedChannels +
   // loadMore{InFlight,Exhausted} + loadNewer{InFlight,Exhausted}, #161 +
-  // refreshInFlight + jumpInFlight, #788) + four signal flushes
+  // refreshInFlight + jumpInFlight, #788) + five signal flushes
   // (scrollbackByChannel + lastOwnSend + ownSendSubmitted, #580 +
-  // farBehindByChannel, #693). Order matches the pre-A3 inline shape.
+  // farBehindByChannel, #693 + measuredUnreadByChannel, #947). Order matches
+  // the pre-A3 inline shape.
   //
   // #788 — the last two are registered here, away from their declarations
   // beside the verbs that own them, precisely BECAUSE that distance is how
@@ -320,6 +352,7 @@ const exports = identityScopedStore((onIdentityChange) => {
   onIdentityChange(() => setLastOwnSend(null));
   onIdentityChange(() => setOwnSendSubmitted(null));
   onIdentityChange(() => setFarBehindByChannel({}));
+  onIdentityChange(() => setMeasuredUnreadByChannel({}));
 
   // Insert an incoming message into the per-channel ascending list at its
   // (server_time, id) position, deduping by id. REST + WS can overlap: the
@@ -405,6 +438,16 @@ const exports = identityScopedStore((onIdentityChange) => {
     // with the loaded rows while thousands are missing, which is the wrong
     // number the suppression exists to prevent.
     setFarBehindByChannel((prev) => {
+      if (!(oldKey in prev)) return prev;
+      const { [oldKey]: moved, ...rest } = prev;
+      return moved === undefined ? rest : { ...rest, [newKey]: moved };
+    });
+    // #947 — same argument, same migration set (CLAUDE.md #373: a new
+    // nick-keyed store that skips this strands its old-nick rows). The count
+    // is about a conversation, not about a spelling of the peer's nick;
+    // stranded, the relabeled pane falls back to counting its truncated rows
+    // and shows the page size — the number this record exists to replace.
+    setMeasuredUnreadByChannel((prev) => {
       if (!(oldKey in prev)) return prev;
       const { [oldKey]: moved, ...rest } = prev;
       return moved === undefined ? rest : { ...rest, [newKey]: moved };
@@ -576,6 +619,19 @@ const exports = identityScopedStore((onIdentityChange) => {
       // the new oldest row — both latches are stale.
       loadNewerExhausted.delete(key);
       loadMoreExhausted.delete(key);
+      // #947 — a FULL page says the unread region did not fit, so the divider
+      // about to be un-suppressed cannot count it. Hand it the number we
+      // already measured rather than dropping it here and letting the pane
+      // report the page size. A SHORT page drained the whole region: the rows
+      // ARE the count, and a carried number could only go stale against them.
+      if (afterPage.length === PAGE_LIMIT) {
+        setMeasuredUnreadByChannel((prev) => ({
+          ...prev,
+          [key]: { at: far.resumeFrom, count: far.missed },
+        }));
+      } else {
+        clearMeasuredUnread(key);
+      }
       clearFarBehind(key);
       return true;
     } catch (err) {
@@ -1108,6 +1164,8 @@ const exports = identityScopedStore((onIdentityChange) => {
     // #693 — the rows the far-behind record points back to were just deleted
     // server-side; offering to jump into them would 404 the affordance.
     clearFarBehind(key);
+    // #947 — and the count of those rows is now a count of nothing.
+    clearMeasuredUnread(key);
     if (hasSignal) {
       setScrollbackByChannel((prev) => {
         const { [key]: _drop, ...rest } = prev;
@@ -1138,6 +1196,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     loadInitialScrollback,
     loadMore,
     loadNewer,
+    measuredUnreadByChannel,
     purgeScrollback,
     renameScrollbackKey,
     refreshScrollback,
@@ -1156,6 +1215,7 @@ export const jumpToUnread = exports.jumpToUnread;
 export const loadInitialScrollback = exports.loadInitialScrollback;
 export const loadMore = exports.loadMore;
 export const loadNewer = exports.loadNewer;
+export const measuredUnreadByChannel = exports.measuredUnreadByChannel;
 export const purgeScrollback = exports.purgeScrollback;
 export const renameScrollbackKey = exports.renameScrollbackKey;
 export const refreshScrollback = exports.refreshScrollback;

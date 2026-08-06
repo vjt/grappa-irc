@@ -31460,3 +31460,62 @@ which the deploy preflight reads as COLD — for packages that are not in the
 prod release, so the COLD buys no production security. Worth folding into the
 next COLD-forcing change rather than shipping alone. `mix deps.audit` remains
 the hard CVE gate throughout and is untouched.
+
+## 2026-08-06 — #947: the divider counts the conversation, the pane counts its rows
+
+The in-pane `── N unread messages ──` divider reported exactly **200** for any
+window resumed by a #693 jump-back. Not a random number: 200 is the server's
+`@max_http_limit` and the client's `PAGE_LIMIT`, and the divider was recounting
+the rows the pane happened to hold.
+
+**#693 already solved this one notch earlier and stopped there.** While a pane
+is far behind, the divider is suppressed precisely because a loaded-row count
+would be "a confident wrong number in the one place the operator reads to
+decide where they left off", and the true server-measured count goes to the
+pinned "N unread — jump back" bar instead. Taking the jump was the case nobody
+followed through on: `jumpToUnread` refetches `after(resumeFrom, PAGE_LIMIT)` —
+one page out of a gap that is >200 *by the definition of far-behind* — replaces
+the pane, and clears the flag. Clearing the flag un-suppresses the divider, and
+`far.missed` is dropped on the floor at the exact moment the label needs it. The
+operator taps a bar reading "239 unread" and lands on "── 200 unread messages
+──". Two numbers for one question, the second one wrong, decided by a fetch cap.
+
+**The issue's suggested fix was a no-op, and that is worth recording.** #947
+proposed taking the label from `selection.ts`'s `messagesUnread()`, described as
+the authoritative unbounded seed. It is not, once the pane hydrates:
+`perChannelUnread`'s local-rows branch *overrides* the seed for any key holding
+rows (local truth wins — the seed is a sync-time snapshot). Measured, not
+argued: with a 5000 seed and 200 loaded rows past the cursor, `messagesUnread()`
+returns **200**. The badge and the divider saturate identically, so reading one
+off the other would have replaced 200 with 200. The premise that "the two
+disagree" only holds while far-behind is SET — and there the divider is
+suppressed, so there is no second number to disagree with. Pinned by
+`selection.test.ts` "local rows override a LARGER seed once the key is
+hydrated", so the next reader does not re-derive it.
+
+**What shipped.** `scrollback.ts` gains `measuredUnreadByChannel`:
+`{at, count}` per key, written by `jumpToUnread` only when the after-page came
+back at the cap (a short page drained the region, so the rows ARE the count and
+a carried number could only go stale against them). `count` is deliberately the
+SAME `far.missed` the bar advertised rather than a second measurement — it
+counts rows the divider's predicate excludes (own-presence, operator echoes) and
+so can run slightly high, but showing the operator a third figure for one
+question is worse than showing a consistent one.
+
+**`at` is the whole design.** It stamps the cursor the count was measured after,
+and the pane spends the record only while its frozen divider is still anchored
+there. That makes the store self-invalidating instead of a cache somebody has to
+remember to sweep: once the freeze re-latches, the answer stops applying on its
+own. It still joins the two registers that exist for this class of state — the
+identity-transition reset list and the #373 `renameScrollbackKey` migration set
+(a count is about a conversation, not about a spelling of the peer's nick).
+
+**Placement stays loaded-row math.** The divider has to sit between the last
+read row and the first unread row actually in the pane; no server count knows
+where that is. Only the label moved.
+
+**Out of scope, deliberately.** The other path that shows a saturated divider is
+a cold open whose gap probe *failed* — `loadInitialScrollback` then keeps the
+anchored resume and loads one page of an unknown gap. There is no honest number
+to show there, because the failure of the probe is exactly the absence of the
+measurement. Left alone rather than guessed at.
