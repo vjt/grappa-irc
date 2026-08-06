@@ -231,6 +231,62 @@ describe("RailActions (#473)", () => {
   });
 });
 
+// #588 → #913 — the upward-opening menu's max-height cap. #588 established
+// that the cap is the space ABOVE the launcher, measured in JS. #913 is the
+// residue: `getBoundingClientRect().top` is measured from the LAYOUT viewport
+// origin, which under `viewport-fit=cover` is the PHYSICAL top of the display
+// — behind the status bar. The inset itself is NOT resolvable from JS (an
+// unregistered custom property's `env()` is not guaranteed to compute through
+// `getComputedStyle`), so the split is: JS publishes the one number CSS cannot
+// know (the anchor's viewport offset, gap already applied) as
+// `--rail-menu-space-above`, and the stylesheet subtracts
+// `var(--safe-area-inset-top)` from it. These tests pin the JS half; the CSS
+// half is pinned in railMenuSafeArea.test.ts.
+describe("RailActions upward-menu cap (#588 → #913)", () => {
+  function stubAnchorTop(top: number): void {
+    const root = document.querySelector(".rail-actions");
+    if (!(root instanceof HTMLElement)) throw new Error(".rail-actions did not render");
+    root.getBoundingClientRect = (): DOMRect =>
+      ({ top, y: top, bottom: top, left: 0, x: 0, right: 0, width: 0, height: 0 }) as DOMRect;
+  }
+
+  function menuEl(): HTMLElement {
+    const menu = document.querySelector(".rail-actions-menu");
+    if (!(menu instanceof HTMLElement)) throw new Error(".rail-actions-menu did not render");
+    return menu;
+  }
+
+  it("publishes the space above the launcher, gap deducted, as a custom property", () => {
+    render(() => <RailActions setters={setters} />);
+    stubAnchorTop(500);
+    openMenu();
+    // 500 (anchor top) - 8 (RAIL_MENU_TOP_GAP) — the CSS then takes the
+    // safe-area inset off this, which is the whole #913 fix.
+    expect(menuEl().style.getPropertyValue("--rail-menu-space-above")).toBe("492px");
+  });
+
+  it("re-measures when the viewport changes (rotation / keyboard reflow)", () => {
+    render(() => <RailActions setters={setters} />);
+    stubAnchorTop(500);
+    openMenu();
+    expect(menuEl().style.getPropertyValue("--rail-menu-space-above")).toBe("492px");
+    // Rotation and `interactive-widget=resizes-content` both move the launcher;
+    // a cap measured once at open would go stale and re-open the #588 overflow.
+    stubAnchorTop(200);
+    window.dispatchEvent(new Event("resize"));
+    expect(menuEl().style.getPropertyValue("--rail-menu-space-above")).toBe("192px");
+  });
+
+  it("clamps at zero when the launcher sits above the gap", () => {
+    render(() => <RailActions setters={setters} />);
+    stubAnchorTop(4);
+    openMenu();
+    // A NEGATIVE length would be an invalid max-height → declaration dropped →
+    // the uncapped #588 overflow returns.
+    expect(menuEl().style.getPropertyValue("--rail-menu-space-above")).toBe("0px");
+  });
+});
+
 // #500 — the always-expanded button column became unreachable on a big channel
 // (desktop: it sat below the overflowing nick list; mobile: it ate the rail).
 // vjt's fix: collapse every action behind ONE launcher permanently pinned at

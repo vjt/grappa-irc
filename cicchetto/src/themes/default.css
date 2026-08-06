@@ -194,6 +194,19 @@
      floor (feedback_cic_tap_target_rem_pitfall). Theme-independent, so it
      lives on base :root, NOT in the per-theme blocks. */
   --tap-min: 44px;
+  /* #913 — the iOS top safe-area inset, as a variable. Everything else in this
+     file writes `env(safe-area-inset-top)` inline, which is right for a
+     padding: the engine substitutes it and nobody has to read it back. The
+     rail actions menu is the one cap whose OTHER operand is measured in JS
+     (`--rail-menu-space-above`), and JS cannot reliably obtain the inset: an
+     unregistered custom property hands `getComputedStyle().getPropertyValue()`
+     its token stream, not a length, so `parseFloat` yields NaN and a `|| 0`
+     fallback hides it. Keeping the arithmetic in CSS keeps `env()` where the
+     engine resolves it. The `0px` fallback is load-bearing: without it an
+     engine that does not know the variable invalidates the whole declaration
+     and the cap disappears (the #588 overflow, back). Theme-independent, so it
+     lives on base :root. */
+  --safe-area-inset-top: env(safe-area-inset-top, 0px);
   /* grappa-irc#69: theme the scrollbars. `scrollbar-color` and
      `scrollbar-width` inherit, so declaring them on :root themes every
      scrollable descendant (.scrollback, members pane, admin tables…)
@@ -1858,13 +1871,23 @@ html.resize-dragging * {
    contain` stops the scroll chaining to the list behind. z-index sits at the
    context-menu layer so it clears the rail chrome; the fixed backdrop below is
    one step under it.
-   #588 — the `max-height: var(--viewport-height)` here is now only the
-   PRE-MEASURE FALLBACK. `var(--viewport-height)` is the WHOLE viewport, but a
-   menu opening upward only has the space ABOVE the launcher; capping at the
-   viewport let the overflowing rows grow off the top of the screen with no
-   scroll. RailActions.tsx measures the real space above on open (+ on resize /
-   visualViewport) and overrides `max-height` inline via `spaceAbove` — only
-   then does the `overflow-y: auto` below actually engage. */
+   #588 — `var(--viewport-height)` is the WHOLE viewport, but a menu opening
+   upward only has the space ABOVE the launcher; capping at the viewport let
+   the overflowing rows grow off the top of the screen with no scroll. So it
+   survives here only as the PRE-MEASURE FALLBACK, nested inside the var()
+   chain: RailActions.tsx measures the real space above on open (+ on resize /
+   visualViewport, via `spaceAbove`) and publishes it as
+   `--rail-menu-space-above`. Only then does the `overflow-y: auto` below
+   actually engage.
+   #913 — that measurement comes from `getBoundingClientRect().top`, which
+   under `viewport-fit=cover` is measured from the PHYSICAL top of the display,
+   so the cap ran a full status bar too tall: the topmost row rendered behind
+   the clock, and — being one inset roomier than the space it had — the rows
+   still fit, so `overflow-y: auto` never engaged and that row could not be
+   scrolled into reach. Subtract the inset HERE, where the engine resolves
+   `env()` (see the `--safe-area-inset-top` note on :root for why not in JS).
+   `max(0px, …)` because the subtraction can go negative on a short viewport,
+   and a negative max-height is an ignored declaration — i.e. no cap at all. */
 .rail-actions-menu {
   position: absolute;
   bottom: 100%;
@@ -1878,9 +1901,30 @@ html.resize-dragging * {
   background: var(--bg-alt);
   border: 1px solid var(--border);
   border-bottom: none;
-  max-height: var(--viewport-height, 80vh);
+  max-height: max(
+    0px,
+    calc(
+      var(--rail-menu-space-above, var(--viewport-height, 80vh)) -
+      var(--safe-area-inset-top, 0px)
+    )
+  );
   overflow-y: auto;
   overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+
+/* #913 — descendant gesture carve-out, mirroring `.members-pane *` (UX-6
+   bucket A v2) and the same pair on `.settings-drawer` / `.archive-modal`.
+   touch-action does NOT inherit, so the action rows sit at the default `auto`
+   while their ancestors are under the `touch-action: none` blanket
+   (`.shell-mobile`, plus `html.overlay-open #root > div` — this menu holds the
+   overlay lock while open). iOS elects the gesture consumer from the hit-test
+   target's own value, and the rows ARE the hit-test target across nearly the
+   whole menu. Without this, capping the menu correctly makes it overflow but
+   the pan can still be refused — the second symptom, surviving the fix for the
+   first. */
+.rail-actions-menu * {
+  touch-action: pan-y;
 }
 
 /* #500 — the launcher carries the same `.rail-action` full-width row chrome

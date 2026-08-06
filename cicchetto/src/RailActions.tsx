@@ -89,9 +89,11 @@ export type Props = {
   setters: MobilePanelSetters;
 };
 
-// #588 — px kept clear at the viewport top when the menu is capped to the space
-// above the launcher, so the topmost row isn't flush against the screen edge
-// (notch / status bar breathing room). Fed to `spaceAbove`.
+// #588 — px kept clear above the menu so the topmost row isn't flush against
+// whatever is above it. Breathing room ONLY: #913 established that clearing the
+// notch / status bar is a separate, ~59px job that this constant was silently
+// being asked to do. The inset is subtracted in CSS (see below); this is what
+// remains on top of it. Fed to `spaceAbove`.
 const RAIL_MENU_TOP_GAP = 8;
 
 const RailActions: Component<Props> = (props) => {
@@ -145,17 +147,28 @@ const RailActions: Component<Props> = (props) => {
   // second, differently-buggy CSS-only guess. Re-measure on `resize` /
   // `visualViewport` resize: that is where the mobile-keyboard-up case lives
   // (the visual viewport shrinks, the launcher rides up, the space above
-  // changes). Null while closed → the menu isn't mounted anyway, and the JSX
-  // falls back to the CSS var.
-  const [menuMaxHeight, setMenuMaxHeight] = createSignal<number | null>(null);
+  // changes) — and where rotation lands too, which matters now that the cap's
+  // other operand (the safe-area inset) also changes with orientation. Null
+  // while closed → the menu isn't mounted anyway, and the CSS var() chain
+  // falls back to the viewport height.
+  //
+  // #913 — this measurement is only HALF the cap. `getBoundingClientRect()` is
+  // relative to the layout viewport, whose origin under `viewport-fit=cover` is
+  // the physical top of the display, behind the status bar. The stylesheet
+  // takes `var(--safe-area-inset-top)` off what we publish here; we do NOT read
+  // the inset in JS, because `getComputedStyle().getPropertyValue()` on an
+  // unregistered custom property is not guaranteed to resolve `env()` to a
+  // length — it can return the token stream, and the NaN that follows would
+  // fail silently as a no-op fix.
+  const [menuSpaceAbove, setMenuSpaceAbove] = createSignal<number | null>(null);
   createEffect(() => {
     if (!open()) {
-      setMenuMaxHeight(null);
+      setMenuSpaceAbove(null);
       return;
     }
     const measure = (): void => {
       if (!rootRef) return;
-      setMenuMaxHeight(spaceAbove(rootRef.getBoundingClientRect().top, RAIL_MENU_TOP_GAP));
+      setMenuSpaceAbove(spaceAbove(rootRef.getBoundingClientRect().top, RAIL_MENU_TOP_GAP));
     };
     measure();
     window.addEventListener("resize", measure);
@@ -178,10 +191,13 @@ const RailActions: Component<Props> = (props) => {
           class="rail-actions-menu"
           role="menu"
           style={
-            // #588 — cap to the space above the launcher (JS-measured); the CSS
-            // `max-height: var(--viewport-height)` stays as the pre-measure
-            // fallback. undefined → the CSS rule applies.
-            menuMaxHeight() !== null ? { "max-height": `${menuMaxHeight()}px` } : undefined
+            // #588/#913 — publish the JS-measured space above the launcher; the
+            // stylesheet's `max-height` subtracts the safe-area inset from it
+            // and clamps. undefined → the var() falls back to the viewport
+            // height (pre-measure only).
+            menuSpaceAbove() !== null
+              ? { "--rail-menu-space-above": `${menuSpaceAbove()}px` }
+              : undefined
           }
         >
           {/* #291 — home launcher. Always visible; leftmost/topmost. */}
