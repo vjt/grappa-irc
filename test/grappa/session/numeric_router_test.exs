@@ -171,10 +171,23 @@ defmodule Grappa.Session.NumericRouterTest do
   # of which is a destination for the reply. This property is what pins the
   # MEMBERSHIP of all three; the real-wire-shape tests below document what
   # each one actually routed to pre-fix.
-  @active_numerics [4, 42, 263, 421, 432, 433, 437, 461, 512, 734] ++
-                     Enum.to_list(211..219) ++
-                     Enum.to_list(240..250) ++
-                     Enum.to_list(200..210) ++ [261, 262] ++ Enum.to_list(321..323)
+  # #911 — the audit families. STATS grew to the contiguous 211–250 (less
+  # 221 RPL_UMODEIS, which is delegated), and ADMIN (256–259), HELP
+  # (704–706), SASL (900–908) and the MONITOR list pair (732/733) joined,
+  # alongside 410 ERR_INVALIDCAPCMD and 472 ERR_UNKNOWNMODE. Each was read
+  # out of a bound ircd's numeric FORMAT TABLE — azzurra/bahamut @ 3b6ccff
+  # `src/s_err.c` and solanum @ 115b1e2 `include/messages.h` — not out of
+  # an RFC. The per-family tests below carry the measured wire shape and
+  # the emitting file:line; this property pins the MEMBERSHIP.
+  @active_numerics [4, 42, 263, 410, 421, 432, 433, 437, 461, 472, 512, 734] ++
+                     (Enum.to_list(211..250) -- [221]) ++
+                     Enum.to_list(200..210) ++
+                     [261, 262] ++
+                     Enum.to_list(321..323) ++
+                     Enum.to_list(256..259) ++
+                     Enum.to_list(704..706) ++
+                     Enum.to_list(900..908) ++
+                     [732, 733]
 
   describe "@active_numerics deny list → {:server, nil}" do
     property "all @active_numerics route to {:server, nil} regardless of params" do
@@ -371,6 +384,126 @@ defmodule Grappa.Session.NumericRouterTest do
       # above is what constrains 323's membership; this test documents the
       # wire.
       m = msg(323, ["vjt", "End of /LIST"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # #911 — the audit families. Every shape below is transcribed from the
+  # emitting ircd's own format table, and every one of these tests is RED
+  # without its deny-list entry: each family reaches the param scan on the
+  # unpatched module and resolves to {:query, <label>}. The two rows the
+  # audit DISPROVED (436 ERR_NICKCOLLISION, 303 RPL_ISON) get no test,
+  # precisely because they already reach $server — an assertion there would
+  # pass before and after, constraining nothing. See the "rows the reading
+  # DISPROVED" block in NumericRouter for why they evaporated.
+  # ---------------------------------------------------------------------------
+
+  describe "@active_numerics deny list — the #911 audit families" do
+    property "@active_numerics and @delegated_numerics are DISJOINT" do
+      # A code in both sets is masked by `numeric_class/1`'s
+      # delegated-first order, so it never misbehaves — it just reads as
+      # two deliberate and contradictory decisions. #911 made this real:
+      # extending STATS to the contiguous 211–250 swallows 221 RPL_UMODEIS,
+      # which #229 delegates. It is subtracted in production; this is what
+      # keeps it subtracted.
+      check all(numeric <- member_of(@active_numerics)) do
+        refute numeric in @delegated_numerics
+      end
+    end
+
+    test "225 RPL_STATSZLINE: the Z-line class letter is NOT a query destination" do
+      # bahamut `s_err.c:253` — `":%s 225 %s %c %s %s"` — emitted from
+      # `s_serv.c:1727`. The identical `%c` class letter #184 was filed
+      # for, sitting in the 220–239 hole #184's own note left open with
+      # "add them here if a bound network emits them". Azzurra does.
+      m = msg(225, ["vjt", "Z", "*@banned.example.org", "zapped"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "222 RPL_STATS*: the 220–239 hole closed as a RANGE, not per-letter" do
+      # bahamut `s_err.c:250` — `":%s 222 %s %c %s * %s %d %d"`. #184's
+      # lesson was that fixing only the letter that got reported leaves
+      # every sibling letter routing wrong; the same holds one range up.
+      m = msg(222, ["vjt", "B", "*", "host.example.org", "0", "0"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "221 RPL_UMODEIS is delegated — it is NOT swallowed by the STATS range" do
+      # The one code in 211–250 that is not a STATS reply on either ircd.
+      m = msg(221, ["vjt", "+iwS"])
+      assert :delegated = NumericRouter.route(m, state())
+    end
+
+    test "257 RPL_ADMINLOC1: a one-word A-line is NOT a query destination" do
+      # bahamut `s_err.c:295` — `":%s 257 %s :%s"` — fed `aconf->host`
+      # verbatim from `s_serv.c:2695`. TWO params, so
+      # `candidate_params/1`'s 2-elem clause (B6.1 HIGH-4) hands the
+      # trailing straight to the scan, and the reply's destination becomes
+      # whatever the operator typed into `admin { }`.
+      m = msg(257, ["vjt", "Azzurra"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "256 RPL_ADMINME: stays on $server even for a DOTLESS server name" do
+      # solanum shape — `"%s :Administrative info"`, so `params[1]` is the
+      # server name. Saved today only by `query_candidate?/2`'s
+      # `.`-exclusion, exactly like 262 RPL_ENDOFTRACE and 323 RPL_LISTEND.
+      m = msg(256, ["vjt", "services", "Administrative info"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "704 RPL_HELPSTART: the help TOPIC is NOT a query destination" do
+      # solanum `include/messages.h` — `":%s 704 %s %s :%s"` — with
+      # `topic` passed at `modules/m_help.c:116`. `/help join` on Libera:
+      # an ordinary command from an ordinary user, no `/quote`, no
+      # watchdog race, no oper bit. The shortest path #911 found from a
+      # normal keystroke to a wrong-conversation row.
+      m = msg(704, ["vjt", "join", "JOIN <channel> - join a channel"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "900 RPL_LOGGEDIN: the SASL ACCOUNT is NOT a query destination" do
+      # solanum — `":%s 900 %s %s!%s@%s %s :You are now logged in as %s"`,
+      # `modules/m_services.c:158`. `params[1]` is a nick!user@host mask
+      # and fails `valid_nick?/1` on the `!`, so the scan falls through to
+      # `params[2]` — the account name — and routes there whenever the
+      # account differs from the nick.
+      m = msg(900, ["vjt", "vjt!u@example.org", "marcello", "You are now logged in as marcello"])
+
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "908 RPL_SASLMECHS: a lone advertised mech is NOT a query destination" do
+      # `":%s 908 %s %s :are available SASL mechanisms"`. A multi-mech
+      # list carries commas and already fails `valid_nick?/1`; a server
+      # advertising a bare "PLAIN" does not.
+      m = msg(908, ["vjt", "PLAIN", "are available SASL mechanisms"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "732 RPL_MONLIST: a single monitored target is NOT the reply's destination" do
+      # `":%s 732 %s :%s"` — two params again, trailing = the
+      # comma-separated monitored-target blob, so a one-entry list IS a
+      # bare nick. The #640 gate does not save this one: you monitor the
+      # people you talk to, so that window is exactly the one that is open.
+      m = msg(732, ["vjt", "peer"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "410 ERR_INVALIDCAPCMD: the CAP subcommand is NOT a query destination" do
+      # `":%s 410 %s %s :Invalid CAP subcommand"` — 421's relationship to
+      # a bad command name, one layer down in capability negotiation.
+      m = msg(410, ["vjt", "FOO", "Invalid CAP subcommand"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "472 ERR_UNKNOWNMODE: the mode CHARACTER is NOT a query destination" do
+      # `":%s 472 %s %c :is an unknown mode char to me"` on both ircds;
+      # `valid_nick?/1` accepts a bare letter, so this is #184's stats
+      # letter with a mode letter in its place. bahamut defines the entry
+      # and never emits it; solanum emits it live from `ircd/chmode.c:1380`.
+      m = msg(472, ["vjt", "z", "is an unknown mode char to me"])
       assert {:server, nil} = NumericRouter.route(m, state())
     end
   end

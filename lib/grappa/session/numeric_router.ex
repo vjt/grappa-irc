@@ -43,8 +43,10 @@ defmodule Grappa.Session.NumericRouter do
      rejected nick (433/432), the unknown command name (421), the
      offending command's argument list (461), an ack (437), or a whole
      server-directed REPORT family whose middles are data, type labels or
-     table headers (`@stats_numerics` #184, `@trace_numerics` #908,
-     `@list_numerics` #910, the connect-storm tokens). These ALWAYS go to
+     table headers (`@stats_numerics` #184/#911, `@trace_numerics` #908,
+     `@list_numerics` #910, `@admin_numerics` / `@help_numerics` /
+     `@sasl_numerics` / `@monitor_list_numerics` #911, the connect-storm
+     tokens). These ALWAYS go to
      `{:server, nil}`. Without this deny
      list, the param-scan below would happily route 433's "BLEH-as-nick"
      to a query window.
@@ -79,16 +81,19 @@ defmodule Grappa.Session.NumericRouter do
     class). So the routing table can only be keyed by the CODE, which is
     what both lists already do — the deny list and an allow list differ
     only in which side the UNKNOWN falls on, and we currently put it on
-    the guessing side. Four families have now been patched in
-    (#184 STATS, UX-4 bucket I connect-storm, #908 TRACE, #910 LIST) and
-    the deny list stands at 46 codes against the two or three the scan's
-    query branch genuinely serves (401 and the legacy 2-param shape) —
-    that ratio IS the argument, and #910 sharpened it: that family was
-    not found by a bug report but by a sweep, two years after this very
-    moduledoc asserted BY NUMBER that it already routed correctly. The
+    the guessing side. The deny list has now outgrown the scan it
+    guards: it enumerates essentially every server-directed reply family
+    the two bound ircds define, against the two or three destinations
+    the query branch genuinely serves (401 and the legacy 2-param
+    shape). That ratio IS the argument, and #911 settled it. #910 was
+    already a sweep finding rather than a bug report; #911 stopped
+    sweeping one family at a time and read both ircds' numeric FORMAT
+    TABLES end to end, which turned up four more families at once —
+    including a STATS range this very note had named as a known gap and
+    then left alone for two years. The
     scan's default does not merely guess wrong, it guesses wrong
     SILENTLY — so the families surface one accidental read at a time,
-    and the count above is a floor, not an inventory. The root-cause fix
+    and no list assembled this way is ever an inventory. The root-cause fix
     is to invert: enumerate the
     target-bearing numerics and default the rest to `$server`. It is not
     done here because it changes behaviour for every numeric in neither
@@ -183,14 +188,30 @@ defmodule Grappa.Session.NumericRouter do
   # bogus DM named "o") that even leaked into Archive via list_archive's
   # `COALESCE(dm_with, channel)` — the exact disease as the 004/042
   # connect-storm ghost below. STATS is server-directed by definition →
-  # always `{:server, nil}`. We deny the full 211–219 / 240–250 range —
+  # always `{:server, nil}`. #184 denied the full 211–219 / 240–250 range —
   # the STATS reply set Azzurra's bahamut actually emits (characterized
   # across the STATS letters in #155) — not just the letter the report
   # named, so EVERY `/stats <x>` reply lands on `$server`, not only
   # `/stats o`. NB this is the observed range, not universal STATS
   # coverage: other ircds define STATS numerics in 220–239 too; add them
   # here if a bound network emits them.
-  @stats_numerics Enum.to_list(211..219) ++ Enum.to_list(240..250)
+  #
+  # #911 closed that hole by reading the table instead of guessing at it.
+  # A bound network DOES emit them: bahamut fills 222/223/224/225/227/229
+  # with `":%s NNN %s %c %s * %s %d %d"` — the SAME `%c` class letter #184
+  # was filed for — plus 226 `":%s 226 %s %s %l"` (a count label) and 228,
+  # whose candidate slot is the literal "S". Every one has a live emitter:
+  # 225 `s_serv.c:1727`, 226 `s_serv.c:1816`, 227 via the
+  # `report_conf_links` table at `s_serv.c:1474`, 228 `s_serv.c:1867`,
+  # 229 `s_serv.c:1936` (WEBIRC builds). solanum leads 220 and 225 with a
+  # `%c` too. So the range is now the contiguous 211–250.
+  #
+  # 221 RPL_UMODEIS is the one code in 211–250 that is not a STATS reply
+  # on either ircd — #229 delegates it — so it is subtracted here rather
+  # than left for `numeric_class/1`'s delegated-first order to mask. A
+  # code sitting in BOTH sets is a latent contradiction that reads as
+  # deliberate; the disjointness property in the test keeps it out.
+  @stats_numerics Enum.to_list(211..250) -- [221]
 
   # #908 — TRACE reply family (200–210, 261–262). The THIRD instance of the
   # @stats_numerics disease (#184's stats letter; UX-4 bucket I's
@@ -256,6 +277,112 @@ defmodule Grappa.Session.NumericRouter do
   # tracker at all.
   @list_numerics Enum.to_list(321..323)
 
+  # #911 — the four families below came out of an AUDIT, not a bug report.
+  # #184, #908 and #910 each started from one observed ghost window; this
+  # set came from reading the numeric FORMAT TABLES of both bound ircds
+  # end to end — azzurra/bahamut @ 3b6ccff `src/s_err.c` (Azzurra, all of
+  # prod) and solanum-ircd/solanum @ 115b1e2 `include/messages.h` (Libera,
+  # and the e2e testnet's second node). Each code is here because a table
+  # entry SAYS its candidate slot holds a label, a letter or a data blob,
+  # never because an RFC suggests it might. Rows the reading DISPROVED are
+  # recorded at the end of this block; a falsified row is the more useful
+  # half of an audit, because it is the evidence the rest were measured.
+
+  # ADMIN reply family (256–259). Server-directed by definition — it
+  # describes the SERVER's operator, and `m_admin` (bahamut
+  # `s_serv.c:2695`) answers with the A-line fields verbatim.
+  #
+  # 257/258/259 are `":%s 25N %s :%s"` on bahamut and `":%s"` on solanum:
+  # a TWO-param numeric whose only middle IS the trailing. That matters,
+  # because `candidate_params/1`'s 2-elem clause (B6.1 HIGH-4, added so a
+  # tail-less 401 still reaches its target's window) hands that trailing
+  # straight to the scan. So the routing destination of an ADMIN reply is
+  # whatever the operator typed into `admin { }`: a one-word dotless
+  # A-line — "Azzurra", "staff", a nick — resolves to `{:query, <that>}`.
+  # Nothing about the family says "conversation"; the exposure is purely
+  # that a config string happened to be nick-shaped.
+  #
+  # 256 RPL_ADMINME carries the server NAME and is saved today only by
+  # `query_candidate?/2`'s `.`-exclusion — the same accident that saved
+  # 262 RPL_ENDOFTRACE and 323 RPL_LISTEND. Covered for the same reason
+  # those two are: a family-wide rule must not rest on how a server
+  # happens to be spelled.
+  @admin_numerics Enum.to_list(256..259)
+
+  # HELP reply family (704–706, solanum; bahamut has no 7xx HELP). The
+  # topic token sits in `params[1]` on all three —
+  # `":%s 704 %s %s :%s"`, fed `topic` at `modules/m_help.c:116` and
+  # `:123` — so `/help join` on Libera scans "join" and resolves the
+  # reply to `{:query, "join"}`. Reachable by an ordinary user typing an
+  # ordinary command: no `/quote`, no watchdog race, no oper privilege.
+  # Of everything #911 measured this is the shortest path from a normal
+  # keystroke to a wrong-conversation row.
+  @help_numerics Enum.to_list(704..706)
+
+  # SASL reply family (900–908, solanum). Server-directed: these describe
+  # the CONNECTION's authentication, not a peer.
+  #
+  # 900 RPL_LOGGEDIN is `":%s 900 %s %s!%s@%s %s :You are now logged in
+  # as %s"` (`modules/m_services.c:158` passes the account twice). The
+  # first candidate `nick!user@host` fails `valid_nick?/1` on the `!`, so
+  # the scan falls to the second — the ACCOUNT NAME — and routes there
+  # whenever the account differs from the nick. #911 filed this row as
+  # "the reply itself never observed"; the shape is now read from source,
+  # and the account-vs-nick condition is the whole of its latency.
+  # 908 RPL_SASLMECHS puts the mech list in `params[1]`; a multi-mech list
+  # carries commas and fails `valid_nick?/1`, a single-mech server
+  # advertising a bare "PLAIN" does not.
+  #
+  # 901–907 are two-param with spacey trailings and route to `$server`
+  # today; they are covered so the family has no hole, the same call the
+  # contiguous TRACE range made for 207/210. 904 ERR_SASLFAIL never
+  # reaches this module at all — `Session.Server` intercepts it with a
+  # dedicated `handle_info` clause ahead of the generic numeric path — so
+  # its membership is inert by construction, not merely unobserved.
+  @sasl_numerics Enum.to_list(900..908)
+
+  # MONITOR list replies (732/733, solanum). Siblings of the #247
+  # presence family: 730/731 are delegated (typed presence effects) and
+  # 734 is already denied, which left the LIST pair as the only members
+  # still guessing. 732 RPL_MONLIST is `":%s 732 %s :%s"` — two-param
+  # again, trailing = the comma-separated monitored-target blob, so a
+  # single-entry list is a bare nick and routes into that peer's window.
+  # 733 carries a spacey terminator and is pinned by the deny-list
+  # property, not by an observed misroute — the 323 posture.
+  @monitor_list_numerics [732, 733]
+
+  # #911, the rows the reading DISPROVED — deliberately NOT denied. They
+  # are recorded because an audit that only lists its hits gives no way to
+  # tell measurement from confident guessing, and because a deny-list
+  # entry that cannot be made to fail is dead weight that reads as cover.
+  #
+  # 436 ERR_NICKCOLLISION was filed as "the twin of 432/433/437, which are
+  # already denied". It is not. Those three name a nick that is NOT you —
+  # the one you asked for and were refused. Every 436 emitter on both
+  # ircds passes the RECIPIENT's own name into `params[1]`
+  # (bahamut `m_nick.c:302/324/346/383`,
+  # `sendto_one(acptr, …, acptr->name, acptr->name)`; solanum
+  # `modules/core/m_nick.c:807` and `m_signon.c:326`,
+  # `sendto_one_numeric(target_p, …, target_p->name)`), so `nick_eq?/2`
+  # already collapses it to `$server`. Denying it would add an entry no
+  # test could ever redden.
+  #
+  # 303 RPL_ISON was filed as a `/quote`-reachable bare nick. Both ircds
+  # append a trailing SPACE after every name they add
+  # (bahamut `s_user.c:3437`, solanum `m_ison.c:101`
+  # `*current_insert_point++ = ' '`), `Parser.parse_params/2` keeps a
+  # trailing verbatim, and `valid_nick?/1` rejects the space — so even the
+  # single-hit reply that made the row plausible is `"nick "`, not `"nick"`.
+  #
+  # And the reachability half of the list shrank too: bahamut's table
+  # defines NO 900, 410, 704–706, 732 or 908. Every family added above
+  # except STATS and ADMIN is solanum-only, which is to say Libera-only —
+  # none of it can fire on Azzurra, where all of prod lives.
+  #
+  # STATS 220–239 went the other way: filed as "already flagged as a known
+  # gap in the moduledoc" and left uncounted, it turned out to be the one
+  # family the network we actually run emits today.
+
   # #785 — the RFC error range (4xx command failures, 5xx server errors).
   # Distinct from `severity/1`'s `>= 400` cut, which also lands the 6xx
   # vendor replies on `:error`; absorption keys off the RANGE instead, so a
@@ -273,6 +400,10 @@ defmodule Grappa.Session.NumericRouter do
                      @stats_numerics ++
                        @trace_numerics ++
                        @list_numerics ++
+                       @admin_numerics ++
+                       @help_numerics ++
+                       @sasl_numerics ++
+                       @monitor_list_numerics ++
                        [
                          # UX-4 bucket I (2026-05-19): connect-storm numerics
                          # whose middle params are server metadata (own ID,
@@ -314,6 +445,27 @@ defmodule Grappa.Session.NumericRouter do
                          # the delegated set below.
                          # 421 ERR_UNKNOWNCOMMAND — unknown IRC command issued
                          421,
+                         # #911 — 410 ERR_INVALIDCAPCMD (solanum,
+                         # `":%s 410 %s %s :Invalid CAP subcommand"`).
+                         # `params[1]` is the rejected CAP SUBCOMMAND
+                         # token — "FOO" for `/quote CAP FOO` — which is
+                         # exactly 421's relationship to a bad command
+                         # name, one layer down in the capability
+                         # negotiation. Denied for 421's reason, not a
+                         # new one.
+                         410,
+                         # #911 — 472 ERR_UNKNOWNMODE. `params[1]` is a
+                         # single mode CHARACTER
+                         # (`":%s 472 %s %c :is an unknown mode char to
+                         # me"`, both ircds), and `valid_nick?/1` accepts
+                         # a bare letter — the identical defect #184 was
+                         # filed for, with a mode letter in place of a
+                         # STATS letter. bahamut defines the entry but no
+                         # `src/` caller emits it; solanum emits it live
+                         # from `ircd/chmode.c:1380`, so `/mode #chan +Ω`
+                         # on Libera scans the offending letter and can
+                         # resolve to a one-character peer's window.
+                         472,
                          # 432 ERR_ERRONEUSNICKNAME — bad nick format in /nick
                          432,
                          # 433 ERR_NICKNAMEINUSE — nick taken in /nick
