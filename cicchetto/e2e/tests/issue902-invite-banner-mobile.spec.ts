@@ -56,6 +56,15 @@ const FAILED_CHANNEL = `#fail902m-${crypto.randomUUID().slice(0, 8)}`;
 let peer: IrcPeer | null = null;
 
 test.afterEach(async () => {
+  // Drop both windows from the operator's state HERE rather than at the end of
+  // the test body: #902 makes a dismissed invite RETURN on the next cold load,
+  // so an `:invited` window stranded by a mid-spec failure is a cascade
+  // poisoner for every later spec whose layout the fixed banner region shifts.
+  // Cleanup that only runs on the happy path is cleanup that is absent exactly
+  // when it is needed. Idempotent; the helper swallows 404.
+  const { token } = getSeededVjt();
+  await partChannel(token, NETWORK_SLUG, INVITED_CHANNEL).catch(() => {});
+  await partChannel(token, NETWORK_SLUG, FAILED_CHANNEL).catch(() => {});
   if (peer) {
     await peer.disconnect("902 mobile cleanup").catch(() => {});
     peer = null;
@@ -119,8 +128,4 @@ test("@webkit #902 — an inbound INVITE reaches a phone via the banner, not the
   // entry. Nothing dismissed it.
   await expect(banner).toHaveCount(0, { timeout: 10_000 });
 
-  // Cleanup: drop both windows from the operator's state (idempotent; the
-  // helper swallows 404 if a window never persisted).
-  await partChannel(vjt.token, NETWORK_SLUG, INVITED_CHANNEL).catch(() => {});
-  await partChannel(vjt.token, NETWORK_SLUG, FAILED_CHANNEL).catch(() => {});
 });

@@ -32,9 +32,11 @@
 
 import { expect, test } from "../fixtures/test";
 import {
+  expandArchiveGroup,
   expectShellReady,
   inviteBanner,
   loginAs,
+  openArchive,
   selectChannel,
   sidebarWindow,
 } from "../fixtures/cicchettoPage";
@@ -98,11 +100,31 @@ test("#482 — the inbound INVITE surface survives a reload (cold-snapshot backf
     await expect(bannerAfter).toContainText(PEER_NICK);
     await expect(bannerAfter).toContainText(TARGET_CHANNEL);
 
+    // The restored surface is a BANNER, not a row: the cold-snapshot backfill
+    // re-emits `window_invited`, and #902 requires that to land as a
+    // notification. A sidebar row here would mean the greyed pseudo-row came
+    // back through the snapshot door after being deleted from the live one.
+    await expect(sidebarWindow(page, NETWORK_SLUG, TARGET_CHANNEL)).toHaveCount(0);
+
     // The channel's own buffer still holds the persisted INVITE row + the
     // [Join now] CTA. #902 dropped the $server DUPLICATE (#482 had restored
-    // it) but deliberately kept this one — it is history, not notification,
-    // and it is what the archive surfaces once the banner is gone.
-    await selectChannel(page, NETWORK_SLUG, TARGET_CHANNEL, { awaitWsReady: false });
+    // it) but deliberately kept this one — it is history, not notification.
+    //
+    // Reached through the ARCHIVE, not `selectChannel`: #902 deleted the
+    // sidebar row, so there is no tab left to click (the first run of this
+    // spec proved it — `selectChannel` hung 30s on a `li[data-window-name]`
+    // that no longer exists). The archive IS the intended door now, and by
+    // construction: `visibleArchiveForNetwork` subtracts only what the nav
+    // draws, the nav draws no invite, so the invited channel's buffer
+    // surfaces there. That is the documented answer to "where did the invite
+    // go once the banner is gone" — asserting it here means the answer is
+    // measured rather than promised in a comment.
+    await openArchive(page);
+    const group = await expandArchiveGroup(page, NETWORK_SLUG);
+    const archivedEntry = group.locator(".archive-modal-row", { hasText: TARGET_CHANNEL });
+    await expect(archivedEntry).toHaveCount(1, { timeout: 15_000 });
+    await archivedEntry.locator(".archive-modal-entry-btn").click();
+    await expect(page.locator(".archive-modal")).toHaveCount(0, { timeout: 5_000 });
     const joinBtn = page.locator(".scrollback-invite-join").first();
     await expect(joinBtn).toBeVisible({ timeout: 10_000 });
     await expect(joinBtn).toContainText(/join/i);
@@ -114,23 +136,17 @@ test("#482 — the inbound INVITE surface survives a reload (cold-snapshot backf
       .first();
     await expect(row).toBeVisible();
   } finally {
-    // Cleanup: #482 makes :invited windows survive-on-reload, so a lingering
-    // one would now pollute sibling specs' cold-loads (pre-#482 they
-    // evaporated). Join → part fully clears the server-side window_state;
-    // the peer must still be connected for bahamut to relay the JOIN. Both
-    // steps are best-effort (idempotent if the test bailed early).
-    try {
-      await selectChannel(page, NETWORK_SLUG, TARGET_CHANNEL, { awaitWsReady: false });
-      const joinBtn = page.locator(".scrollback-invite-join").first();
-      if (await joinBtn.isVisible().catch(() => false)) {
-        await joinBtn.click();
-        await expect(sidebarWindow(page, NETWORK_SLUG, TARGET_CHANNEL)).toHaveClass(/selected/, {
-          timeout: 10_000,
-        });
-      }
-    } catch {
-      // ignore — fall through to the API part + peer teardown
-    }
+    // Cleanup: #482 makes :invited windows survive-on-reload — and #902 makes
+    // that MORE necessary, not less, since a dismissed banner also returns.
+    // A lingering `:invited` would pollute sibling specs' cold-loads.
+    //
+    // The DELETE alone is enough, and the join-then-part dance this used to do
+    // is gone with the sidebar row it clicked. That dance existed on the
+    // belief that a PART cannot clear a channel we never joined; #511 settled
+    // the opposite and the whole invite-durability contract rests on it — the
+    // upstream PART is a 442 no-op, but `PartCleanup.cleanup_local` →
+    // `WindowState.set_parted` drops the key from every window-state map
+    // regardless. Best-effort, idempotent if the test bailed early.
     await partChannel(vjt.token, NETWORK_SLUG, TARGET_CHANNEL).catch(() => {});
     await peer.disconnect("482 done");
   }
