@@ -31251,3 +31251,49 @@ the model. Recorded here so the next reader does not re-derive the survey.
 consecutive within-limit pastes still accumulate in the draft, so a paste-time
 cap is not a send-time guarantee. Whether the limit belongs at submit instead
 of (or as well as) at paste is a design question, not an oversight.
+
+## 2026-08-06 — #816 cap: the second door is the upload verb, not a new service
+
+**The cap is a constant, deliberately.** `PASTE_HARD_MESSAGE_LIMIT = 5`, not
+derived from anything the server says (vjt's ruling). The issue's open question
+asked whether to derive it; the answer is that there is nothing honest to
+derive from — flood limits differ per network and usermode-exempt users are
+exempt from them entirely, so a "computed" ceiling would be a guess wearing a
+formula. A flat number we picked and can retune is the truthful shape.
+
+**Refusing outright was rejected.** Above the ceiling the operator gets two
+doors — upload the block as a file and post the link, or cancel — never a bare
+"no". A dead end teaches the operator nothing except to paste it in two halves,
+which is the same burst with extra steps.
+
+**The service is the upload verb, and that is the whole point.** `text/plain`
+is ALREADY an accepted upload MIME in the `document` category
+(`uploadCategory.ts`, a 1:1 mirror of the server's `@mime_categories`, 10 MiB
+on the default host). So the second door needs no new category, no new server
+surface and no new taxonomy: the pasted text is wrapped in a `File` and handed
+to the existing `dropUpload`, and the orchestrator posts the resulting URL as
+one 📄-prefixed PRIVMSG. That is the same shape as the 📸 image path CLAUDE.md
+names as the model — media is a link, IRC stays text — and it is CLAUDE.md's
+"reuse the verbs, not the nouns" applied literally. The 20% that did not fit
+would have been the domain boundary; there wasn't any.
+
+**Shape: a three-way verdict, not two booleans.** `classifyPaste/1` returns
+`"insert" | "confirm" | "over-limit"` and `pasteRoute` switches on it once.
+Two predicates (`shouldGuard` + `exceedsLimit`) would have let a call site
+answer one and forget the other; the closed set makes a future fourth arm a
+compile error at every switch instead of a silent fall-through.
+
+**The e2e is the gate that proves the reuse reuses.** jsdom can only assert
+that `triggerUploads` was called with the right `File`; the multipart POST →
+auto-send → IRC echo is what shows a *text* paste really does traverse the
+*image* plumbing. That spec was verified by mutation, not by its green: with
+the upload MIME changed to an unaccepted one, `dropUpload` filters the file out
+and the spec fails at the 📄 assertion after its full 20s poll. It also asserts
+the burst did NOT also happen (none of the pasted lines appear as their own
+message), so an implementation that uploaded AND pasted cannot pass.
+
+**Still open, and deliberately not closed here.** The cap is per-paste. Two
+consecutive within-limit pastes accumulate in the draft, so a paste-time cap is
+not a send-time guarantee. Whether the ceiling belongs at submit as well is a
+product question, referred to vjt rather than settled by whoever happened to be
+writing the guard.

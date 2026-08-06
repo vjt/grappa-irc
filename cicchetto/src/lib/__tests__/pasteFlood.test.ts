@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { splitMessageLines } from "../messageLines";
-import { pastedMessageCount, shouldGuardPaste } from "../pasteFlood";
+import { classifyPaste, PASTE_HARD_MESSAGE_LIMIT, pastedMessageCount } from "../pasteFlood";
+
+const block = (n: number): string => Array.from({ length: n }, (_, i) => `l${i}`).join("\n");
 
 // #80/#816 — paste flood guard. A multi-line paste becomes one PRIVMSG per
 // line on submit, so the guard confirms BEFORE the text lands and declares
@@ -59,27 +61,48 @@ describe("pasteFlood — pastedMessageCount", () => {
   });
 });
 
-describe("pasteFlood — shouldGuardPaste", () => {
-  it("leaves a single-line paste frictionless", () => {
-    expect(shouldGuardPaste("just one line")).toBe(false);
+describe("pasteFlood — classifyPaste", () => {
+  it("lets a single-line paste through frictionless", () => {
+    expect(classifyPaste("just one line")).toBe("insert");
   });
 
-  it("guards from the second message onwards (#816 — any newline confirms)", () => {
-    // Pre-#816 this tripped only above three lines, so two- and three-line
-    // pastes went straight in. The ruling removed that carve-out.
-    expect(shouldGuardPaste("a\nb")).toBe(true);
-    expect(shouldGuardPaste("a\nb\nc")).toBe(true);
-    expect(shouldGuardPaste("a\nb\nc\nd")).toBe(true);
+  it("lets an empty paste through", () => {
+    expect(classifyPaste("")).toBe("insert");
   });
 
-  it("does not guard a paste whose newlines carry no message", () => {
+  it("passes a paste whose newlines carry no message", () => {
     // One real line plus a trailing newline, or padding whitespace, is still
     // ONE message — there is no burst to warn about.
-    expect(shouldGuardPaste("hello\n")).toBe(false);
-    expect(shouldGuardPaste("hello\n   \n")).toBe(false);
+    expect(classifyPaste("hello\n")).toBe("insert");
+    expect(classifyPaste("hello\n   \n")).toBe("insert");
   });
 
-  it("does not guard an empty paste", () => {
-    expect(shouldGuardPaste("")).toBe(false);
+  it("confirms from the second message onwards (#816 — any newline confirms)", () => {
+    // Pre-#816 this tripped only above three lines, so two- and three-line
+    // pastes went straight in. The ruling removed that carve-out.
+    expect(classifyPaste("a\nb")).toBe("confirm");
+    expect(classifyPaste("a\nb\nc")).toBe("confirm");
+    expect(classifyPaste("a\nb\nc\nd")).toBe("confirm");
+  });
+
+  it("confirms up to and including the hard limit, and refuses past it", () => {
+    // The boundary, driven off the production constant so the test cannot
+    // silently drift from it.
+    expect(classifyPaste(block(PASTE_HARD_MESSAGE_LIMIT))).toBe("confirm");
+    expect(classifyPaste(block(PASTE_HARD_MESSAGE_LIMIT + 1))).toBe("over-limit");
+  });
+
+  it("pins the hard limit at the ruled constant", () => {
+    // vjt, 2026-08-06: a constant, not derived from anything the server says.
+    // Networks differ and usermode-exempt users exist, so there is no value
+    // to derive — this is a deliberate flat ceiling.
+    expect(PASTE_HARD_MESSAGE_LIMIT).toBe(5);
+  });
+
+  it("weighs the cap in messages, so blank lines cannot push a paste over it", () => {
+    // Five real lines with blanks between them is five wire frames. Counting
+    // what the box would SHOW (nine lines) would refuse a paste that is
+    // exactly at the limit.
+    expect(classifyPaste("a\n\nb\n\nc\n\nd\n\ne")).toBe("confirm");
   });
 });

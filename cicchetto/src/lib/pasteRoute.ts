@@ -2,7 +2,7 @@ import { channelKey } from "./channelKey";
 import { getDraft, isDraining, setDraft } from "./compose";
 import { requestConfirm } from "./confirmDialog";
 import { dropUpload } from "./dropUpload";
-import { pastedMessageCount, shouldGuardPaste } from "./pasteFlood";
+import { classifyPaste, PASTE_HARD_MESSAGE_LIMIT, pastedMessageCount } from "./pasteFlood";
 import { categoryOf } from "./uploadCategory";
 
 // Shared clipboard-paste routing — the file/text branching lifted out of
@@ -46,6 +46,22 @@ export function insertPastedText(
     ta.focus();
     ta.setSelectionRange(caret, caret);
   });
+}
+
+// #816 — the second door above the hard cap. A block too big to send as a
+// burst becomes a `text/plain` File and rides the EXISTING upload path: the
+// orchestrator posts the resulting URL as a 📄-prefixed PRIVMSG, one frame
+// instead of N, and the recipient clicks through. No new category, no new
+// server surface — `text/plain` is already an accepted `document` MIME
+// (uploadCategory.ts, a 1:1 mirror of the server's @mime_categories), so this
+// reuses the upload VERB rather than inventing a paste service. Same shape as
+// the 📸 image path CLAUDE.md names as the model for "media is a link, and
+// IRC stays text".
+export const PASTE_UPLOAD_FILENAME = "paste.txt";
+
+export function uploadPastedText(text: string, networkSlug: string, channelName: string): void {
+  const file = new File([text], PASTE_UPLOAD_FILENAME, { type: "text/plain" });
+  dropUpload([file], networkSlug, channelName);
 }
 
 // Route a clipboard `paste` event to the upload path or the text path for the
@@ -99,33 +115,45 @@ export function routeClipboardPaste(
   // #80/#816 — plain-text multi-line paste guard. A pasted block is sent as
   // one PRIVMSG per line on submit (compose.ts → messageLines.ts), so any
   // paste that becomes more than one message is a burst the operator did not
-  // compose by hand. Intercept the native paste and confirm BEFORE the text
-  // lands; a one-message paste falls through to the native textarea insert
-  // and stays frictionless. Reuses the store-driven confirm dialog
-  // (lib/confirmDialog) — Cancel is the safe default (drop the paste), the
-  // affirmative button pastes.
+  // compose by hand. `classifyPaste` owns the three-way decision; this switch
+  // owns what each one looks like. Both dialogs reuse the store-driven
+  // confirm (lib/confirmDialog) — Cancel is the safe default in both.
   const text = data.getData("text");
-  if (shouldGuardPaste(text)) {
-    e.preventDefault();
-    // #816 — quote MESSAGES, not lines. The operator is authorising a number
-    // of wire frames, and that is the number the send path will produce; a
-    // line count would over-state it for any block containing a blank line.
-    // Always ≥ 2 here (that is what tripped the guard), so the plural is
-    // unconditional and needs no branch.
-    const messages = pastedMessageCount(text);
-    requestConfirm({
-      title: `Paste as ${messages} messages?`,
-      // Target-neutral copy: `channelName` is a nick on a query (DM) window,
-      // so "flood the channel" would misdescribe a DM. "it" carries both.
-      body: `This paste will be sent to ${channelName} as ${messages} separate messages. Sending can flood it with a burst.`,
-      confirmLabel: "Paste",
-      onConfirm: () => insertPastedText(ta, networkSlug, channelName, text),
-    });
-    return;
+  // Always the real count in both guarded arms, and ≥ 2 by construction, so
+  // the plural is unconditional and needs no branch.
+  const messages = pastedMessageCount(text);
+  switch (classifyPaste(text)) {
+    case "confirm":
+      e.preventDefault();
+      requestConfirm({
+        // #816 — quote MESSAGES, not lines. The operator is authorising wire
+        // frames, and that is what the send path will produce; a line count
+        // would over-state it for any block containing a blank line.
+        title: `Paste as ${messages} messages?`,
+        // Target-neutral copy: `channelName` is a nick on a query (DM)
+        // window, so "flood the channel" would misdescribe a DM. "it" carries
+        // both.
+        body: `This paste will be sent to ${channelName} as ${messages} separate messages. Sending can flood it with a burst.`,
+        confirmLabel: "Paste",
+        onConfirm: () => insertPastedText(ta, networkSlug, channelName, text),
+      });
+      return;
+    case "over-limit":
+      e.preventDefault();
+      requestConfirm({
+        title: `Too many messages to send`,
+        // Both numbers: what they pasted and where the ceiling is. "Too many"
+        // without the limit leaves the operator guessing what would fit.
+        body: `This paste would be ${messages} separate messages to ${channelName} — more than the ${PASTE_HARD_MESSAGE_LIMIT} a burst may be. Upload it as a text file instead and post the link.`,
+        confirmLabel: "Upload as file",
+        onConfirm: () => uploadPastedText(text, networkSlug, channelName),
+      });
+      return;
+    case "insert":
+      if (nativeInsertAvailable) return; // focused textarea → the browser inserts it
+      if (text === "") return; // global path with no readable text → focus-only (iOS)
+      e.preventDefault();
+      insertPastedText(ta, networkSlug, channelName, text);
+      return;
   }
-  // Below the flood threshold.
-  if (nativeInsertAvailable) return; // focused textarea → the browser inserts it
-  if (text === "") return; // global path with no readable text → focus-only (iOS)
-  e.preventDefault();
-  insertPastedText(ta, networkSlug, channelName, text);
 }

@@ -1276,6 +1276,67 @@ describe("ComposeBox", () => {
       expect(confirmRequest()?.title).toContain("2");
     });
 
+    // #816 — above the hard cap the paste does not land in the box at all.
+    // The operator gets two doors instead: upload the block as a file and
+    // post the link (the same shape as the 📸 image path — `text/plain` is
+    // already an accepted `document` MIME, so this reuses the upload verb
+    // rather than inventing a service), or cancel. Never a bare refusal.
+    describe("#816 — over the hard cap", () => {
+      const OVER_CAP = Array.from({ length: 6 }, (_, i) => `riga ${i}`).join("\n");
+
+      it("offers 'Upload as file' instead of the paste affirmative", async () => {
+        render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+        const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+        const paste = makeTextPaste(OVER_CAP);
+        ta.dispatchEvent(paste);
+
+        expect(paste.defaultPrevented).toBe(true);
+        const req = confirmRequest();
+        expect(req).not.toBeNull();
+        expect(req?.confirmLabel).toBe("Upload as file");
+        // The copy has to carry BOTH numbers: what they pasted and where the
+        // ceiling is. "Too many" without the limit leaves them guessing.
+        expect(req?.body).toContain("6");
+        expect(req?.body).toContain("5");
+      });
+
+      it("confirming uploads the block as a text file and never touches the draft", async () => {
+        const compose = await import("../lib/compose");
+        const orch = await import("../lib/uploadOrchestrator");
+        render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+        const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+        ta.dispatchEvent(makeTextPaste(OVER_CAP));
+
+        acceptConfirm();
+
+        expect(orch.triggerUploads).toHaveBeenCalledTimes(1);
+        const files = vi.mocked(orch.triggerUploads).mock.calls[0]?.[3] as File[];
+        expect(files).toHaveLength(1);
+        expect(files[0]?.type).toBe("text/plain");
+        // The bytes are the paste itself — an upload that dropped or mangled
+        // the text would still satisfy "a file was uploaded".
+        await expect(files[0]?.text()).resolves.toBe(OVER_CAP);
+        // The whole point of this arm: the burst never enters the composer.
+        expect(compose.setDraft).not.toHaveBeenCalled();
+      });
+
+      it("cancelling neither uploads nor pastes", async () => {
+        const compose = await import("../lib/compose");
+        const orch = await import("../lib/uploadOrchestrator");
+        render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+        const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+        ta.dispatchEvent(makeTextPaste(OVER_CAP));
+        // Pin WHICH dialog was dismissed — without this the case passes
+        // against a build that never grew the over-cap arm at all.
+        expect(confirmRequest()?.confirmLabel).toBe("Upload as file");
+
+        dismissConfirm();
+
+        expect(orch.triggerUploads).not.toHaveBeenCalled();
+        expect(compose.setDraft).not.toHaveBeenCalled();
+      });
+    });
+
     it("#816 — a one-message paste with a trailing newline stays frictionless", async () => {
       // The commonest copy artifact must not start costing a dialog.
       render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);

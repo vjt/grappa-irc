@@ -29,5 +29,26 @@ import { splitMessageLines } from "./messageLines";
 // trimming), and neither does a trailing newline.
 export const pastedMessageCount = (text: string): number => splitMessageLines(text).length;
 
-// True when a paste is large enough to guard (confirm before it lands).
-export const shouldGuardPaste = (text: string): boolean => pastedMessageCount(text) > 1;
+// The hard ceiling on how many messages a paste may become. A flat CONSTANT,
+// deliberately not derived from anything the server tells us (vjt,
+// 2026-08-06): flood limits differ per network and usermode-exempt users
+// exist, so there is no honest value to derive — a ceiling we picked and can
+// retune beats one we pretend to have computed.
+export const PASTE_HARD_MESSAGE_LIMIT = 5;
+
+// What to do with a pasted block. A closed set rather than two booleans, so
+// the router switches once and a new arm is a compile error at every call
+// site instead of a silently-unhandled case.
+//
+//   "insert"     — one message (or none): let it land, no friction.
+//   "confirm"    — 2..LIMIT messages: confirm, stating the count.
+//   "over-limit" — past the ceiling: the block never enters the composer;
+//                  the operator gets upload-as-file or cancel.
+export type PasteVerdict = "insert" | "confirm" | "over-limit";
+
+export function classifyPaste(text: string): PasteVerdict {
+  const messages = pastedMessageCount(text);
+  if (messages <= 1) return "insert";
+  if (messages <= PASTE_HARD_MESSAGE_LIMIT) return "confirm";
+  return "over-limit";
+}

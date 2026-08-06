@@ -29,6 +29,7 @@ import {
   confirmModalBody,
   confirmModalCancel,
   confirmModalYes,
+  scrollbackLine,
   loginAs,
   selectChannel,
 } from "../fixtures/cicchettoPage";
@@ -116,4 +117,73 @@ test("#816 — a one-message paste is frictionless; two messages already guard",
   // 2, where #80 had it at 4.
   await pasteText(page, "riga uno\nriga due");
   await expect(confirmModal(page)).toBeVisible();
+});
+
+// #816 — the hard cap and its second door.
+//
+// Above the ceiling the block never enters the composer at all. Refusing
+// outright was rejected: the operator gets upload-as-file (the text becomes a
+// text/plain File on the existing upload path, and the URL is posted as one
+// 📄 PRIVMSG instead of N) or cancel.
+//
+// The end of that chain — multipart POST, auto-send, IRC echo — is exactly
+// what jsdom cannot follow (ComposeBox.test.tsx can only assert that
+// `triggerUploads` was called with the right File), so this is the gate that
+// proves the reuse actually reuses: a text paste really does traverse the
+// image-upload plumbing and come back as a link in the channel.
+test("#816 — a paste over the hard cap uploads as a file instead of flooding", async ({
+  page,
+  browserName,
+}) => {
+  test.skip(
+    browserName !== "chromium",
+    "shares the upload plumbing gated to chromium by the uploads specs; the paste half is browser-agnostic and covered above",
+  );
+  if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+  const vjt = getSeededVjt();
+  await loginAs(page, vjt);
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+
+  // Pre-ack the embedded-host privacy modal so the upload runs unattended
+  // (that flow is covered by ux-6-b-embedded-upload).
+  await page.evaluate(() =>
+    localStorage.setItem("image-upload-privacy-acknowledged:embedded", "1"),
+  );
+
+  const ta = composeTextarea(page);
+  await expect(ta).toBeVisible();
+  await expect(ta).toHaveValue("");
+
+  // Six messages — one past the ceiling of five.
+  const tag = crypto.randomUUID().slice(0, 8);
+  const block = Array.from({ length: 6 }, (_, i) => `over ${tag} riga ${i}`).join("\n");
+
+  await pasteText(page, block);
+  await expect(confirmModal(page)).toBeVisible();
+  // Both numbers, so the operator knows what would fit.
+  await expect(confirmModalBody(page)).toContainText("6");
+  await expect(confirmModalBody(page)).toContainText("5");
+
+  // Cancel first: the safe default drops the paste with no upload and no
+  // text in the box. Asserted before the affirmative so a handler that
+  // uploaded unconditionally could not pass this spec.
+  await confirmModalCancel(page);
+  await expect(confirmModal(page)).toHaveCount(0);
+  await expect(ta).toHaveValue("");
+
+  // The second door. The block must NOT land in the composer — it goes out
+  // as one 📄-prefixed link instead of six frames.
+  await pasteText(page, block);
+  await expect(confirmModal(page)).toBeVisible();
+  await confirmModalYes(page);
+  await expect(confirmModal(page)).toHaveCount(0);
+  await expect(ta).toHaveValue("");
+
+  const rows = scrollbackLine(page, "privmsg", "📄");
+  await expect.poll(async () => await rows.count(), { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
+
+  // And the burst never happened: none of the pasted lines went to the
+  // channel as its own message. Without this, an implementation that
+  // uploaded AND pasted would still be green above.
+  await expect(scrollbackLine(page, "privmsg", `over ${tag} riga 0`)).toHaveCount(0);
 });
