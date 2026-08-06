@@ -367,11 +367,11 @@ downtime):
   read at service start); Docker classifies it HOT. The jail cold
   path runs `jail_install_rcd.sh` between stop and start, so the
   restart boots through the new wrapper. The sibling
-  `rc.d/grappa_ndp_keepalive` was DEPRECATED 2026-08-02 (#628): the
-  routed-/64 jail has no proxy-NDP neighbour cache to keep warm, so
-  `jail_install_rcd.sh` no longer installs or enables it and it is out
-  of the boot path — no hot/cold classification applies while it ships
-  as no service (the script survives in-tree for a hand-resurrection).
+  `rc.d/grappa_ndp_keepalive` was retired 2026-08-02 (#628) — the
+  routed-/64 jail has no proxy-NDP neighbour cache to keep warm — and
+  #923 DELETED its three files after confirming nothing copied,
+  installed, enabled, started or tested them. Recover them from the
+  #628 commit if the service is ever needed again.
 - `infra/freebsd/bin/*` (the source-alias privilege wrapper) — **HOT on
   purpose (#646)**. It is exec'd fresh by sudo on every call, so nothing
   about it lands in the running BEAM and a restart would buy nothing. It
@@ -388,8 +388,13 @@ downtime):
 - `priv/repo/migrations/*` — hot path skips `mix ecto.migrate`;
   new tables/columns 500 on first query post-reload, Bootstrap
   crash-loops if it reads them.
-- `infra/freebsd/nginx.conf`, `infra/linux/nginx.conf`, or
-  `infra/snippets/*` — hot path doesn't reload nginx. Since #485
+- `infra/snippets/*` — COLD on **every** substrate: every surviving
+  nginx includes this shared proxy surface. Each substrate's OWN
+  config (`infra/freebsd/nginx.conf`, `infra/linux/nginx.conf`) is
+  COLD **only on that substrate** since #923 — before the scoping,
+  editing the Linux config forced a session-dropping COLD on the m42
+  jail, for a file the jail never opens. Hot path doesn't reload
+  nginx. Since #485
   these are DUMB reverse proxies (no headers, no allowlist), so a
   change here is rare; when it happens, the hot BEAM swap won't
   pick it up — reload nginx by hand or COLD-deploy. NOTE: the CSP

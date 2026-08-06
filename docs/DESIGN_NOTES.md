@@ -31195,3 +31195,54 @@ tags. And the dry-run paragraph keeps its mechanism — validating the shipping
 job pre-merge is still right — it just loses the false premise that the job is
 unproven; the reason to run it is now "you changed the Dockerfile or the job",
 not "it has never run".
+---
+
+## 2026-08-06 — #923: a substrate class must be scoped to the substrate that reads it
+
+`Grappa.Deploy.Preflight.classify_paths/2` scopes every boot-substrate class with
+`filter_on/4` — `:image_substrate` to `:docker`, `:rc_d` to `:jail`, `:systemd_unit`
+to `:linux`. `:nginx` was the one that was not, so BOTH substrates' configs were
+cold everywhere. Measured before the fix, by calling the classifier directly:
+`infra/linux/nginx.conf` on `:jail` → COLD; `infra/freebsd/nginx.conf` on `:linux`
+and on `:docker` → COLD.
+
+That is not cosmetic. Editing the **Linux** nginx config forced a COLD deploy on
+the m42 jail: a restart that drops every live IRC session in production, for a
+file the jail never opens. It is the same failure as 2026-06-10, when a Dockerfile
+diff the jail never reads cold-restarted prod — the incident that made `substrate`
+an explicit required argument in the first place. The rule generalises: **a class
+that names a substrate-specific path must be scoped, or the other substrates pay
+its restart.**
+
+`infra/snippets/*` stays substrate-independent on purpose: it is genuinely shared
+(the jail nginx, the Linux nginx and the e2e conf all `include` it), so a change
+there really does concern everyone.
+
+The scoping lives in a 2-arity `nginx?/2` rather than `filter_on/4` because this
+class is MIXED — two substrate-scoped literals plus a shared prefix — and routing
+it through `filter_on/4` would split one class across concatenated filters,
+reordering the reported file list for no gain.
+
+**Two existing tests asserted the defect verbatim** ("cold on both substrates"),
+so the fix rewrote them instead of adding beside them: a test that encodes a bug
+stops anyone from finding the bug. The replacements mirror the `:rc_d` /
+`:systemd_unit` blocks — cold on its own substrate, hot on the other two — and the
+guard was proved by mutation: making both clauses substrate-blind again turns
+exactly those four cross-substrate assertions red while the two same-substrate
+ones stay green.
+
+**Found by the #923 parity audit, but it was never FreeBSD-only** — it hurt the
+jail and the Linux host symmetrically. The audit's *named* target, the "double
+nginx", turned out not to be a divergence at all: both substrates run a two-hop
+chain by design (`infra/linux/nginx.conf` says "same shape as the m42 host→jail
+hop"), both are dumb proxies since #485, and both include the same snippet.
+Removing the jail's hop would move `RemoteIpFromProxy` off its loopback+XFF row —
+the row `Plugs.LoopbackOnly` gates `/admin/reload` on, the endpoint the hot deploy
+itself calls — so it stays untouched pending a staging jail.
+
+**Also deleted here:** the retired `grappa_ndp_keepalive` triple
+(`ndp_keepalive.{pl,sh}` + `rc.d/grappa_ndp_keepalive`). The service was retired
+2026-08-02 by #628 when the VNET cutover removed the proxy-NDP neighbour cache it
+kept warm; the files survived. Nothing copied, installed, enabled, started or
+tested them — their only live edge was the derived shellcheck gate, which still
+linted two of the three on every CI run.

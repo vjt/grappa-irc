@@ -333,12 +333,11 @@ defmodule Grappa.Deploy.Preflight do
 
   # Class 4b: jail rc.d wrapper — applies ONLY when classifying for
   # :jail, and ONLY the grappa wrapper: this class means "the grappa
-  # service must restart to pick the file up". The sibling
-  # `infra/freebsd/rc.d/grappa_ndp_keepalive` is deliberately NOT
-  # here — it's a different rc(8) service, and cold-restarting the
-  # BEAM (dropping every IRC session) would not refresh it anyway.
-  # Its bytes are refreshed by jail_install_rcd.sh, which the jail
-  # cold path runs before every restart.
+  # service must restart to pick the file up". `infra/freebsd/rc.d/`
+  # holds exactly one service since #923 deleted the retired
+  # grappa_ndp_keepalive (#628), so the literal match and the
+  # directory now describe the same thing — a SECOND rc(8) service
+  # arriving here would need its own decision, not this clause.
   defp rc_d?("infra/freebsd/rc.d/grappa"), do: true
   defp rc_d?(_), do: false
 

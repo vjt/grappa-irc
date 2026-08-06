@@ -9,9 +9,10 @@
 #
 # The grappa_ndp_keepalive service was retired 2026-08-02 (GH #628, the VNET
 # jail cutover): the routed-/64 jail has no proxy-NDP neighbour cache to keep
-# warm, so this installer no longer copies or enables it. The scripts survive,
-# deprecated, at infra/freebsd/ndp_keepalive.{pl,sh} + rc.d/grappa_ndp_keepalive
-# — re-add the install block (see the #628 commit) to bring the service back.
+# warm. #923 deleted its three files (ndp_keepalive.{pl,sh} +
+# rc.d/grappa_ndp_keepalive) after confirming nothing copied, installed,
+# enabled, started or tested them — recover them from the #628 commit if the
+# service is ever needed again.
 #
 # Invoke from m42 host:
 #   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_install_rcd.sh
@@ -53,9 +54,6 @@ EOF
 else
 	echo "[install_rcd] ${RC_CONF} already exists — leaving in place"
 fi
-
-# grappa_ndp_keepalive is intentionally NOT installed here — deprecated
-# 2026-08-02 (GH #628); see the header comment above.
 
 # ── grappa-source-alias (mode-2 privilege wrapper, #543/#609/#610) ──────
 #

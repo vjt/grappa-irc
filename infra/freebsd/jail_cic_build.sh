@@ -6,9 +6,10 @@
 # Usage:
 #   sudo bastille cmd grappa /home/grappa/grappa/infra/freebsd/jail_cic_build.sh
 #
-# Output: /home/grappa/grappa/runtime/cicchetto-dist/ (vite bundle,
-# what nginx serves via /usr/local/www/cic symlink — installed by
-# jail_install_nginx.sh).
+# Output: /home/grappa/grappa/runtime/cicchetto-dist/ (vite bundle).
+# The BEAM self-serves it via Plug.Static since #485 — there is no
+# /usr/local/www/cic symlink and nginx serves no files from disk
+# (jail_install_nginx.sh installs two .conf files and nothing else).
 #
 # `--outDir ../runtime/cicchetto-dist` aligns the jail with the Docker
 # substrate (`compose.yaml` bind-mounts `./runtime/cicchetto-dist:

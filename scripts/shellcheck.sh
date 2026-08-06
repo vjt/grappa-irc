@@ -14,11 +14,11 @@
 #
 # Membership rule, deliberately mechanical: a regular file under `bin/`,
 # `infra/`, or `scripts/` that either ends in `.sh` or opens with a shell
-# shebang. That picks up the four extensionless scripts a `*.sh` glob misses
-# (`bin/grappa`, `infra/freebsd/bin/grappa-source-alias`, the two
-# `infra/freebsd/rc.d/` services) and skips the non-shell files that live
-# alongside them (nginx.conf, the perl keepalive, PKGBUILD, the pacman
-# scriptlet — no shebang, sourced by pacman, not a shell program we ship).
+# shebang. That picks up the extensionless scripts a `*.sh` glob misses
+# (`bin/grappa`, `infra/freebsd/bin/grappa-source-alias`, the
+# `infra/freebsd/rc.d/grappa` service) and skips the non-shell files that live
+# alongside them (nginx.conf, PKGBUILD, the pacman scriptlet — no shebang,
+# sourced by pacman, not a shell program we ship).
 #
 # No per-file dialect table: every script already declares its own dialect,
 # via its shebang or (for the two sourced libs, which have none) a
