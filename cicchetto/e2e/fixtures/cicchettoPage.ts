@@ -1090,3 +1090,35 @@ export async function synthSwipe(
     args,
   );
 }
+
+// #902 — the inbound-INVITE banner, the surface that replaced the greyed
+// `:invited` pseudo-row.
+//
+// `data-banner-id` is the per-ENTRY identity from `lib/errorBanners.ts`
+// (`invite:<networkSlug>:<channel>`), NOT `data-source` — a source-level
+// locator would match any of N stacked invites, and telling them apart is
+// the whole point of keying the registry per entry.
+//
+// This is also the suite's observation of `windowStateByChannel`. The banner
+// is derived straight off that map (`windowState.invitedWindows`), so once
+// this locator is visible the key is provably IN the map — the property
+// `issue30-channel-tab-completion` needs as its synchronisation barrier, and
+// which the pseudo-row used to supply. A sidebar row for a JOINED channel
+// comes from `channelsBySlug` on the user topic instead, with no cross-topic
+// ordering guarantee (Sidebar.tsx), so it cannot serve the same purpose.
+export function inviteBanner(page: Page, networkSlug: string, channelName: string) {
+  return page.locator(`.error-banner[data-banner-id="invite:${networkSlug}:${channelName}"]`);
+}
+
+// The [Join] action inside a specific invite banner. Scoped to the banner so
+// a second stacked invite's button can never be clicked by mistake.
+export function inviteBannerJoin(page: Page, networkSlug: string, channelName: string) {
+  return inviteBanner(page, networkSlug, channelName).locator(".error-banner-action");
+}
+
+// The × on a specific invite banner. Session-scoped by design (#902): it
+// hides the banner without joining and writes nothing, so the invite comes
+// back after a reload.
+export function inviteBannerDismiss(page: Page, networkSlug: string, channelName: string) {
+  return inviteBanner(page, networkSlug, channelName).locator(".error-banner-dismiss");
+}

@@ -25,9 +25,15 @@
 // excluded from the pseudo-rows — so no barrier on the parted channel can
 // exist. Probing the same keystroke on a deadline measured the gap at
 // 60ms / 2180ms / 4929ms / 3981ms / 3972ms across five repeats: real, and
-// wide. The invited row IS `windowStateByChannel` rendered, so here the
+// wide. The invite surface IS `windowStateByChannel` rendered, so here the
 // barrier and the assert read ONE projection and the refusal is single-shot
 // truth rather than a race the fast machine happens to win.
+//
+// #902 moved that surface from the greyed `:invited` sidebar row to the
+// stacked top BANNER, which is derived off the same map — the barrier is
+// unchanged in kind, only in selector (`inviteBanner`, keyed on the
+// per-entry `data-banner-id`). It is deliberately not a sidebar row of any
+// other sort: see the note at the barrier itself.
 //
 // The trailing `" "` (never the nick path's `": "`) is asserted verbatim:
 // a channel is a topic of conversation, never an addressee.
@@ -41,9 +47,9 @@ import { IrcPeer } from "../fixtures/ircClient";
 import {
   composeSend,
   composeTextarea,
+  inviteBanner,
   loginAs,
   selectChannel,
-  sidebarWindow,
 } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, test } from "../fixtures/test";
@@ -98,15 +104,23 @@ test("#30 — Tab completes a JOINED channel, and refuses an INVITED one", async
     await peer.join(invitedChannel);
     peer.rawInvite(NETWORK_NICK, invitedChannel);
 
-    // THE BARRIER, on the store under test: this pseudo-row is
-    // `windowStateByChannel` rendered, and `data-window-state` pins it to
-    // the real `:invited` derivation rather than to the greyed class that
-    // every not-joined state shares. Once it reads "invited", the key is in
-    // the very map the completion filters — so the refusal below is a fact
-    // about the FILTER, with no cross-topic race left to lose.
-    const invitedTab = sidebarWindow(page, NETWORK_SLUG, invitedChannel);
-    await expect(invitedTab).toBeVisible({ timeout: 15_000 });
-    await expect(invitedTab).toHaveAttribute("data-window-state", "invited");
+    // THE BARRIER, on the store under test. #902 removed the greyed
+    // `:invited` pseudo-row this used to wait on; the invite banner replaced
+    // it and serves the same purpose for the same reason. `activeBanners()`
+    // derives one entry per invited key straight off `windowStateByChannel`
+    // (`windowState.invitedWindows`), so the banner IS that map rendered —
+    // and `data-banner-id` names the exact (network, channel) rather than a
+    // class every banner shares. Once it is visible the key is in the very
+    // map the completion filters, so the refusal below is a fact about the
+    // FILTER, with no cross-topic race left to lose.
+    //
+    // Do NOT substitute a sidebar row here: a row for a JOINED channel comes
+    // from `channelsBySlug` on the user topic, a different topic with no
+    // ordering guarantee against the per-channel broadcasts that drive
+    // `windowStateByChannel` (stated in Sidebar.tsx). That is exactly the
+    // race this barrier exists to remove.
+    const invited = inviteBanner(page, NETWORK_SLUG, invitedChannel);
+    await expect(invited).toBeVisible({ timeout: 15_000 });
 
     // Known, keyed, NOT joined: the draft is left exactly as typed.
     await ta.click();

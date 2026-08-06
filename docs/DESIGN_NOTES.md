@@ -30587,3 +30587,95 @@ the status bar, and one near the bottom under the home indicator, for the same
 reason. `spaceAbove` has exactly one consumer, so #913 is contained; the
 `placeAxis` blind spot is a second instance of the same origin bug and wants
 its own issue.
+---
+
+## 2026-08-06 — #902: an invite is a notification, not a ghost window
+
+Reported via chat: several people were invited to a channel and nobody
+noticed. The measurement behind that: an inbound INVITE had exactly two
+surfaces, and neither pulls attention. A greyed `:invited` pseudo-row in the
+sidebar looks like every other greyed row — pending, failed, kicked, parked
+are pixel-identical — and the persisted INVITE row lives in a channel buffer
+you have no reason to open. `pushTriggers.shouldNotify()` gates on
+`NOTIFY_KINDS`, which contains only `privmsg`/`action`, so there was also no
+push, no badge, no title movement. If you were not looking at the sidebar at
+that exact second, the invite was gone.
+
+vjt's ruling: the invite becomes an entry in the stacked banner region with a
+`[Join]` action, and **both** old surfaces go — the pseudo-row AND the
+`$server` copy of the INVITE row. That second half deliberately reverts #482.
+The reasoning changed rather than being forgotten: #482 existed because an
+invite left no trace anywhere, and with a banner carrying `[Join]` in front of
+the operator, a status-window duplicate is a second place to look for
+something already on screen. The row in the **channel's own** buffer stays —
+that one is history, not notification, and it is what the archive surfaces
+once the banner is gone.
+
+**The dismiss identity had to widen from source to entry, and that is
+correctness, not taste.** Every `BannerSource` before this had exactly one
+live entry, so the source WAS the instance and the dismissed set could be
+keyed on it. An invite has one entry per channel. With a single aggregate
+entry, a `×` taken while other invites are live keeps the source ACTIVE, so
+`rearmDismissed` never re-arms it and the next invite — different channel,
+different peer — is silently swallowed: precisely the failure that function's
+own contract forbids ("a dismiss must never permanently silence a recurring
+fault"). `BannerEntry.id` (defaulting to `source`, so the other five are
+untouched) fixes it, and makes the re-arm right for free — when one invite
+resolves, only its id leaves the active set. Mutation-tested: re-keying
+`visibleBanners` on `source` turns 2 tests red, re-keying `rearmDismissed`
+turns red exactly the one that names the swallowing. N stacked banners is a
+real wall, but that is a FREQUENCY risk (concurrent invites are rare) against
+a CORRECTNESS defect, and stacking N without overlap is what #119 built.
+
+**The nick could not stay in scrollback.** The decided copy is "`<nick>` is
+inviting you to `#chan`", and the banner renders the instant `window_invited`
+lands — before that channel's buffer is ever fetched. Worse, the
+cold-subscribe backfill (`WindowState.invited_windows/2`) rebuilds its
+payloads from session state alone, with no message in hand, so a nick living
+only in the persisted row could not be reproduced after a reload at all. The
+inviter therefore became window metadata: `{:invited, channel, inviter}`,
+`Wire.window_invited/3` (an ADDITIVE field, so no `Grappa.Protocol` bump), and
+an `invited_by` sibling map on `WindowState` — the same shape, for the same
+reason, as `kicked_meta`. Its invariant is that a key exists **iff** the state
+is `:invited`, enforced in every mutator, so it cannot drift into a parallel
+structure needing housekeeping. Note this makes #902 a COLD deploy:
+`Session.WindowState` is in `HotReload.LongLivedModules` `@state_helpers`, so
+`Deploy.Preflight` reads the changed `defstruct` and refuses hot — which is
+exactly the machinery working, not an obstacle to route around.
+
+**The `×` is episode-scoped and writes nothing — a deliberate reversal of
+#511.** #511 made dismissing the `:invited` tab DURABLE (routing the × through
+a PART so the server key cleared) because otherwise the cold-subscribe
+backfill resurrected it: "the dismissed tab came back" is a bug when the thing
+returning is a permanent sidebar row. For a banner it is not: an invite is
+allowed to be lost, nothing accumulates, and the peer can invite again. So the
+dismissed invite DOES return on the next reload, intentionally. The e2e that
+guarded #511's contract was renamed rather than deleted, and now guards the
+reversal — because routing the banner's × through `partAndForget` "for
+consistency with the other close verbs" is a very reasonable-looking change
+that would silently make any peer's invite destructible by one stray click.
+
+**Mobile lost its only pseudo-row, and that is the whole answer.** #71 INC-3
+had narrowed the BottomBar to exactly the `:invited` slice; with it gone the
+bar draws no pseudo-rows at all and `navPseudoChannelsForNetwork` returns `[]`
+there. Rather than an exception to #402's "subtract from the archive exactly
+what the nav draws", this is that rule applied to the new surface map: mobile
+subtracts nothing, so a pending/failed/kicked/parked window — and now an
+invited one — is reachable on a phone through the ARCHIVE. Verified by code
+read, not assumed: `list_archive/3` does not filter on message kind and
+excludes only the `active_keyset` (joined channels + open queries), so a
+channel holding just the `:server_event` INVITE row does appear.
+
+**The #30 collision, and what replaced the seam.** #30's tab-completion e2e
+used the greyed `:invited` row as its synchronisation barrier for a measured
+reason: it was the ONLY DOM projection of `windowStateByChannel`, the map the
+completion filters, so once it read `invited` the key was provably in that
+map. A row for a *joined* channel comes from `channelsBySlug` on the user
+topic instead — a different topic with no cross-topic ordering guarantee
+(stated at `Sidebar.tsx`) — so a stale entry has no DOM footprint to wait on,
+and the gap was measured at up to 4.9s. Deleting the row without a
+replacement would have returned that spec to the flake it was written to fix.
+The banner is derived straight off the same map, so it restores the barrier
+in kind; `BannerSlot` exposes `data-banner-id` (the per-entry identity), which
+names the exact (network, channel) and is therefore a strictly tighter
+observation than the old `data-window-state="invited"`.

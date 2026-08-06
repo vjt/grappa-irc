@@ -2,30 +2,41 @@
 // (inbound INVITE [Join] CTA).
 //
 // #78 (folds #128) rerouted inbound INVITE: a peer's INVITE we did NOT
-// request no longer lands in the $server window. The server now persists
-// the INVITE row AT THE INVITED CHANNEL (route-by-channel-reference) and
-// flips that channel to a not-joined `:invited` window state — a greyed
-// sidebar tab the operator can /join on their own time (NO auto-focus,
-// the single persisted INVITE row is the one unread item). Cic's
-// ScrollbackPane `renderRawEvent` still renders the `[Join]` CTA
-// (`.scrollback-invite-join`) for the INVITE verb — now inside the
-// channel buffer instead of $server.
+// request no longer lands in the $server window. The server persists the
+// INVITE row AT THE INVITED CHANNEL (route-by-channel-reference) and flips
+// that channel to a not-joined `:invited` window state.
+//
+// #902 changed WHAT THE OPERATOR SEES, and this spec follows it. The greyed
+// `:invited` sidebar tab is gone; the invite is announced by an entry in the
+// stacked top banner region reading "<nick> is inviting you to #chan", with
+// a [Join] action and the standard ×. The reason is the report that filed
+// the issue: several people were invited and nobody noticed, because a
+// greyed row among other greyed rows pulls no attention and the channel-row
+// copy is invisible until you open a window you have no reason to open.
 //
 // E2E shape:
-//   1. operator focused on a real channel
+//   1. operator focused on a real, unrelated channel — and STAYS there,
+//      because the banner must be visible from any window
 //   2. peer issues `INVITE <ownNick> #b2-target`
-//   3. a greyed `:invited` tab for #b2-target appears in the sidebar
-//      (NOT auto-focused)
-//   4. operator selects that tab; the INVITE row + [Join] button render
-//      in the channel buffer
-//   5. click [Join] → channel mounts as joined + stays focused
+//   3. a banner for #b2-target appears, NAMING the inviter; no sidebar row
+//      exists for the channel and focus does not move
+//   4. click the banner's [Join] → the channel mounts as joined + focused,
+//      and the banner clears itself because the window left `:invited`
+//   5. the INVITE row is still in the CHANNEL's own buffer — #902 keeps it
+//      as history; only the $server duplicate was dropped
 //
 // Per `feedback_cicchetto_browser_smoke`: vitest jsdom doesn't render the
-// CSS layout the greyed tab + [Join] button depend on, nor the
-// click-to-join WS round-trip — exactly the class of bug jsdom misses.
+// banner region's stacking or the click-to-join WS round-trip — exactly the
+// class of bug jsdom misses.
 
 import { expect, test } from "../fixtures/test";
-import { loginAs, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
+import {
+  inviteBanner,
+  inviteBannerJoin,
+  loginAs,
+  selectChannel,
+  sidebarWindow,
+} from "../fixtures/cicchettoPage";
 import { partChannel } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
@@ -33,15 +44,17 @@ import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../
 const PEER_NICK = "b2-inviter";
 const TARGET_CHANNEL = "#b2-target";
 
-test("B2 — inbound INVITE opens a greyed :invited tab; [Join] inside it mounts + focuses the channel", async ({
+test("B2 — inbound INVITE raises a banner naming the inviter; its [Join] mounts + focuses the channel", async ({
   page,
 }) => {
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
 
-  // Confirm login on a real channel first. The INVITE no longer lands in
-  // $server (#78), so there's no $server switch — the invited channel's
-  // own greyed tab is the surface.
+  // Confirm login on a real channel first. The INVITE lands in neither
+  // $server (#78, and #902 removed the copy #482 had restored) nor the
+  // sidebar (#902 removed the greyed tab) — the banner is the surface, and
+  // it is deliberately visible from ANY window, which is why we sit on an
+  // unrelated channel for the whole test.
   await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: NETWORK_NICK });
 
   const peer = await IrcPeer.connect({ nick: PEER_NICK });
@@ -56,51 +69,53 @@ test("B2 — inbound INVITE opens a greyed :invited tab; [Join] inside it mounts
     // relays to the operator's session.
     peer.rawInvite(NETWORK_NICK, TARGET_CHANNEL);
 
-    // #78: a greyed :invited tab for the invited channel appears in the
-    // sidebar — NOT auto-focused. The pseudo-row carries the
-    // `.sidebar-window-greyed` class (not-joined state).
-    const invitedTab = sidebarWindow(page, NETWORK_SLUG, TARGET_CHANNEL);
-    await expect(invitedTab).toBeVisible({ timeout: 5_000 });
-    // Genuine-gate assertion (#78 redo). `.sidebar-window-greyed` is shared
-    // by EVERY not-joined pseudo-row state (pending/invited/failed/kicked/
-    // parked), so asserting only the class would pass even if the
-    // inbound-INVITE path produced the wrong state — or none, with the row
-    // greyed for an unrelated reason. data-window-state pins the row to the
-    // real `:invited` derivation: server do_route(:invite) → {:invited, ch}
-    // → window_invited on the user topic → cic setInvited. If any link in
-    // that chain breaks, this attribute is absent/wrong and the spec goes
-    // RED here instead of riding the generic greyed class to a false green.
-    await expect(invitedTab).toHaveAttribute("data-window-state", "invited");
-    await expect(invitedTab.locator(".sidebar-window-greyed")).toBeVisible();
+    // #902: the invite raises a banner. `inviteBanner` keys on
+    // `data-banner-id` (`invite:<slug>:<channel>`), the per-ENTRY identity —
+    // NOT `data-source`, which every stacked invite shares. That pins the
+    // whole chain: server do_route(:invite) → {:invited, ch, inviter} →
+    // window_invited on the user topic → cic setInvited → the registry's
+    // derivation off windowStateByChannel. Break any link and this locator
+    // never resolves, instead of some generic banner class riding to a false
+    // green.
+    const banner = inviteBanner(page, NETWORK_SLUG, TARGET_CHANNEL);
+    await expect(banner).toBeVisible({ timeout: 5_000 });
 
-    // Operator selects the invited tab on their own time. awaitWsReady is
-    // false — the channel is NOT joined yet, so there's no self-JOIN line.
-    await selectChannel(page, NETWORK_SLUG, TARGET_CHANNEL, { awaitWsReady: false });
+    // The copy NAMES the inviter. This is the half that needed the server
+    // leg: the nick reaches cic on the `window_invited` payload, because the
+    // banner renders before the channel's buffer is ever fetched and cannot
+    // read it off the persisted INVITE row.
+    await expect(banner).toContainText(PEER_NICK);
+    await expect(banner).toContainText(TARGET_CHANNEL);
 
-    // The INVITE row + [Join] button render in the channel buffer (per
-    // ScrollbackPane.tsx renderRawEvent INVITE arm).
-    const joinBtn = page.locator(".scrollback-invite-join").first();
-    await expect(joinBtn).toBeVisible({ timeout: 5_000 });
-    await expect(joinBtn).toContainText("Join");
+    // NOT auto-focused, and NOT a sidebar row: the operator is still on the
+    // channel they started in, and the invited channel has no window.
+    await expect(sidebarWindow(page, NETWORK_SLUG, TARGET_CHANNEL)).toHaveCount(0);
 
-    // The row text mentions the inviter + channel.
+    // Click the banner's [Join] → cic posts /join and foregrounds the
+    // channel. This is the SAME verb (`channelJoin.acceptInvite`) the
+    // scrollback invite row's CTA calls.
+    await inviteBannerJoin(page, NETWORK_SLUG, TARGET_CHANNEL).click();
+
+    const newWindow = sidebarWindow(page, NETWORK_SLUG, TARGET_CHANNEL);
+    await expect(newWindow).toBeVisible({ timeout: 5_000 });
+    await expect(newWindow).toHaveClass(/selected/, { timeout: 5_000 });
+    // Joined now → a live row, not a greyed one.
+    await expect(newWindow.locator(".sidebar-window-greyed")).toHaveCount(0, { timeout: 5_000 });
+
+    // The banner clears itself: the window left `:invited`, so the registry
+    // stops deriving the entry. Nothing dismissed it — that is what makes it
+    // derived rather than owned state.
+    await expect(banner).toHaveCount(0, { timeout: 5_000 });
+
+    // The INVITE row survives in the CHANNEL's own buffer — #902 keeps that
+    // one as HISTORY (only the $server duplicate went). We are focused on
+    // the channel now, so it must be on screen with its inline CTA.
     const row = page
       .locator('[data-testid="scrollback-line"]')
       .filter({ hasText: PEER_NICK })
       .filter({ hasText: TARGET_CHANNEL })
       .first();
-    await expect(row).toBeVisible();
-
-    // Click [Join] → cic posts /join. The channel transitions from the
-    // greyed :invited pseudo-row to a live joined window and stays
-    // focused (the operator was already in this window).
-    await joinBtn.click();
-
-    const newWindow = sidebarWindow(page, NETWORK_SLUG, TARGET_CHANNEL);
-    await expect(newWindow).toBeVisible({ timeout: 5_000 });
-    await expect(newWindow).toHaveClass(/selected/, { timeout: 5_000 });
-    // Joined now → the greyed class falls off (live channelsBySlug row).
-    await expect(newWindow.locator(".sidebar-window-greyed")).toHaveCount(0, { timeout: 5_000 });
+    await expect(row).toBeVisible({ timeout: 5_000 });
   } finally {
     await peer.disconnect("B2 done");
     // Test isolation: the [Join] click persists `#b2-target` into the
