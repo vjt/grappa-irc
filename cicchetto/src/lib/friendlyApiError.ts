@@ -76,6 +76,38 @@ export function errorMessage(value: unknown): string {
   return String(value);
 }
 
+// #943 — the per-field walk over the 422 envelope's `field_errors`, lifted
+// out of the `validation_failed` arm below so it has exactly one
+// implementation. Returns `"name: too short; password: is required"` or
+// `null` when the key is absent, not an object, or carries no usable message
+// — callers decide what a `null` degrades to.
+export function fieldErrorSummary(err: ApiError): string | null {
+  const fieldErrors = err.info.field_errors;
+  if (fieldErrors === null || typeof fieldErrors !== "object") return null;
+  const parts: string[] = [];
+  for (const [field, msgs] of Object.entries(fieldErrors as Record<string, unknown>)) {
+    if (Array.isArray(msgs) && msgs.length > 0) parts.push(`${field}: ${msgs.join(", ")}`);
+  }
+  return parts.length > 0 ? parts.join("; ") : null;
+}
+
+// #943 — the ADMIN-CONSOLE counterpart to `errorMessage`, and deliberately
+// its opposite policy: the admin tabs render the raw wire token, because
+// that is what an operator debugging a 422 wants to see (the written rule
+// lives at `AdminSettingsTab.tsx` lines 33-35, and all 8 tabs follow it).
+// The token alone, though, throws away the only text that says WHAT to type
+// instead — the changeset's per-field message. So: token first, detail
+// appended, and a payload without `field_errors` degrades to exactly the
+// bare token rendered before this existed.
+//
+// `fallback` is for the non-`ApiError` throw (network/parse failure), where
+// there is no wire token at all — each call site names its own verb.
+export function operatorApiError(value: unknown, fallback: string): string {
+  if (!(value instanceof ApiError)) return fallback;
+  const detail = fieldErrorSummary(value);
+  return detail === null ? value.code : `${value.code} — ${detail}`;
+}
+
 function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
   switch (code) {
     case "invalid_credentials":
@@ -195,16 +227,8 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       // msg" summary so the user sees WHICH field is wrong and
       // WHY without parsing wire tokens; falls back to a generic
       // copy when the shape is degraded.
-      const fieldErrors = err.info.field_errors as Record<string, string[]> | undefined;
-      if (fieldErrors !== undefined && fieldErrors !== null && typeof fieldErrors === "object") {
-        const parts: string[] = [];
-        for (const [field, msgs] of Object.entries(fieldErrors)) {
-          if (Array.isArray(msgs) && msgs.length > 0) {
-            parts.push(`${field}: ${msgs.join(", ")}`);
-          }
-        }
-        if (parts.length > 0) return `Please fix: ${parts.join("; ")}.`;
-      }
+      const summary = fieldErrorSummary(err);
+      if (summary !== null) return `Please fix: ${summary}.`;
       return "The request was invalid. Please check your input.";
     }
     case "cannot_disconnect_self":

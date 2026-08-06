@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../lib/api";
-import { friendlyApiError } from "../lib/friendlyApiError";
+import { friendlyApiError, operatorApiError } from "../lib/friendlyApiError";
 
 // U-3 (UD3) — exhaustive matrix over the typed-error wire tokens
 // the server emits via FallbackController. Adding a new arm to
@@ -181,5 +181,48 @@ describe("friendlyApiError", () => {
   it("network_unreachable without retry_after info uses generic copy", () => {
     const err = new ApiError(503, "network_unreachable", {});
     expect(friendlyApiError(err)).toBe("We can't reach the network right now.");
+  });
+});
+
+// #943 — the admin consoles render the raw wire token by policy, so they
+// take this door instead of `friendlyApiError`. Its whole contract is the
+// degradation ladder: detail when the 422 carries it, the bare token when it
+// doesn't, the caller's fallback when there is no wire token at all.
+describe("operatorApiError", () => {
+  it("appends the per-field detail to the wire token", () => {
+    const err = new ApiError(422, "validation_failed", {
+      field_errors: { name: ["must start with a letter"], password: ["is too short"] },
+    });
+    expect(operatorApiError(err, "unused")).toBe(
+      "validation_failed — name: must start with a letter; password: is too short",
+    );
+  });
+
+  it("joins multiple messages for one field", () => {
+    const err = new ApiError(422, "validation_failed", {
+      field_errors: { name: ["is too short", "has invalid format"] },
+    });
+    expect(operatorApiError(err, "unused")).toBe(
+      "validation_failed — name: is too short, has invalid format",
+    );
+  });
+
+  for (const [label, info] of [
+    ["absent", {}],
+    ["null", { field_errors: null }],
+    ["not an object", { field_errors: "name is bad" }],
+    ["empty", { field_errors: {} }],
+    ["all-empty arrays", { field_errors: { name: [] } }],
+  ] as Array<[string, Record<string, unknown>]>) {
+    it(`degrades to the bare token when field_errors is ${label}`, () => {
+      expect(operatorApiError(new ApiError(422, "validation_failed", info), "unused")).toBe(
+        "validation_failed",
+      );
+    });
+  }
+
+  it("returns the caller's fallback for a non-ApiError throw", () => {
+    expect(operatorApiError(new Error("net down"), "create_failed")).toBe("create_failed");
+    expect(operatorApiError("boom", "request_failed")).toBe("request_failed");
   });
 });
