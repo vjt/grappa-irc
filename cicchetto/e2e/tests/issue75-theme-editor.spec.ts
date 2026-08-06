@@ -135,6 +135,38 @@ test.describe("#75 — theme editor (producer path)", () => {
     await expect.poll(() => readAccent(page), { timeout: 5_000 }).toBe(accentPreOpen);
   });
 
+  // #963 — a <select> does NOT inherit color: the UA paints it `fieldtext`
+  // (black), which on a dark theme is black-on-dark. jsdom is blind to this
+  // (no UA stylesheet, no computed cascade), so the assertion has to run in a
+  // real engine. BOTH sides are read from the LIVE cascade — never a literal:
+  // the name field is an <input>, so the global form-control rule already
+  // gives it `color: var(--fg)`; the select must resolve to that same
+  // computed color, from that same rule.
+  test("font select takes its color from the control rule, like a sibling input", async ({
+    page,
+  }) => {
+    await loginAs(page, getSeededVjt());
+    await openThemesGalleryDesktop(page);
+
+    await page.getByTestId("theme-new").click();
+    await expect(page.getByTestId("theme-editor")).toBeVisible({ timeout: 5_000 });
+
+    const painted = await page.evaluate(() => {
+      const read = (id: string) => {
+        const el = document.querySelector(`[data-testid="${id}"]`);
+        return el ? getComputedStyle(el).color : "";
+      };
+      return { select: read("theme-editor-font"), input: read("theme-editor-name") };
+    });
+
+    // Guard the oracle: an empty/absent input color would make the equality
+    // vacuous.
+    expect(painted.input).not.toBe("");
+    expect(painted.select).toBe(painted.input);
+
+    await page.getByTestId("theme-editor-cancel-btn").click();
+  });
+
   test("self-hosted font applies live from same-origin /fonts (no CDN)", async ({ page }) => {
     const requests: string[] = [];
     page.on("request", (r) => requests.push(r.url()));

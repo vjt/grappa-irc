@@ -364,8 +364,8 @@ body {
   overscroll-behavior: none;
 }
 
-/* #497 / #508 — global text-input treatment (DENYLIST). The app had NO base
-   <input>/<textarea> rule, so UNCLASSED fields (the identity editor's
+/* #497 / #508 / #963 — global form-control treatment (DENYLIST). The app had
+   NO base <input>/<textarea> rule, so UNCLASSED fields (the identity editor's
    nick/realname/ident) fell back to tiny UA defaults, and every modal re-styled
    its own input in 13+ near-identical `.<x>-input` rules. This is the single
    global treatment: a comfortable ≥44px tap-target, the app's `--font-size`
@@ -389,7 +389,14 @@ body {
    tradeoff). RESTORE PATH if a real iPhone DOES zoom on focus: re-add, after the
    :focus rule, `html.is-ios input:where(:not(<same denylist>)), html.is-ios
    textarea { font-size: max(16px, var(--font-size)) }` — #508 removed it pending
-   vjt's device check. */
+   vjt's device check.
+   #963 added `select`: a <select> does NOT inherit `color` (the UA paints it
+   `fieldtext`, i.e. black), so every bare select in the app rendered
+   black-on-dark — reported on the theme editor's font picker, but the defect
+   was the whole CLASS of element, not that one instance. Selects belong here
+   for the same reason inputs do: one source for the theme tokens and the tap
+   target. No `:where()` needed — the bare element selector is already (0,0,1),
+   matching `textarea`. */
 input:where(
   :not(
     [type="radio"],
@@ -403,6 +410,7 @@ input:where(
     [type="image"]
   )
 ),
+select,
 textarea {
   box-sizing: border-box;
   min-height: var(--tap-min);
@@ -432,6 +440,7 @@ input:where(
     [type="image"]
   )
 ):focus,
+select:focus,
 textarea:focus {
   outline: none;
   border-color: var(--accent);
@@ -4550,9 +4559,13 @@ html.resize-dragging * {
   gap: 0.25rem;
 }
 
+/* #963 — this used to also declare `color: var(--text)`, and `--text` is
+   defined NOWHERE. An unresolvable var() on an inherited property computes to
+   the inherited value, so these controls were picking up the parent's color by
+   accident, not the value this rule meant. The global form-control rule is the
+   one source of `color: var(--fg)` now; only the tighter padding stays. */
 .settings-drawer label.prefs-list input[type="text"],
 .settings-drawer label.prefs-list select {
-  color: var(--text);
   padding: 0.25rem 0.4rem;
 }
 
