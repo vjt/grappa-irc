@@ -36,6 +36,15 @@ name: integration
 # cicchetto/e2e/playwright-report/. Both are uploaded as artifacts when
 # the job fails — the trace zip is the primary debug surface, opens in
 # `npx playwright show-trace <zip>`.
+#
+# Those two are the BROWSER half only, and #702 is what that costs: a
+# failure whose cause is upstream (grappa, bahamut, services) shows up in
+# the trace as an unexplained absence, and the investigation stops there.
+# scripts/integration.sh now dumps every container's log to
+# cicchetto/e2e/container-logs/ on a non-zero exit — inside its own EXIT
+# trap, because the tear-down in that same trap destroys the containers
+# and no step here could reach them afterwards. Uploaded below, failure
+# only.
 
 on:
   push:
@@ -183,5 +192,18 @@ jobs:
         with:
           name: playwright-report
           path: cicchetto/e2e/playwright-report/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Upload testnet container logs (on failure)
+        # The server half of the failure (#702) — one file per container,
+        # written by scripts/integration.sh's EXIT trap before tear-down.
+        # `if-no-files-found: ignore` because the job can also fail before
+        # the stack exists at all (checkout, compose plugin, GHCR login).
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: container-logs
+          path: cicchetto/e2e/container-logs/
           retention-days: 14
           if-no-files-found: ignore

@@ -165,6 +165,16 @@ artifacts: screenshot, video, trace.zip) and
 `cicchetto/e2e/playwright-report/`. Open a trace with
 `npx playwright show-trace <path>/trace.zip`.
 
+Those are the BROWSER half. On a non-zero exit `scripts/integration.sh`
+also dumps one log file per container to `cicchetto/e2e/container-logs/`
+(#702), from inside its EXIT trap — before the tear-down in that same
+trap destroys the containers. The service set is derived from
+`docker compose ps`, so a service added later is covered without editing
+anything. Failure-only: a green run writes nothing. The `integration`
+workflow uploads the directory as the `container-logs` artifact
+alongside the trace + report, so a CI-only red can be read from the
+server side too instead of stopping at the browser.
+
 **Per-spec state reset.** Every spec auto-resets `vjt`'s grappa-side
 state (DB rows + live `Session.Server` + ETS) after the test via the
 `_vjtReset` `auto: true` fixture (`cicchetto/e2e/fixtures/test.ts`),

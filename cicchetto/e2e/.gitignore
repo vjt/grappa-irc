@@ -3,6 +3,8 @@ node_modules/
 test-results/
 playwright-report/
 playwright/.cache/
+# Container logs dumped by scripts/integration.sh on a failed run (#702).
+container-logs/
 # bun.lock is a host-only byproduct: `scripts/bun.sh x tsc -p e2e/tsconfig.json`
 # triggers a host `bun install` that writes it. The canonical e2e path never
 # uses it — runner/Dockerfile does `npm install` from package.json only (no

@@ -20,6 +20,12 @@
 #     propagated.
 #   - Trap on EXIT runs `testnet.sh down` so a failed run leaves no
 #     dangling containers, networks, or volumes.
+#   - On a NON-ZERO exit the same trap first dumps every container's
+#     log to cicchetto/e2e/container-logs/ (#702). It has to happen
+#     here: the tear-down below destroys the containers, so by the
+#     time a CI workflow step could run `docker compose logs` there is
+#     nothing left to read, and a CI-only failure is diagnosable from
+#     the browser side alone.
 #   - KEEP_STACK=1 opts out of the tear-down for iterative debugging
 #     (delegates to the same opt-out in testnet.sh down behavior:
 #     just don't call it).
@@ -43,7 +49,51 @@ TESTNET="$(cd "$(dirname "$0")" && pwd)/testnet.sh"
 GRAPPA_VERSION="$("$SRC_ROOT/infra/packaging/version.sh")"
 export GRAPPA_VERSION
 
+LOG_DIR="$E2E_DIR/container-logs"
+
+# #702 — one file per container, written BEFORE the tear-down. The
+# Playwright trace shows the browser half of a failure whose cause is
+# usually upstream (grappa, bahamut, services); without this the
+# investigation of a CI-only red stops at the browser.
+capture_container_logs() {
+    local services svc
+    mkdir -p "$LOG_DIR"
+    cd "$E2E_DIR" || return 0
+
+    # DERIVED from what compose actually has containers for, not a hand
+    # list: a hand list stops covering the service added after it was
+    # written, and looks like coverage while it does (the #441 lesson,
+    # same shape). `compose run --rm` one-shots (the Playwright runner)
+    # are already gone by now and self-exclude — their stdout is the job
+    # log anyway.
+    docker compose ps --all >"$LOG_DIR/compose-ps.txt" 2>&1 || true
+    services="$(docker compose ps --all --services 2>/dev/null || true)"
+
+    while IFS= read -r svc; do
+        [ -n "$svc" ] || continue
+        # --timestamps so a server-side event can be lined up against the
+        # trace's clock across services; --no-log-prefix because the
+        # service name is already the filename.
+        docker compose logs --no-color --timestamps --no-log-prefix "$svc" \
+            >"$LOG_DIR/$svc.log" 2>&1 || true
+    done <<<"$services"
+
+    # Print the sizes: what this costs per failed run is a measurement,
+    # not an estimate, and it is the number to revisit if it ever grows
+    # into something worth capping.
+    echo "=== #702: container logs captured to $LOG_DIR ==="
+    ls -l "$LOG_DIR" || true
+}
+
 cleanup() {
+    local rc=$?
+
+    # Failure-only. A green run's logs answer no question, and capturing
+    # them every time is how an artifact store becomes a landfill.
+    if [ "$rc" -ne 0 ]; then
+        capture_container_logs
+    fi
+
     if [ "${KEEP_STACK:-}" != "1" ]; then
         "$TESTNET" down 2>&1 || true
     else
