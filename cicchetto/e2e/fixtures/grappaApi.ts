@@ -719,12 +719,22 @@ export interface BaselineSeedChannel {
   seedSender?: string;
 }
 
+/**
+ * What one reset actually cost, for #934. `attempts` is how many times
+ * the 433 retry below fired (1 = no retry); `phases` is the server's own
+ * `k=v;k=v` breakdown, forwarded on the 204 as `x-grappa-reset-phases`.
+ */
+export type ResetOutcome = {
+  attempts: number;
+  phases: string;
+};
+
 export async function resetSubject(
   adminToken: string,
   userName: string,
   baselineAutojoin?: Record<string, string[]>,
   baselineSeed?: Record<string, BaselineSeedChannel[]>,
-): Promise<void> {
+): Promise<ResetOutcome> {
   const body: Record<string, unknown> = { user_name: userName };
   if (baselineAutojoin) body.baseline_autojoin = baselineAutojoin;
   if (baselineSeed) {
@@ -762,18 +772,30 @@ export async function resetSubject(
       },
       body: JSON.stringify(body),
     });
-    if (res.status === 204) return;
+    if (res.status === 204) {
+      return {
+        attempts: attempt,
+        phases: res.headers.get("x-grappa-reset-phases") ?? "",
+      };
+    }
 
     const text = await res.text().catch(() => "<no body>");
     const nickStillTaken = res.status === 500 && text.includes("nick_rejected");
     if (!nickStillTaken || attempt === maxAttempts) {
       throw new Error(`resetSubject(${userName}) failed: ${res.status} ${text}`);
     }
+    // #934 — this retry used to be SILENT, and that silence cost a whole
+    // investigation: `nick_rejected` appeared zero times in a full suite
+    // log and the zero proved nothing, because nothing ever wrote one.
+    // A loop that can multiply a 500 ms call by eight has to say so.
+    process.stderr.write(`__RESETRETRY__\t${attempt}\t${userName}\tnick_rejected\n`);
     // Observed 433 → the ghosted nick isn't released yet. Back off (capped)
     // then re-register; each reset attempt also reconnects, which itself
     // gives bahamut time to reap the prior connection's ghost.
     await sleep(Math.min(500 * attempt, 2_000));
   }
+  // Unreachable: the loop either returns on 204 or throws at maxAttempts.
+  throw new Error(`resetSubject(${userName}): retry loop fell through`);
 }
 
 // Overwrite a user's `credential.autojoin_channels` via the admin

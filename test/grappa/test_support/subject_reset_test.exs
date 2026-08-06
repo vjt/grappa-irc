@@ -58,7 +58,7 @@ defmodule Grappa.TestSupport.SubjectResetTest do
 
   describe "reset!/2" do
     test "drains all mutable DB surfaces for the user", %{user: user, network: network} do
-      assert :ok = SubjectReset.reset!(user.name, %{})
+      assert {:ok, _phases} = SubjectReset.reset!(user.name, %{})
 
       assert ReadCursor.get({:user, user.id}, network.id, "#bofh") == nil
       assert QueryWindows.list_for_subject({:user, user.id}) == %{}
@@ -78,7 +78,7 @@ defmodule Grappa.TestSupport.SubjectResetTest do
       {:ok, _} = UserSettings.set_highlight_patterns({:user, other.id}, ["keep-me"])
       {:ok, _} = Notify.add({:user, other.id}, network.id, ["other-watched"], other.name)
 
-      assert :ok = SubjectReset.reset!(user.name, %{})
+      assert {:ok, _phases} = SubjectReset.reset!(user.name, %{})
 
       other_cursor = ReadCursor.get({:user, other.id}, network.id, "#bofh")
       assert other_cursor != nil
@@ -86,6 +86,19 @@ defmodule Grappa.TestSupport.SubjectResetTest do
       assert UserSettings.get_highlight_patterns({:user, other.id}) == ["keep-me"]
       # #364 S1 — the drain is user-scoped: the other user's watch list stays.
       assert [%{nick: "other-watched"}] = Notify.list({:user, other.id}, network.id)
+    end
+
+    test "reports the wall-clock of every phase it can spend time in", %{user: user} do
+      assert {:ok, phases} = SubjectReset.reset!(user.name, %{})
+
+      # #934: the e2e tail is 43% of the reset budget and nothing could say
+      # WHERE it goes. The phase set must be exhaustive — a span missing
+      # here is a span a slow reset has nowhere to land in.
+      assert phases |> Map.keys() |> Enum.sort() ==
+               [:baseline_ms, :drain_ms, :respawn_ms, :seed_ms, :total_ms]
+
+      assert Enum.all?(Map.values(phases), &(is_integer(&1) and &1 >= 0))
+      assert phases.total_ms >= phases.drain_ms
     end
 
     test "returns {:error, :user_not_found} for unknown user_name" do

@@ -43,8 +43,10 @@ if Mix.env() in [:dev, :test] do
       opts = build_opts(params)
 
       case SubjectReset.reset!(user_name, opts) do
-        :ok ->
-          send_resp(conn, 204, "")
+        {:ok, phases} ->
+          conn
+          |> put_resp_header("x-grappa-reset-phases", encode_phases(phases))
+          |> send_resp(204, "")
 
         {:error, :user_not_found} ->
           conn |> put_status(:not_found) |> json(%{error: "user_not_found"})
@@ -72,6 +74,18 @@ if Mix.env() in [:dev, :test] do
 
     def reset(conn, _) do
       conn |> put_status(:unprocessable_entity) |> json(%{error: "user_name_required"})
+    end
+
+    # #934 — the reset's per-phase wall-clock, ridden out on the 204 as a
+    # header rather than a body so the 204 stays a 204 and no fixture has
+    # to learn a new status code. `k=v;k=v`, keys sorted so a diff of two
+    # runs lines up. A header (not just the server log) because a retry
+    # makes ordinal pairing between client samples and server lines
+    # impossible, and the retry is the thing being measured.
+    defp encode_phases(phases) do
+      phases
+      |> Enum.sort()
+      |> Enum.map_join(";", fn {phase, ms} -> "#{phase}=#{ms}" end)
     end
 
     # Coerce the JSON `baseline_autojoin` map into the keyword-shaped

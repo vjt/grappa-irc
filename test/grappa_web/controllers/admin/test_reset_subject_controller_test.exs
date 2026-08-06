@@ -48,6 +48,19 @@ defmodule GrappaWeb.Admin.TestResetSubjectControllerTest do
         |> post("/admin/test/reset-subject", %{"user_name" => user.name})
 
       assert response(conn, 204) == ""
+
+      # #934 — the phase breakdown rides out on the 204 itself. The
+      # Playwright fixture logs this next to its own measured total, which
+      # is the only way to attribute a slow reset: a retry means one test
+      # produces several server-side resets, so pairing client samples to
+      # server log lines by ordinal cannot work.
+      assert [encoded] = get_resp_header(conn, "x-grappa-reset-phases")
+
+      assert encoded
+             |> String.split(";")
+             |> Enum.map(&(&1 |> String.split("=") |> hd()))
+             |> Enum.sort() ==
+               ["baseline_ms", "drain_ms", "respawn_ms", "seed_ms", "total_ms"]
     end
 
     test "returns 403 with non-admin token", %{conn: conn, user_token: tok, user: user} do

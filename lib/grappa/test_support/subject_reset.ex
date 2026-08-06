@@ -102,6 +102,8 @@ if Mix.env() in [:dev, :test] do
       WSPresence
     }
 
+    require Logger
+
     @reset_timeout_ms 5_000
     @autojoin_timeout_ms 5_000
     @autojoin_poll_interval_ms 50
@@ -115,6 +117,22 @@ if Mix.env() in [:dev, :test] do
     @type reset_opts :: %{
             optional(:baseline_autojoin) => %{String.t() => [String.t()]},
             optional(:baseline_seed) => %{String.t() => [baseline_channel()]}
+          }
+
+    @typedoc """
+    Wall-clock of each span a reset can spend time in, in milliseconds
+    (#934). Exhaustive by construction: `total_ms` minus the four parts
+    is the unattributed remainder, so a slow reset always has somewhere
+    to land. Returned to the caller AND logged, because the two answer
+    different questions — the return value correlates with the client's
+    own total, the log line survives an attempt that never returns one.
+    """
+    @type phases :: %{
+            drain_ms: non_neg_integer(),
+            baseline_ms: non_neg_integer(),
+            seed_ms: non_neg_integer(),
+            respawn_ms: non_neg_integer(),
+            total_ms: non_neg_integer()
           }
 
     @type reset_error ::
@@ -143,7 +161,12 @@ if Mix.env() in [:dev, :test] do
     names rows land cleanly on top of the seed baseline (stable
     post-state: seed_count + ~5 cycle rows per spec).
 
-    Returns `:ok` on success. Returns `{:error, :user_not_found}` if
+    Returns `{:ok, phases}` on success, where `phases` is the
+    per-span wall-clock of this reset (see `t:phases/0`); the
+    controller forwards it on the 204 as `x-grappa-reset-phases` so a
+    Playwright fixture can attribute its own measured total without
+    pairing anything by ordinal — which retries make impossible.
+    Returns `{:error, :user_not_found}` if
     the user_name doesn't exist. Returns `{:error, {:reconnect_timeout,
     network_slug}}` if a `Session.Server` restart didn't reach
     `:session_ready` within #{@reset_timeout_ms}ms. Returns `{:error,
@@ -153,7 +176,7 @@ if Mix.env() in [:dev, :test] do
     `autojoin_channels` entry has not reached `:joined` state within
     #{@autojoin_timeout_ms}ms after `:session_ready`.
     """
-    @spec reset!(String.t(), reset_opts()) :: :ok | {:error, reset_error()}
+    @spec reset!(String.t(), reset_opts()) :: {:ok, phases()} | {:error, reset_error()}
     def reset!(user_name, opts) when is_binary(user_name) and is_map(opts) do
       case Repo.get_by(Accounts.User, name: user_name) do
         nil -> {:error, :user_not_found}
@@ -162,6 +185,46 @@ if Mix.env() in [:dev, :test] do
     end
 
     defp do_reset(user, opts) do
+      started_at = System.monotonic_time(:millisecond)
+      baseline_autojoin = Map.get(opts, :baseline_autojoin, %{})
+      baseline_seed = Map.get(opts, :baseline_seed, %{})
+
+      {drain_ms, :ok} = measure(fn -> drain_surfaces(user) end)
+
+      {baseline_ms, credentials} =
+        measure(fn ->
+          user
+          |> Networks.Credentials.list_credentials_for_user()
+          |> Enum.map(&restore_baseline_channels(&1, baseline_autojoin))
+        end)
+
+      {seed_ms, :ok} = measure(fn -> reset_scrollback(user, credentials, baseline_seed) end)
+      {respawn_ms, outcome} = measure(fn -> respawn_each(user, credentials) end)
+
+      phases = %{
+        drain_ms: drain_ms,
+        baseline_ms: baseline_ms,
+        seed_ms: seed_ms,
+        respawn_ms: respawn_ms,
+        total_ms: System.monotonic_time(:millisecond) - started_at
+      }
+
+      Logger.info(
+        "subject reset",
+        [user: user.name, outcome: outcome_tag(outcome)] ++ Enum.sort(Map.to_list(phases))
+      )
+
+      case outcome do
+        :ok -> {:ok, phases}
+        {:error, _} = err -> err
+      end
+    end
+
+    # Every mutable surface the seed user owns, drained as ONE span so the
+    # phase log can tell DB/ETS cost apart from the scrollback re-seed and
+    # the respawn — the three used to be indistinguishable inside a single
+    # client-observed total.
+    defp drain_surfaces(user) do
       :ok = ReadCursor.clear_all_for_user(user.id)
       :ok = QueryWindows.close_all_for_user(user.id)
       :ok = Push.subscription_clear_all_for_user(user.id)
@@ -175,19 +238,16 @@ if Mix.env() in [:dev, :test] do
       # wired (dead code until now).
       :ok = Notify.clear_all_for_user(user.id)
       :ok = WSPresence.reset_for_user(user.name)
-
-      baseline_autojoin = Map.get(opts, :baseline_autojoin, %{})
-      baseline_seed = Map.get(opts, :baseline_seed, %{})
-
-      credentials =
-        user
-        |> Networks.Credentials.list_credentials_for_user()
-        |> Enum.map(&restore_baseline_channels(&1, baseline_autojoin))
-
-      :ok = reset_scrollback(user, credentials, baseline_seed)
-
-      respawn_each(user, credentials)
     end
+
+    defp measure(fun) do
+      started_at = System.monotonic_time(:millisecond)
+      result = fun.()
+      {System.monotonic_time(:millisecond) - started_at, result}
+    end
+
+    defp outcome_tag(:ok), do: :ok
+    defp outcome_tag({:error, reason}), do: inspect(reason)
 
     # Rewrite cred.last_joined_channels + cred.autojoin_channels to
     # the seed baseline so the merged SessionPlan starts every spec
@@ -274,14 +334,7 @@ if Mix.env() in [:dev, :test] do
 
       case cred.connection_state do
         :connected ->
-          :ok = Session.stop_session({:user, user.id}, network_id)
-
-          with {:ok, autojoin} <- spawn_and_await(user, cred, slug),
-               :ok <- await_autojoin(user, cred, slug, autojoin) do
-            respawn_each(user, rest)
-          else
-            {:error, _} = err -> err
-          end
+          respawn_connected(user, cred, slug, network_id, rest)
 
         _ ->
           # Parked / failed / disconnected — no respawn. Backoff +
@@ -290,10 +343,40 @@ if Mix.env() in [:dev, :test] do
       end
     end
 
+    # The four spans the respawn is made of, timed individually and logged
+    # per credential — including on the failure path, which is the ONLY
+    # trace an attempt that never returns to the caller leaves behind (a
+    # 433 `nick_rejected` is exactly that attempt, and #934 spent a whole
+    # investigation inferring its existence from arithmetic).
+    defp respawn_connected(user, cred, slug, network_id, rest) do
+      {stop_ms, :ok} = measure(fn -> Session.stop_session({:user, user.id}, network_id) end)
+      {spawned, spawn_ms, welcome_ms} = spawn_and_await(user, cred, slug)
+
+      {autojoin_ms, outcome} =
+        case spawned do
+          {:ok, autojoin} -> measure(fn -> await_autojoin(user, cred, slug, autojoin) end)
+          {:error, _} = err -> {0, err}
+        end
+
+      Logger.info("subject reset respawn",
+        network: slug,
+        outcome: outcome_tag(outcome),
+        stop_ms: stop_ms,
+        spawn_ms: spawn_ms,
+        welcome_ms: welcome_ms,
+        autojoin_ms: autojoin_ms
+      )
+
+      case outcome do
+        :ok -> respawn_each(user, rest)
+        {:error, _} = err -> err
+      end
+    end
+
     defp spawn_and_await(user, cred, slug) do
       case Networks.SessionPlan.resolve(cred) do
         {:ok, plan} -> do_spawn_and_await(user, cred, slug, plan)
-        {:error, reason} -> {:error, {:reconnect_failed, slug, reason}}
+        {:error, reason} -> {{:error, {:reconnect_failed, slug, reason}}, 0, 0}
       end
     end
 
@@ -309,20 +392,27 @@ if Mix.env() in [:dev, :test] do
         requesting_subject: nil
       }
 
-      case Grappa.SpawnOrchestrator.spawn(
-             {:user, user.id},
-             cred.network_id,
-             plan_with_notify,
-             capacity_input
-           ) do
+      {spawn_ms, spawned} =
+        measure(fn ->
+          Grappa.SpawnOrchestrator.spawn(
+            {:user, user.id},
+            cred.network_id,
+            plan_with_notify,
+            capacity_input
+          )
+        end)
+
+      case spawned do
         {:ok, _, pid} ->
-          case await_ready(pid, ref, slug) do
-            :ok -> {:ok, Map.get(plan, :autojoin_channels, [])}
-            {:error, _} = err -> err
+          {welcome_ms, ready} = measure(fn -> await_ready(pid, ref, slug) end)
+
+          case ready do
+            :ok -> {{:ok, Map.get(plan, :autojoin_channels, [])}, spawn_ms, welcome_ms}
+            {:error, _} = err -> {err, spawn_ms, welcome_ms}
           end
 
         {:error, reason} ->
-          {:error, {:reconnect_failed, slug, reason}}
+          {{:error, {:reconnect_failed, slug, reason}}, spawn_ms, 0}
       end
     end
 

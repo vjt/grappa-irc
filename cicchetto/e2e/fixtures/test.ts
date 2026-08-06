@@ -117,11 +117,19 @@ export const test = base.extend<{
     },
     { auto: true },
   ],
+  // The per-test reset is the single most expensive thing the suite does
+  // (#934: ~10 min of a 32 min run, and 43% of that concentrated in a tail
+  // that no client-side total could attribute). One stderr line per test
+  // makes every run its own dataset: elapsed, how many attempts the 433
+  // retry burned, and the server's own phase breakdown. Unconditional on
+  // purpose — the last two times this was a throwaway local diff, the
+  // evidence was lost before the question got answered.
   _vjtReset: [
-    async ({}, use) => {
+    async ({}, use, testInfo) => {
       await use();
       const admin = getSeededAdmin();
-      await resetSubject(
+      const startedAt = performance.now();
+      const { attempts, phases } = await resetSubject(
         admin.token,
         VJT_USER,
         { [NETWORK_SLUG]: AUTOJOIN_CHANNELS },
@@ -132,6 +140,10 @@ export const test = base.extend<{
             seedSender: "seed-bot",
           })),
         },
+      );
+      const elapsed = Math.round(performance.now() - startedAt);
+      process.stderr.write(
+        `__RESETCOST__\t${elapsed}\t${attempts}\t${phases}\t${testInfo.titlePath.join(" | ")}\n`,
       );
     },
     { auto: true },
