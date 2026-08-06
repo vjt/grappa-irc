@@ -30509,3 +30509,76 @@ it changes behaviour for every numeric in neither list, and #221's WHOIS-leg
 guard is defined as "a `:scan`-class numeric" and would have to be re-sited
 first. Deny-list entries stay the right size of cut for one reported family;
 they are not a substitute for the inversion.
+
+## 2026-08-06 — #913: the inset is CSS's to resolve, and JS supplies only what CSS cannot measure
+
+The rail actions menu opened into the iOS safe area: the topmost row rendered
+behind the status bar, and the menu would not scroll to bring it into reach.
+Residue of #588, not a regression of it. #588 replaced a cap of the WHOLE
+viewport with a cap of the space above the launcher, which is the right cap
+taken from the wrong origin — `getBoundingClientRect().top` is relative to the
+layout viewport, and under `viewport-fit=cover` that origin is the PHYSICAL top
+of the display. `RAIL_MENU_TOP_GAP = 8` was silently being asked to clear a
+~59px notch.
+
+**The split of responsibility is the durable part.** The issue proposed reading
+the inset in JS: expose `--safe-area-inset-top: env(...)` on `:root` and pull
+it back with `getComputedStyle().getPropertyValue()`. That is not safe. An
+UNREGISTERED custom property's computed value is a token stream, not a length;
+`getPropertyValue` can hand back the literal `env(safe-area-inset-top)`, whose
+`parseFloat` is `NaN`, which the proposal's own `|| 0` fallback turns into a
+fix that looks applied and does nothing. So the arithmetic was split by who can
+know what: **JS publishes the one number CSS cannot measure** — the anchor's
+distance to the viewport top, gap already deducted, as
+`--rail-menu-space-above` — **and the stylesheet subtracts the one value JS
+cannot reliably resolve**, `var(--safe-area-inset-top)`, then clamps with
+`max(0px, …)`. The next JS-measured cap on this codebase should follow the same
+seam rather than reach for `getComputedStyle`.
+
+**A pure-CSS cap was considered and is not available.** No CSS construct yields
+an element's distance to the viewport top; the viewport-unit forms
+(`--viewport-height`, `100dvh`) are exactly the whole-viewport cap #588
+removed, and the anchor is not viewport-pinned on desktop, so a
+`calc(100dvh - …)` shape would be wrong there. JS measurement stays. It
+re-measures on `resize` + `visualViewport` resize, which is also where rotation
+lands — now load-bearing, because the inset itself changes with orientation.
+
+**The `0px` fallbacks are load-bearing, not defensive.** An `env()` whose
+variable the engine does not know invalidates the entire declaration. Without
+`env(safe-area-inset-top, 0px)` the `max-height` would simply vanish on such an
+engine, handing back the uncapped #588 overflow.
+
+**Two symptoms, and only ONE of them shares the cause.** The occlusion is the
+inset, straightforwardly. The no-scroll half is a CONSEQUENCE in the reported
+configuration — a cap one inset too generous means the rows fit, so
+`overflow-y: auto` never engages — but it has a second, independent blocker:
+`.rail-actions-menu` carried no `touch-action` carve-out. Every sibling overlay
+scroller in the stylesheet (`.members-pane`, `.settings-drawer`,
+`.archive-modal`) re-asserts `pan-y` on the scroller AND its descendants, each
+with a comment about the same trap, because touch-action does not inherit and
+iOS elects the gesture consumer from the hit-test target's own value (UX-6
+bucket A v2). The menu holds the overlay lock while open, so it sits under the
+`touch-action: none` blanket, and its action rows are the hit-test target
+across most of its area. Capping correctly makes it overflow; the carve-out
+makes the overflow pannable. Added here for that reason — pattern-derived, NOT
+device-measured.
+
+**Nothing we run can observe the whole fix.** Playwright resolves
+`env(safe-area-inset-*)` to 0 on every engine in the suite, and jsdom resolves
+neither `env()` nor `calc()`. So the guards pin the two halves separately: the
+JS half behaviourally (measured value, re-measure on resize, clamp at zero,
+with a stubbed anchor rect), the CSS arithmetic at source level in the
+`ipadSafeArea.test.ts` style, and the seam between them by an e2e that measures
+the same menu twice — once at Playwright's zero inset, once with a stubbed
+59px — and asserts the top row descended by exactly that much. The differential
+is what makes it non-hollow: an absolute `y >= inset` assertion is already true
+at inset 0, which is precisely how #588's guard stayed green while #913 was
+live. The felt behaviour on a notched device remains vjt's to confirm.
+
+**Out of scope, reported not fixed.** `placeAxis` / `computeMenuPosition`
+(`UserContextMenu`) clamps against `viewportHeight` from origin 0 with no inset
+awareness on EITHER edge, so a context menu opened near the top can land under
+the status bar, and one near the bottom under the home indicator, for the same
+reason. `spaceAbove` has exactly one consumer, so #913 is contained; the
+`placeAxis` blind spot is a second instance of the same origin bug and wants
+its own issue.

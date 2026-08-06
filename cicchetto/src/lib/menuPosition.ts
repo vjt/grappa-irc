@@ -51,6 +51,13 @@ export function computeMenuPosition(m: MenuMeasurement): MenuPlacement {
 // y=0 must never produce a NEGATIVE max-height (invalid CSS → rule ignored →
 // the overflow bug returns). Sibling of `placeAxis`'s viewport-oversize
 // pin — both hand the CSS `overflow-y: auto` a valid, in-viewport box.
+//
+// #913 — the return value is no longer the final max-height: `anchorTop` is
+// measured from the layout viewport origin, which under `viewport-fit=cover`
+// is BEHIND the status bar, so the caller publishes this as
+// `--rail-menu-space-above` and the stylesheet subtracts
+// `var(--safe-area-inset-top)` before capping. `gap` is breathing room only —
+// it is NOT a notch allowance, and must not be grown into one.
 export function spaceAbove(anchorTop: number, gap: number): number {
   return Math.max(0, anchorTop - gap);
 }
