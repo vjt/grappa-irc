@@ -31460,3 +31460,63 @@ which the deploy preflight reads as COLD — for packages that are not in the
 prod release, so the COLD buys no production security. Worth folding into the
 next COLD-forcing change rather than shipping alone. `mix deps.audit` remains
 the hard CVE gate throughout and is untouched.
+
+## 2026-08-06 — #816 ruling: a refusal that speaks, and a door that is a choice
+
+vjt's acceptance comment on #816 (2026-08-06 10:12Z) posed two conditions that
+the shipped implementation did not meet. This is both of them.
+
+**Shift+Enter had to stop being silent.** It still inserts nothing and sends
+nothing — a newline cannot travel inside a PRIVMSG, so honouring the key means
+splitting into N messages, a burst nobody asked for by holding a modifier. But
+a key that does *nothing* is indistinguishable from a broken key: every other
+chat app the operator uses honours that combination, so silence sends them
+looking for a cic setting to flip. It now says **"IRC does not support
+multi-line messages"** — vjt's wording, verbatim, naming the PROTOCOL as the
+thing that refused. It rides the existing #356 feedback seam as a NOTICE
+(`role=status`, self-clearing), not an error: nothing failed, and an assertive
+red alert would overstate a key that was never going to work.
+
+The old vitest **pinned the silence** (`expect(setDraft).not.toHaveBeenCalled()`
+and nothing more, under a comment describing the no-op as the feature). That
+assertion was rewritten, not supplemented — leaving it standing beside a new
+one would have encoded two contradictory truths and let either be "the" spec.
+
+**The .txt upload became a choice instead of a punishment.** It shipped as the
+affirmative on the OVER-CAP dialog only, i.e. reachable exclusively after the
+operator had already been refused. The ruling wants it *offered*, so the
+under-cap confirm now carries it as a third door beside Cancel and Paste. An
+operator who reads "4 separate messages" and thinks better of it posts one link
+instead, without first having to trip a ceiling to learn the option exists.
+
+**The store grew the door, not the paste guard.** `ConfirmRequest` gained
+`alternative: {label, onSelect} | null` plus a `chooseAlternative()` verb
+exclusive with `acceptConfirm()`. It is a REQUIRED field, not an optional one:
+all five existing call sites now write `alternative: null` explicitly, so a
+reader sees "this dialog has two buttons" as a stated fact rather than an
+absence they have to infer from the type. The store stays domain-agnostic — it
+carries a second closure and still knows nothing about uploads.
+
+Both arms use ONE label, `PASTE_UPLOAD_LABEL = "Upload as .txt"` (the over-cap
+affirmative said "Upload as file" before). Two spellings of one action read as
+two actions.
+
+**On the hard cap — measured, not removed.** vjt called the limit MOOT under
+the ruling; it is still in the tree and this change did not touch it, because
+what it now does is narrow and real: above 5 messages the *Paste* door
+disappears, leaving upload-or-cancel. The measurement that matters is that
+**`PASTE_HARD_MESSAGE_LIMIT = 5` is numerically the server's own burst
+allowance** — `config :grappa, :send_throttle, capacity: 5, refill_per_sec:
+0.5`, read from bahamut's flood ladder. So the cap is exactly "how many
+messages leave without the composer dropping into a paced drip", and past it
+`sendBodyLines` (#666) paces on the server's 429 retry-after — roughly one line
+per 2s, never dropping. A 40-line paste was never a disconnect; it was 80
+seconds of drip.
+
+That makes the cap defensible and its *documentation* wrong: `pasteFlood.ts`
+calls the number "deliberately not derived from anything the server tells us",
+while it silently duplicates a server constant that no wire field publishes. If
+an operator retunes `:send_throttle`, the client ceiling diverges in silence.
+Whether to publish `capacity` on `GET /api/config` (additive, no protocol bump)
+and derive the ceiling, or to keep the literal and document the coupling, is
+vjt's call — a shipped guard is not something to delete on the way past.
