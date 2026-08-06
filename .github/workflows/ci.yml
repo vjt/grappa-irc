@@ -51,6 +51,26 @@ jobs:
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
 
+      - name: wireTypes drift gate (#767)
+        # `cicchetto/src/lib/wireTypes.ts` is generated from the
+        # `lib/grappa/**/*wire.ex` typespecs, and until now the gate that
+        # proves the committed mirror still matches them ran in exactly one
+        # place: scripts/check.sh, on a laptop, when someone remembered. A
+        # worker with only the cic gates available could not run it at all.
+        #
+        # The failure it catches is silent by construction: a Wire typespec
+        # changes, wireTypes.ts keeps the old shape, `tsc` stays happy
+        # because the stale types are internally consistent, and the
+        # divergence surfaces at runtime when a narrower drops a payload. A
+        # stale mirror has already survived a merge with CI green.
+        #
+        # Early, right after compile: it needs the beams (it reads typespecs
+        # via Code.Typespec) and nothing else, and a drift should not cost a
+        # full test run to report. Env-independent — the source globs are
+        # paths, not `Mix.env()` branches — so running it in the test job's
+        # MIX_ENV=test yields the same file check.sh generates in :dev.
+        run: mix grappa.gen_wire_types --check
+
       - name: Format check
         run: mix format --check-formatted
 
