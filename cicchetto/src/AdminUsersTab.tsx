@@ -10,6 +10,7 @@ import {
   adminUpdateUserPassword,
 } from "./lib/api";
 import { token } from "./lib/auth";
+import { operatorApiError } from "./lib/friendlyApiError";
 
 // Admin-panel bucket 5 — Users admin tab.
 //
@@ -40,6 +41,14 @@ import { token } from "./lib/auth";
 // Per CLAUDE.md "No localized strings server-side": error tokens come
 // from the server as snake_case strings ("last_admin",
 // "validation_failed"); cic owns human-readable rendering.
+//
+// #943 — the banner shows the RAW wire token, on purpose: operator-console
+// policy (AdminSettingsTab lines 33-35). The three verbs whose controller
+// `@spec` admits an `Ecto.Changeset.t()` (create / toggle admin / rotate
+// password) additionally append the 422's per-field detail via
+// `operatorApiError`, because the token alone never says which field is
+// wrong. `delete` and the list GET cannot produce a changeset, so they keep
+// the plain `err.code` narrowing.
 
 type CreateForm = {
   name: string;
@@ -101,8 +110,7 @@ const AdminUsersTab: Component = () => {
       setCreateForm({ ...EMPTY_CREATE });
       await refresh();
     } catch (err) {
-      const code = err instanceof ApiError ? err.code : "create_failed";
-      setError(`create: ${code}`);
+      setError(`create: ${operatorApiError(err, "create_failed")}`);
     } finally {
       setCreating(false);
     }
@@ -116,8 +124,7 @@ const AdminUsersTab: Component = () => {
       await adminUpdateUserAdmin(t, u.id, !u.is_admin);
       await refresh();
     } catch (err) {
-      const code = err instanceof ApiError ? err.code : "request_failed";
-      setError(`toggle admin (${u.name}): ${code}`);
+      setError(`toggle admin (${u.name}): ${operatorApiError(err, "request_failed")}`);
     }
   };
 
@@ -145,8 +152,7 @@ const AdminUsersTab: Component = () => {
       // change but the operator sees confirmation via row-state rerender.
       await refresh();
     } catch (err) {
-      const code = err instanceof ApiError ? err.code : "request_failed";
-      setError(`rotate password (${u.name}): ${code}`);
+      setError(`rotate password (${u.name}): ${operatorApiError(err, "request_failed")}`);
     }
   };
 

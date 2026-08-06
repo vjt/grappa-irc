@@ -31460,3 +31460,44 @@ which the deploy preflight reads as COLD — for packages that are not in the
 prod release, so the COLD buys no production security. Worth folding into the
 next COLD-forcing change rather than shipping alone. `mix deps.audit` remains
 the hard CVE gate throughout and is untouched.
+
+## 2026-08-06 — #943: the operator wants the token AND the field, not one of them
+
+**The issue's premise was false and the symptom was real.** #943 asked to route
+five `AdminUsersTab` sites through `friendlyApiError`, on the grounds that the
+other admin tabs already do. They don't: `AdminSettingsTab.tsx` lines 33-35
+refuse it *in writing* ("operator console policy — operators want the wire
+token for debugging"), and a sweep found 39 raw-token sites across 8 admin tabs
+with zero calls into the friendly map. `AdminUsersTab` is the rule, not the
+exception, so "make it consistent" pointed the wrong way.
+
+Two of the five prescribed sites also cannot reach the error class the issue is
+about: `index` is a GET and `delete`'s `@spec` is
+`{:error, :not_found | :last_admin}` (`users_controller.ex:53`, `:176`). Adding
+a `field_errors` branch there would be dead code.
+
+**What was real:** `fallback_controller.ex` answers a bad changeset with
+`%{error: "validation_failed", field_errors: …}`, and `Accounts.User` writes the
+one sentence that says what to type instead — "must start with a letter, then
+alphanumeric/_/-". The banner rendered `err.code` alone, so that sentence never
+arrived. An operator saw `create: validation_failed` and had to guess.
+
+**Resolution — additive, not a swap.** The raw wire token stays (it is policy,
+not an oversight); the per-field detail is appended:
+`create: validation_failed — name: must start with a letter…`. Only the three
+verbs whose controller `@spec` admits an `Ecto.Changeset.t()` — create, toggle
+admin, rotate password — take the new door.
+
+The per-field walk was already written, inline in `friendlyApiError`'s
+`validation_failed` arm. It was lifted out as `fieldErrorSummary` and the arm
+now calls it, so the two surfaces cannot drift into two spellings of the same
+summary. `operatorApiError(value, fallback)` sits beside `errorMessage` as its
+deliberate opposite: same "an `unknown` from a catch block" contract, opposite
+policy — token-first for the operator console, human copy for everyone else.
+A payload without `field_errors` degrades to exactly the bare token rendered
+before this existed, which is what the non-regression test pins.
+
+**Declined:** widening to the other 36 raw-token sites. Every one of them would
+need its own answer to "can this endpoint even produce a changeset?", and
+getting that wrong ships dead branches. That is a separate issue, not a
+drive-by.

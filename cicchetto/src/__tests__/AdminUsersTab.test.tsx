@@ -236,3 +236,96 @@ describe("AdminUsersTab — delete flow", () => {
     expect(screen.getByTestId("admin-users-error").textContent).toContain("last_admin");
   });
 });
+
+// #943 — the three write verbs whose controller `@spec` admits an
+// `Ecto.Changeset.t()` (create / update / update_password) can answer 422
+// `validation_failed` with per-field detail in `field_errors`. The banner
+// rendered `err.code` alone, so "must start with a letter…" — the only text
+// that says WHAT to type instead — never reached the operator.
+//
+// The raw wire token STAYS: that is written operator-console policy
+// (AdminSettingsTab lines 33-35), not an oversight. The detail is APPENDED.
+// `delete` and the list GET are deliberately absent: neither can produce a
+// changeset (users_controller.ex:53 / :176), so a branch there is dead code.
+describe("AdminUsersTab — 422 field_errors detail (#943)", () => {
+  const NAME_MSG = "must start with a letter, then alphanumeric/_/-";
+
+  const validationError = async (info: Record<string, unknown>) => {
+    // Re-import to dodge the module mock: the component narrows on
+    // `instanceof ApiError`, so the rejection must be the real class.
+    const api = await vi.importActual<typeof import("../lib/api")>("../lib/api");
+    return new api.ApiError(422, "validation_failed", info);
+  };
+
+  const submitCreate = (name: string): void => {
+    fireEvent.input(screen.getByTestId("admin-users-create-name"), { target: { value: name } });
+    fireEvent.input(screen.getByTestId("admin-users-create-password"), {
+      target: { value: "secret-pass-1234" },
+    });
+    fireEvent.click(screen.getByTestId("admin-users-create-submit"));
+  };
+
+  it("create surfaces the wire token AND the offending field", async () => {
+    (adminCreateUser as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      await validationError({ field_errors: { name: [NAME_MSG] } }),
+    );
+    render(() => <AdminUsersTab />);
+    await waitFor(() => expect(screen.queryByTestId("admin-users-table")).not.toBeNull());
+
+    submitCreate("9bad");
+
+    await waitFor(() => expect(screen.queryByTestId("admin-users-error")).not.toBeNull());
+    const banner = screen.getByTestId("admin-users-error").textContent ?? "";
+    expect(banner).toContain("create: validation_failed");
+    expect(banner).toContain(`name: ${NAME_MSG}`);
+  });
+
+  it("create with no field_errors renders exactly today's bare-token banner", async () => {
+    (adminCreateUser as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      await validationError({}),
+    );
+    render(() => <AdminUsersTab />);
+    await waitFor(() => expect(screen.queryByTestId("admin-users-table")).not.toBeNull());
+
+    submitCreate("carol");
+
+    await waitFor(() => expect(screen.queryByTestId("admin-users-error")).not.toBeNull());
+    expect(screen.getByTestId("admin-users-error").textContent).toBe(
+      "failed: create: validation_failed — click ↻ refresh to retry",
+    );
+  });
+
+  it("admin toggle surfaces the wire token AND the offending field", async () => {
+    (adminUpdateUserAdmin as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      await validationError({ field_errors: { is_admin: ["is invalid"] } }),
+    );
+    render(() => <AdminUsersTab />);
+    await waitFor(() => expect(screen.queryByTestId("admin-users-table")).not.toBeNull());
+
+    fireEvent.click(screen.getByTestId(`admin-user-toggle-admin-${ALICE.id}`));
+
+    await waitFor(() => expect(screen.queryByTestId("admin-users-error")).not.toBeNull());
+    const banner = screen.getByTestId("admin-users-error").textContent ?? "";
+    expect(banner).toContain("toggle admin (alice): validation_failed");
+    expect(banner).toContain("is_admin: is invalid");
+  });
+
+  it("password rotation surfaces the wire token AND the offending field", async () => {
+    (adminUpdateUserPassword as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
+      await validationError({ field_errors: { password: ["should be at least 8 character(s)"] } }),
+    );
+    render(() => <AdminUsersTab />);
+    await waitFor(() => expect(screen.queryByTestId("admin-users-table")).not.toBeNull());
+
+    fireEvent.click(screen.getByTestId(`admin-user-rotate-password-${ALICE.id}`));
+    fireEvent.input(screen.getByTestId(`admin-user-rotate-input-${ALICE.id}`), {
+      target: { value: "short" },
+    });
+    fireEvent.click(screen.getByTestId(`admin-user-rotate-submit-${ALICE.id}`));
+
+    await waitFor(() => expect(screen.queryByTestId("admin-users-error")).not.toBeNull());
+    const banner = screen.getByTestId("admin-users-error").textContent ?? "";
+    expect(banner).toContain("rotate password (alice): validation_failed");
+    expect(banner).toContain("password: should be at least 8 character(s)");
+  });
+});
