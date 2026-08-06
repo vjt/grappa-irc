@@ -485,18 +485,28 @@ describe("Sidebar", () => {
       expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
     });
 
-    it("invited pseudo-rows expose data-window-state='invited' (genuine-gate seam, #78)", () => {
-      // The pseudo-row carries its discrete state as a DOM seam so an e2e
-      // can pin the :invited derivation specifically — `.sidebar-window-greyed`
-      // alone is shared by every not-joined state, so asserting only the class
-      // can't tell :invited from pending/failed/kicked/parked. #invited-room is
-      // NOT in the mocked channelsBySlug, so it renders as a synthetic pseudo-row.
-      mockWindowState = { "freenode #invited-room": "invited" };
+    it("pseudo-rows expose their discrete state as data-window-state (genuine-gate seam, #78)", () => {
+      // The pseudo-row carries its discrete state as a DOM seam so a test can
+      // pin one derivation specifically — `.sidebar-window-greyed` alone is
+      // shared by every not-joined state, so asserting only the class can't
+      // tell them apart. #kicked-room is NOT in the mocked channelsBySlug, so
+      // it renders as a synthetic pseudo-row.
+      mockWindowState = { "freenode #kicked-room": "kicked" };
       render(() => <Sidebar />);
-      const li = screen.getByText("#invited-room").closest("li");
-      expect(li?.getAttribute("data-window-state")).toBe("invited");
+      const li = screen.getByText("#kicked-room").closest("li");
+      expect(li?.getAttribute("data-window-state")).toBe("kicked");
       const btn = li?.querySelector(".sidebar-window-btn");
       expect(btn?.classList.contains("sidebar-window-greyed")).toBe(true);
+    });
+
+    // #902 — the negative half, and the one that actually guards the change:
+    // an `:invited` key in the state map must produce NO sidebar row at all.
+    // The invite is announced by the stacked top banner instead. Without this
+    // assertion, re-adding the row would be silent.
+    it("renders NO row for an :invited window — the banner is its only surface (#902)", () => {
+      mockWindowState = { "freenode #invited-room": "invited" };
+      render(() => <Sidebar />);
+      expect(screen.queryByText("#invited-room")).toBeNull();
     });
 
     it("channel rows do NOT get .sidebar-window-greyed when state=joined", () => {
@@ -1136,16 +1146,18 @@ describe("Sidebar", () => {
       expect(screen.getByRole("button", { name: /^#azzurra\s*\(parted\)/ })).toBeInTheDocument();
     });
 
-    it("a greyed row stays in the list AND names its state (invited)", () => {
-      mockWindowState = { "freenode #italia": "invited" };
+    it("a greyed row stays in the list AND names its state (kicked)", () => {
+      mockWindowState = { "freenode #italia": "kicked" };
       render(() => <Sidebar />);
       // Still a reachable row — greying must never remove a window from the
       // sidebar (its scrollback is the reason the row survives a failed JOIN).
-      expect(screen.getByRole("button", { name: /^#italia\s*\(invited\)/ })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^#italia\s*\(kicked\)/ })).toBeInTheDocument();
     });
 
+    // #902 dropped `invited` from this list along with the row itself; the
+    // remaining states are the ones the Sidebar still draws.
     it("each not-joined state names ITSELF, not a generic 'unavailable'", () => {
-      for (const state of ["invited", "failed", "kicked", "parked"]) {
+      for (const state of ["failed", "kicked", "parked"]) {
         mockWindowState = { "freenode #bnc": state };
         const { unmount } = render(() => <Sidebar />);
         expect(

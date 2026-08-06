@@ -11,10 +11,9 @@ import {
   Show,
 } from "solid-js";
 import LusersCard from "./LusersCard";
-import { isContentKind, ownNickForNetwork, postJoin, type ScrollbackMessage } from "./lib/api";
-import { token } from "./lib/auth";
-import { confirmJoinChannel } from "./lib/channelJoin";
-import { canonicalChannel, channelKey, decodeChannelKey } from "./lib/channelKey";
+import { isContentKind, ownNickForNetwork, type ScrollbackMessage } from "./lib/api";
+import { acceptInvite, confirmJoinChannel } from "./lib/channelJoin";
+import { channelKey, decodeChannelKey } from "./lib/channelKey";
 import { type TopicJoinLine, topicByChannel, topicJoinLine } from "./lib/channelTopic";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { highlightPatterns } from "./lib/highlightList";
@@ -1275,32 +1274,20 @@ const ScrollbackPane: Component<Props> = (props) => {
     setContextMenu({ targetNick: nick, x: e.clientX, y: e.clientY });
   };
 
-  // No-silent-drops bucket 2: [Join] CTA in INVITE rows. Mirrors the
-  // /join slash command flow in compose.ts: postJoin REST call +
-  // immediate setSelectedChannel for user-intent-driven focus. Server-
-  // driven `:pending` window-state origination still flows via
-  // record_in_flight_join; this handler only initiates.
+  // No-silent-drops bucket 2: [Join] CTA in INVITE rows.
+  //
+  // #902 — the body moved to `channelJoin.acceptInvite`. It used to be a
+  // private copy of "postJoin then foreground the folded key" living here,
+  // closed over `props.networkSlug`; the invite BANNER needs the identical
+  // verb from outside any component, and two copies would have drifted. The
+  // shared one also keeps the #799 fold and adds the REST-failure log this
+  // copy lacked. Server-driven `:pending` origination still flows via
+  // record_in_flight_join; this only initiates.
+  //
+  // No +k key is passed (no UX surface for it on an invite; keyed-channel
+  // invites are rare and `/join #chan key` still works from compose).
   const handleJoinChannel = (channel: string): void => {
-    const t = token();
-    if (!t) return;
-    // INVITE-CTA does not pass a +k key (no UX surface for it on the
-    // invite row; keyed-channel invites are rare and the operator can
-    // still type `/join #chan key` in compose if needed).
-    void postJoin(t, props.networkSlug, channel, null).then(() => {
-      // #799 — the FOLDED name, like channelJoin.switchTo, compose.ts `/join`
-      // and DirectoryPane. `channel` is `params[1]` off a stored INVITE row:
-      // ingress folds it today (EventRouter's `:invite` clause, the #537 fix),
-      // but per the #525 posture `refold_identifiers_ascii` does not rewrite
-      // stored values, so a pre-#537 row still carries mixed case. Selection
-      // and window_states are keyed folded — a raw target foregrounds a window
-      // the sidebar can't match. Only the KEY folds: the postJoin above and
-      // the rendered row label keep the invite's spelling.
-      setSelectedChannel({
-        networkSlug: props.networkSlug,
-        channelName: canonicalChannel(channel),
-        kind: "channel",
-      });
-    });
+    acceptInvite(props.networkSlug, channel);
   };
 
   // C7.1 + C7.3: Build a mixed list of (day-separator | unread-marker | message)

@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { channelKey } from "../lib/channelKey";
+import { type ChannelKey, channelKey } from "../lib/channelKey";
+
+// `vi.resetModules()` per test means every `await import` yields a FRESH
+// module instance, so the transition table below has to receive the same
+// instance the assertion reads — hence passing `ws` in rather than closing
+// over one.
+type WindowStateModule = typeof import("../lib/windowState");
 
 // CP15 B5: cic mirror of the server-side window state machine. The
 // server splits state across three maps (window_states,
@@ -81,7 +87,7 @@ describe("windowState.setInvited", () => {
     const ws = await import("../lib/windowState");
     const key = channelKey("freenode", "#invited-room");
 
-    ws.setInvited(key);
+    ws.setInvited(key, "alice");
 
     expect(ws.windowStateByChannel()[key]).toBe("invited");
   });
@@ -90,10 +96,86 @@ describe("windowState.setInvited", () => {
     const ws = await import("../lib/windowState");
     const key = channelKey("freenode", "#invited-room");
 
-    ws.setInvited(key);
+    ws.setInvited(key, "alice");
 
     expect(ws.windowFailureByChannel()[key]).toBeUndefined();
     expect(ws.windowKickedMetaByChannel()[key]).toBeUndefined();
+  });
+
+  // #902 — the inviter is window metadata now. The banner that replaced the
+  // greyed tab renders it, and it arrives on the `window_invited` event
+  // rather than being read out of the channel's scrollback (which the banner
+  // never waits for).
+  it("records the inviter (#902)", async () => {
+    const ws = await import("../lib/windowState");
+    const key = channelKey("freenode", "#invited-room");
+
+    ws.setInvited(key, "alice");
+
+    expect(ws.invitedByChannel()[key]).toBe("alice");
+  });
+
+  // Mirrors the server-side invariant asserted in `WindowStateTest`: the key
+  // exists IF AND ONLY IF the state is "invited". Without the drops, a stale
+  // nick outlives the invite it belonged to and the map becomes a parallel
+  // structure that has to be reconciled by hand.
+  it.each([
+    ["setPending", (ws: WindowStateModule, key: ChannelKey) => ws.setPending(key)],
+    ["setJoined", (ws: WindowStateModule, key: ChannelKey) => ws.setJoined(key)],
+    ["setFailed", (ws: WindowStateModule, key: ChannelKey) => ws.setFailed(key, "nope", 473)],
+    ["setKicked", (ws: WindowStateModule, key: ChannelKey) => ws.setKicked(key, "op", "bye")],
+    ["forceParted", (ws: WindowStateModule, key: ChannelKey) => ws.forceParted(key)],
+  ])("%s clears the recorded inviter (#902)", async (_name, transition) => {
+    const ws = await import("../lib/windowState");
+    const key = channelKey("freenode", "#invited-room");
+
+    ws.setInvited(key, "alice");
+    transition(ws, key);
+
+    expect(ws.invitedByChannel()[key]).toBeUndefined();
+  });
+});
+
+describe("windowState.invitedWindows (#902)", () => {
+  it("projects every invited key as (network, channel, inviter)", async () => {
+    const ws = await import("../lib/windowState");
+
+    ws.setInvited(channelKey("freenode", "#one"), "alice");
+    ws.setInvited(channelKey("azzurra", "#two"), "bob");
+    ws.setJoined(channelKey("freenode", "#joined"));
+
+    expect(ws.invitedWindows()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ networkSlug: "freenode", channelName: "#one", inviter: "alice" }),
+        expect.objectContaining({ networkSlug: "azzurra", channelName: "#two", inviter: "bob" }),
+      ]),
+    );
+    expect(ws.invitedWindows()).toHaveLength(2);
+  });
+
+  // The whole point of the projection: it reads the STATE map, so an invite
+  // that resolves stops being projected without anyone clearing a second
+  // store. This is what makes the banner derived rather than owned.
+  it("stops projecting a channel once it leaves the invited state", async () => {
+    const ws = await import("../lib/windowState");
+    const key = channelKey("freenode", "#one");
+
+    ws.setInvited(key, "alice");
+    ws.setJoined(key);
+
+    expect(ws.invitedWindows()).toHaveLength(0);
+  });
+
+  // A newer cic meeting an older BEAM: the narrower substitutes the "*"
+  // sentinel rather than dropping the invite, so the projection must render
+  // a nameless banner, never `undefined` in the copy.
+  it("falls back to the anonymous-sender sentinel when no inviter was recorded", async () => {
+    const ws = await import("../lib/windowState");
+    const key = channelKey("freenode", "#one");
+
+    ws.setInvited(key, "*");
+
+    expect(ws.invitedWindows()[0]?.inviter).toBe("*");
   });
 });
 

@@ -757,41 +757,20 @@ describe("BottomBar", () => {
     });
   });
 
-  // #71 INC-3 — the /invite-opened `:invited` virtual channel is added to
-  // the mobile BottomBar (post-vjt-reversal scope: BottomBar STAYS; only
-  // the invited window was missing from it). The bar renders ONLY the
-  // `:invited` slice of the shared pseudo-row projection — an INTENTIONAL
-  // narrowing vs the desktop Sidebar (which shows every non-joined state),
-  // because the bottom bar is space-scarce and failed/kicked/parked are
-  // history best confined to the sidebar.
+  // #902 — the BottomBar no longer draws pseudo-rows AT ALL.
   //
-  // #402 moved that narrowing INTO the projection
-  // (`navPseudoChannelsForNetwork`, unit-tested in
-  // `lib/__tests__/pseudoChannels.test.ts`) because the archive filter has
-  // to subtract the same set; a filter open-coded here was invisible to it.
-  // So these tests lock the tab affordances and the fact that this bar
-  // applies NO policy of its own. The e2e still asserts both ends on a real
-  // mobile viewport (`issue71-inc3-bottombar-invite.spec.ts`: invited
-  // appears, failed does not).
-  describe("#71 INC-3 — :invited virtual channel", () => {
-    it("renders an :invited pseudo-channel as a tab carrying data-window-state='invited'", () => {
-      pseudoRowsMock.mockImplementation((slug) =>
-        slug === "freenode" ? [{ name: "#invited", state: "invited" }] : [],
-      );
-      const { container } = render(() => <BottomBar />);
-      const tab = container.querySelector('.bottom-bar-tab[data-window-state="invited"]');
-      expect(tab).not.toBeNull();
-      expect(tab?.getAttribute("data-window-name")).toBe("#invited");
-      expect(tab?.textContent).toContain("#invited");
-    });
-
-    // #402 — the bar draws every row the nav projection hands it and applies
-    // no state filter of its own. A second filter here is precisely what
-    // desynced the bar from the archive: the archive subtracted rows the bar
-    // had silently dropped, and the window ended up on no surface at all.
-    // The narrowing itself is asserted where it now lives, on
-    // `navPseudoChannelsForNetwork`.
-    it("applies no narrowing of its own — it draws every row the nav projection yields", () => {
+  // #71 INC-3 had given it exactly one slice, `:invited`, an intentional
+  // narrowing vs the desktop Sidebar (the bar is space-scarce, and
+  // failed/kicked/parked are history best confined to the sidebar). #902
+  // replaced the invite surface with the stacked top banner — which renders
+  // on both form factors — so that slice had nothing left in it and the
+  // `<For>` went with it. `navPseudoChannelsForNetwork` returns [] on mobile
+  // now, keeping the archive subtracting exactly what is drawn (#402).
+  //
+  // The mock below still feeds that projection, so this is a live regression
+  // guard rather than a mirror: re-add the `<For>` and these rows appear.
+  describe("#902 — the bar draws no pseudo-rows", () => {
+    it("renders no tab for a pseudo-row, whatever the projection yields", () => {
       pseudoRowsMock.mockImplementation((slug) =>
         slug === "freenode"
           ? [
@@ -800,39 +779,11 @@ describe("BottomBar", () => {
             ]
           : [],
       );
-      render(() => <BottomBar />);
-      expect(screen.getByText("#invited")).toBeInTheDocument();
-      expect(screen.getByText("#failed")).toBeInTheDocument();
-    });
+      const { container } = render(() => <BottomBar />);
 
-    it("tapping the invited tab selects it with kind 'channel'", () => {
-      pseudoRowsMock.mockImplementation((slug) =>
-        slug === "freenode" ? [{ name: "#invited", state: "invited" }] : [],
-      );
-      render(() => <BottomBar />);
-      fireEvent.click(screen.getByText("#invited"));
-      expect(selMod.setSelectedChannel).toHaveBeenCalledWith({
-        networkSlug: "freenode",
-        channelName: "#invited",
-        kind: "channel",
-      });
-    });
-
-    it("the invited tab has a close × that dismisses the invite via the shared dismissPseudoWindow verb", () => {
-      pseudoRowsMock.mockImplementation((slug) =>
-        slug === "freenode" ? [{ name: "#invited", state: "invited" }] : [],
-      );
-      render(() => <BottomBar />);
-      // Query the × by its accessible name — `getByRole` throws if absent,
-      // so no null-guard / non-null assertion is needed (and it doubles as
-      // the a11y-label assertion).
-      const closeBtn = screen.getByRole("button", { name: "Close #invited" });
-      expect(closeBtn).toHaveClass("bottom-bar-close");
-      fireEvent.click(closeBtn);
-      // Same verb the desktop Sidebar × uses (one code path, one navigation
-      // outcome). The verb's own drop+redirect behavior is covered in
-      // windowClose.test.ts.
-      expect(windowCloseMod.dismissPseudoWindow).toHaveBeenCalledWith("freenode", "#invited");
+      expect(screen.queryByText("#invited")).toBeNull();
+      expect(screen.queryByText("#failed")).toBeNull();
+      expect(container.querySelector(".bottom-bar-tab[data-window-state]")).toBeNull();
     });
   });
 });

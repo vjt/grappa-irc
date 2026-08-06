@@ -575,7 +575,24 @@ describe("userTopic", () => {
   // pre-subscribe loop joins the per-channel topic so the INVITE row
   // lands in the channel buffer.
   describe("window_invited event (#78)", () => {
-    it("calls setInvited with channelKey(network, channel) on window_invited", async () => {
+    it("calls setInvited with channelKey(network, channel) + the inviter on window_invited", async () => {
+      const ws = await import("../lib/windowState");
+      const { channelKey } = await import("../lib/channelKey");
+      channelMock.fireEvent({
+        kind: "window_invited",
+        network: "freenode",
+        channel: "#random",
+        state: "invited",
+        inviter: "alice",
+      });
+      expect(ws.setInvited).toHaveBeenCalledWith(channelKey("freenode", "#random"), "alice");
+    });
+
+    // #902 — a newer cic against an older BEAM that has no `inviter` field.
+    // The invite MUST still land: dropping the payload for a missing additive
+    // field would lose the whole notification over a cosmetic gap. Degrade to
+    // the same "*" sentinel the server emits for a prefix-less INVITE.
+    it("substitutes the anonymous-sender sentinel when the server sends no inviter", async () => {
       const ws = await import("../lib/windowState");
       const { channelKey } = await import("../lib/channelKey");
       channelMock.fireEvent({
@@ -584,7 +601,20 @@ describe("userTopic", () => {
         channel: "#random",
         state: "invited",
       });
-      expect(ws.setInvited).toHaveBeenCalledWith(channelKey("freenode", "#random"));
+      expect(ws.setInvited).toHaveBeenCalledWith(channelKey("freenode", "#random"), "*");
+    });
+
+    it("substitutes the sentinel for a non-string inviter rather than leaking it", async () => {
+      const ws = await import("../lib/windowState");
+      const { channelKey } = await import("../lib/channelKey");
+      channelMock.fireEvent({
+        kind: "window_invited",
+        network: "freenode",
+        channel: "#random",
+        state: "invited",
+        inviter: 42,
+      });
+      expect(ws.setInvited).toHaveBeenCalledWith(channelKey("freenode", "#random"), "*");
     });
 
     it("drops a window_invited payload missing `channel` (no setInvited call)", async () => {

@@ -3,6 +3,7 @@ import BannerSlot from "./BannerSlot";
 import {
   activeBanners,
   dismissBanner,
+  entryId,
   rearmDismissed,
   sanitizeBanners,
   visibleBanners,
@@ -55,8 +56,16 @@ const ErrorBanners: Component = () => {
               // The one source-specific branch: push-optin is an offer, not a
               // fault, so its dismiss semantics genuinely differ. (BannerEntry
               // stays unchanged — #459 keeps its one-action-plus-dismiss shape.)
+              //
+              // #902 — `invite` is an offer too, yet takes the EPISODE-scoped
+              // path, not push-optin's persistent one. Ruled deliberately: an
+              // invite is allowed to be lost, so nothing is written either way
+              // and a dismissed invite reappears after a reload (the server
+              // re-emits `window_invited` on every cold subscribe). The
+              // dismiss is keyed per ENTRY, so hiding one invite leaves the
+              // others — and any later one — alone.
               onDismiss={() =>
-                entry.source === "push-optin" ? declinePushOptin() : dismissBanner(entry.source)
+                entry.source === "push-optin" ? declinePushOptin() : dismissBanner(entryId(entry))
               }
             />
           )}

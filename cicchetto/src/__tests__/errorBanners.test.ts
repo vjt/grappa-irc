@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { shouldShowRefreshBanner } from "../lib/bundleHash";
+import { acceptInvite } from "../lib/channelJoin";
+import { channelKey } from "../lib/channelKey";
 import { __setConnectivityForTests } from "../lib/connectivity";
 import {
   __resetDismissedForTests,
@@ -7,6 +9,7 @@ import {
   BANNER_SOURCES,
   type BannerEntry,
   dismissBanner,
+  entryId,
   isBannerSeverity,
   isBannerSource,
   isDismissed,
@@ -23,6 +26,7 @@ import {
   recordSocketOpen,
 } from "../lib/socketHealth";
 import { __resetSwRegistrationForTests, recordSwRegError } from "../lib/swRegistration";
+import { forceParted, setInvited, setJoined } from "../lib/windowState";
 
 // The bundle-refresh source depends on `bootBundleHash`, which reads a
 // `<script src="/assets/index-…">` tag that only exists in a real vite build
@@ -49,6 +53,16 @@ vi.mock("../lib/pushOptin", () => ({
   shouldShowPushOptinBanner: vi.fn(() => false),
   acceptPushOptin: vi.fn(),
   declinePushOptin: vi.fn(),
+}));
+
+// #902 — the invite entry's [Join] wires to the SHARED acceptance verb, which
+// would otherwise fire a real REST call and a focus change. Mocked for the
+// same reason as acceptPushOptin above: the registry's job is to project the
+// state and wire the verb; the verb's own behaviour (fold, await-before-focus,
+// failure log) belongs to channelJoin.
+vi.mock("../lib/channelJoin", () => ({
+  acceptInvite: vi.fn(),
+  confirmJoinChannel: vi.fn(),
 }));
 
 const mockShouldShowRefresh = vi.mocked(shouldShowRefreshBanner);
@@ -319,5 +333,129 @@ describe("errorBanners push-optin (#459)", () => {
     const sources = activeBanners().map((e) => e.source);
     expect(sources.indexOf("push-optin")).toBe(sources.length - 1);
     expect(sources.indexOf("push-optin")).toBeGreaterThan(sources.indexOf("bundle-refresh"));
+  });
+});
+
+// #902 — the invite source. Two things are under test that no other source
+// could exercise: a source with MORE THAN ONE live entry, and the per-entry
+// dismiss identity that makes such a source behave correctly.
+describe("errorBanners invite (#902)", () => {
+  const KEY_ONE = channelKey("azzurra", "#one");
+  const KEY_TWO = channelKey("azzurra", "#two");
+  const KEY_OTHER_NET = channelKey("libera", "#one");
+
+  beforeEach(() => {
+    __resetSocketHealthForTests();
+    __setConnectivityForTests(true);
+    __resetSwRegistrationForTests();
+    __resetDismissedForTests();
+    mockShouldShowRefresh.mockReturnValue(false);
+    mockShouldShowPushOptin.mockReturnValue(false);
+    // windowState is REAL here (the registry must derive off the true
+    // projection, not a stub of it), so its keys survive between tests.
+    for (const key of [KEY_ONE, KEY_TWO, KEY_OTHER_NET]) forceParted(key);
+  });
+
+  it("emits no entry when nothing is invited", () => {
+    expect(activeBanners().some((e) => e.source === "invite")).toBe(false);
+  });
+
+  it("emits an info entry naming the inviter and the channel", () => {
+    setInvited(KEY_ONE, "alice");
+    const entry = activeBanners().find((e) => e.source === "invite");
+    expect(entry?.severity).toBe("info");
+    expect(entry?.message).toContain("alice");
+    expect(entry?.message).toContain("#one");
+  });
+
+  it("emits ONE entry per invited channel, not one aggregate", () => {
+    setInvited(KEY_ONE, "alice");
+    setInvited(KEY_TWO, "bob");
+    expect(activeBanners().filter((e) => e.source === "invite")).toHaveLength(2);
+  });
+
+  it("gives each entry a distinct id that also separates same-named channels across networks", () => {
+    setInvited(KEY_ONE, "alice");
+    setInvited(KEY_OTHER_NET, "bob");
+    const ids = activeBanners()
+      .filter((e) => e.source === "invite")
+      .map((e) => e.id);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it("wires [Join] to the shared invite-acceptance verb with (network, channel)", () => {
+    setInvited(KEY_ONE, "alice");
+    const entry = activeBanners().find((e) => e.source === "invite");
+    expect(entry?.actionHint?.label).toBe("Join");
+    entry?.actionHint?.onAction();
+    expect(vi.mocked(acceptInvite)).toHaveBeenCalledWith("azzurra", "#one");
+  });
+
+  it("stops emitting an entry once the window leaves the invited state", () => {
+    setInvited(KEY_ONE, "alice");
+    expect(activeBanners().some((e) => e.source === "invite")).toBe(true);
+    setJoined(KEY_ONE);
+    expect(activeBanners().some((e) => e.source === "invite")).toBe(false);
+  });
+
+  it("sits below every fault + the update prompt, and above push-optin", () => {
+    __setConnectivityForTests(false);
+    recordSwRegError({ name: "SecurityError", message: "denied" });
+    mockShouldShowRefresh.mockReturnValue(true);
+    mockShouldShowPushOptin.mockReturnValue(true);
+    setInvited(KEY_ONE, "alice");
+    const sources = activeBanners().map((e) => e.source);
+    expect(sources.indexOf("invite")).toBeGreaterThan(sources.indexOf("bundle-refresh"));
+    expect(sources.indexOf("invite")).toBeLessThan(sources.indexOf("push-optin"));
+  });
+
+  // THE reason the dismiss identity had to widen from source to entry. With a
+  // source-keyed set, dismissing one invite hides every other live one — and,
+  // worse, `rearmDismissed` would keep the whole source silenced (it stays
+  // "active" while any invite lives), swallowing invites that arrive later.
+  it("dismissing ONE invite leaves the other invites visible", () => {
+    setInvited(KEY_ONE, "alice");
+    setInvited(KEY_TWO, "bob");
+    const one = activeBanners().find((e) => e.message.includes("#one"));
+    dismissBanner(entryId(one as BannerEntry));
+
+    const visible = visibleBanners().filter((e) => e.source === "invite");
+    expect(visible).toHaveLength(1);
+    expect(visible[0]?.message).toContain("#two");
+  });
+
+  it("an invite arriving AFTER a dismiss is shown, not swallowed by it", () => {
+    setInvited(KEY_ONE, "alice");
+    const one = activeBanners().find((e) => e.source === "invite");
+    dismissBanner(entryId(one as BannerEntry));
+    rearmDismissed(activeBanners());
+    expect(visibleBanners().some((e) => e.source === "invite")).toBe(false);
+
+    setInvited(KEY_TWO, "bob");
+    rearmDismissed(activeBanners());
+    const visible = visibleBanners().filter((e) => e.source === "invite");
+    expect(visible).toHaveLength(1);
+    expect(visible[0]?.message).toContain("#two");
+  });
+
+  // The dismiss is EPISODE-scoped, not a persistent decline: re-inviting to a
+  // channel whose banner was dismissed must surface it again. `rearmDismissed`
+  // does that only because the id leaves the active set when the invite
+  // resolves.
+  it("re-inviting a channel whose banner was dismissed shows it again", () => {
+    setInvited(KEY_ONE, "alice");
+    dismissBanner(entryId(activeBanners().find((e) => e.source === "invite") as BannerEntry));
+    forceParted(KEY_ONE);
+    rearmDismissed(activeBanners());
+
+    setInvited(KEY_ONE, "alice");
+    expect(visibleBanners().some((e) => e.source === "invite")).toBe(true);
+  });
+
+  it("dismissing an invite does NOT hide an unrelated source", () => {
+    tripWs(1006, "");
+    setInvited(KEY_ONE, "alice");
+    dismissBanner(entryId(activeBanners().find((e) => e.source === "invite") as BannerEntry));
+    expect(visibleBanners().some((e) => e.source === "ws")).toBe(true);
   });
 });

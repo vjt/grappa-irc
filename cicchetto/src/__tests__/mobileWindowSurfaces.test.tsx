@@ -128,7 +128,16 @@ describe("#402 — mobile surfaces for a non-joined window with scrollback", () 
   // `pending` is the state the ChanServ self-invite path lands
   // (`{:rejoin_invited, _}` → `record_in_flight_join/2`), i.e. the exact
   // sequence in the report.
-  it.each(["pending", "failed", "kicked", "parked"])(
+  // #902 — `invited` joined this list. It used to be the counter-case (the
+  // bottom bar drew it, so the archive had to stay suppressed); now the
+  // BottomBar draws no pseudo-row at all and every non-joined state reaches
+  // the operator the same way on a phone: through the archive.
+  //
+  // The invite BANNER is not a second surface for this window. It is a
+  // transient notification that disappears on [Join] or ×, whereas this test
+  // is about where the WINDOW — the channel buffer holding the persisted
+  // INVITE row — can be found. After the banner is gone, the archive is it.
+  it.each(["pending", "failed", "kicked", "parked", "invited"])(
     "keeps a %s window reachable from exactly one mobile surface",
     async (state) => {
       const { bottomBarTabs, archiveTargets } = await mobileSurfacesFor(state);
@@ -142,13 +151,15 @@ describe("#402 — mobile surfaces for a non-joined window with scrollback", () 
     },
   );
 
-  // The counter-case that keeps the fix honest: `invited` IS rendered by
-  // the bottom bar, so the archive MUST stay suppressed — one surface,
-  // not two.
-  it("keeps an invited window on the bottom bar and out of the archive", async () => {
-    const { bottomBarTabs, archiveTargets } = await mobileSurfacesFor("invited");
+  // ...and names WHICH one, so the parametrised test above cannot be
+  // satisfied by the pair flipping (bar-only would also count as one).
+  it.each(["pending", "failed", "kicked", "parked", "invited"])(
+    "makes the archive that one surface for a %s window",
+    async (state) => {
+      const { bottomBarTabs, archiveTargets } = await mobileSurfacesFor(state);
 
-    expect(bottomBarTabs).toContain("#gated");
-    expect(archiveTargets).not.toContain("#gated");
-  });
+      expect(archiveTargets).toContain("#gated");
+      expect(bottomBarTabs).not.toContain("#gated");
+    },
+  );
 });

@@ -29,17 +29,26 @@ import { forceParted } from "./windowState";
 //
 // The DELETE removes the channel from `channelsBySlug` (server de-autojoins
 // + broadcasts `channels_changed` → refetch). For a channel the user never
-// actually joined — a +k autojoin entry that 475'd on (re)connect, or an
-// :invited / :failed / :kicked pseudo-row — the upstream PART is a 442
-// no-op, so NO self-PART scrollback echo arrives. But the server's
+// actually joined — a +k autojoin entry that 475'd on (re)connect, or a
+// :failed / :kicked pseudo-row — the upstream PART is a 442 no-op, so NO
+// self-PART scrollback echo arrives. But the server's
 // `PartCleanup.cleanup_local` → `WindowState.set_parted` still drops the
 // channel from EVERY window-state map. That is what makes a dismissal
-// DURABLE: #482's cold-subscribe backfill (`WindowState.invited_windows/2`)
-// re-emits `window_invited` for every channel STILL in `:invited`, so a
-// client-only drop (the pre-#511 bug) resurrected the tab on the next
-// reload; routing the × through the DELETE clears the server key so the
-// backfill stops re-asserting it (and covers the `:failed` / `:kicked`
-// siblings carried by the per-channel snapshot the same way).
+// DURABLE: a client-only drop (the pre-#511 bug) let the cold-subscribe
+// snapshot resurrect the row on the next reload; routing the × through the
+// DELETE clears the server key so the snapshot stops re-asserting it.
+//
+// #902 — `:invited` is NO LONGER one of these. It has no pseudo-row to
+// dismiss any more; an invite is a top banner whose × is deliberately
+// session-scoped and writes NOTHING (vjt's ruling: an invite is allowed to
+// be lost, and the peer can invite again). So a dismissed invite DOES come
+// back after a reload, because `WindowState.invited_windows/2` still
+// re-emits `window_invited` for every channel held at `:invited` — the exact
+// behaviour #511 was filed to stop for the TAB, now intended for the BANNER.
+// The difference is that a banner is a notification, not a window: nothing
+// accumulates in the sidebar, so re-announcing it is cheap rather than the
+// "dismissed tab came back" bug. `[Join]` (or a server-side clear) is what
+// ends it for good.
 //
 // `forceParted` (not the echo's `setParted`): a × is a USER close, fresh
 // intent, so it drops the local key even mid-`pending` — the #495
@@ -69,23 +78,24 @@ export function closeQueryWindow(networkId: number, targetNick: string): void {
 }
 
 // #71 INC-3 — THE shared verb for dismissing a non-joined pseudo-row
-// (invited/failed/kicked) via its ×. Both the desktop Sidebar and the
-// mobile BottomBar route their pseudo-row × through here, so the same
-// action produces the same navigation on both surfaces (one design). Was
-// previously inline in Sidebar.handleClosePseudo; the mobile bar's raw
-// setParted let the bucket-E close-watcher pick MRU, a per-surface
-// divergence the INC-3 review caught.
+// (pending/failed/kicked/parked) via its ×. Was previously inline in
+// Sidebar.handleClosePseudo; the mobile bar's raw setParted let the
+// bucket-E close-watcher pick MRU, a per-surface divergence the INC-3
+// review caught. #902 left the desktop Sidebar its only caller — the mobile
+// BottomBar's sole pseudo-row was the `:invited` tab, and that is a banner
+// now — but the verb stays HERE rather than moving back inline: it is a
+// window-lifecycle verb, and the file it lives in is the one that owns the
+// PART.
 //
-// #511 — the dismissal now goes through the SAME `partAndForget` DELETE
-// path `closeChannelWindow` uses, not a client-only `forceParted`. Pre-fix
-// this dropped the local key only; the server kept `window_states[ch]`
-// (e.g. `:invited`), and #482's cold-subscribe backfill re-emitted
-// `window_invited` on the next reload — the dismissed tab came back. The
-// PART is a 442 no-op for the never-joined channel, but the server-side
-// `set_parted` clears the key so the dismissal is durable. See the
-// `partAndForget` doc above for why the PART, the `forceParted`, and the
-// token guard are the right primitives, and how `:failed` / `:kicked` are
-// covered by the same clear.
+// #511 — the dismissal goes through the SAME `partAndForget` DELETE path
+// `closeChannelWindow` uses, not a client-only `forceParted`. Pre-fix this
+// dropped the local key only; the server kept `window_states[ch]` and the
+// cold-subscribe snapshot re-asserted it on the next reload — the dismissed
+// tab came back. The PART is a 442 no-op for the never-joined channel, but
+// the server-side `set_parted` clears the key so the dismissal is durable.
+// See the `partAndForget` doc above for why the PART, the `forceParted`,
+// and the token guard are the right primitives — including why #902's
+// invite banner deliberately does NOT take this path.
 //
 // If the dismissed row IS the focused window, redirect to the network's
 // $server window FIRST, pre-empting the bucket-E watcher (which would

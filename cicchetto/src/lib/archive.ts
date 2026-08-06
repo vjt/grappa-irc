@@ -120,13 +120,21 @@ export const setArchiveModalOpen = exports_.setArchiveModalOpen;
 // dup the row in active + archive sections.
 //
 // UX-5 bucket BK (2026-05-19): ALSO exclude anything shown as a
-// pseudo-row for this network — a failed/kicked/pending/invited/parked
-// window carries scrollback (Session.Server's `:join_failed` arm etc.)
-// that qualifies as archived because the channel isn't in
+// pseudo-row for this network — a failed/kicked/pending/parked window
+// carries scrollback (Session.Server's `:join_failed` arm etc.) that
+// qualifies as archived because the channel isn't in
 // Session.list_channels, so without this filter it appears in BOTH the
 // active sidebar (pseudo-row) AND the archive. One window, one surface.
 // Operator clicks × on the pseudo-row → forceParted drops the windowState
 // key → this filter releases → archive shows the row.
+//
+// #902 — an `:invited` channel is NOT subtracted any more, because no nav
+// draws it: the invite is a transient top banner, and the banner is a
+// notification rather than a window. So the invited channel's buffer (which
+// holds the persisted INVITE row — kept as history) surfaces in the ARCHIVE.
+// That is the intended answer to "where did the invite go once I dismissed
+// the banner", and it is the same rule as before, not an exception to it:
+// subtract what the nav draws, and the nav draws no invite.
 //
 // cp15-b6 (#473): this MUST reuse the ONE shared pseudo-row projection
 // `pseudoChannelsForNetwork` (#71 INC-3), NOT re-derive it from raw

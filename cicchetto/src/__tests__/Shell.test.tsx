@@ -383,6 +383,11 @@ vi.mock("../lib/windowState", () => ({
   windowStateByChannel: () => windowStateMap.current,
   windowFailureByChannel: () => ({}),
   windowKickedMetaByChannel: () => ({}),
+  invitedByChannel: () => ({}),
+  // #902 — Shell mounts ErrorBanners, whose registry derives an invite entry
+  // per invited window off this projection. Empty here: these are layout
+  // tests, and the invite banner has its own coverage in errorBanners.test.
+  invitedWindows: () => [],
   windowIsJoined: (key: string) => mockWindowIsJoined(key),
   isActiveChannelJoined: () => {
     const sel = selectionState.selSig();

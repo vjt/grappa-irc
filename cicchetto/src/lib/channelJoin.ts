@@ -59,6 +59,27 @@ async function performJoin(networkSlug: string, rawChannel: string): Promise<voi
   }
 }
 
+// #902 — THE invite-acceptance verb: join and foreground, no confirm.
+//
+// The 20% that differs from `confirmJoinChannel` below is intent. A
+// `#channel` in prose is ambiguous, so a scrollback click asks first. An
+// [Join] button ON an invite is not ambiguous — the operator is answering a
+// question that was put to them — so asking again is noise.
+//
+// Both of its callers used to own a private copy of this body: the invite
+// row's CTA (`ScrollbackPane.handleJoinChannel`) and, as of #902, the invite
+// BANNER. Two copies of "postJoin then foreground the folded key" is exactly
+// the drift CLAUDE.md's one-feature-one-code-path rule exists to stop, and
+// the banner made the second copy unavoidable — the scrollback one was
+// component-local, closed over `props.networkSlug`.
+//
+// Casing split as everywhere else (#510/#516/#525): RAW on the wire, FOLDED
+// for focus. Focus moves only AFTER the await, so a rejected join (+i/+k/+b)
+// never foregrounds a phantom window (#244).
+export function acceptInvite(networkSlug: string, rawChannel: string): void {
+  void performJoin(networkSlug, rawChannel);
+}
+
 // Already in the channel ⇒ switch, no modal. Otherwise confirm, then join on
 // yes. The confirm body names the RAW channel (display casing).
 export function confirmJoinChannel(networkSlug: string, rawChannel: string): void {

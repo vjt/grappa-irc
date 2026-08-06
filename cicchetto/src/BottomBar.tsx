@@ -2,16 +2,10 @@ import { type Component, createEffect, For, on } from "solid-js";
 import CloseButton from "./CloseButton";
 import { channelKey } from "./lib/channelKey";
 import { channelsBySlug, networks } from "./lib/networks";
-import { navPseudoChannelsForNetwork } from "./lib/pseudoChannels";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { requestScrollToBottom } from "./lib/scrollToBottomCommand";
 import { isActiveSelection, selectedChannel, setSelectedChannel } from "./lib/selection";
-import {
-  closeQueryWindow,
-  confirmDisconnectNetwork,
-  confirmLeaveChannel,
-  dismissPseudoWindow,
-} from "./lib/windowClose";
+import { closeQueryWindow, confirmDisconnectNetwork, confirmLeaveChannel } from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
 import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import NickText from "./NickText";
@@ -206,45 +200,16 @@ const BottomBar: Component<Props> = (props) => {
                 }}
               </For>
 
-              {/* #71 INC-3 — the /invite-opened `:invited` virtual channel.
-                  The mobile BottomBar surfaces ONLY the `:invited` slice of
-                  the shared pseudo-row projection; the desktop Sidebar
-                  renders EVERY non-joined state (pending/failed/kicked/
-                  parked) as a greyed row, because the bottom bar is
-                  space-scarce (DESIGN_NOTES 2026-07-26 #71 INC-3). #402 moved
-                  that narrowing OUT of this call site and into
-                  `navPseudoChannelsForNetwork` (lib/pseudoChannels.ts), where
-                  the archive filter reads it too: an open-coded filter here
-                  is what let the archive subtract rows this bar never drew,
-                  leaving a non-joined window with zero mobile surfaces. The
-                  tab is greyed + tappable (opens the invite notice + JOIN
-                  button in scrollback, kind "channel"); the × routes through
-                  the shared `dismissPseudoWindow` verb (windowClose.ts) — the
-                  SAME verb the desktop Sidebar's pseudo-row × uses, so a
-                  dismiss lands focus identically on both surfaces ($server;
-                  see DESIGN_NOTES 2026-07-26). */}
-              <For each={navPseudoChannelsForNetwork(network.slug, network.id)}>
-                {(row) => (
-                  <>
-                    <button
-                      type="button"
-                      role="tab"
-                      class="bottom-bar-tab bottom-bar-tab-with-close bottom-bar-tab-invited"
-                      classList={{ selected: isSelected(network.slug, row.name) }}
-                      data-window-name={row.name}
-                      data-window-state={row.state}
-                      onClick={() => handleClick(network.slug, row.name, "channel")}
-                    >
-                      {row.name}
-                    </button>
-                    <CloseButton
-                      class="bottom-bar-close"
-                      ariaLabel={`Close ${row.name}`}
-                      onConfirm={() => dismissPseudoWindow(network.slug, row.name)}
-                    />
-                  </>
-                )}
-              </For>
+              {/* #902 — the `:invited` tab that used to sit here is GONE.
+                  It was the BottomBar's ONLY pseudo-row content (#71 INC-3
+                  deliberately narrowed the bar to that one slice, the bar
+                  being space-scarce), and an inbound INVITE is now announced
+                  by the stacked top banner with its own [Join] — a surface
+                  that already renders on both form factors, which is why
+                  mobile needs no replacement row.
+                  `navPseudoChannelsForNetwork` returns [] on mobile now, so
+                  the archive keeps subtracting exactly what is drawn (#402's
+                  invariant) with no filter open-coded here. */}
 
               {/* Query (DM) windows */}
               <For each={queryWindowsByNetwork()[network.id] ?? []}>

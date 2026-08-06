@@ -1,5 +1,5 @@
 import { createSignal } from "solid-js";
-import { type ChannelKey, channelKey } from "./channelKey";
+import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { identityScopedStore } from "./identityScopedStore";
 import { selectedChannel } from "./selection";
 
@@ -11,6 +11,7 @@ import { selectedChannel } from "./selection";
 //   * window_failure_reasons: %{channel => String.t()}
 //   * window_failure_numerics: %{channel => pos_integer()}
 //   * window_kicked_meta    : %{channel => %{by, reason}}
+//   * invited_by            : %{channel => String.t()}   (#902)
 //
 // Cic mirrors that split — three signal maps with one signal per
 // concern — so a render branch reading "is it failed AND show the
@@ -53,50 +54,65 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   const [windowKickedMetaByChannel, setWindowKickedMetaByChannel] = createSignal<
     Record<ChannelKey, WindowKickedMeta>
   >({});
+  // #902 — mirror of the server's `invited_by`. Same invariant as there: a
+  // key exists IF AND ONLY IF the state map says "invited", so every
+  // transition below drops it. It is NOT a second source of truth for
+  // invitedness — `windowStateByChannel` is — only the extra datum the
+  // banner renders, exactly as `windowKickedMetaByChannel` decorates
+  // "kicked".
+  const [invitedByChannel, setInvitedByChannel] = createSignal<Record<ChannelKey, string>>({});
 
   onIdentityChange(() => setWindowStateByChannel({}));
   onIdentityChange(() => setWindowFailureByChannel({}));
   onIdentityChange(() => setWindowKickedMetaByChannel({}));
+  onIdentityChange(() => setInvitedByChannel({}));
+
+  const dropKey = <T>(key: ChannelKey) => {
+    return (prev: Record<ChannelKey, T>): Record<ChannelKey, T> => {
+      if (!(key in prev)) return prev;
+      const { [key]: _drop, ...rest } = prev;
+      return rest;
+    };
+  };
 
   const setPending = (key: ChannelKey): void => {
     setWindowStateByChannel((prev) => ({ ...prev, [key]: "pending" }));
+    setInvitedByChannel(dropKey(key));
   };
 
-  // #78: inbound INVITE to a not-joined channel → a greyed, not-joined
-  // sidebar tab the operator can /join on their own time. Like setPending,
-  // touches only the state map — an invite carries no failure / kicked
-  // metadata; the inviter is conveyed by the persisted scrollback row.
-  const setInvited = (key: ChannelKey): void => {
+  // #78: inbound INVITE to a not-joined channel. #902 — what this DRAWS
+  // changed (a dismissable top banner with [Join], not a greyed sidebar
+  // tab), and with it the storage: the inviter used to be conveyed only by
+  // the persisted scrollback row, which the banner cannot wait for — it
+  // renders before that channel's buffer is ever fetched. So the nick now
+  // rides the `window_invited` event and lands here.
+  const setInvited = (key: ChannelKey, inviter: string): void => {
     setWindowStateByChannel((prev) => ({ ...prev, [key]: "invited" }));
+    setInvitedByChannel((prev) => ({ ...prev, [key]: inviter }));
   };
 
   const setJoined = (key: ChannelKey): void => {
     setWindowStateByChannel((prev) => ({ ...prev, [key]: "joined" }));
+    setInvitedByChannel(dropKey(key));
     // Joining wipes any prior :failed / :kicked snapshot mirrors —
     // mirrors apply_effects([{:joined, channel} | rest], state) on
     // the server. A successful re-join must not leave stale
     // by/reason/numeric in the maps; the next render reads "joined"
     // and looks up failure metadata that should no longer exist.
-    setWindowFailureByChannel((prev) => {
-      if (!(key in prev)) return prev;
-      const { [key]: _drop, ...rest } = prev;
-      return rest;
-    });
-    setWindowKickedMetaByChannel((prev) => {
-      if (!(key in prev)) return prev;
-      const { [key]: _drop, ...rest } = prev;
-      return rest;
-    });
+    setWindowFailureByChannel(dropKey(key));
+    setWindowKickedMetaByChannel(dropKey(key));
   };
 
   const setFailed = (key: ChannelKey, reason: string | null, numeric: number | null): void => {
     setWindowStateByChannel((prev) => ({ ...prev, [key]: "failed" }));
     setWindowFailureByChannel((prev) => ({ ...prev, [key]: { reason, numeric } }));
+    setInvitedByChannel(dropKey(key));
   };
 
   const setKicked = (key: ChannelKey, by: string | null, reason: string | null): void => {
     setWindowStateByChannel((prev) => ({ ...prev, [key]: "kicked" }));
     setWindowKickedMetaByChannel((prev) => ({ ...prev, [key]: { by, reason } }));
+    setInvitedByChannel(dropKey(key));
   };
 
   // forceParted: the unconditional "absence is the projection" verb —
@@ -107,21 +123,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   // × is never a silent no-op. The server-echo path uses setParted below,
   // which guards against a stale echo.
   const forceParted = (key: ChannelKey): void => {
-    setWindowStateByChannel((prev) => {
-      if (!(key in prev)) return prev;
-      const { [key]: _drop, ...rest } = prev;
-      return rest;
-    });
-    setWindowFailureByChannel((prev) => {
-      if (!(key in prev)) return prev;
-      const { [key]: _drop, ...rest } = prev;
-      return rest;
-    });
-    setWindowKickedMetaByChannel((prev) => {
-      if (!(key in prev)) return prev;
-      const { [key]: _drop, ...rest } = prev;
-      return rest;
-    });
+    setWindowStateByChannel(dropKey(key));
+    setWindowFailureByChannel(dropKey(key));
+    setWindowKickedMetaByChannel(dropKey(key));
+    setInvitedByChannel(dropKey(key));
   };
 
   // setParted: the SERVER-echo projection of an own-PART (subscribe.ts's
@@ -146,6 +151,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     windowStateByChannel,
     windowFailureByChannel,
     windowKickedMetaByChannel,
+    invitedByChannel,
     setPending,
     setInvited,
     setJoined,
@@ -159,6 +165,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 export const windowStateByChannel = exports_.windowStateByChannel;
 export const windowFailureByChannel = exports_.windowFailureByChannel;
 export const windowKickedMetaByChannel = exports_.windowKickedMetaByChannel;
+export const invitedByChannel = exports_.invitedByChannel;
 export const setPending = exports_.setPending;
 export const setInvited = exports_.setInvited;
 export const setJoined = exports_.setJoined;
@@ -215,6 +222,50 @@ export const windowIsJoined = (key: ChannelKey): boolean =>
 // channel-name keyspace).
 export const windowIsPresent = (key: ChannelKey): boolean =>
   windowStateByChannel()[key] !== undefined;
+
+// #902 — the source projection behind the invite banner. Every key the
+// server currently holds at `:invited`, decoded into what the banner needs:
+// who to name, which channel to join, and on which network.
+//
+// Read STRAIGHT off `windowStateByChannel`, deliberately NOT through
+// `pseudoChannelsForNetwork`. That projection subtracts `channelsBySlug` and
+// the query windows, which arrive on the USER topic with no ordering
+// guarantee against the per-channel broadcasts that drive this map — so it
+// answers "should a sidebar row be drawn", a different question. This one
+// answers "what does the server say is invited", which is exactly what the
+// banner announces, and it makes the rendered banner a faithful DOM
+// projection of this map (the property `issue30-channel-tab-completion`
+// relies on for its synchronisation barrier, previously supplied by the
+// greyed `:invited` pseudo-row this issue removes).
+//
+// A malformed key is skipped rather than rendered half-decoded; the inviter
+// falls back to the same `"*"` anonymous-sender sentinel the server uses, so
+// a payload from a pre-#902 server degrades to a nameless banner instead of
+// `undefined` leaking into the copy.
+export type InvitedWindow = {
+  key: ChannelKey;
+  networkSlug: string;
+  channelName: string;
+  inviter: string;
+};
+
+export const invitedWindows = (): InvitedWindow[] => {
+  const states = windowStateByChannel();
+  const inviters = invitedByChannel();
+  const out: InvitedWindow[] = [];
+  for (const [key, state] of Object.entries(states) as [ChannelKey, WindowState][]) {
+    if (state !== "invited") continue;
+    const decoded = decodeChannelKey(key);
+    if (decoded === null) continue;
+    out.push({
+      key,
+      networkSlug: decoded.slug,
+      channelName: decoded.name,
+      inviter: inviters[key] ?? "*",
+    });
+  }
+  return out;
+};
 
 export const isActiveChannelJoined = (): boolean => {
   const sel = selectedChannel();

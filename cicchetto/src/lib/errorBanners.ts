@@ -1,9 +1,11 @@
 import { createSignal, untrack } from "solid-js";
 import { performRefresh, refreshBannerMessage, shouldShowRefreshBanner } from "./bundleHash";
+import { acceptInvite } from "./channelJoin";
 import { isOffline } from "./connectivity";
 import { acceptPushOptin, shouldShowPushOptinBanner } from "./pushOptin";
 import { shouldShowBanner, socketHealth } from "./socketHealth";
 import { shouldShowSwRegBanner, swRegistration } from "./swRegistration";
+import { type InvitedWindow, invitedWindows } from "./windowState";
 
 // #119 — unified stacked error-banner registry.
 //
@@ -38,6 +40,7 @@ export const BANNER_SOURCES = [
   "sw-registration",
   "bundle-refresh",
   "push-optin",
+  "invite",
 ] as const;
 export type BannerSource = (typeof BANNER_SOURCES)[number];
 
@@ -49,8 +52,26 @@ export interface BannerAction {
   onAction: () => void;
 }
 
+// #902 — the identity a DISMISS is scoped to. Every source before `invite`
+// had exactly one live entry, so the source WAS the instance and the
+// dismissed set could be keyed on it. `invite` breaks that: there is one
+// entry per invited channel.
+//
+// This is not a preference, it is correctness. With a single aggregate
+// entry, a × taken while other invites are still live keeps the SOURCE
+// active, so `rearmDismissed` never re-arms it and the NEXT invite — a
+// different channel, a different peer — is silently swallowed. That is
+// exactly the failure `rearmDismissed`'s own contract forbids ("a dismiss
+// must never permanently silence a recurring fault"). Keying on the entry
+// instead makes the re-arm correct for free: when #a's invite resolves, only
+// `invite:#a` leaves the active set, so only its dismissal is forgotten.
+export type BannerId = string;
+
 export interface BannerEntry {
   source: BannerSource;
+  // Dismiss identity. Single-instance sources omit it and fall back to the
+  // source name (`entryId` below), so nothing about the other five changed.
+  id?: BannerId;
   severity: BannerSeverity;
   message: string;
   // Present only for user-actionable sources (bundle-refresh's reload). Its
@@ -58,6 +79,13 @@ export interface BannerEntry {
   // derived-and-auto-clearing source (ws, connectivity) and a
   // user-actionable-and-sticky one (bundle-refresh).
   actionHint?: BannerAction;
+}
+
+// The one place the source-or-id fallback is resolved. Every dismiss-side
+// read goes through it so a caller can never key on `source` by accident and
+// re-introduce the aggregate bug described above.
+export function entryId(entry: BannerEntry): BannerId {
+  return entry.id ?? entry.source;
 }
 
 export function isBannerSource(x: unknown): x is BannerSource {
@@ -151,12 +179,42 @@ export function activeBanners(): BannerEntry[] {
     });
   }
 
+  // #902 — inbound INVITEs. LOW in the stack, beside push-optin: an invite is
+  // an OFFER, not a fault, so it never outranks "you are disconnected" or an
+  // update prompt. Just ABOVE push-optin, though: an invite is a specific,
+  // time-sensitive offer from a person, where push-optin is a standing
+  // app-level one. That also keeps "push-optin is LAST" an unconditional
+  // invariant rather than one that holds only when nobody has invited you.
+  //
+  // ONE ENTRY PER INVITED CHANNEL, each with its own `id`. See `BannerId`
+  // above for why an aggregate entry would be wrong rather than merely
+  // terse. N stacked banners is a real wall, but concurrent invites are rare
+  // and stacking N without overlap is precisely what #119 built.
+  //
+  // Derived, never stored: `invitedWindows()` reads the server-owned
+  // window-state map (`userTopic.ts`'s `window_invited` arm is the single
+  // owner). This registry holds nothing of its own, so there is no state to
+  // reconcile when an invite resolves — the entry simply stops being derived,
+  // and `rearmDismissed` forgets any × taken on it.
+  //
+  // Both controls are session-scoped and write NOTHING persistent (vjt's
+  // ruling): [Join] joins and the entry disappears because the state leaves
+  // `:invited`; × hides it for this page life only. The server re-emits
+  // `window_invited` on every cold subscribe, so a dismissed invite returns
+  // after a reload — accepted, because an invite is allowed to be lost and
+  // the peer can simply invite again. Deliberately NOT the persistent decline
+  // `push-optin` uses.
+  for (const invite of invitedWindows()) {
+    entries.push(inviteEntry(invite));
+  }
+
   // #459 — push opt-in offer. LAST in the stack: an offer never outranks a
-  // fault ("you are disconnected") or an update prompt. Gated + actioned by
-  // pushOptin.ts (the source owner); the registry only projects the gate into
-  // an info entry and wires [of course!] to the accept verb. The × is the
-  // decline — routed by the owner (ErrorBanners.tsx) to declinePushOptin so it
-  // PERSISTS, unlike the episode-scoped dismiss the fault sources use.
+  // fault ("you are disconnected"), an update prompt, or a person waiting on
+  // an answer. Gated + actioned by pushOptin.ts (the source owner); the
+  // registry only projects the gate into an info entry and wires [of course!]
+  // to the accept verb. The × is the decline — routed by the owner
+  // (ErrorBanners.tsx) to declinePushOptin so it PERSISTS, unlike the
+  // episode-scoped dismiss every other source uses.
   if (shouldShowPushOptinBanner()) {
     entries.push({
       source: "push-optin",
@@ -167,6 +225,26 @@ export function activeBanners(): BannerEntry[] {
   }
 
   return entries;
+}
+
+// One invite → one entry. Split out so the id shape has a single
+// definition. It carries the NETWORK as well as the channel, so two
+// networks inviting to the same channel name stay independently
+// dismissable — and `:`-joined rather than reusing the raw `ChannelKey`
+// (which is space-joined) so it reads cleanly as the `data-banner-id`
+// attribute selector the e2e suite observes.
+function inviteEntry(invite: InvitedWindow): BannerEntry {
+  return {
+    source: "invite",
+    id: `invite:${invite.networkSlug}:${invite.channelName}`,
+    severity: "info",
+    message: `${invite.inviter} is inviting you to ${invite.channelName}`,
+    actionHint: {
+      label: "Join",
+      // The SAME verb the invite row's [Join] CTA in scrollback calls.
+      onAction: () => acceptInvite(invite.networkSlug, invite.channelName),
+    },
+  };
 }
 
 // #207 — client-local per-source dismiss.
@@ -194,17 +272,20 @@ export function activeBanners(): BannerEntry[] {
 // mask a live problem. sw-registration is the #181 diagnostic surface and
 // bundle-refresh is user-actionable; neither should vanish on a clock the user
 // didn't ask for. The × (with re-arm) is the whole fix.
-const [dismissed, setDismissed] = createSignal<ReadonlySet<BannerSource>>(new Set<BannerSource>());
+//
+// #902 — the set is keyed on `entryId`, not on `source`. See the `BannerId`
+// note above for why that distinction is a correctness one.
+const [dismissed, setDismissed] = createSignal<ReadonlySet<BannerId>>(new Set<BannerId>());
 
-// True iff this source is currently dismissed (hidden by an explicit ×).
-export function isDismissed(source: BannerSource): boolean {
-  return dismissed().has(source);
+// True iff this entry is currently dismissed (hidden by an explicit ×).
+export function isDismissed(id: BannerId): boolean {
+  return dismissed().has(id);
 }
 
-// Hide this source's banner client-locally until it recovers + re-fires.
-export function dismissBanner(source: BannerSource): void {
-  const next = new Set<BannerSource>(dismissed());
-  next.add(source);
+// Hide this entry's banner client-locally until it clears + re-fires.
+export function dismissBanner(id: BannerId): void {
+  const next = new Set<BannerId>(dismissed());
+  next.add(id);
   setDismissed(next);
 }
 
@@ -221,12 +302,12 @@ export function rearmDismissed(active: readonly BannerEntry[]): void {
   // dependency exactly match intent (re-arm when the ACTIVE set changes).
   const current = untrack(dismissed);
   if (current.size === 0) return;
-  const activeSources = new Set(active.map((e) => e.source));
+  const activeIds = new Set(active.map(entryId));
   let changed = false;
-  const next = new Set<BannerSource>();
-  for (const source of current) {
-    if (activeSources.has(source)) {
-      next.add(source);
+  const next = new Set<BannerId>();
+  for (const id of current) {
+    if (activeIds.has(id)) {
+      next.add(id);
     } else {
       changed = true;
     }
@@ -239,11 +320,11 @@ export function rearmDismissed(active: readonly BannerEntry[]): void {
 export function visibleBanners(): BannerEntry[] {
   const active = activeBanners();
   const hidden = dismissed();
-  return active.filter((e) => !hidden.has(e.source));
+  return active.filter((e) => !hidden.has(entryId(e)));
 }
 
 // Test-only — clear the dismissed set. Production code never calls this; the ×
 // (dismiss) and recovery (rearm) are the only production mutators.
 export function __resetDismissedForTests(): void {
-  setDismissed(new Set<BannerSource>());
+  setDismissed(new Set<BannerId>());
 }

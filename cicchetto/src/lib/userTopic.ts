@@ -486,6 +486,13 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         network: r.network,
         channel: r.channel,
         state: "invited",
+        // #902 — TOLERATE an absent `inviter`. cic deploys independently of
+        // the server, so a newer bundle can meet an older BEAM that has no
+        // such field; rejecting the payload here would silently drop the
+        // whole invite rather than the nick. Degrade to the SAME "*"
+        // anonymous-sender sentinel the server uses for a prefix-less
+        // INVITE, so the banner has one nameless shape, not two.
+        inviter: typeof r.inviter === "string" && r.inviter !== "" ? r.inviter : "*",
       };
     case "connection_state_changed": {
       // REV-J M15: pre-fix this arm carried only the wider transition
@@ -1211,15 +1218,19 @@ moduleRoot(() => {
 
         case "window_invited":
           // #78 — inbound INVITE to a not-joined channel. Server's
-          // apply_effects([{:invited, ch}]) writes window_states[ch] =
-          // :invited and broadcasts here on Topic.user/1 (NOT per-channel
-          // — chicken-and-egg, same as window_pending above). The
-          // pre-subscribe loop in subscribe.ts re-runs on the
+          // apply_effects([{:invited, ch, inviter}]) writes
+          // window_states[ch] = :invited and broadcasts here on Topic.user/1
+          // (NOT per-channel — chicken-and-egg, same as window_pending
+          // above). The pre-subscribe loop in subscribe.ts re-runs on the
           // windowStateByChannel signal change and joins the per-channel
-          // topic so the persisted INVITE row lands in the channel buffer
-          // with the existing [Join] affordance. No auto-focus — the
-          // greyed tab + single unread row is the whole surface.
-          setInvited(channelKey(payload.network, payload.channel));
+          // topic so the persisted INVITE row lands in the channel buffer.
+          //
+          // #902 — still NO auto-focus, but the surface changed: the greyed
+          // tab is gone and `errorBanners.ts` derives a dismissable top
+          // banner with a [Join] action off this state. This arm remains the
+          // single state owner ("derive, don't duplicate") — the banner
+          // registry only projects it.
+          setInvited(channelKey(payload.network, payload.channel), payload.inviter);
           return;
 
         case "whois_bundle": {

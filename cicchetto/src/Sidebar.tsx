@@ -77,12 +77,15 @@ import WindowBadges from "./WindowBadges";
 //   per-window `:parked` events from `Session.Server.terminate/2`; cic
 //   derives the cascade from the network-level state.
 
-const NOT_JOINED_STATES = new Set(["invited", "failed", "kicked", "parked"]);
+// #902 — `invited` left this set with the pseudo-row itself: an unanswered
+// invite is announced by the top banner now, so no sidebar row carries that
+// state to grey out.
+const NOT_JOINED_STATES = new Set(["failed", "kicked", "parked"]);
 const NETWORK_GREYED_STATES = new Set(["parked", "failed"]);
 
 // #96 — a row's state, spoken. Every non-live sidebar row is rendered muted +
 // italic and NOTHING else: a screen reader gets no signal at all, and the
-// greyed (parked / failed / invited / kicked) and parted treatments are
+// greyed (parked / failed / kicked) and parted treatments are
 // pixel-identical, so a sighted operator can't tell them apart either. This
 // folds the word into the button's accessible name ("#italia (parked)")
 // without touching a single pixel. Renders nothing when there's no state to
@@ -150,10 +153,9 @@ const Sidebar: Component<Props> = () => {
   };
 
   // Synthetic non-joined window rows come from the shared projection in
-  // `lib/pseudoChannels.ts` (extracted #71 INC-3 so the mobile BottomBar
-  // `:invited` tab derives from the SAME source — one code path, not two
-  // parallel projections). Rationale for the joined-exclusion, the
-  // channelsBySlug dedup, and the query-target filter lives there.
+  // `lib/pseudoChannels.ts` (extracted #71 INC-3). Rationale for the
+  // joined-exclusion, the #902 invited-exclusion, the channelsBySlug dedup,
+  // and the query-target filter lives there.
 
   const handleClick = (slug: string, name: string, kind: WindowKind) => {
     const target = { networkSlug: slug, channelName: name, kind };
@@ -501,12 +503,16 @@ const Sidebar: Component<Props> = () => {
                       // #78 redo: expose the discrete pseudo-row state as a
                       // stable test seam (same pattern as data-window-name /
                       // data-kind). `.sidebar-window-greyed` alone is shared
-                      // by EVERY not-joined state (pending/invited/failed/
-                      // kicked/parked), so an e2e asserting only the greyed
-                      // class can't tell an :invited row from any other greyed
-                      // one — exactly the vacuity that let the old b2 invite
-                      // spec pass while the :invited derivation was suspect.
-                      // Production rendering is unchanged.
+                      // by EVERY not-joined state (pending/failed/kicked/
+                      // parked), so an e2e asserting only the greyed class
+                      // can't tell one greyed row from another — the vacuity
+                      // this attribute closes. Production rendering is
+                      // unchanged.
+                      //
+                      // #902 — `invited` no longer appears here. Specs that
+                      // used this attribute as their "the window-state map
+                      // has the key" barrier read the banner's
+                      // `data-banner-id` instead (BannerSlot.tsx).
                       data-window-state={row.state}
                     >
                       <button
