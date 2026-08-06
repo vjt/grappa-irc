@@ -2,7 +2,7 @@ import { channelKey } from "./channelKey";
 import { getDraft, isDraining, setDraft } from "./compose";
 import { requestConfirm } from "./confirmDialog";
 import { dropUpload } from "./dropUpload";
-import { pastedLineCount, shouldGuardPaste } from "./pasteFlood";
+import { pastedMessageCount, shouldGuardPaste } from "./pasteFlood";
 import { categoryOf } from "./uploadCategory";
 
 // Shared clipboard-paste routing — the file/text branching lifted out of
@@ -96,25 +96,28 @@ export function routeClipboardPaste(
     e.preventDefault();
     return;
   }
-  // #80 — plain-text multi-line paste flood guard. A pasted block is sent
-  // as one PRIVMSG per line on submit (compose.ts → messageLines.ts), so a
-  // large block can flood the channel. Above the line threshold, intercept
-  // the native paste and confirm BEFORE the text lands; below it, fall
-  // through to native textarea paste so 1–3-line pastes stay frictionless.
-  // Reuses the store-driven confirm dialog (lib/confirmDialog) — Cancel is
-  // the safe default (drop the paste), the affirmative button pastes.
+  // #80/#816 — plain-text multi-line paste guard. A pasted block is sent as
+  // one PRIVMSG per line on submit (compose.ts → messageLines.ts), so any
+  // paste that becomes more than one message is a burst the operator did not
+  // compose by hand. Intercept the native paste and confirm BEFORE the text
+  // lands; a one-message paste falls through to the native textarea insert
+  // and stays frictionless. Reuses the store-driven confirm dialog
+  // (lib/confirmDialog) — Cancel is the safe default (drop the paste), the
+  // affirmative button pastes.
   const text = data.getData("text");
   if (shouldGuardPaste(text)) {
     e.preventDefault();
-    const lines = pastedLineCount(text);
+    // #816 — quote MESSAGES, not lines. The operator is authorising a number
+    // of wire frames, and that is the number the send path will produce; a
+    // line count would over-state it for any block containing a blank line.
+    // Always ≥ 2 here (that is what tripped the guard), so the plural is
+    // unconditional and needs no branch.
+    const messages = pastedMessageCount(text);
     requestConfirm({
-      title: `Paste ${lines} lines?`,
+      title: `Paste as ${messages} messages?`,
       // Target-neutral copy: `channelName` is a nick on a query (DM) window,
-      // so "flood the channel" would misdescribe a DM. "a burst of messages"
-      // is honest without over-claiming one-message-per-line (blank lines are
-      // dropped at send — splitMessageLines), and reads right for both a
-      // channel and a DM.
-      body: `You're about to paste ${lines} lines into ${channelName}. Sending can flood it with a burst of messages.`,
+      // so "flood the channel" would misdescribe a DM. "it" carries both.
+      body: `This paste will be sent to ${channelName} as ${messages} separate messages. Sending can flood it with a burst.`,
       confirmLabel: "Paste",
       onConfirm: () => insertPastedText(ta, networkSlug, channelName, text),
     });

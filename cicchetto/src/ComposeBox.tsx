@@ -441,9 +441,17 @@ const ComposeBox: Component<Props> = (props) => {
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter") {
+      // #816 — Shift+Enter is a NO-OP: preventDefault with no send, so the
+      // textarea inserts no line break and the composer stays single-line. A
+      // newline cannot travel inside a PRIVMSG (CRLF terminates the frame),
+      // so honouring one means splitting into N messages — a flood the
+      // operator never asked for by holding a modifier, and one no client
+      // sets the precedent for (mIRC's editbox is single-line, hexchat
+      // splits paste). Paste is left as the ONE route a multi-line body can
+      // take into the box, and paste is guarded (lib/pasteFlood).
       e.preventDefault();
-      void doSubmit();
+      if (!e.shiftKey) void doSubmit();
       return;
     }
     if (e.key === "ArrowUp") {

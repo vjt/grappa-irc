@@ -1,5 +1,6 @@
-// Multiline compose fan-out — a body with embedded newlines (Shift+Enter
-// in ComposeBox, or a pasted block) must send one PRIVMSG per line.
+// Multiline compose fan-out — a body with embedded newlines (a pasted block;
+// #816 made Shift+Enter a no-op, so paste is the only route) must send one
+// PRIVMSG per line.
 //
 // Pre-fix the whole multiline draft went as a single PRIVMSG and the
 // server bounced it as `:invalid_line` (CRLF is the IRC frame delimiter)

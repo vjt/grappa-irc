@@ -1,9 +1,12 @@
 // IRC frames are newline-delimited: a PRIVMSG body cannot carry an
 // embedded LF/CR (the server rejects it as `:invalid_line` —
 // `Session.send_privmsg`'s CRLF/NUL guard, the wire delimiter). A
-// multiline compose — Shift+Enter in ComposeBox, or a pasted block — is
-// the operator asking for one message PER line, so cic splits at this
-// user-intent boundary and sends each line as its own PRIVMSG.
+// multiline body — a pasted block, since #816 made Shift+Enter a no-op and
+// left paste the only route to one — is the operator asking for one message
+// PER line, so cic splits at this user-intent boundary and sends each line
+// as its own PRIVMSG. `pasteFlood` calls this function to tell the operator
+// how many messages a paste becomes BEFORE it lands: the guard's number and
+// the fan-out are the same computation, deliberately.
 //
 // This is the client's half of message framing; the server still owns
 // 512-byte length splitting for any single long line

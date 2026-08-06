@@ -1,36 +1,33 @@
-// #80 — paste flood guard. A multi-line paste into the compose box becomes
-// one PRIVMSG per line on submit (compose.ts → messageLines.ts), so a large
+// #80/#816 — paste flood guard. A multi-line paste into the compose box
+// becomes one PRIVMSG per line on submit (compose.ts → messageLines.ts), so a
 // pasted block can flood a channel. The guard trips a confirm dialog BEFORE
-// the text lands in the textarea, above a small line threshold; single- and
-// few-line pastes stay frictionless.
+// the text lands in the textarea. This module is the pure counting +
+// threshold half — no DOM, no store — so the boundary is proven in isolation;
+// `pasteRoute` owns the dialog call and ComposeBox the event wiring.
 //
-// This module is the pure counting + threshold half — no DOM, no store — so
-// the boundary (3 lines = frictionless, 4 lines = guarded) is proven in
-// isolation. ComposeBox owns the event wiring + the confirm-dialog call.
-
-// Guard when a pasted block exceeds THIS many lines. `> 3` (i.e. 4+ lines)
-// keeps 1–3-line pastes — the overwhelming common case (a URL, a short
-// snippet, an address) — frictionless while catching the flood-shaped block.
-// Spec #80 suggested "e.g. >2-3 lines"; 3 is the upper bound of that range,
-// biasing toward fewer interruptions. Provisional — a single knob to retune.
-export const PASTE_FLOOD_LINE_THRESHOLD = 3;
-
-// Count the lines in a pasted block for the flood guard. Normalizes every
-// line-ending convention (CRLF, lone CR, LF) so the count is delimiter-
-// agnostic, and strips ONE trailing newline so a paste that merely ends in a
-// newline (a common copy artifact) isn't counted as an extra empty line.
+// #816 moved both halves off LINES and onto MESSAGES.
 //
-// Blank INTERIOR lines ARE counted: this is the count of lines the operator
-// is about to drop into the compose box (what they SEE), which is distinct
-// from the send-time fan-out — splitMessageLines drops blanks because an
-// empty PRIVMSG is invalid on the wire, a different concern from "how big is
-// this paste".
-export const pastedLineCount = (text: string): number => {
-  const normalized = text.replace(/\r\n|\r/g, "\n").replace(/\n$/, "");
-  if (normalized === "") return 0;
-  return normalized.split("\n").length;
-};
+// The threshold: any paste that becomes more than ONE message confirms. #80
+// carved out 1–3 lines as frictionless on the reasoning that short pastes are
+// the common case; the ruling withdrew that carve-out, because every
+// multi-message paste is a burst the operator did not compose by hand and the
+// dialog is where they find out. A single line — with or without the trailing
+// newline every copy leaves behind — still goes straight in.
+//
+// The unit: `splitMessageLines`, the SAME function the send path uses. #80
+// deliberately used a different counter (lines as SEEN in the box, blank
+// interior lines included), which was defensible while the dialog only asked
+// "how big is this paste". It stopped being defensible once the dialog has to
+// declare how many MESSAGES the paste becomes: that number is a promise about
+// what send will do, so the code that does it must be the code that counts.
+// `pasteFlood.test.ts` pins the two together.
 
-// True when a paste is large enough to flood-guard (confirm before it lands).
-export const shouldGuardPaste = (text: string): boolean =>
-  pastedLineCount(text) > PASTE_FLOOD_LINE_THRESHOLD;
+import { splitMessageLines } from "./messageLines";
+
+// How many PRIVMSGs this pasted block would become. Blank and whitespace-only
+// lines yield none (#863 — the server refuses a body that is empty after
+// trimming), and neither does a trailing newline.
+export const pastedMessageCount = (text: string): number => splitMessageLines(text).length;
+
+// True when a paste is large enough to guard (confirm before it lands).
+export const shouldGuardPaste = (text: string): boolean => pastedMessageCount(text) > 1;
