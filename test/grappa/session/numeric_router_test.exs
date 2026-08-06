@@ -314,7 +314,6 @@ defmodule Grappa.Session.NumericRouterTest do
   # Active deny list: nick-shaped tokens that are NOT destinations
   # ---------------------------------------------------------------------------
 
-
   describe "@active_numerics deny list → {:server, nil}" do
     property "all @active_numerics route to {:server, nil} regardless of params" do
       check all(numeric <- member_of(@active_numerics)) do
@@ -649,7 +648,6 @@ defmodule Grappa.Session.NumericRouterTest do
   # ---------------------------------------------------------------------------
   # Delegated numerics → :delegated
   # ---------------------------------------------------------------------------
-
 
   describe "delegated numerics → :delegated" do
     property "all delegated numerics return :delegated" do
