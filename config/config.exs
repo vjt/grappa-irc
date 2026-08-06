@@ -539,7 +539,27 @@ config :logger, :console,
     :commands_10s,
     :penalty_10s_s,
     :bank_model_s,
-    :headroom_s
+    :headroom_s,
+    # #934 — `Grappa.TestSupport.SubjectReset`'s per-phase wall-clock. The
+    # e2e reset is the most expensive thing the suite does per test and it
+    # used to be one opaque number; these name every span it can spend time
+    # in, so total minus the parts is the unattributed remainder. `:outcome`
+    # rides both lines (`:ok` or the inspected error) — a failed attempt is
+    # the one that leaves no other trace, and on #934 that was a 433
+    # `nick_rejected`. Test-support only: the module is compile-gated to
+    # :dev/:test and does not exist in a release. Declared here because an
+    # UNDECLARED metadata key is silently dropped by the formatter — the
+    # instrument would compile, run, and print nothing.
+    :outcome,
+    :total_ms,
+    :drain_ms,
+    :baseline_ms,
+    :seed_ms,
+    :respawn_ms,
+    :stop_ms,
+    :spawn_ms,
+    :welcome_ms,
+    :autojoin_ms
   ]
 
 import_config "#{config_env()}.exs"

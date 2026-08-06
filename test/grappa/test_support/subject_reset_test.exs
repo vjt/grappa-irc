@@ -58,7 +58,7 @@ defmodule Grappa.TestSupport.SubjectResetTest do
 
   describe "reset!/2" do
     test "drains all mutable DB surfaces for the user", %{user: user, network: network} do
-      assert {:ok, _phases} = SubjectReset.reset!(user.name, %{})
+      assert {:ok, _} = SubjectReset.reset!(user.name, %{})
 
       assert ReadCursor.get({:user, user.id}, network.id, "#bofh") == nil
       assert QueryWindows.list_for_subject({:user, user.id}) == %{}
@@ -78,7 +78,7 @@ defmodule Grappa.TestSupport.SubjectResetTest do
       {:ok, _} = UserSettings.set_highlight_patterns({:user, other.id}, ["keep-me"])
       {:ok, _} = Notify.add({:user, other.id}, network.id, ["other-watched"], other.name)
 
-      assert {:ok, _phases} = SubjectReset.reset!(user.name, %{})
+      assert {:ok, _} = SubjectReset.reset!(user.name, %{})
 
       other_cursor = ReadCursor.get({:user, other.id}, network.id, "#bofh")
       assert other_cursor != nil
