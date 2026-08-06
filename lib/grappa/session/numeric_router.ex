@@ -27,9 +27,10 @@ defmodule Grappa.Session.NumericRouter do
      nick-shaped but the "nick" is not a routing destination — it's the
      rejected nick (433/432), the unknown command name (421), the
      offending command's argument list (461), an ack (437), or a whole
-     server-directed REPORT family whose middles are data and type labels
-     (`@stats_numerics` #184, `@trace_numerics` #908, the connect-storm
-     tokens). These ALWAYS go to `{:server, nil}`. Without this deny
+     server-directed REPORT family whose middles are data, type labels or
+     table headers (`@stats_numerics` #184, `@trace_numerics` #908,
+     `@list_numerics` #910, the connect-storm tokens). These ALWAYS go to
+     `{:server, nil}`. Without this deny
      list, the param-scan below would happily route 433's "BLEH-as-nick"
      to a query window.
 
@@ -63,11 +64,17 @@ defmodule Grappa.Session.NumericRouter do
     class). So the routing table can only be keyed by the CODE, which is
     what both lists already do — the deny list and an allow list differ
     only in which side the UNKNOWN falls on, and we currently put it on
-    the guessing side. Three families have now been patched in
-    (#184 STATS, UX-4 bucket I connect-storm, #908 TRACE) and the deny
-    list stands at 43 codes against the two or three the scan's query
-    branch genuinely serves (401 and the legacy 2-param shape) — that
-    ratio IS the argument. The root-cause fix is to invert: enumerate the
+    the guessing side. Four families have now been patched in
+    (#184 STATS, UX-4 bucket I connect-storm, #908 TRACE, #910 LIST) and
+    the deny list stands at 46 codes against the two or three the scan's
+    query branch genuinely serves (401 and the legacy 2-param shape) —
+    that ratio IS the argument, and #910 sharpened it: that family was
+    not found by a bug report but by a sweep, two years after this very
+    moduledoc asserted BY NUMBER that it already routed correctly. The
+    scan's default does not merely guess wrong, it guesses wrong
+    SILENTLY — so the families surface one accidental read at a time,
+    and the count above is a floor, not an inventory. The root-cause fix
+    is to invert: enumerate the
     target-bearing numerics and default the rest to `$server`. It is not
     done here because it changes behaviour for every numeric in neither
     list, and because #221's WHOIS-leg guard is defined as "a `:scan`-class
@@ -200,6 +207,40 @@ defmodule Grappa.Session.NumericRouter do
   # fix here neither causes nor repairs it.
   @trace_numerics Enum.to_list(200..210) ++ [261, 262]
 
+  # #910 — LIST reply family (321–323). The FOURTH instance of the
+  # @stats_numerics disease, and the one this module's own moduledoc used to
+  # deny: it asserted by NUMBER that 321/322/323 "route via the default
+  # `{:server, nil}` path". They did not.
+  #
+  # 321 RPL_LISTSTART — `[nick, "Channel", "Users  Name"]`. `params[1]` is
+  #     the literal COLUMN HEADER of the table that follows, and "Channel"
+  #     satisfies `Identifier.valid_nick?/1`, so the scan resolved it to
+  #     `{:query, "Channel"}`. LATENT rather than observed: #640's
+  #     `resolve_numeric_query_window/2` collapses a query decision back to
+  #     `$server` when no such window is open. It becomes real the moment a
+  #     peer nicked "Channel" has a DM window open.
+  # 322 RPL_LIST — `[nick, "#chan", "5", "topic"]`. The CHANNEL branch wins,
+  #     and unlike the query branch it passes #640's gate untouched: one
+  #     `:notice` row persisted into EVERY listed channel's scrollback,
+  #     including channels the user has never joined. This is the observable
+  #     defect of the three.
+  # 323 RPL_LISTEND — `[nick, "End of /LIST"]`. Already reached `$server`,
+  #     but only because the trailing carries SPACES and so fails
+  #     `valid_nick?/1` — the same accident that saved 262 RPL_ENDOFTRACE
+  #     above. Covered for the same reason: a family-wide rule must not rest
+  #     on how a server happens to spell its terminator. Unlike 262 (whose
+  #     dotless-server-name spelling is real, and made its test red), no
+  #     known ircd spells this trailing in a way that routes wrong today —
+  #     so 323's membership is pinned by the deny-list property test, not by
+  #     an assertion on its true wire shape.
+  #
+  # Reachable because these are normally consumed by `Session.Server`'s
+  # `%{directory_refresh: %{}}` clause, whose tracker the `#84` watchdog
+  # NILS on `:directory_refresh_timeout` — every late frame then falls
+  # through to the generic numeric path. `/quote LIST` never arms the
+  # tracker at all.
+  @list_numerics Enum.to_list(321..323)
+
   # #785 — the RFC error range (4xx command failures, 5xx server errors).
   # Distinct from `severity/1`'s `>= 400` cut, which also lands the 6xx
   # vendor replies on `:error`; absorption keys off the RANGE instead, so a
@@ -216,6 +257,7 @@ defmodule Grappa.Session.NumericRouter do
   @active_numerics MapSet.new(
                      @stats_numerics ++
                        @trace_numerics ++
+                       @list_numerics ++
                        [
                          # UX-4 bucket I (2026-05-19): connect-storm numerics
                          # whose middle params are server metadata (own ID,
@@ -343,14 +385,21 @@ defmodule Grappa.Session.NumericRouter do
                         # No-silent-drops B6.1 HIGH-3 (2026-05-14):
                         # LIST (321/322/323) numerics were previously
                         # listed as `:delegated` to a phantom EventRouter
-                        # handler. Removing them lets `param_derived_route/3`
-                        # fall through to `scan_params/2`, which routes them
-                        # via the default `{:server, nil}` path — Server's
-                        # numeric handler then persists them as plain
-                        # `:notice` rows on `$server` with
-                        # `meta.numeric/severity`. Visible, never silent.
-                        # (The cic /list directory UI consumes the REST
-                        # `directory` snapshot, not these numerics.)
+                        # handler, and removing them from this set was
+                        # right — the cic /list directory UI consumes the
+                        # REST `directory` snapshot, not these numerics.
+                        # What this note ASSERTED for the next two years was
+                        # not: it said the scan then routed them "via the
+                        # default `{:server, nil}` path". Only 323 did.
+                        # 321 scanned to `{:query, "Channel"}` and 322 to the
+                        # LISTED channel. #910 moved the family to
+                        # `@list_numerics` in the deny list, which is what
+                        # actually delivers the `$server` persist this note
+                        # claimed. The claim is kept here, corrected rather
+                        # than deleted, because a wrong doc about a family it
+                        # names by NUMBER is the alibi that stops the next
+                        # reader from checking — and it worked on three
+                        # later passes over this module.
                         #
                         # #238 — LINKS (364/365) took the OTHER branch of
                         # that contract: the cic /links topology UI wires a

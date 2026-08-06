@@ -16,7 +16,7 @@ defmodule Grappa.Session.DirectoryTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{ChannelDirectory, IRCServer, PubSub.Topic, Session}
+  alias Grappa.{ChannelDirectory, IRCServer, PubSub.Topic, Scrollback, Session}
   alias Grappa.Networks.{Credentials, SessionPlan}
 
   defp passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
@@ -103,6 +103,54 @@ defmodule Grappa.Session.DirectoryTest do
     # `:sys.get_state` serializes AFTER the timeout handler returns, so the
     # in-flight tracker is guaranteed cleared by the time we read it.
     assert :sys.get_state(pid).directory_refresh == nil
+  end
+
+  # #910 — the timeout above is exactly what makes the LIST family's routing
+  # reachable, so the two belong in one file: once the watchdog nils the
+  # tracker, the `%{directory_refresh: %{}}` head in `Server.handle_info` no
+  # longer matches and every late frame falls into the generic numeric path.
+  # Pre-fix `NumericRouter`'s param scan took 322's LISTED channel for the
+  # reply's destination and persisted a `:notice` row into a channel the user
+  # has never joined. This test is the one that fails on the real wire; the
+  # `NumericRouterTest` cases pin the decision itself.
+  test "a 322 arriving after the watchdog fired lands on $server, not in the listed channel" do
+    {server, port} = start_server()
+    {user, network, _} = setup_user_and_network(port)
+
+    credential = Credentials.get_credential!(user, network)
+    {:ok, base_plan} = SessionPlan.resolve(credential)
+    plan = Map.put(base_plan, :directory_refresh_timeout_ms, 50)
+    {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
+
+    on_exit(fn ->
+      _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
+    end)
+
+    :ok = await_handshake(server)
+    :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+    :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.channel(user.name, network.slug, "$server"))
+
+    assert :ok = Session.refresh_directory({:user, user.id}, network.id)
+
+    # Wait for the watchdog, not a sleep: the `directory_failed` ping is the
+    # instant the tracker went nil, which is the precondition under test.
+    assert_receive %Phoenix.Socket.Broadcast{
+                     event: "event",
+                     payload: %{kind: :directory_failed}
+                   },
+                   1_000
+
+    IRCServer.feed(server, ":irc.test 322 nick #elixir 1200 :The Elixir channel\r\n")
+
+    # The $server row arriving IS the barrier — the routing decision has been
+    # taken and persisted by the time this returns.
+    assert_receive %Phoenix.Socket.Broadcast{
+                     event: "event",
+                     payload: %{message: %{channel: "$server", body: "The Elixir channel"}}
+                   },
+                   1_000
+
+    assert Scrollback.fetch({:user, user.id}, network.id, "#elixir", nil, 10, nil, false) == []
   end
 
   test "a 322/323 burst fills and finalizes the snapshot" do

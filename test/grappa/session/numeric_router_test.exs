@@ -166,10 +166,15 @@ defmodule Grappa.Session.NumericRouterTest do
   # #908 — TRACE reply family (200–210, 261–262) folded in: `params[1]` is
   # the reply TYPE token ("Operator", "Server", "Class", …), the third
   # instance of the #184 stats-letter disease.
+  # #910 — LIST reply family (321–323) folded in: 321's `params[1]` is the
+  # literal column header "Channel" and 322's is the LISTED channel, neither
+  # of which is a destination for the reply. This property is what pins the
+  # MEMBERSHIP of all three; the real-wire-shape tests below document what
+  # each one actually routed to pre-fix.
   @active_numerics [4, 42, 263, 421, 432, 433, 437, 461, 512, 734] ++
                      Enum.to_list(211..219) ++
                      Enum.to_list(240..250) ++
-                     Enum.to_list(200..210) ++ [261, 262]
+                     Enum.to_list(200..210) ++ [261, 262] ++ Enum.to_list(321..323)
 
   describe "@active_numerics deny list → {:server, nil}" do
     property "all @active_numerics route to {:server, nil} regardless of params" do
@@ -327,6 +332,47 @@ defmodule Grappa.Session.NumericRouterTest do
       m = msg(262, ["vjt", "services", "End of TRACE"])
       assert {:server, nil} = NumericRouter.route(m, state())
     end
+
+    # #910 — LIST reply family (321/322/323). Reachable whenever the
+    # `directory_refresh` tracker is nil: the watchdog nils it on
+    # `:directory_refresh_timeout` and every late frame then falls here, and
+    # `/quote LIST` never arms the tracker at all. The three shapes are
+    # DIFFERENT defects and only one of them was user-visible — see the
+    # per-test notes.
+    test "321 RPL_LISTSTART: the column header 'Channel' is NOT a query destination" do
+      # RFC 1459's header row, verbatim. `params[1]` is the literal string
+      # "Channel" — a column label — and it satisfies `valid_nick?/1`, so the
+      # scan resolved it to {:query, "Channel"}. LATENT, not observed: #640's
+      # `resolve_numeric_query_window/2` collapses the decision back to
+      # $server unless a query window with that nick is open. It stops being
+      # latent the moment the operator has a DM open with a peer nicked
+      # "Channel", who then receives the LIST header.
+      m = msg(321, ["vjt", "Channel", "Users  Name"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "322 RPL_LIST: a LISTED channel is not the reply's destination (#910 headline)" do
+      # The observable defect of the three. The channel branch outranks the
+      # query branch AND passes through #640's window-existence gate
+      # untouched, so a late/unsolicited LIST persisted one `:notice` row
+      # into EVERY listed channel's scrollback — including channels the user
+      # has never joined.
+      m = msg(322, ["vjt", "#chan", "42", "a channel topic"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
+
+    test "323 RPL_LISTEND: stays on $server, and no longer by accident" do
+      # Already reached $server pre-fix, but only because "End of /LIST"
+      # carries spaces and so fails `valid_nick?/1` — the same
+      # accident-of-spelling that 262 RPL_ENDOFTRACE was covered for above.
+      # Unlike 262 (where a dotless server name is a real wire shape that
+      # made the pre-fix test RED), every ircd checked spells this trailing
+      # with spaces, so THIS assertion passes before and after. The property
+      # above is what constrains 323's membership; this test documents the
+      # wire.
+      m = msg(323, ["vjt", "End of /LIST"])
+      assert {:server, nil} = NumericRouter.route(m, state())
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -477,14 +523,16 @@ defmodule Grappa.Session.NumericRouterTest do
     end
 
     # B6.1 HIGH-3 — LIST (321/322/323) used to be `:delegated` to a phantom
-    # EventRouter handler, dropping silently. Now it falls through to
-    # `scan_params` and routes to `$server` (or the channel-prefix param
-    # when present), so Server's numeric handler persists visible `:notice`
-    # rows. LINKS (364/365) took the OTHER branch — see the #238 delegation
-    # tests below.
-    test "322 RPL_LIST is no longer delegated; routes to channel param" do
+    # EventRouter handler, dropping silently. It is no longer delegated, and
+    # it is no longer param-scanned either: #910 moved the family to the
+    # active deny list, so the routing assertions live with the rest of that
+    # class above. This test USED to pin `{:channel, "#chan"}` for 322 and
+    # called that outcome the fix — it was the defect, written down as an
+    # expectation, which is how it outlived three later passes over this
+    # module. LINKS (364/365) took the OTHER branch — see the #238 tests.
+    test "322 RPL_LIST is not delegated (#910 routes it via the deny list)" do
       m = msg(322, ["vjt", "#chan", "42", "a channel topic"])
-      assert {:channel, "#chan"} = NumericRouter.route(m, state())
+      refute NumericRouter.route(m, state()) == :delegated
     end
 
     # #238 — LINKS (364/365) are delegated so EventRouter's links_bundle

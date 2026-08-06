@@ -3274,12 +3274,22 @@ defmodule Grappa.Session.Server do
   # `directory_complete`). The `%{directory_refresh: %{}}` head is
   # load-bearing: it matches ONLY when a refresh is in flight (the tracker
   # is a map). A `nil` tracker fails the map pattern, so the numerics fall
-  # through to the generic handler below and route to `$server` scrollback
-  # as before (manual /LIST) — same shape-match discrimination the C4
-  # watchdog uses (`%{directory_refresh: nil}` vs catch-all), sidestepping
-  # a `not is_nil/1` guard. While in-flight the dedicated handler CONSUMES
-  # them — they are NOT persisted (the snapshot is the durable record, the
-  # pings are the live signal).
+  # through to the generic handler below — same shape-match discrimination
+  # the C4 watchdog uses (`%{directory_refresh: nil}` vs catch-all),
+  # sidestepping a `not is_nil/1` guard. While in-flight the dedicated
+  # handler CONSUMES them — they are NOT persisted (the snapshot is the
+  # durable record, the pings are the live signal).
+  #
+  # #910 — this note used to finish that sentence with "and route to
+  # `$server` scrollback as before (manual /LIST)", the same false claim
+  # `NumericRouter`'s moduledoc made about the same three numbers. They did
+  # NOT all reach `$server`: 322 param-scanned to the LISTED channel and
+  # persisted a row into channels the user had never joined. This clause is
+  # precisely what made that reachable — the `:directory_refresh_timeout`
+  # watchdog below NILS the tracker, so every LATE frame of a stalled
+  # refresh falls out of here and into the scan. 321/322/323 are now in
+  # `NumericRouter`'s deny list, which is what makes the `$server` claim
+  # true; do not re-derive it from this clause's fall-through.
   def handle_info(
         {:irc, %Message{command: {:numeric, code}} = msg},
         %{directory_refresh: %{}} = state
