@@ -45,8 +45,8 @@ defmodule Grappa.ApplicationAmbientReapersTest do
   defp running_reapers do
     Grappa.Supervisor
     |> Supervisor.which_children()
-    |> Enum.filter(fn {id, pid, _type, _mods} -> reaper?(id) and is_pid(pid) end)
-    |> Enum.map(fn {id, pid, _type, _mods} -> {id, pid} end)
+    |> Enum.filter(fn {id, pid, _, _} -> reaper?(id) and is_pid(pid) end)
+    |> Enum.map(fn {id, pid, _, _} -> {id, pid} end)
   end
 
   defp reaper?(id) when is_atom(id), do: id |> Atom.to_string() |> String.ends_with?(".Reaper")
