@@ -1,3 +1,4 @@
+import { createEffect, createRoot } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // #443 — "show colored nicklist" display preference. Boolean, OFF by
@@ -56,6 +57,27 @@ describe("colorNicklist module", () => {
       expect(getColoredNicklist()).toBe(false);
       setColoredNicklist(true);
       expect(getColoredNicklist()).toBe(true);
+    });
+
+    // #921 — the assertion that actually constrains the SHAPE. Everything
+    // above, the set-then-get round-trip included, passes against a getter
+    // that is a plain `localStorage.getItem` — measured in #914, where the
+    // module was first written that way on purpose and 6 of 7 assertions
+    // stayed green. A non-reactive getter leaves the MOUNTED members pane
+    // monochrome until reload, which is the whole bug. Only a TRACKED read
+    // proves the signal: the effect has to re-run.
+    it("re-runs a tracked read, so a mounted nicklist re-renders on toggle", async () => {
+      const { getColoredNicklist, setColoredNicklist } = await import("../lib/colorNicklist");
+      const seen: boolean[] = [];
+      createRoot(() => {
+        createEffect(() => seen.push(getColoredNicklist()));
+      });
+      await Promise.resolve();
+      expect(seen).toEqual([false]);
+
+      setColoredNicklist(true);
+      await Promise.resolve();
+      expect(seen).toEqual([false, true]);
     });
   });
 });
