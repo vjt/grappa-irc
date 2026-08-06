@@ -229,7 +229,21 @@ describe("dismissPseudoWindow — drops a pseudo-row, redirects if it was focuse
   // from EVERY window-state map (invited/failed/kicked alike), so the
   // backfill stops re-asserting it. The dismissal now mutates server
   // state — the invariant #511 restores.
-  it("PARTs the invited channel so the dismissal reaches the server and survives a reload (#511)", async () => {
+  //
+  // #912 — the name stops at what this test WITNESSES. It used to end in
+  // "and survives a reload", and it reloads nothing: durability is the client
+  // half COMPOSED with the server half (`PartCleanup.cleanup_local` →
+  // `WindowState.set_parted` → the cold-subscribe snapshot omits the key), and
+  // with `api` mocked no unit test can see past the call. What the call DOES
+  // pin is real — delete `postPart` from `partAndForget` and this reddens, so
+  // the client-only-dismiss regression dies here. The composition is witnessed
+  // only end-to-end, by `e2e/tests/issue511-failed-autojoin-dismiss-durable.spec.ts`
+  // (the `:failed` autojoin shape, through this same `partAndForget` DELETE —
+  // that file's header explains why the pseudo-row shape is vacuous there, and
+  // note #902 has since made `:invited` deliberately NON-durable). A unit name
+  // answering "yes" to "is #511's durability covered?" is how its previous e2e
+  // witness got deleted with nobody noticing.
+  it("calls postPart, so the dismissal reaches the server and not just the client (#511)", async () => {
     selectedChannelMock.mockReturnValue(null);
     const api = await import("../lib/api");
     const auth = await import("../lib/auth");
