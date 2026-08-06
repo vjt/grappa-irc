@@ -385,7 +385,7 @@ defmodule Grappa.Deploy.Preflight do
   # script, not by the restart.
   defp nginx?("infra/freebsd/nginx.conf", :jail), do: true
   defp nginx?("infra/linux/nginx.conf", :linux), do: true
-  defp nginx?(path, _substrate), do: String.starts_with?(path, "infra/snippets/")
+  defp nginx?(path, _), do: String.starts_with?(path, "infra/snippets/")
 
   # Class 7 (H20+H21): ALL config/*.exs. SECRET_SIGNING_SALT was
   # silently HOT'd before this rule because config/config.exs didn't
