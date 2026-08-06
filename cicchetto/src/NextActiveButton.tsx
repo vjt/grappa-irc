@@ -5,6 +5,7 @@ import {
   jumpToNextActiveWindow,
   nextActiveKind,
 } from "./lib/activeWindows";
+import { getHideNextActive } from "./lib/hideNextActive";
 
 // GH #235 — the on-screen "jump to next active window" affordance
 // (irssi Alt+A). ONE component, placements selected by `variant`: the
@@ -21,6 +22,12 @@ import {
 // #280 — badge COLOR reflects the next target's tier via `nextActiveKind`:
 // RED (priority) for a mention/DM, BLUE (normal) for an ordinary channel.
 // Same single source as the count/auto-hide, so it can never diverge.
+//
+// #914 — `getHideNextActive()` ANDs into the same gate. It is PRESENTATIONAL:
+// it removes this button (both variants, one preference) and nothing else, so
+// Alt+A and Ctrl+N keep jumping through the untouched `jumpToNextActiveWindow`
+// verb. On mobile that leaves no jump affordance, which is the point of the
+// request. The pref is per-DEVICE and client-local — see lib/hideNextActive.
 
 export type Props = {
   variant: "desktop" | "mobile";
@@ -28,7 +35,7 @@ export type Props = {
 
 const NextActiveButton: Component<Props> = (props) => {
   return (
-    <Show when={hasActiveWindows()}>
+    <Show when={hasActiveWindows() && !getHideNextActive()}>
       <button
         type="button"
         class={`next-active-btn next-active-btn-${props.variant}`}

@@ -21,6 +21,11 @@ vi.mock("../lib/colorNicklist", () => ({
   setColoredNicklist: vi.fn(),
 }));
 
+vi.mock("../lib/hideNextActive", () => ({
+  getHideNextActive: vi.fn(() => false),
+  setHideNextActive: vi.fn(),
+}));
+
 const subjectHolder = vi.hoisted(() => ({
   current: null as
     | { kind: "user"; id: string; name: string }
@@ -375,6 +380,32 @@ describe("SettingsDrawer display options section (#443)", () => {
     openSub("display-settings-entry");
     fireEvent.click(screen.getByTestId("colored-nicklist-toggle"));
     expect(colorNicklist.setColoredNicklist).toHaveBeenCalledWith(true);
+  });
+
+  // #914 — the fourth fieldset. It is an append to the SAME display-options
+  // section, so it must land inside that block like its three siblings.
+  it("renders the hide-jump-button toggle inside the display-options section", () => {
+    wrap(true);
+    openSub("display-settings-entry");
+    const section = screen.getByTestId("settings-section-display");
+    expect(section.querySelector('[data-testid="hide-next-active-toggle"]')).not.toBeNull();
+  });
+
+  it("renders the hide-jump-button toggle unchecked by default", () => {
+    wrap(true);
+    openSub("display-settings-entry");
+    const toggle = screen.getByTestId("hide-next-active-toggle") as HTMLInputElement;
+    // getHideNextActive mock returns false → the #235 button keeps rendering
+    // for anyone who never touches this row (off by default).
+    expect(toggle.checked).toBe(false);
+  });
+
+  it("toggling the hide-jump-button checkbox fires setHideNextActive(true)", async () => {
+    const hideNextActive = await import("../lib/hideNextActive");
+    wrap(true);
+    openSub("display-settings-entry");
+    fireEvent.click(screen.getByTestId("hide-next-active-toggle"));
+    expect(hideNextActive.setHideNextActive).toHaveBeenCalledWith(true);
   });
 });
 

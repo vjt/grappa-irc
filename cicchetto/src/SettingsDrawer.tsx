@@ -20,6 +20,7 @@ import { getColoredNicklist } from "./lib/colorNicklist";
 import { syncedSetColoredNicklist, syncedSetTimeFormat } from "./lib/displayPrefs";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
 import { friendlyApiError } from "./lib/friendlyApiError";
+import { getHideNextActive, setHideNextActive } from "./lib/hideNextActive";
 import { detach, quit, updateIdentity } from "./lib/lifecycle";
 import { isAdmin, networks, user } from "./lib/networks";
 import { mirrorNotificationPrefs } from "./lib/notificationPrefs";
@@ -199,6 +200,13 @@ const SettingsDrawer: Component<Props> = (props) => {
     const on = (e.currentTarget as HTMLInputElement).checked;
     setColoredNicklistSig(on); // local signal for optimistic drawer UI
     syncedSetColoredNicklist(on); // #449 — local apply + server PUT
+  };
+
+  // #914 — no drawer-local mirror signal (unlike the nicklist row above):
+  // `getHideNextActive()` is already the module signal, so the checkbox binds
+  // straight to it and there is no second copy to keep in sync.
+  const onHideNextActiveChange = (e: Event) => {
+    setHideNextActive((e.currentTarget as HTMLInputElement).checked);
   };
 
   // #126 — detach: leave cic, KEEP the bouncer up. Persistent identities
@@ -1312,6 +1320,25 @@ const SettingsDrawer: Component<Props> = (props) => {
                     data-testid="colored-nicklist-toggle"
                   />
                   show colored nicklist
+                </label>
+              </fieldset>
+
+              {/* #914 — hide the #235 "jump to next active window" (»N)
+                button. Off by default. PRESENTATIONAL: it removes the button
+                in BOTH placements (desktop sidebar + mobile overlay) and
+                nothing else — Alt+A and Ctrl+N keep jumping. Client-local and
+                per-DEVICE, unlike the two synced rows above; the complaint is
+                the viewport-fixed mobile overlay. */}
+              <fieldset class="hide-next-active-fieldset">
+                <legend>jump button</legend>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={getHideNextActive()}
+                    onChange={onHideNextActiveChange}
+                    data-testid="hide-next-active-toggle"
+                  />
+                  hide the jump-to-next-active button
                 </label>
               </fieldset>
             </section>
