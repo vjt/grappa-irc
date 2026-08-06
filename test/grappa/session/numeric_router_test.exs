@@ -167,7 +167,8 @@ defmodule Grappa.Session.NumericRouterTest do
   # the reply TYPE token ("Operator", "Server", "Class", …), the third
   # instance of the #184 stats-letter disease.
   @active_numerics [4, 42, 263, 421, 432, 433, 437, 461, 512, 734] ++
-                     Enum.to_list(211..219) ++ Enum.to_list(240..250) ++
+                     Enum.to_list(211..219) ++
+                     Enum.to_list(240..250) ++
                      Enum.to_list(200..210) ++ [261, 262]
 
   describe "@active_numerics deny list → {:server, nil}" do
