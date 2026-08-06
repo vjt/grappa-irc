@@ -493,6 +493,15 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   // the first residue write makes `preferred` non-empty, hopping windows
   // mid-drain. Known hole: text typed into `preferred` AFTER that resolution
   // (possible during a long 429-paced drain) is still overwritten.
+  //
+  // #907 — `prepare` is whatever the arm must arrange before the first line can
+  // go out (`/msg` awaits its #254 query-topic join). It runs INSIDE the claim,
+  // and that is the whole reason it is a parameter here rather than a statement
+  // in the arm: between the composer emptying at dispatch (#904) and the first
+  // residue write there must be no moment the operator can type into, or that
+  // keystroke is overwritten by the write. Required, never optional, so the
+  // next arm that grows an await has to answer the question instead of silently
+  // re-opening the gap.
   const sendPacedBody = async (
     source: ResidueHome,
     preferred: ResidueHome,
@@ -500,9 +509,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     target: string,
     body: string,
     action: boolean,
+    prepare: () => Promise<void>,
   ): Promise<DispatchOutcome> => {
-    const home =
-      preferred.key === source.key || getDraft(preferred.key) === "" ? preferred : source;
     let sentCount = 0;
     let totalCount = 0;
     // #904 — the two buffer regimes of a free-text send, told apart by the ONE
@@ -526,52 +534,73 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // `finally` so a fatal mid-fan-out unlocks the window too: a lock that
     // outlives its drain leaves the composer dead until reload, which is worse
     // than the overwrite it prevents.
-    const locked = multi ? [...new Set([source.key, home.key])] : [];
-    claimDrafts(locked);
+    //
+    // #907 — claimed BEFORE `prepare`, which means before the home is known,
+    // so BOTH candidates are taken: the choice below reads `preferred`'s draft,
+    // and a draft that stayed writable across an await would be stale ground to
+    // decide on. The loser is handed back the moment the choice is made.
+    const claimed = multi ? [...new Set([source.key, preferred.key])] : [];
+    claimDrafts(claimed);
     try {
-      await sendBodyLines(slug, target, body, action, (sent, total, residue) => {
-        sentCount = sent;
-        totalCount = total;
-        if (!multi) return;
-        // Residue-only draft, reset to the live bottom (historyCursor null):
-        // we're typing the remainder, not walking history. A drained send
-        // leaves "" — never a bare prefix the operator would have to erase.
-        writeState(home.key, (s) => ({
-          ...s,
-          draft: residueDraft(home, residue),
-          historyCursor: null,
-        }));
-      });
-      return { ok: true };
-    } catch (e) {
-      // Fatal mid-fan-out (WS down, invalid_line, severed 401). The residue
-      // draft is already set to the unsent remainder; surface the reason and,
-      // for a genuine multi-line paste, how many lines went out so the operator
-      // knows the send partially landed. "In the box" means the composer they
-      // are looking at — a lie when a busy `preferred` sent the remainder back
-      // to the window they submitted from, so that case says where it went
-      // whether or not the body was multi-line.
-      const reason = friendlyError(e);
-      const sentOf = totalCount > 1 ? ` — sent ${sentCount} of ${totalCount} lines` : "";
-      // #904 — a single line has no residue to relocate: the pump hands the
-      // ORIGINAL text back to the window it was typed in, which needs no
-      // re-addressing because it still carries its own `/me ` / `/msg <peer> `.
-      // So the "your eyes are elsewhere" test is the FOCUS switch (`/msg`
-      // moved them to the query window), not which window won the residue.
-      const relocated = multi ? home.key !== preferred.key : preferred.key !== source.key;
-      if (relocated) {
-        // "The rest" presumes something went out; on a single-line body
-        // nothing did, so name the whole message instead.
-        const what = totalCount > 1 ? "the rest are" : "your message is";
-        const error = `${reason}${sentOf}; ${what} in the window you sent from`;
-        return multi ? { error, keptBuffer: true } : { error };
+      await prepare();
+      const home =
+        preferred.key === source.key || getDraft(preferred.key) === "" ? preferred : source;
+      // Holding a composer hostage for a drain that will never write to it is
+      // its own defect — and `/msg` has just moved the operator's eyes into
+      // exactly that window.
+      releaseDrafts(claimed.filter((k) => k !== source.key && k !== home.key));
+      try {
+        await sendBodyLines(slug, target, body, action, (sent, total, residue) => {
+          sentCount = sent;
+          totalCount = total;
+          if (!multi) return;
+          // Residue-only draft, reset to the live bottom (historyCursor null):
+          // we're typing the remainder, not walking history. A drained send
+          // leaves "" — never a bare prefix the operator would have to erase.
+          writeState(home.key, (s) => ({
+            ...s,
+            draft: residueDraft(home, residue),
+            historyCursor: null,
+          }));
+        });
+        return { ok: true };
+      } catch (e) {
+        // Fatal mid-fan-out (WS down, invalid_line, severed 401). The residue
+        // draft is already set to the unsent remainder; surface the reason and,
+        // for a genuine multi-line paste, how many lines went out so the
+        // operator knows the send partially landed. "In the box" means the
+        // composer they are looking at — a lie when a busy `preferred` sent the
+        // remainder back to the window they submitted from, so that case says
+        // where it went whether or not the body was multi-line.
+        const reason = friendlyError(e);
+        const sentOf = totalCount > 1 ? ` — sent ${sentCount} of ${totalCount} lines` : "";
+        // #904 — a single line has no residue to relocate: the pump hands the
+        // ORIGINAL text back to the window it was typed in, which needs no
+        // re-addressing because it still carries its own `/me ` / `/msg <peer> `.
+        // So the "your eyes are elsewhere" test is the FOCUS switch (`/msg`
+        // moved them to the query window), not which window won the residue.
+        const relocated = multi ? home.key !== preferred.key : preferred.key !== source.key;
+        if (relocated) {
+          // "The rest" presumes something went out; on a single-line body
+          // nothing did, so name the whole message instead.
+          const what = totalCount > 1 ? "the rest are" : "your message is";
+          const error = `${reason}${sentOf}; ${what} in the window you sent from`;
+          return multi ? { error, keptBuffer: true } : { error };
+        }
+        if (!multi) return { error: reason };
+        return { error: `${reason}${sentOf}; the rest are in the box`, keptBuffer: true };
       }
-      if (!multi) return { error: reason };
-      return { error: `${reason}${sentOf}; the rest are in the box`, keptBuffer: true };
     } finally {
-      releaseDrafts(locked);
+      // Everything ever claimed, including the case `prepare` itself threw:
+      // `releaseDrafts` deletes keys, so releasing the loser twice is a no-op.
+      releaseDrafts(claimed);
     }
   };
+
+  // The paced-send arms that address a window which already exists have nothing
+  // to arrange before their first line (#907: `prepare` is required precisely
+  // so that answer is written down rather than assumed).
+  const nothingToPrepare = (): Promise<void> => Promise.resolve();
 
   // #904 — dispatch ONE submission. It never reads or writes the composer
   // buffer: the pump (`submit`, below) hands it the text and owns the
@@ -660,7 +689,15 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           // #723 — the residue stays in THIS window and this window IS the
           // target, so the bare remainder resends correctly: no prefix.
           const home = { key, resubmitPrefix: "" };
-          const r = await sendPacedBody(home, home, networkSlug, channelName, cmd.body, false);
+          const r = await sendPacedBody(
+            home,
+            home,
+            networkSlug,
+            channelName,
+            cmd.body,
+            false,
+            nothingToPrepare,
+          );
           if ("error" in r) return r;
           result = r;
           break;
@@ -672,7 +709,15 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           // #723 — the remainder must resend as an ACTION, not as plain text:
           // the residue carries the `/me ` back with it.
           const home = { key, resubmitPrefix: "/me " };
-          const r = await sendPacedBody(home, home, networkSlug, channelName, cmd.body, true);
+          const r = await sendPacedBody(
+            home,
+            home,
+            networkSlug,
+            channelName,
+            cmd.body,
+            true,
+            nothingToPrepare,
+          );
           if ("error" in r) return r;
           result = r;
           break;
@@ -865,7 +910,15 @@ const exports_ = identityScopedStore((onIdentityChange) => {
             // sent `/msg nickserv IDENTIFY <pass>` ends up resent to the
             // channel the operator typed it in.
             const home = { key, resubmitPrefix: `/msg ${cmd.target} ` };
-            const svc = await sendPacedBody(home, home, networkSlug, cmd.target, cmd.body, false);
+            const svc = await sendPacedBody(
+              home,
+              home,
+              networkSlug,
+              cmd.target,
+              cmd.body,
+              false,
+              nothingToPrepare,
+            );
             if ("error" in svc) return svc;
             result = svc;
             break;
@@ -873,15 +926,6 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           const canonical = canonicalQueryNick(networkId, cmd.target);
           openQueryWindowState(networkId, canonical, new Date().toISOString());
           setSelectedChannel({ networkSlug, channelName: canonical, kind: "query" });
-          // #254 — subscribe-before-send: make the (slug,target) query topic's
-          // WS subscription READY (await the join ACK) BEFORE the first PRIVMSG
-          // POST, so the server's own-echo broadcast has a live listener and
-          // renders live. Pre-fix the join raced the POST (it's gated on the
-          // open_query_window → query_windows_list round-trip) and the echo
-          // fastlaned to nobody — the row then only reappeared on reload. The
-          // echo stays the sole render path (no optimistic local render — cf.
-          // the #251 source_address abolition).
-          await ensureQueryTopicJoined(networkSlug, canonical);
           // #666 — resumable + paced. The residue PREFERS the QUERY window we
           // just focused (`canonical`) over the source window: /msg already
           // switched focus here, so a partial-send remainder + its error banner
@@ -894,6 +938,20 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           // window ends up holding it — and in the source window it keeps its
           // `/msg <peer> `, so resending from a channel cannot spill a private
           // message into that channel.
+          //
+          // #254 — subscribe-before-send: make the (slug,target) query topic's
+          // WS subscription READY (await the join ACK) BEFORE the first PRIVMSG
+          // POST, so the server's own-echo broadcast has a live listener and
+          // renders live. Pre-fix the join raced the POST (it's gated on the
+          // open_query_window → query_windows_list round-trip) and the echo
+          // fastlaned to nobody — the row then only reappeared on reload. The
+          // echo stays the sole render path (no optimistic local render — cf.
+          // the #251 source_address abolition).
+          //
+          // #907 — it is handed over as the `prepare` step rather than awaited
+          // here, so the composer is already claimed while it runs: awaited in
+          // the arm, it was a gap between the #904 take-at-dispatch and the
+          // first residue write, and a keystroke landing in it was destroyed.
           const r = await sendPacedBody(
             { key, resubmitPrefix: `/msg ${canonical} ` },
             { key: channelKey(networkSlug, canonical), resubmitPrefix: "" },
@@ -901,6 +959,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
             canonical,
             cmd.body,
             false,
+            () => ensureQueryTopicJoined(networkSlug, canonical),
           );
           if ("error" in r) return r;
           result = r;

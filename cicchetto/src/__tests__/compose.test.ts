@@ -833,6 +833,112 @@ describe("compose submit — slash command dispatch", () => {
     }
   });
 
+  // #907 — the claim must happen BEFORE the arm awaits. Every other paced-send
+  // arm is safe by the SHAPE of `sendPacedBody`: it claims synchronously, so
+  // there is no moment between the composer emptying (#904 takes the text out
+  // at dispatch) and the lock. `/msg` awaited the #254 query-topic join first,
+  // and that await was a gap the operator could type into — destroyed by the
+  // first residue write in the one configuration where the source window is
+  // also the residue home: a query window that is already busy (#723).
+  //
+  // The join is held open by the test, so nothing here depends on how long a
+  // real join ACK takes — the operator types while the promise is unresolved
+  // by construction, not by timing.
+  it("#907 — /msg claims the composer BEFORE it awaits the query-topic join", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const sb = await import("../lib/scrollback");
+    const api = await import("../lib/api");
+    const qtj = await import("../lib/queryTopicJoin");
+    const compose = await import("../lib/compose");
+    const source = channelKey("freenode", "#a");
+    const query = channelKey("freenode", "bob");
+
+    let ackJoin!: () => void;
+    let joinAwaited = false;
+    qtj.setEnsureQueryTopicJoined(() => {
+      joinAwaited = true;
+      return new Promise<void>((resolve) => {
+        ackJoin = resolve;
+      });
+    });
+
+    let n = 0;
+    vi.mocked(sb.sendMessage).mockImplementation(async () => {
+      n += 1;
+      if (n === 2) throw new api.ApiError(400, "invalid_line");
+      return undefined as never;
+    });
+
+    // Busy query window → the residue is refused the redirect and comes back
+    // to the SOURCE, which is the window still reachable during the join.
+    compose.setDraft(query, "half typed reply");
+    compose.setDraft(source, "/msg bob l1\nl2\nl3");
+    const done = compose.submit(source, "freenode", "#a");
+    expect(joinAwaited).toBe(true);
+
+    // Parked on the join ACK. The buffer is already out of the composer, and
+    // the drain that will rewrite it has not started: pre-fix this typing
+    // landed, and the first residue write ate it without a trace.
+    expect(compose.isDraining(source)).toBe(true);
+    compose.setDraft(source, "and one more thing");
+    expect(compose.getDraft(source)).toBe("");
+
+    ackJoin();
+    const result = await done;
+
+    expect(result).toHaveProperty("error");
+    expect(compose.getDraft(source)).toBe("/msg bob l2\nl3");
+    expect(compose.getDraft(query)).toBe("half typed reply");
+    expect(compose.isDraining(source)).toBe(false);
+  });
+
+  // #907, the counterweight — claiming both candidate homes across the join is
+  // what makes the home choice honest, but only ONE of them ends up holding
+  // the residue. The loser is handed back to the operator the moment the
+  // choice is made: freezing a window the drain will never write to would be a
+  // dead composer for the length of a 429 ladder, in the very window `/msg`
+  // just moved the operator's eyes to.
+  it("#907 — the window that loses the residue is writable again for the drain", async () => {
+    vi.useFakeTimers();
+    try {
+      localStorage.setItem("grappa-token", "tok");
+      const sb = await import("../lib/scrollback");
+      const api = await import("../lib/api");
+      const compose = await import("../lib/compose");
+      const source = channelKey("freenode", "#a");
+      const query = channelKey("freenode", "bob");
+
+      let n = 0;
+      let refused = false;
+      vi.mocked(sb.sendMessage).mockImplementation(async () => {
+        n += 1;
+        if (n === 2 && !refused) {
+          refused = true;
+          throw new api.ApiError(429, "rate_limited", { retry_after: 2 });
+        }
+        return undefined as never;
+      });
+
+      compose.setDraft(query, "half typed reply");
+      compose.setDraft(source, "/msg bob l1\nl2\nl3");
+      const done = compose.submit(source, "freenode", "#a");
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Mid-drain: the source owns the residue and is locked; the query window
+      // owns nothing but the operator's own text and stays theirs.
+      expect(compose.isDraining(source)).toBe(true);
+      expect(compose.isDraining(query)).toBe(false);
+      compose.setDraft(query, "half typed reply, now finished");
+      expect(compose.getDraft(query)).toBe("half typed reply, now finished");
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(await done).toEqual({ ok: true });
+      expect(compose.isDraining(source)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("/me action sends as ACTION via scrollback.sendMessage with CTCP framing", async () => {
     localStorage.setItem("grappa-token", "tok");
     const sb = await import("../lib/scrollback");

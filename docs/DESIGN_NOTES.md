@@ -30830,3 +30830,60 @@ currently pinned only by `issue443-colored-nicklist.spec.ts` in a real browser.
 Recorded here rather than fixed in #914's diff — the finding is worth more than
 the two-line edit, and widening an unrelated PR to bury it is how findings get
 lost.
+
+## 2026-08-06 — #907: claim the buffer, THEN await — the rule becomes a parameter
+
+`/msg` awaited `ensureQueryTopicJoined` (the #254 subscribe-before-send join
+ACK) in the dispatch arm, and only then called `sendPacedBody`, which claims
+the #737 drain lock. Between those two lines the composer was empty (#904 takes
+the text out AT DISPATCH) and unclaimed: a keystroke landing there was
+overwritten by the first residue write of the paced drain. Every other
+paced-send arm is safe by SHAPE rather than by care — `sendPacedBody` resolves
+the residue home and claims in one synchronous block, so no gap exists to type
+into. Nothing protected that shape.
+
+**The fix is the shape, not the arm.** `sendPacedBody` grew a required
+`prepare: () => Promise<void>` and runs it INSIDE the claim; `/msg` hands it
+`() => ensureQueryTopicJoined(slug, canonical)` and the other three call sites
+pass `nothingToPrepare`. Required, not optional: an arm that grows an await
+before its first line now has one place to put it, and the ceremony of passing
+a no-op is the question being asked out loud. Patching only the `/msg` arm —
+claim, await, release, then let `sendPacedBody` re-claim — also closes the hole
+(there is no await between that release and the re-claim, so no keystroke can
+interleave), but it duplicates the `multi` rule and the key set in the arm, and
+"safe because no yield point sits between these two statements" is precisely
+the reasoning that was already load-bearing and already unprotected.
+
+**Both candidate homes are claimed across `prepare`, and the loser is released
+the moment the choice is made.** The home choice reads `preferred`'s draft
+(#723: a busy query window refuses the redirect), and reading it after an await
+it stayed writable during would be deciding on stale ground. Post-`prepare` the
+locked set is byte-identical to the pre-fix one, so the drain's own posture is
+unchanged — the query window that ends up owning nothing goes straight back to
+the operator, whose eyes `/msg` just moved into it. Freezing a window the drain
+will never write to would be its own defect.
+
+**What is NOT measured.** Nobody has timed a join ACK, and no repro was run
+against production. The issue is a code-structure reading and stays one: the
+window's WIDTH and how often it bites are unknown, and no claim here rests on
+them. What IS measured is that the path exists — the test below fails on the
+pre-fix code at the exact assertion that says so.
+
+**One trigger from the issue is falsified.** #907 lists a QUEUED submission
+(#904's one-deep slot) among the conditions. It is not required: #904 empties
+the composer on the FIRST Enter too, so the gap opens on a plain single
+submission. The test queues nothing and still reds.
+
+**The oracle is mid-await, and that is not a shortcut.** Post-fix and pre-fix
+the FINAL draft is identical — the residue write lands on an empty box either
+way, because the operator's text was destroyed rather than merged. So a
+before/after assertion on the settled state passes against the bug. The test
+holds the join promise open under its own control (`setEnsureQueryTopicJoined`,
+the #254 seam, is an injection point), types into the source window while it is
+unresolved, and asserts the write was REFUSED — the #737 posture, refuse rather
+than lose. No timing is guessed anywhere: the promise is resolved by the test,
+not by a clock.
+
+**No e2e, deliberately.** The observable is a textarea that is readOnly for the
+length of one WS round trip. A browser spec racing that window would pass by
+luck, which is worse than not having one.
