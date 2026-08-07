@@ -12,6 +12,13 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxyTest do
   The loopback+XFF row is the bastille-jail (and Docker) shape:
   nginx runs on the same host and proxies via loopback. Tests pin
   the matrix so a config-shape drift fails here before it ships.
+
+  The plug also stamps `direct_loopback_peer?/1` — row 1 as a boolean,
+  the authorization-grade signal `Plugs.LoopbackOnly` gates on. It is
+  deliberately NOT the resolved `conn.remote_ip`: that value is an
+  attribution and can be loopback for reasons carrying no privilege.
+  Its own describe block pins the predicate, the fail-closed default,
+  and the named residual.
   """
   use ExUnit.Case, async: true
 
@@ -182,6 +189,80 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxyTest do
                {203, 0, 113, 7},
                [{"x-forwarded-for", "10.0.0.5"}]
              ) == {203, 0, 113, 7}
+    end
+  end
+
+  # A caller whose own source address is in a reserved range, fronted by a
+  # same-host reverse proxy, arrives with a forwarded chain in which every
+  # entry is reserved. The resolver finds no client in such a chain and
+  # answers with the transport peer — which in that topology is loopback.
+  #
+  # No header is forged; the proxy builds the chain itself. The gate must
+  # deny anyway, and it does, because it reads the transport predicate and
+  # not the resolved value. This pins the GATE, which is the whole point of
+  # separating the two.
+  #
+  # The sibling property — that the RESOLVED value should not collapse onto
+  # the peer either — is an attribution concern, still open, and is NOT
+  # pinned here: it has no fix in this tree, and a permanently-red test
+  # buys nothing. See the `trusted_client_ip/3` moduledoc.
+  describe "reserved-only forwarded chain behind a loopback proxy" do
+    test "the loopback gate rejects a private-range caller fronted by a loopback proxy" do
+      conn =
+        :post
+        |> Plug.Test.conn("/admin/cic-bundle-changed")
+        |> Map.put(:remote_ip, {127, 0, 0, 1})
+        |> Plug.Conn.put_req_header("x-forwarded-for", "10.66.6.6")
+        |> RemoteIpFromProxy.call(RemoteIpFromProxy.init(@plug_opts))
+        |> GrappaWeb.Plugs.LoopbackOnly.call([])
+
+      assert conn.halted, "LoopbackOnly admitted a caller whose real source is 10.66.6.6"
+      assert conn.status == 403
+    end
+  end
+
+  # The authorization-grade signal `Plugs.LoopbackOnly` gates on. Distinct
+  # from the resolved `conn.remote_ip`, which is an attribution: it can be
+  # loopback for reasons that carry no operator privilege. This predicate is
+  # a property of the TRANSPORT, so no header can produce it.
+  describe "direct_loopback_peer? — the gate signal" do
+    test "fails closed on a conn the plug never touched" do
+      refute RemoteIpFromProxy.direct_loopback_peer?(%Plug.Conn{remote_ip: {127, 0, 0, 1}})
+    end
+
+    test "true for a loopback peer with no forwarded header (the operator shell)" do
+      assert RemoteIpFromProxy.direct_loopback_peer?(call({127, 0, 0, 1}, []))
+      assert RemoteIpFromProxy.direct_loopback_peer?(call({0, 0, 0, 0, 0, 0, 0, 1}, []))
+    end
+
+    test "false for a loopback peer carrying any allowlisted forwarded header" do
+      refute RemoteIpFromProxy.direct_loopback_peer?(call({127, 0, 0, 1}, [{"x-forwarded-for", "10.66.6.6"}]))
+
+      refute RemoteIpFromProxy.direct_loopback_peer?(call({127, 0, 0, 1}, [{"x-real-ip", "10.66.6.6"}]))
+    end
+
+    test "false for a non-loopback peer" do
+      refute RemoteIpFromProxy.direct_loopback_peer?(call({10, 66, 6, 6}, []))
+      refute RemoteIpFromProxy.direct_loopback_peer?(call({203, 0, 113, 42}, []))
+    end
+
+    # RESIDUAL, pinned so it is not mistaken for a closed hole: the
+    # predicate's tightness rests on the fronting proxy setting a forwarded
+    # header. Every proxy config this project ships sets both headers
+    # unconditionally, but an operator's own proxy that sets NEITHER while
+    # proxying over loopback is indistinguishable from the operator shell.
+    # This is unchanged from the prior behaviour rather than introduced by
+    # the gate change — it is a reason to keep the port off untrusted
+    # networks, not a reason to widen the gate.
+    test "a header-less loopback-fronting proxy is indistinguishable from the shell" do
+      assert RemoteIpFromProxy.direct_loopback_peer?(call({127, 0, 0, 1}, []))
+    end
+
+    # A header OUTSIDE the allowlist must not disqualify: the gate and the
+    # resolver read the SAME allowlist, so a random `forwarded:` header
+    # can't lock the operator out of their own reload endpoint.
+    test "a header outside the allowlist does not disqualify" do
+      assert RemoteIpFromProxy.direct_loopback_peer?(call({127, 0, 0, 1}, [{"forwarded", "for=10.66.6.6"}]))
     end
   end
 

@@ -37,23 +37,39 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxy do
   The first row covers the operator's healthcheck/admin-poke shape:
   `sudo bastille cmd grappa curl http://127.0.0.1:4000/admin/reload`
   (or `docker exec grappa curl ...`) — loopback peer, no proxy
-  headers, trust the peer. `Plugs.LoopbackOnly` gates on the result.
+  headers, trust the peer. This row is ALSO the shape
+  `Plugs.LoopbackOnly` gates on — but it gates on the predicate below,
+  never on this row's resolved value.
 
-  ## Shell-spoof: explicitly accepted residual risk
+  ## The resolved client IP is NOT an authorization signal
 
-  An attacker with shell access on the host CAN spoof
-  `X-Forwarded-For: 127.0.0.1` from a loopback peer; the wrapper
-  trusts XFF in that case and `Plugs.LoopbackOnly` would accept
-  the result. The earlier (cp51-era) version of this plug blocked
-  that spoof at the cost of breaking nginx-as-local-proxy. The
-  trade-off is intentional: anyone who can run `sudo bastille cmd
-  grappa <anything>` or `docker exec grappa <anything>` already
-  has root-equivalent access (kill the BEAM, drop the sqlite DB,
-  write the codebase). `POST /admin/reload` is the least
-  interesting thing they could do. The defense at this layer is
-  network reachability (nginx doesn't proxy `/admin/reload`,
-  grappa binds 127.0.0.1 only), NOT input validation against an
-  attacker who already has the keys.
+  `trusted_client_ip/3`'s answer is the best available *attribution* of
+  a request — it is not a capability. A resolved value of `127.0.0.1`
+  can mean "the operator's shell curled us directly" OR "a forwarded
+  chain resolved to nothing and the peer happened to be the local
+  reverse proxy". Those two are not equally privileged, and no consumer
+  can tell them apart from the resolved value alone.
+
+  So `Plugs.LoopbackOnly` does NOT read `conn.remote_ip`. It reads
+  `direct_loopback_peer?/1`, the row-1 predicate this plug stamps as an
+  assign: transport peer is loopback AND the request carries no
+  forwarded header at all. That is exactly the operator-shell shape and
+  it is a property of the TRANSPORT, so it cannot be produced by
+  anything a request body or header says. Every reverse proxy this
+  project ships sets a forwarded header unconditionally
+  (`infra/snippets/locations-api.conf`), so a request that arrived
+  through one can never satisfy the predicate.
+
+  **Residual, named:** the predicate's tightness rests on the fronting
+  proxy setting a forwarded header. An operator who fronts grappa with
+  their own proxy that sets none AND proxies over loopback presents
+  every request as the operator shell. That is unchanged from the
+  earlier behaviour rather than introduced here, and it is why
+  operators should keep grappa's port bound away from untrusted
+  networks regardless. Shell access on the host also remains
+  root-equivalent by construction (kill the BEAM, drop the sqlite DB,
+  rewrite the codebase), so this layer never claimed to defend against
+  it.
 
   ## Loopback shapes
 
@@ -84,6 +100,11 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxy do
   # doors can't drift onto different header sets.
   @default_headers ~w[x-forwarded-for x-real-ip]
 
+  # The assign carrying the row-1 predicate. Private on purpose: readers go
+  # through `direct_loopback_peer?/1` so exactly ONE module knows both the
+  # key and the fail-closed default.
+  @direct_peer_assign :direct_loopback_peer
+
   @typedoc "Packed plug options: the header allowlist + the `RemoteIp` keyword opts."
   @type opts :: {[binary()], keyword()}
 
@@ -100,7 +121,7 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxy do
 
   @impl Plug
   @spec call(Plug.Conn.t(), opts()) :: Plug.Conn.t()
-  def call(%Plug.Conn{remote_ip: peer, req_headers: req_headers} = conn, opts) do
+  def call(%Plug.Conn{remote_ip: peer, req_headers: req_headers} = conn, {headers, _} = opts) do
     ip = trusted_client_ip(peer, req_headers, opts)
     # Preserve `RemoteIp.call/2`'s side-effect: it stamped the `:remote_ip`
     # Logger metadata (config allowlists it — the HTTP log line carries the
@@ -108,7 +129,42 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxy do
     # here. This is an HTTP-request logging concern local to the plug, not
     # part of the shared trust decision.
     put_remote_ip_metadata(ip)
-    %{conn | remote_ip: ip}
+
+    # Stamp the row-1 predicate here — this is the only point in the pipeline
+    # that still sees the transport peer, which `remote_ip` is about to lose.
+    direct? = direct_loopback_peer?(peer, req_headers, headers)
+
+    Plug.Conn.assign(%{conn | remote_ip: ip}, @direct_peer_assign, direct?)
+  end
+
+  @doc """
+  Whether the request reached the BEAM DIRECTLY from inside the box: the
+  transport peer is loopback and no forwarded header is present.
+
+  This is the authorization-grade signal `Plugs.LoopbackOnly` gates on —
+  distinct from `conn.remote_ip`, which after `call/2` is an attribution
+  and can be loopback for reasons that carry no privilege. Reads the assign
+  `call/2` stamps and **fails closed**: a conn the plug never touched
+  answers `false`.
+  """
+  @spec direct_loopback_peer?(Plug.Conn.t()) :: boolean()
+  def direct_loopback_peer?(%Plug.Conn{assigns: assigns}),
+    do: Map.get(assigns, @direct_peer_assign, false)
+
+  @doc """
+  Row 1 of the trust matrix, as a predicate: loopback transport peer AND no
+  forwarded header among the `headers` allowlist.
+
+  Both a resolution input (row 1 returns the peer verbatim) and the
+  authorization signal `call/2` stamps for `Plugs.LoopbackOnly` — one
+  definition, so the gate can never drift onto a different header allowlist
+  than the resolver. Takes the allowlist itself, not the packed `opts()`:
+  the decision has no business reading `RemoteIp`'s keyword options.
+  """
+  @spec direct_loopback_peer?(:inet.ip_address(), [{binary(), binary()}], [binary()]) ::
+          boolean()
+  def direct_loopback_peer?(peer_ip, req_headers, headers) do
+    loopback?(peer_ip) and not has_forwarded_header?(req_headers, headers)
   end
 
   @doc """
@@ -136,14 +192,26 @@ defmodule GrappaWeb.Plugs.RemoteIpFromProxy do
   forwarded chain right-to-left and stops at the first non-reserved IP —
   so a trusted proxy's appended real client wins over any forged leftmost
   entry, and a header yielding no client falls back to the peer.
+
+  That last fallback is a known ATTRIBUTION limitation, still open: when
+  every entry in the chain is a reserved address the walk yields nothing,
+  and the answer collapses onto the transport peer — so such clients
+  share one identity for throttle keys, the `sessions.ip` audit column
+  and the #543 mode-2 source derivation. Do NOT read a return value of
+  this function as a privilege; `Plugs.LoopbackOnly` gates on
+  `direct_loopback_peer?/1` precisely so this limitation cannot become an
+  authorization decision.
   """
   @spec trusted_client_ip(:inet.ip_address(), [{binary(), binary()}], opts()) ::
           :inet.ip_address()
   def trusted_client_ip(peer_ip, req_headers, {headers, remote_ip_opts}) do
-    if loopback?(peer_ip) and not has_forwarded_header?(req_headers, headers) do
+    if direct_loopback_peer?(peer_ip, req_headers, headers) do
       peer_ip
     else
-      RemoteIp.from(req_headers, remote_ip_opts) || peer_ip
+      case RemoteIp.from(req_headers, remote_ip_opts) do
+        nil -> peer_ip
+        client -> client
+      end
     end
   end
 

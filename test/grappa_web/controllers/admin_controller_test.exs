@@ -1,11 +1,14 @@
 defmodule GrappaWeb.AdminControllerTest do
   @moduledoc """
-  `POST /admin/reload` is loopback-gated (only `127.0.0.1` / `::1`)
-  and triggers `Phoenix.CodeReloader.reload/1` on success.
+  `POST /admin/reload` is gated on the request having reached the BEAM
+  directly from inside the box (loopback transport peer AND no forwarded
+  header) and triggers `Phoenix.CodeReloader.reload/1` on success.
 
-  The loopback gate is the load-bearing security check — the test
-  exercises both the allow path (default ConnCase remote_ip is
-  `127.0.0.1`) and the deny path (manually rewritten remote_ip).
+  That gate is the load-bearing security check — the tests exercise the
+  allow path (default ConnCase peer is `127.0.0.1`, bare) and every deny
+  path: a non-loopback peer, and a loopback peer carrying a forwarded
+  header (i.e. one that came through a proxy). The gate never reads the
+  RESOLVED client IP; see `GrappaWeb.Plugs.LoopbackOnly`.
 
   The reload itself is a no-op against committed code in the test
   sandbox (Mix is loaded, so reload! runs; nothing changed on disk).
@@ -70,47 +73,48 @@ defmodule GrappaWeb.AdminControllerTest do
       assert response(conn, 403) =~ "loopback_only"
     end
 
-    # SECURITY: end-to-end proof that the `RemoteIpFromProxy` wrapper
-    # protects the LoopbackOnly gate from container-shell spoofing.
-    # The attack: `docker exec grappa curl -H "X-Forwarded-For: <ip>"
-    # http://localhost:4000/admin/reload`. Bare `RemoteIp` would
-    # rewrite `conn.remote_ip` from the header and (when the spoofed
-    # value is loopback) silently grant access. The wrapper bypasses
-    # the rewrite when the TCP peer is loopback, so the gate sees the
-    # genuine loopback peer (allow) and the spoofed value is ignored.
+    # SECURITY: the presence of ANY forwarded header disqualifies a
+    # request from the gate, loopback transport peer or not. A forwarded
+    # header means some proxy handled this request, and the operator
+    # shape the gate exists for never goes through one.
     #
-    # Tested at controller level (not unit) because the integration
-    # of wrapper + LoopbackOnly + admin pipeline is the contract that
-    # actually defends the surface — a wrapper-only unit test would
-    # pass even if a future refactor removed the wrapper from the
-    # endpoint.
-    test "spoofed X-Forwarded-For from loopback peer is ignored, gate still passes (200)",
-         %{conn: conn} do
-      # Peer = 127.0.0.1 (ConnCase default), X-F-F spoofs a LAN IP.
-      # Without the wrapper: bare RemoteIp rewrites to {192,168,1,100},
-      # LoopbackOnly returns 403 (by coincidence the spoof self-DoSes).
-      # WITH the wrapper: peer is loopback → wrapper bypasses → gate
-      # sees {127,0,0,1} → 200.
+    # This case USED to return 200, and for the wrong reason: the header
+    # named only a reserved address, the resolver therefore found no
+    # client, fell back to the transport peer, and the gate — which read
+    # the resolved value — saw loopback. The 200 was the fallback
+    # showing through, not a deliberate allowance.
+    #
+    # Tested at controller level (not unit) because the integration of
+    # wrapper + LoopbackOnly + admin pipeline is the contract that
+    # actually defends the surface — a wrapper-only unit test would pass
+    # even if a future refactor removed the wrapper from the endpoint.
+    test "loopback peer carrying a forwarded header is denied (403)", %{conn: conn} do
       conn =
         conn
         |> Plug.Conn.put_req_header("x-forwarded-for", "192.168.1.100")
         |> post("/admin/reload")
 
-      body = json_response(conn, 200)
-      assert is_list(body["reloaded"])
+      assert response(conn, 403) =~ "loopback_only"
     end
 
-    test "spoofed X-Forwarded-For: 127.0.0.1 from non-loopback peer is denied (403)",
+    test "X-Real-IP also disqualifies a loopback peer (403)", %{conn: conn} do
+      # Both headers in the allowlist must disqualify, or the gate's
+      # tightness would depend on which one the fronting proxy sets —
+      # the shipped snippets set BOTH, an operator's own proxy may set
+      # either.
+      conn =
+        conn
+        |> Plug.Conn.put_req_header("x-real-ip", "192.168.1.100")
+        |> post("/admin/reload")
+
+      assert response(conn, 403) =~ "loopback_only"
+    end
+
+    test "forwarded header naming loopback, from a non-loopback peer, is denied (403)",
          %{conn: conn} do
-      # The malicious case the wrapper exists to prevent: peer is a
-      # LAN IP, attacker sets `X-Forwarded-For: 127.0.0.1` hoping to
-      # masquerade as loopback. Wrapper bypass applies only to
-      # loopback PEERS — a LAN peer still hits bare RemoteIp, which
-      # walks the X-F-F chain and finds {127,0,0,1} as a reserved-
-      # range hit. `RemoteIp` skips reserved entries during the walk,
-      # so the rewrite falls back to... nothing in the chain, leaving
-      # conn.remote_ip as the original peer {192,168,1,100}. The gate
-      # sees a LAN IP and returns 403. (The attacker can't elevate.)
+      # A caller on a LAN peer claiming to be loopback. Denied twice
+      # over: the peer is not loopback, and a forwarded header is
+      # present. The gate never consults what the header claims.
       conn =
         %{conn | remote_ip: {192, 168, 1, 100}}
         |> Plug.Conn.put_req_header("x-forwarded-for", "127.0.0.1")

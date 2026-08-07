@@ -1,7 +1,7 @@
 defmodule GrappaWeb.Plugs.LoopbackOnly do
   @moduledoc """
-  Halts any request whose `remote_ip` isn't `127.0.0.1` (or `::1`) with
-  a uniform 403 JSON body.
+  Halts, with a uniform 403 JSON body, any request that did not reach the
+  BEAM directly from inside the container / jail.
 
   Used to gate the admin reload endpoint (`POST /admin/reload`) so it's
   only callable from inside the running container / jail — `docker exec
@@ -22,43 +22,51 @@ defmodule GrappaWeb.Plugs.LoopbackOnly do
   basic-auth or session-cookie), this plug stays as the inner gate;
   the auth layer is the outer one.
 
-  ## Interaction with `RemoteIpFromProxy`
+  ## Why NOT `conn.remote_ip`
 
-  `GrappaWeb.Endpoint`'s `RemoteIpFromProxy` plug runs FIRST and may
-  rewrite `conn.remote_ip` from `X-Forwarded-For` when the peer is
-  loopback AND XFF is present (the local-reverse-proxy shape — the
-  bastille jail, or any deployment fronted by an operator's own
-  same-host proxy; #485 dropped the in-stack docker nginx). That
-  means a loopback peer
-  who sets `X-Forwarded-For: 127.0.0.1` will reach this plug with
-  `conn.remote_ip = {127, 0, 0, 1}` and pass the gate. This is
-  **explicitly accepted**: anyone with shell access on the host
-  (`sudo bastille cmd grappa`, `docker exec grappa`) already has
-  root-equivalent access — they can kill the BEAM, drop sqlite,
-  rewrite the codebase. POST /admin/reload is the least interesting
-  thing they could do. The defense at this layer is the real-client-IP
-  check above (a remote request arrives through the dumb proxy with
-  `conn.remote_ip` rewritten to the actual client, which is not
-  loopback, so it 403s) plus the compose port-publish binding grappa to
-  `127.0.0.1` — NOT input validation against an attacker with the keys.
-  See `RemoteIpFromProxy` moduledoc for the full trust matrix.
+  `conn.remote_ip` is an *attribution*, not a capability. By the time
+  this plug runs, `GrappaWeb.Endpoint`'s `RemoteIpFromProxy` has already
+  replaced the transport peer with the best available guess at who the
+  client is — and that guess can be loopback for reasons that carry no
+  operator privilege whatsoever. A forwarded chain that names only
+  reserved addresses yields no client at all, and the resolver then
+  answers with the transport peer, which behind a same-host reverse
+  proxy (the bastille jail, `proxy_pass 127.0.0.1:4000`) IS loopback.
+  Gating on that value made the gate a function of a heuristic.
+
+  So the gate reads `RemoteIpFromProxy.direct_loopback_peer?/1` instead:
+  the transport peer was loopback AND the request carried no forwarded
+  header. That is a property of the TRANSPORT — nothing a caller can put
+  in a header produces it — and it is exactly the operator shape this
+  gate exists for (`sudo bastille cmd grappa curl
+  http://127.0.0.1:4000/admin/reload`, `docker exec grappa curl ...`).
+  Every deploy path that pokes these routes uses exactly that shape.
+  A request that came through any proxy this project ships carries a
+  forwarded header unconditionally, so it can never satisfy the
+  predicate.
+
+  It **fails closed**: a conn that never passed through
+  `RemoteIpFromProxy` answers `false` and gets the 403.
+
+  The residual (a fronting proxy that sets no forwarded header at all
+  while proxying over loopback) is named in the `RemoteIpFromProxy`
+  moduledoc, together with the full trust matrix.
   """
   @behaviour Plug
 
   import Plug.Conn
 
-  @loopback_v4 {127, 0, 0, 1}
-  @loopback_v6 {0, 0, 0, 0, 0, 0, 0, 1}
+  alias GrappaWeb.Plugs.RemoteIpFromProxy
 
   @impl Plug
   def init(opts), do: opts
 
   @impl Plug
   def call(conn, _) do
-    case conn.remote_ip do
-      @loopback_v4 -> conn
-      @loopback_v6 -> conn
-      _ -> conn |> send_resp(403, ~s({"error":"loopback_only"})) |> halt()
+    if RemoteIpFromProxy.direct_loopback_peer?(conn) do
+      conn
+    else
+      conn |> send_resp(403, ~s({"error":"loopback_only"})) |> halt()
     end
   end
 end
