@@ -4537,6 +4537,39 @@ html.resize-dragging * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* #964 — flex item since the title row: without this the auto minimum
+     keeps the name at full width and pushes the marker out of the row. */
+  min-width: 0;
+}
+
+/* #964 — the row grows a second line. `Browser on OS` collapses two
+   same-browser devices into byte-identical rows, so the row carries the
+   activity instant below the name and, on the one row this browser
+   registered, a "this device" marker beside it. The name keeps the
+   ellipsis; the marker does NOT shrink (it is the disambiguator). */
+.settings-drawer .device-ua-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.settings-drawer .device-ua-title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.settings-drawer .device-current {
+  flex-shrink: 0;
+  color: var(--mode-voiced);
+  white-space: nowrap;
+}
+
+.settings-drawer .device-activity {
+  color: var(--muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
 }
 
 .settings-drawer .device-remove {

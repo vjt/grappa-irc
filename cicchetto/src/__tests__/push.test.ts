@@ -4,11 +4,14 @@ import {
   deletePushSubscription,
   disablePush,
   ensurePushSubscription,
+  formatDeviceActivity,
   getVapidPublicKey,
   listPushDevices,
+  type PushDeviceSummary,
   postPushSubscription,
   pushAvailable,
   type SubscriptionId,
+  subscriptionIdForEndpoint,
   vapidKeyToUint8Array,
 } from "../lib/push";
 
@@ -420,5 +423,71 @@ describe("pushAvailable — synchronous capability gate (#459)", () => {
       standalone: true,
     });
     expect(pushAvailable()).toBe(true);
+  });
+});
+
+// ── #964 — the device row's disambiguating metadata ────────────────────
+// Two rows reading "Firefox on Linux" are byte-identical today. The
+// payload already carries `created_at` + `last_used_at`; these two
+// helpers turn them (and "which row am I?") into row-level strings.
+
+describe("formatDeviceActivity — #964: the row's activity line", () => {
+  const NOW = Date.parse("2026-08-07T12:00:00Z");
+
+  const device = (over: Partial<PushDeviceSummary>): PushDeviceSummary => ({
+    id: "sub-1" as SubscriptionId,
+    user_agent: "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0",
+    created_at: "2026-08-07T11:00:00Z",
+    last_used_at: null,
+    ...over,
+  });
+
+  it("renders last_used_at when the device has been pushed to", () => {
+    expect(formatDeviceActivity(device({ last_used_at: "2026-08-07T07:48:00Z" }), NOW)).toBe(
+      "last used 4h 12m ago",
+    );
+  });
+
+  it("falls back to created_at when the device has never been pushed to", () => {
+    expect(formatDeviceActivity(device({ created_at: "2026-08-07T11:57:00Z" }), NOW)).toBe(
+      "added 3m ago",
+    );
+  });
+
+  it("prefers last_used_at over created_at when both are present", () => {
+    expect(
+      formatDeviceActivity(
+        device({ created_at: "2026-08-01T12:00:00Z", last_used_at: "2026-08-07T11:59:15Z" }),
+        NOW,
+      ),
+    ).toBe("last used 45s ago");
+  });
+
+  it("clamps a future instant (clock skew) instead of going negative", () => {
+    expect(formatDeviceActivity(device({ last_used_at: "2026-08-07T12:30:00Z" }), NOW)).toBe(
+      "last used 0s ago",
+    );
+  });
+
+  it("returns null when neither instant parses (omit the line, never guess)", () => {
+    expect(formatDeviceActivity(device({ created_at: "not-a-date" }), NOW)).toBeNull();
+  });
+});
+
+describe("subscriptionIdForEndpoint — #964: which row is THIS device", () => {
+  it("returns the stashed id when the endpoint matches", () => {
+    localStorage.setItem(SUB_ID_KEY, "sub-42");
+    localStorage.setItem(SUB_ENDPOINT_KEY, "https://push.example/ep");
+    expect(subscriptionIdForEndpoint("https://push.example/ep")).toBe("sub-42");
+  });
+
+  it("returns null when the live endpoint is not the one we stashed", () => {
+    localStorage.setItem(SUB_ID_KEY, "sub-42");
+    localStorage.setItem(SUB_ENDPOINT_KEY, "https://push.example/old");
+    expect(subscriptionIdForEndpoint("https://push.example/new")).toBeNull();
+  });
+
+  it("returns null when nothing was ever stashed", () => {
+    expect(subscriptionIdForEndpoint("https://push.example/ep")).toBeNull();
   });
 });

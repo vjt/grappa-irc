@@ -255,6 +255,32 @@ export async function resetPushSubscriptions(token: string): Promise<void> {
   }
 }
 
+/**
+ * #964 — blocks until the server has stamped `last_used_at` on at least one
+ * of `token`'s push subscriptions.
+ *
+ * Push.Sender bumps the row AFTER the vendor's 200, so push-catcher recording
+ * a delivery does NOT mean the DB write has landed: a UI refetch fired off the
+ * catcher alone races it. This polls the same REST view the settings drawer
+ * reads, so when it returns, a reload is GUARANTEED to render the stamped
+ * value — a real barrier, not a sleep.
+ */
+export async function awaitDeviceLastUsed(token: string, timeoutMs = 5_000): Promise<void> {
+  const base = "http://grappa-test:4000";
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const res = await fetch(`${base}/push/subscriptions`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    if (res.ok) {
+      const body = (await res.json()) as { subscriptions?: { last_used_at: string | null }[] };
+      if ((body.subscriptions ?? []).some((s) => s.last_used_at !== null)) return;
+    }
+    await sleep(100);
+  }
+  throw new Error(`awaitDeviceLastUsed: no subscription stamped within ${timeoutMs}ms`);
+}
+
 export type CaughtDelivery = {
   headers: Record<string, string>;
   body_b64: string;

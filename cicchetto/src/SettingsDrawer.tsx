@@ -30,10 +30,12 @@ import {
   disablePush,
   type EnablePushResult,
   enablePush,
+  formatDeviceActivity,
   listPushDevices,
   type PushDeviceSummary,
   pushAvailable,
   type SubscriptionId,
+  subscriptionIdForEndpoint,
 } from "./lib/push";
 import { reconnectConnectedNetworks } from "./lib/reconnect";
 import { selectedChannel } from "./lib/selection";
@@ -102,6 +104,12 @@ const SettingsDrawer: Component<Props> = (props) => {
 
   const [prefs, setPrefs] = createSignal<NotificationPrefs>(DEFAULT_NOTIFICATION_PREFS);
   const [devices, setDevices] = createSignal<PushDeviceSummary[]>([]);
+  // #964 — the server row THIS browser registered, so its list entry can say
+  // so. Proven by endpoint match (`subscriptionIdForEndpoint`), never guessed
+  // from the UA: two same-browser rows are byte-identical, which is the whole
+  // reason this issue exists. `null` = we cannot prove any row is ours (never
+  // subscribed here / cleared site data) — then NO row gets the marker.
+  const [currentDeviceId, setCurrentDeviceId] = createSignal<SubscriptionId | null>(null);
   const [pushEnabled, setPushEnabled] = createSignal(false);
   const [pushBanner, setPushBanner] = createSignal<string | null>(null);
   const [savingPrefs, setSavingPrefs] = createSignal(false);
@@ -461,6 +469,7 @@ const SettingsDrawer: Component<Props> = (props) => {
       if (registration.pushManager === undefined) return;
       const sub = await registration.pushManager.getSubscription();
       setPushEnabled(sub !== null);
+      setCurrentDeviceId(sub === null ? null : subscriptionIdForEndpoint(sub.endpoint));
     } catch {
       /* swallowed — pushEnabled stays false */
     }
@@ -560,6 +569,9 @@ const SettingsDrawer: Component<Props> = (props) => {
       const result: EnablePushResult = await enablePush(t);
       if (result.status === "enabled") {
         setPushEnabled(true);
+        // #964 — the drawer does NOT remount after the toggle, so the mount-time
+        // probe never re-runs; take the id straight off the enable result.
+        setCurrentDeviceId(result.subscriptionId);
         await refreshDevices();
       } else if (result.status === "permission_denied") {
         setPushEnabled(false);
@@ -578,6 +590,7 @@ const SettingsDrawer: Component<Props> = (props) => {
     } else {
       await disablePush(t);
       setPushEnabled(false);
+      setCurrentDeviceId(null);
       await refreshDevices();
     }
   };
@@ -1526,14 +1539,36 @@ const SettingsDrawer: Component<Props> = (props) => {
                       // can still surface the original for debugging /
                       // device disambiguation across same-browser instances.
                       const parsed = parseUserAgent(d.user_agent);
+                      // #964 — hover is the ONLY disambiguator today and it does
+                      // not exist on touch, which is where the drawer lives. The
+                      // activity instant + the this-device marker are the two
+                      // always-visible ones. Stamped at render, not on a ticking
+                      // clock: the list is refetched on drawer mount, so a live
+                      // "3m ago → 4m ago" would out-freshen its own data.
+                      const activity = formatDeviceActivity(d, Date.now());
+                      const isCurrent = () => currentDeviceId() === d.id;
                       return (
                         <li>
                           <span class="device-ua" title={d.user_agent ?? "(unknown browser)"}>
                             <span class="device-ua-icon" aria-hidden="true">
                               {deviceClassIcon(parsed.deviceClass)}
                             </span>
-                            <span class="device-ua-name">
-                              {parsed.browser} on {parsed.os}
+                            <span class="device-ua-text">
+                              <span class="device-ua-title">
+                                <span class="device-ua-name">
+                                  {parsed.browser} on {parsed.os}
+                                </span>
+                                <Show when={isCurrent()}>
+                                  <span class="device-current" data-testid="device-current">
+                                    ● this device
+                                  </span>
+                                </Show>
+                              </span>
+                              <Show when={activity !== null}>
+                                <span class="device-activity" data-testid="device-activity">
+                                  {activity}
+                                </span>
+                              </Show>
                             </span>
                           </span>
                           <button

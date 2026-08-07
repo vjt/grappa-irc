@@ -20,6 +20,7 @@
 // bytes; localStorage is the authoritative cache.
 
 import { ApiError, readError } from "./api";
+import { formatDurationSince } from "./duration";
 import { isIos, isStandalonePwa } from "./platform";
 
 const VAPID_PUBLIC_KEY_STORAGE_KEY = "cic.vapidPublicKey";
@@ -170,6 +171,30 @@ export type PushDeviceSummary = {
   last_used_at: string | null;
 };
 
+/**
+ * #964 — the device row's activity line.
+ *
+ * `parseUserAgent` collapses the UA to `Browser on OS`, so two instances of
+ * the same browser on the same OS render byte-identical rows. The payload
+ * already carries two disambiguating instants the row used to throw away;
+ * this turns them into the one string that actually separates the twins
+ * (two devices are almost never last used in the same minute).
+ *
+ * `last_used_at` is `nil` until B2's Sender has pushed to the row at least
+ * once, so a freshly-enabled device falls back to `created_at` — "added 3m
+ * ago" is the honest reading of a device nothing has been sent to yet, and
+ * it is equally disambiguating.
+ *
+ * Returns null when NEITHER instant parses: per the #474 facts-only rule,
+ * omit the line rather than render a confident-wrong value.
+ */
+export function formatDeviceActivity(device: PushDeviceSummary, nowMs: number): string | null {
+  const lastUsed = formatDurationSince(device.last_used_at, nowMs);
+  if (lastUsed !== null) return `last used ${lastUsed} ago`;
+  const added = formatDurationSince(device.created_at, nowMs);
+  return added === null ? null : `added ${added} ago`;
+}
+
 /** GET /push/subscriptions — powers the per-device list in B3 settings. */
 export async function listPushDevices(token: string): Promise<PushDeviceSummary[]> {
   const res = await fetch("/push/subscriptions", {
@@ -203,7 +228,17 @@ function rememberSubscription(id: SubscriptionId, endpoint: string): void {
   localStorage.setItem(SUBSCRIPTION_ENDPOINT_STORAGE_KEY, endpoint);
 }
 
-function recallSubscriptionId(endpoint: string): SubscriptionId | null {
+/**
+ * The server-side row id we stashed for `endpoint`, or null when the live
+ * endpoint is not the one we registered (cleared site data, cross-profile
+ * re-install, a silently-rotated subscription).
+ *
+ * The endpoint match is the whole point: it is what makes the answer PROOF
+ * that the row is ours rather than a guess. `disablePush` leans on it to
+ * never DELETE a row it can't prove ours; #964's "this device" marker leans
+ * on it for the same reason — a stale id would badge the WRONG row.
+ */
+export function subscriptionIdForEndpoint(endpoint: string): SubscriptionId | null {
   const storedEndpoint = localStorage.getItem(SUBSCRIPTION_ENDPOINT_STORAGE_KEY);
   if (storedEndpoint !== endpoint) return null;
   // localStorage hands back a bare string; brand it at this recall seam.
@@ -342,7 +377,7 @@ export async function disablePush(token: string): Promise<boolean> {
   const endpoint = subscription.endpoint;
   await subscription.unsubscribe();
 
-  const knownId = recallSubscriptionId(endpoint);
+  const knownId = subscriptionIdForEndpoint(endpoint);
   if (knownId !== null) {
     await deletePushSubscription(token, knownId).catch(() => {
       /* swallowed — a missing row is fine; B2 Sender will GC dead rows on next push */
