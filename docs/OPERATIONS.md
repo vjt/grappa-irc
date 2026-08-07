@@ -901,8 +901,39 @@ name too.
 
 - **`bin/grappa` (the dispatcher) is docker-only — it FAILS in the
   jail** (`docker: not found`). It's a dev/RPi tool.
-- **Mix tasks don't work either** in the jail: a second BEAM collides
-  with the live node's Endpoint `:4000` in the shared netns.
+- **Mix tasks: the `:4000` reason below is STALE — treat the caution as
+  unverified, not as a rule.** This bullet used to read "mix tasks don't
+  work in the jail: a second BEAM collides with the live node's Endpoint
+  `:4000` in the shared netns". That collision was fixed on 2026-07-23:
+  `Mix.Tasks.Grappa.Boot.start_app_silent/0` suppresses BOTH
+  `Grappa.Bootstrap` and `GrappaWeb.Endpoint`, and runs `mix app.config`
+  so `config/runtime.exs` is evaluated under `MIX_ENV=prod`. The jail also
+  has the full source tree and Mix — `infra/freebsd/deploy.sh` runs
+  `git pull`, `mix deps.get`, `mix compile`, `mix release --overwrite`
+  and even `mix run --no-start -e 'Grappa.Deploy.Preflight.cli(…)'` on
+  every deploy. So the recipe is:
+
+  ```sh
+  jexec grappa su -l grappa -c 'cd /home/grappa/grappa;
+    set -a; . /usr/local/etc/grappa/grappa.env; set +a;
+    MIX_ENV=prod mix grappa.<task>'
+  ```
+
+  **What is still NOT established:** whether a second BEAM writing the
+  same SQLite file while the live node is running is safe in practice.
+  WAL allows concurrent readers and one writer, but this has not been
+  exercised against the live jail. Prefer a read-only / dry-run task
+  first, and read `database is locked` in the output as a reason to stop
+  and drive the LIVE node via `rpc` instead.
+- **`grappa.repair_passwords` (#1001) is a mix task, and dry-run is its
+  default.** Run it with no flags first — it writes nothing and prints
+  the classification. `--write` applies only the deterministic repairs
+  (`:nickserv_identify`, exactly two tokens); everything else is reported
+  for a human. A repaired password is read at (re)connect via
+  `SessionPlan.base_plan/6`, exactly like a #124 field edit, so the fix
+  takes effect on the session's next reconnect rather than immediately.
+  A non-zero count on a modern install is the signal of a NEW bug, not
+  backlog — the task's own output says so.
 - **Drive the LIVE node via the release `rpc`** instead. Source the
   env first (or `rpc` returns `:noconnection` — needs `RELEASE_COOKIE`):
 

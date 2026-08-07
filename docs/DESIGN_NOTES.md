@@ -32782,3 +32782,83 @@ about width still restart the pool at 5 and 10 themselves. The ceiling
 correspondingly stops binding here: 14 tests × ~80 migrations per run becomes
 14 × 3, and the file drops from 8.6s to 0.4s. The undiagnosed replay red is
 still undiagnosed — it simply no longer has a home in this test.
+
+## 2026-08-07 — #1001: the space is an exact signature, but only where Azzurra's rule reaches
+
+`mix grappa.repair_passwords` sweeps the credentials #977 corrupted. #983
+stopped the capture concatenating `SET PASSWD <old> <new>` into one stored
+value and #124 gave the subject a field to retype the secret in, but neither
+backfills a row that is already wrong, and at least one live account was left
+in that state.
+
+**Why the space is a signature and not a heuristic.** An Azzurra password
+cannot contain one: `do_set_password` cuts the parameter at the first space
+(`strchr(param, ' ')`) and then refuses a `newpass` that still holds one, and
+`do_resetpass` does the same. So a space in a secret Azzurra's NickServ
+governs is a concatenation artifact by construction — there is no legitimate
+value it could be. The detector does not re-derive this: it calls
+`Session.NSInterceptor.vet_password/2`, already public as the second door
+#124 needed, whose spaces arm is FIRST in the chain and therefore cannot be
+shadowed by a later one. The same call supplies the `PASSMAX` verdict, so 32
+is not hard-coded a second time where it could drift from the wire door.
+
+**Where that certainty stops, and it is #124 that stopped it.** The issue
+claimed no false positives *by construction*. That was true of
+`nickserv_pass_encrypted`, a NickServ-only column. It stopped being true the
+moment `20260807120000_fold_nickserv_pass_onto_password` ran
+`SET password_encrypted = nickserv_pass_encrypted`: `password_encrypted` is
+now the single home for the NickServ secret AND the SASL one AND the server
+password. SASL PLAIN base64-encodes its passphrase
+(`Grappa.IRC.AuthFSM.sasl_plain_payload/1`), so a space there survives and
+identifies normally; `Credential.password_changeset/2` guards only CR/LF/NUL,
+and `Credentials.update_credential_password/2` applies Azzurra's chain only
+when the method is `:nickserv_identify` — the #124 field *deliberately*
+accepts a space-containing password on a `:sasl` row. Gating #1001 behind
+#124 was right for the schema, and the right schema is precisely the one
+where the space alone no longer decides.
+
+So the sweep repairs `:nickserv_identify` and nothing else. Every other
+method with a space is reported. That is not a new mechanism: it is the verb
+the issue already owed the >2-token case ("report, do not guess"), applied to
+a second axis of ambiguity.
+
+**The rule the whole task is built on.** A missed repair costs a manual
+intervention; a wrong repair costs an unrecoverable secret (Cloak AES-GCM, no
+plaintext backup, nothing to reverse it from). The two do not weigh the same,
+so every remaining doubt resolves to *report*. Consequences, each with a spec:
+dry run is the default and writing must be asked for; the split is a literal
+single space with **no `trim:`**, so a run of spaces or a trailing one yields
+an extra empty token and lands in "reported" — which is the correct answer
+rather than an accident, because services refused such a rotation outright
+and neither token is known to be live; a recovered password that services
+would themselves refuse is reported instead of written; and no output line
+ever carries the secret or any token of it.
+
+At exactly two tokens, "keep the last" and "keep the second" agree, which is
+why the >2 case is reported rather than resolved by picking one rule: at
+three tokens they diverge and only the operator knows which rotation is live.
+
+**The sweep reads every subject, and that needed a second reader.**
+`Credentials.list_all_credentials/0` is scoped `user_id IS NOT NULL` for #211
+— correct for the subject-scoped admin surfaces it backs, where a `user_id:
+nil` row renders as a phantom. But `Session.Server.rotate_stored_password/2`
+has a `{:visitor, visitor_id}` clause beside the `{:user, user_id}` one, so a
+visitor credential carries and corrupts the same secret. A task whose only
+output is a count, printing "0 candidates" with a corrupted visitor row in the
+table, is not a coverage gap but a false statement — the log-honesty class.
+Hence `list_credentials_every_subject/0` as a sibling with a doc explaining
+why the two radii are both deliberate, rather than widening the existing one.
+
+**The task stays in the tree** (vjt reversed the earlier "delete it once it
+has run"). It is idempotent and inert on a healthy database. Its standing
+value is the inverse reading: with #983 holding the capture and #124 offering
+the cure, nothing should be able to corrupt a credential any more, so a run
+that finds one is the signal of a NEW bug rather than backlog being worked
+off. The output says exactly that whenever the count is non-zero.
+
+**Left open, deliberately.** A genuinely corrupted `:sasl` row — the capture
+door is blind to `auth_method`, so one is possible — lands in "reported" and
+is not repaired automatically. That is one repair fewer in exchange for zero
+destroyed secrets. An explicit operator override was considered and NOT built:
+it is a separate unit if it is ever wanted, and a half-built hook would be
+worse than none.
