@@ -19,6 +19,12 @@ defmodule Mix.Tasks.Grappa.RepairPasswordsTest do
   # this value is NOT corruption, and repairing it would destroy a live
   # secret.
   @sasl_passphrase "my pass phrase"
+  # The maximally dangerous shape: a SASL passphrase of EXACTLY two tokens
+  # is indistinguishable from a #977 concatenation by token count alone, so
+  # only the auth_method gate keeps it from being "repaired" to "phrase".
+  # The three-token value above would survive a broken gate on the token
+  # count, which is the wrong reason to stay green.
+  @sasl_two_token "pass phrase"
 
   setup do
     {:ok, user} = Grappa.Accounts.create_user(%{name: "vjt", password: "correct horse battery staple"})
@@ -176,12 +182,12 @@ defmodule Mix.Tasks.Grappa.RepairPasswordsTest do
       assert reload(credential).password_encrypted == "newpass"
     end
 
-    test "leaves a SASL passphrase untouched", %{user: user, network: network} do
-      credential = bind(user, network, @sasl_passphrase, :sasl)
+    test "leaves a two-token SASL passphrase untouched", %{user: user, network: network} do
+      credential = bind(user, network, @sasl_two_token, :sasl)
 
       capture_io(fn -> RepairPasswords.run(["--write"]) end)
 
-      assert reload(credential).password_encrypted == @sasl_passphrase
+      assert reload(credential).password_encrypted == @sasl_two_token
     end
 
     test "leaves a three-token credential untouched", %{user: user, network: network} do
