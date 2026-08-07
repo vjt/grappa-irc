@@ -41,13 +41,7 @@ import { settingsOpenTick } from "./lib/settingsNav";
 import { isMobile } from "./lib/theme";
 import { bindEdgeGesture } from "./lib/touchGesture";
 import { loadUploadTtlSeconds } from "./lib/uploadOrchestrator";
-import {
-  ADMIN_WINDOW_NAME,
-  ADMIN_WINDOW_SLUG,
-  HOME_WINDOW_NAME,
-  HOME_WINDOW_SLUG,
-  kindHasScrollback,
-} from "./lib/windowKinds";
+import { HOME_WINDOW_NAME, HOME_WINDOW_SLUG, kindHasScrollback } from "./lib/windowKinds";
 import { isActiveChannelJoined } from "./lib/windowState";
 import MediaViewerModal from "./MediaViewerModal";
 import MembersPane from "./MembersPane";
@@ -180,12 +174,15 @@ const Shell: Component = () => {
   // signal). Triggers:
   //   * Sidebar admin row click (UX-4 bucket N — primary, always-
   //     visible affordance for admins).
-  //   * SettingsDrawer "admin console" entry (M-7 secondary trigger,
-  //     kept as a fallback per the "two doors, one room" rule).
+  //   * RailActions 🔧 admin launcher (#473, reachable from every
+  //     window kind on both form factors).
   // Both call setSelectedChannel({kind: "admin", ...ADMIN_*}).
+  // #986 removed a THIRD trigger — the SettingsDrawer "admin console"
+  // entry — as an exact duplicate of the rail one (same gate, same
+  // payload, same destination), along with its `onOpenAdmin` prop.
   //
   // Visibility gate `isAdmin()` lives in `lib/networks.ts` — single
-  // source of truth shared with SettingsDrawer (drawer entry) +
+  // source of truth shared with RailActions (the 🔧 launcher) +
   // Sidebar (admin row). Pane mount further gates on `isAdmin()`
   // here so a stale selection (kind === "admin" persisted across
   // a demote) can't reach AdminPane content for a non-admin user.
@@ -193,9 +190,8 @@ const Shell: Component = () => {
   // Demote-mid-session: when `me.is_admin` flips to false (another
   // admin demotes this operator, OR the bearer rotates to a
   // non-admin user), the createEffect below redirects selection
-  // back to home if currently on admin. Sidebar admin row vanishes
-  // via the same `isAdmin()` predicate. Drawer entry hides via the
-  // mirror predicate in SettingsDrawer.
+  // back to home if currently on admin. Sidebar admin row + the rail
+  // 🔧 launcher vanish via the same `isAdmin()` predicate.
 
   // M-7 demote redirect — when the operator loses admin AND is
   // currently on the admin window, navigate back to home so the
@@ -703,17 +699,7 @@ const Shell: Component = () => {
             <RailActions setters={{ membersOpen, setMembersOpen, setSettingsOpen }} />
           </aside>
 
-          <SettingsDrawer
-            open={settingsOpen()}
-            onClose={() => setSettingsOpen(false)}
-            onOpenAdmin={() =>
-              setSelectedChannel({
-                networkSlug: ADMIN_WINDOW_SLUG,
-                channelName: ADMIN_WINDOW_NAME,
-                kind: "admin",
-              })
-            }
-          />
+          <SettingsDrawer open={settingsOpen()} onClose={() => setSettingsOpen(false)} />
         </div>
       }
     >
@@ -954,17 +940,7 @@ const Shell: Component = () => {
           <RailActions setters={{ membersOpen, setMembersOpen, setSettingsOpen }} />
         </aside>
 
-        <SettingsDrawer
-          open={settingsOpen()}
-          onClose={() => setSettingsOpen(false)}
-          onOpenAdmin={() =>
-            setSelectedChannel({
-              networkSlug: ADMIN_WINDOW_SLUG,
-              channelName: ADMIN_WINDOW_NAME,
-              kind: "admin",
-            })
-          }
-        />
+        <SettingsDrawer open={settingsOpen()} onClose={() => setSettingsOpen(false)} />
       </div>
     </Show>
   );
