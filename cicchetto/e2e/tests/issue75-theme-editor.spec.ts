@@ -51,6 +51,107 @@ async function openThemesGalleryDesktop(page: PWPage): Promise<void> {
   await expect(page.getByTestId("theme-gallery")).toBeVisible({ timeout: 5_000 });
 }
 
+// Mobile route to the same gallery. The members-sidebar hamburger (which hosts
+// the settings cog, the path to themes since #299) is channel-scoped, so a
+// channel has to be selected first — mirror of the gallery consumer spec. #299
+// removed the footer 🎨 launcher; rail launcher menu (#500) → cog → themes nav
+// row is the path now.
+async function openThemesGalleryMobile(page: PWPage): Promise<void> {
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+  await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).toBeVisible();
+
+  await page.getByLabel(/open members sidebar/i).tap();
+  await expect(page.locator(".shell-members.open")).toBeVisible({ timeout: 5_000 });
+  await openRailMenu(page);
+  await page.locator(".rail-actions-menu [data-testid='action-cluster-cog']").tap();
+  await expect(page.locator(".shell-members.open")).toHaveCount(0, { timeout: 5_000 });
+  await page.getByTestId("themes-settings-entry").tap();
+  await expect(page.getByTestId("theme-gallery")).toBeVisible({ timeout: 5_000 });
+}
+
+// #963 — the legibility of a control, measured in PIXELS.
+//
+// The first version of this asked `getComputedStyle`, and computed style is
+// the wrong instrument twice over for this defect. On WebKit the native
+// menulist chrome paints its own fill OVER `background`, so the cascade said
+// legible while the control was not; and under `devices["iPhone 15"]`
+// emulation, a page carrying a <select> with <option>s makes
+// `getComputedStyle` hand back DEFAULT values for a subset of nodes (a <body>
+// reporting black while its own <input> child reports `#e0e0e0` is a read
+// artefact, not a cascade any engine can produce). What the user sees is the
+// pixels, so the pixels are the oracle: screenshot the control, histogram its
+// interior, and take the WCAG contrast between what fills it and what is
+// written on it.
+//
+// No colour literal is involved — the fill and the ink are both whatever the
+// engine painted. The only constant is WCAG's 4.5:1 floor for text.
+const WCAG_TEXT_CONTRAST_FLOOR = 4.5;
+
+// Contrast of what is WRITTEN on a control against what FILLS it: dominant
+// colour of the sampled region is the fill, the most frequent colour far
+// enough from it is the ink.
+//
+// The sampled region is the interior MINUS the inline-end strip, which is
+// where a caret lives — ours after `appearance: none`, the user agent's own
+// arrow before it. That exclusion is load-bearing, not tidiness: measured on
+// Playwright's WebKit, sampling the whole interior elects the native arrow
+// (#2e3436, more pixels than the glyphs) as the ink and reports a comfortable
+// 11.5:1 for a control whose own text — `--fg` #e0e0e0 on the native
+// rgb(244,244,244) fill — is invisible at 1.20:1. An oracle that scores a
+// decoration cannot see the defect it exists for.
+//
+// No ink at all — nothing distinguishable from the fill — is contrast 1, not
+// an error: it is precisely the shape this defect takes (black glyphs on a
+// near-black fill on Chromium, `--fg` glyphs on a near-white native fill on
+// WebKit), and both were measured returning exactly this.
+async function paintedTextContrast(page: PWPage, testId: string): Promise<number> {
+  const shot = (await page.getByTestId(testId).screenshot()).toString("base64");
+  return page.evaluate(async (b64: string) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${b64}`;
+    await img.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    if (ctx === null) return 1;
+    ctx.drawImage(img, 0, 0);
+
+    // Inset past the border (1 CSS px, up to 3 device px at dsf 3) and the
+    // rounded corners; the screenshot is in DEVICE pixels, so the caret strip
+    // is too.
+    const inset = 7;
+    const strip = 32 * window.devicePixelRatio;
+    const w = canvas.width - 2 * inset - strip;
+    const h = canvas.height - 2 * inset;
+    if (w <= 0 || h <= 0) return 1;
+    const { data } = ctx.getImageData(inset, inset, w, h);
+
+    const counts = new Map<number, number>();
+    for (let i = 0; i < data.length; i += 4) {
+      const key = (data[i] << 16) | (data[i + 1] << 8) | data[i + 2];
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const byFrequency = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    const fill = byFrequency[0][0];
+    const rgb = (k: number) => [(k >> 16) & 255, (k >> 8) & 255, k & 255];
+    const far = (k: number) => Math.max(...rgb(k).map((c, i) => Math.abs(c - rgb(fill)[i]))) > 40;
+    const ink = byFrequency.find(([k]) => far(k));
+    if (ink === undefined) return 1;
+
+    const luminance = (k: number) => {
+      const [r, g, b] = rgb(k).map((c) => {
+        const s = c / 255;
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const a = luminance(fill);
+    const b = luminance(ink[0]);
+    return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+  }, shot);
+}
+
 test.describe("#75 — theme editor (producer path)", () => {
   test("new theme: live preview + save persists across reload via the server", async ({
     page,
@@ -105,23 +206,7 @@ test.describe("#75 — theme editor (producer path)", () => {
 
   test("@webkit editor opens + live-previews + cancels on mobile", async ({ page }) => {
     await loginAs(page, getSeededVjt());
-    // The mobile members-sidebar hamburger (which hosts the settings cog,
-    // the path to themes since #299) is channel-scoped — select a channel
-    // first (mirror the gallery consumer spec).
-    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
-    await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).toBeVisible();
-
-    // Mobile: reach the themes sub-page via the rail launcher menu (#500) → cog
-    // (settings) → themes nav row. (#299 removed the footer 🎨 launcher; the
-    // cog is the path now.)
-    await page.getByLabel(/open members sidebar/i).tap();
-    const drawer = page.locator(".shell-members.open");
-    await expect(drawer).toBeVisible({ timeout: 5_000 });
-    await openRailMenu(page);
-    await page.locator(".rail-actions-menu [data-testid='action-cluster-cog']").tap();
-    await expect(page.locator(".shell-members.open")).toHaveCount(0, { timeout: 5_000 });
-    await page.getByTestId("themes-settings-entry").tap();
-    await expect(page.getByTestId("theme-gallery")).toBeVisible({ timeout: 5_000 });
+    await openThemesGalleryMobile(page);
 
     const accentPreOpen = await readAccent(page);
     await page.getByTestId("theme-new").tap();
@@ -133,6 +218,75 @@ test.describe("#75 — theme editor (producer path)", () => {
     await page.getByTestId("theme-editor-cancel-btn").tap();
     await expect(page.getByTestId("theme-editor")).toHaveCount(0, { timeout: 5_000 });
     await expect.poll(() => readAccent(page), { timeout: 5_000 }).toBe(accentPreOpen);
+  });
+
+  // #963 — the font <select> has to be READABLE, which is a fact about pixels,
+  // not about the cascade. jsdom has neither, so the assertion is e2e.
+  //
+  // It runs on BOTH engines, as a tagged/untagged PAIR, because the two
+  // Playwright projects PARTITION the suite: chromium takes `grepInvert:
+  // /@webkit/`, webkit-iphone-15 takes `grep: /@webkit/`, so a single test can
+  // only ever reach one of them. That partition is load-bearing here: the two
+  // engines painted this control DIFFERENTLY (Chromium honoured `background`
+  // on a menulist, WebKit covered it with native chrome), so a green on one
+  // says nothing about the other — and cic's engine that matters most is
+  // Safari. Same shape as `issue962-settings-drawer-row-squash.spec.ts`.
+  test("font select is legible — painted fill vs painted text clears WCAG", async ({ page }) => {
+    await loginAs(page, getSeededVjt());
+    await openThemesGalleryDesktop(page);
+
+    await page.getByTestId("theme-new").click();
+    await expect(page.getByTestId("theme-editor")).toBeVisible({ timeout: 5_000 });
+
+    await expect
+      .poll(() => paintedTextContrast(page, "theme-editor-font"), { timeout: 5_000 })
+      .toBeGreaterThanOrEqual(WCAG_TEXT_CONTRAST_FLOOR);
+
+    await page.getByTestId("theme-editor-cancel-btn").click();
+  });
+
+  test("@webkit #963 — font select is legible on the iPhone leg too", async ({ page }) => {
+    await loginAs(page, getSeededVjt());
+    await openThemesGalleryMobile(page);
+
+    await page.getByTestId("theme-new").tap();
+    await expect(page.getByTestId("theme-editor")).toBeVisible({ timeout: 5_000 });
+
+    await expect
+      .poll(() => paintedTextContrast(page, "theme-editor-font"), { timeout: 5_000 })
+      .toBeGreaterThanOrEqual(WCAG_TEXT_CONTRAST_FLOOR);
+
+    await page.getByTestId("theme-editor-cancel-btn").tap();
+  });
+
+  // #963 part B — `color-scheme`. `appearance: none` makes the CLOSED select
+  // ours, but the OPEN list of <option>s stays the UA's to paint (that is the
+  // point of keeping a real <select>: the system picker). The UA only knows
+  // which way to paint it if told, and it cannot be told a literal: cic ships
+  // a light theme, a dark theme and an editor that overrides `--bg` live. So
+  // the declaration is DERIVED from the theme that is painting — which is
+  // exactly what this asserts, by driving the theme from one end of the range
+  // to the other through the editor's own live preview and watching the
+  // derivation follow. A mirror of the implementation would compute the
+  // expected value the same way the product does; white and black instead
+  // carry their own answer.
+  test("the UA's own surfaces follow the theme — color-scheme tracks --bg", async ({ page }) => {
+    await loginAs(page, getSeededVjt());
+    await openThemesGalleryDesktop(page);
+
+    await page.getByTestId("theme-new").click();
+    await expect(page.getByTestId("theme-editor")).toBeVisible({ timeout: 5_000 });
+
+    const scheme = () =>
+      page.evaluate(() => getComputedStyle(document.documentElement).colorScheme);
+
+    await setEditorColor(page, "bg", "#ffffff");
+    await expect.poll(scheme, { timeout: 5_000 }).toBe("light");
+
+    await setEditorColor(page, "bg", "#000000");
+    await expect.poll(scheme, { timeout: 5_000 }).toBe("dark");
+
+    await page.getByTestId("theme-editor-cancel-btn").click();
   });
 
   test("self-hosted font applies live from same-origin /fonts (no CDN)", async ({ page }) => {

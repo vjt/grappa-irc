@@ -1,4 +1,5 @@
 import { createEffect, createSignal } from "solid-js";
+import { applyColorScheme } from "./colorScheme";
 import { moduleRoot } from "./moduleRoot";
 
 // Boot-time base theme + reactive viewport-mode signal.
@@ -34,8 +35,14 @@ function resolveAuto(): ResolvedTheme {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "irssi-dark" : "mirc-light";
 }
 
+// #963 — the base palette write is one of the two places a theme lands on
+// <html>, so it is one of the two that re-derive `color-scheme` for the UA-
+// painted surfaces (the open <option> list first of all). The other is
+// customTheme.ts's overlay apply; both go through the same derivation, which
+// reads whatever `--bg` resolves to after the write.
 function writeDataset(theme: ResolvedTheme): void {
   document.documentElement.dataset.theme = theme;
+  applyColorScheme();
 }
 
 // Boot-time entry. Applies the OS-resolved base theme to
