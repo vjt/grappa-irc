@@ -79,6 +79,16 @@ import { windowStateByChannel } from "./windowState";
 // network instead of assuming the RFC set.
 const CHANNEL_SIGIL = /^[#&+!]/;
 
+// #1003 — IRC nicks wear decoration (`_omino_`, `bob^`, `gio-vanni`), so
+// Tab must reach `_omino_` from the bare `omi`. Deliberately NOT taught to
+// `asciiFold`: that helper is protocol IDENTITY (the cic mirror of
+// `Grappa.IRC.Identifier.canonical_nick/1`, shared with nickColor /
+// notifyWatch / channelKey / pingCorrelation), and folding `_` there would
+// make `foo` and `f_o_o` the SAME person for highlight, colour and
+// presence. This one is local to the completion matcher, where a wrong
+// guess costs a second Tab, not an identity merge.
+const stripNickDecoration = (s: string): string => s.replace(/[[\]\\`_^{|}-]/g, "");
+
 // Per-channel compose state. Owns:
 //   * `composeByChannel` — { draft, history, historyCursor } per key.
 //     `historyCursor === null` = at-bottom (typing fresh draft);
@@ -1935,12 +1945,30 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       oldEnd = cursor;
     }
 
-    const candidates = CHANNEL_SIGIL.test(typedWord)
+    const isChannel = CHANNEL_SIGIL.test(typedWord);
+    const candidates = isChannel
       ? joinedChannelsOnNetwork(key)
       : (membersByChannel()[key] ?? []).map((m) => m.nick);
-    const matches = candidates
-      .filter((c) => asciiFold(c).startsWith(prefix))
-      .sort((a, b) => a.localeCompare(b));
+    const byName = (a: string, b: string) => a.localeCompare(b);
+    const literal = candidates.filter((c) => asciiFold(c).startsWith(prefix)).sort(byName);
+    // Second level (#1003), nicks only: the same prefix test with the
+    // decoration removed from BOTH sides. It runs AFTER the literal
+    // matches — the order IS the behaviour, so with `omino` and `_oMiNo_`
+    // both present the first Tab still yields the literal `omino`. A
+    // decoration-only word (`_`) strips to nothing and would match every
+    // member, so it stays on the literal level. The channel branch never
+    // strips: `#foo-bar` is a DIFFERENT channel from `#foobar`.
+    const looseWord = isChannel ? "" : stripNickDecoration(prefix);
+    const loose =
+      looseWord === ""
+        ? []
+        : candidates
+            .filter(
+              (c) =>
+                !literal.includes(c) && stripNickDecoration(asciiFold(c)).startsWith(looseWord),
+            )
+            .sort(byName);
+    const matches = [...literal, ...loose];
     if (matches.length === 0) return null;
 
     const span = matches.length + 1; // matches + the revert slot

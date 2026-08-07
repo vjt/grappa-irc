@@ -2293,6 +2293,59 @@ describe("compose tabComplete (members-only, irssi-exact)", () => {
     expect(compose.getDraft(k)).toBe("alex: ");
   });
 
+  // #1003 — IRC nicks wear decoration (`_omino_`, `gio-vanni`, `bob^`).
+  // Typing the bare word must still reach them. Second level ONLY: an
+  // exact prefix match always comes first, so the decoration-blind pass
+  // never steals the slot a literal match already owns.
+  it("matches a decorated nick from the undecorated prefix", async () => {
+    await setMembers(["_omino_"]);
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "omi", 3, true)?.newInput).toBe("_omino_: ");
+  });
+
+  it("inserts the REAL nick, decoration included", async () => {
+    await setMembers(["_omino_"]);
+    const compose = await import("../lib/compose");
+    compose.tabComplete(k, "omi", 3, true);
+    expect(compose.getDraft(k)).toBe("_omino_: ");
+  });
+
+  it("strips decoration off the TYPED word too (symmetric)", async () => {
+    await setMembers(["omino"]);
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "_omi", 4, true)?.newInput).toBe("omino: ");
+  });
+
+  it("matches across an inner hyphen", async () => {
+    await setMembers(["gio-vanni"]);
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "giov", 4, true)?.newInput).toBe("gio-vanni: ");
+  });
+
+  it("offers the exact match FIRST and the decorated one on the second Tab", async () => {
+    await setMembers(["omino", "_oMiNo_"]);
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "omi", 3, true)?.newInput).toBe("omino: ");
+    let draft = compose.getDraft(k);
+    expect(compose.tabComplete(k, draft, draft.length, true)?.newInput).toBe("_oMiNo_: ");
+    draft = compose.getDraft(k);
+    expect(compose.tabComplete(k, draft, draft.length, true)?.newInput).toBe("omi");
+  });
+
+  it("does not let a decoration-only match outrank a literal one", async () => {
+    await setMembers(["_alfa_", "alex"]);
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "al", 2, true)?.newInput).toBe("alex: ");
+    const draft = compose.getDraft(k);
+    expect(compose.tabComplete(k, draft, draft.length, true)?.newInput).toBe("_alfa_: ");
+  });
+
+  it("a decoration-only word matches nothing (it would match everyone)", async () => {
+    await setMembers(["alice", "bob"]);
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "_", 1, true)).toBeNull();
+  });
+
   it("a real keystroke (setDraft) discards the cycle", async () => {
     await setMembers(["alice", "alex"]);
     const compose = await import("../lib/compose");
@@ -2396,6 +2449,14 @@ describe("compose tabComplete — channel names (#30)", () => {
     await setJoinedWindows({ [channelKey("freenode", "#other")]: "joined" });
     const compose = await import("../lib/compose");
     expect(compose.tabComplete(k, "#sni", 4, true)).toBeNull();
+  });
+
+  // #1003 — the nick decoration strip stops at the sigil: `#foo-bar` is a
+  // DIFFERENT channel from `#foobar`, not the same one wearing a hyphen.
+  it("never strips decoration on the channel branch", async () => {
+    await setJoinedWindows({ [channelKey("freenode", "#sniffo-bis")]: "joined" });
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "#sniffob", 8, true)).toBeNull();
   });
 
   it("a sigil-less token still completes NICKS, not channels", async () => {
