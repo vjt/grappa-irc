@@ -530,12 +530,19 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.body == body
     end
 
-    test "a plain NOTICE from a regular nick still lands in that peer's window" do
-      state = base_state()
+    test "a plain NOTICE from a regular nick lands in that peer's window when it is OPEN" do
+      # #546 answered the question this test was parked on. It used to read
+      # "still lands in that peer's window" with `base_state()` and the note
+      # "whether THAT is right is #546/#548's question, not this change's" —
+      # #591 deliberately left the plain-notice routing alone so it could not
+      # pre-empt the ruling. The ruling came: a plain peer notice reaches the
+      # peer's window ONLY when the query is already open.
+      #
+      # The contrast with the CTCP test above is what this test is for, and
+      # #546 sharpened it: give BOTH an open window and they still diverge —
+      # framing goes to `$server`, conversation goes to the peer.
+      state = base_state(%{query_window_open?: fn _, _, _ -> true end})
 
-      # The carve-out above is for CTCP framing ONLY. An ordinary peer
-      # notice keeps its existing routing — whether THAT is right is
-      # #546/#548's question, not this change's.
       m = msg(:notice, ["vjt", "just a notice"], {:nick, "alice", "u", "h"})
 
       assert {:cont, _, [{:persist, :notice, attrs}]} = EventRouter.route(m, state)
