@@ -43,11 +43,13 @@ vi.mock("./networks", () => ({
   refetchUser: vi.fn(),
 }));
 
-import { deleteAccount, detach, quit } from "./lifecycle";
+import { acceptConfirm, confirmRequest, dismissConfirm } from "./confirmDialog";
+import { canDetach, confirmDetach, confirmQuit, deleteAccount, detach, quit } from "./lifecycle";
 
 beforeEach(() => {
   vi.clearAllMocks();
   subjectHolder.current = null;
+  dismissConfirm();
 });
 
 describe("detach", () => {
@@ -171,5 +173,120 @@ describe("deleteAccount (#157)", () => {
 
     await expect(deleteAccount()).rejects.toThrow("forbidden");
     expect(auth.clearLocalAuth).not.toHaveBeenCalled();
+  });
+});
+
+// #986 — the rail-actions confirm gate. `detach` / `quit` are no longer a
+// bare button + a two-tap arm in the settings drawer: they are rail entries
+// behind the shared #195 confirm modal, and the modal BODY must state the
+// consequence that actually applies to the subject in front of it. The
+// defect this closes is one shared sentence for three different events, so
+// the load-bearing assertion is that the three bodies genuinely DIFFER —
+// a "the modal opens" test would pass with the old six words intact.
+describe("canDetach (#986)", () => {
+  it("offers detach to a registered user", () => {
+    subjectHolder.current = { kind: "user", id: "u1", name: "alice" };
+    expect(canDetach()).toBe(true);
+  });
+
+  it("offers detach to a registered visitor (same persistence answer)", () => {
+    subjectHolder.current = { kind: "visitor", id: "v1", nick: "vjt", registered: true };
+    expect(canDetach()).toBe(true);
+  });
+
+  it("withholds detach from an ephemeral visitor — no bouncer to leave running", () => {
+    subjectHolder.current = { kind: "visitor", id: "v2", nick: "anon", registered: false };
+    expect(canDetach()).toBe(false);
+  });
+
+  it("withholds detach from the not-yet-loaded null subject", () => {
+    subjectHolder.current = null;
+    expect(canDetach()).toBe(false);
+  });
+});
+
+describe("confirmQuit copy (#986)", () => {
+  const bodyFor = (subject: typeof subjectHolder.current): string => {
+    subjectHolder.current = subject;
+    confirmQuit(vi.fn());
+    const req = confirmRequest();
+    if (req === null) throw new Error("confirmQuit did not raise a confirm request");
+    return req.body;
+  };
+
+  const USER = { kind: "user", id: "u1", name: "alice" } as const;
+  const REGISTERED = { kind: "visitor", id: "v1", nick: "vjt", registered: true } as const;
+  const EPHEMERAL = { kind: "visitor", id: "v2", nick: "anon", registered: false } as const;
+
+  it("gives the three subject shapes three DIFFERENT bodies", () => {
+    const user = bodyFor(USER);
+    const registeredVisitor = bodyFor(REGISTERED);
+    const ephemeral = bodyFor(EPHEMERAL);
+
+    expect(new Set([user, registeredVisitor, ephemeral]).size).toBe(3);
+  });
+
+  it("promises survival to both persistent identities and destruction to the anon one", () => {
+    // The MEANING, not the wording: only the ephemeral copy may say the
+    // session is deleted, and neither persistent copy may.
+    expect(bodyFor(EPHEMERAL)).toMatch(/delete|permanently/i);
+    expect(bodyFor(USER)).toMatch(/survive/i);
+    expect(bodyFor(USER)).not.toMatch(/delete/i);
+    expect(bodyFor(REGISTERED)).toMatch(/survive/i);
+    expect(bodyFor(REGISTERED)).not.toMatch(/delete/i);
+  });
+
+  it("takes the ephemeral copy for the not-yet-loaded null subject (the arm quit() routes it to)", () => {
+    expect(bodyFor(null)).toBe(bodyFor(EPHEMERAL));
+  });
+
+  it("adds NO typed re-entry gate — the modal explains and asks", () => {
+    subjectHolder.current = USER;
+    confirmQuit(vi.fn());
+    // #986 ruling: the type-your-name gate is exclusive to delete account.
+    // The confirm request carries no input contract at all — just a body,
+    // an affirmative label, and (unused here) the #816 third door.
+    expect(confirmRequest()?.alternative).toBeNull();
+  });
+});
+
+describe("confirmDetach / confirmQuit wiring (#986)", () => {
+  it("fires detach + the caller's landing only on the affirmative", async () => {
+    const auth = await import("./auth");
+    const onDone = vi.fn();
+    subjectHolder.current = { kind: "user", id: "u1", name: "alice" };
+
+    confirmDetach(onDone);
+    expect(auth.logout).not.toHaveBeenCalled();
+
+    acceptConfirm();
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(auth.logout).toHaveBeenCalled();
+  });
+
+  it("dismissing the quit modal tears NOTHING down", async () => {
+    const auth = await import("./auth");
+    const quitMod = await import("./quit");
+    const onDone = vi.fn();
+    subjectHolder.current = { kind: "user", id: "u1", name: "alice" };
+
+    confirmQuit(onDone);
+    dismissConfirm();
+
+    expect(quitMod.quitAll).not.toHaveBeenCalled();
+    expect(auth.logout).not.toHaveBeenCalled();
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("confirming quit runs the subject's real teardown (user → park-all)", async () => {
+    const quitMod = await import("./quit");
+    const onDone = vi.fn();
+    subjectHolder.current = { kind: "user", id: "u1", name: "alice" };
+
+    confirmQuit(onDone);
+    acceptConfirm();
+
+    await vi.waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(quitMod.quitAll).toHaveBeenCalled();
   });
 });

@@ -3,6 +3,7 @@ import {
   updateNetworkIdentity as apiUpdateNetworkIdentity,
 } from "./api";
 import { clearLocalAuth, getSubject, isPersistentIdentity, logout, token } from "./auth";
+import { requestConfirm } from "./confirmDialog";
 import { refetchUser } from "./networks";
 import { quitAll } from "./quit";
 
@@ -67,6 +68,99 @@ export async function quit(): Promise<void> {
   // ephemeral (anon) visitor: detach only — the anon branch of
   // `DELETE /auth/logout` stops every attached session + purges the row.
   await logout();
+}
+
+// #986 — the two verbs above are rail-actions entries now, each behind the
+// shared #195 confirm modal. The GATE and the COPY live here, beside the
+// verbs they describe, exactly as windowClose.ts colocates
+// `confirmLeaveChannel` with the PART it fires: a modal that misdescribes
+// the consequence is worse than no modal at all, and the only way copy and
+// teardown cannot drift is to derive both from the same subject read.
+//
+// The two-tap `InlineConfirmButton` this replaces asked "really quit IRC?"
+// — six words that were the SAME for an anon visitor (whose row the server
+// hard-deletes on the way out) and a registered user (whose account and
+// scrollback survive untouched). Those are not the same event, so they do
+// not get the same sentence.
+//
+// No typed re-entry gate here, deliberately: that friction belongs to
+// `delete account` alone, the one door that destroys a persistent identity
+// (#986 ruling). detach and quit explain, then ask.
+
+const DETACH_BODY =
+  "Leave cicchetto in this browser. The bouncer keeps running: your networks stay " +
+  "connected and your scrollback keeps filling, so it is all still here when you come back.";
+
+const QUIT_BODY_USER =
+  "Park every network and take the bouncer offline. Your account, its settings and its " +
+  "scrollback survive — log back in whenever you want to reconnect.";
+
+const QUIT_BODY_REGISTERED_VISITOR =
+  "Park every network and take the bouncer offline. Your session is registered, so the " +
+  "server keeps it: your nick and its scrollback survive — identify again to come back.";
+
+const QUIT_BODY_EPHEMERAL =
+  "Leave IRC and end this session. It is not registered, so the server DELETES it on the " +
+  "way out — windows, scrollback, settings, all of it, permanently. There is nothing to " +
+  "come back to.";
+
+/**
+ * canDetach — is `detach` a meaningful verb for the current subject? True
+ * for a persistent identity only: an ephemeral visitor has no bouncer to
+ * leave running, so "leave cic, keep the session" is not on offer.
+ *
+ * Routed through the shared `isPersistentIdentity` predicate — the SAME
+ * question `quit()` asks one screen up — so the affordance and the teardown
+ * path can never answer it differently.
+ */
+export function canDetach(): boolean {
+  return isPersistentIdentity(getSubject());
+}
+
+// The three consequences of `quit`, keyed off the subject the way `quit()`
+// itself is. A persistent identity survives, so the split inside that arm is
+// about the NOUN the operator owns (an account they log back into vs a
+// registered session they re-identify to) — not about the teardown, which is
+// one `quitAll` for both. The null (not-yet-loaded) subject falls to the
+// ephemeral copy because that is the arm `quit()` routes it to.
+function quitBody(): string {
+  const subject = getSubject();
+  if (subject !== null && isPersistentIdentity(subject)) {
+    return subject.kind === "user" ? QUIT_BODY_USER : QUIT_BODY_REGISTERED_VISITOR;
+  }
+  return QUIT_BODY_EPHEMERAL;
+}
+
+/**
+ * confirmDetach — open the shared confirm modal for `detach`, firing the
+ * verb and then `onDone` only on the affirmative. `onDone` is the caller's
+ * landing (the rail passes `navigate("/login")`): `logout()` nulls the token
+ * and RequireAuth would redirect anyway, but the explicit navigation makes
+ * the landing deterministic rather than effect-ordered.
+ */
+export function confirmDetach(onDone: () => void): void {
+  requestConfirm({
+    title: "Detach",
+    body: DETACH_BODY,
+    confirmLabel: "Detach",
+    onConfirm: () => void detach().then(onDone),
+    alternative: null,
+  });
+}
+
+/**
+ * confirmQuit — open the shared confirm modal for `quit`, with the body that
+ * is TRUE for the current subject. Same fire-then-land shape as
+ * `confirmDetach`.
+ */
+export function confirmQuit(onDone: () => void): void {
+  requestConfirm({
+    title: "Quit IRC",
+    body: quitBody(),
+    confirmLabel: "Quit IRC",
+    onConfirm: () => void quit().then(onDone),
+    alternative: null,
+  });
 }
 
 /**
