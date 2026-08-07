@@ -9,6 +9,10 @@ import {
   pushOverlay,
   __resetForTest as resetOverlayLock,
 } from "../lib/overlayScrollLock";
+// #981 — the REAL shared signal the pane publishes its read-at-the-tail
+// answer into (the badge derivation in selection.ts reads it). Not mocked:
+// the pane is its only writer and what these tests assert IS the write.
+import { readingAtTailKey } from "../lib/readingAtTail";
 // #230 — the mocked `loadMore` (see vi.mock("../lib/scrollback")) so the
 // wheel-up-on-underfill trigger can be asserted directly.
 import { loadMore } from "../lib/scrollback";
@@ -4310,6 +4314,80 @@ describe("ScrollbackPane", () => {
       // visibility gate worth keeping), so nothing may be marked read.
       await new Promise((r) => setTimeout(r, 900));
       expect(mockSetCursorIfAdvances).not.toHaveBeenCalled();
+    });
+  });
+
+  // #981 — the pane PUBLISHES the same read-at-the-tail answer the cursor arm
+  // above acts on, so `selection.ts` can suppress the badge for the window
+  // being read without re-deriving (and eventually forking) the predicate.
+  //
+  // The geometric term is not bindable here — jsdom reports zero-height boxes,
+  // so `atBottomNow` reads "at the tail" whatever the test does (measured
+  // under #887: deleting that gate left every pane test green). What IS
+  // bindable, and what these tests own, is everything around it: the tab
+  // visibility term, the mount/unmount lifecycle, and the refusal to answer
+  // for a window whose geometry has not been measured yet. The geometry
+  // itself is an e2e.
+  describe("#981 — the pane publishes which window it is reading at the tail", () => {
+    it("publishes its own key while visible with rows rendered", async () => {
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+
+      await waitFor(() => expect(readingAtTailKey()).toBe("freenode #grappa"));
+    });
+
+    it("publishes nothing while the tab is hidden (a backgrounded tab is not being read)", async () => {
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      await waitFor(() => expect(readingAtTailKey()).toBe("freenode #grappa"));
+
+      setDocVisible(false);
+
+      await waitFor(() => expect(readingAtTailKey()).toBeNull());
+    });
+
+    it("publishes nothing for an EMPTY window (there is nothing on screen to read)", async () => {
+      setScrollback({});
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(readingAtTailKey()).toBeNull();
+    });
+
+    it("clears on unmount — a pane that is gone is reading nothing", async () => {
+      setScrollback({ "freenode #grappa": fixture });
+      const { unmount } = render(() => (
+        <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+      ));
+      await waitFor(() => expect(readingAtTailKey()).toBe("freenode #grappa"));
+
+      unmount();
+
+      expect(readingAtTailKey()).toBeNull();
+    });
+
+    // The switch re-arms `atBottomNow` TRUE as an INTENT default before any
+    // geometry is read (the 2026-06-01 scroll-contamination re-arm in the key
+    // effect), and only the activation rAF×2 later replaces it with a real
+    // measurement. Publishing across that gap would blink the ARRIVING
+    // window's badge to 0 and back — the "vanishes on select" complaint #887
+    // was filed about, in miniature. So the answer is withheld until the
+    // arriving window's geometry has actually been measured.
+    it("withholds the answer across a window switch until geometry is measured", async () => {
+      const [chan, setChan] = createSignal("#a");
+      setScrollback({ "freenode #a": fixture, "freenode #b": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName={chan()} kind="channel" />);
+      // jsdom leaves scrollTo undefined; the switch's smooth-scroll interrupt
+      // calls it (see the #608 W9 spec, same stub).
+      (screen.getByTestId("scrollback") as HTMLDivElement).scrollTo = vi.fn();
+      await waitFor(() => expect(readingAtTailKey()).toBe("freenode #a"));
+
+      setChan("#b");
+
+      // Synchronously after the switch: the arriving window is unmeasured.
+      expect(readingAtTailKey()).toBeNull();
+      // ...and once the activation has settled, it answers for the new window.
+      await waitFor(() => expect(readingAtTailKey()).toBe("freenode #b"));
     });
   });
 

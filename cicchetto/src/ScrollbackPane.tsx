@@ -38,6 +38,7 @@ import {
 } from "./lib/presenceFilter";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { getReadCursor } from "./lib/readCursor";
+import { setReadingAtTailKey } from "./lib/readingAtTail";
 import { isSettled, nextFollowMode, resolveIntent, type ScrollIntent } from "./lib/scrollAuthority";
 import {
   dismissFarBehind,
@@ -1086,6 +1087,20 @@ const ScrollbackPane: Component<Props> = (props) => {
   // steps build the divergence on.
   const [followMode, setFollowMode] = createSignal(true);
   const [atBottomNow, setAtBottomNow] = createSignal(true);
+  // #981 — has `atBottomNow` been MEASURED for the window now on screen?
+  //
+  // Every activation re-arms it TRUE as an intent default (the 2026-06-01
+  // scroll-contamination re-arm in the key effect) BEFORE any geometry is
+  // read; the real measurement lands later, in the activation's rAF×2 or on
+  // the next scroll event. The read-at-the-tail cursor arm tolerates that gap
+  // — it re-reads the DOM 500 ms later and `setCursorIfAdvances` is
+  // forward-only — but the badge suppression published from it cannot: acting
+  // on the default would blink the ARRIVING window's badge to 0 and back
+  // within two frames, which is the "vanishes on select" complaint #887 was
+  // filed about. False from every switch until a measurement lands, and every
+  // unmeasured path therefore publishes "not reading" — failing toward
+  // SHOWING the badge, the honest direction.
+  const [tailGeometryMeasured, setTailGeometryMeasured] = createSignal(false);
   // #285 reopen — FAIL-OPEN touch-action gate. The CSS base is `pan-y`; this
   // signal drives the `.scrollback-locked` class that LOCKS the pane to
   // `touch-action: none` ONLY when a trustworthy measurement proves the content
@@ -2138,6 +2153,14 @@ const ScrollbackPane: Component<Props> = (props) => {
           setFollowMode(true);
           setAtBottomNow(true);
         }
+        // #981 — every branch above ran INSIDE the rAF×2, i.e. against settled
+        // layout: the marker branch read the distance-to-tail, the else branch
+        // placed the pane AT the tail, and `marker-or-preserve` deliberately
+        // left the reader where they were (above the tail). All three are
+        // answers about THIS window's geometry, so the suppression may act on
+        // `atBottomNow` from here on. The early returns above are not: they
+        // leave the flag false and the badge shown.
+        setTailGeometryMeasured(true);
         // Scroll has settled at the correct position — reveal.
         if (withHide) setActivating(false);
       });
@@ -2259,6 +2282,10 @@ const ScrollbackPane: Component<Props> = (props) => {
         // own input takes it back.
         setFollowMode(true);
         setAtBottomNow(true);
+        // #981 — and that `true` is an INTENT default, not a measurement of
+        // the arriving window. Withhold the badge suppression until the
+        // activation below (or the next scroll) measures the real distance.
+        setTailGeometryMeasured(false);
 
         // CP29 R-4: capture the boundary as the highest message id present
         // RIGHT NOW. `messages()` is the same store the rows memo reads;
@@ -2473,17 +2500,22 @@ const ScrollbackPane: Component<Props> = (props) => {
   // left over from the previous window must never write the switched-to one
   // (same hazard, same shape, as the #239 presence arm below). `key()` is read
   // for exactly that reason: a channel switch must re-arm, not inherit.
+  //
+  // THE predicate, in one place: `readingAtTail`. The arm below acts on it,
+  // and #981 publishes it so the badge derivation can suppress the count for
+  // the window it is true of. Two consumers, one expression — reassembling it
+  // at the reader is how the two would drift apart.
+  const readingAtTail = (): boolean =>
+    isDocumentVisible() && atBottomNow() && (rows()?.length ?? 0) > 0;
   let readAtTailSettleTimer: number | undefined;
   createEffect(() => {
     key();
-    const rowCount = rows()?.length ?? 0;
-    const visible = isDocumentVisible();
-    const atTail = atBottomNow();
+    const reading = readingAtTail();
     if (readAtTailSettleTimer !== undefined) {
       window.clearTimeout(readAtTailSettleTimer);
       readAtTailSettleTimer = undefined;
     }
-    if (!visible || !atTail || rowCount === 0) return;
+    if (!reading) return;
     readAtTailSettleTimer = window.setTimeout(settleCursorToVisibleTail, READ_AT_TAIL_SETTLE_MS);
   });
   onCleanup(() => {
@@ -2491,6 +2523,19 @@ const ScrollbackPane: Component<Props> = (props) => {
       window.clearTimeout(readAtTailSettleTimer);
     }
   });
+
+  // #981 — publish that same answer for `selection.ts` (`perChannelUnread`),
+  // which suppresses the unread badge for the window it names. The extra
+  // `tailGeometryMeasured` term is not a second predicate: it withholds the
+  // answer while `atBottomNow` is still the activation's intent default (see
+  // its declaration), and withholding publishes `null` — the badge shows.
+  //
+  // ONE writer, by construction: exactly one pane is mounted at a time, and
+  // it clears the signal when it goes away.
+  createEffect(() => {
+    setReadingAtTailKey(tailGeometryMeasured() && readingAtTail() ? key() : null);
+  });
+  onCleanup(() => setReadingAtTailKey(null));
 
   // #239 — advance the server read-cursor over the TRAILING run of hidden
   // control messages while this window is DISPLAYED. The #222 presence filter
@@ -3201,6 +3246,10 @@ const ScrollbackPane: Component<Props> = (props) => {
       setFollowMode(nextFollowMode(followMode(), "scroll-up"));
     }
     lastScrollTop = st;
+    // #981 — a scroll event carries a real distance-to-tail read (computed
+    // above), including the untouched middle branch: whatever `atBottomNow`
+    // now says about this window, it says it from measured layout.
+    setTailGeometryMeasured(true);
 
     // BUGHUNT-2 B7: snapshot the current visible-tail for the CURRENT
     // (key) so the leave-arm in `on(key, …)` can recover the leaving
