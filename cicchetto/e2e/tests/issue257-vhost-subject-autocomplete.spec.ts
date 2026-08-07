@@ -16,7 +16,7 @@
 // typed nick — is the value proof.
 
 import { expect, test } from "../fixtures/test";
-import { openSettingsDrawer, expectShellReady } from "../fixtures/cicchettoPage";
+import { expectShellReady, openAdminConsole } from "../fixtures/cicchettoPage";
 import { GRAPPA_BASE_URL, mintVisitor, reapVisitors } from "../fixtures/grappaApi";
 import { getSeededAdmin } from "../fixtures/seedData";
 
@@ -37,10 +37,7 @@ async function adminLogin(
 }
 
 async function openVhostsTab(page: import("@playwright/test").Page): Promise<void> {
-  await openSettingsDrawer(page);
-  await expect(page.getByRole("dialog", { name: /settings/i })).toBeVisible();
-  await page.getByTestId("admin-console-entry").click();
-  await expect(page.getByTestId("admin-pane")).toBeVisible();
+  await openAdminConsole(page);
   await page.getByTestId("admin-tab-vhosts").click();
   await expect(page.getByTestId("admin-vhosts-table")).toBeVisible({ timeout: 10_000 });
 }

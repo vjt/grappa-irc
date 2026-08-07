@@ -1,4 +1,4 @@
-// Issue #477 — quit() + SettingsDrawer.showDetach route on PERSISTENCE,
+// Issue #477 — quit() + the detach affordance route on PERSISTENCE,
 // not subject class. Before #477 both hand-rolled the same predicate twice
 // (`kind === "user" || (visitor && registered === true)`); the collapse
 // routes both through the shared `isPersistentIdentity` (lib/auth.ts). This
@@ -39,24 +39,24 @@
 //
 // The registered-visitor case seeds `registered: true` into the persisted
 // subject — the SAME field the server sets for a real registered visitor and
-// the SOLE input showDetach reads (issue126 seeds `registered: false`
+// the SOLE input the detach gate reads (issue126 seeds `registered: false`
 // symmetrically for its ephemeral case).
 
-import { openSettingsDrawer, loginAs } from "../fixtures/cicchettoPage";
+import { openRailMenu, loginAs } from "../fixtures/cicchettoPage";
 import { mintVisitor, reapVisitors } from "../fixtures/grappaApi";
 import { getSeededAdmin, getSeededVjt } from "../fixtures/seedData";
 import { expect, test } from "../fixtures/test";
 import { type Browser, type Page } from "@playwright/test";
 
-async function openDrawer(page: Page) {
-  await openSettingsDrawer(page);
-  const drawer = page.getByRole("dialog", { name: /settings/i });
-  await expect(drawer).toHaveClass(/open/);
-  return drawer;
+// #986 — the lifecycle verbs left the settings drawer for the rail actions
+// menu. The persistence QUESTION this spec is about (`isPersistentIdentity`,
+// via `canDetach()`) did not change; only the surface it gates did.
+async function openLifecycleMenu(page: Page): Promise<void> {
+  await openRailMenu(page);
 }
 
 // Mint a throwaway visitor, seed it into a fresh isolated context carrying
-// the given `registered` flag (the field showDetach + quit() read), and
+// the given `registered` flag (the field canDetach() + quit() read), and
 // bootstrap cicchetto. Returns the page + a teardown that closes the context
 // and deletes the visitor row (idempotent — an ephemeral quit already purged
 // it server-side, so the delete 404s, swallowed).
@@ -94,40 +94,49 @@ async function bootVisitor(
 }
 
 test.describe("issue #477 — quit()/detach route on persistence, not class", () => {
-  test("registered USER (persistent) → drawer offers BOTH detach and quit", async ({ page }) => {
+  test("registered USER (persistent) → the rail offers BOTH detach and quit", async ({ page }) => {
     await loginAs(page, getSeededVjt());
-    await openDrawer(page);
+    await openLifecycleMenu(page);
 
-    // Persistent identity → isPersistentIdentity true → showDetach renders
+    // Persistent identity → isPersistentIdentity true → canDetach() renders
     // the detach affordance alongside the universal quit. Read-only: no
     // click mutates the shared vjt session.
     await expect(page.getByTestId("detach-btn")).toBeVisible();
     await expect(page.getByTestId("quit-irc-btn")).toBeVisible();
   });
 
-  test("registered VISITOR (persistent) → drawer offers BOTH detach and quit", async ({
+  test("registered VISITOR (persistent) → the rail offers BOTH detach and quit", async ({
     browser,
   }) => {
     const { page, teardown } = await bootVisitor(browser, true);
     try {
-      await openDrawer(page);
+      await openLifecycleMenu(page);
 
       // `registered === true` → persistent, exactly like a user: detach is
       // offered. This is the arm the #477 collapse must keep grouped with
-      // the user arm — no existing e2e covered a registered visitor's drawer.
+      // the user arm — no existing e2e covered a registered visitor here.
       await expect(page.getByTestId("detach-btn")).toBeVisible();
       await expect(page.getByTestId("quit-irc-btn")).toBeVisible();
+
+      // #986 — persistent, so the quit copy must PROMISE SURVIVAL. Against a
+      // real NickServ-flagged visitor, not a stubbed subject: this is the
+      // middle row of the three-way copy split, and the one a vitest fake
+      // cannot prove the shipped client reaches.
+      await page.getByTestId("quit-irc-btn").click();
+      await expect(page.getByTestId("confirm-modal-body")).toHaveText(/survive/i);
+      await page.getByTestId("confirm-modal-cancel").click();
+      await expect(page.getByTestId("confirm-modal")).toHaveCount(0);
     } finally {
       await teardown();
     }
   });
 
-  test("ephemeral VISITOR → drawer offers ONLY quit, and quit lands on /login", async ({
+  test("ephemeral VISITOR → the rail offers ONLY quit, and quit lands on /login", async ({
     browser,
   }) => {
     const { page, teardown } = await bootVisitor(browser, false);
     try {
-      await openDrawer(page);
+      await openLifecycleMenu(page);
 
       // Ephemeral (not persistent) → no detach; quit is the only lifecycle
       // verb (positive twin so a testid typo can't silently green the
@@ -135,14 +144,15 @@ test.describe("issue #477 — quit()/detach route on persistence, not class", ()
       await expect(page.getByTestId("quit-irc-btn")).toBeVisible();
       await expect(page.getByTestId("detach-btn")).toHaveCount(0);
 
-      // The quit ACTION end-state: the two-tap InlineConfirmButton arms on
-      // the first tap (red confirm copy, no navigation) then fires onQuit →
-      // quit() → logout (the ephemeral path) → RequireAuth bounces to
-      // /login. On a throwaway visitor, so it poisons no shared state.
-      const quit = page.getByTestId("quit-irc-btn");
-      await quit.click();
-      await expect(quit).toHaveText(/really quit IRC/i);
-      await quit.click();
+      // The quit ACTION end-state: #986 replaced the two-tap arm with the
+      // shared confirm modal, so the first tap RAISES it (no navigation) and
+      // the affirmative fires quit() → logout (the ephemeral path) →
+      // RequireAuth bounces to /login. On a throwaway visitor, so it poisons
+      // no shared state.
+      await page.getByTestId("quit-irc-btn").click();
+      await expect(page.getByTestId("confirm-modal-body")).toHaveText(/deletes it/i);
+      await expect(page).not.toHaveURL(/\/login/);
+      await page.getByTestId("confirm-modal-confirm").click();
       await expect(page).toHaveURL(/\/login/, { timeout: 10_000 });
     } finally {
       await teardown();

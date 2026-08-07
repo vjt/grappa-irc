@@ -8,13 +8,17 @@
 // stable browser gate):
 //
 //   1. EPHEMERAL VISITOR GATING — a minted (anon, no NickServ identity)
-//      visitor's settings drawer offers ONLY "quit": no "detach", no
+//      visitor's rail actions menu offers ONLY "quit": no "detach", no
 //      "disconnect"/"reconnect", and the retired "log out" label is gone.
 //      RED before #126 (an ephemeral visitor saw a single "log out"
-//      button and no `quit-irc-btn`).
+//      button and no `quit-irc-btn`). #986 moved the surface from the
+//      settings drawer to the rail and put a confirm modal in front of the
+//      verb; the GATE is the same question, so this test follows it there —
+//      and now also pins the modal copy that gate earns, since an anon
+//      visitor is the one subject whose quit DESTROYS the session.
 //
 //   2. USER DETACH KEEPS THE BOUNCER (bug #1 + #2) — after a user detaches
-//      via the drawer, the web session ends (back to /login) but the
+//      via the rail, the web session ends (back to /login) but the
 //      server-side Session.Server + upstream IRC connection STAY UP: the
 //      autojoin channel is still `joined` server-side. RED before #126
 //      (logout called stop_all_user_sessions, tearing the upstream down →
@@ -27,7 +31,7 @@
 // RED run of this spec would tear the seeded session down).
 
 import { test, expect } from "../fixtures/test";
-import { openSettingsDrawer, loginAs } from "../fixtures/cicchettoPage";
+import { openRailMenu, loginAs } from "../fixtures/cicchettoPage";
 import {
   reapVisitors,
   GRAPPA_BASE_URL,
@@ -119,13 +123,11 @@ test.describe("issue #126 — detach lifecycle", () => {
         [visitor.token, subjectJson] as const,
       );
       await page.goto("/");
-      await openSettingsDrawer(page);
-      const drawer = page.getByRole("dialog", { name: /settings/i });
-      await expect(drawer).toHaveClass(/open/);
+      await openRailMenu(page);
 
       // The ONLY lifecycle verb an ephemeral visitor gets is quit.
       await expect(page.getByTestId("quit-irc-btn")).toBeVisible();
-      await expect(page.getByTestId("quit-irc-btn")).toHaveText(/^quit$/i);
+      await expect(page.getByTestId("quit-irc-btn")).toHaveText(/quit/i);
       // Persistent-identity verbs are withheld …
       await expect(page.getByTestId("detach-btn")).toHaveCount(0);
       await expect(page.getByTestId("disconnect-btn")).toHaveCount(0);
@@ -133,6 +135,20 @@ test.describe("issue #126 — detach lifecycle", () => {
       // … and the retired "log out" label is gone (positive twin so a
       // testid typo can't silently green this).
       await expect(page.getByText(/^log out$/i)).toHaveCount(0);
+
+      // #986 — and the copy in front of that verb must be the ANON one. This
+      // is the subject the issue was filed for: the server hard-deletes an
+      // unregistered visitor row on the way out (Visitors.purge_if_anon →
+      // destroy_visitor, CASCADE), so the modal has to say so BEFORE the tap.
+      // Asserted against a REAL minted anon visitor rather than a stubbed
+      // subject — the vitest can fake `registered: false`, only this can
+      // prove the shipped client classifies a real one that way. Cancel:
+      // this session is torn down by the finally block, not by the modal.
+      await page.getByTestId("quit-irc-btn").click();
+      await expect(page.getByTestId("confirm-modal-body")).toHaveText(/deletes it/i);
+      await expect(page.getByTestId("confirm-modal-body")).not.toHaveText(/survive/i);
+      await page.getByTestId("confirm-modal-cancel").click();
+      await expect(page.getByTestId("confirm-modal")).toHaveCount(0);
     } finally {
       await ctx.close();
       // Tear down the throwaway visitor's row + session (loud — see reapVisitors).
@@ -149,11 +165,13 @@ test.describe("issue #126 — detach lifecycle", () => {
 
     await loginAs(page, vjt);
 
-    // Detach via the drawer — the web session ends (back to /login) …
-    await openSettingsDrawer(page);
-    const drawer = page.getByRole("dialog", { name: /settings/i });
-    await expect(drawer).toHaveClass(/open/);
+    // Detach via the rail — #986 put a confirm modal in front of the verb,
+    // so the affirmative is what actually fires it. The web session then
+    // ends (back to /login) …
+    await openRailMenu(page);
     await page.getByTestId("detach-btn").click();
+    await expect(page.getByTestId("confirm-modal-body")).toHaveText(/keeps running/i);
+    await page.getByTestId("confirm-modal-confirm").click();
     await expect(page).toHaveURL(/\/login/, { timeout: 10_000 });
 
     // … but the bouncer STAYS UP: the upstream Session.Server survived, so

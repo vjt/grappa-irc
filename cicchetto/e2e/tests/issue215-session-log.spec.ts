@@ -15,7 +15,7 @@
 // `m11-admin-events-live.spec.ts`.
 
 import { expect, test } from "@playwright/test";
-import { openSettingsDrawer, expectShellReady } from "../fixtures/cicchettoPage";
+import { expectShellReady, openAdminConsole } from "../fixtures/cicchettoPage";
 import { getSeededAdmin } from "../fixtures/seedData";
 
 async function adminFriendlyLogin(
@@ -35,11 +35,7 @@ async function adminFriendlyLogin(
 }
 
 async function openAdminPane(page: import("@playwright/test").Page): Promise<void> {
-  await openSettingsDrawer(page);
-  const drawer = page.getByRole("dialog", { name: /settings/i });
-  await expect(drawer).toBeVisible();
-  await page.getByTestId("admin-console-entry").click();
-  await expect(page.getByTestId("admin-pane")).toBeVisible();
+  await openAdminConsole(page);
 }
 
 test("#215 Session Log tab renders the persisted session-lifecycle tail", async ({ page }) => {

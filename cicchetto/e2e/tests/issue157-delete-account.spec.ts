@@ -27,7 +27,7 @@
 // DeleteAccountModal). Honest scope, mirroring issue126-detach-lifecycle.
 
 import { test, expect } from "../fixtures/test";
-import { openSettingsDrawer, expectShellReady } from "../fixtures/cicchettoPage";
+import { openSettingsDrawer, expectShellReady, openRailMenu, closeSettings } from "../fixtures/cicchettoPage";
 import { GRAPPA_BASE_URL, login, mintVisitor, reapVisitors } from "../fixtures/grappaApi";
 import { getSeededAdmin } from "../fixtures/seedData";
 
@@ -236,9 +236,16 @@ test.describe("issue #157 — delete account", () => {
       await openSettingsDrawer(page);
       await expect(page.getByRole("dialog", { name: /settings/i })).toHaveClass(/open/);
 
-      // The ephemeral visitor gets quit, never delete-account.
-      await expect(page.getByTestId("quit-irc-btn")).toBeVisible();
+      // The ephemeral visitor never gets delete-account. #986 moved the
+      // positive twin (quit) out of this drawer and into the rail, so the
+      // twin is asserted there — the drawer must show NEITHER, and the
+      // delete-account absence keeps a real positive control via the
+      // registered cases above.
       await expect(page.getByTestId("delete-account-btn")).toHaveCount(0);
+      await expect(page.getByTestId("quit-irc-btn")).toHaveCount(0);
+      await closeSettings(page);
+      await openRailMenu(page);
+      await expect(page.getByTestId("quit-irc-btn")).toBeVisible();
     } finally {
       await ctx.close();
       const admin = getSeededAdmin();

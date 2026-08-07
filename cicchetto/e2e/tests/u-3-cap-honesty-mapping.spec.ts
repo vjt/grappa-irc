@@ -42,7 +42,7 @@
 // afterEach restores caps to permissive defaults.
 
 import { expect, test } from "../fixtures/test";
-import { openSettingsDrawer, expectShellReady } from "../fixtures/cicchettoPage";
+import { expectShellReady, openAdminConsole } from "../fixtures/cicchettoPage";
 import {
   ADMIN_IDENTIFIER,
   ADMIN_PASSWORD,
@@ -271,11 +271,7 @@ test("U-3 (UD4) — admin Sessions tab renders per-network cap-count summary", a
   await page.goto("/");
   await expectShellReady(page);
 
-  await openSettingsDrawer(page);
-  const drawer = page.getByRole("dialog", { name: /settings/i });
-  await expect(drawer).toBeVisible();
-  await page.getByTestId("admin-console-entry").click();
-  await expect(page.getByTestId("admin-pane")).toBeVisible();
+  await openAdminConsole(page);
 
   // Sessions is the default tab on M-9b (no click needed), but the
   // explicit click below mirrors the operator flow exactly + future-

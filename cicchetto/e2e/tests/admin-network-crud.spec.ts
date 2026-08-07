@@ -10,7 +10,7 @@
 // suffix) and best-effort delete in finally.
 
 import { expect, test } from "../fixtures/test";
-import { openSettingsDrawer, expectShellReady } from "../fixtures/cicchettoPage";
+import { expectShellReady, openAdminConsole } from "../fixtures/cicchettoPage";
 import { getSeededAdmin } from "../fixtures/seedData";
 import { GRAPPA_BASE_URL } from "../fixtures/grappaApi";
 
@@ -36,10 +36,7 @@ async function adminLogin(
 }
 
 async function openNetworksTab(page: import("@playwright/test").Page): Promise<void> {
-  await openSettingsDrawer(page);
-  await expect(page.getByRole("dialog", { name: /settings/i })).toBeVisible();
-  await page.getByTestId("admin-console-entry").click();
-  await expect(page.getByTestId("admin-pane")).toBeVisible();
+  await openAdminConsole(page);
   await page.getByTestId("admin-tab-networks").click();
   await expect(page.getByTestId("admin-networks-table")).toBeVisible({ timeout: 10_000 });
 }

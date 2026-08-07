@@ -28,7 +28,7 @@
 // every other admin spec — out of scope here.
 
 import { expect, test } from "@playwright/test";
-import { openSettingsDrawer, expectShellReady } from "../fixtures/cicchettoPage";
+import { expectShellReady, openAdminConsole } from "../fixtures/cicchettoPage";
 import { patchNetworkConnectionState } from "../fixtures/grappaApi";
 import { getSeededAdmin, getSeededM9bVictim, NETWORK_SLUG } from "../fixtures/seedData";
 
@@ -67,11 +67,7 @@ async function adminFriendlyLogin(
 }
 
 async function openAdminSessionsTab(page: import("@playwright/test").Page): Promise<void> {
-  await openSettingsDrawer(page);
-  const drawer = page.getByRole("dialog", { name: /settings/i });
-  await expect(drawer).toBeVisible();
-  await page.getByTestId("admin-console-entry").click();
-  await expect(page.getByTestId("admin-pane")).toBeVisible();
+  await openAdminConsole(page);
   await page.getByTestId("admin-tab-sessions").click();
   await expect(page.getByTestId("admin-sessions-table")).toBeVisible({ timeout: 10_000 });
 }

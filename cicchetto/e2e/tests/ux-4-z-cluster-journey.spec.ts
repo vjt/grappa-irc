@@ -86,13 +86,7 @@
 // `afterEach` so subsequent specs see the seeder baseline.
 
 import { expect, test } from "../fixtures/test";
-import {
-  closeMembersDrawer,
-  loginAs,
-  openSettingsMobile,
-  selectChannel,
-  sidebarWindow,
-} from "../fixtures/cicchettoPage";
+import { closeMembersDrawer, loginAs, openSettingsMobile, selectChannel, sidebarWindow, openAdminConsole, closeSettings } from "../fixtures/cicchettoPage";
 import { joinChannel, partChannel } from "../fixtures/grappaApi";
 import {
   AUTOJOIN_CHANNELS,
@@ -503,12 +497,14 @@ test("@webkit UX-4-Z cluster — case-fix + home + sidebar collapse + close-fall
     await openSettingsMobile(adminPage);
     const adminDrawer = adminPage.locator(".settings-drawer.open");
     await expect(adminDrawer).toBeVisible({ timeout: 5_000 });
-    // The "Admin Console" entry sets selection to kind=admin which
-    // mounts AdminPane via Shell.tsx's `<Show when=...>`.
-    await adminPage.getByTestId("admin-console-entry").tap();
-    await expect(adminPage.getByTestId("admin-pane")).toBeVisible({
-      timeout: 10_000,
-    });
+    await closeSettings(adminPage);
+    // #986 — the rail's 🔧 admin launcher sets selection to kind=admin, which
+    // mounts AdminPane via Shell.tsx's `<Show when=...>`. (It replaced the
+    // drawer's duplicate "Admin Console" entry; the drawer assertion above
+    // still stands as the bucket-L "settings reachable on home" check, so it
+    // is closed rather than dropped — a drawer left open would intercept the
+    // rail tap.)
+    await openAdminConsole(adminPage);
     // Settings STILL reachable on the admin window (bucket L rule extends to
     // the admin kind). #71 INC-2 — on mobile the door is the ☰ rail opener
     // (admin is a non-channel kind, so ShellChrome renders it).

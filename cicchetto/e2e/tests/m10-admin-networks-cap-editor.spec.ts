@@ -18,7 +18,7 @@
 // by the time the spec runs.
 
 import { expect, test } from "@playwright/test";
-import { openSettingsDrawer, expectShellReady } from "../fixtures/cicchettoPage";
+import { expectShellReady, openAdminConsole } from "../fixtures/cicchettoPage";
 import { getSeededAdmin } from "../fixtures/seedData";
 
 async function adminFriendlyLogin(
@@ -38,11 +38,7 @@ async function adminFriendlyLogin(
 }
 
 async function openAdminNetworksTab(page: import("@playwright/test").Page): Promise<void> {
-  await openSettingsDrawer(page);
-  const drawer = page.getByRole("dialog", { name: /settings/i });
-  await expect(drawer).toBeVisible();
-  await page.getByTestId("admin-console-entry").click();
-  await expect(page.getByTestId("admin-pane")).toBeVisible();
+  await openAdminConsole(page);
   await page.getByTestId("admin-tab-networks").click();
   await expect(page.getByTestId("admin-networks-table")).toBeVisible({ timeout: 10_000 });
 }

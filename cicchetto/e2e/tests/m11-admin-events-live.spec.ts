@@ -16,7 +16,7 @@
 // land in the Events tab within the expected fan-out window.
 
 import { expect, test } from "@playwright/test";
-import { openSettingsDrawer, expectShellReady } from "../fixtures/cicchettoPage";
+import { expectShellReady, openAdminConsole } from "../fixtures/cicchettoPage";
 import { getSeededAdmin } from "../fixtures/seedData";
 
 async function adminFriendlyLogin(
@@ -36,11 +36,7 @@ async function adminFriendlyLogin(
 }
 
 async function openAdminPane(page: import("@playwright/test").Page): Promise<void> {
-  await openSettingsDrawer(page);
-  const drawer = page.getByRole("dialog", { name: /settings/i });
-  await expect(drawer).toBeVisible();
-  await page.getByTestId("admin-console-entry").click();
-  await expect(page.getByTestId("admin-pane")).toBeVisible();
+  await openAdminConsole(page);
 }
 
 test("M-11 Events tab renders + receives reaper_swept after Force Reap", async ({ page }) => {

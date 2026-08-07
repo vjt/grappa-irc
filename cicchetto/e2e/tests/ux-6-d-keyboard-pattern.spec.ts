@@ -154,15 +154,13 @@ test.describe("UX-6 D cluster close — iOS PWA keyboard pattern @webkit", () =>
     const adminCtx = await promoteVjtToAdmin();
     try {
       await loginAs(page, getSeededVjt());
-      // GREEN-CI batch 2 — mobile admin entry is via the members-drawer
-      // launcher footer (`mobile-panel-admin`), NOT via the desktop
-      // shell-chrome cog. Mirrors ux-6-c-mobile-admin-launcher.spec.ts
-      // pattern: select channel → open members drawer → tap admin
-      // launcher. Original spec used `.querySelector('[data-testid=
-      // "shell-chrome-settings"]').click()` which on mobile resolves
-      // the settings drawer but with admin-console-entry positioned
-      // outside the viewport (drawer is full-height bottom sheet),
-      // so the subsequent click never lands.
+      // GREEN-CI batch 2 — the admin door is the rail launcher
+      // (`mobile-panel-admin`), NOT the desktop shell-chrome cog. Mirrors
+      // ux-6-c-mobile-admin-launcher.spec.ts: select channel → open members
+      // drawer → tap admin launcher. The original spec routed through the
+      // settings drawer, where the admin entry sat outside the viewport on a
+      // full-height bottom sheet and the click never landed — #986 deleted
+      // that entry outright, so the rail is now the only door anyway.
       await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
       await page.getByLabel(/open members sidebar/i).tap();
       const drawer = page.locator(".shell-members.open");

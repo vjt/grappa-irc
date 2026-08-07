@@ -59,11 +59,7 @@
 // genuine phantom, and (b) the real B login spawns NO upstream Session.Server,
 // so it can't dangle a session / cascade (feedback_e2e_real_login_poisons_shared_stack).
 
-import {
-  openSettingsDrawer,
-  waitForChannelReady,
-  waitForScrollbackRefreshed,
-} from "../fixtures/cicchettoPage";
+import { waitForChannelReady, waitForScrollbackRefreshed, openRailMenu } from "../fixtures/cicchettoPage";
 import { login } from "../fixtures/grappaApi";
 import {
   ADMIN_IDENTIFIER,
@@ -185,12 +181,13 @@ test.describe("issue #281 — account switch replay", () => {
     });
 
     // --- The account switch (the repro) ---
-    // Detach A via the settings drawer → back to /login. token → null,
+    // Detach A via the rail actions menu → back to /login. token → null,
     // in-context: pre-fix, A's Solid resources go STALE (not cleared).
-    await openSettingsDrawer(page);
-    const drawer = page.getByRole("dialog", { name: /settings/i });
-    await expect(drawer).toHaveClass(/open/);
+    // #986 — detach lives in the rail now and asks first; the affirmative is
+    // what fires it.
+    await openRailMenu(page);
     await page.getByTestId("detach-btn").click();
+    await page.getByTestId("confirm-modal-confirm").click();
     await expect(page).toHaveURL(/\/login/, { timeout: 10_000 });
 
     // Log back in as account B (admin-vjt — registered, password under the

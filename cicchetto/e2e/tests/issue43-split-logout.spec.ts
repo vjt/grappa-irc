@@ -2,76 +2,90 @@
 // the IRC session connected) and "quit" (park ALL networks + logout,
 // bouncer offline) for registered users.
 //
-// vitest (src/__tests__/SettingsDrawer.test.tsx) pins the WIRING with a
-// mocked quitAll — detach→logout, quit two-tap→quitAll, disarm-on-close,
-// visitor single button. This Playwright spec is the production-fidelity
-// confirmation per `feedback_ux_e2e_mandatory` + `_cicchetto_browser_smoke`:
-// it exercises the real CSS render + reactivity that jsdom cannot —
-//   * both buttons VISIBLE + clickable inside the open drawer overlay
-//     (the `_css_block_button_wraps_inline_prefix` clip class);
-//   * the destructive "quit" two-tap ARM guard in a real browser — one
-//     tap flips to the red `.confirming` confirm copy WITHOUT navigating;
-//   * the disarm-on-close effect firing through the real `.open` toggle.
+// #986 — both verbs moved OUT of the settings drawer and into the rail
+// actions menu, and the destructive gate changed shape with them: the
+// two-tap `InlineConfirmButton` arm is gone, replaced by the shared #195
+// confirm modal whose BODY states the per-subject consequence. The arm-guard
+// test below therefore became a modal-guard test. What the issue asserts is
+// unchanged: a registered user sees two distinct verbs, and the destructive
+// one cannot fire on a single tap.
 //
-// DELIBERATELY NOT EXERCISED HERE: the SECOND "quit" tap (fires quitAll →
-// parks vjt's network + logout) and a real "detach" click (DELETE
+// vitest (src/__tests__/RailActions.test.tsx) pins the WIRING with a mocked
+// quitAll — detach→logout, quit→quitAll, the three modal bodies, the gate.
+// This Playwright spec is the production-fidelity confirmation per
+// `feedback_ux_e2e_mandatory` + `_cicchetto_browser_smoke`: it exercises the
+// real CSS render + reactivity that jsdom cannot —
+//   * both entries VISIBLE + clickable inside the absolutely-positioned,
+//     max-height-capped RailActions menu (the
+//     `_css_block_button_wraps_inline_prefix` clip class);
+//   * the confirm modal painting OVER the rail (z-index 1000 vs the menu's
+//     301) carrying the real per-subject body text;
+//   * Cancel returning the operator to an untouched session.
+//
+// DELIBERATELY NOT EXERCISED HERE: the AFFIRMATIVE button (fires quitAll →
+// parks vjt's network + logout) and a confirmed "detach" (DELETE
 // /auth/logout revokes the bearer). vjt's seeded token + IRC session are
 // SHARED across the whole spec suite (see seedData.ts's cascade
 // warnings) — confirming quit would park the session and revoking the
 // bearer would 401 every downstream vjt spec. The quitAll park-all+logout
 // composite already has full-stack coverage in u-4-device-identity-change
-// + ux-4-z-cluster-journey; this spec owns the NEW render + arm-guard
+// + ux-4-z-cluster-journey; this spec owns the render + confirm-gate
 // surface only, not the (pre-covered) destructive composite. Every
 // interaction below is client-side state — zero server mutation.
 
-import { openSettingsDrawer, loginAs } from "../fixtures/cicchettoPage";
+import { openRailMenu, loginAs } from "../fixtures/cicchettoPage";
 import { getSeededVjt } from "../fixtures/seedData";
 import { expect, test } from "../fixtures/test";
-import { type Page } from "@playwright/test";
 
-async function openDrawer(page: Page) {
-  await openSettingsDrawer(page);
-  const drawer = page.getByRole("dialog", { name: /settings/i });
-  await expect(drawer).toHaveClass(/open/);
-  return drawer;
-}
-
-test("issue #43 — registered user sees detach + quit, not a bare 'log out'", async ({ page }) => {
+test("issue #43 — registered user sees detach + quit in the rail, not a bare 'log out'", async ({
+  page,
+}) => {
   await loginAs(page, getSeededVjt());
-  await openDrawer(page);
+  await openRailMenu(page);
 
   const detach = page.getByTestId("detach-btn");
   const quit = page.getByTestId("quit-irc-btn");
   await expect(detach).toBeVisible();
-  await expect(detach).toHaveText(/^detach$/i);
+  await expect(detach).toHaveText(/detach/i);
   await expect(quit).toBeVisible();
-  await expect(quit).toHaveText(/^quit$/i);
+  await expect(quit).toHaveText(/quit/i);
   // Positive twin for the negative assertion so a testid typo can't
   // silently green both paths (per the M-7 spec's polarity discipline).
   await expect(page.getByText(/^log out$/i)).toHaveCount(0);
 });
 
-test("issue #43 — quit arms on first tap (red confirm copy) and disarms on close", async ({
+test("issue #43/#986 — quit opens a confirm modal that explains, and Cancel changes nothing", async ({
   page,
 }) => {
   await loginAs(page, getSeededVjt());
-  const drawer = await openDrawer(page);
-  const quit = page.getByTestId("quit-irc-btn");
+  await openRailMenu(page);
 
-  // First tap arms — flips to the destructive confirm copy + the shared
-  // InlineConfirmButton `.confirming` red treatment. It must NOT navigate
-  // (arming alone never fires quitAll/logout).
-  await quit.click();
-  await expect(quit).toHaveText(/really quit IRC/i);
-  await expect(quit).toHaveClass(/confirming/);
+  // One tap must NOT tear anything down — it raises the modal.
+  await page.getByTestId("quit-irc-btn").click();
+  const modal = page.getByTestId("confirm-modal");
+  await expect(modal).toBeVisible();
+  // The body is the whole point of #986: a registered user is told the
+  // bouncer goes offline and the account SURVIVES — not the old six words
+  // ("really quit IRC?") that an anon visitor got for a different event.
+  await expect(page.getByTestId("confirm-modal-body")).toHaveText(/survive/i);
   await expect(page).not.toHaveURL(/\/login/);
 
-  // The drawer stays mounted across close (CSS .open toggle), so the
-  // createEffect disarm is the only thing standing between a stale armed
-  // button and a one-tap bouncer kill on reopen. Close → reopen → idle.
-  await page.getByTestId("settings-drawer-done").click();
-  await expect(drawer).not.toHaveClass(/open/);
-  await openSettingsDrawer(page);
-  await expect(drawer).toHaveClass(/open/);
-  await expect(quit).toHaveText(/^quit$/i);
+  // Cancel is the safe default (#195): it dismisses without firing.
+  await page.getByTestId("confirm-modal-cancel").click();
+  await expect(modal).toHaveCount(0);
+  await expect(page).not.toHaveURL(/\/login/);
+});
+
+test("issue #43/#986 — detach's modal promises the opposite of quit's", async ({ page }) => {
+  await loginAs(page, getSeededVjt());
+  await openRailMenu(page);
+
+  await page.getByTestId("detach-btn").click();
+  // detach keeps the bouncer up, quit takes it offline. One shared string
+  // would defeat the change, so assert the DISTINGUISHING claim rather than
+  // merely that a modal came up.
+  await expect(page.getByTestId("confirm-modal-body")).toHaveText(/keeps running/i);
+  await page.getByTestId("confirm-modal-cancel").click();
+  await expect(page.getByTestId("confirm-modal")).toHaveCount(0);
+  await expect(page).not.toHaveURL(/\/login/);
 });

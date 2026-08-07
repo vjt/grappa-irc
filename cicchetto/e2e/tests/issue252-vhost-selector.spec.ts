@@ -25,7 +25,7 @@
 // exercises the real CSS/DOM render path jsdom can't.
 
 import { GRAPPA_BASE_URL } from "../fixtures/grappaApi";
-import { openSettingsDrawer, expectShellReady } from "../fixtures/cicchettoPage";
+import { openSettingsDrawer, expectShellReady, openAdminConsole } from "../fixtures/cicchettoPage";
 import { getSeededAdmin, getSeededVjt } from "../fixtures/seedData";
 import { expect, test } from "../fixtures/test";
 
@@ -45,10 +45,7 @@ async function loginAs(page: import("@playwright/test").Page, seed: Seed): Promi
 }
 
 async function openVhostsTab(page: import("@playwright/test").Page): Promise<void> {
-  await openSettingsDrawer(page);
-  await expect(page.getByRole("dialog", { name: /settings/i })).toBeVisible();
-  await page.getByTestId("admin-console-entry").click();
-  await expect(page.getByTestId("admin-pane")).toBeVisible();
+  await openAdminConsole(page);
   await page.getByTestId("admin-tab-vhosts").click();
   await expect(page.getByTestId("admin-vhosts-create-form")).toBeVisible({ timeout: 10_000 });
 }

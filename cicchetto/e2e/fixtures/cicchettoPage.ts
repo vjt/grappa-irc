@@ -945,9 +945,10 @@ export async function openSettingsSection(
 
 // #500 — open the settings drawer ROOT (viewport-aware), returning the drawer
 // dialog locator. The sibling of openSettingsSection for specs that need the
-// drawer's main index itself — e.g. to reach the Admin Console entry
-// (admin-console-entry), which lives in the drawer, not in a #460 sub-section —
-// or to assert drawer chrome. The cog (aria-label "open settings" /
+// drawer's main index itself — to reach a main-page affordance (share session,
+// delete account) or to assert drawer chrome. (#986 — reaching the ADMIN
+// console is no longer one of those reasons: use openAdminConsole, which goes
+// through the rail.) The cog (aria-label "open settings" /
 // action-cluster-cog) now lives behind the RailActions launcher (#500):
 // openRailMenu reveals the menu (opening the rail drawer first on mobile), then
 // the cog is tapped. Idempotent — the open step is a no-op if the drawer is
@@ -963,40 +964,33 @@ export async function openSettingsDrawer(page: Page): Promise<Locator> {
   return page.getByRole("dialog", { name: /settings/i });
 }
 
-// Open the admin console — the SINGLE door for reaching AdminPane, the
-// sibling of openSettingsDrawer. The Admin Console entry lives INSIDE the
-// settings drawer, so this opens the drawer, clicks the entry (whose onClick
-// fires onClose() + onOpenAdmin()), then WAITS for the drawer to finish
-// closing before returning. That wait is load-bearing: `.settings-drawer`
-// slides out over a 200ms `transform` transition (themes/default.css) at
-// z-index 100 anchored right, so a caller that clicks a right-side admin tab
-// (e.g. the 9th tab, Settings) the instant `admin-pane` mounts can land the
-// click on the STILL-SLIDING drawer instead of the tab. The tab's onClick is
-// a pure synchronous signal, so a swallowed click simply never switches the
-// tab — no product defect, a delivery race. This race is pre-existing and
-// LATENT across the ~20 admin specs that hand-roll `admin-console-entry`
-// .click(); centralizing the wait here fixes the whole class in ONE place
-// (follow-up issue tracks migrating the remaining specs onto this primitive).
-// Surfaced as a ~9% flake once #508's iOS font floor perturbed the layout
-// timing. Returns the admin-pane locator so callers scope assertions to it.
+// Open the admin console — the SINGLE door for reaching AdminPane.
+//
+// #986 — that door is now the rail's 🔧 admin launcher, not the settings
+// drawer. The drawer's "admin console" entry was an exact duplicate of it
+// (same isAdmin() gate, same setSelectedChannel({kind:"admin"}) payload) and
+// was removed along with its `onOpenAdmin` prop; every spec that used to
+// hand-roll `admin-console-entry` .click() now comes through here.
+//
+// The route through the rail also RETIRES the flake this helper was written
+// to absorb. Reaching admin via the drawer meant clicking an entry that
+// closed the drawer, and `.settings-drawer` slides out over a 200ms
+// `transform` at z-index 100 anchored right — so a caller that clicked a
+// right-side admin tab (Settings is the 9th of 10) the instant `admin-pane`
+// mounted could land the click on the STILL-SLIDING drawer. That is why the
+// old body waited for `not.toBeInViewport()` before returning. The rail
+// launcher opens no drawer at all: `openAdminPanel` closes members +
+// settings + archive and sets selection, so there is nothing left mid-
+// transition over the tabs. (Surfaced as a ~9% flake once #508's iOS font
+// floor perturbed the layout timing; the pre-#986 mitigation is now
+// structural.)
+//
+// Returns the admin-pane locator so callers scope assertions to it.
 export async function openAdminConsole(page: Page): Promise<Locator> {
-  const drawer = await openSettingsDrawer(page);
-  await page.getByTestId("admin-console-entry").click();
-  // The entry closes the drawer AND opens admin. The drawer stays MOUNTED
-  // (SettingsDrawer keeps it in the DOM across open/close — a CSS `.open`
-  // toggle, not a <Show>): closing only strips `.open`, which STARTS a 200ms
-  // `translateX(100%)` slide-out (themes/default.css, z-index 100, anchored
-  // right). Waiting on `.settings-drawer.open` count→0 returned at the slide's
-  // START, with the drawer still on-screen covering the right-side admin tabs
-  // (Settings is the 9th of 10) → a caller's tab click landed on the sliding
-  // drawer and was swallowed. The closed drawer changes NO
-  // visibility/display/pointer-events (so toBeHidden never fires — an
-  // off-screen transform is still "visible" to Playwright); instead wait until
-  // it has fully slid OUT of the viewport (transition settled at
-  // translateX(100%)), the instant it can no longer intercept the next click.
-  await expect(drawer).not.toBeInViewport({ timeout: 5_000 });
+  await openRailMenu(page);
+  await page.getByTestId("mobile-panel-admin").click();
   const pane = page.getByTestId("admin-pane");
-  await expect(pane).toBeVisible({ timeout: 5_000 });
+  await expect(pane).toBeVisible({ timeout: 10_000 });
   return pane;
 }
 

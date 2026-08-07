@@ -37,7 +37,7 @@
 // visitors against azzurra would 503 if the revert didn't run.
 
 import { expect, test } from "@playwright/test";
-import { openSettingsDrawer, expectShellReady } from "../fixtures/cicchettoPage";
+import { expectShellReady, openAdminConsole, openRailMenu } from "../fixtures/cicchettoPage";
 import { getSeededAdmin } from "../fixtures/seedData";
 import { mintVisitor } from "../fixtures/grappaApi";
 
@@ -62,11 +62,7 @@ async function adminFriendlyLogin(
 }
 
 async function openAdminPane(page: import("@playwright/test").Page): Promise<void> {
-  await openSettingsDrawer(page);
-  const drawer = page.getByRole("dialog", { name: /settings/i });
-  await expect(drawer).toBeVisible();
-  await page.getByTestId("admin-console-entry").click();
-  await expect(page.getByTestId("admin-pane")).toBeVisible();
+  await openAdminConsole(page);
 }
 
 // PATCH /admin/networks/:slug — partial body shape per M-10. Only
@@ -92,19 +88,17 @@ test("M-Z admin operator journey: drawer → 4 tabs → cap-saturation event lan
   const admin = getSeededAdmin();
   await adminFriendlyLogin(page, admin);
 
-  // STEP 1 — Login as admin → drawer entry visible.
-  // adminFriendlyLogin already asserts the cog is visible; opening
-  // the drawer + asserting the Admin entry exercises the M-7 gate.
-  await openSettingsDrawer(page);
-  const drawer = page.getByRole("dialog", { name: /settings/i });
-  await expect(drawer).toBeVisible();
-  await expect(page.getByTestId("admin-console-entry")).toBeVisible();
+  // STEP 1 — Login as admin → the rail's 🔧 admin launcher is visible.
+  // #986 — the settings-drawer "admin console" entry this step used to
+  // exercise was a duplicate of that launcher and is gone; the M-7 gate it
+  // proved is the same gate, on the surviving door.
+  await openRailMenu(page);
+  await expect(page.getByTestId("mobile-panel-admin")).toBeVisible();
 
   // Mount the AdminPane → channel join + snapshot push happen here.
   // EVERY subsequent assertion depends on the pane being mounted, so
   // the channel subscription is live by the time we hit cap-saturate.
-  await page.getByTestId("admin-console-entry").click();
-  await expect(page.getByTestId("admin-pane")).toBeVisible();
+  await openAdminConsole(page);
 
   // STEP 2 — Visitors tab: list renders (table when populated, or
   // the explicit "no visitors" marker when empty — seeder doesn't

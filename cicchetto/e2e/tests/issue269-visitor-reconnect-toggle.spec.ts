@@ -23,7 +23,7 @@
 // alone: the session genuinely goes down then up on the SPECIFIC network.
 
 import { expect, test } from "../fixtures/test";
-import { openSettingsDrawer } from "../fixtures/cicchettoPage";
+import { openAdminConsole } from "../fixtures/cicchettoPage";
 import { getSeededAdmin } from "../fixtures/seedData";
 import { mintVisitor, reapVisitors } from "../fixtures/grappaApi";
 
@@ -40,10 +40,7 @@ async function adminOpenVisitorsTab(
     [seed.token, seed.subjectJson] as const,
   );
   await page.goto("/");
-  await openSettingsDrawer(page);
-  await expect(page.getByRole("dialog", { name: /settings/i })).toBeVisible();
-  await page.getByTestId("admin-console-entry").click();
-  await expect(page.getByTestId("admin-pane")).toBeVisible();
+  await openAdminConsole(page);
   await page.getByTestId("admin-tab-visitors").click();
   await expect(page.getByTestId("admin-visitors-table")).toBeVisible({ timeout: 10_000 });
 }
