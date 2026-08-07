@@ -32782,3 +32782,73 @@ about width still restart the pool at 5 and 10 themselves. The ceiling
 correspondingly stops binding here: 14 tests × ~80 migrations per run becomes
 14 × 3, and the file drops from 8.6s to 0.4s. The undiagnosed replay red is
 still undiagnosed — it simply no longer has a home in this test.
+
+---
+
+## 2026-08-07 — #621: the gate's doctor moves to `:test`, because the reason for the `:dev` one never existed
+
+**The artifact.** `mix doctor` derives a module's function COUNT from the
+source AST but reads each function's doc/spec presence from the compiled
+BEAM of the env it runs in. `scripts/check.sh` pins `mix ci.check` to
+`MIX_ENV=dev` (credo / sobelow / ex_doc are `only: [:dev, :test]` deps), and in
+`:dev` everything inside `if Mix.env() == :test do … end` is compiled out. Such
+a function is therefore counted but unscored — filed as "No Docs" AND "No
+Specs" even when the source gives it `@doc false` and a full `@spec`. A
+module's dev-env coverage is `always-compiled documented fns / all source fns`,
+which sinks as its test-only seam grows.
+
+Nine modules in `lib/` carry such a seam (the issue listed seven; it missed
+`GrappaWeb.PasskeyOrigin` and `Grappa.RateLimit.RequestBudget`).
+`Grappa.Repo.BusyRetry` was simply the first to cross doctor's 40% floor: #594
+added one more test-gated helper and took it 43% → 38%, reddening the gate over
+a seam the test-env doctor scores at 100%.
+
+**The issue's first option rested on a premise that does not hold, and checking
+it changed the cure rather than confirming it.** The issue proposed a
+`.doctor.exs` excluding test-gated functions from the *dev* count, reasoning
+that "the dev run was added deliberately for a reason (`check.sh` comment)".
+The comment says the opposite. It justifies the OTHER run: the `MIX_ENV=test`
+one, added by `2eed58ca` (#75, a four-red-commits post-mortem) whose message
+reads *"Add a second `mix doctor` run in MIX_ENV=test to check.sh so local ==
+GH"* — because GH's job runs in `:test`, where `elixirc_paths` adds
+`test/support`, and a `test/support` module missing a per-function `@doc` had
+passed local `check.sh` while reddening main.
+
+Doctor-in-dev was never argued for by anybody: `git log -S 'doctor' -- mix.exs`
+shows it entering with the project scaffold and later being wrapped in `cmd`
+for exit propagation (`fc4575a0`), nothing more. It is a side effect of the
+alias's env pin. **So the cure is not to teach the dev count to lie less — it
+is that the dev count must not gate.**
+
+**One line.** `"cmd mix doctor"` → `"cmd env MIX_ENV=test mix doctor"`, reusing
+the shell-out precedent three lines below (the test step, which escapes the
+same pin for a related reason). `check.sh`'s now-duplicate second run goes, its
+#75 rationale folded into the alias comment. One doctor, in the honest env.
+
+**Nothing is lost, on either axis.** `:test` is a strict superset:
+`elixirc_paths(:test)` is `["lib", "test/support"]` against `:dev`'s `["lib"]`,
+and `grep 'Mix.env() == :dev' lib/` returns nothing — no function exists that
+`:dev` can see and `:test` cannot.
+
+**Parity is now by construction, and read from `origin/main` rather than a
+local checkout** (a CI rule was once wrong for days because it was read from a
+stale local `ci.yml`). The workflow runs exactly one `mix doctor`, at
+`ci.yml:106`, under the `test` job's `MIX_ENV: test`; the `dialyzer` job
+(`MIX_ENV: dev`) runs only `dialyzer` and `docs`. There is no dev-env doctor
+anywhere in it. The alias and the workflow now invoke the same command in the
+same env over the same file set, instead of a duplicate kept in step by hand.
+
+**Scope of that parity claim, checked rather than assumed.** It covers doctor
+ONLY. The alias's other steps still run in `:dev` locally against `:test` on
+GH, but none of them derives its file set from `elixirc_paths`: credo takes
+`included: ["lib/", "test/", "config/"]` from `.credo.exs`, and sobelow and
+format are path-based. Doctor was the one tool that reads the beam, which is
+exactly why #75 was a doctor-specific incident. The remaining env divergence is
+pre-existing and untouched here.
+
+**Rejected.** Raising the 40% floor so `BusyRetry` fits — the count is what is
+dishonest, not the threshold, and moving a threshold to admit a failing subject
+is the same family as weakening an assertion. Also rejected: a `.doctor.exs`
+that excludes test-gated functions from the dev count, which would encode the
+lie in configuration and leave two doctor runs disagreeing about the same
+module.
