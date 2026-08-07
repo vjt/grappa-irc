@@ -66,7 +66,10 @@ test("#975 — /mode on a parted channel reports unknown, not the modes cached w
     const modal = page.getByTestId("mode-modal");
     await composeSend(page, `/mode ${channel}`);
     await expect(modal).toBeVisible({ timeout: 5_000 });
-    await expect(modal.getByLabel(/moderated/i)).toHaveAttribute("aria-pressed", "true");
+    // By testid, not by accessible name: bahamut has BOTH +m ("moderated")
+    // and +M ("moderated (reg'd)"), so any /moderated/ name locator is
+    // ambiguous and asserts on whichever the grid happened to render first.
+    await expect(modal.getByTestId("mode-toggle-m")).toHaveAttribute("aria-pressed", "true");
     await expect(modal.getByTestId("mode-modal-unknown")).toHaveCount(0);
     await modal.getByLabel("close modes").click();
     await expect(modal).toBeHidden({ timeout: 5_000 });

@@ -254,9 +254,15 @@ const ModeModal: Component = () => {
                     <Show
                       when={m.takesParam}
                       fallback={
+                        // The testid is the only unambiguous handle on a
+                        // toggle: bahamut ships both +m ("moderated") and +M
+                        // ("moderated (reg'd)"), so the accessible name does
+                        // not identify a mode. Keyed by letter, like the
+                        // ParamModeRow testids above.
                         <button
                           type="button"
                           class="mode-modal-toggle"
+                          data-testid={`mode-toggle-${m.letter}`}
                           classList={{ "mode-modal-toggle-active": isActive(m.letter) }}
                           aria-pressed={isActive(m.letter)}
                           aria-disabled={!canEdit()}
