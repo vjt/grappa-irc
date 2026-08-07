@@ -22,6 +22,7 @@
 import { ApiError, readError } from "./api";
 import { formatDurationSince } from "./duration";
 import { isIos, isStandalonePwa } from "./platform";
+import { parseUserAgent } from "./userAgent";
 
 const VAPID_PUBLIC_KEY_STORAGE_KEY = "cic.vapidPublicKey";
 
@@ -167,9 +168,97 @@ export async function deletePushSubscription(token: string, id: SubscriptionId):
 export type PushDeviceSummary = {
   id: SubscriptionId;
   user_agent: string | null;
+  /** #964 — user-set device name. `null` until renamed; see `deviceRows`. */
+  label: string | null;
   created_at: string;
   last_used_at: string | null;
 };
+
+/** A device paired with the name the row should actually print. */
+export type DeviceRow = {
+  device: PushDeviceSummary;
+  /** The user's label when set, else the derived `Browser on OS [#n]`. */
+  displayName: string;
+  /** True when `displayName` is the user's own label rather than the default. */
+  named: boolean;
+};
+
+const parsedDeviceName = (device: PushDeviceSummary): string => {
+  const parsed = parseUserAgent(device.user_agent);
+  return `${parsed.browser} on ${parsed.os}`;
+};
+
+// Oldest first, id as the tiebreak so the ordering is TOTAL — two rows
+// created in the same microsecond (or with an unparseable instant) must
+// still get a stable order, or the ordinals would shuffle between renders.
+const byCreation = (a: PushDeviceSummary, b: PushDeviceSummary): number => {
+  const ta = Date.parse(a.created_at);
+  const tb = Date.parse(b.created_at);
+  const ka = Number.isNaN(ta) ? Number.POSITIVE_INFINITY : ta;
+  const kb = Number.isNaN(tb) ? Number.POSITIVE_INFINITY : tb;
+  if (ka !== kb) return ka < kb ? -1 : 1;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+};
+
+/**
+ * #964 — pairs each device with the name its row prints, preserving the
+ * server's ordering (newest first).
+ *
+ * The user's `label` wins outright. Without one the row falls back to the
+ * parsed `Browser on OS`, which is exactly the string that collides — so
+ * when two or more UNLABELLED devices parse to the same name, each gets an
+ * ordinal (`Firefox on Linux #1`, `#2`) assigned oldest-first. A device
+ * alone in its group takes no suffix: a solitary `#1` is noise.
+ *
+ * Labelled rows are excluded from the grouping, not just from the suffix.
+ * Naming one of two twins already disambiguates the pair, and leaving the
+ * other as a lone `#2` would be the stale-ordinal bug reintroduced by hand.
+ *
+ * ## Why the ordinal is DERIVED here and not a column
+ *
+ * Two independent reasons, and either alone settles it:
+ *
+ *   1. An ordinal is a function of how many rows currently share a parsed
+ *      name. Stored, it goes stale the instant one of them is deleted —
+ *      a `#2` with no `#1` that nothing realigns. Derived, the list
+ *      self-heals on the next render. The LABEL is the stored thing here;
+ *      the ordinal is only the fallback.
+ *   2. The grouping key is the OUTPUT of `parseUserAgent`, which exists
+ *      only in this codebase. Deriving server-side would mean a second UA
+ *      parser in Elixir whose classification could disagree with this one,
+ *      and then the ordinal would number a grouping the user cannot see.
+ */
+export function deviceRows(devices: PushDeviceSummary[]): DeviceRow[] {
+  const unlabelled = devices.filter((d) => (d.label ?? null) === null);
+
+  return devices.map((device) => {
+    const label = device.label ?? null;
+    if (label !== null) return { device, displayName: label, named: true };
+
+    const name = parsedDeviceName(device);
+    const twins = unlabelled.filter((d) => parsedDeviceName(d) === name).sort(byCreation);
+    const displayName =
+      twins.length < 2 ? name : `${name} #${twins.findIndex((d) => d.id === device.id) + 1}`;
+    return { device, displayName, named: false };
+  });
+}
+
+/**
+ * PATCH /push/subscriptions/:id — the #964 inline rename. An empty string
+ * clears the label server-side, so the row falls back to its derived name.
+ */
+export async function renamePushDevice(
+  token: string,
+  id: SubscriptionId,
+  label: string,
+): Promise<void> {
+  const res = await fetch(`/push/subscriptions/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ label }),
+  });
+  if (!res.ok) throw await readError(res);
+}
 
 /**
  * #964 — the device row's activity line.
