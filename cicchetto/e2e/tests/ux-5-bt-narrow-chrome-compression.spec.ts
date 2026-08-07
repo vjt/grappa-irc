@@ -120,10 +120,15 @@ test("@webkit ux-5-bt mobile — channel: NO standalone .shell-chrome row (#473 
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
 
-  // Cold-load lands on home — TopicBar absent. Chrome row STAYS on
-  // mobile-home (no host row to absorb the buttons).
-  await expect(page.getByTestId("shell-chrome")).toBeVisible({ timeout: 10_000 });
+  // Cold-load lands on home — TopicBar absent. The chrome element STAYS on
+  // mobile-home (no TopicBar to host the ☰), which is what this test is about:
+  // mounted here, absent on a channel. #985 took away its BAND, not its
+  // existence — `height: 0` with the ☰ floated over the pane's corner — so the
+  // host reads as hidden to Playwright while `toHaveCount(1)` on the next line
+  // still says exactly what this precondition meant. The door is witnessed
+  // directly instead.
   await expect(page.locator(".shell-chrome")).toHaveCount(1);
+  await expect(page.getByTestId("shell-chrome-rail-opener")).toBeVisible({ timeout: 10_000 });
   await expect(page.locator(".topic-bar")).toHaveCount(0);
 
   // Switch to channel via BottomBar (mobile selectChannel handles the

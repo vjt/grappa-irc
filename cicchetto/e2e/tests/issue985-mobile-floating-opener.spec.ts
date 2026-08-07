@@ -65,20 +65,33 @@ test("@webkit #985 — a mobile query window spends no band on the ☰, and the 
     // absent and every assertion below is green for the wrong reason.
     await expect(page.locator(".topic-bar")).toHaveCount(0);
     const chrome = page.getByTestId("shell-chrome");
-    await expect(chrome).toBeVisible({ timeout: 10_000 });
+    const opener = page.getByTestId("shell-chrome-rail-opener");
+    // The host is MOUNTED, not VISIBLE — and this spec is the reason. #985
+    // collapses `.shell-chrome` to `height: 0` and lets its one child overflow,
+    // so the element Playwright is asked about has an empty bounding box and is
+    // `hidden` by definition. Asserting it visible here contradicted this same
+    // test's own outcome assertion ("the chrome row must cost zero height")
+    // twenty lines down: both could never hold at once. What the precondition
+    // actually needs to establish is that the non-channel branch mounted its
+    // door — so: the host exists, and the door itself is on screen.
+    await expect(chrome).toHaveCount(1);
+    await expect(opener).toBeVisible({ timeout: 10_000 });
 
     const main = page.locator(".shell-main");
     const pane = page.locator(".scrollback-pane");
-    const opener = page.getByTestId("shell-chrome-rail-opener");
     await expect(pane).toBeVisible();
 
     const mainBox = await main.boundingBox();
     const paneBox = await pane.boundingBox();
-    const chromeBox = await chrome.boundingBox();
     const openerBox = await opener.boundingBox();
-    if (!mainBox || !paneBox || !chromeBox || !openerBox) {
+    if (!mainBox || !paneBox || !openerBox) {
       throw new Error("#985 — a measured element has no bounding box");
     }
+    // Read through the DOM, not through `boundingBox()`: the latter is defined
+    // to return null for an element Playwright considers invisible, and a
+    // zero-height box is exactly that — so the very property under test here
+    // would have come back as "no bounding box" and thrown above.
+    const chromeHeight = await chrome.evaluate((el) => el.getBoundingClientRect().height);
 
     // THE OUTCOME. The conversation starts at the top of the pane. This is the
     // pixel vjt asked for back, and it is the one number that was wrong before:
@@ -89,7 +102,7 @@ test("@webkit #985 — a mobile query window spends no band on the ☰, and the 
     ).toBeLessThanOrEqual(1);
     // The mechanism, measured rather than read: the row still exists (the
     // window needs its door) and costs nothing.
-    expect(chromeBox.height, "#985 — the chrome row must cost zero height").toBeLessThanOrEqual(1);
+    expect(chromeHeight, "#985 — the chrome row must cost zero height").toBeLessThanOrEqual(1);
 
     // The float must not have shrunk the affordance on its way out of the
     // flow: still the 48px HIG floor `--chrome-tap-min` guarantees.

@@ -79,7 +79,15 @@ test("@webkit ux-5-a mobile — exactly ONE visible hamburger (TopicBar members)
 
   // Cold-load lands on home — no channel context, TopicBar unmounted,
   // ZERO hamburgers anywhere.
-  await expect(page.getByTestId("shell-chrome")).toBeVisible({ timeout: 10_000 });
+  //
+  // #985 — the host is mounted but no longer occupies a band: it is
+  // `height: 0` and its ☰ overflows over the pane's top-right corner, so
+  // Playwright reports the host itself as hidden. This precondition only ever
+  // needed "the non-channel chrome is on screen"; post-#985 the thing on screen
+  // is the opener, so witness that. The dedupe count below is untouched — and
+  // it is the point of this test, not the host's box.
+  await expect(page.getByTestId("shell-chrome")).toHaveCount(1);
+  await expect(page.getByTestId("shell-chrome-rail-opener")).toBeVisible({ timeout: 10_000 });
   await expect(page.locator(".shell-chrome-hamburger")).toHaveCount(0);
   await expect(page.locator(".topic-bar-hamburger")).toHaveCount(0);
 

@@ -150,17 +150,29 @@ test("@webkit ux-5-bm mobile-channel — topic-bar hosts hamburger only; drawer 
 // mutex test). The `toggleMembersPanel` close-siblings arm itself is
 // pinned at the unit level by `src/__tests__/mobilePanel.test.ts`.
 
-test("@webkit ux-5-bm mobile-non-channel — standalone .shell-chrome row preserved on home", async ({
+test("@webkit ux-5-bm mobile-non-channel — home keeps its own ☰ door to the rail", async ({
   page,
 }) => {
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
 
-  // Cold-load lands on home. BM scope is mobile-channel only — non-
-  // channel windows keep the standalone .shell-chrome row (no members
-  // hamburger on home/mentions/admin/server to host the launchers).
-  await expect(page.getByTestId("shell-chrome")).toBeVisible({ timeout: 10_000 });
-  await expect(page.locator(".shell-chrome")).toHaveCount(1);
+  // Cold-load lands on home. BM scope is mobile-channel only — non-channel
+  // windows keep their OWN ☰, because there is no members hamburger on
+  // home/mentions/admin/server to host it.
+  //
+  // This test used to be titled "standalone .shell-chrome row preserved" and
+  // opened by asserting that row visible. #985 removed the row on vjt's call
+  // ("solo l'hamburger, in alto a destra"): the host is now `height: 0` and the
+  // ☰ floats over the pane's corner. What BM cares about survives that change
+  // intact — a non-channel window has exactly one door, it is reachable, and
+  // the cog is not in it — so the title and the opening assertion now name the
+  // DOOR, which is what was always meant, instead of the band that used to
+  // carry it. Nothing that BM measured has been dropped: the door's visibility
+  // is asserted below, scoped INSIDE `.shell-chrome`, which is stricter than
+  // the assertion removed here — so no twin is added for it (a second waiter on
+  // the same fact is the duplicate-waiter shape). The cold-load settle budget
+  // the removed assertion carried moves onto this one, which is now first.
+  await expect(page.locator(".shell-chrome")).toHaveCount(1, { timeout: 10_000 });
   await expect(page.locator(".topic-bar")).toHaveCount(0);
   // #71 INC-2 — the standalone row's button is now the ☰ RAIL OPENER (the cog
   // moved into the rail it opens). Assert the opener is reachable here, and that
