@@ -262,20 +262,8 @@ defmodule Grappa.Operator do
   @spec emit_visitor_deleted(Visitor.t(), actor()) :: :ok
   defp emit_visitor_deleted(%Visitor{} = v, actor) do
     {actor_id, actor_name} = unpack_actor(actor)
-    AdminEvents.record(AdminWire.visitor_deleted(v.id, visitor_nick(v), actor_id, actor_name))
-  end
-
-  # #211 phase 7 — the visitor's display nick lives per-network on the
-  # credential now (the `visitors.nick` scalar is dropped). For an
-  # identity-wide label (delete event, operator log) use the representative
-  # (identity-anchor) credential's nick; `nil` when the identity holds no
-  # credential (a fresh/mangled row).
-  @spec visitor_nick(Visitor.t()) :: String.t() | nil
-  defp visitor_nick(%Visitor{id: id}) do
-    case Credentials.representative_visitor_credential(id) do
-      {:ok, %Credential{nick: nick}} -> nick
-      {:error, :not_found} -> nil
-    end
+    nick = Credentials.representative_visitor_nick(v.id)
+    AdminEvents.record(AdminWire.visitor_deleted(v.id, nick, actor_id, actor_name))
   end
 
   # #211 phase 7 — a visitor is multi-network; its nick lives per-network on
@@ -290,8 +278,8 @@ defmodule Grappa.Operator do
     :ok
   end
 
-  defp log_delete_outcome(id, visitor, :ok) do
-    IO.puts("deleted visitor #{id} (#{visitor_nick(visitor)})")
+  defp log_delete_outcome(id, %Visitor{id: visitor_id}, :ok) do
+    IO.puts("deleted visitor #{id} (#{Credentials.representative_visitor_nick(visitor_id)})")
     :ok
   end
 

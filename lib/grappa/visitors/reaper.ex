@@ -146,15 +146,10 @@ defmodule Grappa.Visitors.Reaper do
   end
 
   # Representative (identity-anchor) nick for the reap event label, read
-  # before the delete cascades the credentials. `nil` for a credential-less
-  # identity.
+  # before the delete cascades the credentials away.
   @spec reaped_nick(Visitors.Visitor.t()) :: String.t() | nil
-  defp reaped_nick(%Visitors.Visitor{id: id}) do
-    case Credentials.representative_visitor_credential(id) do
-      {:ok, %Credential{nick: nick}} -> nick
-      {:error, :not_found} -> nil
-    end
-  end
+  defp reaped_nick(%Visitors.Visitor{id: id}),
+    do: Credentials.representative_visitor_nick(id)
 
   # #590 — `Visitors.delete/1` can now degrade a sustained SQLITE_BUSY to
   # `{:error, :db_unavailable}`; the sweep's per-row `{:error, reason}` arm logs

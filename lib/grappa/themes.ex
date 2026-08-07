@@ -454,7 +454,7 @@ defmodule Grappa.Themes do
   # A STORED snapshot, NOT a live lookup: visitors are reaped, and a reaped
   # visitor's published theme re-homes to the system user (`visitor_id` → nil),
   # so the author label must not depend on the visitor still existing. Derived
-  # from the credential anchor (`Networks.Credentials.representative_visitor_credential/1`,
+  # from the credential anchor (`Networks.Credentials.representative_visitor_nick/1`,
   # the same identity nick the subject wire + admin tab show), NOT the caller
   # subject (an admin may publish another subject's theme) and NOT the Visitor
   # row (#211 phase 7 dropped the row's nick — it lives per-network on the
@@ -465,12 +465,9 @@ defmodule Grappa.Themes do
   # untouched so the wire falls back to the guest label.
   defp maybe_snapshot_author_nick(changeset, %Theme{visitor_id: visitor_id}, true)
        when is_binary(visitor_id) do
-    case Credentials.representative_visitor_credential(visitor_id) do
-      {:ok, %{nick: nick}} when is_binary(nick) ->
-        Ecto.Changeset.change(changeset, author_nick: nick)
-
-      _ ->
-        changeset
+    case Credentials.representative_visitor_nick(visitor_id) do
+      nick when is_binary(nick) -> Ecto.Changeset.change(changeset, author_nick: nick)
+      nil -> changeset
     end
   end
 

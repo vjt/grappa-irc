@@ -491,6 +491,42 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
+  The visitor identity's display LABEL — the anchor credential's nick,
+  or `nil` when the identity holds no credential (or holds one with no
+  nick yet).
+
+  Every operator-facing surface that names a visitor without a network
+  in hand needs this, and before #982 each derived it inline: the
+  `:visitor_deleted` event (`Grappa.Operator`), the `:visitor_reaped`
+  event (`Grappa.Visitors.Reaper`), and the published-theme author
+  snapshot (`Grappa.Themes`). Adding a fourth caller (the #982 admin
+  share-token mint) is what forced the extraction.
+
+  It lives HERE and not in `Grappa.Visitors` for two reasons, the second
+  structural: #211 phase 7 moved the nick off the visitor row onto the
+  per-network credential, so the credential context owns it; and
+  `Grappa.Visitors` already deps on `Grappa.Themes`, so a helper over
+  there could never be reached from `Themes` without inverting that edge
+  into a cycle. `Grappa.Networks` is the one boundary all four callers
+  already depend on.
+
+  Callers keep their own absent-nick handling — the events render `nil`
+  as the id, the theme snapshot leaves the changeset untouched so the
+  wire falls back to the guest label. Shared derivation, per-caller
+  consequence.
+
+  Raw as stored, NOT ASCII-folded: a display label, not a fold-MATCH
+  site (consistent with the raw-cased members map / `state.nick`).
+  """
+  @spec representative_visitor_nick(Ecto.UUID.t()) :: String.t() | nil
+  def representative_visitor_nick(visitor_id) when is_binary(visitor_id) do
+    case representative_visitor_credential(visitor_id) do
+      {:ok, %Credential{nick: nick}} -> nick
+      {:error, :not_found} -> nil
+    end
+  end
+
+  @doc """
   #481 — the USER twin of `representative_visitor_credential/1`: the
   identity-anchor credential (lowest `network_id`) a user already holds,
   used to SEED a self-serve network accretion so a new network starts on
