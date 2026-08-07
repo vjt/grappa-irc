@@ -335,9 +335,10 @@ defmodule Grappa.Operator do
   """
   @spec reset_totp!(String.t()) :: :ok | no_return()
   def reset_totp!(name) when is_binary(name) do
-    name
-    |> Accounts.reset_totp()
-    |> report_reset("disarmed TOTP and revoked sessions for", name)
+    case Accounts.reset_totp(name) do
+      {:ok, _} -> report_reset("disarmed TOTP and revoked sessions for", name)
+      {:error, reason} -> fail_reset(reason, name)
+    end
   end
 
   @doc """
@@ -349,24 +350,29 @@ defmodule Grappa.Operator do
   """
   @spec reset_passkeys!(String.t()) :: :ok | no_return()
   def reset_passkeys!(name) when is_binary(name) do
-    name
-    |> Accounts.reset_passkeys()
-    |> report_reset("reset passkeys and sessions for", name)
+    case Accounts.reset_passkeys(name) do
+      {:ok, _} -> report_reset("reset passkeys and sessions for", name)
+      {:error, reason} -> fail_reset(reason, name)
+    end
   end
 
-  @spec report_reset({:ok, term()} | {:error, :not_found | :db_unavailable}, String.t(), String.t()) ::
-          :ok | no_return()
-  defp report_reset({:ok, _}, verb, name) do
-    IO.puts("#{verb} #{name}")
-    :ok
-  end
+  # Reporting and aborting are separate functions on purpose. Folded into one
+  # multi-clause helper, the clauses that raise contribute nothing to the
+  # success typing, so any honest `@spec` covering the whole input union is a
+  # supertype of it and Dialyzer says so. Splitting gives each half a spec
+  # that is exactly true: this one always returns, `fail_reset/2` never does.
+  @spec report_reset(String.t(), String.t()) :: :ok
+  defp report_reset(verb, name), do: IO.puts("#{verb} #{name}")
 
-  defp report_reset({:error, :not_found}, _verb, name) do
+  # Operator-visible stderr line, then a raise so `bin/grappa` exits non-zero
+  # — the `delete_visitor!/1` contract. Silence would read as success.
+  @spec fail_reset(:not_found | :db_unavailable, String.t()) :: no_return()
+  defp fail_reset(:not_found, name) do
     IO.puts(:stderr, "account not found: #{name}")
     raise Ecto.NoResultsError, queryable: User
   end
 
-  defp report_reset({:error, :db_unavailable}, _verb, name) do
+  defp fail_reset(:db_unavailable, name) do
     IO.puts(:stderr, "account #{name} reset failed — database busy, retry")
     raise "account reset deferred: database busy"
   end
