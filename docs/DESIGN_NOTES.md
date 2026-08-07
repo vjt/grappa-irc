@@ -31207,15 +31207,16 @@ the limits differ per network, and users with the right usermode are exempt,
 so there is no safe value to assume. The composer had two routes onto that and
 neither asked the operator anything.
 
-**Shift+Enter is a no-op, not a line break.** `preventDefault` with no send:
-the composer stays single-line. It used to insert a newline, which is a burst
-requested by holding a modifier, and there is no precedent to match — mIRC's
-editbox is single-line and pops a "paste N lines?" dialog, hexchat splits
-paste line by line. Closing this door is what makes the remaining one
-sufficient: paste is now the ONLY way a multi-line body reaches the box, and
-paste is guarded. `composeSend` in the e2e fixtures fills the textarea
-programmatically, so the fan-out spec still exercises the split — the
-behaviour is untouched, only the keyboard route to it is gone.
+**Shift+Enter was made a no-op, not a line break** (reversed on 2026-08-07,
+see #974 below: it now SENDS). `preventDefault` with no send: the composer
+stays single-line. It used to insert a newline, which is a burst requested by
+holding a modifier, and there is no precedent to match — mIRC's editbox is
+single-line and pops a "paste N lines?" dialog, hexchat splits paste line by
+line. Closing this door is what makes the remaining one sufficient: paste is
+now the ONLY way a multi-line body reaches the box, and paste is guarded.
+`composeSend` in the e2e fixtures fills the textarea programmatically, so the
+fan-out spec still exercises the split — the behaviour is untouched, only the
+keyboard route to it is gone.
 
 **The guard trips on the second message, not the fourth line.** #80 carved out
 1–3 lines as frictionless, reasoning that short pastes (a URL, an address) are
@@ -31509,16 +31510,18 @@ drive-by.
 vjt's acceptance comment on #816 (2026-08-06 10:12Z) posed two conditions that
 the shipped implementation did not meet. This is both of them.
 
-**Shift+Enter had to stop being silent.** It still inserts nothing and sends
-nothing — a newline cannot travel inside a PRIVMSG, so honouring the key means
-splitting into N messages, a burst nobody asked for by holding a modifier. But
-a key that does *nothing* is indistinguishable from a broken key: every other
-chat app the operator uses honours that combination, so silence sends them
-looking for a cic setting to flip. It now says **"IRC does not support
-multi-line messages"** — vjt's wording, verbatim, naming the PROTOCOL as the
-thing that refused. It rides the existing #356 feedback seam as a NOTICE
-(`role=status`, self-clearing), not an error: nothing failed, and an assertive
-red alert would overstate a key that was never going to work.
+**Shift+Enter had to stop being silent** (reversed the next day — see the
+2026-08-07 #974 entry below; the refusal is gone entirely, copy and all). It
+still inserts nothing and sends nothing — a newline cannot travel inside a
+PRIVMSG, so honouring the key means splitting into N messages, a burst nobody
+asked for by holding a modifier. But a key that does *nothing* is
+indistinguishable from a broken key: every other chat app the operator uses
+honours that combination, so silence sends them looking for a cic setting to
+flip. It now says **"IRC does not support multi-line messages"** — vjt's
+wording, verbatim, naming the PROTOCOL as the thing that refused. It rides the
+existing #356 feedback seam as a NOTICE (`role=status`, self-clearing), not an
+error: nothing failed, and an assertive red alert would overstate a key that
+was never going to work.
 
 The old vitest **pinned the silence** (`expect(setDraft).not.toHaveBeenCalled()`
 and nothing more, under a comment describing the no-op as the feature). That
@@ -32202,3 +32205,59 @@ true there and FALSE here: services accept a RESETPASS from an unidentified
 user — that is what the verb is for. All grappa lacks in that case is a
 stored secret to rotate, and the follow-up IDENTIFY binds the new one
 through the ordinary `+r` rendezvous.
+
+## 2026-08-07 — #974: the refusal was eating the message, so the refusal goes
+
+**Shift+Enter just sends, and the notice is deleted.** This reverses the
+2026-08-06 ruling recorded above, one day old, and it is vjt's ruling and his
+reversal. The 2026-08-06 entry asked the refusal to SPEAK; there is nothing
+left to speak about once nothing is refused. `SHIFT_ENTER_REFUSAL` and its
+copy are gone from the product, not merely un-asserted.
+
+**What the refusal actually cost.** `preventDefault()` ran unconditionally and
+the submit was gated behind `!e.shiftKey`, so on any press where the modifier
+was set the keystroke was CONSUMED and the message was not sent. vjt hits that
+on presses he never meant as Shift+Enter — he has to press Enter again, and
+before the notice existed there was not even a hint that anything had happened.
+A refusal that only refuses is a design choice; one that eats a message the
+operator typed is a defect, and it outranks the reason the door was closed.
+
+**The trigger is still unknown, and the fix does not need it.** vjt ran a probe
+on a real iPhone (two textareas, one bare like cic's, one with
+`autocapitalize="off"`, both logging every Enter keydown): `shiftKey` is
+`false` in every box, including on a draft starting with `/`. The iOS
+auto-capitalisation hypothesis is dead, and "shift still held" does not apply
+to a phone. A stale bundle was excluded too — the live prod bundle minifies to
+exactly `e.shiftKey?l(fO):ne()`, the same gate as `origin/main`. So the whole
+"the message got eaten" class is closed WITHOUT a diagnosis: whatever arms the
+modifier, Enter sends. Neither dead candidate was implemented, and neither
+should be resurrected on the strength of this entry.
+
+**`preventDefault()` stays, and that is the one part of the wording not to take
+literally.** It is what stops the textarea from inserting its own line break.
+Drop it and the newline lands in the box AFTER the async `doSubmit()` has
+cleared the draft — a stray `\n` in a freshly-emptied composer, a second defect
+wearing the first one's clothes. The #816 premise is untouched: a newline
+cannot travel inside a PRIVMSG (CRLF terminates the frame), the composer stays
+single-line, and paste remains the ONE route a multi-line body takes in, still
+guarded by `lib/pasteFlood` + `lib/pasteRoute`. Consequence worth stating:
+Ctrl+Enter and Cmd+Enter already fell through to submit, so this makes the
+modifier handling uniform rather than adding a case to it.
+
+**Three specs inverted, and why that is not the usual sin.** Two vitests and
+the `#816 shift-enter-speaks` e2e pinned the reversed behaviour and had to be
+rewritten. That is normally the thing not to do — an assert that goes red is
+evidence, not an obstacle. It is allowed HERE because the product intent moved
+by ruling, so it is the SPEC that moves; nothing was weakened to reach green.
+The e2e was inverted rather than deleted (it is renamed
+`issue974-shift-enter-sends.spec.ts`) because the real-browser proof — the
+message appearing in the SCROLLBACK — is precisely what the issue is about.
+The jsdom half measures `setDraft`, not the rendered value: `getDraft` is a
+static mock there, so the textarea reads empty either way and only the store
+write can witness a newline that got in.
+
+**Not the fix, shipped alongside it:** the compose textarea carried no
+`autocapitalize`/`autocorrect`, so WebKit applied `sentences`. For a composer
+that eats nicks, channels and `/commands` that default is wrong on its own
+merits and is now `off`. It was the falsified hypothesis' subject, and it must
+not be read as the mechanism — it changes nothing about which keystrokes send.
