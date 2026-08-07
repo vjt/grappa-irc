@@ -568,12 +568,14 @@ defmodule GrappaWeb.AuthController do
   # plug only fires once on the `login/2` call, so the captcha boundary
   # and the upstream verify call must both consume the same value.
   defp visitor_login(conn, nick, password, captcha_token, identity, network, incognito) do
+    ip = format_ip(conn)
+
     input = %{
       nick: nick,
       password: password,
       ident: identity.ident,
       realname: identity.realname,
-      ip: format_ip(conn),
+      ip: ip,
       user_agent: user_agent(conn),
       token: extract_bearer(conn),
       captcha_token: captcha_token,
@@ -584,16 +586,79 @@ defmodule GrappaWeb.AuthController do
       incognito: incognito
     }
 
-    case Login.login(input, []) do
-      {:ok, %{visitor: %Visitor{} = v, token: token}} ->
-        conn
-        |> put_status(:ok)
-        |> render(:login, token: token, subject: {:visitor, v})
+    with :ok <- check_visitor_throttle(ip, password) do
+      case Login.login(input, []) do
+        {:ok, %{visitor: %Visitor{} = v, token: token}} ->
+          conn
+          |> put_status(:ok)
+          |> render(:login, token: token, subject: {:visitor, v})
 
-      {:error, reason} ->
-        visitor_error_response(conn, nick, network, reason)
+        {:error, reason} ->
+          :ok = record_visitor_failure(ip, reason)
+          visitor_error_response(conn, nick, network, reason)
+      end
     end
   end
+
+  # S6's window, one door over. The registered-visitor password gate is
+  # the credential door with the least standing under it: the account
+  # door above pays an Argon2 per guess, this one pays a Cloak decrypt
+  # and a `Plug.Crypto.secure_compare/2` — constant-time, so no timing
+  # oracle, but cheap. It is also the only credential door on
+  # `pipe_through :api`, with no request budget in front, and the captcha
+  # gates the fresh-provision branch rather than the password one (its
+  # default provider is `Disabled`, so an unconfigured self-host has none
+  # anywhere). Every attenuation that makes the sibling doors tolerable
+  # is absent here at once.
+  #
+  # Its own bucket: sharing a counter is how one door's limit silently
+  # becomes another's.
+  @visitor_login_bucket :visitor_login
+  @visitor_login_max_failures 10
+  @visitor_login_window_ms :timer.minutes(15)
+
+  # Keyed on the source IP and NOTHING else. A per-account dimension that
+  # denies would be a remote lockout on someone else's identity: visitor
+  # nicks are enumerable at zero cost and the window renews, so one wrong
+  # guess every 90 seconds would hold a nick shut forever, with the victim
+  # paying instead of the attacker. The per-IP cost on shared NAT is the
+  # tradeoff already accepted three doors over (DESIGN_NOTES 2026-07-03).
+  #
+  # Only a credential-bearing attempt is gated. A passwordless visitor
+  # login is the anon/fresh door — and it is also how cic discovers a gate
+  # exists at all (post, read `:password_required` back, then prompt) — so
+  # gating it would let a spray against registered nicks take anonymous
+  # logins down with it.
+  @spec check_visitor_throttle(String.t() | nil, String.t() | nil) ::
+          :ok | {:error, :too_many_attempts}
+  defp check_visitor_throttle(_, nil), do: :ok
+
+  defp check_visitor_throttle(ip, password) when is_binary(password) do
+    case FailureWindow.check(@visitor_login_bucket, ip, @visitor_login_max_failures) do
+      :ok -> :ok
+      {:error, :limited} -> {:error, :too_many_attempts}
+    end
+  end
+
+  # Charges the window on a wrong password and nothing else. A capacity
+  # refusal, an unreachable upstream or a `:password_required` are not
+  # guesses, and charging them would spend a visitor's own door on the
+  # server's problems.
+  @spec record_visitor_failure(String.t() | nil, Login.login_error()) :: :ok
+  defp record_visitor_failure(ip, :password_mismatch) do
+    count = FailureWindow.record_failure(@visitor_login_bucket, ip, @visitor_login_window_ms)
+
+    # Exactly-once-per-window operator signal, on the crossing failure
+    # only — same discipline as the mode-1 emitter, so a spray cannot
+    # flood the admin stream with its own rejections.
+    if count == @visitor_login_max_failures do
+      AdminEvents.record(AdminEventsWire.login_throttled(ip, count, @visitor_login_window_ms))
+    end
+
+    :ok
+  end
+
+  defp record_visitor_failure(_, _), do: :ok
 
   # L-web-1: every visitor-error atom now flows through
   # `GrappaWeb.FallbackController` (wired globally via `use GrappaWeb,

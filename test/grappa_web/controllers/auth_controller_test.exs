@@ -1407,4 +1407,83 @@ defmodule GrappaWeb.AuthControllerTest do
       refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :login_throttled}}, 200
     end
   end
+
+  # The registered-visitor password gate is the credential door with the
+  # least standing under it — no KDF, no request budget, no captcha on this
+  # branch. These pin the per-IP window that bounds it. No IRC handshake
+  # anywhere below: a wrong password never dials, and neither does a
+  # throttled one.
+  describe "POST /auth/login visitor password-gate throttle" do
+    setup do
+      :ets.delete_all_objects(FailureWindow.table_name())
+
+      {network, _} = setup_visitor_network(pick_unused_port())
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt", "azzurra", "1.2.3.4")
+      {:ok, _} = Visitors.commit_password(visitor.id, network.id, "s3cret")
+
+      {:ok, network: network, visitor: visitor}
+    end
+
+    test "the 11th attempt from one IP is refused even with the CORRECT password", %{conn: conn} do
+      for _ <- 1..10 do
+        assert json_response(wrong_visitor_login(conn, 7), 401)["error"] == "password_mismatch"
+      end
+
+      # The correct secret, and still refused: the check precedes the whole
+      # login flow, so a throttled address buys no compare and no spawn.
+      # Nothing feeds a 001 here — if this were let through it would dial.
+      refused =
+        conn
+        |> with_ip(7)
+        |> post("/auth/login", %{"identifier" => "vjt", "password" => "s3cret"})
+
+      assert json_response(refused, 429) == %{"error" => "too_many_attempts"}
+    end
+
+    test "a spent IP does not lock the visitor's OWN door from elsewhere", %{conn: conn} do
+      for _ <- 1..10, do: wrong_visitor_login(conn, 13)
+      assert json_response(wrong_visitor_login(conn, 13), 429)["error"] == "too_many_attempts"
+
+      # Same nick, another address: still the credential oracle, not the
+      # throttle. Nicks are enumerable, so a per-account deny would let one
+      # address hold someone else's identity shut; this one cannot.
+      assert json_response(wrong_visitor_login(conn, 14), 401)["error"] == "password_mismatch"
+    end
+
+    test "a passwordless login never advances the counter", %{conn: conn} do
+      # cic discovers the gate by posting without a password and reading
+      # `password_required` back; it is also the anon/fresh door. Charging
+      # it would let a spray against registered nicks take anonymous logins
+      # down with it.
+      for _ <- 1..15 do
+        assert conn
+               |> with_ip(15)
+               |> post("/auth/login", %{"identifier" => "vjt"})
+               |> json_response(401) == %{"error" => "password_required"}
+      end
+
+      assert json_response(wrong_visitor_login(conn, 15), 401)["error"] == "password_mismatch"
+    end
+
+    test "crossing the limit emits :login_throttled exactly once", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Grappa.PubSub.Topic.admin_events())
+
+      for _ <- 1..10, do: wrong_visitor_login(conn, 16)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       payload: %{kind: :login_throttled, source_ip: "10.66.0.16", failures: 10}
+                     },
+                     500
+
+      _ = wrong_visitor_login(conn, 16)
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :login_throttled}}, 200
+    end
+  end
+
+  defp wrong_visitor_login(conn, d) do
+    conn
+    |> with_ip(d)
+    |> post("/auth/login", %{"identifier" => "vjt", "password" => "WRONG-pw"})
+  end
 end

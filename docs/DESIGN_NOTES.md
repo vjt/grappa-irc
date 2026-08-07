@@ -31776,3 +31776,61 @@ on a flex child, ask whether the parent has a fixed height. If it does, you
 have not set a minimum — you have replaced one, and handed the algorithm
 permission to use yours as the target.
 
+## 2026-08-07 — the visitor password gate gets a window, keyed on the source IP alone
+
+`Grappa.RateLimit.FailureWindow` now stands in front of the visitor login
+door (`AuthController.visitor_login/7`), bucket `:visitor_login`, 10 failures
+per 15 minutes per source IP. Same infrastructure and same shape as the
+mode-1 account door has used since S6 — check before the work, record only on
+a mismatch, one `login_throttled` admin event on the crossing failure. A
+separate bucket on purpose: merging two credential policies because they
+share a counter is how one door's limit silently becomes the other's.
+
+**It lives at the HTTP edge because the Boundary compiler said so, and it was
+right.** The first cut put the check inside `Visitors.Login`, next to the
+compare, which is where the scoping is most precise. `Grappa.Visitors` does
+not depend on `Grappa.RateLimit` or `Grappa.AdminEvents`, and the build said
+so out loud. Widening a domain context's dependency surface to hold a
+request-edge policy keyed on the source IP is the wrong trade when all three
+sibling windows already live in controllers — so the window moved to the
+door instead, and the domain context is untouched by this change. The
+placement is also strictly earlier: the check now precedes the nick
+classification, the DB lookups, the Cloak decrypt and any spawn, rather than
+sitting one frame above the compare.
+
+**Only a credential-bearing attempt is gated.** With the check at the door it
+would otherwise cover the anon and fresh-provision branches too, so a spray
+against registered nicks would take anonymous logins from the same NAT down
+with it. `check_visitor_throttle/2` returns `:ok` immediately when no password
+was supplied; the branches that carry one — the registered gate and the
+fresh-provision NickServ path, which dials an upstream with that secret — are
+both bounded.
+
+**Why this door and not another.** It is the credential door with the least
+under it. The account door pays an Argon2 per guess; this one pays a Cloak
+decrypt and a `Plug.Crypto.secure_compare/2` — constant-time, so no timing
+oracle, but cheap. It is also the only credential door mounted on
+`pipe_through :api`, with no request budget in front, and the captcha gates
+the fresh-provision branch rather than this one (and its default provider is
+`Disabled`, so an unconfigured self-host has none anywhere). Every attenuation
+that makes the other doors tolerable is absent here at once.
+
+**The key is the source IP and nothing else, and that is the design, not an
+omission.** A per-account dimension that DENIES is a remote lockout on someone
+else's identity: visitor nicks are enumerable at zero cost, and the window
+renews, so a single wrong guess every 90 seconds would hold a nick shut
+forever. The attacker would pay with the victim's door instead of their own.
+The per-IP cost on shared NAT is the tradeoff this project already accepted
+three doors over (2026-07-03), so the fix adds no lockout vector that did not
+already exist. What it explicitly does NOT buy is the distributed case: N
+addresses still get N windows, here as everywhere else — none of the failure
+windows in the codebase sums across IPs. Bounding that is detection before it
+is prevention, and it is a separate decision.
+
+**Only a wrong password charges it.** `record_visitor_failure/2` matches
+`:password_mismatch` and nothing else: a capacity refusal, an unreachable
+upstream or a `:password_required` are not guesses, and charging them would
+spend a visitor's own door on the server's problems. The test that pins the
+`:password_required` half would pass vacuously against the pre-fix tree, so it
+was proven by mutation — recording on every error branch turns it red.
+
