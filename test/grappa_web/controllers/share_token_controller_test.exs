@@ -33,9 +33,13 @@ defmodule GrappaWeb.ShareTokenControllerTest do
 
   alias Grappa.Repo.BusyRetry
   alias Grappa.Visitors.ShareTokens
+  alias GrappaWeb.ShareToken
 
-  @max_age_seconds 600
-  @salt "visitor-share-v1"
+  # #982 — read from the production module rather than re-declared here.
+  # Two doors mint this token now; a test carrying its own copy of the
+  # salt would stay green through a drift that breaks both of them.
+  @max_age_seconds ShareToken.max_age_seconds()
+  @salt ShareToken.salt()
 
   describe "POST /me/share-token — mint" do
     test "visitor subject returns 200 + signed token + expires_at", %{conn: conn} do

@@ -20,6 +20,13 @@ defmodule GrappaWeb.ShareTokenController do
   second device is the precise gap this flow closes — visitors have no
   password, so the link IS the auth mechanism.
 
+  Since #982 this is no longer the ONLY mint: an admin can mint the
+  same token for a locked-out visitor via `POST
+  /admin/visitors/:id/share-token`. The consume below stays the single
+  redeem surface for both origins, and both mints go through
+  `GrappaWeb.ShareToken` — see that module for why the salt and TTL
+  cannot live in a controller any more.
+
   ## Why Phoenix.Token + ETS (no DB)
 
   Threat model is benign (operator clicks own link twice). Short TTL
@@ -50,18 +57,7 @@ defmodule GrappaWeb.ShareTokenController do
   alias Grappa.Networks.Credentials
   alias Grappa.Visitors.{ShareTokens, Visitor}
   alias Grappa.Visitors.Wire, as: VisitorsWire
-  alias GrappaWeb.RemoteIP
-
-  @salt "visitor-share-v1"
-  @max_age_seconds 600
-
-  @doc false
-  @spec salt() :: String.t()
-  def salt, do: @salt
-
-  @doc false
-  @spec max_age_seconds() :: unquote(@max_age_seconds)
-  def max_age_seconds, do: @max_age_seconds
+  alias GrappaWeb.{RemoteIP, ShareToken}
 
   @doc """
   `POST /me/share-token` — visitor-only mint.
@@ -89,8 +85,7 @@ defmodule GrappaWeb.ShareTokenController do
         {:error, :forbidden}
 
       {:visitor, %Visitor{id: visitor_id}} ->
-        token = Phoenix.Token.sign(GrappaWeb.Endpoint, @salt, visitor_id)
-        expires_at = DateTime.add(DateTime.utc_now(), @max_age_seconds, :second)
+        {token, expires_at} = ShareToken.mint(visitor_id)
 
         :telemetry.execute(
           [:grappa, :visitor, :share_token, :minted],
@@ -150,7 +145,7 @@ defmodule GrappaWeb.ShareTokenController do
              | :db_unavailable
              | Ecto.Changeset.t()}
   def consume(conn, %{"token" => token}) when is_binary(token) and token != "" do
-    with {:ok, visitor_id} <- verify_token(token),
+    with {:ok, visitor_id} <- ShareToken.verify(token),
          :ok <- mark_consumed(token) do
       # The one-shot claim is now HELD by this request (mark_consumed
       # returned :ok — we won any race). #593 — every failure past this
@@ -233,17 +228,6 @@ defmodule GrappaWeb.ShareTokenController do
     )
 
     {:error, reason}
-  end
-
-  @spec verify_token(String.t()) ::
-          {:ok, Ecto.UUID.t()}
-          | {:error, :unauthorized | :share_token_expired}
-  defp verify_token(token) do
-    case Phoenix.Token.verify(GrappaWeb.Endpoint, @salt, token, max_age: @max_age_seconds) do
-      {:ok, visitor_id} when is_binary(visitor_id) -> {:ok, visitor_id}
-      {:error, :expired} -> {:error, :share_token_expired}
-      {:error, _} -> {:error, :unauthorized}
-    end
   end
 
   # Translates `ShareTokens.mark_consumed/1`'s `{:error,
