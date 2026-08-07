@@ -2128,6 +2128,84 @@ describe("ScrollbackPane", () => {
       });
     });
 
+    // #997 — the bar is pinned to the TOP edge, and the dismiss is the only
+    // gesture that unfreezes the cursor. An operator sitting at the tail never
+    // looked up: the frozen badge read as a broken counter for as long as they
+    // used the client. The label stays where it is; the gesture also lands in
+    // the #280 corner stack, where the thumb already is.
+    describe("far-behind dismiss in thumb reach (#997)", () => {
+      afterEach(() => {
+        setFarBehind({});
+        jumpToUnreadSpy.mockClear();
+        dismissFarBehindSpy.mockClear();
+      });
+
+      const renderFarBehindPane = () => {
+        seedReadCursor("freenode", "#grappa", 1);
+        setScrollback({ "freenode #grappa": fixture });
+        setFarBehind({ "freenode #grappa": { missed: 3000, resumeFrom: 1 } });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+      };
+
+      it("puts the affordance in the corner stack, not only in the top bar", () => {
+        renderFarBehindPane();
+        const corner = screen.getByTestId("far-behind-float-dismiss");
+        // Membership in the stack IS the reach fix: the stack is the
+        // container-anchored lower-right cluster (#280), and a control outside
+        // it inherits neither the anchor nor the pointer-events re-enable.
+        expect(corner.parentElement?.className).toContain("scrollback-float-stack");
+        expect(screen.getByTestId("far-behind-bar").contains(corner)).toBe(false);
+      });
+
+      it("shows nothing in the corner for an ordinary pane", () => {
+        seedReadCursor("freenode", "#grappa", 1);
+        setScrollback({ "freenode #grappa": fixture });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        expect(screen.queryByTestId("far-behind-float-dismiss")).toBeNull();
+      });
+
+      it("dismisses THIS window's far-behind state, the same verb the × fires", () => {
+        renderFarBehindPane();
+        screen.getByTestId("far-behind-float-dismiss").click();
+        expect(dismissFarBehindSpy).toHaveBeenCalledWith("freenode", "#grappa");
+        // A corner control that navigated instead would leave the cursor
+        // frozen — the badge would stay stuck with the way out now in reach
+        // and still useless, which is worse than the reported defect.
+        expect(jumpToUnreadSpy).not.toHaveBeenCalled();
+      });
+
+      it("re-latches the frozen divider, exactly as the × does", async () => {
+        // The second surface must write the WHOLE state, not the part that is
+        // easy to see. Dismissing without carrying the returned id back into
+        // the frozen marker un-suppresses the divider against a cursor
+        // snapshot thousands of rows old and slams "2 unread" across the top
+        // of the buffer — the two controls would then disagree about what a
+        // dismiss means.
+        renderFarBehindPane();
+        screen.getByTestId("far-behind-float-dismiss").click();
+        // The verb clears the flag server-side; mirror that here.
+        setFarBehind({});
+        await Promise.resolve();
+        expect(screen.queryByTestId("unread-marker")).toBeNull();
+      });
+
+      it("keeps the backwards jump on the bar — opposite directions survive", () => {
+        // jump-to-first-unread goes BACKWARDS, scroll-to-bottom FORWARDS. The
+        // corner gets the dismiss and ONLY the dismiss: a backwards jump one
+        // gap above the forwards scroll would be the collision #280 anchored
+        // this stack to prevent, and it would not unfreeze anything.
+        renderFarBehindPane();
+        expect(screen.getByTestId("far-behind-jump")).toBeInTheDocument();
+        expect(
+          screen.getByTestId("far-behind-bar").contains(screen.getByTestId("far-behind-jump")),
+        ).toBe(true);
+      });
+    });
+
     // #947 — the notch after #693. The operator took the jump, so the flag is
     // gone and the divider is back; but the jump could only carry ONE page of
     // the gap, so counting the loaded rows reports the page size. The number

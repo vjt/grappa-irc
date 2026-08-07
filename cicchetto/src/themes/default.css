@@ -2927,6 +2927,59 @@ html.resize-dragging * {
   opacity: 0.5;
 }
 
+/* #997 — the far-behind dismiss, in the float stack. The bar at the top edge
+   keeps the LABEL; this is the gesture, in the corner the thumb already
+   reaches. Palette is the BAR's (`--bg` fill, `--accent` glyph + hairline),
+   not the accent-filled scroll-to-bottom circle: it reads as the far-behind
+   thing rather than a second scroll control, which is the whole distinction
+   the two directions turn on.
+
+   44px floor in ABSOLUTE px, like both bar buttons — the root font-size is
+   14px, so a rem target comes out short on mobile. Desktop therefore renders
+   this LARGER than its 2rem sibling; the tap floor is a physical constraint
+   and wins over the visual match. */
+.far-behind-float-dismiss {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  font-family: var(--font-mono);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+/* Opaque, against the #289/#302 translucency its stack siblings carry. Those
+   are PERMANENT chrome, so letting the text behind them show through was the
+   right trade; this appears only while the window is far behind, and it is
+   the only gesture that unfreezes the read cursor. The far-behind surface
+   paints opaquely over the rows it covers — the bar does it at the top edge
+   for the same reason — so the one control that must not be misread does not
+   inherit a translucency tuned for buttons that are always there. Child
+   selector so the override reads as deliberate rather than as a specificity
+   accident. */
+.shell-mobile .scrollback-float-stack > .far-behind-float-dismiss {
+  opacity: 1;
+}
+
+/* Mobile — match the 3.5rem box its stack siblings take (#280 req 4) so the
+   column stays one consistent set of controls; the 48px floor mirrors
+   `.shell-mobile .scroll-to-bottom-btn`. */
+.shell-mobile .far-behind-float-dismiss {
+  width: 3.5rem;
+  height: 3.5rem;
+  min-width: 48px;
+  min-height: 48px;
+  font-size: 1.75rem;
+}
+
 /* C7.4: Scroll-to-bottom button. An in-flow child of the float stack (#280)
    — the stack owns the absolute anchor for POSITIONING; this is `position:
    relative` only so the #360 mention-count badge can anchor to its corner
