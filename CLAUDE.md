@@ -41,6 +41,7 @@ Grappa.Application
 ├── DynamicSupervisor                  (name: Grappa.SessionSupervisor)
 │   └── Grappa.Session.Server          (one per (user, network), :transient)
 ├── GrappaWeb.Endpoint                 (Phoenix HTTP + WS)
+├── GrappaWeb.SessionRevocationListener (turns a bearer-death event into the WS teardown; with/after Endpoint)
 ├── Grappa.Visitors.Reaper             (60s sweep of expired visitors; after Endpoint)
 ├── Grappa.Uploads.Reaper              (UX-6-B1 upload GC sweep; after Endpoint)
 ├── Grappa.Accounts.Reaper             (#223 idle auth-session GC; after Endpoint)

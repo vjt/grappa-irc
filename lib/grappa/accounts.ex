@@ -46,12 +46,18 @@ defmodule Grappa.Accounts do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Ecto.Like, Grappa.EncryptedBinary, Grappa.Repo, Grappa.Visitors.Visitor],
+    deps: [
+      Grappa.Accounts.Revocations,
+      Grappa.Ecto.Like,
+      Grappa.EncryptedBinary,
+      Grappa.Repo,
+      Grappa.Visitors.Visitor
+    ],
     exports: [User, Session, Wire, AdminWire, TOTP, TOTPRecoveryCode, Passkey, WebAuthn]
 
   import Ecto.Query
 
-  alias Grappa.Accounts.{Passkey, RecoveryCodes, Session, TOTP, TOTPRecoveryCode, User}
+  alias Grappa.Accounts.{Passkey, RecoveryCodes, Revocations, Session, TOTP, TOTPRecoveryCode, User}
   alias Grappa.Ecto.Like
   alias Grappa.Repo
   alias Grappa.Visitors.Visitor
@@ -346,7 +352,12 @@ defmodule Grappa.Accounts do
           {:error, :last_admin}
         else
           {:ok, _} = Repo.delete(user)
-          :ok
+          # The CASCADE takes the `accounts_sessions` rows with the user row,
+          # so the socket teardown has to be announced here: nothing
+          # downstream can resolve `user_id` to a name once the row is gone.
+          # `current.name` (the row just read) over `user.name` (the caller's
+          # possibly-stale struct) — the id-topic is keyed by the DB truth.
+          :ok = Revocations.announce({:user, current.name})
         end
     end
   end
@@ -509,10 +520,18 @@ defmodule Grappa.Accounts do
   @spec revoke_session(Ecto.UUID.t()) :: :ok | {:error, :db_unavailable}
   def revoke_session(id) when is_binary(id) do
     case Repo.BusyRetry.run(fn ->
-           {:ok, Repo.update_all(session_by_id_query(id), set: [revoked_at: DateTime.utc_now()])}
+           # Resolved BEFORE the UPDATE only because it must be resolved at
+           # all: the announcement is keyed by the socket id-topic label, and
+           # `revoke_session/1` is the one kill site that is handed an opaque
+           # session id rather than the subject. Read-then-write is safe here
+           # — a row deleted in between yields an announcement for a subject
+           # whose sessions are dead anyway.
+           subject = session_subject(id)
+           {:ok, {subject, Repo.update_all(session_by_id_query(id), set: [revoked_at: DateTime.utc_now()])}}
          end) do
-      {:ok, {affected, _}} ->
+      {:ok, {subject, {affected, _}}} ->
         Logger.info("session revoked", session_ref: session_handle(id), affected: affected)
+        if subject, do: Revocations.announce(subject)
         :ok
 
       {:error, :db_unavailable} = err ->
@@ -522,6 +541,30 @@ defmodule Grappa.Accounts do
 
   @spec session_by_id_query(Ecto.UUID.t()) :: Ecto.Query.t()
   defp session_by_id_query(id), do: from(s in Session, where: s.id == ^id)
+
+  # The session's owner, as the socket id-topic label parts. `nil` when the
+  # row is gone — nothing to announce.
+  #
+  # The user branch selects `users.name` rather than `sessions.user_id`: the
+  # socket is keyed by name (`Grappa.Subject.label/1`), and resolving the id
+  # later would fail on exactly the paths that matter most, where the user
+  # row is being deleted.
+  @spec session_subject(Ecto.UUID.t()) :: Revocations.subject() | nil
+  defp session_subject(id) do
+    query =
+      from(s in Session,
+        left_join: u in User,
+        on: u.id == s.user_id,
+        where: s.id == ^id,
+        select: {u.name, s.visitor_id}
+      )
+
+    case Repo.one(query) do
+      {name, nil} when is_binary(name) -> {:user, name}
+      {nil, visitor_id} when is_binary(visitor_id) -> {:visitor, visitor_id}
+      _ -> nil
+    end
+  end
 
   @doc """
   Bulk-revoke every non-revoked `Session` row tied to the given
@@ -556,7 +599,11 @@ defmodule Grappa.Accounts do
           affected: affected
         )
 
-        :ok
+        # Unconditional, not gated on `affected > 0`: the UPDATE only matches
+        # rows still `is_nil(revoked_at)`, so a subject whose row was already
+        # revoked by an earlier door — while its socket stayed up — would
+        # otherwise be announced zero times, forever.
+        :ok = Revocations.announce({:visitor, visitor_id})
 
       {:error, :db_unavailable} = err ->
         err
@@ -594,7 +641,7 @@ defmodule Grappa.Accounts do
   # transaction and reaches the outer `Repo.BusyRetry`, which re-runs the
   # whole unit. See the family contract on `revoke_session/1`.
   @spec revoke_sessions_for_user!(User.t()) :: :ok
-  defp revoke_sessions_for_user!(%User{id: user_id}) do
+  defp revoke_sessions_for_user!(%User{id: user_id, name: name}) do
     query = from(s in Session, where: s.user_id == ^user_id and is_nil(s.revoked_at))
 
     {affected, _} = Repo.update_all(query, set: [revoked_at: DateTime.utc_now()])
@@ -605,7 +652,11 @@ defmodule Grappa.Accounts do
       affected: affected
     )
 
-    :ok
+    # Announced from INSIDE the enclosing transaction — see the
+    # over-firing-is-safe note on `Grappa.Accounts.Revocations`. A rollback
+    # or a `Repo.BusyRetry` replay costs a reconnect blip; deferring to the
+    # commit would put the call back at each call-site.
+    :ok = Revocations.announce({:user, name})
   end
 
   @doc """
@@ -620,7 +671,7 @@ defmodule Grappa.Accounts do
   caller-facing revoke, not this one.
   """
   @spec revoke_other_sessions_for_user!(User.t(), Ecto.UUID.t()) :: :ok
-  def revoke_other_sessions_for_user!(%User{id: user_id}, current_session_id)
+  def revoke_other_sessions_for_user!(%User{id: user_id, name: name}, current_session_id)
       when is_binary(current_session_id) do
     query =
       from(s in Session,
@@ -628,7 +679,13 @@ defmodule Grappa.Accounts do
       )
 
     Repo.update_all(query, set: [revoked_at: DateTime.utc_now()])
-    :ok
+
+    # The socket id-topic is keyed by SUBJECT, not by session, so this closes
+    # the acting device's socket too even though its bearer survives. That
+    # device reconnects on its own (`phoenix.js` retries a 1001 close) — the
+    # cost is a blip, and per-session granularity is the open question
+    # documented on `Grappa.Accounts.Revocations`.
+    :ok = Revocations.announce({:user, name})
   end
 
   @doc "Atomically enables TOTP and revokes every other bearer session."
@@ -893,8 +950,8 @@ defmodule Grappa.Accounts do
     # owns the best-effort-DROP terminal — NO 503 (no web caller). Wrap the
     # `delete_all` in an `{:ok, _}` so it honours the `BusyRetry.run/1`
     # contract.
-    case Repo.BusyRetry.run(fn -> {:ok, Repo.delete_all(query)} end) do
-      {:ok, {deleted, _}} ->
+    case Repo.BusyRetry.run(fn -> {:ok, {expired_user_names(query), Repo.delete_all(query)}} end) do
+      {:ok, {names, {deleted, _}}} ->
         # Suppressed on count=0: the reaper calls this every 60s, so an
         # unconditional line would flood the log with 1440 idle "reaped 0"
         # entries/day. A productive sweep logs once so the lifecycle stays
@@ -903,11 +960,30 @@ defmodule Grappa.Accounts do
         # was observed — N rows past the idle window — not merely "ran".)
         if deleted > 0, do: Logger.info("expired sessions reaped", affected: deleted)
 
+        Enum.each(names, &Revocations.announce({:user, &1}))
+
         {:ok, deleted}
 
       {:error, :db_unavailable} = err ->
         err
     end
+  end
+
+  # The distinct owners of the rows `delete_expired_sessions/0` is about to
+  # remove, as socket id-topic labels. Read BEFORE the DELETE: the user rows
+  # survive the sweep, but the sessions that name them do not, so afterwards
+  # there is nothing left to join.
+  #
+  # A second statement on a 60s timer whose usual result is the empty list.
+  # `delete_all(returning: …)` would avoid it, but the sweep is the reaper's
+  # whole tick — there is no hot path to protect here.
+  @spec expired_user_names(Ecto.Query.t()) :: [String.t()]
+  defp expired_user_names(query) do
+    query
+    |> join(:inner, [s], u in User, on: u.id == s.user_id)
+    |> distinct(true)
+    |> select([_s, u], u.name)
+    |> Repo.all()
   end
 
   defp check_idle(session) do

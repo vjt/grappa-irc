@@ -60,6 +60,9 @@ defmodule Grappa.Visitors do
     top_level?: true,
     deps: [
       Grappa.Accounts,
+      # `destroy_visitor/1` announces the bearer death the visitor-row
+      # CASCADE causes; nothing in Accounts runs on that path.
+      Grappa.Accounts.Revocations,
       Grappa.Admission,
       Grappa.Auth.IdentifierClassifier,
       Grappa.IRC,
@@ -81,6 +84,7 @@ defmodule Grappa.Visitors do
   import Ecto.Query
 
   alias Grappa.{Admission, Networks, Repo, Session, SpawnOrchestrator, Themes, UserSettings}
+  alias Grappa.Accounts.Revocations
   alias Grappa.Networks.{Credential, Credentials}
   alias Grappa.Visitors.{SessionPlan, Visitor}
 
@@ -814,7 +818,13 @@ defmodule Grappa.Visitors do
     case outcome do
       {:ok, :deleted} ->
         :ok = Session.Backoff.forget({:visitor, visitor.id})
-        :ok
+        # The `sessions.visitor_id ON DELETE CASCADE` FK kills every bearer
+        # of this visitor without any Accounts codepath running, so the
+        # socket teardown is announced from the deleting side. This one call
+        # covers the admin DELETE, `bin/grappa delete-visitor`, the 60s
+        # Reaper sweep, self-delete and the anon co-terminus purge: they all
+        # funnel through here.
+        :ok = Revocations.announce({:visitor, visitor.id})
 
       {:error, :db_unavailable} = err ->
         err

@@ -14,6 +14,7 @@ defmodule GrappaWeb do
       [
         Grappa.AccountDeletion,
         Grappa.Accounts,
+        Grappa.Accounts.Revocations,
         Grappa.Admission,
         Grappa.AdminEvents,
         Grappa.Auth.IdentifierClassifier,
@@ -70,8 +71,10 @@ defmodule GrappaWeb do
     # `PasskeyOrigin` joins `Endpoint` on the export list for the same
     # reason: `Grappa.Application.start/2` reaches in to boot it, the
     # documented boot-time-config boundary. Nothing else outside
-    # `GrappaWeb` may call it.
-    exports: [Endpoint, PasskeyOrigin]
+    # `GrappaWeb` may call it. `SessionRevocationListener` is on the list
+    # for the same and only that reason — it is a supervised child of the
+    # application tree; no caller outside `GrappaWeb` invokes it.
+    exports: [Endpoint, PasskeyOrigin, SessionRevocationListener]
 
   @doc "Imports for `use GrappaWeb, :controller` — Phoenix.Controller + Plug.Conn + the JSON fallback."
   @spec controller() :: Macro.t()

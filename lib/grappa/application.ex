@@ -426,10 +426,20 @@ defmodule Grappa.Application do
   # caller that only needs the Repo-backed supervision tree shouldn't
   # be forced to also take on a side effect it never asked for — here,
   # binding the HTTP port a live release already owns).
-  @spec endpoint_child() :: [] | [GrappaWeb.Endpoint]
+  #
+  # The revocation listener rides WITH the Endpoint rather than standing on
+  # its own: it exists to close WebSockets, its teardown broadcast goes
+  # through `GrappaWeb.Endpoint`, and a node booted without one (the
+  # `Mix.Tasks.Grappa.Boot.start_app_silent/0` second BEAM) has no sockets to
+  # close. Started AFTER the Endpoint, so the transport supervisor exists
+  # before the first announcement can be translated.
+  @spec endpoint_child() :: [] | [GrappaWeb.Endpoint | {GrappaWeb.SessionRevocationListener, keyword()}]
   defp endpoint_child do
     if Application.get_env(:grappa, :start_endpoint, true) do
-      [GrappaWeb.Endpoint]
+      [
+        GrappaWeb.Endpoint,
+        {GrappaWeb.SessionRevocationListener, name: GrappaWeb.SessionRevocationListener}
+      ]
     else
       []
     end

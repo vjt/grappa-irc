@@ -146,6 +146,27 @@ defmodule Grappa.PubSub.Topic do
   def server_settings, do: "grappa:server_settings"
 
   @doc """
+  Builds the session-revocation fan-out topic.
+
+  Single fixed topic — every codepath that kills an `accounts_sessions`
+  row (revoke OR cascade-delete OR idle GC) announces the affected
+  subject here via `Grappa.Accounts.Revocations.announce/1`, and the
+  web-layer `GrappaWeb.SessionRevocationListener` translates each
+  announcement into the existing socket teardown.
+
+  Lives outside the user-rooted shape on purpose: the subject travels
+  in the PAYLOAD, not the topic. A per-subject topic would need the
+  listener to subscribe per connected subject — i.e. to track socket
+  lifecycle a second time, in parallel with `Grappa.WSPresence`. One
+  fixed topic with one subscriber keeps the listener stateless.
+
+  Excluded from `parse/1` / `valid?/1` like `ws_presence/1`: this is an
+  internal bridge, never subscribable by a WS client.
+  """
+  @spec session_revocations() :: t()
+  def session_revocations, do: "grappa:session_revocations"
+
+  @doc """
   Builds the WSPresence bridge topic.
 
   Internal grappa-side fan-out from the WS edge (`Grappa.WSPresence`)

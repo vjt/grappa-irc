@@ -31776,3 +31776,59 @@ on a flex child, ask whether the parent has a fixed height. If it does, you
 have not set a minimum — you have replaced one, and handed the algorithm
 permission to use yours as the target.
 
+
+## 2026-08-07 — bearer death and socket death become one fact
+
+**The invariant.** A subject's `accounts_sessions` rows and its live
+WebSockets die together. `GrappaWeb.UserSocket` authenticates once, at
+connect, and afterwards holds no tie to the row it authenticated against —
+so the teardown has to be *pushed* from wherever the row dies. That push
+used to be written out by hand at each call-site, which makes it a rule,
+and a rule is a thing that drifts. It had: most of the doors that kill a
+session row did not carry the line, including two that fire on a 60s timer
+with nobody driving them.
+
+**Shape.** The kill sites emit a domain event —
+`Grappa.Accounts.Revocations.announce/1` on
+`Grappa.PubSub.Topic.session_revocations/0`, carrying the subject's
+topic-label parts — and a supervised web-layer listener
+(`GrappaWeb.SessionRevocationListener`) translates it into the existing
+`UserSocket.disconnect_user_name/1`. The indirection is not ceremony:
+calling the socket from `Grappa.Accounts` is a context → web dependency
+`Boundary` refuses, for the same reason `Grappa.Operator` carries no web
+deps.
+
+**Why not a per-door line, and why not a re-check on inbound frames.**
+Repeating the call at each door is the shape that drifted; it also cannot
+help a door that runs in another BEAM. Re-validating in
+`GrappaChannel.handle_in/3` ties the guarantee to the client *sending*
+something, which is the wrong half of a duplex connection to hang it on.
+
+**Seven chokepoints, not seventeen doors.** Every write to
+`accounts_sessions` passes one of: the four revoke functions in
+`Grappa.Accounts` (which own the table), `Accounts.delete_user/1`,
+`Accounts.delete_expired_sessions/0`, and `Visitors.destroy_visitor/1` —
+already documented in its own source as *"the single hard-delete mechanic"*
+for visitors. The two timer reapers are covered without being touched,
+because they funnel through those. A door added later inherits the teardown
+by construction rather than by memory. That is the difference between a fix
+and one more thing to remember.
+
+**Granularity is per-subject, deliberately.** `UserSocket.id/1` is keyed by
+subject, so a revoke of *other* sessions (TOTP enrolment/disable, passkey
+mode change) also closes the acting device's socket. Its bearer is still
+valid and `phoenix.js` reconnects on a 1001 close, so the cost is a blip.
+Per-session granularity would mean re-keying `UserSocket.id/1` and teaching
+`Grappa.WSPresence` to carry `session_id`; it is left as an open, strictly
+additive question rather than a closed door.
+
+**Over-firing is the safe direction.** The in-transaction kill sites
+announce from inside the transaction, so a rollback or a `Repo.BusyRetry`
+replay can announce a revocation that never committed. That costs a
+reconnect. Announcing only after commit would push the call back out to the
+call-sites — the drift, restored. Under-firing is the failure that matters.
+
+**Two doors this cannot reach, and why.** `Accounts.reset_totp/1` and
+`reset_passkeys/1` run from mix tasks, i.e. from a second BEAM. The
+chokepoint fires there and is heard by nobody. That is not a missing line;
+it is the wrong lane, and it is fixed separately.
