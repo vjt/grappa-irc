@@ -11,11 +11,18 @@
 # /usr/local/www/cic symlink, and no nginx in the jail at all: the m42
 # HOST vhost proxies straight to the BEAM.
 #
-# `--outDir ../runtime/cicchetto-dist` aligns the jail with the Docker
-# substrate (`compose.yaml` bind-mounts `./runtime/cicchetto-dist:
-# /app/dist` so the same final path holds the bundle on host). The
-# shared path is what `Grappa.Cic.Bundle.@bundle_path` reads
-# unconditionally — both substrates, one server-side anchor.
+# `runtime/cicchetto-dist` aligns the jail with the Docker substrate
+# (`compose.yaml` bind-mounts it into the build oneshot so the same final
+# path holds the bundle on host). The shared path is what
+# `Grappa.Cic.Bundle.@bundle_path` reads unconditionally — both
+# substrates, one server-side anchor.
+#
+# #1020: vite does NOT write there directly. The BEAM serves that
+# directory per REQUEST, and `--emptyOutDir` wiped it at the START of the
+# build, so the SPA was unloadable for the whole build and stayed broken
+# if the build failed. The build now targets a staging sibling and
+# infra/lib/cic_dist.sh renames it into place — see that file for the
+# swap's failure window.
 
 set -eu
 
@@ -24,7 +31,11 @@ set -eu
 exec su -l grappa -c '
 set -eu
 cd /home/grappa/grappa/cicchetto
-mkdir -p ../runtime/cicchetto-dist
+# #1020 — build-beside-then-swap. Sourced (not executed) so the promote
+# runs in THIS shell, as grappa, with the same relative cwd the build uses.
+. ../infra/lib/cic_dist.sh
+served=../runtime/cicchetto-dist
+staged="$(cic_dist_staging "$served")"
 # #538/#652 — vite bakes GRAPPA_VERSION into <meta cicchetto-version>. Derive it
 # from the repo-root VERSION file via the POSIX version.sh (this jail runs
 # /bin/sh + npm, no bash/bun port). Single source of truth; same env channel every cic build
@@ -48,8 +59,9 @@ else
 	npm install >"$log" 2>&1 || { tail -20 "$log"; exit 1; }
 fi
 tail -3 "$log"
-npm run build -- --outDir ../runtime/cicchetto-dist --emptyOutDir >"$log" 2>&1 || { tail -30 "$log"; exit 1; }
+npm run build -- --outDir "$staged" --emptyOutDir >"$log" 2>&1 || { tail -30 "$log"; exit 1; }
 tail -8 "$log"
+cic_dist_promote "$served" "$staged"
 echo "--- runtime/cicchetto-dist contents ---"
-ls -la ../runtime/cicchetto-dist/
+ls -la "$served"/
 '

@@ -19,6 +19,17 @@ CIC_DIR="${REPO_ROOT}/cicchetto"
 OUT_DIR="${REPO_ROOT}/runtime/cicchetto-dist"
 GRAPPA_USER="${GRAPPA_USER:-grappa}"
 
+# #1020 — OUT_DIR is what the running BEAM serves, per request. Vite must not
+# write into it: it builds into a staging sibling and the shared lib renames
+# that into place afterwards. Sourced from the SCRIPT's own dir, not from
+# REPO_ROOT — the lib ships with this script, and the arg only names the
+# checkout the bundle is built FROM.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CIC_DIST_LIB="${SCRIPT_DIR}/../lib/cic_dist.sh"
+# shellcheck source=infra/lib/cic_dist.sh
+. "${CIC_DIST_LIB}"
+STAGE_DIR="$(cic_dist_staging "${OUT_DIR}")"
+
 # #538/#652 — vite bakes GRAPPA_VERSION into <meta cicchetto-version>. Derive it
 # from the repo-root VERSION file (the single source of truth) via version.sh; `sudo -u`
 # scrubs the env, so it is injected into the run_as_grappa command string below.
@@ -33,19 +44,22 @@ run_as_grappa() {
 	sudo -u "${GRAPPA_USER}" -H bash -c "export PATH=\"\$HOME/.local/bin:\$HOME/.asdf/shims:\$PATH\"; $1"
 }
 
-echo "[cic_build] bun install && bun run build (outDir=${OUT_DIR})"
+echo "[cic_build] bun install && bun run build (outDir=${STAGE_DIR} → ${OUT_DIR})"
 # Buffer output and only show it on failure — a clean build is noisy
 # (vite + tsc output) and the interesting signal is the exit code;
 # same pipefail-avoidance lesson as jail_cic_build.sh's header.
 log="$(mktemp)"
 trap 'rm -f "${log}"' EXIT
-if ! run_as_grappa "export GRAPPA_VERSION='${GRAPPA_VERSION}'; cd '${CIC_DIR}' && bun install && bun run build -- --outDir '${OUT_DIR}' --emptyOutDir" >"${log}" 2>&1; then
+if ! run_as_grappa "export GRAPPA_VERSION='${GRAPPA_VERSION}'; cd '${CIC_DIR}' && bun install && bun run build -- --outDir '${STAGE_DIR}' --emptyOutDir" >"${log}" 2>&1; then
 	echo "[cic_build] ERROR: build failed — output:" >&2
 	cat "${log}" >&2
 	exit 1
 fi
-# Vite's `emptyOutDir` wipes .gitkeep on every build. Restore the
-# tracked placeholder so a cold deploy leaves the worktree clean.
-run_as_grappa "touch '${OUT_DIR}/.gitkeep'"
+# Swap as grappa, like every other step here: the renames need write on
+# runtime/, and doing them as root would plant a root-owned .gitkeep inside a
+# grappa-owned tree. The tracked placeholder is planted by the promote itself
+# now, so the post-build `touch` this replaces is gone — it only ever existed
+# to undo the in-place wipe.
+run_as_grappa ". '${CIC_DIST_LIB}'; cic_dist_promote '${OUT_DIR}' '${STAGE_DIR}'"
 
 echo "[cic_build] done — ${OUT_DIR}"

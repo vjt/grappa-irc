@@ -704,13 +704,19 @@ cmd_update() {
 	}
 
 	substrate_cic() {
-		mkdir -p runtime/cicchetto-dist
+		# #1020 — build into a staging sibling and rename it in. The BEAM
+		# serves runtime/cicchetto-dist per request and vite empties its
+		# outDir first, so building in place blanked the SPA for the whole
+		# build — on a box that is UPDATING, i.e. one that is already live.
+		local cic_served="runtime/cicchetto-dist"
+		local cic_build_out
+		cic_build_out="$(cic_dist_docker_stage "$cic_served")"
 		# AFTER substrate_pull, so the bundle carries the version the box is
 		# moving TO, not the one it is on (the pull may have bumped VERSION).
 		export_cic_version
 		say "Rebuilding the cicchetto bundle"
-		"${COMPOSE[@]}" --profile prod run --rm cicchetto-build
-		touch runtime/cicchetto-dist/.gitkeep
+		CIC_BUILD_OUT="$cic_build_out" "${COMPOSE[@]}" --profile prod run --rm cicchetto-build
+		cic_dist_promote "$cic_served" "$cic_build_out"
 	}
 
 	substrate_migrate() {
@@ -745,6 +751,12 @@ EOF
 
 	# shellcheck source=infra/lib/deploy_common.sh
 	. "$REPO_ROOT/infra/lib/deploy_common.sh"
+	# #1020 build-beside-then-swap, used by substrate_cic above. Sourced HERE
+	# and not at the top of the file: only source mode builds a bundle (the
+	# release path ships a prebuilt image), so the get.sh mirror — which
+	# reproduces exactly what a checkout-less host sources — needs no new file.
+	# shellcheck source=infra/lib/cic_dist.sh
+	. "$REPO_ROOT/infra/lib/cic_dist.sh"
 	# Empty-array-safe expansion for bash 3.2 under `set -u`.
 	deploy_main ${libargs[@]+"${libargs[@]}"}
 }

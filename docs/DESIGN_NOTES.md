@@ -33326,3 +33326,63 @@ so the surfaced error is unforgeable proof the target survived cic's parser, the
 channel door and `Client.send_admin/2`. 423 and 447 stay unit-tested — the first
 needs a leaf with no `A:` line, the second a restricted-class user, and neither
 is reachable without reshaping the shared testnet for one spec.
+
+## 2026-08-07 — #1020: the cic build emptied the dist it was serving, so the build moved next door
+
+`--emptyOutDir` was never the defect. Vite refuses to clean an out-of-root
+`outDir` without explicit consent, and `outDir` is out of root by design (root
+is `cicchetto/`, the bundle lands in `runtime/cicchetto-dist` so Docker and the
+jail share one server-side anchor). The cleanup is *wanted*: vite emits
+content-hashed chunks, and without it every deploy accretes the previous
+bundle's assets forever and the dist stops being a truthful picture of what is
+served. **The timing was the defect.** Vite empties `outDir` BEFORE it writes,
+and `Grappa.Cic.Bundle.root/0` resolves that same directory PER REQUEST
+(`Plug.Static` + the SPA history-fallback), so every deploy blanked the SPA for
+the whole build — and a build that FAILED left it blanked, because `set -eu`
+walked away from an already-emptied tree.
+
+The fix is the shape `infra/packaging/build.sh` already had: build into a
+sibling nobody is serving, then rename it in. One implementation,
+`infra/lib/cic_dist.sh`, sourced by all three serving substrates — the jail's
+POSIX `/bin/sh` body, the native-Linux bash script, and the three compose
+launchers. `infra/packaging/build.sh` needs no change; it is the shape being
+generalised.
+
+**The swap has a window, and it is ENOENT rather than empty.** There is no
+portable two-directory exchange (`RENAME_EXCHANGE` is Linux-only and out of
+reach from `sh`), so the promote is two renames with the served path absent
+between them — two syscalls against the whole vite build it replaces. A client
+gets the old bundle or the new one, never a mix. Die mid-swap and both complete
+trees survive as `.prev` and `.next`; only a crash inside the microsecond gap
+leaves the served path missing, and re-running the build fixes it. A symlink
+flip WOULD have been atomic and was rejected for a concrete reason: the served
+path is TRACKED (`runtime/cicchetto-dist/.gitkeep`), and turning a tracked
+directory into a symlink is a type change git reports as dirt — the same class
+of dirty tree that once stalled a deploy's `git pull --ff-only` on a deleted
+`.gitkeep`.
+
+That `.gitkeep` moved from a repair to a property. Three scripts used to
+`touch` it back after the build because `emptyOutDir` ate it; the promote now
+plants it in the staged tree BEFORE the rename, so the tracked path is never
+absent at all rather than being restored shortly after it goes missing.
+
+**The Docker seam is a defaulted variable, on purpose.** The compose oneshot
+writes to whatever is bind-mounted at `/app/dist`, so the mount source became
+`${CIC_BUILD_OUT:-./runtime/cicchetto-dist}`. The deploy wrappers set it to the
+staging sibling and promote afterwards; the DEFAULT stays the served dir
+because a bare `compose --profile prod up` reaches the build through grappa's
+`depends_on` with nobody to promote — and there nothing is serving yet, so
+there is no window to protect. A second compose service would have been the
+alternative and was rejected: two build definitions is exactly the drift
+`cic_version_export_test.bats` exists to police.
+
+**What was proved and what was not.** The jail and native-Linux scripts are
+RUN in bats against a fake vite that empties its `outDir` first and records
+what the served directory holds at that instant — the assertion is on the
+timing, not on any string, and it reads MISSING on the parent commit. The
+Docker substrate has structure only (the compose mount pin, plus a scan that
+every launcher aims the build at `CIC_BUILD_OUT` and promotes): the build
+happens inside a container, so no bats can observe it. Nobody watched a real
+jail serve an empty dist during a build either — the window is read out of
+`--emptyOutDir` plus serve-at-request-time, and it is stated as such rather
+than dressed up as an incident.

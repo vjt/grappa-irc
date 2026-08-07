@@ -29,6 +29,8 @@ set -euo pipefail
 
 # shellcheck source=scripts/_lib.sh
 . "$(dirname "$0")/_lib.sh"
+# shellcheck source=infra/lib/cic_dist.sh
+. "$(dirname "$0")/../infra/lib/cic_dist.sh"
 
 # #364 docker S10: assert main-checkout + main-branch BEFORE the dist
 # rebuild swaps the on-disk bundle nginx serves. Pre-fix this script had
@@ -39,7 +41,11 @@ require_main_checkout "deploy-cic.sh"
 
 cd "$REPO_ROOT"
 
-mkdir -p runtime/cicchetto-dist
+# #1020 — build into a staging sibling, NOT into the dir the live BEAM is
+# serving. CIC_BUILD_OUT is scoped to the build command so the rest of this
+# script (and any later compose call) sees the normal mount.
+CIC_SERVED="runtime/cicchetto-dist"
+CIC_BUILD_OUT="$(cic_dist_docker_stage "$CIC_SERVED")"
 
 # #538 — derive the single-source version for the cic build. The
 # cicchetto-build container mounts only ./cicchetto, so it can't read the repo
@@ -47,11 +53,10 @@ mkdir -p runtime/cicchetto-dist
 GRAPPA_VERSION="$("$REPO_ROOT/infra/packaging/version.sh")"
 export GRAPPA_VERSION
 echo "Building cicchetto dist..."
-docker compose "${COMPOSE_ARGS[@]}" --profile prod run --rm cicchetto-build
-# Vite's `emptyOutDir` wipes .gitkeep on every build (the tracked
-# placeholder is bait for fresh-clone Docker auto-mkdir-as-root —
-# see .gitignore L44-46). Restore it so `git status` stays clean.
-touch runtime/cicchetto-dist/.gitkeep
+CIC_BUILD_OUT="$CIC_BUILD_OUT" docker compose "${COMPOSE_ARGS[@]}" --profile prod run --rm cicchetto-build
+# Swap the finished bundle in. The tracked .gitkeep is planted by the promote,
+# so the post-build `touch` that used to undo vite's wipe is gone.
+cic_dist_promote "$CIC_SERVED" "$CIC_BUILD_OUT"
 
 echo "Notifying grappa of new bundle hash..."
 # Container `curl` against loopback inside the grappa pod —

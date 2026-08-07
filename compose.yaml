@@ -183,7 +183,17 @@ services:
     volumes:
       - ./cicchetto:/app
       - ./runtime/bun-cache:/cache
-      - ./runtime/cicchetto-dist:/app/dist
+      # #1020 — vite empties `dist/` before it writes, and `./runtime/
+      # cicchetto-dist` is the dir the BEAM serves PER REQUEST, so pointing
+      # this mount at it made every deploy serve an empty SPA for the whole
+      # build. The deploy wrappers (scripts/deploy.sh, scripts/deploy-cic.sh,
+      # infra/docker/deploy.sh) set CIC_BUILD_OUT to a staging sibling and
+      # rename it into place afterwards — one env var rather than a second
+      # service, so there is still ONE build definition.
+      # The DEFAULT stays the served dir on purpose: it is what a bare
+      # `compose --profile prod up` uses via grappa's depends_on, and there
+      # nothing is serving yet — no live server, no window to protect.
+      - ${CIC_BUILD_OUT:-./runtime/cicchetto-dist}:/app/dist
     tmpfs:
       # UID/GID must track the `user:` field above — bun writes to
       # HOME=/tmp, so a hardcoded uid=1000 tmpfs while the process runs
