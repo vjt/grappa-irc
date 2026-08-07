@@ -138,43 +138,82 @@ function assertFirstRowVisible(g: MenuGeometry, label: string): void {
   expect(g.spaceAboveVar, `${label} — the JS-measured cap was never published`).not.toBe("");
 }
 
+// The discriminator has to be READABLE from the run's log, not merely
+// computed. Two exits, deliberately:
+//
+//   * a NODE-side `console.log` (this is after the `page.evaluate` returns —
+//     a log inside the browser context would never leave it). Verified
+//     against the `list` reporter: stdout from a PASSING test is printed, so
+//     the numbers arrive even on the green run, which is the run whose
+//     numbers settle whether #988's premise was real at all.
+//   * a `testInfo.attach`, because attachments survive into the HTML report
+//     and are not interleaved with 200 other lines of suite output.
+//
+// Both are called ONCE with every reading, from a `finally` — not per
+// iteration before its own assertion. Logging inside the loop meant the first
+// height to fail swallowed every later height's numbers, which is exactly
+// when they are wanted.
+async function reportReadings(
+  testInfo: import("@playwright/test").TestInfo,
+  label: string,
+  readings: { height: number; g: MenuGeometry }[],
+): Promise<void> {
+  if (readings.length === 0) return;
+  for (const { height, g } of readings) console.log(`#988 ${label} h=${height} ${JSON.stringify(g)}`);
+  await testInfo.attach(`issue988-geometry-${label}`, {
+    body: JSON.stringify(readings, null, 2),
+    contentType: "application/json",
+  });
+}
+
 test.setTimeout(120_000);
 
 test("@webkit #988 — the actions menu opens with `home` visible at every viewport height", async ({
   page,
-}) => {
+}, testInfo) => {
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
   // A channel window so the menu carries its widest row set (rooms + denoise
   // are selection-gated) — the tall menu #988 is about.
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
 
-  let sawOverflow = false;
-  for (const height of HEIGHTS) {
-    await page.setViewportSize({ width: WIDTH, height });
-    await openRailMenu(page);
-    const g = await measureMenu(page);
-    console.log(`#988 h=${height} ${JSON.stringify(g)}`);
-    assertFirstRowVisible(g, `#988 @${height}px`);
-    expect(g.firstRowLabel, "#988 — `home` must be the first row").toContain("home");
-    if (g.scrollHeight > g.clientHeight + 1) sawOverflow = true;
-    await page.keyboard.press("Escape");
-    await expect(page.locator(".rail-actions-menu")).toHaveCount(0, { timeout: 5_000 });
+  // MEASURE EVERY HEIGHT FIRST, assert afterwards. The two phases are split on
+  // purpose: this spec is a discriminator before it is a guard, and asserting
+  // inside the loop meant the first height to fail took the remaining heights'
+  // numbers down with it — losing the reading in the only run where it decides
+  // anything.
+  const readings: { height: number; g: MenuGeometry }[] = [];
+  try {
+    for (const height of HEIGHTS) {
+      await page.setViewportSize({ width: WIDTH, height });
+      await openRailMenu(page);
+      readings.push({ height, g: await measureMenu(page) });
+      await page.keyboard.press("Escape");
+      await expect(page.locator(".rail-actions-menu")).toHaveCount(0, { timeout: 5_000 });
+    }
+  } finally {
+    // Whatever was collected before a mid-loop throw still reaches the log.
+    await reportReadings(testInfo, "viewport-sweep", readings);
   }
 
-  // Without this the whole loop could pass on a menu that always fits, which
+  for (const { height, g } of readings) {
+    assertFirstRowVisible(g, `#988 @${height}px`);
+    expect(g.firstRowLabel, `#988 @${height}px — \`home\` must be the first row`).toContain("home");
+  }
+
+  // Without this the whole sweep could pass on a menu that always fits, which
   // asserts nothing about the case #988 is about. If it ever trips, the menu
   // stopped being able to overflow at 360px and the heights need revisiting —
   // not the assertion.
   expect(
-    sawOverflow,
+    readings.some(({ g }) => g.scrollHeight > g.clientHeight + 1),
     "#988 — no viewport in the set made the menu overflow; the capped case was never exercised",
   ).toBe(true);
 });
 
 test("@webkit #988 — `home` stays visible at XXL text with the viewport at its shortest", async ({
   page,
-}) => {
+}, testInfo) => {
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
@@ -197,7 +236,9 @@ test("@webkit #988 — `home` stays visible at XXL text with the viewport at its
     await page.setViewportSize({ width: WIDTH, height: 360 });
     await openRailMenu(page);
     const g = await measureMenu(page);
-    console.log(`#988 XXL h=360 ${JSON.stringify(g)}`);
+    // Reported BEFORE the assertion, for the same reason the sweep defers its
+    // own: the XXL reading is wanted most on the run where it fails.
+    await reportReadings(testInfo, "xxl-360", [{ height: 360, g }]);
     assertFirstRowVisible(g, "#988 XXL @360px");
   } finally {
     // Reset, or every later spec in this browser inherits XXL — the
