@@ -1339,6 +1339,41 @@ the matching pre-migration SHA and cold-deploy it before starting. The
 `schema_migrations` head printed in step 3 is the authoritative check
 that the DB and the target code SHA agree on the migration set.
 
+## Letting a locked-out visitor back in (#982)
+
+A visitor has no password — the browser session IS the identity. If the
+device dies, the profile is wiped, or the cookie goes away, the account
+is unreachable and there is nothing to "reset". The recovery verb is:
+
+```
+POST /admin/visitors/:id/share-token      # admin bearer, :admin_authn
+→ 200 {"token": "...", "expires_at": "2026-08-07T12:10:00Z"}
+```
+
+Hand the person `https://<host>/#/share/<token>`; consuming it mints
+them a fresh session for the SAME visitor identity.
+
+**The link is a bearer credential for that visitor's session.** Anyone
+holding it within the window becomes that visitor — there is no second
+factor, because the identity has no first one. Therefore:
+
+* **Send it over a private channel.** A pasted link in a public
+  channel, a shared ticket, or an unencrypted mail thread is a handed-
+  over account. Prefer the same channel you would use for a password.
+* **It expires in 10 minutes and redeems exactly once.** Both limits
+  are deliberate and must not be widened for convenience — they are
+  what keep a leaked link from becoming a standing key. If the person
+  misses the window, mint another one; that is cheaper than a longer
+  TTL.
+* **Every mint is recorded** as a `visitor_share_token_minted` admin
+  event naming the admin who pressed it, visible in the console's
+  Events tab, with telemetry distinct from the visitor's own share
+  mint. The capability is abusable by an admin by construction (see
+  `docs/DESIGN_NOTES.md`); the audit trail is the mitigation, so do
+  not expect the mint to be deniable.
+* **Incognito visitors are refused (403).** An incognito session is
+  deliberately non-portable (#363); there is nothing to restore.
+
 ## CSP / security headers (BEAM-emitted, NOT nginx — #485)
 
 The Content-Security-Policy + sibling security headers

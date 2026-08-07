@@ -626,6 +626,26 @@ export function narrowAdminEvent(raw: unknown): WireAdminEvent | null {
         visitor_nick: r.visitor_nick as string | null,
         at: r.at as string,
       };
+    case "visitor_share_token_minted":
+      // #982 — the actor is NON-nullable on this one, unlike
+      // visitor_deleted: the verb is only reachable behind
+      // `:admin_authn`, so an unattributed grant is a malformed event
+      // and must narrow to null rather than render as anonymous.
+      if (
+        typeof r.visitor_id !== "string" ||
+        !isNullableString(r.visitor_nick) ||
+        typeof r.actor_user_id !== "string" ||
+        typeof r.actor_user_name !== "string"
+      )
+        return null;
+      return {
+        kind: "visitor_share_token_minted",
+        visitor_id: r.visitor_id,
+        visitor_nick: r.visitor_nick as string | null,
+        actor_user_id: r.actor_user_id,
+        actor_user_name: r.actor_user_name,
+        at: r.at as string,
+      };
     case "reaper_swept":
       if (typeof r.count !== "number") return null;
       return { kind: "reaper_swept", count: r.count, at: r.at as string };

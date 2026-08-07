@@ -52,6 +52,11 @@ function renderEvent(ev: WireAdminEvent): string {
       return `${visitorLabel(ev.visitor_nick, ev.visitor_id)} deleted${actorSuffix(ev.actor_user_name)}`;
     case "visitor_reaped":
       return `${visitorLabel(ev.visitor_nick, ev.visitor_id)} reaped (TTL expired)`;
+    case "visitor_share_token_minted":
+      // #982 — the actor is not optional here (see the server-side
+      // constructor), so it is named outright rather than through
+      // `actorSuffix`, which renders nothing when the name is absent.
+      return `share link minted for ${visitorLabel(ev.visitor_nick, ev.visitor_id)} by ${ev.actor_user_name}`;
     case "reaper_swept":
       return `reaper swept ${ev.count} visitor(s)`;
     case "upload_reaped":

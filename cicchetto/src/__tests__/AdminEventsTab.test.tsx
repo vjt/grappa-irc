@@ -112,6 +112,37 @@ describe("AdminEventsTab — per-kind rendering (closed-union exhaustiveness)", 
     expect(row.textContent).toContain("S`grappa deleted by vjt");
   });
 
+  it("visitor_share_token_minted names the visitor and the acting admin (#982)", () => {
+    events = [
+      sample({
+        kind: "visitor_share_token_minted",
+        visitor_id: "v-uuid",
+        visitor_nick: "S`grappa",
+        actor_user_id: "u-uuid",
+        actor_user_name: "vjt",
+      } as WireAdminEvent),
+    ];
+    render(() => <AdminEventsTab />);
+    const row = screen.getByTestId("admin-event-visitor_share_token_minted");
+    expect(row.textContent).toContain("share link minted for S`grappa by vjt");
+  });
+
+  it("visitor_share_token_minted falls back to the id when the nick is absent", () => {
+    events = [
+      sample({
+        kind: "visitor_share_token_minted",
+        visitor_id: "v-uuid",
+        visitor_nick: null,
+        actor_user_id: "u-uuid",
+        actor_user_name: "vjt",
+      } as WireAdminEvent),
+    ];
+    render(() => <AdminEventsTab />);
+    const row = screen.getByTestId("admin-event-visitor_share_token_minted");
+    expect(row.textContent).toContain("v-uuid");
+    expect(row.textContent).toContain("by vjt");
+  });
+
   it("visitor_deleted without actor (system path)", () => {
     events = [
       sample({

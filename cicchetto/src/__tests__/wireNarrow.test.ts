@@ -749,6 +749,30 @@ describe("narrowAdminEvent (REV-G H24)", () => {
     });
   });
 
+  describe("kind: visitor_share_token_minted (#982)", () => {
+    const valid = {
+      kind: "visitor_share_token_minted",
+      visitor_id: "uuid-1",
+      visitor_nick: "alice",
+      actor_user_id: "uuid-op",
+      actor_user_name: "admin",
+      at: "2026-08-07T12:00:00Z",
+    };
+    it("accepts the minted grant", () => {
+      expect(narrowAdminEvent(valid)).toEqual(valid);
+    });
+    it("accepts a credential-less identity (null nick)", () => {
+      const ev = { ...valid, visitor_nick: null };
+      expect(narrowAdminEvent(ev)).toEqual(ev);
+    });
+    it("rejects a missing actor — an unattributed grant is malformed here", () => {
+      // Unlike visitor_deleted, this event has no system path. Rendering
+      // it anonymously would hide exactly what it exists to show.
+      expect(narrowAdminEvent({ ...valid, actor_user_id: null })).toBeNull();
+      expect(narrowAdminEvent({ ...valid, actor_user_name: null })).toBeNull();
+    });
+  });
+
   describe("kind: reaper_swept / uploads_swept", () => {
     it("accepts reaper_swept", () => {
       const ev = { kind: "reaper_swept", count: 5, at: "2026-05-22T12:00:00Z" };

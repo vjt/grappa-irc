@@ -32782,3 +32782,78 @@ about width still restart the pool at 5 and 10 themselves. The ceiling
 correspondingly stops binding here: 14 tests × ~80 migrations per run becomes
 14 × 3, and the file drops from 8.6s to 0.4s. The undiagnosed replay red is
 still undiagnosed — it simply no longer has a home in this test.
+## 2026-08-07 — #982: an admin door that mints an identity, and why that was accepted
+
+`POST /admin/visitors/:id/share-token` lets an admin mint a share link
+that grants a session for someone else's visitor identity. Stated
+plainly: **an operator can become any visitor.** That is not an
+oversight in the design — it is the design, accepted explicitly by the
+project owner, and this entry exists so the next reader finds the
+reasoning instead of the capability.
+
+**Why it is worth it.** A visitor has no password; the browser session
+IS the identity. There is no credential to re-issue, no email to send a
+reset to, no second factor to fall back on. When the device dies or the
+profile is wiped, the account is simply unreachable, and the only
+operator tool before this was `DELETE /admin/visitors/:id` — which
+throws the session away rather than returning it. The alternative to an
+abusable recovery path is no recovery path, and for a passwordless
+identity that is the strictly worse trade. The owner weighed it and
+took the capability.
+
+**What the code owes in exchange is visibility, not prevention.** Every
+mint records a `:visitor_share_token_minted` admin event naming the
+acting admin, and emits `[:grappa, :admin, :visitor, :share_token,
+:minted]` — deliberately NOT folded into the visitor-side
+`[:grappa, :visitor, :share_token, :minted]`, because a shared event
+makes "did an operator do this?" unanswerable from telemetry, which is
+the only question the audit surface is for. The event's actor fields
+are the sole NON-nullable ones in `Grappa.AdminEvents.Wire`: every
+other actor-bearing event has a legitimate system path (the reaper,
+`bin/grappa`), this one has none, so `nil` is not "the system did it",
+it is an unattributed grant — the exact thing the event exists to
+prevent. The constructor's guard refuses it rather than recording it
+anonymously, and cic's narrower drops the malformed shape to `null`.
+
+**The TTL and the one-shot were not widened.** Ten minutes and single
+use are what stop a leaked link from being a standing key, and the
+admin door makes leakage *more* likely, not less: the link now travels
+to a third party over a channel the server cannot see. Operator
+guidance is in `docs/OPERATIONS.md`.
+
+**One mint path, one redeem path.** Both doors sign through the new
+`GrappaWeb.ShareToken` (salt, TTL, `mint/1`, `verify/1`), and
+`POST /auth/share/consume` is untouched. A second `Phoenix.Token.sign`
+site carrying its own copy of the salt would fail in the worst
+direction — the mint keeps returning 200 while consume rejects, so the
+operator hands out a dead link and the locked-out visitor stays locked
+out, with no error anywhere to read. The controller-level `salt/0` +
+`max_age_seconds/0` accessors that preceded this had zero callers; the
+tests re-declared the literals instead, which is the drift the shared
+module removes.
+
+**The incognito refusal is repeated, not inherited.** `%Visitor{incognito:
+true}` gets 403 at BOTH doors (#363). A gate applied at only one of two
+callers is how a product decision gets undone through the back entrance,
+so the admin action re-states it rather than assuming the visitor-side
+check covers the surface.
+
+### Side effect: the representative-nick derivation had to stop being copied
+
+The event carries `visitor_nick` so the console names a person rather
+than a UUID. That label — the identity-anchor credential's nick — was
+already derived inline in three places (`Grappa.Operator`,
+`Grappa.Visitors.Reaper`, `Grappa.Themes`), so a fourth caller forced
+the extraction: `Grappa.Networks.Credentials.representative_visitor_nick/1`,
+now used by all four.
+
+It lives in `Credentials` rather than `Visitors` for a reason that is
+structural, not stylistic. #211 phase 7 moved the nick off the visitor
+row onto the per-network credential, so the credential context owns it —
+and, decisively, `Grappa.Visitors` already deps on `Grappa.Themes`, so a
+helper placed in `Visitors` could never be reached from `Themes` without
+inverting that edge into a Boundary cycle. `Grappa.Networks` is the one
+boundary all four callers already depend on. `Themes` keeps its own
+absent-nick handling (leave the changeset alone, so the wire falls back
+to the guest label) while the two events render `nil` as the id: shared
+derivation, per-caller consequence — the verb reused, not the noun.

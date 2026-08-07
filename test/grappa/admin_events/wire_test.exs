@@ -133,6 +133,34 @@ defmodule Grappa.AdminEvents.WireTest do
     end
   end
 
+  describe "visitor_share_token_minted/4 (#982)" do
+    test "renders with the acting admin" do
+      event = Wire.visitor_share_token_minted("v-uuid", "S`grappa", "u-uuid", "vjt")
+
+      assert event.kind == :visitor_share_token_minted
+      assert event.visitor_id == "v-uuid"
+      assert event.visitor_nick == "S`grappa"
+      assert event.actor_user_id == "u-uuid"
+      assert event.actor_user_name == "vjt"
+    end
+
+    test "a credential-less identity still records, with a nil nick" do
+      event = Wire.visitor_share_token_minted("v-uuid", nil, "u-uuid", "vjt")
+      assert event.visitor_nick == nil
+    end
+
+    test "refuses a nil actor — there is no system path to this verb" do
+      # Unlike `visitor_deleted/4`, which the reaper and `bin/grappa`
+      # also drive, this event can ONLY originate behind `:admin_authn`.
+      # Accepting `nil` would let an unattributed grant look legitimate
+      # in the console, which is the one thing this event exists to
+      # prevent.
+      assert_raise FunctionClauseError, fn ->
+        Wire.visitor_share_token_minted("v-uuid", "S`grappa", nil, nil)
+      end
+    end
+  end
+
   describe "visitor_reaped/2 + reaper_swept/1" do
     test "visitor_reaped" do
       event = Wire.visitor_reaped("v-uuid", "nick")

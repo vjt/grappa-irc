@@ -23,12 +23,40 @@ defmodule GrappaWeb.Admin.VisitorsController do
 
   Returns `204 No Content` on success; `404 not_found` on unknown id
   (typed via `FallbackController`).
+
+  ## POST /admin/visitors/:id/share-token (#982) — the let-them-back-in verb
+
+  A visitor has no password: the browser session IS the identity. Lose
+  the device, wipe the profile, drop the cookie, and the account is
+  unreachable — the only operator tool before this was `DELETE`, which
+  throws the session away rather than returning it.
+
+  This mints the SAME token `POST /me/share-token` mints, through the
+  same `GrappaWeb.ShareToken`, redeemed by the same unchanged
+  `POST /auth/share/consume`. The operator hands the resulting link to
+  the person who lost access.
+
+  **The capability is abusable by an admin and that was accepted
+  deliberately** by the project owner, on the grounds that a
+  passwordless identity has no other recovery path (issue #982; the
+  reasoning is in `docs/DESIGN_NOTES.md`). What this code owes in
+  return is making the abuse VISIBLE, not preventing it: every mint
+  records a `:visitor_share_token_minted` admin event naming the
+  acting admin, and emits telemetry distinct from the visitor-side
+  mint so "did an operator do this?" stays answerable.
+
+  Incognito visitors are refused 403, exactly as the visitor-side mint
+  refuses them (#363). Returns `200` + `{token, expires_at}`;
+  `403 forbidden` for incognito; `404 not_found` for an unknown id.
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Operator, Visitors}
-  alias Grappa.Visitors.AdminWire
+  alias Grappa.{AdminEvents, Operator, Visitors}
+  alias Grappa.AdminEvents.Wire, as: EventsWire
+  alias Grappa.Networks.Credentials
+  alias Grappa.Visitors.{AdminWire, Visitor}
   alias GrappaWeb.Admin.AuthPlug
+  alias GrappaWeb.ShareToken
 
   @doc """
   List every visitor row joined to its live `Session.Server`
@@ -56,4 +84,59 @@ defmodule GrappaWeb.Admin.VisitorsController do
       send_resp(conn, :no_content, "")
     end
   end
+
+  @doc """
+  Mint a share link for a visitor who can no longer authenticate as
+  themselves (#982). Returns `200` + `{token, expires_at}`; wrapping it
+  into `https://<host>/#/share/<token>` stays the client's job, as on
+  the visitor-side mint.
+
+  Refuses an incognito visitor with 403 (#363) and an unknown id with
+  404, the same 404 the `DELETE` verb returns.
+  """
+  @spec share_token(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :not_found | :forbidden}
+  def share_token(conn, %{"id" => id}) when is_binary(id) do
+    with {:ok, visitor} <- fetch_visitor(id),
+         :ok <- refuse_incognito(visitor) do
+      {token, expires_at} = ShareToken.mint(visitor.id)
+      {actor_id, actor_name} = AuthPlug.actor_from_conn(conn)
+
+      # Distinct from the visitor-side `[:grappa, :visitor, :share_token,
+      # :minted]` on purpose: folding both into one event would make
+      # "was this grant operator-issued?" unanswerable from telemetry.
+      :telemetry.execute(
+        [:grappa, :admin, :visitor, :share_token, :minted],
+        %{count: 1},
+        %{visitor_id: visitor.id, actor_user_id: actor_id}
+      )
+
+      AdminEvents.record(
+        EventsWire.visitor_share_token_minted(
+          visitor.id,
+          Credentials.representative_visitor_nick(visitor.id),
+          actor_id,
+          actor_name
+        )
+      )
+
+      json(conn, %{token: token, expires_at: DateTime.to_iso8601(expires_at)})
+    end
+  end
+
+  @spec fetch_visitor(Ecto.UUID.t()) :: {:ok, Visitor.t()} | {:error, :not_found}
+  defp fetch_visitor(id) do
+    case Visitors.get(id) do
+      %Visitor{} = visitor -> {:ok, visitor}
+      nil -> {:error, :not_found}
+    end
+  end
+
+  # #363 — an incognito session is deliberately non-portable, and the
+  # visitor-side mint closes this door already. Refusing in only ONE of
+  # the two doors would undo a product decision through the back
+  # entrance, so the gate is repeated per caller rather than assumed.
+  @spec refuse_incognito(Visitor.t()) :: :ok | {:error, :forbidden}
+  defp refuse_incognito(%Visitor{incognito: true}), do: {:error, :forbidden}
+  defp refuse_incognito(%Visitor{}), do: :ok
 end

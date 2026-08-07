@@ -117,6 +117,10 @@ defmodule GrappaWeb.Router do
     get "/me", MeController, :index
     get "/visitors", VisitorsController, :index
     delete "/visitors/:id", VisitorsController, :delete
+    # #982 — recovery door for a locked-out visitor. Mints the SAME
+    # token `POST /me/share-token` does; `/auth/share/consume` stays the
+    # only redeem surface.
+    post "/visitors/:id/share-token", VisitorsController, :share_token
     get "/sessions", SessionsController, :index
     post "/sessions/:id/disconnect", SessionsController, :disconnect
     # #269 — Reconnect half of the admin Visitors-tab toggle (visitor-only).

@@ -32,6 +32,11 @@ defmodule Grappa.AdminEvents.Wire do
   system-initiated events (`bin/grappa` rpc-eval verbs, scheduled
   reaper sweeps). Cic renders "by <name>" only when both are set.
 
+  `:visitor_share_token_minted` (#982) is the one exception: its actor
+  fields are non-nullable, because the verb is reachable ONLY behind
+  `:admin_authn` and an unattributed session grant is precisely what
+  the event exists to surface.
+
   Admission-side telemetry events (`:circuit_open`, `:circuit_close`,
   `:capacity_reject`) DO NOT carry actor attribution — they fire
   inside admission-layer modules with no controller-side conn in
@@ -50,6 +55,7 @@ defmodule Grappa.AdminEvents.Wire do
           | :capacity_reject
           | :visitor_deleted
           | :visitor_reaped
+          | :visitor_share_token_minted
           | :reaper_swept
           | :upload_reaped
           | :uploads_swept
@@ -113,6 +119,20 @@ defmodule Grappa.AdminEvents.Wire do
           kind: :visitor_reaped,
           visitor_id: String.t(),
           visitor_nick: String.t() | nil,
+          at: String.t()
+        }
+
+  @typedoc """
+  #982 — an admin minted a share link that grants a session for someone
+  else's visitor identity. The actor fields are NON-nullable here, unlike
+  every other actor-bearing event: there is no system path to this verb.
+  """
+  @type visitor_share_token_minted_event :: %{
+          kind: :visitor_share_token_minted,
+          visitor_id: String.t(),
+          visitor_nick: String.t() | nil,
+          actor_user_id: String.t(),
+          actor_user_name: String.t(),
           at: String.t()
         }
 
@@ -417,6 +437,7 @@ defmodule Grappa.AdminEvents.Wire do
           | capacity_reject_event()
           | visitor_deleted_event()
           | visitor_reaped_event()
+          | visitor_share_token_minted_event()
           | reaper_swept_event()
           | upload_reaped_event()
           | uploads_swept_event()
@@ -509,6 +530,28 @@ defmodule Grappa.AdminEvents.Wire do
 
     %{
       kind: :visitor_deleted,
+      visitor_id: visitor_id,
+      visitor_nick: visitor_nick,
+      actor_user_id: actor_user_id,
+      actor_user_name: actor_user_name,
+      at: now()
+    }
+  end
+
+  @doc false
+  @spec visitor_share_token_minted(String.t(), String.t() | nil, String.t(), String.t()) ::
+          visitor_share_token_minted_event()
+  def visitor_share_token_minted(visitor_id, visitor_nick, actor_user_id, actor_user_name)
+      when is_binary(visitor_id) and (is_binary(visitor_nick) or is_nil(visitor_nick)) and
+             is_binary(actor_user_id) and is_binary(actor_user_name) do
+    # Deliberately NOT `validate_actor/2`: that helper permits the
+    # both-nil system shape, which is right for events the reaper and
+    # `bin/grappa` also raise. This verb exists only behind
+    # `:admin_authn`, so a nil actor is not a system path — it is an
+    # unattributed session grant, which is the single thing this event
+    # was added to make impossible to miss. The guard refuses it.
+    %{
+      kind: :visitor_share_token_minted,
       visitor_id: visitor_id,
       visitor_nick: visitor_nick,
       actor_user_id: actor_user_id,
