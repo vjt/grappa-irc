@@ -51,6 +51,41 @@ async function openThemesGalleryDesktop(page: PWPage): Promise<void> {
   await expect(page.getByTestId("theme-gallery")).toBeVisible({ timeout: 5_000 });
 }
 
+// Mobile route to the same gallery. The members-sidebar hamburger (which hosts
+// the settings cog, the path to themes since #299) is channel-scoped, so a
+// channel has to be selected first — mirror of the gallery consumer spec. #299
+// removed the footer 🎨 launcher; rail launcher menu (#500) → cog → themes nav
+// row is the path now.
+async function openThemesGalleryMobile(page: PWPage): Promise<void> {
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
+  await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).toBeVisible();
+
+  await page.getByLabel(/open members sidebar/i).tap();
+  await expect(page.locator(".shell-members.open")).toBeVisible({ timeout: 5_000 });
+  await openRailMenu(page);
+  await page.locator(".rail-actions-menu [data-testid='action-cluster-cog']").tap();
+  await expect(page.locator(".shell-members.open")).toHaveCount(0, { timeout: 5_000 });
+  await page.getByTestId("themes-settings-entry").tap();
+  await expect(page.getByTestId("theme-gallery")).toBeVisible({ timeout: 5_000 });
+}
+
+// #963 — the font <select>'s computed colour, plus the computed colour of the
+// name <input> beside it as the ORACLE. Both are read from the LIVE cascade:
+// the name field is an <input>, so the global form-control rule already gives
+// it `color: var(--fg)`, and the select must resolve to the same value from
+// that same rule. Never a literal — a hardcoded expected colour would pass on
+// a theme whose `--fg` happened to be black, which is the exact confusion this
+// bug is made of.
+function readEditorControlColors(page: PWPage): Promise<{ select: string; input: string }> {
+  return page.evaluate(() => {
+    const read = (id: string) => {
+      const el = document.querySelector(`[data-testid="${id}"]`);
+      return el ? getComputedStyle(el).color : "";
+    };
+    return { select: read("theme-editor-font"), input: read("theme-editor-name") };
+  });
+}
+
 test.describe("#75 — theme editor (producer path)", () => {
   test("new theme: live preview + save persists across reload via the server", async ({
     page,
@@ -105,23 +140,7 @@ test.describe("#75 — theme editor (producer path)", () => {
 
   test("@webkit editor opens + live-previews + cancels on mobile", async ({ page }) => {
     await loginAs(page, getSeededVjt());
-    // The mobile members-sidebar hamburger (which hosts the settings cog,
-    // the path to themes since #299) is channel-scoped — select a channel
-    // first (mirror the gallery consumer spec).
-    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
-    await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).toBeVisible();
-
-    // Mobile: reach the themes sub-page via the rail launcher menu (#500) → cog
-    // (settings) → themes nav row. (#299 removed the footer 🎨 launcher; the
-    // cog is the path now.)
-    await page.getByLabel(/open members sidebar/i).tap();
-    const drawer = page.locator(".shell-members.open");
-    await expect(drawer).toBeVisible({ timeout: 5_000 });
-    await openRailMenu(page);
-    await page.locator(".rail-actions-menu [data-testid='action-cluster-cog']").tap();
-    await expect(page.locator(".shell-members.open")).toHaveCount(0, { timeout: 5_000 });
-    await page.getByTestId("themes-settings-entry").tap();
-    await expect(page.getByTestId("theme-gallery")).toBeVisible({ timeout: 5_000 });
+    await openThemesGalleryMobile(page);
 
     const accentPreOpen = await readAccent(page);
     await page.getByTestId("theme-new").tap();
@@ -138,10 +157,15 @@ test.describe("#75 — theme editor (producer path)", () => {
   // #963 — a <select> does NOT inherit color: the UA paints it `fieldtext`
   // (black), which on a dark theme is black-on-dark. jsdom is blind to this
   // (no UA stylesheet, no computed cascade), so the assertion has to run in a
-  // real engine. BOTH sides are read from the LIVE cascade — never a literal:
-  // the name field is an <input>, so the global form-control rule already
-  // gives it `color: var(--fg)`; the select must resolve to that same
-  // computed color, from that same rule.
+  // real engine.
+  //
+  // It runs on BOTH engines, as a tagged/untagged PAIR, because the two
+  // Playwright projects PARTITION the suite: chromium takes `grepInvert:
+  // /@webkit/`, webkit-iphone-15 takes `grep: /@webkit/`, so a single test can
+  // only ever reach one of them. A defect whose whole mechanism is a UA
+  // default (`fieldtext`) has to be measured on the UA that matters most for
+  // cic — Safari on iOS — and not inferred from Chrome. Same shape as
+  // `issue962-settings-drawer-row-squash.spec.ts`.
   test("font select takes its color from the control rule, like a sibling input", async ({
     page,
   }) => {
@@ -151,13 +175,7 @@ test.describe("#75 — theme editor (producer path)", () => {
     await page.getByTestId("theme-new").click();
     await expect(page.getByTestId("theme-editor")).toBeVisible({ timeout: 5_000 });
 
-    const painted = await page.evaluate(() => {
-      const read = (id: string) => {
-        const el = document.querySelector(`[data-testid="${id}"]`);
-        return el ? getComputedStyle(el).color : "";
-      };
-      return { select: read("theme-editor-font"), input: read("theme-editor-name") };
-    });
+    const painted = await readEditorControlColors(page);
 
     // Guard the oracle: an empty/absent input color would make the equality
     // vacuous.
@@ -165,6 +183,23 @@ test.describe("#75 — theme editor (producer path)", () => {
     expect(painted.select).toBe(painted.input);
 
     await page.getByTestId("theme-editor-cancel-btn").click();
+  });
+
+  test("@webkit #963 — font select takes its color from the control rule (iPhone)", async ({
+    page,
+  }) => {
+    await loginAs(page, getSeededVjt());
+    await openThemesGalleryMobile(page);
+
+    await page.getByTestId("theme-new").tap();
+    await expect(page.getByTestId("theme-editor")).toBeVisible({ timeout: 5_000 });
+
+    const painted = await readEditorControlColors(page);
+
+    expect(painted.input).not.toBe("");
+    expect(painted.select).toBe(painted.input);
+
+    await page.getByTestId("theme-editor-cancel-btn").tap();
   });
 
   test("self-hosted font applies live from same-origin /fonts (no CDN)", async ({ page }) => {
