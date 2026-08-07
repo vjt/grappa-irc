@@ -2555,7 +2555,97 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "inbound peer NOTICE to own nick opens a server-side query window" do
+    # #546 — REVERSED. Until now an inbound peer NOTICE minted the query
+    # window (UX-6-L / #422 Option B). Azzurra's welcome notice is sent from
+    # a plain USER, so every operator got a tab on connect. irssi/HexChat put
+    # a notice in the status window unless the query is already open; morph +
+    # Sonic settled on that rule (#it-opers, 2026-07-30).
+    #
+    # The refute needs a BARRIER or it is vacuous — a `refute_receive` alone
+    # would pass on a session that never processed the line at all. So the
+    # positive half comes first: the row must ARRIVE on the `$server` window.
+    # Only then is "no query window" a statement about routing.
+    test "#546 inbound peer NOTICE routes to $server and opens NO query window" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.channel(user.name, network.slug, "$server")
+        )
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      IRCServer.feed(server, ":bob!~b@host NOTICE vjt :ping\r\n")
+
+      # Barrier: the notice landed, and it landed on `$server`.
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :message,
+                         message: %{kind: :notice, sender: "bob", body: "ping", channel: "$server"}
+                       }
+                     },
+                     2_000
+
+      # ...and minted nothing: no `query_windows_list` broadcast, no DB row.
+      refute_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :query_windows_list}
+                     },
+                     300
+
+      refute QueryWindows.open?({:user, user.id}, network.id, "bob")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # #546, the other arm: an ALREADY-OPEN query window keeps the notice.
+    # This is the half that makes the rule irssi-shaped rather than a blanket
+    # "notices go to status" — and it is the arm `open_query_or_server/2`
+    # already implemented for services since #400.
+    test "#546 inbound peer NOTICE lands in the peer's window when it is already open" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
+
+      {:ok, _} = QueryWindows.open({:user, user.id}, network.id, "bob", user.name)
+
+      :ok =
+        Phoenix.PubSub.subscribe(
+          Grappa.PubSub,
+          Topic.channel(user.name, network.slug, "bob")
+        )
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      IRCServer.feed(server, ":bob!~b@host NOTICE vjt :ping\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :message,
+                         message: %{kind: :notice, sender: "bob", body: "ping", channel: "bob"}
+                       }
+                     },
+                     2_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # #546 regression the issue called out as the one concrete casualty: the
+    # "CTCP VERSION query → grappa X" visibility row. It does NOT ride the
+    # NOTICE door at all — it is emitted by the inbound-PRIVMSG CTCP arm,
+    # persisted at `channel = own_nick` with `dm_with = sender`, and the
+    # auto-open keys off `dm_with || channel` (#422). So it survives the
+    # reversal untouched. Pinned here because "it still works" is a claim
+    # about a path #546 does not visit, and nobody should have to re-derive
+    # that from the routing table six months from now.
+    test "#546 a peer CTCP VERSION query still opens the peer's query window" do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
 
@@ -2564,7 +2654,7 @@ defmodule Grappa.Session.ServerTest do
       pid = start_session_for(user, network)
       :ok = await_handshake(server)
 
-      IRCServer.feed(server, ":bob!~b@host NOTICE vjt :ping\r\n")
+      IRCServer.feed(server, ":bob!~b@host PRIVMSG vjt :\x01VERSION\x01\r\n")
 
       net_id = network.id
 
@@ -2572,7 +2662,7 @@ defmodule Grappa.Session.ServerTest do
                        event: "event",
                        payload: %{kind: :query_windows_list, windows: %{^net_id => entries}}
                      },
-                     1_000
+                     2_000
 
       assert Enum.any?(entries, &(&1.target_nick == "bob"))
       assert QueryWindows.open?({:user, user.id}, net_id, "bob")

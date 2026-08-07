@@ -42,9 +42,11 @@ defmodule Grappa.IRC.CTCP do
   this asks the complement: "is this protocol rather than something
   somebody said". A CTCP reply (`\x01PING 1234\x01`, `\x01VERSION …\x01`)
   arrives as a NOTICE from a peer's nick and would otherwise be routed
-  like any peer NOTICE — persisted under that peer and minting a query
-  window for them, with a row of control characters in it. Pinging
-  somebody would leave a tab open with them.
+  like any peer NOTICE. When that meant "persist under the peer and mint
+  a query window", pinging somebody left a tab open with them holding a
+  row of control characters. #546 removed the minting, but not the
+  reason for this predicate: a peer the operator has a query OPEN with
+  would still get the raw `\x01…\x01` filed into that conversation.
 
   Lenient on the closing `\x01` for the same reason `action?/1` is: the
   trailing delimiter is optional and clients omit it.

@@ -723,6 +723,14 @@ moduleRoot(() => {
             // (delivered via query_windows_list); cic only re-keys + appends
             // here (pure renderer), it does NOT originate the window.
             //
+            // #546 narrowed WHAT reaches this arm, without changing it: a
+            // peer's own NOTICE no longer lands at `channel == ownNick` at
+            // all (it routes to `$server`, or to the peer's own topic when
+            // that query is already open). What still arrives here is the
+            // server-emitted CTCP-query visibility row above. No cic edit
+            // was needed for #546 precisely because this is a renderer —
+            // the routing it mirrors moved underneath it.
+            //
             // sender !== ownNick guard: don't route our OWN outbound NOTICEs
             // (they ride the topic too as fan-out echo). Service-to-self
             // NOTICEs (NickServ etc.) never hit this branch — our server

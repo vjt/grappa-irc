@@ -402,16 +402,23 @@ defmodule Grappa.Session.EventRouter do
         reply = "NOTICE #{sender} :\x01VERSION grappa #{version}\x01"
 
         # Persist the inbound query so cic surfaces it. Routing rule
-        # mirrors how a real inbound PRIVMSG/NOTICE would land:
-        # private CTCP query (target == own_nick) persists on the
-        # own-nick topic — that's where cic's dm-listener handler
-        # observes inbound DM-shaped traffic, re-keys it onto the
-        # sender's window, and (per CP23 NOTICE auto-open arm) opens
-        # the sender's query window with an unread badge. Persisting
-        # at channel = sender bypasses the dm-listener entirely;
-        # the broadcast lands on a topic cic isn't subscribed to
-        # until that window already exists, defeating auto-open.
+        # mirrors how a real inbound PRIVMSG would land: a private CTCP
+        # query (target == own_nick) persists on the own-nick topic —
+        # that's where cic's dm-listener observes inbound DM-shaped
+        # traffic and re-keys it onto the sender's window. The window
+        # itself is minted SERVER-side (#422): `build_persist/6` sets
+        # `dm_with = sender` via `Scrollback.dm_peer/4`, and
+        # `Session.Server.maybe_open_query_window/2` keys on
+        # `dm_with || channel`. Persisting at channel = sender instead
+        # would land the broadcast on a topic cic isn't subscribed to
+        # until that window already exists.
         # Channel-targeted CTCP keeps target as channel (no re-key).
+        #
+        # #546 does NOT reach this arm: it reverses the NOTICE door
+        # (`route_non_channel_notice/3`), and a CTCP query arrives as a
+        # PRIVMSG. So this visibility row still opens the peer's window —
+        # the issue predicted it would go quiet, and it does not. Pinned
+        # by a `server_test.exs` case rather than left to be re-derived.
         # #537 — `canonical_target/1` (fold at every identifier boundary)
         # so a DM CTCP target (a peer nick) folds into a canonical window
         # KEY; the sigil-gated form left it raw-cased.
@@ -2534,8 +2541,8 @@ defmodule Grappa.Session.EventRouter do
   # `[ #chan ]:` branch rewrites body to drop the prefix and keeps
   # PRIORITY (a channel-scoped notice belongs to the channel window even
   # when a ChanServ query window is open — #400 open-Q 3); other branches
-  # return body unchanged. `state` is threaded only for the #400 services
-  # re-key lookup (see `service_route_channel/2`).
+  # return body unchanged. `state` is threaded for the open-window lookup
+  # (see `open_query_or_server/2`).
   @spec route_non_channel_notice(String.t(), String.t(), state()) :: {String.t(), String.t()}
   defp route_non_channel_notice(sender, body, state) do
     # A CTCP-framed NOTICE is a REPLY to something we asked — a PING round
@@ -2545,6 +2552,13 @@ defmodule Grappa.Session.EventRouter do
     # pinging somebody left a tab open with them containing a row of
     # control characters. Case 4's own comment says "non-CTCP NOTICE" —
     # the intent was always this, the predicate was missing.
+    #
+    # #546 did NOT make this redundant, though it removed the original
+    # symptom (no nick branch mints a window any more). The short-circuit
+    # now earns its keep on the OTHER side of the new rule: without it, a
+    # peer the operator has a query OPEN with would have their raw
+    # `\x01PING …\x01` filed into that conversation. Protocol stays out of
+    # conversations whether or not one is open.
     #
     # `$server` keeps the row (losing it would hide a reply nobody
     # asked for) while `dm_eligible?/1` mints nothing. The BODY stays
@@ -2565,16 +2579,23 @@ defmodule Grappa.Session.EventRouter do
           {String.t(), String.t()}
   defp route_non_channel_notice_non_chanserv(sender, body, state) do
     cond do
-      Identifier.services_sender?(sender) ->
-        {service_route_channel(sender, state), body}
-
       String.contains?(sender, ".") ->
         {"$server", body}
 
       Identifier.valid_nick?(sender) ->
-        # Regular user nick → me; persist on channel = sender_nick so it
-        # lands in the same query window a PRIVMSG-to-own-nick would.
-        {sender, body}
+        # #546 — ANY nick sender, service or peer, takes the open-window
+        # test. A notice is not an invitation to a conversation: it lands
+        # in the query only when that query is already open, else in the
+        # status window (irssi/HexChat; morph + Sonic, #it-opers
+        # 2026-07-30). This used to be an unconditional `{sender, body}`
+        # with `Identifier.services_sender?/1` bolted on ABOVE it to carve
+        # the *Serv nicks back out — scaffolding that existed only because
+        # the default was "notices open windows". Flipping the default
+        # collapses both into this one rule; the allowlist branch is gone
+        # from this door (it still gates the PRIVMSG door, where a
+        # DM-shaped services reply must not mint a window and a peer's DM
+        # must).
+        {open_query_or_server(sender, state), body}
 
       true ->
         # Anonymous-sender sentinel ("*") or other non-nick senders we
@@ -2584,25 +2605,39 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
-  # #400 — where a services-sender arrival (NOTICE or DM-shaped PRIVMSG)
-  # lands. The default re-keys to the synthetic `$server` window so the
-  # traffic surfaces in the server-messages tab and bypasses cic's
-  # dm-listener auto-open (no stray query window per service). EXCEPTION:
-  # when the operator already has an OPEN query window with this service —
-  # they `/msg`'d it by hand — the reply belongs in THAT window, not
-  # `$server` where they'd stare at an empty query while the answer landed
-  # elsewhere. Neither invariant weakens: an existing window is not being
-  # *opened* (auto-open untouched), and `$server` stays the fallback for
-  # unsolicited service traffic (NickServ-at-connect, the common case).
+  # Where a nick-shaped arrival lands: the sender's query window if the
+  # operator ALREADY has one open with them, else the synthetic `$server`
+  # window (server-messages tab). Arrived with #400 for services only
+  # ("unsolicited service traffic must not mint a tab per service, but a
+  # `/msg`'d service's reply belongs in the window you asked from") and
+  # generalised by #546 to every NOTICE sender. It never OPENS anything —
+  # `$server` is not `dm_eligible?/1`, so the auto-open
+  # (`Session.Server.maybe_open_query_window/2`) mints nothing off a row
+  # routed here. That is the whole mechanism by which a notice stops
+  # spawning windows: routing, not a second carve-out at the open site.
+  #
+  # Two doors, deliberately asymmetric:
+  #   * NOTICE (`route_non_channel_notice_non_chanserv/3`) — EVERY nick
+  #     sender. A notice is announcement, not conversation.
+  #   * PRIVMSG (`privmsg_default/3`) — services senders ONLY. A peer's DM
+  #     still opens the conversation; that is what a DM is for.
   #
   # The open-window fact is a per-(subject, network) DB read. EventRouter
   # is a pure classifier ("No Repo"), so the lookup is injected as the
   # opaque `state.query_window_open?` callback (see the type's docstring).
-  # Absent → false → `$server`, keeping the sandbox-free classifier suite
-  # and today's behaviour intact. Shared by the NOTICE arm and
-  # `privmsg_default/3` so the two doors can't drift.
-  @spec service_route_channel(String.t(), state()) :: String.t()
-  defp service_route_channel(sender, state) do
+  # Absent → false → `$server`, which post-#546 is also the correct default
+  # for a peer, so the sandbox-free classifier suite needs no DI seam to
+  # observe production routing.
+  #
+  # "Open" is the SOLE condition, and "not archived" is implied by it, not a
+  # second check: `query_windows` has no `archived` column — `close/4`
+  # DELETEs the row, and `Scrollback.list_archive/3` DERIVES the archive as
+  # "has scrollback MINUS the active keyset", whose query half is exactly
+  # these rows. Open and archived are complementary by construction. Adding
+  # an archive test here would duplicate derived state (CLAUDE.md, Design
+  # discipline 1) and could only ever disagree with itself.
+  @spec open_query_or_server(String.t(), state()) :: String.t()
+  defp open_query_or_server(sender, state) do
     open? = Map.get(state, :query_window_open?, fn _, _, _ -> false end)
 
     if open?.(state.subject, state.network_id, sender),
@@ -2722,12 +2757,16 @@ defmodule Grappa.Session.EventRouter do
     # services advertisements to the channel everyone is watching.
     # #400: a DM-shaped services PRIVMSG re-keys to `$server` UNLESS the
     # operator has that service's query window open (then it lands there).
-    # `service_route_channel/2` is shared with the NOTICE arm so both doors
-    # observe the same open-window rule. Channel-target services traffic is
-    # unaffected — it belongs in the channel window regardless (#78).
+    # `open_query_or_server/2` is shared with the NOTICE arm so the two
+    # doors observe the same open-window rule. Channel-target services
+    # traffic is unaffected — it belongs in the channel window regardless
+    # (#78). #546 generalised the NOTICE door to every sender but NOT this
+    # one: the services allowlist is still what separates "a reply from a
+    # robot you queried" from "somebody talking to you", and only the
+    # former should stay out of a window of its own.
     route_channel =
       if Identifier.services_sender?(sender) and not channel_target?(channel),
-        do: service_route_channel(sender, state),
+        do: open_query_or_server(sender, state),
         else: channel
 
     {state, eff} = build_persist(state, kind, route_channel, sender, body, %{})

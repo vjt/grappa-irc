@@ -791,8 +791,15 @@ defmodule Grappa.Session.EventRouterTest do
 
     # CP13 server-window cluster: NOTICE-to-non-channel-target priority chain.
     # Replaces the pre-CP13 greedy "anything not a channel → $server" rule
-    # with: ChanServ-bracketed → channel; *Serv$ sender → $server;
-    # hostname sender → $server; user nick sender → query window.
+    # with: ChanServ-bracketed → channel; CTCP-framed → $server; hostname
+    # sender → $server; nick sender → the query window IF ALREADY OPEN, else
+    # $server.
+    #
+    # #546 reversed the last link: it used to be "user nick sender → query
+    # window" unconditionally, with a services allowlist bolted on to carve
+    # the *Serv nicks back out to $server. The allowlist branch is GONE from
+    # this door — services and peers now take the same open-window test, so
+    # every *Serv test below is green by the GENERAL rule, not a carve-out.
 
     test "ChanServ-bracketed body persists on captured channel with prefix stripped" do
       state = base_state()
@@ -836,13 +843,13 @@ defmodule Grappa.Session.EventRouterTest do
           {:nick, "ChanServ", "s", "h"}
         )
 
-      # ChanServ doesn't match a hostname (no '.' in nick), and "ChanServ"
-      # matches @services_sender_regex → $server.
+      # ChanServ doesn't match a hostname (no '.' in nick), so it takes the
+      # nick branch — and with no open query window (#546) that is $server.
       assert {:cont, ^state, [{:persist, :notice, %{channel: "$server", sender: "ChanServ"}}]} =
                EventRouter.route(m, state)
     end
 
-    test "NickServ sender routes to $server (services allowlist)" do
+    test "NickServ sender routes to $server (no open query window)" do
       state = base_state()
 
       m =
@@ -895,10 +902,11 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.meta == %{ctcp_verb: "PING", ctcp_args: "1706743200000"}
     end
 
-    # #591 — a plain (non-CTCP) peer NOTICE stays exactly as before: empty
-    # meta, no ctcp tag. Proves the classification is strictly additive.
+    # #591 — a plain (non-CTCP) peer NOTICE carries empty meta, no ctcp tag.
+    # Proves the classification is strictly additive. The OPEN window is what
+    # keeps this row in `bob` post-#546; the meta assertion is the point.
     test "plain peer NOTICE gets no ctcp meta (additive)" do
-      state = base_state()
+      state = base_state(%{query_window_open?: fn _, _, _ -> true end})
 
       m = msg(:notice, ["vjt", "hey are you around?"], {:nick, "bob", "u", "h"})
 
@@ -909,14 +917,34 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.meta == %{}
     end
 
+    # #546 — the CTCP short-circuit outranks the open window. A CTCP-framed
+    # NOTICE is a REPLY to something we asked (a /ping round trip): protocol,
+    # not conversation, so it stays on `$server` even for a peer the operator
+    # has a query open with — cic correlates the token from `$server` and
+    # synthesises the RTT line in the window /ping was typed in (#591).
+    # WITHOUT this, generalising the nick branch would start dumping raw
+    # \x01 rows into open conversations.
+    test "#546 CTCP-framed peer NOTICE stays on $server EVEN with an open query window" do
+      state = base_state(%{query_window_open?: fn _, _, _ -> true end})
+
+      m = msg(:notice, ["vjt", "\x01PING 1706743200000\x01"], {:nick, "bob", "u", "h"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} = EventRouter.route(m, state)
+
+      assert attrs.channel == "$server"
+      assert attrs.body == "\x01PING 1706743200000\x01"
+    end
+
     # #371 — Azzurra (bahamut) pseudo-services SeenServ / StatServ /
     # DebugServ were absent from the allowlist, so their NOTICE replies
     # fell through to the peer-nick query-window arm (a stray empty
     # window) instead of the synthetic `$server` channel. Added to
     # `Grappa.IRC.Identifier` `@services` in lockstep with the cic-side
-    # twin (`cicchetto/src/lib/servicesSender.ts`). The `Conserv` guard
-    # above proves a non-allowlist -serv nick still routes to a query
-    # window, so this asserts the allowlist membership is what flips it.
+    # twin (`cicchetto/src/lib/servicesSender.ts`). #546 NOTE: on THIS door
+    # the allowlist no longer decides anything — a non-allowlist nick with no
+    # open window lands on `$server` too. The test stays because the OUTCOME
+    # is still the contract; the allowlist's remaining job is the PRIVMSG
+    # door (see the `Conserv` PRIVMSG guard below).
     test "#371 SeenServ / StatServ / DebugServ NOTICEs route to $server" do
       state = base_state()
 
@@ -937,24 +965,64 @@ defmodule Grappa.Session.EventRouterTest do
     # UX-4 bucket G — closed-allowlist regression guard: ops nicks that
     # end in "serv" (Conserv, Dataserv, Reserv on real networks) used to
     # match the `~r/Serv$/i` regex and route to $server, swallowing the
-    # operator's query-window content. The allowlist (now in Identifier)
-    # rejects them — they're regular user nicks and fall through to the
-    # peer-nick query window arm.
-    test "ops nick Conserv (ends in -serv but not in allowlist) routes to query window" do
+    # operator's query-window content. #546 moved this guard to the PRIVMSG
+    # door: on the NOTICE door the allowlist stopped discriminating (both
+    # arms take the open-window test), so a NOTICE-shaped assertion could no
+    # longer tell a re-broadened allowlist from the general rule. A PRIVMSG
+    # still can — a services PRIVMSG re-keys to `$server`, a peer's does not.
+    test "ops nick Conserv (ends in -serv but not in allowlist) keeps its PRIVMSG query window" do
       state = base_state()
 
       m =
-        msg(:notice, ["vjt", "you got opped"], {:nick, "Conserv", "u", "host.example.com"})
+        msg(:privmsg, ["vjt", "you got opped"], {:nick, "Conserv", "u", "host.example.com"})
+
+      assert {:cont, ^state, [{:persist, :privmsg, attrs}]} =
+               EventRouter.route(m, state)
+
+      assert attrs.channel == "vjt"
+      assert attrs.sender == "Conserv"
+    end
+
+    # #546 — THE reversal. A NOTICE from a plain peer used to persist on
+    # `channel = sender`, which `maybe_open_query_window/2` then turned into
+    # a query window: Azzurra's welcome notice (sent from a USER, not a
+    # service) opened a tab for everyone on connect. irssi/HexChat send a
+    # notice to the status window unless the query is already open; morph +
+    # Sonic settled on exactly that on #it-opers (2026-07-30). This reverses
+    # UX-6-L / #422 Option B's "peer NOTICE opens the window" arm.
+    test "#546 peer NOTICE with NO open query window routes to $server" do
+      state = base_state(%{query_window_open?: fn _, _, _ -> false end})
+
+      m =
+        msg(
+          :notice,
+          ["vjt", "yo, you alive?"],
+          {:nick, "alice", "u", "host.example.com"}
+        )
 
       assert {:cont, ^state, [{:persist, :notice, attrs}]} =
                EventRouter.route(m, state)
 
-      assert attrs.channel == "Conserv"
-      assert attrs.sender == "Conserv"
+      assert attrs.channel == "$server"
+      assert attrs.sender == "alice"
+      assert attrs.body == "yo, you alive?"
     end
 
-    test "regular user nick → persist on channel = sender_nick (query window)" do
+    # The callback is ABSENT in the plain classifier suite (no DI seam
+    # injected) — it must default to "not open", i.e. `$server`. Pins that
+    # the reversal holds on the default path, not only when a test hands in
+    # a `false` stub.
+    test "#546 peer NOTICE with NO open-window callback injected routes to $server" do
       state = base_state()
+
+      m = msg(:notice, ["vjt", "yo, you alive?"], {:nick, "alice", "u", "host.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, %{channel: "$server", sender: "alice"}}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "#546 peer NOTICE WITH an open query window routes to the peer's window" do
+      state = base_state(%{query_window_open?: fn _, _, _ -> true end})
 
       m =
         msg(
@@ -969,6 +1037,40 @@ defmodule Grappa.Session.EventRouterTest do
       assert attrs.channel == "alice"
       assert attrs.sender == "alice"
       assert attrs.body == "yo, you alive?"
+    end
+
+    # The open-window lookup must be asked about the PEER, with this
+    # session's subject + network — the same three arguments the services
+    # door passes. A lookup keyed on anything else (own nick, the wire
+    # target) would answer a different question and route by accident.
+    test "#546 the open-window predicate is called with (subject, network_id, peer nick)" do
+      parent = self()
+
+      state =
+        base_state(%{
+          query_window_open?: fn subject, network_id, nick ->
+            send(parent, {:open_check, subject, network_id, nick})
+            false
+          end
+        })
+
+      m = msg(:notice, ["vjt", "yo"], {:nick, "alice", "u", "host.example.com"})
+      EventRouter.route(m, state)
+
+      assert_received {:open_check, {:user, _}, 42, "alice"}
+    end
+
+    # #546 must NOT leak into the PRIVMSG door: a DM from a peer still opens
+    # the conversation. Only NOTICEs became non-opening.
+    test "#546 peer PRIVMSG still lands in the DM window with NO open query window" do
+      state = base_state(%{query_window_open?: fn _, _, _ -> false end})
+
+      m = msg(:privmsg, ["vjt", "you around?"], {:nick, "alice", "u", "host.example.com"})
+
+      assert {:cont, ^state, [{:persist, :privmsg, attrs}]} = EventRouter.route(m, state)
+
+      assert attrs.channel == "vjt"
+      assert attrs.dm_with == "alice"
     end
 
     test "anonymous sender (no prefix) falls back to $server" do

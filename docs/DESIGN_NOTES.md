@@ -21374,6 +21374,12 @@ Two disjoint fixture doors close the gap, zero assertions removed:
   "cog" — `.shell-main` is the honest signal.
 ## 2026-07-28 — #422: inbound DM opens the query window SERVER-SIDE (+ leading day-separator)
 
+> **Superseded in part by #546 (2026-08-07).** The NOTICE arm of this entry no
+> longer holds: a peer NOTICE routes to `$server` unless the query is already
+> open, so it mints nothing. Everything else here — server-owned origination,
+> the `dm_with || channel` key, `dm_eligible?/1` as the sole predicate, cic as a
+> pure renderer — stands unchanged, and is in fact the mechanism #546 reuses.
+
 **The bug.** Query-window auto-open lived ONLY in the client
 (`cicchetto/src/lib/subscribe.ts` dm-listener → `openQueryWindowState`).
 `QueryWindows.open/4` had a single `lib/` call site: the `open_query_window`
@@ -32782,3 +32788,94 @@ about width still restart the pool at 5 and 10 themselves. The ceiling
 correspondingly stops binding here: 14 tests × ~80 migrations per run becomes
 14 × 3, and the file drops from 8.6s to 0.4s. The undiagnosed replay red is
 still undiagnosed — it simply no longer has a home in this test.
+---
+
+## 2026-08-07 — #546: a peer NOTICE stops opening a query window (reverses the NOTICE arm of UX-6-L / #422 Option B)
+
+**The ruling, and whose it is.** Azzurra staff (morph, Sonic, Mezmerize,
+Hypnotize — `#it-opers`, 2026-07-30) asked grappa to follow the irssi/HexChat
+convention: **query window already open → the query; otherwise → `$server`.**
+vjt queued the issue, so the ruling is made. This is NOT a bug that slipped
+through — it reverses a documented decision, which is why it needed one.
+
+**The rejected third branch, recorded on purpose.** Sonic proposed "no query
+open but a channel in common → route into the channels"; morph refused ("nei
+canali no, irssi manda in status") and Sonic conceded. It is the part most
+likely to be re-litigated by somebody who finds the two-branch rule
+surprising. It was considered and declined.
+
+**The change is one deleted branch, not a new one.** The requested behaviour
+already existed — `service_route_channel/2` (#400) has implemented exactly
+"open → the window, else `$server`" since services traffic needed it. All
+#546 does is widen which senders reach it: `route_non_channel_notice_non_chanserv/3`
+dropped its `Identifier.services_sender?/1` arm, so every nick sender takes
+the same test. The helper is renamed `open_query_or_server/2` because it is no
+longer about services. Deleting the carve-out was morph's own argument for the
+change and is the whole of it: the allowlist branch, the `$server` re-key and
+the `*Serv` handling existed **only** because the default was "notices open
+windows". Flip the default and the scaffolding is redundant — a parallel
+branch alongside the old one would have been the double structure CLAUDE.md
+forbids.
+
+**What did NOT generalise, and why the asymmetry is deliberate.** The PRIVMSG
+door still gates on the services allowlist. A peer's DM opens the
+conversation — that is what a DM is for; only NOTICEs became non-opening. So
+`Identifier.services_sender?/1` keeps exactly one job: separating "a reply from
+a robot you queried" from "somebody talking to you". The UX-4 bucket G
+regression guard (ops nicks ending in `-serv`, e.g. `Conserv`, must not be
+swallowed) MOVED to the PRIVMSG door with it — on the NOTICE door the allowlist
+no longer discriminates, so a NOTICE-shaped assertion could not tell a
+re-broadened allowlist from the general rule. A guard that cannot fail is not a
+guard.
+
+**The CTCP short-circuit stays, on a new justification.** `CTCP.framed?/1`
+sends any CTCP-framed NOTICE to `$server` (#591). Its original reason — "else
+pinging somebody leaves a tab open with a row of control characters" — is gone
+with the minting. It earns its keep on the other side of the new rule: without
+it, a peer the operator has a query OPEN with would get raw `\x01PING …\x01`
+filed into that conversation. Protocol stays out of conversations whether or
+not one is open, and a test pins it at `query_window_open? = true`.
+
+**Two things the issue asked us to assume, proven instead.**
+
+*"`query_window_open?/3` needs checking against archive state, not just row
+existence."* It does not, and it must not. `query_windows` has no `archived`
+column: `Window` carries `target_nick` + `opened_at`, `QueryWindows.close/4`
+**DELETEs** the row, and `Scrollback.list_archive/3` DERIVES the archive as
+"every target with scrollback MINUS the active keyset", whose query half
+(`ArchiveController.build_active_keyset/3` → `QueryWindows.list_for_subject/1`)
+is precisely the rows `open?/3` tests. Open and archived are **complementary by
+construction** — there is no third state. The ruling's conjunction ("open AND
+not archived") is one condition in this schema; the second is implied by the
+first. Adding an archive check would duplicate derived state (Design discipline
+1) and could only ever disagree with itself.
+
+*"The CTCP VERSION visibility row goes quiet — the one concrete regression."*
+It does not, because that row never rides the NOTICE door. It is emitted by the
+inbound-**PRIVMSG** CTCP arm, persisted at `channel = own_nick` with
+`dm_with = sender` (`Scrollback.dm_peer/4`: target == own_nick ⇒ peer =
+sender), and the auto-open keys on `dm_with || channel`. #546 touches only
+`route_non_channel_notice_non_chanserv/3`. The row survives untouched — and is
+now pinned by a `server_test.exs` case, because "it still works" is a claim
+about a path this change does not visit, and without a pin nobody learns when
+it stops being true. Whether a CTCP *query* should mint a window at all is a
+separate question about the PRIVMSG door that morph and Sonic's ruling does not
+settle; it was left alone rather than widened in silently.
+
+**cic needed no edit, and that is #422 Option B paying out.** The dm-listener
+dropped its `openQueryWindowState` calls when the server took over origination,
+so it is a pure renderer: the routing moved underneath it and it rendered the
+new destination without knowing. #546 only narrowed what reaches its
+own-nick NOTICE arm (now just the server-emitted CTCP visibility row); the
+comment there says so rather than leaving the next reader to derive it.
+
+**Test shape.** Classifier-level: both arms of the rule, the absent-callback
+default (`$server` — the reversal must hold on the production path, not only
+when a stub says `false`), the predicate's three arguments, and a PRIVMSG case
+proving the change did not leak doors. Full-stack: the reversal is asserted
+with a **positive barrier first** — the row must be observed arriving on
+`$server` before "no query window" is refuted, because a bare `refute_receive`
+would pass just as well on a session that never processed the line.
+`e2e/tests/issue546-peer-notice-no-query-window.spec.ts` drives the visible
+outcome against a real peer: the tab that must not appear, and the window the
+notice lands in when it is already open.

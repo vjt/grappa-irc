@@ -36,7 +36,7 @@ export type ServiceModalTarget = {
 //
 // The server routes a services-sender NOTICE/PRIVMSG to `$server` — UNLESS the
 // operator has that service's own query window open, in which case it lands
-// THERE (#400, `EventRouter.service_route_channel/2`). Reading only `$server`
+// THERE (#400, `EventRouter.open_query_or_server/2`). Reading only `$server`
 // made the console look dead exactly for the operator who had a NickServ query
 // open: modal up, help wall piling into the query behind it, mirror empty
 // forever. The mirror is a view over wherever the notices land, so it spans

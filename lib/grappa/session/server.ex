@@ -4523,8 +4523,10 @@ defmodule Grappa.Session.Server do
   # without knowing whether a window exists. The window-existence POLICY is
   # the server's — it owns window state — so the gate lives here, using the
   # SAME `state.query_window_open?` predicate EventRouter's
-  # `service_route_channel/2` uses for the identical "route to the window iff
-  # already open, else $server; never auto-open" decision.
+  # `open_query_or_server/2` uses for the identical "route to the window iff
+  # already open, else $server; never auto-open" decision. #546 widened that
+  # helper's caller set (every NOTICE sender, not just services); the
+  # decision it encodes — and this numeric gate's reuse of it — is unchanged.
   #
   # The concrete bug: a 401 ERR_NOSUCHNICK from a /ctcp or /ping to a
   # nonexistent nick scans to {:query, target}; with no window open it used
