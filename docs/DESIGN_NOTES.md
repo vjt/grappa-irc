@@ -32842,6 +32842,13 @@ same pin for a related reason). `check.sh`'s now-duplicate second run goes, its
 and `grep 'Mix.env() == :dev' lib/` returns nothing — no function exists that
 `:dev` can see and `:test` cannot.
 
+Which is the sharper way to state the whole artifact: **the dev run is not
+lenient about `test/support`, it is blind to it** — it never compiles those
+files, so it cannot score them at all (297 modules against `:test`'s 313). The
+same blindness, one scope down, is what hits `lib/`: a `Mix.env() == :test`
+seam is invisible to the dev beam yet visible to the AST that counts, so the
+function is counted and cannot be scored. One defect, two radii.
+
 **Parity is now by construction, and read from `origin/main` rather than a
 local checkout** (a CI rule was once wrong for days because it was read from a
 stale local `ci.yml`). The workflow runs exactly one `mix doctor`, at
