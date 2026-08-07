@@ -1,6 +1,10 @@
 import { type Component, For } from "solid-js";
 import { adminEvents } from "./lib/adminEvents";
 import { assertNever, type WireAdminEvent } from "./lib/api";
+import type {
+  AdminEventsWireLoginThrottleDoor,
+  AdminEventsWireLoginThrottleScope,
+} from "./lib/wireTypes";
 
 // M-11 — Admin events tab. Renders the in-memory ring buffer from
 // `adminEvents()` newest-first. Per `feedback_no_localized_strings_server_side`,
@@ -98,8 +102,13 @@ function renderEvent(ev: WireAdminEvent): string {
     case "credential_unbound":
       return `${ev.user_name} unbound from ${ev.network_slug}${actorSuffix(ev.actor_user_name)}`;
     case "login_throttled":
-      // S6 — admin-login brute-force gate tripped for this source IP.
-      return `login throttled: ${ev.source_ip ?? "(unknown ip)"} hit ${ev.failures} failures in ${Math.round(ev.window_ms / 60000)}m`;
+      // S6 — a credential door's brute-force gate tripped for this source
+      // IP. Seven windows across five doors share this event, so the door
+      // and the key that crossed are what make it actionable: the fine key
+      // says one account is being hammered from that address, the ceiling
+      // says the address is spraying across accounts. Both are additive —
+      // a row minted before they existed reads as the bare trip.
+      return `login throttled: ${ev.source_ip ?? "(unknown ip)"} hit ${ev.failures} failures in ${Math.round(ev.window_ms / 60000)}m${throttleAttribution(ev.door, ev.scope)}`;
     case "web_session_severed":
       // #630 — a subject's web session was severed for sustained inbound
       // flooding (socket closed + bearer revoked; IRC session untouched).
@@ -123,6 +132,21 @@ function capLabel(n: number | null): string {
 
 function actorSuffix(name: string | null): string {
   return name !== null ? ` by ${name}` : "";
+}
+
+// Names the FailureWindow row that shut. `undefined` is the honest
+// reading of a pre-upgrade event replayed from the persisted ring, so it
+// renders as nothing rather than as a guess. `ip_account` is spelled
+// "per-account" and the bare `ip` "per-address" because that difference
+// IS the operator's read: one account hammered from an address versus an
+// address spraying across accounts.
+function throttleAttribution(
+  door: AdminEventsWireLoginThrottleDoor | undefined,
+  scope: AdminEventsWireLoginThrottleScope | undefined,
+): string {
+  if (door === undefined) return "";
+  if (scope === undefined) return ` [${door}]`;
+  return ` [${door}, ${scope === "ip_account" ? "per-account" : "per-address"}]`;
 }
 
 export default AdminEventsTab;

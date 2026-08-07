@@ -1397,7 +1397,13 @@ defmodule GrappaWeb.AuthControllerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        topic: "grappa:admin:events",
-                       payload: %{kind: :login_throttled, source_ip: "10.66.0.5", failures: 10}
+                       payload: %{
+                         kind: :login_throttled,
+                         door: :mode1_login,
+                         scope: :ip,
+                         source_ip: "10.66.0.5",
+                         failures: 10
+                       }
                      },
                      500
 
@@ -1513,6 +1519,83 @@ defmodule GrappaWeb.AuthControllerTest do
              |> json_response(200)
              |> Map.fetch!("token")
     end
+
+    # Both of this door's keys were silent before: the window shut and the
+    # operator saw nothing. They emit the SAME event as the two doors that
+    # already spoke, told apart by `door` + `scope` rather than by a count
+    # the reader would have to decode against the constants.
+    test "the per-account key names its own crossing", %{conn: conn} do
+      {user, password} = user_fixture_with_password()
+      secret = arm_totp(user)
+      wrong = wrong_totp_code(secret, System.system_time(:second))
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Grappa.PubSub.Topic.admin_events())
+
+      pending =
+        conn
+        |> with_ip(13)
+        |> post("/auth/login", %{"identifier" => user.name, "password" => password})
+        |> json_response(202)
+
+      for _ <- 1..10 do
+        conn
+        |> with_ip(13)
+        |> post("/auth/totp/verify", %{
+          "challenge_token" => pending["challenge_token"],
+          "code" => wrong
+        })
+      end
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       payload: %{
+                         kind: :login_throttled,
+                         door: :totp_login,
+                         scope: :ip_account,
+                         source_ip: "10.66.0.13",
+                         failures: 10
+                       }
+                     },
+                     500
+    end
+
+    test "the address ceiling names its own crossing", %{conn: conn} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Grappa.PubSub.Topic.admin_events())
+
+      # Three accounts, ten each: no per-account key ever passes ten, so
+      # only the ceiling can be the thing that crossed at thirty.
+      for _ <- 1..3 do
+        {user, password} = user_fixture_with_password()
+        secret = arm_totp(user)
+        wrong = wrong_totp_code(secret, System.system_time(:second))
+
+        pending =
+          conn
+          |> with_ip(14)
+          |> post("/auth/login", %{"identifier" => user.name, "password" => password})
+          |> json_response(202)
+
+        for _ <- 1..10 do
+          conn
+          |> with_ip(14)
+          |> post("/auth/totp/verify", %{
+            "challenge_token" => pending["challenge_token"],
+            "code" => wrong
+          })
+        end
+      end
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       topic: "grappa:admin:events",
+                       payload: %{
+                         kind: :login_throttled,
+                         door: :totp_login,
+                         scope: :ip,
+                         source_ip: "10.66.0.14",
+                         failures: 30
+                       }
+                     },
+                     1000
+    end
   end
 
   # The registered-visitor password gate is the credential door with the
@@ -1579,7 +1662,13 @@ defmodule GrappaWeb.AuthControllerTest do
 
       assert_receive %Phoenix.Socket.Broadcast{
                        topic: "grappa:admin:events",
-                       payload: %{kind: :login_throttled, source_ip: "10.66.0.16", failures: 10}
+                       payload: %{
+                         kind: :login_throttled,
+                         door: :visitor_login,
+                         scope: :ip,
+                         source_ip: "10.66.0.16",
+                         failures: 10
+                       }
                      },
                      500
 

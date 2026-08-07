@@ -368,12 +368,28 @@ export type AdminEventsWireCredentialUnboundEvent = {
   at: string;
 };
 
+export const ADMIN_EVENTS_WIRE_LOGIN_THROTTLE_DOOR = [
+  "mode1_login",
+  "visitor_login",
+  "totp_login",
+  "passkey_recovery",
+  "passkey_login_options",
+] as const;
+export type AdminEventsWireLoginThrottleDoor =
+  (typeof ADMIN_EVENTS_WIRE_LOGIN_THROTTLE_DOOR)[number];
+
+export const ADMIN_EVENTS_WIRE_LOGIN_THROTTLE_SCOPE = ["ip", "ip_account"] as const;
+export type AdminEventsWireLoginThrottleScope =
+  (typeof ADMIN_EVENTS_WIRE_LOGIN_THROTTLE_SCOPE)[number];
+
 export type AdminEventsWireLoginThrottledEvent = {
   kind: "login_throttled";
   source_ip: string | null;
   failures: number;
   window_ms: number;
   at: string;
+  door?: AdminEventsWireLoginThrottleDoor;
+  scope?: AdminEventsWireLoginThrottleScope;
 };
 
 export type AdminEventsWireWebSessionSeveredEvent = {

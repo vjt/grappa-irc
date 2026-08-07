@@ -31856,3 +31856,60 @@ is only reachable after the password, and the challenge token is bound to
 proven a password. And no per-account deny is added here either: the ceiling
 is per source IP, so a caller can only spend their own address, never lock
 another account's owner out of theirs.
+
+## 2026-08-07 — every credential window speaks, and says which one it was
+
+Two windows had been added the same night the audit was written, and the audit
+was right about the half it saw and wrong about its size. `login_throttled`
+had one emitter when the audit was written and two by the time it was read —
+the visitor door above had added one. The real number is worse than either:
+the unit that shuts is not a door but a `FailureWindow` row, `(bucket, key)`,
+and `:totp_login` and `:passkey_recovery` carry two rows each. Seven windows
+guard a credential door. Two emitted. Five — one of them added that night —
+shut in total silence.
+
+**A window that denies without a signal is a brake nobody knows is on.** It
+does not fail loudly; it fails as an unexplained login problem, which is the
+one failure mode an operator cannot tell from a bug. So the fix is not another
+emitter at each site: `GrappaWeb.LoginThrottle.charge/4` records the failure
+AND raises the crossing signal in one verb, and every credential door now
+charges through it. The signal is no longer a step a caller can forget — a new
+door cannot be added mute, because there is no longer a way to record a
+failure without it. `FailureWindow.check/3` deliberately stays at each call
+site: only the caller knows what expensive work it gates and what refusing
+must return. This is visibility, not policy.
+
+**Attribution is not decoration.** Seven windows sharing one undifferentiated
+event would tell an operator that some address hit thirty failures and leave
+them to guess whether that was a TOTP ceiling, a recovery ceiling, or
+challenge-allocation abuse — three different incidents. So the event carries
+`door` (which IS the bucket, derived from the counter rather than tracked
+beside it) and `scope` (`:ip` or `:ip_account`, derived from the shape of the
+key). The pair matters on the two-row doors: the fine key crossing says one
+account is being hammered from that address; the ceiling crossing says that
+address is spraying across accounts.
+
+**What is deliberately NOT in the payload: the account id.** On the recovery
+door the identifier is attacker-supplied and resolved by `find_user/1`, so
+carrying the account would let a spray write names of its own choosing into
+the admin stream. The operator gets the address, which is the party that can
+actually be acted on.
+
+**Why the two fields are `optional` on the wire, and why that is honest rather
+than a hedge.** The admin ring is mirrored to disk and reloaded at boot (#215
+Option B, `load_recent/1`), and `snapshot/0` serves those reloaded rows to a
+joining admin socket. After this upgrade the Events tab genuinely replays
+`login_throttled` rows minted by a server that predates the fields. So absence
+is a real wire state, not a hypothetical old client, and cic narrows both to
+`undefined` rather than nulling the event: the trip is the load-bearing part,
+the attribution is the detail, and a missing detail must not delete the alert.
+Additive fields need no `protocol_version` bump.
+
+Naming both closed sets rather than inlining them was forced, and the forcing
+is worth recording: the door union is 102 characters as an inline map field,
+which `mix grappa.gen_wire_types` emits unwrapped but biome would wrap at 100
+— the codegen drift gate and the cic format gate would have disagreed forever.
+A named enum type is emitted as an `as const` array plus a derived type, both
+formatted by the generator's own biome-mimicking rules, so the two gates agree.
+The new fields sit LAST in the map typespec so source order and any
+required-before-optional canonicalisation produce the same generated output.

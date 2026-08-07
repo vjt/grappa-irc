@@ -6,7 +6,7 @@ defmodule GrappaWeb.PasskeyController do
   alias Grappa.Accounts.{User, WebAuthn}
   alias Grappa.Auth.IdentifierClassifier
   alias Grappa.RateLimit.FailureWindow
-  alias GrappaWeb.{PasskeyOrigin, RemoteIP}
+  alias GrappaWeb.{LoginThrottle, PasskeyOrigin, RemoteIP}
 
   @recovery_salt "account-passwordless-recovery-v1"
   @recovery_max_age_seconds 600
@@ -198,8 +198,17 @@ defmodule GrappaWeb.PasskeyController do
         # here is allocation, and the cheapest way to allocate is to keep
         # succeeding: a loop against a known passwordless identifier gets
         # a 200 each time, so a failures-only window would never trip on
-        # the exact traffic it needs to bound.
-        _ = FailureWindow.record_failure(:passkey_login_options, ip, @recovery_window_ms)
+        # the exact traffic it needs to bound. So the crossing charge —
+        # and the operator signal it raises — lands on a request that
+        # SUCCEEDS.
+        _ =
+          LoginThrottle.charge(
+            :passkey_login_options,
+            ip,
+            @recovery_window_ms,
+            @login_options_attempts
+          )
+
         begin_passwordless(conn, identifier)
     end
   end
@@ -271,14 +280,16 @@ defmodule GrappaWeb.PasskeyController do
         {:error, :too_many_attempts}
 
       _ ->
-        _ = FailureWindow.record_failure(:passkey_recovery, key, @recovery_window_ms)
-        _ = FailureWindow.record_failure(:passkey_recovery, ip, @recovery_window_ms)
+        _ = LoginThrottle.charge(:passkey_recovery, key, @recovery_window_ms, @recovery_account_attempts)
+        _ = LoginThrottle.charge(:passkey_recovery, ip, @recovery_window_ms, @recovery_ip_attempts)
         {:error, :invalid_two_factor}
     end
   end
 
+  # An identifier that resolves to no passwordless account charges the
+  # ceiling and nothing else — there is no account to key the fine row on.
   defp recover_resolved(_, ip, _, _) do
-    _ = FailureWindow.record_failure(:passkey_recovery, ip, @recovery_window_ms)
+    _ = LoginThrottle.charge(:passkey_recovery, ip, @recovery_window_ms, @recovery_ip_attempts)
     {:error, :invalid_two_factor}
   end
 

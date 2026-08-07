@@ -9,11 +9,23 @@ import type {
 } from "./api";
 import type { ModesEntry, TopicEntry } from "./channelTopic";
 import type { MemberEntry } from "./memberTypes";
-import type { SessionLogEvent, SessionLogWireT, WindowCountsSeverity } from "./wireTypes";
+import type {
+  AdminEventsWireLoginThrottleDoor,
+  AdminEventsWireLoginThrottleScope,
+  SessionLogEvent,
+  SessionLogWireT,
+  WindowCountsSeverity,
+} from "./wireTypes";
 // #410 — the runtime allowlists derive from the codegen-emitted `as const`
 // enum arrays, so each closed set has ONE source (the server typespec via
 // wireTypes.ts), not a hand copy that can silently drift.
-import { SCROLLBACK_MESSAGE_KIND, SESSION_LOG_EVENT, WINDOW_COUNTS_SEVERITY } from "./wireTypes";
+import {
+  ADMIN_EVENTS_WIRE_LOGIN_THROTTLE_DOOR,
+  ADMIN_EVENTS_WIRE_LOGIN_THROTTLE_SCOPE,
+  SCROLLBACK_MESSAGE_KIND,
+  SESSION_LOG_EVENT,
+  WINDOW_COUNTS_SEVERITY,
+} from "./wireTypes";
 
 // #267 — narrow the window_counts severity to the closed union, defaulting
 // to "none" for an unknown value (defensive: a stale server mid hot-reload
@@ -25,6 +37,18 @@ function narrowSeverity(raw: unknown): WindowCountsSeverity {
   return typeof raw === "string" && (WINDOW_COUNTS_SEVERITY as readonly string[]).includes(raw)
     ? (raw as WindowCountsSeverity)
     : "none";
+}
+
+// An ADDITIVE closed-set field: absent (an older server minted the event)
+// or unrecognised (a newer one added an arm) both narrow to `undefined`,
+// so the caller renders without it instead of dropping the event. Same
+// #410 discipline as `narrowSeverity` — the allowlist IS the
+// codegen-emitted const, never a hand copy.
+function narrowEnumMember<T extends string>(
+  raw: unknown,
+  allowed: readonly string[],
+): T | undefined {
+  return typeof raw === "string" && allowed.includes(raw) ? (raw as T) : undefined;
 }
 
 // Bucket G H4+U3 (codebase-review-2026-05-12): runtime narrowing for
@@ -853,8 +877,14 @@ export function narrowAdminEvent(raw: unknown): WireAdminEvent | null {
         actor_user_name: r.actor_user_name,
         at: r.at as string,
       };
-    // S6 (review 2026-07-19) — mode-1 login throttle trip. source_ip
-    // is nullable (server RemoteIP honesty for unresolvable peers).
+    // S6 (review 2026-07-19) — a credential door's throttle trip.
+    // source_ip is nullable (server RemoteIP honesty for unresolvable
+    // peers). door/scope are ADDITIVE and narrow to `undefined` rather
+    // than nulling the event: the admin ring is mirrored to disk and
+    // reloaded at boot, so the Events tab genuinely replays rows minted
+    // before the fields existed. The trip is the load-bearing part; the
+    // attribution is the detail, and a missing detail must not delete
+    // the alert.
     case "login_throttled":
       if (
         !isNullableString(r.source_ip) ||
@@ -868,6 +898,14 @@ export function narrowAdminEvent(raw: unknown): WireAdminEvent | null {
         failures: r.failures,
         window_ms: r.window_ms,
         at: r.at as string,
+        door: narrowEnumMember<AdminEventsWireLoginThrottleDoor>(
+          r.door,
+          ADMIN_EVENTS_WIRE_LOGIN_THROTTLE_DOOR,
+        ),
+        scope: narrowEnumMember<AdminEventsWireLoginThrottleScope>(
+          r.scope,
+          ADMIN_EVENTS_WIRE_LOGIN_THROTTLE_SCOPE,
+        ),
       };
     case "cap_counts_changed":
       // REV-H H5 (2026-05-22): network_slug is required non-null on

@@ -365,6 +365,108 @@ defmodule GrappaWeb.PasskeyControllerTest do
            |> json_response(429) == %{"error" => "too_many_attempts"}
   end
 
+  # All three windows in this controller shut in silence. They emit the
+  # event the mode-1 door has always emitted, told apart by `door` +
+  # `scope`. Each is driven to ONE attempt short of its limit through the
+  # production counter, so the crossing is the request under test and not
+  # the twenty-nine that set it up.
+  @window_ms :timer.minutes(15)
+  @wrong_code "wrongwrongwrongwrongwrongw"
+
+  defp seed_failures(bucket, key, n) do
+    for _ <- 1..n, do: FailureWindow.record_failure(bucket, key, @window_ms)
+    :ok
+  end
+
+  defp watch_admin_events do
+    :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Grappa.PubSub.Topic.admin_events())
+  end
+
+  test "the recovery per-account key names its own crossing", %{conn: conn} do
+    {user, _} = passwordless_user()
+
+    clear = fn ->
+      FailureWindow.clear(:passkey_recovery, "127.0.0.1")
+      FailureWindow.clear(:passkey_recovery, {"127.0.0.1", user.id})
+    end
+
+    clear.()
+    on_exit(clear)
+
+    seed_failures(:passkey_recovery, {"127.0.0.1", user.id}, 9)
+    watch_admin_events()
+
+    assert conn
+           |> post("/auth/passkeys/recover", %{"identifier" => user.name, "recovery_code" => @wrong_code})
+           |> json_response(401) == %{"error" => "invalid_two_factor"}
+
+    assert_receive %Phoenix.Socket.Broadcast{
+                     topic: "grappa:admin:events",
+                     payload: %{
+                       kind: :login_throttled,
+                       door: :passkey_recovery,
+                       scope: :ip_account,
+                       source_ip: "127.0.0.1",
+                       failures: 10
+                     }
+                   },
+                   500
+  end
+
+  test "the recovery address ceiling names its own crossing", %{conn: conn} do
+    clear = fn -> FailureWindow.clear(:passkey_recovery, "127.0.0.1") end
+    clear.()
+    on_exit(clear)
+
+    # An identifier that resolves to no account charges the ceiling and
+    # nothing else — the per-account key is never even formed, so only the
+    # ceiling can be what crossed.
+    seed_failures(:passkey_recovery, "127.0.0.1", 29)
+    watch_admin_events()
+
+    assert conn
+           |> post("/auth/passkeys/recover", %{"identifier" => "nobody-here", "recovery_code" => @wrong_code})
+           |> json_response(401) == %{"error" => "invalid_two_factor"}
+
+    assert_receive %Phoenix.Socket.Broadcast{
+                     topic: "grappa:admin:events",
+                     payload: %{
+                       kind: :login_throttled,
+                       door: :passkey_recovery,
+                       scope: :ip,
+                       source_ip: "127.0.0.1",
+                       failures: 30
+                     }
+                   },
+                   500
+  end
+
+  test "challenge-allocation abuse names its own crossing", %{conn: conn} do
+    {user, _} = passwordless_user()
+    clear = fn -> FailureWindow.clear(:passkey_login_options, "127.0.0.1") end
+    clear.()
+    on_exit(clear)
+
+    # This window counts every call, not every failure, so the crossing
+    # request is a 200. The signal has to fire on a door that is SUCCEEDING.
+    seed_failures(:passkey_login_options, "127.0.0.1", 29)
+    watch_admin_events()
+
+    assert conn |> post("/auth/passkeys/options", %{"identifier" => user.name}) |> Map.get(:status) == 200
+
+    assert_receive %Phoenix.Socket.Broadcast{
+                     topic: "grappa:admin:events",
+                     payload: %{
+                       kind: :login_throttled,
+                       door: :passkey_login_options,
+                       scope: :ip,
+                       source_ip: "127.0.0.1",
+                       failures: 30
+                     }
+                   },
+                   500
+  end
+
   test "passwordless mode rejects password and accepts a one-shot recovery code", %{conn: conn} do
     {user, password} = user_fixture_with_password()
     secret = TOTP.new_enrollment(user, "Grappa test").secret

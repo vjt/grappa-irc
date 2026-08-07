@@ -73,10 +73,12 @@ defmodule Grappa.AdminEvents.WireTest do
     end
   end
 
-  describe "login_throttled/3" do
+  describe "login_throttled/5" do
     test "renders the typed wire shape" do
-      event = Wire.login_throttled("203.0.113.7", 10, 900_000)
+      event = Wire.login_throttled(:mode1_login, :ip, "203.0.113.7", 10, 900_000)
       assert event.kind == :login_throttled
+      assert event.door == :mode1_login
+      assert event.scope == :ip
       assert event.source_ip == "203.0.113.7"
       assert event.failures == 10
       assert event.window_ms == 900_000
@@ -84,8 +86,31 @@ defmodule Grappa.AdminEvents.WireTest do
     end
 
     test "accepts nil source_ip (unresolvable peer honesty)" do
-      event = Wire.login_throttled(nil, 10, 900_000)
+      event = Wire.login_throttled(:visitor_login, :ip, nil, 10, 900_000)
       assert event.source_ip == nil
+    end
+
+    # Five windows share this event now. Without `door` the operator reads
+    # "an address hit 30 failures" and cannot tell a TOTP ceiling from a
+    # recovery ceiling from challenge-allocation abuse; without `scope` the
+    # two-key doors emit two arms that differ only by a count the reader
+    # would have to know the constants to decode.
+    test "carries the door and the key shape that crossed" do
+      event = Wire.login_throttled(:passkey_recovery, :ip_account, "203.0.113.7", 10, 900_000)
+      assert event.door == :passkey_recovery
+      assert event.scope == :ip_account
+    end
+
+    test "refuses a door outside the closed set" do
+      assert_raise FunctionClauseError, fn ->
+        Wire.login_throttled(:not_a_door, :ip, "203.0.113.7", 10, 900_000)
+      end
+    end
+
+    test "refuses a scope outside the closed set" do
+      assert_raise FunctionClauseError, fn ->
+        Wire.login_throttled(:mode1_login, :ip_client, "203.0.113.7", 10, 900_000)
+      end
     end
   end
 

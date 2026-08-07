@@ -39,13 +39,12 @@ defmodule GrappaWeb.AuthController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Accounts, AdminEvents, Networks, Session, Visitors}
+  alias Grappa.{Accounts, Networks, Session, Visitors}
   alias Grappa.Accounts.{TOTP, WebAuthn}
-  alias Grappa.AdminEvents.Wire, as: AdminEventsWire
   alias Grappa.Auth.IdentifierClassifier
   alias Grappa.RateLimit.FailureWindow
   alias Grappa.Visitors.{Login, Visitor}
-  alias GrappaWeb.{PasskeyOrigin, RemoteIP}
+  alias GrappaWeb.{LoginThrottle, PasskeyOrigin, RemoteIP}
 
   require Logger
 
@@ -517,11 +516,11 @@ defmodule GrappaWeb.AuthController do
 
       {:error, _} ->
         ip = format_ip(conn)
-        _ = FailureWindow.record_failure(:totp_login, {ip, user.id}, @totp_window_ms)
+        _ = LoginThrottle.charge(:totp_login, {ip, user.id}, @totp_window_ms, @totp_max_failures)
         # The aggregate is charged too, and is deliberately NOT cleared on
         # success above: one account the attacker can satisfy must not
         # reset the ceiling for every other account they are guessing.
-        _ = FailureWindow.record_failure(:totp_login, ip, @totp_window_ms)
+        _ = LoginThrottle.charge(:totp_login, ip, @totp_window_ms, @totp_ip_max_failures)
 
         {:error, :invalid_two_factor}
     end
@@ -559,15 +558,7 @@ defmodule GrappaWeb.AuthController do
         ok
 
       {:error, _} = err ->
-        count = FailureWindow.record_failure(@mode1_bucket, ip, @mode1_window_ms)
-
-        # Exactly-once-per-window operator signal: emit on the crossing
-        # failure only, never on the (attacker-driven) rejected requests
-        # that follow — a spray can't flood the admin stream.
-        if count == @mode1_max_failures do
-          AdminEvents.record(AdminEventsWire.login_throttled(ip, count, @mode1_window_ms))
-        end
-
+        _ = LoginThrottle.charge(@mode1_bucket, ip, @mode1_window_ms, @mode1_max_failures)
         err
     end
   end
@@ -658,14 +649,13 @@ defmodule GrappaWeb.AuthController do
   # server's problems.
   @spec record_visitor_failure(String.t() | nil, Login.login_error()) :: :ok
   defp record_visitor_failure(ip, :password_mismatch) do
-    count = FailureWindow.record_failure(@visitor_login_bucket, ip, @visitor_login_window_ms)
-
-    # Exactly-once-per-window operator signal, on the crossing failure
-    # only — same discipline as the mode-1 emitter, so a spray cannot
-    # flood the admin stream with its own rejections.
-    if count == @visitor_login_max_failures do
-      AdminEvents.record(AdminEventsWire.login_throttled(ip, count, @visitor_login_window_ms))
-    end
+    _ =
+      LoginThrottle.charge(
+        @visitor_login_bucket,
+        ip,
+        @visitor_login_window_ms,
+        @visitor_login_max_failures
+      )
 
     :ok
   end

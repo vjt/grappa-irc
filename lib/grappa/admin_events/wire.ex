@@ -340,18 +340,57 @@ defmodule Grappa.AdminEvents.Wire do
         }
 
   @typedoc """
-  S6 (review 2026-07-19) — a source IP crossed the mode-1 login
-  failure threshold and is now throttled for the rest of its window.
-  Emitted ONCE per (ip, window) — on the exact limit-crossing failure,
-  not on every subsequently rejected request — so a spray can't flood
-  the admin stream with its own rejections.
+  Which credential door's window shut. The atom IS the
+  `Grappa.RateLimit.FailureWindow` bucket, so the door is DERIVED from
+  the counter rather than tracked beside it.
+  """
+  @type login_throttle_door ::
+          :mode1_login
+          | :visitor_login
+          | :totp_login
+          | :passkey_recovery
+          | :passkey_login_options
+
+  @login_throttle_doors [
+    :mode1_login,
+    :visitor_login,
+    :totp_login,
+    :passkey_recovery,
+    :passkey_login_options
+  ]
+
+  @typedoc """
+  Which KEY of the door crossed. `:totp_login` and `:passkey_recovery`
+  each carry two rows — a fine `{ip, account}` limit and a coarse `ip`
+  ceiling — and the two mean different incidents: the fine key says one
+  account is being hammered from that address, the ceiling says the
+  address is spraying across accounts.
+  """
+  @type login_throttle_scope :: :ip | :ip_account
+
+  @typedoc """
+  S6 (review 2026-07-19) — a credential door's failure window shut for
+  the rest of its window. Emitted ONCE per (bucket, key, window) — on the
+  exact limit-crossing failure, not on every subsequently rejected
+  request — so a spray can't flood the admin stream with its own
+  rejections.
+
+  `door` + `scope` + `source_ip` together name the exact
+  `FailureWindow` row that crossed; without them seven windows would
+  render as one indistinguishable line. Both are `optional` and a client
+  MUST tolerate their absence: the ring is mirrored to disk and reloaded
+  at boot (#215 Option B), so after this upgrade the Events tab still
+  serves `login_throttled` rows minted by a server that predates the
+  fields.
   """
   @type login_throttled_event :: %{
-          kind: :login_throttled,
-          source_ip: String.t() | nil,
-          failures: pos_integer(),
-          window_ms: pos_integer(),
-          at: String.t()
+          required(:kind) => :login_throttled,
+          required(:source_ip) => String.t() | nil,
+          required(:failures) => pos_integer(),
+          required(:window_ms) => pos_integer(),
+          required(:at) => String.t(),
+          optional(:door) => login_throttle_door(),
+          optional(:scope) => login_throttle_scope()
         }
 
   @typedoc """
@@ -1107,13 +1146,21 @@ defmodule Grappa.AdminEvents.Wire do
   end
 
   @doc false
-  @spec login_throttled(String.t() | nil, pos_integer(), pos_integer()) ::
-          login_throttled_event()
-  def login_throttled(source_ip, failures, window_ms)
-      when (is_binary(source_ip) or is_nil(source_ip)) and is_integer(failures) and
+  @spec login_throttled(
+          login_throttle_door(),
+          login_throttle_scope(),
+          String.t() | nil,
+          pos_integer(),
+          pos_integer()
+        ) :: login_throttled_event()
+  def login_throttled(door, scope, source_ip, failures, window_ms)
+      when door in @login_throttle_doors and scope in [:ip, :ip_account] and
+             (is_binary(source_ip) or is_nil(source_ip)) and is_integer(failures) and
              failures > 0 and is_integer(window_ms) and window_ms > 0 do
     %{
       kind: :login_throttled,
+      door: door,
+      scope: scope,
       source_ip: source_ip,
       failures: failures,
       window_ms: window_ms,
