@@ -951,7 +951,7 @@ defmodule Grappa.Session.EventRouterTest do
     # the allowlist no longer decides anything — a non-allowlist nick with no
     # open window lands on `$server` too. The test stays because the OUTCOME
     # is still the contract; the allowlist's remaining job is the PRIVMSG
-    # door (see the `Conserv` PRIVMSG guard below).
+    # door, guarded by the `Conserv` test in the `:privmsg` describe.
     test "#371 SeenServ / StatServ / DebugServ NOTICEs route to $server" do
       state = base_state()
 
@@ -969,26 +969,18 @@ defmodule Grappa.Session.EventRouterTest do
       end
     end
 
-    # UX-4 bucket G — closed-allowlist regression guard: ops nicks that
-    # end in "serv" (Conserv, Dataserv, Reserv on real networks) used to
-    # match the `~r/Serv$/i` regex and route to $server, swallowing the
-    # operator's query-window content. #546 moved this guard to the PRIVMSG
-    # door: on the NOTICE door the allowlist stopped discriminating (both
-    # arms take the open-window test), so a NOTICE-shaped assertion could no
-    # longer tell a re-broadened allowlist from the general rule. A PRIVMSG
-    # still can — a services PRIVMSG re-keys to `$server`, a peer's does not.
-    test "ops nick Conserv (ends in -serv but not in allowlist) keeps its PRIVMSG query window" do
-      state = base_state()
-
-      m =
-        msg(:privmsg, ["vjt", "you got opped"], {:nick, "Conserv", "u", "host.example.com"})
-
-      assert {:cont, ^state, [{:persist, :privmsg, attrs}]} =
-               EventRouter.route(m, state)
-
-      assert attrs.channel == "vjt"
-      assert attrs.sender == "Conserv"
-    end
+    # UX-4 bucket G's closed-allowlist regression guard (ops nicks ending in
+    # "serv" — Conserv, Dataserv — must not be swallowed into `$server`)
+    # used to live HERE as a NOTICE. #546 deleted it from this door rather
+    # than rewriting it: the allowlist no longer discriminates on the NOTICE
+    # door (both arms take the open-window test), so a NOTICE-shaped
+    # assertion could not fail if somebody re-broadened the allowlist, and a
+    # guard that cannot fail is not a guard. The guard survives where it can
+    # still fail — the PRIVMSG door, which already carries it verbatim:
+    # "PRIVMSG from regular user nick (Conserv — not in allowlist) routes to
+    # query window (regression guard)" in the `:privmsg` describe. Verified
+    # by mutation, not by assumption: dropping `services_sender?/1` from
+    # `privmsg_default/3` turns that test red.
 
     # #546 — THE reversal. A NOTICE from a plain peer used to persist on
     # `channel = sender`, which `maybe_open_query_window/2` then turned into
