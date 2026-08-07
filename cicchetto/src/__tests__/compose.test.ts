@@ -2216,8 +2216,9 @@ describe("compose tabComplete (members-only, irssi-exact)", () => {
   it("folds case (not the bracket range) on the prefix match (#525)", async () => {
     // #525 CASEMAPPING=ascii: `[` is NOT folded, so a member `Foo[1]` and
     // the typed `foo[` are the SAME nick (case-only) and completion
-    // matches on the common `nick[away]` shape; a brace `foo{` would be a
-    // DIFFERENT nick.
+    // matches on the common `nick[away]` shape. A brace `foo{` is a
+    // DIFFERENT nick — but since #1003 it still REACHES `Foo[1]` on the
+    // decoration level, behind the literals; see the cousin test below.
     await setMembers(["Foo[1]"]);
     const compose = await import("../lib/compose");
     const r = compose.tabComplete(k, "foo[", 4, true);
@@ -2338,6 +2339,18 @@ describe("compose tabComplete (members-only, irssi-exact)", () => {
     expect(compose.tabComplete(k, "al", 2, true)?.newInput).toBe("alex: ");
     const draft = compose.getDraft(k);
     expect(compose.tabComplete(k, draft, draft.length, true)?.newInput).toBe("_alfa_: ");
+  });
+
+  // #525 vs #1003: the fold keeps `foo{` and `Foo[1]` DISTINCT identities,
+  // but the second completion level treats `{` and `[` alike — so `Foo[1]`
+  // IS offered, and strictly after every literal match. Pins the exact
+  // claim made in the matcher's comment.
+  it("offers a brace/bracket cousin only behind the literal matches", async () => {
+    await setMembers(["foo{x}", "Foo[1]"]);
+    const compose = await import("../lib/compose");
+    expect(compose.tabComplete(k, "foo{", 4, true)?.newInput).toBe("foo{x}: ");
+    const draft = compose.getDraft(k);
+    expect(compose.tabComplete(k, draft, draft.length, true)?.newInput).toBe("Foo[1]: ");
   });
 
   it("a decoration-only word matches nothing (it would match everyone)", async () => {

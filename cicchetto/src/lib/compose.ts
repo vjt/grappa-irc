@@ -1932,10 +1932,18 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       anchorStart = start;
       // ASCII fold (not a bare toLowerCase) so `Foo` completes a member
       // `foo` — bahamut is CASEMAPPING=ascii (#525), folding `A-Z` ONLY.
-      // `[ ] \ ~` are NOT folded, so `foo{` does NOT complete `Foo[1]`
-      // (they are DISTINCT nicks). toLowerCase is avoided because it
-      // Unicode-over-folds non-ASCII (`CAFÉ`→`café`), not the brackets.
-      // Mirror of `Grappa.IRC.Identifier.canonical_nick/1`.
+      // `[ ] \ ~` are NOT folded, so for IDENTITY `foo{` and `Foo[1]` stay
+      // DISTINCT nicks. toLowerCase is avoided because it Unicode-over-folds
+      // non-ASCII (`CAFÉ`→`café`), not the brackets. Mirror of
+      // `Grappa.IRC.Identifier.canonical_nick/1`.
+      //
+      // Careful, this is only HALF the completion rule (#1003): the second
+      // level below counts `{ | }` as decoration alongside `[ ] \`, so
+      // `foo{<TAB>` CAN reach `Foo[1]` — strictly BEHIND every literal
+      // match, never displacing one. That is not an identity merge and does
+      // not soften #525: nothing here is a key, and what gets inserted is
+      // always the real nick. Keep both halves stated — a reader who sees
+      // only this paragraph will "fix" the second level as a leftover.
       prefix = asciiFold(typedWord);
       // ": " only when the word is the first token on the line — and only
       // for a NICK. A channel is a topic of conversation, never an
