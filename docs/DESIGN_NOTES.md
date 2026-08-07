@@ -32799,9 +32799,21 @@ which sinks as its test-only seam grows.
 
 Nine modules in `lib/` carry such a seam (the issue listed seven; it missed
 `GrappaWeb.PasskeyOrigin` and `Grappa.RateLimit.RequestBudget`).
-`Grappa.Repo.BusyRetry` was simply the first to cross doctor's 40% floor: #594
-added one more test-gated helper and took it 43% → 38%, reddening the gate over
-a seam the test-env doctor scores at 100%.
+`Grappa.Repo.BusyRetry` sits closest to doctor's 40% floor. **The issue's
+motivating red is real but historical, and no longer reproducible — checked,
+not assumed.** Measured on this tree, the `:dev` doctor scores BusyRetry 43%
+doc / 43% spec (four phantom "No Docs" AND four phantom "No Specs") and PASSES,
+where the `:test` doctor scores it 100/100. The 38% red existed at `bf74899e`,
+where `arm_faults` still had two arities: three documented functions out of
+eight is 37.5%, under the floor. The very next commit of the same #594,
+`2b42190a`, collapsed those arities — for an unrelated design reason, a default
+argument in disguise, as the surviving comment in `busy_retry.ex` says outright
+("the 40%-doctor-floor artifact #621 is a side effect, not the reason") — and
+took it back to 43%.
+
+So this change fixes no live red. What it removes is a three-point margin, and
+a scoring lie that the `:test` doctor never tells. That is the honest case for
+it; "the gate is red" would not have been.
 
 **The issue's first option rested on a premise that does not hold, and checking
 it changed the cure rather than confirming it.** The issue proposed a
@@ -32845,6 +32857,33 @@ GH, but none of them derives its file set from `elixirc_paths`: credo takes
 format are path-based. Doctor was the one tool that reads the beam, which is
 exactly why #75 was a doctor-specific incident. The remaining env divergence is
 pre-existing and untouched here.
+
+**Proven by mutation, in four passes.** Exit codes only, never a grep of the
+output; `scripts/mix.sh --env=test doctor` throughout unless stated.
+
+1. **Baseline** — clean tree, **exit 0**. 313 modules, 0 failed. The listing
+   includes `test/support` modules (`Grappa.WireFixture`, `Grappa.PtrTestResolver`,
+   …), so the superset claim above is observed and not merely argued.
+2. **MUT-A, and the floor's grain.** Stripping ONE `@doc` from an
+   always-compiled function of `busy_retry.ex` left the gate **exit 0** — the
+   module read 86%, one "No Doc". The mutation LANDED and was scored; it simply
+   did not cross a 40% floor. Recorded because a green here means "mutation
+   below the threshold", not "gate asleep", and the two are easy to confuse.
+   Stripping five of the module's seven — 29% — went **exit 1**, one failed
+   module. The floor still bites, on #621's own module, in `:test`.
+3. **MUT-B, the one that could have condemned the cure.** Stripping the single
+   `@doc` from `test/support/themes_image_fetcher_test_resolver.ex` — the exact
+   module named in the #75 post-mortem — went **exit 1** at 0%. The guard #75
+   bought is intact: it moved into the alias, it was not deleted.
+4. **The counterfactual, which is what makes 3 non-circular.** The SAME MUT-B
+   run against `mix doctor` in `:dev` — the run this change removes — is
+   **exit 0**. It never names the module at all: 297 modules against `:test`'s
+   313. The dev run is not lenient about `test/support`, it is blind to it. So
+   of the two runs `check.sh` used to have, the one carrying the #75 guard is
+   precisely the one kept.
+
+Both mutations were reverted and the baseline re-run green (313 / 0 failed,
+both targets back at 100%) before this was written.
 
 **Rejected.** Raising the 40% floor so `BusyRetry` fits — the count is what is
 dishonest, not the threshold, and moving a threshold to admit a failing subject

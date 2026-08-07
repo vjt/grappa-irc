@@ -343,10 +343,16 @@ defmodule Grappa.MixProject do
         # `if Mix.env() == :test do … end` block is counted-but-unscored:
         # present in the count, absent from the beam, filed as "No Docs" AND
         # "No Specs" even with `@doc false` + a full `@spec`. Nine modules in
-        # `lib/` carry such a seam today; `Repo.BusyRetry` was simply the
-        # first whose ratio crossed doctor's 40% floor (43% → 38% when #594
-        # added one more test-gated helper), reddening the gate over a seam
-        # the test-env doctor scores at 100%.
+        # `lib/` carry such a seam today. `Repo.BusyRetry` is the closest to
+        # the floor: measured, :dev scores it 43% doc / 43% spec (4 phantom
+        # "No Docs" AND 4 phantom "No Specs") where :test scores it 100/100.
+        # It DID cross doctor's 40% floor once — at bf74899e, where
+        # `arm_faults` had two arities, so 3 documented of 8 = 38%, red. The
+        # next commit of the same #594, 2b42190a, collapsed those arities for
+        # an unrelated design reason (a default argument in disguise) and took
+        # it back to 43%. So the gate is GREEN on main today and this change
+        # fixes no live red — it removes a 3-point margin under which the next
+        # seam to grow lands, on a lie the test-env doctor never tells.
         #
         # :test loses no coverage — it is a strict superset. `elixirc_paths`
         # adds `test/support` there (which is why the GH workflow's single
