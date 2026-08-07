@@ -69,21 +69,73 @@ async function openThemesGalleryMobile(page: PWPage): Promise<void> {
   await expect(page.getByTestId("theme-gallery")).toBeVisible({ timeout: 5_000 });
 }
 
-// #963 — the font <select>'s computed colour, plus the computed colour of the
-// name <input> beside it as the ORACLE. Both are read from the LIVE cascade:
-// the name field is an <input>, so the global form-control rule already gives
-// it `color: var(--fg)`, and the select must resolve to the same value from
-// that same rule. Never a literal — a hardcoded expected colour would pass on
-// a theme whose `--fg` happened to be black, which is the exact confusion this
-// bug is made of.
-function readEditorControlColors(page: PWPage): Promise<{ select: string; input: string }> {
-  return page.evaluate(() => {
-    const read = (id: string) => {
-      const el = document.querySelector(`[data-testid="${id}"]`);
-      return el ? getComputedStyle(el).color : "";
+// #963 — the legibility of a control, measured in PIXELS.
+//
+// The first version of this asked `getComputedStyle`, and computed style is
+// the wrong instrument twice over for this defect. On WebKit the native
+// menulist chrome paints its own fill OVER `background`, so the cascade said
+// legible while the control was not; and under `devices["iPhone 15"]`
+// emulation, a page carrying a <select> with <option>s makes
+// `getComputedStyle` hand back DEFAULT values for a subset of nodes (a <body>
+// reporting black while its own <input> child reports `#e0e0e0` is a read
+// artefact, not a cascade any engine can produce). What the user sees is the
+// pixels, so the pixels are the oracle: screenshot the control, histogram its
+// interior, and take the WCAG contrast between what fills it and what is
+// written on it.
+//
+// No colour literal is involved — the fill and the ink are both whatever the
+// engine painted. The only constant is WCAG's 4.5:1 floor for text.
+const WCAG_TEXT_CONTRAST_FLOOR = 4.5;
+
+// Contrast of the painted control: dominant interior colour (the fill) vs the
+// most frequent colour far enough from it to be ink (glyphs, caret). Null when
+// nothing is written on the control — a control with no ink would otherwise
+// score infinite contrast and pass vacuously.
+async function paintedContrast(page: PWPage, testId: string): Promise<number | null> {
+  const shot = (await page.getByTestId(testId).screenshot()).toString("base64");
+  return page.evaluate(async (b64: string) => {
+    const img = new Image();
+    img.src = `data:image/png;base64,${b64}`;
+    await img.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    if (ctx === null) return null;
+    ctx.drawImage(img, 0, 0);
+
+    // Inset past the border (1 CSS px, up to 3 device px at dsf 3) and the
+    // rounded corners, so only the control's own surface is sampled.
+    const inset = 7;
+    const w = canvas.width - 2 * inset;
+    const h = canvas.height - 2 * inset;
+    if (w <= 0 || h <= 0) return null;
+    const { data } = ctx.getImageData(inset, inset, w, h);
+
+    const counts = new Map<number, number>();
+    for (let i = 0; i < data.length; i += 4) {
+      const key = (data[i] << 16) | (data[i + 1] << 8) | data[i + 2];
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const byFrequency = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    const fill = byFrequency[0][0];
+    const rgb = (k: number) => [(k >> 16) & 255, (k >> 8) & 255, k & 255];
+    const far = (k: number) =>
+      Math.max(...rgb(k).map((c, i) => Math.abs(c - rgb(fill)[i]))) > 40;
+    const ink = byFrequency.find(([k]) => far(k));
+    if (ink === undefined) return null;
+
+    const luminance = (k: number) => {
+      const [r, g, b] = rgb(k).map((c) => {
+        const s = c / 255;
+        return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
     };
-    return { select: read("theme-editor-font"), input: read("theme-editor-name") };
-  });
+    const a = luminance(fill);
+    const b = luminance(ink[0]);
+    return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+  }, shot);
 }
 
 test.describe("#75 — theme editor (producer path)", () => {
@@ -154,52 +206,73 @@ test.describe("#75 — theme editor (producer path)", () => {
     await expect.poll(() => readAccent(page), { timeout: 5_000 }).toBe(accentPreOpen);
   });
 
-  // #963 — a <select> does NOT inherit color: the UA paints it `fieldtext`
-  // (black), which on a dark theme is black-on-dark. jsdom is blind to this
-  // (no UA stylesheet, no computed cascade), so the assertion has to run in a
-  // real engine.
+  // #963 — the font <select> has to be READABLE, which is a fact about pixels,
+  // not about the cascade. jsdom has neither, so the assertion is e2e.
   //
   // It runs on BOTH engines, as a tagged/untagged PAIR, because the two
   // Playwright projects PARTITION the suite: chromium takes `grepInvert:
   // /@webkit/`, webkit-iphone-15 takes `grep: /@webkit/`, so a single test can
-  // only ever reach one of them. A defect whose whole mechanism is a UA
-  // default (`fieldtext`) has to be measured on the UA that matters most for
-  // cic — Safari on iOS — and not inferred from Chrome. Same shape as
-  // `issue962-settings-drawer-row-squash.spec.ts`.
-  test("font select takes its color from the control rule, like a sibling input", async ({
-    page,
-  }) => {
+  // only ever reach one of them. That partition is load-bearing here: the two
+  // engines painted this control DIFFERENTLY (Chromium honoured `background`
+  // on a menulist, WebKit covered it with native chrome), so a green on one
+  // says nothing about the other — and cic's engine that matters most is
+  // Safari. Same shape as `issue962-settings-drawer-row-squash.spec.ts`.
+  test("font select is legible — painted fill vs painted text clears WCAG", async ({ page }) => {
     await loginAs(page, getSeededVjt());
     await openThemesGalleryDesktop(page);
 
     await page.getByTestId("theme-new").click();
     await expect(page.getByTestId("theme-editor")).toBeVisible({ timeout: 5_000 });
 
-    const painted = await readEditorControlColors(page);
-
-    // Guard the oracle: an empty/absent input color would make the equality
-    // vacuous.
-    expect(painted.input).not.toBe("");
-    expect(painted.select).toBe(painted.input);
+    await expect
+      .poll(() => paintedContrast(page, "theme-editor-font"), { timeout: 5_000 })
+      .toBeGreaterThanOrEqual(WCAG_TEXT_CONTRAST_FLOOR);
 
     await page.getByTestId("theme-editor-cancel-btn").click();
   });
 
-  test("@webkit #963 — font select takes its color from the control rule (iPhone)", async ({
-    page,
-  }) => {
+  test("@webkit #963 — font select is legible on the iPhone leg too", async ({ page }) => {
     await loginAs(page, getSeededVjt());
     await openThemesGalleryMobile(page);
 
     await page.getByTestId("theme-new").tap();
     await expect(page.getByTestId("theme-editor")).toBeVisible({ timeout: 5_000 });
 
-    const painted = await readEditorControlColors(page);
-
-    expect(painted.input).not.toBe("");
-    expect(painted.select).toBe(painted.input);
+    await expect
+      .poll(() => paintedContrast(page, "theme-editor-font"), { timeout: 5_000 })
+      .toBeGreaterThanOrEqual(WCAG_TEXT_CONTRAST_FLOOR);
 
     await page.getByTestId("theme-editor-cancel-btn").tap();
+  });
+
+  // #963 part B — `color-scheme`. `appearance: none` makes the CLOSED select
+  // ours, but the OPEN list of <option>s stays the UA's to paint (that is the
+  // point of keeping a real <select>: the system picker). The UA only knows
+  // which way to paint it if told, and it cannot be told a literal: cic ships
+  // a light theme, a dark theme and an editor that overrides `--bg` live. So
+  // the declaration is DERIVED from the theme that is painting — which is
+  // exactly what this asserts, by driving the theme from one end of the range
+  // to the other through the editor's own live preview and watching the
+  // derivation follow. A mirror of the implementation would compute the
+  // expected value the same way the product does; white and black instead
+  // carry their own answer.
+  test("the UA's own surfaces follow the theme — color-scheme tracks --bg", async ({ page }) => {
+    await loginAs(page, getSeededVjt());
+    await openThemesGalleryDesktop(page);
+
+    await page.getByTestId("theme-new").click();
+    await expect(page.getByTestId("theme-editor")).toBeVisible({ timeout: 5_000 });
+
+    const scheme = () =>
+      page.evaluate(() => getComputedStyle(document.documentElement).colorScheme);
+
+    await setEditorColor(page, "bg", "#ffffff");
+    await expect.poll(scheme, { timeout: 5_000 }).toBe("light");
+
+    await setEditorColor(page, "bg", "#000000");
+    await expect.poll(scheme, { timeout: 5_000 }).toBe("dark");
+
+    await page.getByTestId("theme-editor-cancel-btn").click();
   });
 
   test("self-hosted font applies live from same-origin /fonts (no CDN)", async ({ page }) => {
