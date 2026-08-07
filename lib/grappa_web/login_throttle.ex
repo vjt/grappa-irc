@@ -74,6 +74,6 @@ defmodule GrappaWeb.LoginThrottle do
   end
 
   @spec attribute(key()) :: {Wire.login_throttle_scope(), String.t() | nil}
-  defp attribute({source_ip, _account}), do: {:ip_account, source_ip}
+  defp attribute({source_ip, _}), do: {:ip_account, source_ip}
   defp attribute(source_ip), do: {:ip, source_ip}
 end

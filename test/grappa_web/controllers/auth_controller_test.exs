@@ -26,6 +26,7 @@ defmodule GrappaWeb.AuthControllerTest do
   alias Grappa.Accounts.{Passkey, TOTP}
   alias Grappa.AdmissionStateHelpers
   alias Grappa.Networks.Credential
+  alias Grappa.PubSub.Topic
   alias Grappa.RateLimit.FailureWindow
   alias Grappa.Session.Server, as: SessionServer
   alias Grappa.Visitors.Visitor
@@ -1391,7 +1392,7 @@ defmodule GrappaWeb.AuthControllerTest do
 
     test "crossing the limit emits :login_throttled exactly once", %{conn: conn} do
       {user, _} = user_fixture_with_password()
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Grappa.PubSub.Topic.admin_events())
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
 
       for _ <- 1..10, do: wrong_login(conn, user, 5)
 
@@ -1528,7 +1529,7 @@ defmodule GrappaWeb.AuthControllerTest do
       {user, password} = user_fixture_with_password()
       secret = arm_totp(user)
       wrong = wrong_totp_code(secret, System.system_time(:second))
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Grappa.PubSub.Topic.admin_events())
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
 
       pending =
         conn
@@ -1559,7 +1560,7 @@ defmodule GrappaWeb.AuthControllerTest do
     end
 
     test "the address ceiling names its own crossing", %{conn: conn} do
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Grappa.PubSub.Topic.admin_events())
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
 
       # Three accounts, ten each: no per-account key ever passes ten, so
       # only the ceiling can be the thing that crossed at thirty.
@@ -1656,7 +1657,7 @@ defmodule GrappaWeb.AuthControllerTest do
     end
 
     test "crossing the limit emits :login_throttled exactly once", %{conn: conn} do
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Grappa.PubSub.Topic.admin_events())
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.admin_events())
 
       for _ <- 1..10, do: wrong_visitor_login(conn, 16)
 
