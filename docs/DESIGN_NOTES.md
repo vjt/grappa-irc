@@ -32202,3 +32202,67 @@ true there and FALSE here: services accept a RESETPASS from an unidentified
 user — that is what the verb is for. All grappa lacks in that case is a
 stored secret to rotate, and the follow-up IDENTIFY binds the new one
 through the ordinary `+r` rendezvous.
+
+## 2026-08-07 — the lifecycle verbs move to the rail, and learn to say what they destroy (#986)
+
+`detach` and `quit` left the settings drawer for the **rail actions menu**,
+each behind the shared #195 confirm modal. The `@` mentions door moved with
+them, off `.shell-chrome`; the drawer's `admin console` entry was deleted
+outright as a duplicate. Four moves, one destination, one reason each.
+
+**The modal body is subject-routed because the consequence is.** The control
+this replaces was an `InlineConfirmButton` two-tap that said *"really quit
+IRC?"* — the same six words to a registered user, whose account and
+scrollback survive a park-all untouched, and to an anonymous visitor, whose
+row the server HARD-DELETES on the way out (`Visitors.purge_if_anon` →
+`destroy_visitor`, CASCADE). Those are not the same event, so `confirmQuit`
+picks one of three sentences and `confirmDetach` a fourth. The split lives in
+`lib/lifecycle.ts`, beside the verbs, exactly as `windowClose.ts` colocates
+`confirmLeaveChannel` with the PART it fires: copy that drifts from its verb
+is a modal that lies, and colocation is the only structural defence.
+
+The split ROUTES on `isPersistentIdentity` — the shared #477 predicate,
+reused not re-derived, so the affordance (`canDetach()`) and the teardown
+(`quit()`) cannot answer the persistence question differently. Only INSIDE
+the persistent arm does `kind` choose between the user's noun (an account you
+log back into) and the visitor's (a registered session you re-identify to);
+the teardown for both is one `quitAll`. The not-yet-loaded null subject takes
+the ephemeral copy because that is the arm `quit()` routes it to.
+
+**One typed gate in the product, and it is not here.** vjt's ruling:
+`delete account` keeps its type-your-name modal, for BOTH registered subjects
+(a registered visitor's delete is `AccountDeletion.delete_account/1`, "the
+ONLY door that destroys the persistent identity"), because the gate is about
+IRREVERSIBILITY, not subject kind. detach and quit explain and ask. No
+friction was added for symmetry — the value is in saying it BEFORE the tap.
+`delete account` therefore did NOT move; it stays in settings and its
+geometry is #987.
+
+**The two-tap component is not retired; its use as a lifecycle gate is.**
+`InlineConfirmButton` still serves ~20 call sites (every admin tab, passkeys,
+vhost reconnect, archive delete) unchanged. Only the two settings-drawer
+copies died, and the drawer entries died with them: two doors to a
+destructive verb, one confirmed and one not, is worse than either alone.
+
+**`@` mentions drops its form-factor gate.** In `.shell-chrome` it was
+`isMobile() && bundle`, because on desktop it would have duplicated the
+Sidebar mentions row (#71 INC-2). In the rail it is bundle-gated only:
+#473 already ruled the rail carries the same set on both form factors, and
+`home` is the standing precedent for a rail launcher that doubles a sidebar
+row. Keeping the gate would have been the one thing `RailActions` documents
+that it never does. This is what lets #985 drop the whole band — what is left
+in `ShellChrome` is a lone ☰.
+
+**Removing the drawer's admin entry retired a latent e2e flake.** ~20 admin
+specs hand-rolled `admin-console-entry.click()`, and `openAdminConsole` had
+grown a `not.toBeInViewport()` wait because that entry CLOSES the drawer,
+which slides out over 200ms at z-index 100 anchored right — long enough to
+swallow a click aimed at the 9th admin tab (~9% flake once #508's iOS font
+floor perturbed the timing). The rail launcher opens no drawer, so the wait
+has no subject any more. Every one of those specs now goes through the
+primitive; the migration the old comment tracked as a follow-up is done.
+
+**Unmeasured, declared:** `.logout` carried `margin-top: auto`, which pushed
+the tail of the drawer's button stack to the floor. Nothing inherits it — the
+index above overflows in every shipped viewport, where an auto margin buys
+nothing — but that is reasoning, not a screenshot.
