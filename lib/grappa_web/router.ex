@@ -377,6 +377,9 @@ defmodule GrappaWeb.Router do
     # POST here → server stores endpoint+keys for B2's Push.Sender.
     get "/push/subscriptions", PushSubscriptionController, :index
     post "/push/subscriptions", PushSubscriptionController, :create
+    # #964 — inline rename from the device row. The label is the only
+    # user-writable field on a subscription.
+    patch "/push/subscriptions/:id", PushSubscriptionController, :update
     delete "/push/subscriptions/:id", PushSubscriptionController, :delete
 
     # UX-6-B1 (2026-05-20): embedded image uploader — authenticated

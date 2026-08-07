@@ -5,9 +5,17 @@ defmodule Grappa.Push.Subscription do
 
   Push notifications cluster B1 (2026-05-14). Stores the three opaque
   fields the W3C Push API hands out (`endpoint`, `p256dh_key`,
-  `auth_key`) plus per-device metadata (`user_agent`, `last_used_at`)
-  that drives the "see + revoke my devices" UX in the cic settings
-  drawer (B3).
+  `auth_key`) plus per-device metadata (`user_agent`, `last_used_at`,
+  `label`) that drives the "see + revoke my devices" UX in the cic
+  settings drawer (B3).
+
+  ## `label` — the only user-writable field (#964)
+
+  Nullable, set through `label_changeset/2` alone. NULL means "no
+  label" and the client falls back to a derived name. The ordinal that
+  disambiguates two same-browser devices is deliberately NOT a column:
+  it is a function of how many rows currently share a parsed name, so a
+  stored copy strands a lone `#2` the moment `#1` is deleted.
 
   ## Subject XOR
 
@@ -57,6 +65,7 @@ defmodule Grappa.Push.Subscription do
           p256dh_key: String.t() | nil,
           auth_key: String.t() | nil,
           user_agent: String.t() | nil,
+          label: String.t() | nil,
           last_used_at: DateTime.t() | nil,
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
@@ -72,6 +81,7 @@ defmodule Grappa.Push.Subscription do
     field :p256dh_key, :string
     field :auth_key, :string
     field :user_agent, :string
+    field :label, :string
     field :last_used_at, :utc_datetime_usec
 
     timestamps(type: :utc_datetime_usec)
@@ -87,8 +97,18 @@ defmodule Grappa.Push.Subscription do
   # `Ecto.Changeset.change/2` path after a successful B2 Sender
   # delivery). A caller cannot supply an arbitrary timestamp on
   # create. `user_agent` IS optional; B1 review (B1.r1, 2026-05-14).
+  # `label` is likewise absent from the allowlist: it is the ONE
+  # user-writable field, it is never known at registration time (the
+  # browser has nothing to name itself with — see #964 on why the machine
+  # hostname is not reachable from a page), and it travels on its own
+  # `label_changeset/2` so a POST body cannot widen the create surface.
   @optional ~w(user_agent)a
   @subject ~w(user_id visitor_id)a
+
+  # Graphemes, not bytes — the cap bounds what the drawer renders, and the
+  # drawer renders characters. Roomy enough for "MacBook del lavoro",
+  # tight enough that the row keeps its ellipsis instead of wrapping.
+  @label_max 64
 
   @doc """
   Insert / update changeset.
@@ -148,6 +168,49 @@ defmodule Grappa.Push.Subscription do
       message: "user_id and visitor_id are mutually exclusive"
     )
   end
+
+  @doc """
+  Rename changeset — the ONE user-writable field on a subscription (#964).
+
+  Separate from `changeset/2` on purpose: `label` is not knowable at
+  registration, so keeping it off the create allowlist means the POST
+  surface cannot grow a field by accident, and this changeset cannot be
+  talked into touching an endpoint or a key.
+
+  The stored contract, and who enforces each half:
+
+    * **blank → NULL**, so "cleared" has exactly ONE representation and
+      the read side tests `is_nil/1` and never also `== ""`. This is what
+      makes clearing the label fall back to the derived
+      `Browser on OS [#n]` default instead of rendering an empty name.
+      Enforced by `cast/3` itself: its default `:empty_values` already
+      folds `""` AND a whitespace-only string to `nil`. Measured, not
+      assumed — a hand-written blank arm here was proven dead by removing
+      it and watching the blank/whitespace tests stay green. The tests
+      pin the CONTRACT, so it survives whoever implements it.
+    * **trim** of a non-blank value — a label is a display string, and
+      invisible padding would make two labels compare unequal. This half
+      Ecto does NOT do, so it lives here.
+    * **cap at #{@label_max} graphemes**, applied AFTER the trim, so a
+      value that only exceeds the cap by padding is accepted rather than
+      rejected on characters the user cannot see.
+
+  A non-string value fails `cast/3` with `"is invalid"`; the controller
+  rejects that shape earlier with a 400 so the 422 envelope stays about
+  values, not types.
+  """
+  @spec label_changeset(t(), map()) :: Ecto.Changeset.t()
+  def label_changeset(%__MODULE__{} = sub, attrs) do
+    sub
+    |> cast(attrs, [:label])
+    |> update_change(:label, &normalize_label/1)
+    |> validate_length(:label, max: @label_max)
+  end
+
+  @spec normalize_label(String.t() | nil) :: String.t() | nil
+  defp normalize_label(nil), do: nil
+
+  defp normalize_label(label) when is_binary(label), do: String.trim(label)
 
   # Mirror of `Grappa.ReadCursor.Cursor.validate_subject_xor/1`.
   @spec validate_subject_xor(Ecto.Changeset.t()) :: Ecto.Changeset.t()

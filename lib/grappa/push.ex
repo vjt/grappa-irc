@@ -39,6 +39,7 @@ defmodule Grappa.Push do
       subject (sorted by `inserted_at`, most-recent first).
     * `get_for_subject/2` — fetch one by ID, scoped to subject (404
       if cross-subject).
+    * `update_label/2` — rename a device (#964); `nil`/blank clears.
     * `delete/1` — by struct.
     * `delete_dead/1` — by endpoint URL. Used by B2's `Push.Sender`
       when a vendor returns 404/410 for a stale subscription.
@@ -236,6 +237,26 @@ defmodule Grappa.Push do
   """
   @spec delete(Subscription.t()) :: {:ok, Subscription.t()} | {:error, Ecto.Changeset.t()}
   def delete(%Subscription{} = sub), do: Repo.delete(sub)
+
+  @doc """
+  Renames a subscription (#964). `nil` or a blank string clears the
+  label, and the client falls back to its derived default name.
+
+  Struct-in, for the same reason as `delete/1`: the caller must already
+  have loaded + scoped the row through `get_for_subject/2`, so a path
+  parameter cannot reach an UPDATE without passing the subject check.
+
+  Every normalisation (trim, blank → NULL, length cap) lives in
+  `Subscription.label_changeset/2` — this is user input and it does not
+  reach `Repo` without a changeset.
+  """
+  @spec update_label(Subscription.t(), String.t() | nil) ::
+          {:ok, Subscription.t()} | {:error, Ecto.Changeset.t()}
+  def update_label(%Subscription{} = sub, label) when is_binary(label) or is_nil(label) do
+    sub
+    |> Subscription.label_changeset(%{label: label})
+    |> Repo.update()
+  end
 
   @doc """
   Deletes any subscription matching the given endpoint URL,

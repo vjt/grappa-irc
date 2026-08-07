@@ -16,6 +16,10 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
     * DELETE cross-subject → 404 (probing protection).
     * DELETE unknown ID → 404.
     * user_agent header is captured + persisted on POST.
+    * PATCH (#964 rename): 200 + row summary, visitor parity, label
+      visible on the following GET, blank / null clears to NULL, 422
+      past the cap, 400 on a missing or non-string label, 404
+      cross-subject + unknown ID.
   """
   use GrappaWeb.ConnCase, async: true
 
@@ -49,6 +53,20 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
       nil -> base
       supersedes -> Map.put(base, "supersedes", supersedes)
     end
+  end
+
+  # #964 — a persisted subscription to rename. Carries a real UA so the
+  # renamed row can be checked to keep every field the PATCH must not touch.
+  defp subscription_for(subject, endpoint) do
+    {:ok, sub} =
+      Push.create(subject, %{
+        endpoint: endpoint,
+        p256dh_key: "k",
+        auth_key: "a",
+        user_agent: "Mozilla/5.0 (X11; Linux x86_64) Firefox/124.0"
+      })
+
+    sub
   end
 
   describe "POST /push/subscriptions — auth gating" do
@@ -357,6 +375,165 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
     test "404 on unknown UUID", %{conn: conn} do
       {_, session} = user_and_session()
       conn = conn |> put_bearer(session.id) |> delete("/push/subscriptions/#{Ecto.UUID.generate()}")
+      assert json_response(conn, 404) == %{"error" => "not_found"}
+    end
+  end
+
+  describe "PATCH /push/subscriptions/:id (#964 rename)" do
+    test "401 without bearer", %{conn: conn} do
+      conn = patch(conn, "/push/subscriptions/#{Ecto.UUID.generate()}", %{"label" => "x"})
+      assert json_response(conn, 401)
+    end
+
+    test "200 with the renamed row, and the list reads it back", %{conn: conn} do
+      {user, session} = user_and_session()
+      sub = subscription_for({:user, user.id}, "https://example.com/push/rename-#{uniq()}")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> patch("/push/subscriptions/#{sub.id}", %{"label" => "MacBook del lavoro"})
+
+      body = json_response(conn, 200)
+      assert body["id"] == sub.id
+      assert body["label"] == "MacBook del lavoro"
+      # Same summary shape the list rows carry, so cic can splice it back in.
+      assert body["user_agent"] == sub.user_agent
+      assert Map.has_key?(body, "created_at")
+      assert Map.has_key?(body, "last_used_at")
+      # Credential-grade material stays out of every response shape.
+      refute Map.has_key?(body, "endpoint")
+      refute Map.has_key?(body, "p256dh_key")
+
+      assert [%{label: "MacBook del lavoro"}] = Push.list_for_subject({:user, user.id})
+    end
+
+    test "200 for a visitor subject — V3 parity", %{conn: conn} do
+      {visitor, session} = visitor_and_session()
+      sub = subscription_for({:visitor, visitor.id}, "https://example.com/push/v-rename-#{uniq()}")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> patch("/push/subscriptions/#{sub.id}", %{"label" => "telefono"})
+
+      assert json_response(conn, 200)["label"] == "telefono"
+      assert [%{label: "telefono"}] = Push.list_for_subject({:visitor, visitor.id})
+    end
+
+    test "GET exposes the label after a rename", %{conn: conn} do
+      {user, session} = user_and_session()
+      sub = subscription_for({:user, user.id}, "https://example.com/push/label-index-#{uniq()}")
+
+      conn
+      |> put_bearer(session.id)
+      |> patch("/push/subscriptions/#{sub.id}", %{"label" => "fisso"})
+      |> json_response(200)
+
+      listed =
+        build_conn()
+        |> put_bearer(session.id)
+        |> get("/push/subscriptions")
+        |> json_response(200)
+
+      assert %{"subscriptions" => [only]} = listed
+      assert only["label"] == "fisso"
+    end
+
+    test "a blank label clears the row back to null", %{conn: conn} do
+      {user, session} = user_and_session()
+      sub = subscription_for({:user, user.id}, "https://example.com/push/clear-#{uniq()}")
+
+      conn
+      |> put_bearer(session.id)
+      |> patch("/push/subscriptions/#{sub.id}", %{"label" => "da cancellare"})
+      |> json_response(200)
+
+      cleared =
+        build_conn()
+        |> put_bearer(session.id)
+        |> patch("/push/subscriptions/#{sub.id}", %{"label" => "   "})
+        |> json_response(200)
+
+      assert cleared["label"] == nil
+    end
+
+    test "an explicit null clears the row too", %{conn: conn} do
+      {user, session} = user_and_session()
+      sub = subscription_for({:user, user.id}, "https://example.com/push/null-#{uniq()}")
+
+      conn
+      |> put_bearer(session.id)
+      |> patch("/push/subscriptions/#{sub.id}", %{"label" => "da cancellare"})
+      |> json_response(200)
+
+      cleared =
+        build_conn()
+        |> put_bearer(session.id)
+        |> patch("/push/subscriptions/#{sub.id}", %{"label" => nil})
+        |> json_response(200)
+
+      assert cleared["label"] == nil
+    end
+
+    test "422 past the length cap, and the stored label is untouched", %{conn: conn} do
+      {user, session} = user_and_session()
+      sub = subscription_for({:user, user.id}, "https://example.com/push/toolong-#{uniq()}")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> patch("/push/subscriptions/#{sub.id}", %{"label" => String.duplicate("a", 65)})
+
+      assert %{"error" => "validation_failed", "field_errors" => errors} =
+               json_response(conn, 422)
+
+      assert Map.has_key?(errors, "label")
+      assert [%{label: nil}] = Push.list_for_subject({:user, user.id})
+    end
+
+    test "400 when label is absent from the body", %{conn: conn} do
+      {user, session} = user_and_session()
+      sub = subscription_for({:user, user.id}, "https://example.com/push/nolabel-#{uniq()}")
+
+      conn = conn |> put_bearer(session.id) |> patch("/push/subscriptions/#{sub.id}", %{})
+      assert json_response(conn, 400)
+    end
+
+    test "400 when label is not a string", %{conn: conn} do
+      {user, session} = user_and_session()
+      sub = subscription_for({:user, user.id}, "https://example.com/push/badtype-#{uniq()}")
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> patch("/push/subscriptions/#{sub.id}", %{"label" => %{"nested" => true}})
+
+      assert json_response(conn, 400)
+    end
+
+    test "404 on cross-user rename (probing protection)", %{conn: conn} do
+      {alice, _} = user_and_session()
+      {_, bob_session} = user_and_session()
+      alice_sub = subscription_for({:user, alice.id}, "https://example.com/push/xrename-#{uniq()}")
+
+      conn =
+        conn
+        |> put_bearer(bob_session.id)
+        |> patch("/push/subscriptions/#{alice_sub.id}", %{"label" => "mio adesso"})
+
+      assert json_response(conn, 404) == %{"error" => "not_found"}
+      assert [%{label: nil}] = Push.list_for_subject({:user, alice.id})
+    end
+
+    test "404 on unknown UUID", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> patch("/push/subscriptions/#{Ecto.UUID.generate()}", %{"label" => "x"})
+
       assert json_response(conn, 404) == %{"error" => "not_found"}
     end
   end

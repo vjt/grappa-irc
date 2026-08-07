@@ -268,6 +268,94 @@ defmodule Grappa.PushTest do
     end
   end
 
+  describe "update_label/2 (#964)" do
+    test "a fresh subscription carries no label" do
+      user = user_fixture()
+      assert {:ok, %Subscription{label: nil}} = Push.create({:user, user.id}, valid_attrs())
+    end
+
+    test "create cannot set the label — it is not on the create allowlist" do
+      user = user_fixture()
+      attrs = Map.put(valid_attrs(), :label, "smuggled in at registration")
+      assert {:ok, %Subscription{label: nil}} = Push.create({:user, user.id}, attrs)
+    end
+
+    test "stores the label and the list reads it back" do
+      user = user_fixture()
+      {:ok, sub} = Push.create({:user, user.id}, valid_attrs())
+
+      assert {:ok, %Subscription{label: "MacBook del lavoro"}} =
+               Push.update_label(sub, "MacBook del lavoro")
+
+      assert [%Subscription{label: "MacBook del lavoro"}] =
+               Push.list_for_subject({:user, user.id})
+    end
+
+    test "trims surrounding whitespace" do
+      user = user_fixture()
+      {:ok, sub} = Push.create({:user, user.id}, valid_attrs())
+      assert {:ok, %Subscription{label: "telefono"}} = Push.update_label(sub, "  telefono \t ")
+    end
+
+    test "a blank string clears the label to NULL, not to an empty string" do
+      user = user_fixture()
+      {:ok, sub} = Push.create({:user, user.id}, valid_attrs())
+      {:ok, named} = Push.update_label(sub, "telefono")
+      assert {:ok, %Subscription{label: nil}} = Push.update_label(named, "")
+    end
+
+    test "a whitespace-only string clears the label too" do
+      user = user_fixture()
+      {:ok, sub} = Push.create({:user, user.id}, valid_attrs())
+      {:ok, named} = Push.update_label(sub, "telefono")
+      assert {:ok, %Subscription{label: nil}} = Push.update_label(named, "   ")
+    end
+
+    test "nil clears the label" do
+      user = user_fixture()
+      {:ok, sub} = Push.create({:user, user.id}, valid_attrs())
+      {:ok, named} = Push.update_label(sub, "telefono")
+      assert {:ok, %Subscription{label: nil}} = Push.update_label(named, nil)
+    end
+
+    test "rejects a label past the 64-grapheme cap" do
+      user = user_fixture()
+      {:ok, sub} = Push.create({:user, user.id}, valid_attrs())
+
+      assert {:error, %Ecto.Changeset{errors: errors}} =
+               Push.update_label(sub, String.duplicate("a", 65))
+
+      assert {_, opts} = errors[:label]
+      assert opts[:count] == 64
+    end
+
+    test "counts graphemes, not bytes — 64 multi-byte characters fit" do
+      user = user_fixture()
+      {:ok, sub} = Push.create({:user, user.id}, valid_attrs())
+      label = String.duplicate("è", 64)
+      assert {:ok, %Subscription{label: ^label}} = Push.update_label(sub, label)
+    end
+
+    test "the cap applies to the trimmed value, not the padded one" do
+      user = user_fixture()
+      {:ok, sub} = Push.create({:user, user.id}, valid_attrs())
+      padded = "   " <> String.duplicate("a", 64) <> "   "
+      expected = String.duplicate("a", 64)
+      assert {:ok, %Subscription{label: ^expected}} = Push.update_label(sub, padded)
+    end
+
+    test "renaming touches nothing but the label" do
+      user = user_fixture()
+      {:ok, sub} = Push.create({:user, user.id}, valid_attrs())
+      {:ok, renamed} = Push.update_label(sub, "telefono")
+      assert renamed.endpoint == sub.endpoint
+      assert renamed.p256dh_key == sub.p256dh_key
+      assert renamed.auth_key == sub.auth_key
+      assert renamed.user_agent == sub.user_agent
+      assert renamed.user_id == sub.user_id
+    end
+  end
+
   describe "touch_last_used/1" do
     test "sets last_used_at to a fresh timestamp" do
       user = user_fixture()
