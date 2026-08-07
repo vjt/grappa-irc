@@ -1408,6 +1408,113 @@ defmodule GrappaWeb.AuthControllerTest do
     end
   end
 
+  # The registered-visitor password gate has its own window (see
+  # `Grappa.Visitors.LoginTest` for the orchestrator contract). This is the
+  # wire half: without an explicit `visitor_error_response/4` clause the
+  # atom falls through to the catch-all and the door answers 500 while
+  # claiming to throttle. No IRC handshake anywhere below — a wrong
+  # password never dials, and neither does a throttled one.
+  # `:totp_login` was keyed on `{ip, user_id}` and nothing else — a key
+  # STRICTER than per-IP, so one address got its ten guesses per account
+  # with no bound on the total. `:passkey_recovery` already carries both
+  # dimensions (fine per account, coarse per IP); this brings the second
+  # factor to the same shape.
+  describe "POST /auth/totp/verify per-IP aggregate cap (:totp_login)" do
+    setup do
+      :ets.delete_all_objects(FailureWindow.table_name())
+      :ok
+    end
+
+    test "a fresh account is refused once the ADDRESS has spent the aggregate", %{conn: conn} do
+      # Each account's own `{ip, user_id}` key tops out at 10, so three
+      # accounts spend 30 failures from one address without any single key
+      # tripping. The fourth account's FIRST attempt has a clean per-account
+      # key: only the aggregate can refuse it.
+      spend = fn ->
+        {user, password} = user_fixture_with_password()
+        secret = arm_totp(user)
+        wrong = wrong_totp_code(secret, System.system_time(:second))
+
+        pending =
+          conn
+          |> with_ip(9)
+          |> post("/auth/login", %{"identifier" => user.name, "password" => password})
+          |> json_response(202)
+
+        for _ <- 1..10 do
+          assert conn
+                 |> with_ip(9)
+                 |> post("/auth/totp/verify", %{
+                   "challenge_token" => pending["challenge_token"],
+                   "code" => wrong
+                 })
+                 |> json_response(401) == %{"error" => "invalid_two_factor"}
+        end
+      end
+
+      for _ <- 1..3, do: spend.()
+
+      {fresh, password} = user_fixture_with_password()
+      secret = arm_totp(fresh)
+
+      pending =
+        conn
+        |> with_ip(9)
+        |> post("/auth/login", %{"identifier" => fresh.name, "password" => password})
+        |> json_response(202)
+
+      {:ok, code} = TOTP.code_at(secret, System.system_time(:second))
+
+      assert conn
+             |> with_ip(9)
+             |> post("/auth/totp/verify", %{
+               "challenge_token" => pending["challenge_token"],
+               "code" => code
+             })
+             |> json_response(429) == %{"error" => "too_many_attempts"}
+    end
+
+    test "another address is untouched by a spent one", %{conn: conn} do
+      {user, password} = user_fixture_with_password()
+      secret = arm_totp(user)
+      wrong = wrong_totp_code(secret, System.system_time(:second))
+
+      pending_a =
+        conn
+        |> with_ip(11)
+        |> post("/auth/login", %{"identifier" => user.name, "password" => password})
+        |> json_response(202)
+
+      for _ <- 1..10 do
+        conn
+        |> with_ip(11)
+        |> post("/auth/totp/verify", %{
+          "challenge_token" => pending_a["challenge_token"],
+          "code" => wrong
+        })
+      end
+
+      # Same account, another address: the aggregate is the attacker's own
+      # address, never the account's — so the real owner still gets in.
+      pending_b =
+        conn
+        |> with_ip(12)
+        |> post("/auth/login", %{"identifier" => user.name, "password" => password})
+        |> json_response(202)
+
+      {:ok, code} = TOTP.code_at(secret, System.system_time(:second))
+
+      assert conn
+             |> with_ip(12)
+             |> post("/auth/totp/verify", %{
+               "challenge_token" => pending_b["challenge_token"],
+               "code" => code
+             })
+             |> json_response(200)
+             |> Map.fetch!("token")
+    end
+  end
+
   # The registered-visitor password gate is the credential door with the
   # least standing under it — no KDF, no request budget, no captcha on this
   # branch. These pin the per-IP window that bounds it. No IRC handshake

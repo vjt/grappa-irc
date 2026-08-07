@@ -31776,6 +31776,7 @@ on a flex child, ask whether the parent has a fixed height. If it does, you
 have not set a minimum — you have replaced one, and handed the algorithm
 permission to use yours as the target.
 
+
 ## 2026-08-07 — the visitor password gate gets a window, keyed on the source IP alone
 
 `Grappa.RateLimit.FailureWindow` now stands in front of the visitor login
@@ -31834,3 +31835,24 @@ spend a visitor's own door on the server's problems. The test that pins the
 `:password_required` half would pass vacuously against the pre-fix tree, so it
 was proven by mutation — recording on every error branch turns it red.
 
+## 2026-08-07 — `:totp_login` gets the aggregate ceiling its siblings already had
+
+The second-factor window was keyed on `{ip, user_id}` and nothing else. That
+key is STRICTER than per-IP, not looser, which is exactly why it left a gap:
+one address got ten guesses PER ACCOUNT, so a hundred accounts bought a
+thousand attempts and no single key ever reached its limit. The fine key
+bounds the pair; nothing bounded the address.
+
+`:passkey_recovery` already carries both dimensions — 10 per `{ip, account}`
+and 30 per `ip` — and that second number is the one doing the work. So
+`:totp_login` now checks both and records both, with `@totp_ip_max_failures`
+at the same 30. The success path still clears the fine key only: an account
+the caller CAN satisfy must not reset the ceiling for every other account
+they are guessing.
+
+Two things this does not change. The attenuation stands — the second factor
+is only reachable after the password, and the challenge token is bound to
+`{user_id, ip, client_id}`, so the address spending the aggregate has already
+proven a password. And no per-account deny is added here either: the ceiling
+is per source IP, so a caller can only spend their own address, never lock
+another account's owner out of theirs.

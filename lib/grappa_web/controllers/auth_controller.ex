@@ -69,6 +69,9 @@ defmodule GrappaWeb.AuthController do
   @totp_challenge_salt "account-totp-login-v1"
   @totp_challenge_max_age_seconds 300
   @totp_max_failures 10
+  # Aggregate ceiling per source IP across ALL accounts, mirroring
+  # `:passkey_recovery`'s 30 — three accounts' worth of fine limit.
+  @totp_ip_max_failures 30
   @totp_window_ms :timer.minutes(15)
 
   @doc """
@@ -482,9 +485,18 @@ defmodule GrappaWeb.AuthController do
     end
   end
 
+  # Two dimensions, the `:passkey_recovery` shape: `{ip, user_id}` is the
+  # fine limit, the bare `ip` is the aggregate ceiling. The fine key alone
+  # is STRICTER than per-IP, not looser — it hands one address ten guesses
+  # PER ACCOUNT, so a hundred accounts bought a thousand attempts and no
+  # key ever reached its limit. The ceiling is what bounds the address.
   defp check_totp_throttle(conn, user_id) do
-    case FailureWindow.check(:totp_login, {format_ip(conn), user_id}, @totp_max_failures) do
-      :ok -> :ok
+    ip = format_ip(conn)
+
+    with :ok <- FailureWindow.check(:totp_login, ip, @totp_ip_max_failures),
+         :ok <- FailureWindow.check(:totp_login, {ip, user_id}, @totp_max_failures) do
+      :ok
+    else
       {:error, :limited} -> {:error, :too_many_attempts}
     end
   end
@@ -504,12 +516,12 @@ defmodule GrappaWeb.AuthController do
         error
 
       {:error, _} ->
-        _ =
-          FailureWindow.record_failure(
-            :totp_login,
-            {format_ip(conn), user.id},
-            @totp_window_ms
-          )
+        ip = format_ip(conn)
+        _ = FailureWindow.record_failure(:totp_login, {ip, user.id}, @totp_window_ms)
+        # The aggregate is charged too, and is deliberately NOT cleared on
+        # success above: one account the attacker can satisfy must not
+        # reset the ceiling for every other account they are guessing.
+        _ = FailureWindow.record_failure(:totp_login, ip, @totp_window_ms)
 
         {:error, :invalid_two_factor}
     end
