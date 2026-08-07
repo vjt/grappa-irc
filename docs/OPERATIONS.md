@@ -51,6 +51,8 @@ bin/grappa gen-vapid
 
 # Live-state verbs (--rpc-eval against the live BEAM via T-2 dist shell):
 bin/grappa delete-visitor <uuid>     # sync terminate + Repo.delete; frees cap slot
+bin/grappa reset-totp <account>      # disarm TOTP, revoke bearers, close its sockets
+bin/grappa reset-passkeys <account>  # drop passkeys, revoke bearers, close its sockets
 bin/grappa reap-visitors             # force-run Visitors.Reaper.sweep (otherwise 60s tick)
 bin/grappa list-sessions             # tab-separated: subject, network_id, pid, mailbox, memory
 bin/grappa list-credentials          # tab-separated: user, network, nick, state (ALL states)
@@ -1644,9 +1646,20 @@ If a user loses both passkey and recovery codes, restore password login from the
 instance host:
 
 ```sh
-scripts/mix.sh grappa.reset_passkeys --user ACCOUNT_NAME
+bin/grappa reset-passkeys ACCOUNT_NAME
 ```
 
-The reset removes every passkey and recovery code and revokes all live sessions.
-It does not remove TOTP; an account with TOTP enabled returns to password plus
-TOTP login.
+The reset removes every passkey and recovery code, revokes all live sessions
+and closes the account's open WebSockets. It does not remove TOTP; an account
+with TOTP enabled returns to password plus TOTP login. The TOTP side has its
+own verb:
+
+```sh
+bin/grappa reset-totp ACCOUNT_NAME
+```
+
+Both are `rpc` verbs — they run inside the live BEAM. They used to be the mix
+tasks `grappa.reset_passkeys` / `grappa.reset_totp`, which no longer exist: a
+mix task boots a SECOND `:grappa` instance, so its in-node effects never
+reached the node actually serving traffic. Recovery is exactly the verb whose
+in-node effects have to take, so the lane was wrong.

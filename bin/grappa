@@ -79,6 +79,8 @@ declare -Ag VERBS=(
     [gen-vapid]="boot|grappa.gen_vapid|boot|generate a VAPID keypair (push)"
 
     [delete-visitor]="rpc|Grappa.Operator.delete_visitor!|rpc|terminate + delete a visitor (sync)"
+    [reset-totp]="rpc|Grappa.Operator.reset_totp!|rpc|disarm TOTP for a locked-out account"
+    [reset-passkeys]="rpc|Grappa.Operator.reset_passkeys!|rpc|reset passkeys for a locked-out account"
     [reap-visitors]="rpc|Grappa.Operator.reap_visitors!|rpc|force-run the visitor reaper"
     [list-sessions]="rpc|Grappa.Operator.list_sessions_text!|rpc|inspect the live session registry"
     [list-credentials]="rpc|Grappa.Operator.list_credentials_text!|rpc|list cred bindings + state"
@@ -179,6 +181,25 @@ verb_delete_visitor() {
     rpc_eval "Grappa.Operator.delete_visitor!(\"$id\")"
 }
 
+# The two account-recovery verbs. They were mix tasks; a mix task runs in a
+# SECOND BEAM, so its in-node effects never reach the node serving traffic —
+# wrong lane for a recovery verb. Arg-taking, hence bespoke, not dispatch_rpc.
+verb_reset_totp() {
+    if [ $# -ne 1 ]; then
+        printf 'Usage: bin/grappa reset-totp <account-name>\n' >&2
+        exit 64
+    fi
+    rpc_eval "Grappa.Operator.reset_totp!(\"$1\")"
+}
+
+verb_reset_passkeys() {
+    if [ $# -ne 1 ]; then
+        printf 'Usage: bin/grappa reset-passkeys <account-name>\n' >&2
+        exit 64
+    fi
+    rpc_eval "Grappa.Operator.reset_passkeys!(\"$1\")"
+}
+
 verb_remote_shell() {
     # T-A2 / T-2: live-BEAM attach via Erlang distribution. Cookie is
     # sourced INSIDE the container's `sh -c` (no host needs to know it);
@@ -246,6 +267,36 @@ delete-visitor <uuid>
     query_windows, push_subscriptions, user_settings, read_cursors.
 
     Unknown uuid: raises Ecto.NoResultsError; bin/grappa exits non-zero.
+EOF
+}
+
+verb_help_reset_totp() { cat <<'EOF'
+reset-totp <account-name>
+    Clear the account's TOTP secret and revoke every live bearer,
+    restoring password-only login. The undo for an enrolment the
+    account owner did not make.
+
+    Recovery codes are shared with the passkey factor: they go only
+    if this leaves nothing armed to redeem them.
+
+    Runs on the LIVE node, which is load-bearing — the revocation
+    also tears down the account's open WebSockets. The former
+    `mix grappa.reset_totp` ran in a separate BEAM, the wrong lane
+    for a verb whose in-node effects have to take.
+
+    Unknown account: raises; bin/grappa exits non-zero.
+EOF
+}
+
+verb_help_reset_passkeys() { cat <<'EOF'
+reset-passkeys <account-name>
+    Remove every passkey, restore password login and revoke every
+    live bearer. Does NOT disarm TOTP — an account with TOTP armed
+    returns to password plus TOTP.
+
+    Same live-node rationale as reset-totp.
+
+    Unknown account: raises; bin/grappa exits non-zero.
 EOF
 }
 
@@ -379,6 +430,8 @@ declare -ag VERB_DISPLAY_ORDER=(
     gen-encryption-key
     gen-vapid
     delete-visitor
+    reset-totp
+    reset-passkeys
     reap-visitors
     list-sessions
     list-credentials

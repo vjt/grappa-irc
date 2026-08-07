@@ -31832,3 +31832,34 @@ call-sites — the drift, restored. Under-firing is the failure that matters.
 `reset_passkeys/1` run from mix tasks, i.e. from a second BEAM. The
 chokepoint fires there and is heard by nobody. That is not a missing line;
 it is the wrong lane, and it is fixed separately.
+
+## 2026-08-07 — a verb that mutates live-node state belongs in the live node
+
+**What moved.** `reset_totp` / `reset_passkeys` were mix tasks
+(`grappa.reset_totp`, `grappa.reset_passkeys`). They are now `rpc` verbs —
+`bin/grappa reset-totp` / `reset-passkeys`, entry points
+`Grappa.Operator.reset_totp!/1` and `reset_passkeys!/1` — and the mix tasks
+are deleted, not kept as aliases. A door left standing is a door someone
+uses.
+
+**Why.** A mix task runs under `Mix.Tasks.Grappa.Boot.start_app_silent/0`,
+which starts a SECOND `:grappa` instance in another OS process, with its
+own PubSub and `start_endpoint: false`. Its DB writes land, because the DB
+is shared. Anything it signals in-node reaches only itself, because the
+process tree is not. These two are account *recovery* verbs — the ones an
+operator reaches for precisely when the account's live state must change —
+so "DB writes land, in-node effects do not" is the worst possible split
+for them. No in-node mechanism could have covered them: the fix had to be
+the lane, not a line.
+
+**The general rule, worth more than the two verbs.** Boot-lane verbs
+(`create-user`, `bind-network`, `gen-vapid`) are legitimately boot-lane
+because their entire effect IS rows in a file, and a second BEAM writes
+rows just as well as the first. The moment a verb's effect includes
+anything the running node holds in memory — a supervised process, a PubSub
+subscriber, an ETS table, a socket — the boot lane silently drops half of
+it. **Before adding a verb, ask what its effect is made of. If any part of
+it lives in the live node, it is an `rpc` verb.**
+
+`docs/OPERATIONS.md` carries the operator-facing half of this change; the
+runbook line for passkey recovery changed command.

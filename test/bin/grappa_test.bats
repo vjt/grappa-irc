@@ -70,6 +70,8 @@ EOF
     [[ "$output" == *"remove-server"* ]]
     # live-state verbs (stubs in T-1)
     [[ "$output" == *"delete-visitor"* ]]
+    [[ "$output" == *"reset-totp"* ]]
+    [[ "$output" == *"reset-passkeys"* ]]
     [[ "$output" == *"reap-visitors"* ]]
     [[ "$output" == *"list-sessions"* ]]
     [[ "$output" == *"list-credentials"* ]]
@@ -186,6 +188,43 @@ EOF
     [ "$status" -eq 64 ]
     [[ "$output" == *"delete-visitor"* ]]
     [[ "$output" == *"uuid"* ]]
+}
+
+# The account-recovery verbs must land in the rpc lane, not the boot lane:
+# a mix task runs in a second BEAM whose revocation reaches no live socket.
+# Asserting --rpc-eval here is asserting that fix, not the plumbing.
+@test "reset-totp invokes --rpc-eval calling Operator.reset_totp! on the live node" {
+    run "$BIN_GRAPPA" reset-totp alice
+    [ "$status" -eq 0 ]
+    grep -q 'docker .*compose .*exec -T grappa sh' "$ARGV_LOG"
+    grep -q -- '--rpc-eval' "$ARGV_LOG"
+    grep -q -- 'grappa@grappa' "$ARGV_LOG"
+    grep -q 'Grappa.Operator.reset_totp' "$ARGV_LOG"
+    grep -q 'alice' "$ARGV_LOG"
+    refute grep -q 'mix.sh' "$ARGV_LOG"
+}
+
+@test "reset-totp with no args exits 64 with usage" {
+    run "$BIN_GRAPPA" reset-totp
+    [ "$status" -eq 64 ]
+    [[ "$output" == *"reset-totp"* ]]
+    [[ "$output" == *"account-name"* ]]
+}
+
+@test "reset-passkeys invokes --rpc-eval calling Operator.reset_passkeys! on the live node" {
+    run "$BIN_GRAPPA" reset-passkeys alice
+    [ "$status" -eq 0 ]
+    grep -q -- '--rpc-eval' "$ARGV_LOG"
+    grep -q 'Grappa.Operator.reset_passkeys' "$ARGV_LOG"
+    grep -q 'alice' "$ARGV_LOG"
+    refute grep -q 'mix.sh' "$ARGV_LOG"
+}
+
+@test "reset-passkeys with no args exits 64 with usage" {
+    run "$BIN_GRAPPA" reset-passkeys
+    [ "$status" -eq 64 ]
+    [[ "$output" == *"reset-passkeys"* ]]
+    [[ "$output" == *"account-name"* ]]
 }
 
 @test "reap-visitors invokes docker exec -T grappa with --rpc-eval calling Operator.reap_visitors!" {

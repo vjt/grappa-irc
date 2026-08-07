@@ -314,6 +314,64 @@ defmodule Grappa.Operator do
   end
 
   @doc """
+  Operator recovery: disarm TOTP for a locked-out account and kill its
+  live bearers.
+
+  ## Why this is an rpc verb and not a mix task
+
+  It used to be `mix grappa.reset_totp`, which runs under
+  `Mix.Tasks.Grappa.Boot.start_app_silent/0` — a SECOND `:grappa`
+  instance in a separate OS process, with its own PubSub and no
+  Endpoint. Its DB writes land; anything it signals in-node reaches only
+  itself. Recovery is precisely the verb whose in-node effects have to
+  take, so the lane was the bug.
+
+  A verb that mutates live-node state belongs in the live node. That is
+  what the `rpc` lane is (`bin/grappa reset-totp`, via
+  `elixir --rpc-eval`) and what `delete-visitor` already does.
+
+  Unknown account: raises after a stderr line, so `bin/grappa` exits
+  non-zero — same contract as `delete_visitor!/1`.
+  """
+  @spec reset_totp!(String.t()) :: :ok | no_return()
+  def reset_totp!(name) when is_binary(name) do
+    name
+    |> Accounts.reset_totp()
+    |> report_reset("disarmed TOTP and revoked sessions for", name)
+  end
+
+  @doc """
+  Operator recovery: remove every passkey for a locked-out account,
+  restore password login and kill its live bearers.
+
+  Sibling of `reset_totp!/1` — same lane, same reason. See that
+  function's note on why neither belongs in a mix task.
+  """
+  @spec reset_passkeys!(String.t()) :: :ok | no_return()
+  def reset_passkeys!(name) when is_binary(name) do
+    name
+    |> Accounts.reset_passkeys()
+    |> report_reset("reset passkeys and sessions for", name)
+  end
+
+  @spec report_reset({:ok, term()} | {:error, :not_found | :db_unavailable}, String.t(), String.t()) ::
+          :ok | no_return()
+  defp report_reset({:ok, _}, verb, name) do
+    IO.puts("#{verb} #{name}")
+    :ok
+  end
+
+  defp report_reset({:error, :not_found}, _verb, name) do
+    IO.puts(:stderr, "account not found: #{name}")
+    raise Ecto.NoResultsError, queryable: User
+  end
+
+  defp report_reset({:error, :db_unavailable}, _verb, name) do
+    IO.puts(:stderr, "account #{name} reset failed — database busy, retry")
+    raise "account reset deferred: database busy"
+  end
+
+  @doc """
   Force-run `Grappa.Visitors.Reaper.sweep/0` on demand. Returns `:ok`
   after printing the swept count. The Reaper runs its scheduled tick
   every 60s; this verb is the operator-on-demand variant.
