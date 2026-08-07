@@ -2295,20 +2295,59 @@ html.resize-dragging * {
    top-of-`.shell-main` toolbar. Hosts hamburger (mobile) + archive
    button + settings cog. The buttons share `.shell-chrome-btn` base
    class for size parity with `.topic-bar-hamburger` — the cog grows to
-   hamburger size. */
+   hamburger size.
+
+   #985 — it is not a bar any more. Every other occupant left (archive #473,
+   `@` mentions #986), so what remained was a full-width band around ONE
+   right-aligned ☰, priced at `var(--chrome-tap-min) + 1rem + 1px` and SCALING
+   with the operator's text size — paid on every non-channel mobile window, in
+   the state where vertical space is scarcest (keyboard up). The mobile-CHANNEL
+   branch had already reclaimed those pixels by hosting its ☰ inline in the
+   TopicBar; the query case never got a host, so it kept the whole row.
+
+   Now a ZERO-HEIGHT flow row whose single child overflows over the pane's
+   top-right corner: the scrollback starts at the top of `.shell-main` exactly
+   as it does on a channel window. Three choices worth their comment:
+
+   * `position: relative` HERE, not on `.shell-main`. The opener anchors to
+     THIS box, so no ancestor's containing block changes and nothing else in
+     the pane silently re-anchors. `height: 0` with NO padding: under
+     `box-sizing: border-box` a surviving padding would floor the border box
+     above zero and quietly hand part of the band back.
+   * NO `env(safe-area-inset-top)`. `.shell-mobile` already carries it
+     (UX-3 BIS) and `.shell-main` sits inside that padding box, so the pane's
+     top edge is ALREADY below the island; re-adding it would double-count —
+     the #913 trap pointed the other way.
+   * `z-index: 41` clears every in-pane scrollback float (the next-active
+     circle at 40 is the tallest) because the later-in-DOM scrollback would
+     otherwise paint over a child that overflows a zero-height box; and stays
+     below the members drawer (89/90) and the modal tier (1000), which must
+     keep covering the opener that summons them. The cost is deliberate and
+     narrow: the ☰'s own 48px box overlaps the top-right corner of the
+     scrollback, so a link ending exactly there is behind it — accepted,
+     the alternative was the band. */
 
 .shell-chrome {
+  position: relative;
+  z-index: 41;
+  height: 0;
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
+  align-items: flex-start;
+  justify-content: flex-end;
   flex-shrink: 0;
 }
 
-.shell-chrome-spacer {
-  flex: 1;
+/* #985 — the floated opener brings the surface the band used to supply.
+   `.shell-chrome-btn` declares `background: transparent`, which was free while
+   an opaque row sat behind the glyph; floating puts it over arbitrary
+   scrollback text and over a themed background image
+   (`:root.theme-has-bg .scrollback-pane::before`). Descendant selector rather
+   than order-dependent overriding, matching `.rail-actions .rail-action`.
+   The margin is what keeps the glyph off the pane's very corner — it is
+   breathing room, NOT a notch allowance (see above). */
+.shell-chrome .shell-chrome-rail-opener {
+  background: var(--bg);
+  margin: 0.25rem 0.5rem 0 0;
 }
 
 .shell-chrome-btn {
