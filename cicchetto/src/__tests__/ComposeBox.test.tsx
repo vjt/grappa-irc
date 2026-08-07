@@ -118,6 +118,36 @@ describe("ComposeBox", () => {
     expect(screen.getByRole("button", { name: /send/i })).toBeInTheDocument();
   });
 
+  // #1008 — the composer is PROSE, and the two attributes fall on opposite
+  // sides of that line. `autocapitalize="none"` is right and stays: with no
+  // attribute WebKit applies `sentences` and the box upper-cases nicks,
+  // channel names and `/commands`. `autocorrect="off"` was copied in beside
+  // it from the identifier inputs and shipped in v0.13.3; on WebKit it also
+  // kills the QuickType predictive bar, which made the box unusable on a
+  // phone.
+  //
+  // The composer had NO attribute guard at all before this — `6a12346e`
+  // added the pair and touched no test — so this is the first one, and it
+  // exists to stop the pair being re-copied wholesale. The identifier half
+  // of the contrast is already pinned, and deliberately stays pinned, by
+  // `Login.test.tsx`'s "keeps autocapitalize/autocorrect/spellcheck/
+  // autocomplete on the nick field".
+  //
+  // What this canNOT witness: whether the predictive bar actually appears.
+  // jsdom has no iOS text-input UI and neither does Playwright's webkit.
+  // This asserts the DOM attribute that governs it, nothing more; the
+  // acceptance criterion is a device check.
+  it("#1008 — composer keeps autocapitalize=none but carries NO autocorrect (prose, not an identifier)", () => {
+    render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+    const ta = screen.getByPlaceholderText(/message #a/i);
+
+    expect(ta).toHaveAttribute("autocapitalize", "none");
+    expect(ta.hasAttribute("autocorrect")).toBe(false);
+    // `spellcheck` is the attribute that already sat on the prose side of
+    // this line; it must not have been dragged off it either.
+    expect(ta.hasAttribute("spellcheck")).toBe(false);
+  });
+
   // UX-6 bucket F (2026-05-21) — send button reshaped: aria-label +
   // SVG paper-plane glyph (vjt iPhone-dogfood Bug 7). SVG (not a
   // Unicode codepoint) so the glyph survives Linux/Windows monospace

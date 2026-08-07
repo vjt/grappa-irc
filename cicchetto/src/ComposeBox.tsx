@@ -538,11 +538,25 @@ const ComposeBox: Component<Props> = (props) => {
           // mechanism behind it (the iOS auto-capitalisation hypothesis was
           // falsified on a real device). Correct on its own merits: with no
           // attribute WebKit applies `sentences`, and this box eats nicks,
-          // channel names and `/commands`. Same trio spelling as the other
-          // identifier inputs (PerformSettings, Login). `spellcheck` is left
-          // alone on purpose — message bodies are prose.
+          // channel names and `/commands`.
+          //
+          // #1008 — and it stops there. `autocorrect="off"` was copied in
+          // alongside it from the IDENTIFIER inputs (PerformSettings, Login,
+          // AliasSettings) and shipped in v0.13.3; on WebKit that attribute
+          // also suppresses the QuickType predictive bar, not merely the
+          // silent correction, and a reporter on #sniffo could no longer type
+          // on a phone. **This box is prose, and prose keeps its typing
+          // aids** — the same line `spellcheck` already sits on, which is why
+          // `spellcheck` is likewise left alone. Do not re-add `autocorrect`
+          // here by copying the pair from an identifier field: those fields
+          // want it, a message body does not.
+          //
+          // Accepted cost, ruled on knowingly in #1008: autocorrection may
+          // occasionally rewrite an unusual word — a bare nick typed without
+          // tab-completion among them. Being unable to type at all is worse.
+          // Having BOTH needs a contenteditable composer with mention spans
+          // marked non-correctable; that is its own issue, not a rider here.
           autocapitalize="none"
-          autocorrect="off"
           // #737 — a paced drain rewrites this draft every acked line for as
           // long as the pacing lasts. The store refuses operator writes while
           // it does (that is the real guard, and it covers the global paste
