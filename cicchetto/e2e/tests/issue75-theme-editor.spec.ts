@@ -87,11 +87,24 @@ async function openThemesGalleryMobile(page: PWPage): Promise<void> {
 // engine painted. The only constant is WCAG's 4.5:1 floor for text.
 const WCAG_TEXT_CONTRAST_FLOOR = 4.5;
 
-// Contrast of the painted control: dominant interior colour (the fill) vs the
-// most frequent colour far enough from it to be ink (glyphs, caret). Null when
-// nothing is written on the control — a control with no ink would otherwise
-// score infinite contrast and pass vacuously.
-async function paintedContrast(page: PWPage, testId: string): Promise<number | null> {
+// Contrast of what is WRITTEN on a control against what FILLS it: dominant
+// colour of the sampled region is the fill, the most frequent colour far
+// enough from it is the ink.
+//
+// The sampled region is the interior MINUS the inline-end strip, which is
+// where a caret lives — ours after `appearance: none`, the user agent's own
+// arrow before it. That exclusion is load-bearing, not tidiness: measured on
+// Playwright's WebKit, sampling the whole interior elects the native arrow
+// (#2e3436, more pixels than the glyphs) as the ink and reports a comfortable
+// 11.5:1 for a control whose own text — `--fg` #e0e0e0 on the native
+// rgb(244,244,244) fill — is invisible at 1.20:1. An oracle that scores a
+// decoration cannot see the defect it exists for.
+//
+// No ink at all — nothing distinguishable from the fill — is contrast 1, not
+// an error: it is precisely the shape this defect takes (black glyphs on a
+// near-black fill on Chromium, `--fg` glyphs on a near-white native fill on
+// WebKit), and both were measured returning exactly this.
+async function paintedTextContrast(page: PWPage, testId: string): Promise<number> {
   const shot = (await page.getByTestId(testId).screenshot()).toString("base64");
   return page.evaluate(async (b64: string) => {
     const img = new Image();
@@ -101,15 +114,17 @@ async function paintedContrast(page: PWPage, testId: string): Promise<number | n
     canvas.width = img.naturalWidth;
     canvas.height = img.naturalHeight;
     const ctx = canvas.getContext("2d");
-    if (ctx === null) return null;
+    if (ctx === null) return 1;
     ctx.drawImage(img, 0, 0);
 
     // Inset past the border (1 CSS px, up to 3 device px at dsf 3) and the
-    // rounded corners, so only the control's own surface is sampled.
+    // rounded corners; the screenshot is in DEVICE pixels, so the caret strip
+    // is too.
     const inset = 7;
-    const w = canvas.width - 2 * inset;
+    const strip = 32 * window.devicePixelRatio;
+    const w = canvas.width - 2 * inset - strip;
     const h = canvas.height - 2 * inset;
-    if (w <= 0 || h <= 0) return null;
+    if (w <= 0 || h <= 0) return 1;
     const { data } = ctx.getImageData(inset, inset, w, h);
 
     const counts = new Map<number, number>();
@@ -120,10 +135,9 @@ async function paintedContrast(page: PWPage, testId: string): Promise<number | n
     const byFrequency = [...counts.entries()].sort((a, b) => b[1] - a[1]);
     const fill = byFrequency[0][0];
     const rgb = (k: number) => [(k >> 16) & 255, (k >> 8) & 255, k & 255];
-    const far = (k: number) =>
-      Math.max(...rgb(k).map((c, i) => Math.abs(c - rgb(fill)[i]))) > 40;
+    const far = (k: number) => Math.max(...rgb(k).map((c, i) => Math.abs(c - rgb(fill)[i]))) > 40;
     const ink = byFrequency.find(([k]) => far(k));
-    if (ink === undefined) return null;
+    if (ink === undefined) return 1;
 
     const luminance = (k: number) => {
       const [r, g, b] = rgb(k).map((c) => {
@@ -225,7 +239,7 @@ test.describe("#75 — theme editor (producer path)", () => {
     await expect(page.getByTestId("theme-editor")).toBeVisible({ timeout: 5_000 });
 
     await expect
-      .poll(() => paintedContrast(page, "theme-editor-font"), { timeout: 5_000 })
+      .poll(() => paintedTextContrast(page, "theme-editor-font"), { timeout: 5_000 })
       .toBeGreaterThanOrEqual(WCAG_TEXT_CONTRAST_FLOOR);
 
     await page.getByTestId("theme-editor-cancel-btn").click();
@@ -239,7 +253,7 @@ test.describe("#75 — theme editor (producer path)", () => {
     await expect(page.getByTestId("theme-editor")).toBeVisible({ timeout: 5_000 });
 
     await expect
-      .poll(() => paintedContrast(page, "theme-editor-font"), { timeout: 5_000 })
+      .poll(() => paintedTextContrast(page, "theme-editor-font"), { timeout: 5_000 })
       .toBeGreaterThanOrEqual(WCAG_TEXT_CONTRAST_FLOOR);
 
     await page.getByTestId("theme-editor-cancel-btn").tap();
