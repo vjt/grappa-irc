@@ -335,7 +335,29 @@ defmodule Grappa.MixProject do
         # this mirrors `continue-on-error` on the CI step.
         "cmd sh -c 'mix hex.audit || true'",
         "cmd mix sobelow --config --exit Medium",
-        "cmd mix doctor",
+        # #621 — doctor shells out to MIX_ENV=test, like the test step below
+        # and for a related reason: this alias is pinned to :dev (credo /
+        # sobelow / ex_doc are dev-or-test deps), and in :dev doctor lies.
+        # It counts a module's functions from the SOURCE AST but reads
+        # doc/spec presence from the compiled BEAM, so everything inside an
+        # `if Mix.env() == :test do … end` block is counted-but-unscored:
+        # present in the count, absent from the beam, filed as "No Docs" AND
+        # "No Specs" even with `@doc false` + a full `@spec`. Nine modules in
+        # `lib/` carry such a seam today; `Repo.BusyRetry` was simply the
+        # first whose ratio crossed doctor's 40% floor (43% → 38% when #594
+        # added one more test-gated helper), reddening the gate over a seam
+        # the test-env doctor scores at 100%.
+        #
+        # :test loses no coverage — it is a strict superset. `elixirc_paths`
+        # adds `test/support` there (which is why the GH workflow's single
+        # doctor step, `MIX_ENV: test`, catches test-support modules the :dev
+        # run never scanned — the #75 parity gap that shipped 4 red commits,
+        # 2eed58ca), and NO function in `lib/` is gated on `Mix.env() == :dev`,
+        # so nothing exists that :dev can see and :test cannot.
+        #
+        # Raising the 40% floor to make BusyRetry fit was rejected: the count
+        # is what is dishonest, not the threshold.
+        "cmd env MIX_ENV=test mix doctor",
         # Coverage is a CI-only step (mix coveralls.json in the workflow);
         # local runs would need MIX_ENV=test for excoveralls to load.
         # `cmd env MIX_ENV=test mix test ...` shells out so MIX_ENV is set

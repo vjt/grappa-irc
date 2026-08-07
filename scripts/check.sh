@@ -13,7 +13,8 @@
 #     - mix deps.audit
 #     - mix hex.audit
 #     - mix sobelow --config --exit Medium
-#     - mix doctor
+#     - cmd env MIX_ENV=test mix doctor  (shells out: in :dev doctor scores
+#       test-gated functions as undocumented, and never scans test/support — #621)
 #     - cmd env MIX_ENV=test mix test --warnings-as-errors  (shells out so Repo gets Sandbox)
 #     - mix dialyzer
 #     - mix docs (build check)
@@ -23,11 +24,11 @@
 #     - scripts/bats.sh  (host-side bats for bin/grappa dispatcher; submodule vendor/bats-core)
 #
 # Pins MIX_ENV=dev via scripts/mix.sh because ci.check runs credo +
-# sobelow + doctor + ex_doc, all `only: [:dev, :test]` deps. The test
-# sub-step uses `cmd env MIX_ENV=test` to shell out into a fresh mix
-# process so Repo gets the Sandbox pool — without the cmd shell-out,
-# `mix test` inside the alias inherits the parent's :dev env and
-# corrupts the run.
+# sobelow + ex_doc, all `only: [:dev, :test]` deps. Two sub-steps shell
+# out of that pin with `cmd env MIX_ENV=test`: the test run (so Repo gets
+# the Sandbox pool — inside an alias `mix test` inherits the parent's :dev
+# env and corrupts the run) and, since #621, doctor (so its counts are
+# honest and its file set matches the GH job's).
 #
 # Exit non-zero if any gate fails. Same gates as CI workflow, run identically.
 #
@@ -39,17 +40,15 @@
 cd "$REPO_ROOT"
 
 "$SRC_ROOT/scripts/mix.sh" --env=dev ci.check
-# CI-PARITY doctor gate (#75, 4-red-commits post-mortem). The `ci.check`
-# alias above runs `mix doctor` in MIX_ENV=dev, where `elixirc_paths/1`
-# is just `["lib"]` — so doctor NEVER scans `test/support/*.ex`. The GH
-# `ci` workflow runs the whole gate job in MIX_ENV=test (.github/workflows/
-# ci.yml), where `elixirc_paths(:test)` adds `test/support`, so its
-# `mix doctor` step DOES scan test-only modules (e.g.
-# Grappa.Themes.ImageFetcher.TestResolver). A test-support module missing a
-# per-function @doc therefore passed local check.sh but reddened GH main.
-# Run doctor again in :test here so local == GH — same env, same file set.
-echo "=== check.sh: mix doctor (MIX_ENV=test — GH-ci parity, scans test/support) ==="
-"$SRC_ROOT/scripts/mix.sh" --env=test doctor
+# #621 — the CI-parity doctor run that used to live HERE moved INTO the
+# `ci.check` alias as `cmd env MIX_ENV=test mix doctor`. It was added by #75
+# (a 4-red-commits post-mortem) as a SECOND run, because the alias's own
+# doctor was pinned to the alias's :dev env and so never scanned
+# `test/support` the way the GH job does. That left two doctor runs, one of
+# them scoring `Mix.env() == :test` seams as undocumented. Making the
+# alias's run the :test one collapses them to one honest run, identical to
+# the workflow's single `mix doctor` step — so local == GH is preserved by
+# construction rather than by a duplicate kept in step by hand.
 # Drift gate for cicchetto/src/lib/wireTypes.ts — regenerates the file
 # in memory and diffs against the committed copy. Fails with a clear
 # error message pointing the operator at `scripts/mix.sh
