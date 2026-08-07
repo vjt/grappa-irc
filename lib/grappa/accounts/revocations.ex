@@ -86,9 +86,17 @@ defmodule Grappa.Accounts.Revocations do
 
   One subscriber in production (the web listener); tests subscribe
   directly to assert the announcement without standing up a socket.
+
+  Returns `:ok` or raises. The only failure `Phoenix.PubSub` reports here
+  is `{:already_registered, pid}` — a process subscribing twice, which is
+  a bug in that process, not a runtime condition anything could sensibly
+  handle. Returning it would invent a failure mode every caller then has
+  to pretend to consider.
   """
-  @spec subscribe() :: :ok | {:error, term()}
-  def subscribe, do: Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.session_revocations())
+  @spec subscribe() :: :ok
+  def subscribe do
+    :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.session_revocations())
+  end
 
   @doc """
   Announces that every bearer session of `subject` is dead.

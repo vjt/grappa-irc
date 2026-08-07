@@ -83,8 +83,8 @@ defmodule Grappa.Visitors do
 
   import Ecto.Query
 
-  alias Grappa.{Admission, Networks, Repo, Session, SpawnOrchestrator, Themes, UserSettings}
   alias Grappa.Accounts.Revocations
+  alias Grappa.{Admission, Networks, Repo, Session, SpawnOrchestrator, Themes, UserSettings}
   alias Grappa.Networks.{Credential, Credentials}
   alias Grappa.Visitors.{SessionPlan, Visitor}
 

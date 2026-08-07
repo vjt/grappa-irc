@@ -15,8 +15,7 @@ defmodule GrappaWeb.SessionRevocationListenerTest do
   """
   use ExUnit.Case, async: true
 
-  alias Grappa.Accounts.Revocations
-  alias Grappa.Accounts.User
+  alias Grappa.Accounts.{Revocations, User}
   alias Grappa.Visitors.Visitor
   alias GrappaWeb.{Endpoint, UserSocket}
 

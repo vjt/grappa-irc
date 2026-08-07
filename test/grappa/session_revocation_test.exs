@@ -18,9 +18,8 @@ defmodule Grappa.SessionRevocationTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.Accounts
+  alias Grappa.{Accounts, Visitors}
   alias Grappa.Accounts.{Revocations, Session}
-  alias Grappa.Visitors
 
   @idle_seconds 7 * 24 * 3600
 
@@ -61,7 +60,7 @@ defmodule Grappa.SessionRevocationTest do
 
     test "revoke_sessions_for_visitor/1 announces the visitor" do
       visitor = visitor_fixture()
-      _session = visitor_session_fixture(visitor)
+      _ = visitor_session_fixture(visitor)
 
       assert :ok = Accounts.revoke_sessions_for_visitor(visitor.id)
 
@@ -82,7 +81,7 @@ defmodule Grappa.SessionRevocationTest do
     end
 
     test "revoke_sessions_for_user/1 announces the user" do
-      {user, _session} = user_and_session()
+      {user, _} = user_and_session()
 
       assert :ok = Accounts.revoke_sessions_for_user(user)
 
@@ -108,7 +107,7 @@ defmodule Grappa.SessionRevocationTest do
     # `Repo.BusyRetry.run(Repo.transaction(…))`, so this also pins that the
     # announcement survives the enclosing transaction.
     test "reset_totp/1 announces from inside its transaction" do
-      {user, _session} = user_and_session()
+      {user, _} = user_and_session()
 
       assert {:ok, _} = Accounts.reset_totp(user.name)
 
@@ -117,7 +116,7 @@ defmodule Grappa.SessionRevocationTest do
     end
 
     test "reset_passkeys/1 announces from inside its transaction" do
-      {user, _session} = user_and_session()
+      {user, _} = user_and_session()
 
       assert {:ok, _} = Accounts.reset_passkeys(user.name)
 
@@ -128,7 +127,7 @@ defmodule Grappa.SessionRevocationTest do
 
   describe "family B — the rows are cascaded or reaped away" do
     test "delete_user/1 announces the name the cascade is about to erase" do
-      {user, _session} = user_and_session()
+      {user, _} = user_and_session()
 
       assert :ok = Accounts.delete_user(user)
 
@@ -155,7 +154,7 @@ defmodule Grappa.SessionRevocationTest do
 
     test "Visitors.delete/1 announces the visitor" do
       visitor = visitor_fixture()
-      _session = visitor_session_fixture(visitor)
+      _ = visitor_session_fixture(visitor)
 
       assert :ok = Visitors.delete(visitor.id)
 
@@ -165,7 +164,7 @@ defmodule Grappa.SessionRevocationTest do
 
     test "purge_if_anon/1 announces the anon visitor it destroys" do
       visitor = visitor_fixture()
-      _session = visitor_session_fixture(visitor)
+      _ = visitor_session_fixture(visitor)
 
       assert :ok = Visitors.purge_if_anon(visitor.id)
 
@@ -179,7 +178,7 @@ defmodule Grappa.SessionRevocationTest do
     # `Visitors.delete/1`.
     test "the visitor reaper sweep announces each row it collects" do
       visitor = visitor_fixture()
-      _session = visitor_session_fixture(visitor)
+      _ = visitor_session_fixture(visitor)
       expire(visitor)
 
       assert {:ok, 1} = Visitors.Reaper.sweep()
@@ -198,7 +197,8 @@ defmodule Grappa.SessionRevocationTest do
   defp stale_session_owner do
     {user, session} = user_and_session()
     when_seen = DateTime.add(DateTime.utc_now(), -(@idle_seconds + 3600), :second)
-    {1, _} = Repo.update_all(from(s in Session, where: s.id == ^session.id), set: [last_seen_at: when_seen])
+    query = from(s in Session, where: s.id == ^session.id)
+    {1, _} = Repo.update_all(query, set: [last_seen_at: when_seen])
     user
   end
 end
