@@ -5,7 +5,7 @@ import { socketUserName, token } from "./auth";
 import { incrementBadge, setBadge } from "./badge";
 import { playBeep } from "./beep";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
-import { seedModes, seedTopic } from "./channelTopic";
+import { dropChannelTopicState, seedModes, seedTopic } from "./channelTopic";
 import { isDocumentVisible } from "./documentVisibility";
 import { highlightPatterns } from "./highlightList";
 import { seedIsupport } from "./isupport";
@@ -36,7 +36,14 @@ import { followQueryNick, selectedChannel, setServerSeedCount } from "./selectio
 import { joinChannel } from "./socket";
 import { socketHealth } from "./socketHealth";
 import { SERVER_WINDOW_NAME } from "./windowKinds";
-import { setFailed, setJoined, setKicked, setParted, windowStateByChannel } from "./windowState";
+import {
+  setFailed,
+  setJoined,
+  setKicked,
+  setParted,
+  windowIsPresent,
+  windowStateByChannel,
+} from "./windowState";
 import { narrowChannelEvent } from "./wireNarrow";
 
 // WS subscription installer. Reactive side-effect module: imports for
@@ -508,6 +515,14 @@ moduleRoot(() => {
             // map. Server intentionally does NOT broadcast `kind:
             // "parted"` — cic derives the projection here.
             setParted(key);
+            // #975: the channel's topic + modes are only observable while
+            // we are IN it (the 324 that seeds modes is the server's
+            // on-JOIN `MODE #chan` query), so they die with the window.
+            // Gated on the OUTCOME of setParted rather than re-deriving
+            // its #495 stale-echo guard: when that guard no-ops (a late
+            // part echo landing on a re-join already "pending") the key is
+            // still present and the freshly-seeded state must survive.
+            if (!windowIsPresent(key)) dropChannelTopicState(key);
           }
 
           routeMessage(slug, key, name, message, ownNick);

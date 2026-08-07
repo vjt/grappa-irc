@@ -209,6 +209,7 @@ vi.mock("../lib/channelTopic", () => ({
   compactModeString: (modes: string[]) => (modes.length > 0 ? `+${modes.join("")}` : ""),
   seedTopic: vi.fn(),
   seedModes: vi.fn(),
+  dropChannelTopicState: vi.fn(),
 }));
 
 vi.mock("../lib/mentions", () => ({

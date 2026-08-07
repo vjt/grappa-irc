@@ -1,6 +1,6 @@
 import { createSignal } from "solid-js";
 import type { ChannelKey } from "./channelKey";
-import { moduleRoot } from "./moduleRoot";
+import { identityScopedStore } from "./identityScopedStore";
 
 // Per-channel topic + modes store. Module-singleton reactive signals.
 //
@@ -12,12 +12,19 @@ import { moduleRoot } from "./moduleRoot";
 // `compactModeString` is a pure function exported for use in TopicBar and
 // tests alike — formats `["n", "t"]` → `"+nt"`.
 //
-// Lifecycle: module-singleton signals, no identity-scoped cleanup needed
-// for this store (data is overwritten on each WS push; stale data
-// from a previous channel join is harmless — the next channel join will
-// push fresh state, and self-PART/self-KICK on the server clears the
-// per-channel cache so the next topic_changed re-seeds with the new
-// channel-instance values).
+// Lifecycle (#975). Both maps hold state that is only true WHILE the
+// session is in the channel, so both are emptied at the two boundaries
+// where that stops being true:
+//   * own-PART → `dropChannelTopicState(key)` from subscribe.ts, beside
+//     the `setParted(key)` windowState projection.
+//   * logout / bearer rotation → the `identityScopedStore` resets below,
+//     like scrollback.ts / selection.ts / members.ts / readCursor.ts.
+// Pre-#975 there was NO emptier at all: the pre-PART entry survived
+// forever and ModeModal presented it as the channel's CURRENT modes. The
+// old comment here claimed no cleanup was needed because "the next join
+// pushes fresh state" — true, but it answers the wrong question: between
+// the part and any re-join the cache is a confident lie. Absence is the
+// honest answer, and it is what ModeModal now renders as "modes unknown".
 //
 // UX-5 BJ (2026-05-19): the per-channel creation timestamp store
 // (329 RPL_CREATIONTIME → `createdByChannel` / `seedChannelCreated`)
@@ -41,9 +48,20 @@ export type ModesEntry = {
   params: Record<string, string | null>;
 };
 
-const exports_ = moduleRoot(() => {
+const exports_ = identityScopedStore((onIdentityChange) => {
   const [topicByChannel, setTopicByChannel] = createSignal<Record<ChannelKey, TopicEntry>>({});
   const [modesByChannel, setModesByChannel] = createSignal<Record<ChannelKey, ModesEntry>>({});
+
+  onIdentityChange(() => setTopicByChannel({}));
+  onIdentityChange(() => setModesByChannel({}));
+
+  const dropKey = <T>(key: ChannelKey) => {
+    return (prev: Record<ChannelKey, T>): Record<ChannelKey, T> => {
+      if (!(key in prev)) return prev;
+      const { [key]: _drop, ...rest } = prev;
+      return rest;
+    };
+  };
 
   const seedTopic = (key: ChannelKey, entry: TopicEntry): void => {
     setTopicByChannel((prev) => ({ ...prev, [key]: entry }));
@@ -53,11 +71,22 @@ const exports_ = moduleRoot(() => {
     setModesByChannel((prev) => ({ ...prev, [key]: entry }));
   };
 
+  // Both maps go together: topic and modes are the same datum class
+  // (server-pushed while joined, unobservable once parted) and splitting
+  // their lifecycle would leave two twin structures behaving differently
+  // for no reason a later reader could recover. Idempotent — dropping an
+  // unknown key returns the same object, so no consumer wakes for nothing.
+  const dropChannelTopicState = (key: ChannelKey): void => {
+    setTopicByChannel(dropKey(key));
+    setModesByChannel(dropKey(key));
+  };
+
   return {
     topicByChannel,
     modesByChannel,
     seedTopic,
     seedModes,
+    dropChannelTopicState,
   };
 });
 
@@ -65,6 +94,7 @@ export const topicByChannel = exports_.topicByChannel;
 export const modesByChannel = exports_.modesByChannel;
 export const seedTopic = exports_.seedTopic;
 export const seedModes = exports_.seedModes;
+export const dropChannelTopicState = exports_.dropChannelTopicState;
 
 /**
  * #263 — flattens a multi-line topic draft to a SINGLE wire line.

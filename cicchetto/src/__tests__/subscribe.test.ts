@@ -3096,6 +3096,78 @@ describe("subscribe — BUG5b: own-action events do not bump unread", () => {
       expect(ws.setParted).not.toHaveBeenCalled();
     });
 
+    // #975 — the channelTopic store is NOT mocked in this suite, so these
+    // three assert the real store's contents rather than a call spy: the
+    // reported symptom is "the modal shows the modes I had before I left",
+    // and only the store's actual key answers that.
+    it("own-PART drops the channel's cached topic + modes (#975)", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      await loadStores();
+      const ct = await import("../lib/channelTopic");
+      const key = channelKey("freenode", "#grappa");
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+      ct.seedModes(key, { modes: ["n", "t"], params: {} });
+      ct.seedTopic(key, { text: "old topic", set_by: "op", set_at: null });
+
+      fireMessageEvent("#grappa", { id: 52, kind: "part", sender: "alice" });
+
+      expect(key in ct.modesByChannel()).toBe(false);
+      expect(key in ct.topicByChannel()).toBe(false);
+    });
+
+    it("peer PART leaves the cached topic + modes alone (#975)", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      await loadStores();
+      const ct = await import("../lib/channelTopic");
+      const key = channelKey("freenode", "#grappa");
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+      ct.seedModes(key, { modes: ["n", "t"], params: {} });
+
+      fireMessageEvent("#grappa", { id: 53, kind: "part", sender: "bob" });
+
+      expect(ct.modesByChannel()[key]).toEqual({ modes: ["n", "t"], params: {} });
+    });
+
+    it("a stale part echo on a still-present window keeps the fresh cache (#975/#495)", async () => {
+      // setParted no-ops when a re-join is already "pending" (#495), so the
+      // window survives the echo — and so must the modes seeded by that
+      // re-join. The drop is gated on that OUTCOME, not on a copy of the
+      // guard, which is what makes the two impossible to drift apart.
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      await loadStores();
+      const ws = await import("../lib/windowState");
+      const ct = await import("../lib/channelTopic");
+      const key = channelKey("freenode", "#grappa");
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+      ct.seedModes(key, { modes: ["n", "t"], params: {} });
+      vi.mocked(ws.windowIsPresent).mockReturnValue(true);
+
+      fireMessageEvent("#grappa", { id: 54, kind: "part", sender: "alice" });
+
+      expect(ct.modesByChannel()[key]).toEqual({ modes: ["n", "t"], params: {} });
+    });
+
     it("window-state events do NOT route as messages (no scrollback append, no unread)", async () => {
       localStorage.setItem("grappa-token", "tok");
       localStorage.setItem(
