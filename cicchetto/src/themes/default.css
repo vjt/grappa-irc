@@ -194,6 +194,15 @@
      floor (feedback_cic_tap_target_rem_pitfall). Theme-independent, so it
      lives on base :root, NOT in the per-theme blocks. */
   --tap-min: 44px;
+  /* #963 — geometry of the caret the form-control rule draws on every
+     <select> (see the `appearance: none` block below). Two numbers, one
+     source: --select-caret-inset is the caret's distance from the control's
+     inline END edge, --select-caret-room the padding that keeps the value
+     text off it. A per-component rule that tightens a select's padding MUST
+     re-declare `padding-inline-end: var(--select-caret-room)` or its longest
+     option runs under the caret. Theme-independent, so base :root. */
+  --select-caret-inset: 0.6rem;
+  --select-caret-room: 1.75rem;
   /* #913 — the iOS top safe-area inset, as a variable. Everything else in this
      file writes `env(safe-area-inset-top)` inline, which is right for a
      padding: the engine substitutes it and nobody has to read it back. The
@@ -444,6 +453,51 @@ select:focus,
 textarea:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* #963 — the closed <select> is OURS. The rule above gives it the tokens, the
+   tap target and the focus ring, but on WebKit none of the paint half of that
+   lands: the native menulist chrome draws its own fill OVER `background`,
+   while `color` still reaches the glyphs — measured on Playwright's WebKit,
+   `--fg` text on an Adwaita `rgb(244,244,244)` fill, 1.20:1. Chromium honours
+   both. `appearance: none` retires the native chrome on every engine, so the
+   fill and the text come from the same place the surrounding controls' do.
+   The element stays a real <select>, so tapping it still opens the NATIVE
+   option picker (the iOS wheel, the Android dialog, the desktop popup) — this
+   is not a custom dropdown widget. The popup list itself stays UA-painted;
+   `color-scheme` (lib/colorScheme.ts) is what tells the UA how to paint it.
+
+   The caret is ours to draw now. It is two 45° gradient wedges in
+   `currentColor`, so it follows `--fg` in every theme with no second asset
+   for the dark case — a `background-image` data URI would freeze its colour
+   and need one variant per theme, and a ::before/::after is not reliable on a
+   replaced element. Its inline position is the writing direction's END, which
+   is where a native menulist puts it in both directions, hence the `:dir(rtl)`
+   flip rather than a hardcoded `right`.
+
+   CONSTRAINT this rule imposes on every component rule below: style a select
+   with `background-color`, NEVER the `background` shorthand — the shorthand
+   resets `background-image` and silently erases the caret. Same for padding:
+   keep `padding-inline-end: var(--select-caret-room)`. Three rules already
+   pay this (.theme-editor-font-select, .banlist-modal-add-form, the
+   settings-drawer prefs-list select). */
+select {
+  appearance: none;
+  padding-inline-end: var(--select-caret-room);
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  background-position:
+    right calc(var(--select-caret-inset) + 5px) center,
+    right var(--select-caret-inset) center;
+}
+
+select:dir(rtl) {
+  background-position:
+    left var(--select-caret-inset) center,
+    left calc(var(--select-caret-inset) + 5px) center;
 }
 
 /* UX-6 D9 (2026-05-21) — iOS-only layout-viewport pin. This is the
@@ -4569,6 +4623,12 @@ html.resize-dragging * {
   padding: 0.25rem 0.4rem;
 }
 
+/* #963 — the tighter padding above would put the longest option under the
+   caret the global select rule draws. Give its room back. */
+.settings-drawer label.prefs-list select {
+  padding-inline-end: var(--select-caret-room);
+}
+
 .settings-drawer label.prefs-list input[type="text"]:disabled,
 .settings-drawer label.prefs-list select:disabled {
   opacity: 0.5;
@@ -6703,10 +6763,18 @@ html.resize-dragging * {
 }
 
 .theme-editor-name-input,
+/* #963 — `background-color`, not the `background` shorthand: on the select the
+   shorthand would reset `background-image` and erase the caret the global
+   form-control rule draws. The tighter padding stays, but the select has to
+   keep the caret's room back. */
 .theme-editor-font-select,
 .theme-editor-bg-url-input {
-  background: var(--bg-alt);
+  background-color: var(--bg-alt);
   padding: 0 0.5rem;
+}
+
+.theme-editor-font-select {
+  padding-inline-end: var(--select-caret-room);
 }
 
 .theme-editor-group {
@@ -8285,10 +8353,14 @@ html.resize-dragging * {
   border-color: var(--accent, var(--fg));
 }
 
+/* #963 — `background-color`, not the `background` shorthand, and the caret's
+   room back on top of the tighter padding: this is a <select>, and the
+   shorthand would erase the caret the global form-control rule draws. */
 .banlist-modal-add-form {
   flex: 0 0 auto;
   padding: 0.4rem 0.5rem;
-  background: var(--bg-alt);
+  padding-inline-end: var(--select-caret-room);
+  background-color: var(--bg-alt);
   color: var(--fg);
   border: 1px solid var(--border);
   font-family: var(--font-mono);
