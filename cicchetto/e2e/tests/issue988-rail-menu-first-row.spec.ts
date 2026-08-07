@@ -8,12 +8,36 @@
 // prompted it. So this spec is the discriminator BEFORE it is a guard — it
 // measures, prints what it measured, and only then asserts.
 //
+// THE DISCRIMINATOR HAS RUN. Its numbers, from webkit-iphone-15 (run
+// 31179452487), are what the rest of this header is now written against:
+//
+//   h=659  scrollTop 0  menuTop 140.25  firstRow 148.25  clientHeight 435 (fits)
+//   h=520  scrollTop 0  menuTop 9       firstRow 17      clientHeight 427 / 435
+//   h=430  scrollTop 0  menuTop 9       firstRow 17      clientHeight 337 / 435
+//   h=360  scrollTop 0  menuTop 9       firstRow 17      clientHeight 267 / 435
+//   XXL@360 scrollTop 0 menuTop 9       firstRow 20      clientHeight 252 / 457
+//
+// `home` was the first row, wholly inside the port, and the hit-test target at
+// every one of them. The premise of #988 — that the first row is out of reach —
+// did NOT reproduce.
+//
 // The two readings #988 offers, and what this spec does with them:
 //
-//   Reading 2 (a stray scroll offset hides `home`) is falsified here directly:
-//   `scrollTop` is read on every pass. A fresh `overflow-y: auto` container
-//   opens at 0 and nothing in RailActions scrolls it, so the expectation is 0
-//   — printed, not assumed.
+//   Reading 2 (a stray scroll offset hides `home`) is FALSIFIED BY MEASUREMENT,
+//   not by argument: `scrollTop` read 0 on all five passes above, including the
+//   three where the menu genuinely overflowed. A fresh `overflow-y: auto`
+//   container opens at 0 and nothing in RailActions scrolls it. Still read on
+//   every pass, because that is what keeps the falsification live.
+//
+//   What the first run DID surface was a constant gap between the menu's top
+//   and its first row: 8px at every viewport height, 11px at XXL. Not scroll —
+//   `scrollTop` was 0 — but the menu's OWN chrome: `padding: 0.5rem` over a
+//   `border: 1px`, and `rem` follows `--font-size` (`html, body { font-size:
+//   var(--font-size) }`), so 7+1 at the default 14px root and 10+1 at XXL's
+//   20px. Both numbers, to the pixel, from one cause. The assertion that
+//   tripped on it was comparing a content-box coordinate to a border-box one;
+//   it is corrected below, and the chrome is now MEASURED per pass so the
+//   attribution is the run's and not this comment's.
 //
 //   Reading 1 (re-anchor a tall menu to the top) does NOT get a code change in
 //   this branch, because the geometry says it cannot produce one. When the
@@ -25,6 +49,12 @@
 //   explicitly keeps `bottom: 100%` there. A re-anchor would be a no-op
 //   wearing the shape of a fix. What is worth having instead is this: the
 //   acceptance criterion, pinned, at the heights where the cap bites.
+//
+//   That argument was structure without magnitude when it was written, which
+//   is precisely how it could have been wrong. The sweep supplies the missing
+//   magnitude: at the three heights where the menu overflows, the first row is
+//   already at the top of the port and reachable. The no-op reading is now
+//   held up by measurement rather than by reasoning about rectangles.
 //
 // The cap (#588) and the safe-area subtraction (#913) are asserted as
 // preconditions rather than left implicit — they are the two things that make
@@ -66,6 +96,13 @@ type MenuGeometry = {
   scrollHeight: number;
   clientHeight: number;
   menuTop: number;
+  // The menu's OWN chrome above its content. `getBoundingClientRect().top` is
+  // the BORDER box; the first row starts at the CONTENT box. Measured rather
+  // than read off the stylesheet, so the attribution is the run's, not the
+  // author's.
+  borderTopWidth: number;
+  paddingTop: number;
+  rootFontSize: number;
   firstRowTop: number;
   firstRowBottom: number;
   firstRowLabel: string;
@@ -84,6 +121,7 @@ async function measureMenu(page: import("@playwright/test").Page): Promise<MenuG
     if (first === undefined) throw new Error("#988 — the menu has no rows");
     const menuRect = menu.getBoundingClientRect();
     const rowRect = first.getBoundingClientRect();
+    const menuStyle = getComputedStyle(menu);
     const hit = document.elementFromPoint(
       rowRect.x + rowRect.width / 2,
       rowRect.y + rowRect.height / 2,
@@ -93,6 +131,9 @@ async function measureMenu(page: import("@playwright/test").Page): Promise<MenuG
       scrollHeight: menu.scrollHeight,
       clientHeight: menu.clientHeight,
       menuTop: menuRect.top,
+      borderTopWidth: Number.parseFloat(menuStyle.borderTopWidth),
+      paddingTop: Number.parseFloat(menuStyle.paddingTop),
+      rootFontSize: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
       firstRowTop: rowRect.top,
       firstRowBottom: rowRect.bottom,
       firstRowLabel: first.textContent?.trim() ?? "",
@@ -116,14 +157,32 @@ function assertFirstRowVisible(g: MenuGeometry, label: string): void {
     g.firstRowTop,
     `${label} — the first row starts ${g.firstRowTop}px from the viewport top, i.e. off-screen`,
   ).toBeGreaterThanOrEqual(-0.5);
+  // The first row sits at the top of the CONTENT box, and the whole distance
+  // from the menu's border-box top down to it is accounted for by the menu's
+  // own chrome — nothing else. Written as an equality on the RESIDUAL, which
+  // is what makes it a guard rather than a tolerance: any offset that is not
+  // border + padding (a stray scroll, a hidden sibling, a margin on row one)
+  // shows up here as a non-zero number and fails, whichever direction it goes.
+  //
+  // The predicate this replaces compared `firstRowTop` against `menuTop`, i.e.
+  // a content-box coordinate against a BORDER-box one, and demanded they be
+  // within 1px. That is not a weaker or stronger version of the criterion —
+  // it is the wrong quantity: it can only hold on a menu with no border and no
+  // padding, and `.rail-actions-menu` has always had both (`padding: 0.5rem`,
+  // `border: 1px`). It failed at every height for that reason alone and no
+  // other, and the numbers say so exactly — see the header.
+  const chromeAbove = g.borderTopWidth + g.paddingTop;
   expect(
-    g.firstRowTop - g.menuTop,
-    `${label} — the first row is not at the top of the scroll port`,
-  ).toBeLessThanOrEqual(1);
+    Math.abs(g.firstRowTop - (g.menuTop + chromeAbove)),
+    `${label} — the first row is ${g.firstRowTop - g.menuTop}px below the menu's top, but the menu's own chrome above it is only ${chromeAbove}px (border ${g.borderTopWidth} + padding ${g.paddingTop}); the remainder is unexplained`,
+  ).toBeLessThanOrEqual(0.5);
+  // `clientHeight` spans the PADDING box, so the scroll port's bottom edge is
+  // measured from below the top border — the same border-vs-content slip as
+  // above, here masked by the 1px tolerance rather than caught by it.
   expect(
     g.firstRowBottom,
     `${label} — the first row is not WHOLLY visible inside the scroll port`,
-  ).toBeLessThanOrEqual(g.menuTop + g.clientHeight + 1);
+  ).toBeLessThanOrEqual(g.menuTop + g.borderTopWidth + g.clientHeight + 1);
 
   // Visible is not the same as reachable: `home` must also be the element
   // under the finger, not something painted over it.
