@@ -2346,7 +2346,10 @@ html.resize-dragging * {
    The margin is what keeps the glyph off the pane's very corner — it is
    breathing room, NOT a notch allowance (see above). */
 .shell-chrome .shell-chrome-rail-opener {
-  background: var(--bg);
+  /* DELIBERATE RED — reverted in the very next commit. Proves the #985
+     opacity guard still rejects a translucent backing after the assertion
+     was rewritten. Must NOT survive into main. */
+  background: rgba(255, 255, 255, 0.5);
   margin: 0.25rem 0.5rem 0 0;
 }
 
