@@ -9,11 +9,9 @@
 // bottom of `.shell-members` — present on BOTH desktop and mobile and on
 // EVERY window kind. It supersedes the retired mobile-only
 // `.mobile-panel-actions` footer AND the post-#71 top ActionCluster: the
-// settings cog + denoise toggle now live in the rail too. So an admin on a
-// channel window sees SEVEN buttons — home, rooms (📇 $list), themes, archive,
-// settings (cog), admin, denoise — each keeping its testid (the $list launcher
-// is labelled "rooms" but keeps `mobile-panel-list`; the cog keeps
-// `action-cluster-cog`).
+// settings cog + denoise toggle now live in the rail too. Each keeps its
+// testid (the $list launcher is labelled "rooms" but keeps
+// `mobile-panel-list`; the cog keeps `action-cluster-cog`).
 //
 // This spec drives the real mobile layout (@webkit / iPhone 15): open the
 // drawer, assert the home launcher is present with its sibling launchers,
@@ -127,13 +125,16 @@ test.describe("#291 — home launcher in the rail actions drawer", () => {
     // channel window (it too folded into the rail).
     await expect(menu.locator("[data-testid='presence-toggle']")).toHaveCount(1);
 
-    // Every launcher is a proper mobile tap target (≥44px, #291). Seven buttons
-    // for an admin on a channel window: home, rooms, themes, archive, settings
-    // (cog), admin, denoise. #500 — scope the count to `.rail-actions-menu`: the
-    // pinned launcher ALSO carries `.shell-chrome-btn` but lives OUTSIDE the
-    // menu, so counting under the menu yields exactly the seven action buttons.
+    // Every launcher is a proper mobile tap target (≥44px, #291) — the actual
+    // #291 contract. This sweeps whatever the menu renders rather than pinning
+    // a total: the exhaustive "these buttons and no others" set is owned by
+    // issue473 ("rail hosts every labelled button"), and a total duplicated
+    // here reddened this spec the moment #986 added detach + quit, neither of
+    // which #291 has anything to say about. It cannot pass vacuously — the
+    // seven testids above are each asserted present in this same `menu`.
+    // #500 — scope to `.rail-actions-menu`: the pinned launcher ALSO carries
+    // `.shell-chrome-btn` but lives OUTSIDE the menu.
     const buttons = menu.locator(".shell-chrome-btn");
-    await expect(buttons).toHaveCount(7);
     const count = await buttons.count();
     for (let i = 0; i < count; i++) {
       const box = await buttons.nth(i).boundingBox();

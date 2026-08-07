@@ -13,9 +13,10 @@
 // spec exists to guard:
 //   * Every rail button now carries a VISIBLE TEXT LABEL next to its glyph
 //     (`.rail-action-label`) — the whole point of #473 (the bare emoji had to
-//     be guessed / long-pressed). The siblings assert testid COUNTS
-//     (issue291 mobile full-7, ux-5-bm/bt relocation); none pins the desktop
-//     rail's labelled-button SET as a whole. Test (a) does.
+//     be guessed / long-pressed). The siblings assert individual testids for
+//     whatever THEY are about (issue291 the home launcher, issue299 admin
+//     reachability); none pins the rail's labelled-button SET as a whole, nor
+//     should they. Test (a) does, and owns it — see RAIL_BUTTONS.
 //   * The archive button is ALWAYS shown (like settings), NOT selection-gated,
 //     so the ONE archive surface is reachable from HOME — where there is no
 //     network context — not just from a channel/server window. Test (b) pins
@@ -24,13 +25,15 @@
 //   * The full PART → grouped-modal → lazy-expand → revive round trip on
 //     desktop (test c) and its mobile parity via the collapsed drawer (test d).
 //
-// Capability gating (RailActions.tsx): home / themes / archive / settings are
-// always shown; rooms needs a network context (channel/server window); denoise
-// is channel-gated; admin is isAdmin()-gated. vjt is a NON-admin, so on a
-// channel window it sees SIX labelled buttons and the admin button is ABSENT —
-// the isAdmin() gate's negative arm. The admin-present arm (the full seven) is
-// owned by issue291 / ux-6-c, which promote vjt via setAdminFlag; this spec
-// stays on the plain non-admin baseline to keep the shared stack untouched.
+// Capability gating (RailActions.tsx): home / themes / archive / settings /
+// quit are always shown; rooms needs a network context (channel/server window);
+// mentions needs a live bundle for that network; denoise is channel-gated;
+// detach is canDetach()-gated; admin is isAdmin()-gated. vjt is a persistent
+// NON-admin, so on a channel window it sees the EIGHT labelled buttons in
+// RAIL_BUTTONS, with admin ABSENT — the isAdmin() gate's negative arm. The
+// admin-present arm is exercised by issue291 / issue299 / ux-6-c, which promote
+// vjt via setAdminFlag; this spec stays on the plain non-admin baseline to keep
+// the shared stack untouched.
 //
 // Projects (playwright.config.ts): the plain-title tests run on chromium
 // (desktop 1280×720); the `@webkit` test runs on webkit-iphone-15 (393×852,
@@ -55,10 +58,18 @@ import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../
 const CHANNEL = AUTOJOIN_CHANNELS[0]; // #bofh — the seeded autojoin channel
 
 // The rail buttons a NON-admin (vjt) sees on a CHANNEL window, each paired with
-// the `.rail-action-label` text #473 gave it. Admin is excluded — it is
-// isAdmin()-gated and asserted ABSENT for vjt below. Order mirrors the render
-// order in RailActions.tsx (home · rooms · themes · archive · settings ·
-// denoise), but the assertions are per-button so order drift is not the signal.
+// the `.rail-action-label` text #473 gave it. Order mirrors the render order in
+// RailActions.tsx, but the assertions are per-button so order drift is not the
+// signal. TWO buttons are deliberately absent and so excluded: `admin`
+// (isAdmin()-gated, asserted ABSENT for vjt below) and `mentions` (needs a live
+// `mentions_bundle` push for the current network — none arrives here).
+//
+// This list is the SOLE owner of the exhaustive rail set: the tests below both
+// assert `toHaveCount(RAIL_BUTTONS.length)` inside the open menu, so "these and
+// no others" is one number derived from one array in one file. #986 is the
+// cautionary tale — the same total was ALSO pinned by issue291 and issue299,
+// and adding detach + quit reddened two specs that have nothing to do with the
+// rail's membership. A new rail entry belongs HERE, and only here.
 const RAIL_BUTTONS: ReadonlyArray<{ testid: string; label: string }> = [
   { testid: "mobile-panel-home", label: "home" },
   { testid: "mobile-panel-list", label: "rooms" },
@@ -66,6 +77,10 @@ const RAIL_BUTTONS: ReadonlyArray<{ testid: string; label: string }> = [
   { testid: "mobile-panel-archive", label: "archive" },
   { testid: "action-cluster-cog", label: "settings" },
   { testid: "presence-toggle", label: "denoise" },
+  // #986 — the lifecycle pair, moved out of the settings drawer. `detach` is
+  // canDetach()-gated: vjt is a persistent user, so it renders.
+  { testid: "detach-btn", label: "detach" },
+  { testid: "quit-irc-btn", label: "quit" },
 ];
 
 test.setTimeout(60_000);
@@ -94,8 +109,8 @@ test.describe("#473 — RailActions drawer + grouped ArchiveModal", () => {
 
     // #500 — the labelled buttons are collapsed behind ONE launcher; reveal the
     // menu first (openRailMenu is viewport-aware: on desktop it taps the
-    // launcher directly). The seven action buttons live inside
-    // `.rail-actions-menu` now, so re-scope every button query to it.
+    // launcher directly). The action buttons live inside `.rail-actions-menu`
+    // now, so re-scope every button query to it.
     await openRailMenu(page);
     const menu = page.locator(".shell-members .rail-actions-menu");
     await expect(menu).toBeVisible();
@@ -114,6 +129,12 @@ test.describe("#473 — RailActions drawer + grouped ArchiveModal", () => {
     // Assert absence INSIDE the open menu (alongside the present buttons above),
     // so the menu is proven expanded — a collapsed menu would hide admin too.
     await expect(menu.locator("[data-testid='mobile-panel-admin']")).toHaveCount(0);
+
+    // …and NOTHING else. The exhaustive clause the loop above cannot express:
+    // it proves every listed button is there, not that no unlisted one is. The
+    // launcher itself also carries `.shell-chrome-btn` but lives OUTSIDE the
+    // menu, so this counts exactly the action buttons.
+    await expect(menu.locator(".shell-chrome-btn")).toHaveCount(RAIL_BUTTONS.length);
   });
 
   test("desktop home — archive is always-on (no selection) and opens the grouped modal", async ({
@@ -188,7 +209,7 @@ test.describe("#473 — RailActions drawer + grouped ArchiveModal", () => {
     await expect(rail).toBeVisible();
     // #500 — the buttons are collapsed behind the launcher; reveal the menu
     // (openRailMenu sees the drawer is already open and just taps the launcher).
-    // The seven action buttons live inside `.rail-actions-menu` now.
+    // The action buttons live inside `.rail-actions-menu` now.
     await openRailMenu(page);
     const menu = page.locator(".shell-members.open .rail-actions-menu");
     await expect(menu).toBeVisible();
@@ -198,6 +219,11 @@ test.describe("#473 — RailActions drawer + grouped ArchiveModal", () => {
       await expect(button.locator(".rail-action-label")).toHaveText(label);
     }
     await expect(menu.locator("[data-testid='mobile-panel-admin']")).toHaveCount(0);
+    // Same exhaustive total as desktop — which is the point: gating in
+    // RailActions is capability-only, so the two form factors render the SAME
+    // set. Pinning it on both sides is what makes "no form-factor gates" a
+    // tested claim rather than a moduledoc sentence.
+    await expect(menu.locator(".shell-chrome-btn")).toHaveCount(RAIL_BUTTONS.length);
 
     // Close the launcher menu first — its full-viewport backdrop (fixed
     // inset:0) would otherwise intercept the drawer-backdrop click below. Escape

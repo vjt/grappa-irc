@@ -13,7 +13,7 @@
 //
 // The invariant this spec guards — "admin stays reachable" — is unchanged. It
 // drives the real mobile layout (@webkit / iPhone 15) and proves:
-//   (a) the rail hosts the full launcher set (themes PRESENT),
+//   (a) the themes launcher — the one that caused the clip — is PRESENT,
 //   (b) admin is present, ≥44px, and TAPPABLE (renders the AdminPane), and
 //   (c) themes is still reachable via the cog → themes nav row.
 // The themes launcher's own deep-link behaviour is owned by the issue332 spec;
@@ -107,15 +107,16 @@ test.describe("#299 — admin reachable from the rail actions drawer", () => {
     await openRailMenu(page);
     const railMenu = page.locator(".rail-actions-menu");
 
-    // #473/#500 — every launcher lives in the ONE `.rail-actions-menu`. An admin
-    // on a channel window sees SEVEN: home, rooms, themes, archive, settings
-    // (cog), admin, denoise. The themes launcher is PRESENT (its clip-vs-wrap
-    // history is moot now the rail is a flex column). The settings cog folded
-    // into the rail with the `action-cluster-cog` testid (no
-    // `mobile-panel-settings` button ever existed).
+    // #473/#500 — every launcher lives in the ONE `.rail-actions-menu`. The
+    // themes launcher is PRESENT (its clip-vs-wrap history is moot now the rail
+    // is a flex column) and it does NOT strand admin — the whole subject of
+    // this spec. The settings cog folded into the rail with the
+    // `action-cluster-cog` testid (no `mobile-panel-settings` button ever
+    // existed). The exhaustive "these and no others" total lives in issue473,
+    // which owns it: pinned here too it made THIS spec red for #986's detach +
+    // quit, an arrival that cannot strand anything.
     await expect(railMenu.locator("[data-testid='mobile-panel-themes']")).toHaveCount(1);
     await expect(railMenu.locator("[data-testid='action-cluster-cog']")).toHaveCount(1);
-    await expect(railMenu.locator(".shell-chrome-btn")).toHaveCount(7);
 
     // Admin is present AND a proper ≥44px tap target.
     const adminBtn = railMenu.locator("[data-testid='mobile-panel-admin']");
