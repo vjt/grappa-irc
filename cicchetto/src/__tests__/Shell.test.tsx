@@ -359,14 +359,23 @@ vi.mock("../lib/api", () => ({
   adminListSessionLog: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock("../lib/channelKey", () => ({
-  channelKey: (slug: string, name: string) => `${slug} ${name}`,
-  decodeChannelKey: (key: string) => {
-    const sep = key.indexOf(" ");
-    if (sep < 0) return null;
-    return { slug: key.slice(0, sep), name: key.slice(sep + 1) };
-  },
-}));
+// Only the composite-key pair is stubbed (identity, not folding — the
+// fixtures key on raw names). `canonicalChannel` stays REAL via importActual:
+// the #1018 mute lookup folds through it inside `activeWindows`, and a
+// hand-rolled stand-in here would be this suite re-implementing production's
+// fold.
+vi.mock("../lib/channelKey", async () => {
+  const actual = await vi.importActual<typeof import("../lib/channelKey")>("../lib/channelKey");
+  return {
+    ...actual,
+    channelKey: (slug: string, name: string) => `${slug} ${name}`,
+    decodeChannelKey: (key: string) => {
+      const sep = key.indexOf(" ");
+      if (sep < 0) return null;
+      return { slug: key.slice(0, sep), name: key.slice(sep + 1) };
+    },
+  };
+});
 
 // windowState — Shell + TopicBar gate the members aside / hamburger /
 // nick count on the joined-channel predicate. Default to "joined for

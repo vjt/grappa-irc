@@ -24,6 +24,7 @@
 
 import { type MessageKind, NOTIFY_KINDS } from "./api";
 import { canonicalChannel } from "./channelKey";
+import { conversationMuteKey, isConversationMuted } from "./conversationMute";
 import { matchesWatchlist } from "./mentionMatch";
 import { asciiFold, nickEquals } from "./nickEquals";
 import type { NotificationPrefs } from "./userSettings";
@@ -92,7 +93,7 @@ export function shouldNotify(
   // including a direct mention (vjt's Q2: the mute always wins, because the
   // polite default for "I silenced this room" is that it stays silent).
   // That is why it sits here and not inside the two branches.
-  if (isMuted(prefs, conversationKey(message, isDm))) return false;
+  if (isConversationMuted(prefs.muted_targets, conversationKey(message, isDm))) return false;
 
   if (isDm) {
     return dmMatch(message, prefs);
@@ -100,29 +101,18 @@ export function shouldNotify(
   return channelMatch(message, prefs, ownNick, patterns);
 }
 
-// The identity of the CONVERSATION the row belongs to — the thing an
-// operator points at when they say "mute this tab". For a channel that is
-// the channel; for a DM it is the PEER, never `message.channel`, which an
-// inbound DM sets to own_nick (so keying on it would collapse every DM
-// onto one mute). Same fold as the two whitelists: `canonicalChannel` is
-// the mirror of `Identifier.canonical_target/1` and folds a nick exactly
-// as it folds a channel.
-function conversationKey(message: ShouldNotifyMessage, isDm: boolean): string {
-  return canonicalChannel(isDm ? message.sender : message.channel);
-}
-
-// `until` is deliberately NOT read here. Expiry belongs to the READER
-// (`notificationPrefs()` client-side, `get_notification_prefs/1` on the
-// server) so this predicate stays pure and the shared truth-table needs no
-// `now` column — vjt's Q3. A stored-but-elapsed mute reaching this point
-// still silences; that only happens to a caller that bypassed the reader.
+// Which CONVERSATION this row belongs to, in mute terms: the channel for a
+// channel row, the PEER for a DM — never `message.channel`, which an inbound
+// DM sets to own_nick (so keying on it would collapse every DM onto one
+// mute). The fold itself, and the membership test above, live in
+// `conversationMute.ts` — shared with the #1018 next-active cycle and the
+// settings picker so the three can never disagree on a key.
 //
-// `Object.hasOwn`, not `muted[key] !== undefined`: the map arrives from
-// `JSON.parse`, so it carries Object.prototype and a peer legitimately
-// nicked `constructor` or `toString` would otherwise read as muted.
-function isMuted(prefs: NotificationPrefs, key: string): boolean {
-  const muted = prefs.muted_targets;
-  return muted !== undefined && Object.hasOwn(muted, key);
+// `until` is deliberately not read on this path: expiry belongs to the
+// READER, which is what keeps this predicate pure `/4` and the shared
+// truth-table free of a `now` column (#866 Q3).
+function conversationKey(message: ShouldNotifyMessage, isDm: boolean): string {
+  return conversationMuteKey(isDm ? message.sender : message.channel);
 }
 
 function dmMatch(message: ShouldNotifyMessage, prefs: NotificationPrefs): boolean {

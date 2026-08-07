@@ -14,8 +14,8 @@ import InlineConfirmButton from "./InlineConfirmButton";
 import { windowCandidates } from "./lib/activeWindows";
 import { ApiError, displayNick, type Network, visitorNetworkNick } from "./lib/api";
 import { getSubject, token } from "./lib/auth";
-import { canonicalChannel } from "./lib/channelKey";
 import { getColoredNicklist } from "./lib/colorNicklist";
+import { windowMuteKey } from "./lib/conversationMute";
 import { syncedSetColoredNicklist, syncedSetTimeFormat } from "./lib/displayPrefs";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
 import { friendlyApiError } from "./lib/friendlyApiError";
@@ -542,7 +542,7 @@ const SettingsDrawer: Component<Props> = (props) => {
     const muted = prefs().muted_targets ?? {};
     const byKey = new Map<string, string>();
     for (const candidate of windowCandidates()) {
-      const key = canonicalChannel(candidate.channelName);
+      const key = windowMuteKey(candidate);
       if (Object.hasOwn(muted, key) || byKey.has(key)) continue;
       byKey.set(key, candidate.channelName);
     }

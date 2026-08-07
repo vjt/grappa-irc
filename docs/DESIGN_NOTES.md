@@ -33326,3 +33326,43 @@ so the surfaced error is unforgeable proof the target survived cic's parser, the
 channel door and `Client.send_admin/2`. 423 and 447 stay unit-tested — the first
 needs a leaf with no `A:` line, the second a restricted-class user, and neither
 is reachable without reshaping the shared testnet for one spec.
+## 2026-08-07 — #1018: the mute reaches the next-active ordering, and the key gets ONE home
+
+vjt, on IRC: *"una finestra in mute dovrebbe essere esclusa dal giro che fa il
+bottone alt+a"*. #866 stored the per-conversation mute; #235 owns the
+next-active ordering. Nothing joined them, so a busy muted channel kept
+stealing the jump the operator uses to reach the windows they actually read.
+
+**Where the filter went, and why not somewhere cheaper.** `activeWindows.ts` is
+already the ONE ordering behind all three doors (Alt+A, Ctrl+N/P, the on-screen
+affordance), so the change is a single new input on `orderUnreadWindows` and all
+three inherit it — no forked ordering, which is exactly what #235 unified away.
+The input is REQUIRED, not optional: a future door that forgets the mute is a
+compile error rather than a window that silently keeps stealing the jump. The
+alternative — filtering the candidate list at the memo — was rejected for the
+opposite reason: it would have been a filter a caller can quietly omit.
+
+**The key is the trap, so the derivation now has one home.** The mute is keyed
+by the FOLDED conversation: the channel for a channel, the PEER for a DM. Get
+the DM case wrong and every DM collapses onto one entry, silencing an arbitrary
+peer. That derivation existed in `pushTriggers.ts` (private) and, open-coded, in
+the settings picker; #1018 would have made three. `lib/conversationMute.ts` now
+owns all of it — `conversationMuteKey` (the fold), `windowMuteKey` (the window
+shape, structurally typed so the mute lookup does not depend on the window
+projection), `isConversationMuted` (the `Object.hasOwn` membership test, which
+is what keeps a peer nicked `constructor` from reading as muted). The three
+consumers ask the same question of the same function.
+
+**No clock.** Expiry stays where #866 Q3 put it — in the READER. The memo passes
+`notificationPrefs().muted_targets`, which has already dropped elapsed snoozes,
+so an expired mute puts its window back on the cycle with no `now` anywhere in
+the ordering.
+
+**Scope, deliberately narrow.** #866 Q4 ruled that a muted target still COUNTS;
+this extends the mute into navigation only. A muted window keeps its sidebar
+unread badge and its mention counters — the e2e asserts the badge is still there
+after the cycle has skipped past it. Consequence accepted, not a scope leak: the
+affordance's own count and auto-hide DO drop the muted window, because they read
+the same ordered list. A button that says "2" and cycles through 1 would be the
+lie. And when every unread window is muted the cycle is a no-op (Q2), which the
+empty list gives for free.

@@ -1,11 +1,14 @@
 import { createMemo, untrack } from "solid-js";
 import { type ChannelKey, channelKey } from "./channelKey";
+import { isConversationMuted, windowMuteKey } from "./conversationMute";
 import { mentionCounts } from "./mentions";
 import { moduleRoot } from "./moduleRoot";
 import { channelsBySlug, networks } from "./networks";
+import { notificationPrefs } from "./notificationPrefs";
 import { queryWindowsByNetwork } from "./queryWindows";
 import { scrollbackByChannel } from "./scrollback";
 import { messagesUnread, selectedChannel, setSelectedChannel } from "./selection";
+import type { MutedTargets } from "./userSettings";
 
 // GH #235 — "jump to next active window" (irssi Alt+A).
 //
@@ -69,6 +72,17 @@ export type OrderInput = {
    * no local rows yet) — correctly the "oldest" activity.
    */
   activityId: Record<ChannelKey, number>;
+  /**
+   * The subject's muted conversations (#866), as the READER hands them over
+   * — `notificationPrefs()` has already dropped elapsed snoozes, so an
+   * entry present here silences and no clock is consulted below. #1018: a
+   * muted window is not a stop on the cycle. `undefined` (a BEAM older than
+   * this bundle) means "no mutes".
+   *
+   * Required, not optional: a door that forgets the mute is a compile error
+   * rather than a window that silently keeps stealing the jump.
+   */
+  muted: MutedTargets | undefined;
 };
 
 // Tier-0 predicate: a window is "priority" when it is a query (DM) OR
@@ -81,7 +95,8 @@ export function isPriorityWindow(w: ActiveWindow, mentions: Record<ChannelKey, n
   return w.kind === "query" || (mentions[key] ?? 0) > 0;
 }
 
-// Pure ordering. Filter to windows with unread activity, then sort:
+// Pure ordering. Filter to windows with unread activity that the operator
+// has not muted, then sort:
 //   1. tier — mention/highlight OR query (DM) come first (0), ordinary
 //      channel traffic second (1);
 //   2. activity time ascending — chronological, oldest activity first
@@ -89,7 +104,7 @@ export function isPriorityWindow(w: ActiveWindow, mentions: Record<ChannelKey, n
 //   3. flat (sidebar) index — stable tie-break for equal activity ids
 //      (e.g. two seed-only windows).
 export function orderUnreadWindows(input: OrderInput): ActiveWindow[] {
-  const { candidates, unread, mentions, activityId } = input;
+  const { candidates, unread, mentions, activityId, muted } = input;
   const ranked = candidates
     .map((w, flatIndex) => {
       const key = channelKey(w.networkSlug, w.channelName);
@@ -98,10 +113,16 @@ export function orderUnreadWindows(input: OrderInput): ActiveWindow[] {
         unread: unread[key] ?? 0,
         tier: isPriorityWindow(w, mentions) ? 0 : 1,
         activityId: activityId[key] ?? 0,
+        muted: isConversationMuted(muted, windowMuteKey(w)),
         flatIndex,
       };
     })
-    .filter((r) => r.unread > 0);
+    // #1018 — the mute drops the window from the CYCLE, and it beats the
+    // tier: a mention inside a muted room is still not a stop (#866 Q2,
+    // "the mute always wins"). Everything else about the window is
+    // untouched — its sidebar unread badge and the mention counters keep
+    // rendering exactly as before (#866 Q4).
+    .filter((r) => r.unread > 0 && !r.muted);
 
   ranked.sort((a, b) => {
     if (a.tier !== b.tier) return a.tier - b.tier;
@@ -178,6 +199,10 @@ const root = moduleRoot(() => {
       unread: messagesUnread(),
       mentions: mentionCounts(),
       activityId: buildActivityIds(),
+      // #1018 — read through `notificationPrefs()`, never the stored signal:
+      // that reader resolves an elapsed snooze, so a mute that ran out puts
+      // its window back on the cycle with no clock handling here.
+      muted: notificationPrefs().muted_targets,
     }),
   );
   return { activeWindows };

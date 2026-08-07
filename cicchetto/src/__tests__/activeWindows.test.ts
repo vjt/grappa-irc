@@ -46,15 +46,15 @@ const names = (list: ActiveWindow[]): string[] => list.map((w) => w.channelName)
 describe("orderUnreadWindows", () => {
   it("returns empty when there are no candidates", () => {
     expect(
-      orderUnreadWindows({ candidates: [], unread: {}, mentions: {}, activityId: {} }),
+      orderUnreadWindows({ candidates: [], unread: {}, mentions: {}, activityId: {}, muted: {} }),
     ).toEqual([]);
   });
 
   it("returns empty when no candidate has unread activity", () => {
     const c = [chan("#a"), query("bob")];
-    expect(orderUnreadWindows({ candidates: c, unread: {}, mentions: {}, activityId: {} })).toEqual(
-      [],
-    );
+    expect(
+      orderUnreadWindows({ candidates: c, unread: {}, mentions: {}, activityId: {}, muted: {} }),
+    ).toEqual([]);
   });
 
   it("includes only windows whose unread count is greater than zero", () => {
@@ -62,6 +62,7 @@ describe("orderUnreadWindows", () => {
     const b = chan("#b");
     const out = orderUnreadWindows({
       candidates: [a, b],
+      muted: {},
       unread: counts([
         [a, 0],
         [b, 3],
@@ -77,6 +78,7 @@ describe("orderUnreadWindows", () => {
     const bob = query("bob");
     const out = orderUnreadWindows({
       candidates: [a, bob],
+      muted: {},
       unread: counts([
         [a, 3],
         [bob, 1],
@@ -96,6 +98,7 @@ describe("orderUnreadWindows", () => {
     const plain = chan("#plain");
     const out = orderUnreadWindows({
       candidates: [ment, plain],
+      muted: {},
       unread: counts([
         [ment, 1],
         [plain, 5],
@@ -117,6 +120,7 @@ describe("orderUnreadWindows", () => {
     const out = orderUnreadWindows({
       // flat order c,a,b — but chronology must override it.
       candidates: [c, a, b],
+      muted: {},
       unread: counts([
         [a, 1],
         [b, 1],
@@ -137,6 +141,7 @@ describe("orderUnreadWindows", () => {
     const y = chan("#y");
     const out = orderUnreadWindows({
       candidates: [x, y],
+      muted: {},
       unread: counts([
         [x, 1],
         [y, 1],
@@ -153,6 +158,7 @@ describe("orderUnreadWindows", () => {
     const alice = query("alice");
     const out = orderUnreadWindows({
       candidates: [zoe, alice],
+      muted: {},
       unread: counts([
         [zoe, 1],
         [alice, 1],
@@ -171,12 +177,160 @@ describe("orderUnreadWindows", () => {
     const o = chan("#o");
     const out = orderUnreadWindows({
       candidates: [m, o],
+      muted: {},
       unread: counts([[o, 1]]),
       // #m carries a mention but nothing unread — no jump target.
       mentions: counts([[m, 2]]),
       activityId: {},
     });
     expect(names(out)).toEqual(["#o"]);
+  });
+});
+
+// #1018 — a conversation the operator MUTED (#866) is not a stop on the
+// cycle. The mute is keyed by the FOLDED conversation, per-subject and
+// network-agnostic (`MutedTargets`), and expiry was already resolved by
+// the reader (`notificationPrefs()`), so the ordering takes the live map
+// and asks a pure membership question — no clock, no second fold.
+//
+// Badges and counters are NOT touched (#866 Q4): this filters the
+// NAVIGATION order only.
+
+describe("orderUnreadWindows — muted conversations (#1018)", () => {
+  it("skips a muted channel and lands on the next unread window", () => {
+    const noisy = chan("#noisy");
+    const quiet = chan("#quiet");
+    const out = orderUnreadWindows({
+      candidates: [noisy, quiet],
+      muted: { "#noisy": { until: null } },
+      unread: counts([
+        [noisy, 9],
+        [quiet, 1],
+      ]),
+      mentions: {},
+      // the muted channel is the OLDER activity, so without the filter it
+      // would head the list.
+      activityId: counts([
+        [noisy, 100],
+        [quiet, 200],
+      ]),
+    });
+    expect(names(out)).toEqual(["#quiet"]);
+  });
+
+  it("keys a muted QUERY on the PEER, never on own nick", () => {
+    const bob = query("bob");
+    const carol = query("carol");
+    const out = orderUnreadWindows({
+      candidates: [bob, carol],
+      // "vjt" is the operator's own nick — an inbound DM row carries it in
+      // `channel`, and keying on that would collapse every DM onto ONE mute
+      // entry. Muting own nick must silence NOTHING here.
+      muted: { vjt: { until: null } },
+      unread: counts([
+        [bob, 1],
+        [carol, 1],
+      ]),
+      mentions: {},
+      activityId: counts([
+        [bob, 100],
+        [carol, 200],
+      ]),
+    });
+    expect(names(out)).toEqual(["bob", "carol"]);
+
+    const outMutedPeer = orderUnreadWindows({
+      candidates: [bob, carol],
+      muted: { bob: { until: null } },
+      unread: counts([
+        [bob, 1],
+        [carol, 1],
+      ]),
+      mentions: {},
+      activityId: counts([
+        [bob, 100],
+        [carol, 200],
+      ]),
+    });
+    expect(names(outMutedPeer)).toEqual(["carol"]);
+  });
+
+  it("folds the window name against the stored key (a mute is case-insensitive, A-Z only)", () => {
+    const shouty = chan("#NoIsY");
+    const bracket = chan("#chan{1}");
+    const out = orderUnreadWindows({
+      candidates: [shouty, bracket],
+      // `#chan[1]` is a DIFFERENT conversation from `#chan{1}` — the fold
+      // touches `A-Z` only (#525), so the bracket window is NOT muted.
+      muted: { "#noisy": { until: null }, "#chan[1]": { until: null } },
+      unread: counts([
+        [shouty, 1],
+        [bracket, 1],
+      ]),
+      mentions: {},
+      activityId: {},
+    });
+    expect(names(out)).toEqual(["#chan{1}"]);
+  });
+
+  it("keeps skipping a muted window that carries a MENTION (#866 Q2: the mute wins)", () => {
+    const muted = chan("#muted");
+    const plain = chan("#plain");
+    const out = orderUnreadWindows({
+      candidates: [muted, plain],
+      muted: { "#muted": { until: null } },
+      unread: counts([
+        [muted, 1],
+        [plain, 1],
+      ]),
+      mentions: counts([[muted, 3]]),
+      activityId: {},
+    });
+    expect(names(out)).toEqual(["#plain"]);
+  });
+
+  it("returns empty when EVERY unread window is muted — the cycle is a no-op", () => {
+    const a = chan("#a");
+    const bob = query("bob");
+    const out = orderUnreadWindows({
+      candidates: [a, bob],
+      muted: { "#a": { until: null }, bob: { until: null } },
+      unread: counts([
+        [a, 1],
+        [bob, 1],
+      ]),
+      mentions: {},
+      activityId: {},
+    });
+    expect(out).toEqual([]);
+  });
+
+  it("tolerates a server that sends no muted_targets at all (cic ships ahead of the BEAM)", () => {
+    const a = chan("#a");
+    const out = orderUnreadWindows({
+      candidates: [a],
+      muted: undefined,
+      unread: counts([[a, 1]]),
+      mentions: {},
+      activityId: {},
+    });
+    expect(names(out)).toEqual(["#a"]);
+  });
+
+  it("does not skip a window whose mute has ELAPSED — the reader already dropped it", () => {
+    // `notificationPrefs()` (withLiveMutes) resolves expiry before the map
+    // reaches here, so an elapsed snooze arrives as an ABSENT key. This
+    // pins that the ordering adds no second clock of its own: an entry that
+    // is still present silences, whatever its `until` says.
+    const a = chan("#a");
+    const out = orderUnreadWindows({
+      candidates: [a],
+      muted: {},
+      unread: counts([[a, 1]]),
+      mentions: {},
+      activityId: {},
+    });
+    expect(names(out)).toEqual(["#a"]);
   });
 });
 
