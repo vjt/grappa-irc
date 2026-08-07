@@ -91,11 +91,17 @@ defmodule Mix.Tasks.Grappa.RepairPasswords do
           | {:unusable, NSInterceptor.vet_reject_reason()}
           | {:unusable_repair, NSInterceptor.vet_reject_reason()}
 
-  @type classification ::
-          :no_password
-          | :healthy
-          | {:repairable, String.t()}
-          | {:report, report_reason()}
+  @typedoc """
+  What the concatenation branch can conclude. Narrower than
+  `classification/0` on purpose: once a stored value has been found to hold
+  a space there is something to say about it, so `:healthy` and
+  `:no_password` are no longer reachable — Dialyzer proves it, and the
+  split type records the decision tree instead of hiding it behind one
+  catch-all.
+  """
+  @type verdict :: {:repairable, String.t()} | {:report, report_reason()}
+
+  @type classification :: :no_password | :healthy | verdict()
 
   @doc """
   Classifies one credential's stored password. Pure — reads the struct, hits
@@ -125,8 +131,7 @@ defmodule Mix.Tasks.Grappa.RepairPasswords do
   # the split: `do_set_password` cuts at the FIRST space and then refuses a
   # `newpass` that still holds one, so such a rotation never took upstream
   # and NEITHER token is known to be the live password.
-  @spec classify_concatenation(String.t(), String.t() | nil, Credential.auth_method()) ::
-          classification()
+  @spec classify_concatenation(String.t(), String.t() | nil, Credential.auth_method()) :: verdict()
   defp classify_concatenation(password, nick, :nickserv_identify) do
     case String.split(password, " ") do
       # Exactly two tokens is the single-rotation case, and it is the only
@@ -143,7 +148,8 @@ defmodule Mix.Tasks.Grappa.RepairPasswords do
 
   # A repair that services would themselves refuse is not a repair — it just
   # exchanges one silently-never-identifying value for another.
-  @spec classify_repair(String.t(), String.t() | nil) :: classification()
+  @spec classify_repair(String.t(), String.t() | nil) ::
+          {:repairable, String.t()} | {:report, {:unusable_repair, NSInterceptor.vet_reject_reason()}}
   defp classify_repair(candidate, nick) do
     case NSInterceptor.vet_password(candidate, nick || "") do
       :ok -> {:repairable, candidate}
@@ -156,7 +162,7 @@ defmodule Mix.Tasks.Grappa.RepairPasswords do
   # calling a legitimately longer one unusable — the same scoping
   # `Credentials.update_credential_password/2` applies at the #124 door.
   @spec classify_unusable(NSInterceptor.vet_reject_reason(), Credential.auth_method()) ::
-          classification()
+          :healthy | {:report, {:unusable, NSInterceptor.vet_reject_reason()}}
   defp classify_unusable(reason, :nickserv_identify), do: {:report, {:unusable, reason}}
   defp classify_unusable(_, _), do: :healthy
 
