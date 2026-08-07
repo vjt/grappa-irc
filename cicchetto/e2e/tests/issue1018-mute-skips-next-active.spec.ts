@@ -30,7 +30,7 @@ import {
 } from "../fixtures/cicchettoPage";
 import { clearMutedConversations, partChannel } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
-import { getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
+import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, test } from "../fixtures/test";
 
 const PEER_NICK = "i1018-noise";
@@ -45,6 +45,18 @@ test("Alt+A skips the muted channel and lands on the unmuted one, badge intact",
 }) => {
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
+  // Focus the seeded autojoin channel before anything else, for TWO
+  // reasons that both bite silently if skipped:
+  //   * the compose box below only exists once a scrollback-kind window
+  //     is selected — Shell's `kindHasScrollback` Match owns ComposeBox,
+  //     and boot auto-selects $home, which has none. Without this the
+  //     `/join` fill waits 30s on a locator that never mounts.
+  //   * the per-test reset clears every read cursor and re-seeds this
+  //     channel with 200 rows, so it starts FULLY unread and would be a
+  //     second stop on the cycle. Focusing it baselines the cursor to
+  //     the tail, which is what makes the count assertion below read the
+  //     two windows this spec drives and nothing else.
+  await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: NETWORK_NICK });
 
   const peer = await IrcPeer.connect({ nick: PEER_NICK });
   try {
