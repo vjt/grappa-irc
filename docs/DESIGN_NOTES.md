@@ -32324,3 +32324,55 @@ write can witness a newline that got in.
 that eats nicks, channels and `/commands` that default is wrong on its own
 merits and is now `off`. It was the falsified hypothesis' subject, and it must
 not be read as the mechanism — it changes nothing about which keystrokes send.
+## 2026-08-07 — the far-behind label stays up top; the gesture moves to the thumb (#997)
+
+An operator on IRC sat under a frozen `(199)` badge and read it as a broken
+counter. Everything worked as designed: the window was far behind, so #693
+freezes the read cursor deliberately and #888 marks the badge as a DISTANCE
+rather than a count. But the dismiss is the ONLY gesture that unfreezes that
+cursor, and it lived pinned to the top edge of the pane. They were at the
+tail, and never looked up.
+
+**The original reasoning does not defend the top edge.** The comment above
+`.scrollback-far-behind` justifies pinning the bar OUT of the scroll flow: a
+far-behind pane has no divider to scroll to, so the activation routine parks
+it at the bottom and an in-flow boundary row would sit viewports above the
+fold — the one signal that a region was abandoned, where nobody looks. That
+argument is sound and it is an argument against an IN-FLOW marker. It says
+nothing in favour of the top specifically. The #280 float stack is also out
+of flow, also container-anchored, and is where the thumb already is.
+
+**Option 2 of the three the issue listed, chosen by vjt.** The bar stays as
+the status LABEL ("you are N behind" — a bare corner glyph cannot say that);
+the affordance also lands in the corner stack. Option 1 (move the pair down,
+lose the label) and option 3 (move the whole bar to the bottom edge, into the
+keyboard geometry #280 exists to survive and the #133 z-order) were not taken.
+
+**One owner, one state.** A second surface for the same state is only worth
+having if the two cannot disagree, so both controls call one
+`dismissFarBehindGesture` — the corner button has no handler of its own.
+Two handlers that agree today are the #975 twin-structure shape: they drift,
+and the drift here would be silent (dismissing without carrying the returned
+id back into the frozen marker un-suppresses the divider against a cursor
+snapshot thousands of rows old). Both mutations were measured against the
+unit specs: dropping the re-latch reds one test, calling `jumpToUnread`
+instead reds two.
+
+**The jump deliberately gets NO corner twin.** It goes BACKWARDS into the
+abandoned region and does not unfreeze anything, so a reachable copy of it
+would leave the badge exactly as stuck — a control in reach that does not
+work is worse than the reported defect, not better. And a backwards control
+one gap above the forwards scroll-to-bottom is precisely the two-affordances
+collision #280 anchored this stack to prevent. The two directions must stay
+distinguishable; they overlap only in placement.
+
+**The corner control is opaque, against its siblings.** `.shell-mobile
+.scrollback-float-stack > *` carries `opacity: 0.5` (#289/#302) because those
+buttons are PERMANENT chrome and the text behind them had to stay readable.
+This one appears only while the window is far behind, it is the only gesture
+that unfreezes the cursor, and the far-behind surface paints opaquely over
+the rows it covers by necessity — so it opts out, via a child selector so the
+override reads as deliberate rather than as a specificity accident. The 44px
+tap floor stays in ABSOLUTE px (root font-size is 14px; a rem target renders
+38.5px), which makes the desktop control larger than its 2rem sibling: the
+physical constraint wins over the visual match.
