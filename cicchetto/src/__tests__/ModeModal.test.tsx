@@ -78,6 +78,32 @@ describe("ModeModal", () => {
     expect(getByText("secret")).toBeTruthy();
   });
 
+  // #975 — with the PART-time cache drop in place, "no entry for this
+  // channel" is the COMMON case (any channel the session is not in), so the
+  // modal has to say it rather than draw an all-off grid that reads as "+".
+  it("says the modes are unknown when the channel has no cache entry", () => {
+    mockMembers[KEY] = [];
+    openModeModal("bahamut", "#bofh");
+
+    const { getByTestId, queryByText } = render(() => <ModeModal />);
+    expect(getByTestId("mode-modal-unknown").textContent).toContain("modes unknown");
+    // The toggle grid is GONE, not merely all-off — an all-off grid is the
+    // lie this issue is about.
+    expect(queryByText("secret")).toBeNull();
+  });
+
+  it("renders the grid for a channel whose modes are known to be none", () => {
+    // An entry present with an empty array is a real 324 answer ("+"), not
+    // the unknown state. Conflating the two is the bug.
+    mockModes[KEY] = { modes: [], params: {} };
+    mockMembers[KEY] = [{ nick: "vjt-grappa", modes: ["@"] }];
+    openModeModal("bahamut", "#bofh");
+
+    const { queryByTestId, getByText } = render(() => <ModeModal />);
+    expect(queryByTestId("mode-modal-unknown")).toBeNull();
+    expect(getByText("secret")).toBeTruthy();
+  });
+
   it("shows active modes as pressed", () => {
     mockModes[KEY] = { modes: ["s"], params: {} };
     mockMembers[KEY] = [{ nick: "vjt-grappa", modes: ["@"] }];

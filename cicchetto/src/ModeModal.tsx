@@ -126,6 +126,18 @@ const ModeModal: Component = () => {
     return networks()?.find((n) => n.slug === t.networkSlug)?.id;
   };
 
+  // #975 — "no cache entry" and "an entry that lists no modes" are
+  // DIFFERENT facts and the modal must not conflate them. The cache is only
+  // ever seeded by the 324 the server queries on JOIN, so a missing key
+  // means the session is not in the channel and cic simply does not know;
+  // rendering the toggle grid all-off would state `+` (no modes set) as
+  // fact. An entry present with an empty `modes` array is a real answer and
+  // still renders the grid.
+  const modesKnown = (): boolean => {
+    const k = key();
+    return k !== null && modesByChannel()[k] !== undefined;
+  };
+
   // Current channel modes (letters + params) from the server-seeded cache.
   const currentModes = (): string[] => {
     const k = key();
@@ -229,37 +241,46 @@ const ModeModal: Component = () => {
               </button>
             </header>
             <div class="mode-modal-body">
-              <For each={toggles()}>
-                {(m) => (
-                  <Show
-                    when={m.takesParam}
-                    fallback={
-                      <button
-                        type="button"
-                        class="mode-modal-toggle"
-                        classList={{ "mode-modal-toggle-active": isActive(m.letter) }}
-                        aria-pressed={isActive(m.letter)}
-                        aria-disabled={!canEdit()}
-                        aria-label={`${m.label} (+${m.letter})`}
-                        onClick={() => onToggle(m)}
-                      >
-                        <span class="mode-modal-toggle-flag">+{m.letter}</span>
-                        <span class="mode-modal-toggle-label">{m.label}</span>
-                        <span class="mode-modal-toggle-desc">{m.desc}</span>
-                      </button>
-                    }
-                  >
-                    <ParamModeRow
-                      mode={m}
-                      active={() => isActive(m.letter)}
-                      paramValue={() => currentParams()[m.letter] ?? null}
-                      canEdit={canEdit}
-                      onSet={(value) => onSetParam(m, value)}
-                      onUnset={() => onUnsetParam(m)}
-                    />
-                  </Show>
-                )}
-              </For>
+              <Show
+                when={modesKnown()}
+                fallback={
+                  <p class="mode-modal-unknown" data-testid="mode-modal-unknown">
+                    modes unknown — not in this channel
+                  </p>
+                }
+              >
+                <For each={toggles()}>
+                  {(m) => (
+                    <Show
+                      when={m.takesParam}
+                      fallback={
+                        <button
+                          type="button"
+                          class="mode-modal-toggle"
+                          classList={{ "mode-modal-toggle-active": isActive(m.letter) }}
+                          aria-pressed={isActive(m.letter)}
+                          aria-disabled={!canEdit()}
+                          aria-label={`${m.label} (+${m.letter})`}
+                          onClick={() => onToggle(m)}
+                        >
+                          <span class="mode-modal-toggle-flag">+{m.letter}</span>
+                          <span class="mode-modal-toggle-label">{m.label}</span>
+                          <span class="mode-modal-toggle-desc">{m.desc}</span>
+                        </button>
+                      }
+                    >
+                      <ParamModeRow
+                        mode={m}
+                        active={() => isActive(m.letter)}
+                        paramValue={() => currentParams()[m.letter] ?? null}
+                        canEdit={canEdit}
+                        onSet={(value) => onSetParam(m, value)}
+                        onUnset={() => onUnsetParam(m)}
+                      />
+                    </Show>
+                  )}
+                </For>
+              </Show>
             </div>
           </div>
         </div>

@@ -6112,6 +6112,16 @@ html.resize-dragging * {
   overscroll-behavior: contain;
 }
 
+/* #975 — the "cic has no 324 for this channel" state, shown INSTEAD of the
+ * toggle grid. Muted like every other non-answer in the chrome; deliberately
+ * not styled as an error, since not being in a channel is not a fault. */
+.mode-modal-unknown {
+  margin: 0;
+  padding: 0.5rem 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 /* Chunky toggle button: flag chip + bold label + muted description on
  * one row. Inactive = flat outline; active = inset double-frame in the
  * accent color (the "switch is ON" retro affordance). */
