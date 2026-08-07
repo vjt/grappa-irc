@@ -11,6 +11,7 @@ import { nickEquals } from "./nickEquals";
 import { presenceRowVisible } from "./presenceFilter";
 import { queryWindowsByNetwork } from "./queryWindows";
 import { getReadCursor, readCursors, setReadCursor } from "./readCursor";
+import { readingAtTailKey } from "./readingAtTail";
 import {
   farBehindByChannel,
   loadInitialScrollback,
@@ -51,6 +52,9 @@ import { windowIsPresent } from "./windowState";
 //     scrollback.ts) the derived counts fall on their own — in the
 //     FOCUSED window exactly as in every other one (#887; the old
 //     focused-window zeroing overwrite is gone, see `perChannelUnread`).
+//     The one window that IS zeroed is the one the pane reports it is
+//     reading at the tail (#981, `readingAtTail`) — a narrower rule than
+//     the #887 one, and honest for the reason spelled out at the memo.
 //
 // 2026-06-01 (unread-badges-from-cursor cluster, bucket B2): the four
 // increment stores (`unreadCounts`, `messagesUnread`, `eventsUnread`,
@@ -474,6 +478,39 @@ const exports = identityScopedStore((onIdentityChange) => {
     // The one window whose count still cannot fall is a far-behind one
     // (#693 freezes its cursor on purpose). That is now SAID rather than
     // hidden — #888 marks the badge as a distance, not a stuck counter.
+    //
+    // #981 (2026-08-07) — a NARROWER suppression is back, and the paragraph
+    // above is why it is allowed to be. DO NOT delete this for the #887
+    // reason without re-reading both:
+    //
+    // #887's objection was that the suppression was DISHONEST — it hid the
+    // badge without advancing the cursor, so the count vanished on select and
+    // returned whole on leave. That objection no longer holds: the cursor
+    // now advances WHILE the operator reads (the read-at-the-tail arm), so a
+    // window suppressed here genuinely becomes read within the arm's settle
+    // and the number does not come back. What is hidden is the 500 ms gap
+    // between "the row landed" (this memo, synchronous) and "the arm marked
+    // it read" (debounced) — the blink vjt reported as a badge flashing `1`
+    // on a pane he was already at the bottom of.
+    //
+    // The predicate is NOT re-derived here. `readingAtTailKey` is the pane's
+    // own read-at-the-tail gate — visible tab AND geometrically at the tail
+    // AND rows rendered — published whole, so the badge is suppressed for
+    // exactly the window the cursor arm is about to mark read. Reassembling
+    // it from `selectedChannel` (an intent, not a geometry) or from
+    // `followMode` would fork it, and the fork would be the #887 complaint
+    // again the first time the two disagreed. A backgrounded tab publishes
+    // `null` and keeps accruing.
+    //
+    // A far-behind window (#693) is deliberately excluded: its cursor is
+    // frozen, the arm cannot advance it, and the rows the operator is at the
+    // bottom of are NOT the unread region. Suppressing there would hide the
+    // one count that can never come back on its own.
+    const readingKey = readingAtTailKey();
+    if (readingKey !== null && !farBehind[readingKey] && result[readingKey] !== undefined) {
+      result[readingKey] = { messages: 0, events: 0 };
+    }
+
     return result;
   });
 
