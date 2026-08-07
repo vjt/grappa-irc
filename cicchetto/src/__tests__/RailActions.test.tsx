@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __resetForTest as resetOverlayLock } from "../lib/overlayScrollLock";
 
@@ -28,6 +28,52 @@ vi.mock("../lib/channelKey", () => ({
 const adminHolder = { value: false };
 vi.mock("../lib/networks", () => ({
   isAdmin: () => adminHolder.value,
+  // #986 — pulled in transitively by lib/lifecycle (updateIdentity refetches
+  // /me). Unused by the rail, but a named import must resolve.
+  refetchUser: vi.fn(),
+}));
+
+// #986 — the two lifecycle entries land the operator on /login once the
+// teardown resolves. House pattern (DeleteAccountModal.test / SettingsDrawer
+// .test): stub the router hook rather than wrapping every render in a Router.
+const navigateMock = vi.fn();
+vi.mock("@solidjs/router", () => ({
+  useNavigate: () => navigateMock,
+}));
+
+// #188/#986 — the @ mentions entry only surfaces when the network implied by
+// the current selection HAS a bundle to re-open. Mutable holder per test.
+const mentionsBundles = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
+vi.mock("../lib/mentionsWindow", () => ({
+  mentionsBundleBySlug: () => mentionsBundles.value,
+}));
+
+// #986 — the subject drives BOTH the detach gate and which of the three quit
+// bodies the modal shows. Spread the REAL auth module so the shared
+// `isPersistentIdentity` predicate runs for real against the stubbed
+// getSubject — the classification IS what is under test. lib/lifecycle stays
+// UNMOCKED so the copy asserted below is the copy that ships; only its
+// side-effecting leaves (logout / quitAll / the REST verbs) are stubbed.
+const subjectHolder = vi.hoisted(() => ({
+  current: null as
+    | { kind: "user"; id: string; name: string }
+    | { kind: "visitor"; id: string; nick: string; registered?: boolean }
+    | null,
+}));
+vi.mock("../lib/auth", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/auth")>()),
+  logout: vi.fn().mockResolvedValue(undefined),
+  token: () => "test-bearer",
+  getSubject: () => subjectHolder.current,
+}));
+
+vi.mock("../lib/quit", () => ({
+  quitAll: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../lib/api", () => ({
+  deleteAccount: vi.fn().mockResolvedValue(undefined),
+  updateNetworkIdentity: vi.fn().mockResolvedValue(undefined),
 }));
 
 type Sel = { networkSlug: string; channelName: string; kind: string } | null;
@@ -49,6 +95,7 @@ const openThemesPanel = vi.fn();
 const openAdminPanel = vi.fn();
 const openSettingsPanel = vi.fn();
 const openArchivePanel = vi.fn();
+const openMentionsPanel = vi.fn();
 vi.mock("../lib/mobilePanel", () => ({
   openHomePanel: (...a: unknown[]) => openHomePanel(...a),
   openListPanel: (...a: unknown[]) => openListPanel(...a),
@@ -56,8 +103,11 @@ vi.mock("../lib/mobilePanel", () => ({
   openAdminPanel: (...a: unknown[]) => openAdminPanel(...a),
   openSettingsPanel: (...a: unknown[]) => openSettingsPanel(...a),
   openArchivePanel: (...a: unknown[]) => openArchivePanel(...a),
+  openMentionsPanel: (...a: unknown[]) => openMentionsPanel(...a),
 }));
 
+import ConfirmModal from "../ConfirmModal";
+import { dismissConfirm } from "../lib/confirmDialog";
 import RailActions from "../RailActions";
 
 const channelSel: Sel = { networkSlug: "freenode", channelName: "#italia", kind: "channel" };
@@ -72,6 +122,9 @@ beforeEach(() => {
   adminHolder.value = false;
   selHolder.value = null;
   roomsSlugHolder.value = "freenode";
+  mentionsBundles.value = {};
+  subjectHolder.current = null;
+  dismissConfirm();
 });
 
 afterEach(() => {
@@ -340,5 +393,231 @@ describe("RailActions launcher (#500)", () => {
     expect(screen.getByTestId("rail-actions-launcher")).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByTestId("action-cluster-cog")).toBeNull();
     expect(openSettingsPanel).not.toHaveBeenCalled();
+  });
+});
+
+// #986 — the three arrivals. The @ mentions door left `.shell-chrome` (whose
+// band #985 removes) and the two lifecycle verbs left the settings drawer,
+// where detach fired with NO confirmation at all and quit armed a two-tap
+// that said "really quit IRC?" to every subject alike. Here they are rail
+// entries behind the shared #195 confirm modal.
+//
+// The load-bearing assertions are about the modal BODY, mounted for real:
+// a naive "the modal opens" test passes with one shared sentence, which is
+// precisely the defect this issue exists to close.
+describe("RailActions — @ mentions (#986)", () => {
+  it("shows the entry when the selected network has a bundle to re-open", () => {
+    selHolder.value = channelSel;
+    mentionsBundles.value = { freenode: {} };
+    render(() => <RailActions setters={setters} />);
+    openMenu();
+    const entry = screen.getByTestId("rail-action-mentions");
+    expect(entry).toBeInTheDocument();
+    expect(entry).toHaveTextContent("mentions");
+  });
+
+  it("hides the entry when that network has no bundle — nothing to re-open", () => {
+    selHolder.value = channelSel;
+    mentionsBundles.value = {};
+    render(() => <RailActions setters={setters} />);
+    openMenu();
+    expect(screen.queryByTestId("rail-action-mentions")).toBeNull();
+  });
+
+  it("hides the entry with no network context at all (home)", () => {
+    roomsSlugHolder.value = null;
+    mentionsBundles.value = { freenode: {} };
+    render(() => <RailActions setters={setters} />);
+    openMenu();
+    expect(screen.queryByTestId("rail-action-mentions")).toBeNull();
+  });
+
+  it("routes through the shared nav mutex to the mentions window", () => {
+    selHolder.value = channelSel;
+    mentionsBundles.value = { freenode: {} };
+    render(() => <RailActions setters={setters} />);
+    openMenu();
+    fireEvent.click(screen.getByTestId("rail-action-mentions"));
+    expect(openMentionsPanel).toHaveBeenCalledWith(setters, expect.any(Function));
+    // The nav thunk is what actually selects the window — run it and assert
+    // the payload, rather than trusting that the mutex helper was called.
+    const navThunk = openMentionsPanel.mock.calls[0]?.[1] as (() => void) | undefined;
+    if (navThunk === undefined) throw new Error("openMentionsPanel got no nav thunk");
+    navThunk();
+    expect(setSelectedChannel).toHaveBeenCalledWith({
+      networkSlug: "freenode",
+      channelName: "",
+      kind: "mentions",
+    });
+  });
+
+  // #473's capability-only rule, applied. The @ was `isMobile()`-gated in
+  // ShellChrome to avoid duplicating the desktop Sidebar mentions row (#71
+  // INC-2); in the rail that gate would be the one thing this component says
+  // it never does, and `home` is the standing precedent for a rail launcher
+  // that doubles a sidebar row.
+  it("carries NO form-factor gate — desktop gets it too", () => {
+    selHolder.value = channelSel;
+    mentionsBundles.value = { freenode: {} };
+    render(() => <RailActions setters={setters} />);
+    openMenu();
+    // isMobile is never consulted: the module is not even imported, so a
+    // reintroduced gate would have to add it back. Assert the outcome the
+    // rule produces — the entry is there with no viewport stubbing at all.
+    expect(screen.getByTestId("rail-action-mentions")).toBeInTheDocument();
+  });
+});
+
+describe("RailActions — detach + quit (#986)", () => {
+  const USER = { kind: "user" as const, id: "u1", name: "alice" };
+  const REGISTERED_VISITOR = {
+    kind: "visitor" as const,
+    id: "v1",
+    nick: "vjt",
+    registered: true,
+  };
+  const ANON_VISITOR = { kind: "visitor" as const, id: "v2", nick: "guest", registered: false };
+
+  const mountWithSubject = (subject: typeof subjectHolder.current): void => {
+    subjectHolder.current = subject;
+    render(() => (
+      <>
+        <RailActions setters={setters} />
+        <ConfirmModal />
+      </>
+    ));
+    openMenu();
+  };
+
+  const quitBodyFor = (subject: typeof subjectHolder.current): string => {
+    mountWithSubject(subject);
+    fireEvent.click(screen.getByTestId("quit-irc-btn"));
+    return screen.getByTestId("confirm-modal-body").textContent ?? "";
+  };
+
+  it("offers quit to every subject and detach only to a persistent identity", () => {
+    mountWithSubject(ANON_VISITOR);
+    expect(screen.getByTestId("quit-irc-btn")).toBeInTheDocument();
+    expect(screen.queryByTestId("detach-btn")).toBeNull();
+
+    cleanup();
+    mountWithSubject(USER);
+    expect(screen.getByTestId("detach-btn")).toBeInTheDocument();
+
+    cleanup();
+    mountWithSubject(REGISTERED_VISITOR);
+    expect(screen.getByTestId("detach-btn")).toBeInTheDocument();
+  });
+
+  it("carries a name next to the glyph, like every other rail row", () => {
+    mountWithSubject(USER);
+    expect(screen.getByTestId("detach-btn")).toHaveTextContent("detach");
+    expect(screen.getByTestId("quit-irc-btn")).toHaveTextContent("quit");
+  });
+
+  // THE assertion of this issue. Three subjects, three visibly different
+  // sentences in the rendered modal — not three calls that happen to open a
+  // modal carrying one shared string.
+  it("renders a DIFFERENT quit modal body for each of the three subject shapes", () => {
+    const user = quitBodyFor(USER);
+    cleanup();
+    const registeredVisitor = quitBodyFor(REGISTERED_VISITOR);
+    cleanup();
+    const anon = quitBodyFor(ANON_VISITOR);
+
+    expect(user).not.toBe("");
+    expect(new Set([user, registeredVisitor, anon]).size).toBe(3);
+    // …and each says the thing that is TRUE for it: only the anon session is
+    // destroyed, both persistent ones survive.
+    expect(anon).toMatch(/delete|permanently/i);
+    expect(user).toMatch(/survive/i);
+    expect(registeredVisitor).toMatch(/survive/i);
+    expect(user).not.toMatch(/delete/i);
+    expect(registeredVisitor).not.toMatch(/delete/i);
+  });
+
+  it("opens ONE confirm paradigm — the shared modal, never a two-tap arm", () => {
+    mountWithSubject(USER);
+    const quit = screen.getByTestId("quit-irc-btn");
+    fireEvent.click(quit);
+    // The old settings control re-labelled itself to "really quit IRC?" on
+    // the first tap and fired on the second. The rail entry does neither: it
+    // keeps its label and hands off to the modal.
+    expect(quit).toHaveTextContent("quit");
+    expect(quit).not.toHaveTextContent(/really quit/i);
+    expect(screen.getByTestId("confirm-modal")).toBeInTheDocument();
+  });
+
+  it("a tap tears NOTHING down until the modal is confirmed", async () => {
+    const quitMod = await import("../lib/quit");
+    const auth = await import("../lib/auth");
+    mountWithSubject(USER);
+
+    fireEvent.click(screen.getByTestId("quit-irc-btn"));
+    expect(quitMod.quitAll).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("confirm-modal-cancel"));
+    expect(quitMod.quitAll).not.toHaveBeenCalled();
+    expect(auth.logout).not.toHaveBeenCalled();
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("confirming quit parks all networks and lands on /login", async () => {
+    const quitMod = await import("../lib/quit");
+    mountWithSubject(USER);
+
+    fireEvent.click(screen.getByTestId("quit-irc-btn"));
+    fireEvent.click(screen.getByTestId("confirm-modal-confirm"));
+
+    expect(quitMod.quitAll).toHaveBeenCalled();
+    await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledWith("/login", { replace: true }));
+  });
+
+  it("confirming detach revokes the web session WITHOUT parking anything", async () => {
+    const quitMod = await import("../lib/quit");
+    const auth = await import("../lib/auth");
+    mountWithSubject(USER);
+
+    fireEvent.click(screen.getByTestId("detach-btn"));
+    fireEvent.click(screen.getByTestId("confirm-modal-confirm"));
+
+    expect(auth.logout).toHaveBeenCalled();
+    // detach is the ABSENCE of teardown — the bouncer stays up.
+    expect(quitMod.quitAll).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(navigateMock).toHaveBeenCalledWith("/login", { replace: true }));
+  });
+
+  // The full row order with EVERY gate satisfied. Shell.test.tsx asserts the
+  // same list against a mounted Shell but its auth fixture has no subject, so
+  // detach is absent there; this is the one place the complete contract —
+  // navigation set first, lifecycle pair last — is pinned.
+  it("puts the lifecycle pair LAST, after the whole navigation set", () => {
+    adminHolder.value = true;
+    selHolder.value = channelSel;
+    mentionsBundles.value = { freenode: {} };
+    subjectHolder.current = USER;
+    const { container } = render(() => <RailActions setters={setters} />);
+    openMenu();
+    const order = Array.from(
+      container.querySelectorAll<HTMLElement>(".rail-actions-menu .rail-action"),
+    ).map((b) => b.getAttribute("data-testid"));
+    expect(order).toEqual([
+      "mobile-panel-home",
+      "mobile-panel-list",
+      "rail-action-mentions",
+      "mobile-panel-themes",
+      "mobile-panel-archive",
+      "action-cluster-cog",
+      "mobile-panel-admin",
+      "presence-toggle",
+      "detach-btn",
+      "quit-irc-btn",
+    ]);
+  });
+
+  it("closes the menu on tap so no live menu waits under the modal", () => {
+    mountWithSubject(USER);
+    fireEvent.click(screen.getByTestId("quit-irc-btn"));
+    expect(screen.queryByTestId("action-cluster-cog")).toBeNull();
   });
 });

@@ -240,7 +240,7 @@ vi.mock("../lib/theme", () => ({
 
 // Spread the real auth module (importOriginal — same pattern the
 // uploadOrchestrator mock below uses) so the pure `isPersistentIdentity`
-// predicate resolves for real: #477 routes SettingsDrawer.showDetach + the
+// predicate resolves for real: #477 routes the detach gate + the
 // quit path through it, and Shell renders SettingsDrawer, so a bare factory
 // mock lacking that export crashes the drawer the moment Shell mounts it.
 // Only the side-effecting exports are stubbed.
@@ -1219,7 +1219,7 @@ describe("#361 / #473 — rooms (list) launcher in the RailActions drawer", () =
     });
   });
 
-  it("#473 drawer order: home · rooms · themes · archive · settings · admin · denoise", async () => {
+  it("#473/#986 drawer order: home · rooms · mentions · themes · archive · settings · admin · denoise · quit", async () => {
     mobileState.value = true;
     userHolder.current = {
       kind: "user",
@@ -1235,7 +1235,7 @@ describe("#361 / #473 — rooms (list) launcher in the RailActions drawer", () =
     });
     // #500 — open the launcher; the actions live in the expanded menu now. The
     // launcher itself also carries `.rail-action`, so scope the order query to
-    // the MENU to assert only the seven action buttons.
+    // the MENU to assert only the action buttons.
     openRailMenu();
     const menu = container.querySelector(".shell-members .rail-actions-menu");
     const order = Array.from(menu?.querySelectorAll<HTMLElement>(".rail-action") ?? []).map((b) =>
@@ -1245,14 +1245,23 @@ describe("#361 / #473 — rooms (list) launcher in the RailActions drawer", () =
     // now a first-class button (always-on, between themes and the cog); denoise
     // is the channel-gated trailer, present on this channel window. testids kept
     // where the button survives.
+    // #986 — mentions joins the navigation set (this fixture seeds a freenode
+    // bundle) and the lifecycle pair closes the list, AFTER it: the
+    // conventional slot for a destructive verb. `detach-btn` is absent here
+    // and that is CORRECT — the auth mock above returns `getSubject() => null`,
+    // and a null subject is not a persistent identity, so `canDetach()` is
+    // false. The full ten-row order with a real subject is asserted in
+    // RailActions.test.tsx, which owns that gate.
     expect(order).toEqual([
       "mobile-panel-home",
       "mobile-panel-list",
+      "rail-action-mentions",
       "mobile-panel-themes",
       "mobile-panel-archive",
       "action-cluster-cog",
       "mobile-panel-admin",
       "presence-toggle",
+      "quit-irc-btn",
     ]);
     // The mobile-only launcher footer is gone entirely.
     expect(container.querySelector(".shell-members .mobile-panel-actions")).toBeNull();
@@ -1266,9 +1275,11 @@ describe("#361 / #473 — rooms (list) launcher in the RailActions drawer", () =
 // auto-redirects to home on demote.
 //
 // UX-4 bucket N (2026-05-19) — pane mount is now selection-driven:
-// `<Show when={sel.kind === "admin" && isAdmin()}>`. The drawer
-// "admin console" entry sets selection to the admin window; the
-// dedicated sidebar admin row does the same. Demote-mid-session
+// `<Show when={sel.kind === "admin" && isAdmin()}>`. The rail's 🔧 admin
+// launcher sets selection to the admin window; the dedicated sidebar admin
+// row does the same. (#986 removed a third, duplicate door — the settings
+// drawer's "admin console" entry — and its `onOpenAdmin` prop with it, so
+// the tests below drive the rail.) Demote-mid-session
 // redirects selection back to home (was: flip adminOpen=false; now:
 // setSelectedChannel(home), which collapses the admin Show AND lands
 // the operator on a deterministic window). Tests below pin both paths.
@@ -1278,24 +1289,25 @@ describe("Shell — M-7/N admin pane lifecycle", () => {
     selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
     const { container } = render(() => <Shell />);
     expect(container.querySelector(".admin-pane")).toBeNull();
-    // Drawer entry hidden for non-admin (gated in SettingsDrawer).
+    // #986 — the drawer entry is gone outright; the rail launcher is the one
+    // door and stays isAdmin()-gated.
     expect(container.querySelector(".admin-console-entry")).toBeNull();
+    openRailMenu();
+    expect(screen.queryByTestId("mobile-panel-admin")).toBeNull();
   });
 
-  it("admin user can open the admin pane via the drawer entry; channel pane unmounts", async () => {
+  it("admin user can open the admin pane via the rail launcher; channel pane unmounts", async () => {
     userHolder.current = { kind: "user", id: "u1", name: "vjt", is_admin: true, inserted_at: "x" };
     selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });
     const { container } = render(() => <Shell />);
     // Pre-click — channel content visible, no admin pane.
     expect(container.querySelector(".admin-pane")).toBeNull();
     expect(container.querySelector(".scrollback-pane")).toBeInTheDocument();
-    // Open settings overlay → click admin console entry. #500 — the cog is
-    // behind the rail launcher, so open it first.
+    // #500/#986 — the actions are behind the rail launcher; the 🔧 admin
+    // entry is the ONE door to the pane now.
     openRailMenu();
-    fireEvent.click(screen.getByLabelText(/open settings/i));
-    const entry = await screen.findByTestId("admin-console-entry");
-    fireEvent.click(entry);
-    // UX-4 bucket N — selection-driven: drawer entry sets selection to
+    fireEvent.click(await screen.findByTestId("mobile-panel-admin"));
+    // UX-4 bucket N — selection-driven: the launcher sets selection to the
     // admin window. Shell's `<Show when={sel.kind === "admin" && isAdmin()}>`
     // flips true on the next reactive cycle.
     await waitFor(() => {
@@ -1314,9 +1326,9 @@ describe("Shell — M-7/N admin pane lifecycle", () => {
 
   it("clicking admin pane close button returns to home (selection-driven)", async () => {
     userHolder.current = { kind: "user", id: "u1", name: "vjt", is_admin: true, inserted_at: "x" };
-    // Start on admin window directly — equivalent to the post-drawer-
-    // entry state. Avoids re-asserting the drawer wiring here (covered
-    // by the prior test).
+    // Start on admin window directly — equivalent to the post-launcher
+    // state. Avoids re-asserting the rail wiring here (covered by the
+    // prior test).
     selectionState.setSelSig({ networkSlug: "$admin", channelName: "$admin", kind: "admin" });
     const { container } = render(() => <Shell />);
     await waitFor(() => expect(container.querySelector(".admin-pane")).toBeInTheDocument());

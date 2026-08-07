@@ -1,8 +1,11 @@
+import { useNavigate } from "@solidjs/router";
 import { type Component, createEffect, createSignal, onCleanup, Show } from "solid-js";
 import { archiveSlugForSelection } from "./lib/archiveContext";
 import { channelKey } from "./lib/channelKey";
 import { syncedSetChannelPresencePref } from "./lib/displayPrefs";
+import { canDetach, confirmDetach, confirmQuit } from "./lib/lifecycle";
 import { membersByChannel } from "./lib/members";
+import { mentionsBundleBySlug } from "./lib/mentionsWindow";
 import { spaceAbove } from "./lib/menuPosition";
 import {
   type MobilePanelSetters,
@@ -10,6 +13,7 @@ import {
   openArchivePanel,
   openHomePanel,
   openListPanel,
+  openMentionsPanel,
   openSettingsPanel,
   openThemesPanel,
 } from "./lib/mobilePanel";
@@ -55,20 +59,47 @@ import {
 // gesture. A full-viewport scrim (the modal family's idiom) would swallow that
 // first click — wrong for a lightweight rail popover.
 //
-// The six window/panel launchers close the menu after firing (single-shot, like
-// every overlay). `denoise` does NOT close it — it is a per-channel state toggle
-// the operator flips in place (watching the accent flip, re-toggling), not a
+// Every launcher closes the menu after firing (single-shot, like every
+// overlay) — including the two lifecycle entries, which hand the operator to
+// a modal and must not leave a live menu waiting underneath it for the
+// Cancel. `denoise` does NOT close it — it is a per-channel state toggle the
+// operator flips in place (watching the accent flip, re-toggling), not a
 // navigation away.
 //
-// Buttons, in order: home · rooms · themes · archive · settings · admin ·
-// denoise. Each carries its NAME as visible text next to the glyph (#473: bare
-// emoji had to be guessed / long-pressed).
+// Buttons, in order: home · rooms · mentions · themes · archive · settings ·
+// admin · denoise · detach · quit. Each carries its NAME as visible text next
+// to the glyph (#473: bare emoji had to be guessed / long-pressed).
 //
 // Gating is CAPABILITY-only — no form-factor gates (#473):
-//   * home / themes / settings / archive — always.
+//   * home / themes / settings / archive / quit — always.
 //   * rooms — needs a network context (`archiveSlugForSelection()`).
+//   * mentions — needs a bundle to re-open for that network context.
 //   * admin — `isAdmin()`.
 //   * denoise — channel-gated (a channel window is selected).
+//   * detach — `canDetach()`: a persistent identity has a bouncer to leave
+//     running, an ephemeral visitor does not.
+//
+// #986 — three arrivals, and the two lifecycle verbs among them are why this
+// menu now carries a destructive class of action:
+//
+//   * `@` mentions moved OFF `.shell-chrome`, the band #985 removes. It was
+//     gated `isMobile() && bundle` there, because on desktop it would have
+//     duplicated the Sidebar mentions row (#71 INC-2). That gate does NOT
+//     travel with it: #473 already settled that the rail carries the same set
+//     on both form factors, and `home` is the standing precedent — a sidebar
+//     row AND a rail launcher, deliberately. A form-factor gate here would be
+//     the one thing this component says it does not do.
+//   * `detach` / `quit` moved out of the settings drawer, each behind the
+//     shared #195 confirm modal via lib/lifecycle's `confirmDetach` /
+//     `confirmQuit`. ONE confirm paradigm: the drawer's two-tap
+//     `InlineConfirmButton` arm is NOT reproduced here (the component keeps
+//     serving its ~20 other call sites unchanged — only its use as a
+//     lifecycle-verb gate ends). The modal body is subject-TRUE; the copy
+//     block in lib/lifecycle.ts records why one sentence could not honestly
+//     serve three different events.
+//
+// The lifecycle pair sits LAST, after the navigation set — the conventional
+// slot for a destructive verb, and one the confirm modal makes affordable.
 //
 // #473 — `archive` is ALWAYS shown, like settings — NOT selection-gated: the
 // grouped `ArchiveModal` is the SINGLE archive surface and must be reachable
@@ -97,6 +128,25 @@ export type Props = {
 const RAIL_MENU_TOP_GAP = 8;
 
 const RailActions: Component<Props> = (props) => {
+  // #986 — the two lifecycle verbs land the operator on /login once the
+  // teardown resolves. `logout()` nulls the token and main.tsx's RequireAuth
+  // would redirect on its own, but the explicit navigation makes the landing
+  // deterministic instead of effect-ordered (the shape SettingsDrawer used
+  // before these buttons moved here).
+  const navigate = useNavigate();
+  const toLogin = (): void => navigate("/login", { replace: true });
+
+  // #188 item 6 / #986 — which network's mentions bundle can be re-opened?
+  // Derived from the current selection exactly as `rooms` derives its network
+  // (`archiveSlugForSelection`), and null unless that network HAS a bundle:
+  // there is nothing to re-open otherwise. Returns null while the mentions
+  // panel is itself selected, which correctly hides the redundant entry.
+  const mentionsSlug = (): string | null => {
+    const slug = archiveSlugForSelection();
+    if (slug === null) return null;
+    return mentionsBundleBySlug()[slug] ? slug : null;
+  };
+
   // The channel this rail is currently showing, or null on non-channel windows
   // — drives the channel-gated denoise toggle (any channel: the toggle writes a
   // pref that persists to reconnect, so it is meaningful on parked channels
@@ -253,6 +303,37 @@ const RailActions: Component<Props> = (props) => {
             )}
           </Show>
 
+          {/* #986 — mentions launcher (@). The ONE door back into a network's
+              "you were /away" bundle now that `.shell-chrome` is losing its
+              copy (#985). Gated on there BEING a bundle for the current
+              network context — capability, not form factor (see moduledoc).
+              Routes through the same nav mutex as home / rooms / admin. */}
+          <Show when={mentionsSlug()}>
+            {(slug) => (
+              <button
+                type="button"
+                class="shell-chrome-btn rail-action rail-action-mentions"
+                aria-label="open mentions"
+                data-testid="rail-action-mentions"
+                onClick={() => {
+                  openMentionsPanel(props.setters, () =>
+                    setSelectedChannel({
+                      networkSlug: slug(),
+                      channelName: "",
+                      kind: "mentions",
+                    }),
+                  );
+                  close();
+                }}
+              >
+                <span class="rail-action-icon" aria-hidden="true">
+                  @
+                </span>
+                <span class="rail-action-label">mentions</span>
+              </button>
+            )}
+          </Show>
+
           {/* #75/#332 — themes launcher: opens the settings drawer on the themes
               sub-page (openThemesPanel deep-links via settingsNav). Always. */}
           <button
@@ -377,6 +458,51 @@ const RailActions: Component<Props> = (props) => {
               );
             }}
           </Show>
+
+          {/* #986 — detach: leave cic, KEEP the bouncer running. Offered to a
+              persistent identity only, via lib/lifecycle's `canDetach()` —
+              the SAME `isPersistentIdentity` question `quit()` routes on, so
+              the affordance and the teardown cannot drift. The confirm modal
+              is what makes this a rail entry rather than the drawer's
+              unconfirmed button: it says what stays up before the tap. */}
+          <Show when={canDetach()}>
+            <button
+              type="button"
+              class="shell-chrome-btn rail-action rail-action-detach"
+              aria-label="detach from cicchetto"
+              data-testid="detach-btn"
+              onClick={() => {
+                confirmDetach(toLogin);
+                close();
+              }}
+            >
+              <span class="rail-action-icon" aria-hidden="true">
+                {"\u{1F50C}"}
+              </span>
+              <span class="rail-action-label">detach</span>
+            </button>
+          </Show>
+
+          {/* #986 — quit: close cic AND tear the live session down.
+              Universal, and the ONE entry whose consequence is genuinely
+              different per subject — a user parks and comes back, an anon
+              visitor is deleted. `confirmQuit` picks the sentence that is
+              true for whoever is looking at it. */}
+          <button
+            type="button"
+            class="shell-chrome-btn rail-action rail-action-quit"
+            aria-label="quit IRC"
+            data-testid="quit-irc-btn"
+            onClick={() => {
+              confirmQuit(toLogin);
+              close();
+            }}
+          >
+            <span class="rail-action-icon" aria-hidden="true">
+              {"\u{1F6AA}"}
+            </span>
+            <span class="rail-action-label">quit</span>
+          </button>
         </div>
       </Show>
 

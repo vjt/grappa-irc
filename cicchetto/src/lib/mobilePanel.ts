@@ -131,6 +131,15 @@ export function openHomePanel(setters: MobilePanelSetters, navigate: () => void)
   openNavWindow(setters, navigate);
 }
 
+// #986 — mentions launcher. The @ re-open door left `.shell-chrome` (the
+// band #985 removes) for the rail, so the ONE way back into a network's
+// "you were /away" bundle now routes through the same nav mutex as home /
+// rooms / admin. Shell sets `selectedChannel` → kind "mentions" for the
+// network the current selection implies.
+export function openMentionsPanel(setters: MobilePanelSetters, navigate: () => void): void {
+  openNavWindow(setters, navigate);
+}
+
 // #361 — list launcher (channel directory / $list) in the mobile drawer
 // footer. Pre-bucket the ONLY mobile way to open the $list window was to
 // TYPE `/list`; the desktop sidebar's 📇 $list row had no mobile

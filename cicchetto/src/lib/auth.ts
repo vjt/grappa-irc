@@ -222,7 +222,7 @@ export function getSubject(): api.Subject | null {
 // (`registered === true`, derived server-side from password_encrypted).
 // The inverse — an ephemeral (anon) visitor, or the not-yet-loaded null
 // subject — is torn down by a bare logout (its anon row is purged
-// server-side). This collapses the class-branching quit()/showDetach used
+// server-side). This collapses the class-branching quit()/detach-gate used
 // to hand-roll (`kind === "user" || (visitor && registered)`): both asked
 // the SAME question — persistence, not class.
 //

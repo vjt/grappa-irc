@@ -1,4 +1,3 @@
-import { useNavigate } from "@solidjs/router";
 import {
   type Component,
   createEffect,
@@ -14,15 +13,15 @@ import DeleteAccountModal from "./DeleteAccountModal";
 import InlineConfirmButton from "./InlineConfirmButton";
 import { windowCandidates } from "./lib/activeWindows";
 import { ApiError, displayNick, type Network, visitorNetworkNick } from "./lib/api";
-import { getSubject, isPersistentIdentity, token } from "./lib/auth";
+import { getSubject, token } from "./lib/auth";
 import { canonicalChannel } from "./lib/channelKey";
 import { getColoredNicklist } from "./lib/colorNicklist";
 import { syncedSetColoredNicklist, syncedSetTimeFormat } from "./lib/displayPrefs";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
 import { friendlyApiError } from "./lib/friendlyApiError";
 import { getHideNextActive, setHideNextActive } from "./lib/hideNextActive";
-import { detach, quit, updateIdentity } from "./lib/lifecycle";
-import { isAdmin, networks, user } from "./lib/networks";
+import { updateIdentity } from "./lib/lifecycle";
+import { networks, user } from "./lib/networks";
 import { mirrorNotificationPrefs } from "./lib/notificationPrefs";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import {
@@ -70,8 +69,10 @@ import WatchlistsSettings from "./WatchlistsSettings";
 // `<Show>` blocks whose signals live in this component's body (general =
 // upload retention + visitor identity; display = text size / timestamp /
 // colored nicklist; push = notifications). The main page keeps, BELOW the
-// index, the subject-gated affordances that aren't sub-pages: admin console,
-// share session, detach, quit, delete account, done.
+// index, the subject-gated affordances that aren't sub-pages: share session,
+// delete account, done. (#986 retired three of them: admin console was an
+// exact duplicate of the rail's admin action, and detach + quit moved into
+// the rail actions menu behind a per-subject confirm modal.)
 //
 // open prop drives the .open class; the drawer stays mounted across
 // open/close so onMount-loaded state (devices + prefs) doesn't refetch
@@ -86,18 +87,9 @@ import WatchlistsSettings from "./WatchlistsSettings";
 export type Props = {
   open: boolean;
   onClose: () => void;
-  // M-7 — fires when the operator clicks the "admin console" entry.
-  // Shell.tsx handles closing the drawer + selecting the admin
-  // window (UX-4 bucket N: selection-driven AdminPane mount;
-  // pre-bucket-N Shell flipped a separate `adminOpen` signal).
-  // Required even though only admin renderings invoke it — both
-  // SettingsDrawer call sites in Shell (desktop + mobile) pass the
-  // same selection-set handler.
-  onOpenAdmin: () => void;
 };
 
 const SettingsDrawer: Component<Props> = (props) => {
-  const navigate = useNavigate();
   const [size, setSize] = createSignal<FontSizeKey>(getFontSize());
   const [timeFmt, setTimeFmt] = createSignal<TimeFormatKey>(getTimeFormat());
   const [coloredNicklist, setColoredNicklistSig] = createSignal<boolean>(getColoredNicklist());
@@ -149,21 +141,15 @@ const SettingsDrawer: Component<Props> = (props) => {
     const s = getSubject();
     return s?.kind === "visitor" && s.incognito === true;
   };
-  // #126 / #477 — detach is offered to every PERSISTENT identity (a
-  // registered user OR a NickServ-identified visitor, `registered === true`
-  // derived server-side); an ephemeral visitor and the not-yet-loaded null
-  // subject get quit-only. Routed through the shared `isPersistentIdentity`
-  // predicate (lib/auth.ts) — the SAME persistence question `quit()` asks,
-  // so the drawer affordance and the teardown path can never drift apart.
-  const showDetach = (): boolean => isPersistentIdentity(getSubject());
-  // "quit IRC" is destructive (parks every network, bouncer offline), so
-  // it arms via the shared two-tap InlineConfirmButton. Parent owns the
-  // armed flag per that component's contract.
-  const [quitArmed, setQuitArmed] = createSignal(false);
+  // #986 — the `showDetach()` gate + the two-tap `quitArmed` latch moved to
+  // the rail with the buttons they served (`canDetach()` in lib/lifecycle
+  // asks the same `isPersistentIdentity` question; the latch has no
+  // successor — the shared confirm modal replaced the two-tap arm).
   // #157 — "delete account" is an IRREVERSIBLE total wipe, surfaced as a
   // SEPARATE affordance from quit (quit PRESERVES a persistent identity;
-  // delete nukes it). It opens a confirm MODAL (type-your-name gate) —
-  // stronger than quit's two-tap arm. Offered ONLY to a registered
+  // delete nukes it). It opens a confirm MODAL (type-your-name gate) — the
+  // ONE typed gate in the product (#986: detach and quit explain and ask,
+  // this one asks you to spell the identity out). Offered ONLY to a registered
   // NON-admin user or a registered visitor; admins (issue #157) + anon
   // visitors are excluded. Reads the reactive `/me` resource (authoritative
   // for is_admin / registered) so a mid-session demote/refetch flips it.
@@ -217,25 +203,9 @@ const SettingsDrawer: Component<Props> = (props) => {
     setHideNextActive((e.currentTarget as HTMLInputElement).checked);
   };
 
-  // #126 — detach: leave cic, KEEP the bouncer up. Persistent identities
-  // only (gated by `showDetach()`). `detach()` revokes the web session;
-  // the explicit navigate mirrors onQuit's post-logout landing.
-  const onDetach = async () => {
-    await detach();
-    navigate("/login", { replace: true });
-  };
-
-  // #126 — quit: close cic AND tear down the live session. Universal;
-  // `quit()` (lib/lifecycle.ts) routes per subject — user parks all
-  // networks (the former quitAll, also driven by the /quit compose verb +
-  // the sidebar ×), registered visitor drops the upstream then detaches
-  // (row kept), ephemeral visitor detaches (server purges the anon row).
-  // logout() inside nulls the token → RequireAuth redirects; the explicit
-  // navigate makes the landing deterministic.
-  const onQuit = async () => {
-    await quit();
-    navigate("/login", { replace: true });
-  };
+  // #986 — the `onDetach` / `onQuit` handlers moved to RailActions with
+  // their buttons, and now fire through lib/lifecycle's `confirmDetach` /
+  // `confirmQuit` so the modal states the per-subject consequence first.
 
   // #211 phase 6 — the #126 disconnect ⇄ reconnect handlers are RETIRED
   // (per-network park/reconnect moved to the home page; global disconnect
@@ -271,7 +241,10 @@ const SettingsDrawer: Component<Props> = (props) => {
   const [identitySaved, setIdentitySaved] = createSignal(false);
   // Two-tap arm for the apply button (parent owns the flag per
   // InlineConfirmButton's contract) — the reconnect is disruptive
-  // (session bounces), so it gets the same confirm gate as quit.
+  // (session bounces), so it arms rather than firing on the first tap. #986
+  // retired the settings copies of this control for the LIFECYCLE verbs only
+  // — as a per-row apply gate it is unchanged, here and at its ~20 other
+  // call sites.
   const [identityArmed, setIdentityArmed] = createSignal(false);
 
   // Default the editor's target ONCE per open-session: the currently-focused
@@ -337,13 +310,13 @@ const SettingsDrawer: Component<Props> = (props) => {
   };
 
   // The drawer stays mounted across open/close (CSS .open toggle, not a
-  // <Show>), so an armed quit button would survive a close → reopen and
-  // sit one stray tap from killing the bouncer. Disarm on every close.
-  // #157: also close the delete-account modal so a reopened drawer never
-  // strands the irreversible confirm dialog open.
+  // <Show>), so transient armed state would survive a close → reopen.
+  // #157: close the delete-account modal so a reopened drawer never strands
+  // the irreversible confirm dialog open. (#986 — the quit two-tap latch this
+  // effect also disarmed left with the button; the rail's confirm modal is a
+  // store-driven singleton that owns its own lifetime.)
   createEffect(() => {
     if (!props.open) {
-      setQuitArmed(false);
       setDeleteOpen(false);
       // #152 — disarm the identity apply + clear transient save state so a
       // reopened drawer never sits one tap from a reconnect or shows a
@@ -785,8 +758,9 @@ const SettingsDrawer: Component<Props> = (props) => {
             pushes into a dedicated sub-page (a `<Show>`-gated block that
             replaces the index in place); the header × stays visible for both.
             Below the index sit the subject-gated affordances that are NOT
-            sub-pages (admin console, share session, detach, quit, delete
-            account, done). */}
+            sub-pages (share session, delete account, done — #986 moved the
+            lifecycle verbs to the rail and dropped the duplicate admin
+            entry). */}
         <Show when={settingsPage() === "main"}>
           {/* Index rows, in order: general, display, themes, push
               (notifications), watch lists, aliases, on-connect commands,
@@ -959,19 +933,12 @@ const SettingsDrawer: Component<Props> = (props) => {
             </button>
           </Show>
 
-          <Show when={isAdmin()}>
-            <button
-              type="button"
-              class="admin-console-entry"
-              onClick={() => {
-                props.onClose();
-                props.onOpenAdmin();
-              }}
-              data-testid="admin-console-entry"
-            >
-              admin console
-            </button>
-          </Show>
+          {/* #986 — the `admin console` entry is GONE. It was an exact
+            duplicate of the rail's 🔧 admin action: same `isAdmin()` gate,
+            same `setSelectedChannel({ kind: "admin" })` payload, same
+            destination. Its `onOpenAdmin` prop and both Shell wirings went
+            with it — a dead prop left behind is how the next reader concludes
+            the two paths differed. */}
 
           {/* #392 — session-share entry. isVisitor()-gated (mint 403s for
               users — the modal is never reachable for a password subject).
@@ -993,48 +960,23 @@ const SettingsDrawer: Component<Props> = (props) => {
             </button>
           </Show>
 
-          {/* #126 — canonical session-lifecycle verbs ("log out" retired).
-            detach (leave cic, KEEP the bouncer) + disconnect ⇄ reconnect
-            (drop / restore the upstream, STAY in cic) are
-            persistent-identity-only (user + NickServ visitor); quit
-            (close cic AND tear down) is universal. An ephemeral visitor +
-            the not-yet-loaded null subject get quit alone. */}
-          <Show when={showDetach()}>
-            <button
-              type="button"
-              class="logout"
-              data-testid="detach-btn"
-              onClick={() => {
-                void onDetach();
-              }}
-            >
-              detach
-            </button>
-          </Show>
+          {/* #986 — the canonical session-lifecycle verbs (detach + quit) are
+            NO LONGER here. They moved into the rail actions menu
+            (RailActions.tsx), each behind the shared #195 confirm modal that
+            states, per subject, what the verb actually destroys. Two doors to
+            a destructive verb — one confirmed and one not — is worse than
+            either alone, so the drawer copies went with the move rather than
+            staying as an unconfirmed shortcut.
 
-          {/* #211 phase 6 — the visitor disconnect ⇄ reconnect toggle is
-            RETIRED. Per-network park/reconnect now lives on the HOME PAGE
-            for both subjects (ruling D); global disconnect is `quit`
-            (park-all). */}
-
-          {/* quit — universal destructive teardown, two-tap armed. */}
-          <InlineConfirmButton
-            idleLabel="quit"
-            confirmLabel="really quit IRC?"
-            armed={quitArmed()}
-            onArm={() => setQuitArmed(true)}
-            onConfirm={() => {
-              void onQuit();
-            }}
-            testId="quit-irc-btn"
-            extraClass="settings-quit"
-          />
+            `delete account` below STAYS: it is the one irreversible door, it
+            keeps its own type-your-name gate, and its geometry is #987. */}
 
           {/* #157 — delete account: IRREVERSIBLE total wipe, DISTINCT from
-            quit. Separate label + separate confirm (a type-your-name modal,
-            stronger than quit's two-tap). Offered ONLY to a registered
-            non-admin user or a registered visitor; admins + anon visitors
-            never see it. */}
+            quit (which PRESERVES a persistent identity). It keeps the
+            type-your-name modal — #986's ruling is that the typed gate is
+            about IRREVERSIBILITY, not subject kind, so it stays here and
+            ONLY here. Offered to a registered non-admin user or a registered
+            visitor; admins + anon visitors never see it. */}
           <Show when={showDeleteAccount()}>
             <button
               type="button"

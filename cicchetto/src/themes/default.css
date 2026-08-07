@@ -3654,8 +3654,8 @@ html.resize-dragging * {
 
    `:where()` keeps the selector at element-only specificity (0,0,1), so a
    per-class rule at (0,1,0) always wins the properties it DECLARES:
-   .settings-back, .logout, .watchlists-remove, .inline-confirm-btn and the
-   theme cards keep their own paint. The look IS .settings-back's (transparent
+   .settings-back, .watchlists-remove, .inline-confirm-btn and the theme
+   cards keep their own paint. The look IS .settings-back's (transparent
    + accent + border) — the drawer's existing idiom promoted to the base
    rather than a new one invented beside it.
 
@@ -3668,9 +3668,10 @@ html.resize-dragging * {
        reports, in panes that never reported it — fixing the class, not the
        instance. Revert path if the density is unwanted: exempt those two
        classes with an explicit min-height of their own.
-     * .logout / .admin-console-entry / .delete-account-entry declare
-       font-family but no font-size, so they move off the UA's 13.3px onto
-       the drawer's --font-size — the same unification #497 made for inputs.
+     * .delete-account-entry declares font-family but no font-size, so it
+       moves off the UA's 13.3px onto the drawer's --font-size — the same
+       unification #497 made for inputs. (#986 retired its two former
+       companions here, .logout and .admin-console-entry.)
    NO border-radius here: the drawer is square by documented intent (see the
    .settings-section comment, "sharp corners, irssi aesthetic"), and NO drawer
    button class declares one, so a radius on the base would round all of them.
@@ -3727,36 +3728,18 @@ html.resize-dragging * {
   cursor: pointer;
 }
 
-.settings-drawer button.logout {
-  margin-top: auto;
-  background: transparent;
-  color: var(--mode-op);
-  border: 1px solid var(--border);
-  padding: 0.5rem 1rem;
-  font-family: var(--font-mono);
-  cursor: pointer;
-}
+/* #986 — `.logout` (detach), `.admin-console-entry` and
+   `.inline-confirm-btn.settings-quit` are GONE with the buttons they
+   painted: detach + quit are rail actions now, and the admin entry was a
+   duplicate of the rail's. `.logout` carried the `margin-top: auto` that
+   pushed the tail of the stack to the drawer floor; nothing inherits it,
+   because the index above is long enough to overflow in every shipped
+   viewport and an auto margin buys nothing in an overflowing flex column.
 
-/* M-cluster M-7 — admin console entry button. Shares logout's visual
-   shape (border + monospace), distinct color (accent over mode-op) so
-   operators perceive it as a privileged action. `.logout`'s
-   `margin-top: auto` keeps logout at the bottom; admin sits just
-   above it via the flex flow with a small gap on top so the two
-   buttons don't visually merge into one. */
-.settings-drawer button.admin-console-entry {
-  margin-top: 0.5rem;
-  background: transparent;
-  color: var(--accent);
-  border: 1px solid var(--border);
-  padding: 0.5rem 1rem;
-  font-family: var(--font-mono);
-  cursor: pointer;
-}
-
-/* #157 — delete-account entry button. Visually DISTINCT from logout /
-   quit: red border + red text (a danger affordance) so the operator
-   perceives it as the nuclear option, never a sibling of quit. Sits just
-   above the "done" button at the bottom of the stack. */
+   #157 — delete-account entry button. Visually DISTINCT from every other
+   drawer control: red border + red text (a danger affordance) so the
+   operator perceives it as the nuclear option. Sits just above the "done"
+   button at the bottom of the stack. */
 .settings-drawer button.delete-account-entry {
   margin-top: 0.5rem;
   background: transparent;
@@ -4219,19 +4202,6 @@ html.resize-dragging * {
 .inline-confirm-btn.confirming {
   color: #c00;
   border-color: #c00;
-}
-
-/* Issue #43 — "quit IRC" reuses the shared InlineConfirmButton but sits
-   in the settings drawer's full-width button stack (next to `.logout` /
-   `.admin-console-entry`), not a dense admin row. Override the compact
-   base sizing to match its neighbours; the base `.confirming` rule still
-   supplies the red armed treatment. `.logout`'s `margin-top: auto` keeps
-   the detach button (and this quit button right below it) anchored to
-   the drawer bottom. */
-.settings-drawer button.inline-confirm-btn.settings-quit {
-  margin-top: 0.5rem;
-  padding: 0.5rem 1rem;
-  font-size: inherit;
 }
 
 /* #473 — the Sidebar `.sidebar-archive-row` / `.sidebar-archive-delete`

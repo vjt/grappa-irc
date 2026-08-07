@@ -1,5 +1,4 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@solidjs/router", () => ({
@@ -37,9 +36,11 @@ const subjectHolder = vi.hoisted(() => ({
       }
     | null,
 }));
-// Spread the REAL auth module so `showDetach`'s `isPersistentIdentity`
-// predicate runs for real against the stubbed getSubject (the drawer +
-// lib/lifecycle both route on it now). Only side-effecting exports stubbed.
+// Spread the REAL auth module so the `isPersistentIdentity` predicate runs
+// for real against the stubbed getSubject. #986 moved the drawer's detach
+// gate out (lib/lifecycle's `canDetach()` asks the same question for the
+// rail), so what this stub still serves here is the visitor / incognito
+// share-session gating. Only side-effecting exports stubbed.
 vi.mock("../lib/auth", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/auth")>()),
   logout: vi.fn().mockResolvedValue(undefined),
@@ -47,12 +48,13 @@ vi.mock("../lib/auth", async (importOriginal) => ({
   getSubject: () => subjectHolder.current,
 }));
 
-// #126 — the drawer routes detach/quit through lib/lifecycle. The
-// lifecycle module is NOT mocked here (so the existing detach→logout /
-// quit→quitAll wiring assertions still hold via the underlying auth/quit
-// mocks); lifecycle's own per-subject routing has dedicated coverage in
-// lib/lifecycle.test.ts. We mock the api verbs the drawer touches
-// (updateIdentity) so a click doesn't hit the network.
+// #986 — the drawer no longer routes detach/quit at all: those verbs moved
+// to the rail actions menu behind the shared confirm modal (RailActions.tsx
+// owns their rendering + copy tests; lib/lifecycle.test.ts owns the per-
+// subject routing). The drawer still reaches lib/lifecycle for
+// `updateIdentity`, so the api verbs stay mocked to keep a click off the
+// network. `../lib/quit` stays mocked as a guard: any assertion below that
+// the drawer parks something would now be a bug.
 vi.mock("../lib/api", () => ({
   // #211 phase 7 — the identity editor PATCHes /networks/:slug/identity via
   // lib/lifecycle's updateIdentity, which calls api.updateNetworkIdentity.
@@ -267,8 +269,8 @@ vi.mock("../DeleteAccountModal", async () => {
 
 import SettingsDrawer from "../SettingsDrawer";
 
-const wrap = (open: boolean, onClose = vi.fn(), onOpenAdmin = vi.fn()) =>
-  render(() => <SettingsDrawer open={open} onClose={onClose} onOpenAdmin={onOpenAdmin} />);
+const wrap = (open: boolean, onClose = vi.fn()) =>
+  render(() => <SettingsDrawer open={open} onClose={onClose} />);
 
 // #460 — the settings main page is an index of nav rows; general / display /
 // push (notifications) content now lives in dedicated sub-pages reached by
@@ -316,19 +318,14 @@ describe("SettingsDrawer", () => {
     expect(timeFormat.setTimeFormat).toHaveBeenCalledWith("hm");
   });
 
-  it("null subject (loading) shows quit alone (no 'log out', no detach); two-tap detaches", async () => {
-    // #126 — "log out" is retired. The not-yet-loaded null subject gets
-    // only the universal quit verb; clicking through the two-tap routes
-    // to quit() → (null subject) logout().
-    const auth = await import("../lib/auth");
+  it("#986 — carries NO session-lifecycle verb for the loading null subject", () => {
+    // #126 retired "log out"; #986 moved detach + quit out of the drawer
+    // entirely. Two doors to a destructive verb — one confirmed and one not
+    // — is worse than either, so nothing lifecycle-shaped stayed behind.
     wrap(true);
     expect(screen.queryByText(/^log out$/i)).toBeNull();
     expect(screen.queryByTestId("detach-btn")).toBeNull();
-    fireEvent.click(screen.getByTestId("quit-irc-btn")); // arm
-    fireEvent.click(screen.getByTestId("quit-irc-btn")); // confirm
-    await waitFor(() => {
-      expect(auth.logout).toHaveBeenCalled();
-    });
+    expect(screen.queryByTestId("quit-irc-btn")).toBeNull();
   });
 
   it("backdrop click fires onClose", () => {
@@ -692,115 +689,57 @@ describe("SettingsDrawer (visitor subject)", () => {
     });
   });
 
-  it("renders the universal quit verb for the loading null subject", () => {
+  it("#986 — the loading null subject sees no lifecycle affordance here", () => {
     wrap(true);
-    // #126 — the lifecycle affordance is quit alone for the not-yet-loaded
-    // subject ("log out" retired). (#299 removed the theme radio selector.)
-    expect(screen.getByTestId("quit-irc-btn")).toBeInTheDocument();
+    // #126 retired "log out"; #986 moved quit to the rail. (#299 removed the
+    // theme radio selector.)
+    expect(screen.queryByTestId("quit-irc-btn")).toBeNull();
     expect(screen.queryByText(/^log out$/i)).toBeNull();
   });
 });
 
-// M-cluster M-7 — admin console entry gate. Per
-// `feedback_e2e_user_class_parity_matrix`: the admin entry is
-// admin-gated EXEMPT (only one of the three subject classes sees it).
-// The vitest covers visibility polarity; the Playwright e2e covers
-// end-to-end login → drawer-open → entry-visibility per subject class.
-describe("SettingsDrawer (M-7 admin console entry)", () => {
-  it("hides admin entry when subject is non-admin user", () => {
+// #986 — the M-7 admin console entry is GONE from the drawer. It was an
+// exact duplicate of the rail's 🔧 admin action: same `isAdmin()` gate, same
+// `setSelectedChannel({ kind: "admin" })` payload, same destination. The gate
+// itself did not disappear — RailActions.test.tsx owns its polarity now — so
+// what is left to assert here is that no second door survived, for ANY
+// subject class, including the admin who is the only one who ever saw it.
+describe("SettingsDrawer (#986 — the duplicate admin console entry is gone)", () => {
+  it("withholds an admin entry even from an admin (the rail 🔧 is the one door)", () => {
     meHolder.current = {
       kind: "user",
       id: "u1",
-      name: "alice",
-      is_admin: false,
+      name: "vjt",
+      is_admin: true,
       inserted_at: "x",
     };
     wrap(true);
     expect(screen.queryByTestId("admin-console-entry")).toBeNull();
     expect(screen.queryByText(/admin console/i)).toBeNull();
   });
-
-  it("hides admin entry when subject is a visitor", () => {
-    meHolder.current = {
-      kind: "visitor",
-      id: "v1",
-      nick: "anon-vjt",
-      expires_at: "2026-05-17T00:00:00Z",
-    };
-    wrap(true);
-    expect(screen.queryByTestId("admin-console-entry")).toBeNull();
-  });
-
-  it("hides admin entry when subject is not yet loaded (me() === null)", () => {
-    meHolder.current = null;
-    wrap(true);
-    expect(screen.queryByTestId("admin-console-entry")).toBeNull();
-  });
-
-  it("shows admin entry when user is admin", () => {
-    meHolder.current = {
-      kind: "user",
-      id: "u1",
-      name: "vjt",
-      is_admin: true,
-      inserted_at: "x",
-    };
-    wrap(true);
-    const entry = screen.getByTestId("admin-console-entry");
-    expect(entry).toBeInTheDocument();
-    // textContent guard per
-    // `feedback_css_block_button_wraps_inline_prefix` — pseudo-element
-    // sigils / inline prefixes can clip the visible label even when
-    // the button itself is present.
-    expect(entry.textContent).toContain("admin console");
-  });
-
-  it("clicking admin entry fires onClose THEN onOpenAdmin (drawer dismiss → pane mount handoff)", () => {
-    meHolder.current = {
-      kind: "user",
-      id: "u1",
-      name: "vjt",
-      is_admin: true,
-      inserted_at: "x",
-    };
-    const onClose = vi.fn();
-    const onOpenAdmin = vi.fn();
-    wrap(true, onClose, onOpenAdmin);
-    fireEvent.click(screen.getByTestId("admin-console-entry"));
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(onOpenAdmin).toHaveBeenCalledTimes(1);
-    // Order matters — drawer dismisses BEFORE pane mounts so the two
-    // overlays don't briefly co-exist. Assert call-order via mock
-    // invocation ordinals.
-    const closeOrder = onClose.mock.invocationCallOrder[0];
-    const openOrder = onOpenAdmin.mock.invocationCallOrder[0];
-    expect(closeOrder !== undefined && openOrder !== undefined && closeOrder < openOrder).toBe(
-      true,
-    );
-  });
 });
 
 describe("SettingsDrawer (bucket L — chrome polish)", () => {
   it("renders × close button in the header (desktop parity)", () => {
-    wrap(true, vi.fn(), vi.fn());
+    wrap(true, vi.fn());
     expect(screen.getByTestId("settings-drawer-close")).toBeInTheDocument();
   });
 
   it("clicking × close fires onClose", () => {
     const onClose = vi.fn();
-    wrap(true, onClose, vi.fn());
+    wrap(true, onClose);
     fireEvent.click(screen.getByTestId("settings-drawer-close"));
     expect(onClose).toHaveBeenCalled();
   });
 
   it("renders bottom done button (mobile thumb-reach)", () => {
-    wrap(true, vi.fn(), vi.fn());
+    wrap(true, vi.fn());
     expect(screen.getByTestId("settings-drawer-done")).toBeInTheDocument();
   });
 
   it("clicking done fires onClose", () => {
     const onClose = vi.fn();
-    wrap(true, onClose, vi.fn());
+    wrap(true, onClose);
     fireEvent.click(screen.getByTestId("settings-drawer-done"));
     expect(onClose).toHaveBeenCalled();
   });
@@ -959,73 +898,48 @@ describe("SettingsDrawer (share session — visitor only)", () => {
   });
 });
 
-// Issue #43 / #126 — a registered user gets "detach" (leave cic, KEEP
-// the bouncer) + a destructive two-tap "quit" (park ALL networks +
-// detach). Under #126 "log out" is retired and the same persistent
-// -identity verbs extend to the NickServ visitor (separate describe
-// below); ephemeral visitors + the loading null subject get quit alone.
-describe("SettingsDrawer (issue #43 — detach + quit for a user)", () => {
-  beforeEach(() => {
-    subjectHolder.current = { kind: "user", id: "u1", name: "alice" };
-  });
+// Issue #43 / #126 / #986 — the session-lifecycle verbs are no longer this
+// component's. `detach` (leave cic, KEEP the bouncer) and `quit` (park every
+// network and go offline) are rail-actions entries behind the shared confirm
+// modal; RailActions.test.tsx owns their gating, their wiring and — the point
+// of #986 — the three per-subject modal bodies. What survives here is the
+// guard that no drawer copy stayed armed differently from the rail copy, for
+// any of the three subject classes.
+describe("SettingsDrawer (#986 — the lifecycle verbs left the drawer)", () => {
+  const CLASSES = [
+    { name: "registered user", subject: { kind: "user" as const, id: "u1", name: "alice" } },
+    {
+      name: "registered visitor",
+      subject: { kind: "visitor" as const, id: "v1", nick: "vjt", registered: true },
+    },
+    {
+      name: "ephemeral visitor",
+      subject: { kind: "visitor" as const, id: "v2", nick: "guest" },
+    },
+  ];
 
-  it("renders detach + quit for a registered user (no bare 'log out')", () => {
-    wrap(true);
-    expect(screen.getByTestId("detach-btn")).toHaveTextContent(/^detach$/i);
-    expect(screen.getByTestId("quit-irc-btn")).toHaveTextContent(/^quit$/i);
-    expect(screen.queryByText(/log out/i)).toBeNull();
-  });
+  for (const c of CLASSES) {
+    it(`withholds detach + quit from a ${c.name} (both moved to the rail)`, () => {
+      subjectHolder.current = c.subject;
+      wrap(true);
+      expect(screen.queryByTestId("detach-btn")).toBeNull();
+      expect(screen.queryByTestId("quit-irc-btn")).toBeNull();
+      // #126 relics, still retired.
+      expect(screen.queryByText(/^log out$/i)).toBeNull();
+      expect(screen.queryByTestId("disconnect-btn")).toBeNull();
+      expect(screen.queryByTestId("reconnect-btn")).toBeNull();
+    });
+  }
 
-  it("clicking detach calls auth.logout, NOT quit.quitAll", async () => {
+  it("never tears anything down — the drawer holds no teardown path at all", async () => {
     const auth = await import("../lib/auth");
     const quit = await import("../lib/quit");
+    subjectHolder.current = { kind: "user", id: "u1", name: "alice" };
     wrap(true);
-    fireEvent.click(screen.getByTestId("detach-btn"));
-    expect(auth.logout).toHaveBeenCalled();
+    // No two-tap arm to walk, and nothing else in the drawer may substitute
+    // for one: opening it must not reach logout / park-all by any route.
+    expect(auth.logout).not.toHaveBeenCalled();
     expect(quit.quitAll).not.toHaveBeenCalled();
-  });
-
-  it("a single tap on quit arms it (shows confirm copy) but does NOT quit", async () => {
-    const quit = await import("../lib/quit");
-    wrap(true);
-    fireEvent.click(screen.getByTestId("quit-irc-btn"));
-    expect(screen.getByTestId("quit-irc-btn")).toHaveTextContent(/really quit IRC/i);
-    expect(quit.quitAll).not.toHaveBeenCalled();
-  });
-
-  it("two-tap on quit calls quit.quitAll", async () => {
-    const quit = await import("../lib/quit");
-    wrap(true);
-    fireEvent.click(screen.getByTestId("quit-irc-btn")); // arm
-    fireEvent.click(screen.getByTestId("quit-irc-btn")); // confirm
-    await waitFor(() => {
-      expect(quit.quitAll).toHaveBeenCalled();
-    });
-  });
-
-  it("closing the drawer disarms an armed quit button", async () => {
-    const [open, setOpen] = createSignal(true);
-    render(() => <SettingsDrawer open={open()} onClose={vi.fn()} onOpenAdmin={vi.fn()} />);
-    fireEvent.click(screen.getByTestId("quit-irc-btn")); // arm
-    expect(screen.getByTestId("quit-irc-btn")).toHaveTextContent(/really quit IRC/i);
-    setOpen(false); // close
-    await Promise.resolve();
-    setOpen(true); // reopen
-    await Promise.resolve();
-    expect(screen.getByTestId("quit-irc-btn")).toHaveTextContent(/^quit$/i);
-  });
-
-  it("ephemeral visitor gets quit alone — no detach, no disconnect/reconnect, no 'log out'", () => {
-    // #126 — an ephemeral (non-registered) visitor has no persistent
-    // identity, so the persistent-identity verbs are withheld; quit is
-    // the only (universal) verb. registered omitted = not registered.
-    subjectHolder.current = { kind: "visitor", id: "v1", nick: "guest" };
-    wrap(true);
-    expect(screen.getByTestId("quit-irc-btn")).toBeInTheDocument();
-    expect(screen.queryByTestId("detach-btn")).toBeNull();
-    expect(screen.queryByTestId("disconnect-btn")).toBeNull();
-    expect(screen.queryByTestId("reconnect-btn")).toBeNull();
-    expect(screen.queryByText(/^log out$/i)).toBeNull();
   });
 });
 
@@ -1033,8 +947,10 @@ describe("SettingsDrawer (issue #43 — detach + quit for a user)", () => {
 // identity, so it gets the SAME persistent-identity verbs as a user
 // (detach + disconnect ⇄ reconnect) PLUS the universal quit. The
 // disconnect/reconnect button face follows the whereis-derived
-// `connected` flag from /me.
-describe("SettingsDrawer (#126 — registered-visitor lifecycle verbs)", () => {
+// `connected` flag from /me. (#986 — detach + quit themselves moved to the
+// rail; what this describe still owns is the registered visitor's per-network
+// identity editor and the retired-toggle guard.)
+describe("SettingsDrawer (#126 — registered-visitor drawer surface)", () => {
   beforeEach(() => {
     subjectHolder.current = {
       kind: "visitor",
@@ -1044,7 +960,7 @@ describe("SettingsDrawer (#126 — registered-visitor lifecycle verbs)", () => {
     };
   });
 
-  it("#211 phase 6 — detach + quit, NO disconnect/reconnect toggle", () => {
+  it("#211 phase 6 — NO disconnect/reconnect toggle", () => {
     meHolder.current = {
       kind: "visitor",
       id: "v1",
@@ -1053,8 +969,6 @@ describe("SettingsDrawer (#126 — registered-visitor lifecycle verbs)", () => {
       registered: true,
     };
     wrap(true);
-    expect(screen.getByTestId("detach-btn")).toHaveTextContent(/^detach$/i);
-    expect(screen.getByTestId("quit-irc-btn")).toHaveTextContent(/^quit$/i);
     // The disconnect ⇄ reconnect toggle is RETIRED — per-network
     // park/reconnect lives on the home page now (ruling D).
     expect(screen.queryByTestId("disconnect-btn")).toBeNull();
@@ -1514,12 +1428,12 @@ describe("SettingsDrawer (#460 — settings index)", () => {
     expect(screen.queryByTestId("themes-settings-entry")).toBeNull();
   });
 
-  it("share session, quit + done stay on the main index page (not moved into a sub-page)", () => {
+  it("share session + done stay on the main index page (not moved into a sub-page)", () => {
     subjectHolder.current = { kind: "visitor", id: "v1", nick: "alice" };
     wrap(true);
-    // These affordances live BELOW the index on the main page.
+    // These affordances live BELOW the index on the main page. (#986 — quit
+    // used to be asserted here too; it is a rail entry now.)
     expect(screen.getByTestId("share-session-entry")).toBeInTheDocument();
-    expect(screen.getByTestId("quit-irc-btn")).toBeInTheDocument();
     expect(screen.getByTestId("settings-drawer-done")).toBeInTheDocument();
   });
 });
