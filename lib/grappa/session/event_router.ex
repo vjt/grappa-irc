@@ -2584,17 +2584,11 @@ defmodule Grappa.Session.EventRouter do
 
       Identifier.valid_nick?(sender) ->
         # #546 — ANY nick sender, service or peer, takes the open-window
-        # test. A notice is not an invitation to a conversation: it lands
-        # in the query only when that query is already open, else in the
-        # status window (irssi/HexChat; morph + Sonic, #it-opers
-        # 2026-07-30). This used to be an unconditional `{sender, body}`
-        # with `Identifier.services_sender?/1` bolted on ABOVE it to carve
-        # the *Serv nicks back out — scaffolding that existed only because
-        # the default was "notices open windows". Flipping the default
-        # collapses both into this one rule; the allowlist branch is gone
-        # from this door (it still gates the PRIVMSG door, where a
-        # DM-shaped services reply must not mint a window and a peer's DM
-        # must).
+        # test: a notice is announcement, not an invitation to a
+        # conversation. This was an unconditional `{sender, body}` with a
+        # `services_sender?/1` arm above it carving the *Serv nicks back
+        # out; flipping the default collapsed both into this one rule.
+        # Rationale + the rejected third branch: DESIGN_NOTES 2026-08-07.
         {open_query_or_server(sender, state), body}
 
       true ->
