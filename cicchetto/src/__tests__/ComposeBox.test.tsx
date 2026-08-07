@@ -329,17 +329,16 @@ describe("ComposeBox", () => {
     expect(compose.submit).toHaveBeenCalledWith(expect.anything(), "freenode", "#a");
   });
 
-  // #816 — Shift+Enter inserts NOTHING and submits NOTHING, and now SAYS SO.
-  // The composer stays single-line, because a newline cannot travel inside a
-  // PRIVMSG and the only way to honour one is to split into N messages — a
-  // flood hazard the operator never asked for by pressing a modifier. No
-  // client sets the precedent either (mIRC's editbox is single-line; hexchat
-  // splits paste). What vjt's ruling (2026-08-06) changed is that the refusal
-  // is no longer SILENT: a key that does nothing reads as a broken key, so
-  // the composer explains itself on the existing feedback seam. Paste remains
-  // the ONE way a multi-line body reaches the box, and paste is guarded.
-  it("#816 — Shift+Enter submits nothing, inserts no line break, and says why", async () => {
+  // #974 — every Enter variant SENDS, modifier or not. vjt's 2026-08-07 ruling
+  // reverses his 2026-08-06 one: the refusal is gone, notice and all. Whatever
+  // arms `shiftKey` on the reporter's device (still unknown, and deliberately
+  // not diagnosed) can no longer eat the message. Ctrl+Enter and Cmd+Enter
+  // already fell through to submit, so this makes the handling uniform rather
+  // than adding a case. Paste stays the ONE route a multi-line body takes into
+  // the box, and paste is still guarded.
+  it("#974 — Shift+Enter submits, and says nothing about multi-line", async () => {
     const compose = await import("../lib/compose");
+    vi.mocked(compose.submit).mockResolvedValue({ ok: true });
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
     const ta = screen.getByPlaceholderText(/message #a/i);
     const ev = new KeyboardEvent("keydown", {
@@ -349,25 +348,43 @@ describe("ComposeBox", () => {
       cancelable: true,
     });
     ta.dispatchEvent(ev);
-    expect(compose.submit).not.toHaveBeenCalled();
-    // preventDefault is what stops the textarea's own newline insertion —
-    // asserting "no submit" alone passed against the old behaviour too.
+    expect(compose.submit).toHaveBeenCalledWith(expect.anything(), "freenode", "#a");
+    // preventDefault SURVIVES the reversal: it is what stops the textarea from
+    // inserting its own line break, which would otherwise land in the box
+    // AFTER the async submit has cleared the draft.
     expect(ev.defaultPrevented).toBe(true);
-    expect(compose.setDraft).not.toHaveBeenCalled();
-    // The ruling's copy, verbatim. This is the assertion the old test
-    // INVERTED (it pinned the silence), so it is what proves the change.
-    expect(screen.getByText("IRC does not support multi-line messages")).toBeInTheDocument();
+    // The refusal copy is gone from the product, not merely un-asserted.
+    expect(screen.queryByText("IRC does not support multi-line messages")).toBeNull();
   });
 
-  // A plain Enter must not trip the multi-line explanation — otherwise the
-  // notice would fire on every ordinary send and mean nothing.
-  it("#816 — a plain Enter shows no multi-line explanation", async () => {
+  // #974 — the reason `preventDefault` SURVIVES the reversal. In a real
+  // browser an un-prevented Enter keydown on a textarea inserts "\n" and
+  // fires `input`, which is how the newline would reach the draft store —
+  // AFTER the async submit has cleared it, leaving a stray line break in a
+  // freshly-emptied composer. jsdom implements no such default action, so the
+  // test applies it EXACTLY when the handler let the event through. What is
+  // measured is `setDraft`: the store write is the observable half of the
+  // stranding (the rendered value is not — `getDraft` is a static mock here,
+  // so the textarea would read empty either way; the real-browser proof is
+  // the e2e).
+  it("#974 — no newline reaches the draft store on the send keystroke", async () => {
     const compose = await import("../lib/compose");
+    vi.mocked(compose.getDraft).mockReturnValue("hello");
     vi.mocked(compose.submit).mockResolvedValue({ ok: true });
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
-    const ta = screen.getByPlaceholderText(/message #a/i);
-    fireEvent.keyDown(ta, { key: "Enter" });
-    expect(screen.queryByText("IRC does not support multi-line messages")).toBeNull();
+    const ta = screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+    const ev = new KeyboardEvent("keydown", {
+      key: "Enter",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    ta.dispatchEvent(ev);
+    if (!ev.defaultPrevented) {
+      fireEvent.input(ta, { target: { value: "hello\n" } });
+    }
+    expect(compose.submit).toHaveBeenCalledTimes(1);
+    expect(compose.setDraft).not.toHaveBeenCalled();
   });
 
   it("Up arrow on first-line cursor calls recallPrev", async () => {
