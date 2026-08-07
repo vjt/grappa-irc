@@ -47,6 +47,9 @@ setup() {
     # #503: deploy.sh now sources the shared deploy algorithm lib — it must
     # exist in the throwaway clone for the script to run.
     cp "$BATS_TEST_DIRNAME/../../infra/lib/deploy_common.sh" "$UPSTREAM/infra/lib/deploy_common.sh"
+    # #1020 — the cic build's build-beside-then-swap helper, sourced by the
+    # same orchestrator. A checkout has it; the throwaway clone must too.
+    cp "$BATS_TEST_DIRNAME/../../infra/lib/cic_dist.sh" "$UPSTREAM/infra/lib/cic_dist.sh"
     : > "$UPSTREAM/compose.yaml"
     # NB: deliberately NO runtime/.gitkeep here — git drops the empty dir,
     # so the clone has NO runtime/. This mimics a checkout-less install

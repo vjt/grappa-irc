@@ -59,6 +59,9 @@ setup() {
     # exist in the throwaway clone for the script to run — committed so
     # pulls stay clean. Assertions below are UNCHANGED by the extraction.
     cp "$BATS_TEST_DIRNAME/../../infra/lib/deploy_common.sh" "$UPSTREAM/infra/lib/deploy_common.sh"
+    # #1020 — the cic build's build-beside-then-swap helper, sourced by the
+    # same orchestrator. A checkout has it; the throwaway clone must too.
+    cp "$BATS_TEST_DIRNAME/../../infra/lib/cic_dist.sh" "$UPSTREAM/infra/lib/cic_dist.sh"
     # version.sh delegate → committed recorder that echoes a version.
     cat > "$UPSTREAM/infra/packaging/version.sh" <<'EOF'
 #!/bin/sh
@@ -96,6 +99,15 @@ printf 'docker %s\n' "$*" >> "$ARGV_LOG"
 case "$*" in
     *"ps -q grappa"*)  echo fakecid ;;
     *"run --no-start"*) exit "$PREFLIGHT_RC" ;;
+    *"run --rm cicchetto-build"*)
+        # #1020 — model the oneshot: vite writes the bundle into whatever host
+        # dir is bind-mounted at /app/dist, which is CIC_BUILD_OUT now. Without
+        # this the promote correctly REFUSES to swap in a tree with no
+        # index.html, and every cold case dies for the wrong reason.
+        cic_out="${CIC_BUILD_OUT:-./runtime/cicchetto-dist}"
+        mkdir -p "$cic_out/assets"
+        printf '<!doctype html>\n' > "$cic_out/index.html"
+        ;;
     *"exec -T grappa curl"*reload*)
         if [ "$RELOAD_FAILS" = "1" ]; then
             printf '{"loaded":[],"failed":[{"module":"Foo","reason":"old_code_in_use"}]}'

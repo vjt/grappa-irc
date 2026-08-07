@@ -52,6 +52,10 @@ setup() {
     # #503: deploy.sh now sources the shared deploy algorithm lib — it must
     # exist in the checkout for the script to reach the pull step.
     cp "$BATS_TEST_DIRNAME/../../infra/lib/deploy_common.sh" "$MAIN/infra/lib/deploy_common.sh"
+    # #1020: both scripts also source the build-beside-then-swap helper, at the
+    # top — before the guards these cases are about. Missing it would kill them
+    # for the wrong reason.
+    cp "$BATS_TEST_DIRNAME/../../infra/lib/cic_dist.sh" "$MAIN/infra/lib/cic_dist.sh"
     # #538/#652 — deploy-cic.sh (and deploy.sh's cold path) derive the cic
     # version from the repo-root VERSION file via infra/packaging/version.sh.
     # The fixture needs both the script and a VERSION file to derive from, or
@@ -82,6 +86,15 @@ case "\$args" in
     *cic-bundle-changed*)  printf '%s' 'abc123';   exit 0 ;;
     *admin/reload*)        printf '%s' '{"reloaded":[],"failed":[]}'; exit 0 ;;
     *healthz*)             exit 0 ;;
+    *"run --rm cicchetto-build"*)
+        # #1020 — the oneshot writes the bundle into the CIC_BUILD_OUT staging
+        # dir; deploy-cic.sh then promotes it, and the promote refuses an empty
+        # tree. Model the write so these guard cases fail on guards only.
+        cic_out="\${CIC_BUILD_OUT:-./runtime/cicchetto-dist}"
+        mkdir -p "\$cic_out/assets"
+        printf '<!doctype html>\\n' > "\$cic_out/index.html"
+        exit 0
+        ;;
     *)                     exit 0 ;;
 esac
 EOF
@@ -161,6 +174,14 @@ args="\$*"
 case "\$args" in
     *"ps -q grappa"*)      echo "fakecontainerid"; exit 0 ;;
     *cic-bundle-changed*)  printf '%s' ''; exit 0 ;;
+    *"run --rm cicchetto-build"*)
+        # #1020, as above: the build must produce a promotable tree, or this
+        # case would die at the swap instead of reaching the 204 it is about.
+        cic_out="\${CIC_BUILD_OUT:-./runtime/cicchetto-dist}"
+        mkdir -p "\$cic_out/assets"
+        printf '<!doctype html>\\n' > "\$cic_out/index.html"
+        exit 0
+        ;;
     *)                     exit 0 ;;
 esac
 EOF
