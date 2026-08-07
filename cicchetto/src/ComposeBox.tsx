@@ -534,6 +534,15 @@ const ComposeBox: Component<Props> = (props) => {
           onInput={onInput}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
+          // #974 — NOT the fix for that issue, and explicitly not the
+          // mechanism behind it (the iOS auto-capitalisation hypothesis was
+          // falsified on a real device). Correct on its own merits: with no
+          // attribute WebKit applies `sentences`, and this box eats nicks,
+          // channel names and `/commands`. Same trio spelling as the other
+          // identifier inputs (PerformSettings, Login). `spellcheck` is left
+          // alone on purpose — message bodies are prose.
+          autocapitalize="none"
+          autocorrect="off"
           // #737 — a paced drain rewrites this draft every acked line for as
           // long as the pacing lasts. The store refuses operator writes while
           // it does (that is the real guard, and it covers the global paste
