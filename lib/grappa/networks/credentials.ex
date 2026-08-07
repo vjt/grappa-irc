@@ -1253,6 +1253,40 @@ defmodule Grappa.Networks.Credentials do
   end
 
   @doc """
+  #1001 — every credential row, USER-bound and VISITOR-bound alike.
+
+  Deliberately NOT `list_all_credentials/0`, and the two must not be
+  unified. That one is scoped `user_id IS NOT NULL` for #211: it backs the
+  admin `/admin/credentials` listing and `bin/grappa list-credentials`,
+  operator surfaces where a `user_id: nil` row would render as a phantom
+  and drive `LiveIntrospection.lookup_session({:user, nil}, …)`. Its narrow
+  radius is a feature of a SUBJECT-scoped door.
+
+  This reader answers the opposite question — "what is in the column, for
+  anybody" — and it cannot inherit that scope. The secret-rotation path
+  reaches BOTH subjects: `Session.Server`'s `rotate_stored_password/2` has a
+  `{:visitor, visitor_id}` clause alongside the `{:user, user_id}` one, so a
+  visitor credential carries (and corrupts) `password_encrypted` exactly like
+  a user one. A repair sweep reading the user-scoped list would print
+  "0 candidates" with a corrupted visitor row sitting right there — not a
+  coverage gap but a false statement, which is the whole point of a task
+  whose only output is a count.
+
+  No `preload: [network: :servers]`: the caller reports on the stored secret,
+  never dials one. `:network` alone is preloaded, for the slug in the report.
+  """
+  @spec list_credentials_every_subject() :: [Credential.t()]
+  def list_credentials_every_subject do
+    query =
+      from(c in Credential,
+        order_by: [asc: c.inserted_at, asc: c.id],
+        preload: [:network]
+      )
+
+    Repo.all(query)
+  end
+
+  @doc """
   Returns a map of `connection_state` → USER-credential row count. Used
   by `Grappa.Bootstrap.run/0` to surface honest startup logs when zero
   credentials are `:connected` (e.g. all parked after
