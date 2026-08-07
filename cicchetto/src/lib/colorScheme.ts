@@ -35,21 +35,17 @@ type Rgb = { r: number; g: number; b: number };
 function parseColor(value: string): Rgb | null {
   const v = value.trim();
 
-  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(v);
-  if (hex) {
-    const d = hex[1];
-    const wide = d.length === 6;
-    const at = (i: number) => (wide ? d.slice(i * 2, i * 2 + 2) : d[i].repeat(2));
-    return {
-      r: Number.parseInt(at(0), 16),
-      g: Number.parseInt(at(1), 16),
-      b: Number.parseInt(at(2), 16),
-    };
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(v)?.[1];
+  if (hex !== undefined) {
+    const wide = hex.length === 6 ? hex : hex.replace(/./g, (c) => c + c);
+    const packed = Number.parseInt(wide, 16);
+    return { r: (packed >> 16) & 255, g: (packed >> 8) & 255, b: packed & 255 };
   }
 
   const rgb = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(v);
-  if (rgb) {
-    return { r: Number(rgb[1]), g: Number(rgb[2]), b: Number(rgb[3]) };
+  if (rgb !== null) {
+    const [r, g, b] = [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
+    if ([r, g, b].every((c) => Number.isFinite(c))) return { r, g, b };
   }
 
   return null;

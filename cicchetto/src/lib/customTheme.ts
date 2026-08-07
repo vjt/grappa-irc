@@ -1,5 +1,6 @@
 import { createEffect, createSignal } from "solid-js";
 import { token } from "./auth";
+import { applyColorScheme } from "./colorScheme";
 import { identityMoved } from "./identityMoved";
 import { moduleRoot } from "./moduleRoot";
 import { prefersDark } from "./theme";
@@ -117,6 +118,9 @@ export function applyCustomTheme(payload: TokenPayload | null): void {
   if (payload === null) {
     for (const v of THEME_CSS_VARS) root.style.removeProperty(v);
     root.classList.remove("theme-has-bg");
+    // #963 — back to the base cascade's `--bg`, so the UA-painted surfaces
+    // (the open <option> list, scrollbars) follow it back.
+    applyColorScheme();
     return;
   }
   const vars = tokenToCssVars(payload);
@@ -134,6 +138,12 @@ export function applyCustomTheme(payload: TokenPayload | null): void {
     "theme-has-bg",
     Boolean(payload.background.image_id || payload.background.builtin),
   );
+  // #963 — this payload's `--bg` now wins over the base block, so the UA-
+  // painted surfaces have to be told which way to paint. Derived from the
+  // resolved `--bg`, not from which slot (day/night) was picked: a user is
+  // free to park a light theme in the night slot, and the option list has to
+  // follow the colours, not the slot.
+  applyColorScheme();
 }
 
 // #358 — the cached day/night payload pair. `light` is the day slot, `dark`
