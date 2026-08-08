@@ -644,8 +644,7 @@ defmodule Grappa.UserSettingsTest do
       # The old bundle GETs the prefs, spreads the map it does not understand,
       # and adds its own bare key. The composite entries are opaque strings to
       # it, so they ride back out untouched.
-      old_bundle_body =
-        read_muted(user) |> Map.put("#freshly-muted-by-old-cic", %{"until" => nil})
+      old_bundle_body = Map.put(read_muted(user), "#freshly-muted-by-old-cic", %{"until" => nil})
 
       assert {:ok, _} = put_muted(user, old_bundle_body)
 

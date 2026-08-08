@@ -72,15 +72,18 @@ defmodule Grappa.Migrations.PrefixMutedTargetsWithNetworkTest do
 
   defp run, do: Repo.query!(@rewrite_sql, [])
 
+  # Returns the SUBJECT only: no test needs the user struct itself, and
+  # returning a pair just to discard half of it is what credo's
+  # unused-variable consistency check was pointing at.
   defp user_on(slug) do
     user = user_fixture()
     network = network_fixture(slug: slug)
     _ = credential_fixture(user, network, %{nick: "n"})
-    {user, {:user, user.id}}
+    {:user, user.id}
   end
 
   test "a bare key gains the subject's network prefix" do
-    {_user, subject} = user_on("azzurra")
+    subject = user_on("azzurra")
     :ok = seed_mutes(subject, %{"#linux" => %{"until" => nil}})
 
     run()
@@ -92,7 +95,7 @@ defmodule Grappa.Migrations.PrefixMutedTargetsWithNetworkTest do
     # The migration is only worth anything if what it writes is what
     # `Identifier.channel_key/2` builds. Asserting the literal string above
     # pins the shape; this asserts the two agree, through the real reader.
-    {_user, subject} = user_on("azzurra")
+    subject = user_on("azzurra")
     :ok = seed_mutes(subject, %{"#linux" => %{"until" => nil}})
 
     run()
@@ -104,7 +107,7 @@ defmodule Grappa.Migrations.PrefixMutedTargetsWithNetworkTest do
   end
 
   test "a snooze keeps its until across the rewrite" do
-    {_user, subject} = user_on("azzurra")
+    subject = user_on("azzurra")
     until = System.os_time(:second) + 3_600
     :ok = seed_mutes(subject, %{"#linux" => %{"until" => until}})
 
@@ -114,7 +117,7 @@ defmodule Grappa.Migrations.PrefixMutedTargetsWithNetworkTest do
   end
 
   test "every bare key is rewritten, not just the first" do
-    {_user, subject} = user_on("azzurra")
+    subject = user_on("azzurra")
 
     :ok =
       seed_mutes(subject, %{
@@ -133,7 +136,7 @@ defmodule Grappa.Migrations.PrefixMutedTargetsWithNetworkTest do
   end
 
   test "an already-composite key is left exactly as it is" do
-    {_user, subject} = user_on("azzurra")
+    subject = user_on("azzurra")
 
     :ok =
       seed_mutes(subject, %{
@@ -152,7 +155,7 @@ defmodule Grappa.Migrations.PrefixMutedTargetsWithNetworkTest do
   end
 
   test "is idempotent — a second run does not double-prefix" do
-    {_user, subject} = user_on("azzurra")
+    subject = user_on("azzurra")
     :ok = seed_mutes(subject, %{"#linux" => %{"until" => nil}})
 
     run()
@@ -194,8 +197,8 @@ defmodule Grappa.Migrations.PrefixMutedTargetsWithNetworkTest do
   end
 
   test "does not reach across subjects — one subject's network never lands on another's mute" do
-    {_a, subject_a} = user_on("net-a")
-    {_b, subject_b} = user_on("net-b")
+    subject_a = user_on("net-a")
+    subject_b = user_on("net-b")
 
     :ok = seed_mutes(subject_a, %{"#shared" => %{"until" => nil}})
     :ok = seed_mutes(subject_b, %{"#shared" => %{"until" => nil}})
@@ -220,7 +223,7 @@ defmodule Grappa.Migrations.PrefixMutedTargetsWithNetworkTest do
   end
 
   test "an empty mute map is untouched and does not become null" do
-    {_user, subject} = user_on("azzurra")
+    subject = user_on("azzurra")
     :ok = seed_mutes(subject, %{})
 
     run()
@@ -229,7 +232,7 @@ defmodule Grappa.Migrations.PrefixMutedTargetsWithNetworkTest do
   end
 
   test "a subject with no notification_prefs at all is untouched" do
-    {_user, subject} = user_on("azzurra")
+    subject = user_on("azzurra")
     {:ok, settings} = UserSettings.get_or_init(subject)
     {:ok, _} = settings |> Settings.changeset(%{data: %{"theme" => "amber"}}) |> Repo.update()
 

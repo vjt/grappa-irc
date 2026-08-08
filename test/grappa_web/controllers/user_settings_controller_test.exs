@@ -160,14 +160,41 @@ defmodule GrappaWeb.UserSettingsControllerTest do
     # this is the first key whose value is an object, so the atom-vs-string
     # round-trip through the `:map` column has one more level to get wrong.
     test "round-trips the nested muted_targets map, folded", %{conn: conn, user: user} do
-      body = valid_prefs_wire(%{"muted_targets" => %{"#NOISY" => %{"until" => nil}}})
+      # #1038 — the key is the composite `"<slug> <folded target>"`: the SLUG
+      # rides through verbatim and only the TARGET half folds.
+      body = valid_prefs_wire(%{"muted_targets" => %{"azzurra #NOISY" => %{"until" => nil}}})
       conn = put(conn, "/me/settings/notification-prefs", body)
 
       assert %{"notification_prefs" => returned} = json_response(conn, 200)
-      assert returned["muted_targets"] == %{"#noisy" => %{"until" => nil}}
+      assert returned["muted_targets"] == %{"azzurra #noisy" => %{"until" => nil}}
 
       stored = UserSettings.get_notification_prefs({:user, user.id})
-      assert stored.muted_targets == %{"#noisy" => %{"until" => nil}}
+      assert stored.muted_targets == %{"azzurra #noisy" => %{"until" => nil}}
+    end
+
+    # #1038 — the bare-key posture, asserted at the HTTP boundary where an old
+    # cic bundle actually meets it. The unit test in `user_settings_test.exs`
+    # covers the same rule; this one proves the REQUEST still succeeds, which
+    # is the half that matters to a client too old to know about the new key.
+    test "drops a bare mute key but still answers 200 and keeps the rest", %{
+      conn: conn,
+      user: user
+    } do
+      body =
+        valid_prefs_wire(%{
+          "muted_targets" => %{
+            "#from-an-old-bundle" => %{"until" => nil},
+            "azzurra #keepme" => %{"until" => nil}
+          }
+        })
+
+      conn = put(conn, "/me/settings/notification-prefs", body)
+
+      assert %{"notification_prefs" => returned} = json_response(conn, 200)
+      assert returned["muted_targets"] == %{"azzurra #keepme" => %{"until" => nil}}
+
+      stored = UserSettings.get_notification_prefs({:user, user.id})
+      assert stored.muted_targets == %{"azzurra #keepme" => %{"until" => nil}}
     end
   end
 
