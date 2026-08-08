@@ -347,7 +347,7 @@ export function getSeededWizUser(): SeededUser {
   };
 }
 
-// #481 — self-serve accretion user (token + subject) for loginAs.
+// #1038 — cross-network mute user (token + subject) for loginAs.
 export function getSeededMute1038User(): SeededUser {
   const token = process.env[MUTE1038_TOKEN_ENV_VAR];
   const subjectJson = process.env[MUTE1038_SUBJECT_ENV_VAR];
@@ -365,6 +365,7 @@ export function getSeededMute1038User(): SeededUser {
   };
 }
 
+// #481 — self-serve accretion user (token + subject) for loginAs.
 export function getSeededAccreteUser(): SeededUser {
   const token = process.env[ACCRETE_TOKEN_ENV_VAR];
   const subjectJson = process.env[ACCRETE_SUBJECT_ENV_VAR];
