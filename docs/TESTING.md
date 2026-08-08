@@ -184,6 +184,16 @@ artifacts: screenshot, video, trace.zip) and
 `cicchetto/e2e/playwright-report/`. Open a trace with
 `npx playwright show-trace <path>/trace.zip`.
 
+**A trace's screencast metadata lies about frame size.** Unzipped,
+`0-trace.trace` declares the screencast at the DEVICE resolution
+(e.g. `1179x1977` for `webkit-iphone-15`) while the JPEGs it points at
+are written at the CSS resolution (`391x657`) — off by the device pixel
+ratio, and off in the direction that makes a measured pixel look 3×
+further along than it is. Measuring a frame against the declared size
+flips the conclusion, which is how the #1050 diagnosis went the wrong
+way once. Run `sips -g pixelWidth -g pixelHeight <frame>.jpeg` and scale
+against THAT before turning a frame pixel into a CSS px.
+
 Those are the BROWSER half. On a non-zero exit `scripts/integration.sh`
 also dumps one log file per container to `cicchetto/e2e/container-logs/`
 (#702), from inside its EXIT trap — before the tear-down in that same

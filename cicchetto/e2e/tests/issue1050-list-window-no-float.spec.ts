@@ -37,11 +37,78 @@ import { expect, test } from "../fixtures/test";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
+// ONE oracle, read by BOTH the barrier and the probe. They ask the same
+// question about the same corner at two different instants, and the whole
+// #1050 CI archaeology turned on comparing their answers — so they must not be
+// two hand-rolled readings that can drift apart.
+//
+// Runs inside the page: passed to `evaluate`, never called from node, so it
+// may close over nothing. Everything it can cheaply see about the corner goes
+// in, because the expensive half of a red here is not the failure, it is not
+// knowing which of paint, hit-test and layout disagreed at that instant.
+function inspectCorner(el: Element) {
+  const describe = (n: Element) =>
+    `${n.tagName.toLowerCase()}${[...n.classList].map((c) => `.${c}`).join("")}` +
+    (n.getAttribute("data-testid") ? `[${n.getAttribute("data-testid")}]` : "");
+  const drawer = document.querySelector(".shell-members");
+  const r = el.getBoundingClientRect();
+  const x = r.x + r.width / 2;
+  const y = r.y + r.height / 2;
+  const stack = document.elementsFromPoint(x, y);
+  const top = stack.length === 0 ? null : stack[0];
+  const nAnim = drawer === null ? 0 : drawer.getAnimations().length;
+  return {
+    t: Math.round(performance.now()),
+    hit: top !== null && (top === el || el.contains(top)),
+    inViewport: x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight,
+    clear: drawer === null || (nAnim === 0 && stack.length > 0 && !stack.includes(drawer)),
+    point: [Math.round(x), Math.round(y)],
+    viewport: [window.innerWidth, window.innerHeight],
+    rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
+    nMembers: document.querySelectorAll(".shell-members").length,
+    nAnim,
+    drawerLeft: drawer === null ? null : Math.round(drawer.getBoundingClientRect().left),
+    drawerTransform: drawer === null ? null : getComputedStyle(drawer).transform,
+    stack: stack.slice(0, 6).map(describe),
+  };
+}
+
+type CornerReading = ReturnType<typeof inspectCorner>;
+
+// SELF-REPORTING, ON GREEN TOO. The one red this spec has produced in CI cost
+// a full reconstruction from the trace's screencast — barrier release instant
+// against painted drawer edge, fitted to the transition curve — to establish
+// something the barrier itself could simply have said: how many times it
+// polled, and what it saw each time. It polled ONCE and released 48ms before
+// the probe, with the drawer still ~59px over the point. None of that is in
+// any artifact; all of it was in the barrier's own hands.
+//
+// So every reading is printed unconditionally. It costs nothing while the spec
+// passes and it turns the next red from archaeology into a read. Two exits and
+// a `finally`, mirroring `issue988-rail-menu-first-row`: node-side
+// `console.log` (the `list` reporter prints stdout from PASSING tests, which
+// is the run whose numbers matter most here) plus a `testInfo.attach`, which
+// survives into the HTML report instead of being interleaved with the rest of
+// the suite. From a `finally`, so a barrier that times out still reports the
+// samples that led there.
+async function reportCorner(
+  testInfo: import("@playwright/test").TestInfo,
+  label: string,
+  readings: CornerReading[],
+): Promise<void> {
+  if (readings.length === 0) return;
+  for (const r of readings) console.log(`#1050 ${label} ${JSON.stringify(r)}`);
+  await testInfo.attach(`issue1050-corner-${label}`, {
+    body: JSON.stringify(readings, null, 2),
+    contentType: "application/json",
+  });
+}
+
 test.setTimeout(90_000);
 
 test("@webkit #1050 — the /list window drops the floating ☰, and its ✕ actually closes the directory", async ({
   page,
-}) => {
+}, testInfo) => {
   const vjt = getSeededVjt();
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
@@ -66,8 +133,8 @@ test("@webkit #1050 — the /list window drops the floating ☰, and its ✕ act
   // THE MECHANISM, measured rather than argued: the element under the finger at
   // the ✕'s own centre IS the ✕. Pre-fix this resolved to the floated ☰.
   //
-  // The probe returns the whole hit stack, not a bare boolean, and it costs
-  // nothing until something fails. The first red here was unreadable: a lone
+  // The probe returns the whole hit stack, not a bare boolean, and it is
+  // reported whatever the outcome. The first red here was unreadable: a lone
   // `false` says a layer won the corner but never names it, and the artifacts
   // do not settle it either — `elementFromPoint` returns null for a point
   // outside the viewport, so "covered by an invisible layer" and "pushed
@@ -108,6 +175,14 @@ test("@webkit #1050 — the /list window drops the floating ☰, and its ✕ act
   // `elementFromPoint` are still using the interpolated one. Two oracles, one
   // instant, opposite answers.
   //
+  // ⚠️ IF YOU RE-MEASURE THOSE FRAMES: the trace's own metadata LIES about
+  // their size. `0-trace.trace` declares the screencast at `1179x1977` while
+  // the JPEGs on disk are `391x657` — a factor of 3, the device pixel ratio,
+  // applied in the wrong direction. Reading the frames at the declared size
+  // yields the OPPOSITE conclusion about where the drawer edge was, which is
+  // exactly the wrong turn taken once already while diagnosing this. Check with
+  // `sips -g pixelWidth <frame>.jpeg` before converting a pixel to a CSS px.
+  //
   // So the barrier now asks the SAME oracle the assertion below asks. It waits
   // ONLY for the drawer to leave the ✕'s hit stack — deliberately not for the
   // ✕ to win it, which would fold the #1050 regression itself into a barrier
@@ -143,40 +218,24 @@ test("@webkit #1050 — the /list window drops the floating ☰, and its ✕ act
   // float is `.shell-chrome`, a DIFFERENT element, never consulted here; and if
   // the drawer genuinely failed to leave, the hit-stack half would still fail.
   await expect(page.locator(".shell-members.open")).toHaveCount(0);
-  await expect
-    .poll(
-      () =>
-        closeBtn.evaluate((el) => {
-          const drawer = document.querySelector(".shell-members");
-          if (drawer === null) return true;
-          if (drawer.getAnimations().length > 0) return false;
-          const r = el.getBoundingClientRect();
-          const stack = document.elementsFromPoint(r.x + r.width / 2, r.y + r.height / 2);
-          return stack.length > 0 && !stack.includes(drawer);
-        }),
-      { timeout: 10_000, message: "#1050 — the rail drawer never left the ✕'s hit stack" },
-    )
-    .toBe(true);
+  const barrierReadings: CornerReading[] = [];
+  try {
+    await expect
+      .poll(
+        async () => {
+          const reading = await closeBtn.evaluate(inspectCorner);
+          barrierReadings.push(reading);
+          return reading.clear;
+        },
+        { timeout: 10_000, message: "#1050 — the rail drawer never left the ✕'s hit stack" },
+      )
+      .toBe(true);
+  } finally {
+    await reportCorner(testInfo, "barrier", barrierReadings);
+  }
 
-  const probe = await closeBtn.evaluate((el) => {
-    const describe = (n: Element | null) =>
-      n === null
-        ? "null"
-        : `${n.tagName.toLowerCase()}${[...n.classList].map((c) => `.${c}`).join("")}` +
-          (n.getAttribute("data-testid") ? `[${n.getAttribute("data-testid")}]` : "");
-    const r = el.getBoundingClientRect();
-    const x = r.x + r.width / 2;
-    const y = r.y + r.height / 2;
-    const top = document.elementFromPoint(x, y);
-    return {
-      hit: top === el || el.contains(top),
-      inViewport: x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight,
-      point: [Math.round(x), Math.round(y)],
-      viewport: [window.innerWidth, window.innerHeight],
-      rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
-      stack: document.elementsFromPoint(x, y).slice(0, 6).map(describe),
-    };
-  });
+  const probe = await closeBtn.evaluate(inspectCorner);
+  await reportCorner(testInfo, "probe", [probe]);
 
   // Split from the hit test on purpose. A ✕ pushed off-screen fails the hit
   // test too, for a reason that has nothing to do with anything painting over
