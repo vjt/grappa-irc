@@ -229,19 +229,31 @@ export function sidebarWindow(page: Page, networkSlug: string, windowName: strin
     // match.
     return section.locator(`.bottom-bar-tab:not(.bottom-bar-network-header)${attr}`);
   }
-  // Desktop: scope to the section whose collapsed network header
-  // row (UX-4 bucket C `.sidebar-network-header` row, replacing the
-  // pre-C `<h3>` per network) carries the network slug. The header
-  // row's button-text is `<emoji> <slug>`, so `hasText` matches the
-  // slug substring + tolerates the emoji prefix + optional [away]
-  // badge suffix.
+  // Desktop: scope to the per-network `<ul>` by its production
+  // `aria-label` (`"<slug> windows"`), an EXACT attribute match.
+  //
+  // #1038 — this used to filter on the header row's `hasText: slug`,
+  // which is a SUBSTRING match, so `azzurra` also selected `azzurra2`
+  // and `azzurra-reg`. Existing specs survived by accident: two matched
+  // sections still yield one `<li>` as long as the window name exists in
+  // only one of them. The first spec to hold the SAME channel name on
+  // two networks (the whole point of #1038) got "resolved to 2 elements"
+  // instead. That is precisely the defect GREEN-CI-3 B2 fixed for the
+  // WINDOW half of this helper (`#bofh` ⊂ `#bofh-test`) and for the
+  // whole mobile branch above, which anchors on an exact
+  // `data-network-slug`; the desktop network half was simply never given
+  // the same treatment.
+  //
+  // No production change was needed: `Sidebar.tsx` already authors
+  // `aria-label={`${network.slug} windows`}` on this exact element, and
+  // it is the only site that emits `.sidebar-network-section`.
   //
   // UX-5 BH (2026-05-19): `.sidebar-network` was renamed to
   // `.sidebar-network-section` when the legacy `<section>` wrapper was
   // killed and the per-network `<ul>` took over carrying the class.
-  const section = page.locator(".sidebar-network-section", {
-    has: page.locator(".sidebar-network-header", { hasText: networkSlug }),
-  });
+  const section = page.locator(
+    `.sidebar-network-section[aria-label="${networkSlug} windows"]`,
+  );
   // FLAKE-B (2026-05-22) — same callsite shape as the mobile branch
   // above. Post-UX-4-C the desktop sidebar network-header `<li>` IS
   // the server-window entry; its visible text is `⚙️ <slug>` (NOT
