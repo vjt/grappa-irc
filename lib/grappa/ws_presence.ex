@@ -718,7 +718,7 @@ defmodule Grappa.WSPresence do
           do: if(is_integer(last), do: now - last, else: nil)
 
     Logger.info("ws_presence: demoted #{length(ages)} stale :visible socket(s) to :hidden",
-      user_name: user_name,
+      user: user_name,
       silent_for_ms: inspect(ages)
     )
   end

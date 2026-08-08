@@ -34049,3 +34049,94 @@ perfectly visible button. For #1051 it is `document.elementFromPoint` at
 the ✕'s own centre, preceded by an assertion that the two boxes still
 INTERSECT: without that precondition a layout change that merely moved
 them apart would keep the spec green while retiring what it guards.
+## 2026-08-08 — #224: the socket was alive, so no transport timeout could reach it
+
+A prod socket sat `:visible` for ~2 days with nothing foregrounded.
+Auto-away fires on the `any_visible?/1` `true → false` TRANSITION, and
+the three doors that compute it (`set_visibility`, `client_closing`, pid
+`DOWN`) all need a write that never came — the hidden/close signal was
+lost and the socket never died. Killing that one socket by hand let both
+of the user's `Session.Server`s reach `:away_auto` within the debounce,
+so it was the sole blocker.
+
+**The question that decided the design: was the stuck socket still
+heartbeating?** The issue offered "tie liveness to the transport
+idle-timeout" as a cheap structural fix, and "~450k reductions" as if it
+settled the question. It does not — reductions accrue from work done FOR
+a socket too, and every push fanned out to that user passed through it.
+Magnitude cannot be read off code.
+
+It is settleable from structure, though, and the answer is yes:
+
+- Phoenix's websocket `:timeout` defaults to **60_000 ms**
+  (`Phoenix.Transports.WebSocket.default_config/0`), and
+  `Phoenix.Socket.Transport.load_config/2` merges the endpoint's
+  `websocket:` keyword list OVER that default. `endpoint.ex` sets no
+  `:timeout`, so 60s is in force — "not configured" is true of the
+  source and false of the behaviour.
+- Bandit honours it: `Bandit.WebSocket.Handler.handle_connection/2`
+  returns `{:persistent, timeout}`, which ThousandIsland arms as a
+  `Process.send_after(self(), :read_timeout, …)`.
+- That timer is reset ONLY from `handle_continuation/2`, which is
+  reached from the `:tcp`/`:ssl` inbound-data clause. Bandit's generic
+  `handle_info/2` — the one every outbound PubSub push arrives through —
+  returns `{:noreply, …}` directly and never touches it.
+
+So outbound traffic cannot hold a socket open. A socket that survives two
+days received inbound frames at least every 60 seconds, which on this
+wire means phx heartbeats, which means the client's JS timers were
+running. The connection was never what died; the visibility report was.
+**Direction 2 is not merely unbuilt, it is unavailable** — the mechanism
+already exists, already runs, and correctly declined to fire.
+
+(The same argument, at 90 minutes rather than 2 days, is already written
+into `WSPresence`'s #318 "efficacy caveat". It was reached independently
+here from the transport source, which is why it is recorded as structure
+rather than as a quote.)
+
+**The fix.** A periodic tick demotes each no-longer-`fresh?/3`
+`:visible` entry to `{:hidden, nil}` and runs the SAME
+`emit_transition/4` door as every other write. Nothing new is stored:
+the stamp (`last_visible_at`), the predicate (`fresh?/3`), the window
+(`stale_ms`) and the door all predate it.
+
+Three things that are not obvious:
+
+- **Demote, don't just emit.** Writing the entry is what makes a re-tick
+  idempotent — the alternative is a flag beside the entry saying "already
+  emitted", i.e. exactly the parallel bookkeeping that drifts. A mutant
+  that emitted without writing re-fired `:ws_all_hidden` on every tick,
+  forever.
+- **The demotion IS the disarm.** A returning client (heartbeat resumes
+  after a suspend) reports `:visible` against a `:hidden` entry, which is
+  a genuine `false → true` flip and cancels the debounce. Against a
+  still-`:visible` entry that report emits NOTHING — so a sweep that only
+  emitted would arm auto-away and leave nothing able to cancel it. The
+  arm and the disarm are one change, not two.
+- **#671's RAW/FRESH split survives.** It is tempting to read the sweep
+  as making the fresh view fully evented, and collapse the two predicates
+  into one. It does not: a pid that goes stale and dies BEFORE the next
+  tick is removed by `DOWN` before the sweep can see it, and only the RAW
+  `before?` at that door still produces its transition. Reading the fresh
+  view there resurrects the #671 bug in a window one tick wide. The sweep
+  closes the gap #671 left open (nothing arrives at all); it does not
+  replace it.
+
+**One knob in prod, two in the code.** `:sweep_ms` defaults to
+`:stale_ms`, and nothing in production sets it, so worst-case detection
+is `2 × stale_ms` = 120s against a 600s debounce. It is separately
+injectable for one reason: `WSPresence` is an application-wide singleton
+under `max_cases: 1`, so its timer is not scoped to the test that cares
+about it, and a tick landing inside another test's
+`mark_stale_for_test/2` window would demote a pid that test still expects
+to be reported-visible — a cross-test failure with no local cause.
+`config/test.exs` parks it at an hour; the sweep tests drive the tick
+themselves, and one starts its own short-interval instance so the timer's
+existence and re-arming are proven rather than assumed.
+
+**What the demotion costs.** A demoted entry is indistinguishable from a
+page that reported hidden, so `/admin/ws_presence` (#318's diagnostic)
+can no longer tell "swept" from "reported". A third visibility atom would
+have preserved it at the cost of landing on every consumer of a closed
+type, for a diagnostic; instead the `:info` line at the demotion carries
+what the snapshot loses — how long each socket had been silent.

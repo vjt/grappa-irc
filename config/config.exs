@@ -559,7 +559,13 @@ config :logger, :console,
     :stop_ms,
     :spawn_ms,
     :welcome_ms,
-    :autojoin_ms
+    :autojoin_ms,
+    # #224 — how long each demoted socket had been silent when the
+    # WSPresence stale sweep flipped it to :hidden. The demotion makes the
+    # entry indistinguishable from a page that reported hidden, so the
+    # `/admin/ws_presence` snapshot can no longer show it; this line is
+    # where that age survives.
+    :silent_for_ms
   ]
 
 import_config "#{config_env()}.exs"
