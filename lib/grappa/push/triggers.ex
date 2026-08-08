@@ -13,7 +13,7 @@ defmodule Grappa.Push.Triggers do
   hot path stays sub-millisecond and Sender failures don't bleed into
   the mailbox.
 
-  ## Decision logic — `should_notify?/4`
+  ## Decision logic — `should_notify?/5`
 
   The FIRST question is "is this row mine?", decided by IDENTITY
   (`Identifier.canonical_target(sender) == canonical_nick(own_nick)`), NOT
@@ -26,15 +26,18 @@ defmodule Grappa.Push.Triggers do
        their own message body. Excluding by sender-identity kills that for
        both self-authored shapes (outbound DM + own channel message).
 
-    0b. **Muted conversation** (#866) — the row's CONVERSATION (the folded
-       channel, or the folded PEER for a DM) is a key of
+    0b. **Muted conversation** (#866, network-keyed by #1038) — the composite
+       `Identifier.channel_key(network_slug, target)`, where `target` is the
+       channel for a channel row and the PEER for a DM, is a key of
        `prefs.muted_targets` — never notify. This beats every reason below,
        INCLUDING a direct mention: vjt's Q2 ruling is that the mute always
        wins, because "I silenced this room" staying silent is the polite
-       default. The mute is keyed on the conversation and NOT on
-       `message.channel` for the same reason step 0 exists — an inbound DM
-       carries `channel = own_nick`, so that key would collapse every DM
-       onto a single mute.
+       default. The target is the conversation and NOT `message.channel` for
+       the same reason step 0 exists — an inbound DM carries
+       `channel = own_nick`, so that key would collapse every DM onto a
+       single mute. The NETWORK is in the key because `#linux` on two
+       networks is two rooms and the same nick on two networks is two people
+       (#1038, reversing #866's deliberate network-blind key).
 
        `until` is not read here. Expiry happens on READ, in
        `UserSettings.get_notification_prefs/1`, so this predicate stays pure
@@ -161,7 +164,7 @@ defmodule Grappa.Push.Triggers do
         prefs = UserSettings.get_notification_prefs(subject)
         patterns = UserSettings.get_highlight_patterns(subject)
 
-        # #182 — foreground-suppression gate. `should_notify?/4` stays a
+        # #182 — foreground-suppression gate. `should_notify?/5` stays a
         # PURE predicate (no IO); the visibility check reads WSPresence
         # GenServer state, so it is a SEPARATE explicit step here. If ANY
         # of the subject's devices reports the PWA is on-screen, skip the
@@ -174,7 +177,7 @@ defmodule Grappa.Push.Triggers do
         # right after you background still delivers. Deliver-leaning: an
         # unreported/backgrounded device reads `:hidden`, so this never
         # suppresses to a device that hasn't claimed the foreground.
-        if should_notify?(message, own_nick, prefs, patterns) and
+        if should_notify?(message, network_slug, own_nick, prefs, patterns) and
              not WSPresence.any_visible?(subject_label) do
           payload = build_payload(message, network_slug, own_nick, subject)
           Push.Sender.send_to_subject(subject, payload)
@@ -191,8 +194,15 @@ defmodule Grappa.Push.Triggers do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Returns `true` when `message` should produce a push notification
-  for an operator whose IRC nick is `own_nick`, given `prefs`.
+  Returns `true` when `message`, received on `network_slug`, should produce a
+  push notification for an operator whose IRC nick is `own_nick`, given
+  `prefs`.
+
+  `network_slug` is read by exactly ONE branch — the mute (#1038), whose key
+  is the composite `(network, conversation)` `ChannelKey`. Every other branch
+  is network-independent. It is a required positional argument rather than an
+  optional one because a caller that forgets it must not silently fall back
+  to the network-blind behaviour this issue removed.
 
   `highlight_patterns` is the per-user watchlist (from
   `UserSettings.get_highlight_patterns/1`); used only when the
@@ -203,16 +213,17 @@ defmodule Grappa.Push.Triggers do
   """
   @spec should_notify?(
           Message.t(),
+          network_slug :: String.t(),
           own_nick :: String.t(),
           prefs(),
           highlight_patterns :: [String.t()]
         ) :: boolean()
-  def should_notify?(%Message{kind: kind}, _, _, _)
+  def should_notify?(%Message{kind: kind}, _, _, _, _)
       when kind not in @notify_kinds,
       do: false
 
-  def should_notify?(%Message{} = message, own_nick, prefs, patterns)
-      when is_binary(own_nick) and is_map(prefs) and is_list(patterns) do
+  def should_notify?(%Message{} = message, network_slug, own_nick, prefs, patterns)
+      when is_binary(network_slug) and is_binary(own_nick) and is_map(prefs) and is_list(patterns) do
     cond do
       # #532 C — the subject's OWN rows never notify, decided by IDENTITY
       # (sender folds to own_nick), NOT by window shape. An OUTBOUND DM is
@@ -230,7 +241,7 @@ defmodule Grappa.Push.Triggers do
       # in the `cond` rather than inside the two branches is what makes that
       # true structurally instead of by remembering to add `and not muted?` to
       # each new disjunct.
-      muted?(message, prefs, own_nick) -> false
+      muted?(message, network_slug, prefs, own_nick) -> false
       dm?(message, own_nick) -> dm_match?(message, prefs)
       true -> channel_match?(message, prefs, own_nick, patterns)
     end
@@ -282,25 +293,39 @@ defmodule Grappa.Push.Triggers do
 
   defp dm?(_, _), do: false
 
-  # #866 — is this row's CONVERSATION muted?
+  # #866 — is this row's CONVERSATION muted? Network-keyed since #1038.
   #
-  # The key is the conversation, NOT the row's `channel` field. An inbound DM
-  # is persisted with `channel = own_nick`, so keying on `channel` would make
-  # one "mute vjt" entry silence every DM the operator ever receives, while
-  # "mute alice" silenced nothing. So: the folded channel for a channel row,
-  # the folded PEER for a DM. Same `canonical_target/1` fold the two
-  # whitelists use, matching the fold `UserSettings` applies at write.
+  # The TARGET is the conversation, NOT the row's `channel` field. An inbound
+  # DM is persisted with `channel = own_nick`, so keying on `channel` would
+  # make one "mute vjt" entry silence every DM the operator ever receives,
+  # while "mute alice" silenced nothing. So: the channel for a channel row,
+  # the PEER for a DM.
+  #
+  # #1038 — the target alone is not the key. `Identifier.channel_key/2`
+  # composes it with the network the row arrived on, because the same channel
+  # name (and the same nick) on two networks is two conversations. That
+  # builder applies the same `canonical_target/1` fold `UserSettings` applies
+  # at write, so the string compared here is byte-identical to the one stored.
+  #
+  # A stored BARE key can never match: it has no separator, so no composite
+  # this function builds can equal it. That is the intended failure direction
+  # — a mute the migration missed goes LOUD, it does not silence every
+  # network the way the pre-#1038 key did.
   #
   # `until` is deliberately not consulted. Expiry belongs to the READER
   # (`UserSettings.get_notification_prefs/1`, Q3), which is what keeps this
   # predicate pure and the shared truth-table free of a `now` column.
-  defp muted?(%Message{channel: channel, sender: sender} = message, prefs, own_nick)
-       when is_binary(channel) and is_binary(sender) do
-    key = if dm?(message, own_nick), do: sender, else: channel
-    Map.has_key?(Map.get(prefs, :muted_targets, %{}), Identifier.canonical_target(key))
+  defp muted?(%Message{channel: channel, sender: sender} = message, network_slug, prefs, own_nick)
+       when is_binary(channel) and is_binary(sender) and is_binary(network_slug) do
+    target = if dm?(message, own_nick), do: sender, else: channel
+
+    Map.has_key?(
+      Map.get(prefs, :muted_targets, %{}),
+      Identifier.channel_key(network_slug, target)
+    )
   end
 
-  defp muted?(_, _, _), do: false
+  defp muted?(_, _, _, _), do: false
 
   defp dm_match?(%Message{} = message, prefs) do
     Map.get(prefs, :private_messages_all, false) or

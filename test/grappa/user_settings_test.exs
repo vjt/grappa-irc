@@ -374,7 +374,7 @@ defmodule Grappa.UserSettingsTest do
         channel_mentions: true,
         private_messages_all: false,
         private_messages_only: ["alice"],
-        muted_targets: %{"#noisy" => %{"until" => nil}}
+        muted_targets: %{"azzurra #noisy" => %{"until" => nil}}
       }
 
       assert {:ok, %Settings{}} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
@@ -554,23 +554,102 @@ defmodule Grappa.UserSettingsTest do
   defp read_muted(user),
     do: UserSettings.get_notification_prefs({:user, user.id}).muted_targets
 
-  describe "notification_prefs muted_targets (#866)" do
-    test "folds keys with canonical_target/1, so the stored key is the one a row matches" do
+  describe "notification_prefs muted_targets (#866, network-keyed since #1038)" do
+    test "folds the TARGET and keeps the slug, so the stored key is the one a row matches" do
       user = user_fixture()
 
       assert {:ok, _} =
                put_muted(user, %{
-                 "  #SBiffo " => %{"until" => nil},
-                 "Alice" => %{"until" => nil}
+                 "  azzurra #SBiffo " => %{"until" => nil},
+                 "azzurra Alice" => %{"until" => nil}
                })
 
-      # A-Z only, and trimmed. The same fold `Triggers.muted?/3` applies to the
-      # incoming channel/sender — a write that folded differently would store a
-      # key no message can ever match.
+      # A-Z only on the target half, and the whole key trimmed. The slug rides
+      # through VERBATIM — cic's `channelKey` does not fold it either, and a
+      # server that did would store a key no lookup can rebuild. The same
+      # `Identifier.channel_key/2` that `Triggers.muted?/4` builds from the
+      # incoming row is what composes this.
       assert read_muted(user) == %{
-               "#sbiffo" => %{"until" => nil},
-               "alice" => %{"until" => nil}
+               "azzurra #sbiffo" => %{"until" => nil},
+               "azzurra alice" => %{"until" => nil}
              }
+    end
+
+    test "the SAME channel on two networks is two independent mutes (the #1038 point)" do
+      user = user_fixture()
+
+      assert {:ok, _} =
+               put_muted(user, %{
+                 "azzurra #linux" => %{"until" => nil},
+                 "libera #linux" => %{"until" => nil}
+               })
+
+      assert map_size(read_muted(user)) == 2
+    end
+
+    test "unmuting on one network leaves the other network's mute standing" do
+      user = user_fixture()
+
+      assert {:ok, _} =
+               put_muted(user, %{
+                 "azzurra #linux" => %{"until" => nil},
+                 "libera #linux" => %{"until" => nil}
+               })
+
+      # What the client does to unmute: PUT back the map without that key.
+      assert {:ok, _} = put_muted(user, %{"libera #linux" => %{"until" => nil}})
+
+      assert read_muted(user) == %{"libera #linux" => %{"until" => nil}}
+    end
+
+    # -------------------------------------------------------------------
+    # The bare (pre-#1038) key shape — what an OLD cic bundle still sends
+    # -------------------------------------------------------------------
+
+    test "a BARE key is dropped at the boundary instead of stored network-blind" do
+      user = user_fixture()
+
+      # A key with no separator is not a ChannelKey. Storing it verbatim would
+      # recreate exactly the defect #1038 exists to remove: a row that reads as
+      # muted in settings and silences nothing, because no lookup ever builds
+      # that string. `PresenceFilter.Resolver` has dropped separator-less pins
+      # since they shipped; this is the same posture, not a new one.
+      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => nil}})
+
+      assert read_muted(user) == %{}
+    end
+
+    test "a bare key does NOT fail the whole PUT — the rest of the map survives" do
+      user = user_fixture()
+
+      # The constraint #1038 states outright: an old bundle that still sends
+      # bare keys must not be able to corrupt or wipe a migrated map. Erroring
+      # the request would land the noise on the wrong person (the old bundle
+      # could then save NO notification setting at all) and would break the
+      # tolerant contract `cast_muted_targets/2` already keeps for an absent
+      # key. Unknown-is-never-fatal, in both directions (#447).
+      assert {:ok, _} =
+               put_muted(user, %{
+                 "#noisy" => %{"until" => nil},
+                 "azzurra #keepme" => %{"until" => nil}
+               })
+
+      assert read_muted(user) == %{"azzurra #keepme" => %{"until" => nil}}
+    end
+
+    test "an old bundle's read-modify-write cannot wipe a migrated mute" do
+      user = user_fixture()
+      assert {:ok, _} = put_muted(user, %{"azzurra #migrated" => %{"until" => nil}})
+
+      # The old bundle GETs the prefs, spreads the map it does not understand,
+      # and adds its own bare key. The composite entries are opaque strings to
+      # it, so they ride back out untouched.
+      old_bundle_body =
+        read_muted(user) |> Map.put("#freshly-muted-by-old-cic", %{"until" => nil})
+
+      assert {:ok, _} = put_muted(user, old_bundle_body)
+
+      assert read_muted(user) == %{"azzurra #migrated" => %{"until" => nil}}
     end
 
     test "does not over-fold non-ASCII, so #CAFÉ and #café stay two mutes (#525)" do
@@ -578,8 +657,8 @@ defmodule Grappa.UserSettingsTest do
 
       assert {:ok, _} =
                put_muted(user, %{
-                 "#CAFÉ" => %{"until" => nil},
-                 "#café" => %{"until" => nil}
+                 "azzurra #CAFÉ" => %{"until" => nil},
+                 "azzurra #café" => %{"until" => nil}
                })
 
       assert map_size(read_muted(user)) == 2
@@ -589,15 +668,15 @@ defmodule Grappa.UserSettingsTest do
       user = user_fixture()
       until = System.os_time(:second) + 3_600
 
-      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => until}})
-      assert read_muted(user) == %{"#noisy" => %{"until" => until}}
+      assert {:ok, _} = put_muted(user, %{"azzurra #noisy" => %{"until" => until}})
+      assert read_muted(user) == %{"azzurra #noisy" => %{"until" => until}}
     end
 
     test "drops a snooze whose until has elapsed, on READ (Q3)" do
       user = user_fixture()
       elapsed = System.os_time(:second) - 1
 
-      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => elapsed}})
+      assert {:ok, _} = put_muted(user, %{"azzurra #noisy" => %{"until" => elapsed}})
 
       assert read_muted(user) == %{}
     end
@@ -606,7 +685,7 @@ defmodule Grappa.UserSettingsTest do
       user = user_fixture()
       elapsed = System.os_time(:second) - 1
 
-      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => elapsed}})
+      assert {:ok, _} = put_muted(user, %{"azzurra #noisy" => %{"until" => elapsed}})
       assert read_muted(user) == %{}
 
       # The point of Q3 being "on read": no sweeper, and the GET does not turn
@@ -614,7 +693,7 @@ defmodule Grappa.UserSettingsTest do
       # pruning read would issue a write per badge refresh.
       settings = Repo.get_by!(Settings, user_id: user.id)
 
-      assert %{"muted_targets" => %{"#noisy" => %{"until" => ^elapsed}}} =
+      assert %{"muted_targets" => %{"azzurra #noisy" => %{"until" => ^elapsed}}} =
                settings.data["notification_prefs"]
     end
 
@@ -622,7 +701,7 @@ defmodule Grappa.UserSettingsTest do
       user = user_fixture()
       elapsed = System.os_time(:second) - 1
 
-      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => elapsed}})
+      assert {:ok, _} = put_muted(user, %{"azzurra #noisy" => %{"until" => elapsed}})
       # A client PUTs back what it read, and what it read had the entry gone.
       assert {:ok, _} = put_muted(user, read_muted(user))
 
@@ -632,7 +711,7 @@ defmodule Grappa.UserSettingsTest do
 
     test "an ABSENT muted_targets key leaves the stored mutes alone" do
       user = user_fixture()
-      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => nil}})
+      assert {:ok, _} = put_muted(user, %{"azzurra #noisy" => %{"until" => nil}})
 
       # A cic bundle predating #866 saves an unrelated checkbox. It is saying
       # nothing about mutes, not asserting there are none — clearing them here
@@ -640,12 +719,12 @@ defmodule Grappa.UserSettingsTest do
       legacy = Map.delete(base_prefs(%{}), :muted_targets)
       assert {:ok, _} = UserSettings.put_notification_prefs({:user, user.id}, legacy)
 
-      assert read_muted(user) == %{"#noisy" => %{"until" => nil}}
+      assert read_muted(user) == %{"azzurra #noisy" => %{"until" => nil}}
     end
 
     test "an EXPLICIT empty map does clear them — that is how the client unmutes" do
       user = user_fixture()
-      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => nil}})
+      assert {:ok, _} = put_muted(user, %{"azzurra #noisy" => %{"until" => nil}})
 
       assert {:ok, _} = put_muted(user, %{})
 
@@ -656,21 +735,34 @@ defmodule Grappa.UserSettingsTest do
       user = user_fixture()
 
       assert {:error, %Ecto.Changeset{} = cs} =
-               put_muted(user, %{"#noisy" => %{"until" => "tomorrow"}})
+               put_muted(user, %{"azzurra #noisy" => %{"until" => "tomorrow"}})
 
       assert errors_on(cs)[:notification_prefs] != nil
+    end
+
+    test "a bare key is dropped WITHOUT judging its value" do
+      user = user_fixture()
+
+      # A dropped key stores no entry, so it has no value to validate. Failing
+      # here would make an old bundle's ability to save its settings depend on
+      # a field that was never going to be stored — undoing the whole reason
+      # the bare key is dropped rather than rejected. A CURRENT bundle always
+      # sends a composite key, so its `until` is still validated (the test
+      # above); nothing is weakened for the path that can actually store.
+      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => "tomorrow"}})
+      assert read_muted(user) == %{}
     end
 
     test "rejects a non-positive until" do
       user = user_fixture()
 
-      assert {:error, %Ecto.Changeset{}} = put_muted(user, %{"#noisy" => %{"until" => 0}})
+      assert {:error, %Ecto.Changeset{}} = put_muted(user, %{"azzurra #noisy" => %{"until" => 0}})
     end
 
     test "rejects a value that is not a map" do
       user = user_fixture()
 
-      assert {:error, %Ecto.Changeset{}} = put_muted(user, %{"#noisy" => true})
+      assert {:error, %Ecto.Changeset{}} = put_muted(user, %{"azzurra #noisy" => true})
     end
 
     test "rejects a muted_targets that is not a map" do
@@ -683,10 +775,18 @@ defmodule Grappa.UserSettingsTest do
                )
     end
 
-    test "rejects a key that folds to empty" do
+    test "drops a key that trims down to a bare slug with no target" do
       user = user_fixture()
 
-      assert {:error, %Ecto.Changeset{}} = put_muted(user, %{"   " => %{"until" => nil}})
+      assert {:ok, _} = put_muted(user, %{"azzurra    " => %{"until" => nil}})
+      assert read_muted(user) == %{}
+    end
+
+    test "drops a key that is only whitespace" do
+      user = user_fixture()
+
+      assert {:ok, _} = put_muted(user, %{"   " => %{"until" => nil}})
+      assert read_muted(user) == %{}
     end
 
     test "bounds the entry count, because the column is a user-writable blob" do
@@ -701,9 +801,10 @@ defmodule Grappa.UserSettingsTest do
     test "drops a sibling key the writer invented rather than persisting an unmodelled shape" do
       user = user_fixture()
 
-      assert {:ok, _} = put_muted(user, %{"#noisy" => %{"until" => nil, "reason" => "loud"}})
+      assert {:ok, _} =
+               put_muted(user, %{"azzurra #noisy" => %{"until" => nil, "reason" => "loud"}})
 
-      assert read_muted(user) == %{"#noisy" => %{"until" => nil}}
+      assert read_muted(user) == %{"azzurra #noisy" => %{"until" => nil}}
     end
 
     test "the reader survives a malformed stored map, failing OPEN" do

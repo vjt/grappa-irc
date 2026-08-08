@@ -2,7 +2,7 @@ defmodule Grappa.Push.ShouldNotifyParityTest do
   @moduledoc """
   Drift gate for the PWA badge predicate (2026-06-21).
 
-  `Grappa.Push.Triggers.should_notify?/4` (server) and
+  `Grappa.Push.Triggers.should_notify?/5` (server) and
   `cicchetto/src/lib/pushTriggers.ts`'s `shouldNotify` (foreground badge
   increment) MUST agree — the OS push, the icon badge, and the
   `document.title` all derive from the same notify decision, so a
@@ -55,7 +55,7 @@ defmodule Grappa.Push.ShouldNotifyParityTest do
   end
 
   for testcase <- @truth_table do
-    test "should_notify?/4 — #{testcase["name"]}" do
+    test "should_notify?/5 — #{testcase["name"]}" do
       c = unquote(Macro.escape(testcase))
 
       message = %Message{
@@ -65,10 +65,16 @@ defmodule Grappa.Push.ShouldNotifyParityTest do
         body: c["message"]["body"]
       }
 
-      # JSON carries string-keyed prefs; should_notify?/4 reads atom keys.
+      # JSON carries string-keyed prefs; should_notify?/5 reads atom keys.
       prefs = Map.new(c["prefs"], fn {k, v} -> {Map.fetch!(@pref_keys, k), v} end)
 
-      assert Triggers.should_notify?(message, c["own_nick"], prefs, c["patterns"]) ==
+      # #1038 — `network_slug` is REQUIRED of every case, not defaulted. A
+      # default here would let a case that forgot it silently exercise one
+      # fixed network on both ports, which is precisely the blindness the
+      # issue removes.
+      slug = Map.fetch!(c, "network_slug")
+
+      assert Triggers.should_notify?(message, slug, c["own_nick"], prefs, c["patterns"]) ==
                c["expected"],
              "truth-table case #{inspect(c["name"])} expected #{inspect(c["expected"])}"
     end

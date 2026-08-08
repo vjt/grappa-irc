@@ -50,7 +50,7 @@ defmodule Grappa.Mentions do
 
   `mentioned?/3` exposes the same word-boundary, case-insensitive
   matcher as `aggregate_mentions/6` for the push-notification trigger
-  hot path (`Grappa.Push.Triggers.should_notify?/4`). One matcher,
+  hot path (`Grappa.Push.Triggers.should_notify?/5`). One matcher,
   two consumers — same predicate guarantees the badge cic raises in
   the sidebar and the OS push that fires server-side never disagree.
 
@@ -135,7 +135,7 @@ defmodule Grappa.Mentions do
   empty terms are skipped (a literal empty pattern would match every
   body via `\\b\\b`). A `nil` or empty body never matches.
 
-  Used by `Grappa.Push.Triggers.should_notify?/4` on the inbound
+  Used by `Grappa.Push.Triggers.should_notify?/5` on the inbound
   PRIVMSG hot path. No memoization at this layer — the caller spawns
   a `Task` per inbound message so per-call regex compilation is
   bounded by message rate, and a global cache would re-introduce the

@@ -6,7 +6,7 @@ defmodule Grappa.Push.BadgeCount do
   ## One number, one predicate
 
   `count/1` returns the number of unread scrollback rows that pass the
-  REAL push-trigger predicate `Grappa.Push.Triggers.should_notify?/4`,
+  REAL push-trigger predicate `Grappa.Push.Triggers.should_notify?/5`,
   capped at `99`. It is the EXACT same notify set Web Push fires on —
   by construction the badge and the OS notification never disagree.
   There is no new persisted state: the count is derived from the
@@ -50,7 +50,7 @@ defmodule Grappa.Push.BadgeCount do
   early-bails once the running total reaches the badge cap — so the
   uniform path stays off any unbounded scan while keeping a single source
   of truth. Outbound DM rows (our own messages) are excluded by the
-  predicate itself — `should_notify?/4` returns `false` for any row whose
+  predicate itself — `should_notify?/5` returns `false` for any row whose
   `sender` folds to the live own_nick (#532 C), an IDENTITY test that
   covers both self-authored shapes. It is NOT `channel != own_nick`:
   outbound DMs are persisted with `channel = peer`, which passes that test
@@ -59,7 +59,7 @@ defmodule Grappa.Push.BadgeCount do
 
   ## own_nick is the LIVE nick, via a cheap Registry lookup (#498)
 
-  The mention branch of `should_notify?/4` needs the subject's IRC nick.
+  The mention branch of `should_notify?/5` needs the subject's IRC nick.
   This module resolves it via `Networks.live_nick_index/1`, which reads the
   LIVE session nick through `Session.current_nick/2` — now a cheap
   `Registry` value lookup, NOT a `GenServer.call`. `count/1` runs on the
@@ -82,7 +82,7 @@ defmodule Grappa.Push.BadgeCount do
   `Scrollback`, which transitively reach `Session`, and `Session`
   deps `Push` — so folding these into Push would close the cycle
   `Push → Networks → Session → Push`. Keeping BadgeCount in its own
-  boundary that depends DOWN onto Push (for `Triggers.should_notify?/4`)
+  boundary that depends DOWN onto Push (for `Triggers.should_notify?/5`)
   inverts cleanly: nothing in the lower layers references BadgeCount.
 
   #211 phase 6 — the visitor own-nick seed moved off `Grappa.Visitors`
@@ -131,7 +131,7 @@ defmodule Grappa.Push.BadgeCount do
 
   Folds over the subject's read cursors: for each cursored
   `(network, channel)` window it fetches the bounded unread content tail
-  and counts the rows that pass `should_notify?/4` against the subject's
+  and counts the rows that pass `should_notify?/5` against the subject's
   notification prefs + highlight patterns. Channels with a `nil` cursor
   are skipped (same contract as the `/me` unread-count seed); cursors
   whose network slug no longer resolves to a credential / network row are
@@ -164,48 +164,53 @@ defmodule Grappa.Push.BadgeCount do
   # at the badge cap. Lifted out of `count/1`'s reduce_while closure to
   # keep that body shallow (credo nesting depth).
   @spec accumulate(
-          {integer(), String.t(), integer(), String.t()},
+          {integer(), String.t(), String.t(), integer(), String.t()},
           non_neg_integer(),
           Subject.t(),
           UserSettings.notification_prefs(),
           [String.t()]
         ) :: {:cont, non_neg_integer()} | {:halt, non_neg_integer()}
-  defp accumulate({network_id, channel, cursor, own_nick}, acc, subject, prefs, patterns) do
-    acc = acc + count_window(subject, network_id, channel, cursor, own_nick, prefs, patterns)
+  defp accumulate({network_id, slug, channel, cursor, own_nick}, acc, subject, prefs, patterns) do
+    window = {network_id, slug, channel, cursor, own_nick}
+    acc = acc + count_window(subject, window, prefs, patterns)
 
     if acc >= @badge_cap, do: {:halt, @badge_cap}, else: {:cont, acc}
   end
 
   # Flattens the nested cursor envelope into a list of
-  # `{network_id, channel, cursor, own_nick}` work items, dropping:
+  # `{network_id, slug, channel, cursor, own_nick}` work items, dropping:
   #   * slugs absent from `windows` (stale cursor / deleted network /
   #     no credential on that network), and
   #   * `nil` cursors (legacy explicit-no-cursor rows — same skip the
   #     `/me` unread-count seed applies).
+  #
+  # #1038 — the SLUG now rides in the work item. It was already the outer key
+  # of the envelope and was being discarded here; `should_notify?/5` needs it
+  # because the mute key is per-network, and the badge must agree with the
+  # push or the icon count and the notifications disagree about one mute.
   @spec flatten_entries(ReadCursor.bulk_envelope(), %{String.t() => {integer(), String.t()}}) ::
-          [{integer(), String.t(), integer(), String.t()}]
+          [{integer(), String.t(), String.t(), integer(), String.t()}]
   defp flatten_entries(cursors, windows) do
     for {slug, per_channel} <- cursors,
         {:ok, {network_id, own_nick}} <- [Map.fetch(windows, slug)],
         {channel, cursor} <- per_channel,
         is_integer(cursor) do
-      {network_id, channel, cursor, own_nick}
+      {network_id, slug, channel, cursor, own_nick}
     end
   end
 
+  # The window tuple is passed whole rather than as five positionals: #1038
+  # added the slug and the arity was already at the edge of readable.
   @spec count_window(
           Subject.t(),
-          integer(),
-          String.t(),
-          integer(),
-          String.t(),
+          {integer(), String.t(), String.t(), integer(), String.t()},
           UserSettings.notification_prefs(),
           [String.t()]
         ) :: non_neg_integer()
-  defp count_window(subject, network_id, channel, cursor, own_nick, prefs, patterns) do
+  defp count_window(subject, {network_id, slug, channel, cursor, own_nick}, prefs, patterns) do
     subject
     |> Scrollback.unread_content_tail(network_id, channel, cursor, own_nick, @per_channel_cap)
-    |> Enum.count(&Triggers.should_notify?(&1, own_nick, prefs, patterns))
+    |> Enum.count(&Triggers.should_notify?(&1, slug, own_nick, prefs, patterns))
   end
 
   @doc """

@@ -2,7 +2,7 @@ defmodule Grappa.Push.BadgeCountTest do
   @moduledoc """
   PWA icon-badge count (2026-06-21). `count/1` returns the number of
   unread scrollback rows that pass the REAL push predicate
-  `Grappa.Push.Triggers.should_notify?/4`, capped at 99.
+  `Grappa.Push.Triggers.should_notify?/5`, capped at 99.
 
   Coverage mirrors the design's test list: every prefs branch (DM
   all / whitelist / off, channel all / whitelist, mention via nick /

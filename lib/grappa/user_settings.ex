@@ -92,15 +92,29 @@ defmodule Grappa.UserSettings do
   Per-conversation notification mutes (#866) — the one DENY-list in
   `notification_prefs()`, where everything else is an allow-list.
 
-  Keyed by the FOLDED conversation (`Identifier.canonical_target/1`, the
-  channel pattern: fold at write, compare `==` at read): a channel by its
-  name, a DM by its PEER's nick. NOT by the row's `channel` field — an
-  inbound DM is persisted with `channel = own_nick`, so that key would make
-  a single entry silence every DM the subject receives.
+  Keyed by the composite `ChannelKey` — `Identifier.channel_key/2`,
+  `"<slug> <folded target>"` — where the target is the channel for a channel
+  and the PEER's nick for a DM. NOT the row's `channel` field: an inbound DM
+  is persisted with `channel = own_nick`, so that key would make a single
+  entry silence every DM the subject receives. The channel pattern still
+  holds within the composite: build at write, compare `==` at read.
 
-  There is deliberately no network in the key. `user_settings` is
-  per-SUBJECT, exactly like `channel_messages_only` beside it, so `#grappa`
-  is one mute across every network the subject is on.
+  ## The network is IN the key, and that reverses #866 (#1038)
+
+  #866 shipped a network-blind key and said so on purpose: `user_settings`
+  is per-SUBJECT, like `channel_messages_only` beside it, so `#grappa` was
+  ONE mute everywhere. vjt withdrew that on 2026-08-08 — muting `#linux` on
+  Libera also silenced `#linux` on Azzurra, and the settings list could not
+  name the network because there wasn't one. The per-subject storage is
+  unchanged; only the key grew a network component.
+
+  The composite is not a shape invented here: it is the same cross-stack
+  `ChannelKey` cic builds with `channelKey(slug, name)` and the presence-pin
+  resolver keys on. One builder, one decoder, in `Grappa.IRC.Identifier`.
+
+  A key with NO separator is the pre-#1038 bare shape. It is dropped at the
+  write boundary (`cast_muted_key/2`) and rewritten once, at migration time,
+  by `20260808120000_prefix_muted_targets_with_network`.
 
   The value is the closed shape `%{"until" => unix_seconds | nil}`, string
   keys because that is what survives the `:map` JSON round-trip. `nil` is a
@@ -126,10 +140,12 @@ defmodule Grappa.UserSettings do
   `muted_targets` is the only DENY side and it OUTRANKS all of the above,
   a mention included (vjt's Q2) — see `t:muted_targets/0`.
 
-  Channel names + nicks are stored folded + trimmed (set via
-  `put_notification_prefs/2`) through `Identifier.canonical_target/1`,
-  and trigger eval folds the incoming message fields the same way, so the
-  comparison is case-insensitive end-to-end under CASEMAPPING=ascii.
+  Channel names + nicks in the two WHITELISTS are stored folded + trimmed
+  (set via `put_notification_prefs/2`) through
+  `Identifier.canonical_target/1`, and trigger eval folds the incoming
+  message fields the same way, so the comparison is case-insensitive
+  end-to-end under CASEMAPPING=ascii. `muted_targets` folds the same way but
+  its key also carries the network — `Identifier.channel_key/2`, #1038.
   """
   @type notification_prefs :: %{
           channel_messages_all: boolean(),
@@ -401,7 +417,7 @@ defmodule Grappa.UserSettings do
 
   A `muted_targets` entry whose `until` has elapsed is dropped from the
   returned map. This is the ONLY place a mute expires — there is no
-  sweeper, and `Push.Triggers.should_notify?/4` never looks at the clock,
+  sweeper, and `Push.Triggers.should_notify?/5` never looks at the clock,
   which is what keeps it a pure `/4` predicate and keeps the shared
   cic/Elixir truth-table free of a `now` column.
 
@@ -1256,37 +1272,78 @@ defmodule Grappa.UserSettings do
 
   # Collect-or-bail traversal per CLAUDE.md: success extends the accumulator,
   # the first error returns immediately. Two raw keys that fold to the same
-  # target collapse onto one entry, last one wins — the same collision the
+  # composite collapse onto one entry, last one wins — the same collision the
   # picker prevents client-side by deduping before it offers the option.
+  #
+  # `:drop` is a THIRD outcome, and only the KEY SHAPE produces it: the entry
+  # is skipped and the traversal continues. See `cast_muted_key/2`.
   defp collect_muted([], acc, _), do: {:ok, acc}
 
   defp collect_muted([{key, value} | rest], acc, subject) do
-    with {:ok, folded} <- cast_muted_key(key, subject),
-         {:ok, target} <- cast_muted_value(value, subject) do
-      collect_muted(rest, Map.put(acc, folded, target), subject)
+    case cast_muted_key(key, subject) do
+      {:ok, composite} ->
+        with {:ok, target} <- cast_muted_value(value, subject) do
+          collect_muted(rest, Map.put(acc, composite, target), subject)
+        end
+
+      :drop ->
+        # The value is deliberately NOT validated on this arm — a dropped key
+        # carries no entry, so there is nothing for a malformed `until` to
+        # corrupt, and validating it would fail the whole PUT for a mute that
+        # is being discarded anyway.
+        collect_muted(rest, acc, subject)
+
+      {:error, _} = err ->
+        err
     end
   end
 
-  # Folded through `canonical_target/1`, the same fold `normalize_list/2`
-  # applies to the two whitelists and the same one `Triggers.muted?/3` applies
-  # to the incoming row — a write that folded differently would store a key no
-  # message can ever match.
+  # #1038 — the key is the composite `ChannelKey` (`"<slug> <folded target>"`),
+  # built by the cross-stack SSOT `Identifier.channel_key/2`. Decomposing and
+  # REBUILDING through that function (rather than folding the string in place)
+  # is what guarantees the stored key is byte-identical to the one
+  # `Triggers.muted?/4` composes from an incoming row and the one cic's
+  # `channelKey` emits.
+  #
+  # A key with no separator is the BARE pre-#1038 shape — a mute written by a
+  # cic bundle older than this BEAM. It is DROPPED, and the rest of the PUT
+  # proceeds. The three postures were weighed:
+  #
+  #   * failing the request would break the tolerant contract this module
+  #     already keeps for an ABSENT `muted_targets` (see
+  #     `cast_muted_targets/2`) and would stop an old bundle from saving ANY
+  #     notification setting — the noise landing on the wrong person;
+  #   * storing it verbatim would recreate the exact defect #1038 removes: a
+  #     settings row that reads as muted and silences nothing, because no
+  #     lookup ever builds that string;
+  #   * expanding it to a network here would be the LAZY migration vjt
+  #     explicitly ruled against (the rewrite runs ONCE, in the migration).
+  #
+  # Dropping is also the posture that already existed for this exact shape:
+  # `PresenceFilter.Resolver.parse_pins/1` has ignored separator-less pins
+  # since presence pins shipped ("not a ChannelKey ... dropped rather than
+  # guessed at"). Same key, same rule, one implementation
+  # (`Identifier.decode_channel_key/1`).
+  #
+  # An over-long key still ERRORS: that guard bounds a user-writable blob, and
+  # silently discarding an abusive key would make the bound unobservable.
+  @spec cast_muted_key(term(), Subject.t()) ::
+          {:ok, String.t()} | :drop | {:error, Ecto.Changeset.t()}
   defp cast_muted_key(key, subject) when is_binary(key) do
-    folded = key |> String.trim() |> Identifier.canonical_target()
+    with {:ok, {slug, target}} <- Identifier.decode_channel_key(String.trim(key)),
+         composite = Identifier.channel_key(slug, target),
+         false <- byte_size(composite) > @channel_key_max_bytes do
+      {:ok, composite}
+    else
+      :error ->
+        :drop
 
-    cond do
-      folded == "" ->
-        {:error, prefs_changeset_error("muted_targets keys must be non-empty strings", subject)}
-
-      byte_size(folded) > @channel_key_max_bytes ->
+      true ->
         {:error,
          prefs_changeset_error(
            "muted_targets keys must be at most #{@channel_key_max_bytes} bytes",
            subject
          )}
-
-      true ->
-        {:ok, folded}
     end
   end
 
