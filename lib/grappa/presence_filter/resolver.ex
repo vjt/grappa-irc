@@ -48,10 +48,13 @@ defmodule Grappa.PresenceFilter.Resolver do
 
   ## The pin key is not folded on read
 
-  A pin is stored under cic's composite `ChannelKey`
-  (`"<slug> <folded channel>"`, `cicchetto/src/lib/channelKey.ts`), and
-  `channel_key/2` folds the channel being LOOKED UP so any casing resolves
-  to the same pin. The stored key itself is taken verbatim in the bulk path.
+  A pin is stored under the composite `ChannelKey`
+  (`"<slug> <folded channel>"`), built and parsed by
+  `Grappa.IRC.Identifier.channel_key/2` + `decode_channel_key/1` — the
+  cross-stack SSOT shared with cic's `channelKey` and, since #1038, with the
+  per-conversation mute. That builder folds the channel being LOOKED UP so
+  any casing resolves to the same pin. The stored key itself is taken
+  verbatim in the bulk path.
   That is deliberate: re-folding stored keys there would make the bulk path
   honour a legacy raw-cased pin that `hidden?/4` misses, and one rule with
   two behaviours is the thing this module exists to prevent.
@@ -82,7 +85,7 @@ defmodule Grappa.PresenceFilter.Resolver do
   def hidden?(subject, network_slug, network_id, channel)
       when is_binary(network_slug) and is_integer(network_id) and is_binary(channel) do
     pins = UserSettings.get_display_prefs(subject).presence_filter
-    pref = Map.get(pins, channel_key(network_slug, channel))
+    pref = Map.get(pins, Identifier.channel_key(network_slug, channel))
 
     PresenceFilter.hidden?(pref, member_count_for_unset(pref, subject, network_id, channel))
   end
@@ -163,15 +166,6 @@ defmodule Grappa.PresenceFilter.Resolver do
     end)
   end
 
-  @doc """
-  cic's composite `ChannelKey` for a `(network, channel)` pair —
-  `"<slug> <folded channel>"`. The channel is folded through the identifier
-  SSOT so a request in any casing resolves to the one stored pin.
-  """
-  @spec channel_key(String.t(), String.t()) :: String.t()
-  def channel_key(network_slug, channel),
-    do: "#{network_slug} #{Identifier.canonical_target(channel)}"
-
   # ---------------------------------------------------------------------------
   # Private
   # ---------------------------------------------------------------------------
@@ -190,19 +184,18 @@ defmodule Grappa.PresenceFilter.Resolver do
 
   defp member_count_for_unset(_, _, _, _), do: nil
 
-  # `%{"<slug> <channel>" => pref}` → `%{slug => %{channel => pref}}`. The
-  # separator is a space, which neither a slug nor an IRC channel name may
-  # contain (RFC 2812 chanstring excludes 0x20), so splitting on the first
-  # one is unambiguous. A key without a separator is not a ChannelKey and is
-  # dropped rather than guessed at.
+  # `%{"<slug> <channel>" => pref}` → `%{slug => %{channel => pref}}`, via the
+  # ChannelKey decoder paired with the builder `hidden?/4` writes with. A key
+  # without a separator is not a ChannelKey and is dropped rather than guessed
+  # at — the posture #1038 reused for a bare (pre-network) mute key.
   @spec parse_pins(%{String.t() => String.t()}) :: %{String.t() => %{String.t() => String.t()}}
   defp parse_pins(presence_filter) do
     Enum.reduce(presence_filter, %{}, fn {key, pref}, acc ->
-      case String.split(key, " ", parts: 2) do
-        [slug, channel] when slug != "" and channel != "" ->
+      case Identifier.decode_channel_key(key) do
+        {:ok, {slug, channel}} ->
           Map.update(acc, slug, %{channel => pref}, &Map.put(&1, channel, pref))
 
-        _ ->
+        :error ->
           acc
       end
     end)

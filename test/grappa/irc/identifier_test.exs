@@ -339,6 +339,82 @@ defmodule Grappa.IRC.IdentifierTest do
     end
   end
 
+  # The composite `(network, channel)` KEY — the cross-stack contract with
+  # cic's `channelKey(slug, name)` (`cicchetto/src/lib/channelKey.ts`). The pin
+  # below is LITERAL on purpose and it is the reason this describe exists here
+  # rather than only at a consumer: the shape lives beside the fold it composes
+  # with, so a future consumer cannot quietly grow a third builder. Same
+  # discipline as the `nick_fold_sql/1` byte pin — derive it from the
+  # production helper and the test agrees with whatever the server does,
+  # including a drift that orphans every key already stored under the old
+  # spelling. `Grappa.PresenceFilter.Resolver`'s own literal pin
+  # (`resolver_test.exs`) stays where it is: it pins the presence-pin feature's
+  # stored keys independently of this one.
+  describe "channel_key/2 + decode_channel_key/1 (composite ChannelKey — #1038)" do
+    test "is literally `<slug> <folded channel>`" do
+      assert Identifier.channel_key("azzurra", "#Chan") == "azzurra #chan"
+    end
+
+    test "folds ONLY the target — the slug is passed through verbatim" do
+      # cic's `channelKey` folds `name` and interpolates `slug` untouched. A
+      # server that also folded the slug would build a different string for any
+      # slug carrying an uppercase byte, and the two stacks would silently key
+      # the same conversation apart.
+      assert Identifier.channel_key("Azzurra2", "#CHAN") == "Azzurra2 #chan"
+    end
+
+    test "a nick target folds exactly like a channel (one fold, both shapes)" do
+      # The DM half of #1038: the mute key for a query is the PEER, and a sigil
+      # sits outside `A-Z`, so one fold serves both — see canonical_target/1.
+      assert Identifier.channel_key("azzurra", "Alice") == "azzurra alice"
+    end
+
+    test "keeps #525-distinct spellings distinct inside the composite" do
+      refute Identifier.channel_key("azzurra", "#Foo[1]") ==
+               Identifier.channel_key("azzurra", "#Foo{1}")
+    end
+
+    test "the SAME channel on two networks is two DIFFERENT keys (the #1038 point)" do
+      refute Identifier.channel_key("azzurra", "#linux") ==
+               Identifier.channel_key("libera", "#linux")
+    end
+
+    test "decode_channel_key/1 splits at the FIRST space and round-trips" do
+      assert Identifier.decode_channel_key("azzurra #chan") == {:ok, {"azzurra", "#chan"}}
+
+      key = Identifier.channel_key("azzurra", "#Chan")
+      assert Identifier.decode_channel_key(key) == {:ok, {"azzurra", "#chan"}}
+    end
+
+    test "a key with no separator is NOT a ChannelKey" do
+      # The bare-key shape every mute was stored under before #1038, and the
+      # shape an old cic bundle still sends. `Resolver.parse_pins/1` has read it
+      # this way since the presence pins shipped: not a ChannelKey, dropped
+      # rather than guessed at.
+      assert Identifier.decode_channel_key("#chan") == :error
+    end
+
+    test "an empty half is NOT a ChannelKey either" do
+      assert Identifier.decode_channel_key(" #chan") == :error
+      assert Identifier.decode_channel_key("azzurra ") == :error
+      assert Identifier.decode_channel_key("") == :error
+    end
+
+    test "passes non-binary through as :error rather than raising" do
+      assert Identifier.decode_channel_key(nil) == :error
+    end
+
+    property "every built key decodes back to its slug and its FOLDED target" do
+      check all(
+              slug <- string(:alphanumeric, min_length: 1),
+              name <- string(:alphanumeric, min_length: 1)
+            ) do
+        key = Identifier.channel_key(slug, name)
+        assert Identifier.decode_channel_key(key) == {:ok, {slug, Identifier.canonical_target(name)}}
+      end
+    end
+  end
+
   describe "canonical_target/2 (network-aware KEY fold — #537)" do
     test "composes normalize_casemapping/2 then the ASCII canonical_target/1" do
       # The single network-aware KEY fold every INGRESS routes through:
