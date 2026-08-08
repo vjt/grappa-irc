@@ -27,6 +27,13 @@ defmodule Grappa.WSPresenceTest do
     :ok
   end
 
+  # #224 — drive the demotion tick on the shared singleton. Its own timer is
+  # parked for the whole run (`config/test.exs`), so the tick a test wants is
+  # the tick it asks for; nothing arrives on its own.
+  defp sweep_now do
+    send(Process.whereis(WSPresence), :sweep)
+  end
+
   defp stub_pid do
     spawn(fn ->
       receive do
@@ -412,6 +419,145 @@ defmodule Grappa.WSPresenceTest do
       refute_receive {:ws_all_hidden, "lena"}, 100
 
       send(stale, :stop)
+    end
+  end
+
+  describe "#224 — the stale-demotion sweep trips auto-away" do
+    # #224 — in the field a socket sat `:visible` for ~2 days with nothing
+    # foregrounded: the hidden/close signal was lost and the pid never went
+    # DOWN, so none of the three transition doors ever ran and auto-away was
+    # blocked indefinitely. Read-time staleness (#318) discounted the pid for
+    # PUSH but emitted nothing, so the FSM never heard about it.
+    #
+    # The sweep demotes an aged-out `:visible` entry to `:hidden` and runs the
+    # same emission door as every other write. The demotion (rather than a
+    # bare emit) is what makes a re-tick idempotent AND what lets a returning
+    # client emit `:ws_visible` again — both pinned below.
+    #
+    # The singleton's own timer is parked in `config/test.exs`, so these drive
+    # the tick explicitly; the last case starts its own instance to prove the
+    # timer exists and re-arms.
+
+    test "a stale :visible socket is demoted and fires :ws_all_hidden" do
+      p = stub_pid()
+      :ok = WSPresence.register_with_notify("mara", p, self())
+      :ok = WSPresence.set_visibility("mara", p, true)
+      assert_receive {:ws_visible, "mara"}, 200
+
+      # The device stops affirming visibility — no hidden report, no close,
+      # no DOWN. Exactly the field shape.
+      :ok = WSPresence.mark_stale_for_test("mara", p)
+      # Pre-state: nothing has fired yet, and the socket is still tracked.
+      # Without this the assertion below could pass on a leftover event.
+      refute_receive {:ws_all_hidden, "mara"}, 50
+      assert WSPresence.ws_count("mara") == 1
+
+      sweep_now()
+
+      assert_receive {:ws_all_hidden, "mara"}, 200
+      # Demoted, not dropped: the socket is still connected.
+      assert WSPresence.ws_count("mara") == 1
+
+      send(p, :stop)
+    end
+
+    test "a second sweep does not re-fire :ws_all_hidden" do
+      p = stub_pid()
+      :ok = WSPresence.register_with_notify("nadia", p, self())
+      :ok = WSPresence.set_visibility("nadia", p, true)
+      assert_receive {:ws_visible, "nadia"}, 200
+      :ok = WSPresence.mark_stale_for_test("nadia", p)
+
+      sweep_now()
+      assert_receive {:ws_all_hidden, "nadia"}, 200
+
+      # The demotion consumed the ageout; the entry is now plain `:hidden`,
+      # so there is nothing left to transition. A sweep that only EMITTED
+      # would re-arm the debounce here on every tick, forever.
+      sweep_now()
+      refute_receive {:ws_all_hidden, "nadia"}, 100
+
+      send(p, :stop)
+    end
+
+    test "a FRESH :visible socket survives the sweep untouched" do
+      p = stub_pid()
+      :ok = WSPresence.register_with_notify("otto", p, self())
+      :ok = WSPresence.set_visibility("otto", p, true)
+      assert_receive {:ws_visible, "otto"}, 200
+
+      sweep_now()
+
+      refute_receive {:ws_all_hidden, "otto"}, 100
+      # Still visible to BOTH views — the sweep must not fire wide.
+      assert WSPresence.any_visible?("otto")
+    end
+
+    test "only the stale socket is demoted when a fresh sibling is visible" do
+      stale = stub_pid()
+      fresh = stub_pid()
+      :ok = WSPresence.register_with_notify("pia", stale, self())
+      :ok = WSPresence.register_with_notify("pia", fresh, self())
+      :ok = WSPresence.set_visibility("pia", stale, true)
+      :ok = WSPresence.set_visibility("pia", fresh, true)
+      assert_receive {:ws_visible, "pia"}, 200
+
+      :ok = WSPresence.mark_stale_for_test("pia", stale)
+      sweep_now()
+
+      # One device is still foreground, so the user has NOT gone all-hidden.
+      refute_receive {:ws_all_hidden, "pia"}, 100
+      assert WSPresence.any_visible?("pia")
+
+      # But the stale one really was demoted: its death is now a no-op
+      # transition rather than the last-visible-device leaving.
+      Process.exit(stale, :kill)
+      assert_ws_count("pia", 1)
+      refute_receive {:ws_all_hidden, "pia"}, 100
+
+      send(fresh, :stop)
+    end
+
+    test "a demoted socket reporting visible again fires :ws_visible (the disarm)" do
+      p = stub_pid()
+      :ok = WSPresence.register_with_notify("quinn", p, self())
+      :ok = WSPresence.set_visibility("quinn", p, true)
+      assert_receive {:ws_visible, "quinn"}, 200
+
+      :ok = WSPresence.mark_stale_for_test("quinn", p)
+      sweep_now()
+      assert_receive {:ws_all_hidden, "quinn"}, 200
+
+      # The client comes back (heartbeat resumes after a suspend). This MUST
+      # emit, or the sweep arms auto-away with nothing able to cancel it:
+      # against a still-`:visible` entry the report is a no-op transition.
+      :ok = WSPresence.set_visibility("quinn", p, true)
+      assert_receive {:ws_visible, "quinn"}, 200
+
+      send(p, :stop)
+    end
+
+    test "the sweep timer is armed at init and re-arms after each tick" do
+      # Its own instance, with a short window, so the ONLY thing that can
+      # produce the events below is the periodic timer — nothing here sends
+      # `:sweep`. The singleton cannot serve: its tick is parked for the run.
+      {:ok, srv} = GenServer.start_link(WSPresence, stale_ms: 40, sweep_ms: 20)
+      p = stub_pid()
+      :ok = GenServer.call(srv, {:register, "rosa", p, self()})
+
+      :ok = GenServer.call(srv, {:set_visibility, "rosa", p, true})
+      assert_receive {:ws_visible, "rosa"}, 200
+      # First tick after the stamp ages past 40ms.
+      assert_receive {:ws_all_hidden, "rosa"}, 1_000
+
+      # Re-arm: a second ageout is noticed with no further help. An `init`
+      # that scheduled once would pass the assertion above and fail here.
+      :ok = GenServer.call(srv, {:set_visibility, "rosa", p, true})
+      assert_receive {:ws_visible, "rosa"}, 200
+      assert_receive {:ws_all_hidden, "rosa"}, 1_000
+
+      send(p, :stop)
+      GenServer.stop(srv)
     end
   end
 

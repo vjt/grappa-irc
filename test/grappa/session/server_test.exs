@@ -9189,6 +9189,56 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    # #224 — the same FULL chain as the #182 test above, but the device never
+    # reports anything: it just STOPS affirming visibility. In the field that
+    # was a socket sitting `:visible` for ~2 days (browser killed / machine
+    # asleep / half-open TCP) with no hidden report, no `client_closing` and
+    # no pid DOWN — so none of the three transition doors ran and auto-away
+    # was blocked indefinitely. What makes it reachable is the demotion sweep;
+    # what this asserts is the user-visible end of it, a real AWAY line.
+    test "a socket that stops affirming visibility stops blocking auto-away (#224)" do
+      {server, port} = start_server_with_001()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      :ok = WSPresence.reset_for_test()
+      device = spawn(fn -> Process.sleep(:infinity) end)
+      :ok = WSPresence.register(user.name, device)
+      :ok = WSPresence.set_visibility(user.name, device, true)
+
+      # The device goes silent. Nothing reports hidden, the socket stays up.
+      :ok = WSPresence.mark_stale_for_test(user.name, device)
+
+      # Pre-state: silence here is NOT the fix working — it is the bug. The
+      # debounce must be unarmed at this point or the assertion after the
+      # sweep proves nothing about the sweep.
+      assert SessionStateHelpers.auto_away_timer(SessionStateHelpers.fetch(pid)) == nil
+
+      send(Process.whereis(WSPresence), :sweep)
+
+      # No immediate AWAY (the 10-min debounce), and this doubles as the
+      # settle for the WSPresence → PubSub → Session.Server hop.
+      assert {:error, :timeout} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :auto"), 200)
+
+      assert SessionStateHelpers.auto_away_timer(SessionStateHelpers.fetch(pid)) != nil
+
+      send(pid, :auto_away_debounce_fire)
+
+      assert {:ok, away_line} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :auto"), 1_000)
+
+      assert String.starts_with?(away_line, "AWAY :auto-away")
+      state = SessionStateHelpers.fetch(pid)
+      assert AwayState.state_of(SessionStateHelpers.away_state(state)) == :away_auto
+
+      Process.exit(device, :kill)
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "set_auto_away when :away_explicit is a no-op (explicit takes precedence)" do
       {server, port} = start_server_with_001()
       {user, network, _} = setup_user_and_network(port)

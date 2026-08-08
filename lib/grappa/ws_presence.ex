@@ -58,19 +58,60 @@ defmodule Grappa.WSPresence do
   re-reads the live property each tick) — stops refreshing, goes stale,
   and push resumes within `stale_ms` instead of ~90 min.
 
-  Scope: read-time staleness fixes PUSH suppression only. The auto-away
-  FSM keys off the visibility TRANSITION (an emitted event), and no event
-  fires when a pid merely ages out with no write — so a stale `:visible`
-  pid does not itself TRIP auto-away. But ageing out must not DISARM it
-  either: the transition doors (`set_visibility` / `client_closing` /
-  DOWN) compute `before?`/`after?` over RAW `:visible` membership
-  (`any_reported_visible_in?/2`), NOT the fresh push view — so a device
-  that went stale and THEN dies / closes / reports hidden still produces
-  the `true → false` flip that fires `:ws_all_hidden`. Auto-away stays
-  bounded by the real socket DOWN / `client_closing` / explicit hide;
-  the fresh filter is confined to `any_visible?/1` push suppression
-  (#671 — before this, a stale-then-dead socket lost the transition and
-  auto-away never armed).
+  Ageing out must not DISARM auto-away: the transition doors
+  (`set_visibility` / `client_closing` / DOWN) compute `before?`/`after?`
+  over RAW `:visible` membership (`any_reported_visible_in?/2`), NOT the
+  fresh push view — so a device that went stale and THEN dies / closes /
+  reports hidden still produces the `true → false` flip that fires
+  `:ws_all_hidden` (#671 — before this, a stale-then-dead socket lost the
+  transition and auto-away never armed).
+
+  ## Stale demotion sweep (#224)
+
+  Read-time staleness alone fixed PUSH suppression only: `any_visible?/1`
+  discounted a stale pid, but no EVENT fired when a pid merely aged out
+  with no write, so a stale `:visible` pid never TRIPPED auto-away. In the
+  field a socket sat `:visible` for ~2 days with nothing foregrounded and
+  auto-away was blocked the whole time — the hidden/close signal was lost
+  and the pid `:DOWN` never came.
+
+  A periodic sweep closes it: every `stale_ms` the server demotes each
+  `:visible` pid that is no longer `fresh?/3` to `{:hidden, nil}` and runs
+  the SAME `emit_transition/4` door as every other write, so the last
+  device ageing out fires `:ws_all_hidden` and auto-away arms. Worst-case
+  detection is therefore `2 × stale_ms` (a pid can go stale just after a
+  tick) — noise against the 10-minute auto-away debounce.
+
+  Three things this deliberately does NOT do:
+
+    * **No new state.** The stamp (`last_visible_at`), the predicate
+      (`fresh?/3`), the window (`stale_ms`) and the emission door already
+      existed; the sweep only reads them. Demoting the entry — rather than
+      recording "already emitted" beside it — is what makes a re-tick
+      idempotent, so there is no parallel bookkeeping to drift.
+    * **No second knob in production.** The sweep period DEFAULTS to
+      `stale_ms`, and nothing in prod sets it otherwise, so there is one
+      number to reason about. `:sweep_ms` is overridable only so the test
+      suite can park the shared singleton's timer (see `start_link/1`).
+    * **It does not obsolete the RAW/FRESH split (#671).** A pid that goes
+      stale and dies BEFORE the next tick is removed by DOWN and the sweep
+      never sees it, so the DOWN door must still flip on RAW membership or
+      that transition is lost — exactly the #671 bug, in a window one tick
+      wide. The sweep closes the gap #671 left open (nothing arrives at
+      all); it does not replace it.
+
+  Because the sweep keeps the stored entry honest, the disarm side follows
+  for free: a demoted pid whose client resumes heartbeating reports
+  `:visible` against a `:hidden` entry, which is a genuine `false → true`
+  flip and fires `:ws_visible`. Without the demotion the re-report would
+  land on a still-`:visible` entry and emit NOTHING — so a sweep that only
+  emitted, without writing, would arm auto-away and never disarm it.
+
+  Transport liveness is NOT an alternative here. Phoenix's websocket
+  `:timeout` defaults to 60s and Bandit enforces it against INBOUND data
+  only (outbound pushes do not reset it), so a socket that survives days
+  is one whose client is still sending phx heartbeats. It is the
+  visibility report that stopped, not the connection.
 
   Efficacy caveat: whether a backgrounded iOS PWA actually stops sending
   fresh `visible` reports is unconfirmed off-device — the prod socket
@@ -180,7 +221,11 @@ defmodule Grappa.WSPresence do
   # margin; this MUST stay ≥ 2× the client heartbeat interval.
   @default_stale_ms 60_000
 
-  defstruct sockets: %{}, notify_pids: %{}, refs_to_user: %{}, stale_ms: @default_stale_ms
+  defstruct sockets: %{},
+            notify_pids: %{},
+            refs_to_user: %{},
+            stale_ms: @default_stale_ms,
+            sweep_ms: @default_stale_ms
 
   @typedoc "Per-pid reported PWA foreground visibility."
   @type visibility :: :visible | :hidden
@@ -195,7 +240,8 @@ defmodule Grappa.WSPresence do
           sockets: %{String.t() => %{pid() => pid_state()}},
           notify_pids: %{String.t() => pid()},
           refs_to_user: %{reference() => String.t()},
-          stale_ms: non_neg_integer()
+          stale_ms: non_neg_integer(),
+          sweep_ms: non_neg_integer()
         }
 
   # ---------------------------------------------------------------------------
@@ -206,9 +252,19 @@ defmodule Grappa.WSPresence do
   Starts the WSPresence GenServer as a named singleton. Used by the
   application supervision tree.
 
-  Opts: `:stale_ms` — the read-time staleness window for `any_visible?/1`
-  (#318); defaults to `#{@default_stale_ms}`. Injected here (boot-time)
-  rather than read from Application env at runtime.
+  Opts:
+
+    * `:stale_ms` — the read-time staleness window for `any_visible?/1`
+      (#318); defaults to `#{@default_stale_ms}`.
+    * `:sweep_ms` — how often the #224 demotion tick runs; defaults to
+      `:stale_ms`, which is the only value production sets. It exists as a
+      separate opt so the test suite can park the app-wide singleton's
+      timer: WSPresence is shared across the whole `mix test` run, and a
+      tick landing inside a `mark_stale_for_test/2` window would demote a
+      pid a test still expects to be reported-visible.
+
+  Both are injected here (boot-time) rather than read from Application env
+  at runtime.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) when is_list(opts) do
@@ -419,7 +475,10 @@ defmodule Grappa.WSPresence do
 
   @impl GenServer
   def init(opts) do
-    {:ok, %__MODULE__{stale_ms: Keyword.get(opts, :stale_ms, @default_stale_ms)}}
+    stale_ms = Keyword.get(opts, :stale_ms, @default_stale_ms)
+    sweep_ms = Keyword.get(opts, :sweep_ms, stale_ms)
+    schedule_sweep(sweep_ms)
+    {:ok, %__MODULE__{stale_ms: stale_ms, sweep_ms: sweep_ms}}
   end
 
   @impl GenServer
@@ -591,9 +650,78 @@ defmodule Grappa.WSPresence do
     end
   end
 
+  # #224 — the stale-visible demotion tick. See "Stale demotion sweep" in
+  # the moduledoc. Re-arms first so a raise inside the pass cannot silently
+  # stop the sweep for the life of the node (WSPresence is `:permanent`, so
+  # a crash restarts it empty — but a lost timer would leave it running and
+  # blind).
+  def handle_info(:sweep, state) do
+    schedule_sweep(state.sweep_ms)
+    {:noreply, demote_stale(state)}
+  end
+
   # ---------------------------------------------------------------------------
   # Private helpers
   # ---------------------------------------------------------------------------
+
+  @spec schedule_sweep(non_neg_integer()) :: reference()
+  defp schedule_sweep(sweep_ms), do: Process.send_after(self(), :sweep, sweep_ms)
+
+  # Demote every no-longer-fresh `:visible` pid to `:hidden`, firing the
+  # visibility transition per user through the normal door. Keys are taken
+  # up front: the pass replaces values only, never adds or removes a user.
+  @spec demote_stale(t()) :: t()
+  defp demote_stale(state) do
+    now = now_ms()
+
+    state.sockets
+    |> Map.keys()
+    |> Enum.reduce(state, fn user_name, acc -> demote_stale_user(acc, user_name, now) end)
+  end
+
+  @spec demote_stale_user(t(), String.t(), integer()) :: t()
+  defp demote_stale_user(state, user_name, now) do
+    existing = Map.get(state.sockets, user_name, %{})
+
+    demoted =
+      Map.new(existing, fn
+        {pid, {:visible, last}} = entry ->
+          if fresh?(last, now, state.stale_ms), do: entry, else: {pid, {:hidden, nil}}
+
+        entry ->
+          entry
+      end)
+
+    if demoted == existing do
+      state
+    else
+      log_demotions(user_name, existing, demoted, now)
+      before? = any_reported_visible_in?(state, user_name)
+      state1 = put_user_sockets(state, user_name, demoted)
+      after? = any_reported_visible_in?(state1, user_name)
+      emit_transition(user_name, before?, after?, state1)
+      state1
+    end
+  end
+
+  # A demoted pid becomes indistinguishable from one whose page reported
+  # hidden, so the `/admin/ws_presence` snapshot can no longer tell the two
+  # apart (deliberate: a third visibility atom would land on every
+  # consumer for a diagnostic). The log line carries what the snapshot
+  # loses — how long the socket had been silent when it was demoted.
+  @spec log_demotions(String.t(), %{pid() => pid_state()}, %{pid() => pid_state()}, integer()) ::
+          :ok
+  defp log_demotions(user_name, existing, demoted, now) do
+    ages =
+      for {pid, {:visible, last}} <- existing,
+          match?({:hidden, _}, Map.fetch!(demoted, pid)),
+          do: if(is_integer(last), do: now - last, else: nil)
+
+    Logger.info("ws_presence: demoted #{length(ages)} stale :visible socket(s) to :hidden",
+      user_name: user_name,
+      silent_for_ms: inspect(ages)
+    )
+  end
 
   # The ONE write door for `sockets`, and the place the "no empty maps"
   # invariant is kept: a user whose last socket just went away is REMOVED,
@@ -628,18 +756,21 @@ defmodule Grappa.WSPresence do
 
   # RAW `:visible` membership, IGNORING freshness — the AUTO-AWAY
   # transition predicate (#671). The `before?`/`after?` of every
-  # lifecycle-event door (`set_visibility`, `client_closing`, DOWN) reads
-  # THIS, not `any_visible_in?/2`. Rationale: read-time staleness (#318)
-  # emits no event when a pid merely ages out, so a device that stopped
-  # heartbeating (phone asleep, JS timers suspended) is silently dropped
-  # from the FRESH view — and if `before?` also read the fresh view, the
-  # `true → false` flip on the eventual DOWN / close / hidden report would
-  # have ALREADY happened invisibly, so `emit_transition/4` saw
-  # `false → false` and never fired `:ws_all_hidden`, so auto-away never
-  # armed. A stale-but-still-`:visible` pid is a REPORTED-visible device:
-  # auto-away stays bounded by the real socket DOWN / close / explicit
-  # hide, NOT disarmed by silent ageout. (Ageout still does not TRIP
-  # auto-away — no event fires on ageout — it just no longer DISARMS it.)
+  # lifecycle-event door (`set_visibility`, `client_closing`, DOWN, and
+  # the #224 sweep) reads THIS, not `any_visible_in?/2`. Rationale: a pid
+  # that stopped heartbeating (phone asleep, JS timers suspended) drops
+  # out of the FRESH view the moment it ages out, with no write — and if
+  # `before?` also read the fresh view, the `true → false` flip on the
+  # eventual DOWN / close / hidden report would have ALREADY happened
+  # invisibly, so `emit_transition/4` would see `false → false` and never
+  # fire `:ws_all_hidden`, so auto-away would never arm.
+  #
+  # The #224 sweep does NOT retire this. It demotes an aged-out pid on a
+  # tick, so most ageouts now DO trip auto-away — but a pid that goes
+  # stale and dies before the next tick is gone from the map before the
+  # sweep can see it, and only the RAW `before?` at the DOWN door still
+  # produces its transition. Reading the fresh view there would lose it:
+  # the #671 bug, in a window one tick wide.
   @spec any_reported_visible_in?(t(), String.t()) :: boolean()
   defp any_reported_visible_in?(state, user_name) do
     state.sockets

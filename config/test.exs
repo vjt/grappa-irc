@@ -282,3 +282,13 @@ config :grappa, Grappa.Vault,
       {Cloak.Ciphers.AES.GCM,
        tag: "AES.GCM.V1", key: Base.decode64!("Ot80AYbRqJG9htfEztMBqz6Eo9ALMWgu9Ze6w0CbbPg="), iv_length: 12}
   ]
+
+# #224 — park the WSPresence stale-demotion sweep for the whole run.
+# WSPresence is an application-wide singleton (see the `max_cases: 1`
+# note above), so its periodic tick is NOT scoped to the test that cares
+# about it: a tick landing inside a `mark_stale_for_test/2` window would
+# demote a pid the #671 cases still expect to be REPORTED-visible, i.e. a
+# rare cross-test failure with no local cause. Tests that exercise the
+# sweep drive it deterministically — either `send(pid, :sweep)` against
+# the singleton, or their own short-interval instance.
+config :grappa, Grappa.WSPresence, sweep_ms: 3_600_000

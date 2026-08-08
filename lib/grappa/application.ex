@@ -205,7 +205,11 @@ defmodule Grappa.Application do
         # WSPresence: tracks live WS socket pids per user_name to drive auto-away
         # (S3.1). Must come before SessionSupervisor so session processes can subscribe
         # to its notifications as soon as they start. Restart: :permanent (infrastructure).
-        Grappa.WSPresence,
+        #
+        # Opts are the CLAUDE.md boot-time injection of the #224 demotion
+        # sweep's interval (prod sets nothing and inherits `stale_ms`); test
+        # env parks the timer because the singleton is shared across the run.
+        {Grappa.WSPresence, ws_presence_opts()},
         # Grappa.Admission.NetworkCircuit (T31): both ETS-backed
         # singletons that must exist before the first session spawn or
         # admission check. NetworkCircuit funnels writes through its
@@ -531,6 +535,14 @@ defmodule Grappa.Application do
   # pattern in `test/grappa/admin_events_test.exs`.
   @spec attach_admin_telemetry?() :: boolean()
   defp attach_admin_telemetry?, do: Application.get_env(:grappa, :attach_admin_telemetry, true)
+
+  # #224 — WSPresence start opts (`:stale_ms`, `:sweep_ms`). Prod configures
+  # neither and takes the module defaults; test env parks `:sweep_ms` so the
+  # demotion tick cannot fire inside another test's `mark_stale_for_test/2`
+  # window. Boot-time `Application.get_env/2` is the CLAUDE.md-designated
+  # boundary for reaching config on the way into a child's start_link.
+  @spec ws_presence_opts() :: keyword()
+  defp ws_presence_opts, do: Application.get_env(:grappa, Grappa.WSPresence, [])
 
   # #215 Option B — AdminEvents disk mirror. On in prod; off in test env
   # (the singleton's Repo write would hit a foreign sandbox connection).
