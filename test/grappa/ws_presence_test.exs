@@ -509,13 +509,18 @@ defmodule Grappa.WSPresenceTest do
       refute_receive {:ws_all_hidden, "pia"}, 100
       assert WSPresence.any_visible?("pia")
 
-      # But the stale one really was demoted: its death is now a no-op
-      # transition rather than the last-visible-device leaving.
-      Process.exit(stale, :kill)
+      # Kill the FRESH one, and the user must now go all-hidden — which can
+      # only happen if the stale sibling really was written to `:hidden`.
+      # Leave it `:visible` (a sweep that emits without demoting) and it is
+      # still RAW-visible here, so nothing fires. Killing the STALE one
+      # instead would prove nothing: that is a no-op transition either way.
+      # Contrast the #671 case above, where no sweep runs and the stale
+      # sibling DOES keep the user present.
+      Process.exit(fresh, :kill)
+      assert_receive {:ws_all_hidden, "pia"}, 200
       assert_ws_count("pia", 1)
-      refute_receive {:ws_all_hidden, "pia"}, 100
 
-      send(fresh, :stop)
+      send(stale, :stop)
     end
 
     test "a demoted socket reporting visible again fires :ws_visible (the disarm)" do
