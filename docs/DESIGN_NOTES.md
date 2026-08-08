@@ -34049,3 +34049,65 @@ perfectly visible button. For #1051 it is `document.elementFromPoint` at
 the ✕'s own centre, preceded by an assertion that the two boxes still
 INTERSECT: without that precondition a layout change that merely moved
 them apart would keep the spec green while retiring what it guards.
+---
+
+## 2026-08-08 — #954: a destroyed document is not a failed send
+
+The #904 pump owes the composer its text back on every failing path, and
+that contract is right for every failure but one. When the DOCUMENT is
+destroyed mid-flight — a reload, the #674 auto-refresh applying itself,
+a closed tab — the POST aborts, but **the server may already own the
+message**. Handing that text back re-arms the composer, and because #772
+mirrors the draft into sessionStorage it survives the reload: the
+operator lands on a page showing the message in the scrollback AND
+staged in the composer. One distracted Enter sends it twice.
+
+vjt's ruling (issue #954, 08:30Z): distinguish that class in the
+`finally` and DROP the text rather than re-arming it. Explicitly not a
+delivery-confirmation protocol — no idempotency key, no correlation
+token. Losing the draft in that window is the correct trade, because the
+echo will render the message.
+
+**The discriminator is a lifecycle event, never the error.** `fetch`
+rejects with the same `TypeError: Failed to fetch` for a dead Wi-Fi, a
+DNS death, a CORS refusal, a vanished server AND a destroyed document.
+Matching on that string would silently swallow real send failures, which
+is the opposite of what the issue asks for. `lib/documentTeardown.ts`
+owns the answer instead: `pagehide` + `beforeunload`, the same seam
+`main.tsx` already uses for the S3.3 away-hint.
+
+**A counter, not a boolean — two ways that flag would have been wrong.**
+`pagehide` also fires on bfcache entry and the iOS PWA freeze, and those
+documents come back; a latch would drop every send failure for the rest
+of their life. Clearing the latch on `pageshow` does not fix it either,
+because a frozen document's fetch rejects on the THAW, after `pageshow`
+has already cleared it. Comparing the epoch ACROSS a flight asks the only
+question the pump has — "did a teardown land between the dispatch and the
+rejection" — and is immune to both. `visibilitychange` is deliberately
+not a trigger: a backgrounded tab keeps its fetches.
+
+**The queued line is still handed back.** Only the line that was in the
+air can be owned by the server; the one-deep #904 queue behind it never
+left the client, so dropping it would lose a message outright instead of
+trading a duplicate for one.
+
+**Where the trade stops being free, measured rather than assumed.** The
+#954 harness (real Bandit listener, real TCP kill at a controlled offset,
+N=20 per row, three runs) found an aborted POST persisted 20/20 at every
+offset from +1 ms onward in both close modes — 95% ceiling on
+non-persistence 0.32%. The ONE exception is an RST landing at +0 ms after
+the last body byte: **0/20, the message did not land**, and dropping the
+text there loses it. Whether a destroyed document closes FIN or RST is
+UNMEASURED, and a killed tab plausibly looks like RST. So a
+sub-millisecond window on an otherwise idle path is a real, if narrow,
+loss. Engineering around it is the delivery-confirmation protocol the
+ruling excludes; the boundary is recorded in the code comment where the
+drop happens so it is found rather than rediscovered.
+
+**Scope left open on purpose.** A paced multi-line drain (#666/#737)
+mirrors its OWN residue into the draft and never reaches the pump's
+`handBack`, so an aborted line inside a paste is still re-armed. Same
+hazard, different writer — but NOT the same rule: the drain's error mix
+includes explicit 429 refusals, which prove the line did not land and
+must never be dropped. Guessing a second rule there would have been two
+patterns for one question, so it is left to a decision of its own.
