@@ -116,6 +116,32 @@ test("@webkit #1050 — the /list window drops the floating ☰, and its ✕ act
   // This is NOT webkit-specific, despite only webkit having reported it: the
   // chromium project `grepInvert`s `@webkit`, so chromium has never run this
   // spec. The race is in the flow, not the engine.
+  //
+  // TWO THINGS THE HIT-STACK BARRIER STILL GOT WRONG, both fixed below and both
+  // established by reading, not by a red this closes.
+  //
+  // ONE — the release condition was INSTANTANEOUS where a barrier must be
+  // DURABLE. "the drawer is not under this point right now" is a property of a
+  // LIVE animation: instrumenting the barrier locally, it holds ~5–15ms before
+  // the slide ends (`getAnimations().length === 1`, drawer left at 377..389
+  // against a final 393) in 9 runs out of 10. The assertion then samples at
+  // some LATER, unbounded instant — 4–15ms locally, 48ms in the CI trace. A
+  // barrier that samples a moving target and hopes is a coin flip by design, no
+  // matter which engine internal decides the toss. So it now also requires the
+  // transition to be FINISHED: `getAnimations().length === 0`. That is the
+  // durable pre-state; "momentarily off the point" never was one.
+  //
+  // TWO — an EMPTY hit stack was read as "clear". `elementsFromPoint` returns
+  // an empty list for a point outside the viewport, which is precisely the
+  // conflation the probe below was rewritten to eliminate, quietly reintroduced
+  // one block earlier: a ✕ pushed off-screen would release the barrier
+  // instantly. An empty stack is now NOT free — it is a state to keep waiting
+  // through, and the probe's own `inViewport` assertion stays the one that
+  // names it.
+  //
+  // Neither relaxes anything, and neither can mask the #1050 regression: the
+  // float is `.shell-chrome`, a DIFFERENT element, never consulted here; and if
+  // the drawer genuinely failed to leave, the hit-stack half would still fail.
   await expect(page.locator(".shell-members.open")).toHaveCount(0);
   await expect
     .poll(
@@ -123,10 +149,10 @@ test("@webkit #1050 — the /list window drops the floating ☰, and its ✕ act
         closeBtn.evaluate((el) => {
           const drawer = document.querySelector(".shell-members");
           if (drawer === null) return true;
+          if (drawer.getAnimations().length > 0) return false;
           const r = el.getBoundingClientRect();
-          return !document
-            .elementsFromPoint(r.x + r.width / 2, r.y + r.height / 2)
-            .includes(drawer);
+          const stack = document.elementsFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+          return stack.length > 0 && !stack.includes(drawer);
         }),
       { timeout: 10_000, message: "#1050 — the rail drawer never left the ✕'s hit stack" },
     )
