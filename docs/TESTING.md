@@ -128,6 +128,25 @@ a raw `docker run oven/bun:1 …` to replicate it (that trips the docker
 guardrail above); the e2e stage already IS that clean build, through the
 wrapper.
 
+**`scripts/bun.sh run check` counts a biome FORMAT violation as an
+ERROR, and hides which file it came from.** `check` is `biome check src
+&& tsc --noEmit`: a line biome would reflow (a long `foo({ a, b, c })`
+call it wants multiline, say) is enough to exit 1 — and `&&` then skips
+`tsc` entirely, so the type gate never runs. The diagnosis is the hard
+part, because biome truncates its own output: your file's error can sit
+inside "Diagnostics not shown: N" while the listed files are ones you
+never touched, and the summary reads only `Found 1 error`. `grep "error
+TS"` finds nothing, because it is not a tsc error. `mix format` does not
+cover cic, so nothing else catches it first.
+
+So **format before you gate**: after editing any `cicchetto/src/**`
+file, run `scripts/bun.sh x biome check --write <the files you touched>`
+— your files ONLY, never `--write src`, which reformats unrelated files
+and balloons the diff. To read the real diagnostic instead of the
+summary, isolate it: `scripts/bun.sh x biome check <your files>
+--max-diagnostics=100`. Do NOT append `--max-diagnostics` to `bun run
+check` — the composite script forwards it to `tsc`, which rejects it.
+
 Bash 4+ required (`declare -ag` shebangs to `#!/usr/bin/env bash` so
 PATH picks Homebrew bash 5 on macOS). `brew install bash` if missing.
 
