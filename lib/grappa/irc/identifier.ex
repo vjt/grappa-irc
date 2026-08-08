@@ -322,9 +322,13 @@ defmodule Grappa.IRC.Identifier do
   resolves to one key; a nick folds identically to a channel (a sigil sits
   outside `A-Z`), which is why the same function serves a DM peer.
 
-  The SLUG is interpolated VERBATIM — cic folds only `name`, so folding the
-  slug here would build a different string for any slug carrying an
-  uppercase byte and the two stacks would key one conversation apart.
+  The SLUG is interpolated VERBATIM, mirroring cic's `channelKey`, which
+  folds only `name`. Today that is indistinguishable from folding it:
+  `valid_network_slug?/1` constrains a slug to `^[a-z0-9_-]+$`, so there is
+  no uppercase byte to fold. It is written as the verbatim rule anyway
+  because the cross-stack contract is byte equality with cic, not "equal
+  for the inputs currently reachable" — if the slug charset ever widens,
+  this stays correct without anyone rediscovering why.
 
   The separator is a space, which neither a slug nor an IRC channel name may
   contain (RFC 2812 excludes 0x20 from chanstring), so `decode_channel_key/1`

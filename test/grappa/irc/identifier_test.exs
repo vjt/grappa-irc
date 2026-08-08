@@ -356,10 +356,12 @@ defmodule Grappa.IRC.IdentifierTest do
     end
 
     test "folds ONLY the target — the slug is passed through verbatim" do
-      # cic's `channelKey` folds `name` and interpolates `slug` untouched. A
-      # server that also folded the slug would build a different string for any
-      # slug carrying an uppercase byte, and the two stacks would silently key
-      # the same conversation apart.
+      # cic's `channelKey` folds `name` and interpolates `slug` untouched, so
+      # this pins byte equality with it rather than "equal for the inputs
+      # currently reachable". Honest caveat: a real slug is
+      # `^[a-z0-9_-]+$` (`valid_network_slug?/1`), so no production key can
+      # tell the two apart today — this guards the contract if that charset
+      # ever widens, and it is NOT evidence of a live divergence.
       assert Identifier.channel_key("Azzurra2", "#CHAN") == "Azzurra2 #chan"
     end
 
