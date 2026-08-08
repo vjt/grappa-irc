@@ -272,6 +272,7 @@ vi.mock("../DeleteAccountModal", async () => {
   };
 });
 
+import { channelKey } from "../lib/channelKey";
 import { deleteAccountBody } from "../lib/lifecycle";
 import { SHARE_SESSION_LABEL } from "../lib/shareModal";
 import SettingsDrawer from "../SettingsDrawer";
@@ -510,6 +511,12 @@ describe("SettingsDrawer notifications section", () => {
 // conversations you actually have, with each mute rendered as its own
 // removable row.
 describe("SettingsDrawer muted conversations — #866", () => {
+  // #1038 — the stored key is the composite ChannelKey. Built with the
+  // production `channelKey` so these tests speak the app's grammar; the SHAPE
+  // itself is pinned in `channelKey`'s suite and `IdentifierTest`, not here.
+  const SBIFFO = channelKey("azzurra", "#Sbiffo");
+  const ALICE = channelKey("azzurra", "alice");
+
   const optionValues = (): string[] =>
     [...(screen.getByTestId("pref-mute-picker") as HTMLSelectElement).options].map((o) => o.value);
 
@@ -536,17 +543,18 @@ describe("SettingsDrawer muted conversations — #866", () => {
     ];
   });
 
-  it("offers the conversations you are in, keyed by the folded name", async () => {
+  it("offers the conversations you are in, keyed by network + folded name", async () => {
     await openPush();
 
-    // "#Sbiffo" is offered under its FOLDED key — that is what gets stored and
-    // what the predicate compares against — while the option still READS as
-    // the operator typed it.
-    expect(optionValues()).toEqual(["", "#sbiffo", "alice"]);
-    expect(screen.getByRole("option", { name: "#Sbiffo" })).toBeInTheDocument();
+    // "#Sbiffo" is offered under its composite key — the network plus the
+    // FOLDED name, which is what gets stored and what the predicate compares
+    // against — while the option still READS as the operator typed it, with
+    // the network appended so two networks can be told apart.
+    expect(optionValues()).toEqual(["", "azzurra #sbiffo", "azzurra alice"]);
+    expect(screen.getByRole("option", { name: "#Sbiffo — azzurra" })).toBeInTheDocument();
   });
 
-  it("collapses the same conversation on two networks into one option", async () => {
+  it("offers the same conversation on two networks TWICE, one row each (#1038)", async () => {
     windowCandidatesHolder.current = [
       { networkSlug: "azzurra", channelName: "#grappa", kind: "channel" },
       { networkSlug: "libera", channelName: "#Grappa", kind: "channel" },
@@ -554,33 +562,33 @@ describe("SettingsDrawer muted conversations — #866", () => {
 
     await openPush();
 
-    // muted_targets is per-subject and carries no network, so offering the
-    // name twice would promise a per-network mute the store cannot keep.
-    expect(optionValues()).toEqual(["", "#grappa"]);
-    // And the surviving LABEL is the first candidate's spelling, i.e. the one
-    // the sidebar is showing highest. Measured: without this assertion the
-    // dedupe guard was unconstrained — the Map collapses the key on its own,
-    // so dropping the guard only flipped which spelling won and nothing went
-    // red. The guard now has to earn its line.
-    expect(screen.getByRole("option", { name: "#grappa" })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: "#Grappa" })).toBeNull();
+    // This test used to assert the OPPOSITE — it pinned #866 Q5's collapse,
+    // where the two networks shared one key and offering the name twice would
+    // have promised a per-network mute the store could not keep. vjt reversed
+    // that on 2026-08-08: the store now keeps exactly that promise, so the
+    // collapse became the bug and this assertion is inverted deliberately.
+    expect(optionValues()).toEqual(["", "azzurra #grappa", "libera #grappa"]);
+    // Each option names its network, which is the only thing distinguishing
+    // two rows that would otherwise read identically.
+    expect(screen.getByRole("option", { name: "#grappa — azzurra" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "#Grappa — libera" })).toBeInTheDocument();
   });
 
   it("picking a conversation persists a permanent mute and adopts the server echo", async () => {
     await openPush();
 
-    fireEvent.change(screen.getByTestId("pref-mute-picker"), { target: { value: "#sbiffo" } });
+    fireEvent.change(screen.getByTestId("pref-mute-picker"), { target: { value: SBIFFO } });
 
     await waitFor(async () => {
       expect(await lastPutPrefs()).toMatchObject({
-        muted_targets: { "#sbiffo": { until: null } },
+        muted_targets: { [SBIFFO]: { until: null } },
       });
     });
     // The row appears because the PUT's echo came back, not because the click
     // optimistically drew it: the mock echoes what it was sent, and the store
     // rule is that cic adopts the server's normalized map.
     await waitFor(() => {
-      expect(screen.getByTestId("pref-muted-#sbiffo")).toBeInTheDocument();
+      expect(screen.getByTestId(`pref-muted-${SBIFFO}`)).toBeInTheDocument();
     });
   });
 
@@ -588,13 +596,13 @@ describe("SettingsDrawer muted conversations — #866", () => {
     const userSettings = await import("../lib/userSettings");
     (userSettings.getNotificationPrefs as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ...userSettings.DEFAULT_NOTIFICATION_PREFS,
-      muted_targets: { "#sbiffo": { until: null } },
+      muted_targets: { [SBIFFO]: { until: null } },
     });
 
     await openPush();
 
     await waitFor(() => {
-      expect(optionValues()).toEqual(["", "alice"]);
+      expect(optionValues()).toEqual(["", ALICE]);
     });
   });
 
@@ -602,29 +610,29 @@ describe("SettingsDrawer muted conversations — #866", () => {
     const userSettings = await import("../lib/userSettings");
     (userSettings.getNotificationPrefs as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ...userSettings.DEFAULT_NOTIFICATION_PREFS,
-      muted_targets: { "#sbiffo": { until: null }, alice: { until: null } },
+      muted_targets: { [SBIFFO]: { until: null }, [ALICE]: { until: null } },
     });
 
     await openPush();
     await waitFor(() => {
-      expect(screen.getByTestId("pref-muted-#sbiffo")).toBeInTheDocument();
+      expect(screen.getByTestId(`pref-muted-${SBIFFO}`)).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByLabelText("Unmute #sbiffo"));
+    fireEvent.click(screen.getByLabelText("Unmute #sbiffo on azzurra"));
 
     await waitFor(async () => {
-      expect(await lastPutPrefs()).toMatchObject({ muted_targets: { alice: { until: null } } });
+      expect(await lastPutPrefs()).toMatchObject({ muted_targets: { [ALICE]: { until: null } } });
     });
     // The removed key is ABSENT, not present-with-a-falsy-value: the predicate
     // decides on key presence alone.
-    expect((await lastPutPrefs()).muted_targets).not.toHaveProperty("#sbiffo");
+    expect((await lastPutPrefs()).muted_targets).not.toHaveProperty(SBIFFO);
   });
 
   it("disables the picker when every conversation is already muted", async () => {
     const userSettings = await import("../lib/userSettings");
     (userSettings.getNotificationPrefs as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ...userSettings.DEFAULT_NOTIFICATION_PREFS,
-      muted_targets: { "#sbiffo": { until: null }, alice: { until: null } },
+      muted_targets: { [SBIFFO]: { until: null }, [ALICE]: { until: null } },
     });
 
     await openPush();
@@ -642,7 +650,7 @@ describe("SettingsDrawer muted conversations — #866", () => {
 
     await openPush();
 
-    expect(optionValues()).toEqual(["", "#sbiffo", "alice"]);
+    expect(optionValues()).toEqual(["", SBIFFO, ALICE]);
     expect(screen.queryByTestId("pref-muted-list")).toBeNull();
   });
 
@@ -662,15 +670,15 @@ describe("SettingsDrawer muted conversations — #866", () => {
     // no second GET, exactly as the rail leaves things.
     mirrorNotificationPrefs({
       ...userSettings.DEFAULT_NOTIFICATION_PREFS,
-      muted_targets: { "#sbiffo": { until: null } },
+      muted_targets: { [SBIFFO]: { until: null } },
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId("pref-muted-#sbiffo")).toBeInTheDocument();
+      expect(screen.getByTestId(`pref-muted-${SBIFFO}`)).toBeInTheDocument();
     });
     // ...and the picker stops offering what is now muted, from the same map.
     await waitFor(() => {
-      expect(optionValues()).toEqual(["", "alice"]);
+      expect(optionValues()).toEqual(["", ALICE]);
     });
   });
 
@@ -702,20 +710,20 @@ describe("SettingsDrawer muted conversations — #866", () => {
     };
 
     it("shows how long a snooze has left", async () => {
-      await openWithMutes({ "#sbiffo": { until: NOW_SECONDS + 3_600 } });
+      await openWithMutes({ [SBIFFO]: { until: NOW_SECONDS + 3_600 } });
 
       await waitFor(() => {
-        expect(screen.getByTestId("pref-muted-until-#sbiffo")).toHaveTextContent("1h 0m");
+        expect(screen.getByTestId(`pref-muted-until-${SBIFFO}`)).toHaveTextContent("1h 0m");
       });
     });
 
     it("shows nothing of the kind for a permanent mute", async () => {
-      await openWithMutes({ "#sbiffo": { until: null } });
+      await openWithMutes({ [SBIFFO]: { until: null } });
 
       await waitFor(() => {
-        expect(screen.getByTestId("pref-muted-#sbiffo")).toBeInTheDocument();
+        expect(screen.getByTestId(`pref-muted-${SBIFFO}`)).toBeInTheDocument();
       });
-      expect(screen.queryByTestId("pref-muted-until-#sbiffo")).toBeNull();
+      expect(screen.queryByTestId(`pref-muted-until-${SBIFFO}`)).toBeNull();
     });
   });
 });

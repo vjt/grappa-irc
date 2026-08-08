@@ -29,7 +29,7 @@
 // for.
 
 import { loginAs, openRailMenu, openSettingsSection, selectChannel } from "../fixtures/cicchettoPage";
-import { clearMutedConversations, partChannel } from "../fixtures/grappaApi";
+import { clearMutedConversations, muteKey, partChannel } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import {
   assertNoPushDelivery,
@@ -99,18 +99,19 @@ test("a one-hour snooze picked from the rail silences the channel and says how l
 
     // Drawn from the server's echo, so the row's presence proves the PUT landed
     // and came back normalized. No sleep, no arbitrary timeout.
-    await expect(page.getByTestId(`pref-muted-${SNOOZED_CHANNEL}`)).toBeVisible({
+    const snoozedKey = muteKey(NETWORK_SLUG, SNOOZED_CHANNEL);
+    await expect(page.getByTestId(`pref-muted-${snoozedKey}`)).toBeVisible({
       timeout: 10_000,
     });
     // THE discriminator: a remaining span exists only for an integer `until`.
     // "1h 0m left" at the top of the hour, "59m left" a minute in — both match,
     // and a permanent mute renders no such element at all.
-    await expect(page.getByTestId(`pref-muted-until-${SNOOZED_CHANNEL}`)).toHaveText(
+    await expect(page.getByTestId(`pref-muted-until-${snoozedKey}`)).toHaveText(
       /^(1h \d+m|5\dm) left$/,
     );
     // ...and the sibling channel is demonstrably not muted, so the two push
     // arms below differ in exactly one variable.
-    await expect(page.getByTestId(`pref-muted-${LOUD_CHANNEL}`)).toHaveCount(0);
+    await expect(page.getByTestId(`pref-muted-${muteKey(NETWORK_SLUG, LOUD_CHANNEL)}`)).toHaveCount(0);
     await expect(page.getByTestId("pref-channel-mentions")).toBeChecked();
 
     await page.getByTestId("settings-drawer-backdrop").click({ force: true });

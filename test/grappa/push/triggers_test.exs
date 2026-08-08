@@ -4,7 +4,7 @@ defmodule Grappa.Push.TriggersTest do
 
   Two surfaces under test:
 
-    * `Triggers.should_notify?/4` — pure predicate, testable in
+    * `Triggers.should_notify?/5` — pure predicate, testable in
       isolation with literal `Message{}` structs + literal prefs maps.
       Covers the full decision tree (DM all / DM whitelist / channel
       all / channel whitelist / channel mention / kind gate).
@@ -14,7 +14,7 @@ defmodule Grappa.Push.TriggersTest do
       real `push_subscriptions` rows + `:telemetry` to observe the
       `[:grappa, :push, :send, :start | :stop]` events.
 
-  The `should_notify?/4` test class is `async: true` (no DB).
+  The `should_notify?/5` test class is `async: true` (no DB).
   The `evaluate_and_dispatch/2` test class is `async: false`
   (DataCase + Bypass).
   """
@@ -44,12 +44,23 @@ defmodule Grappa.Push.TriggersTest do
 
   defp prefs(overrides), do: Map.merge(default_prefs(), Map.new(overrides))
 
-  describe "should_notify?/4 — kind gate" do
+  # #1038 — the predicate grew a `network_slug` because the mute key carries
+  # the network. Every branch BELOW the mute (kind gate, DM, channel, own-row)
+  # is network-independent, so they run through this fixed-slug wrapper rather
+  # than repeating a constant 23 times. The mute branch does NOT use it: those
+  # tests call `Triggers.should_notify?/5` directly with two different slugs,
+  # which is the only way the new argument can be seen to matter.
+  @slug "azzurra"
+
+  defp notify?(message, own_nick, prefs, patterns),
+    do: Triggers.should_notify?(message, @slug, own_nick, prefs, patterns)
+
+  describe "should_notify?/5 — kind gate" do
     test "non-PRIVMSG kinds always return false" do
       for kind <- [:notice, :join, :part, :quit, :nick_change, :mode, :topic, :kick, :server_event] do
         m = msg(kind: kind, body: "vjt: ping")
         # Even with the most aggressive prefs (everything on, mention pattern matches)
-        refute Triggers.should_notify?(
+        refute notify?(
                  m,
                  "vjt",
                  prefs(channel_messages_all: true, channel_mentions: true),
@@ -62,7 +73,7 @@ defmodule Grappa.Push.TriggersTest do
     test ":privmsg passes the kind gate" do
       m = msg(kind: :privmsg, channel: "#sniffo", body: "vjt ping")
 
-      assert Triggers.should_notify?(
+      assert notify?(
                m,
                "vjt",
                prefs(channel_mentions: true),
@@ -73,7 +84,7 @@ defmodule Grappa.Push.TriggersTest do
     test ":action (CTCP /me) passes the kind gate" do
       m = msg(kind: :action, channel: "#sniffo", body: "waves at vjt")
 
-      assert Triggers.should_notify?(
+      assert notify?(
                m,
                "vjt",
                prefs(channel_mentions: true),
@@ -94,7 +105,7 @@ defmodule Grappa.Push.TriggersTest do
         m = msg(kind: kind, channel: "#sniffo", body: "vjt: ping")
         expected = kind in Message.notify_kinds()
 
-        assert Triggers.should_notify?(
+        assert notify?(
                  m,
                  "vjt",
                  prefs(channel_messages_all: true, channel_mentions: true),
@@ -105,16 +116,16 @@ defmodule Grappa.Push.TriggersTest do
     end
   end
 
-  describe "should_notify?/4 — DM (channel == own_nick)" do
+  describe "should_notify?/5 — DM (channel == own_nick)" do
     test "private_messages_all=true → notify regardless of sender" do
       m = msg(channel: "vjt", sender: "alice", body: "ping")
-      assert Triggers.should_notify?(m, "vjt", prefs(private_messages_all: true), [])
+      assert notify?(m, "vjt", prefs(private_messages_all: true), [])
     end
 
     test "private_messages_all=false + sender NOT in whitelist → no notify" do
       m = msg(channel: "vjt", sender: "alice", body: "ping")
 
-      refute Triggers.should_notify?(
+      refute notify?(
                m,
                "vjt",
                prefs(private_messages_all: false, private_messages_only: ["bob"]),
@@ -125,7 +136,7 @@ defmodule Grappa.Push.TriggersTest do
     test "private_messages_all=false + sender IN whitelist → notify" do
       m = msg(channel: "vjt", sender: "alice", body: "ping")
 
-      assert Triggers.should_notify?(
+      assert notify?(
                m,
                "vjt",
                prefs(private_messages_all: false, private_messages_only: ["alice"]),
@@ -136,7 +147,7 @@ defmodule Grappa.Push.TriggersTest do
     test "whitelist comparison is case-insensitive on sender" do
       m = msg(channel: "vjt", sender: "ALICE", body: "ping")
 
-      assert Triggers.should_notify?(
+      assert notify?(
                m,
                "vjt",
                prefs(private_messages_all: false, private_messages_only: ["alice"]),
@@ -151,7 +162,7 @@ defmodule Grappa.Push.TriggersTest do
       # an inbound FOO[BAR] must fold to foo[bar] and match.
       m = msg(channel: "vjt", sender: "FOO[BAR]", body: "ping")
 
-      assert Triggers.should_notify?(
+      assert notify?(
                m,
                "vjt",
                prefs(private_messages_all: false, private_messages_only: ["foo[bar]"]),
@@ -162,7 +173,7 @@ defmodule Grappa.Push.TriggersTest do
     test "whitelist match folds sender under ASCII case — tilde kept (#525)" do
       m = msg(channel: "vjt", sender: "FOO~BAZ", body: "ping")
 
-      assert Triggers.should_notify?(
+      assert notify?(
                m,
                "vjt",
                prefs(private_messages_all: false, private_messages_only: ["foo~baz"]),
@@ -175,7 +186,7 @@ defmodule Grappa.Push.TriggersTest do
       # should NOT notify — the DM branch is independent.
       m = msg(channel: "vjt", sender: "alice", body: "ping")
 
-      refute Triggers.should_notify?(
+      refute notify?(
                m,
                "vjt",
                prefs(
@@ -189,16 +200,16 @@ defmodule Grappa.Push.TriggersTest do
     end
   end
 
-  describe "should_notify?/4 — channel message" do
+  describe "should_notify?/5 — channel message" do
     test "channel_messages_all=true → notify regardless of body" do
       m = msg(channel: "#sniffo", body: "no mention here")
-      assert Triggers.should_notify?(m, "vjt", prefs(channel_messages_all: true), [])
+      assert notify?(m, "vjt", prefs(channel_messages_all: true), [])
     end
 
     test "channel_messages_only hit → notify even when _all is off" do
       m = msg(channel: "#sniffo", body: "no mention here")
 
-      assert Triggers.should_notify?(
+      assert notify?(
                m,
                "vjt",
                prefs(channel_messages_all: false, channel_messages_only: ["#sniffo"]),
@@ -209,7 +220,7 @@ defmodule Grappa.Push.TriggersTest do
     test "channel_messages_only is case-insensitive on channel name" do
       m = msg(channel: "#SNIFFO", body: "no mention here")
 
-      assert Triggers.should_notify?(
+      assert notify?(
                m,
                "vjt",
                prefs(channel_messages_all: false, channel_messages_only: ["#sniffo"]),
@@ -219,31 +230,31 @@ defmodule Grappa.Push.TriggersTest do
 
     test "channel_mentions=true + body mentions own_nick → notify" do
       m = msg(channel: "#sniffo", body: "vjt: are you there?")
-      assert Triggers.should_notify?(m, "vjt", prefs(channel_mentions: true), [])
+      assert notify?(m, "vjt", prefs(channel_mentions: true), [])
     end
 
     test "channel_mentions=true + body matches highlight pattern → notify" do
       m = msg(channel: "#sniffo", body: "oncall page incoming")
-      assert Triggers.should_notify?(m, "vjt", prefs(channel_mentions: true), ["oncall"])
+      assert notify?(m, "vjt", prefs(channel_mentions: true), ["oncall"])
     end
 
     test "channel_mentions=false → mention does NOT notify" do
       m = msg(channel: "#sniffo", body: "vjt: ping")
-      refute Triggers.should_notify?(m, "vjt", prefs(channel_mentions: false), [])
+      refute notify?(m, "vjt", prefs(channel_mentions: false), [])
     end
 
     test "all flags off + no whitelist hit + no mention → no notify" do
       m = msg(channel: "#sniffo", body: "no mention")
-      refute Triggers.should_notify?(m, "vjt", prefs([]), [])
+      refute notify?(m, "vjt", prefs([]), [])
     end
 
     test "channel mention is word-boundary (substring does NOT match)" do
       m = msg(channel: "#sniffo", body: "vjtbot is paged")
-      refute Triggers.should_notify?(m, "vjt", prefs(channel_mentions: true), [])
+      refute notify?(m, "vjt", prefs(channel_mentions: true), [])
     end
   end
 
-  describe "should_notify?/4 — the subject's OWN rows never notify (#532 C)" do
+  describe "should_notify?/5 — the subject's OWN rows never notify (#532 C)" do
     test "own OUTBOUND DM matching a highlight pattern does NOT notify" do
       # The #532 C bug: an outbound DM is persisted with `channel = peer`
       # (not own_nick), so the DM branch misses it and it falls to the
@@ -251,13 +262,13 @@ defmodule Grappa.Push.TriggersTest do
       # their OWN message body. Excluded by identity: sender == own_nick.
       m = msg(channel: "peer", sender: "vjt", body: "oncall page incoming")
 
-      refute Triggers.should_notify?(m, "vjt", prefs(channel_mentions: true), ["oncall"])
+      refute notify?(m, "vjt", prefs(channel_mentions: true), ["oncall"])
     end
 
     test "own outbound message mentioning own nick does NOT notify" do
       m = msg(channel: "peer", sender: "vjt", body: "note to self: vjt fix this")
 
-      refute Triggers.should_notify?(m, "vjt", prefs(channel_mentions: true), [])
+      refute notify?(m, "vjt", prefs(channel_mentions: true), [])
     end
 
     test "own-sender check folds ASCII case — still excluded" do
@@ -266,7 +277,7 @@ defmodule Grappa.Push.TriggersTest do
       # recognise it as the subject's own row.
       m = msg(channel: "peer", sender: "VJT", body: "oncall")
 
-      refute Triggers.should_notify?(m, "vjt", prefs(channel_mentions: true), ["oncall"])
+      refute notify?(m, "vjt", prefs(channel_mentions: true), ["oncall"])
     end
 
     test "an INBOUND DM from the peer still notifies (regression guard)" do
@@ -274,7 +285,67 @@ defmodule Grappa.Push.TriggersTest do
       # exclusion must NOT suppress a genuine inbound message.
       m = msg(channel: "vjt", sender: "peer", body: "ping")
 
-      assert Triggers.should_notify?(m, "vjt", prefs(private_messages_all: true), [])
+      assert notify?(m, "vjt", prefs(private_messages_all: true), [])
+    end
+  end
+
+  describe "should_notify?/5 — the mute is keyed PER NETWORK (#1038)" do
+    # These call the arity-5 predicate directly with two different slugs: the
+    # fixed-slug `notify?/4` wrapper the rest of this file uses could not tell
+    # a network-blind key from a network-keyed one, which is the entire bug.
+    defp muted(key), do: prefs(channel_mentions: true, muted_targets: %{key => %{"until" => nil}})
+
+    test "a mention in the muted channel is silenced on the network it was muted on" do
+      m = msg(channel: "#linux", sender: "alice", body: "vjt: ping")
+
+      refute Triggers.should_notify?(m, "azzurra", "vjt", muted("azzurra #linux"), [])
+    end
+
+    test "the SAME channel on ANOTHER network still notifies — the #1038 bug" do
+      # Pre-#1038 the key was the bare folded channel, so this row matched the
+      # mute and returned false. It is the one assertion that fails if the
+      # network component is dropped from either the key or the lookup.
+      m = msg(channel: "#linux", sender: "alice", body: "vjt: ping")
+
+      assert Triggers.should_notify?(m, "libera", "vjt", muted("azzurra #linux"), [])
+    end
+
+    test "a BARE stored key silences nothing, on any network" do
+      # What a migration miss (or an old bundle's write, were it not dropped)
+      # leaves behind. It must fail OPEN — the conversation notifies — rather
+      # than silencing every network, which is the old behaviour.
+      m = msg(channel: "#linux", sender: "alice", body: "vjt: ping")
+
+      assert Triggers.should_notify?(m, "azzurra", "vjt", muted("#linux"), [])
+      assert Triggers.should_notify?(m, "libera", "vjt", muted("#linux"), [])
+    end
+
+    test "the channel half still folds inside the composite" do
+      m = msg(channel: "#LiNuX", sender: "alice", body: "vjt: ping")
+
+      refute Triggers.should_notify?(m, "azzurra", "vjt", muted("azzurra #linux"), [])
+    end
+
+    test "a DM mutes the PEER on ONE network, not the peer everywhere" do
+      # The DM half of #1038: the key is the peer, and the same nick on two
+      # networks is two different people.
+      m = msg(channel: "vjt", sender: "Alice", body: "ping")
+      p = Map.merge(muted("azzurra alice"), %{private_messages_all: true})
+
+      refute Triggers.should_notify?(m, "azzurra", "vjt", p, [])
+      assert Triggers.should_notify?(m, "libera", "vjt", p, [])
+    end
+
+    test "muting the peer does NOT mute a channel of the same name, and vice versa" do
+      # Both halves compose through one `channel_key/2`, so a channel mute and
+      # a DM mute on the same network are distinguished only by the sigil the
+      # fold leaves in place.
+      dm = msg(channel: "vjt", sender: "alice", body: "ping")
+      chan = msg(channel: "#alice", sender: "bob", body: "vjt: ping")
+      p = Map.merge(muted("azzurra alice"), %{private_messages_all: true})
+
+      refute Triggers.should_notify?(dm, "azzurra", "vjt", p, [])
+      assert Triggers.should_notify?(chan, "azzurra", "vjt", p, [])
     end
   end
 

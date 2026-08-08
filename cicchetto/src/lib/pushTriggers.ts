@@ -1,5 +1,5 @@
 // Foreground mirror of the server push predicate
-// `Grappa.Push.Triggers.should_notify?/4` (PWA icon badge, 2026-06-21).
+// `Grappa.Push.Triggers.should_notify?/5` (PWA icon badge, 2026-06-21).
 //
 // Why a client-side copy exists. The badge's authoritative values come
 // from the server (the `/me` seed, the `read_cursor_set` broadcast, and
@@ -23,7 +23,7 @@
 // notify-match and the visual-match can never diverge again.
 
 import { type MessageKind, NOTIFY_KINDS } from "./api";
-import { canonicalChannel } from "./channelKey";
+import { type ChannelKey, canonicalChannel } from "./channelKey";
 import { conversationMuteKey, isConversationMuted } from "./conversationMute";
 import { matchesWatchlist } from "./mentionMatch";
 import { asciiFold, nickEquals } from "./nickEquals";
@@ -43,14 +43,15 @@ export type ShouldNotifyMessage = {
  * Returns true when `message` should produce a notification for the
  * operator whose IRC nick is `ownNick`, given `prefs` + `patterns`.
  *
- * Faithful transcription of `Grappa.Push.Triggers.should_notify?/4`:
+ * Faithful transcription of `Grappa.Push.Triggers.should_notify?/5`:
  *   1. kind gate — only the shared `NOTIFY_KINDS` SSOT (privmsg|action,
  *      the "notify" subset of api's CONTENT_KINDS, #395) → everything else
  *      false. NOTICE (services chatter) counts as unread but never notifies.
  *   2. own row (#532 C) — a row this operator authored never notifies.
- *   3. muted conversation (#866) — the folded channel, or the folded PEER
- *      for a DM, present in `muted_targets`. Beats every reason below it,
- *      mentions included.
+ *   3. muted conversation (#866, network-keyed by #1038) — the composite
+ *      `channelKey(networkSlug, target)`, where target is the channel or the
+ *      PEER for a DM, present in `muted_targets`. Beats every reason below
+ *      it, mentions included.
  *   4. DM (channel folds to ownNick): private_messages_all OR
  *      asciiFold(sender) in private_messages_only (mirrors the
  *      server's `canonical_target(sender) in ...`).
@@ -59,6 +60,7 @@ export type ShouldNotifyMessage = {
  */
 export function shouldNotify(
   message: ShouldNotifyMessage,
+  networkSlug: string,
   ownNick: string,
   prefs: NotificationPrefs,
   patterns: string[],
@@ -93,7 +95,8 @@ export function shouldNotify(
   // including a direct mention (vjt's Q2: the mute always wins, because the
   // polite default for "I silenced this room" is that it stays silent).
   // That is why it sits here and not inside the two branches.
-  if (isConversationMuted(prefs.muted_targets, conversationKey(message, isDm))) return false;
+  if (isConversationMuted(prefs.muted_targets, conversationKey(message, networkSlug, isDm)))
+    return false;
 
   if (isDm) {
     return dmMatch(message, prefs);
@@ -101,18 +104,28 @@ export function shouldNotify(
   return channelMatch(message, prefs, ownNick, patterns);
 }
 
-// Which CONVERSATION this row belongs to, in mute terms: the channel for a
-// channel row, the PEER for a DM — never `message.channel`, which an inbound
-// DM sets to own_nick (so keying on it would collapse every DM onto one
-// mute). The fold itself, and the membership test above, live in
-// `conversationMute.ts` — shared with the #1018 next-active cycle and the
-// settings picker so the three can never disagree on a key.
+// Which CONVERSATION this row belongs to, in mute terms: the NETWORK it
+// arrived on plus the channel for a channel row, or the PEER for a DM — never
+// `message.channel`, which an inbound DM sets to own_nick (so keying on it
+// would collapse every DM onto one mute). The key builder and the membership
+// test both live in `conversationMute.ts` — shared with the #1018 next-active
+// cycle and the settings picker so the three can never disagree on a key.
+//
+// #1038 — the network entered the key on both stacks at once. `networkSlug`
+// is a required parameter of `shouldNotify` rather than something read off
+// the message, because a scrollback row does not carry its network: the
+// listener that receives it does (`subscribe.ts` already has `slug` in scope
+// for `effectivelyFocused`).
 //
 // `until` is deliberately not read on this path: expiry belongs to the
-// READER, which is what keeps this predicate pure `/4` and the shared
+// READER, which is what keeps this predicate pure and the shared
 // truth-table free of a `now` column (#866 Q3).
-function conversationKey(message: ShouldNotifyMessage, isDm: boolean): string {
-  return conversationMuteKey(isDm ? message.sender : message.channel);
+function conversationKey(
+  message: ShouldNotifyMessage,
+  networkSlug: string,
+  isDm: boolean,
+): ChannelKey {
+  return conversationMuteKey(networkSlug, isDm ? message.sender : message.channel);
 }
 
 function dmMatch(message: ShouldNotifyMessage, prefs: NotificationPrefs): boolean {

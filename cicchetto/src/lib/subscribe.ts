@@ -306,7 +306,7 @@ moduleRoot(() => {
     // count of record.
     //
     // #868 — the DECISION is `pushTriggers.shouldNotify`, the mirror of the
-    // server's `Grappa.Push.Triggers.should_notify?/4`, and no longer a bare
+    // server's `Grappa.Push.Triggers.should_notify?/5`, and no longer a bare
     // `matchesWatchlist` call. It used to be: this path read NO preference at
     // all, so `channel_mentions: false` still beeped, `private_messages_all:
     // false` still beeped, an `action` the server DID push never moved the
@@ -332,7 +332,7 @@ moduleRoot(() => {
       u &&
       ownNick !== null &&
       !effectivelyFocused(slug, displayName) &&
-      shouldNotify(message, ownNick, notificationPrefs(), highlightPatterns())
+      shouldNotify(message, slug, ownNick, notificationPrefs(), highlightPatterns())
     ) {
       playBeep();
       incrementBadge();

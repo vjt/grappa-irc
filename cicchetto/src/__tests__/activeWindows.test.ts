@@ -197,12 +197,16 @@ describe("orderUnreadWindows", () => {
 // NAVIGATION order only.
 
 describe("orderUnreadWindows — muted conversations (#1018)", () => {
+  // #1038 — mute keys are the composite ChannelKey, built with the SAME
+  // production `ck` the unread/activity maps above use. These were bare
+  // channel names until the network entered the key; a bare one now matches
+  // nothing, which is the intended fail-OPEN direction.
   it("skips a muted channel and lands on the next unread window", () => {
     const noisy = chan("#noisy");
     const quiet = chan("#quiet");
     const out = orderUnreadWindows({
       candidates: [noisy, quiet],
-      muted: { "#noisy": { until: null } },
+      muted: { [ck("net", "#noisy")]: { until: null } },
       unread: counts([
         [noisy, 9],
         [quiet, 1],
@@ -226,7 +230,7 @@ describe("orderUnreadWindows — muted conversations (#1018)", () => {
       // "vjt" is the operator's own nick — an inbound DM row carries it in
       // `channel`, and keying on that would collapse every DM onto ONE mute
       // entry. Muting own nick must silence NOTHING here.
-      muted: { vjt: { until: null } },
+      muted: { [ck("net", "vjt")]: { until: null } },
       unread: counts([
         [bob, 1],
         [carol, 1],
@@ -241,7 +245,7 @@ describe("orderUnreadWindows — muted conversations (#1018)", () => {
 
     const outMutedPeer = orderUnreadWindows({
       candidates: [bob, carol],
-      muted: { bob: { until: null } },
+      muted: { [ck("net", "bob")]: { until: null } },
       unread: counts([
         [bob, 1],
         [carol, 1],
@@ -262,7 +266,7 @@ describe("orderUnreadWindows — muted conversations (#1018)", () => {
       candidates: [shouty, bracket],
       // `#chan[1]` is a DIFFERENT conversation from `#chan{1}` — the fold
       // touches `A-Z` only (#525), so the bracket window is NOT muted.
-      muted: { "#noisy": { until: null }, "#chan[1]": { until: null } },
+      muted: { [ck("net", "#noisy")]: { until: null }, [ck("net", "#chan[1]")]: { until: null } },
       unread: counts([
         [shouty, 1],
         [bracket, 1],
@@ -278,7 +282,7 @@ describe("orderUnreadWindows — muted conversations (#1018)", () => {
     const plain = chan("#plain");
     const out = orderUnreadWindows({
       candidates: [muted, plain],
-      muted: { "#muted": { until: null } },
+      muted: { [ck("net", "#muted")]: { until: null } },
       unread: counts([
         [muted, 1],
         [plain, 1],
@@ -294,7 +298,7 @@ describe("orderUnreadWindows — muted conversations (#1018)", () => {
     const bob = query("bob");
     const out = orderUnreadWindows({
       candidates: [a, bob],
-      muted: { "#a": { until: null }, bob: { until: null } },
+      muted: { [ck("net", "#a")]: { until: null }, [ck("net", "bob")]: { until: null } },
       unread: counts([
         [a, 1],
         [bob, 1],
@@ -303,6 +307,39 @@ describe("orderUnreadWindows — muted conversations (#1018)", () => {
       activityId: {},
     });
     expect(out).toEqual([]);
+  });
+
+  it("a mute on ONE network leaves the same-named window on another a stop (#1038)", () => {
+    // The cycle half of #1038. Pre-fix both windows shared the bare key
+    // `#linux`, so muting one dropped BOTH from the Alt+A cycle and the
+    // operator could not reach the network they had not silenced.
+    const here: ActiveWindow = { networkSlug: "azzurra", channelName: "#linux", kind: "channel" };
+    const there: ActiveWindow = { networkSlug: "libera", channelName: "#linux", kind: "channel" };
+    const out = orderUnreadWindows({
+      candidates: [here, there],
+      muted: { [ck("azzurra", "#linux")]: { until: null } },
+      unread: counts([
+        [here, 1],
+        [there, 1],
+      ]),
+      mentions: {},
+      activityId: {},
+    });
+
+    expect(out).toEqual([there]);
+  });
+
+  it("a BARE (pre-#1038) stored key silences nothing — it fails OPEN", () => {
+    const noisy = chan("#noisy");
+    const out = orderUnreadWindows({
+      candidates: [noisy],
+      muted: { "#noisy": { until: null } },
+      unread: counts([[noisy, 1]]),
+      mentions: {},
+      activityId: {},
+    });
+
+    expect(names(out)).toEqual(["#noisy"]);
   });
 
   it("tolerates a server that sends no muted_targets at all (cic ships ahead of the BEAM)", () => {

@@ -28,7 +28,7 @@ import {
   sidebarMessageBadge,
   sidebarWindow,
 } from "../fixtures/cicchettoPage";
-import { clearMutedConversations, partChannel } from "../fixtures/grappaApi";
+import { clearMutedConversations, muteKey, partChannel } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, getSeededVjt, NETWORK_NICK, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, test } from "../fixtures/test";
@@ -75,16 +75,17 @@ test("Alt+A skips the muted channel and lands on the unmuted one, badge intact",
 
     await openSettingsSection(page, "push");
     const picker = page.locator('[data-testid="pref-mute-picker"]');
-    await expect(picker.locator(`option[value="${MUTED_CHANNEL}"]`)).toHaveCount(1);
-    await picker.selectOption(MUTED_CHANNEL);
+    const mutedKey = muteKey(NETWORK_SLUG, MUTED_CHANNEL);
+    await expect(picker.locator(`option[value="${mutedKey}"]`)).toHaveCount(1);
+    await picker.selectOption(mutedKey);
     // The row is drawn from the server's normalized echo, so its presence
     // proves the PUT landed — no sleep, no arbitrary timeout.
-    await expect(page.locator(`[data-testid="pref-muted-${MUTED_CHANNEL}"]`)).toBeVisible({
+    await expect(page.locator(`[data-testid="pref-muted-${mutedKey}"]`)).toBeVisible({
       timeout: 10_000,
     });
     // ...and the sibling is demonstrably NOT muted: the two arms below differ
     // in exactly one variable.
-    await expect(page.locator(`[data-testid="pref-muted-${LOUD_CHANNEL}"]`)).toHaveCount(0);
+    await expect(page.locator(`[data-testid="pref-muted-${muteKey(NETWORK_SLUG, LOUD_CHANNEL)}"]`)).toHaveCount(0);
     await page.locator('[data-testid="settings-drawer-backdrop"]').click({ force: true });
 
     // Park focus on the neutral $server window — NOT part of the cycle — so

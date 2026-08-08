@@ -3749,7 +3749,7 @@ describe("subscribe — UX-6-L foreground beep wiring", () => {
 //
 // Before this issue, `subscribe.ts` called `matchesWatchlist` directly and
 // read no preference at all, while the OS push was decided server-side by
-// `Grappa.Push.Triggers.should_notify?/4`. One preference, two answers. Each
+// `Grappa.Push.Triggers.should_notify?/5`. One preference, two answers. Each
 // test below pins a case where the two surfaces used to disagree.
 describe("subscribe — #868 the beep obeys the notification prefs", () => {
   const asAlice = async () => {

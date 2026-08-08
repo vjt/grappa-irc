@@ -389,6 +389,20 @@ services:
         # specs. Logged in + token-stashed by the runner's globalSetup
         # (fixtures/seedData.ts ACCRETE_*), unlike fresh405.
         mix grappa.create_user --name accr481 --password test-password-not-secret
+        # #1038 — dedicated user for the cross-network mute e2e
+        # (issue1038-mute-is-per-network.spec.ts). NO bind_network: the spec
+        # accretes azzurra AND azzurra2 at runtime, because it needs ONE
+        # subject holding the SAME channel name on TWO networks — the only
+        # shape that can tell a network-keyed mute from a network-blind one.
+        # The two slugs sit on DIFFERENT ircds (bahamut-test / bahamut-test2),
+        # so the two sessions cannot collide on nick
+        # (feedback_e2e_multinet_live_needs_distinct_nicks) and the same
+        # channel name really is two conversations rather than one.
+        # Isolated from vjt on purpose: the auto `resetSubject` after every
+        # test re-spawns every credential a subject holds and never deletes
+        # extra ones, so accreting onto the shared vjt would leave two
+        # permanent sessions and redden the admin-sessions leak canary.
+        mix grappa.create_user --name mute1038 --password test-password-not-secret
     networks:
       grappa-e2e: {}
 

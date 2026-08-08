@@ -34202,3 +34202,216 @@ can no longer tell "swept" from "reported". A third visibility atom would
 have preserved it at the cost of landing on every consumer of a closed
 type, for a diagnostic; instead the `:info` line at the demotion carries
 what the snapshot loses — how long each socket had been silent.
+## 2026-08-08 — #1038: the mute key grows a network, and #866's "deliberately no network" is RETRACTED
+
+The 2026-08-05 #866 entry above says of the mute key: *"there is
+deliberately no network in the key, exactly like `channel_messages_only`
+beside it, because `user_settings` is per-SUBJECT. The drawer picker
+dedupes by folded key for that reason — offering `#grappa` once per
+network would promise a per-network mute the shape cannot keep."*
+
+**That paragraph is withdrawn.** vjt reversed it on 2026-08-08 (#grappa,
+#1038): muting `#linux` on Libera also silenced `#linux` on Azzurra, and
+the settings list could not name the network a mute belonged to, because
+there wasn't one. The old text stays where it is — this file is a
+chronological log, so the reversal lives here, not as an edit up there.
+The issue is explicit that this is a changed REQUIREMENT and not a bug
+report: the network-blind key was coherent with itself and documented as
+intentional everywhere it appeared.
+
+**What did NOT change is the storage.** `user_settings` is still
+per-SUBJECT; only the KEY grew a component. The two allow-lists the
+retracted sentence compared the mute to — `channel_messages_only` and
+`private_messages_only` — are untouched and remain network-blind. Nobody
+asked for those, and widening a scoped reversal is how one ruling
+quietly becomes three.
+
+## The composite key already existed on BOTH stacks
+
+The issue forbids inventing a second composite shape, and it names cic's
+`channelKey(slug, name)` (`"<slug> <canonicalChannel(name)>"`) as the one
+to reuse. What the issue does not say, and what mattered more, is that the
+SERVER already had the same string: `PresenceFilter.Resolver.channel_key/2`
+has built `"<slug> <folded channel>"` for the presence pins since they
+shipped. So minting a new builder for the mute would have been the exact
+sin the issue forbids, committed one stack over.
+
+The builder therefore moved to **`Grappa.IRC.Identifier`** —
+`channel_key/2` plus its paired `decode_channel_key/1` — because the
+composite is *defined* as the fold plus a separator, and a module that
+owns the fold but not the composite is how a third builder gets written
+by someone who reasonably concludes "Identifier is the folding module".
+It mirrors cic, where `channelKey.ts` exports `channelKey` and
+`canonicalChannel` together for the same reason.
+
+`Resolver.channel_key/2` was **deleted, not turned into a delegate.** It
+had exactly one caller — itself — so a `defdelegate` would have been a
+zero-caller shim, which CLAUDE.md forbids. `resolver.ex` now calls
+`Identifier.channel_key/2` directly and its `parse_pins/1` uses the
+decoder instead of a hand-rolled `String.split(key, " ", parts: 2)`.
+That split existing twice was the latent version of the same drift: one
+encoder and one decoder, or the two disagree the day the separator moves.
+
+**The slug is interpolated VERBATIM, and that is a no-op today.** An
+earlier draft of the builder doc claimed folding the slug would prevent a
+live divergence. It would not: `valid_network_slug?/1` constrains a slug
+to `^[a-z0-9_-]+$`, so there is no uppercase byte to fold, and the pin
+test that covers it witnesses a rule, not a bug. The rule is written as
+"verbatim" anyway because the cross-stack contract is byte equality with
+cic's `channelKey` (which folds only `name`), not "equal for the inputs
+currently reachable".
+
+**Where the literal pin lives.** The byte-for-byte cross-stack pin —
+`channel_key("azzurra", "#Chan") == "azzurra #chan"` — is in
+`IdentifierTest`, together with "the slug is passed through", "the #525
+spellings stay distinct inside the composite", and "the same channel on
+two networks is two keys". `resolver_test.exs`'s local `key/2` helper was
+NOT touched: it still pins the presence-pin shape independently. The pin
+EXTENDED to two literals, one per consumer; it did not move and get lost.
+
+## `should_notify?/4` became `/5`, and the badge was already holding the slug
+
+The predicate needs the network for exactly ONE branch (the mute); every
+other branch is network-independent. `network_slug` is a **required
+positional**, not an optional or defaulted one: a caller who forgets it
+must not silently fall back to the network-blind behaviour this issue
+removes.
+
+Two callers. `Triggers.evaluate_and_dispatch/2` already had the slug in
+its context. `Push.BadgeCount` is the interesting one — the slug was
+already the OUTER key of the read-cursor envelope and `flatten_entries/2`
+was **discarding** it while building the work item. So the badge could
+not have honoured a per-network mute even in principle; it now carries the
+slug through, because a badge that counts a muted room while the push
+stays quiet is the two surfaces disagreeing about one preference, which
+is the whole reason they share a predicate.
+
+`shouldNotifyTruthTable.json` grew `network_slug` on all 40 existing
+cases and 4 new ones (44 total), read with `Map.fetch!` on the Elixir
+side and `c.network_slug` on the cic side and **never with a default** —
+a default would make two cases that differ ONLY by slug indistinguishable,
+which is precisely what the new cases exist to pin.
+
+## A BARE key at the write boundary is DROPPED, and the rest of the PUT lands
+
+An old cic bundle (installed PWA, cached for weeks — the documented
+reason the tolerant-read contract exists at all) still emits bare keys.
+`UserSettings.cast_muted_key/2` returns a third outcome, `:drop`, and
+`collect_muted/3` skips that entry and continues. Three postures were
+weighed:
+
+  * **Failing the request** would break the tolerant contract this module
+    already keeps for an ABSENT `muted_targets`, and would stop an old
+    bundle from saving ANY notification preference — the noise landing on
+    the wrong person.
+  * **Storing it verbatim** would recreate the exact defect #1038
+    removes: a settings row that reads as muted and silences nothing,
+    because no lookup ever builds that string.
+  * **Expanding it to a network on the fly** is the LAZY migration vjt
+    ruled out — a path that would have to live forever, and that
+    re-creates network-blind behaviour for every client still emitting
+    bare keys.
+
+The precedent to cite is not a new judgment call: `parse_pins/1` has
+ignored separator-less pins since presence pins shipped ("not a
+ChannelKey … dropped rather than guessed at"). Same key shape, same rule,
+now one implementation. **A dropped key's VALUE is deliberately not
+validated** — a discarded entry has no value to corrupt, and failing on
+its `until` would undo the reason it is being discarded. An over-long key
+still ERRORS, because that guard bounds a user-writable blob and silently
+discarding an abusive key would make the bound unobservable.
+
+The failure direction is the honest one: a bare key can never match a
+composite, so a mute the migration missed goes LOUD (you get notified)
+rather than silencing every network the way the pre-#1038 key did.
+
+## The migration, and the NULL that would have eaten the column
+
+Mutes are already in production under the bare key, so changing the shape
+without a data pass is worse than a reset: every entry stops matching
+while the settings list still shows the room as muted. vjt's call —
+one-shot and optimistic: each bare key takes the prefix of the FIRST
+network in the DB for that subject (`ORDER BY nc.id LIMIT 1`). No attempt
+to reconstruct which network the mute meant, because that information was
+never stored and a reconstruction would be a guess dressed as a fact. A
+single-network subject (the common case) lands exactly right; a
+multi-network subject gets one plausible mute it can now move by hand,
+because the list finally names the network.
+
+Two guards are structural. `instr(key, ' ') > 0` skips an
+already-composite key, which is what makes a re-run a no-op rather than an
+identity rewrite. The subject lookup spells out BOTH arms of the XOR-FK
+with an explicit `IS NOT NULL` each: a bare `nc.user_id =
+user_settings.user_id` compares NULL to NULL for a visitor row, which is
+NULL rather than true, and every visitor's mutes would have been skipped
+in silence.
+
+**The third guard was MEASURED, and it refuted this note's first draft.**
+That draft claimed that without an `EXISTS` on the credentials, a
+credential-less subject would make `json_group_object` RAISE on a NULL
+key. False. SQLite does not raise: `NULL || ' ' || key` is NULL, and the
+function silently returns an EMPTY object — the subject's entire mute map
+is WIPED with no error anywhere. Deleting that conjunct turns the
+migration test's "a subject with NO credential is left alone" red with
+`left: %{}`, which is how the truth surfaced. The guard converts "cannot
+be migrated" into "skipped"; without it the failure mode is silent data
+loss. Three mutants were run against the migration, all measured rather
+than predicted: prefix removed → 9 of 12 red; visitor XOR arm removed →
+`1 failed | 11 passed`, exactly the visitor test; credential guard
+removed → `1 failed | 11 passed`, the `left: %{}` above.
+
+`down/0` is a deliberate no-op. Stripping the prefix cannot tell a key
+this migration wrote from one an operator created on a specific network
+afterwards, so a reverse pass would merge two deliberate mutes into one.
+Rolling the CODE back with composite keys standing degrades the same way
+an unmigrated key does under the new code — the mute stops matching and
+the room notifies — which is the safe direction.
+
+## The picker reverses its dedupe; the list gains the disambiguator
+
+`muteCandidates()` used to dedupe by folded channel name *on purpose*, so
+`#grappa` was offered once — offering it twice would have promised a
+per-network mute the shape could not keep. That promise is now kept, so
+the same name on two networks is two rows and the label names the network.
+The `Map` survives only to collapse a genuine duplicate window, which is
+now an actual duplicate rather than two different conversations colliding.
+
+The muted row renders the TARGET as the keyword and the network as its own
+muted span, rather than showing the raw composite: the channel is what an
+operator scans for, the network is the disambiguator they need only when a
+name appears twice. **A key that fails to decode is still SHOWN**, with no
+network — it is a pre-#1038 leftover the migration could not place (a
+subject who had no credential at the time), it is really in the stored
+map, and hiding it would leave an entry only the DB knows about and
+nobody can remove.
+
+`activeWindows`' muted projection (#1018's next-active cycle) needed **no
+change at all**: it already called `windowMuteKey(w)` with the whole
+window, and the window already carried its `networkSlug`. Keying the mute
+like every other per-conversation store is what made that free.
+
+## The wire reading (#447), written down and NOT acted on
+
+`muted_targets` travels the user-settings wire, and #1038 changes the
+GRAMMAR OF ITS KEYS. Whether that is covered by the additive-only rule is
+a judgment for vjt, so nothing here bumps anything; this is the reading
+the bump would rest on.
+
+`min_protocol_version` should NOT rise. Degradation is non-fatal in both
+directions: an old bundle reads composite keys as opaque strings and
+sends them back intact (so existing mutes survive its writes), and its own
+new bare keys are dropped; a new bundle against an old BEAM writes a
+composite key that the old fold stores verbatim and the old predicate
+never matches. Nobody is stranded, so old clients stay served.
+
+`protocol_version` is the grey one, and the honest answer is that it sits
+on the line. The field's MEANING is unchanged — "which conversations are
+muted" — which reads as covered. But the additive rule is about adding
+frames, events and fields that an unrecognising peer ignores, and this
+adds nothing: it changes how existing DATA in an existing field is
+interpreted, and the degradation above is silent in both directions. The
+concrete thing a bump would buy is real, because cic ships independently
+of the BEAM: a new bundle has no way to learn which grammar the server
+speaks except by sniffing the stored keys for a space, and a version
+number is exactly what exists to avoid that. Recorded as a grey-zone
+reading, deliberately left for vjt to rule on.

@@ -25,7 +25,7 @@
 // #866-muted delivers a push (channel_mentions defaults ON).
 
 import { loginAs, openSettingsSection, selectChannel } from "../fixtures/cicchettoPage";
-import { clearMutedConversations, partChannel } from "../fixtures/grappaApi";
+import { clearMutedConversations, muteKey, partChannel } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import {
   assertNoPushDelivery,
@@ -82,17 +82,18 @@ test("a muted channel swallows even a direct mention, while its unmuted sibling 
     await expect(page.locator('[data-testid="pref-channel-mentions"]')).toBeChecked();
 
     const picker = page.locator('[data-testid="pref-mute-picker"]');
-    await expect(picker.locator(`option[value="${MUTED_CHANNEL}"]`)).toHaveCount(1);
-    await picker.selectOption(MUTED_CHANNEL);
+    const mutedKey = muteKey(NETWORK_SLUG, MUTED_CHANNEL);
+    await expect(picker.locator(`option[value="${mutedKey}"]`)).toHaveCount(1);
+    await picker.selectOption(mutedKey);
 
     // The row is drawn from the server's echo, so its presence is proof the
     // PUT landed and came back normalized — no sleep, no arbitrary timeout.
-    await expect(page.locator(`[data-testid="pref-muted-${MUTED_CHANNEL}"]`)).toBeVisible({
+    await expect(page.locator(`[data-testid="pref-muted-${mutedKey}"]`)).toBeVisible({
       timeout: 10_000,
     });
     // ...and the loud channel is demonstrably NOT muted, so the two arms below
     // differ in exactly one variable.
-    await expect(page.locator(`[data-testid="pref-muted-${LOUD_CHANNEL}"]`)).toHaveCount(0);
+    await expect(page.locator(`[data-testid="pref-muted-${muteKey(NETWORK_SLUG, LOUD_CHANNEL)}"]`)).toHaveCount(0);
 
     await page.locator('[data-testid="settings-drawer-backdrop"]').click({ force: true });
 

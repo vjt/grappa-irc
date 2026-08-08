@@ -19,6 +19,25 @@ defmodule Grappa.IRC.Identifier do
   `valid_*?/1` predicates accept any term and return `false` for
   non-binaries — convenient at the changeset boundary where the input
   may be `nil` or another type.
+
+  ## Two SSOTs live here, and the second is easy to miss
+
+  This module owns the identifier FOLD (`canonical_target/1` and its
+  network-aware `/2`) — that much is in the name. Since #1038 it ALSO owns
+  the composite `(network, channel)` KEY: `channel_key/2` and its paired
+  `decode_channel_key/1`. The two belong together because the composite is
+  *defined* as `"<slug> <folded target>"` — it is the fold plus a separator,
+  and splitting them across modules is how a third builder gets written by
+  someone who reasonably concludes "Identifier is the folding module".
+
+  The composite is a CROSS-STACK contract with cic's `channelKey(slug, name)`
+  (`cicchetto/src/lib/channelKey.ts`), byte-pinned in `IdentifierTest`. Two
+  server consumers key on it today — the presence-filter pins
+  (`Grappa.PresenceFilter.Resolver`, which calls both of these directly —
+  its own `channel_key/2` was removed rather than left as a one-caller
+  shim) and the per-conversation mute (`Grappa.UserSettings` +
+  `Grappa.Push.Triggers`, #1038). A third one MUST call `channel_key/2`,
+  never re-interpolate the shape.
   """
 
   @typedoc """
@@ -294,6 +313,56 @@ defmodule Grappa.IRC.Identifier do
   def canonical_target(name) when is_binary(name), do: fold_ascii(name)
 
   def canonical_target(other), do: other
+
+  @doc """
+  The composite `(network, channel)` KEY — `"<slug> <folded target>"`.
+
+  The server side of cic's `channelKey(slug, name)`
+  (`cicchetto/src/lib/channelKey.ts`), and the SINGLE place that shape is
+  built. `target` is folded through `canonical_target/1` so any casing
+  resolves to one key; a nick folds identically to a channel (a sigil sits
+  outside `A-Z`), which is why the same function serves a DM peer.
+
+  The SLUG is interpolated VERBATIM, mirroring cic's `channelKey`, which
+  folds only `name`. Today that is indistinguishable from folding it:
+  `valid_network_slug?/1` constrains a slug to `^[a-z0-9_-]+$`, so there is
+  no uppercase byte to fold. It is written as the verbatim rule anyway
+  because the cross-stack contract is byte equality with cic, not "equal
+  for the inputs currently reachable" — if the slug charset ever widens,
+  this stays correct without anyone rediscovering why.
+
+  The separator is a space, which neither a slug nor an IRC channel name may
+  contain (RFC 2812 excludes 0x20 from chanstring), so `decode_channel_key/1`
+  can split on the first one unambiguously.
+  """
+  @spec channel_key(String.t(), String.t()) :: String.t()
+  def channel_key(network_slug, target)
+      when is_binary(network_slug) and is_binary(target),
+      do: "#{network_slug} #{canonical_target(target)}"
+
+  @doc """
+  Splits a composite key back into `{slug, target}`, or `:error`.
+
+  Paired with `channel_key/2` so the shape has one encoder and one decoder:
+  a second hand-rolled `String.split(key, " ")` is how the two drift the day
+  the separator changes.
+
+  `:error` covers everything that is not a well-formed ChannelKey —
+  no separator, an empty half, a non-binary. A key with no separator is the
+  BARE shape (a pre-#1038 stored mute, or a mute written by a cic bundle
+  older than #1038): it is not a ChannelKey, and every caller drops it
+  rather than guessing which network it meant. That posture predates #1038 —
+  `Grappa.PresenceFilter.Resolver` has read pins this way since they shipped.
+  """
+  @spec decode_channel_key(term()) :: {:ok, {String.t(), String.t()}} | :error
+  def decode_channel_key(key) when is_binary(key) do
+    case String.split(key, " ", parts: 2) do
+      [slug, target] when slug != "" and target != "" -> {:ok, {slug, target}}
+      _ -> :error
+    end
+  end
+
+  def decode_channel_key(_), do: :error
 
   @doc """
   Maps the rfc1459 "national" characters onto their folded representative

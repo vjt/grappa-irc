@@ -27,6 +27,7 @@
 
 import { createSignal } from "solid-js";
 import { token } from "./auth";
+import type { ChannelKey } from "./channelKey";
 import { withConversationMute, withoutConversationMute } from "./conversationMute";
 import { identityScopedStore } from "./identityScopedStore";
 import {
@@ -41,8 +42,8 @@ import {
 // elapsed mutes inside `UserSettings.get_notification_prefs/1`; this is its
 // client twin, because the mirrored signal is only refreshed on a user-topic
 // (re)join and a snooze can elapse with the tab open. Doing it here rather
-// than in `shouldNotify` is what keeps that predicate pure `/4` and the
-// shared truth-table free of a `now` column.
+// than in `shouldNotify` is what keeps that predicate PURE and the shared
+// truth-table free of a `now` column.
 //
 // A malformed `until` fails OPEN (the entry is dropped, so the conversation
 // notifies) rather than silently muting forever.
@@ -123,14 +124,18 @@ async function writeMutedTargets(
 }
 
 /**
- * Mute `key` (already folded via `conversationMuteKey`) until `until` — unix
- * seconds for a snooze, `null` for a permanent mute.
+ * Mute `key` (the composite `ChannelKey` from `conversationMuteKey`) until
+ * `until` — unix seconds for a snooze, `null` for a permanent mute.
+ *
+ * Typed as `ChannelKey` rather than `string` since #1038: the brand is what
+ * makes "I passed a bare channel name" a compile error instead of a mute that
+ * the server drops and nobody notices.
  */
-export function applyConversationMute(key: string, until: number | null): Promise<void> {
+export function applyConversationMute(key: ChannelKey, until: number | null): Promise<void> {
   return writeMutedTargets((muted) => withConversationMute(muted, key, until));
 }
 
 /** Unmute `key`, whatever its expiry was. */
-export function clearConversationMute(key: string): Promise<void> {
+export function clearConversationMute(key: ChannelKey): Promise<void> {
   return writeMutedTargets((muted) => withoutConversationMute(muted, key));
 }

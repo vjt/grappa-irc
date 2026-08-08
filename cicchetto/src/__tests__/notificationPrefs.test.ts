@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setToken } from "../lib/auth";
+import { channelKey } from "../lib/channelKey";
 import {
   applyConversationMute,
   clearConversationMute,
@@ -118,6 +119,12 @@ describe("notificationPrefs store — #868", () => {
 describe("notificationPrefs muted_targets expiry — #866", () => {
   const NOW_SECONDS = 1_800_000_000;
 
+  // #1038 — expiry itself is key-shape-agnostic, but these keys are written
+  // in the CURRENT grammar anyway. A file that half-speaks the old shape is
+  // how the next reader learns the wrong one.
+  const NOISY = channelKey("azzurra", "#noisy");
+  const ALICE = channelKey("azzurra", "alice");
+
   const withMutes = (muted: NotificationPrefs["muted_targets"]): NotificationPrefs => ({
     ...DEFAULT_NOTIFICATION_PREFS,
     muted_targets: muted,
@@ -133,19 +140,19 @@ describe("notificationPrefs muted_targets expiry — #866", () => {
   });
 
   it("keeps a permanent mute (until: null)", () => {
-    mirrorNotificationPrefs(withMutes({ "#noisy": { until: null } }));
+    mirrorNotificationPrefs(withMutes({ [NOISY]: { until: null } }));
 
-    expect(notificationPrefs().muted_targets).toEqual({ "#noisy": { until: null } });
+    expect(notificationPrefs().muted_targets).toEqual({ [NOISY]: { until: null } });
   });
 
   it("keeps a snooze whose until is still ahead", () => {
-    mirrorNotificationPrefs(withMutes({ "#noisy": { until: NOW_SECONDS + 60 } }));
+    mirrorNotificationPrefs(withMutes({ [NOISY]: { until: NOW_SECONDS + 60 } }));
 
-    expect(notificationPrefs().muted_targets).toEqual({ "#noisy": { until: NOW_SECONDS + 60 } });
+    expect(notificationPrefs().muted_targets).toEqual({ [NOISY]: { until: NOW_SECONDS + 60 } });
   });
 
   it("drops a snooze whose until has elapsed, leaving the conversation audible again", () => {
-    mirrorNotificationPrefs(withMutes({ "#noisy": { until: NOW_SECONDS - 1 } }));
+    mirrorNotificationPrefs(withMutes({ [NOISY]: { until: NOW_SECONDS - 1 } }));
 
     expect(notificationPrefs().muted_targets).toEqual({});
   });
@@ -154,8 +161,8 @@ describe("notificationPrefs muted_targets expiry — #866", () => {
     // The discriminating one. Nothing re-hydrates between the two reads, so a
     // filter applied in `mirrorNotificationPrefs` (or in the settings drawer)
     // would keep silencing `#noisy` forever and leave this red.
-    mirrorNotificationPrefs(withMutes({ "#noisy": { until: NOW_SECONDS + 60 } }));
-    expect(notificationPrefs().muted_targets).toEqual({ "#noisy": { until: NOW_SECONDS + 60 } });
+    mirrorNotificationPrefs(withMutes({ [NOISY]: { until: NOW_SECONDS + 60 } }));
+    expect(notificationPrefs().muted_targets).toEqual({ [NOISY]: { until: NOW_SECONDS + 60 } });
 
     vi.setSystemTime((NOW_SECONDS + 61) * 1000);
 
@@ -164,10 +171,10 @@ describe("notificationPrefs muted_targets expiry — #866", () => {
 
   it("expires per entry — an elapsed snooze does not take a permanent mute with it", () => {
     mirrorNotificationPrefs(
-      withMutes({ "#noisy": { until: NOW_SECONDS - 1 }, alice: { until: null } }),
+      withMutes({ [NOISY]: { until: NOW_SECONDS - 1 }, [ALICE]: { until: null } }),
     );
 
-    expect(notificationPrefs().muted_targets).toEqual({ alice: { until: null } });
+    expect(notificationPrefs().muted_targets).toEqual({ [ALICE]: { until: null } });
   });
 
   it("tolerates a server that sends no muted_targets at all (cic ships ahead of the BEAM)", () => {
@@ -186,11 +193,18 @@ describe("notificationPrefs muted_targets expiry — #866", () => {
 // tap has none, which is the whole reason this verb exists and why it reads the
 // server before it writes.
 describe("conversation mute writer — #950", () => {
+  // #1038 — keys are the composite ChannelKey. Built through the production
+  // `channelKey` rather than written as literals: the brand makes a bare name
+  // a compile error, and these tests are about the WRITER, not the shape (the
+  // shape is pinned in channelKey's own suite and in `IdentifierTest`).
+  const NOISY = channelKey("azzurra", "#noisy");
+  const ALREADY = channelKey("azzurra", "#already");
+
   const SERVER_STATE: NotificationPrefs = {
     ...DEFAULT_NOTIFICATION_PREFS,
     channel_mentions: false,
     channel_messages_only: ["#italia"],
-    muted_targets: { "#already": { until: null } },
+    muted_targets: { [ALREADY]: { until: null } },
   };
 
   const mockGetThenPut = () => {
@@ -224,34 +238,34 @@ describe("conversation mute writer — #950", () => {
   it("writes the chosen until as a positive integer under the folded key", async () => {
     const spy = mockGetThenPut();
 
-    await applyConversationMute("#noisy", 1_800_000_600);
+    await applyConversationMute(NOISY, 1_800_000_600);
 
-    expect(putBody(spy).muted_targets).toMatchObject({ "#noisy": { until: 1_800_000_600 } });
+    expect(putBody(spy).muted_targets).toMatchObject({ [NOISY]: { until: 1_800_000_600 } });
   });
 
   it("keeps the mutes that were already there instead of replacing the map", async () => {
     const spy = mockGetThenPut();
 
-    await applyConversationMute("#noisy", 1_800_000_600);
+    await applyConversationMute(NOISY, 1_800_000_600);
 
-    expect(putBody(spy).muted_targets).toMatchObject({ "#already": { until: null } });
+    expect(putBody(spy).muted_targets).toMatchObject({ [ALREADY]: { until: null } });
   });
 
   it("writes a permanent mute when the offer carries no expiry", async () => {
     const spy = mockGetThenPut();
 
-    await applyConversationMute("#noisy", null);
+    await applyConversationMute(NOISY, null);
 
-    expect(putBody(spy).muted_targets).toMatchObject({ "#noisy": { until: null } });
+    expect(putBody(spy).muted_targets).toMatchObject({ [NOISY]: { until: null } });
   });
 
   it("clearConversationMute drops just that key", async () => {
     const spy = mockGetThenPut();
 
-    await clearConversationMute("#already");
+    await clearConversationMute(ALREADY);
 
     const muted = putBody(spy).muted_targets ?? {};
-    expect(Object.hasOwn(muted, "#already")).toBe(false);
+    expect(Object.hasOwn(muted, ALREADY)).toBe(false);
   });
 
   // The discriminating one. The mirrored signal is DEFAULT until a user-topic
@@ -263,7 +277,7 @@ describe("conversation mute writer — #950", () => {
     mirrorNotificationPrefs(DEFAULT_NOTIFICATION_PREFS);
     const spy = mockGetThenPut();
 
-    await applyConversationMute("#noisy", 1_800_000_600);
+    await applyConversationMute(NOISY, 1_800_000_600);
 
     const body = putBody(spy);
     expect(body.channel_mentions).toBe(false);
@@ -273,9 +287,9 @@ describe("conversation mute writer — #950", () => {
   it("adopts the server echo so the live beep path honours the new mute at once", async () => {
     mockGetThenPut();
 
-    await applyConversationMute("#noisy", 1_800_000_600);
+    await applyConversationMute(NOISY, 1_800_000_600);
 
-    expect(notificationPrefs().muted_targets).toMatchObject({ "#noisy": { until: 1_800_000_600 } });
+    expect(notificationPrefs().muted_targets).toMatchObject({ [NOISY]: { until: 1_800_000_600 } });
     expect(notificationPrefs().channel_mentions).toBe(false);
   });
 
@@ -283,13 +297,13 @@ describe("conversation mute writer — #950", () => {
     setToken(null);
     const spy = vi.spyOn(globalThis, "fetch");
 
-    await expect(applyConversationMute("#noisy", 1_800_000_600)).rejects.toThrow("no session");
+    await expect(applyConversationMute(NOISY, 1_800_000_600)).rejects.toThrow("no session");
     expect(spy).not.toHaveBeenCalled();
   });
 
   it("propagates a failed write instead of reporting a mute that never landed", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 500 }));
 
-    await expect(applyConversationMute("#noisy", 1_800_000_600)).rejects.toBeDefined();
+    await expect(applyConversationMute(NOISY, 1_800_000_600)).rejects.toBeDefined();
   });
 });

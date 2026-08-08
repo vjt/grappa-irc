@@ -746,13 +746,13 @@ defmodule Grappa.Scrollback do
 
   "Content" = `:privmsg | :notice | :action` — the same kind set
   `count_after_split/6` buckets as `:messages` and the push-trigger
-  predicate (`Grappa.Push.Triggers.should_notify?/4`) can act on.
+  predicate (`Grappa.Push.Triggers.should_notify?/5`) can act on.
   Presence/control kinds (`:join`, `:mode`, …) never carry a
   notification meaning, so they are excluded at the SQL layer rather
   than fetched and discarded.
 
   Sole consumer: `Grappa.Push.BadgeCount` — it maps the REAL
-  `should_notify?/4` predicate over this bounded tail to count
+  `should_notify?/5` predicate over this bounded tail to count
   notify-worthy unread per window. The `limit` is the per-channel cap
   that keeps the badge fold off an unbounded scan: a channel a user
   hasn't read in months has a huge unread range, but the badge tops out
@@ -1302,7 +1302,7 @@ defmodule Grappa.Scrollback do
   was when the row arrived, and `Push.Triggers.dm?/2` reads it back
   against the LIVE own nick (#498). Leave it stale and every pre-rename
   inbound DM stops classifying as a DM, falls into the channel branch of
-  `should_notify?/4`, and silently loses its badge / notify credit.
+  `should_notify?/5`, and silently loses its badge / notify credit.
 
   ## Why this is NOT `rename_dm_peer/4` with different arguments
 

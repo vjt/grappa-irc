@@ -102,6 +102,26 @@ export const ACCRETE_PASSWORD = "test-password-not-secret";
 export const ACCRETE_IDENTIFIER = "accr481@grappa.test";
 export const ACCRETE_NETWORK_SLUG = "azzurra2";
 
+// #1038 — dedicated user for the cross-network mute e2e. NO bind at seed
+// time: the spec accretes BOTH slugs below at runtime, because what it has to
+// witness is ONE subject holding the SAME channel name on TWO networks.
+//
+// The two slugs are on DIFFERENT ircds (azzurra → bahamut-test,
+// azzurra2 → bahamut-test2), which buys two things at once: the two sessions
+// cannot collide on nick even though both default to the account name
+// (feedback_e2e_multinet_live_needs_distinct_nicks), and the same channel
+// name genuinely IS two conversations rather than one room seen twice.
+//
+// Isolated from vjt deliberately — see the compose.yaml comment: the auto
+// subject reset re-spawns every credential and never removes an accreted one.
+export const MUTE1038_USER = "mute1038";
+export const MUTE1038_PASSWORD = "test-password-not-secret";
+export const MUTE1038_IDENTIFIER = "mute1038@grappa.test";
+export const MUTE1038_NETWORK_A = "azzurra";
+export const MUTE1038_NETWORK_B = "azzurra2";
+export const MUTE1038_HOST_A = "bahamut-test";
+export const MUTE1038_HOST_B = "bahamut-test2";
+
 // GH #349 — dedicated user for the registration-wizard real-services
 // e2e. Bound to `azzurra-reg` (services_flavor=azzurra) with a FRESH
 // unregistered nick, so the "Register nick" button shows and the spec
@@ -180,6 +200,8 @@ const WIZ_TOKEN_ENV_VAR = "E2E_WIZ_TOKEN";
 const WIZ_SUBJECT_ENV_VAR = "E2E_WIZ_SUBJECT";
 const ACCRETE_TOKEN_ENV_VAR = "E2E_ACCRETE_TOKEN";
 const ACCRETE_SUBJECT_ENV_VAR = "E2E_ACCRETE_SUBJECT";
+const MUTE1038_TOKEN_ENV_VAR = "E2E_MUTE1038_TOKEN";
+const MUTE1038_SUBJECT_ENV_VAR = "E2E_MUTE1038_SUBJECT";
 const I498_TOKEN_ENV_VAR = "E2E_I498_TOKEN";
 const I498_SUBJECT_ENV_VAR = "E2E_I498_SUBJECT";
 const FLOOD_VICTIM_TOKEN_ENV_VAR = "E2E_FLOOD_VICTIM_TOKEN";
@@ -232,6 +254,10 @@ export default async function globalSetup(): Promise<void> {
   const accrete = await loginWithRetry(ACCRETE_IDENTIFIER, ACCRETE_PASSWORD);
   process.env[ACCRETE_TOKEN_ENV_VAR] = accrete.token;
   process.env[ACCRETE_SUBJECT_ENV_VAR] = JSON.stringify(accrete.subject);
+
+  const mute1038 = await loginWithRetry(MUTE1038_IDENTIFIER, MUTE1038_PASSWORD);
+  process.env[MUTE1038_TOKEN_ENV_VAR] = mute1038.token;
+  process.env[MUTE1038_SUBJECT_ENV_VAR] = JSON.stringify(mute1038.subject);
 
   // #498 — badge-follows-live-nick witness user. Only the USER is seeded;
   // the spec accretes its OWN azzurra session at runtime and renames ITS
@@ -316,6 +342,24 @@ export function getSeededWizUser(): SeededUser {
     name: WIZ_USER,
     password: WIZ_PASSWORD,
     identifier: WIZ_IDENTIFIER,
+    token,
+    subjectJson,
+  };
+}
+
+// #1038 — cross-network mute user (token + subject) for loginAs.
+export function getSeededMute1038User(): SeededUser {
+  const token = process.env[MUTE1038_TOKEN_ENV_VAR];
+  const subjectJson = process.env[MUTE1038_SUBJECT_ENV_VAR];
+  if (!token || !subjectJson) {
+    throw new Error(
+      `getSeededMute1038User: ${MUTE1038_TOKEN_ENV_VAR}/${MUTE1038_SUBJECT_ENV_VAR} not set. Did playwright globalSetup run?`,
+    );
+  }
+  return {
+    name: MUTE1038_USER,
+    password: MUTE1038_PASSWORD,
+    identifier: MUTE1038_IDENTIFIER,
     token,
     subjectJson,
   };

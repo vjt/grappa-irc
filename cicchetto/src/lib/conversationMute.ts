@@ -1,5 +1,9 @@
-// #866 / #1018 — the per-conversation mute LOOKUP: how a conversation is
-// keyed into `NotificationPrefs.muted_targets`, and how membership is asked.
+// #866 / #1018 / #1038 — the per-conversation mute LOOKUP: how a conversation
+// is keyed into `NotificationPrefs.muted_targets`, and how membership is
+// asked. Since #1038 the key is the composite `(network, target)` ChannelKey,
+// so this module is a thin, well-named layer over `channelKey.ts` rather than
+// a key derivation of its own — which is the point: the mute is now keyed
+// like every other per-conversation store in the client.
 //
 // Extracted here (from `pushTriggers.ts`, its first and until #1018 only
 // consumer) because three call sites now need the identical answer and a
@@ -16,25 +20,35 @@
 // `UserSettings.get_notification_prefs/1` server-side), so nothing here
 // needs a `now` and the push truth-table needs no clock column (#866 Q3).
 
-import { canonicalChannel } from "./channelKey";
+import { type ChannelKey, channelKey } from "./channelKey";
 import type { MutedTargets } from "./userSettings";
 
 /**
- * The key under which a conversation is muted: the FOLDED identifier of the
- * thing an operator points at when they say "silence this tab" — the channel
- * for a channel, the PEER for a DM.
+ * The key under which a conversation is muted: the composite `ChannelKey` of
+ * the NETWORK plus the thing an operator points at when they say "silence
+ * this tab" — the channel for a channel, the PEER for a DM.
  *
  * Never the `channel` field of a DM row: an inbound DM carries
  * `channel = own_nick`, so keying on it collapses every DM onto ONE entry and
  * muting one peer silences them all. Callers pass the peer explicitly.
  *
- * `canonicalChannel` (the mirror of `Identifier.canonical_target/1`) folds a
- * nick exactly as it folds a channel — a sigil sits outside `A-Z` — which is
- * why one fold serves both shapes. Per-subject and network-agnostic by
- * design: `#grappa` on two networks is ONE mute (#866 Q5).
+ * `channelKey` folds the target through `canonicalChannel` (the mirror of
+ * `Identifier.canonical_target/1`), which folds a nick exactly as it folds a
+ * channel — a sigil sits outside `A-Z` — so one expression serves both
+ * shapes.
+ *
+ * #1038 — the network IS in the key, reversing #866 Q5. That ruling made
+ * `#grappa` ONE mute across every network on purpose; vjt withdrew it on
+ * 2026-08-08 because muting `#linux` on one network silenced it on all of
+ * them and nothing on screen could say which network a mute belonged to.
+ * Reusing the existing `channelKey` brand rather than minting a second
+ * composite shape is deliberate: the mute was the last per-conversation
+ * store not keyed like `scrollback` / `selection` / `subscribe`, and two
+ * notions of "which conversation" always drift apart. The server keys the
+ * same string through `Grappa.IRC.Identifier.channel_key/2`.
  */
-export function conversationMuteKey(target: string): string {
-  return canonicalChannel(target);
+export function conversationMuteKey(networkSlug: string, target: string): ChannelKey {
+  return channelKey(networkSlug, target);
 }
 
 /**
@@ -43,10 +57,12 @@ export function conversationMuteKey(target: string): string {
  * `qw.targetNick` — which is exactly the identifier the DM notify path folds,
  * so ONE expression serves both kinds without ever touching a row's `channel`
  * field. Structurally typed rather than importing `ActiveWindow`, to keep the
- * mute lookup free of a dependency on the window projection.
+ * mute lookup free of a dependency on the window projection — and since
+ * #1038 the window's own `networkSlug` is part of that structure, because it
+ * is part of the key.
  */
-export function windowMuteKey(window: { channelName: string }): string {
-  return conversationMuteKey(window.channelName);
+export function windowMuteKey(window: { networkSlug: string; channelName: string }): ChannelKey {
+  return conversationMuteKey(window.networkSlug, window.channelName);
 }
 
 /**
@@ -59,7 +75,7 @@ export function windowMuteKey(window: { channelName: string }): string {
  * `undefined` (a BEAM older than this bundle, #618) means "no mutes", never
  * "everything muted" — the tolerant direction.
  */
-export function isConversationMuted(muted: MutedTargets | undefined, key: string): boolean {
+export function isConversationMuted(muted: MutedTargets | undefined, key: ChannelKey): boolean {
   return muted !== undefined && Object.hasOwn(muted, key);
 }
 
@@ -74,7 +90,7 @@ export function isConversationMuted(muted: MutedTargets | undefined, key: string
  */
 export function withConversationMute(
   muted: MutedTargets | undefined,
-  key: string,
+  key: ChannelKey,
   until: number | null,
 ): MutedTargets {
   return { ...(muted ?? {}), [key]: { until } };
@@ -83,7 +99,7 @@ export function withConversationMute(
 /** The map without `key`. Absent key ⇒ unchanged map, never an error. */
 export function withoutConversationMute(
   muted: MutedTargets | undefined,
-  key: string,
+  key: ChannelKey,
 ): MutedTargets {
   const next = { ...(muted ?? {}) };
   delete next[key];
