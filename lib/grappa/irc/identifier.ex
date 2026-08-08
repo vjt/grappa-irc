@@ -33,10 +33,11 @@ defmodule Grappa.IRC.Identifier do
   The composite is a CROSS-STACK contract with cic's `channelKey(slug, name)`
   (`cicchetto/src/lib/channelKey.ts`), byte-pinned in `IdentifierTest`. Two
   server consumers key on it today — the presence-filter pins
-  (`Grappa.PresenceFilter.Resolver`, which delegates here) and the
-  per-conversation mute (`Grappa.UserSettings` + `Grappa.Push.Triggers`,
-  #1038). A third one MUST call `channel_key/2`, never re-interpolate the
-  shape.
+  (`Grappa.PresenceFilter.Resolver`, which calls both of these directly —
+  its own `channel_key/2` was removed rather than left as a one-caller
+  shim) and the per-conversation mute (`Grappa.UserSettings` +
+  `Grappa.Push.Triggers`, #1038). A third one MUST call `channel_key/2`,
+  never re-interpolate the shape.
   """
 
   @typedoc """

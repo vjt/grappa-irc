@@ -42,8 +42,8 @@ import {
 // elapsed mutes inside `UserSettings.get_notification_prefs/1`; this is its
 // client twin, because the mirrored signal is only refreshed on a user-topic
 // (re)join and a snooze can elapse with the tab open. Doing it here rather
-// than in `shouldNotify` is what keeps that predicate pure `/4` and the
-// shared truth-table free of a `now` column.
+// than in `shouldNotify` is what keeps that predicate PURE and the shared
+// truth-table free of a `now` column.
 //
 // A malformed `until` fails OPEN (the entry is dropped, so the conversation
 // notifies) rather than silently muting forever.

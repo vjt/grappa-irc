@@ -418,8 +418,8 @@ defmodule Grappa.UserSettings do
   A `muted_targets` entry whose `until` has elapsed is dropped from the
   returned map. This is the ONLY place a mute expires — there is no
   sweeper, and `Push.Triggers.should_notify?/5` never looks at the clock,
-  which is what keeps it a pure `/4` predicate and keeps the shared
-  cic/Elixir truth-table free of a `now` column.
+  which is what keeps it a PURE predicate and keeps the shared cic/Elixir
+  truth-table free of a `now` column.
 
   Expiry is a READ-side projection, not a write: the stored row keeps the
   elapsed entry. It disappears from storage on the next
