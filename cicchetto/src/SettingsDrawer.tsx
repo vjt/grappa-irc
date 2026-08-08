@@ -18,7 +18,7 @@ import { getColoredNicklist } from "./lib/colorNicklist";
 import { windowMuteKey } from "./lib/conversationMute";
 import { syncedSetColoredNicklist, syncedSetTimeFormat } from "./lib/displayPrefs";
 import { type FontSizeKey, getFontSize, setFontSize } from "./lib/fontSize";
-import { friendlyApiError } from "./lib/friendlyApiError";
+import { errorMessage, friendlyApiError } from "./lib/friendlyApiError";
 import { getHideNextActive, setHideNextActive } from "./lib/hideNextActive";
 import { updateIdentity, updateNetworkPassword } from "./lib/lifecycle";
 import { networks, user } from "./lib/networks";
@@ -26,6 +26,7 @@ import { mirrorNotificationPrefs } from "./lib/notificationPrefs";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import {
   deletePushSubscription,
+  deviceRows,
   disablePush,
   type EnablePushResult,
   enablePush,
@@ -33,6 +34,7 @@ import {
   listPushDevices,
   type PushDeviceSummary,
   pushAvailable,
+  renamePushDevice,
   type SubscriptionId,
   subscriptionIdForEndpoint,
 } from "./lib/push";
@@ -102,6 +104,12 @@ const SettingsDrawer: Component<Props> = (props) => {
   // reason this issue exists. `null` = we cannot prove any row is ours (never
   // subscribed here / cleared site data) — then NO row gets the marker.
   const [currentDeviceId, setCurrentDeviceId] = createSignal<SubscriptionId | null>(null);
+  // #964 — inline rename. `renamingId` is the row currently in edit mode
+  // (at most one); the draft lives here rather than in the input so a
+  // re-render from a background refreshDevices cannot discard the typing.
+  const [renamingId, setRenamingId] = createSignal<SubscriptionId | null>(null);
+  const [renameDraft, setRenameDraft] = createSignal("");
+  const [renameError, setRenameError] = createSignal<string | null>(null);
   const [pushEnabled, setPushEnabled] = createSignal(false);
   const [pushBanner, setPushBanner] = createSignal<string | null>(null);
   const [savingPrefs, setSavingPrefs] = createSignal(false);
@@ -601,6 +609,37 @@ const SettingsDrawer: Component<Props> = (props) => {
       setPushEnabled(false);
       setCurrentDeviceId(null);
       await refreshDevices();
+    }
+  };
+
+  // #964 — opens the row's editor. Seeded with the STORED label, never with
+  // the derived default: pre-filling "Firefox on Linux #2" and hitting save
+  // would freeze today's ordinal into a stored label, which is the stale
+  // number the derived design exists to avoid.
+  const startRename = (device: PushDeviceSummary) => {
+    setRenameError(null);
+    setRenameDraft(device.label ?? "");
+    setRenamingId(device.id);
+  };
+
+  const cancelRename = () => {
+    setRenamingId(null);
+    setRenameError(null);
+  };
+
+  // Unlike removeDevice, a failure here is NOT swallowed: a 422 past the
+  // length cap is the user's own input coming back, and silently dropping
+  // it would look like the rename simply did not take.
+  const commitRename = async (id: SubscriptionId) => {
+    const t = token();
+    if (t === null) return;
+    try {
+      await renamePushDevice(t, id, renameDraft());
+      setRenamingId(null);
+      setRenameError(null);
+      await refreshDevices();
+    } catch (err) {
+      setRenameError(errorMessage(err));
     }
   };
 
@@ -1572,8 +1611,9 @@ const SettingsDrawer: Component<Props> = (props) => {
               <Show when={devices().length > 0}>
                 <h3>devices</h3>
                 <ul class="devices-list" data-testid="devices-list">
-                  <For each={devices()}>
-                    {(d) => {
+                  <For each={deviceRows(devices())}>
+                    {(row) => {
+                      const d = row.device;
                       // UX-4 bucket L (2026-05-19) — replace the raw UA
                       // string with `{icon} {Browser} on {OS}`. Title
                       // attribute preserves the full UA so a hover (desktop)
@@ -1588,39 +1628,111 @@ const SettingsDrawer: Component<Props> = (props) => {
                       // "3m ago → 4m ago" would out-freshen its own data.
                       const activity = formatDeviceActivity(d, Date.now());
                       const isCurrent = () => currentDeviceId() === d.id;
+                      const editing = () => renamingId() === d.id;
                       return (
                         <li>
-                          <span class="device-ua" title={d.user_agent ?? "(unknown browser)"}>
-                            <span class="device-ua-icon" aria-hidden="true">
-                              {deviceClassIcon(parsed.deviceClass)}
-                            </span>
-                            <span class="device-ua-text">
-                              <span class="device-ua-title">
-                                <span class="device-ua-name">
-                                  {parsed.browser} on {parsed.os}
-                                </span>
-                                <Show when={isCurrent()}>
-                                  <span class="device-current" data-testid="device-current">
-                                    ● this device
+                          <Show
+                            when={editing()}
+                            fallback={
+                              <>
+                                <span class="device-ua" title={d.user_agent ?? "(unknown browser)"}>
+                                  <span class="device-ua-icon" aria-hidden="true">
+                                    {deviceClassIcon(parsed.deviceClass)}
                                   </span>
-                                </Show>
-                              </span>
-                              <Show when={activity !== null}>
-                                <span class="device-activity" data-testid="device-activity">
-                                  {activity}
+                                  <span class="device-ua-text">
+                                    <span class="device-ua-title">
+                                      <span class="device-ua-name" data-testid="device-name">
+                                        {row.displayName}
+                                      </span>
+                                      <Show when={isCurrent()}>
+                                        <span class="device-current" data-testid="device-current">
+                                          ● this device
+                                        </span>
+                                      </Show>
+                                    </span>
+                                    {/* #964 — the parsed name survives as the
+                                        secondary line ONLY once a label has
+                                        taken its place above; printing it
+                                        twice on an unnamed row says nothing. */}
+                                    <Show when={row.named}>
+                                      <span class="device-activity" data-testid="device-parsed">
+                                        {parsed.browser} on {parsed.os}
+                                      </span>
+                                    </Show>
+                                    <Show when={activity !== null}>
+                                      <span class="device-activity" data-testid="device-activity">
+                                        {activity}
+                                      </span>
+                                    </Show>
+                                  </span>
+                                </span>
+                                <button
+                                  type="button"
+                                  class="device-remove"
+                                  data-testid="device-rename"
+                                  onClick={() => startRename(d)}
+                                >
+                                  rename
+                                </button>
+                                <button
+                                  type="button"
+                                  class="device-remove"
+                                  onClick={() => {
+                                    void removeDevice(d.id);
+                                  }}
+                                >
+                                  remove
+                                </button>
+                              </>
+                            }
+                          >
+                            <span class="device-rename-form">
+                              <input
+                                type="text"
+                                class="device-rename-input"
+                                data-testid="device-name-input"
+                                aria-label="device name"
+                                // Empty draft = no label yet; the placeholder shows
+                                // what the row falls back to, so clearing the field
+                                // is a visible choice rather than a blank row.
+                                placeholder={row.displayName}
+                                value={renameDraft()}
+                                onInput={(e) => setRenameDraft(e.currentTarget.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    void commitRename(d.id);
+                                  } else if (e.key === "Escape") {
+                                    e.preventDefault();
+                                    cancelRename();
+                                  }
+                                }}
+                              />
+                              <Show when={renameError() !== null}>
+                                <span class="prefs-error" data-testid="device-rename-error">
+                                  {renameError()}
                                 </span>
                               </Show>
                             </span>
-                          </span>
-                          <button
-                            type="button"
-                            class="device-remove"
-                            onClick={() => {
-                              void removeDevice(d.id);
-                            }}
-                          >
-                            remove
-                          </button>
+                            <button
+                              type="button"
+                              class="device-remove"
+                              data-testid="device-rename-save"
+                              onClick={() => {
+                                void commitRename(d.id);
+                              }}
+                            >
+                              save
+                            </button>
+                            <button
+                              type="button"
+                              class="device-remove"
+                              data-testid="device-rename-cancel"
+                              onClick={cancelRename}
+                            >
+                              cancel
+                            </button>
+                          </Show>
                         </li>
                       );
                     }}

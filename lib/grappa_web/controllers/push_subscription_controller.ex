@@ -3,7 +3,7 @@ defmodule GrappaWeb.PushSubscriptionController do
   REST surface for `Grappa.Push` subscriptions — push notifications
   cluster B1 (2026-05-14) + visitor-parity V3 (2026-05-15).
 
-  Three endpoints, all behind `[:api, :authn]`:
+  Four endpoints, all behind `[:api, :authn]`:
 
     * `POST /push/subscriptions` — body
       `{"endpoint": <url>, "keys": {"p256dh": <b64>, "auth": <b64>}}`,
@@ -24,9 +24,15 @@ defmodule GrappaWeb.PushSubscriptionController do
       protection — one subject cannot enumerate another's
       subscription IDs).
 
+    * `PATCH /push/subscriptions/:id` — body `{"label": <string|null>}`,
+      the #964 inline rename. 200 with the updated device summary;
+      400 on a missing / non-string `label`; 404 (uniform body) for
+      cross-subject or missing IDs; 422 past the length cap.
+
     * `GET /push/subscriptions` — 200 with
-      `%{subscriptions: [%{id, user_agent, created_at, last_used_at},
-      ...]}`. Powers the cic settings drawer's per-device list (B3).
+      `%{subscriptions: [%{id, user_agent, label, created_at,
+      last_used_at}, ...]}`. Powers the cic settings drawer's per-device
+      list (B3).
 
   ## Subject-scoped — V3 (2026-05-15)
 
@@ -116,6 +122,28 @@ defmodule GrappaWeb.PushSubscriptionController do
       send_resp(conn, :no_content, "")
     end
   end
+
+  @doc """
+  `PATCH /push/subscriptions/:id` — rename a device (#964). Body
+  `{"label": <string|null>}`; `null` or a blank string clears the label
+  and the row falls back to its derived name.
+
+  400 when `label` is absent or not a string/null — a type error is the
+  client's bug, not a value the 422 envelope should have to describe.
+  404 (uniform body) for cross-subject OR missing IDs, same probing
+  protection as `delete/2`. 422 when the value exceeds the length cap.
+  """
+  @spec update(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :bad_request | :not_found | Ecto.Changeset.t()}
+  def update(conn, %{"id" => id, "label" => label})
+      when is_binary(id) and (is_binary(label) or is_nil(label)) do
+    with {:ok, sub} <- Push.get_for_subject(Subject.from_assigns(conn.assigns), id),
+         {:ok, renamed} <- Push.update_label(sub, label) do
+      render(conn, :device, subscription: renamed)
+    end
+  end
+
+  def update(_, _), do: {:error, :bad_request}
 
   @doc """
   `GET /push/subscriptions` — list the authenticated subject's

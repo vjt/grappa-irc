@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearVapidPublicKeyCache,
   deletePushSubscription,
+  deviceRows,
   disablePush,
   ensurePushSubscription,
   formatDeviceActivity,
@@ -437,6 +438,7 @@ describe("formatDeviceActivity — #964: the row's activity line", () => {
   const device = (over: Partial<PushDeviceSummary>): PushDeviceSummary => ({
     id: "sub-1" as SubscriptionId,
     user_agent: "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0",
+    label: null,
     created_at: "2026-08-07T11:00:00Z",
     last_used_at: null,
     ...over,
@@ -489,5 +491,149 @@ describe("subscriptionIdForEndpoint — #964: which row is THIS device", () => {
 
   it("returns null when nothing was ever stashed", () => {
     expect(subscriptionIdForEndpoint("https://push.example/ep")).toBeNull();
+  });
+});
+
+// ── #964 — the row's NAME: user label first, derived ordinal otherwise ──
+// The label is the only stored piece; the ordinal is derived on every
+// render precisely so deleting a twin cannot strand a lone "#2".
+
+describe("deviceRows — #964: the name the device row prints", () => {
+  const FIREFOX_LINUX = "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0";
+  const CHROME_MAC =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36";
+
+  const dev = (
+    over: Omit<Partial<PushDeviceSummary>, "id"> & { id: string },
+  ): PushDeviceSummary => ({
+    user_agent: FIREFOX_LINUX,
+    label: null,
+    created_at: "2026-08-07T11:00:00Z",
+    last_used_at: null,
+    ...over,
+    id: over.id as SubscriptionId,
+  });
+
+  const nameOf = (rows: ReturnType<typeof deviceRows>, id: string): string | undefined =>
+    rows.find((r) => r.device.id === (id as SubscriptionId))?.displayName;
+
+  it("prints the parsed name, with NO ordinal, for a device alone in its group", () => {
+    const rows = deviceRows([dev({ id: "a" })]);
+    expect(rows.map((r) => r.displayName)).toEqual(["Firefox on Linux"]);
+    expect(rows[0]?.named).toBe(false);
+  });
+
+  it("prints no ordinal when the two devices parse differently", () => {
+    const rows = deviceRows([dev({ id: "a" }), dev({ id: "b", user_agent: CHROME_MAC })]);
+    expect(rows.map((r) => r.displayName)).toEqual(["Firefox on Linux", "Chrome on macOS"]);
+  });
+
+  it("numbers twins oldest-first, regardless of the order the server sent them", () => {
+    // Server order is newest-first, so the NEWER row arrives at index 0 —
+    // if the ordinal followed list position instead of created_at, the
+    // older device would be #2 and the numbers would flip whenever the
+    // list is re-sorted.
+    const rows = deviceRows([
+      dev({ id: "new", created_at: "2026-08-07T11:00:00Z" }),
+      dev({ id: "old", created_at: "2026-08-01T09:00:00Z" }),
+    ]);
+    expect(nameOf(rows, "old")).toBe("Firefox on Linux #1");
+    expect(nameOf(rows, "new")).toBe("Firefox on Linux #2");
+  });
+
+  it("keeps existing ordinals stable when a newer twin appears", () => {
+    const older = dev({ id: "old", created_at: "2026-08-01T09:00:00Z" });
+    const newer = dev({ id: "new", created_at: "2026-08-07T11:00:00Z" });
+    const third = dev({ id: "third", created_at: "2026-08-09T09:00:00Z" });
+
+    const before = deviceRows([newer, older]);
+    const after = deviceRows([third, newer, older]);
+
+    expect(nameOf(before, "old")).toBe(nameOf(after, "old"));
+    expect(nameOf(before, "new")).toBe(nameOf(after, "new"));
+    expect(nameOf(after, "third")).toBe("Firefox on Linux #3");
+  });
+
+  it("re-derives after a deletion instead of stranding a lone #2", () => {
+    // THE reason the ordinal is not a column: delete #1 and a stored #2
+    // has nobody to be second to. Derived, the survivor is alone in its
+    // group and drops the suffix entirely.
+    const older = dev({ id: "old", created_at: "2026-08-01T09:00:00Z" });
+    const newer = dev({ id: "new", created_at: "2026-08-07T11:00:00Z" });
+
+    expect(nameOf(deviceRows([newer, older]), "new")).toBe("Firefox on Linux #2");
+    expect(nameOf(deviceRows([newer]), "new")).toBe("Firefox on Linux");
+  });
+
+  it("numbers each colliding group independently", () => {
+    const rows = deviceRows([
+      dev({ id: "f1", created_at: "2026-08-01T09:00:00Z" }),
+      dev({ id: "f2", created_at: "2026-08-02T09:00:00Z" }),
+      dev({ id: "c1", user_agent: CHROME_MAC, created_at: "2026-08-03T09:00:00Z" }),
+      dev({ id: "c2", user_agent: CHROME_MAC, created_at: "2026-08-04T09:00:00Z" }),
+    ]);
+    expect(nameOf(rows, "f1")).toBe("Firefox on Linux #1");
+    expect(nameOf(rows, "f2")).toBe("Firefox on Linux #2");
+    expect(nameOf(rows, "c1")).toBe("Chrome on macOS #1");
+    expect(nameOf(rows, "c2")).toBe("Chrome on macOS #2");
+  });
+
+  it("the user's label wins over the derived name", () => {
+    const rows = deviceRows([
+      dev({ id: "a", label: "MacBook del lavoro", created_at: "2026-08-01T09:00:00Z" }),
+      dev({ id: "b", created_at: "2026-08-02T09:00:00Z" }),
+    ]);
+    expect(nameOf(rows, "a")).toBe("MacBook del lavoro");
+    expect(rows.find((r) => r.device.id === ("a" as SubscriptionId))?.named).toBe(true);
+  });
+
+  it("naming one twin leaves the other WITHOUT an orphan ordinal", () => {
+    // The pair is no longer ambiguous on screen, so the survivor must not
+    // keep a "#2" that has nothing to contrast with.
+    const rows = deviceRows([
+      dev({ id: "named", label: "fisso", created_at: "2026-08-01T09:00:00Z" }),
+      dev({ id: "bare", created_at: "2026-08-02T09:00:00Z" }),
+    ]);
+    expect(nameOf(rows, "bare")).toBe("Firefox on Linux");
+  });
+
+  it("still numbers the two that remain unlabelled among three twins", () => {
+    const rows = deviceRows([
+      dev({ id: "named", label: "fisso", created_at: "2026-08-01T09:00:00Z" }),
+      dev({ id: "x", created_at: "2026-08-02T09:00:00Z" }),
+      dev({ id: "y", created_at: "2026-08-03T09:00:00Z" }),
+    ]);
+    expect(nameOf(rows, "x")).toBe("Firefox on Linux #1");
+    expect(nameOf(rows, "y")).toBe("Firefox on Linux #2");
+  });
+
+  it("preserves the server's row order (newest first)", () => {
+    const rows = deviceRows([
+      dev({ id: "new", created_at: "2026-08-07T11:00:00Z" }),
+      dev({ id: "old", created_at: "2026-08-01T09:00:00Z" }),
+    ]);
+    expect(rows.map((r) => r.device.id)).toEqual(["new", "old"]);
+  });
+
+  it("falls back to the id for a total order when created_at does not parse", () => {
+    const rows = deviceRows([
+      dev({ id: "b", created_at: "not-a-date" }),
+      dev({ id: "a", created_at: "not-a-date" }),
+    ]);
+    expect(nameOf(rows, "a")).toBe("Firefox on Linux #1");
+    expect(nameOf(rows, "b")).toBe("Firefox on Linux #2");
+  });
+
+  it("groups two unparseable user agents together rather than splitting them", () => {
+    const rows = deviceRows([
+      dev({ id: "a", user_agent: null, created_at: "2026-08-01T09:00:00Z" }),
+      dev({ id: "b", user_agent: "", created_at: "2026-08-02T09:00:00Z" }),
+    ]);
+    expect(nameOf(rows, "a")).toBe("Unknown browser on Unknown OS #1");
+    expect(nameOf(rows, "b")).toBe("Unknown browser on Unknown OS #2");
+  });
+
+  it("returns an empty list for an empty device list", () => {
+    expect(deviceRows([])).toEqual([]);
   });
 });
