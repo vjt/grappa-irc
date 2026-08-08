@@ -22,17 +22,18 @@ import {
 // Store reads (selection, networks isAdmin, archiveContext) are mocked so the
 // gates are driven deterministically; the mobilePanel helpers are spied to
 // assert the buttons route through the shared mutex layer (CLAUDE.md: assert
-// outcomes, and reuse the ONE launcher-mutex path). channelKey is stubbed and
-// the REAL presenceFilter + members stores drive the denoise toggle wiring
+// outcomes, and reuse the ONE launcher-mutex path). The REAL channelKey,
+// presenceFilter and members stores drive the denoise toggle wiring
 // (use production code, don't re-implement logic).
 
-// #950 — `channelKey` stays stubbed (the denoise pref key), but the REST of the
-// module is real: `conversationMute` folds the mute key through
-// `canonicalChannel`, and that fold is exactly what the picker must emit.
-vi.mock("../lib/channelKey", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../lib/channelKey")>()),
-  channelKey: (slug: string, name: string) => `${slug} ${name}`,
-}));
+// #1038 — `channelKey` used to be stubbed here with an UNFOLDED
+// `${slug} ${name}`, justified by "conversationMute folds the mute key through
+// canonicalChannel anyway, and that fold is what the picker must emit". That
+// justification died with this issue: the mute key is now BUILT by
+// `channelKey`, so the stub would swallow the exact fold the picker is
+// supposed to emit and every assertion below would be measuring the stub.
+// Nothing asserted on the stubbed denoise key, so it went rather than growing
+// a fold of its own.
 
 // #950 — the mute WRITE is a server round-trip (GET-then-PUT, see
 // notificationPrefs.ts). Stub the two verbs and the mirrored signal so the
@@ -145,6 +146,7 @@ vi.mock("../lib/mobilePanel", () => ({
 }));
 
 import ConfirmModal from "../ConfirmModal";
+import { channelKey } from "../lib/channelKey";
 import { dismissConfirm } from "../lib/confirmDialog";
 import RailActions from "../RailActions";
 
@@ -681,6 +683,10 @@ describe("RailActions — detach + quit (#986)", () => {
 //     the menu, where denoise deliberately stays open to be re-flipped.
 describe("RailActions — mute snooze picker (#950)", () => {
   const querySel: Sel = { networkSlug: "freenode", channelName: "Alice", kind: "query" };
+  // #1038 — the rail writes the composite ChannelKey. `channelSel` is on
+  // "freenode", so the key it produces is that slug plus the folded target.
+  const ITALIA = channelKey("freenode", "#italia");
+  const ALICE = channelKey("freenode", "alice");
   const NOW_MS = 1_800_000_000_000;
   const NOW_SECONDS = NOW_MS / 1000;
 
@@ -725,7 +731,7 @@ describe("RailActions — mute snooze picker (#950)", () => {
   it("writes now + one hour under the folded channel key", () => {
     openWith({ ...channelSel, channelName: "#Italia" });
     pick("1h");
-    expect(applyConversationMute).toHaveBeenCalledWith("#italia", NOW_SECONDS + 3_600);
+    expect(applyConversationMute).toHaveBeenCalledWith(ITALIA, NOW_SECONDS + 3_600);
   });
 
   // The DM row of the #866 truth table, at the door: the key is the PEER, and
@@ -733,13 +739,13 @@ describe("RailActions — mute snooze picker (#950)", () => {
   it("keys a DM snooze on the folded PEER nick", () => {
     openWith(querySel);
     pick("8h");
-    expect(applyConversationMute).toHaveBeenCalledWith("alice", NOW_SECONDS + 28_800);
+    expect(applyConversationMute).toHaveBeenCalledWith(ALICE, NOW_SECONDS + 28_800);
   });
 
   it("writes a null until for the permanent offer", () => {
     openWith(channelSel);
     pick("forever");
-    expect(applyConversationMute).toHaveBeenCalledWith("#italia", null);
+    expect(applyConversationMute).toHaveBeenCalledWith(ITALIA, null);
   });
 
   it("closes the menu once the choice is made — a snooze is not a toggle", () => {
@@ -756,7 +762,7 @@ describe("RailActions — mute snooze picker (#950)", () => {
   });
 
   it("offers unmute only for a conversation that is currently muted", () => {
-    mutedHolder.value = { "#italia": { until: NOW_SECONDS + 60 } };
+    mutedHolder.value = { [ITALIA]: { until: NOW_SECONDS + 60 } };
     openWith(channelSel);
     const picker = screen.getByTestId("rail-mute-picker") as HTMLSelectElement;
     expect(Array.from(picker.options).map((o) => o.value)).toContain("off");
@@ -769,15 +775,28 @@ describe("RailActions — mute snooze picker (#950)", () => {
   });
 
   it("unmuting routes through the clear verb, not a mute with a past expiry", () => {
-    mutedHolder.value = { "#italia": { until: null } };
+    mutedHolder.value = { [ITALIA]: { until: null } };
     openWith(channelSel);
     pick("off");
-    expect(clearConversationMute).toHaveBeenCalledWith("#italia");
+    expect(clearConversationMute).toHaveBeenCalledWith(ITALIA);
     expect(applyConversationMute).not.toHaveBeenCalled();
   });
 
+  it("does NOT read as muted when only ANOTHER network's copy is muted (#1038)", () => {
+    // Same channel name, different network. Pre-#1038 the rail keyed on the
+    // bare name, so this row claimed "muted" for a conversation the operator
+    // had never silenced — and offered `off`, which would have written a
+    // clear for the other network's mute.
+    mutedHolder.value = { [channelKey("azzurra", "#italia")]: { until: null } };
+    openWith(channelSel);
+
+    expect(screen.getByTestId("rail-action-mute")).not.toHaveTextContent(/muted/i);
+    const picker = screen.getByTestId("rail-mute-picker") as HTMLSelectElement;
+    expect(Array.from(picker.options).map((o) => o.value)).not.toContain("off");
+  });
+
   it("says on the row itself whether the conversation is already silenced", () => {
-    mutedHolder.value = { "#italia": { until: NOW_SECONDS + 60 } };
+    mutedHolder.value = { [ITALIA]: { until: NOW_SECONDS + 60 } };
     openWith(channelSel);
     expect(screen.getByTestId("rail-action-mute")).toHaveTextContent(/muted/i);
   });

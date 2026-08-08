@@ -27,6 +27,7 @@
 
 import { createSignal } from "solid-js";
 import { token } from "./auth";
+import type { ChannelKey } from "./channelKey";
 import { withConversationMute, withoutConversationMute } from "./conversationMute";
 import { identityScopedStore } from "./identityScopedStore";
 import {
@@ -123,14 +124,18 @@ async function writeMutedTargets(
 }
 
 /**
- * Mute `key` (already folded via `conversationMuteKey`) until `until` — unix
- * seconds for a snooze, `null` for a permanent mute.
+ * Mute `key` (the composite `ChannelKey` from `conversationMuteKey`) until
+ * `until` — unix seconds for a snooze, `null` for a permanent mute.
+ *
+ * Typed as `ChannelKey` rather than `string` since #1038: the brand is what
+ * makes "I passed a bare channel name" a compile error instead of a mute that
+ * the server drops and nobody notices.
  */
-export function applyConversationMute(key: string, until: number | null): Promise<void> {
+export function applyConversationMute(key: ChannelKey, until: number | null): Promise<void> {
   return writeMutedTargets((muted) => withConversationMute(muted, key, until));
 }
 
 /** Unmute `key`, whatever its expiry was. */
-export function clearConversationMute(key: string): Promise<void> {
+export function clearConversationMute(key: ChannelKey): Promise<void> {
   return writeMutedTargets((muted) => withoutConversationMute(muted, key));
 }

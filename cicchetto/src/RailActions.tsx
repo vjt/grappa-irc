@@ -1,7 +1,7 @@
 import { useNavigate } from "@solidjs/router";
 import { type Component, createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import { archiveSlugForSelection } from "./lib/archiveContext";
-import { channelKey } from "./lib/channelKey";
+import { type ChannelKey, channelKey } from "./lib/channelKey";
 import { conversationMuteKey, isConversationMuted } from "./lib/conversationMute";
 import { syncedSetChannelPresencePref } from "./lib/displayPrefs";
 import { canDetach, confirmDetach, confirmQuit } from "./lib/lifecycle";
@@ -192,10 +192,10 @@ const RailActions: Component<Props> = (props) => {
   // exactly one kind, and deliberately a separate memo: denoise is a
   // per-CHANNEL presence pref (a query has no join/part traffic), the mute is
   // per-conversation.
-  const conversation = (): { channelName: string } | null => {
+  const conversation = (): { networkSlug: string; channelName: string } | null => {
     const sel = selectedChannel();
     return sel && (sel.kind === "channel" || sel.kind === "query")
-      ? { channelName: sel.channelName }
+      ? { networkSlug: sel.networkSlug, channelName: sel.channelName }
       : null;
   };
 
@@ -562,7 +562,8 @@ const RailActions: Component<Props> = (props) => {
               as the sibling denoise PUT. */}
           <Show when={conversation()}>
             {(conv) => {
-              const key = (): string => conversationMuteKey(conv().channelName);
+              const key = (): ChannelKey =>
+                conversationMuteKey(conv().networkSlug, conv().channelName);
               const isMuted = (): boolean =>
                 isConversationMuted(notificationPrefs().muted_targets, key());
               const onPick = (picked: string): void => {

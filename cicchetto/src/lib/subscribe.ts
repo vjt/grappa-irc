@@ -332,7 +332,7 @@ moduleRoot(() => {
       u &&
       ownNick !== null &&
       !effectivelyFocused(slug, displayName) &&
-      shouldNotify(message, ownNick, notificationPrefs(), highlightPatterns())
+      shouldNotify(message, slug, ownNick, notificationPrefs(), highlightPatterns())
     ) {
       playBeep();
       incrementBadge();

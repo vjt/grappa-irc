@@ -14,6 +14,7 @@ import InlineConfirmButton from "./InlineConfirmButton";
 import { windowCandidates } from "./lib/activeWindows";
 import { ApiError, displayNick, type Network, visitorNetworkNick } from "./lib/api";
 import { getSubject, token } from "./lib/auth";
+import { type ChannelKey, decodeChannelKey } from "./lib/channelKey";
 import { getColoredNicklist } from "./lib/colorNicklist";
 import {
   windowMuteKey,
@@ -541,26 +542,56 @@ const SettingsDrawer: Component<Props> = (props) => {
   // mirror, so this drawer's own picker is unchanged in behaviour.
   const mutedTargets = (): MutedTargets => notificationPrefs().muted_targets ?? {};
 
-  // #866 — the per-conversation mute list, sorted by the stored (folded) key
-  // so the rows do not reshuffle when one is added.
-  const mutedConversations = (): { key: string; until: number | null }[] =>
+  // #866 — the per-conversation mute list, sorted by the stored key so the
+  // rows do not reshuffle when one is added.
+  //
+  // #1038 — the key is now the composite ChannelKey, so the row can finally
+  // say WHICH network a mute belongs to. It is decoded through the paired
+  // `decodeChannelKey` rather than split here: one encoder, one decoder.
+  // A key that fails to decode is a pre-#1038 bare leftover the migration
+  // could not place (a subject with no credential at the time). It is still
+  // SHOWN — with no network — because it is really in the stored map and the
+  // operator must be able to remove it; hiding it would leave an entry only
+  // the DB knows about.
+  const mutedConversations = (): {
+    key: ChannelKey;
+    network: string | null;
+    target: string;
+    until: number | null;
+  }[] =>
     Object.entries(mutedTargets())
-      .map(([key, target]) => ({ key, until: target.until }))
+      .map(([raw, target]) => {
+        const key = raw as ChannelKey;
+        const decoded = decodeChannelKey(key);
+        return {
+          key,
+          network: decoded?.slug ?? null,
+          target: decoded?.name ?? key,
+          until: target.until,
+        };
+      })
       .sort((a, b) => a.key.localeCompare(b.key));
 
   // What the picker offers: the conversations the SIDEBAR shows (joined and
   // parted channels, open queries), never a free-text field over all of IRC —
-  // vjt's Q5. Deduped by the folded key because `muted_targets` is per-subject
-  // and carries no network: `#grappa` on two networks is ONE mute, and
-  // offering it twice would imply otherwise. Already-muted keys drop out, so
-  // the picker cannot re-add a row that is on screen right below it.
-  const muteCandidates = (): { key: string; label: string }[] => {
+  // vjt's Q5. Already-muted keys drop out, so the picker cannot re-add a row
+  // that is on screen right below it.
+  //
+  // #1038 — this used to DEDUPE by the folded channel name, so `#grappa` on
+  // two networks was offered once, deliberately: the key carried no network
+  // and offering it twice would have implied two independent mutes when there
+  // was one. That is exactly what vjt reversed. The key now carries the
+  // network, so the same channel name on two networks is two rows, and the
+  // label names the network to tell them apart. The Map is kept only to
+  // collapse a genuine duplicate window, which is now a real duplicate rather
+  // than two different conversations colliding.
+  const muteCandidates = (): { key: ChannelKey; label: string }[] => {
     const muted = mutedTargets();
-    const byKey = new Map<string, string>();
+    const byKey = new Map<ChannelKey, string>();
     for (const candidate of windowCandidates()) {
       const key = windowMuteKey(candidate);
       if (Object.hasOwn(muted, key) || byKey.has(key)) continue;
-      byKey.set(key, candidate.channelName);
+      byKey.set(key, `${candidate.channelName} — ${candidate.networkSlug}`);
     }
     return [...byKey]
       .map(([key, label]) => ({ key, label }))
@@ -570,7 +601,7 @@ const SettingsDrawer: Component<Props> = (props) => {
   // `until: null` — permanent. This picker mutes indefinitely; the TIME-BOXED
   // mute is the rail's picker (#950), which writes an integer `until` through
   // the same shape via `withConversationMute`.
-  const muteConversation = (key: string) => {
+  const muteConversation = (key: ChannelKey) => {
     if (key === "") return;
     void savePrefs({
       ...prefs(),
@@ -578,7 +609,7 @@ const SettingsDrawer: Component<Props> = (props) => {
     });
   };
 
-  const unmuteConversation = (key: string) => {
+  const unmuteConversation = (key: ChannelKey) => {
     void savePrefs({
       ...prefs(),
       muted_targets: withoutConversationMute(mutedTargets(), key),
@@ -1559,8 +1590,8 @@ const SettingsDrawer: Component<Props> = (props) => {
 
               <h3>muted conversations</h3>
               <p class="prefs-hint">
-                A muted conversation never notifies — not even when someone says your nick. The name
-                applies on every network.
+                A muted conversation never notifies — not even when someone says your nick. A mute
+                belongs to one network: the same channel elsewhere stays audible.
               </p>
               <label class="prefs-list">
                 mute:
@@ -1574,7 +1605,7 @@ const SettingsDrawer: Component<Props> = (props) => {
                     const el = e.currentTarget as HTMLSelectElement;
                     const picked = el.value;
                     el.value = "";
-                    muteConversation(picked);
+                    muteConversation(picked as ChannelKey);
                   }}
                   data-testid="pref-mute-picker"
                 >
@@ -1589,7 +1620,21 @@ const SettingsDrawer: Component<Props> = (props) => {
                   <For each={mutedConversations()}>
                     {(muted) => (
                       <li class="watchlists-item" data-testid={`pref-muted-${muted.key}`}>
-                        <span class="watchlists-keyword">{muted.key}</span>
+                        <span class="watchlists-keyword">{muted.target}</span>
+                        {/* #1038 — the network the mute belongs to. Rendered
+                            as its own muted span rather than folded into the
+                            keyword: the CHANNEL is what the operator scans
+                            for, the network is the disambiguator they only
+                            need when the same name appears twice. A
+                            pre-#1038 leftover the migration could not place
+                            has no network and simply shows none. */}
+                        <Show when={muted.network}>
+                          {(network) => (
+                            <span class="muted" data-testid={`pref-muted-net-${muted.key}`}>
+                              {network()}
+                            </span>
+                          )}
+                        </Show>
                         {/* #950 — a time-boxed mute (written by the rail
                             picker) says how long it has left; a permanent one
                             renders nothing extra. Computed at render from the
@@ -1610,7 +1655,7 @@ const SettingsDrawer: Component<Props> = (props) => {
                           type="button"
                           class="watchlists-remove"
                           disabled={savingPrefs()}
-                          aria-label={`Unmute ${muted.key}`}
+                          aria-label={`Unmute ${muted.target}${muted.network === null ? "" : ` on ${muted.network}`}`}
                           onClick={() => unmuteConversation(muted.key)}
                         >
                           ×
