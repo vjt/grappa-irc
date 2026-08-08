@@ -64,12 +64,12 @@ defmodule GrappaWeb.SpaController do
   @doc """
   Serves `service-worker.js` with `Cache-Control: no-cache` (nginx
   parity), so browsers always re-fetch the SW script and PWA updates
-  are never pinned by HTTP caching.
+  are never pinned by HTTP caching. The header itself comes from
+  `serve/2` — see there for why it is not set per-action.
   """
   @spec service_worker(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def service_worker(conn, _) do
     conn
-    |> put_resp_header("cache-control", "no-cache")
     |> put_resp_content_type("text/javascript")
     |> serve("service-worker.js")
   end
@@ -81,9 +81,28 @@ defmodule GrappaWeb.SpaController do
   # actions that delegate here. Content-type is set by the caller with a
   # string literal (avoids an XSS.ContentType false positive on a
   # variable type).
+  #
+  # #1063 — `cache-control: no-cache` is set HERE, not per-action.
+  # Every document served out of the bundle root is an update-delivery
+  # entry point: `service-worker.js` is how a new worker reaches the
+  # browser, and `index.html` is the SOLE carrier of the
+  # `<script src="/assets/index-<hash>.js">` tag that decides which
+  # bundle boots. A stale copy of either pins a client to an old
+  # version. The policy was written for the worker and not the shell,
+  # so it is now structural: a third document added below inherits it.
+  #
+  # MEASURED, against #1063's claim that the shell had "no cache policy
+  # at all": it did — Phoenix's controller default,
+  # `max-age=0, private, must-revalidate`, which already forbids the
+  # heuristic freshness that claim rests on. This line replaces an
+  # incidental framework default with a chosen one that reads the same
+  # in both actions; it is a durability change, NOT a fix for a client
+  # observed stranded on an old bundle.
   @sobelow_skip ["Traversal.SendFile"]
   defp serve(conn, filename) do
     path = Path.join(Bundle.root(), filename)
+
+    conn = put_resp_header(conn, "cache-control", "no-cache")
 
     if File.regular?(path) do
       send_file(conn, 200, path)

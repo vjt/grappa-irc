@@ -21,7 +21,10 @@
 //     `lib/grappa_web/router.ex` REST scope prefixes.
 //   - skipWaiting + clients.claim is correct for a shell-only
 //     cache where stale assets are never useful (matches the
-//     pre-B0 `registerType: "autoUpdate"` behavior).
+//     pre-B0 `registerType: "autoUpdate"` behavior). #1063
+//     (2026-08-08): claim alone was read as "clients end up on the
+//     new bundle", which it never meant — it transfers control
+//     without reloading. See `activate` below.
 //   - B2 (2026-05-14): push + notificationclick listeners, dedup
 //     via clients.matchAll when a window is focused on the source
 //     URL.
@@ -35,6 +38,7 @@ import { createHandlerBoundToURL, precacheAndRoute } from "workbox-precaching";
 import { NavigationRoute, registerRoute } from "workbox-routing";
 import { shouldSuppressPush } from "./lib/pushDedup";
 import { narrowPushPayload, type PushPayload, pushNotificationOptions } from "./lib/pushPayload";
+import { isSkipWaitingMessage, navigateStaleClients } from "./lib/swLifecycle";
 import { deliverNavigate } from "./lib/swNavigate";
 
 declare const self: ServiceWorkerGlobalScope & {
@@ -93,8 +97,29 @@ self.addEventListener("install", () => {
   self.skipWaiting();
 });
 
+// #1063 — claiming is not enough. `clients.claim()` takes control of open
+// windows; it does not reload them, so a claimed tab keeps executing the
+// bundle it booted with and stays stale indefinitely. The navigate pass is
+// what actually moves clients forward; which ones, and why not all of
+// them, is argued in `lib/swLifecycle.ts`.
 self.addEventListener("activate", (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    self.clients
+      .claim()
+      // AFTER the claim, not beside it: `navigate()` requires the client to
+      // be controlled by this worker.
+      .then(() => self.clients.matchAll({ type: "window" }))
+      .then(navigateStaleClients),
+  );
+});
+
+// #1063 — the listener `performRefresh` was already posting to. Without it
+// the post was a no-op; see `isSkipWaitingMessage` for why handling it
+// beats deleting the post.
+self.addEventListener("message", (event) => {
+  if (isSkipWaitingMessage(event.data)) {
+    void self.skipWaiting();
+  }
 });
 
 // ── Web Push (B2, 2026-05-14) ──────────────────────────────────────

@@ -188,51 +188,98 @@ export function refreshBannerMessage(): string {
 // proceeds best-effort: a console-noted failure at any step doesn't
 // block the reload, but the operator now has evidence of what fell
 // over if 3-press behavior reappears.
+// #1063 — ONE ceiling, applied to every step of the chain.
+//
+// Pre-#1063 only the `controllerchange` wait was bounded. `reg.update()`
+// and the caches purge were plain awaits, and a hang in either never
+// reaches the `finally` that reloads: the tap produces no reload, no
+// error and no user-visible feedback. That silent no-op is the shape of
+// the symptom #1063 reports, and the comment on the one ceiling that did
+// exist already named the risk ("iOS Safari throttling") — the guard was
+// simply applied to one await out of three.
+//
+// The value is the 2s the `controllerchange` wait already used. Nothing
+// here is worth making the operator wait longer for: every step is
+// best-effort, and arriving at the reload with a step skipped beats not
+// arriving at all.
+const REFRESH_STEP_CEILING_MS = 2000;
+
+/**
+ * Await `work`, but never longer than `REFRESH_STEP_CEILING_MS`.
+ *
+ * Never rejects and never hangs, so a caller can sequence these and still
+ * be sure it reaches its own next line. Both failure modes are distinct in
+ * the log because they mean different things to whoever is reading
+ * devtools after a refresh that did not help: `rejected` is a step that
+ * ran and failed, `exceeded` is a step that never answered at all.
+ */
+async function settleWithin(work: Promise<unknown>, label: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const outcome = await Promise.race([
+      work.then(() => "settled" as const),
+      new Promise<"exceeded">((resolve) => {
+        timer = setTimeout(() => resolve("exceeded"), REFRESH_STEP_CEILING_MS);
+      }),
+    ]);
+    if (outcome === "exceeded") {
+      console.warn(`performRefresh: ${label} exceeded its ${REFRESH_STEP_CEILING_MS}ms ceiling`);
+    }
+  } catch (err) {
+    console.warn(`performRefresh: ${label} rejected`, err);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// The claim barrier. Not routed through `settleWithin` because it is an
+// event wait, not a promise: the listener has to come off on BOTH exits or
+// it outlives the wait. Shares the ceiling constant so there is still only
+// one number.
+function awaitControllerChange(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const done = (): void => {
+      navigator.serviceWorker.removeEventListener("controllerchange", done);
+      clearTimeout(timer);
+      resolve();
+    };
+    navigator.serviceWorker.addEventListener("controllerchange", done);
+    const timer = setTimeout(done, REFRESH_STEP_CEILING_MS);
+  });
+}
+
+async function purgeCaches(): Promise<void> {
+  const keys = await caches.keys();
+  await Promise.all(keys.map((key) => caches.delete(key)));
+}
+
 export async function performRefresh(): Promise<void> {
   if (typeof window === "undefined") return;
   try {
     if ("serviceWorker" in navigator) {
       const reg = await navigator.serviceWorker.getRegistration();
       if (reg) {
-        try {
-          await reg.update();
-        } catch (err) {
-          console.warn("performRefresh: registration.update() rejected", err);
-        }
+        await settleWithin(reg.update(), "registration.update()");
         // Message whichever new-SW state we observe — waiting (install
         // already finished) or installing (install in flight). The
         // install handler calls skipWaiting() so it'll transition
         // promptly either way.
         const newSW = reg.waiting ?? reg.installing;
         newSW?.postMessage({ type: "SKIP_WAITING" });
-        // Wait for controllerchange (the new SW claimed all clients)
-        // with a 2s ceiling. Without this the cache purge below races
-        // the activation and we serve stale assets on the next
-        // navigate.
+        // Wait for controllerchange (the new SW claimed all clients).
+        // Without this the cache purge below races the activation and we
+        // serve stale assets on the next navigate.
         if (newSW && navigator.serviceWorker.controller) {
-          await new Promise<void>((resolve) => {
-            const onChange = (): void => {
-              navigator.serviceWorker.removeEventListener("controllerchange", onChange);
-              resolve();
-            };
-            navigator.serviceWorker.addEventListener("controllerchange", onChange);
-            // Ceiling: don't block reload forever if the SW never
-            // transitions (e.g. iOS Safari throttling).
-            setTimeout(() => {
-              navigator.serviceWorker.removeEventListener("controllerchange", onChange);
-              resolve();
-            }, 2000);
-          });
+          await awaitControllerChange();
         }
       }
     }
     if ("caches" in window) {
-      try {
-        const keys = await caches.keys();
-        await Promise.all(keys.map((key) => caches.delete(key)));
-      } catch (err) {
-        console.warn("performRefresh: caches purge failed", err);
-      }
+      // Bounded as a WHOLE: `caches.keys()` and the individual
+      // `caches.delete()` calls are each capable of hanging, and bounding
+      // only the first would leave the second stranded — the one-of-three
+      // mistake this fix exists to undo.
+      await settleWithin(purgeCaches(), "caches purge");
     }
   } finally {
     // Respect the e2e test-seam probe if installed; production code

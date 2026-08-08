@@ -113,6 +113,20 @@ defmodule GrappaWeb.SpaServingTest do
       assert ["text/html" <> _] = get_resp_header(conn, "content-type")
     end
 
+    # #1063 — the shell is the SOLE carrier of the
+    # `<script src="/assets/index-<hash>.js">` tag, so a browser that holds a
+    # stale shell re-boots the same bundle on every load and the refresh
+    # banner it raises can never be satisfied. The policy was written for
+    # `service_worker/2` and left off the shell; it now lives on the shared
+    # `serve/2`, so no document served out of the bundle root can ship
+    # without it.
+    test "GET / serves the shell with a revalidation policy" do
+      conn = get(html_conn(), "/")
+      assert conn.status == 200
+      assert [cache_control] = get_resp_header(conn, "cache-control")
+      assert cache_control =~ "no-cache"
+    end
+
     test "GET /a/client/deep/link serves index.html for a browser navigation" do
       conn = get(html_conn(), "/theme/some-shared-id")
       assert conn.status == 200

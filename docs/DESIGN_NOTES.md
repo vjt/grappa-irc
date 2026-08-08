@@ -34313,3 +34313,113 @@ e2e spec was REPLACED, not deleted: it was the only e2e that clicked a dismiss
 and watched the frozen badge fall, so that outcome moves onto the surviving
 door (the bar's ×) in `issue1062-far-behind-float-stack.spec.ts`, alongside the
 removal claim scoped to the stack.
+## 2026-08-08 — #1063: two of the four claims were smaller than reported
+
+#1063 listed four defects breaking one invariant — a client that opens the app
+when an update exists must end up on the latest version — and said plainly that
+the cause of the reported symptom (an iOS PWA stuck on `0.9` while the server
+advertised `0.14`) was not identified. Both halves of that framing held up.
+Two of the four shrank under measurement; the symptom is still unattributed.
+
+**The shell was not served without a cache policy.** The issue's first defect
+rests on `SpaController.index/2` emitting no `cache-control`, so a browser
+applies heuristic freshness and keeps re-booting the same bundle hash. The
+failing assertion said otherwise, literally: `max-age=0, private,
+must-revalidate` — Phoenix's controller default. `max-age=0` plus
+`must-revalidate` already forbids the heuristic freshness the argument depends
+on. The change still landed, but its justification changed with it: the policy
+moved onto the shared `serve/2` so that an incidental framework default became
+a chosen one, and so a third document served out of the bundle root inherits it
+instead of depending on whoever adds it remembering. It is durability, not a
+fix for a stranded client, and the code comment says so at the line.
+
+**For a PWA client the shell's HTTP policy is not in the update path at all.**
+The injected precache manifest carries `{"revision":"b82723f0…","url":"index.html"}`,
+and workbox fetches a revisioned entry with `__WB_REVISION__` appended — a
+different URL per deploy, so the install is a guaranteed HTTP cache miss. What
+actually serves the shell to a controlled client is the precache, via
+`createHandlerBoundToURL("index.html")`, which holds whatever the *currently
+active* worker installed. That is the real staleness mechanism, and it is a
+worker-lifecycle problem, not a caching-header one.
+
+**`clients.claim()` was read as something it never meant.** Claim transfers
+control of open windows; it does not reload them, so a claimed tab keeps
+executing the bundle it booted with. The worker is worth involving because
+every other path that moves a client forward runs in the page and keys off the
+`bundle_hash` user-topic push: the #674 auto-refresh and the manual banner both
+need the server to have told the page. A client whose socket never delivers it
+never learns, and `/service-worker.js` is served `no-cache`, so `activate` is
+new code that runs anyway.
+
+**The gate is not-visible, and it was chosen rather than defaulted.**
+Unconditional navigate was rejected: `activate` is not a proxy for "the operator
+just opened the app", because a push event triggers a worker update check too,
+so an unconditional reload can discard a foreground window mid-use hours after
+boot. Not-visible is the principle #674 already ships page-side — apply a deploy
+when it cannot eat anything in progress — and `visibilityState` is the only
+signal a worker has to approximate it. The uncomfortable half is recorded in
+`lib/swLifecycle.ts` rather than left implicit: this does **not** cover a client
+that boots stale and stays visible, which is the common shape of opening the
+app, because opening it is served the old `index.html` out of the old worker's
+precache. That window keeps the refresh banner. Two premises the issue offered
+for gating were also out of date — #772 persists the compose draft in
+sessionStorage, so an in-place navigate no longer eats what the operator was
+typing, and per the #182 note `matchAll` visibility is unreliable on iOS PWAs,
+so iOS navigates more eagerly than the gate describes.
+
+**The ceiling trades a dead button for a reload that may not take.** Only the
+`controllerchange` wait was bounded; `reg.update()` and the caches purge were
+plain awaits, and a hang in either never reaches the `finally` that reloads — no
+reload, no error, nothing visible. `settleWithin` bounds every step. But the
+purge is what empties the stale precache, so a skipped purge means the reload
+lands on the old shell again. That is the right trade — a reload the operator
+can repeat beats a tap that does nothing — and it is a different claim from "the
+refresh works", which is why the e2e deliberately does not assert convergence
+under a hung purge. It is also the strongest argument for the visible-feedback
+half of acceptance 3, which is not implemented here: the honest mechanism reuses
+`bundleRefreshNotice.ts`'s existing marker (it already carries the departing
+hash), but making `performRefresh` write it would also make a successful manual
+click announce "Updated to X" — a change to #775's behaviour, escalated rather
+than decided.
+
+**The objection that nearly withdrew the navigate pass, and the measurement
+that answered it.** cic registers with `registerType: "autoUpdate"`, and the
+emitted bundle really does carry `addEventListener("controlling", e =>
+e.isUpdate && location.reload())`. Read statically, that says the page already
+reloads itself when a new worker takes control, the whole `activate` pass is
+redundant, and its navigation races the page's own. Measured in a real chromium
+instead: a byte-different worker installed, activated and took control — one
+`controllerchange`, controller object changed — and the page did not reload.
+The claimed tab kept running the bundle it booted with. The static reading was
+wrong and the issue was right. The limit is recorded next to the code: the
+update was driven by an explicit `registration.update()` (the call
+`performRefresh` makes), not by the browser's own check on a navigation, which
+remains unmeasured.
+
+**An unconditional navigate would break the shared e2e barrier.** Discovered by
+mutation, not by review: with the gate removed, the worker navigates the page
+out from under `awaitServiceWorkerActive`'s own `page.reload()` and the fixture
+dies with `net::ERR_ABORTED`. Every spec that uses that barrier would fail, in a
+way that names nothing. That is an argument for the gate independent of the
+UX one above, and it is the reason the gate has a named e2e of its own.
+
+**The `SKIP_WAITING` post had no listener.** `install` calls `skipWaiting()`
+unconditionally, so the handshake is redundant on a healthy browser — but
+`performRefresh`'s comment describes the post as belt-and-braces for iOS
+versions that throttle install-time `skipWaiting`, and with nothing listening
+that was fiction. Handling it makes the documented behaviour true; the
+alternative the issue offered, deleting the post, would remove the only lever
+that exists exactly when `skipWaiting` is throttled.
+
+**What is still not established.** Which defect produced the reported symptom.
+The banner appeared, which means the `bundle_hash` push arrived and
+`shouldShowRefreshBanner()` was true — the page-side trigger worked and
+execution failed, which rules out the claim-but-never-navigate defect as the
+cause. The discriminating measurement the issue names, whether the page reloads
+at all on tap, needs the device and was not taken. No iOS-specific cache
+behaviour was measured, and none is asserted anywhere in the change.
+
+**Adjacent, found and not fixed:** `performRefresh` purges *all* caches,
+including the precache the new worker just populated during its install. The
+next navigation falls back to the network, which is fine online, but the PWA has
+no offline shell until the next worker install — i.e. until the next deploy.

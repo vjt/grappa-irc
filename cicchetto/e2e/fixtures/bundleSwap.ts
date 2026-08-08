@@ -60,6 +60,7 @@ const SNAPSHOT_DIR = "/work/dist-test-snapshot-ux-6-i2";
 
 const INDEX_HTML = "index.html";
 const ASSETS_DIR = "assets";
+const SERVICE_WORKER_JS = "service-worker.js";
 
 // Sentinel embedded in synthetic bundle B's index.html script tag +
 // stub JS filename. Used by the H1 self-heal path to detect "previous
@@ -193,6 +194,35 @@ export async function swapToBundleB(): Promise<BundleSwapResult> {
   await fs.rename(tmpPath, htmlPath);
 
   return { newHash, oldHash };
+}
+
+/**
+ * Make `service-worker.js` byte-different without changing what it does,
+ * so the browser installs and activates a genuinely NEW worker.
+ *
+ * #1063 needs this and `swapToBundleB` cannot provide it: that verb only
+ * rewrites `index.html` and drops a stub asset, so the worker bytes are
+ * unchanged, no new worker installs, and `activate` never runs. A spec
+ * that exercised the activate path against `swapToBundleB` alone would be
+ * hollow — it would pass without ever reaching the code under test.
+ *
+ * An appended comment is deliberately the whole change. The worker must
+ * keep working (later specs share this dist), and the thing under test is
+ * the lifecycle, not the worker's behaviour. Returns the token so a caller
+ * can assert the swap landed if it wants to.
+ */
+export async function swapServiceWorker(): Promise<string> {
+  const token = `sw-swap-${process.pid}-${Date.now().toString(36)}`;
+  const swPath = path.join(DIST_DIR, SERVICE_WORKER_JS);
+  const js = await fs.readFile(swPath, "utf8");
+
+  // Same atomic rename as the index.html swap: the browser must never
+  // fetch a half-written worker.
+  const tmpPath = `${swPath}.tmp-${token}`;
+  await fs.writeFile(tmpPath, `${js}\n// ${token}\n`);
+  await fs.rename(tmpPath, swPath);
+
+  return token;
 }
 
 // ── Internal helpers ───────────────────────────────────────────────

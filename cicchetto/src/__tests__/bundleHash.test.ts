@@ -140,6 +140,10 @@ describe("formatRefreshBanner (#292 — current vs available)", () => {
     });
 
     afterEach(() => {
+      // A test that times out never reaches its inline `useRealTimers`, and
+      // fake timers left installed poison every test after it — the failure
+      // then reads as a cascade rather than as the one red that is real.
+      vi.useRealTimers();
       Object.defineProperty(window, "location", {
         writable: true,
         configurable: true,
@@ -324,6 +328,93 @@ describe("formatRefreshBanner (#292 — current vs available)", () => {
       await refreshPromise;
       expect(reloadSpy).toHaveBeenCalledTimes(1);
       vi.useRealTimers();
+    });
+
+    // #1063 — the controllerchange wait was the ONLY bounded await of the
+    // three. `reg.update()` and the caches purge were unbounded, and a hang
+    // in either never reaches the `finally` that reloads: the tap produces
+    // no reload, no error and no feedback. That silent no-op is the shape
+    // of the reported symptom ("tapping Refresh does not bring the client
+    // forward"), which is why both are pinned here.
+    //
+    // The advance is deliberately far past any ceiling rather than the
+    // exported constant: the test then asserts "bounded", not "bounded at
+    // exactly N", and cannot be greened by an import that does not exist
+    // yet.
+    const FAR_PAST_ANY_CEILING_MS = 30_000;
+
+    it("reloads even when registration.update() never settles", async () => {
+      vi.useFakeTimers();
+      Object.defineProperty(navigator, "serviceWorker", {
+        configurable: true,
+        value: {
+          getRegistration: vi.fn().mockResolvedValue({
+            // Never settles — neither resolve nor reject. A rejection is
+            // already covered by the H2 test above; this is the hang.
+            update: vi.fn(() => new Promise<void>(() => {})),
+            waiting: null,
+            installing: null,
+          }),
+          controller: null,
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        },
+      });
+
+      const refreshPromise = performRefresh();
+      await vi.advanceTimersByTimeAsync(FAR_PAST_ANY_CEILING_MS);
+      await refreshPromise;
+      expect(reloadSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("reloads even when the caches purge never settles", async () => {
+      vi.useFakeTimers();
+      Object.defineProperty(navigator, "serviceWorker", {
+        configurable: true,
+        value: {
+          getRegistration: vi.fn().mockResolvedValue(undefined),
+        },
+      });
+      Object.defineProperty(window, "caches", {
+        configurable: true,
+        value: {
+          // `caches.keys()` hanging is the iOS-plausible half: the purge
+          // sits between the SW handshake and the reload, so a hang here
+          // strands the user exactly as an unbounded update() does.
+          keys: vi.fn(() => new Promise<string[]>(() => {})),
+          delete: cachesDeleteSpy,
+        },
+      });
+
+      const refreshPromise = performRefresh();
+      await vi.advanceTimersByTimeAsync(FAR_PAST_ANY_CEILING_MS);
+      await refreshPromise;
+      expect(reloadSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("reloads even when an individual caches.delete() never settles", async () => {
+      vi.useFakeTimers();
+      Object.defineProperty(navigator, "serviceWorker", {
+        configurable: true,
+        value: {
+          getRegistration: vi.fn().mockResolvedValue(undefined),
+        },
+      });
+      Object.defineProperty(window, "caches", {
+        configurable: true,
+        value: {
+          keys: vi.fn().mockResolvedValue(["workbox-precache-v2"]),
+          // The other half: keys() answers, the delete hangs. Bounding only
+          // `keys()` would leave this path stranded, so it gets its own
+          // assertion rather than riding on the one above.
+          delete: vi.fn(() => new Promise<boolean>(() => {})),
+        },
+      });
+
+      const refreshPromise = performRefresh();
+      await vi.advanceTimersByTimeAsync(FAR_PAST_ANY_CEILING_MS);
+      await refreshPromise;
+      expect(reloadSpy).toHaveBeenCalledTimes(1);
     });
   });
 });
