@@ -2192,6 +2192,142 @@ describe("#904 — one-deep send queue", () => {
   });
 });
 
+// #954 — the #904 pump owes the composer its text back on every failing path.
+// One "failure" is not one: a POST aborted because the DOCUMENT was destroyed
+// (reload, the #674 auto-refresh, a closed tab) may already have been accepted
+// and persisted by the server. Handing that text back re-arms the composer —
+// and #772 mirrors the draft into sessionStorage, so it survives the reload
+// and greets the operator with a line the channel is already showing. One
+// distracted Enter sends it twice.
+//
+// The abort itself is indistinguishable: `fetch` rejects with the same
+// `TypeError: Failed to fetch` for a dead Wi-Fi, a vanished server and a
+// destroyed document, so these tests drive the DOCUMENT-LIFECYCLE event
+// (`pagehide`), never an error string.
+describe("#954 — a send aborted by the document going away is not re-armed", () => {
+  const k = channelKey("freenode", "#a");
+
+  // Same controlled-ack shape the #904 block uses: the in-flight window is a
+  // real observable state, so the teardown can be placed INSIDE it.
+  const deferredSend = async () => {
+    const sb = await import("../lib/scrollback");
+    const acks: Array<{ body: string; resolve: () => void; reject: (e: unknown) => void }> = [];
+    vi.mocked(sb.sendMessage).mockImplementation(
+      (_slug: string, _target: string, body: string) =>
+        new Promise<void>((resolve, reject) => {
+          acks.push({ body, resolve, reject });
+        }),
+    );
+    return acks;
+  };
+
+  // What a destroyed document does to an in-flight POST: the page teardown
+  // fires, then the request rejects as a bare network failure.
+  const abortedByTeardown = (ack: { reject: (e: unknown) => void } | undefined): void => {
+    window.dispatchEvent(new Event("pagehide"));
+    ack?.reject(new TypeError("Failed to fetch"));
+  };
+
+  it("drops the in-flight line instead of putting it back in the composer", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const acks = await deferredSend();
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "probe954 already in the channel");
+    const done = compose.submit(k, "freenode", "#a");
+    await Promise.resolve();
+
+    abortedByTeardown(acks[0]);
+    expect(await done).toHaveProperty("error");
+
+    expect(compose.getDraft(k)).toBe("");
+  });
+
+  it("so the reload does not restore it either — the outcome the operator sees", async () => {
+    // The whole point, end to end. #772 mirrors the store into sessionStorage,
+    // so "handed back" and "armed after the reload" are the same fact; this is
+    // the one that reproduces the issue's own snapshot, where the message was
+    // in the scrollback AND staged in the composer.
+    localStorage.setItem("grappa-token", "tok");
+    const acks = await deferredSend();
+    const before = await import("../lib/compose");
+
+    before.setDraft(k, "probe954 already in the channel");
+    const done = before.submit(k, "freenode", "#a");
+    await Promise.resolve();
+    abortedByTeardown(acks[0]);
+    await done;
+
+    vi.resetModules();
+    const after = await import("../lib/compose");
+
+    expect(after.getDraft(k)).toBe("");
+  });
+
+  it("still hands back an ORDINARY failure — the guard cannot fire wide", async () => {
+    // The negative that makes the positive mean something. Same rejection
+    // class, same `TypeError: Failed to fetch`, NO teardown: a dead link owes
+    // the operator their text, and swallowing it here would be a lost message.
+    localStorage.setItem("grappa-token", "tok");
+    const acks = await deferredSend();
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "probe954 never left the building");
+    const done = compose.submit(k, "freenode", "#a");
+    await Promise.resolve();
+
+    acks[0]?.reject(new TypeError("Failed to fetch"));
+    expect(await done).toHaveProperty("error");
+
+    expect(compose.getDraft(k)).toBe("probe954 never left the building");
+  });
+
+  it("is not condemned by a teardown that happened BEFORE it was dispatched", async () => {
+    // A `pagehide` also fires on bfcache entry and the iOS PWA freeze, and
+    // those documents come back. A latched flag would drop every send failure
+    // for the rest of this document's life; the epoch is compared across the
+    // flight, so an earlier teardown is simply history.
+    localStorage.setItem("grappa-token", "tok");
+    const acks = await deferredSend();
+    const compose = await import("../lib/compose");
+
+    window.dispatchEvent(new Event("pagehide"));
+
+    compose.setDraft(k, "typed after coming back");
+    const done = compose.submit(k, "freenode", "#a");
+    await Promise.resolve();
+    acks[0]?.reject(new TypeError("Failed to fetch"));
+    await done;
+
+    expect(compose.getDraft(k)).toBe("typed after coming back");
+  });
+
+  it("still hands back the QUEUED line — nothing ever dispatched it", async () => {
+    // The precision the drop needs. Only the line that was IN THE AIR can be
+    // owned by the server; the one-deep queue behind it never left the client,
+    // so dropping it would lose a message outright rather than trade a
+    // duplicate for it.
+    localStorage.setItem("grappa-token", "tok");
+    const acks = await deferredSend();
+    const sb = await import("../lib/scrollback");
+    const compose = await import("../lib/compose");
+
+    compose.setDraft(k, "in flight");
+    const done = compose.submit(k, "freenode", "#a");
+    await Promise.resolve();
+    compose.setDraft(k, "queued behind it");
+    await compose.submit(k, "freenode", "#a");
+
+    abortedByTeardown(acks[0]);
+    await done;
+
+    expect(compose.getDraft(k)).toBe("queued behind it");
+    expect(vi.mocked(sb.sendMessage).mock.calls.length).toBe(1);
+    expect(compose.isQueueFull(k)).toBe(false);
+    expect(compose.isSending(k)).toBe(false);
+  });
+});
+
 describe("compose tabComplete (members-only, irssi-exact)", () => {
   const k = channelKey("freenode", "#a");
 

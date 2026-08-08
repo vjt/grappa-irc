@@ -15,6 +15,7 @@ import { openBanlistModal } from "./banlistModal";
 import { buildBanMask } from "./banMask";
 import { setQuery } from "./channelDirectory";
 import { type ChannelKey, canonicalChannel, channelKey, decodeChannelKey } from "./channelKey";
+import { documentTeardownEpoch, documentTornDownSince } from "./documentTeardown";
 import { friendlyError } from "./friendlyError";
 import { addHighlight, delHighlight } from "./highlightList";
 import { identityScopedStore } from "./identityScopedStore";
@@ -1836,10 +1837,16 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // minutes late, and it comes back AFTER the line that failed — the order
     // they were typed in.
     let inHand: string | null = null;
+    // #954 — the document-lifecycle epoch as of the dispatch currently in the
+    // air, re-sampled per iteration so a teardown can only condemn the line it
+    // actually overlapped. Sampled here too, because `takeDraft` throwing would
+    // reach the `finally` before the loop ever assigns it.
+    let teardownAtDispatch = documentTeardownEpoch();
     try {
       let text = takeDraft(key);
       for (;;) {
         inHand = text;
+        teardownAtDispatch = documentTeardownEpoch();
         const outcome = await dispatchDraft(key, networkSlug, channelName, text);
         // A drain that kept the buffer already put its own residue there.
         inHand = "error" in outcome && !("keptBuffer" in outcome) ? text : null;
@@ -1854,7 +1861,45 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       // and the pump owes the composer its text back on EVERY path — a throw
       // that evaporated it would be this issue's own defect, wearing a stack
       // trace. The throw still propagates; only the text is rescued.
-      const owed = inHand === null ? [] : [inHand];
+      //
+      // #954 — with ONE rejection class excepted: the document was destroyed
+      // while this line was in the air (a reload, the #674 auto-refresh, a
+      // closed tab). That abort is not evidence the send failed — the server
+      // may already own the message — and the text does not die with the page
+      // either, because #772 mirrors the draft into sessionStorage: handing it
+      // back here is what re-arms the composer, after the reload, with a line
+      // the channel already shows. So it is DROPPED. The trade is deliberate
+      // and it is vjt's (issue #954, 2026-08-08): the echo will render the
+      // message, whereas a loaded composer invites a second Enter.
+      //
+      // WHERE THE TRADE STOPS BEING FREE, measured, not assumed. On the
+      // #954 harness (real Bandit listener, real TCP kill at a controlled
+      // offset, N=20/row, three runs) an aborted POST persisted 20/20 at every
+      // offset from +1ms onward, either close mode — that is the regime this
+      // drop is for, and its 95% ceiling on non-persistence is 0.32%. The ONE
+      // exception is an RST landing at +0ms after the last body byte: 0/20,
+      // the message did NOT land, and dropping the text there LOSES it.
+      // Whether a destroyed document closes FIN or RST is UNMEASURED, and a
+      // killed tab plausibly looks like RST — so that sub-millisecond window
+      // on an otherwise idle path is a real, if narrow, loss. Engineering
+      // around it means a delivery-confirmation protocol (an idempotency key
+      // on the POST, or a correlation token echoed back), which #954 rules out
+      // as its own cluster. Do not paper over it here; widen the measurement
+      // first if it ever needs revisiting.
+      //
+      // The QUEUED line is handed back regardless: it was never dispatched, so
+      // no server can own it, and dropping it would lose a message outright.
+      //
+      // SCOPE, so nobody reads this as covering more than it does: a paced
+      // multi-line drain never reaches here with text in hand (`keptBuffer`
+      // leaves `inHand` null) because it mirrors its OWN residue into the
+      // draft, so an aborted line inside a paste is still re-armed. That is
+      // the same hazard at a different writer, and it is NOT the same rule —
+      // the drain's error mix includes explicit 429 refusals, which prove the
+      // line did not land and must never be dropped. Deliberately left to a
+      // decision of its own rather than guessed at here.
+      const destroyedInFlight = documentTornDownSince(teardownAtDispatch);
+      const owed = inHand === null || destroyedInFlight ? [] : [inHand];
       const queued = takeQueued(key);
       if (queued !== null) owed.push(queued);
       handBack(key, owed);
