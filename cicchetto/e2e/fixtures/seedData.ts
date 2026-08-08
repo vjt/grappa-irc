@@ -361,7 +361,7 @@ export function getSeededMute1038User(): SeededUser {
     password: MUTE1038_PASSWORD,
     identifier: MUTE1038_IDENTIFIER,
     token,
-    subject: JSON.parse(subjectJson) as SeededUser["subject"],
+    subjectJson,
   };
 }
 
