@@ -119,9 +119,11 @@ export function orderUnreadWindows(input: OrderInput): ActiveWindow[] {
     })
     // #1018 — the mute drops the window from the CYCLE, and it beats the
     // tier: a mention inside a muted room is still not a stop (#866 Q2,
-    // "the mute always wins"). Everything else about the window is
-    // untouched — its sidebar unread badge and the mention counters keep
-    // rendering exactly as before (#866 Q4).
+    // "the mute always wins"). The COUNTS are untouched — the badges still
+    // render, still show the same numbers, and the window still sits in the
+    // sidebar. #1077 revised #866 Q4 on one axis only: those badges now
+    // render DIMMED (`WindowBadges.MUTED_CLASS`, same predicate as here), a
+    // visual weight change and nothing else.
     .filter((r) => r.unread > 0 && !r.muted);
 
   ranked.sort((a, b) => {

@@ -1,6 +1,8 @@
 import { type Component, Show } from "solid-js";
-import type { ChannelKey } from "./lib/channelKey";
+import { type ChannelKey, decodeChannelKey } from "./lib/channelKey";
+import { conversationMuteKey, isConversationMuted } from "./lib/conversationMute";
 import { mentionCounts } from "./lib/mentions";
+import { notificationPrefs } from "./lib/notificationPrefs";
 import { farBehindByChannel } from "./lib/scrollback";
 import { eventsUnread, messagesUnread } from "./lib/selection";
 
@@ -37,6 +39,17 @@ export type WindowBadgesVariant = keyof typeof BADGE_CLASSES;
 // the token itself is one string so the two surfaces cannot drift apart.
 export const FAR_BEHIND_CLASS = "far-behind";
 
+// #1077 — the modifier that says "this conversation is muted". Same shape as
+// FAR_BEHIND_CLASS for the same reason: one token, qualified per badge class
+// in the stylesheet, so the two surfaces cannot drift.
+//
+// It REVISES #866 Q4, which had answered "does the mute change the badge?"
+// with no. It still does not change what the badge MEANS or what it counts —
+// only how loudly it says it. Dimming, deliberately not a second colour: a
+// different hue would make the muted badge a different KIND of thing, and
+// the ask was for the same thing, quieter.
+export const MUTED_CLASS = "conversation-muted";
+
 export type BadgeKind = "messages" | "events";
 
 // What the badge SAYS, as opposed to what it shows. A bare "1832" inside a
@@ -65,6 +78,25 @@ const WindowBadges: Component<Props> = (props) => {
   const messages = () => messagesUnread()[props.channelKey] ?? 0;
   const events = () => eventsUnread()[props.channelKey] ?? 0;
   const mentions = () => mentionCounts()[props.channelKey] ?? 0;
+  // #1077 — the SAME predicate the cycle-skip consults (`activeWindows`
+  // .orderUnreadWindows, #1018), so the badge cannot drift from the mute it
+  // is reporting. `notificationPrefs()` is read as a signal, not snapshotted:
+  // lifting a mute must restore full brightness without a reload.
+  //
+  // The mute key is network-AGNOSTIC (#866 Q5) while a ChannelKey is
+  // network-scoped, so only the name half feeds it — taken through the paired
+  // `decodeChannelKey` rather than a hand-rolled `indexOf(" ")`, because the
+  // key shape has exactly one decoder by contract. A query window's
+  // `channelName` IS the peer nick, so this covers DMs with no second branch.
+  // The fold is idempotent, so folding an already-folded name is free and the
+  // call site stays honest about what kind of string it needs.
+  const muted = () => {
+    const decoded = decodeChannelKey(props.channelKey);
+    return (
+      decoded !== null &&
+      isConversationMuted(notificationPrefs().muted_targets, conversationMuteKey(decoded.name))
+    );
+  };
 
   // BOTH unread badges take the treatment, not just the message one: the
   // far-behind branch of `perChannelUnread` skips local counting wholesale
@@ -87,7 +119,7 @@ const WindowBadges: Component<Props> = (props) => {
       <Show when={messages() > 0}>
         <span
           class={classes().messages}
-          classList={{ [FAR_BEHIND_CLASS]: farBehind() }}
+          classList={{ [FAR_BEHIND_CLASS]: farBehind(), [MUTED_CLASS]: muted() }}
           role="img"
           title={farBehind() ? badgeLabel(messages(), "messages", true) : undefined}
           aria-label={badgeLabel(messages(), "messages", farBehind())}
@@ -98,7 +130,7 @@ const WindowBadges: Component<Props> = (props) => {
       <Show when={events() > 0}>
         <span
           class={classes().events}
-          classList={{ [FAR_BEHIND_CLASS]: farBehind() }}
+          classList={{ [FAR_BEHIND_CLASS]: farBehind(), [MUTED_CLASS]: muted() }}
           role="img"
           title={farBehind() ? badgeLabel(events(), "events", true) : undefined}
           aria-label={badgeLabel(events(), "events", farBehind())}
@@ -107,7 +139,9 @@ const WindowBadges: Component<Props> = (props) => {
         </span>
       </Show>
       <Show when={mentions() > 0}>
-        <span class={classes().mention}>@{mentions()}</span>
+        <span class={classes().mention} classList={{ [MUTED_CLASS]: muted() }}>
+          @{mentions()}
+        </span>
       </Show>
     </>
   );

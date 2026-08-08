@@ -1729,6 +1729,32 @@ html.resize-dragging * {
   padding: 0 calc(0.3rem - 1px);
 }
 
+/* #1077 — a muted conversation's badges dim. Same hue, less brightness: the
+   ask was explicitly NOT a second colour, because a different hue would make
+   the muted badge a different KIND of thing rather than the same thing said
+   quietly.
+
+   `opacity`, which is also why it composes: `.far-behind` paints border,
+   background and colour and never touches opacity, so a window that is muted
+   AND far behind keeps both treatments instead of one winning.
+
+   All three badges, not just the two counters. #866 Q2 already ruled that a
+   mention inside a muted room is not a stop; a full-strength `@4` beside two
+   dimmed counters would contradict a decision the codebase has already made.
+
+   The events badge is written separately because it already sits at 0.7 and
+   `opacity` does not compound across declarations on one element — 0.45 there
+   would make it BRIGHTER than it is unmuted. 0.32 is the product, spelled out
+   rather than computed so the value you read is the value that renders. */
+.sidebar-msg-unread.conversation-muted,
+.sidebar-mention.conversation-muted {
+  opacity: 0.45;
+}
+
+.sidebar-events-unread.conversation-muted {
+  opacity: 0.32;
+}
+
 /* CP15 B5 — greyed window-row treatment for failed/kicked/parked
    channels and DM targets. Italic + dim mirror `.sidebar-channel-name.parted`
    (the per-channel "you've parted" visual) but apply at the row button
@@ -6854,6 +6880,18 @@ html.resize-dragging * {
 .bottom-bar-events-unread.far-behind {
   border: 1px solid var(--muted);
   padding: 0 calc(0.2rem - 1px);
+}
+
+/* #1077 — the mobile twin. Same modifier token from `WindowBadges`, same
+   values: the dimming is a statement about the conversation, and the
+   conversation is the same one on both surfaces. */
+.bottom-bar-msg-unread.conversation-muted,
+.bottom-bar-mention.conversation-muted {
+  opacity: 0.45;
+}
+
+.bottom-bar-events-unread.conversation-muted {
+  opacity: 0.32;
 }
 
 /* UX-3 DEC: dropped `.bottom-bar-tab-wrap` <span> — tab + close ×

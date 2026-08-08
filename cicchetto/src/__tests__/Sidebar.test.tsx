@@ -112,13 +112,14 @@ vi.mock("../lib/mentionsWindow", () => ({
   mentionsBundleBySlug: () => mockMentionsBundles,
 }));
 
-vi.mock("../lib/channelKey", () => ({
+// #1077 — spread the ORIGINAL and override only the encoder. The rest of the
+// module is real: `decodeChannelKey` was re-implemented here byte for byte
+// (a copy of production logic in a test, which CLAUDE.md forbids), and
+// `canonicalChannel` was simply absent — which the badge's mute lookup, which
+// reaches it through `conversationMute`, needs to resolve.
+vi.mock("../lib/channelKey", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/channelKey")>()),
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
-  decodeChannelKey: (key: string) => {
-    const sepIdx = key.indexOf(" ");
-    if (sepIdx < 0) return null;
-    return { slug: key.slice(0, sepIdx), name: key.slice(sepIdx + 1) };
-  },
 }));
 
 vi.mock("../lib/queryWindows", () => ({

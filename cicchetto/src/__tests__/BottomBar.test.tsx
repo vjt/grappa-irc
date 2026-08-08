@@ -58,7 +58,12 @@ vi.mock("../lib/mentions", () => ({
   setServerMention: vi.fn(),
 }));
 
-vi.mock("../lib/channelKey", () => ({
+// #1077 — spread the ORIGINAL and override only the encoder, so
+// `canonicalChannel` / `decodeChannelKey` resolve for real: the badge's mute
+// lookup reaches them through `conversationMute`, and a partial mock that
+// omits an export fails at first ACCESS rather than at mock time.
+vi.mock("../lib/channelKey", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/channelKey")>()),
   channelKey: (slug: string, name: string) => `${slug} ${name}`,
 }));
 
