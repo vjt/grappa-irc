@@ -61,11 +61,17 @@ defmodule Grappa.Repo.Migrations.PrefixMutedTargetsWithNetwork do
        NULL-safe for a row whose `data` has no `notification_prefs`.
     2. an `EXISTS` for at least one bare key — this is what makes a re-run a
        no-op instead of a rewrite that happens to be identity.
-    3. an `EXISTS` for at least one credential — WITHOUT it, the slug
-       subquery returns NULL for a credential-less subject, `NULL || ' ' ||
-       key` is NULL, and `json_group_object` raises on a NULL key. The guard
-       turns "cannot be migrated" into "skipped", which is the honest
-       outcome.
+    3. an `EXISTS` for at least one credential. This one was MEASURED, not
+       reasoned about, because the first version of this note guessed wrong.
+       With the guard removed, the slug subquery returns NULL for a
+       credential-less subject and `NULL || ' ' || key` is NULL — and
+       SQLite's `json_group_object` does NOT raise on a NULL key, which is
+       what the guess said. It silently yields an EMPTY object, so the
+       subject's entire mute map is WIPED with no error anywhere. The
+       migration test pins that: delete this conjunct and
+       "a subject with NO credential is left alone" fails with `left: %{}`.
+       The guard turns "cannot be migrated" into "skipped", which is the
+       honest outcome; without it the failure mode is silent data loss.
 
   ## Idempotent, and irreversible on purpose
 
