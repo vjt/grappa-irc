@@ -28,6 +28,11 @@ defmodule Grappa.MixProject do
       # this, ExUnit warns on every non-`_test.exs` file under `test/`
       # (test/support/data_case.ex etc.).
       test_load_filters: [&String.ends_with?(&1, "_test.exs")],
+      # `test/measurement/` holds on-demand measurement harnesses (GH #954),
+      # not suite tests. They are named outside `_test.exs` so a normal run
+      # never collects them — run one explicitly by path — and ignored here so
+      # the discovery scan stops warning about them on every full run.
+      test_ignore_filters: [&String.starts_with?(&1, "test/measurement/")],
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
