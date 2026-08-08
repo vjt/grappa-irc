@@ -548,6 +548,24 @@ export async function partChannel(
   }
 }
 
+// #1038 — the stored mute key: the network slug, a space, and the channel or
+// DM peer.
+//
+// Written out LITERALLY here rather than imported from `src/lib/channelKey`,
+// and that is the point: an e2e is the only witness that cic's builder, the
+// server's `Grappa.IRC.Identifier.channel_key/2` and the stored bytes are the
+// SAME string. Deriving it from cic's builder would make this agree with
+// whatever cic does, including a drift that orphans every mute already
+// stored. Same reasoning the server keeps its own literal pin in
+// `resolver_test.exs` for the presence-pin key.
+//
+// The channel is NOT folded here: every spec passes an already-lowercase name,
+// and folding would hide a stack that stopped folding. A spec that needs a
+// mixed-case target should assert the folded literal it expects.
+export function muteKey(networkSlug: string, target: string): string {
+  return `${networkSlug} ${target}`;
+}
+
 // #866 — drop every per-conversation mute for `token`'s subject.
 //
 // notification_prefs live in `user_settings` and OUTLIVE the spec that wrote
