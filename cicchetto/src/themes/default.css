@@ -8611,9 +8611,12 @@ html.resize-dragging * {
  * positioned, so it paints above the pane's in-flow content unless that
  * content is lifted — hence `.scrollback` at 1, which is a rule in its own
  * right and not decoration. The tempting alternative, `::before` at -1, is the
- * one shape that genuinely NEEDS a stacking context: resolved against the root
- * instead, a negative layer slides under the shell's opaque background and the
- * wallpaper disappears. Guarded by
+ * one shape that genuinely NEEDS a stacking context, and it was measured
+ * rather than reasoned about: mutated to -1, the guard's pixel oracle reports
+ * the wallpaper stops painting altogether — resolved against the root the
+ * negative layer lands under an opaque box the isolated pane used to keep it
+ * above. Which box was not established and is not the point; -1 is simply not
+ * available here. Guarded by
  * `e2e/tests/issue1051-card-close-above-float.spec.ts` — its second arm runs
  * with a wallpaper theme active, and its third asserts the wallpaper still
  * paints and still paints behind the conversation. No source-level assertion

@@ -36219,3 +36219,102 @@ clones` over the 237 MB grappa container log returned **0**, with a sanity
 count of 126,802 `privmsg` lines from the same grep on the same file — so in
 that run they never appeared anywhere. That is one run's observation, not a
 general claim that the bump is inert.
+
+---
+
+### 2026-08-09 — #1051 — a z-index cannot decide a hit test across a stacking context
+
+**The report that outlived its own fix.** The floated ☰ (#985) overflows a
+zero-height row into the pane's top-right corner; the #133 pinned lookup cards
+(WHOIS / WHOWAS / LUSERS) put their ✕ in that same corner. `c9333004` raised
+`.scrollback-overlay` from 5 to 42, over `.shell-chrome`'s 41, and shipped in
+v0.15.0 — and the person who filed the issue still could not tap the ✕.
+
+**Cause.** `:root.theme-has-bg .scrollback-pane { isolation: isolate }`, three
+thousand lines away in the #75 wallpaper block. `isolation` makes the pane a
+stacking context, so the overlay's 42 resolves INSIDE the pane and never meets
+`.shell-chrome`. What meets it is the pane, at `z-index: auto` — so the ☰ wins
+at any number the overlay could carry. The class is present only for operators
+running a background image. That is the whole shape of the incident: the same
+build was fixed for half the userbase and untouched for the other half, and
+every re-measurement that did not toggle that one class read green.
+
+**The general rule, which is why this is written down.** A z-index comparison
+is meaningful only between two elements in the same stacking context, and CSS
+gives no warning when they are not. The declaration that creates the context —
+`isolation`, `contain`, `filter`, `opacity`, `transform`, `will-change`, or a
+positioned ancestor carrying any z-index — is normally written in another
+block, for another feature, by someone who never heard of the two numbers it
+silently invalidates. When a z-index "does not work", the first question is
+which context it resolved in, not which number it should have been.
+
+**Fix.** Drop the isolation. The block already carried the two rules that do
+the ordering — `::before` at 0, `.scrollback` at 1 — and against the root they
+resolve in the same relative order they did inside the isolated pane, so the
+wallpaper is unchanged and the overlay is free to outrank the chrome.
+Rejected: keeping the isolation and moving the overlay or the ☰ so the two
+share a context. That is DOM surgery in `Shell.tsx` for a one-declaration
+cause, and it leaves the trap armed for the next in-pane layer that needs to
+outrank the chrome. Not available: `::before` at -1 (see below).
+
+**Why a green suite shipped it twice.** `src/__tests__/shellChromeFloat.test.ts`
+regex-extracts the two z-index values from the stylesheet TEXT and compares
+them. Both values were correct throughout the defect and the assertion passed
+the whole time. No text-level assertion can observe a stacking context: the
+declaration that creates one is not written next to the numbers it breaks, and
+a regex has no notion of an ancestor. The vitest file is kept — the numbers are
+still a contract — but it is not the guard.
+
+**Guard, and the matrix that makes it one.**
+`cicchetto/e2e/tests/issue1051-card-close-above-float.spec.ts` runs one shared
+body twice, parametrised on whether a theme carrying a real built-in wallpaper
+is active before boot; each arm asserts its own premise (`html.theme-has-bg`
+absent / present) so neither can decay into a copy of the other. Measured on
+`webkit-iphone-15`:
+
+| | no-wallpaper arm | wallpaper arm |
+|---|---|---|
+| before the fix | pass | **fail** — `elementFromPoint` at the ✕'s centre returns `.shell-chrome-rail-opener` |
+| after the fix | pass | pass |
+
+**The half the fix put at risk.** Removing the isolation is a fix only if the
+wallpaper still paints and still paints BEHIND the conversation, which no hit
+test can see. A third test measures it in pixels at opacity 1.0, where "behind"
+and "in front" are the difference between a readable channel and a blank
+photograph. The wallpaper is toggled by the #358 day/night pair — control theme
+in the light slot, wallpapered theme in the dark slot, `emulateMedia` flipping
+between them live — so the two renders share a document, a scroll offset and a
+conversation, and differ in one variable. Both themes copy the same built-in
+palette, so only `background.builtin` changes; and a first phase runs the same
+flip with the control theme in BOTH slots and requires the two images to be
+byte-identical, which measures the flip's inertness instead of arguing it.
+
+**The oracle was wrong first, and that is the reusable part.** The original
+version compared screenshots either side of a `page.reload()` that swapped the
+theme. Mutating the layer to `opacity: 0` — an invisible wallpaper, the exact
+failure the claim exists to catch — left it GREEN: a reload changes the pane
+for reasons of its own, so the difference was never attributable. A pixel
+oracle whose two samples straddle a navigation is not measuring the variable
+it names.
+
+Mutations run against the corrected oracle, each killing exactly one assertion:
+
+* `::before { opacity: 0 }` → only *"an opaque wallpaper must change what the
+  scrollback area paints"* fails.
+* `::before { z-index: 2 }` → the layer buries the text; only *"a message
+  arriving must be visible over the wallpaper"* fails, with the first claim and
+  the inertness phase passing on the way.
+* `::before { z-index: -1 }` → the first claim fails: the wallpaper stops
+  painting entirely. So -1 really is the shape that needs the stacking context
+  this change removes, and it is off the table. (Under the pre-correction
+  oracle this same mutation read green — the retraction is the point.)
+
+**What is NOT established.** The e2e is `webkit-iphone-15` only, because the
+float is mobile-only; the desktop shell never mounts it, which is an argument
+from `Shell.tsx`, not a measurement. The pixel claims cover ONE catalogue
+background at opacity 1.0 on one viewport — nothing here says anything about
+blending at the 0.3 default or about the other thirteen entries. Nothing here
+was verified against a production install. And #1042 — whether the pane's
+top-right corner is a contract for every window kind — is still open and still
+untouched: #1050 denies the rail to one window kind, #1051 lets a card cover
+the ☰, and neither settles the question.
