@@ -24,7 +24,7 @@ import { maybeEscapePwaClick } from "./lib/platform";
 // spec 2026-06-10; the spec bans lightbox-on-arrival, not click-to-view).
 //
 // Driven entirely by `mediaViewerState()` (lib/mediaViewer.ts);
-// ScrollbackPane's renderRun calls `openMediaViewer` for links that
+// `MircText`'s link handler calls `openMediaViewer` for links that
 // `classifyMediaLink` accepts. Mounted at Shell root in both branches
 // (PrivacyModal pattern).
 //
