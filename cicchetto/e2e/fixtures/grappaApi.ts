@@ -173,7 +173,16 @@ export async function loginVisitor(
 // author-nick e2e. The runner talks to grappa directly on port 4000
 // (bypassing nginx), so these mirror the cic `themesApi` verbs without the
 // browser. Only the fields the spec asserts on are typed.
-export type ThemeWire = { id: number; author: string; built_in: boolean };
+export type ThemeWire = {
+  id: number;
+  author: string;
+  built_in: boolean;
+  // The sanitized token map (`Grappa.Themes.TokenModel`). Left as an open
+  // record: specs that need a palette COPY one off a built-in rather than
+  // spell 27 colour keys, so nothing here is read field-by-field except
+  // `background`, which #1051 rewrites.
+  payload: Record<string, unknown>;
+};
 
 export async function listGalleryThemes(token: string): Promise<ThemeWire[]> {
   const res = await fetch(`${GRAPPA_BASE_URL}/themes`, {
@@ -206,6 +215,80 @@ export async function publishTheme(token: string, id: number): Promise<ThemeWire
     throw new Error(`grappaApi.publishTheme: ${id} → ${res.status} ${await res.text()}`);
   }
   return (await res.json()) as ThemeWire;
+}
+
+// #1051 — give the running subject a theme that carries a WALLPAPER, and make
+// it active, before the browser boots. The wallpaper is what engages
+// `:root.theme-has-bg`, and that class is the variable the whole #1051
+// stacking-context defect turns on: a spec that never sets it measures the
+// half of the userbase that never had the bug.
+//
+// A `builtin` background (#294) rather than an upload: it resolves to a static
+// /backgrounds/<key>.webp the stack already serves, so the spec proves the
+// layer against a REAL image with no upload round-trip and no image bytes in
+// the repo. The palette is COPIED off a built-in theme's payload — 27 colour
+// keys spelled by hand in a fixture would be a second source of truth for the
+// token vocabulary, and would rot the day the model gains a key.
+//
+// Both verbs are subject-scoped writes on a subject `fixtures/test.ts`
+// provisions and destroys per test (#1078), so this spends no shared budget:
+// the theme-create daily quota is per-(bucket, subject, day) and the subject
+// is seconds old.
+export type BuiltinBackground = { key: string; name: string; variant: string; path: string };
+
+export async function listBuiltinBackgrounds(token: string): Promise<BuiltinBackground[]> {
+  const res = await fetch(`${GRAPPA_BASE_URL}/themes/backgrounds`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    throw new Error(`grappaApi.listBuiltinBackgrounds: ${res.status} ${await res.text()}`);
+  }
+  const body = (await res.json()) as { backgrounds: BuiltinBackground[] };
+  return body.backgrounds;
+}
+
+// `builtinKey: null` is not a degenerate call — it is the CONTROL arm. Both
+// arms copy the SAME built-in palette, so a pair of themes differing only in
+// `background.builtin` isolates the wallpaper as the single variable between
+// two renders. Without that, a "with vs without wallpaper" comparison also
+// swaps 27 colours and proves nothing about the layer.
+export async function createThemeWithBuiltinBackground(
+  token: string,
+  name: string,
+  builtinKey: string | null,
+  opacity: number,
+): Promise<ThemeWire> {
+  const base = (await listGalleryThemes(token)).find((theme) => theme.built_in);
+  if (!base) {
+    throw new Error("grappaApi.createThemeWithBuiltinBackground: no built-in theme to copy");
+  }
+
+  const payload = {
+    ...base.payload,
+    background: { image_id: null, builtin: builtinKey, size: "cover", opacity },
+  };
+  const res = await fetch(`${GRAPPA_BASE_URL}/themes`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ name, payload }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `grappaApi.createThemeWithBuiltinBackground: ${res.status} ${await res.text()}`,
+    );
+  }
+  return (await res.json()) as ThemeWire;
+}
+
+export async function setActiveTheme(token: string, id: number): Promise<void> {
+  const res = await fetch(`${GRAPPA_BASE_URL}/me/theme`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ light: id }),
+  });
+  if (!res.ok) {
+    throw new Error(`grappaApi.setActiveTheme: ${id} → ${res.status} ${await res.text()}`);
+  }
 }
 
 // Admin deletes any theme (owner|admin authz) — teardown for the re-homed
