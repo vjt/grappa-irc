@@ -226,7 +226,7 @@ const LinksModal: Component = () => {
         return (
           // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape)
           // biome-ignore lint/a11y/noStaticElementInteractions: backdrop is non-interactive scrim
-          <div class="links-modal-backdrop" onClick={close}>
+          <div class="modal-backdrop modal-backdrop-viewport links-modal-backdrop" onClick={close}>
             {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
             <div
               role="dialog"
@@ -244,7 +244,7 @@ const LinksModal: Component = () => {
                 <div class="links-modal-controls">
                   <button
                     type="button"
-                    class="links-modal-zoom"
+                    class="modal-chrome-button links-modal-zoom"
                     aria-label="zoom out"
                     onClick={() =>
                       zoomAround(
@@ -260,7 +260,7 @@ const LinksModal: Component = () => {
                   </button>
                   <button
                     type="button"
-                    class="links-modal-zoom"
+                    class="modal-chrome-button links-modal-zoom"
                     aria-label="reset view"
                     onClick={resetView}
                   >
@@ -268,7 +268,7 @@ const LinksModal: Component = () => {
                   </button>
                   <button
                     type="button"
-                    class="links-modal-zoom"
+                    class="modal-chrome-button links-modal-zoom"
                     aria-label="zoom in"
                     onClick={() =>
                       zoomAround(
@@ -284,7 +284,7 @@ const LinksModal: Component = () => {
                   </button>
                   <button
                     type="button"
-                    class="links-modal-close"
+                    class="modal-chrome-button links-modal-close"
                     aria-label="close links"
                     onClick={close}
                   >

@@ -80,7 +80,7 @@ const DeleteAccountModal: Component<Props> = (props) => {
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape) */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop is a non-interactive scrim */}
       <div
-        class="delete-account-backdrop"
+        class="modal-backdrop modal-backdrop-full delete-account-backdrop"
         onClick={props.onClose}
         data-testid="delete-account-backdrop"
       >

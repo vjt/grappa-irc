@@ -50,7 +50,10 @@ const PrivacyModal: Component = () => {
       {(host) => (
         // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape)
         // biome-ignore lint/a11y/noStaticElementInteractions: backdrop is non-interactive scrim, click is convenience-only
-        <div class="image-upload-modal-backdrop" onClick={onCancel}>
+        <div
+          class="modal-backdrop modal-backdrop-full image-upload-modal-backdrop"
+          onClick={onCancel}
+        >
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
           <div
             role="dialog"

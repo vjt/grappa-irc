@@ -81,7 +81,7 @@ const RecoverModal: Component = () => {
       {(st) => (
         // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape)
         // biome-ignore lint/a11y/noStaticElementInteractions: backdrop is non-interactive scrim
-        <div class="recover-modal-backdrop" onClick={close}>
+        <div class="modal-backdrop modal-backdrop-viewport recover-modal-backdrop" onClick={close}>
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
           <div
             role="dialog"
@@ -101,7 +101,12 @@ const RecoverModal: Component = () => {
                 </span>
                 Recover your identity
               </h2>
-              <button type="button" class="recover-modal-close" aria-label="close" onClick={close}>
+              <button
+                type="button"
+                class="modal-chrome-button recover-modal-close"
+                aria-label="close"
+                onClick={close}
+              >
                 ×
               </button>
             </header>

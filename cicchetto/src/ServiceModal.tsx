@@ -83,7 +83,10 @@ const ServiceModal: Component = () => {
         return (
           // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape)
           // biome-ignore lint/a11y/noStaticElementInteractions: backdrop is non-interactive scrim
-          <div class="service-modal-backdrop" onClick={close}>
+          <div
+            class="modal-backdrop modal-backdrop-viewport service-modal-backdrop"
+            onClick={close}
+          >
             {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
             <div
               role="dialog"
@@ -104,7 +107,7 @@ const ServiceModal: Component = () => {
                 </h2>
                 <button
                   type="button"
-                  class="service-modal-close"
+                  class="modal-chrome-button service-modal-close"
                   aria-label="close"
                   onClick={close}
                 >

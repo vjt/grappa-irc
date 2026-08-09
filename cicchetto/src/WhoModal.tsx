@@ -222,7 +222,7 @@ const WhoModal: Component = () => {
         return (
           // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape)
           // biome-ignore lint/a11y/noStaticElementInteractions: backdrop is non-interactive scrim
-          <div class="who-modal-backdrop" onClick={close}>
+          <div class="modal-backdrop modal-backdrop-viewport who-modal-backdrop" onClick={close}>
             {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
             <div
               role="dialog"
@@ -239,7 +239,7 @@ const WhoModal: Component = () => {
                 </h2>
                 <button
                   type="button"
-                  class="who-modal-close"
+                  class="modal-chrome-button who-modal-close"
                   aria-label="close who"
                   onClick={close}
                 >

@@ -160,7 +160,10 @@ const BanlistModal: Component = () => {
       {(t) => (
         // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack
         // biome-ignore lint/a11y/noStaticElementInteractions: backdrop is non-interactive scrim
-        <div class="banlist-modal-backdrop" onClick={closeBanlistModal}>
+        <div
+          class="modal-backdrop modal-backdrop-viewport banlist-modal-backdrop"
+          onClick={closeBanlistModal}
+        >
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
           <div
             role="dialog"
@@ -180,7 +183,7 @@ const BanlistModal: Component = () => {
               </h2>
               <button
                 type="button"
-                class="banlist-modal-close"
+                class="modal-chrome-button banlist-modal-close"
                 aria-label="close ban list"
                 onClick={closeBanlistModal}
               >

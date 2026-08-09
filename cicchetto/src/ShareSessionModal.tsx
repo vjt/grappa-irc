@@ -165,7 +165,7 @@ const ShareSessionModal: Component = () => {
     <Show when={shareModalOpen()}>
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape) */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop is non-interactive scrim */}
-      <div class="share-modal-backdrop" onClick={close}>
+      <div class="modal-backdrop modal-backdrop-viewport share-modal-backdrop" onClick={close}>
         {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
         <div
           role="dialog"
@@ -180,7 +180,7 @@ const ShareSessionModal: Component = () => {
             <h2 id="share-modal-title">{SHARE_SESSION_LABEL}</h2>
             <button
               type="button"
-              class="share-modal-close"
+              class="modal-chrome-button share-modal-close"
               data-testid="share-modal-close"
               aria-label="close"
               onClick={close}

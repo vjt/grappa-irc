@@ -3565,17 +3565,112 @@ html.resize-dragging * {
   flex-shrink: 0;
 }
 
-/* Privacy modal — full-viewport backdrop + centred dialog. */
+/* ------------------------------------------------------------------ *
+ * Shared modal chrome (#407)
+ *
+ * The quiet button in a dialog header and the dim scrim behind the
+ * dialog, each declared once. Both were reached by copying a rule — ten
+ * `*-close` blocks and thirteen `*-backdrop` blocks — so a tap-target or
+ * safe-area fix landed on whichever modal someone had open and left the
+ * rest behind.
+ *
+ * Named for the SHAPE, not the role: eleven controls wear it and one of
+ * them is the links modal's zoom, not a ×. Calling the base
+ * `.modal-close` would have made that one keep its own fourteen-line
+ * copy, which is the defect. Same reasoning as #740's
+ * `.login-quiet-button`.
+ *
+ * Worn BESIDE the per-instance class (`class="modal-chrome-button
+ * share-modal-close"`), also the #740 convention: the base carries the
+ * paint, the per-instance name stays a selector contract for tests and
+ * e2e and a home for any real delta. `modalChrome.test.ts` pins what
+ * each site resolves to and holds the clones out.
+ * ------------------------------------------------------------------ */
 
-.image-upload-modal-backdrop {
+.modal-chrome-button {
+  /* #143 — 44px Apple-HIG tap target, matching the #133 card-× precedent
+     (`.whois-card-close` et al). Negative block margins pull the tall hit
+     box back out of the header row so the title stays vertically compact
+     (margins don't shrink the pointer target). The inline-end pull is for
+     the LAST control in the row; one that is not overrides it. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--tap-min);
+  min-height: var(--tap-min);
+  margin: -0.6rem -0.5rem -0.6rem 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.modal-chrome-button:hover {
+  color: var(--fg);
+}
+
+/* The scrim's paint and centring — but NOT its geometry. Every
+   `.modal-backdrop` must also wear exactly one of the two variants below;
+   on its own this rule is a zero-height box, which is deliberate. The two
+   geometries are a real divergence, so neither gets to be the default
+   nobody notices they inherited. */
+.modal-backdrop {
   position: fixed;
-  inset: 0;
+  left: 0;
+  right: 0;
+  top: 0;
   background: rgba(0, 0, 0, 0.6);
+  /* #987 — `center`, not `stretch`. On a flex backdrop `stretch` forces the
+     child to the full cross-axis extent, so the modal was viewport-tall
+     whatever it held and its own `max-height: var(--viewport-height)` read
+     like a cap that never bit: the box was already at that height because
+     the backdrop had put it there. Centred, the box sizes to content, the
+     max-height becomes a real ceiling, and the `overflow-y: auto` +
+     `touch-action: pan-y` already on the modal start earning their keep in
+     the tall case (large text, keyboard up) instead of being dead weight in
+     the short one. */
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
 }
+
+/* Spans the LAYOUT viewport — the pre-#143 geometry. With the iOS keyboard
+   up the visible region is shorter than the layout viewport, so a centred
+   modal can end up partly under the keyboard. Named as its own variant
+   rather than quietly upgraded to the one below: that would move pixels,
+   and #407 is an extraction. */
+.modal-backdrop-full {
+  bottom: 0;
+}
+
+/* #143 — spans only the VISIBLE region (the same keyboard-aware var the
+   modal caps its max-height on), so `align-items: center` centres within
+   what the user can see. Across the layout viewport the backdrop filled the
+   full height while the visible region (visualViewport.height) is shorter
+   when the iOS keyboard is up — parking the modal's lower half under the
+   keyboard. No offsetTop anchor is needed: UX-6-D's `installSmartScrollPin`
+   clamps `vv.offsetTop`→0 (offsetTop is WebKit-broken, #297779; the
+   `translateY(offsetTop)` cancel failed across D6/D8 — see DESIGN_NOTES
+   2026-05-21 UX-6-D).
+
+   The padding is #143's safe-area inset, mirroring `.settings-drawer`
+   (~:1702). The backdrop spans the full visible region, so a full-height
+   modal would otherwise tuck its header under the iOS notch / status bar
+   (and the home indicator at the bottom). `max()` keeps the plain 1rem
+   /1.5rem padding on non-notched devices where the env() insets are 0.
+   With `align-items: center` a short modal stays centred; a full-height
+   one shrinks to the padding box and lands between the safe areas. */
+.modal-backdrop-viewport {
+  height: var(--viewport-height, 100dvh);
+  padding: max(1rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom)) 1rem;
+}
+
+/* Privacy modal — full-viewport backdrop + centred dialog. */
 
 .image-upload-modal {
   background: var(--bg);
@@ -4108,24 +4203,6 @@ html.resize-dragging * {
 /* #157 — delete-account confirm modal (type-your-name irreversibility
    gate). Mirrors the archive-modal scaffold; red-bordered to signal the
    destructive context. */
-.delete-account-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  /* #987 — `center`, not `stretch`. On a flex backdrop `stretch` forces the
-     child to the full cross-axis extent, so the modal was viewport-tall
-     whatever it held and its own `max-height: var(--viewport-height)` read
-     like a cap that never bit: the box was already at that height because the
-     backdrop had put it there. Centred, the box sizes to content, the
-     max-height becomes a real ceiling, and the `overflow-y: auto` +
-     `touch-action: pan-y` already on the modal start earning their keep in the
-     tall case (large text, keyboard up) instead of being dead weight in the
-     short one. `.confirm-modal-backdrop` (~:3878) has always had this. */
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
 
 .delete-account-modal {
   background: var(--bg);
@@ -4221,15 +4298,6 @@ html.resize-dragging * {
    channel, disconnect network). Replaces the removed #172 hold-to-close
    gesture. Centered dialog over a dim scrim; structure mirrors
    .delete-account-* (the closest existing confirm modal). */
-.confirm-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
 
 .confirm-modal {
   background: var(--bg);
@@ -7167,38 +7235,6 @@ html.resize-dragging * {
    close button) but pins header + footer and scrolls only the body so
    the "#channel — N people" heading + "End of /NAMES list" count stay
    visible on large channels. */
-.names-modal-backdrop,
-.who-modal-backdrop,
-.links-modal-backdrop {
-  position: fixed;
-  left: 0;
-  right: 0;
-  top: 0;
-  /* #143 — span only the VISIBLE region (same keyboard-aware var the
-     modal caps its max-height on) instead of `inset: 0`, so
-     `align-items: center` centers within what the user can see. With
-     `inset: 0` the backdrop filled the full LAYOUT viewport while the
-     visible region (visualViewport.height) is shorter when the iOS
-     keyboard is up — parking the modal's lower half under the keyboard.
-     No offsetTop anchor is needed: UX-6-D's `installSmartScrollPin`
-     clamps `vv.offsetTop`→0 (offsetTop is WebKit-broken, #297779; the
-     `translateY(offsetTop)` cancel failed across D6/D8 — see
-     DESIGN_NOTES 2026-05-21 UX-6-D). */
-  height: var(--viewport-height, 100dvh);
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  /* #143 — safe-area insets, mirroring `.settings-drawer` (~:1702). The
-     backdrop spans the full visible region, so a full-height modal would
-     otherwise tuck its header under the iOS notch / status bar at the top
-     (and the home indicator at the bottom). `max()` keeps the plain 1rem
-     /1.5rem padding on non-notched devices where the env() insets are 0.
-     With `align-items: center` a short modal stays centred; a full-height
-     one shrinks to the padding box and lands between the safe areas. */
-  padding: max(1rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom)) 1rem;
-}
 
 .names-modal,
 .who-modal {
@@ -7236,33 +7272,6 @@ html.resize-dragging * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.names-modal-close,
-.who-modal-close {
-  /* #143 — 44px Apple-HIG tap target, matching the #133 card-× precedent
-     (`.whois-card-close` et al). Negative block margins pull the tall
-     hit box back out of the header row so the title stays vertically
-     compact (margins don't shrink the pointer target). */
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: var(--tap-min);
-  min-height: var(--tap-min);
-  margin: -0.6rem -0.5rem -0.6rem 0;
-  padding: 0;
-  background: transparent;
-  color: var(--muted);
-  border: none;
-  font-family: var(--font-mono);
-  font-size: 1.5rem;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.names-modal-close:hover,
-.who-modal-close:hover {
-  color: var(--fg);
 }
 
 .names-modal-body,
@@ -7539,32 +7548,12 @@ html.resize-dragging * {
   flex: 0 0 auto;
 }
 
-.links-modal-zoom,
-.links-modal-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: var(--tap-min);
-  min-height: var(--tap-min);
-  margin: -0.6rem 0;
-  padding: 0;
-  background: transparent;
-  color: var(--muted);
-  border: none;
-  font-family: var(--font-mono);
+/* The zoom pair is not the last control in the header row, so it does not
+   take the base's inline-end pull; its glyphs also sit a notch smaller than
+   the close button. Everything else is `.modal-chrome-button`. */
+.links-modal-zoom {
+  margin-right: 0;
   font-size: 1.4rem;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.links-modal-close {
-  margin-right: -0.5rem;
-  font-size: 1.5rem;
-}
-
-.links-modal-zoom:hover,
-.links-modal-close:hover {
-  color: var(--fg);
 }
 
 .links-modal-body {
@@ -7803,20 +7792,6 @@ html.resize-dragging * {
  * gradients (vjt: "a bit retro, but not skeuomorphic"). Theme-safe: only
  * existing --tokens, no new colors. */
 
-.mode-modal-backdrop {
-  position: fixed;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: var(--viewport-height, 100dvh);
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: max(1rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom)) 1rem;
-}
-
 .mode-modal {
   background: var(--bg);
   color: var(--fg);
@@ -7860,27 +7835,6 @@ html.resize-dragging * {
   text-transform: none;
   letter-spacing: normal;
   font-size: 0.85rem;
-}
-
-.mode-modal-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: var(--tap-min);
-  min-height: var(--tap-min);
-  margin: -0.6rem -0.5rem -0.6rem 0;
-  padding: 0;
-  background: transparent;
-  color: var(--muted);
-  border: none;
-  font-family: var(--font-mono);
-  font-size: 1.5rem;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.mode-modal-close:hover {
-  color: var(--fg);
 }
 
 .mode-modal-body {
@@ -8716,19 +8670,6 @@ html.resize-dragging * {
  * lines, a phosphor accent on the header sigil + a blinking block cursor in
  * the footer — a 2026 nod to classic-IRC MOTD/INFO screens. Theme-safe: all
  * colors come from the existing CSS vars, so it inherits every theme. */
-.server-reply-modal-backdrop {
-  position: fixed;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: var(--viewport-height, 100dvh);
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: max(1rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom)) 1rem;
-}
 
 .server-reply-modal {
   background: var(--bg);
@@ -8771,27 +8712,6 @@ html.resize-dragging * {
 .server-reply-modal-sigil {
   color: var(--link, var(--fg));
   margin-right: 0.5rem;
-}
-
-.server-reply-modal-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: var(--tap-min);
-  min-height: var(--tap-min);
-  margin: -0.6rem -0.5rem -0.6rem 0;
-  padding: 0;
-  background: transparent;
-  color: var(--muted);
-  border: none;
-  font-family: var(--font-mono);
-  font-size: 1.5rem;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.server-reply-modal-close:hover {
-  color: var(--fg);
 }
 
 .server-reply-modal-body {
@@ -8849,19 +8769,6 @@ html.resize-dragging * {
  * a leading phosphor `>` sigil + a borderless mono input, so the modal reads
  * as a confined terminal console for the service. Theme-safe: all colors come
  * from the existing CSS vars. */
-.service-modal-backdrop {
-  position: fixed;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: var(--viewport-height, 100dvh);
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: max(1rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom)) 1rem;
-}
 
 .service-modal {
   background: var(--bg);
@@ -8904,27 +8811,6 @@ html.resize-dragging * {
 .service-modal-sigil {
   color: var(--link, var(--fg));
   margin-right: 0.5rem;
-}
-
-.service-modal-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: var(--tap-min);
-  min-height: var(--tap-min);
-  margin: -0.6rem -0.5rem -0.6rem 0;
-  padding: 0;
-  background: transparent;
-  color: var(--muted);
-  border: none;
-  font-family: var(--font-mono);
-  font-size: 1.5rem;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.service-modal-close:hover {
-  color: var(--fg);
 }
 
 .service-modal-body {
@@ -9010,19 +8896,6 @@ html.resize-dragging * {
  * services console (backdrop scrim, pinned header, scrollable body) but
  * step-driven: an intro/email/password/register/code/verify sequence with
  * a Back/Retry/Next footer. Theme-safe — all colors from CSS vars. */
-.registration-wizard-backdrop {
-  position: fixed;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: var(--viewport-height, 100dvh);
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: max(1rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom)) 1rem;
-}
 
 .registration-wizard {
   background: var(--bg);
@@ -9060,27 +8933,6 @@ html.resize-dragging * {
 
 .registration-wizard-sigil {
   margin-right: 0.5rem;
-}
-
-.registration-wizard-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: var(--tap-min);
-  min-height: var(--tap-min);
-  margin: -0.6rem -0.5rem -0.6rem 0;
-  padding: 0;
-  background: transparent;
-  color: var(--muted);
-  border: none;
-  font-family: var(--font-mono);
-  font-size: 1.5rem;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.registration-wizard-close:hover {
-  color: var(--fg);
 }
 
 .registration-wizard-steps {
@@ -9223,19 +9075,6 @@ html.resize-dragging * {
 
 /* #581 — "recover my identity" progress modal. Server-driven step list +
  * terminal outcome. Mirrors the registration-wizard / service-modal shell. */
-.recover-modal-backdrop {
-  position: fixed;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: var(--viewport-height, 100dvh);
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: max(1rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom)) 1rem;
-}
 
 .recover-modal {
   background: var(--bg);
@@ -9273,27 +9112,6 @@ html.resize-dragging * {
 
 .recover-modal-sigil {
   margin-right: 0.5rem;
-}
-
-.recover-modal-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: var(--tap-min);
-  min-height: var(--tap-min);
-  margin: -0.6rem -0.5rem -0.6rem 0;
-  padding: 0;
-  background: transparent;
-  color: var(--muted);
-  border: none;
-  font-family: var(--font-mono);
-  font-size: 1.5rem;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.recover-modal-close:hover {
-  color: var(--fg);
 }
 
 .recover-modal-body {
@@ -9883,19 +9701,6 @@ html.resize-dragging * {
    surface that supersedes the #376 inline card: list rows + a mask-builder
    add row + a per-row remove ×. The op-gate is a HINT (`.banlist-modal-deemph`
    dims but never disables — vjt decision #2). */
-.banlist-modal-backdrop {
-  position: fixed;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: var(--viewport-height, 100dvh);
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: max(1rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom)) 1rem;
-}
 
 .banlist-modal {
   background: var(--bg);
@@ -9939,27 +9744,6 @@ html.resize-dragging * {
   text-transform: none;
   letter-spacing: normal;
   font-size: 0.85rem;
-}
-
-.banlist-modal-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: var(--tap-min);
-  min-height: var(--tap-min);
-  margin: -0.6rem -0.5rem -0.6rem 0;
-  padding: 0;
-  background: transparent;
-  color: var(--muted);
-  border: none;
-  font-family: var(--font-mono);
-  font-size: 1.5rem;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.banlist-modal-close:hover {
-  color: var(--fg);
 }
 
 .banlist-modal-body {
@@ -11994,20 +11778,6 @@ audio.media-viewer-media {
   font-size: 0.85em;
 }
 
-.share-modal-backdrop {
-  position: fixed;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: var(--viewport-height, 100dvh);
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: max(1rem, env(safe-area-inset-top)) 1rem max(1.5rem, env(safe-area-inset-bottom)) 1rem;
-}
-
 .share-modal {
   background: var(--bg);
   color: var(--fg);
@@ -12049,27 +11819,6 @@ audio.media-viewer-media {
   font-weight: normal;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-}
-
-.share-modal-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: var(--tap-min);
-  min-height: var(--tap-min);
-  margin: -0.6rem -0.5rem -0.6rem 0;
-  padding: 0;
-  background: transparent;
-  color: var(--muted);
-  border: none;
-  font-family: var(--font-mono);
-  font-size: 1.5rem;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.share-modal-close:hover {
-  color: var(--fg);
 }
 
 .share-modal-qr-heading {

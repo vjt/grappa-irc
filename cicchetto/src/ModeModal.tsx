@@ -213,7 +213,10 @@ const ModeModal: Component = () => {
       {(t) => (
         // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape)
         // biome-ignore lint/a11y/noStaticElementInteractions: backdrop is non-interactive scrim
-        <div class="mode-modal-backdrop" onClick={closeModeModal}>
+        <div
+          class="modal-backdrop modal-backdrop-viewport mode-modal-backdrop"
+          onClick={closeModeModal}
+        >
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
           <div
             role="dialog"
@@ -233,7 +236,7 @@ const ModeModal: Component = () => {
               </h2>
               <button
                 type="button"
-                class="mode-modal-close"
+                class="modal-chrome-button mode-modal-close"
                 aria-label="close modes"
                 onClick={closeModeModal}
               >

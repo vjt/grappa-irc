@@ -223,7 +223,10 @@ const RegistrationWizardModal: Component = () => {
         return (
           // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape)
           // biome-ignore lint/a11y/noStaticElementInteractions: backdrop is non-interactive scrim
-          <div class="registration-wizard-backdrop" onClick={close}>
+          <div
+            class="modal-backdrop modal-backdrop-viewport registration-wizard-backdrop"
+            onClick={close}
+          >
             {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
             <div
               role="dialog"
@@ -245,7 +248,7 @@ const RegistrationWizardModal: Component = () => {
                 </h2>
                 <button
                   type="button"
-                  class="registration-wizard-close"
+                  class="modal-chrome-button registration-wizard-close"
                   aria-label="close"
                   onClick={close}
                 >
