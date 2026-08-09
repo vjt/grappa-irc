@@ -35213,3 +35213,62 @@ follow-up slices — the machinery, the gate and the measurement pattern are wha
 this one had to establish. `wireTypesAssert.ts` is NOT in that count: it is a
 compile-time bridge between `api.ts` hand-mirrors and `wireTypes.ts`, and it
 disappears when those mirrors do, not when the narrowers do.
+
+## 2026-08-09 — #1127: the wasted band was nothing painting, and zero is not the same as absent
+
+**The defect.** On a notched iPhone PWA a black band sat under the mobile
+window-tab strip. It reads like a bar that is too tall; it is not. The mobile
+shell carried `padding-bottom: env(safe-area-inset-bottom)` on its OUTER box,
+which lifted the whole shell — background included — off the physical bottom
+edge. Nothing painted in the strip it vacated. Measured on a `320x568x2`
+emulated viewport with the iOS value injected by hand (`padding-bottom: 34px`,
+because desktop Chrome always resolves `env()` to 0): `.bottom-bar` ended 34px
+short of `innerHeight`, and `elementFromPoint` at the very bottom returned
+`DIV.shell shell-mobile` computing to `rgba(0, 0, 0, 0)` while the bar itself
+was `rgb(49, 50, 68)`. **The defect does not reproduce without a real inset** —
+any claim about it made on a desktop browser is a claim about an injected
+value, not about the device.
+
+**The ruling** (vjt, on IRC): move the whole shell down, reclaim the band. So
+the bottom edge goes flush and the tabs now sit inside the home-indicator
+strip. That is an ACCEPTED trade, not an oversight: iOS also reads gestures
+there, and if a specific tab turns out to be unusable the answer is a
+measurement, not a unilateral re-add of clearance.
+
+**Zero, not absent.** The tempting edit is to delete the declaration. It is
+wrong. Base `.shell` declares `padding-bottom: env(safe-area-inset-bottom)` at
+the SAME specificity (both are single class selectors; an `@media` prelude adds
+none), and the mobile element carries both classes — `<div class="shell
+shell-mobile">`. `.shell-mobile`'s block is later in the stylesheet, so it wins
+only for as long as it declares the property. Remove the longhand and the inset
+cascades straight back in, silently, with the diff reading like a removal.
+This is the same trap #205 already documented from the other side (left/right
+were arriving from the base rule unannounced), which is why that rule owns all
+four edges explicitly.
+
+**A dead override is a liability, so it is deleted with its reason moved.**
+`.shell-mobile:has(textarea:focus, input:focus) { padding-bottom: 0 }` existed
+because with the keyboard up iOS reports the inset relative to the DEVICE, not
+the shrunken visual viewport, so an inset on this edge double-counts against
+`--viewport-height`. That override was removed once on a speculative research
+claim (UX-6 D9) and had to be restored after live diag from a real device
+(D11). With a zero base it collapses nothing, so it is gone — but its finding
+is not a historical note, it is the precondition anyone re-adding a bottom
+inset here would violate, so it now lives on the `padding-bottom: 0`
+declaration itself.
+
+**The guard, and why it is one assertion.** `ipadSafeArea.test.ts` pinned
+`.shell` and never mentioned `.shell-mobile`, so this change would have landed
+green either way. The new guard collects every `padding-bottom` declared by a
+`.shell-mobile` rule and asserts the list is exactly `["0"]`. One assertion,
+three kills: restoring the inset, deleting the longhand (the cascade trap
+above), and appending a second declaration after the zero. Proven by
+deliberate red on each.
+
+**What is NOT claimed.** Nobody has seen this on a device. jsdom resolves no
+`env()`, Playwright's iPhone emulation resolves every inset to 0, and there is
+no way to make `env(safe-area-inset-bottom)` report 34px from CSS — a
+hand-injected `padding-bottom` would be overriding the very declaration under
+test, so the simulation would be circular. The on-device look, and whether the
+bottom row of tabs still takes taps reliably inside the home-indicator strip,
+remain owed to a real notched iPhone.
