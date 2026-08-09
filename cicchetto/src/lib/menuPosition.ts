@@ -5,15 +5,28 @@
 // (issue487-context-menu-viewport-clamp.spec.ts). jsdom returns 0-sized rects,
 // so a jsdom placement test would be hollow — hence the seam.
 //
-// placeAxis is the 1D primitive, applied independently to X and Y:
+// placeAxis is the 1D primitive, applied independently to X and Y, over the
+// half-open interval [start, end):
 //   * fits after the click          → keep the click coord (menu opens down/right)
 //   * overflows the far edge         → FLIP before the click (menu opens up/left),
 //                                      keeping the pointer on the menu edge like a
 //                                      native context menu
-//   * flip would underflow origin    → CLAMP to the last fully-visible coord (menu
+//   * flip would underflow `start`   → CLAMP to the last fully-visible coord (menu
 //                                      slides off the cursor but stays whole)
-//   * menu bigger than the viewport  → pin to 0 and let the CSS max-height +
+//   * menu bigger than the interval  → pin to `start` and let the CSS max-height +
 //                                      overflow-y:auto scroll the overflow
+//
+// #949 — that interval used to be hardcoded [0, viewport). Under
+// `viewport-fit=cover` (index.html) 0 is the PHYSICAL top of the display, so
+// the oversize pin put the first row behind the status bar, and `viewport` is
+// the physical bottom, so a flip could tuck the tail under the home indicator
+// (in landscape, the same on X against the notch/rounded corners). Both edges
+// carried the #913 defect at a different door. The interval is now the
+// caller's, taken from a fixed `inset: env(safe-area-inset-*)` frame the
+// engine lays out — see ContextMenu.tsx for why that frame, and not a JS read
+// of `env()`, is the seam.
+
+export type SafeArea = { top: number; right: number; bottom: number; left: number };
 
 export type MenuMeasurement = {
   clickX: number;
@@ -22,21 +35,44 @@ export type MenuMeasurement = {
   menuHeight: number;
   viewportWidth: number;
   viewportHeight: number;
+  safeArea: SafeArea;
 };
 
 export type MenuPlacement = { left: number; top: number };
 
-export function placeAxis(click: number, size: number, viewport: number): number {
-  if (size >= viewport) return 0;
-  if (click + size <= viewport) return click;
+export function placeAxis(click: number, size: number, start: number, end: number): number {
+  if (size >= end - start) return start;
+  if (click + size <= end) return Math.max(click, start);
   const flipped = click - size;
-  return flipped >= 0 ? flipped : viewport - size;
+  return flipped >= start ? flipped : end - size;
 }
 
+// The two bounds come from different places and both can bite:
+//   * `safeArea` is a laid-out box, so its edges are LAYOUT-viewport
+//     coordinates — it knows the notch, and does NOT know the keyboard (iOS
+//     never shrinks the layout viewport for it).
+//   * `viewport{Width,Height}` is the VISUAL viewport, which knows the
+//     keyboard and not the notch. #487 chose it deliberately: `innerHeight`
+//     stays full-screen with the keyboard up and would let the menu render
+//     underneath it.
+// They compose as a plain `min` because both are measured from the layout
+// viewport's origin — true while `visualViewport.offsetTop/Left` are 0, which
+// holds for this non-scrolling, non-zoomable app shell. A pinch-zoomed page
+// would need the offsets added in; the pre-#949 code made the same assumption.
 export function computeMenuPosition(m: MenuMeasurement): MenuPlacement {
   return {
-    left: placeAxis(m.clickX, m.menuWidth, m.viewportWidth),
-    top: placeAxis(m.clickY, m.menuHeight, m.viewportHeight),
+    left: placeAxis(
+      m.clickX,
+      m.menuWidth,
+      m.safeArea.left,
+      Math.min(m.viewportWidth, m.safeArea.right),
+    ),
+    top: placeAxis(
+      m.clickY,
+      m.menuHeight,
+      m.safeArea.top,
+      Math.min(m.viewportHeight, m.safeArea.bottom),
+    ),
   };
 }
 

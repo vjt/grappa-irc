@@ -236,6 +236,12 @@
      and the cap disappears (the #588 overflow, back). Theme-independent, so it
      lives on base :root. */
   --safe-area-inset-top: env(safe-area-inset-top, 0px);
+  /* #949 — the bottom (home-indicator) inset, same contract, same reason: the
+     `.context-menu` height cap subtracts BOTH vertical insets from a value
+     (`--viewport-height`) that JS writes, so the subtraction has to happen in
+     CSS. Sibling of the top inset above; the `0px` fallback is load-bearing
+     for the same reason. */
+  --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
   /* grappa-irc#69: theme the scrollbars. `scrollbar-color` and
      `scrollbar-width` inherit, so declaring them on :root themes every
      scrollable descendant (.scrollback, members pane, admin tables…)
@@ -6325,9 +6331,46 @@ html.resize-dragging * {
      flip/clamp (lib/menuPosition.ts) pins an oversized menu to the top edge;
      this caps it to the viewport height and scrolls the overflow so every
      item stays reachable. --viewport-height mirrors the mobile shell's
-     keyboard-aware height (main.tsx); 100vh is the desktop fallback. */
-  max-height: var(--viewport-height, 100vh);
+     keyboard-aware height (main.tsx); 100vh is the desktop fallback.
+     #949 — the cap has to lose BOTH vertical insets, and it has to do so
+     HERE rather than inline from JS: the placement effect measures the menu's
+     rendered height, so a cap applied after that measurement would place the
+     box against a height it no longer has. CSS caps first, JS then measures a
+     box that is already the right size — the same division of labour as
+     `.rail-actions-menu` (#913), which likewise lets the engine own `env()`.
+     Over-subtracts by the bottom inset while the keyboard is up (the home
+     indicator is behind the keyboard, so --viewport-height has already
+     excluded it): a menu shorter than it could be, never one that overflows.
+     `max(0px, …)` because a negative max-height is an ignored declaration —
+     i.e. no cap at all, which is the #487 overflow handed straight back. */
+  max-height: max(
+    0px,
+    calc(
+      var(--viewport-height, 100vh) -
+      var(--safe-area-inset-top, 0px) -
+      var(--safe-area-inset-bottom, 0px)
+    )
+  );
   overflow-y: auto;
+}
+
+/* #949 — the ruler the placement math measures (ContextMenu.tsx). Fixed, so
+   its rect is in the same layout-viewport coordinate space as the press
+   coordinates and the menu's own `position: fixed` box; inset by all four
+   safe-area values, so that rect IS the safe box. Nothing paints and nothing
+   hit-tests: `pointer-events: none` keeps it off the backdrop's click-outside,
+   and it carries no background, border or content.
+   The `0px` fallbacks are load-bearing, not defensive — an `inset` shorthand
+   with one unknown `env()` is invalid as a whole, which would collapse the
+   ruler to `auto` on every side and hand back a zero-sized rect: a safe box of
+   [0,0] on both axes, i.e. every menu pinned to the corner. With the fallbacks
+   an engine that knows no insets reports the full viewport, which is exactly
+   the pre-#949 behaviour. */
+.context-menu-safe-area {
+  position: fixed;
+  inset: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+    env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  pointer-events: none;
 }
 
 .context-menu-item {

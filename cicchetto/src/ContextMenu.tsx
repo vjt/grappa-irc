@@ -20,6 +20,21 @@ import { computeMenuPosition } from "./lib/menuPosition";
 // proven in the Playwright e2e (issue487-context-menu-viewport-clamp.spec.ts)
 // since jsdom gives no real viewport dimensions. Opacity-gated until measured
 // so the pre-measure frame never flashes off-screen.
+//
+// #949 — "inside the viewport" was the LAYOUT viewport, whose origin under
+// `viewport-fit=cover` is the physical top of the display. #913 fixed the same
+// arithmetic for the rail menu and named this door as carrying the residue.
+// The bounds now come from `.context-menu-safe-area`: a fixed, unpainted box
+// laid out at `inset: env(safe-area-inset-*)`, measured with
+// `getBoundingClientRect()`. That indirection is the point. #913 established
+// that JS must NOT read the inset back out of a custom property —
+// `getComputedStyle().getPropertyValue()` on an unregistered one can hand back
+// the token stream rather than a length, and the NaN that follows is swallowed
+// by any `|| 0` into a fix that looks applied and does nothing. A rect is a
+// resolved length by construction: the engine still owns `env()`, and JS reads
+// geometry, which is the one thing it can always trust. The box also yields
+// all four insets from one measurement, which is what the X axis (landscape
+// notch) and the bottom edge (home indicator) need.
 
 export type ContextMenuItem = {
   label: string;
@@ -50,6 +65,7 @@ const ContextMenu: Component<Props> = (props) => {
   };
 
   let menuRef: HTMLDivElement | undefined;
+  let safeAreaRef: HTMLDivElement | undefined;
   const [placement, setPlacement] = createSignal({
     top: props.position.y,
     left: props.position.x,
@@ -62,8 +78,9 @@ const ContextMenu: Component<Props> = (props) => {
     // signal), so `onMount` alone would strand the menu at the first coords.
     const clickX = props.position.x;
     const clickY = props.position.y;
-    if (!menuRef) return;
+    if (!menuRef || !safeAreaRef) return;
     const rect = menuRef.getBoundingClientRect();
+    const safe = safeAreaRef.getBoundingClientRect();
     setPlacement(
       computeMenuPosition({
         clickX,
@@ -80,6 +97,10 @@ const ContextMenu: Component<Props> = (props) => {
         // keyboard-up divergence is a device-dogfood item, not an e2e one.
         viewportWidth: window.visualViewport?.width ?? window.innerWidth,
         viewportHeight: window.visualViewport?.height ?? window.innerHeight,
+        // #949 — the safe box, in layout-viewport coordinates. Where there is
+        // no inset (every desktop browser, every engine in the e2e suite) this
+        // is exactly {0, w, h, 0} and the placement is bit-identical to #487's.
+        safeArea: { top: safe.top, right: safe.right, bottom: safe.bottom, left: safe.left },
       }),
     );
     setPlaced(true);
@@ -94,6 +115,10 @@ const ContextMenu: Component<Props> = (props) => {
     // out-of-pane chrome). Rendering at the document root keeps the z-300/301
     // layers above everything, themed or not.
     <Portal>
+      {/* #949 — the safe-area ruler. Unpainted and untouchable; it exists only
+          so `getBoundingClientRect()` can hand the placement math the four
+          insets as resolved lengths. */}
+      <div ref={safeAreaRef} class="context-menu-safe-area" aria-hidden="true" />
       {/* Backdrop: click-outside closes the menu. Rendered as button for a11y. */}
       <button
         type="button"
