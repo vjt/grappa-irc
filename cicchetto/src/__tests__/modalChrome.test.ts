@@ -221,6 +221,39 @@ function resolveSite(name: string): {
   return resolve(site.classList);
 }
 
+/** Every bare class in the sheet whose own rules resolve to exactly `shape`. */
+function classesResolvingTo(shape: Record<string, string>): string[] {
+  const names = new Set(
+    topLevelRules()
+      .flatMap((rule) => rule.selectors)
+      .filter((selector) => /^\.[a-z0-9-]+$/.test(selector))
+      .map((selector) => selector.slice(1)),
+  );
+  return [...names]
+    .filter((name) => {
+      const { rest } = resolve([name]);
+      const keys = Object.keys(rest);
+      return (
+        keys.length === Object.keys(shape).length && keys.every((key) => rest[key] === shape[key])
+      );
+    })
+    .sort();
+}
+
+/** Every element in the markup wearing the scrim base, as [file, classList]. */
+function backdropElements(): [string, string[]][] {
+  const found: [string, string[]][] = [];
+  for (const file of tsxFiles("src")) {
+    if (file.includes("__tests__")) continue;
+    for (const match of readFileSync(file, "utf8").matchAll(/class="([^"]+)"/g)) {
+      const classList = (match[1] ?? "").split(/\s+/).filter(Boolean);
+      if (classList.includes("modal-backdrop")) found.push([file, classList]);
+    }
+  }
+  expect(found.length, "no element wears .modal-backdrop").toBeGreaterThan(0);
+  return found;
+}
+
 describe("#407 — the modal chrome extraction changes no pixel", () => {
   it("reaches every call site through bare class selectors only", () => {
     // The premise `resolve` folds on. A descendant selector, a media query or
@@ -266,6 +299,28 @@ describe("#407 — the modal chrome extraction changes no pixel", () => {
 
   it.each(BACKDROP_FULL_SITES)("%s resolves to the one layout-viewport scrim", (name) => {
     expect(resolveSite(name)).toEqual(BACKDROP_FULL);
+  });
+
+  it("leaves no rule outside the bases carrying a base's whole shape", () => {
+    // The #740 failure mode: the shared rule lands, the clones stay beside it,
+    // and the next control is copied from whichever was nearer. Keyed on the
+    // WHOLE resolved shape rather than a few marker properties — a control
+    // that genuinely differs (`.links-modal-zoom`, two properties apart) is
+    // not a clone and must not be carved out by an exclusion list.
+    expect(classesResolvingTo(CLOSE.rest)).toEqual(["modal-chrome-button"]);
+    expect(classesResolvingTo(BACKDROP_BASE)).toEqual(["modal-backdrop"]);
+  });
+
+  it("gives every scrim exactly one geometry", () => {
+    // `.modal-backdrop` declares no bottom and no height on purpose, so a
+    // scrim that reaches the markup without a geometry variant is an
+    // invisible zero-height box — silent in CSS, and silent in a unit test
+    // that only checks the classes it expects to find.
+    const geometries = ["modal-backdrop-full", "modal-backdrop-viewport"];
+    for (const [file, classList] of backdropElements()) {
+      const worn = classList.filter((name) => geometries.includes(name));
+      expect(worn, `${file}: ${classList.join(" ")}`).toHaveLength(1);
+    }
   });
 
   it("keeps the two scrim geometries distinct rather than flattening them", () => {
@@ -369,6 +424,21 @@ const ZOOM_DELTA = { "margin-right": "0", "font-size": "1.4rem" };
 const ZOOM = {
   rest: { ...CLOSE.rest, ...ZOOM_DELTA },
   hover: { ...CLOSE.hover, ...ZOOM_DELTA },
+};
+
+// What `.modal-backdrop` declares on its own: paint and centring, no geometry.
+// Spelled out rather than derived from the two maps below, so the clone guard
+// keeps working off a transcription of the stylesheet and not off itself.
+const BACKDROP_BASE = {
+  position: "fixed",
+  left: "0",
+  right: "0",
+  top: "0",
+  background: "rgba(0, 0, 0, 0.6)",
+  display: "flex",
+  "align-items": "center",
+  "justify-content": "center",
+  "z-index": "1000",
 };
 
 const BACKDROP_VIEWPORT_REST = {
