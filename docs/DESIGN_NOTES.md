@@ -35107,3 +35107,71 @@ second copy of the flow set in a module that has no business owning one —
 worse than the gap. The set is closed by construction upstream:
 `Admission.check_capacity/1` takes a `capacity_input` whose `flow` is typed
 `flow()`.
+
+## 2026-08-09 — #499: the circuit was not bleeding across tests, it was healing inside one
+
+**The filed diagnosis did not survive measurement.** Issue #499 attributed an
+intermittent `login_test.exs` red to `Grappa.Admission.NetworkCircuit`'s
+singleton ETS table bleeding across tests serially — sqlite recycles rowids, so
+a fresh network inherits an id a previous test already tripped the circuit for.
+It proposed two test-infra routes: reset the ETS table between tests, or hand
+the affected tests non-colliding ids. Neither was implemented, because neither
+addresses what actually happens.
+
+Two facts falsify the premise. First, `login_test.exs` has called
+`AdmissionStateHelpers.reset_network_circuit/0` from a per-test `setup` since
+2026-05-14 (an inline ETS-delete loop before that) — the very mitigation the
+issue proposes as the fix had been in that file for two months before the issue
+was filed. Second, the instrumented failure shows no foreign row at all. The
+`network_circuit_open` case, run under host load with the ETS snapshot printed
+at the cast drain, reported one row — `{1, 3, _, :open, _}`, count exactly at
+threshold, written by that same test — and `NetworkCircuit.check/1` on the very
+next line already returning `:ok`. Nothing bled in. The circuit the test had
+just opened had already closed itself.
+
+**`check/1` is the only clock-dependent reader, and the test-env cooldown is
+shorter than the tests that depend on it.** An `:open` row reads back as `:ok`
+the instant `now >= cooled_at_ms`; no writer is involved, so no reset can
+prevent it. `config/test.exs` sets `network_circuit_cooldown_ms: 50` (±25%
+jitter → 38..62ms) to keep the cooldown-expiry cases cheap to sleep through.
+That is shorter than the work a *consumer* test does between opening the circuit
+and reading it back, so under load the precondition evaporates and the consumer
+asserts against a circuit it never closed. The same shape existed at ten sites
+across six files: every one of them established "circuit is open" through the
+production transition and then read it back through a clock-dependent path
+(`check/1`, or `AdminWire`'s `retry_after_seconds`).
+
+**The cure is a precondition that cannot decay.**
+`AdmissionStateHelpers.open_circuit!/1` drives the real `record_failure/1`
+transition, raises if it did not land, then pins `cooled_at_ms` a minute out.
+The production module is untouched — its runtime shape is deliberate, and the
+defect was never in it. The split is principled rather than an exclusion list:
+tests where open-ness is a PRECONDITION use the helper; the four whose SUBJECT
+is the clock — the `retry_after` upper bound, cooldown expiry, and the
+`:cooldown_expired` telemetry pair — keep driving the real cooldown, because
+pinning it would delete what they test.
+
+**Raising the cooldown was rejected.** It is the same band-aid one size larger:
+the race window widens but stays a race, and it would have slowed the two
+expiry tests by exactly the amount of headroom bought. A flake is cured by
+making the setup deterministic, not by giving it more room to be lucky in.
+
+**The guard is deterministic where the bug was probabilistic.** The new case
+sleeps twice the configured cooldown — clearing the jitter ceiling — and
+asserts the circuit still reads open. Deleting the pin from the helper turns
+exactly that one assertion red, every run, with `right: :ok`: the circuit
+self-healing, named. Measured incidence for the original symptom: 3 reds in 30
+loaded runs before, 0 in 20 after, with the deterministic guard as the proof
+and the load runs as corroboration.
+
+**What this did not fix, and should not be read as fixing.** Under the same
+load `login_test.exs` reds on eleven other cases that never touch the circuit —
+`433` nick negotiation, handshake waits, the mode-2 admission guard. They share
+a substrate (the in-process `IRCServer` fake plus `pool_size: 1` sqlite), not a
+cause. One of them is circuit-adjacent enough to be worth naming: the `#960`
+boundary case fails on its FIRST assertion, with `Login.login` returning
+`{:error, :connect_timeout}` while the session process logs
+`{:connect_failed, :econnrefused}` — the login surfaces a timeout for what was
+actually a refusal, losing the diagnosis. That is a separate defect on the login
+path, not circuit isolation, and it is left for its own issue rather than
+widened into this one.
