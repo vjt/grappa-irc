@@ -2860,13 +2860,33 @@ const ScrollbackPane: Component<Props> = (props) => {
         );
         return;
       }
-      case "marker-activation":
+      case "marker-activation": {
         // W2/W3 — jump to the rendered unread divider (or the tail if none).
         // `scrollToActivation` owns the rAF×2 + the frozen bail (unreachable
         // here: overlay-freeze outranks marker-activation, so we only dispatch
         // marker-activation when not frozen).
+        //
+        // #1089 — SYNC leg first, then the deferred one, exactly as the
+        // overlay-freeze case above does and for the same reason ("no transient
+        // frame for a reader to catch"). This dispatch reacts to a rows change,
+        // and the rows change has ALREADY mutated the DOM by the time the
+        // applier runs — we are post-commit, pre-paint. Deferring the whole
+        // correction to `scrollToActivation`'s rAF×2 therefore concedes one
+        // COMPOSITED frame at the displaced position. Measured entering an
+        // unread window: the read-context page (`loadInitialScrollback`'s
+        // anchored `before` fetch — the eager join-ok refresh only loads rows
+        // AFTER the read cursor, so this page always arrives on focus) prepends
+        // ~1049px ABOVE the viewport, and for one frame the reader saw the
+        // divider shoved off the bottom of the pane before the correction pulled
+        // it back — "it paints once, then jumps". The applier gated this intent
+        // on a rendered divider, so the node is here; the rAF×2 that follows
+        // still owns the settled read (`followMode`/`atBottomNow` from the real
+        // distance) and corrects any pre-layout inaccuracy of this leg.
+        const marker = listRef.querySelector('[data-testid="unread-marker"]') as HTMLElement | null;
+        marker?.scrollIntoView?.({ block: "start" });
         scrollToActivation("marker-or-tail", false);
         return;
+      }
       case "tail-follow":
         // W5 — stick to the tail via the MEASURED-settle wait (#608 STEP 6),
         // replacing the fixed rAF×2 which is not a layout flush on iOS WebKit and

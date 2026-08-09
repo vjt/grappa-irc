@@ -34571,3 +34571,68 @@ spec's width assertion also covers Networks only: Visitors and Sessions are
 empty in the baseline seed, and Users/Credentials are populated but were never
 measured at 393px, so "no admin tab scrolls horizontally" is asserted for the
 one tab the issue scoped and believed for the rest on the strength of `a669e8cf`.
+
+---
+
+## 2026-08-09 — #1089: entering an unread window flickered, and it was not the hide
+
+The report: switching into a window that has unread paints once, then jumps. The
+issue arrived half-diagnosed and named a suspect — the applier's marker
+RE-ASSERT runs `scrollToActivation("marker-or-tail", false)`, i.e. WITHOUT the
+#130 flicker hide, while the establishing write runs with it. The issue also
+said, correctly, that the suspicion had not been measured.
+
+**Measured, the hide is innocent.** Sampling `visibility` + the divider's
+on-screen offset every animation frame through a switch shows the establishing
+write parking the pane on the divider and revealing it correctly. What comes
+AFTER the reveal is the flicker, and there are two of them:
+
+1. **A `tail-only` activation writing straight through a live marker
+   activation.** The ResizeObserver arm (`moved && followMode()`) fires because
+   the container box does change between the $server pane and a channel pane,
+   and the switch pre-arms `followMode` as an intent default. It tail-snapped
+   the reader ~18ms after the reveal, leaving the divider 365px off-screen ABOVE
+   for ~400ms. `marker-activation` outranks `tail-follow` in `resolveIntent`, so
+   this write should never have happened — `applyActivation` declares only its
+   own intent plus overlay-freeze, which is the STEP-3 behaviour-preserving
+   choice made explicit in its doc comment, and this is the hole it leaves.
+2. **The read-context page landing.** The eager join-ok `refreshScrollback`
+   resumes from the READ CURSOR, so entering an unread window has only the
+   unread rows loaded and `loadInitialScrollback`'s anchored `before` page
+   ALWAYS arrives on focus. It prepends ~1049px ABOVE the viewport; scrollTop
+   does not change, so the content moves under the reader and the correction —
+   deferred to `scrollToActivation`'s rAF×2 — concedes one COMPOSITED frame with
+   the divider shoved off the bottom.
+
+**The cure is one sync leg, and it is the file's own idiom.** The applier's
+marker-activation dispatch now scrolls the divider into view SYNCHRONOUSLY
+before delegating to `scrollToActivation`, exactly as the `overlay-freeze` case
+two branches above already does ("re-assert SYNC — no transient frame for a
+reader to catch — then AGAIN across rAF×2"). The applier runs post-commit,
+pre-paint, so the sync leg lands in the same frame as the rows change that
+displaced the pane; the rAF×2 still owns the settled read (`followMode` /
+`atBottomNow` from the real distance) and corrects any pre-layout inaccuracy.
+
+**Displacement (1) needed no code.** A precedence fix in `applyActivation` (also
+declaring the derived marker-activation intent so a `tail-only` activation
+yields) was written, measured, and REMOVED: with the pane parked on the divider
+from the commit frame onward, the tail write stops happening at all, and
+deleting the precedence fix left the spec green. It was inert, so it did not
+ship. The underlying gap — `applyActivation` cannot lose to anything but
+overlay-freeze — is still there and is worth its own issue; it is simply not
+what produced this bug.
+
+**The regime matters more than the assertion.** On the local e2e stack the
+post-switch fetches return in single-digit ms, INSIDE the establishing write's
+hide window, and the pane is revealed already correct — the same spec ran green,
+green, RED on unmodified main depending on which side of the reveal the fetch
+happened to land. The spec therefore injects 400ms of latency on the post-switch
+`/messages` route: not a workaround, but the regime the maintainer's mobile
+report comes from, chosen deterministically instead of by coin flip.
+
+**Oracle.** `cicchetto/e2e/tests/issue1089-switch-into-unread-flicker.spec.ts`
+asserts the visible outcome, per frame: while the pane is VISIBLE, the unread
+divider never leaves the viewport. Hidden frames are excluded by construction
+(they are the frames the operator cannot see), and the end state is pinned
+visible AND parked on the divider so the green cannot come from a pane that
+stayed hidden or never rendered a divider.
