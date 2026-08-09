@@ -35213,3 +35213,90 @@ follow-up slices — the machinery, the gate and the measurement pattern are wha
 this one had to establish. `wireTypesAssert.ts` is NOT in that count: it is a
 compile-time bridge between `api.ts` hand-mirrors and `wireTypes.ts`, and it
 disappears when those mirrors do, not when the narrowers do.
+
+## 2026-08-09 — #1121: the overlay close asks two questions, and they live in two epochs
+
+A reader sitting at the tail of a live channel opened the media viewer, waited
+while three lines landed underneath, and closed it — and the pane went deaf.
+The new lines were invisible, every later line was invisible too, there was no
+floating scroll-to-bottom button and no unread badge, and only their own send
+released it. Reproduced three times on the testnet, then in jsdom.
+
+**The freeze was not the bug.** While a covering overlay is up the pane holds
+its position and every scroll writer bails (#196, widened to the shared
+refcount by #219-general). That is deliberate and it worked. The damage was one
+function at the close edge, `applyOverlayRestore`, and it was doing two things
+wrong at once with a single expression:
+
+```ts
+setFollowMode(
+  listRef.scrollHeight - target - listRef.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX,
+);
+if (listRef.scrollTop === target) return;
+```
+
+`target` is the scrollTop captured on the OPEN edge; `scrollHeight` is read on
+the CLOSE edge. Content arriving under the overlay grows the extent by Δ, so the
+expression returns Δ for a reader who never moved — it cannot tell *"the reader
+scrolled up"* from *"the content grew while they were held"*, and it reconciles
+`followMode` off for the second. That is why the pane stayed deaf long after the
+overlay was gone: the intent was dead, not just the frame.
+
+The same expression was never published to the geometry. The freeze had held the
+pane exactly at `target`, so the restore writes nothing, takes the early return,
+and emits no `scroll` event — and `onScroll` is the only thing that re-measures.
+`atBottomNow` went on asserting a tail the pane had drifted away from. It has two
+consumers and both repeated the lie: the floating button is
+`<Show when={!atBottomNow()}>`, and `readingAtTailKey` — published from the same
+predicate precisely so `selection.ts` can suppress the badge of the window being
+read — kept naming this window. The pane was parked above the tail while every
+part of the UI agreed the reader was caught up.
+
+**The shape of the fix.** The close edge asks two questions and they belong to
+different epochs:
+
+* the follow INTENT — *"was the reader following when the freeze began?"* — is a
+  fact about the OPEN edge. Capture the distance-to-tail alongside the px and
+  reconcile against that. Growth under the overlay then cannot masquerade as a
+  scroll-up.
+* the GEOMETRY — *"is the pane at the tail now?"* — is a fact about the CLOSE
+  edge, and the old expression answered it correctly all along. It was never
+  wrong, only **misaddressed**. Publish it to `atBottomNow`, measured against
+  `target` (both exits leave the pane there), and publish it BEFORE the no-op
+  early return, because the held-position case is exactly the one that goes
+  stale.
+
+**#608 keeps what it bought.** Deleting the reconciliation would have re-opened
+the media-viewer close snap it was written for. A mid-list snapshot carries a
+large distance in either epoch, so a reader who really had scrolled up still
+gets the intent reconciled off. That case gains something too: its `atBottomNow`
+was stale-true for the same reason, hiding the button from a reader who
+genuinely needed it.
+
+**One site, two signals, three symptoms.** The three complaints in the report
+are not three defects and not one: they are two independent signals. The dead
+intent hides the messages; the stale geometry hides both affordances, because
+the button and the badge are one signal with two consumers by design. Two
+mutants prove it — reverting the intent to the mixed-epoch read kills only the
+follow assertion, removing the geometry publish kills only the button and the
+badge. A third mutant moving the publish after the early return kills the same
+pair, which is the honest result: it proves the PLACEMENT is load-bearing, not
+that there is a third signal.
+
+**Not the media viewer's bug.** Twenty surfaces push the shared overlay
+refcount, and all of them route through this one freeze and this one restore.
+The viewer is simply the one a reader keeps open for twenty seconds while a
+channel talks underneath. The fix is at the shared site, so it is class-wide by
+construction — no per-surface census to maintain.
+
+**Left open, deliberately.** The reporter's own proposal — stop freezing under
+a fully-covering surface and just keep following — is a different and larger
+call: the freeze exists because a fullscreen modal shrinks the mobile
+visualViewport and the resulting resize used to drop the reader's position, and
+#219 widened it to surfaces where the pane stays partly visible. Splitting the
+policy by coverage is possible and is not decided here. Nor is the second fork
+this fix surfaces: a reader restored with `followMode` true but parked above the
+tail is offered a button rather than snapped forward. That is the conservative
+direction — it is the reader's position that is being preserved — but "a
+follower's anchor is the tail, not a pixel" is a defensible reading of the same
+invariant, and it would remove the button from this scenario entirely.
