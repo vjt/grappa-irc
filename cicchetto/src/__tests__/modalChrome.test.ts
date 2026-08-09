@@ -12,8 +12,8 @@ import { themeCss } from "./helpers/themeCss";
 //
 // An extraction is a promise not to change any pixel, so the guard is not
 // "a base rule exists" — it is that the DECLARATIONS every call site resolves
-// to are byte-for-byte what they were before the base existed. The three maps
-// at the foot of this file were transcribed from the stylesheet as it stood at
+// to are byte-for-byte what they were before the base existed. The maps at the
+// foot of this file were transcribed from the stylesheet as it stood at
 // 6e81170 (origin/main, pre-extraction) and must survive it unchanged.
 //
 // jsdom applies no stylesheet, so this reads the source. It proves what the
@@ -33,6 +33,14 @@ const CLOSE_SITES = [
   "share-modal-close",
   "who-modal-close",
 ];
+
+/**
+ * Not a ×, but the same chrome shape: the links modal's zoom controls sit in
+ * the same header row and were cut from the same block, two properties apart.
+ * They are in the census because leaving them out would leave one 14-line copy
+ * of the base standing next to the base — the very thing #407 is removing.
+ */
+const CHROME_SITES = ["links-modal-zoom"];
 
 /** Scrims that #143 shrank to the visible region so the iOS keyboard fits. */
 const BACKDROP_VIEWPORT_SITES = [
@@ -55,7 +63,7 @@ const BACKDROP_FULL_SITES = [
   "image-upload-modal-backdrop",
 ];
 
-const SITES = [...CLOSE_SITES, ...BACKDROP_VIEWPORT_SITES, ...BACKDROP_FULL_SITES];
+const SITES = [...CLOSE_SITES, ...CHROME_SITES, ...BACKDROP_VIEWPORT_SITES, ...BACKDROP_FULL_SITES];
 
 type Rule = { selectors: string[]; body: string };
 
@@ -195,7 +203,7 @@ function callSiteClassLists(): Map<string, { files: string[]; classList: string[
       const seen = found.get(key);
       if (seen) {
         expect(seen.classList, `${key} worn with two different class lists`).toEqual(classList);
-        seen.files.push(file);
+        if (!seen.files.includes(file)) seen.files.push(file);
       } else {
         found.set(key, { files: [file], classList });
       }
@@ -248,6 +256,10 @@ describe("#407 — the modal chrome extraction changes no pixel", () => {
     expect(resolveSite(name)).toEqual(CLOSE);
   });
 
+  it.each(CHROME_SITES)("%s resolves to the × shape and exactly two deltas", (name) => {
+    expect(resolveSite(name)).toEqual(ZOOM);
+  });
+
   it.each(BACKDROP_VIEWPORT_SITES)("%s resolves to the one keyboard-aware scrim", (name) => {
     expect(resolveSite(name)).toEqual(BACKDROP_VIEWPORT);
   });
@@ -277,6 +289,7 @@ const CALL_SITES: Record<string, string[]> = {
   "image-upload-modal-backdrop": ["src/PrivacyModal.tsx"],
   "links-modal-backdrop": ["src/LinksModal.tsx"],
   "links-modal-close": ["src/LinksModal.tsx"],
+  "links-modal-zoom": ["src/LinksModal.tsx"],
   "mode-modal-backdrop": ["src/ModeModal.tsx", "src/UmodeModal.tsx"],
   "mode-modal-close": ["src/ModeModal.tsx", "src/UmodeModal.tsx"],
   "names-modal-backdrop": ["src/NamesModal.tsx"],
@@ -346,6 +359,16 @@ const CLOSE = {
     "line-height": "1",
     cursor: "pointer",
   },
+};
+
+// Spelled as the × shape plus its overrides, because that IS the finding: the
+// zoom control differs from the ten × buttons in two properties out of twenty.
+// Written out longhand instead, a later drift in a shared property would read
+// as an intended difference.
+const ZOOM_DELTA = { "margin-right": "0", "font-size": "1.4rem" };
+const ZOOM = {
+  rest: { ...CLOSE.rest, ...ZOOM_DELTA },
+  hover: { ...CLOSE.hover, ...ZOOM_DELTA },
 };
 
 const BACKDROP_VIEWPORT_REST = {
