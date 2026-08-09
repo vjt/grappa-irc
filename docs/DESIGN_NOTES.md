@@ -35408,3 +35408,63 @@ hand-injected `padding-bottom` would be overriding the very declaration under
 test, so the simulation would be circular. The on-device look, and whether the
 bottom row of tabs still takes taps reliably inside the home-indicator strip,
 remain owed to a real notched iPhone.
+
+## 2026-08-09 — #1106: the selection window does not close on its own, and the diagnostic the issue proposes cannot separate its leads
+
+**What was asked, and what was refused.** #1106 is an iOS report: long-press a
+message row with the compose keyboard up, choose `Select…`, and no selection
+appears. Nobody working on it here has an iPhone or a WebKit engine, so
+everything about what WebKit *paints* stays unclaimed. Only the lead that is a
+question of ORDERING rather than of rendering was measurable, and only that one
+was measured.
+
+**The hazard shape, which is real.** `selectMessageText` installs the range,
+adds `is-selecting` to `<html>`, and only THEN registers the `selectionchange`
+listener that strips the class once the selection is gone.
+`ContextMenu.handleItemClick` runs `item.action()` and then `props.onClose()`,
+so the portal, backdrop and buttons unmount immediately after. `selectionchange`
+is dispatched ASYNCHRONOUSLY — the spec queues a task — so the event the install
+itself provokes is delivered AFTER that teardown, straight into the listener
+registered a moment earlier. Had the teardown emptied the selection, the class
+would have been stripped within one macrotask and `html.is-ios.is-selecting
+.scrollback { -webkit-touch-callout: default }` would never have applied, which
+is precisely the re-enable #1067 added to make the selection adjustable.
+
+**The measurement.** In jsdom, with a focused `<textarea>` standing in for the
+open keyboard, the class survives: three `selectionchange` events are delivered
+after the click, each carrying the full row text, so the guard is reached,
+finds a live selection and returns early. Removing the menu's own DOM does not
+disturb a range anchored outside it, and nothing else in cic touches the
+selection — the only `removeAllRanges` in the tree is `selectMessageText`'s own,
+and no code refocuses the composer on menu close. Pinned by
+`MessageContextMenu.test.tsx`; proven by a deliberate red (a teardown that
+clears the selection kills that one test and no other, 1 of 4965).
+
+**A stub cannot see an asynchronous event.** `messageMenu.test.ts` stubs
+`window.getSelection`, so its "arms the callout re-enable" test asserts
+synchronously and would pass unchanged if the class were stripped one tick
+later. That is why the new guard uses jsdom's real Selection, and why it
+asserts a `selectionchange` was actually delivered: without that assertion it
+would go green for want of an event rather than for the reason claimed.
+
+**The diagnostic the issue proposes does not discriminate.** #1106 suggests
+capturing `keepKeyboard`'s `kb: scrollback md held=<n>ms → HOLD keep-kbd`
+diag line on the failing device to tell whether the long-press arm is reached,
+"which separates lead 1 from leads 2-3". By `keepKeyboard`'s own documented
+device model, it cannot: that arm fires on `mousedown`, and the module states
+that on real iOS a long-press synthesizes no `mousedown` at all — only taps do,
+so the arm "effectively only ever sees taps" and survives as a cross-platform
+net. The HOLD line is therefore predicted ABSENT on the very gesture under
+test, and observing its absence is consistent with both "arm not reached" and
+"iOS dispatched nothing to reach it". Observing it PRESENT would be
+informative, but only by falsifying that comment.
+
+**What would actually decide it, and it needs the device.** A remote Web
+Inspector console (Mac Safari → Develop → the connected iPhone), immediately
+after tapping `Select…` with the keyboard up, reading three things:
+`getSelection().rangeCount` and `.toString()`; `document.documentElement.className`;
+and `getComputedStyle(row)`'s `webkitUserSelect` / `webkitTouchCallout`. A live
+non-empty range plus `is-selecting` present plus `text`/`default` resolved means
+WebKit installed everything and painted nothing — lead 1 — and the fix belongs
+in the ordering or the keyboard, not in the class or the CSS. It needs no new
+code.
