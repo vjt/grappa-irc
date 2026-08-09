@@ -6408,11 +6408,41 @@ html.resize-dragging * {
        (global, line 67) means the inset is consumed FROM the height,
        not added to it. */
     padding-top: env(safe-area-inset-top);
-    /* Home-indicator safe-area inset. (#177 removed the custom on-screen
-       keyboard, whose height reservation was folded in here; the native
-       keyboard shrinks the visual viewport on its own, so no extra
-       reservation is needed.) */
-    padding-bottom: env(safe-area-inset-bottom);
+    /* #1127 — the bottom edge is FLUSH: no home-indicator inset, so the
+       whole mobile shell (the `.bottom-bar` tab strip included) reaches
+       the physical bottom and the reclaimed band goes to content.
+
+       What the inset actually produced was NOT wasted padding inside the
+       bar: it lifted the shell off the bottom edge and exposed the
+       transparent area behind it. Measured on a 320x568x2 emulated
+       viewport with the iOS value injected by hand (`padding-bottom: 34px`
+       here, because desktop Chrome always reports `env()` as 0): the bar
+       ended 34px short, and `elementFromPoint` at the very bottom returned
+       `DIV.shell shell-mobile` computing to `rgba(0, 0, 0, 0)` while the
+       bar itself was `rgb(49, 50, 68)`. The accepted trade is that the tabs
+       now sit inside the home-indicator strip, where iOS also reads
+       gestures — do NOT re-add clearance to "fix" that without a ruling.
+
+       `0`, NOT a deleted declaration. Base `.shell` (~:1195) declares
+       `padding-bottom: env(safe-area-inset-bottom)` at the same
+       specificity, and the mobile element carries BOTH classes
+       (`<div class="shell shell-mobile">`), so dropping this line would
+       simply let the base rule cascade the inset back in.
+
+       This also retires the UX-6 D1/D11 keyboard collapse that used to
+       live below as `.shell-mobile:has(textarea:focus, input:focus) {
+       padding-bottom: 0 }`. D11's finding still holds and is the reason a
+       future bottom inset here is dangerous: with the keyboard up iOS
+       reports `env(safe-area-inset-bottom)` relative to the DEVICE, not
+       the shrunken visual viewport, so an inset here double-counts against
+       `--viewport-height` and reopens a ~34px gap above the keyboard (live
+       diag from vjt's iPhone PWA 18.7; D9 removed the override on a
+       speculative research claim and D11 had to restore it). A zero base
+       has nothing left to collapse — but anyone re-introducing an inset on
+       this edge MUST restore that override in the same change. (#177 had
+       folded the removed custom keyboard's height reservation into this
+       same declaration; nothing reserves height here now.) */
+    padding-bottom: 0;
     /* #205 — left/right insets declared EXPLICITLY here. The mobile
        element is `<div class="shell shell-mobile">` (Shell.tsx) — it
        carries BOTH classes — so it inherits base `.shell`'s new
@@ -6430,26 +6460,6 @@ html.resize-dragging * {
        for the camera housing / rounded corners, not a regression. */
     padding-left: env(safe-area-inset-left);
     padding-right: env(safe-area-inset-right);
-  }
-
-  /* UX-6 bucket D11 (2026-05-21) — D1 restored after D9 removal
-     was wrong. Research claim "double-counts with position:fixed
-     html" was speculation; live diag from vjt's iPhone PWA 18.7
-     showed gap between BottomBar and keyboard top remained ~34px
-     (= env(safe-area-inset-bottom) home indicator inset) because
-     iOS doesn't shrink the safe-area inset when keyboard is up —
-     it reports a value relative to the device, not the visible
-     viewport. With `vv.height = visible-excluding-keyboard` AND
-     `padding-bottom: env(safe-area-inset-bottom)` together, we
-     reserved 34px above what was already correctly shrunken.
-     Collapsing the padding when a text input is focused
-     (`:has(textarea:focus, input:focus)`) closes the gap. */
-  .shell-mobile:has(textarea:focus, input:focus) {
-    /* Native keyboard up → collapse the home-indicator inset (it would
-       double-count against the shrunken visual viewport). (#177: the custom
-       keyboard's height reservation was previously folded in here; with it
-       gone, this reverts to the original collapse-to-0 behavior.) */
-    padding-bottom: 0;
   }
 
   /* Legacy fallback for browsers that don't grok `dvh` (Safari < 15.4).
@@ -11635,9 +11645,11 @@ audio.media-viewer-media {
        focused the keyboard is (about to be) up: bump `--nab-lift` to clear
        the bottom bar too. This ALSO makes the reposition observable in a
        real-browser e2e (headless WebKit raises no soft keyboard, so
-       `--viewport-height` alone would not move on focus). Mirrors the
-       existing `.shell-mobile:has(textarea:focus, input:focus)`
-       keyboard-react rule (~:3444).
+       `--viewport-height` alone would not move on focus). This used to
+       mirror a `.shell-mobile:has(textarea:focus, input:focus)`
+       keyboard-react rule that collapsed the shell's bottom inset; #1127
+       zeroed that inset outright, so the lift below is now the ONLY
+       consumer of the focus signal.
 
    Bigger + a proper CIRCLE (#264 req 2 & 3): symmetric box, 50% radius,
    glyph-only body (count → corner badge below). `min-*: 48px` keeps the

@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { ruleBody, themeCss } from "./helpers/themeCss";
+import { nestedRuleBodies, ruleBody, themeCss } from "./helpers/themeCss";
 
 // #205 — cicchetto as an installed PWA on iPadOS rendered its top chrome
 // (settings cog included) UNDER the iOS status bar, clipped and
@@ -90,5 +90,40 @@ describe("#205 iPad standalone-PWA safe area", () => {
     expect(css).toMatch(
       /\.shell-members\s*\{[\s\S]*?padding-bottom:\s*max\(1\.5rem,\s*env\(safe-area-inset-bottom\)\)/,
     );
+  });
+});
+
+// #1127 — the mobile shell's bottom edge. The guards above pin `.shell`
+// (desktop / iPad) and never mention `.shell-mobile`, so flipping the
+// mobile bottom edge used to land green either way. Same caveat as #205:
+// SOURCE-level, because jsdom resolves no `env()` and desktop Chrome
+// reports every inset as 0 — the on-device look still needs a real
+// notched iPhone.
+describe("#1127 mobile shell bottom edge", () => {
+  it(".shell-mobile declares exactly one bottom edge, and it is 0", () => {
+    // One assertion over the whole declaration list, deliberately: it has
+    // to kill three different regressions at once. Restoring the inset
+    // (`env(safe-area-inset-bottom)`) reopens the black band the issue was
+    // filed for. DELETING the declaration is just as wrong and far more
+    // tempting — base `.shell` declares the same property at the same
+    // specificity and the element carries both classes, so an absent
+    // longhand here means the inset cascades straight back in. And a
+    // second declaration appended after the `0` would silently win.
+    const declared = [
+      ...nestedRuleBodies(".shell-mobile")
+        .join("\n")
+        .matchAll(/padding-bottom:\s*([^;]+);/g),
+    ].map((m) => (m[1] ?? "").trim());
+    expect(declared).toEqual(["0"]);
+  });
+
+  it(".shell-mobile keeps the top / left / right insets", () => {
+    // Bottom edge only. The top inset clears the status bar and keeps the
+    // chrome tappable (UX-3 BIS); the sides matter in the sub-768 landscape
+    // edge on small notched devices.
+    const body = nestedRuleBodies(".shell-mobile").join("\n");
+    expect(body).toMatch(/padding-top:\s*env\(safe-area-inset-top\)/);
+    expect(body).toMatch(/padding-left:\s*env\(safe-area-inset-left\)/);
+    expect(body).toMatch(/padding-right:\s*env\(safe-area-inset-right\)/);
   });
 });

@@ -42,6 +42,27 @@ export function focusRules(): { selectors: string; body: string }[] {
   return out;
 }
 
+/**
+ * Every body of a rule whose selector is EXACTLY `selector`, at any nesting
+ * depth — `ruleBody`'s column-0 anchor cannot see rules inside an `@media` /
+ * `@supports` block. Returns one entry per block on purpose: a selector can
+ * legitimately have more than one (`.shell-mobile` has a second block under
+ * `@supports not (height: 100dvh)`), and an assertion about which value a
+ * property ends up with has to see them all. Comments stripped, same as
+ * `ruleBody`; throws when the selector has no rule at all, so a rename can't
+ * pass vacuously.
+ */
+export function nestedRuleBodies(selector: string): string[] {
+  const stripped = themeCss.replace(/\/\*[\s\S]*?\*\//g, "");
+  const out: string[] = [];
+  for (const match of stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if ((match[1] ?? "").trim() !== selector) continue;
+    out.push(match[2] ?? "");
+  }
+  if (out.length === 0) throw new Error(`CSS rule not found: ${selector}`);
+  return out;
+}
+
 export function ruleBody(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(`^${escaped}\\s*\\{([^}]*)\\}`, "m");

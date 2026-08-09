@@ -109,7 +109,12 @@ test("@webkit UX-Z cluster — Dynamic Island clearance + RailActions archive + 
   });
   expect(shellPadding).not.toBeNull();
   expect(shellPadding?.top ?? "").toContain("safe-area-inset-top");
-  expect(shellPadding?.bottom ?? "").toContain("safe-area-inset-bottom");
+  // #1127 — the BOTTOM edge is flush now: the home-indicator inset lifted
+  // the shell off the bottom and exposed the transparent area behind it.
+  // Still declared (an empty string would mean base `.shell`'s inset
+  // cascades in at equal specificity), just zero; CSSOM may serialize the
+  // authored `0` as `0px`.
+  expect(shellPadding?.bottom ?? "").toMatch(/^0(px)?$/);
 
   // PART seed channel so the UX-2 archive-button arm has an archived
   // entry to render in the modal.

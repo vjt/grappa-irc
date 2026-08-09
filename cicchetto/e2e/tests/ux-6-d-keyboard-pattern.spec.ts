@@ -21,10 +21,21 @@
 // (a) html.is-ios class lands on iPhone UA (boot-time detection)
 // (b) --vh CSS var writes from visualViewport.height
 // (c) --viewport-height legacy CSS var writes from same source
-// (d) D1 `:has(:focus){padding-bottom:0}` rule applies when input
-//     has focus
 // (e) Smart-pin: window.scrollTo(0,0) clamps any drift
 // (f) Admin → Debug tab renders the diag panel + DiagFloat toggle
+//
+// Arm (d) is GONE (#1127, 2026-08-09). It asserted that focusing a text
+// field collapsed `.shell-mobile`'s computed padding-bottom to 0px via the
+// D1 `:has(:focus)` override. #1127 zeroed the shell's bottom inset
+// outright — the home-indicator inset lifted the shell off the bottom edge
+// and exposed the transparent band behind it — so the override was deleted
+// as dead code and the arm lost its subject. Note the arm was already
+// vacuous in Playwright: headless WebKit resolves `env()` to 0, so the
+// computed padding read 0px with or without the override applying. The
+// D11 rationale it encoded now lives on the `padding-bottom: 0`
+// declaration in default.css, which is where anyone re-adding an inset on
+// that edge will read it. Arm letters are kept stable so the (e)/(f)
+// references elsewhere don't shift.
 
 import { loginAs, openRailMenu, selectChannel } from "../fixtures/cicchettoPage";
 import {
@@ -116,24 +127,6 @@ test.describe("UX-6 D cluster close — iOS PWA keyboard pattern @webkit", () =>
     expect(vpHeightVar).toMatch(/^\d+px$/);
     const value = Number.parseInt(vpHeightVar, 10);
     expect(value).toBeGreaterThan(100);
-  });
-
-  test("(d) D1 :has(:focus) rule collapses padding-bottom when input focused", async ({ page }) => {
-    await loginAs(page, getSeededVjt());
-    // GREEN-CI batch 2 — UX-4 bucket B made `:home` the cold-load
-    // default selection; HomePane has no `.compose-box`. Select the
-    // autojoin channel first so the ComposeBox mounts (same fix shape
-    // as ios-z-cluster-journey.spec.ts:57 lessons-learned).
-    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: NETWORK_NICK });
-    const composeTa = page.locator(".compose-box textarea").first();
-    await expect(composeTa).toBeVisible({ timeout: 10_000 });
-    await composeTa.focus();
-    const paddingBottom = await page.evaluate(() => {
-      const shell = document.querySelector(".shell-mobile") as HTMLElement | null;
-      if (!shell) return "(no shell)";
-      return getComputedStyle(shell).paddingBottom;
-    });
-    expect(paddingBottom).toBe("0px");
   });
 
   test("(e) smart-pin: programmatic window scroll snaps back to 0", async ({ page }) => {

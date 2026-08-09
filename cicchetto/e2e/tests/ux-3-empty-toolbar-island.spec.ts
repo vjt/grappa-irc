@@ -24,12 +24,19 @@
 //
 // Verification strategy. Walk document.styleSheets, find the
 // `.shell-mobile` rule (lives under the `@media (max-width: 768px)`
-// branch — CSSMediaRule), assert it declares both
-// `padding-top: env(safe-area-inset-top)` and
-// `padding-bottom: env(safe-area-inset-bottom)`. Webkit-iphone-15
+// branch — CSSMediaRule), assert it declares
+// `padding-top: env(safe-area-inset-top)`. Webkit-iphone-15
 // emulation matches viewport but doesn't inject real env() values —
 // computed paddingTop resolves to 0px regardless — so this is a
 // SOURCE-shape assertion, not a metric assertion.
+//
+// #1127 (2026-08-09) flipped the BOTTOM edge: the home-indicator inset
+// lifted the shell off the bottom and exposed the transparent area behind
+// it (a black band under the tab strip), so `.shell-mobile` now declares
+// `padding-bottom: 0` and the shell reaches the physical bottom. The edge
+// is still asserted here, with the opposite expectation — and the
+// declaration must still be PRESENT, since base `.shell` would otherwise
+// cascade the inset back in at equal specificity.
 //
 // Also assert `.topic-bar` rule NO LONGER contains `env(` /
 // `safe-area-inset-top` (the previous fix is reverted at the bar
@@ -99,7 +106,7 @@ test("@webkit UX-3 BIS — .shell.shell-mobile carries safe-area inset; bars do 
 
   // .shell-mobile rule lives inside @media (max-width: 768px) — must
   // recurse through CSSMediaRule.cssRules to find it. The rule MUST
-  // declare both top + bottom inset.
+  // declare the top inset, and MUST declare a flush bottom edge (#1127).
   const shell = await findRulePadding(page, ".shell-mobile");
   expect(shell).not.toBeNull();
   // The longhands MAY be authored or expanded; tolerate either.
@@ -107,8 +114,10 @@ test("@webkit UX-3 BIS — .shell.shell-mobile carries safe-area inset; bars do 
   const shellBottom = shell?.paddingBottom ?? "";
   expect(shellTop).toContain("env(");
   expect(shellTop).toContain("safe-area-inset-top");
-  expect(shellBottom).toContain("env(");
-  expect(shellBottom).toContain("safe-area-inset-bottom");
+  // Zero, and declared: an empty string here means the longhand is gone
+  // and base `.shell`'s inset cascades in. CSSOM may serialize the
+  // authored `0` as `0px`, so accept either spelling.
+  expect(shellBottom).toMatch(/^0(px)?$/);
 
   // .topic-bar MUST NOT carry the inset anymore — pin the UX-3 BIS
   // revert so a future operator can't re-introduce the double-clear
