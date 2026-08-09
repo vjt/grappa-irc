@@ -2664,9 +2664,12 @@ html.resize-dragging * {
    the cards undismissable on a non-channel window: `.shell-chrome` floats its
    lone ☰ over the pane's top-RIGHT corner (#985) at 41, each card puts its ✕
    in that same corner (`margin-left: auto` in the card header), and 41 > 5, so
-   the ☰ won the hit test. 42 is the whole fix — vjt's ruling is that the card
-   wins, because if a card is open the intent is to close it, and closing it
-   uncovers the ☰ anyway. Ceiling is NOT the 89/90 drawer tier: `.toast-stack`
+   the ☰ won the hit test. vjt's ruling is that the card wins, because if a card
+   is open the intent is to close it, and closing it uncovers the ☰ anyway.
+   42 is only HALF the fix, and shipping it alone is why #1051 was reopened: a
+   number can only decide a hit test between elements in the SAME stacking
+   context, and the #75 wallpaper block used to make `.scrollback-pane` one (see
+   that block — it no longer does). Ceiling is NOT the 89/90 drawer tier: `.toast-stack`
    sits at 60 and must keep painting over a card, or a toast raised while a
    WHOIS is up is invisible. Consequence worth stating, since 42 also clears
    `.scrollback-float-stack` (40): a full-height card now covers the
@@ -8587,14 +8590,34 @@ html.resize-dragging * {
  * + chrome stay solid for legibility, and the ComposeBox (a sibling OUTSIDE
  * the pane) stays opaque. Gated on the `theme-has-bg` class
  * (applyCustomTheme) because CSS can't branch on the var being "none".
- * `isolation` makes the pane a stacking context so the ::before layer sits
- * below the (transparent) scrollback text but above the pane backdrop.
  * NEVER an <img> — the text-only-scrollback rule holds; this is a CSS
- * background-image only. */
-:root.theme-has-bg .scrollback-pane {
-  isolation: isolate;
-}
-
+ * background-image only.
+ *
+ * THE PANE MUST NOT BECOME A STACKING CONTEXT (#1051). The two rules below
+ * order the layer explicitly — `::before` at 0, `.scrollback` at 1 — and this
+ * block used to ALSO declare `isolation: isolate` here. That ordered these two
+ * correctly, and trapped every other z-index in the pane while doing it: the
+ * #133 pinned card overlay (42) stopped competing with the floated ☰ in
+ * `.shell-chrome` (41) and the pane itself competed instead, at `z-index:
+ * auto`. The ☰ therefore won the pane's top-right corner unconditionally and
+ * the WHOIS / WHOWAS / LUSERS ✕ that lives in that same corner could not be
+ * tapped — but ONLY for operators running a background image, which is why
+ * raising the overlay's number twice fixed the corner for half the userbase
+ * and did nothing for the other half. Do NOT reintroduce `isolation` here, nor
+ * `contain` / `filter` / `opacity` / `transform` / `will-change`: each of them
+ * re-creates the context and puts the card back under the ☰.
+ *
+ * What isolation was buying, and how it is paid for now: `::before` is
+ * positioned, so it paints above the pane's in-flow content unless that
+ * content is lifted — hence `.scrollback` at 1, which is a rule in its own
+ * right and not decoration. The tempting alternative, `::before` at -1, is the
+ * one shape that genuinely NEEDS a stacking context: resolved against the root
+ * instead, a negative layer slides under the shell's opaque background and the
+ * wallpaper disappears. Guarded by
+ * `e2e/tests/issue1051-card-close-above-float.spec.ts` — its second arm runs
+ * with a wallpaper theme active, and its third asserts the wallpaper still
+ * paints and still paints behind the conversation. No source-level assertion
+ * can see a stacking context, which is how this shipped twice. */
 :root.theme-has-bg .scrollback-pane::before {
   content: "";
   position: absolute;
