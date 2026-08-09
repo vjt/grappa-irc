@@ -5379,6 +5379,140 @@ describe("ScrollbackPane", () => {
 
       expect(scrollIntoViewSpy).not.toHaveBeenCalled();
     });
+
+    // #1121 — the close edge must answer TWO questions, and they live in TWO
+    // DIFFERENT epochs:
+    //
+    //   * the follow INTENT — "was the reader following when the freeze began?"
+    //     — is a fact about the OPEN edge;
+    //   * the GEOMETRY (`atBottomNow`) — "is the pane at the tail right now?" —
+    //     is a fact about the CLOSE edge.
+    //
+    // `applyOverlayRestore` computed ONE number for both and spent it on the
+    // intent alone: `scrollHeight` read NOW minus `target` captured on the OPEN
+    // edge. Content arriving under the overlay grows `scrollHeight` by Δ, so for
+    // a reader who was sitting exactly AT the tail that number reads Δ — "the
+    // reader is Δ above the tail" — and `followMode` was reconciled OFF for
+    // someone who never moved. The geometry was not republished at all: the pane
+    // never moved while frozen, so `scrollTop === target`, the restore's no-op
+    // early-return fires, no `scroll` event is emitted, and `atBottomNow` stays
+    // stale-TRUE.
+    //
+    // Two signals, three field symptoms (the reporter's, testnet, 3 runs): the
+    // dead intent hides every message arriving after the close, and the stale
+    // geometry hides BOTH rescue affordances — the floating button is
+    // `<Show when={!atBottomNow()}>`, and `readingAtTailKey` (published from the
+    // same `atBottomNow`) is what `selection.ts` uses to SUPPRESS the unread
+    // badge. The button and the badge are ONE signal with two consumers by
+    // design (see `readingAtTail`), which is why two mutants — not three — cover
+    // this block.
+    //
+    // Same site as the #608 reconciliation above and it must not undo it: a
+    // mid-list snapshot still reconciles the intent OFF. The distinction is the
+    // EPOCH the distance is measured in, not the presence of the reconciliation.
+    describe("#1121 — closing an overlay over a tail reader must not strand them", () => {
+      // The field scenario: a reader MEASURED at the tail, an overlay opened
+      // over them, three lines arriving underneath (rows land AND the extent
+      // grows while the freeze holds scrollTop), then the close.
+      //
+      // The scroll event before the overlay is load-bearing, not decoration: it
+      // is what sets `tailGeometryMeasured`. Without it `readingAtTailKey`
+      // withholds its answer and publishes `null` regardless, so the badge
+      // assertion below would pass on the unfixed code — a vacuous test.
+      const strandATailReader = async (): Promise<HTMLDivElement> => {
+        seedRows();
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        const list = screen.getByTestId("scrollback") as HTMLDivElement;
+        await flushRaf();
+
+        Object.defineProperty(list, "scrollHeight", { value: 2000, configurable: true });
+        Object.defineProperty(list, "clientHeight", { value: 500, configurable: true });
+        Object.defineProperty(list, "scrollTop", {
+          value: 1500,
+          writable: true,
+          configurable: true,
+        });
+        // distance = 2000 - 1500 - 500 = 0 → at the tail, and MEASURED.
+        list.dispatchEvent(new Event("scroll"));
+        await flushRaf();
+
+        pushOverlay(null);
+        await flushRaf();
+
+        // Three lines land underneath. 400px of growth — the reporter's three
+        // chat lines are already well past the 50px threshold.
+        Object.defineProperty(list, "scrollHeight", { value: 2400, configurable: true });
+        setScrollback({
+          "freenode #grappa": Array.from({ length: 23 }, (_, i) => ({
+            id: i + 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: i + 1,
+            kind: "privmsg" as const,
+            sender: "alice",
+            body: `row ${i + 1}`,
+            meta: {},
+          })),
+        });
+        await flushRaf();
+
+        popOverlay(null);
+        await flushRaf();
+        return list;
+      };
+
+      it("keeps the follow intent alive, so a message arriving after the close is tailed", async () => {
+        const list = await strandATailReader();
+        scrollIntoViewSpy.mockClear();
+
+        // A fourth line arrives with no overlay in the way. A reader who was
+        // following must be tailed onto it. Pre-fix `followMode` was reconciled
+        // false by the mixed-epoch read, so the length-effect never armed
+        // tail-follow and the line stayed below the fold indefinitely — the
+        // reporter's "continuo a non vedere un cazzo".
+        Object.defineProperty(list, "scrollHeight", { value: 2500, configurable: true });
+        setScrollback({
+          "freenode #grappa": Array.from({ length: 24 }, (_, i) => ({
+            id: i + 1,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: i + 1,
+            kind: "privmsg" as const,
+            sender: "alice",
+            body: `row ${i + 1}`,
+            meta: {},
+          })),
+        });
+        // The tail-follow settle poll is frame-budgeted (SETTLE_MAX_FRAMES = 30)
+        // and jsdom never lays out, so `isSettled` can never hold: the write
+        // arrives on the fail-safe frame. Drain past the budget.
+        for (let i = 0; i < 20; i++) await flushRaf();
+
+        expect(scrollIntoViewSpy).toHaveBeenCalled();
+      });
+
+      it("republishes the geometry, so the floating scroll-to-bottom button appears", async () => {
+        await strandATailReader();
+
+        // The pane is parked 400px above the tail. Pre-fix the restore wrote
+        // nothing (position already held), no scroll event fired, `atBottomNow`
+        // stayed stale-true and the button stayed unmounted — the reporter's
+        // "non c'e' nessun bottone di scroll".
+        expect(screen.queryByTestId("scroll-to-bottom")).not.toBeNull();
+      });
+
+      it("stops claiming the reader is at the tail, so the unread badge is not suppressed", async () => {
+        await strandATailReader();
+
+        // Same stale `atBottomNow`, second consumer: the pane publishes
+        // `readingAtTailKey`, and `selection.ts` suppresses this window's unread
+        // count while it names it. Parked above the tail, the honest answer is
+        // `null` — every unknown collapses to "show the badge".
+        expect(readingAtTailKey()).toBeNull();
+      });
+    });
   });
 
   // affordances. Rendered as flex siblings BEFORE `.scrollback` they

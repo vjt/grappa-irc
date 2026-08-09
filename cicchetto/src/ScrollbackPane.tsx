@@ -1072,6 +1072,17 @@ const ScrollbackPane: Component<Props> = (props) => {
   // Both the freeze gate and the restore require this === key(); a switched-to
   // window activates normally. `null` when no overlay snapshot is held.
   let overlaySnapshotKey: string | null = null;
+  // #1121 — the distance-to-tail measured at the same instant as
+  // `overlayScrollSnapshot`, and the reason it must be captured rather than
+  // recomputed. The restore reconciles the follow INTENT, which is a fact about
+  // the OPEN edge ("was the reader following when the freeze began?"), but it
+  // runs on the CLOSE edge, where `scrollHeight` has already absorbed whatever
+  // arrived underneath. Recomputing the distance there mixes an open-edge
+  // scrollTop with a close-edge extent and reads back the GROWTH — so a reader
+  // pinned to the tail looked like a reader who had scrolled up by exactly the
+  // messages they missed, and lost tail-follow for it. Captured with the px,
+  // spent on the intent; the geometry signal is measured fresh instead.
+  let overlaySnapshotDistance: number | null = null;
   // #608 (deep-review §6.1) — the overloaded `atBottom` split into its two
   // independent concerns, the PRIMARY reshape of the single-scroll-authority
   // work:
@@ -1984,10 +1995,14 @@ const ScrollbackPane: Component<Props> = (props) => {
         if (open) {
           overlayScrollSnapshot = listRef.scrollTop;
           overlaySnapshotKey = key();
+          // #1121 — same instant, same epoch as the px above. See its
+          // declaration for why the restore cannot recompute this later.
+          overlaySnapshotDistance = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
         }
         const target = overlayScrollSnapshot;
         const snapKey = overlaySnapshotKey;
-        if (target === null || snapKey === null) return;
+        const snapDistance = overlaySnapshotDistance;
+        if (target === null || snapKey === null || snapDistance === null) return;
         // Re-assert across rAF×2 (matching scrollToActivation's frame budget so
         // it lands after the overlay's layout commits) via the applier's W1
         // restore entrypoint — the single owner of this write, key-guarded there.
@@ -2001,7 +2016,7 @@ const ScrollbackPane: Component<Props> = (props) => {
         // close→reopen nulling a just-re-armed snapshot) is now structurally
         // impossible, as is the field-bug "frozen forever under a leaked count".
         requestAnimationFrame(() =>
-          requestAnimationFrame(() => applyOverlayRestore(target, snapKey)),
+          requestAnimationFrame(() => applyOverlayRestore(target, snapKey, snapDistance)),
         );
       },
       { defer: true },
@@ -2981,7 +2996,7 @@ const ScrollbackPane: Component<Props> = (props) => {
   // mid-overlay channel switch owns its own activation; never stamp the leaving
   // channel's px onto it) and skips a no-op write. `target` is the px captured on
   // the open edge; `snapKey` the channel it was captured on.
-  const applyOverlayRestore = (target: number, snapKey: string): void => {
+  const applyOverlayRestore = (target: number, snapKey: string, snapDistance: number): void => {
     if (!listRef || snapKey !== key()) return;
     // #608 (regression fix) — reconcile the follow INTENT with the reader's
     // trusted position. The snapshot is the authoritative position across the
@@ -2997,7 +3012,31 @@ const ScrollbackPane: Component<Props> = (props) => {
     // the live `overlayCount()`). Runs even when the position is already held
     // (`scrollTop === target`), so a scrolled-up reader whose px never moved still
     // gets the stale intent corrected.
-    setFollowMode(
+    //
+    // #1121 — the intent is reconciled against `snapDistance`, the distance
+    // measured WITH the snapshot, not one recomputed here. Both readings answer
+    // "where is the reader relative to the tail", but only the captured one
+    // answers it for the epoch the intent belongs to: recomputed on the close
+    // edge it also counts every line that arrived under the overlay, which reads
+    // as a scroll-up the reader never performed. #608's mid-list case is
+    // unchanged — a snapshot taken mid-list carries a large distance either way.
+    setFollowMode(snapDistance <= SCROLL_BOTTOM_THRESHOLD_PX);
+    // #1121 — and the GEOMETRY is republished for the close edge, where it
+    // belongs. It is the SAME expression the intent used to be computed from —
+    // current extent against the restored position — because that expression was
+    // never wrong, only misaddressed: it answers "is the pane at the tail now",
+    // which is `atBottomNow`'s question, not `followMode`'s. Measured against
+    // `target` rather than the live `scrollTop`: both exits below leave the pane
+    // there, so this is the position the reader is about to be looking from.
+    //
+    // This is the only place the pane can learn that the tail moved away from it
+    // while it was held: nothing scrolled, so no `scroll` event fires and
+    // `onScroll` never re-measures. Both consumers of a stale-true `atBottomNow`
+    // then lie in the same direction — the floating scroll-to-bottom button
+    // stays unmounted, and `readingAtTailKey` keeps telling `selection.ts` to
+    // suppress this window's unread badge. Published BEFORE the no-op early
+    // return, because the held-position case IS the one that goes stale.
+    setAtBottomNow(
       listRef.scrollHeight - target - listRef.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX,
     );
     if (listRef.scrollTop === target) return;
