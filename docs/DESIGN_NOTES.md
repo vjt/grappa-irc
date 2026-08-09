@@ -35213,3 +35213,70 @@ follow-up slices — the machinery, the gate and the measurement pattern are wha
 this one had to establish. `wireTypesAssert.ts` is NOT in that count: it is a
 compile-time bridge between `api.ts` hand-mirrors and `wireTypes.ts`, and it
 disappears when those mirrors do, not when the narrowers do.
+## 2026-08-09 — #407: an extraction is a promise, and a promise needs a witness
+
+Twenty-four modal controls each carried a copy of one of three declaration
+blocks: eleven dialog-header buttons, ten keyboard-aware scrims, three older
+scrims. The cost is visible in the history — #143 (44px tap target, safe-area
+insets) and #987 (`align-items: center`, not `stretch`) each landed on whichever
+modal their author had open, and the rest kept the old numbers.
+
+**The pin landed first, against the stylesheet with no base in it.** Deduping
+CSS is a promise not to move a pixel, and the promise is worth what it can be
+checked against. `modalChrome.test.ts` resolves each call site the way the
+cascade would — every rule reaching it, folded in source order, `:hover` on top
+— and compares it to a map transcribed from the sheet at 6e81170. It passed
+before the extraction existed; the extraction commit does not touch the test
+file, so the same literals are green on both sides. Two premises that would make
+the fold a fiction are asserted rather than assumed: that nothing reaches these
+classes except a bare single-class selector (so specificity is uniform and
+source order decides), and that the class list being resolved is the one the
+markup actually wears.
+
+**Box shorthands must expand to longhands, or the pin lies in both directions.**
+Nine of the ten × rules spelled their margin as one shorthand;
+`.links-modal-close` reached the same four values through `margin: -0.6rem 0`
+plus a `margin-right` longhand in a second rule with the same selector. The two
+scrim geometries spelled the same edges as `inset: 0` and as `left/right/top: 0`.
+Compared as written, identical boxes read as differences and a real difference
+could hide under a spelling.
+
+**Name the base for the SHAPE, not the role — the role name would have kept a
+clone alive.** The issue proposed `.modal-close`. Grepping the sheet made that
+look right; reading it did not. `.links-modal-close` is the second selector of
+`.links-modal-zoom, .links-modal-close`, and the links modal's zoom buttons wear
+the same block two properties apart (`margin-right: 0`, because they are not the
+last control in the row, and `font-size: 1.4rem`). A base called `.modal-close`
+could not honestly take the zoom, so the zoom would have kept its own
+fourteen-declaration copy standing beside the thing meant to end copies.
+`.modal-chrome-button` takes all eleven and the zoom keeps only its two deltas.
+Same reasoning, same convention as #740's `.login-quiet-button`: worn beside the
+per-instance class, which stays a selector contract — which is why not one
+existing e2e selector had to move.
+
+**The scrim gets a base and TWO named geometries, and no default.**
+`.modal-backdrop` carries the paint and the centring and deliberately no
+geometry; `.modal-backdrop-full` spans the layout viewport, `.modal-backdrop-viewport`
+spans only the visible region (the #143 keyboard fix). Ten scrims have that fix
+and three do not, and with the iOS keyboard up that is a difference in behaviour,
+not in spelling. Either choice of default is a bad one: defaulting to `-full`
+hands the next modal the worse behaviour without anyone choosing it, and
+defaulting to `-viewport` moves three modals' pixels under cover of a refactor.
+So the base alone is a zero-height box and every site names its geometry. That
+failure mode — a scrim shipped with no variant, invisible but present — is
+silent in CSS, so it is asserted against the markup.
+
+**The clone guard is keyed on the whole shape, so it needs no exclusion list.**
+It asks which classes in the sheet resolve to exactly a base's declaration set
+and expects the base alone. `.links-modal-zoom` differs in two properties out of
+twenty and falls out of the rule by itself, rather than being carved out by a
+list the next reader would extend instead of question.
+
+**What the file cannot prove.** jsdom applies no stylesheet: this is an
+assertion about what the cascade is asked to do, never about what a browser
+paints. Existing e2e already hit-tests two of the three shapes in a real browser
+— `issue219` clicks `.names-modal-close` and waits for the modal to hide,
+`issue232` clicks `.mode-modal-backdrop` at (6,6), a corner click that a
+mis-sized scrim would miss. The `-full` geometry has no such witness; the confirm
+and delete-account scrims both dismiss on backdrop click and neither is clicked
+by any spec.
