@@ -716,12 +716,7 @@ defmodule Grappa.Visitors.LoginTest do
 
     test "network_circuit_open → {:error, {:network_circuit_open, retry_after}}",
          %{network: net} do
-      for _ <- 1..NetworkCircuit.threshold() do
-        :ok = NetworkCircuit.record_failure(net.id)
-      end
-
-      # Flush GenServer cast queue before checking.
-      _ = :sys.get_state(NetworkCircuit)
+      :ok = AdmissionStateHelpers.open_circuit!(net.id)
 
       # Task 5: Login surfaces the tuple shape so FallbackController can
       # emit Retry-After. Bare atom would lose the cooldown payload.

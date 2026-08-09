@@ -67,6 +67,11 @@ defmodule Grappa.AdmissionStateHelpers do
   @reset_registry_attempts 600
   @reset_registry_poll_ms 25
 
+  # How far ahead `open_circuit!/1` pins `cooled_at_ms`. Any value that
+  # outlives a single test works; a minute matches the forged row the
+  # H7 case in `network_circuit_test.exs` already uses.
+  @pinned_cooldown_ms 60_000
+
   @doc """
   Clear every per-`network_id` row from the `NetworkCircuit` ETS table,
   every per-`(subject, network_id)` row from the `Backoff` ETS table,
@@ -94,10 +99,60 @@ defmodule Grappa.AdmissionStateHelpers do
   @spec reset_network_circuit() :: :ok
   def reset_network_circuit do
     for {network_id, _, _, _, _} <- NetworkCircuit.entries() do
-      :ets.delete(:admission_network_circuit_state, network_id)
+      :ets.delete(NetworkCircuit.table_name(), network_id)
     end
 
     :ok
+  end
+
+  @doc """
+  Drive `NetworkCircuit` to `:open` for `network_id` through the
+  production `record_failure/1` transition, then pin the row's
+  `cooled_at_ms` a minute out so the open state cannot decay while the
+  test is still running. Raises if the transition did not happen.
+
+  ## Why the pin (GH #499)
+
+  `NetworkCircuit.check/1` is the only clock-dependent reader: an
+  `:open` row reads as `:ok` the moment `now >= cooled_at_ms`, without
+  anything having rewritten it. `config/test.exs` sets
+  `network_circuit_cooldown_ms: 50` (±25% jitter → 38..62ms) so the
+  cooldown-expiry tests stay cheap — which is far shorter than the work
+  a *consumer* test does between opening the circuit and reading it
+  back. The circuit then self-heals mid-test and the consumer observes
+  a closed circuit it never closed.
+
+  Measured on `login_test.exs`'s `network_circuit_open` case under
+  host load: the row was `{count: 3, :open}` at the drain and
+  `check/1` on the very next line already returned `:ok` — a
+  self-inflicted expiry, no cross-test bleed involved.
+
+  So: tests where "the circuit is open" is a PRECONDITION use this
+  helper and get a fact that does not decay. Tests whose SUBJECT is the
+  clock — the retry_after bound, cooldown expiry, the
+  `:cooldown_expired` telemetry — must keep driving the real cooldown
+  and deliberately do NOT use it.
+  """
+  @spec open_circuit!(integer()) :: :ok
+  def open_circuit!(network_id) when is_integer(network_id) do
+    for _ <- 1..NetworkCircuit.threshold() do
+      :ok = NetworkCircuit.record_failure(network_id)
+    end
+
+    # record_failure/1 is a cast; drain the mailbox before reading back.
+    _ = :sys.get_state(NetworkCircuit)
+
+    case :ets.lookup(NetworkCircuit.table_name(), network_id) do
+      [{^network_id, count, window_start_ms, :open, _}] ->
+        pinned_cooled_at = System.monotonic_time(:millisecond) + @pinned_cooldown_ms
+        true = :ets.insert(NetworkCircuit.table_name(), {network_id, count, window_start_ms, :open, pinned_cooled_at})
+
+        :ok
+
+      other ->
+        raise "AdmissionStateHelpers.open_circuit!: #{NetworkCircuit.threshold()} failures " <>
+                "on network_id=#{network_id} did not open the circuit; row is #{inspect(other)}"
+    end
   end
 
   @doc """

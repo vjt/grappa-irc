@@ -59,11 +59,8 @@ defmodule GrappaWeb.Admin.CircuitControllerTest do
       slug = "c-reset-#{System.unique_integer([:positive])}"
       {:ok, net} = Networks.find_or_create_network(%{slug: slug})
 
-      for _ <- 1..NetworkCircuit.threshold() do
-        :ok = NetworkCircuit.record_failure(net.id)
-      end
+      :ok = AdmissionStateHelpers.open_circuit!(net.id)
 
-      _ = :sys.get_state(NetworkCircuit)
       assert {:error, :open, _} = NetworkCircuit.check(net.id)
 
       session = admin_session()

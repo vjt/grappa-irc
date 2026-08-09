@@ -104,11 +104,7 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
       slug = "g-dirty-#{System.unique_integer([:positive])}"
       {:ok, net} = Networks.find_or_create_network(%{slug: slug})
 
-      for _ <- 1..NetworkCircuit.threshold() do
-        :ok = NetworkCircuit.record_failure(net.id)
-      end
-
-      _ = :sys.get_state(NetworkCircuit)
+      :ok = AdmissionStateHelpers.open_circuit!(net.id)
 
       session = admin_session()
       conn = conn |> put_bearer(session.id) |> get("/admin/networks")

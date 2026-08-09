@@ -57,11 +57,7 @@ defmodule Grappa.Admission.NetworkCircuitTest do
     end
 
     test "isolated per-network_id" do
-      for _ <- 1..NetworkCircuit.threshold() do
-        :ok = NetworkCircuit.record_failure(1)
-      end
-
-      _ = :sys.get_state(NetworkCircuit)
+      :ok = AdmissionStateHelpers.open_circuit!(1)
 
       assert {:error, :open, _} = NetworkCircuit.check(1)
       assert NetworkCircuit.check(2) == :ok
@@ -81,11 +77,8 @@ defmodule Grappa.Admission.NetworkCircuitTest do
     end
 
     test "clears open circuit" do
-      for _ <- 1..NetworkCircuit.threshold() do
-        :ok = NetworkCircuit.record_failure(1)
-      end
+      :ok = AdmissionStateHelpers.open_circuit!(1)
 
-      _ = :sys.get_state(NetworkCircuit)
       assert {:error, :open, _} = NetworkCircuit.check(1)
 
       :ok = NetworkCircuit.record_success(1)
@@ -130,6 +123,25 @@ defmodule Grappa.Admission.NetworkCircuitTest do
       Process.sleep(NetworkCircuit.cooldown_ms() + 30)
 
       assert NetworkCircuit.check(1) == :ok
+    end
+  end
+
+  describe "#499 — AdmissionStateHelpers.open_circuit!/1" do
+    test "the pinned open state outlives the configured cooldown" do
+      # The guard for every consumer test that treats "circuit is open" as a
+      # precondition. `check/1` self-heals on the wall clock, and the test-env
+      # cooldown (~50ms) is shorter than the work a consumer does before
+      # reading the circuit back — that decay, not cross-test ETS bleed, is
+      # what reddened `login_test.exs`'s network_circuit_open case. Sleeping
+      # 2x the configured cooldown clears the ±25% jitter ceiling, so dropping
+      # the pin from the helper turns this RED deterministically.
+      net_id = 3001
+
+      :ok = AdmissionStateHelpers.open_circuit!(net_id)
+
+      Process.sleep(NetworkCircuit.cooldown_ms() * 2)
+
+      assert {:error, :open, _} = NetworkCircuit.check(net_id)
     end
   end
 
@@ -181,12 +193,7 @@ defmodule Grappa.Admission.NetworkCircuitTest do
       attach_circuit_event([:grappa, :admission, :circuit, :open])
       net_id = 1002
 
-      # Open the circuit.
-      for _ <- 1..NetworkCircuit.threshold() do
-        :ok = NetworkCircuit.record_failure(net_id)
-      end
-
-      _ = :sys.get_state(NetworkCircuit)
+      :ok = AdmissionStateHelpers.open_circuit!(net_id)
 
       # Drain the first (and only) event.
       assert_receive {:telemetry, [:grappa, :admission, :circuit, :open], %{}, %{network_id: ^net_id}},
@@ -205,11 +212,7 @@ defmodule Grappa.Admission.NetworkCircuitTest do
       attach_circuit_event([:grappa, :admission, :circuit, :close])
       net_id = 1003
 
-      for _ <- 1..NetworkCircuit.threshold() do
-        :ok = NetworkCircuit.record_failure(net_id)
-      end
-
-      _ = :sys.get_state(NetworkCircuit)
+      :ok = AdmissionStateHelpers.open_circuit!(net_id)
 
       :ok = NetworkCircuit.record_success(net_id)
       _ = :sys.get_state(NetworkCircuit)

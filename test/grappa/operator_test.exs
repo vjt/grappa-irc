@@ -184,11 +184,8 @@ defmodule Grappa.OperatorTest do
 
       AdmissionStateHelpers.reset_network_circuit()
 
-      for _ <- 1..NetworkCircuit.threshold() do
-        :ok = NetworkCircuit.record_failure(network.id)
-      end
+      :ok = AdmissionStateHelpers.open_circuit!(network.id)
 
-      _ = :sys.get_state(NetworkCircuit)
       assert {:error, :open, _} = NetworkCircuit.check(network.id)
 
       assert {:ok, nil} = Operator.reset_circuit(network.id)

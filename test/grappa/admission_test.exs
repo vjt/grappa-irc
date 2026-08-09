@@ -9,7 +9,7 @@ defmodule Grappa.AdmissionTest do
 
   alias Grappa.{Admission, AdmissionStateHelpers, Repo, SessionRegistry}
   alias Grappa.Admission.Captcha.{Disabled, HCaptcha, Turnstile}
-  alias Grappa.Admission.{Config, NetworkCircuit}
+  alias Grappa.Admission.Config
   alias Grappa.Networks.Network
   alias Grappa.Session.Server, as: SessionServer
 
@@ -25,11 +25,7 @@ defmodule Grappa.AdmissionTest do
   describe "check_capacity/1 — network circuit gate" do
     test "open circuit short-circuits with {:network_circuit_open, retry_after}",
          %{network: net} do
-      for _ <- 1..NetworkCircuit.threshold() do
-        :ok = NetworkCircuit.record_failure(net.id)
-      end
-
-      _ = :sys.get_state(NetworkCircuit)
+      :ok = AdmissionStateHelpers.open_circuit!(net.id)
 
       input = %{
         network_id: net.id,
@@ -509,11 +505,7 @@ defmodule Grappa.AdmissionTest do
     test "emits :capacity, :reject when circuit open", %{network: net} do
       attach_reject_event()
 
-      for _ <- 1..NetworkCircuit.threshold() do
-        :ok = NetworkCircuit.record_failure(net.id)
-      end
-
-      _ = :sys.get_state(NetworkCircuit)
+      :ok = AdmissionStateHelpers.open_circuit!(net.id)
 
       input = %{
         network_id: net.id,
