@@ -35213,6 +35213,7 @@ follow-up slices — the machinery, the gate and the measurement pattern are wha
 this one had to establish. `wireTypesAssert.ts` is NOT in that count: it is a
 compile-time bridge between `api.ts` hand-mirrors and `wireTypes.ts`, and it
 disappears when those mirrors do, not when the narrowers do.
+
 ## 2026-08-09 — #407: an extraction is a promise, and a promise needs a witness
 
 Twenty-four modal controls each carried a copy of one of three declaration
