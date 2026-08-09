@@ -81,7 +81,9 @@ async function activateWallpaperTheme(
     throw new Error("#1051 — the built-in background catalog is empty");
   }
   const theme = await createThemeWithBuiltinBackground(token, label, first.key, opacity);
-  await setActiveTheme(token, theme.id);
+  // Single pick: the same wallpapered theme paints in both OS modes, so this
+  // arm cannot depend on which scheme the runner happens to boot in.
+  await setActiveTheme(token, theme.id, null);
 }
 
 // The shared body of both arms: open a WHOIS card on a query window and prove
@@ -200,7 +202,20 @@ test("@webkit #1051 — with a background theme active the card's ✕ still wins
 // Measured at opacity 1.0 rather than the 0.3 default, deliberately: at full
 // strength "the layer is under the text" and "the layer is over the text" are
 // the difference between a readable channel and a blank photo, so the oracle
-// below does not have to reason about blending.
+// does not have to reason about blending.
+//
+// HOW THE WALLPAPER IS TOGGLED, and why not with a reload. The first version
+// of this test screenshotted the pane before and after a `page.reload()` that
+// swapped the active theme, and it was a FALSE GREEN: mutating the wallpaper to
+// `opacity: 0` — invisible, the exact failure the claim exists to catch — still
+// produced two different images, because a reload changes the pane for reasons
+// of its own. So the swap now rides the #358 day/night pair instead: the light
+// slot is the control theme, the dark slot the wallpapered one, and
+// `emulateMedia` flips between them LIVE — same document, same scroll offset,
+// same conversation, one variable. The base `[data-theme]` block an OS flip
+// also swaps declares exactly the 27 colour vars the custom payload overrides,
+// so the flip is inert on everything except the layer under test; PHASE A
+// measures that rather than asserting it.
 test("@webkit #1051 — the wallpaper still paints, and still paints behind the conversation", async ({
   page,
 }) => {
@@ -227,23 +242,45 @@ test("@webkit #1051 — the wallpaper still paints, and still paints behind the 
     1,
   );
 
-  await setActiveTheme(vjt.token, control.id);
-  await loginAs(page, vjt);
-  await expect(page.locator("html.theme-has-bg")).toHaveCount(0);
-  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
-
   const scrollback = page.locator(".scrollback");
-  await expect(scrollback).toBeVisible();
-  const withoutWallpaper = await scrollback.screenshot({ animations: "disabled" });
+  const shoot = () => scrollback.screenshot({ animations: "disabled" });
+  const isDark = () => page.evaluate(() => document.documentElement.dataset.theme === "irssi-dark");
 
-  await setActiveTheme(vjt.token, wallpapered.id);
-  await page.reload();
-  await expect(page.locator("html.theme-has-bg")).toHaveCount(1, { timeout: 15_000 });
+  // PHASE A — the oracle's own control. Both slots hold the CONTROL theme, so
+  // the light→dark flip changes the OS scheme and nothing else. If these two
+  // images are not byte-identical, the flip is not inert and every difference
+  // measured in phase B would be unattributable — this must fail LOUDLY rather
+  // than let phase B pass on the flip's own noise.
+  await setActiveTheme(vjt.token, control.id, control.id);
+  await page.emulateMedia({ colorScheme: "light" });
+  await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
   await expect(scrollback).toBeVisible();
+  await expect(page.locator("html.theme-has-bg")).toHaveCount(0);
 
-  // The layer is wired to the theme at all — the #294 assertion, kept because
-  // a wallpaper that never resolved its URL would make every pixel claim below
+  const controlLight = await shoot();
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect.poll(isDark, { timeout: 10_000 }).toBe(true);
+  await expect(page.locator("html.theme-has-bg")).toHaveCount(0);
+  expect(
+    (await shoot()).equals(controlLight),
+    "#1051 — the OS-scheme flip must be inert under one theme, or it cannot isolate the wallpaper",
+  ).toBe(true);
+
+  // PHASE B — same flip, but now the dark slot carries the wallpaper.
+  await setActiveTheme(vjt.token, control.id, wallpapered.id);
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.reload();
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
+  await expect(scrollback).toBeVisible();
+  await expect(page.locator("html.theme-has-bg")).toHaveCount(0);
+  const withoutWallpaper = await shoot();
+
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html.theme-has-bg")).toHaveCount(1, { timeout: 10_000 });
+
+  // The layer is wired to the theme at all — the #294 assertion, kept because a
+  // wallpaper that never resolved its URL would make every pixel claim below
   // vacuous for a reason that has nothing to do with stacking.
   const layerImage = await page.evaluate(() => {
     const pane = document.querySelector(".scrollback-pane");
@@ -251,23 +288,14 @@ test("@webkit #1051 — the wallpaper still paints, and still paints behind the 
   });
   expect(layerImage).toContain("/backgrounds/");
 
-  const withWallpaper = await scrollback.screenshot({ animations: "disabled" });
+  const withWallpaper = await shoot();
 
-  // CLAIM 1 — the wallpaper actually PAINTS. Same palette, same conversation,
-  // same element: the only difference between the two renders is the layer.
+  // CLAIM 1 — the wallpaper actually PAINTS. Phase A established that the flip
+  // alone changes nothing, so the difference is the layer and only the layer.
   expect(
     withWallpaper.equals(withoutWallpaper),
     "#1051 — an opaque wallpaper must change what the scrollback area paints",
   ).toBe(false);
-
-  // ORACLE CONTROL. Two shots of an untouched pane must be byte-identical, or
-  // "the pixels differed" below means nothing — a caret, a CRT flicker or a
-  // ticking timestamp inside this element would make CLAIM 2 pass on noise.
-  const withWallpaperAgain = await scrollback.screenshot({ animations: "disabled" });
-  expect(
-    withWallpaperAgain.equals(withWallpaper),
-    "#1051 — the scrollback must render deterministically for the pixel oracle to discriminate",
-  ).toBe(true);
 
   // CLAIM 2 — the conversation paints ABOVE the opaque wallpaper. If the layer
   // covered the text, the pane would be pure photograph and a new message would
@@ -275,9 +303,8 @@ test("@webkit #1051 — the wallpaper still paints, and still paints behind the 
   const marker = `i1051 wallpaper witness ${crypto.randomUUID().slice(0, 8)}`;
   await composeSend(page, marker);
   await expect(scrollback.getByText(marker, { exact: false })).toBeVisible({ timeout: 15_000 });
-  const afterMessage = await scrollback.screenshot({ animations: "disabled" });
   expect(
-    afterMessage.equals(withWallpaper),
+    (await shoot()).equals(withWallpaper),
     "#1051 — a message arriving must be visible over the wallpaper, not buried under it",
   ).toBe(false);
 });

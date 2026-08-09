@@ -280,14 +280,25 @@ export async function createThemeWithBuiltinBackground(
   return (await res.json()) as ThemeWire;
 }
 
-export async function setActiveTheme(token: string, id: number): Promise<void> {
+// The #358 pair, both slots explicit. `dark: null` is the single pick (the
+// light theme paints in both modes); a distinct dark id makes the OS
+// colour-scheme media query a LIVE toggle between two payloads, with no reload
+// and no navigation — the only way to change one visual variable in a running
+// page without also changing everything a reload changes.
+export async function setActiveTheme(
+  token: string,
+  light: number,
+  dark: number | null,
+): Promise<void> {
   const res = await fetch(`${GRAPPA_BASE_URL}/me/theme`, {
     method: "PUT",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ light: id }),
+    body: JSON.stringify({ light, dark }),
   });
   if (!res.ok) {
-    throw new Error(`grappaApi.setActiveTheme: ${id} → ${res.status} ${await res.text()}`);
+    throw new Error(
+      `grappaApi.setActiveTheme: ${light}/${dark} → ${res.status} ${await res.text()}`,
+    );
   }
 }
 
