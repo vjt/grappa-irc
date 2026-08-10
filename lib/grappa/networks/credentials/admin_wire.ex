@@ -215,6 +215,6 @@ defmodule Grappa.Networks.Credentials.AdminWire do
   end
 
   @spec error_tag(spawn_error() | {spawn_error(), term()}) :: spawn_error()
-  defp error_tag({tag, _payload}) when is_atom(tag), do: tag
+  defp error_tag({tag, _}) when is_atom(tag), do: tag
   defp error_tag(tag) when is_atom(tag), do: tag
 end

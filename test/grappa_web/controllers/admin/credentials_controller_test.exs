@@ -549,7 +549,7 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
     end
 
     test "circuit open: neither door brings a session up", %{conn: conn} do
-      {_server, port} = start_irc_server()
+      {_, port} = start_irc_server()
       {network, _} = network_with_server(port: port, slug: "bind-agree-open-#{uniq()}")
       :ok = AdmissionStateHelpers.open_circuit!(network.id)
 
@@ -594,7 +594,7 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
   end
 
   defp run_bootstrap do
-    {result, _log} = with_log(fn -> Bootstrap.run() end)
+    {result, _} = with_log(fn -> Bootstrap.run() end)
     result
   end
 
