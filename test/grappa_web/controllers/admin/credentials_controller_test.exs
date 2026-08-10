@@ -19,14 +19,16 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
   """
   use GrappaWeb.ConnCase, async: false
 
+  import ExUnit.CaptureLog
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, AdminEvents, AdmissionStateHelpers, Networks}
-  alias Grappa.Networks.Credentials
+  alias Grappa.{Accounts, AdminEvents, AdmissionStateHelpers, Bootstrap, IRCServer, Networks, Session}
+  alias Grappa.Bootstrap.Result
+  alias Grappa.Networks.{Credential, Credentials}
   alias Grappa.PubSub.Topic
 
   setup do
-    AdmissionStateHelpers.reset_session_supervisor()
+    AdmissionStateHelpers.reset_all()
     :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
     :ok
   end
@@ -480,6 +482,138 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
 
       assert json_response(conn, 422)["error"] == "validation_failed"
     end
+  end
+
+  describe "POST /admin/credentials — session spawn (#1163)" do
+    test "201 + the bound session dials out with no restart", %{conn: conn} do
+      {server, port} = start_irc_server()
+      {network, _} = network_with_server(port: port, slug: "bind-spawn-#{uniq()}")
+      target_user = user_fixture(name: "bind-spawn-#{uniq()}")
+      stop_session_on_exit(target_user, network)
+
+      body = bind(conn, target_user, network, "vjt")
+
+      assert {:ok, "NICK vjt\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK"), 5_000)
+
+      assert is_pid(Session.whereis({:user, target_user.id}, network.id))
+
+      assert body["session_action"] == "spawned"
+      assert body["session_error"] == nil
+      assert body["live_state"] != nil
+
+      assert {:ok, %Credential{connection_state: :connected}} =
+               Credentials.get_credential(target_user, network)
+    end
+
+    test "201 + a network with no enabled server keeps the row :parked and says so", %{conn: conn} do
+      {:ok, network} = Networks.find_or_create_network(%{slug: "bind-noserver-#{uniq()}"})
+      target_user = user_fixture(name: "bind-noserver-#{uniq()}")
+
+      body = bind(conn, target_user, network, "vjt")
+
+      assert body["session_action"] == "not_spawned"
+      assert body["session_error"] == "resolve_failed"
+      assert body["live_state"] == nil
+      # U-0: the row never claims :connected without a live Session.Server.
+      assert body["connection_state"] == "parked"
+
+      assert {:ok, %Credential{connection_state: :parked}} =
+               Credentials.get_credential(target_user, network)
+
+      refute Session.whereis({:user, target_user.id}, network.id)
+    end
+  end
+
+  # The acceptance criterion the issue words as "the bind-time and boot-time
+  # spawn go through one code path — a test that proves the two agree". Both
+  # doors are run against the SAME network under the SAME admission gate: with
+  # the circuit closed both bring a session up, with it open neither does. A
+  # bind-time inline copy of the dance fails one half or the other — skipping
+  # admission passes the first test and fails the second.
+  describe "POST /admin/credentials — bind door and boot door are one path (#1163)" do
+    test "circuit closed: both doors bring a session up", %{conn: conn} do
+      {server, port} = start_irc_server()
+      {network, _} = network_with_server(port: port, slug: "bind-agree-ok-#{uniq()}")
+
+      boot_user = boot_bound_user(network, "booted")
+      assert {:ok, %Result{spawned: 1}} = run_bootstrap()
+      assert is_pid(Session.whereis({:user, boot_user.id}, network.id))
+      assert {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK"), 5_000)
+
+      bind_user = user_fixture(name: "bind-agree-ok-#{uniq()}")
+      stop_session_on_exit(bind_user, network)
+
+      assert %{"session_action" => "spawned"} = bind(conn, bind_user, network, "bound")
+      assert is_pid(Session.whereis({:user, bind_user.id}, network.id))
+    end
+
+    test "circuit open: neither door brings a session up", %{conn: conn} do
+      {_server, port} = start_irc_server()
+      {network, _} = network_with_server(port: port, slug: "bind-agree-open-#{uniq()}")
+      :ok = AdmissionStateHelpers.open_circuit!(network.id)
+
+      boot_user = boot_bound_user(network, "booted")
+      assert {:ok, %Result{spawned: 0, capacity_rejected: 1}} = run_bootstrap()
+      refute Session.whereis({:user, boot_user.id}, network.id)
+
+      bind_user = user_fixture(name: "bind-agree-open-#{uniq()}")
+
+      assert %{"session_action" => "not_spawned", "session_error" => "network_circuit_open"} =
+               bind(conn, bind_user, network, "bound")
+
+      refute Session.whereis({:user, bind_user.id}, network.id)
+    end
+  end
+
+  defp uniq, do: System.unique_integer([:positive])
+
+  defp start_irc_server do
+    {:ok, server} = IRCServer.start_link(fn state, _ -> {:reply, nil, state} end)
+    {server, IRCServer.port(server)}
+  end
+
+  defp stop_session_on_exit(user, network) do
+    on_exit(fn -> Session.stop_session({:user, user.id}, network.id, "test teardown") end)
+  end
+
+  # A credential the BOOT door will pick up: bound and left at the schema
+  # default `:connected`, exactly as a pre-#1163 deploy's rows read.
+  defp boot_bound_user(network, nick) do
+    user = user_fixture(name: "boot-#{uniq()}")
+
+    {:ok, _} =
+      Credentials.bind_credential(user, network, %{
+        nick: nick,
+        auth_method: :none,
+        autojoin_channels: []
+      })
+
+    stop_session_on_exit(user, network)
+    user
+  end
+
+  defp run_bootstrap do
+    {result, _log} = with_log(fn -> Bootstrap.run() end)
+    result
+  end
+
+  defp bind(conn, target_user, network, nick) do
+    session = admin_session()
+
+    conn
+    |> put_bearer(session.id)
+    |> put_req_header("content-type", "application/json")
+    |> post(
+      "/admin/credentials",
+      Jason.encode!(%{
+        user_id: target_user.id,
+        network_id: network.id,
+        nick: nick,
+        auth_method: "none"
+      })
+    )
+    |> json_response(201)
   end
 
   describe "DELETE /admin/credentials/:user_id/:network_id — admin-panel bucket 3" do

@@ -107,6 +107,9 @@ defmodule Grappa.Networks.Credentials.AdminWire do
       must `/connect` to bring it back under the new creds. We don't
       auto-respawn — the `POST /networks/:slug/connect` verb is
       the operator-facing path that re-runs admission + spawn.
+
+  The POST bind writes the SAME wire key with its own disjoint set
+  (`:spawned` / `:not_spawned`) — see `t:bind_outcome/0`.
   """
   @type session_action :: :left_alone | :stopped
 
@@ -155,6 +158,31 @@ defmodule Grappa.Networks.Credentials.AdminWire do
     }
   end
 
+  @typedoc """
+  #1163 — what the POST bind did to the session, and why it did not do
+  it. `:spawned` means a `Session.Server` is running and the row was
+  committed `:connected`; `:not_spawned` means the row was created and
+  left `:parked`, with `session_error` naming the refusal.
+
+  The error tags are `Grappa.Operator.connect_credential/1`'s union with
+  its payloads dropped (a `{:network_circuit_open, retry_after}` renders
+  as `:network_circuit_open`) — spelled out rather than aliased because
+  `Grappa.Networks` must not depend on `Grappa.Admission`. Runtime tag
+  extraction is generic, so a tag added to
+  `Admission.capacity_error_atoms/0` still renders correctly; only this
+  type would go stale.
+  """
+  @type spawn_error ::
+          :resolve_failed
+          | :not_found
+          | :ip_cap_exceeded
+          | :visitor_cap_exceeded
+          | :user_cap_exceeded
+          | :network_circuit_open
+          | :start_failed
+
+  @type bind_outcome :: :spawned | {:not_spawned, spawn_error() | {spawn_error(), term()}}
+
   @doc """
   Attaches a `session_action:` field to a credential JSON map (the
   bucket-3 PUT response shape). Defined here, not at the controller,
@@ -165,4 +193,28 @@ defmodule Grappa.Networks.Credentials.AdminWire do
       when action in [:left_alone, :stopped] do
     Map.put(json, :session_action, action)
   end
+
+  @doc """
+  #1163 — attaches `session_action:` + `session_error:` to the POST bind
+  response. Sibling of `with_session_action/2` on the same key: both
+  answer "what happened to the session because of this admin verb", for
+  the two verbs that can move it.
+
+  `session_error` is `nil` on `:spawned`, so the operator reads one
+  field to tell "bound and connected" from "bound, and here is why it is
+  not dialling" — the alternative (a 201 that says nothing) is the
+  silent-swallow this endpoint shipped before #1163.
+  """
+  @spec with_bind_outcome(t(), bind_outcome()) :: map()
+  def with_bind_outcome(%{} = json, :spawned) do
+    Map.merge(json, %{session_action: :spawned, session_error: nil})
+  end
+
+  def with_bind_outcome(%{} = json, {:not_spawned, reason}) do
+    Map.merge(json, %{session_action: :not_spawned, session_error: error_tag(reason)})
+  end
+
+  @spec error_tag(spawn_error() | {spawn_error(), term()}) :: spawn_error()
+  defp error_tag({tag, _payload}) when is_atom(tag), do: tag
+  defp error_tag(tag) when is_atom(tag), do: tag
 end

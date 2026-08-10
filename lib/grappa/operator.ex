@@ -766,6 +766,102 @@ defmodule Grappa.Operator do
   end
 
   @doc """
+  #1163: dial the upstream for a USER credential the operator has just
+  bound, and commit `:connected` only if it comes up. The user twin of
+  `reconnect_session/2` — same admission → backoff-reset → spawn core
+  through `SpawnOrchestrator.spawn/4`, so the bind door and the boot
+  door (`Grappa.Bootstrap`) cannot drift.
+
+  ## Why not `GrappaWeb.NetworkSpawn.orchestrate/4`
+
+  That helper builds the capacity input from the REQUEST's IP, which is
+  right for the two self-serve doors it serves (a user connecting their
+  own network) and wrong here: the requester is an admin, the subject is
+  somebody else. Counting the admin's IP against the target user's cap
+  would refuse the fifth bind of an evening for a reason that has nothing
+  to do with the user being bound. `source_ip: nil` +
+  `requesting_subject: {:user, _}` is the shape `reconnect_session/2`
+  already uses for the same admin-on-behalf-of reason.
+
+  ## U-0 ordering
+
+  Spawn FIRST, commit `:connected` only on success (the invariant
+  `NetworksController.apply_transition/5` upholds for PATCH /connect and
+  `SessionController.spawn_or_rollback/4` for accretion). The caller binds
+  the row `:parked`; a refused spawn therefore leaves a `:parked`
+  credential — a normal, recoverable state — never the
+  `:connected`-with-no-Session.Server wedge where the UI reads CONNECTED
+  and every `POST /messages` 404s.
+
+  Errors mirror `reconnect_session/2` verbatim:
+
+    * `{:error, :resolve_failed}` — no enabled server on the network, or
+      the user row is gone (`SessionPlan.resolve/1`). The servers-bound
+      rule stays where it is: this is Bootstrap's resolver, not a softer
+      copy of it.
+    * `{:error, :not_found}` — the credential was unbound between the
+      admission check and the spawn (`Session.Server.init/1` → `:ignore`).
+    * `Admission.capacity_error()` / `{:start_failed, term()}` — verbatim
+      from `SpawnOrchestrator.spawn/4`.
+  """
+  @spec connect_credential(Credential.t()) ::
+          {:ok, Credential.t()}
+          | {:error, :resolve_failed | :not_found | Admission.capacity_error() | {:start_failed, term()}}
+  def connect_credential(%Credential{user_id: user_id, network_id: network_id} = credential)
+      when is_binary(user_id) do
+    with {:ok, plan} <- resolve_user_plan(credential),
+         :ok <- spawn_user_bind({:user, user_id}, network_id, plan) do
+      Networks.connect(credential)
+    end
+  end
+
+  # Mirror of `resolve_visitor_plan/2` on the user arm: collapse every
+  # `SessionPlan.resolve/1` failure (`:no_server` / `:user_not_found`) to
+  # the uniform `:resolve_failed`.
+  @spec resolve_user_plan(Credential.t()) ::
+          {:ok, Session.start_opts()} | {:error, :resolve_failed}
+  defp resolve_user_plan(%Credential{} = credential) do
+    case Networks.SessionPlan.resolve(credential) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "admin bind: user session plan resolve failed " <>
+            "(user_id=#{credential.user_id} network_id=#{credential.network_id} " <>
+            "reason=#{inspect(reason)})"
+        )
+
+        {:error, :resolve_failed}
+    end
+  end
+
+  # The admission → backoff-reset → spawn dance for an admin bind.
+  # `:admin_credential_bind` flow (subject_kind `:user`) so the network
+  # total + circuit gate the user pool under a tag that names the surface;
+  # `source_ip: nil` because the admin's IP is not the subject's (see
+  # `connect_credential/1`). `:already_started` collapses to `:ok` — a
+  # rebind of a network the user is somehow already live on keeps the live
+  # session, it does not bounce it.
+  @spec spawn_user_bind(Session.subject(), integer(), Session.start_opts()) ::
+          :ok | {:error, :not_found | Admission.capacity_error() | {:start_failed, term()}}
+  defp spawn_user_bind(subject, network_id, plan) do
+    capacity_input = %{
+      network_id: network_id,
+      source_ip: nil,
+      flow: :admin_credential_bind,
+      requesting_subject: subject
+    }
+
+    case SpawnOrchestrator.spawn(subject, network_id, plan, capacity_input) do
+      {:ok, :spawned, _} -> :ok
+      {:ok, :already_started, _} -> :ok
+      {:ok, :ignored} -> {:error, :not_found}
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc """
   Print active visitors (anon TTL not yet elapsed + identified
   never-expires rows) as a tab-separated table: header + one row per
   visitor. #211 phase 7 — identity-wide columns only (id, expires_at,

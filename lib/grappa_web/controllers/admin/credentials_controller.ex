@@ -47,9 +47,9 @@ defmodule GrappaWeb.Admin.CredentialsController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{Accounts, AdminEvents, LiveIntrospection, Networks}
+  alias Grappa.{Accounts, AdminEvents, LiveIntrospection, Networks, Operator}
   alias Grappa.AdminEvents.Wire, as: AdminEventsWire
-  alias Grappa.Networks.Credentials
+  alias Grappa.Networks.{Credential, Credentials}
   alias Grappa.Networks.Credentials.AdminWire
   alias GrappaWeb.Admin.AuthPlug
   alias GrappaWeb.Validation
@@ -105,6 +105,12 @@ defmodule GrappaWeb.Admin.CredentialsController do
   optional `password`, `sasl_user`, `realname`, `auth_command_template`,
   `autojoin_channels`. Returns `201 Created` with the credential JSON
   shape (no password / password_encrypted leakage).
+
+  #1163 — the bind also DIALS: the row is written `:parked`, the session
+  is spawned through the shared orchestrator, and only a live
+  `Session.Server` promotes the row to `:connected`. A refused spawn
+  still returns `201` (the row exists) with
+  `session_action: "not_spawned"` + `session_error:` naming the refusal.
   """
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t() | {:error, :not_found | :already_exists | :bad_request | Ecto.Changeset.t()}
@@ -116,11 +122,42 @@ defmodule GrappaWeb.Admin.CredentialsController do
          {:ok, network} <- fetch_network(network_id),
          {:ok, cred} <- bind_with_conflict_classification(user, network, attrs) do
       :ok = emit_credential_bound(user, network, cred, conn)
+      {cred, outcome} = connect_bound_credential(cred)
       live = LiveIntrospection.lookup_session({:user, cred.user_id}, cred.network_id)
 
       conn
       |> put_status(:created)
-      |> json(AdminWire.credential_to_admin_json(cred, live))
+      |> json(
+        cred
+        |> AdminWire.credential_to_admin_json(live)
+        |> AdminWire.with_bind_outcome(outcome)
+      )
+    end
+  end
+
+  # #1163 — the bind DIALS. Before this, `create/2` only ever *read*
+  # whether a session happened to be live, so a credential bound from the
+  # console sat there doing nothing until the node restarted; unbind, the
+  # other half of the same control, was live all along.
+  #
+  # The spawn is `Grappa.Operator.connect_credential/1` — the same
+  # admission → backoff-reset → spawn core Bootstrap and every other
+  # runtime spawn surface reach through `SpawnOrchestrator.spawn/4`, so
+  # bind-time and boot-time cannot drift.
+  #
+  # A refused spawn is NOT a failed bind: the row is written, so the 201
+  # stands and the credential stays (unlike accretion, which rolls its
+  # bind back — there the user asked to JOIN a network, here the operator
+  # asked to PROVISION a credential, and deleting it would discard their
+  # input). It stays `:parked` per the U-0 ordering the caller set up, and
+  # the outcome rides out in the response body: no exception, but no
+  # silence either.
+  @spec connect_bound_credential(Credential.t()) ::
+          {Credential.t(), AdminWire.bind_outcome()}
+  defp connect_bound_credential(cred) do
+    case Operator.connect_credential(cred) do
+      {:ok, connected} -> {connected, :spawned}
+      {:error, reason} -> {cred, {:not_spawned, reason}}
     end
   end
 
@@ -288,7 +325,17 @@ defmodule GrappaWeb.Admin.CredentialsController do
     extra = keys -- @allowed_create_keys
 
     if extra == [] and Map.has_key?(params, "nick") and Map.has_key?(params, "auth_method") do
-      {:ok, Validation.take_atomized(params, @allowed_create_keys, &maybe_atomize_auth_method/2)}
+      attrs = Validation.take_atomized(params, @allowed_create_keys, &maybe_atomize_auth_method/2)
+
+      # #1163 — bind `:parked`, NEVER the schema default `:connected`.
+      # `connect_bound_credential/1` promotes the row only once a
+      # `Session.Server` is actually running (the U-0 ordering). The
+      # default made every admin bind write a row that CLAIMED a session
+      # it never had: cic rendered CONNECTED, so there was nothing to
+      # press, while `POST /messages` answered "That network or resource
+      # doesn't exist." Same invariant `SessionController` binds accretion
+      # under, for the same reason.
+      {:ok, Map.put(attrs, :connection_state, :parked)}
     else
       {:error, :bad_request}
     end
