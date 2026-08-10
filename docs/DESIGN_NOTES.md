@@ -36219,3 +36219,71 @@ clones` over the 237 MB grappa container log returned **0**, with a sanity
 count of 126,802 `privmsg` lines from the same grep on the same file — so in
 that run they never appeared anywhere. That is one run's observation, not a
 general claim that the bump is inert.
+
+---
+
+## 2026-08-10 — #1163: the bind door never learned the sequence every other spawn surface knows
+
+`POST /admin/credentials` wrote the credential, returned `201`, and stopped.
+Its success path read `LiveIntrospection.lookup_session/2` — which only ever
+*asks* whether a session happens to be live — so nothing dialled until the
+node restarted. `DELETE` on the same resource has always stopped the live
+session. Two halves of one control, disagreeing.
+
+The issue as filed pointed the fix at `Grappa.Bootstrap`. That was the wrong
+name for the right idea: the runtime spawn door is
+`Grappa.SpawnOrchestrator.spawn/4` (admission → `Backoff.reset` → spawn), and
+Bootstrap is one of its five callers. `POST /admin/credentials` was the odd
+surface out — the only one that creates a session-relevant row without ever
+reaching the shared verb.
+
+**The `:connected` default made it worse than "no session".**
+`Credential.connection_state` defaults to `:connected`, so every console bind
+wrote a row that *claimed* a session it did not have. cic rendered CONNECTED —
+nothing to press — while `POST /messages` answered *"That network or resource
+doesn't exist."* That is verbatim the pre-U-0 state
+`NetworksController.apply_transition/5` was written to eliminate on the PATCH
+door. The fix is therefore the U-0 ordering, not a spawn bolted on after the
+insert: bind `:parked`, spawn, and let only a live `Session.Server` promote
+the row to `:connected`.
+
+**Why not `GrappaWeb.NetworkSpawn.orchestrate/4`**, the web-layer helper the
+two self-serve doors use. It builds the capacity input from the *request's*
+IP, which is correct when a user connects their own network and wrong when an
+admin acts for somebody else: the admin's IP would be counted against the
+target user's per-IP cap, and a busy evening of provisioning would start
+refusing binds for a reason having nothing to do with the user being bound. So
+the verb lands in `Grappa.Operator` — `connect_credential/1`, the user twin of
+the Visitors-tab `reconnect_session/2` — with `source_ip: nil` and a new
+`:admin_credential_bind` flow, exactly the shape the visitor reconnect already
+uses for the same on-behalf-of reason.
+
+**A refused spawn does not roll the bind back.** Accretion
+(`SessionController.spawn_or_rollback/4`) unbinds on refusal, and that is right
+*there*: the user asked to JOIN a network, and a network they cannot reach
+should not stay attached. Here the operator asked to PROVISION a credential —
+the row is their input, and deleting it would discard work the 201 already
+acknowledged. It stays `:parked`, which is a recoverable state (the owning user
+can `PATCH /networks/:id`), and the response says why: additive
+`session_action` + `session_error`, snake_case, no `protocol_version` bump. The
+alternative — a 500 on a row that exists — would lie about the write; silence
+would leave the operator debugging IRC connectivity for a network that was
+never dialled, which is the failure mode the issue was filed about.
+
+The servers-bound invariant did not move: the resolver is Bootstrap's own
+`SessionPlan.resolve/1`, so "no enabled server" fails at bind time the same way
+it fails at boot, not through a softer second copy of the rule.
+
+**The agreement test needed a 2×2, not a pair of assertions.** The acceptance
+criterion asks to prove the bind-time and boot-time spawns are one path. Simply
+asserting that each door spawns would leave the plausible wrong implementation
+— an inline copy that skips admission — fully green. So both doors are run
+against the same network under the same gate: with the circuit closed both
+bring a session up, with it open neither does. The skip-admission mutant passes
+the first and fails the second.
+
+**Not covered.** No browser-level check of the admin console; the tests drive
+the HTTP door. cic renders no copy for the two new fields yet — it casts the
+response without validating, so they are inert there, and the honest signal it
+*does* now show is the row reading `parked` instead of a fictitious
+`connected`.
