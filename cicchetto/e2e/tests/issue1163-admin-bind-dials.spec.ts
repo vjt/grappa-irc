@@ -11,10 +11,31 @@
 // That spec binds against networks it creates with `POST /admin/networks` and
 // no server row. A server-less network fails plan resolution, so even the
 // FIXED code does not dial there — the scenario is blind to this bug by
-// construction. This spec therefore adds the one thing that was missing: an
-// enabled server, pointed at the same `bahamut-test:6667` testnet the seeder
-// uses. Everything else stays throwaway (own user, own network, own nick), so
-// nothing here touches the seeded vjt / m9b credentials other specs depend on.
+// construction. What this spec needs, and it has to get it somewhere, is a
+// network with an ENABLED SERVER.
+//
+// ## Why it borrows the seeded network instead of building its own
+//
+// The first version of this spec built a throwaway network and attached a
+// server to it. It passed — and 26 minutes later, in the same run, it failed
+// two assertions in `ux-6-g-admin-mobile-h-scroll.spec.ts`, which measures
+// that no admin table is wider than a phone panel: 393px against a 365px
+// panel, 28px of overflow, read identically by that spec's scrollLeft clamp.
+//
+// The throwaway network could not be deleted. `Networks.delete_network/1`
+// refuses a network that has scrollback, and this is the only spec whose
+// network gets a LIVE session — the moment it dials, the server's `$server`
+// notices are persisted against that network. The teardown's DELETE was
+// refused, the best-effort `catch` swallowed the refusal, and a row with a
+// 27-character slug sat in the Networks tab for the rest of the run
+// (`workers: 1`, so every later spec saw it). The width failure was this
+// spec's leak, arriving late and wearing another spec's name.
+//
+// So it binds a throwaway USER to the SEEDED `bahamut-test` network instead.
+// That network is already in the Networks tab and the baseline already fits
+// it, so this spec adds nothing to any measured table. The seeded vjt / m9b
+// CREDENTIALS other specs depend on are untouched: a second credential on the
+// same network is additive, and unbind removes it and stops its session.
 //
 // ## The oracle
 //
@@ -35,14 +56,8 @@
 
 import { expectShellReady, openAdminConsole } from "../fixtures/cicchettoPage";
 import { GRAPPA_BASE_URL } from "../fixtures/grappaApi";
-import { getSeededAdmin } from "../fixtures/seedData";
+import { getSeededAdmin, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, test } from "../fixtures/test";
-
-// The testnet endpoint the compose seeder binds `vjt` to. Reaching it by its
-// docker alias is what makes the spawn real: a dial that resolves, connects
-// and registers.
-const TESTNET_HOST = "bahamut-test";
-const TESTNET_PORT = 6667;
 
 type Admin = ReturnType<typeof getSeededAdmin>;
 
@@ -82,35 +97,64 @@ async function createUser(token: string, name: string): Promise<string> {
   return ((await res.json()) as { id: string }).id;
 }
 
-async function createNetwork(token: string, slug: string): Promise<number> {
-  const res = await api(token, "POST", "/admin/networks", { slug });
-  if (!res.ok) throw new Error(`createNetwork: ${slug} → ${res.status}`);
-  return ((await res.json()) as { id: number }).id;
+// The seeded network is the one with an enabled server (`bahamut-test:6667`),
+// which is the whole reason this spec can dial at all. Resolved by slug rather
+// than hardcoded: the id is assigned by whichever order the seeder ran in.
+async function seededNetworkId(token: string): Promise<number> {
+  const res = await api(token, "GET", "/admin/networks");
+  if (!res.ok) throw new Error(`seededNetworkId: ${res.status}`);
+  const body = (await res.json()) as { networks: { id: number; slug: string }[] };
+  const net = body.networks.find((n) => n.slug === NETWORK_SLUG);
+  if (net === undefined) throw new Error(`seededNetworkId: no network ${NETWORK_SLUG}`);
+  return net.id;
 }
 
-// The step that separates this spec from the existing bind coverage: without
-// an enabled server the bind cannot dial even when the code is correct.
-async function addTestnetServer(token: string, networkId: number): Promise<void> {
-  const res = await api(token, "POST", `/admin/networks/${networkId}/servers`, {
-    host: TESTNET_HOST,
-    port: TESTNET_PORT,
-    tls: false,
-  });
-  if (!res.ok) throw new Error(`addTestnetServer: ${networkId} → ${res.status}`);
-}
-
-// Unbind is the teardown that matters: it stops the live session, so the
-// throwaway upstream connection does not outlive the test and count against
-// the next one. Best-effort — a failed cleanup must not mask the verdict.
-async function cleanup(token: string, userId: string | null, networkId: number | null) {
+// Unbind is the teardown that matters: it stops the live session this spec
+// started, so the upstream connection does not outlive the test.
+//
+// It reports instead of swallowing. A silent best-effort teardown is what
+// turned the first version of this spec into a cascade poisoner — the cleanup
+// was refused, said nothing, and a later spec paid for it. A leak here cannot
+// be allowed to fail the test (that would mask the real verdict), so it lands
+// as a test annotation: visible in the report, attached to the spec that
+// caused it, and not to the one that trips over it 26 minutes later.
+async function unbind(
+  token: string,
+  userId: string,
+  networkId: number,
+  testInfo: import("@playwright/test").TestInfo,
+): Promise<void> {
   try {
-    if (userId !== null && networkId !== null) {
-      await api(token, "DELETE", `/admin/credentials/${userId}/${networkId}`);
+    const res = await api(token, "DELETE", `/admin/credentials/${userId}/${networkId}`);
+    if (!res.ok) {
+      testInfo.annotations.push({
+        type: "leak",
+        description: `unbind ${userId}:${networkId} → ${res.status}; a live session may survive this spec`,
+      });
     }
-    if (networkId !== null) await api(token, "DELETE", `/admin/networks/${networkId}`);
-    if (userId !== null) await api(token, "DELETE", `/admin/users/${userId}`);
-  } catch {
-    // best-effort
+  } catch (err) {
+    testInfo.annotations.push({ type: "leak", description: `unbind threw: ${String(err)}` });
+  }
+}
+
+// The user carries this spec's scrollback (the `$server` notices its session
+// receives), which CASCADEs away with the row. Deleting the user is therefore
+// what keeps the seeded network free of this spec's residue.
+async function deleteUser(
+  token: string,
+  userId: string,
+  testInfo: import("@playwright/test").TestInfo,
+): Promise<void> {
+  try {
+    const res = await api(token, "DELETE", `/admin/users/${userId}`);
+    if (!res.ok) {
+      testInfo.annotations.push({
+        type: "leak",
+        description: `deleteUser ${userId} → ${res.status}; a throwaway user survives this spec`,
+      });
+    }
+  } catch (err) {
+    testInfo.annotations.push({ type: "leak", description: `deleteUser threw: ${String(err)}` });
   }
 }
 
@@ -125,18 +169,15 @@ test("admin binds a credential from the console and the session dials out", asyn
   // repeat indices disambiguate runs that land in the same millisecond.
   const stamp = `${Date.now()}-${testInfo.workerIndex}-${testInfo.repeatEachIndex}`;
   const userName = `e2e1163-u-${stamp}`;
-  const netSlug = `e2e1163-n-${stamp}`;
   // An IRC nick caps at 30 chars, so the stamp is shortened here rather than
   // reused whole.
   const nick = `b1163-${Date.now() % 1_000_000}-${testInfo.workerIndex}${testInfo.repeatEachIndex}`;
 
+  const networkId = await seededNetworkId(admin.token);
   let userId: string | null = null;
-  let networkId: number | null = null;
 
   try {
     userId = await createUser(admin.token, userName);
-    networkId = await createNetwork(admin.token, netSlug);
-    await addTestnetServer(admin.token, networkId);
 
     await adminLogin(page, admin);
     await openCredentialsTab(page);
@@ -150,7 +191,7 @@ test("admin binds a credential from the console and the session dials out", asyn
     // in the issue actually used, and the one that had no other door on a
     // release image (#1158).
     await page.getByTestId("admin-credentials-bind-user").selectOption({ label: userName });
-    await page.getByTestId("admin-credentials-bind-network").selectOption({ label: netSlug });
+    await page.getByTestId("admin-credentials-bind-network").selectOption({ label: NETWORK_SLUG });
     await page.getByTestId("admin-credentials-bind-nick").fill(nick);
     await page.getByTestId("admin-credentials-bind-auth-method").selectOption("none");
     await page.getByTestId("admin-credentials-bind-submit").click();
@@ -177,6 +218,9 @@ test("admin binds a credential from the console and the session dials out", asyn
     await expect(reloadedRow).toContainText("alive", { timeout: 10_000 });
     await expect(reloadedRow).toContainText("connected");
   } finally {
-    await cleanup(admin.token, userId, networkId);
+    if (userId !== null) {
+      await unbind(admin.token, userId, networkId, testInfo);
+      await deleteUser(admin.token, userId, testInfo);
+    }
   }
 });
