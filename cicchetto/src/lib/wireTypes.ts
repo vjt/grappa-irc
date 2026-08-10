@@ -11,6 +11,7 @@ export const ADMISSION_FLOW = [
   "bootstrap_visitor",
   "patch_network_connect",
   "visitor_reconnect",
+  "admin_credential_bind",
 ] as const;
 export type AdmissionFlow = (typeof ADMISSION_FLOW)[number];
 
@@ -572,9 +573,26 @@ export type NetworksCredentialsAdminWireT = {
   live_state: NetworksCredentialsAdminWireLiveStateJson | null;
 };
 
-export const NETWORKS_CREDENTIALS_ADMIN_WIRE_SESSION_ACTION = ["left_alone", "stopped"] as const;
+export const NETWORKS_CREDENTIALS_ADMIN_WIRE_SESSION_ACTION = [
+  "left_alone",
+  "stopped",
+  "spawned",
+  "not_spawned",
+] as const;
 export type NetworksCredentialsAdminWireSessionAction =
   (typeof NETWORKS_CREDENTIALS_ADMIN_WIRE_SESSION_ACTION)[number];
+
+export const NETWORKS_CREDENTIALS_ADMIN_WIRE_SPAWN_ERROR = [
+  "resolve_failed",
+  "not_found",
+  "ip_cap_exceeded",
+  "visitor_cap_exceeded",
+  "user_cap_exceeded",
+  "network_circuit_open",
+  "start_failed",
+] as const;
+export type NetworksCredentialsAdminWireSpawnError =
+  (typeof NETWORKS_CREDENTIALS_ADMIN_WIRE_SPAWN_ERROR)[number];
 
 // === Grappa.Networks.FeaturedChannels.AdminWire ===
 

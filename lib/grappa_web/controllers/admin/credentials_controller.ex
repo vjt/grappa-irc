@@ -153,7 +153,9 @@ defmodule GrappaWeb.Admin.CredentialsController do
   # the outcome rides out in the response body: no exception, but no
   # silence either.
   @spec connect_bound_credential(Credential.t()) ::
-          {Credential.t(), AdminWire.bind_outcome()}
+          {Credential.t(),
+           :spawned
+           | {:not_spawned, AdminWire.spawn_error() | {AdminWire.spawn_error(), term()}}}
   defp connect_bound_credential(cred) do
     case Operator.connect_credential(cred) do
       {:ok, connected} -> {connected, :spawned}

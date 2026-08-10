@@ -20,6 +20,7 @@ import {
   LIVE_INTROSPECTION_SESSION_ENTRY_DEGRADED_FIELD,
   NETWORKS_CREDENTIAL_CONNECTION_STATE,
   NETWORKS_CREDENTIALS_ADMIN_WIRE_SESSION_ACTION,
+  NETWORKS_CREDENTIALS_ADMIN_WIRE_SPAWN_ERROR,
   NETWORKS_NETWORK_SERVICES_FLAVOR,
   SCROLLBACK_MESSAGE_KIND,
   SESSION_LOG_EVENT,
@@ -580,6 +581,11 @@ export const S_NetworksCredentialsAdminWireLiveStateJson = {
 // Grappa.Networks.Credentials.AdminWire.session_action/0
 export const S_NetworksCredentialsAdminWireSessionAction = {
   e: [...NETWORKS_CREDENTIALS_ADMIN_WIRE_SESSION_ACTION],
+} as const;
+
+// Grappa.Networks.Credentials.AdminWire.spawn_error/0
+export const S_NetworksCredentialsAdminWireSpawnError = {
+  e: [...NETWORKS_CREDENTIALS_ADMIN_WIRE_SPAWN_ERROR],
 } as const;
 
 // Grappa.Networks.Credentials.AdminWire.t/0

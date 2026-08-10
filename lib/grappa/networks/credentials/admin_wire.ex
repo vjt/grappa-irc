@@ -94,8 +94,14 @@ defmodule Grappa.Networks.Credentials.AdminWire do
         }
 
   @typedoc """
-  Admin-panel bucket 3 — outcome of the PUT credential update against
-  any running `Session.Server` for `{:user, user_id} × network_id`.
+  What the admin verb did to the session for
+  `{:user, user_id} × network_id`. ONE wire key, `session_action`, so ONE
+  union — the codegen publishes it to cic as a single string-literal set,
+  and splitting the values across two types would have shipped cic a
+  union that omits half the values the field can carry.
+
+  PATCH (admin-panel bucket 3 — the credential update against any running
+  session):
 
     * `:left_alone` — no live session, OR the change set didn't include
       `:password` / `:auth_method` (cosmetic-only fields like autojoin or
@@ -108,10 +114,17 @@ defmodule Grappa.Networks.Credentials.AdminWire do
       auto-respawn — the `POST /networks/:slug/connect` verb is
       the operator-facing path that re-runs admission + spawn.
 
-  The POST bind writes the SAME wire key with its own disjoint set
-  (`:spawned` / `:not_spawned`) — see `t:bind_outcome/0`.
+  POST (#1163 — the bind that dials):
+
+    * `:spawned` — a `Session.Server` is running and the row was committed
+      `:connected`. `session_error` is `nil`.
+    * `:not_spawned` — the row was created and left `:parked`;
+      `session_error` names the refusal.
+
+  A consumer keys off the endpoint it called: the two pairs are disjoint
+  and neither verb can emit the other's values.
   """
-  @type session_action :: :left_alone | :stopped
+  @type session_action :: :left_alone | :stopped | :spawned | :not_spawned
 
   @doc """
   Render a Credential row + optional live SessionEntry to the admin
@@ -159,14 +172,12 @@ defmodule Grappa.Networks.Credentials.AdminWire do
   end
 
   @typedoc """
-  #1163 — what the POST bind did to the session, and why it did not do
-  it. `:spawned` means a `Session.Server` is running and the row was
-  committed `:connected`; `:not_spawned` means the row was created and
-  left `:parked`, with `session_error` naming the refusal.
+  #1163 — the `session_error` value space: why a bind did not dial.
+  `nil` when it did.
 
-  The error tags are `Grappa.Operator.connect_credential/1`'s union with
-  its payloads dropped (a `{:network_circuit_open, retry_after}` renders
-  as `:network_circuit_open`) — spelled out rather than aliased because
+  These are `Grappa.Operator.connect_credential/1`'s error union with the
+  payloads dropped (a `{:network_circuit_open, retry_after}` renders as
+  `:network_circuit_open`) — spelled out rather than aliased because
   `Grappa.Networks` must not depend on `Grappa.Admission`. Runtime tag
   extraction is generic, so a tag added to
   `Admission.capacity_error_atoms/0` still renders correctly; only this
@@ -180,8 +191,6 @@ defmodule Grappa.Networks.Credentials.AdminWire do
           | :user_cap_exceeded
           | :network_circuit_open
           | :start_failed
-
-  @type bind_outcome :: :spawned | {:not_spawned, spawn_error() | {spawn_error(), term()}}
 
   @doc """
   Attaches a `session_action:` field to a credential JSON map (the
@@ -204,8 +213,16 @@ defmodule Grappa.Networks.Credentials.AdminWire do
   field to tell "bound and connected" from "bound, and here is why it is
   not dialling" — the alternative (a 201 that says nothing) is the
   silent-swallow this endpoint shipped before #1163.
+
+  The outcome argument is spelled INLINE, deliberately: a named public
+  type in a `*Wire` module is a wire CONTRACT — `mix grappa.gen_wire_types`
+  publishes every one of them to `cicchetto/src/lib/wireTypes.ts`. This
+  tuple is an internal Elixir hand-off between the controller and this
+  renderer; naming it shipped cic a `["not_spawned", …]` array type for a
+  payload the wire never carries.
   """
-  @spec with_bind_outcome(t(), bind_outcome()) :: map()
+  @spec with_bind_outcome(t(), :spawned | {:not_spawned, spawn_error() | {spawn_error(), term()}}) ::
+          map()
   def with_bind_outcome(%{} = json, :spawned) do
     Map.merge(json, %{session_action: :spawned, session_error: nil})
   end
