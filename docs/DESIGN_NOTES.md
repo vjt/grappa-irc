@@ -39349,3 +39349,64 @@ WebKit at iPhone-15 metrics, which is the suite's standing limit. And
 `isAdminNarrow` mirrors a number CSS cannot share with JS — a media
 query still cannot read a `var()`, so 899 is written twice, exactly like
 `--breakpoint-mobile` before it.
+
+---
+
+## 2026-08-11 — #1224: a session that is over is a record, not a row in a live console
+
+vjt, same iPhone dogfood pass as #1223: *"i visitor deleted son utili ma
+vanno su sotto pagina con campi diversi perché son sempre offline"*.
+#1158 item 4 had put those rows on screen; this is where they belong.
+
+**Three of the four dictated columns were an em-dash by construction.**
+`last seen`, `channels` and `actions` are live-process facts, and a
+log-only row has no process and no DB row — the CASCADE took the
+subject, `session_log_events` has no FK to it and stayed. So the list
+was paying full column width for fields that can never be populated, and
+the operator scanned past rows that looked broken rather than finished.
+The record is a post-mortem; the table it was being rendered into is a
+live console.
+
+**vjt's three rulings, and what each cost.** (1) A SUB-PAGE of Sessions,
+not a sixth tab — the tab strip already overflows and scrolls on a
+phone. (2) No `deleted` badge: once the rows move out, the list is
+strictly live and there is nothing to mark, so the badge #1158 item 4
+added is gone rather than kept "just in case". (3) The ring caveat is
+not a blocker — but it is still true, and a page NAMED after a
+population implies it holds all of it in a way an inline badge did not.
+So the caveat moved onto the page's card subtitle, where it is the
+premise of the screen instead of a remark on a row.
+
+**The split is a view concern, so it lives in the view's vocabulary.**
+`buildSubjectRows` is untouched: one row set, one composite key, the log
+still enriching a live row's drill-down. `liveSessions`/`endedSessions`
+partition it, and they are a PARTITION rather than two filters — the
+live list is the complement, so a class nobody anticipated cannot fall
+off both screens. `EndedSessionRow` narrows `last_event` to non-null,
+which is why the page needs no guard for a case its constructor makes
+impossible.
+
+**The door had to survive an empty list.** The Sessions card used to be
+gated on the row count, so with zero rows there was no card — and after
+the split "zero live rows, some ended ones" is a real state, exactly the
+one where an operator most wants the other screen. The card now renders
+whenever the data loaded and the empty state sits inside it, saying "no
+live sessions" rather than "no sessions", with the ended count on the
+door beside it.
+
+**Built with #1223 item 1 already applied**, as the issue asked: the
+page's columns are the ones the record actually has, no panel repeats
+them, and nothing is dropped at any width — five short fields stack into
+a card without needing a disclosure to get them back.
+
+**Deliberately not built.** No route (the console has none, and #1158
+already declined to invent its first deep link); no independent fetch —
+the page is handed the rows the tab already merged, because a second
+fetch would show a second snapshot of the list the operator reached it
+from; no retention change of any kind.
+
+**Not claimed.** That the page is complete. It cannot be: the ring is
+bounded, pruned on write, fed by an async cast from a path that includes
+`terminate/2`, and a last event that is not a disconnect means the log
+never saw the end — the subtitle says both, and the `lasted`/`how` cells
+render an em-dash rather than inventing an ending.

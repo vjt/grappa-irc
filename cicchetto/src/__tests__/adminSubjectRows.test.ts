@@ -3,6 +3,8 @@ import {
   type AdminSubjectRow,
   buildSubjectRows,
   channelCount,
+  endedSessions,
+  liveSessions,
   rowActions,
   rowKey,
 } from "../lib/adminSubjectRows";
@@ -341,6 +343,51 @@ describe("buildSubjectRows — the session-log join", () => {
 
     expect(rows[0]?.subject_kind).toBe("user");
     expect(rows[0]?.origin).toBe("session_log");
+  });
+});
+
+// #1224 — the merge stays one row set; the VIEW is what splits. vjt
+// ruled that ended sessions move to a sub-page of Sessions and the list
+// that stays is strictly live, so these two functions are what each
+// screen renders.
+describe("liveSessions / endedSessions — the partition", () => {
+  const both = (): AdminSubjectRow[] =>
+    build({ visitors: [visitor()], logSessions: [logEntry({ session_id: "visitor:gone:42" })] });
+
+  it("sends the log-only row to the ended list and nothing else", () => {
+    const rows = both();
+
+    expect(rows).toHaveLength(2);
+    expect(endedSessions(rows).map((r) => r.key)).toEqual(["visitor:gone:42"]);
+  });
+
+  it("leaves every row with a subject or a pid in the live list", () => {
+    const rows = both();
+
+    expect(liveSessions(rows).map((r) => r.origin)).toEqual(["credential"]);
+  });
+
+  // A partition, not two filters: every row lands in exactly one list, so
+  // a class nobody thought about cannot fall off both screens.
+  it("puts each row in exactly one of the two", () => {
+    const rows = build({
+      visitors: [visitor()],
+      credentials: [credential()],
+      sessions: [session({ subject_id: "deadbeef-0000-0000-0000-000000000000" })],
+      logSessions: [logEntry({ session_id: "visitor:gone:42" })],
+    });
+
+    const keys = [...liveSessions(rows), ...endedSessions(rows)].map((r) => r.key);
+    expect(new Set(keys).size).toBe(rows.length);
+    expect(keys).toHaveLength(rows.length);
+  });
+
+  // The narrowing is the reason the sub-page needs no null guard: the
+  // pass that builds a log-only row builds it FROM the entry.
+  it("hands the ended list rows whose event is not nullable", () => {
+    const [ended] = endedSessions(both());
+
+    expect(ended?.last_event.event).toBe("disconnected");
   });
 });
 

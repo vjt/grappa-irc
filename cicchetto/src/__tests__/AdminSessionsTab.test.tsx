@@ -435,48 +435,95 @@ describe("AdminSessionsTab — the drill-down keeps both sources of truth", () =
   });
 });
 
-// #1158 item 4 — vjt ruled "keep only the event" (2026-08-11): visitor
-// retention is unchanged, so an anon visitor is still purged at logout,
-// and the lifecycle log — which carries no FK to the subject — is the
-// only thing left. These tests assert the operator can still SEE that
-// session, and that the surface never pretends the subject is still there.
-describe("AdminSessionsTab — a session whose subject was deleted", () => {
-  it("lists a session that only the log remembers", async () => {
+// #1158 item 4 gave a session whose subject is gone a row in this list,
+// badged `deleted`, because the lifecycle log carries no FK to the
+// subject and outlived the CASCADE. #1224 moved it OUT: three of the four
+// dictated columns are live-process facts, so on those rows they were an
+// em-dash forever. vjt's ruling (2026-08-11): a sub-page of Sessions with
+// the record's own columns, no badge, and this list strictly live.
+//
+// The operator must still be able to SEE the session, and the surface
+// must still never pretend the subject is there — the two properties
+// #1158 item 4 established. Only the screen they hold on has changed.
+describe("AdminSessionsTab — a session whose subject was deleted (#1224)", () => {
+  it("keeps it out of the live list", async () => {
+    await mountWith({ visitors: [parkedVisitor()], logSessions: [logEntry()] });
+
+    // The live row is the pre-state: without it an empty table would
+    // satisfy this by accident.
+    await screen.findByTestId(`admin-session-row-${VISITOR_KEY}`);
+    expect(screen.queryByTestId(`admin-session-row-${GONE_KEY}`)).toBeNull();
+  });
+
+  it("carries no deleted badge anywhere, because nothing needs marking", async () => {
+    await mountWith({ visitors: [parkedVisitor()], logSessions: [logEntry()] });
+
+    await screen.findByTestId(`admin-session-row-${VISITOR_KEY}`);
+    expect(screen.queryByTestId(`admin-session-gone-${GONE_KEY}`)).toBeNull();
+  });
+
+  it("counts it on the door to the sub-page", async () => {
     await mountWith({ logSessions: [logEntry()] });
 
-    const row = await screen.findByTestId(`admin-session-row-${GONE_KEY}`);
+    const door = await screen.findByTestId("admin-sessions-ended-open");
+    expect(door).toHaveTextContent("Ended sessions (1)");
+  });
+
+  // The door has to be reachable exactly when the live list is empty —
+  // that is when an operator looking for a session that is over has
+  // nothing else on screen.
+  it("offers the door even with no live session at all", async () => {
+    await mountWith({ logSessions: [logEntry()] });
+
+    await screen.findByTestId("admin-sessions-empty");
+    expect(screen.getByTestId("admin-sessions-ended-open")).toBeTruthy();
+  });
+
+  it("lists it on the sub-page with the record's own columns", async () => {
+    await mountWith({ logSessions: [logEntry()] });
+
+    fireEvent.click(await screen.findByTestId("admin-sessions-ended-open"));
+
+    const row = await screen.findByTestId(`admin-ended-session-row-${GONE_KEY}`);
     expect(row.textContent).toContain("guest9");
+    expect(row.textContent).toContain("disconnected");
+    expect(row.textContent).toContain(":tcp_closed");
+    expect(row.textContent).toContain("unclean");
+    expect(row.textContent).toContain("1h0m");
   });
 
-  it("marks the row as deleted rather than letting it read as merely broken", async () => {
+  // Point 3 of the ruling: not a blocker, still true. A page named after
+  // a population implies it holds all of it, and this one cannot.
+  it("says on the page that the ring is not an archive", async () => {
     await mountWith({ logSessions: [logEntry()] });
 
-    expect(await screen.findByTestId(`admin-session-gone-${GONE_KEY}`)).toBeTruthy();
+    fireEvent.click(await screen.findByTestId("admin-sessions-ended-open"));
+
+    const card = await screen.findByTestId("admin-ended-sessions-card");
+    expect(card).toHaveTextContent("not evidence the session never ran");
   });
 
-  // No credential to park, no pid to stop: every verb would resolve to a
-  // subject that is gone, so the cell offers none.
-  it("offers no verb on the row", async () => {
-    await mountWith({ logSessions: [logEntry()] });
+  // An empty page is "the ring remembers nothing", never "no session
+  // ended" — so it says so, and the caveat above it still applies.
+  it("does not claim nothing ever ended when the log is empty", async () => {
+    await mountWith({ credentials: [userCredential()], logSessions: [] });
 
-    await screen.findByTestId(`admin-session-row-${GONE_KEY}`);
-    expect(screen.queryByTestId(`admin-session-disconnect-${GONE_KEY}`)).toBeNull();
-    expect(screen.queryByTestId(`admin-session-reconnect-${GONE_KEY}`)).toBeNull();
-    expect(screen.queryByTestId(`admin-session-terminate-${GONE_KEY}`)).toBeNull();
+    fireEvent.click(await screen.findByTestId("admin-sessions-ended-open"));
+
+    const empty = await screen.findByTestId("admin-ended-sessions-empty");
+    expect(empty).toHaveTextContent("the log remembers no session whose subject is gone");
   });
 
-  it("puts why it ended in the drill-down, not in the table", async () => {
-    await mountWith({ logSessions: [logEntry()] });
+  it("goes back to the live list", async () => {
+    await mountWith({ visitors: [parkedVisitor()], logSessions: [logEntry()] });
 
-    const row = await screen.findByTestId(`admin-session-row-${GONE_KEY}`);
-    expect(row.textContent).not.toContain(":tcp_closed");
+    fireEvent.click(await screen.findByTestId("admin-sessions-ended-open"));
+    await screen.findByTestId("admin-ended-sessions-page");
+    expect(screen.queryByTestId(`admin-session-row-${VISITOR_KEY}`)).toBeNull();
 
-    fireEvent.click(screen.getByTestId(`admin-session-details-${GONE_KEY}`));
+    fireEvent.click(screen.getByTestId("admin-ended-sessions-back"));
 
-    const panel = await screen.findByTestId(`admin-session-detail-${GONE_KEY}`);
-    expect(panel).toHaveTextContent(":tcp_closed");
-    expect(panel).toHaveTextContent("unclean");
-    expect(panel).toHaveTextContent("1h0m");
+    expect(await screen.findByTestId(`admin-session-row-${VISITOR_KEY}`)).toBeTruthy();
   });
 
   it("joins the last event onto a subject that still exists", async () => {

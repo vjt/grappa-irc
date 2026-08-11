@@ -10,11 +10,16 @@
 // `<kind>:<id>:<network>` composite the admin session rows are, which is
 // what makes the unified Sessions view able to list them.
 //
-// What this spec pins is the SURFACE contract, in the one direction the
-// product actually promises:
+// #1224 moved the SURFACE, not the property. Those rows used to sit inline
+// in the live list with a `deleted` badge and three em-dashes — `last
+// seen`, `channels` and `actions` are live-process facts, and there is
+// neither a process nor a row. vjt (2026-08-11): a sub-page of Sessions
+// with the record's own columns, no badge, and the live list strictly
+// live. So what this spec pins is now:
 //
 //     given the log remembers a session, and no subject row does,
-//     the Sessions view lists it, marks it deleted, and offers no verb.
+//     the ENDED-SESSIONS page lists it, the live list does not, and
+//     nothing anywhere offers a verb against it.
 //
 // It deliberately does NOT assert the converse. The log is a bounded
 // global ring written from an async telemetry cast on a path that
@@ -29,12 +34,12 @@
 // the admin class reaches the console, and reachability for the other
 // two is covered by `m7-admin-gate-settings-drawer.spec.ts`.
 
-import { openAdminSessionDetail, openAdminSessionsTab } from "../fixtures/cicchettoPage";
+import { openAdminEndedSessions, openAdminSessionsTab } from "../fixtures/cicchettoPage";
 import { listSessionLogSessions, mintVisitor, reapVisitors } from "../fixtures/grappaApi";
 import { getSeededAdmin } from "../fixtures/seedData";
 import { expect, test } from "../fixtures/test";
 
-test("#1158 item 4 a deleted visitor's session survives as a log-only row with no verbs", async ({
+test("#1158 item 4 a deleted visitor's session survives on the ended-sessions page", async ({
   page,
 }) => {
   const admin = getSeededAdmin();
@@ -81,35 +86,41 @@ test("#1158 item 4 a deleted visitor's session survives as a log-only row with n
       [admin.token, admin.subjectJson] as const,
     );
     await page.goto("/");
+
+    // #1224's half: the live list is strictly live. The table itself is
+    // the barrier — asserting absence against a tab that has not rendered
+    // would pass on an empty screen.
     await openAdminSessionsTab(page);
+    await expect(page.getByTestId(`admin-session-row-${key}`)).toHaveCount(0);
+    await expect(page.getByTestId(`admin-session-gone-${key}`)).toHaveCount(0);
 
     // THE property. Without the log join this row cannot exist at all:
     // both row-backed endpoints lost the subject with the CASCADE.
-    const row = page.getByTestId(`admin-session-row-${key}`);
+    const subpage = await openAdminEndedSessions(page);
+    const row = subpage.getByTestId(`admin-ended-session-row-${key}`);
     await expect(row).toBeVisible({ timeout: 15_000 });
     await expect(row).toContainText(visitorNick);
 
-    // Marked, so it does not read as a live session that merely looks
-    // broken — the operator must be able to tell "gone" from "down".
-    await expect(page.getByTestId(`admin-session-gone-${key}`)).toBeVisible();
+    // The record's own columns, which is what the move was for. Not
+    // `logged.event`: terminating the session can append a newer
+    // lifecycle row between the barrier and the render, so the stable
+    // claim is that the page names the event it is showing.
+    await expect(page.getByTestId(`admin-ended-session-event-${key}`)).not.toBeEmpty();
+
+    // The caveat survived the move — a page named after a population
+    // implies it holds all of it, and a bounded ring does not.
+    await expect(page.getByTestId("admin-ended-sessions-card")).toContainText(
+      "not evidence the session never ran",
+    );
 
     // No credential to park, no pid to stop: every verb would resolve to
-    // a subject that is gone, so none is offered. Asserting all three
-    // matters — a single surviving button is a guaranteed failed request.
+    // a subject that is gone, so none is offered on either screen.
+    // Asserting all four matters — a single surviving button is a
+    // guaranteed failed request.
     await expect(page.getByTestId(`admin-session-disconnect-${key}`)).toHaveCount(0);
     await expect(page.getByTestId(`admin-session-reconnect-${key}`)).toHaveCount(0);
     await expect(page.getByTestId(`admin-session-terminate-${key}`)).toHaveCount(0);
     await expect(page.getByTestId(`admin-session-delete-${key}`)).toHaveCount(0);
-
-    // The dictated shape: the row stays a summary, the record lives in
-    // the drill-in ("nei dettagli mostrare tutte le info", vjt 2026-08-11).
-    // Not `logged.event`: terminating the session can append a newer
-    // lifecycle row between the barrier and the render, so the stable
-    // claim is that the panel names the log as the record, and carries a
-    // last-event fact at all.
-    const detail = await openAdminSessionDetail(page, key);
-    await expect(detail).toContainText("session log only");
-    await expect(detail).toContainText("last event");
   } finally {
     if (!deleted) await reapVisitors(admin.token, visitor.id);
   }

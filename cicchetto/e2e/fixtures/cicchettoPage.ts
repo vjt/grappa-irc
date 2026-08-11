@@ -1025,6 +1025,27 @@ export async function openAdminSessionsTab(page: Page): Promise<Locator> {
   return table;
 }
 
+// #1224 — the ended-sessions sub-page, reached the only way an operator can:
+// through the Sessions tab's card header. Deliberately NOT routed through
+// `openAdminSessionsTab`: that one waits on `admin-sessions-table`, which does
+// not render when the live list is empty, and an empty live list is exactly
+// when a spec is most likely to be looking for a session that is over. The
+// door itself is the barrier — it renders as soon as the tab's data loads.
+// Idempotent about how it got there: a spec that already opened the Sessions
+// tab must not be sent back through the rail launcher, which is a TOGGLE and
+// would close the pane it is standing in.
+export async function openAdminEndedSessions(page: Page): Promise<Locator> {
+  const door = page.getByTestId("admin-sessions-ended-open");
+  if ((await door.count()) === 0) {
+    await openAdminConsole(page);
+    await page.getByTestId("admin-tab-sessions").click();
+  }
+  await door.click({ timeout: 15_000 });
+  const subpage = page.getByTestId("admin-ended-sessions-page");
+  await expect(subpage).toBeVisible({ timeout: 10_000 });
+  return subpage;
+}
+
 // A row's testid suffix is the composite `<kind>:<subject_id>:<network_id>` —
 // the same string the `/admin/sessions/:id/*` verbs parse. A spec knows the
 // subject id (a minted visitor id, a seeded user id) but not the network's

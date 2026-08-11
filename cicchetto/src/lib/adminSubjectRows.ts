@@ -108,6 +108,44 @@ export type AdminSubjectRow = {
   last_event: AdminSessionLogEntry | null;
 };
 
+/**
+ * A row that is nothing BUT the lifecycle record: the subject is gone,
+ * no pid is left, and the log entry that produced the row is therefore
+ * the only thing it carries. The narrowing is the point — `last_event`
+ * is `null`-able on the general row and cannot be here, because the
+ * log-only pass builds the row FROM the entry.
+ */
+export type EndedSessionRow = AdminSubjectRow & {
+  origin: "session_log";
+  last_event: AdminSessionLogEntry;
+};
+
+function isEnded(row: AdminSubjectRow): row is EndedSessionRow {
+  return row.origin === "session_log" && row.last_event !== null;
+}
+
+/**
+ * #1224 — the two populations the admin console shows separately.
+ *
+ * vjt (2026-08-11): ended sessions move to a sub-page of Sessions and
+ * the list that stays is strictly live, with no `deleted` badge. The
+ * split is a VIEW concern, so it happens here rather than in the merge:
+ * the join is still one row set keyed on one composite, and the log
+ * still enriches a live row's drill-down.
+ *
+ * A partition, not two filters: `liveSessions` is the complement of
+ * `endedSessions`, so no row can fall out of both. A log-only row with
+ * no entry cannot exist (the pass that builds it needs the entry), but
+ * if it ever did it would show up in the live list rather than vanish.
+ */
+export function endedSessions(rows: AdminSubjectRow[]): EndedSessionRow[] {
+  return rows.filter(isEnded);
+}
+
+export function liveSessions(rows: AdminSubjectRow[]): AdminSubjectRow[] {
+  return rows.filter((row) => !isEnded(row));
+}
+
 export function rowKey(kind: "user" | "visitor", subjectId: string, networkId: number): string {
   return `${kind}:${subjectId}:${networkId}`;
 }

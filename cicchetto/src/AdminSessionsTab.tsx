@@ -1,4 +1,5 @@
 import { type Component, createMemo, createSignal, For, onMount, Show } from "solid-js";
+import AdminEndedSessionsPage from "./AdminEndedSessionsPage";
 import AdminBadge from "./admin/AdminBadge";
 import AdminCard from "./admin/AdminCard";
 import AdminDetailPanel from "./admin/AdminDetailPanel";
@@ -7,11 +8,14 @@ import AdminRowName from "./admin/AdminRowName";
 import { AdminEmpty, AdminError } from "./admin/AdminStatus";
 import AdminTable from "./admin/AdminTable";
 import { useRefreshSlot } from "./admin/refreshSlot";
+import { renderEnded } from "./admin/sessionLogFormat";
 import InlineConfirmButton from "./InlineConfirmButton";
 import {
   type AdminSubjectRow,
   buildSubjectRows,
   channelCount,
+  endedSessions,
+  liveSessions,
   rowActions,
 } from "./lib/adminSubjectRows";
 import {
@@ -65,9 +69,14 @@ import { token } from "./lib/auth";
 // is the row key, so it both fills in "what did this session last do"
 // and supplies rows for subjects that no longer exist.
 //
-// The log is a bounded ring, so those rows are RECENT history, not an
-// archive, and the card subtitle says so rather than letting the table
-// imply completeness.
+// #1224 — and those log-only rows are no longer IN this list. They were
+// carrying a `deleted` badge and three em-dashes, because `last seen`,
+// `channels` and `actions` are live-process facts and there is neither a
+// process nor a row. vjt's ruling (2026-08-11): they move to a sub-page
+// of Sessions with columns the record actually has, no badge, and this
+// list becomes strictly live. The merge is unchanged — one row set, one
+// composite key, the log still enriching a live row's drill-down — and
+// `liveSessions`/`endedSessions` partition it for the two screens.
 //
 // Per `feedback_e2e_user_class_parity_matrix`: admin-gated EXEMPT.
 
@@ -107,6 +116,10 @@ const AdminSessionsTab: Component = () => {
   const [logSessions, setLogSessions] = createSignal<AdminSessionLogEntry[] | null>(null);
   const [confirmingKey, setConfirmingKey] = createSignal<string | null>(null);
   const [detailKey, setDetailKey] = createSignal<string | null>(null);
+  // #1224 — the sub-page is open, or the list is. Same shape as the Users
+  // tab's drill-in to `AdminUserPage`, and deliberately not a route: the
+  // admin console has none.
+  const [endedOpen, setEndedOpen] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
 
@@ -124,6 +137,9 @@ const AdminSessionsTab: Component = () => {
         })
       : [],
   );
+
+  const live = createMemo<AdminSubjectRow[]>(() => liveSessions(rows()));
+  const ended = createMemo(() => endedSessions(rows()));
 
   const refresh = async (): Promise<void> => {
     const t = token();
@@ -226,98 +242,129 @@ const AdminSessionsTab: Component = () => {
 
   return (
     <div class="admin-sessions-tab">
-      <div class="adm-scroll">
-        <Show when={error() !== null}>
-          <AdminError message={error() ?? ""} testId="admin-sessions-error" />
-        </Show>
+      <Show when={endedOpen()}>
+        <AdminEndedSessionsPage rows={ended()} onBack={() => setEndedOpen(false)} />
+      </Show>
 
-        <Show when={networks() !== null && (networks() ?? []).length > 0}>
-          <AdminCard
-            title="Capacity per network"
-            subtitle="live_counts from the Registry — the same projection the admission policy uses"
-            data-testid="admin-sessions-network-summary"
-          >
-            <AdminTable data-testid="admin-sessions-summary-table">
-              <thead>
-                <tr>
-                  <th>network</th>
-                  <th>visitors</th>
-                  <th>users</th>
-                  <th>per-IP cap</th>
-                </tr>
-              </thead>
-              <tbody>
-                <For each={networks() ?? []}>
-                  {(net) => (
-                    <tr
-                      class="admin-sessions-summary-row"
-                      data-testid={`admin-sessions-summary-row-${net.slug}`}
-                    >
-                      <td class="adm-cell-title">{net.slug}</td>
-                      <td
-                        data-label="visitors"
-                        data-testid={`admin-sessions-summary-visitors-${net.slug}`}
+      <Show when={!endedOpen()}>
+        <div class="adm-scroll">
+          <Show when={error() !== null}>
+            <AdminError message={error() ?? ""} testId="admin-sessions-error" />
+          </Show>
+
+          <Show when={networks() !== null && (networks() ?? []).length > 0}>
+            <AdminCard
+              title="Capacity per network"
+              subtitle="live_counts from the Registry — the same projection the admission policy uses"
+              data-testid="admin-sessions-network-summary"
+            >
+              <AdminTable data-testid="admin-sessions-summary-table">
+                <thead>
+                  <tr>
+                    <th>network</th>
+                    <th>visitors</th>
+                    <th>users</th>
+                    <th>per-IP cap</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <For each={networks() ?? []}>
+                    {(net) => (
+                      <tr
+                        class="admin-sessions-summary-row"
+                        data-testid={`admin-sessions-summary-row-${net.slug}`}
                       >
-                        {net.live_counts.visitors}/{renderCap(net.max_concurrent_visitor_sessions)}
-                      </td>
-                      <td
-                        data-label="users"
-                        data-testid={`admin-sessions-summary-users-${net.slug}`}
-                      >
-                        {net.live_counts.users}/{renderCap(net.max_concurrent_user_sessions)}
-                      </td>
-                      <td
-                        data-label="per-ip"
-                        data-testid={`admin-sessions-summary-per-ip-${net.slug}`}
-                      >
-                        {renderCap(net.max_per_ip)}
-                      </td>
+                        <td class="adm-cell-title">{net.slug}</td>
+                        <td
+                          data-label="visitors"
+                          data-testid={`admin-sessions-summary-visitors-${net.slug}`}
+                        >
+                          {net.live_counts.visitors}/
+                          {renderCap(net.max_concurrent_visitor_sessions)}
+                        </td>
+                        <td
+                          data-label="users"
+                          data-testid={`admin-sessions-summary-users-${net.slug}`}
+                        >
+                          {net.live_counts.users}/{renderCap(net.max_concurrent_user_sessions)}
+                        </td>
+                        <td
+                          data-label="per-ip"
+                          data-testid={`admin-sessions-summary-per-ip-${net.slug}`}
+                        >
+                          {renderCap(net.max_per_ip)}
+                        </td>
+                      </tr>
+                    )}
+                  </For>
+                </tbody>
+              </AdminTable>
+            </AdminCard>
+          </Show>
+
+          <Show when={!loaded() && error() === null}>
+            <AdminEmpty message="loading…" />
+          </Show>
+
+          {/* #1224 — the card renders whenever the data loaded, empty list
+            or not, and the empty state sits INSIDE it. The door to the
+            ended sessions lives in this header, and a live list that
+            happens to be empty is exactly when the operator most needs
+            it: gating the card on the row count would take the door away
+            with the rows. */}
+          <Show when={loaded()}>
+            <AdminCard
+              hostsRefresh
+              title="Sessions"
+              subtitle="row-backed and strictly live — parked and failed subjects are listed too, with live state joined on"
+              actions={
+                <button
+                  type="button"
+                  class="adm-btn"
+                  onClick={() => setEndedOpen(true)}
+                  data-testid="admin-sessions-ended-open"
+                >
+                  Ended sessions ({ended().length})
+                </button>
+              }
+              data-testid="admin-sessions-table-card"
+            >
+              <Show
+                when={live().length > 0}
+                fallback={
+                  // "live", not "no sessions": the log may well remember
+                  // sessions that ended, and they are one tap away.
+                  <AdminEmpty message="no live sessions" testId="admin-sessions-empty" />
+                }
+              >
+                <AdminTable class="admin-sessions-table" data-testid="admin-sessions-table">
+                  <thead>
+                    <tr>
+                      <th class="adm-table-grow">who</th>
+                      <th>last seen</th>
+                      <th>channels</th>
+                      <th class="adm-table-sticky-actions">actions</th>
                     </tr>
-                  )}
-                </For>
-              </tbody>
-            </AdminTable>
-          </AdminCard>
-        </Show>
-
-        <Show when={!loaded() && error() === null}>
-          <AdminEmpty message="loading…" />
-        </Show>
-
-        <Show when={loaded() && rows().length === 0}>
-          <AdminEmpty message="no sessions" testId="admin-sessions-empty" />
-        </Show>
-
-        <Show when={loaded() && rows().length > 0}>
-          <AdminCard
-            hostsRefresh
-            title="Sessions"
-            subtitle="row-backed — parked and failed subjects are listed too, with live state joined on; rows marked deleted come from the lifecycle log, which keeps recent history only"
-            data-testid="admin-sessions-table-card"
-          >
-            <AdminTable class="admin-sessions-table" data-testid="admin-sessions-table">
-              <thead>
-                <tr>
-                  <th class="adm-table-grow">who</th>
-                  <th>last seen</th>
-                  <th>channels</th>
-                  <th class="adm-table-sticky-actions">actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                <For each={rows()}>
-                  {(row) => (
-                    <>
-                      <tr class="admin-sessions-row" data-testid={`admin-session-row-${row.key}`}>
-                        <td class="admin-session-who adm-cell-title">
-                          <AdminRowName
-                            alwaysOpenable
-                            open={detailKey() === row.key}
-                            onToggle={() => setDetailKey(detailKey() === row.key ? null : row.key)}
-                            label={`details for ${renderWho(row)}`}
-                            testId={`admin-session-details-${row.key}`}
+                  </thead>
+                  <tbody>
+                    <For each={live()}>
+                      {(row) => (
+                        <>
+                          <tr
+                            class="admin-sessions-row"
+                            data-testid={`admin-session-row-${row.key}`}
                           >
-                            {/* The two dictated lines are ONE block beside the
+                            <td class="admin-session-who adm-cell-title">
+                              <AdminRowName
+                                alwaysOpenable
+                                open={detailKey() === row.key}
+                                onToggle={() =>
+                                  setDetailKey(detailKey() === row.key ? null : row.key)
+                                }
+                                label={`details for ${renderWho(row)}`}
+                                testId={`admin-session-details-${row.key}`}
+                              >
+                                {/* The two dictated lines are ONE block beside the
                                 caret, not two siblings of it. Left as siblings
                                 they are flex items of `.adm-row-expand`, and
                                 the second line can only be produced by letting
@@ -327,126 +374,124 @@ const AdminSessionsTab: Component = () => {
                                 line, losing the caret's indent and breaking the
                                 alignment the fixed-width badge exists to
                                 create. Measured at 16px of drift. */}
-                            <span class="admin-session-lines">
-                              <span class="admin-session-identity">
-                                {/* Fixed-width kind badge: "visitor" and
+                                <span class="admin-session-lines">
+                                  <span class="admin-session-identity">
+                                    {/* Fixed-width kind badge: "visitor" and
                                     "user" are different lengths, and an
                                     unpadded pair makes every nick start at
                                     a different x. */}
-                                <AdminBadge
-                                  tone={row.subject_kind === "user" ? "info" : "neutral"}
-                                  class="adm-badge--kind"
-                                  ariaLabel={row.subject_kind}
-                                >
-                                  {row.subject_kind}
-                                </AdminBadge>
-                                <span class="admin-session-nick">{renderLabel(row)}</span>
-                                {/* #1158 item 4 — this row exists only
-                                    because the lifecycle log outlived the
-                                    subject. Say so on the row itself: it
-                                    has no state to read and no verb to
-                                    press, and without the marker it reads
-                                    as a session that merely looks broken. */}
-                                <Show when={row.origin === "session_log"}>
-                                  <AdminBadge
-                                    tone="warn"
-                                    ariaLabel="subject deleted, session log only"
-                                    testId={`admin-session-gone-${row.key}`}
-                                  >
-                                    deleted
-                                  </AdminBadge>
-                                </Show>
-                              </span>
-                              <span class="admin-session-network">
-                                {row.network_slug ?? `network ${row.network_id}`}
-                              </span>
-                            </span>
-                          </AdminRowName>
-                        </td>
-                        <td
-                          class="admin-session-last-seen"
-                          data-label="last seen"
-                          data-testid={`admin-session-last-seen-${row.key}`}
-                          title={row.last_seen_at ?? "no browser session on record"}
-                        >
-                          {renderLastSeen(row.last_seen_at)}
-                        </td>
-                        <td data-label="channels" data-testid={`admin-session-channels-${row.key}`}>
-                          {renderChannels(row)}
-                        </td>
-                        <td
-                          class="admin-sessions-actions adm-table-sticky-actions"
-                          data-label="actions"
-                        >
-                          <For each={rowActions(row)}>
-                            {(kind) => (
-                              <InlineConfirmButton
-                                idleLabel={ACTION_LABEL[kind]}
-                                confirmLabel={`Confirm ${kind}`}
-                                armed={confirmingKey() === confirmKey(row.key, kind)}
-                                onArm={() => setConfirmingKey(confirmKey(row.key, kind))}
-                                onConfirm={() => runAction(row, kind)}
-                                testId={`admin-session-${kind}-${row.key}`}
-                                extraClass={`${kind}-btn`}
-                              />
-                            )}
-                          </For>
-                          {/* An empty cell reads as a rendering bug. The
+                                    <AdminBadge
+                                      tone={row.subject_kind === "user" ? "info" : "neutral"}
+                                      class="adm-badge--kind"
+                                      ariaLabel={row.subject_kind}
+                                    >
+                                      {row.subject_kind}
+                                    </AdminBadge>
+                                    {/* No `deleted` badge (#1224, vjt: "no badge
+                                    needed"). #1158 item 4 put one here
+                                    because a log-only row sat in this list
+                                    and would otherwise have read as a
+                                    session that merely looks broken; those
+                                    rows are on their own page now, so the
+                                    badge would have nothing to mark. */}
+                                    <span class="admin-session-nick">{renderLabel(row)}</span>
+                                  </span>
+                                  <span class="admin-session-network">
+                                    {row.network_slug ?? `network ${row.network_id}`}
+                                  </span>
+                                </span>
+                              </AdminRowName>
+                            </td>
+                            <td
+                              class="admin-session-last-seen"
+                              data-label="last seen"
+                              data-testid={`admin-session-last-seen-${row.key}`}
+                              title={row.last_seen_at ?? "no browser session on record"}
+                            >
+                              {renderLastSeen(row.last_seen_at)}
+                            </td>
+                            <td
+                              data-label="channels"
+                              data-testid={`admin-session-channels-${row.key}`}
+                            >
+                              {renderChannels(row)}
+                            </td>
+                            <td
+                              class="admin-sessions-actions adm-table-sticky-actions"
+                              data-label="actions"
+                            >
+                              <For each={rowActions(row)}>
+                                {(kind) => (
+                                  <InlineConfirmButton
+                                    idleLabel={ACTION_LABEL[kind]}
+                                    confirmLabel={`Confirm ${kind}`}
+                                    armed={confirmingKey() === confirmKey(row.key, kind)}
+                                    onArm={() => setConfirmingKey(confirmKey(row.key, kind))}
+                                    onConfirm={() => runAction(row, kind)}
+                                    testId={`admin-session-${kind}-${row.key}`}
+                                    extraClass={`${kind}-btn`}
+                                  />
+                                )}
+                              </For>
+                              {/* An empty cell reads as a rendering bug. The
                               dash says the absence is the answer. */}
-                          <Show when={rowActions(row).length === 0}>—</Show>
-                        </td>
-                      </tr>
-                      <Show when={detailKey() === row.key}>
-                        <AdminDetailPanel
-                          title={renderWho(row)}
-                          subtitle="the rest of the record"
-                          onClose={() => setDetailKey(null)}
-                          closeLabel="close session details"
-                          columns={SESSION_COLUMNS}
-                          data-testid={`admin-session-detail-${row.key}`}
-                        >
-                          <AdminFacts facts={detailFacts(row)} />
-                          <Show when={row.visitor !== null}>
-                            <div class="admin-session-danger">
-                              {/* Named for what it destroys. The verb is
+                              <Show when={rowActions(row).length === 0}>—</Show>
+                            </td>
+                          </tr>
+                          <Show when={detailKey() === row.key}>
+                            <AdminDetailPanel
+                              title={renderWho(row)}
+                              subtitle="the rest of the record"
+                              onClose={() => setDetailKey(null)}
+                              closeLabel="close session details"
+                              columns={SESSION_COLUMNS}
+                              data-testid={`admin-session-detail-${row.key}`}
+                            >
+                              <AdminFacts facts={detailFacts(row)} />
+                              <Show when={row.visitor !== null}>
+                                <div class="admin-session-danger">
+                                  {/* Named for what it destroys. The verb is
                                   identity-wide: it deletes the visitor
                                   and every one of its network rows, not
                                   the row this panel hangs off. */}
-                              <span class="admin-session-danger-note">
-                                deletes the whole visitor identity, on every network
-                              </span>
-                              <InlineConfirmButton
-                                idleLabel="Delete visitor"
-                                confirmLabel="Confirm delete visitor"
-                                armed={confirmingKey() === confirmKey(row.key, "delete")}
-                                onArm={() => setConfirmingKey(confirmKey(row.key, "delete"))}
-                                onConfirm={() => runDelete(row)}
-                                testId={`admin-session-delete-${row.key}`}
-                                extraClass="delete-btn"
-                              />
-                            </div>
+                                  <span class="admin-session-danger-note">
+                                    deletes the whole visitor identity, on every network
+                                  </span>
+                                  <InlineConfirmButton
+                                    idleLabel="Delete visitor"
+                                    confirmLabel="Confirm delete visitor"
+                                    armed={confirmingKey() === confirmKey(row.key, "delete")}
+                                    onArm={() => setConfirmingKey(confirmKey(row.key, "delete"))}
+                                    onConfirm={() => runDelete(row)}
+                                    testId={`admin-session-delete-${row.key}`}
+                                    extraClass="delete-btn"
+                                  />
+                                </div>
+                              </Show>
+                            </AdminDetailPanel>
                           </Show>
-                        </AdminDetailPanel>
-                      </Show>
-                    </>
-                  )}
-                </For>
-              </tbody>
-            </AdminTable>
-          </AdminCard>
-        </Show>
-      </div>
+                        </>
+                      )}
+                    </For>
+                  </tbody>
+                </AdminTable>
+              </Show>
+            </AdminCard>
+          </Show>
+        </div>
+      </Show>
     </div>
   );
 };
 
 function renderLabel(row: AdminSubjectRow): string {
   if (row.label !== null) return row.label;
-  // `null` on an orphan pid whose DB row is gone, or on a log entry the
-  // server wrote before the session had a nick. Say which rather than
-  // rendering a blank — it is the divergence, not a missing value.
-  const why = row.origin === "session_log" ? "no nick logged" : "no DB row";
-  return `${row.subject_id.slice(0, 8)} (${why})`;
+  // `null` here means an orphan pid whose DB row is gone — the one
+  // label-less class this list still holds. (The log-only class, whose
+  // entry can predate the session having a nick, is on the sub-page and
+  // has its own renderer for the same reason.) Say which rather than
+  // rendering a blank: it is the divergence, not a missing value.
+  return `${row.subject_id.slice(0, 8)} (no DB row)`;
 }
 
 function renderWho(row: AdminSubjectRow): string {
@@ -497,17 +542,6 @@ function renderExpires(row: AdminSubjectRow): string {
   return days <= 0 ? "expired" : `in ${days}d`;
 }
 
-// Human duration for a session that has ended. Raw milliseconds are
-// unreadable at the scale a bouncer session actually runs for.
-function renderDuration(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  return h < 24 ? `${h}h${m % 60}m` : `${Math.floor(h / 24)}d${h % 24}h`;
-}
-
 // The last thing the lifecycle log saw this session do. `null` is NOT
 // "this session never ran": the log is a bounded global ring written
 // from an async cast, so it forgets, and saying so is the honest render.
@@ -515,14 +549,6 @@ function renderLastEvent(row: AdminSubjectRow): string {
   const e = row.last_event;
   if (e === null) return "nothing logged (bounded ring — not proof it never ran)";
   return `${e.event} · ${e.at}`;
-}
-
-// Only meaningful on a disconnect: reason / cleanliness / how long it
-// had been up. Each part is dropped when the row does not carry it.
-function renderEnded(e: AdminSessionLogEntry): string {
-  const clean = e.clean === null ? "" : e.clean ? " (clean)" : " (unclean)";
-  const lasted = e.duration_ms === null ? "" : `, lasted ${renderDuration(e.duration_ms)}`;
-  return `${e.reason ?? "no reason recorded"}${clean}${lasted}`;
 }
 
 function detailFacts(row: AdminSubjectRow): { label: string; value: string }[] {
@@ -551,12 +577,10 @@ function detailFacts(row: AdminSubjectRow): { label: string; value: string }[] {
     facts.push({ label: "ended", value: renderEnded(row.last_event) });
   }
 
-  if (row.origin === "session_log") {
-    facts.push({
-      label: "record",
-      value: "session log only — the subject was deleted, the event outlived it",
-    });
-  }
+  // No `record: session log only` fact any more (#1224): the panel that
+  // carried it belonged to a row this list no longer holds, and on the
+  // sub-page the sentence is the page's premise rather than a per-row
+  // remark — it lives in the card subtitle there.
 
   if (row.live !== null) {
     facts.push(

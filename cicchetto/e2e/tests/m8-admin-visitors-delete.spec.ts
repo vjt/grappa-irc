@@ -92,9 +92,11 @@ test("M-8 admin deletes a minted visitor from the unified Sessions view (inline 
     //
     // #1158 item 4 changed what that looks like on screen, not what the
     // verb does. The identity is still destroyed — but `session_log_events`
-    // has no FK to the subject, so a row can SURVIVE the CASCADE as the
-    // log-only class: badged "deleted", no DB state, no verbs. Counting
-    // rows would now assert the pre-item-4 world.
+    // has no FK to the subject, so the session can SURVIVE the CASCADE as
+    // the log-only class: no DB state, no pid, no verbs. (#1224 then moved
+    // that class off this list onto the ended-sessions sub-page, which is
+    // one more reason not to count rows here: the count now depends on a
+    // screen this spec is not looking at.)
     //
     // So the identity-wide property moves onto the verbs. `rowActions`
     // gives a credential-backed visitor row exactly one of Disconnect /
