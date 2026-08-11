@@ -18,6 +18,10 @@ import type { AdminNetwork, AdminUser } from "../lib/api";
 // where the disclosure does not even render.
 vi.mock("../lib/theme", () => ({
   isMobile: () => true,
+  // #1223 — a phone is below BOTH breakpoints. The admin components now
+  // read the console's own 899px one; the shell's 768px flag stays for the
+  // shell. `adminCardRegime.test.tsx` is the file that sets them apart.
+  isAdminNarrow: () => true,
   prefersDark: () => false,
   applyTheme: vi.fn(),
 }));

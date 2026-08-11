@@ -39291,3 +39291,61 @@ drill-in (the `session_id` index exists and is still unused by any
 query), and any retention change whatsoever. If a future surface needs
 the identity rather than the event, that reopens vjt's fork; it is not
 a mechanical extension of this.
+
+---
+
+## 2026-08-11 — #1223 item 1: two defects, one symptom, and the band between two breakpoints
+
+vjt, dogfooding staging on an iPhone: *"poi abbiamo quest'idiozia di
+mostrare colonne già mostrate"*. His ruling on the fork the issue left
+open (2026-08-11): *"1223 punto 1: direi drop no?"* — the secondary
+columns really leave the card on a phone, and the detail panel stays.
+Dropping the panel instead was the rejected arm.
+
+**The panel's subtitle was the only true thing on screen, and it was
+false.** `.adm-col-detail { display: none }` is (0,1,0); the stacking
+block that turns rows into cards re-declares `.adm-table td` (0,1,1) and
+wins, so below 900px every "dropped" column came back as a labelled line
+of the card while the panel underneath printed it again under the words
+*"the columns the table drops on a phone"*. `thead` is hidden outright,
+which is why the result read as designed rather than broken. The fix is
+one `td`-qualified twin (0,2,1) inside the same block — it has to live
+there, because a rule outside a media query cannot outrank one inside it.
+
+**One symptom, two defects, and only one of them was CSS.** The issue
+read the Sessions `NETWORK` repeat as another instance of the
+specificity failure. It is not: Sessions drops no column at any width
+(four `<th>`, none secondary). Its repeat was JSX — `detailFacts`
+carried a `network` fact while `.admin-session-network` printed the slug
+under the nick, on DESKTOP too. Raising the selector would not have
+touched it, and dropping the panel on a phone would not have touched the
+desktop half of it. Curing one and calling the issue closed would have
+left the other alive, which is why the count matters more than the
+symptom.
+
+**The 769–899 band is where a half-fix would have made it worse.** The
+admin console's regime changes at 900px — the nav rail, the form grid,
+the table stacking and `.adm-col-detail` are all written against
+`900px`/`899px`. `isMobile()` is the SHELL's breakpoint, 768px, and
+three admin gates were reading it. Make the drop real without touching
+that, and between 769 and 899 the columns leave while `AdminRowName`
+still renders a plain `<span>`: the fields gone AND no door to the panel
+they went into. So the console got its own signal (`isAdminNarrow`,
+899px) and `AdminRowName` plus the Networks column split now read it.
+`refreshSlot` deliberately keeps `isMobile()`: where the refresh button
+lives is a question about the shell's rail, not about the table.
+
+**Where each half is tested, and why they differ.** The drop is a
+question about what is PAINTED — jsdom cannot see it (#1073's lesson),
+so `issue1223-admin-card-affordances.spec.ts` asserts it in a real
+browser, with the report's own oracle: no value may be on the card AND
+in the panel at once, both sides asserted non-empty first so an empty
+intersection cannot pass vacuously. The band gets a second real-browser
+test at 820px. The Sessions duplication is plain JSX that vitest sees
+perfectly well, and a browser copy of it would only be slower.
+
+**Not claimed.** Nothing here measures a real iPhone; the phone leg is
+WebKit at iPhone-15 metrics, which is the suite's standing limit. And
+`isAdminNarrow` mirrors a number CSS cannot share with JS — a media
+query still cannot read a `var()`, so 899 is written twice, exactly like
+`--breakpoint-mobile` before it.

@@ -533,7 +533,14 @@ function detailFacts(row: AdminSubjectRow): { label: string; value: string }[] {
     // would erase it.
     { label: "connection", value: row.connection_state ?? "no DB row" },
     { label: "live", value: renderLive(row) },
-    { label: "network", value: row.network_slug ?? `id ${row.network_id}` },
+    // NO `network` fact. #1223 item 1 reported the panel repeating it,
+    // and unlike the Users/Credentials repeats this one is not the
+    // `.adm-col-detail` specificity defect: Sessions drops no column at
+    // any width, and `.admin-session-network` prints the slug under the
+    // nick on DESKTOP too. Two defects, one symptom — raising the CSS
+    // selector would not have touched this one, and the second line of
+    // the identity block is dictated (vjt, 2026-08-09), so the panel is
+    // the copy that goes.
     { label: "upstream", value: renderUpstream(row) },
     // #1158 item 4 — the third source, and the only one that says
     // anything at all about a session that is over.

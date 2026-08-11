@@ -5285,7 +5285,13 @@ html.resize-dragging * {
    `ux-6-g-admin-mobile-h-scroll` still holds, in its #1074 form: pan-x
    stays PERMITTED on every admin tab (a table that fits must still not
    trap a horizontal gesture), and no tab is wider than its panel on a
-   phone. Networks was the one exemption and is not one any more. */
+   phone. Networks was the one exemption and is not one any more.
+
+   This declaration alone does NOT achieve the drop: the stacking block
+   at the bottom of this file re-declares `.adm-table td`, which outranks
+   it. The `td`-qualified twin down there is what enforces it (#1223
+   item 1). Kept here as the mobile-first default, and because it is what
+   hides the `th` partner. */
 .adm-col-detail {
   display: none;
 }
@@ -5755,6 +5761,30 @@ html.resize-dragging * {
     letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--adm-text-dim);
+  }
+
+  /* #1223 item 1 — the drop is REAL below 900px, which it was not.
+     `.adm-col-detail { display: none }` is (0,1,0) and the stacking rule
+     right above is `.adm-table td` (0,1,1), so every secondary cell won
+     its way back on screen as a labelled line of the card — while
+     `thead` is hidden outright, which is why the result read as designed
+     rather than broken. The panel underneath then repeated those very
+     fields under a subtitle promising the opposite ("the columns the
+     table drops on a phone"): `LIVE 2` / `INSERTED …` on the card and
+     `LIVE SESSIONS 2` / `INSERTED …` in the panel, one under the other
+     (vjt, iPhone dogfood at `b0d5342d`).
+
+     `.adm-table td.adm-col-detail` is (0,2,1) and wins. It has to live
+     INSIDE this block: the rule it is beating is in here, and the base
+     declaration outside cannot outrank it from there.
+
+     vjt's ruling on the fork (2026-08-11): drop the columns, keep the
+     panel. The alternative — dropping the panel on a phone — was
+     rejected. Note this cures ONE of the two duplications reported: the
+     Sessions NETWORK repeat is JSX, not specificity, and is fixed in
+     `AdminSessionsTab`. */
+  .adm-table td.adm-col-detail {
+    display: none;
   }
 
   /* The identity cell is the card's HEADING, not a labelled field: a

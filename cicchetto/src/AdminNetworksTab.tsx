@@ -31,7 +31,7 @@ import {
   adminUpdateServer,
 } from "./lib/api";
 import { token } from "./lib/auth";
-import { isMobile } from "./lib/theme";
+import { isAdminNarrow } from "./lib/theme";
 
 // M-cluster M-10 — Networks admin tab. Operator surface for the
 // admission caps + circuit-breaker recovery + on-demand visitor reap.
@@ -206,9 +206,15 @@ const AdminNetworksTab: Component = () => {
   // the row is right there, and a network deleted by another admin
   // takes its own panel with it.
 
-  // Column count for the detail row's `colspan`. On a phone the six
-  // secondary columns are gone, so the row is slug + actions.
-  const networkColumns = (): number => (isMobile() ? 2 : NETWORK_COLUMNS);
+  // Column count for the detail row's `colspan`. Below the console's
+  // breakpoint the six secondary columns are gone, so the row is slug +
+  // actions.
+  //
+  // #1223 — the gate is `isAdminNarrow()` (899px), not `isMobile()`
+  // (768px): the split has to agree with the CSS that stacks the table,
+  // or the 769-899 band gets a card whose columns are still inline while
+  // every other tab has already moved them into the panel.
+  const networkColumns = (): number => (isAdminNarrow() ? 2 : NETWORK_COLUMNS);
 
   // The two cells that move between the row and the detail depending on
   // width. ONE definition each: the cap editor is a live control, and a
@@ -691,7 +697,7 @@ const AdminNetworksTab: Component = () => {
                       EDITORS, and the detail has to render the control
                       itself, not a copy of its value. Two live controls
                       with one test id is not a layout, it is a bug. */}
-                  <Show when={!isMobile()}>
+                  <Show when={!isAdminNarrow()}>
                     <th>visitors (live/cap)</th>
                     <th>max visitor sessions</th>
                     <th>users (live/cap)</th>
@@ -720,7 +726,7 @@ const AdminNetworksTab: Component = () => {
                             {expandedNetworkId() === net.id ? "▾" : "▸"} {net.slug}
                           </button>
                         </td>
-                        <Show when={!isMobile()}>
+                        <Show when={!isAdminNarrow()}>
                           <td data-label="visitors">{liveCount(net, "visitors")}</td>
                           <td data-label="max visitors">
                             {capEditor(net, "max_concurrent_visitor_sessions")}
@@ -785,7 +791,7 @@ const AdminNetworksTab: Component = () => {
                               there is no read-only copy of them anywhere,
                               so editing a cap stays possible on a phone
                               and Save stays up on the row. */}
-                          <Show when={isMobile()}>
+                          <Show when={isAdminNarrow()}>
                             <AdminFacts
                               facts={[
                                 {

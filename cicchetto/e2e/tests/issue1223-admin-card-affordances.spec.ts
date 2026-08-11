@@ -1,11 +1,12 @@
-// #1223 items 2 and 3 — what an admin row card does on a phone, once
-// #1157 turned rows into cards.
+// #1223 — what an admin row card does on a phone, once #1157 turned rows
+// into cards.
 //
 // vjt, dogfooding staging on an iPhone: *"abbiamo tap target solo sul testo
-// quando invece dovrebbe esser tutta l'area, parlo ad es dei nomi visitor"*.
-// Two separate defects behind that reading, both of them layout, both
-// therefore invisible to jsdom (`feedback_cicchetto_browser_smoke`) and to
-// every vitest suite that mounts these components:
+// quando invece dovrebbe esser tutta l'area, parlo ad es dei nomi visitor"*
+// and *"poi abbiamo quest'idiozia di mostrare colonne già mostrate"*.
+// Separate defects behind those readings, all of them layout, all therefore
+// invisible to jsdom (`feedback_cicchetto_browser_smoke`) and to every
+// vitest suite that mounts these components:
 //
 //   2. `.adm-row-expand` puts the 44px `--tap-min` floor on HEIGHT only and
 //      sizes its box with `inline-flex`, so the door to the row's detail is
@@ -19,11 +20,24 @@
 //      wraps timestamps over several lines. Asserted as the value track
 //      taking the panel's full width, with the label above it.
 //
-// Item 1 of the same issue (the detail panel repeating fields the card
-// already shows) is NOT in scope here: it needs a product call between
-// dropping the columns for real and dropping the panel on mobile, and it is
-// the only one of the three that changes what is on screen rather than where
-// it is.
+//   1. the detail panel repeats fields the card already shows. vjt ruled the
+//      fork on 2026-08-11 — *"1223 punto 1: direi drop no?"* — so the columns
+//      really leave the card and the panel stays the only place they live.
+//
+//      Two defects share that symptom, and only ONE of them is in this file.
+//      The `.adm-col-detail` specificity failure (Users, Credentials) is a
+//      question about what is PAINTED, invisible to jsdom, so it is asserted
+//      here. The Sessions repeat is JSX — `detailFacts` carried a `network`
+//      fact while the identity cell printed the slug at every width, desktop
+//      included — which vitest sees perfectly well and
+//      `AdminSessionsTab.test.tsx` pins. Bringing it here too would buy a
+//      slower copy of a test that already exists.
+//
+//      Also asserted here: the 769-899 BAND. The console's card regime starts
+//      at 900px and `isMobile()` is 768px, so a fix that only raised the CSS
+//      selector would have made that band strictly worse — columns gone,
+//      `AdminRowName` still a plain span, no door to the panel they went
+//      into. That is a real-browser claim as much as the drop is.
 //
 // The desktop test is the counter-claim, and it is why item 3's fix is a
 // `@container` rule rather than a blanket single column: at a width where two
@@ -62,6 +76,25 @@ async function openSessionsTab(page: Page): Promise<void> {
   await openAdminConsole(page);
   await page.getByTestId("admin-tab-sessions").click();
   await expect(page.getByTestId("admin-sessions-table")).toBeVisible({ timeout: 10_000 });
+}
+
+async function openUsersTab(page: Page): Promise<void> {
+  await openAdminConsole(page);
+  await page.getByTestId("admin-tab-users").click();
+  await expect(page.getByTestId("admin-users-table")).toBeVisible({ timeout: 10_000 });
+}
+
+// The card's cells that are actually PAINTED. `getClientRects()` rather than
+// a computed-style read: a `display: none` cell has no boxes, which is the
+// property under test, and it costs nothing on WebKit (where reading computed
+// style has bitten this suite before).
+async function paintedCellTexts(row: Locator): Promise<string[]> {
+  return row.locator("td").evaluateAll((tds) =>
+    tds
+      .filter((td) => td.getClientRects().length > 0)
+      .map((td) => (td.textContent ?? "").trim())
+      .filter((text) => text !== ""),
+  );
 }
 
 type Box = { x: number; y: number; width: number; height: number };
@@ -186,4 +219,84 @@ test("#1223 on a wide panel the facts stay two columns", async ({ page }) => {
   } finally {
     await reapVisitors(admin.token, visitor.id);
   }
+});
+
+// Item 1, the half only a browser can see. The panel's subtitle promises
+// "the columns the table drops on a phone", and until #1223 it was the one
+// thing on screen that was false: `.adm-col-detail { display: none }` is
+// (0,1,0) and lost to the `.adm-table td` stacking rule (0,1,1), so every
+// dropped column came back as a labelled line of the card and the panel
+// underneath said it a second time.
+//
+// The oracle is the report itself — no value may be on the card AND in the
+// panel — rather than a check that a particular selector is hidden: that is
+// the property vjt read off the screen, and it survives the next tab growing
+// a column.
+test("#1223 @webkit on a phone no field is on the card and in the panel at once", async ({
+  page,
+}) => {
+  const admin = getSeededAdmin();
+  const adminId = (JSON.parse(admin.subjectJson) as { id: string }).id;
+
+  await adminLogin(page);
+  await openUsersTab(page);
+
+  const row = page.getByTestId(`admin-user-row-${adminId}`);
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeVisible();
+
+  const panel = page.getByTestId(`admin-user-detail-${adminId}`);
+  await expect(panel).toHaveCount(0);
+  await page.getByTestId(`admin-user-details-${adminId}`).tap();
+  await expect(panel).toBeVisible({ timeout: 5_000 });
+
+  const cardValues = await paintedCellTexts(row);
+  const factValues = (await panel.locator("dd").allTextContents())
+    .map((t) => t.trim())
+    .filter((t) => t !== "");
+
+  // Non-vacuity, both sides: an empty card or an empty panel would make the
+  // intersection trivially empty and the test a mirror.
+  expect(cardValues.length, "the row card must still show something").toBeGreaterThan(0);
+  expect(factValues.length, "the panel must carry the dropped columns").toBeGreaterThan(0);
+
+  expect(
+    factValues.filter((value) => cardValues.includes(value)),
+    `values printed twice — card ${JSON.stringify(cardValues)}, panel ${JSON.stringify(factValues)}`,
+  ).toEqual([]);
+});
+
+// The band the console's two breakpoints leave between them. 820px is a
+// portrait iPad: the CSS has already turned the table into cards and taken
+// the secondary columns away, and `isMobile()` — 768px — says desktop.
+test.describe("#1223 the 769-899 band", () => {
+  test.use({ viewport: { width: 820, height: 1180 } });
+
+  test("#1223 the columns leave and the door to their panel is there", async ({ page }) => {
+    const admin = getSeededAdmin();
+    const adminId = (JSON.parse(admin.subjectJson) as { id: string }).id;
+
+    await adminLogin(page);
+    await openUsersTab(page);
+
+    const row = page.getByTestId(`admin-user-row-${adminId}`);
+    await expect(row).toBeVisible();
+
+    // Gone from the card: this is the width at which the drop applies.
+    const dropped = row.locator("td.adm-col-detail");
+    expect(await dropped.count(), "the secondary cells must still be in the DOM").toBeGreaterThan(
+      0,
+    );
+    for (let i = 0; i < (await dropped.count()); i++) {
+      await expect(dropped.nth(i)).toBeHidden();
+    }
+
+    // And reachable: the disclosure has to exist wherever the columns leave,
+    // or this band is where the record becomes unreadable.
+    await page.getByTestId(`admin-user-details-${adminId}`).click();
+    const panel = page.getByTestId(`admin-user-detail-${adminId}`);
+    await expect(panel).toBeVisible({ timeout: 5_000 });
+    await expect(panel).toContainText("live sessions");
+    await expect(panel).toContainText("inserted");
+  });
 });

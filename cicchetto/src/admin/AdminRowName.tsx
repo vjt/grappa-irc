@@ -1,5 +1,5 @@
 import { type Component, type JSX, Show } from "solid-js";
-import { isMobile } from "../lib/theme";
+import { isAdminNarrow } from "../lib/theme";
 
 // Admin redesign (2026-08-07 review) — a table row's identity cell.
 //
@@ -20,6 +20,12 @@ import { isMobile } from "../lib/theme";
 // is not one of those: it carries four columns at EVERY width and keeps
 // the rest of the record in the panel, so there the disclosure is the
 // only door to it and `alwaysOpenable` keeps it on at all widths.
+//
+// #1223 — and "below 900px" is what the gate now asks. It used to ask
+// `isMobile()`, which is 768px: in the 769-899 band the table had
+// already dropped its columns into a panel this rendered no door to.
+// The door has to open wherever the columns leave, so both read the
+// SAME breakpoint (`isAdminNarrow`).
 
 export type Props = {
   /** The row's name, e.g. `vjt @ azzurra`. */
@@ -36,7 +42,7 @@ export type Props = {
 
 const AdminRowName: Component<Props> = (props) => (
   <Show
-    when={props.alwaysOpenable === true || isMobile()}
+    when={props.alwaysOpenable === true || isAdminNarrow()}
     fallback={<span class="adm-row-name">{props.children}</span>}
   >
     <button

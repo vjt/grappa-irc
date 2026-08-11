@@ -206,6 +206,29 @@ describe("AdminSessionsTab — the dictated columns", () => {
     expect(row.textContent).toContain("azzurra");
   });
 
+  // #1223 item 1 — and it shows it ONCE. The panel used to carry a
+  // `network` fact as well, so the slug was printed twice on every row,
+  // at EVERY width: this half of the report is JSX duplication, not the
+  // `.adm-col-detail` specificity defect the other tabs have, and no CSS
+  // change would have touched it.
+  it("does not repeat the network in the drill-down", async () => {
+    await mountWith({ credentials: [userCredential()] });
+
+    const row = await screen.findByTestId(`admin-session-row-${USER_KEY}`);
+    expect(
+      row.querySelector(".admin-session-network")?.textContent,
+      "pre-state: the identity cell is where the network is printed",
+    ).toBe("azzurra");
+
+    fireEvent.click(screen.getByTestId(`admin-session-details-${USER_KEY}`));
+    const panel = await screen.findByTestId(`admin-session-detail-${USER_KEY}`);
+
+    const factValues = [...panel.querySelectorAll("dd")].map((dd) => dd.textContent);
+    expect(factValues, "the panel must not reprint what the row already shows").not.toContain(
+      "azzurra",
+    );
+  });
+
   it("renders the channel count from the live session", async () => {
     await mountWith({ credentials: [userCredential()] });
 

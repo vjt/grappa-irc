@@ -27,6 +27,22 @@ export type ResolvedTheme = "mirc-light" | "irssi-dark";
 
 const MOBILE_QUERY = "(max-width: 768px)";
 
+// #1223 — the ADMIN console's own breakpoint, which is not the shell's.
+//
+// Everything about the console changes at 900px, not 768px: the desktop
+// nav rail (`.admin-pane` grid), the two-column form grid, the table
+// stacking block and `.adm-col-detail`'s drop are all written against
+// `900px` / `899px` in `themes/default.css`. Between 769 and 899 the
+// shell is a desktop and the console is already a stack of cards, so an
+// admin component that branches on `isMobile()` reads the wrong regime
+// for a 130px-wide band — which is how the Users and Credentials tables
+// came to drop their secondary columns while `AdminRowName` still
+// rendered a plain span, leaving the detail panel with no door.
+//
+// Same literal-in-CSS caveat as `--breakpoint-mobile`: a media query
+// cannot read a `var()`, so the number is mirrored, not shared.
+const ADMIN_NARROW_QUERY = "(max-width: 899px)";
+
 // Resolves the OS preference via matchMedia. Defensive against environments
 // without matchMedia (older browsers, SSR — neither applies to cicchetto
 // today, but the boundary is cheap).
@@ -75,6 +91,12 @@ const exports_ = moduleRoot(() => {
       : false;
   const [mobile, setMobile] = createSignal(initial);
 
+  const adminNarrowInitial =
+    typeof window !== "undefined" && window.matchMedia
+      ? window.matchMedia(ADMIN_NARROW_QUERY).matches
+      : false;
+  const [adminNarrow, setAdminNarrow] = createSignal(adminNarrowInitial);
+
   const darkInitial =
     typeof window !== "undefined" && window.matchMedia
       ? window.matchMedia(DARK_QUERY).matches
@@ -86,6 +108,9 @@ const exports_ = moduleRoot(() => {
     const listener = (e: MediaQueryListEvent) => setMobile(e.matches);
     mm.addEventListener("change", listener);
 
+    const mmAdmin = window.matchMedia(ADMIN_NARROW_QUERY);
+    mmAdmin.addEventListener("change", (e: MediaQueryListEvent) => setAdminNarrow(e.matches));
+
     const mmDark = window.matchMedia(DARK_QUERY);
     mmDark.addEventListener("change", (e: MediaQueryListEvent) => setPrefersDark(e.matches));
 
@@ -95,14 +120,21 @@ const exports_ = moduleRoot(() => {
     void createEffect(() => {
       // Force the signals into the createRoot's tracking scope.
       void mobile();
+      void adminNarrow();
       void prefersDark();
     });
   }
 
-  return { isMobile: mobile, prefersDark };
+  return { isMobile: mobile, isAdminNarrow: adminNarrow, prefersDark };
 });
 
 export const isMobile = exports_.isMobile;
+
+// #1223 — true below the ADMIN console's 900px breakpoint (see
+// ADMIN_NARROW_QUERY). Every admin component whose behaviour has to match
+// what the console's CSS is doing at that width reads THIS, not
+// `isMobile()`; the shell's own layout keeps `isMobile()`.
+export const isAdminNarrow = exports_.isAdminNarrow;
 
 // #358 — the reactive OS dark-mode preference (true = dark). customTheme.ts's
 // apply effect subscribes to it; the gallery reads it to default the slot
