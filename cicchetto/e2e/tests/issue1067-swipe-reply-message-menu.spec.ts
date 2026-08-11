@@ -173,7 +173,7 @@ test("issue1067 — a left→right swipe on a message quotes it into the compose
   expect(result.transformAfter).toBe("");
 
   // THE outcome: the quote, exactly as the issue spells it, caret at the end.
-  const quote = `<${specNick()}> ${body}<< `;
+  const quote = `<${specNick()}> ${body} << `;
   await expect(composeTextarea(page)).toHaveValue(quote);
   const caret = await composeTextarea(page).evaluate(
     (el) => (el as HTMLTextAreaElement).selectionStart,
@@ -293,7 +293,7 @@ test("issue1067 — the menu's Reply item fills the compose with the same quote 
   await menuItem(page, "Reply").click();
 
   await expect(menu(page)).toHaveCount(0);
-  await expect(composeTextarea(page)).toHaveValue(`<${specNick()}> ${body}<< `);
+  await expect(composeTextarea(page)).toHaveValue(`<${specNick()}> ${body} << `);
 });
 
 // The clipboard is stubbed at the browser boundary rather than driven through
@@ -408,7 +408,7 @@ test("issue1156 — a join row refuses the swipe while the privmsg above it stil
     ]);
     expect(onSpeech.prevented).toBe(true);
     expect(onSpeech.transformDuring).toMatch(/^translateX\(\d/);
-    await expect(composeTextarea(page)).toHaveValue(`<${specNick()}> ${body}<< `);
+    await expect(composeTextarea(page)).toHaveValue(`<${specNick()}> ${body} << `);
   } finally {
     await peer.disconnect("1156 witness done");
   }

@@ -42,14 +42,35 @@ test.setTimeout(90_000);
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
 // The issue measured the threshold at a 390px viewport: a 46-char quote
-// already wraps and already hides the caret. This body is deliberately far
-// past it — around six wrapped lines — so the required overflow below is a
-// wide margin rather than a coin toss on font metrics, while staying well
+// already wraps and already hides the caret. This body is far past it, so the
+// ROW wraps and the quote it produces is a capped one, while staying well
 // inside one PRIVMSG so the server-side split budget (#246) never turns it
 // into two scrollback rows.
 const FILLER =
   "che va a capo parecchie volte perche' il textarea e' rows=1 e non cresce, " +
   "quindi il caret finisce sotto la piega e non si vede piu' nulla";
+
+// #1235 capped the quoted body at 42 characters plus a literal `...`, so a
+// single reply can no longer BE six wrapped lines: the longest quote the
+// gesture can now produce is `<nick> ` + 45 + ` << `, about two. The overflow
+// this spec needs is therefore built the way an operator builds it — the reply
+// verb APPENDS, so three replies to the same row stack into a draft that wraps
+// well past the fold, with the caret at the very end of the third. What is
+// measured is unchanged: the caret's geometry after an append.
+//
+// Hardcoded in lockstep with `REPLY_QUOTE_BODY_LIMIT` / `REPLY_QUOTE_ELLIPSIS`
+// in `src/lib/replyQuote.ts` — the e2e package does not import from `src`, and
+// the house convention here is a mirrored constant with a lockstep comment.
+const QUOTED_BODY_LIMIT = 42;
+const QUOTED_ELLIPSIS = "...";
+const REPLIES = 3;
+
+function cappedQuotedBody(body: string): string {
+  const chars = [...body];
+  return chars.length <= QUOTED_BODY_LIMIT
+    ? body
+    : chars.slice(0, QUOTED_BODY_LIMIT).join("") + QUOTED_ELLIPSIS;
+}
 
 // A body unique per run: the e2e sqlite scrollback persists across
 // KEEP_STACK=1 re-runs, and a static string would match two rows on the
@@ -58,9 +79,10 @@ function uniqueBody(): string {
   return `issue1105 ${Date.now()} ${FILLER}`;
 }
 
-// Six-ish wrapped lines minus generous slack. Its job is to fail loudly if the
-// fixture ever stops overflowing, because then "the caret is in view" would be
-// true for the wrong reason.
+// Six-ish wrapped lines minus generous slack — three stacked quotes come to
+// about what the single uncapped one used to be. Its job is to fail loudly if
+// the fixture ever stops overflowing, because then "the caret is in view" would
+// be true for the wrong reason.
 const MIN_OVERFLOW_PX = 40;
 
 // A left→right drag on the message row whose text contains `body`. Touch
@@ -116,10 +138,13 @@ test("issue1105 — replying to a wrapping message scrolls the compose caret int
   await expect(ta).toHaveValue("");
   expect((await composeCaretGeometry(page)).scrollTop).toBe(0);
 
-  await swipeRowRight(page, body);
-
-  const quote = `<${specNick()}> ${body}<< `;
-  await expect(ta).toHaveValue(quote, { timeout: 5_000 });
+  // Each reply is awaited before the next is fired: the value IS the barrier
+  // proving the previous append landed, so the swipes cannot overlap.
+  const quote = `<${specNick()}> ${cappedQuotedBody(body)} << `;
+  for (let i = 1; i <= REPLIES; i++) {
+    await swipeRowRight(page, body);
+    await expect(ta).toHaveValue(quote.repeat(i), { timeout: 5_000 });
+  }
 
   // THE regression: caret at the end of the quote AND that line inside the
   // client box. Before the fix scrollTop stayed 0 with the caret below it.
