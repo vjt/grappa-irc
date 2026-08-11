@@ -23,7 +23,8 @@
 // not exist any more.
 //
 // The replacement is a claim no relocation of the scroller can satisfy: at
-// 393px, on EVERY tab, no scroll container inside the admin pane may have
+// 393px, on EVERY surface (#1224 — tabs AND the sub-pages that open from
+// inside one), no scroll container inside the admin pane may have
 // `scrollWidth > clientWidth`. Moving `overflow-x` one level in or out —
 // the exact trap the deleted CSS comment documented, and the thing #1074
 // did — fails it, because the offender is reported wherever it lands.
@@ -52,16 +53,14 @@
 
 import type { Page } from "@playwright/test";
 import { loginAs, openRailMenu, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
-import { mintVisitor, reapVisitors } from "../fixtures/grappaApi";
+import { listSessionLogSessions, mintVisitor, reapVisitors } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededAdmin, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 const GRAPPA_BASE_URL = "http://grappa-test:4000";
 
-// Every tab AdminPane mounts (`TABS` in AdminPane.tsx). The pan is a
-// property of the pane, not of the three tabs that happened to have tables
-// when this spec was written, so the oracle visits all of them.
+// Every tab AdminPane mounts (`TABS` in AdminPane.tsx).
 const ADMIN_TABS = [
   "sessions",
   "events",
@@ -78,10 +77,89 @@ const ADMIN_TABS = [
   "debug",
 ] as const;
 
+// #1224 — the width oracle enumerates SURFACES, not tabs.
+//
+// This comment used to say "the pan is a property of the pane, not of the
+// three tabs that happened to have tables" and then loop the tab list. Both
+// halves were true when written and the second stopped being true: a tab is
+// not the only thing the pane shows. `AdminUsersTab` has opened
+// `AdminUserPage` from inside the Users panel since #1158 (which is where
+// the Credentials tab went), and #1224 added the ended-sessions page behind
+// the Sessions card header. Two full-pane surfaces with tables, at 393px,
+// that a loop over `ADMIN_TABS` structurally cannot reach — the guard had
+// quietly become a list of the places that existed when it was written.
+//
+// So the list of TABS stays (it is what the touch-action tests below are
+// about — `#admin-tab-<key>` is a real element with a real CSS contract),
+// and the width claim moves onto this list of surfaces instead.
+//
+// 🔴 Why the sub-page half is still hand-written, and what would fix it.
+// A surface is discoverable once you are ON it — both sub-pages render
+// `.adm-subpage-head`. A DOOR is not: `admin-sessions-ended-open` is a
+// static testid on a card-header button, `admin-user-networks-<id>` is a
+// per-row button in an actions cell, they share no convention, and the
+// cells they sit in also hold Delete. There is nothing a crawl could press
+// safely and nothing a selector could match honestly. Giving every door one
+// marker attribute would make this list derive itself; until then the
+// completeness assertion below covers the TAB half automatically, and a new
+// sub-page needs a line here. That is a real gap, stated rather than
+// papered over — a comment that claims coverage it does not have is exactly
+// how this one went stale.
+type Surface = {
+  name: string;
+  open: (page: Page) => Promise<void>;
+};
+
+async function openTab(page: Page, tab: string): Promise<void> {
+  await page.getByTestId(`admin-tab-${tab}`).tap();
+  await expect(page.locator(`#admin-tab-${tab}`)).toBeVisible({ timeout: 10_000 });
+}
+
+// Takes the subject's id because the user page is per-user and only one
+// user will do: its networks TABLE renders under `mine().length > 0`, and
+// the seeded `admin-vjt` — which `.first()` reaches, being row one — has no
+// IRC bind, so it shows the empty state and the surface would be measured
+// with nothing on it. `vjt` has the bind. Measured, not assumed: `.first()`
+// is what the first run of this extension did, and the barrier caught it.
+function adminSurfaces(vjtUserId: string): Surface[] {
+  return [
+    ...ADMIN_TABS.map((tab) => ({
+      name: `tab:${tab}`,
+      open: (page: Page) => openTab(page, tab),
+    })),
+    {
+      name: "subpage:ended-sessions",
+      open: async (page: Page) => {
+        await openTab(page, "sessions");
+        await page.getByTestId("admin-sessions-ended-open").tap();
+        await expect(page.getByTestId("admin-ended-sessions-page")).toBeVisible({
+          timeout: 10_000,
+        });
+        // Anti-hollow-green: measure a POPULATED page or fail here. An
+        // empty-state card cannot overflow and would pass on nothing.
+        await expect(page.getByTestId("admin-ended-sessions-table")).toBeVisible({
+          timeout: 10_000,
+        });
+      },
+    },
+    {
+      name: "subpage:user-page",
+      open: async (page: Page) => {
+        await openTab(page, "users");
+        await page.getByTestId(`admin-user-networks-${vjtUserId}`).tap();
+        await expect(page.getByTestId("admin-user-page")).toBeVisible({ timeout: 10_000 });
+        await expect(page.getByTestId("admin-user-networks-table")).toBeVisible({
+          timeout: 10_000,
+        });
+      },
+    },
+  ];
+}
+
 test.setTimeout(180_000);
 
 type Offender = {
-  tab: string;
+  surface: string;
   tag: string;
   testId: string | null;
   cls: string;
@@ -145,6 +223,28 @@ async function createSeedVhost(adminToken: string): Promise<number | null> {
   return ((await res.json()) as { id: number }).id;
 }
 
+// A row on the ended-sessions sub-page. The only thing that puts one there
+// is a session the lifecycle log remembers whose subject no longer exists
+// (#1158 item 4), so this mints a visitor, waits for the sink to write its
+// row, then destroys the identity — the same arrange `issue1158-item4` uses.
+// No teardown: the subject is already gone, and the log row is the point.
+async function seedEndedSession(adminToken: string): Promise<void> {
+  const visitor = await mintVisitor(`ux6g-ended-${Date.now()}`);
+  const prefix = `visitor:${visitor.id}:`;
+  await expect
+    .poll(
+      async () =>
+        (await listSessionLogSessions(adminToken)).filter((e) => e.session_id.startsWith(prefix))
+          .length,
+      {
+        timeout: 20_000,
+        message: `precondition: session_log never recorded ${prefix}* — the ended-sessions surface cannot be populated, so measuring it would prove nothing`,
+      },
+    )
+    .toBeGreaterThan(0);
+  await reapVisitors(adminToken, visitor.id);
+}
+
 async function deleteSeedVhost(adminToken: string, id: number | null): Promise<void> {
   if (id === null) return;
   await fetch(`${GRAPPA_BASE_URL}/admin/vhosts/${id}`, {
@@ -185,26 +285,38 @@ test.describe("UX-6-G — admin pane horizontal scroll on mobile", () => {
     await expect(page.getByTestId("admin-pane")).toBeVisible({ timeout: 5_000 });
   }
 
-  test("@webkit admin on mobile — no tab can be panned sideways", async ({ page }) => {
+  test("@webkit admin on mobile — no surface can be panned sideways", async ({ page }) => {
     const admin = getSeededAdmin();
     const visitor = await mintVisitor(`ux6g-${Date.now()}`);
     let vhostId: number | null = null;
 
     try {
       vhostId = await createSeedVhost(admin.token);
+      // A row on the ended-sessions sub-page, by the only route that makes
+      // one: a session the log remembers whose subject is gone. Without it
+      // that surface renders an empty-state card and measuring it would be
+      // the very "an empty tab cannot overflow" pass this spec was rewritten
+      // to stop doing.
+      await seedEndedSession(admin.token);
       await openAdminPane(page);
+
+      // The TAB half of the surface list maintains itself: a tab added to
+      // `TABS` without a line here fails on the count rather than going
+      // unmeasured. The sub-page half cannot (see the note on `Surface`).
+      await expect(
+        page.getByTestId("admin-pane").locator("[role='tab']"),
+        "a tab exists that the surface list does not name — add it to ADMIN_TABS",
+      ).toHaveCount(ADMIN_TABS.length);
 
       const offenders: Offender[] = [];
 
-      for (const tab of ADMIN_TABS) {
-        await page.getByTestId(`admin-tab-${tab}`).tap();
-        const panel = page.locator(`#admin-tab-${tab}`);
-        await expect(panel).toBeVisible({ timeout: 10_000 });
+      for (const surface of adminSurfaces(vjtUserId)) {
+        await surface.open(page);
 
         // The pane, not just the panel: the pre-#1157 arrangement made the
         // PANEL the scroller, and a future one could push it further out.
         const found = await page.getByTestId("admin-pane").evaluate((root) => {
-          const out: Omit<Offender, "tab">[] = [];
+          const out: Omit<Offender, "surface">[] = [];
           const consider = (el: Element): void => {
             // NAMED EXEMPTION, not a filter that makes the red go away.
             // `.adm-nav` is the tab strip: nine chips, `overflow-x: auto`
@@ -232,12 +344,12 @@ test.describe("UX-6-G — admin pane horizontal scroll on mobile", () => {
           return out;
         });
 
-        offenders.push(...found.map((o) => ({ ...o, tab })));
+        offenders.push(...found.map((o) => ({ ...o, surface: surface.name })));
       }
 
       expect(
         offenders,
-        `nothing in the admin pane may be pannable at 393px, on any tab — ` +
+        `nothing in the admin pane may be pannable at 393px, on any surface — ` +
           `offenders: ${JSON.stringify(offenders, null, 2)}`,
       ).toEqual([]);
     } finally {
