@@ -2,7 +2,8 @@
 # Install the dumb reverse-proxy nginx config + shared snippet on a native
 # Linux host, enable/reload the service. The BEAM self-serves the SPA and
 # owns every header (#485), so there is no cicchetto-dist symlink and no
-# security-headers snippet — only the substrate-agnostic proxy snippet.
+# security-headers snippet — only the two substrate-agnostic snippets: the
+# proxy locations and the shared access-log format (#1029).
 #
 # Idempotent — re-run after `git pull` (or to change
 # LISTEN_ADDR/TRUSTED_UPSTREAM_CIDR) to refresh the config.
@@ -48,6 +49,9 @@ echo "[install_nginx] installing config + snippets"
 install -o root -g root -m 0644 "${tmp_conf}" "${NGINX_ETC}/nginx.conf"
 mkdir -p "${NGINX_ETC}/snippets"
 install -o root -g root -m 0644 "${REPO_ROOT}/infra/snippets/locations-api.conf" "${NGINX_ETC}/snippets/locations-api.conf"
+# #1029 — nginx.conf includes this one too; miss it and `nginx -t` below
+# fails AFTER the config has already been written to /etc/nginx.
+install -o root -g root -m 0644 "${REPO_ROOT}/infra/snippets/log-format.conf" "${NGINX_ETC}/snippets/log-format.conf"
 
 echo "[install_nginx] nginx -t"
 nginx -t
