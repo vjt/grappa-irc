@@ -4,7 +4,13 @@ import type { ScrollbackMessage } from "../lib/api";
 import { channelKey } from "../lib/channelKey";
 import { getDraft, setDraft } from "../lib/compose";
 import { appendToCompose } from "../lib/composeAppend";
-import { replyQuote, replyToMessage } from "../lib/replyQuote";
+import {
+  REPLY_QUOTE_BODY_LIMIT,
+  REPLY_QUOTE_ELLIPSIS,
+  REPLY_QUOTE_TAIL,
+  replyQuote,
+  replyToMessage,
+} from "../lib/replyQuote";
 
 // #1067 — the reply verb: a swipe (or the menu's Reply item) drops
 // `<nick> quoted message<< ` into the compose box with the caret at the end,
@@ -44,14 +50,14 @@ beforeEach(() => {
 
 describe("replyQuote", () => {
   it("renders the irssi-shaped quote the issue specifies", () => {
-    expect(replyQuote(msg({}))).toBe("<vjt> ciao mondo<< ");
+    expect(replyQuote(msg({}))).toBe("<vjt> ciao mondo << ");
   });
 
   // The body on the wire can carry mIRC colour/bold control bytes; the operator
   // is quoting what they SEE, and a control byte pasted into compose would be
   // re-sent verbatim as formatting they never chose.
   it("strips mIRC control codes out of the quoted body", () => {
-    expect(replyQuote(msg({ body: "\x02bold\x02 plain" }))).toBe("<vjt> bold plain<< ");
+    expect(replyQuote(msg({ body: "\x02bold\x02 plain" }))).toBe("<vjt> bold plain << ");
   });
 
   // Presence rows (join/part/quit/mode/…) have no author speaking and often no
@@ -71,7 +77,7 @@ describe("replyQuote", () => {
   });
 
   it("quotes a notice like speech — it has an author and a body", () => {
-    expect(replyQuote(msg({ kind: "notice" }))).toBe("<vjt> ciao mondo<< ");
+    expect(replyQuote(msg({ kind: "notice" }))).toBe("<vjt> ciao mondo << ");
   });
 
   // #1126 — a real action row carries the wire envelope (`\x01ACTION …\x01`);
@@ -81,7 +87,7 @@ describe("replyQuote", () => {
   // ended up in the compose box and from there onto the wire.
   it("quotes an action in ACTION form, envelope stripped — #1126", () => {
     expect(replyQuote(msg({ kind: "action", body: "\x01ACTION si dà alla fuga\x01" }))).toBe(
-      "* vjt si dà alla fuga<< ",
+      "* vjt si dà alla fuga << ",
     );
   });
 
@@ -98,7 +104,7 @@ describe("replyQuote", () => {
   // future server-side pre-strip, or a row persisted before the wire form was
   // stored). The action SHAPE must not depend on the envelope being there.
   it("still uses action form when the envelope is absent — #1126", () => {
-    expect(replyQuote(msg({ kind: "action", body: "ciao mondo" }))).toBe("* vjt ciao mondo<< ");
+    expect(replyQuote(msg({ kind: "action", body: "ciao mondo" }))).toBe("* vjt ciao mondo << ");
   });
 
   // An envelope with nothing inside is not a quotable action: after the strip
@@ -114,7 +120,7 @@ describe("replyQuote", () => {
 describe("replyQuote — a previous quote is dropped (#1123)", () => {
   it("quotes only what the sender wrote, not the quote they were answering", () => {
     expect(replyQuote(msg({ sender: "alice", body: "<bob> original<< answer" }))).toBe(
-      "<alice> answer<< ",
+      "<alice> answer << ",
     );
   });
 
@@ -124,14 +130,14 @@ describe("replyQuote — a previous quote is dropped (#1123)", () => {
   it("cuts at the last tail, not the first", () => {
     expect(
       replyQuote(msg({ sender: "carol", body: "<alice> <bob> original<< answer<< reply" })),
-    ).toBe("<carol> reply<< ");
+    ).toBe("<carol> reply << ");
   });
 
   // #1126 gave actions their own quote head (`* nick …`), so the client emits
   // two shapes and both nest. One bug, both doors.
   it("drops a previous action-shaped quote too", () => {
     expect(replyQuote(msg({ sender: "alice", body: "* bob waves<< sure" }))).toBe(
-      "<alice> sure<< ",
+      "<alice> sure << ",
     );
   });
 
@@ -140,7 +146,7 @@ describe("replyQuote — a previous quote is dropped (#1123)", () => {
       replyQuote(
         msg({ kind: "action", sender: "alice", body: "\x01ACTION <bob> orig<< nods\x01" }),
       ),
-    ).toBe("* alice nods<< ");
+    ).toBe("* alice nods << ");
   });
 
   // Every legal nick special (RFC 2812 `special` plus the tail-only dash),
@@ -148,7 +154,7 @@ describe("replyQuote — a previous quote is dropped (#1123)", () => {
   // instead of derived would silently refuse to strip these.
   it("recognises a head with every legal nick special", () => {
     expect(replyQuote(msg({ sender: "alice", body: "<_a[b]\\c{d}|e^f`g-1> quoted<< mine" }))).toBe(
-      "<alice> mine<< ",
+      "<alice> mine << ",
     );
   });
 
@@ -158,7 +164,7 @@ describe("replyQuote — a previous quote is dropped (#1123)", () => {
     const nick = `n${"x".repeat(29)}`;
     expect(nick).toHaveLength(30);
     expect(replyQuote(msg({ sender: "alice", body: `<${nick}> quoted<< mine` }))).toBe(
-      "<alice> mine<< ",
+      "<alice> mine << ",
     );
   });
 
@@ -176,7 +182,7 @@ describe("replyQuote — a previous quote is dropped (#1123)", () => {
   // typed after a wider gap would arrive with the gap still on it.
   it("does not carry the gap after the tail into the new quote", () => {
     expect(replyQuote(msg({ sender: "alice", body: "<bob> original<<   spaced" }))).toBe(
-      "<alice> spaced<< ",
+      "<alice> spaced << ",
     );
   });
 });
@@ -186,17 +192,17 @@ describe("replyQuote — what must NOT be mistaken for a quote (#1123)", () => {
   // which is worse than the nesting it fixes.
   it("leaves a shift expression alone", () => {
     expect(replyQuote(msg({ body: "shift << 2 gives four" }))).toBe(
-      "<vjt> shift << 2 gives four<< ",
+      "<vjt> shift << 2 gives four << ",
     );
   });
 
   it("leaves a heredoc alone", () => {
-    expect(replyQuote(msg({ body: "cat <<EOF > f" }))).toBe("<vjt> cat <<EOF > f<< ");
+    expect(replyQuote(msg({ body: "cat <<EOF > f" }))).toBe("<vjt> cat <<EOF > f << ");
   });
 
   it("leaves a leading angle bracket that is not a nick head alone", () => {
-    expect(replyQuote(msg({ body: "<3 you << me" }))).toBe("<vjt> <3 you << me<< ");
-    expect(replyQuote(msg({ body: "<two words> a << b" }))).toBe("<vjt> <two words> a << b<< ");
+    expect(replyQuote(msg({ body: "<3 you << me" }))).toBe("<vjt> <3 you << me << ");
+    expect(replyQuote(msg({ body: "<two words> a << b" }))).toBe("<vjt> <two words> a << b << ");
   });
 
   // The head must be at position 0. `appendToCompose` drops the quote AFTER an
@@ -204,8 +210,109 @@ describe("replyQuote — what must NOT be mistaken for a quote (#1123)", () => {
   // sender's own words — cutting there would delete what they wrote.
   it("leaves a quote that is not at the start of the body alone", () => {
     expect(replyQuote(msg({ sender: "alice", body: "bozza <bob> ciao<< risposta" }))).toBe(
-      "<alice> bozza <bob> ciao<< risposta<< ",
+      "<alice> bozza <bob> ciao<< risposta << ",
     );
+  });
+});
+
+// #1235 — vjt: "sul reply limitiamo a 42 i caratteri di cui facciamo reply, se
+// sforano mettiamo un ellipsis `...`, e poi mettiamo sempre uno spazio prima
+// del `<<` finale". The cap lives in the WRAPPER, never in `quotableBody`:
+// that helper is shared with `!addquote` (#1107), which archives the line and
+// must keep it whole. `addQuote.test.ts` is the control group for that.
+describe("replyQuote — the quoted body is capped (#1235)", () => {
+  const AT_LIMIT = "a".repeat(REPLY_QUOTE_BODY_LIMIT);
+
+  it("leaves a body at the limit whole, with no ellipsis", () => {
+    expect(replyQuote(msg({ body: AT_LIMIT }))).toBe(`<vjt> ${AT_LIMIT} << `);
+  });
+
+  // The first body over the limit is where an off-by-one shows: one way it
+  // clips a body that fits, the other it lets a 43rd character through.
+  it("caps the first body that overflows", () => {
+    expect(replyQuote(msg({ body: `${AT_LIMIT}b` }))).toBe(`<vjt> ${AT_LIMIT}... << `);
+  });
+
+  // The 42 counts BODY characters and the ellipsis is ADDED past them — the
+  // quoted run is 45, not 42 with three of them spent on dots.
+  it("keeps a full 42 characters and adds the ellipsis after them", () => {
+    const quote = replyQuote(msg({ body: "x".repeat(200) })) ?? "";
+    const quoted = quote.slice("<vjt> ".length, -REPLY_QUOTE_TAIL.length);
+    expect(quoted).toBe(`${"x".repeat(REPLY_QUOTE_BODY_LIMIT)}${REPLY_QUOTE_ELLIPSIS}`);
+    expect(quoted).toHaveLength(REPLY_QUOTE_BODY_LIMIT + REPLY_QUOTE_ELLIPSIS.length);
+  });
+
+  // Hardcoded on purpose, against the constant: the request spells the marker
+  // `...`, and a U+2026 that renders identically would still be a different
+  // byte sequence going onto the wire.
+  it("marks the overflow with three ASCII dots, not U+2026", () => {
+    const quote = replyQuote(msg({ body: "x".repeat(200) })) ?? "";
+    expect(quote).toContain("x...");
+    expect(quote).not.toContain("…");
+  });
+
+  // A flat cut, with no backing off to the last word boundary: that is
+  // "limitiamo a 42 i caratteri" read literally, and a word-boundary rule would
+  // make the quote length depend on where the spaces happen to fall.
+  it("cuts flat at the limit, mid-word", () => {
+    const body = `${"parola ".repeat(5)}spezzata`;
+    expect(body).toHaveLength(43);
+    expect(replyQuote(msg({ body }))).toBe(`<vjt> ${"parola ".repeat(5)}spezzat... << `);
+  });
+
+  // The cap is on the BODY: a long nick does not eat into what the sender said.
+  it("does not count the nick head against the limit", () => {
+    const nick = "n".repeat(30);
+    expect(replyQuote(msg({ sender: nick, body: AT_LIMIT }))).toBe(`<${nick}> ${AT_LIMIT} << `);
+  });
+
+  // The cap runs AFTER the #1123 de-nesting cut, on what the sender actually
+  // wrote. Capping first would spend the whole budget on the quote they were
+  // answering and truncate their answer to nothing.
+  it("counts what the sender wrote, not the quote they were answering", () => {
+    const body = `<bob> ${"o".repeat(200)}<< breve`;
+    expect(replyQuote(msg({ sender: "alice", body }))).toBe("<alice> breve << ");
+  });
+
+  // A UTF-16 slice at 42 can land between the halves of a surrogate pair and
+  // emit a lone surrogate — an unpaired code unit in the compose box, and from
+  // there onto the wire. The cut counts code points.
+  it("does not cut an astral character in half", () => {
+    const quote = replyQuote(msg({ body: `${"a".repeat(41)}🍺x` })) ?? "";
+    expect(quote).toBe(`<vjt> ${"a".repeat(41)}🍺... << `);
+    expect(quote.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, "")).not.toMatch(/[\uD800-\uDFFF]/);
+  });
+});
+
+// #1235 — the tail grew a leading space. The de-nesting regex
+// (`quotableBody.ts`) is `^(?:<nick>|\* nick) [\s\S]*<<(?: |$)`, whose greedy
+// head absorbs a space as happily as a word character, so the nesting cut is
+// supposed to keep working on BOTH spellings. That is the one thing which would
+// silently break every line already persisted, so it is asserted, not assumed.
+describe("replyQuote — the spaced tail still de-nests, both spellings (#1235)", () => {
+  it("strips a quote persisted with the OLD flush tail", () => {
+    expect(replyQuote(msg({ sender: "alice", body: "<bob> original<< answer" }))).toBe(
+      "<alice> answer << ",
+    );
+  });
+
+  it("strips a quote written with the NEW spaced tail", () => {
+    expect(replyQuote(msg({ sender: "alice", body: "<bob> original << answer" }))).toBe(
+      "<alice> answer << ",
+    );
+  });
+
+  // The full round trip: what the wrapper emits today, quoted again tomorrow.
+  it("round-trips its own output", () => {
+    const first = replyQuote(msg({ sender: "bob", body: "original" })) ?? "";
+    expect(replyQuote(msg({ sender: "alice", body: `${first}answer` }))).toBe("<alice> answer << ");
+  });
+
+  // And the same trip on a CAPPED line, where the tail follows an ellipsis
+  // rather than a word — the shape the cap makes commonplace.
+  it("round-trips a capped quote", () => {
+    const first = replyQuote(msg({ sender: "bob", body: "o".repeat(200) })) ?? "";
+    expect(replyQuote(msg({ sender: "alice", body: `${first}answer` }))).toBe("<alice> answer << ");
   });
 });
 
@@ -249,7 +356,7 @@ describe("replyToMessage", () => {
   it("fills an empty compose with exactly the quote", () => {
     mountCompose();
     replyToMessage(msg({}), NET, CHAN);
-    expect(getDraft(KEY)).toBe("<vjt> ciao mondo<< ");
+    expect(getDraft(KEY)).toBe("<vjt> ciao mondo << ");
   });
 
   // Never destroy work in progress: the quote lands AFTER what is already
@@ -258,7 +365,7 @@ describe("replyToMessage", () => {
     mountCompose();
     setDraft(KEY, "bozza ");
     replyToMessage(msg({}), NET, CHAN);
-    expect(getDraft(KEY)).toBe("bozza <vjt> ciao mondo<< ");
+    expect(getDraft(KEY)).toBe("bozza <vjt> ciao mondo << ");
   });
 
   it("writes nothing for an unquotable row", () => {
