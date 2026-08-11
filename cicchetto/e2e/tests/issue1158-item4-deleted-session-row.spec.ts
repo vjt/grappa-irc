@@ -107,11 +107,19 @@ test("#1158 item 4 a deleted visitor's session survives on the ended-sessions pa
     // claim is that the page names the event it is showing.
     await expect(page.getByTestId(`admin-ended-session-event-${key}`)).not.toBeEmpty();
 
+    // PROVENANCE. Before #1224 the drill-in carried `record: session log
+    // only — the subject was deleted, the event outlived it`, and the
+    // assert on it is the one claim the move did not relocate by itself:
+    // the sub-page states it as its premise instead of per-row, but a
+    // premise nobody asserts is not covered. So it is asserted here, on a
+    // POPULATED page — the empty-state wording is pinned in the unit
+    // twin, and an empty screen cannot witness this.
+    const card = page.getByTestId("admin-ended-sessions-card");
+    await expect(card).toContainText("From the lifecycle log");
+
     // The caveat survived the move — a page named after a population
     // implies it holds all of it, and a bounded ring does not.
-    await expect(page.getByTestId("admin-ended-sessions-card")).toContainText(
-      "not evidence the session never ran",
-    );
+    await expect(card).toContainText("not evidence the session never ran");
 
     // No credential to park, no pid to stop: every verb would resolve to
     // a subject that is gone, so none is offered on either screen.
