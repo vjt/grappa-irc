@@ -90,7 +90,7 @@ defmodule Grappa.Session.EventRouter do
 
   alias Grappa.IRC.{CTCP, Identifier, Message}
   alias Grappa.{Scrollback, Session}
-  alias Grappa.Session.{IdentityState, ISupport, NumericRouter, Presence}
+  alias Grappa.Session.{IdentityState, ISupport, ListModes, NumericRouter, Presence}
 
   @typedoc """
   The Session.Server state subset this module reads + mutates. The
@@ -217,7 +217,8 @@ defmodule Grappa.Session.EventRouter do
           | {:invited, channel :: String.t(), inviter :: String.t()}
           | {:lusers_bundle, accum :: map()}
           | {:whowas_bundle, target :: String.t(), accum :: map(), Grappa.Session.reply_to()}
-          | {:banlist_bundle, channel :: String.t(), accum :: map(), Grappa.Session.reply_to()}
+          | {:list_mode_bundle, channel :: String.t(), mode :: ListModes.mode(), accum :: map(),
+             Grappa.Session.reply_to()}
           | {:links_bundle, accum :: map(), Grappa.Session.reply_to()}
           | {:umode_changed, modes :: [String.t()]}
           | {:supported_umodes_changed, modes :: [String.t()]}
@@ -2076,57 +2077,74 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
-  # #376 — BANLIST bundle (367 / 368). Bahamut emits one 367 RPL_BANLIST
-  # row per ban entry, terminated by 368 RPL_ENDOFBANLIST. Mirror of the
-  # WHOWAS shape but keyed by FOLDED channel (#364 channel pattern), not
-  # nick:
-  #   * `:send_banlist` primes `state.banlist_pending[folded_chan] =
-  #     %{channel_display, entries: []}` (Server.handle_call).
-  #   * 367 appends one `%{mask, setter, set_ts}` entry.
-  #   * 368 emits `{:banlist_bundle, channel_display, accum}` and clears
-  #     the pending entry.
+  # #376/#1251 — channel LIST-MODE bundle. A type-A channel mode is a LIST:
+  # `MODE #chan <letter>` streams one row numeric per entry, terminated by an
+  # end numeric. Mirror of the WHOWAS shape but keyed by `{FOLDED channel
+  # (#364 channel pattern), mode letter}`, not nick:
+  #   * `:send_list_mode` primes `state.list_mode_pending[{folded_chan, mode}]
+  #     = %{channel_display, mode, entries: []}` (Server.handle_call).
+  #   * a row numeric appends one `%{mask, setter, set_ts}` entry.
+  #   * the end numeric emits `{:list_mode_bundle, channel_display, mode,
+  #     accum, reply_to}` and clears the pending entry.
   # The channel key is already folded by `canonicalize_channel_params/1`
   # (route/2 runs it before do_route); `normalize_channel/1` here keeps the
   # key-derivation explicit + idempotent, matching the prime site.
+  #
+  # The pairs (`Grappa.Session.ListModes`, cited to both ircds' sources)
+  # split into TWO wire shapes, which is why there are two clause pairs:
+  #   * 367 `b` / 348 `e` / 346 `I` — the NUMERIC is the letter.
+  #   * 728 / 729 — bahamut's restrict list (`z`) and solanum's quiet list
+  #     (`q`) share the pair, and BOTH hardcode their letter into the format
+  #     string as a middle param, so the letter is read off the WIRE.
 
-  # 367 RPL_BANLIST: `:server 367 own_nick #chan <mask> [setter] [set_ts]`.
-  # setter/set_ts are OPTIONAL — older ircds / solanum may send only the
-  # mask (see reference_solanum_vs_bahamut_shapes). Append a new entry.
-  # Skips when no banlist_pending entry exists (unsolicited 367 — operator
-  # never issued /banlist; not actionable).
+  # 367 RPL_BANLIST / 348 RPL_EXCEPTLIST / 346 RPL_INVITELIST:
+  # `:server <n> own_nick #chan <mask> [setter] [set_ts]`.
+  # setter/set_ts are OPTIONAL — older ircds may send only the mask (see
+  # reference_solanum_vs_bahamut_shapes). Skips when no accumulator exists
+  # (unsolicited row — the operator never asked; not actionable).
   defp do_route(
-         %Message{command: {:numeric, 367}, params: [_, channel, mask | rest]},
+         %Message{command: {:numeric, numeric}, params: [_, channel, mask | rest]},
          state
        )
-       when is_binary(channel) and is_binary(mask) do
+       when numeric in [367, 348, 346] and is_binary(channel) and is_binary(mask) do
     entry = %{mask: mask, setter: Enum.at(rest, 0), set_ts: Enum.at(rest, 1)}
-    {:cont, banlist_append_entry(state, channel, entry), []}
+    {:cont, list_mode_append_entry(state, channel, numeric_list_mode(numeric), entry), []}
   end
 
-  # 368 RPL_ENDOFBANLIST: `:server 368 own_nick #chan :End of Channel Ban List`.
-  # Emits the bundle (carrying the case-preserved `channel_display`) + drops
-  # the pending entry. Silently ignored if no accumulator exists (unsolicited
-  # terminator).
+  # 728 RPL_RESTRICTLIST (bahamut `z`) / RPL_QUIETLIST (solanum `q`):
+  # `:server 728 own_nick #chan <mode> <mask> [setter] [set_ts]`. The mode
+  # letter is the wire's, never assumed — the SAME numeric carries `z` on one
+  # ircd and `q` on the other.
   defp do_route(
-         %Message{command: {:numeric, 368}, params: [_, channel | _]},
+         %Message{command: {:numeric, 728}, params: [_, channel, mode, mask | rest]},
          state
        )
-       when is_binary(channel) do
-    pending = Map.get(state, :banlist_pending, %{})
-    chan_key = normalize_channel(channel, casemapping(state))
+       when is_binary(channel) and is_binary(mask) and byte_size(mode) == 1 do
+    entry = %{mask: mask, setter: Enum.at(rest, 0), set_ts: Enum.at(rest, 1)}
+    {:cont, list_mode_append_entry(state, channel, mode, entry), []}
+  end
 
-    case Map.fetch(pending, chan_key) do
-      {:ok, accum} ->
-        next_state = %{state | banlist_pending: Map.delete(pending, chan_key)}
+  # 368 RPL_ENDOFBANLIST / 349 RPL_ENDOFEXCEPTLIST / 347 RPL_ENDOFINVITELIST:
+  # `:server <n> own_nick #chan :End of Channel … List`. Emits the bundle
+  # (carrying the case-preserved `channel_display`) + drops the pending entry.
+  # Silently ignored if no accumulator exists (unsolicited terminator).
+  defp do_route(
+         %Message{command: {:numeric, numeric}, params: [_, channel | _]},
+         state
+       )
+       when numeric in [368, 349, 347] and is_binary(channel) do
+    flush_list_mode(state, channel, numeric_list_mode(numeric))
+  end
 
-        {:cont, next_state,
-         [
-           {:banlist_bundle, Map.get(accum, :channel_display, channel), accum, Map.get(accum, :reply_to)}
-         ]}
-
-      :error ->
-        {:cont, state, []}
-    end
+  # 729 RPL_ENDOFRESTRICTLIST / RPL_ENDOFQUIETLIST: `:server 729 own_nick
+  # #chan <mode> :End of Channel … List` — same letter-on-the-wire shape as
+  # its 728 rows.
+  defp do_route(
+         %Message{command: {:numeric, 729}, params: [_, channel, mode | _]},
+         state
+       )
+       when is_binary(channel) and byte_size(mode) == 1 do
+    flush_list_mode(state, channel, mode)
   end
 
   # #238 — LINKS topology bundle (364 / 365). On-demand server-mesh query;
@@ -3918,27 +3936,63 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
-  # #376 — append one ban entry to `banlist_pending[folded_chan].entries`.
-  # Entries are stored REVERSED (head = most recent 367) for an O(1)
-  # prepend (Credo's MapInto check rejects the O(n) `++ [entry]` shape);
-  # `Wire.banlist_bundle/3` reverses to restore the wire order. Skips when
-  # no banlist_pending entry exists (unsolicited 367 — operator never
-  # issued /banlist; not actionable). Mirror of `whowas_append_entry/3`
-  # but keyed by folded channel (#364), not nick.
-  @spec banlist_append_entry(state(), String.t(), map()) :: state()
-  defp banlist_append_entry(state, channel, entry)
-       when is_binary(channel) and is_map(entry) do
-    pending = Map.get(state, :banlist_pending, %{})
-    chan_key = normalize_channel(channel, casemapping(state))
+  # #1251 — the mode letter a row/end numeric names by ITSELF (the 728/729
+  # pair is excluded on purpose: it carries its letter as a param, because
+  # bahamut spends it on `z` and solanum on `q`).
+  @spec numeric_list_mode(pos_integer()) :: ListModes.mode()
+  defp numeric_list_mode(367), do: "b"
+  defp numeric_list_mode(368), do: "b"
+  defp numeric_list_mode(348), do: "e"
+  defp numeric_list_mode(349), do: "e"
+  defp numeric_list_mode(346), do: "I"
+  defp numeric_list_mode(347), do: "I"
 
-    case Map.fetch(pending, chan_key) do
+  # #376/#1251 — append one entry to
+  # `list_mode_pending[{folded_chan, mode}].entries`. Entries are stored
+  # REVERSED (head = most recent row) for an O(1) prepend (Credo's MapInto
+  # check rejects the O(n) `++ [entry]` shape); `Wire.list_mode_bundle/4`
+  # reverses to restore the wire order. Skips when no accumulator exists
+  # (unsolicited row — the operator never issued the query; not actionable).
+  # Mirror of `whowas_append_entry/3` but keyed by `{folded channel (#364),
+  # mode}`, not nick.
+  @spec list_mode_append_entry(state(), String.t(), ListModes.mode(), map()) :: state()
+  defp list_mode_append_entry(state, channel, mode, entry)
+       when is_binary(channel) and is_binary(mode) and is_map(entry) do
+    pending = Map.get(state, :list_mode_pending, %{})
+    key = {normalize_channel(channel, casemapping(state)), mode}
+
+    case Map.fetch(pending, key) do
       :error ->
         state
 
       {:ok, accum} ->
         entries = [entry | Map.get(accum, :entries, [])]
         merged = Map.put(accum, :entries, entries)
-        %{state | banlist_pending: Map.put(pending, chan_key, merged)}
+        Map.put(state, :list_mode_pending, Map.put(pending, key, merged))
+    end
+  end
+
+  # #1251 — drain the `{folded_chan, mode}` accumulator on its end numeric.
+  # Silently ignored when nothing is pending (unsolicited terminator).
+  @spec flush_list_mode(state(), String.t(), ListModes.mode()) ::
+          {:cont, state(), [effect()]}
+  defp flush_list_mode(state, channel, mode)
+       when is_binary(channel) and is_binary(mode) do
+    pending = Map.get(state, :list_mode_pending, %{})
+    key = {normalize_channel(channel, casemapping(state)), mode}
+
+    case Map.fetch(pending, key) do
+      {:ok, accum} ->
+        next_state = Map.put(state, :list_mode_pending, Map.delete(pending, key))
+
+        {:cont, next_state,
+         [
+           {:list_mode_bundle, Map.get(accum, :channel_display, channel), mode, accum,
+            Map.get(accum, :reply_to)}
+         ]}
+
+      :error ->
+        {:cont, state, []}
     end
   end
 

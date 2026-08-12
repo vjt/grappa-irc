@@ -85,8 +85,13 @@ defmodule GrappaWeb.GrappaChannel do
   - `"invite"` — invite a nick. Payload: `%{"network_id" => id, "channel" => chan,
     "nick" => nick}`.
 
-  - `"banlist"` — query the channel ban list. Payload: `%{"network_id" => id,
-    "channel" => chan}`. Issues `MODE #chan b` (no sign); server replies with 367/368.
+  - `"banlist"` — query one of the channel's type-A (list) modes. Payload:
+    `%{"network_id" => id, "channel" => chan}`, plus an OPTIONAL
+    `"mode" => letter` (#1251) which defaults to `"b"`. Issues
+    `MODE #chan <letter>` (no sign); the ircd replies with that list's row +
+    end numerics (`b` 367/368, `e` 348/349, `I` 346/347, `z`/`q` 728/729).
+    The letter must be in the network's `list_modes_queryable` (published on
+    `isupport_changed`), else `unsupported_list_mode`.
 
   - `"resolve_userhost"` — on-demand per-nick userhost lookup (#386). Payload:
     `%{"network_id" => id, "nick" => nick}`. Replies `{:ok, %{user, host}}` from
@@ -745,27 +750,39 @@ defmodule GrappaWeb.GrappaChannel do
     )
   end
 
-  # /banlist  →  MODE #chan b (query form, no sign)
+  # /banlist  →  MODE #chan <mode> (type-A list query form, no sign)
   #
   # CP24 bucket B reviewer add-on: read-only verb — visitors are
   # entitled to issue it. #376 wired the real handler: EventRouter
-  # accumulates the 367 RPL_BANLIST rows keyed by folded channel and
-  # 368 RPL_ENDOFBANLIST emits a `banlist_bundle` broadcast on the
+  # accumulates the list rows keyed by folded channel and the end numeric
+  # emits a `banlist_bundle` broadcast on the
   # subject's own subject_label topic (mirror of WHOWAS), which cic's
   # `banlistCard.ts` store feeds to the #386 BanlistModal (the interactive
   # /banlist surface that superseded the original inline card). Pre-#376
   # this comment described the design but no such clause existed — 367/368
   # leaked the bare set-timestamp as a `$server` :notice row.
+  #
+  # #1251 — `mode` is OPTIONAL and defaults to `"b"`: the verb name and the
+  # absent-field default are what keep a pre-#1251 client working unchanged
+  # (additive-only wire, GH #447), while a current client asks for any
+  # letter the server published in `isupport_changed.list_modes_queryable`.
+  # The letter is authoritative-checked against THIS network's 005 in
+  # `Session.Server` — `unsupported_list_mode` is the refusal, never a
+  # query put on the wire on spec.
   defp do_handle_in(
          "banlist",
-         %{"network_id" => network_id, "channel" => channel},
+         %{"network_id" => network_id, "channel" => channel} = payload,
          socket
        )
        when is_integer(network_id) and is_binary(channel) do
+    mode = Map.get(payload, "mode", "b")
+
     dispatch_subject_verb(
       socket,
-      fn -> validate_args(channel: channel) end,
-      fn subject -> Session.send_banlist(subject, network_id, channel, reply_to(socket)) end
+      fn -> validate_args(channel: channel, list_mode: mode) end,
+      fn subject ->
+        Session.send_list_mode(subject, network_id, channel, mode, reply_to(socket))
+      end
     )
   end
 
@@ -1728,6 +1745,19 @@ defmodule GrappaWeb.GrappaChannel do
       else: {:error, :invalid_nick}
   end
 
+  # #1251 — a type-A channel list-mode letter off a client frame. SHAPE gate
+  # only: exactly one ASCII letter, so a multi-token value can never forge
+  # extra MODE arguments (and a non-binary from a hand-rolled client can
+  # never reach the `is_binary` guards downstream). WHICH letters this
+  # network supports is a 005 question, answered in `Session.Server` against
+  # `ISupport.chanmodes.a` — `:invalid_line` is the shape refusal,
+  # `:unsupported_list_mode` the semantic one.
+  defp validate_args([{:list_mode, value} | rest]) do
+    if is_binary(value) and value =~ ~r/\A[A-Za-z]\z/,
+      do: validate_args(rest),
+      else: {:error, :invalid_line}
+  end
+
   defp validate_args([{:mask, value} | rest]) do
     if Identifier.safe_line_token?(value) and value != "",
       do: validate_args(rest),
@@ -1947,6 +1977,14 @@ defmodule GrappaWeb.GrappaChannel do
       # nothing ever emits.
       {:error, :links_in_flight} ->
         {:reply, {:error, %{error: "links_in_flight"}}, socket}
+
+      # #1251 — the list-mode query was refused BEFORE the wire: the letter
+      # is not in this network's 005 type-A set (or grappa knows no numeric
+      # pair for it). Typed for the same reason as `links_in_flight` above:
+      # the catch-all's `upstream_unavailable` would lie about a request
+      # that never left the building.
+      {:error, :unsupported_list_mode} ->
+        {:reply, {:error, %{error: "unsupported_list_mode"}}, socket}
 
       # #581 recover gating (Session.recover_identity/2). A missing live
       # pid is the same "no upstream to act against" as `no_session`; a

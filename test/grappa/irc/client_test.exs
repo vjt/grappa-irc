@@ -357,7 +357,7 @@ defmodule Grappa.IRC.ClientTest do
     end
 
     # cluster #9 (resp-A4 close): typed helpers for KICK / INVITE /
-    # banlist-query / umode / topic-clear. Each helper validates its
+    # list-query / umode / topic-clear. Each helper validates its
     # identifier args via `Grappa.IRC.Identifier` predicates and
     # returns `{:error, :invalid_line}` on rejection — same boundary
     # discipline as the helpers above. Mirrors the
@@ -424,21 +424,44 @@ defmodule Grappa.IRC.ClientTest do
                Client.send_invite(client, "#sniffo", "bad nick")
     end
 
-    test "send_banlist/2 emits MODE #chan b framing" do
+    test "send_list_mode/3 emits MODE #chan b framing" do
       {server, port} = start_server()
       client = start_client(port)
 
-      :ok = Client.send_banlist(client, "#sniffo")
+      :ok = Client.send_list_mode(client, "#sniffo", "b")
 
       assert {:ok, "MODE #sniffo b\r\n"} =
                IRCServer.wait_for_line(server, &(&1 == "MODE #sniffo b\r\n"), 1_000)
     end
 
-    test "send_banlist/2 rejects malformed channel with {:error, :invalid_line}" do
+    # #1251 — the letter is not `b` any more. `I` also pins that the case is
+    # carried verbatim: lowercasing it would query the invite-ONLY flag.
+    test "send_list_mode/3 emits the requested letter, case verbatim" do
+      {server, port} = start_server()
+      client = start_client(port)
+
+      :ok = Client.send_list_mode(client, "#sniffo", "I")
+
+      assert {:ok, "MODE #sniffo I\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #sniffo I\r\n"), 1_000)
+    end
+
+    test "send_list_mode/3 rejects malformed channel with {:error, :invalid_line}" do
       {_, port} = start_server()
       client = start_client(port)
 
-      assert {:error, :invalid_line} = Client.send_banlist(client, "no-prefix")
+      assert {:error, :invalid_line} = Client.send_list_mode(client, "no-prefix", "b")
+    end
+
+    # #1251 — `mode` arrives from a client frame, so the wire builder gates
+    # its SHAPE: anything but one ASCII letter could forge MODE arguments.
+    test "send_list_mode/3 rejects a multi-token mode (argument forgery)" do
+      {_, port} = start_server()
+      client = start_client(port)
+
+      assert {:error, :invalid_line} = Client.send_list_mode(client, "#sniffo", "b *!*@x")
+      assert {:error, :invalid_line} = Client.send_list_mode(client, "#sniffo", "")
+      assert {:error, :invalid_line} = Client.send_list_mode(client, "#sniffo", "be")
     end
 
     test "send_channel_modes/2 emits bare MODE #chan query framing" do

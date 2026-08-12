@@ -10192,7 +10192,7 @@ defmodule Grappa.Session.ServerTest do
       network: network,
       pid: pid
     } do
-      assert :ok = Session.send_banlist({:user, user.id}, network.id, "#test", nil)
+      assert :ok = Session.send_list_mode({:user, user.id}, network.id, "#test", "b", nil)
 
       assert {:ok, "MODE #test b\r\n"} =
                IRCServer.wait_for_line(server, &(&1 == "MODE #test b\r\n"), 1_000)
@@ -10247,7 +10247,7 @@ defmodule Grappa.Session.ServerTest do
       assert {:error, :no_session} = Session.send_ban({:user, uid}, 9_999, "#x", "a")
       assert {:error, :no_session} = Session.send_unban({:user, uid}, 9_999, "#x", "*!*@h")
       assert {:error, :no_session} = Session.send_invite({:user, uid}, 9_999, "#x", "a")
-      assert {:error, :no_session} = Session.send_banlist({:user, uid}, 9_999, "#x", nil)
+      assert {:error, :no_session} = Session.send_list_mode({:user, uid}, 9_999, "#x", "b", nil)
       assert {:error, :no_session} = Session.send_umode({:user, uid}, 9_999, "+i")
       assert {:error, :no_session} = Session.send_mode({:user, uid}, 9_999, "#x", "+m", [])
       assert {:error, :no_session} = Session.send_whois({:user, uid}, 9_999, "alice", nil, :user, nil)
@@ -10804,8 +10804,8 @@ defmodule Grappa.Session.ServerTest do
          } do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
-      # Operator issues /banlist #test — primes banlist_pending["#test"].
-      assert :ok = Grappa.Session.send_banlist({:user, user.id}, network.id, "#test", nil)
+      # Operator issues /banlist #test — primes list_mode_pending[{"#test", "b"}].
+      assert :ok = Grappa.Session.send_list_mode({:user, user.id}, network.id, "#test", "b", nil)
 
       # Bahamut emits the ban list: 367 rows then 368 terminator.
       IRCServer.feed(
@@ -10831,6 +10831,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert ev.network == network.slug
       assert ev.channel == "#test"
+      assert ev.mode == "b"
       assert length(ev.entries) == 2
 
       # Wire order preserved; first ban carries mask/setter/set_ts (NOT a
@@ -10842,6 +10843,81 @@ defmodule Grappa.Session.ServerTest do
              }
 
       assert Enum.at(ev.entries, 1)[:mask] == "evil!*@spam.net"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # #1251 — the SAME path for a list that is not `b`, end to end: the 005
+    # gate opens `z`, the query reaches the wire as `MODE #test z`, and the
+    # 728/729 burst (bahamut's restrict list, letter ON the wire) drains into
+    # a bundle tagged `z`.
+    test "#1251 /banlist z on a bz network: MODE #test z upstream, 728/729 burst → mode z bundle",
+         %{server: server, user: user, network: network, pid: pid} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 005 grappa-test CHANMODES=bz,k,l,imnpst :are supported\r\n"
+      )
+
+      # Barrier: the gate below reads state.isupport, so the 005 must be
+      # APPLIED before the query — a GenServer call serialises behind it.
+      assert {:ok, isupport} = Grappa.Session.get_isupport({:user, user.id}, network.id)
+      assert "z" in isupport.chanmodes.a
+
+      assert :ok = Grappa.Session.send_list_mode({:user, user.id}, network.id, "#test", "z", nil)
+
+      assert {:ok, "MODE #test z\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "MODE #test z\r\n"), 1_000)
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 728 grappa-test #test z *!*@rogue.host op!u@h 1784572878\r\n"
+      )
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 729 grappa-test #test z :End of Channel Restrict List\r\n"
+      )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :banlist_bundle} = ev
+                     },
+                     1_500
+
+      assert ev.mode == "z"
+      assert ev.channel == "#test"
+      assert ev.entries == [%{mask: "*!*@rogue.host", setter: "op!u@h", set_ts: "1784572878"}]
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # #1251 — the quiet-degradation gate. `e` is a real list mode on OTHER
+    # ircds, so the refusal must come from THIS network's 005, not from a
+    # global allowlist — and nothing may reach the wire, because a query
+    # whose replies this ircd never sends would never terminate.
+    test "#1251 a letter this network does not advertise is refused, and never reaches the wire",
+         %{server: server, user: user, network: network, pid: pid} do
+      IRCServer.feed(
+        server,
+        ":irc.test.org 005 grappa-test CHANMODES=bz,k,l,imnpst :are supported\r\n"
+      )
+
+      assert {:ok, isupport} = Grappa.Session.get_isupport({:user, user.id}, network.id)
+      refute "e" in isupport.chanmodes.a
+
+      assert {:error, :unsupported_list_mode} =
+               Grappa.Session.send_list_mode({:user, user.id}, network.id, "#test", "e", nil)
+
+      # A `b` query DOES reach the wire right after, which is what makes the
+      # absence above a refusal rather than a dead socket.
+      assert :ok = Grappa.Session.send_list_mode({:user, user.id}, network.id, "#test", "b", nil)
+
+      assert {:ok, line} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "MODE #test "), 1_000)
+
+      assert line == "MODE #test b\r\n"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

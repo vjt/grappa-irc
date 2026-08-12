@@ -59,7 +59,7 @@ defmodule Grappa.Session.Wire do
 
   alias Grappa.IRC.LineSplit
   alias Grappa.Scrollback.Message
-  alias Grappa.Session.{EventRouter, ISupport}
+  alias Grappa.Session.{EventRouter, ISupport, ListModes}
 
   @typedoc """
   The closed set of event kinds emitted by Session. Useful when
@@ -139,6 +139,7 @@ defmodule Grappa.Session.Wire do
           chanmodes_b: [String.t()],
           chanmodes_c: [String.t()],
           chanmodes_d: [String.t()],
+          list_modes_queryable: [String.t()],
           prefix: %{String.t() => String.t()},
           frame_budget_base: integer()
         }
@@ -685,19 +686,28 @@ defmodule Grappa.Session.Wire do
         }
 
   @typedoc """
-  #376 — BANLIST bundle. Aggregated reply to operator-issued `/banlist`
-  (or a raw `MODE #chan b`). Unlike `whowas_bundle` (which projects only
-  the most-recent historical entry into flat fields) the banlist ships
-  ALL `entries` — a channel's ban list is a set of rows. `entries` are in
-  the wire order the ircd sent them. `channel` is the ASCII-folded
-  channel (#364/#525) — the card renders it as the surface header. cic owns the
-  human-readable rendering (mask · set-by · set-time); the server never
-  emits a bare set-timestamp (the #376 leak).
+  #376 — channel LIST-MODE bundle. Aggregated reply to an operator-issued
+  list query (`/banlist`, or a raw `MODE #chan <letter>`). Unlike
+  `whowas_bundle` (which projects only the most-recent historical entry into
+  flat fields) it ships ALL `entries` — a channel list mode IS a set of rows.
+  `entries` are in the wire order the ircd sent them. `channel` is the
+  ASCII-folded channel (#364/#525) — the card renders it as the surface
+  header. cic owns the human-readable rendering (mask · set-by · set-time);
+  the server never emits a bare set-timestamp (the #376 leak).
+
+  `mode` (#1251) is the type-A letter this bundle answers for — `b` bans,
+  `e` exempts, `I` invex, `z` bahamut restrict, `q` solanum quiet. It is
+  ADDITIVE on a kind that used to be `b`-only: the `kind` stays
+  `banlist_bundle` because the client wire contract is additive-only (GH
+  #447) — renaming a published frame kind is a removal, and a client that
+  predates the field cannot receive a non-`b` bundle anyway, since it can
+  only ask for the list it knows how to ask for.
   """
   @type banlist_bundle_payload :: %{
           kind: :banlist_bundle,
           network: String.t(),
           channel: String.t(),
+          mode: String.t(),
           entries: [banlist_entry()]
         }
 
@@ -882,6 +892,15 @@ defmodule Grappa.Session.Wire do
   `linelen` is the session's live LINELEN (005, or the RFC 2812 default);
   it is published as the derived per-frame budget, never raw, so cic never
   holds a second copy of the #246 framing reserve (#1108).
+
+  `list_modes_queryable` (#1251) is the subset of `chanmodes_a` grappa can
+  actually QUERY — the letters it knows the reply numerics for. It is
+  published rather than derived client-side for the same reason as the frame
+  budget: the pair table is server knowledge, and a client that guessed it
+  would offer a query the server refuses (or, worse, one that never
+  terminates). A letter the network advertises and grappa has no pair for
+  appears in `chanmodes_a` and NOT here — that difference IS the quiet
+  degradation.
   """
   @spec isupport_changed(integer(), ISupport.t(), pos_integer()) :: isupport_changed_payload()
   def isupport_changed(network_id, %{chanmodes: cm, prefix: prefix}, linelen)
@@ -893,6 +912,7 @@ defmodule Grappa.Session.Wire do
       chanmodes_b: Enum.sort(cm.b),
       chanmodes_c: Enum.sort(cm.c),
       chanmodes_d: Enum.sort(cm.d),
+      list_modes_queryable: ListModes.queryable(%{chanmodes: cm}),
       prefix: prefix,
       frame_budget_base: LineSplit.frame_budget_base(linelen)
     }
@@ -1564,21 +1584,24 @@ defmodule Grappa.Session.Wire do
   end
 
   @doc """
-  #376 — BANLIST bundle. Broadcast on `Topic.user/1` (mirrors
-  `whowas_bundle/3` — single-surface ephemeral data). cic dispatches in
-  `userTopic.ts`'s `banlist_bundle` arm into the per-network
-  `banlistCard.ts` store (last-write-wins replacement).
+  #376/#1251 — channel LIST-MODE bundle. Broadcast on `Topic.user/1`
+  (mirrors `whowas_bundle/3` — single-surface ephemeral data). cic
+  dispatches in `userTopic.ts`'s `banlist_bundle` arm into the per-network
+  `banlistCard.ts` store (last-write-wins replacement per network + mode).
 
-  Unlike whowas, ALL `entries` are shipped (a ban list is a set of rows).
-  EventRouter stores entries REVERSED (head = most recent 367, for an O(1)
-  prepend); this restores the wire order via `Enum.reverse/1`. Each entry
-  is normalised to the `banlist_entry/0` wire shape so a missing
-  `setter`/`set_ts` (older ircds) ships as nil. NOT persisted — operator
-  types /banlist to refresh.
+  Unlike whowas, ALL `entries` are shipped (a channel list mode is a set of
+  rows). EventRouter stores entries REVERSED (head = most recent row, for an
+  O(1) prepend); this restores the wire order via `Enum.reverse/1`. Each
+  entry is normalised to the `banlist_entry/0` wire shape so a missing
+  `setter`/`set_ts` (older ircds) ships as nil. NOT persisted — the operator
+  re-queries to refresh.
+
+  `mode` is the type-A letter the bundle answers for; see
+  `banlist_bundle_payload/0` for why the kind keeps its `b`-era name.
   """
-  @spec banlist_bundle(String.t(), String.t(), map()) :: banlist_bundle_payload()
-  def banlist_bundle(network_slug, channel, accum)
-      when is_binary(network_slug) and is_binary(channel) and is_map(accum) do
+  @spec banlist_bundle(String.t(), String.t(), String.t(), map()) :: banlist_bundle_payload()
+  def banlist_bundle(network_slug, channel, mode, accum)
+      when is_binary(network_slug) and is_binary(channel) and is_binary(mode) and is_map(accum) do
     entries =
       accum
       |> Map.get(:entries, [])
@@ -1595,6 +1618,7 @@ defmodule Grappa.Session.Wire do
       kind: :banlist_bundle,
       network: network_slug,
       channel: channel,
+      mode: mode,
       entries: entries
     }
   end

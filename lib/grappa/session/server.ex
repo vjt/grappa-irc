@@ -104,6 +104,7 @@ defmodule Grappa.Session.Server do
     GhostRecovery,
     IdentityState,
     ISupport,
+    ListModes,
     ModeChunker,
     NSInterceptor,
     NumericRouter,
@@ -895,14 +896,19 @@ defmodule Grappa.Session.Server do
           # (typically 0-1 at a time) AND the S10 lazy @pending_ttl_ms sweep
           # (withheld 369/406 can't strand the entry). NOT persisted.
           whowas_pending: %{String.t() => map()},
-          # #376 — pending BANLIST accumulators keyed by FOLDED channel
-          # (#364), not nick. Set up on `:send_banlist`; 367 RPL_BANLIST
-          # appends a `%{mask, setter, set_ts}` entry to `entries`; 368
-          # RPL_ENDOFBANLIST emits `{:banlist_bundle, channel_display,
-          # accum}` and clears the entry. Bounded by in-flight /banlist
-          # commands AND the S10 lazy @pending_ttl_ms sweep (a withheld 368
-          # can't strand the entry). NOT persisted across crashes.
-          banlist_pending: %{String.t() => map()},
+          # #376/#1251 — pending channel LIST-MODE accumulators keyed by
+          # `{FOLDED channel (#364), mode letter}`, not nick. A type-A mode is
+          # a LIST (`b` bans, `e` exempts, `I` invex, `z`/`q` restrict/quiet),
+          # so the key carries WHICH list: two lists of the same channel can
+          # stream concurrently without colliding. Set up on
+          # `:send_list_mode`; each row numeric appends a
+          # `%{mask, setter, set_ts}` entry to `entries`; the end numeric
+          # emits `{:list_mode_bundle, channel_display, mode, accum}` and
+          # clears the entry. Bounded by in-flight queries AND the S10 lazy
+          # @pending_ttl_ms sweep (a withheld terminator — e.g. the 482 an
+          # ircd answers a non-op `MODE #chan e` with — can't strand the
+          # entry). NOT persisted across crashes.
+          list_mode_pending: %{{String.t(), ListModes.mode()} => map()},
           # Channel directory (#84) refresh tunables — config-derived at
           # boot (`config :grappa, Grappa.ChannelDirectory`), opts-overridable
           # in `do_init/1` so tests can pin them. Read by later tasks: the
@@ -1330,11 +1336,11 @@ defmodule Grappa.Session.Server do
       # emits a not_found bundle. Bounded by in-flight /whowas commands
       # (typically 0-1 at a time). NOT persisted across crashes.
       whowas_pending: %{},
-      # #376 — pending BANLIST accumulators keyed by folded channel (#364).
-      # Set up on `:send_banlist`; 367 appends entries; 368 emits
-      # :banlist_bundle and clears. Bounded by in-flight /banlist commands.
-      # NOT persisted across crashes.
-      banlist_pending: %{},
+      # #376/#1251 — pending list-mode accumulators keyed by `{folded channel
+      # (#364), mode letter}`. Set up on `:send_list_mode`; the row numeric
+      # appends entries; the end numeric emits :list_mode_bundle and clears.
+      # Bounded by in-flight queries. NOT persisted across crashes.
+      list_mode_pending: %{},
       # Channel directory (#84) refresh tunables — config default
       # (`@directory_*` from `config :grappa, Grappa.ChannelDirectory`),
       # opts-overridable so tests can pin a short timeout / small batch.
@@ -2153,30 +2159,46 @@ defmodule Grappa.Session.Server do
     {:reply, {:error, :not_visitor}, state}
   end
 
-  # #376 — /banlist <#chan>. Mirror of :send_whowas shape but keyed by
-  # channel, not nick. Two effects: (1) prime the accumulator in
-  # state.banlist_pending so EventRouter folds 367 RPL_BANLIST rows into
-  # it (368 RPL_ENDOFBANLIST drains it as :banlist_bundle); (2) emit
-  # `MODE #chan b\r\n`. #537 — the facade now passes `channel` RAW; the
+  # #376/#1251 — /banlist <#chan> [mode]. Mirror of :send_whowas shape but
+  # keyed by `{channel, mode}`, not nick. Two effects: (1) prime the
+  # accumulator in state.list_mode_pending so EventRouter folds the list rows
+  # into it (the end numeric drains it as :list_mode_bundle); (2) emit
+  # `MODE #chan <mode>\r\n`. #537 — the facade passes `channel` RAW; the
   # accumulator KEY folds network-aware here (`fold_key/2`), and
   # `channel_display` is the FOLDED key (channels have no separate display
   # form — the card header shows the canonical spelling, per #364/option B;
   # unlike WHOWAS, which is nick-keyed and preserves display case). The
   # MODE line ships the RAW `channel` upstream (wire stays as-typed). On
   # send_line failure the accumulator stays primed — harmless until the
-  # next /banlist replaces the entry.
-  def handle_call({:send_banlist, channel, reply_to}, _, state) when is_binary(channel) do
-    chan_key = fold_key(state, channel)
+  # next query replaces the entry, and the S10 sweep evicts it anyway.
+  #
+  # #1251 — the mode is GATED on this network's own 005: only a letter the
+  # ircd advertises as type A (`CHANMODES` class a) AND grappa knows the
+  # numeric pair for is accepted. A letter outside that set is refused here
+  # rather than put on the wire, because a query whose reply numerics we
+  # cannot recognise would never terminate (vjt's ruling). The same set is
+  # published to clients on `isupport_changed`, so a well-behaved client
+  # never reaches this arm.
+  def handle_call({:send_list_mode, channel, mode, reply_to}, _, state)
+      when is_binary(channel) and is_binary(mode) do
+    isupport = Map.get(state, :isupport, ISupport.default())
 
-    next_pending =
-      prime_pending(state.banlist_pending, chan_key, %{
-        channel_display: chan_key,
-        entries: [],
-        reply_to: reply_to
-      })
+    if mode in ListModes.queryable(isupport) do
+      chan_key = fold_key(state, channel)
 
-    next_state = %{state | banlist_pending: next_pending}
-    {:reply, Client.send_banlist(state.client, channel), next_state}
+      next_pending =
+        prime_pending(state.list_mode_pending, {chan_key, mode}, %{
+          channel_display: chan_key,
+          mode: mode,
+          entries: [],
+          reply_to: reply_to
+        })
+
+      next_state = %{state | list_mode_pending: next_pending}
+      {:reply, Client.send_list_mode(state.client, channel, mode), next_state}
+    else
+      {:reply, {:error, :unsupported_list_mode}, state}
+    end
   end
 
   # C2 — /whois <nick>. Two effects: (1) prime the accumulator entry in
@@ -4838,8 +4860,8 @@ defmodule Grappa.Session.Server do
   # `*_bundle` builders read the accumulator via explicit `Map.get` field
   # extraction — and dies with the entry on drain (Map.delete of the whole key),
   # so no drain site needs to know about it.
-  @spec prime_pending(%{optional(String.t()) => map()}, String.t(), map()) ::
-          %{optional(String.t()) => map()}
+  @spec prime_pending(%{optional(term()) => map()}, term(), map()) ::
+          %{optional(term()) => map()}
   defp prime_pending(pending, key, value) when is_map(pending) and is_map(value) do
     now = System.monotonic_time(:millisecond)
 
@@ -5733,17 +5755,18 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, state)
   end
 
-  # #376 — BANLIST bundle ephemeral. Broadcast on the user-level topic
-  # (mirrors :whowas_bundle — the wire payload carries its own `network` +
-  # `channel` fields). cic dispatches in `userTopic.ts`'s `banlist_bundle`
-  # arm into the per-network `banlistCard.ts` store (last-write-wins per
-  # network). NOT persisted — operator types /banlist to refresh.
-  defp apply_effects([{:banlist_bundle, channel, accum, reply_to} | rest], state) do
+  # #376/#1251 — channel LIST-MODE bundle ephemeral. Broadcast on the
+  # user-level topic (mirrors :whowas_bundle — the wire payload carries its
+  # own `network` + `channel` + `mode` fields). cic dispatches in
+  # `userTopic.ts`'s `banlist_bundle` arm into the per-network
+  # `banlistCard.ts` store (last-write-wins per network+mode). NOT persisted
+  # — the operator re-queries to refresh.
+  defp apply_effects([{:list_mode_bundle, channel, mode, accum, reply_to} | rest], state) do
     :ok =
       Broadcaster.to_requester(
         state,
         reply_to,
-        SessionWire.banlist_bundle(state.network_slug, channel, accum)
+        SessionWire.banlist_bundle(state.network_slug, channel, mode, accum)
       )
 
     apply_effects(rest, state)

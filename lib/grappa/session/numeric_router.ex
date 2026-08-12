@@ -576,8 +576,8 @@ defmodule Grappa.Session.NumericRouter do
                         # #376 — BANLIST bundle (367 RPL_BANLIST, 368
                         # RPL_ENDOFBANLIST). EventRouter accumulates one
                         # {mask, setter, set_ts} entry per 367 into
-                        # banlist_pending[folded_chan] and emits a
-                        # :banlist_bundle effect on 368. Without delegation,
+                        # list_mode_pending[{folded_chan, "b"}] and emits a
+                        # :list_mode_bundle effect on 368. Without delegation,
                         # `param_derived_route/3` falls through to `scan_params/2`
                         # → default `{:server, nil}` and Server persists each 367
                         # as a bare `:notice` row whose body is the trailing param
@@ -586,6 +586,23 @@ defmodule Grappa.Session.NumericRouter do
                         # the same commit per the delegation contract.
                         367,
                         368,
+                        # #1251 — the REST of the type-A list family, wired
+                        # in the same commit as their EventRouter clauses per
+                        # the delegation contract above. Same disease shape as
+                        # 367 pre-#376: undelegated, `param_derived_route/3`
+                        # persists every row as a bare `$server` :notice whose
+                        # body is the set-timestamp. 348/349 EXCEPT (+e) and
+                        # 346/347 INVITE (+I) are solanum's; 728/729 are
+                        # SHARED — bahamut spends them on the restrict list
+                        # (+z), solanum on the quiet list (+q) — which is why
+                        # the EventRouter clause reads the mode letter off the
+                        # wire rather than assuming it.
+                        346,
+                        347,
+                        348,
+                        349,
+                        728,
+                        729,
                         # LUSERS bundle (251, 252, 253, 254, 255, 265, 266)
                         251,
                         252,

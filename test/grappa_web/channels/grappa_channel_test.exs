@@ -1424,6 +1424,42 @@ defmodule GrappaWeb.GrappaChannelTest do
       {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE #snap b\r\n"), 1_000)
     end
 
+    # #1251 — the `mode` field is OPTIONAL and additive: absent means `b`
+    # (asserted above, the pre-#1251 client's frame), present means that
+    # letter. `e` is in the pre-005 default type-A seed, so this session
+    # accepts it without a 005.
+    test "banlist: an explicit mode queries THAT list, not the ban list", %{
+      irc_server: irc_server,
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "banlist", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "mode" => "e"
+        })
+
+      assert_reply(ref, :ok)
+      {:ok, _} = IRCServer.wait_for_line(irc_server, &(&1 == "MODE #snap e\r\n"), 1_000)
+    end
+
+    # #1251 — SHAPE gate at the web edge: a mode value that is not one ASCII
+    # letter is refused before it can forge MODE arguments upstream.
+    test "banlist: a multi-token mode is rejected with invalid_line", %{
+      socket: socket,
+      network: network
+    } do
+      ref =
+        push(socket, "banlist", %{
+          "network_id" => network.id,
+          "channel" => "#snap",
+          "mode" => "b *!*@forged"
+        })
+
+      assert_reply(ref, :error, %{error: "invalid_line"})
+    end
+
     # #386 — resolve_userhost: on-demand per-nick userhost lookup, the surgical
     # host source the /kb + BanlistModal mask builder consume (cic has no
     # per-member host client-side). Read-only query over Session.lookup_userhost/3.

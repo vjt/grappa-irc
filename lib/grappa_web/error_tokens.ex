@@ -185,6 +185,13 @@ defmodule GrappaWeb.ErrorTokens do
           | :persist_failed
           | :invalid_channel
           | :links_in_flight
+          # #1251 — a channel list-mode query (`banlist`) for a letter this
+          # NETWORK does not advertise as type A, or that grappa knows no
+          # reply-numeric pair for. Typed rather than folded into
+          # `upstream_unavailable`: nothing upstream failed — the query was
+          # refused here precisely so it could never be one that never
+          # terminates.
+          | :unsupported_list_mode
           | :nothing_to_recover
           | :already_identified
           | :recovery_in_progress

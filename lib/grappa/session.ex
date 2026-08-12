@@ -1857,26 +1857,36 @@ defmodule Grappa.Session do
   end
 
   @doc """
-  Sends `MODE <channel> b` upstream — the banlist query form (no sign) —
-  and primes the per-channel accumulator in `state.banlist_pending` so
-  EventRouter folds the 367 RPL_BANLIST rows into it. On 368
-  RPL_ENDOFBANLIST the bundle is broadcast on `Topic.user/1` as a
-  `banlist_bundle` event (#376). The accumulator keys on the
+  Sends `MODE <channel> <mode>` upstream — the type-A list QUERY form (no
+  sign) — and primes the `{channel, mode}` accumulator in
+  `state.list_mode_pending` so EventRouter folds that list's row numerics
+  into it. On the end numeric the bundle is broadcast on `Topic.user/1` as a
+  `banlist_bundle` event (#376/#1251). The accumulator keys on the
   ASCII-folded channel (#364/#525) so the rows drain regardless of upstream
   casing.
 
-  Ephemeral — NOT persisted in scrollback. Bundle replaces any prior
-  bundle for the same channel.
+  `mode` is a single type-A letter (`b` bans, `e` exempts, `I` invex, `z`
+  bahamut restrict, `q` solanum quiet). It is validated against THIS
+  network's 005 (`ISupport.chanmodes.a` ∩ `Grappa.Session.ListModes`), so a
+  letter the network doesn't advertise — or one grappa has no numeric pair
+  for — is refused with `{:error, :unsupported_list_mode}` instead of
+  becoming a query that can never terminate.
 
-  Returns `:ok`, `{:error, :no_session}`, or `{:error, :invalid_line}`
-  if the channel syntax is rejected by `Grappa.IRC.Client.send_banlist/2`.
+  Ephemeral — NOT persisted in scrollback. Bundle replaces any prior
+  bundle for the same channel + mode.
+
+  Returns `:ok`, `{:error, :no_session}`, `{:error, :unsupported_list_mode}`,
+  or `{:error, :invalid_line}` if the syntax is rejected by
+  `Grappa.IRC.Client.send_list_mode/3`.
   """
-  @spec send_banlist(subject(), integer(), String.t(), reply_to()) ::
-          :ok | {:error, :no_session | :invalid_line | send_transport_error()}
-  def send_banlist(subject, network_id, channel, reply_to)
+  @spec send_list_mode(subject(), integer(), String.t(), String.t(), reply_to()) ::
+          :ok
+          | {:error,
+             :no_session | :invalid_line | :unsupported_list_mode | send_transport_error()}
+  def send_list_mode(subject, network_id, channel, mode, reply_to)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
-             (is_binary(reply_to) or is_nil(reply_to)) do
-    call_session(subject, network_id, {:send_banlist, channel, reply_to})
+             is_binary(mode) and (is_binary(reply_to) or is_nil(reply_to)) do
+    call_session(subject, network_id, {:send_list_mode, channel, mode, reply_to})
   end
 
   @doc """

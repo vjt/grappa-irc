@@ -5225,21 +5225,30 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
-  # #376 — BANLIST bundle (367 RPL_BANLIST / 368 RPL_ENDOFBANLIST). Mirror
-  # of the WHOWAS shape but keyed by FOLDED channel (#364), not nick:
-  # send_banlist primes banlist_pending[folded_chan]; 367 appends one
-  # {mask, setter, set_ts} entry; 368 emits :banlist_bundle + clears.
-  # setter/set_ts are OPTIONAL (older ircds/solanum may omit).
+  # #376/#1251 — channel LIST-MODE bundle. Mirror of the WHOWAS shape but
+  # keyed by `{FOLDED channel (#364), mode}`, not nick: `send_list_mode`
+  # primes list_mode_pending[{folded_chan, mode}]; the row numeric appends one
+  # {mask, setter, set_ts} entry; the end numeric emits :list_mode_bundle +
+  # clears. setter/set_ts are OPTIONAL (older ircds may omit).
   describe "#376 — BANLIST bundle (367 / 368)" do
     defp banlist_pending_state(channel_display) do
+      list_mode_pending_state(channel_display, "b")
+    end
+
+    defp list_mode_pending_state(channel_display, mode) do
       base_state(%{
-        banlist_pending: %{
-          Grappa.IRC.Identifier.canonical_target(channel_display) => %{
+        list_mode_pending: %{
+          {Grappa.IRC.Identifier.canonical_target(channel_display), mode} => %{
             channel_display: channel_display,
+            mode: mode,
             entries: []
           }
         }
       })
+    end
+
+    defp entries_for(state, channel, mode) do
+      state.list_mode_pending[{Grappa.IRC.Identifier.canonical_target(channel), mode}][:entries]
     end
 
     test "367 RPL_BANLIST appends a ban entry to entries list" do
@@ -5254,13 +5263,13 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, []} = EventRouter.route(m, state)
 
-      assert new_state.banlist_pending["#test"][:entries] == [
+      assert entries_for(new_state, "#test", "b") == [
                %{mask: "*!*@banned.host", setter: "op!u@h", set_ts: "1784572878"}
              ]
     end
 
-    test "367 with no banlist_pending entry is silently ignored (unsolicited)" do
-      state = base_state(%{banlist_pending: %{}})
+    test "367 with no pending accumulator is silently ignored (unsolicited)" do
+      state = base_state(%{list_mode_pending: %{}})
 
       m =
         msg(
@@ -5270,7 +5279,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.banlist_pending == %{}
+      assert new_state.list_mode_pending == %{}
     end
 
     test "367 with missing setter/set_ts (older ircd shape) folds nils" do
@@ -5280,7 +5289,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, []} = EventRouter.route(m, state)
 
-      assert new_state.banlist_pending["#test"][:entries] == [
+      assert entries_for(new_state, "#test", "b") == [
                %{mask: "*!*@old.host", setter: nil, set_ts: nil}
              ]
     end
@@ -5298,7 +5307,7 @@ defmodule Grappa.Session.EventRouterTest do
       {:cont, s2, []} = EventRouter.route(m2, s1)
 
       m368 = msg({:numeric, 368}, ["vjt", "#test", "End of Channel Ban List"], {:server, "irc.test.org"})
-      {:cont, _, [{:banlist_bundle, _, accum, _}]} = EventRouter.route(m368, s2)
+      {:cont, _, [{:list_mode_bundle, _, "b", accum, _}]} = EventRouter.route(m368, s2)
 
       # The EFFECT accum stores entries reversed (head = most recent 367,
       # O(1) prepend); `Wire.banlist_bundle/3` reverses to restore the wire
@@ -5306,12 +5315,13 @@ defmodule Grappa.Session.EventRouterTest do
       assert Enum.map(accum[:entries], & &1[:mask]) == ["b!*@2", "a!*@1"]
     end
 
-    test "368 RPL_ENDOFBANLIST emits :banlist_bundle effect + drops entry" do
+    test "368 RPL_ENDOFBANLIST emits :list_mode_bundle effect + drops entry" do
       state =
         base_state(%{
-          banlist_pending: %{
-            "#test" => %{
+          list_mode_pending: %{
+            {"#test", "b"} => %{
               channel_display: "#Test",
+              mode: "b",
               entries: [%{mask: "*!*@h", setter: "op", set_ts: "1784572878"}]
             }
           }
@@ -5324,19 +5334,19 @@ defmodule Grappa.Session.EventRouterTest do
           {:server, "irc.test.org"}
         )
 
-      {:cont, new_state, [{:banlist_bundle, channel, accum, _}]} = EventRouter.route(m, state)
+      {:cont, new_state, [{:list_mode_bundle, channel, "b", accum, _}]} = EventRouter.route(m, state)
       # The router carries `channel_display` through VERBATIM (whatever was
       # primed) — proven here with a mixed-case value so a stray fold in the
       # router would fail. In production the facade (`Session.send_banlist/3`)
       # already folded it, so the live `channel_display` is the canonical
-      # spelling (#364) — see the server.ex :send_banlist comment.
+      # spelling (#364) — see the server.ex :send_list_mode comment.
       assert channel == "#Test"
       assert length(accum[:entries]) == 1
-      assert new_state.banlist_pending == %{}
+      assert new_state.list_mode_pending == %{}
     end
 
     test "368 with no pending entry is silently ignored (unsolicited terminator)" do
-      state = base_state(%{banlist_pending: %{}})
+      state = base_state(%{list_mode_pending: %{}})
 
       m =
         msg(
@@ -5346,7 +5356,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.banlist_pending == %{}
+      assert new_state.list_mode_pending == %{}
     end
 
     test "367/368 channel lookup folds ASCII (#364/#525) — primed #chan, wire #CHAN" do
@@ -5356,14 +5366,136 @@ defmodule Grappa.Session.EventRouterTest do
         msg({:numeric, 367}, ["vjt", "#CHAN", "*!*@h", "op", "111"], {:server, "irc.test.org"})
 
       {:cont, s1, []} = EventRouter.route(m367, state)
-      assert length(s1.banlist_pending["#chan"][:entries]) == 1
+      assert length(entries_for(s1, "#chan", "b")) == 1
 
       m368 =
         msg({:numeric, 368}, ["vjt", "#CHAN", "End"], {:server, "irc.test.org"})
 
-      {:cont, s2, [{:banlist_bundle, _, accum, _}]} = EventRouter.route(m368, s1)
+      {:cont, s2, [{:list_mode_bundle, _, "b", accum, _}]} = EventRouter.route(m368, s1)
       assert length(accum[:entries]) == 1
-      assert s2.banlist_pending == %{}
+      assert s2.list_mode_pending == %{}
+    end
+  end
+
+  # #1251 — every OTHER type-A list, not just `b`. Two wire shapes: the
+  # 367/348/346 family names its letter by NUMERIC, while 728/729 carry the
+  # letter as a middle param because bahamut spends the pair on `z` (restrict)
+  # and solanum on `q` (quiet) — measured in both sources, see
+  # `Grappa.Session.ListModes`.
+  describe "#1251 — every type-A list mode (346/347, 348/349, 728/729)" do
+    test "348 RPL_EXCEPTLIST appends under mode e, 349 flushes it" do
+      state = list_mode_pending_state("#test", "e")
+
+      m348 =
+        msg({:numeric, 348}, ["vjt", "#test", "*!*@safe.host", "op", "111"], {:server, "irc.t"})
+
+      {:cont, s1, []} = EventRouter.route(m348, state)
+      assert entries_for(s1, "#test", "e") == [%{mask: "*!*@safe.host", setter: "op", set_ts: "111"}]
+
+      m349 = msg({:numeric, 349}, ["vjt", "#test", "End of Channel Exception List"], {:server, "irc.t"})
+      {:cont, s2, [{:list_mode_bundle, "#test", "e", accum, _}]} = EventRouter.route(m349, s1)
+
+      assert length(accum[:entries]) == 1
+      assert s2.list_mode_pending == %{}
+    end
+
+    test "346 RPL_INVITELIST appends under mode I, 347 flushes it" do
+      state = list_mode_pending_state("#test", "I")
+
+      m346 = msg({:numeric, 346}, ["vjt", "#test", "*!*@invited", "op", "222"], {:server, "irc.t"})
+      {:cont, s1, []} = EventRouter.route(m346, state)
+      assert length(entries_for(s1, "#test", "I")) == 1
+
+      m347 = msg({:numeric, 347}, ["vjt", "#test", "End of Channel Invite List"], {:server, "irc.t"})
+      {:cont, _, [{:list_mode_bundle, "#test", "I", accum, _}]} = EventRouter.route(m347, s1)
+      assert length(accum[:entries]) == 1
+    end
+
+    # bahamut src/s_err.c:812 — `":%s 728 %s %s z %s %s %lu"`.
+    test "728 with bahamut's z (restrict) reads the mode off the WIRE" do
+      state = list_mode_pending_state("#test", "z")
+
+      m728 =
+        msg({:numeric, 728}, ["vjt", "#test", "z", "*!*@rogue", "op", "333"], {:server, "irc.t"})
+
+      {:cont, s1, []} = EventRouter.route(m728, state)
+      assert entries_for(s1, "#test", "z") == [%{mask: "*!*@rogue", setter: "op", set_ts: "333"}]
+
+      m729 = msg({:numeric, 729}, ["vjt", "#test", "z", "End of Channel Restrict List"], {:server, "irc.t"})
+      {:cont, s2, [{:list_mode_bundle, "#test", "z", accum, _}]} = EventRouter.route(m729, s1)
+
+      assert length(accum[:entries]) == 1
+      assert s2.list_mode_pending == %{}
+    end
+
+    # solanum include/messages.h:231 — the SAME numeric, `":%s 728 %s %s q …"`.
+    # A hardcoded `z` here would drop every quiet row on Libera-family ircds.
+    test "728 with solanum's q (quiet) lands in the q accumulator, not z" do
+      state = list_mode_pending_state("#test", "q")
+
+      m728 =
+        msg({:numeric, 728}, ["vjt", "#test", "q", "*!*@muted", "op", "444"], {:server, "irc.t"})
+
+      {:cont, s1, []} = EventRouter.route(m728, state)
+      assert length(entries_for(s1, "#test", "q")) == 1
+
+      m729 = msg({:numeric, 729}, ["vjt", "#test", "q", "End of Channel Quiet List"], {:server, "irc.t"})
+      {:cont, _, [{:list_mode_bundle, "#test", "q", _, _}]} = EventRouter.route(m729, s1)
+    end
+
+    test "a 728 row for a mode nobody asked for is ignored (z primed, q on the wire)" do
+      state = list_mode_pending_state("#test", "z")
+
+      m728 =
+        msg({:numeric, 728}, ["vjt", "#test", "q", "*!*@muted", "op", "444"], {:server, "irc.t"})
+
+      {:cont, new_state, []} = EventRouter.route(m728, state)
+      assert entries_for(new_state, "#test", "z") == []
+      refute Map.has_key?(new_state.list_mode_pending, {"#test", "q"})
+    end
+
+    test "two lists of the SAME channel accumulate independently" do
+      state =
+        base_state(%{
+          list_mode_pending: %{
+            {"#test", "b"} => %{channel_display: "#test", mode: "b", entries: []},
+            {"#test", "e"} => %{channel_display: "#test", mode: "e", entries: []}
+          }
+        })
+
+      m367 = msg({:numeric, 367}, ["vjt", "#test", "*!*@banned", "op", "1"], {:server, "irc.t"})
+      m348 = msg({:numeric, 348}, ["vjt", "#test", "*!*@exempt", "op", "2"], {:server, "irc.t"})
+
+      {:cont, s1, []} = EventRouter.route(m367, state)
+      {:cont, s2, []} = EventRouter.route(m348, s1)
+
+      assert Enum.map(entries_for(s2, "#test", "b"), & &1[:mask]) == ["*!*@banned"]
+      assert Enum.map(entries_for(s2, "#test", "e"), & &1[:mask]) == ["*!*@exempt"]
+
+      # And the ban terminator drains ONLY the ban list.
+      m368 = msg({:numeric, 368}, ["vjt", "#test", "End of Channel Ban List"], {:server, "irc.t"})
+      {:cont, s3, [{:list_mode_bundle, _, "b", _, _}]} = EventRouter.route(m368, s2)
+
+      assert Map.keys(s3.list_mode_pending) == [{"#test", "e"}]
+    end
+
+    # Anti-drift: the table and the router clauses are two halves of one
+    # fact. Adding a letter to `ListModes.pairs/0` without its clause here
+    # would ship a query whose terminator nothing recognises — exactly the
+    # never-terminating request the mode gate exists to prevent.
+    test "every mode in ListModes.pairs/0 has a terminator clause that flushes it" do
+      for {mode, {_row, fin}} <- Grappa.Session.ListModes.pairs() do
+        state = list_mode_pending_state("#test", mode)
+
+        params =
+          if fin == 729,
+            do: ["vjt", "#test", mode, "End of list"],
+            else: ["vjt", "#test", "End of list"]
+
+        assert {:cont, _, [{:list_mode_bundle, "#test", ^mode, _, _}]} =
+                 EventRouter.route(msg({:numeric, fin}, params, {:server, "irc.t"}), state),
+               "no EventRouter terminator clause flushes mode #{mode} on numeric #{fin}"
+      end
     end
   end
 

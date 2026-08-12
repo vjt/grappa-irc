@@ -672,19 +672,27 @@ defmodule Grappa.IRC.Client do
   end
 
   @doc """
-  Sends `MODE <channel> b\\r\\n` — the banlist query form (no sign,
-  just the mode letter). Numerics 367 RPL_BANLIST + 368
-  RPL_ENDOFBANLIST reply with the ban list. Validates the channel
-  syntax with `{:error, :invalid_line}` on rejection.
+  Sends `MODE <channel> <mode>\\r\\n` — the type-A list QUERY form (no sign,
+  just the mode letter). The ircd answers with that list's row numerics and
+  its terminator (`b` → 367/368, `e` → 348/349, `I` → 346/347, `z`/`q` →
+  728/729; see `Grappa.Session.ListModes`).
+
+  Validates the channel syntax AND the mode letter with
+  `{:error, :invalid_line}` on rejection: `mode` reaches here from a client
+  frame, so a single ASCII letter is the only shape allowed on the wire — a
+  multi-token value would forge a MODE argument list. WHICH letters are
+  meaningful is a per-network 005 question and is gated upstream of here, in
+  `Grappa.Session.Server`'s `:send_list_mode` arm.
 
   Consolidates the raw `send_line` arm previously open-coded in
-  `Grappa.Session.Server`'s `:send_banlist` handle_call (resp-A4 close).
+  `Grappa.Session.Server`'s list-query handle_call (resp-A4 close),
+  generalised from `b`-only to every type-A letter by #1251.
   """
-  @spec send_banlist(pid(), String.t()) :: send_result()
-  def send_banlist(client, channel) do
-    if Identifier.valid_channel?(channel),
-      do: send_line(client, "MODE #{channel} b\r\n"),
-      else: reject_invalid_line(:banlist)
+  @spec send_list_mode(pid(), String.t(), String.t()) :: send_result()
+  def send_list_mode(client, channel, mode) do
+    if Identifier.valid_channel?(channel) and mode =~ ~r/\A[A-Za-z]\z/,
+      do: send_line(client, "MODE #{channel} #{mode}\r\n"),
+      else: reject_invalid_line(:list_mode)
   end
 
   @doc """
@@ -697,9 +705,9 @@ defmodule Grappa.IRC.Client do
   arm (#216) to make channel modes visible from the moment of join.
 
   Validates the channel syntax with `{:error, :invalid_line}` on
-  rejection. Sibling to `send_banlist/2` — same `MODE <channel> …` verb,
-  the only difference is the absent trailing `b` (query-all-modes vs
-  query-banlist).
+  rejection. Sibling to `send_list_mode/3` — same `MODE <channel> …` verb,
+  the only difference is the absent trailing mode letter (query-all-modes vs
+  query-one-list).
   """
   @spec send_channel_modes(pid(), String.t()) :: send_result()
   def send_channel_modes(client, channel) do
@@ -1037,7 +1045,7 @@ defmodule Grappa.IRC.Client do
            | :pong
            | :kick
            | :invite
-           | :banlist
+           | :list_mode
            | :umode
            | :umode_query
            | :topic_clear
