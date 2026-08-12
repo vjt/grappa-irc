@@ -186,6 +186,12 @@ export function narrowIsupportChanged(
     chanmodes_b: b,
     chanmodes_c: c,
     chanmodes_d: d,
+    // #1251 — absent means a server that predates the field (a cic-only
+    // bundle deploy is the realistic case), and that server can query
+    // exactly one list: `b`. Falling back to the empty set would silently
+    // remove /banlist; deriving the set from `chanmodes_a` would offer
+    // queries that server cannot answer.
+    list_modes_queryable: narrowStringArray(r.list_modes_queryable) ?? ["b"],
     prefix,
     // #1108 — absent or malformed means ABSENT, never a rejected envelope:
     // the /mode toggles this payload seeds must survive a server that

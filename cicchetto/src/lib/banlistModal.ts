@@ -19,13 +19,17 @@ import { moduleRoot } from "./moduleRoot";
 // identity-scoped survival state. A logout unmounts the shell so a stale-open
 // modal disappears with it.
 
-export type BanlistModalTarget = { networkSlug: string; channel: string };
+// #1251 — `mode` is the type-A letter the modal is showing (`b` bans, `e`
+// exempts, `I` invex, `z`/`q` restrict/quiet). It lives in the OPEN state
+// rather than in the modal component so the switcher, `/banlist e` and
+// `/mode #chan +e` all drive the same one source of truth.
+export type BanlistModalTarget = { networkSlug: string; channel: string; mode: string };
 
 const exports_ = moduleRoot(() => {
   const [banlistModalState, setBanlistModalState] = createSignal<BanlistModalTarget | null>(null);
 
-  const openBanlistModal = (networkSlug: string, channel: string): void => {
-    setBanlistModalState({ networkSlug, channel });
+  const openBanlistModal = (networkSlug: string, channel: string, mode: string): void => {
+    setBanlistModalState({ networkSlug, channel, mode });
   };
 
   const closeBanlistModal = (): void => {

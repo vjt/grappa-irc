@@ -859,9 +859,9 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         not_found: r.not_found,
       };
     case "banlist_bundle": {
-      // #376 — BANLIST bundle. All entries ship (a ban list is a set of
-      // rows). cic owns the rendering (single card per network,
-      // last-write-wins per /banlist). Each element is narrowed against
+      // #376/#1251 — channel LIST-MODE bundle. All entries ship (a list mode
+      // is a set of rows). cic owns the rendering (single card per network,
+      // last-write-wins per query). Each element is narrowed against
       // the wire shape; ANY malformed element drops the whole bundle.
       if (
         typeof r.network !== "string" ||
@@ -879,6 +879,10 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         kind: "banlist_bundle",
         network: r.network,
         channel: r.channel,
+        // #1251 — WHICH list this is. Additive-tolerant like links_bundle's
+        // `mask`: a grappa that predates the field could only ever have sent
+        // the ban list, so absent means `b` (unknown-is-never-fatal, #447).
+        mode: typeof r.mode === "string" ? r.mode : "b",
         entries,
       };
     }
@@ -1424,7 +1428,9 @@ moduleRoot(() => {
         }
 
         case "banlist_bundle": {
-          // #376 — BANLIST bundle. Last-write-wins per-network. Renders
+          // #376/#1251 — list-mode bundle. Last-write-wins per-network; the
+          // bundle's `mode` is what lets the modal tell "no reply yet for
+          // +e" from "here is the +b list I asked for before". Renders
           // inline above the active window scrollback (mirrors WhoisCard/
           // WhowasCard). No focus change: operator typed /banlist from the
           // window they're looking at; the card renders there.

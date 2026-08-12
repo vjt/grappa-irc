@@ -1,10 +1,12 @@
 import { type Component, createSignal, For, Show } from "solid-js";
 import { banlistCardBySlug } from "./lib/banlistCard";
-import { banlistModalState, closeBanlistModal } from "./lib/banlistModal";
+import { banlistModalState, closeBanlistModal, openBanlistModal } from "./lib/banlistModal";
 import { type BanMaskForm, buildBanMask } from "./lib/banMask";
 import { ownHoldsChannelEditorSigil } from "./lib/channelEditPerm";
 import { canonicalChannel, channelKey } from "./lib/channelKey";
 import { friendlyError } from "./lib/friendlyError";
+import { isupportForNetwork } from "./lib/isupport";
+import { listModeLabel, listModeTitle } from "./lib/listModes";
 import { networks } from "./lib/networks";
 import { createOverlayLock } from "./lib/overlayScrollLock";
 import {
@@ -32,8 +34,13 @@ import {
 //     (cic has no per-member host); a cache MISS is fail-closed (vjt decision
 //     #1: no wider-mask guess — surface "run /whois first").
 //
-// v1 scope: `+b` only (vjt decision #3 — `+e`/`+I` are the same UI with a
-// different mode letter, a later afternoon).
+// #1251 — the surface is now EVERY type-A list the network offers, not just
+// `+b`: the mode switcher renders `isupport.listModesQueryable` (server data,
+// never derived here) and each switch re-queries. Editing stays `+b`-only —
+// the ADD/REMOVE path goes through the `ban`/`unban` verbs, which derive a
+// mask from a bare nick and chunk per ISUPPORT `MODES=`; generalising that is
+// a separate verb pair, not a widened modal. For the other lists this is a
+// viewer, and the hint points at the `/mode` form that edits them.
 
 // cic owns time formatting (moved from the #376 BanlistCard). `set_ts` is the
 // raw upstream unix-epoch STRING; render it in the viewer's locale, NaN-guarded.
@@ -63,15 +70,41 @@ const BanlistModal: Component = () => {
     return t ? networks()?.find((n) => n.slug === t.networkSlug)?.id : undefined;
   };
 
-  // Ban rows for THIS modal's channel. The #376 store holds one bundle per
-  // network; show it only when its (folded) channel matches the modal target,
-  // so a stale prior-channel bundle doesn't flash during the open→re-query.
+  // Rows for THIS modal's channel AND mode. The #376 store holds one bundle
+  // per network; show it only when its (folded) channel matches the modal
+  // target, so a stale prior-channel bundle doesn't flash during the
+  // open→re-query. #1251 adds the mode to that guard for the same reason:
+  // after switching b→e the ban bundle is still the newest one in the store,
+  // and rendering it under an "Exempts" heading would be a lie.
   const bundle = () => {
     const t = target();
     if (!t) return undefined;
     const b = banlistCardBySlug()[t.networkSlug];
     if (!b) return undefined;
+    if (b.mode !== t.mode) return undefined;
     return canonicalChannel(b.channel) === canonicalChannel(t.channel) ? b : undefined;
+  };
+
+  // #1251 — the letters this NETWORK can be asked for, straight from 005 (the
+  // server publishes the intersection with what it can parse). Never derived
+  // here; an unseeded network falls back to the shared default table.
+  const queryableModes = (): string[] => {
+    const id = networkId();
+    return id === undefined ? [] : isupportForNetwork(id).listModesQueryable;
+  };
+
+  // Editing is `+b` only for now — `ban`/`unban` are the verbs that derive a
+  // mask from a bare nick and chunk per ISUPPORT MODES=. The other lists are
+  // read-only here and edited with `/mode #chan +e <mask>`.
+  const editable = (): boolean => (target()?.mode ?? "b") === "b";
+
+  const switchMode = (mode: string): void => {
+    const t = target();
+    const id = networkId();
+    if (!t || id === undefined || t.mode === mode) return;
+    setError(null);
+    openBanlistModal(t.networkSlug, t.channel, mode);
+    pushChannelBanlist(id, t.channel, mode);
   };
 
   // Op-gate HINT only (never a hard block, vjt decision #2).
@@ -85,7 +118,7 @@ const BanlistModal: Component = () => {
   const refresh = (): void => {
     const t = target();
     const id = networkId();
-    if (t && id !== undefined) pushChannelBanlist(id, t.channel);
+    if (t && id !== undefined) pushChannelBanlist(id, t.channel, t.mode);
   };
 
   const onAdd = async (): Promise<void> => {
@@ -176,7 +209,7 @@ const BanlistModal: Component = () => {
           >
             <header class="banlist-modal-header">
               <h2 id="banlist-modal-title">
-                Ban list: {t().channel}
+                {listModeTitle(t().mode, t().channel)}
                 <Show when={!canEdit()}>
                   <span class="banlist-modal-hint"> (not opped — the server decides)</span>
                 </Show>
@@ -198,47 +231,88 @@ const BanlistModal: Component = () => {
                 </p>
               </Show>
 
+              {/* #1251 — one button per list this network offers. Rendered
+                  only when there is a choice to make: on a network with a
+                  single queryable list the switcher would be furniture. */}
+              <Show when={queryableModes().length > 1}>
+                <div class="banlist-modal-modes" data-testid="banlist-mode-switcher">
+                  <For each={queryableModes()}>
+                    {(mode) => (
+                      <button
+                        type="button"
+                        class="banlist-modal-mode-btn"
+                        classList={{ "banlist-modal-mode-active": mode === t().mode }}
+                        aria-pressed={mode === t().mode}
+                        data-testid={`banlist-mode-${mode}`}
+                        onClick={() => switchMode(mode)}
+                      >
+                        {listModeLabel(mode)}
+                      </button>
+                    )}
+                  </For>
+                </div>
+              </Show>
+
+              <Show when={!editable()}>
+                <p class="banlist-modal-readonly muted" data-testid="banlist-modal-readonly">
+                  read-only here — set with{" "}
+                  <code>
+                    /mode {t().channel} +{t().mode} &lt;mask&gt;
+                  </code>
+                </p>
+              </Show>
+
               {/* Add row — de-emphasised when not opped, but ALWAYS clickable. */}
-              <div class="banlist-modal-add" classList={{ "banlist-modal-deemph": !canEdit() }}>
-                <input
-                  type="text"
-                  class="banlist-modal-add-input"
-                  data-testid="banlist-add-input"
-                  aria-label="nick or mask to ban"
-                  placeholder="nick or mask"
-                  value={maskInput()}
-                  onInput={(e) => setMaskInput(e.currentTarget.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void onAdd();
-                  }}
-                />
-                <select
-                  class="banlist-modal-add-form"
-                  data-testid="banlist-add-form"
-                  aria-label="ban mask form"
-                  value={form()}
-                  onChange={(e) => setForm(e.currentTarget.value as BanMaskForm)}
-                >
-                  <For each={FORMS}>{(f) => <option value={f.value}>{f.label}</option>}</For>
-                </select>
-                <button
-                  type="button"
-                  class="banlist-modal-add-btn"
-                  data-testid="banlist-add-btn"
-                  onClick={() => void onAdd()}
-                >
-                  Add ban
-                </button>
-              </div>
+              <Show when={editable()}>
+                <div class="banlist-modal-add" classList={{ "banlist-modal-deemph": !canEdit() }}>
+                  <input
+                    type="text"
+                    class="banlist-modal-add-input"
+                    data-testid="banlist-add-input"
+                    aria-label="nick or mask to ban"
+                    placeholder="nick or mask"
+                    value={maskInput()}
+                    onInput={(e) => setMaskInput(e.currentTarget.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void onAdd();
+                    }}
+                  />
+                  <select
+                    class="banlist-modal-add-form"
+                    data-testid="banlist-add-form"
+                    aria-label="ban mask form"
+                    value={form()}
+                    onChange={(e) => setForm(e.currentTarget.value as BanMaskForm)}
+                  >
+                    <For each={FORMS}>{(f) => <option value={f.value}>{f.label}</option>}</For>
+                  </select>
+                  <button
+                    type="button"
+                    class="banlist-modal-add-btn"
+                    data-testid="banlist-add-btn"
+                    onClick={() => void onAdd()}
+                  >
+                    Add ban
+                  </button>
+                </div>
+              </Show>
 
               <Show
                 when={bundle()}
-                fallback={<p class="banlist-modal-empty muted">Loading ban list…</p>}
+                fallback={
+                  <p class="banlist-modal-empty muted">
+                    Loading {listModeLabel(t().mode).toLowerCase()}…
+                  </p>
+                }
               >
                 {(b) => (
                   <Show
                     when={b().entries.length > 0}
-                    fallback={<p class="banlist-modal-empty muted">no bans set on {t().channel}</p>}
+                    fallback={
+                      <p class="banlist-modal-empty muted">
+                        no {listModeLabel(t().mode).toLowerCase()} set on {t().channel}
+                      </p>
+                    }
                   >
                     <ul class="banlist-modal-rows">
                       <For each={b().entries}>
@@ -251,16 +325,18 @@ const BanlistModal: Component = () => {
                             <Show when={formatBanSetAt(entry.set_ts)}>
                               {(time) => <span class="banlist-modal-time muted">{time()}</span>}
                             </Show>
-                            <button
-                              type="button"
-                              class="banlist-modal-remove"
-                              classList={{ "banlist-modal-deemph": !canEdit() }}
-                              data-testid="banlist-remove-btn"
-                              aria-label={`remove ban ${entry.mask}`}
-                              onClick={() => void onRemove(entry.mask)}
-                            >
-                              ×
-                            </button>
+                            <Show when={editable()}>
+                              <button
+                                type="button"
+                                class="banlist-modal-remove"
+                                classList={{ "banlist-modal-deemph": !canEdit() }}
+                                data-testid="banlist-remove-btn"
+                                aria-label={`remove ban ${entry.mask}`}
+                                onClick={() => void onRemove(entry.mask)}
+                              >
+                                ×
+                              </button>
+                            </Show>
                           </li>
                         )}
                       </For>

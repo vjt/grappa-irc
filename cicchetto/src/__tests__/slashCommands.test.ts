@@ -675,8 +675,38 @@ describe("parseSlash — channel ops verbs", () => {
     });
   });
 
-  it("/banlist bare → banlist for the current channel (null)", () => {
-    expect(parseSlash("/banlist")).toEqual({ kind: "banlist", channel: null });
+  it("/banlist bare → banlist for the current channel (null), mode b", () => {
+    expect(parseSlash("/banlist")).toEqual({ kind: "banlist", channel: null, mode: "b" });
+  });
+
+  // #1251 — `/banlist [#chan] [mode]`: both optional, classified by SHAPE so
+  // either order works. The mode test wins over the channel test because a
+  // `+`-sigil channel named `+e` is extinct while `/banlist +e` is obvious.
+  it("/banlist <mode> → that list on the current channel", () => {
+    expect(parseSlash("/banlist e")).toEqual({ kind: "banlist", channel: null, mode: "e" });
+    expect(parseSlash("/banlist +e")).toEqual({ kind: "banlist", channel: null, mode: "e" });
+    expect(parseSlash("/banlist I")).toEqual({ kind: "banlist", channel: null, mode: "I" });
+  });
+
+  it("/banlist #chan <mode> → that list on that channel, either token order", () => {
+    expect(parseSlash("/banlist #sniffo z")).toEqual({
+      kind: "banlist",
+      channel: "#sniffo",
+      mode: "z",
+    });
+
+    expect(parseSlash("/banlist q #sniffo")).toEqual({
+      kind: "banlist",
+      channel: "#sniffo",
+      mode: "q",
+    });
+  });
+
+  // The letter's CASE is the mode's identity: `I` (invex) and `i`
+  // (invite-only) are different modes.
+  it("/banlist keeps the mode letter's case", () => {
+    expect(parseSlash("/banlist I")).toEqual({ kind: "banlist", channel: null, mode: "I" });
+    expect(parseSlash("/banlist i")).toEqual({ kind: "banlist", channel: null, mode: "i" });
   });
 
   it("/invite <nick>", () => {
@@ -769,31 +799,58 @@ describe("parseSlash — channel ops verbs", () => {
     });
   });
 
-  // #536 — a list-mode QUERY form of /mode (the `b` letter, optionally
-  // signed, with NO mask param) is the no-args shape: it must open the
-  // banlist modal (the /banlist path), NOT execute a raw MODE whose
-  // 367/368 reply is silently dropped for lack of banlist_pending. The
-  // parser stays pure and emits `banlist` carrying the resolved channel
-  // (explicit for `/mode #chan +b`; null = current for `/mode +b`).
-  // Scope: `b` only (#536 constraints — +e/+I stay silent).
-  it("/mode #chan +b (list-mode query, no mask) → banlist for that channel", () => {
-    expect(parseSlash("/mode #sniffo +b")).toEqual({ kind: "banlist", channel: "#sniffo" });
+  // #536/#1251 — the list-mode QUERY form of /mode (a single letter,
+  // optionally signed, NO mask) must open the list modal instead of putting
+  // a raw MODE on the wire whose reply rows nothing collects. Since #1251
+  // that decision needs the network's 005 (which letters are type A), so the
+  // PARSER keeps the literal shape and compose.ts intercepts — see
+  // "list-mode query interception" in compose.test.ts for the behaviour.
+  // These cases pin that the parser hands compose everything it needs: the
+  // channel (or its absence), the SIGN, and the empty param list.
+  it("/mode #chan +b (list-mode query, no mask) → mode, verbatim, for compose to intercept", () => {
+    expect(parseSlash("/mode #sniffo +b")).toEqual({
+      kind: "mode",
+      target: "#sniffo",
+      modes: "+b",
+      params: [],
+    });
   });
 
-  it("/mode #chan b (unsigned list-mode query) → banlist for that channel", () => {
-    expect(parseSlash("/mode #sniffo b")).toEqual({ kind: "banlist", channel: "#sniffo" });
+  it("/mode #chan b (unsigned list-mode query) → mode, sign absent, params empty", () => {
+    expect(parseSlash("/mode #sniffo b")).toEqual({
+      kind: "mode",
+      target: "#sniffo",
+      modes: "b",
+      params: [],
+    });
   });
 
-  it("/mode #chan -b (signed list-mode query) → banlist for that channel", () => {
-    expect(parseSlash("/mode #sniffo -b")).toEqual({ kind: "banlist", channel: "#sniffo" });
+  // The sign is CARRIED, not normalised: `-m` with no param is a real mode
+  // change on a flag mode, so a parser that dropped the sign would turn a
+  // removal into an addition on every non-list letter.
+  it("/mode #chan -b (signed list-mode query) → mode, sign preserved", () => {
+    expect(parseSlash("/mode #sniffo -b")).toEqual({
+      kind: "mode",
+      target: "#sniffo",
+      modes: "-b",
+      params: [],
+    });
   });
 
-  it("/mode +b (bare list-mode query, no channel) → banlist for the current channel (null)", () => {
-    expect(parseSlash("/mode +b")).toEqual({ kind: "banlist", channel: null });
+  it("/mode +b (bare list-mode query, no channel) → mode-apply-current", () => {
+    expect(parseSlash("/mode +b")).toEqual({
+      kind: "mode-apply-current",
+      modes: "+b",
+      params: [],
+    });
   });
 
-  it("/mode -b (bare signed list-mode query) → banlist for the current channel (null)", () => {
-    expect(parseSlash("/mode -b")).toEqual({ kind: "banlist", channel: null });
+  it("/mode -b (bare signed list-mode query) → mode-apply-current, sign preserved", () => {
+    expect(parseSlash("/mode -b")).toEqual({
+      kind: "mode-apply-current",
+      modes: "-b",
+      params: [],
+    });
   });
 
   // A mask parameter turns the list-mode letter into a MUTATION, not a
@@ -823,11 +880,10 @@ describe("parseSlash — channel ops verbs", () => {
     expect(parseSlash("/mode b")).toEqual({ kind: "umode-target-view", target: "b" });
   });
 
-  // #536 regex-boundary guards — the discriminator is a single `b`, exact.
-  // A future careless widening of isBanlistQuery must NOT swallow these:
-  // `+bb` (repeated), `+be` (combined list letters — +e is out of scope),
-  // and uppercase `+B` (a DISTINCT, case-sensitive mode letter on bahamut)
-  // all stay raw MODE executes, not banlist queries.
+  // #536/#1251 boundary guards — the query discriminator is ONE letter,
+  // exact. `+bb` (repeated), `+be` (two list letters at once) and uppercase
+  // `+B` (a DISTINCT, case-sensitive mode on bahamut) are mode changes, and
+  // compose's interception regex must never swallow them either.
   it("/mode #chan +bb (repeated letter) → mode (not a banlist query)", () => {
     expect(parseSlash("/mode #sniffo +bb")).toEqual({
       kind: "mode",

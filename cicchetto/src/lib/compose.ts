@@ -23,6 +23,7 @@ import { type FramePreview, framePreview } from "./frameBudget";
 import { friendlyError } from "./friendlyError";
 import { addHighlight, delHighlight } from "./highlightList";
 import { identityScopedStore } from "./identityScopedStore";
+import { isupportForNetwork } from "./isupport";
 import { markLusersRequested } from "./lusersBundle";
 import { membersByChannel } from "./members";
 import { clearMentionsBundle } from "./mentionsWindow";
@@ -86,6 +87,24 @@ import { windowStateByChannel } from "./windowState";
 // TODO(#30): plumb CHANTYPES through `isupport_changed` and read it per
 // network instead of assuming the RFC set.
 const CHANNEL_SIGIL = /^[#&+!]/;
+
+// #536/#1251 — is this `/mode` a type-A LIST QUERY rather than a mode change?
+// Three conditions, all necessary: no parameter (a mask makes it a MUTATION,
+// `/mode #chan +b nick!*@*`), exactly one optionally-signed letter, and that
+// letter is one this NETWORK offers as a queryable list (server-published, in
+// `isupport.listModesQueryable` — cic never derives it).
+//
+// Why it lives here and not in the pure parser: the third condition is 005
+// data. `/mode #chan +i` on a network where `i` is a flag must stay a mode
+// change, and no letter is a list mode everywhere — `q` is a LIST on solanum
+// and a founder-status prefix elsewhere. Returns the bare letter, or null
+// when the caller should execute the MODE verbatim.
+const listModeQueryLetter = (modes: string, params: string[], networkId: number): string | null => {
+  if (params.length > 0) return null;
+  const letter = /^[+-]?([A-Za-z])$/.exec(modes)?.[1];
+  if (letter === undefined) return null;
+  return isupportForNetwork(networkId).listModesQueryable.includes(letter) ? letter : null;
+};
 
 // #1003 — IRC nicks wear decoration (`_omino_`, `bob^`, `gio-vanni`), so
 // Tab must reach `_omino_` from the bare `omi`. Deliberately NOT taught to
@@ -1516,21 +1535,30 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           break;
         }
         case "banlist": {
-          // #386 — /banlist is now the ban-management MODAL surface (it
+          // #386 — /banlist is the channel list-mode MODAL surface (it
           // supersedes the #376 inline BanlistCard, mirroring how the #169
           // /who modal replaced the inline WHO dump). Open the modal AND fire
-          // a fresh re-query so the 367/368 list is live on open (pre-#386 it
+          // a fresh re-query so the list is live on open (pre-#386 it
           // was fire-and-forget only).
-          // #536 — the list-mode query form of /mode (`/mode #chan +b`)
-          // resolves an explicit channel in the parser; bare /banlist and
-          // `/mode +b` carry null → the current channel (same resolver
+          // An explicit `/banlist #chan` resolves in the parser; a bare
+          // /banlist carries null → the current channel (same resolver
           // every channel-scoped verb uses).
           const chanOrErr = cmd.channel ?? requireChannel("banlist");
           if (typeof chanOrErr !== "string") return chanOrErr;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/banlist: network not found" };
-          openBanlistModal(networkSlug, chanOrErr);
-          pushChannelBanlist(networkId, chanOrErr);
+          // #1251 — an explicitly typed letter this network cannot answer is
+          // an ERROR, not a silent fallback to bans: the operator asked for a
+          // specific list and would otherwise read the ban list as the
+          // exempt list. The offered set is server-published, never derived.
+          const offered = isupportForNetwork(networkId).listModesQueryable;
+          if (!offered.includes(cmd.mode)) {
+            return {
+              error: `/banlist: this network has no +${cmd.mode} list (it offers ${offered.map((m) => `+${m}`).join(" ")})`,
+            };
+          }
+          openBanlistModal(networkSlug, chanOrErr, cmd.mode);
+          pushChannelBanlist(networkId, chanOrErr, cmd.mode);
           result = { ok: true };
           break;
         }
@@ -1601,6 +1629,16 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           // requirement (#216: mode-args present → apply).
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/mode: network not found" };
+          // #536/#1251 — a bare list letter with NO mask is a QUERY, not a
+          // mutation: open the list modal instead of putting a raw MODE on
+          // the wire whose reply rows nothing is primed to collect.
+          const listMode = listModeQueryLetter(cmd.modes, cmd.params, networkId);
+          if (listMode !== null && CHANNEL_SIGIL.test(cmd.target)) {
+            openBanlistModal(networkSlug, cmd.target, listMode);
+            pushChannelBanlist(networkId, cmd.target, listMode);
+            result = { ok: true };
+            break;
+          }
           await pushChannelMode(networkId, cmd.target, cmd.modes, cmd.params);
           result = { ok: true };
           break;
@@ -1624,6 +1662,15 @@ const exports_ = identityScopedStore((onIdentityChange) => {
           if (typeof chanOrErr !== "string") return chanOrErr;
           const networkId = networkIdBySlug(networkSlug);
           if (networkId === undefined) return { error: "/mode: network not found" };
+          // #536/#1251 — same list-QUERY interception as the explicit-channel
+          // arm above; `/mode +b` and `/mode #chan +b` must behave alike.
+          const listMode = listModeQueryLetter(cmd.modes, cmd.params, networkId);
+          if (listMode !== null) {
+            openBanlistModal(networkSlug, chanOrErr, listMode);
+            pushChannelBanlist(networkId, chanOrErr, listMode);
+            result = { ok: true };
+            break;
+          }
           await pushChannelMode(networkId, chanOrErr, cmd.modes, cmd.params);
           result = { ok: true };
           break;

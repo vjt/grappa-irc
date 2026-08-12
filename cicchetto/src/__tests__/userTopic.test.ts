@@ -417,6 +417,10 @@ describe("userTopic", () => {
       expect(isupport.seedIsupport).toHaveBeenCalledWith(7, {
         chanmodes: { a: ["b", "e", "I"], b: ["k"], c: ["l"], d: ["n", "t", "s"] },
         prefix: { q: "~", o: "@", v: "+" },
+        // #1251 — this envelope predates `list_modes_queryable`, and such a
+        // server can only ever answer one list. Deriving the set from
+        // `chanmodes_a` here would offer +e and +I queries it cannot serve.
+        listModesQueryable: ["b"],
         // #1108 — this envelope carried no budget, so none is seeded.
         frameBudgetBase: null,
       });
@@ -1357,11 +1361,31 @@ describe("userTopic", () => {
       expect(bc.setBanlistBundle).toHaveBeenCalledWith("azzurra", {
         network: "azzurra",
         channel: "#test",
+        // #1251 — a payload with no `mode` is a pre-#1251 server, which could
+        // only ever have sent the ban list (unknown-is-never-fatal, #447).
+        mode: "b",
         entries: [
           { mask: "*!*@banned.host", setter: "op!u@h", set_ts: "1784572878" },
           { mask: "evil!*@spam.net", setter: "mod!u@h", set_ts: "1784564620" },
         ],
       });
+    });
+
+    // #1251 — the letter travels with the bundle: without it the modal would
+    // render solanum's quiet list under a "Bans" heading.
+    it("carries the mode letter through to the store", async () => {
+      const bc = await import("../lib/banlistCard");
+      channelMock.fireEvent({
+        kind: "banlist_bundle",
+        network: "azzurra",
+        channel: "#test",
+        mode: "z",
+        entries: [{ mask: "*!*@rogue", setter: "op", set_ts: "1" }],
+      });
+      expect(bc.setBanlistBundle).toHaveBeenCalledWith(
+        "azzurra",
+        expect.objectContaining({ mode: "z" }),
+      );
     });
 
     it("accepts empty entries (channel with no bans)", async () => {

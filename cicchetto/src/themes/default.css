@@ -10505,6 +10505,43 @@ html.resize-dragging * {
   font-size: 0.85rem;
 }
 
+/* #1251 — list-mode switcher: one button per type-A list the network
+   advertises AND the server can query. Rendered only when there is more than
+   one, so a bahamut-only-`b` network sees no furniture. */
+.banlist-modal-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.banlist-modal-mode-btn {
+  min-height: var(--tap-min);
+  padding: 0.3rem 0.7rem;
+  background: var(--bg-alt);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  cursor: pointer;
+}
+
+.banlist-modal-mode-btn:hover {
+  border-color: var(--accent, var(--fg));
+}
+
+.banlist-modal-mode-active {
+  border-color: var(--accent, var(--fg));
+  background: var(--bg);
+  font-weight: bold;
+}
+
+/* #1251 — the non-`b` lists are a viewer here; the note names the verb that
+   edits them instead of showing dead controls. */
+.banlist-modal-readonly {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
 /* Add-ban row: nick/mask input + form selector + Add button. */
 .banlist-modal-add {
   display: flex;

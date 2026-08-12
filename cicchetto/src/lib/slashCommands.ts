@@ -150,12 +150,16 @@ export type SlashCommand =
   | { kind: "kill"; nick: string; reason: string }
   | { kind: "ban"; mask: string }
   | { kind: "unban"; mask: string }
-  // #386 /banlist opens the ban-management modal. #536 — the list-mode
-  // QUERY form of /mode (`/mode #chan +b`, `/mode +b`) also maps here, so
-  // the shape carries the resolved channel: an explicit channel for
-  // `/mode #chan +b`, or null (= the current window, resolved in
-  // compose.ts) for bare `/banlist` and `/mode +b`.
-  | { kind: "banlist"; channel: string | null }
+  // #386 /banlist opens the channel list-mode modal. The shape carries the
+  // resolved channel — an explicit `/banlist #chan`, or null (= the current
+  // window, resolved in compose.ts) — and, since #1251, WHICH type-A list
+  // (`b` bans, `e` exempts, `I` invex, `z`/`q` restrict/quiet).
+  //
+  // #536's `/mode #chan +b` route no longer lands here: whether a bare
+  // `+<letter>` is a LIST query or a flag toggle depends on the network's
+  // 005, which this pure parser cannot see, so the `mode` arms keep their
+  // literal shape and compose.ts (which has the isupport table) intercepts.
+  | { kind: "banlist"; channel: string | null; mode: string }
   | { kind: "invite"; nick: string; channel: string | null }
   | { kind: "umode"; modes: string }
   // #229 — no-mode-args umode forms open the umode viewer/editor modal.
@@ -237,17 +241,6 @@ function err(verb: string, message: string): SlashCommand {
 // Parse a list of whitespace-delimited tokens from `rest`.
 function tokens(rest: string): string[] {
   return rest === "" ? [] : rest.split(/\s+/).filter((t) => t.length > 0);
-}
-
-// #536 — a /mode "list-mode query" is the `b` letter, optionally signed,
-// with NO mask parameter (`+b`, `-b`, `b`). That is the no-args shape
-// #216/#229 route to the modal: it must open the banlist, not execute a
-// raw MODE whose 367/368 reply is dropped for lack of banlist_pending.
-// A mask parameter makes it a MUTATION (`/mode #chan +b nick!*@*`),
-// which stays an execute verb. Scope is `b` only (#536 constraint —
-// +e/+I are also type-A list modes but have no accumulator/modal yet).
-function isBanlistQuery(modes: string, params: string[]): boolean {
-  return params.length === 0 && /^[+-]?b$/.test(modes);
 }
 
 // Parse nicks-requiring ops verbs (/op /deop /voice /devoice).
@@ -606,7 +599,23 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
     return { kind: "unban", mask };
   },
 
-  banlist: (_verb, _rest) => ({ kind: "banlist", channel: null }),
+  // #386/#1251 — `/banlist [#chan] [mode]`. Both args optional, order-free,
+  // classified by SHAPE: a single (optionally signed) letter is the mode, a
+  // sigil-led token is the channel. The mode test runs FIRST because `+e` is
+  // both a signed mode and a `+`-sigil channel name — and a channel literally
+  // named `+e` is extinct, while `/banlist +e` is the obvious spelling.
+  // Defaults: current window's channel (resolved in compose.ts) and `b`.
+  banlist: (_verb, rest) => {
+    let channel: string | null = null;
+    let mode = "b";
+
+    for (const tok of tokens(rest)) {
+      if (/^[+-]?[A-Za-z]$/.test(tok)) mode = tok.replace(/^[+-]/, "");
+      else if (/^[#&!+]/.test(tok)) channel = tok;
+    }
+
+    return { kind: "banlist", channel, mode };
+  },
 
   invite: (verb, rest) => {
     // Codebase audit type-A9 — destructure + guard so the index access
@@ -658,10 +667,10 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
     const isChannel = /^[#&!]/.test(first);
 
     if (isModeString) {
-      // /mode +b (list-mode query, no mask) → banlist for the current
-      // channel (#536). compose.ts resolves the null channel.
-      if (isBanlistQuery(first, restToks)) return { kind: "banlist", channel: null };
-      // /mode +s [params] → apply to the current channel.
+      // /mode +s [params] → apply to the current channel. #536/#1251: a bare
+      // `+b`/`+e` with no mask is a LIST QUERY on a network that advertises
+      // that letter as type A — but only compose.ts can tell, so the
+      // interception lives there and this arm keeps the literal shape.
       return { kind: "mode-apply-current", modes: first, params: restToks };
     }
 
@@ -669,10 +678,9 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
       const [modes, ...params] = restToks;
       // /mode #chan (no modes) → open the modal for that channel.
       if (!modes) return { kind: "mode-view", channel: first };
-      // /mode #chan +b (list-mode query, no mask) → banlist for that
-      // channel (#536), not a raw MODE whose 367s are dropped.
-      if (isBanlistQuery(modes, params)) return { kind: "banlist", channel: first };
-      // /mode #chan +s [params] → execute directly.
+      // /mode #chan +s [params] → execute directly (or, for a bare list
+      // letter with no mask, get intercepted into the list modal by
+      // compose.ts — see the mode-string branch above).
       return { kind: "mode", target: first, modes, params };
     }
 

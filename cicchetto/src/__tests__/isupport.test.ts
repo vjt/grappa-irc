@@ -51,6 +51,7 @@ describe("isupport store", () => {
     const entry: IsupportEntry = {
       chanmodes: { a: ["b", "e", "I"], b: ["k"], c: ["l"], d: ["i", "m", "n", "s", "t"] },
       prefix: { q: "~", a: "&", o: "@", h: "%", v: "+" },
+      listModesQueryable: ["b", "e", "I"],
       frameBudgetBase: 393,
     };
     seedIsupport(7, entry);

@@ -712,6 +712,12 @@ export type WireChannelEvent =
       chanmodes_b: string[];
       chanmodes_c: string[];
       chanmodes_d: string[];
+      // #1251 — the subset of `chanmodes_a` the SERVER can query (it knows
+      // the reply numerics). cic offers exactly these and never derives the
+      // set itself; a letter in `chanmodes_a` but not here is the quiet
+      // degradation. Absent (pre-#1251 server, e.g. a cic-only bundle
+      // deploy) → `["b"]`, the capability that server does have.
+      list_modes_queryable: string[];
       prefix: Record<string, string>;
       // #1108 — `null` when the server published no budget. Narrowed
       // permissively on purpose: the wire is additive-only, so a server
@@ -1027,6 +1033,12 @@ export type WireUserEvent =
       chanmodes_b: string[];
       chanmodes_c: string[];
       chanmodes_d: string[];
+      // #1251 — the subset of `chanmodes_a` the SERVER can query (it knows
+      // the reply numerics). cic offers exactly these and never derives the
+      // set itself; a letter in `chanmodes_a` but not here is the quiet
+      // degradation. Absent (pre-#1251 server, e.g. a cic-only bundle
+      // deploy) → `["b"]`, the capability that server does have.
+      list_modes_queryable: string[];
       prefix: Record<string, string>;
       // #1108 — `null` when the server published no budget. Narrowed
       // permissively on purpose: the wire is additive-only, so a server

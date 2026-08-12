@@ -214,6 +214,14 @@ vi.mock("../lib/banlistModal", () => ({
   closeBanlistModal: vi.fn(),
 }));
 
+// #1251 — compose decides "list QUERY vs mode change" from the network's 005
+// (`listModesQueryable`, published by the server). Default here is a
+// bahamut-shaped network: `b` and `z` are lists, everything else is a flag.
+const isupportMock = vi.hoisted(() => ({ listModesQueryable: ["b", "z"] }));
+vi.mock("../lib/isupport", () => ({
+  isupportForNetwork: () => ({ listModesQueryable: isupportMock.listModesQueryable }),
+}));
+
 vi.mock("../lib/modeModal", () => ({
   openModeModal: vi.fn(),
   closeModeModal: vi.fn(),
@@ -3361,9 +3369,104 @@ describe("compose submit — channel ops verbs", () => {
 
     // #386 — /banlist is now the modal surface (supersedes the inline card):
     // open it AND fire a fresh 367/368 re-query so the list is live on open.
-    expect(banlistModal.openBanlistModal).toHaveBeenCalledWith("freenode", "#a");
-    expect(socket.pushChannelBanlist).toHaveBeenCalledWith(1, "#a");
+    expect(banlistModal.openBanlistModal).toHaveBeenCalledWith("freenode", "#a", "b");
+    expect(socket.pushChannelBanlist).toHaveBeenCalledWith(1, "#a", "b");
     expect(result).toEqual({ ok: true });
+  });
+
+  // #536/#1251 — the list-QUERY interception moved from the pure parser to
+  // here, because only compose can see the network's 005. These pin BOTH
+  // sides of the decision: a letter this network lists opens the modal, and
+  // a letter it does not stays a raw MODE on the wire.
+  describe("#1251 list-mode query interception", () => {
+    it("/mode #chan +b opens the list modal and re-queries — no raw MODE", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const socket = await import("../lib/socket");
+      const banlistModal = await import("../lib/banlistModal");
+      const compose = await import("../lib/compose");
+      const k = channelKey("freenode", "#a");
+      compose.setDraft(k, "/mode #a +b");
+      const result = await compose.submit(k, "freenode", "#a");
+
+      expect(banlistModal.openBanlistModal).toHaveBeenCalledWith("freenode", "#a", "b");
+      expect(socket.pushChannelBanlist).toHaveBeenCalledWith(1, "#a", "b");
+      expect(socket.pushChannelMode).not.toHaveBeenCalled();
+      expect(result).toEqual({ ok: true });
+    });
+
+    it("/mode +z (bare, current channel) opens the z list on a network that has one", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const socket = await import("../lib/socket");
+      const banlistModal = await import("../lib/banlistModal");
+      const compose = await import("../lib/compose");
+      const k = channelKey("freenode", "#a");
+      compose.setDraft(k, "/mode +z");
+      const result = await compose.submit(k, "freenode", "#a");
+
+      expect(banlistModal.openBanlistModal).toHaveBeenCalledWith("freenode", "#a", "z");
+      expect(socket.pushChannelBanlist).toHaveBeenCalledWith(1, "#a", "z");
+      expect(socket.pushChannelMode).not.toHaveBeenCalled();
+      expect(result).toEqual({ ok: true });
+    });
+
+    // The discriminating case: `e` IS a list mode on solanum, and this
+    // network doesn't have it. Guessing from the letter alone would swallow
+    // a real mode change; the 005 is what decides.
+    it("/mode #chan +e on a network without +e stays a raw MODE", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const socket = await import("../lib/socket");
+      const banlistModal = await import("../lib/banlistModal");
+      const compose = await import("../lib/compose");
+      const k = channelKey("freenode", "#a");
+      compose.setDraft(k, "/mode #a +e");
+      const result = await compose.submit(k, "freenode", "#a");
+
+      expect(banlistModal.openBanlistModal).not.toHaveBeenCalled();
+      expect(socket.pushChannelMode).toHaveBeenCalledWith(1, "#a", "+e", []);
+      expect(result).toEqual({ ok: true });
+    });
+
+    it("/mode #chan -m (a flag mode, no param) stays a raw MODE with its sign", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const socket = await import("../lib/socket");
+      const compose = await import("../lib/compose");
+      const k = channelKey("freenode", "#a");
+      compose.setDraft(k, "/mode #a -m");
+      const result = await compose.submit(k, "freenode", "#a");
+
+      expect(socket.pushChannelMode).toHaveBeenCalledWith(1, "#a", "-m", []);
+      expect(result).toEqual({ ok: true });
+    });
+
+    it("/mode #chan +b <mask> (a MUTATION) stays a raw MODE", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const socket = await import("../lib/socket");
+      const banlistModal = await import("../lib/banlistModal");
+      const compose = await import("../lib/compose");
+      const k = channelKey("freenode", "#a");
+      compose.setDraft(k, "/mode #a +b nick!*@*");
+      const result = await compose.submit(k, "freenode", "#a");
+
+      expect(banlistModal.openBanlistModal).not.toHaveBeenCalled();
+      expect(socket.pushChannelMode).toHaveBeenCalledWith(1, "#a", "+b", ["nick!*@*"]);
+      expect(result).toEqual({ ok: true });
+    });
+
+    it("/banlist <letter> the network doesn't offer is an inline error, not a ban list", async () => {
+      localStorage.setItem("grappa-token", "tok");
+      const socket = await import("../lib/socket");
+      const banlistModal = await import("../lib/banlistModal");
+      const compose = await import("../lib/compose");
+      const k = channelKey("freenode", "#a");
+      compose.setDraft(k, "/banlist e");
+      const result = await compose.submit(k, "freenode", "#a");
+
+      expect(banlistModal.openBanlistModal).not.toHaveBeenCalled();
+      expect(socket.pushChannelBanlist).not.toHaveBeenCalled();
+      expect(result).toEqual({
+        error: "/banlist: this network has no +e list (it offers +b +z)",
+      });
+    });
   });
 
   // #386 — /kb <nick> [reason]: ban FIRST (`*!*@host`, host from the on-demand

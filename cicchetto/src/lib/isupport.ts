@@ -30,6 +30,12 @@ export type IsupportEntry = {
     d: string[];
   };
   prefix: Record<string, string>;
+  // #1251 — the type-A (list) modes this network advertises AND the server
+  // knows the reply numerics for, in 005 order. The BanlistModal's mode
+  // switcher renders exactly this set: a letter the network advertises but
+  // the server cannot query never appears, so cic can never ask for a list
+  // whose reply would never arrive.
+  listModesQueryable: string[];
   // #1108 — the target-independent per-frame body budget, from the same 005
   // (see `frameBudget.ts` for what cic may and may not derive from it).
   // `null` when the server published none: unlike the capability table, this
@@ -47,6 +53,7 @@ export const DEFAULT_ISUPPORT: IsupportEntry = {
     d: ["C", "D", "R", "c", "d", "i", "m", "n", "p", "r", "s", "t"],
   },
   prefix: { o: "@", h: "%", v: "+" },
+  listModesQueryable: ["b", "e", "I"],
   frameBudgetBase: null,
 };
 
@@ -85,6 +92,7 @@ export function isupportEntryFromWire(payload: {
   chanmodes_b: string[];
   chanmodes_c: string[];
   chanmodes_d: string[];
+  list_modes_queryable: string[];
   prefix: Record<string, string>;
   frame_budget_base: number | null;
 }): IsupportEntry {
@@ -96,6 +104,7 @@ export function isupportEntryFromWire(payload: {
       d: payload.chanmodes_d,
     },
     prefix: payload.prefix,
+    listModesQueryable: payload.list_modes_queryable,
     frameBudgetBase: payload.frame_budget_base,
   };
 }

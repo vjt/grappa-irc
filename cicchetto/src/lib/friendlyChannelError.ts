@@ -113,6 +113,13 @@ function friendlyKnown(code: ErrorTokensChannelErrorToken): string {
       // silently dropping the first bundle). The in-flight request's map is
       // still coming; the user just retries once it lands.
       return "A network map request is already loading — try again in a moment.";
+    case "unsupported_list_mode":
+      // #1251 — a channel list-mode query for a letter this network doesn't
+      // advertise as type A (or one grappa knows no reply numerics for). cic
+      // only offers the server-published set, so reaching this means the
+      // network's 005 changed under an open modal — the honest answer is
+      // that the list isn't there, not that something failed.
+      return "This network doesn't have that channel list.";
 
     // ── #411 D6b — the 8 previously-unmapped channel tokens (product copy,
     //    vetted by vjt). Same actionable-copy contract as the REST sibling.

@@ -90,6 +90,7 @@ describe("availableModes", () => {
     const isupport: IsupportEntry = {
       chanmodes: { a: [], b: [], c: [], d: ["n", "t", "Z"] },
       prefix: {},
+      listModesQueryable: [],
       frameBudgetBase: null,
     };
     const modes = availableModes(isupport);
@@ -131,6 +132,7 @@ describe("editorSigils", () => {
     const isupport: IsupportEntry = {
       chanmodes: { a: [], b: [], c: [], d: ["n", "t"] },
       prefix: { q: "~", a: "&", o: "@", h: "%", v: "+" },
+      listModesQueryable: [],
       frameBudgetBase: null,
     };
     const e = editorSigils(isupport);
@@ -145,6 +147,7 @@ describe("editorSigils", () => {
     const isupport: IsupportEntry = {
       chanmodes: { a: [], b: [], c: [], d: [] },
       prefix: { v: "+" },
+      listModesQueryable: [],
       frameBudgetBase: null,
     };
     const e = editorSigils(isupport);

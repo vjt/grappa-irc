@@ -608,11 +608,14 @@ export function pushChannelUnban(networkId: number, channel: string, mask: strin
   return pushUserChannelVerb("unban", { network_id: networkId, channel, mask });
 }
 
-// /banlist → MODE #chan b (query form, no sign); server replies 367/368.
-// Read-only query — stays fire-and-forget (no error to surface inline).
-export function pushChannelBanlist(networkId: number, channel: string): void {
+// /banlist → MODE #chan <mode> (type-A list query form, no sign); the server
+// replies with that list's numerics (b 367/368, e 348/349, I 346/347, z|q
+// 728/729). Read-only query — stays fire-and-forget (no error to surface
+// inline). #1251: `mode` is always sent explicitly; the server's own default
+// for an absent field is `b`, which is what a pre-#1251 client relies on.
+export function pushChannelBanlist(networkId: number, channel: string, mode: string): void {
   if (_userChannel === null) return;
-  _userChannel.push("banlist", { network_id: networkId, channel });
+  _userChannel.push("banlist", { network_id: networkId, channel, mode });
 }
 
 // #386 — resolve a nick's userhost on demand. cic has NO per-member host
