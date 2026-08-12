@@ -380,6 +380,11 @@ config :logger, :console,
     # (a NOTICE opens no window). In the allowlist to satisfy the
     # known_keys↔metadata sync test even though no Logger call carries it today.
     :notice_target,
+    # #1247 — the STATUSMSG membership sigil an inbound message was delivered
+    # at (`@#chan` ops-only, `+#chan` voice), kept rather than dropped when the
+    # #218 route peels it. In the allowlist to satisfy the known_keys↔metadata
+    # sync test even though no Logger call carries it today.
+    :statusmsg,
     :nick_fallback,
     # Auth context (Phase 2): bearer-token session lifecycle. `session_ref`
     # is a non-reversible SHA-256 handle of the session-id (S9: the raw id

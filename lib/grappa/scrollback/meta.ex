@@ -139,6 +139,23 @@ defmodule Grappa.Scrollback.Meta do
                                                                   off the message, not off the routing key.
                                                                   Its ABSENCE on a :notice row is what
                                                                   marks the row INBOUND.)
+      :notice  | :privmsg           →  + %{statusmsg: String.t()}
+                                                                 (#1247: the STATUSMSG membership sigil
+                                                                  the message was DELIVERED at —
+                                                                  `@#chan` reaches channel ops only,
+                                                                  `+#chan` voiced members. #218 peels the
+                                                                  sigil to route the row to the channel
+                                                                  window; this is the peeled sigil kept
+                                                                  rather than dropped, so a consumer can
+                                                                  tell an ops-only broadcast from one the
+                                                                  whole channel saw. Verbatim from the
+                                                                  wire, so the value set is whatever the
+                                                                  network's ISUPPORT STATUSMSG=
+                                                                  advertises (bahamut `@+`, others
+                                                                  `@%+`) — NOT a closed set this end can
+                                                                  enumerate. ABSENT on an ordinary
+                                                                  channel message; there is no nil form,
+                                                                  presence IS the test.)
 
   Phase 1 only writes `:privmsg` rows where `meta = %{}` so Phase 1
   exercises only the empty-map path. The allowlist + atomization is
@@ -179,11 +196,12 @@ defmodule Grappa.Scrollback.Meta do
             | :ctcp_args
             | :ctcp_target
             | :notice_target
+            | :statusmsg
             | :nick_fallback
           ) => term()
         }
 
-  @known_keys ~w[target new_nick modes args numeric severity who who_target names names_target raw_verb raw_sender raw_params sender_user sender_host sender_prefix sender_kind ctcp_verb ctcp_args ctcp_target notice_target nick_fallback]a
+  @known_keys ~w[target new_nick modes args numeric severity who who_target names names_target raw_verb raw_sender raw_params sender_user sender_host sender_prefix sender_kind ctcp_verb ctcp_args ctcp_target notice_target statusmsg nick_fallback]a
 
   @doc """
   The atom-key allowlist. Exposed so the test suite can assert that
@@ -214,6 +232,7 @@ defmodule Grappa.Scrollback.Meta do
           | :ctcp_args
           | :ctcp_target
           | :notice_target
+          | :statusmsg
           | :nick_fallback,
           ...
         ]

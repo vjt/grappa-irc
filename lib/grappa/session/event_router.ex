@@ -265,12 +265,13 @@ defmodule Grappa.Session.EventRouter do
   @spec route(Message.t(), state()) :: {:cont, state(), [effect()]}
   def route(%Message{} = msg, state) do
     isupport = Map.get(state, :isupport, ISupport.default())
-    statusmsg = ISupport.statusmsg(isupport)
+
+    {msg, statusmsg_level} = strip_statusmsg_target(msg, ISupport.statusmsg(isupport))
 
     msg
-    |> strip_statusmsg_target(statusmsg)
     |> canonicalize_channel_params(ISupport.casemapping(isupport))
     |> do_route(state)
+    |> tag_statusmsg(statusmsg_level)
   end
 
   # Rewrites `msg.params` so every channel-shape param is canonicalised
@@ -359,28 +360,65 @@ defmodule Grappa.Session.EventRouter do
   # fn reading `state()`) so the strip stays a pure fn of msg + sigil-set
   # and doesn't tighten whole-module `state` inference. This is the
   # remaining STATUSMSG gap of the #78/#128 route-by-target class.
-  @spec strip_statusmsg_target(Message.t(), [String.t()]) :: Message.t()
+  #
+  # #1247 — the peeled sigil is RETURNED alongside the message rather than
+  # dropped. It is the only record that the message was delivered ops-only;
+  # peeling it to route the row and then discarding it destroys the level at
+  # ingress, so no consumer downstream can badge what never reached the store.
+  # `nil` when nothing was peeled — the vast majority of traffic.
+  @spec strip_statusmsg_target(Message.t(), [String.t()]) :: {Message.t(), String.t() | nil}
   defp strip_statusmsg_target(%Message{command: cmd, params: [target | rest]} = msg, statusmsg)
        when cmd in [:notice, :privmsg] and is_binary(target) do
-    %{msg | params: [strip_statusmsg_prefix(target, statusmsg) | rest]}
+    {stripped, level} = strip_statusmsg_prefix(target, statusmsg)
+    {%{msg | params: [stripped | rest]}, level}
   end
 
-  defp strip_statusmsg_target(msg, _), do: msg
+  defp strip_statusmsg_target(msg, _), do: {msg, nil}
 
   # Peels ONE leading statusmsg sigil iff (a) it is in the network's
   # advertised set AND (b) a channel sigil (`#&!+`) immediately follows —
   # so a real `+chan` (voice-typed channel, `+` NOT followed by a channel
   # sigil) is never mis-stripped (the `+` collision: `+` is both a channel
-  # sigil and the voice membership sigil). Returns the underlying channel,
-  # else the target unchanged. Reuses `channel_target?/1` so the
-  # "what follows is a channel" test agrees byte-for-byte with the
-  # channel-NOTICE dispatch guard.
-  @spec strip_statusmsg_prefix(binary(), [String.t()]) :: binary()
+  # sigil and the voice membership sigil). Returns `{underlying channel,
+  # peeled sigil}`, else `{target unchanged, nil}` — the `nil` is what keeps
+  # the collision guard from inventing a voice level on a modeless `+chan`.
+  # Reuses `channel_target?/1` so the "what follows is a channel" test agrees
+  # byte-for-byte with the channel-NOTICE dispatch guard.
+  @spec strip_statusmsg_prefix(binary(), [String.t()]) :: {binary(), String.t() | nil}
   defp strip_statusmsg_prefix(<<sigil::binary-size(1), rest::binary>> = target, statusmsg) do
-    if sigil in statusmsg and channel_target?(rest), do: rest, else: target
+    if sigil in statusmsg and channel_target?(rest), do: {rest, sigil}, else: {target, nil}
   end
 
-  defp strip_statusmsg_prefix(target, _), do: target
+  defp strip_statusmsg_prefix(target, _), do: {target, nil}
+
+  # #1247 — record the delivery level on the rows this message produced.
+  #
+  # Applied to the ROUTED RESULT rather than threaded into `do_route/2`: the
+  # sigil is known only where it is peeled, and the alternatives are worse.
+  # A third argument would touch every one of the ~50 `do_route/2` clauses to
+  # serve the two commands that can bear a sigil; a field on `%IRC.Message{}`
+  # would put a router annotation on the parser's struct, which is the wire's
+  # shape and not ours to extend.
+  #
+  # Every persist effect from the message is tagged, not just the one keyed to
+  # the stripped channel: a sigil is only ever peeled off a genuine channel
+  # target, so every row derived from that message describes the same
+  # ops-only delivery. `Map.put` MERGES into the meta the row already built
+  # (#25's sender_prefix, #1070's sender_kind) — the map is the row's, this
+  # only adds to it.
+  @spec tag_statusmsg({:cont, state(), [effect()]}, String.t() | nil) ::
+          {:cont, state(), [effect()]}
+  defp tag_statusmsg(routed, nil), do: routed
+
+  defp tag_statusmsg({:cont, state, effects}, level) do
+    {:cont, state, Enum.map(effects, &put_statusmsg(&1, level))}
+  end
+
+  @spec put_statusmsg(effect(), String.t()) :: effect()
+  defp put_statusmsg({:persist, kind, attrs}, level),
+    do: {:persist, kind, %{attrs | meta: Map.put(attrs.meta, :statusmsg, level)}}
+
+  defp put_statusmsg(effect, _), do: effect
 
   @spec do_route(Message.t(), state()) :: {:cont, state(), [effect()]}
   # CTCP VERSION query — body is `\x01VERSION\x01` or `\x01VERSION ...\x01`

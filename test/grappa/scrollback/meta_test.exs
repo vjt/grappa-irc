@@ -44,6 +44,17 @@ defmodule Grappa.Scrollback.MetaTest do
                Meta.load(%{"nick_fallback" => %{"requested" => "vjt", "registered" => "vjt_"}})
     end
 
+    # #1247 — same failure shape as the nick_fallback case above: the router
+    # emits the level onto every ops-only row, and an allowlist that does not
+    # know the key rejects the whole cast, so the row never reaches the DB and
+    # the badge never reaches anyone. The router test asserts the EFFECT and
+    # would stay green throughout.
+    test "the STATUSMSG level survives cast, load and dump" do
+      assert {:ok, %{statusmsg: "@"}} = Meta.cast(%{statusmsg: "@"})
+      assert {:ok, %{statusmsg: "+"}} = Meta.load(%{"statusmsg" => "+"})
+      assert {:ok, %{"statusmsg" => "@"}} = Meta.dump(%{statusmsg: "@"})
+    end
+
     test "string-keyed map: known keys atomized" do
       assert {:ok, %{target: "alice"}} = Meta.cast(%{"target" => "alice"})
 

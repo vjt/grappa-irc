@@ -1360,6 +1360,98 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
+  # #1247 — the sigil #218 peels is the ONLY record that a message was
+  # ops-only. Peeling it to route the row and then dropping it destroys the
+  # level at ingress: no consumer can badge what never reached the store.
+  # The peel now RETURNS the sigil and it rides `meta.statusmsg` on the row
+  # keyed to the stripped channel — so a reload (REST) and a live push
+  # (PubSub) answer the same thing, both reading the same persisted meta.
+  describe "route/2 — #1247 the peeled STATUSMSG level survives as meta" do
+    test "NOTICE @#chan carries meta.statusmsg == \"@\"" do
+      state = base_state()
+
+      m = msg(:notice, ["@#italia", "ops-only heads up"], {:nick, "op", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} = EventRouter.route(m, state)
+
+      assert attrs.meta.statusmsg == "@"
+    end
+
+    test "NOTICE +#chan carries meta.statusmsg == \"+\"" do
+      state = base_state()
+
+      m = msg(:notice, ["+#italia", "voiced folks only"], {:nick, "someone", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} = EventRouter.route(m, state)
+
+      assert attrs.meta.statusmsg == "+"
+    end
+
+    test "PRIVMSG @#chan carries meta.statusmsg == \"@\" (same ingress, same record)" do
+      state = base_state()
+
+      m = msg(:privmsg, ["@#italia", "ops chatter"], {:nick, "op", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :privmsg, attrs}]} = EventRouter.route(m, state)
+
+      assert attrs.meta.statusmsg == "@"
+    end
+
+    test "the level is the ADVERTISED sigil, not a hardcoded @/+" do
+      # A network advertising `STATUSMSG=@%+` delivers a halfop-only notice;
+      # the recorded level must be the `%` that was actually on the wire.
+      isupport = ISupport.merge_isupport(["x", "STATUSMSG=@%+"], ISupport.default())
+      state = base_state(%{isupport: isupport})
+
+      m = msg(:notice, ["%#italia", "halfops heads up"], {:nick, "op", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} = EventRouter.route(m, state)
+
+      assert attrs.meta.statusmsg == "%"
+    end
+
+    test "a plain #chan NOTICE carries NO :statusmsg key (absence, not nil)" do
+      # ABSENT, not `nil`: an always-present key would make every ordinary
+      # channel row claim a level it never had, and cic reads presence.
+      state = base_state()
+
+      m = msg(:notice, ["#italia", "everyone"], {:nick, "someone", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} = EventRouter.route(m, state)
+
+      refute Map.has_key?(attrs.meta, :statusmsg)
+    end
+
+    test "the +chan collision guard records no level either" do
+      # `+chan` is a modeless CHANNEL, not a voice-targeted `+#chan`. #218
+      # already routes it whole; recording a `+` level here would invent an
+      # ops-only badge on a channel anyone can read.
+      state = base_state()
+
+      m = msg(:notice, ["+chan", "hello modeless channel"], {:nick, "someone", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} = EventRouter.route(m, state)
+
+      assert attrs.channel == "+chan"
+      refute Map.has_key?(attrs.meta, :statusmsg)
+    end
+
+    test "the level does not disturb the meta the row already carried" do
+      # #1070's sender_kind and #25's sender_prefix ride the same map. A
+      # producer that REPLACED meta instead of merging into it would pass
+      # every assertion above and silently drop them.
+      state = base_state(%{members: %{"#italia" => %{"op" => ["@"]}}})
+
+      m = msg(:notice, ["@#italia", "ops-only heads up"], {:nick, "op", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} = EventRouter.route(m, state)
+
+      assert attrs.meta.statusmsg == "@"
+      assert attrs.meta.sender_kind == "user"
+      assert attrs.meta.sender_prefix == "@"
+    end
+  end
+
   describe "route/2 — #127 server-reply modals (INFO/VERSION/MOTD)" do
     # Explicit /motd primes state.motd_pending; the 375/372 burst folds and
     # 376 RPL_ENDOFMOTD drains ONE {:server_reply, :motd, lines} effect in
