@@ -617,6 +617,32 @@ const renderNumeric = (raw: NumericEvent): JSX.Element => {
   );
 };
 
+// #1247 — the STATUSMSG level a message was delivered at, recorded by the
+// server into `meta.statusmsg` when it peeled the sigil to route the row
+// (#218). A `@#chan` notice reaches channel ops ONLY; rendered like any other
+// notice it reads as a broadcast everyone saw, which is the reported symptom.
+//
+// The sigil set is per-network and open-ended (ISUPPORT `STATUSMSG=`; bahamut
+// advertises `@+`, others `@%+`), so only the two levels the issue names get a
+// word. An unnamed one renders as its own sigil rather than falling back to no
+// badge — "unknown level" and "everyone" must not look alike.
+const STATUSMSG_LABEL: Record<string, string> = { "@": "ops-only", "+": "voice-only" };
+
+// Row-level, not per-kind: a STATUSMSG target is legal on PRIVMSG as well as
+// NOTICE, and the level describes who the line REACHED — a property of the
+// row, not of one render arm.
+const statusmsgBadge = (meta: ScrollbackMessage["meta"]): JSX.Element | null => {
+  const level = meta?.statusmsg;
+  if (typeof level !== "string" || level === "") return null;
+  return (
+    <>
+      <span class="scrollback-statusmsg" data-testid="statusmsg-badge">
+        {STATUSMSG_LABEL[level] ?? level}
+      </span>{" "}
+    </>
+  );
+};
+
 const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element => {
   // #648 — click-to-join affordance for a `#channel` in a CONTENT body. Passed
   // ONLY to the privmsg / notice / action MircBody calls below — the same set
@@ -994,6 +1020,7 @@ const ScrollbackLine: Component<{
       data-msg-id={props.msg.id}
     >
       <span class="scrollback-time">{formatTime(props.msg.server_time)}</span>{" "}
+      {statusmsgBadge(props.msg.meta)}
       {renderBody(props.msg, handlers)}
     </div>
   );

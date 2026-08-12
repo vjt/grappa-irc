@@ -3002,6 +3002,16 @@ html.resize-dragging * {
   color: var(--mode-op);
 }
 
+/* #1247 — the STATUSMSG delivery level (`@#chan` ops-only, `+#chan` voice).
+   Reuses --mode-op, the red already carrying "this is an op thing" on @op
+   nicks and error notices, per the total-consistency rule — no new token.
+   Sized like the sidebar away/reconnect badges so it reads as a passive
+   annotation on the row, not as part of what the sender said. */
+.scrollback-statusmsg {
+  color: var(--mode-op);
+  font-size: 0.75rem;
+}
+
 /* CP13 S10: mIRC inline formatting toggles. Each Run rendered by
    parseMircFormat is a <span> with one or more of these classes for
    the active toggles. Color codes (fg/bg) ride inline style on the

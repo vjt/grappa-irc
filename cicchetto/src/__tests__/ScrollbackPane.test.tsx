@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@solidjs/testing-library";
+import { render, screen, waitFor, within } from "@solidjs/testing-library";
 import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage, WhoisBundle } from "../lib/api";
@@ -528,6 +528,87 @@ describe("ScrollbackPane", () => {
     // Inbound stays the untouched `-sender- body` shape — no arrow.
     expect(lines[1]).toHaveTextContent("-carol- ack");
     expect(lines[1]?.textContent ?? "").not.toContain("→");
+  });
+
+  it("badges an ops-only row from meta.statusmsg and leaves a plain one alone — #1247", () => {
+    // #1247 — an ops-only NOTICE (`NOTICE @#chan`) is delivered to channel ops
+    // only. #218 routes it to the channel window; without a badge it is
+    // indistinguishable from the plain channel notice sitting next to it, so
+    // the second row here is the control: the discriminator must be the badge,
+    // not "it is a notice".
+    const notices: ScrollbackMessage[] = [
+      {
+        id: 1,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 1,
+        kind: "notice",
+        sender: "carol",
+        body: "rehash in 5",
+        meta: { statusmsg: "@" },
+      },
+      {
+        id: 2,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 2,
+        kind: "notice",
+        sender: "carol",
+        body: "rehash in 5",
+        meta: {},
+      },
+    ];
+    setScrollback({ "freenode #grappa": notices });
+    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+    const lines = screen.getAllByTestId("scrollback-line");
+
+    expect(within(lines[0] as HTMLElement).getByTestId("statusmsg-badge")).toHaveTextContent(
+      "ops-only",
+    );
+    // The body still renders — the badge annotates the row, it does not
+    // replace it.
+    expect(lines[0]).toHaveTextContent("-carol- rehash in 5");
+
+    expect(within(lines[1] as HTMLElement).queryByTestId("statusmsg-badge")).toBeNull();
+  });
+
+  it("badges a voice-only row and an unnamed level by its raw sigil — #1247", () => {
+    // `+` is the other level bahamut advertises by default. A network
+    // advertising `STATUSMSG=@%+` can deliver a `%` too, and the sigil set is
+    // per-network and open-ended: an unnamed level renders as itself rather
+    // than silently dropping to "no badge", which would read as "everyone".
+    const notices: ScrollbackMessage[] = [
+      {
+        id: 1,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 1,
+        kind: "notice",
+        sender: "carol",
+        body: "voiced folks",
+        meta: { statusmsg: "+" },
+      },
+      {
+        id: 2,
+        network: "freenode",
+        channel: "#grappa",
+        server_time: 2,
+        kind: "privmsg",
+        sender: "carol",
+        body: "halfops chatter",
+        meta: { statusmsg: "%" },
+      },
+    ];
+    setScrollback({ "freenode #grappa": notices });
+    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+    const lines = screen.getAllByTestId("scrollback-line");
+
+    expect(within(lines[0] as HTMLElement).getByTestId("statusmsg-badge")).toHaveTextContent(
+      "voice-only",
+    );
+    // A PRIVMSG can bear a STATUSMSG target too — the badge is a property of
+    // the row, not of the notice arm.
+    expect(within(lines[1] as HTMLElement).getByTestId("statusmsg-badge")).toHaveTextContent("%");
   });
 
   it("renders a /notice echo to a CHANNEL recipient — #1225", () => {
