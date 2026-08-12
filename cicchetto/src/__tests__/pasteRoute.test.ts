@@ -30,7 +30,7 @@ vi.mock("../lib/dropUpload", () => ({
 import { setDraft } from "../lib/compose";
 import { requestConfirm } from "../lib/confirmDialog";
 import { dropUpload } from "../lib/dropUpload";
-import { routeClipboardPaste } from "../lib/pasteRoute";
+import { routeClipboardPaste, routePastedInput } from "../lib/pasteRoute";
 
 type ClipItem = { kind: string; type: string; getAsFile: () => File | null };
 
@@ -57,6 +57,30 @@ function pasteEvent(opts: { text?: string; file?: File | null }): {
 
 function textarea(): HTMLTextAreaElement {
   return document.createElement("textarea");
+}
+
+// #1250 — synthesise the `beforeinput` an IME insertion fires. `dataTransfer`
+// is not settable through the constructor, so it is defined on the instance
+// the same way `clipboardData` is above; `data` rides the constructor, which
+// is how the engines report a plain-string commit.
+function inputEvent(opts: { inputType: string; dataTransferText?: string; data?: string }): {
+  e: InputEvent;
+  preventDefault: ReturnType<typeof vi.spyOn>;
+} {
+  const e = new InputEvent("beforeinput", {
+    inputType: opts.inputType,
+    data: opts.data ?? null,
+    bubbles: true,
+    cancelable: true,
+  });
+  if (opts.dataTransferText !== undefined) {
+    Object.defineProperty(e, "dataTransfer", {
+      value: { getData: (t: string) => (t === "text" ? opts.dataTransferText : "") },
+      configurable: true,
+    });
+  }
+  const preventDefault = vi.spyOn(e, "preventDefault");
+  return { e, preventDefault };
 }
 
 const pngFile = (): File =>
@@ -153,5 +177,143 @@ describe("pasteRoute — routeClipboardPaste", () => {
     expect(req).toBeDefined();
     req?.onConfirm();
     expect(setDraft).toHaveBeenCalledWith("freenode #a", block);
+  });
+});
+
+// #1250 — the IME door. GBoard's clipboard chip fires NO `paste` event: it
+// commits through the input method, which surfaces only as `beforeinput` with
+// an `insertFromPaste` inputType. Before this the flood cap was not weak on
+// that path, it was absent — `classifyPaste` never ran, so an operator could
+// paste an arbitrary burst by choosing the chip over the long-press menu.
+describe("pasteRoute — routePastedInput (IME insertFromPaste, #1250)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const BLOCK_OVER_LIMIT = "a\nb\nc\nd\ne\nf\ng";
+  const BLOCK_CONFIRM = "a\nb\nc\nd";
+
+  it("over-limit IME paste → hard close: the upload dialog, and the text never lands", () => {
+    const { e, preventDefault } = inputEvent({
+      inputType: "insertFromPaste",
+      dataTransferText: BLOCK_OVER_LIMIT,
+    });
+    routePastedInput(e, textarea(), "freenode", "#a");
+
+    expect(preventDefault).toHaveBeenCalled();
+    expect(setDraft).not.toHaveBeenCalled();
+    const req = vi.mocked(requestConfirm).mock.calls[0]?.[0];
+    // The over-limit arm is the one with no paste door: upload IS the
+    // affirmative and there is no alternative offered.
+    expect(req?.confirmLabel).toBe("Upload as .txt");
+    expect(req?.alternative).toBeNull();
+  });
+
+  it("mid-size IME paste → the same confirm dialog the clipboard door raises", () => {
+    const { e, preventDefault } = inputEvent({
+      inputType: "insertFromPaste",
+      dataTransferText: BLOCK_CONFIRM,
+    });
+    routePastedInput(e, textarea(), "freenode", "#a");
+
+    expect(preventDefault).toHaveBeenCalled();
+    expect(vi.mocked(requestConfirm).mock.calls[0]?.[0]?.title).toBe("Paste as 4 messages?");
+  });
+
+  it("insertFromPasteAsQuotation is the same gesture and is guarded too", () => {
+    const { e, preventDefault } = inputEvent({
+      inputType: "insertFromPasteAsQuotation",
+      dataTransferText: BLOCK_OVER_LIMIT,
+    });
+    routePastedInput(e, textarea(), "freenode", "#a");
+
+    expect(requestConfirm).toHaveBeenCalledTimes(1);
+    expect(preventDefault).toHaveBeenCalled();
+  });
+
+  it("falls back to event.data when the insertion carries no dataTransfer", () => {
+    const { e, preventDefault } = inputEvent({ inputType: "insertFromPaste", data: BLOCK_CONFIRM });
+    routePastedInput(e, textarea(), "freenode", "#a");
+
+    expect(requestConfirm).toHaveBeenCalledTimes(1);
+    expect(preventDefault).toHaveBeenCalled();
+  });
+
+  it("a one-message IME paste is left to the browser — no dialog, no preventDefault", () => {
+    const { e, preventDefault } = inputEvent({
+      inputType: "insertFromPaste",
+      dataTransferText: "one line",
+    });
+    routePastedInput(e, textarea(), "freenode", "#a");
+
+    expect(requestConfirm).not.toHaveBeenCalled();
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(setDraft).not.toHaveBeenCalled();
+  });
+
+  it("ordinary typing is not a paste — a big insertText is untouched", () => {
+    const { e, preventDefault } = inputEvent({ inputType: "insertText", data: BLOCK_OVER_LIMIT });
+    routePastedInput(e, textarea(), "freenode", "#a");
+
+    expect(requestConfirm).not.toHaveBeenCalled();
+    expect(preventDefault).not.toHaveBeenCalled();
+  });
+});
+
+// #1250 — one gesture, at most one dialog, with no cross-event bookkeeping.
+// A native paste IS reported twice, but the second report is the first one's
+// default action: the UA fires `paste`, and only an uncancelled `paste`
+// produces the insertion that fires `beforeinput[insertFromPaste]`. These pin
+// the two halves of that argument at the unit level — that a guarded arm
+// cancels (so the second report never exists) and that the pass-through arm is
+// idempotent if both do fire. The ORDERING itself is a browser contract, so it
+// is measured in a real browser by `paste-ime-flood-guard.spec.ts`, not
+// asserted here from a synthetic event.
+describe("pasteRoute — one gesture cannot ask twice (#1250)", () => {
+  const BLOCK = "a\nb\nc\nd";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("a guarded paste CANCELS, which is what suppresses the beforeinput that would ask again", () => {
+    const { e, preventDefault } = pasteEvent({ text: BLOCK });
+    routeClipboardPaste(e, textarea(), "freenode", "#a", true);
+
+    expect(requestConfirm).toHaveBeenCalledTimes(1);
+    // The whole no-double-dialog argument rests on this call: no insertion,
+    // therefore no insertFromPaste, therefore no second decision.
+    expect(preventDefault).toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  it("the guarded IME arm cancels its own insertion the same way", () => {
+    const { e, preventDefault } = inputEvent({
+      inputType: "insertFromPaste",
+      dataTransferText: BLOCK,
+    });
+    routePastedInput(e, textarea(), "freenode", "#a");
+
+    expect(requestConfirm).toHaveBeenCalledTimes(1);
+    expect(preventDefault).toHaveBeenCalled();
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  // The one case where both reports DO reach the router: a below-threshold
+  // paste, which cancels nothing. Running the decision twice must stay a
+  // no-op — no dialog, no draft write, nothing inserted twice.
+  it("a below-threshold paste reported twice inserts once and asks nothing", () => {
+    const { e: pasted, preventDefault: pastePrevented } = pasteEvent({ text: "one line" });
+    routeClipboardPaste(pasted, textarea(), "freenode", "#a", true);
+    const { e: inserted, preventDefault: inputPrevented } = inputEvent({
+      inputType: "insertFromPaste",
+      dataTransferText: "one line",
+    });
+    routePastedInput(inserted, textarea(), "freenode", "#a");
+
+    expect(requestConfirm).not.toHaveBeenCalled();
+    expect(setDraft).not.toHaveBeenCalled();
+    expect(pastePrevented).not.toHaveBeenCalled();
+    expect(inputPrevented).not.toHaveBeenCalled();
   });
 });

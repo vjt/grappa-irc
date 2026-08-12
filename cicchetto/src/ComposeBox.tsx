@@ -28,7 +28,7 @@ import { diagPush } from "./lib/diagLog";
 import { frameBudgetForTarget } from "./lib/frameBudget";
 import { frameBudgetBaseForNetwork } from "./lib/isupport";
 import { networkBySlug } from "./lib/networks";
-import { routeClipboardPaste } from "./lib/pasteRoute";
+import { routeClipboardPaste, routePastedInput } from "./lib/pasteRoute";
 import {
   claimAxis,
   type DragAxis,
@@ -524,6 +524,16 @@ const ComposeBox: Component<Props> = (props) => {
     routeClipboardPaste(e, textareaEl, props.networkSlug, props.channelName, true);
   };
 
+  // #1250 — the same guard for a paste that fires NO `paste` event. GBoard's
+  // clipboard chip commits through the input method, which surfaces only as
+  // `beforeinput` with an `insertFromPaste` inputType, so the flood cap was
+  // bypassable by picking that gesture. The router arbitrates the overlap with
+  // `onPaste` above (one gesture, one decision) — see its claim comment.
+  const onBeforeInput = (e: InputEvent) => {
+    if (textareaEl === undefined) return;
+    routePastedInput(e, textareaEl, props.networkSlug, props.channelName);
+  };
+
   // #118 — "(i/N)" counter, shown only while a multi-file batch is in
   // flight. A single upload (total 1) renders no counter.
   const batchLabel = (): string | null => {
@@ -680,6 +690,7 @@ const ComposeBox: Component<Props> = (props) => {
           onInput={onInput}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
+          onBeforeInput={onBeforeInput}
           // #974 — NOT the fix for that issue, and explicitly not the
           // mechanism behind it (the iOS auto-capitalisation hypothesis was
           // falsified on a real device). Correct on its own merits: with no

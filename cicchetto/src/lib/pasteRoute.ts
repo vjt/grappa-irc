@@ -13,6 +13,13 @@ import { categoryOf } from "./uploadCategory";
 // the document while focus sits elsewhere — resolves to the same three
 // outcomes: file → upload, big text → flood-confirm, small text → insert.
 //
+// #1250 added a THIRD door for the same reason the second one exists: an
+// IME-mediated paste (GBoard's clipboard chip) fires no `paste` event at all,
+// so the guard did not exist on that path and the message cap was bypassable
+// by choosing a different gesture. All three doors converge on
+// `routeGuardedText` — a new entry point must reuse it rather than grow a
+// fourth copy of the decision.
+//
 // The dependencies are all module-level (compose store, dropUpload,
 // confirmDialog, pasteFlood), so this is a pure function of (event, textarea,
 // target) — nothing ComposeBox-instance-bound. The textarea is passed in
@@ -113,12 +120,75 @@ export function routeClipboardPaste(
     dropUpload(files, networkSlug, channelName);
     return;
   }
+  routeGuardedText(e, data.getData("text"), ta, networkSlug, channelName, nativeInsertAvailable);
+}
+
+// #1250 — the THIRD door: an IME-mediated paste. GBoard's clipboard chip (and
+// any other input-method insertion) commits text through the input method and
+// fires NO `paste` event at all — only `beforeinput` with an `insertFromPaste`
+// inputType. The flood guard was therefore not "weak" on that path, it was
+// absent: an operator could bypass PASTE_HARD_MESSAGE_LIMIT entirely by
+// choosing the chip over the long-press Paste menu.
+//
+// Text source order mirrors what the engines actually populate: `dataTransfer`
+// when the insertion carries one, `data` for the plain-string commit. Anything
+// else is not a paste we can size, so it is left alone.
+export function routePastedInput(
+  e: InputEvent,
+  ta: HTMLTextAreaElement,
+  networkSlug: string,
+  channelName: string,
+): void {
+  if (!PASTE_INPUT_TYPES.has(e.inputType)) return;
+  const text = e.dataTransfer?.getData("text") ?? e.data ?? "";
+  // nativeInsertAvailable = true: this IS the browser's own insertion about to
+  // happen into the focused textarea, so the below-threshold arm lets it.
+  routeGuardedText(e, text, ta, networkSlug, channelName, true);
+}
+
+// `insertFromPasteAsQuotation` is the same gesture with quoting applied by the
+// UA; it becomes the same burst of PRIVMSGs, so it is sized by the same rule.
+const PASTE_INPUT_TYPES = new Set(["insertFromPaste", "insertFromPasteAsQuotation"]);
+
+// The ONE text decision, shared by all three doors (textarea `paste`, the #352
+// document listener, and the #1250 IME `beforeinput`). Takes the event as a
+// bare `Event` because all it needs from it is `preventDefault` — which is
+// also what keeps a fourth door from having to be a ClipboardEvent.
+//
+// #1250, one gesture / at most one dialog — by CONSTRUCTION, with no
+// cross-event bookkeeping. A native paste is reported twice, but the second
+// report is the FIRST one's default action: the UA fires `paste`, and only if
+// that is not cancelled does it perform the insertion, which is what fires
+// `beforeinput[insertFromPaste]`. So both guarded arms below, which
+// `preventDefault` the `paste`, structurally suppress the `beforeinput` that
+// would have asked again. The pass-through arm does let both fire, and is
+// idempotent by design: with `nativeInsertAvailable` it only ever decides "let
+// the browser do it", so classifying twice costs one extra pure call and
+// changes nothing.
+//
+// The rejected alternative was a module-level "this gesture is claimed" flag
+// released on a macrotask. It would have covered a hypothetical engine that
+// fires both reports for a CANCELLED paste — but it also makes two pastes in
+// one task indistinguishable from one, which is a state no browser can produce
+// and every existing paste test does. Three test files had to learn to yield
+// between cases before this comment was written; a guard that quietly disarms
+// itself for the next author is worse than the ordering assumption it removes.
+// The ordering is verified on both shipped engines by
+// `paste-ime-flood-guard.spec.ts` rather than assumed here.
+function routeGuardedText(
+  e: Event,
+  text: string,
+  ta: HTMLTextAreaElement,
+  networkSlug: string,
+  channelName: string,
+  nativeInsertAvailable: boolean,
+): void {
   // #737 — a paced drain owns this window's draft, so the text path has
   // nowhere to put a paste: the store refuses the write. Drop it HERE rather
   // than letting the flood modal ask "Paste 30 lines?" and then discard the
   // answer. preventDefault covers the global-listener path, whose target
   // textarea may not be the focused element and so is not protected by its own
-  // readOnly. The file branch above is untouched — an upload never touches the
+  // readOnly. The file branch is untouched — an upload never touches the
   // draft.
   if (isDraining(channelKey(networkSlug, channelName))) {
     e.preventDefault();
@@ -130,7 +200,6 @@ export function routeClipboardPaste(
   // compose by hand. `classifyPaste` owns the three-way decision; this switch
   // owns what each one looks like. Both dialogs reuse the store-driven
   // confirm (lib/confirmDialog) — Cancel is the safe default in both.
-  const text = data.getData("text");
   // Always the real count in both guarded arms, and ≥ 2 by construction, so
   // the plural is unconditional and needs no branch.
   const messages = pastedMessageCount(text);
