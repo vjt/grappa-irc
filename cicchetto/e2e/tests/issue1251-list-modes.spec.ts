@@ -30,11 +30,8 @@
 // `case 'z'`) and PARTs it in `finally`.
 
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
-import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
-
-const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 test("#1251 — the +z restrict list is reachable, and renders as itself", async ({ page }) => {
   const vjt = specUser();
@@ -45,7 +42,6 @@ test("#1251 — the +z restrict list is reachable, and renders as itself", async
   // what a dropped `mode` field would break.
   const banMask = `banned1251-${stamp}!*@*`;
   const restrictMask = `rogue1251-${stamp}!*@*`;
-  const peer = await IrcPeer.connect({ nick: `lm1251-${stamp}` });
 
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: specNick() });
@@ -59,30 +55,31 @@ test("#1251 — the +z restrict list is reachable, and renders as itself", async
     ).toHaveCount(1, { timeout: 15_000 });
     await selectChannel(page, NETWORK_SLUG, channel, { ownNick: specNick() });
 
-    // Peer joins so it receives the channel MODE broadcasts — the wire
-    // witness that serialises "the entry landed upstream" before we query
-    // (the list numerics carry no request-id, so racing them re-introduces
-    // the #386 marker race).
-    await peer.join(channel);
-    await expect(page.locator(".members-pane .member-name", { hasText: peer.nick })).toBeVisible({
-      timeout: 15_000,
-    });
+    // Barrier: the ircd's own MODE echo, rendered as a scrollback row. It
+    // serialises "the entry landed upstream" before we query — the list
+    // numerics carry no request-id, so racing them re-introduces the #386
+    // marker race — and it is a DURABLE pre-state (the row is persisted),
+    // not a transient we might miss.
+    //
+    // A joined peer CANNOT witness this, which is what the first run of this
+    // spec measured: bahamut writes `b` into both `mbuf` and `stripped_mbuf`
+    // (`channel.c` case 'b') so the ban echo reaches the whole channel, but
+    // case 'z' writes `mbuf` ONLY — `stripped_mcount != mcount` then routes
+    // the echo through `sendto_chanops_butserv` (`channel.c` ~:1120), i.e.
+    // to OPS ALONE. The restrict list is op-private on both the read and the
+    // write side; a non-op peer waiting for `MODE +z` waits forever.
+    const modeEcho = (modes: string, mask: string) =>
+      expect(
+        page.locator(".scrollback-body", {
+          hasText: `sets mode ${modes} ${mask} on ${channel}`,
+        }),
+      ).toBeVisible({ timeout: 15_000 });
 
-    const sawBan = peer.waitForLine(
-      new RegExp(`MODE ${escapeRe(channel)} \\+b ${escapeRe(banMask)}`),
-      "MODE +b <mask>",
-      15_000,
-    );
     await composeSend(page, `/mode ${channel} +b ${banMask}`);
-    await sawBan;
+    await modeEcho("+b", banMask);
 
-    const sawRestrict = peer.waitForLine(
-      new RegExp(`MODE ${escapeRe(channel)} \\+z ${escapeRe(restrictMask)}`),
-      "MODE +z <mask>",
-      15_000,
-    );
     await composeSend(page, `/mode ${channel} +z ${restrictMask}`);
-    await sawRestrict;
+    await modeEcho("+z", restrictMask);
 
     // Baseline: the `b` list is the one that already worked. Asserting it
     // FIRST also proves the two masks are distinguishable in the UI, so the
@@ -119,7 +116,6 @@ test("#1251 — the +z restrict list is reachable, and renders as itself", async
     await modal.getByRole("button", { name: "close ban list" }).click();
     await expect(modal).toHaveCount(0);
   } finally {
-    await peer.disconnect("bye").catch(() => {});
     await composeSend(page, `/part ${channel}`).catch(() => {});
   }
 });

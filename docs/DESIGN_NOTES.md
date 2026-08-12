@@ -40261,6 +40261,21 @@ the same treatment, not a modal that quietly sends raw MODE lines for four
 letters and a chunked one for the fifth. For the other lists the modal is a
 viewer and says so, pointing at `/mode #chan +e <mask>`.
 
+**The restrict list is op-private on the WRITE side too, which cost the e2e
+its first witness.** The spec originally used a joined peer waiting for the
+`MODE +z` broadcast as its "the entry landed upstream" barrier — the shape
+that works for `+b`. It timed out, and the ircd was right: bahamut's
+`channel.c` writes `b` into BOTH `mbuf` and `stripped_mbuf` (case 'b',
+gated only on `MODE_HIDEBANS`), but case 'z' writes `mbuf` alone. The
+mode-change sender then compares the two counts, and on `stripped_mcount !=
+mcount` it routes the echo through `sendto_chanops_butserv` (~:1120) instead
+of `sendto_channel_butserv` — so a non-op peer never sees `+z` at all. Read
+AND write are op-only, not just the read the paragraph above describes. The
+barrier is now the MODE echo as a scrollback row: the bouncer holds op, the
+row is persisted, and it witnesses the same upstream fact without a second
+client. Nothing in the product changed — the first run's failure was the
+test asking a non-op to witness an op-only event.
+
 **Named, not fixed: a non-op query does not terminate.** solanum
 (`ircd/chmode.c`, the `MODE_QUERY` branch) answers a non-op `MODE #chan e`
 with 482 and no terminator, and bahamut (`src/channel.c:1478`) does the same
