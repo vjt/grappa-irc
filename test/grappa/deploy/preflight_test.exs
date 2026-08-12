@@ -1209,6 +1209,7 @@ defmodule Grappa.Deploy.PreflightTest do
       20260802190000_add_user_totp
       20260805100000_add_old_nick_to_session_log_events
       20260810120000_add_client_tokens_to_sessions
+      20260812220753_add_charset_to_uploads
     )
 
     test "every migration on disk classifies, and the HOT set is exactly the pinned one" do

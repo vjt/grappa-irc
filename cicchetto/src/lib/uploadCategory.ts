@@ -58,9 +58,23 @@ const MIME_CATEGORIES: Record<string, UploadCategory> = Object.fromEntries([
   ...AUDIO_MIMES.map((m) => [m, "audio"] as const),
 ]);
 
-/** Single MIME→category map. null = not uploadable, reject at boundary. */
+/**
+ * Strip the parameter run off a content type, leaving `type/subtype`
+ * lowercased — the form every gate and accept-list in cic compares
+ * against. Mirrors the server's `Grappa.Uploads.ContentType.parse/1`
+ * (#1256): a File may legitimately carry `text/plain; charset=utf-8`
+ * (the paste-as-.txt path knows its encoding for certain), and an
+ * exact-string gate would drop it before it ever reached the upload.
+ */
+export function baseMime(mime: string): string {
+  return (mime.split(";")[0] ?? "").trim().toLowerCase();
+}
+
+/** Single MIME→category map. null = not uploadable, reject at boundary.
+ *  Parameter-tolerant: the category is a property of the type, not of
+ *  the charset the client declared alongside it. */
 export function categoryOf(mime: string): UploadCategory | null {
-  return MIME_CATEGORIES[mime] ?? null;
+  return MIME_CATEGORIES[baseMime(mime)] ?? null;
 }
 
 // Audio extension → canonical MIME — 1:1 mirror of the server's

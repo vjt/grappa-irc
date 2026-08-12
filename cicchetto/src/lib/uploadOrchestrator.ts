@@ -3,6 +3,7 @@ import type { ChannelKey } from "./channelKey";
 import { formatBytes } from "./formatBytes";
 import { sendMessage } from "./scrollback";
 import {
+  baseMime,
   categoryOf,
   mimeExtLabel,
   normalizeUploadFile,
@@ -363,8 +364,11 @@ async function dispatchUpload(
   // box shows, and a new selection always replaces a rejected one.
   lastAttempt.set(key, { file, networkSlug, channelName });
 
-  const category = categoryOf(file.type);
-  if (category === null || !host.acceptedMimeTypes[category].includes(file.type)) {
+  // #1256: gate on the TYPE. `file.type` may carry a charset the paste
+  // path declares truthfully, and the host accept-lists are bare types.
+  const mime = baseMime(file.type);
+  const category = categoryOf(mime);
+  if (category === null || !host.acceptedMimeTypes[category].includes(mime)) {
     setEntry(key, {
       filename: file.name,
       loaded: 0,

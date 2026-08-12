@@ -27,9 +27,15 @@ defmodule Grappa.Uploads.Upload do
     races the Reaper between unlink + soft-delete sees the row
     live + ENOENT on disk and returns 404.
 
-  ## Why `mime` + `bytes` + `original_filename` are stored
+  ## Why `mime` + `charset` + `bytes` + `original_filename` are stored
 
   - `mime` — served back as `Content-Type` on download.
+  - `charset` — the encoding the UPLOADER declared, reduced to a closed
+    set of atoms by `Grappa.Uploads.ContentType` (GH #1256). NULL means
+    unlabelled, which is what every client that declares no encoding
+    gets — the browser then falls back to its locale default, as it did
+    before the column existed. Never the client's raw parameter run:
+    the value is re-spelled from the atom when the header is rebuilt.
   - `bytes` — summed for the global-cap check on POST.
   - `original_filename` — best-effort, populates
     `Content-Disposition: inline; filename="..."` if present.
@@ -40,6 +46,7 @@ defmodule Grappa.Uploads.Upload do
   import Ecto.Changeset
 
   alias Grappa.Accounts.User
+  alias Grappa.Uploads.ContentType
   alias Grappa.Visitors.Visitor
 
   @type t :: %__MODULE__{
@@ -50,6 +57,7 @@ defmodule Grappa.Uploads.Upload do
           visitor_id: Ecto.UUID.t() | nil,
           visitor: Visitor.t() | Ecto.Association.NotLoaded.t() | nil,
           mime: String.t() | nil,
+          charset: ContentType.charset() | nil,
           bytes: non_neg_integer() | nil,
           original_filename: String.t() | nil,
           expires_at: DateTime.t() | nil,
@@ -68,6 +76,9 @@ defmodule Grappa.Uploads.Upload do
     belongs_to :visitor, Visitor
 
     field :mime, :string
+    # Closed set fed from ContentType, so the column cannot accept a
+    # charset the header builder has no canonical spelling for.
+    field :charset, Ecto.Enum, values: ContentType.charsets()
     field :bytes, :integer
     field :original_filename, :string
 
@@ -89,6 +100,7 @@ defmodule Grappa.Uploads.Upload do
       :user_id,
       :visitor_id,
       :mime,
+      :charset,
       :bytes,
       :original_filename,
       :expires_at

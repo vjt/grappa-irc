@@ -78,8 +78,18 @@ export function insertPastedText(
 export const PASTE_UPLOAD_FILENAME = "paste.txt";
 export const PASTE_UPLOAD_LABEL = "Upload as .txt";
 
+// #1256 — declare the encoding. `text` is a JS string and the File
+// constructor encodes USVString parts as UTF-8 by specification, so this
+// is a fact about the bytes, not a guess: these bytes are OURS. Without
+// the label the server stores a bare `text/plain` and serves it
+// unlabelled, and a Western-locale browser paints every accented
+// character as mojibake. The server splits the parameter off the type
+// before matching its allowlist (Grappa.Uploads.ContentType) and
+// re-emits the charset on GET.
 export function uploadPastedText(text: string, networkSlug: string, channelName: string): void {
-  const file = new File([text], PASTE_UPLOAD_FILENAME, { type: "text/plain" });
+  const file = new File([text], PASTE_UPLOAD_FILENAME, {
+    type: "text/plain; charset=utf-8",
+  });
   dropUpload([file], networkSlug, channelName);
 }
 

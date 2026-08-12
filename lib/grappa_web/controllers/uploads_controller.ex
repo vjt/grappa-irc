@@ -18,8 +18,16 @@ defmodule GrappaWeb.UploadsController do
   Boundary checks (in order — fail fast on the cheapest):
 
     1. Multipart shape — missing `file` → 400 bad_request.
-    2. MIME — must be a key of `@mime_categories` (image / video /
-       document / audio allowlists) → 415 unsupported. The category is
+    2. MIME — the client-declared content type is split into
+       `type/subtype` + charset (`Grappa.Uploads.ContentType`, #1256)
+       and the TYPE must be a key of `@mime_categories` (image / video /
+       document / audio allowlists) → 415 unsupported. Matching the
+       whole declared string made the closed MIME allowlist an
+       accidental closed PARAMETER allowlist, so a client labelling its
+       encoding honestly (`text/plain; charset=utf-8`) was the one
+       getting 415. The charset is persisted beside the MIME and
+       re-emitted by `show/2`; anything outside the closed charset set
+       is dropped, never stored. The category is
        DERIVED from the MIME at request time, never stored — no
        schema change. Audio uploads the OS labels
        `application/octet-stream` (common for .m4a/.flac) are rescued
@@ -41,6 +49,12 @@ defmodule GrappaWeb.UploadsController do
   so the cic viewer reads the type from the URL, not a message-body emoji.
 
   ## GET /uploads/:slug[.ext] (public, NO auth)
+
+  Content-Type is REBUILT from the stored `{mime, charset}` pair
+  (`Uploads.content_type_header/2`), never echoed from a client string
+  — with parameters accepted at upload time, echoing the raw run would
+  trade #1256's mojibake for content-type confusion and undercut the
+  `nosniff` below.
 
   Streams the file via `Plug.Conn.send_file/5`. Validates slug shape
   + row + on-disk file. Any failure → 404 with no oracle. The optional
@@ -154,13 +168,15 @@ defmodule GrappaWeb.UploadsController do
 
     with {:ok, upload} <- extract_upload_field(params),
          {:ok, ttl_seconds} <- parse_ttl(params),
-         {:ok, mime, category} <- validate_mime(upload),
+         {:ok, mime, charset, category} <- validate_mime(upload),
          :ok <- check_per_file_cap(upload, category),
          {:ok, bytes} <- read_file(upload),
          :ok <-
            Uploads.check_global_cap(byte_size(bytes), ServerSettings.get_upload_global_cap_bytes()),
          {:ok, row} <-
-           Uploads.create(bytes, build_attrs(subject, mime, upload, ttl_seconds), storage_root: storage_root()) do
+           Uploads.create(bytes, build_attrs(subject, {mime, charset}, upload, ttl_seconds),
+             storage_root: storage_root()
+           ) do
       conn
       |> put_status(:created)
       |> json(%{
@@ -182,7 +198,7 @@ defmodule GrappaWeb.UploadsController do
          path = Uploads.storage_path(storage_root(), row.slug),
          {:ok, %File.Stat{size: size}} <- File.stat(path) do
       conn
-      |> put_resp_header("content-type", row.mime)
+      |> put_resp_header("content-type", Uploads.content_type_header(row.mime, row.charset))
       |> put_resp_header("content-disposition", disposition_header(row))
       # S5: user bytes are served inline from the SAME origin as cic and
       # text/plain is in the accept allowlist, so uploaded text carrying
@@ -274,10 +290,16 @@ defmodule GrappaWeb.UploadsController do
   defp parse_ttl(%{"expire" => _}), do: {:error, :bad_request}
   defp parse_ttl(_), do: {:ok, @default_ttl_seconds}
 
+  # #1256: match the TYPE, keep the charset. `ContentType.parse/1`
+  # yields the declared charset as an atom from a closed set (nil when
+  # absent or unrecognised) — the client's parameter run stops here and
+  # never reaches storage or a header.
   defp validate_mime(%Plug.Upload{content_type: ct, filename: filename}) when is_binary(ct) do
-    case Map.fetch(@mime_categories, ct) do
-      {:ok, category} -> {:ok, ct, category}
-      :error -> sniff_audio(ct, filename)
+    {mime, charset} = Uploads.parse_content_type(ct)
+
+    case Map.fetch(@mime_categories, mime) do
+      {:ok, category} -> {:ok, mime, charset, category}
+      :error -> sniff_audio(mime, filename)
     end
   end
 
@@ -293,7 +315,10 @@ defmodule GrappaWeb.UploadsController do
     ext = filename |> Path.extname() |> String.downcase() |> String.trim_leading(".")
 
     case Map.fetch(@audio_ext_canonical_mime, ext) do
-      {:ok, mime} -> {:ok, mime, :audio}
+      # No charset: the rescue MINTS the type from the extension, so
+      # there is nothing the uploader declared to carry through — and
+      # audio is not text.
+      {:ok, mime} -> {:ok, mime, nil, :audio}
       :error -> {:error, :unsupported_media_type}
     end
   end
@@ -334,7 +359,7 @@ defmodule GrappaWeb.UploadsController do
     end
   end
 
-  defp build_attrs(subject, mime, %Plug.Upload{filename: filename}, ttl_seconds) do
+  defp build_attrs(subject, {mime, charset}, %Plug.Upload{filename: filename}, ttl_seconds) do
     now = DateTime.utc_now()
 
     # `:bytes` is set inside `Uploads.create/3` from the actual
@@ -343,6 +368,7 @@ defmodule GrappaWeb.UploadsController do
     %{
       subject: subject,
       mime: mime,
+      charset: charset,
       original_filename: filename,
       expires_at: DateTime.add(now, ttl_seconds, :second)
     }

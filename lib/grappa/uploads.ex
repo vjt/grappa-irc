@@ -20,7 +20,8 @@ defmodule Grappa.Uploads do
     * `create/3` — accepts `{file_bytes, attrs, opts}`, strips
       image/video metadata (`MetadataStrip` — fail-closed, #39),
       writes to disk, inserts row. `attrs` carries the subject (XOR
-      user/visitor FK), `mime`, optional `original_filename`,
+      user/visitor FK), `mime`, optional `charset`, optional
+      `original_filename`,
       optional `expires_at`. `opts` carries `:storage_root` (DI for
       tests) + the random-slug + clock injection seams.
     * `get_by_slug/1` — slug → `{:ok, %Upload{}} | {:error, :not_found}`.
@@ -79,7 +80,7 @@ defmodule Grappa.Uploads do
   import Ecto.Query
 
   alias Grappa.{Repo, Subject}
-  alias Grappa.Uploads.{MetadataStrip, Upload}
+  alias Grappa.Uploads.{ContentType, MetadataStrip, Upload}
 
   @slug_byte_size 16
   @slug_regex ~r/\A[a-z2-7]{26}\z/
@@ -111,6 +112,7 @@ defmodule Grappa.Uploads do
   @type create_attrs :: %{
           required(:subject) => Subject.t(),
           required(:mime) => String.t(),
+          optional(:charset) => ContentType.charset() | nil,
           optional(:bytes) => non_neg_integer(),
           optional(:original_filename) => String.t() | nil,
           optional(:expires_at) => DateTime.t() | nil
@@ -151,6 +153,24 @@ defmodule Grappa.Uploads do
   """
   @spec ext_for(term()) :: {:ok, String.t()} | :error
   defdelegate ext_for(mime), to: __MODULE__.MimeExt
+
+  @doc """
+  Split a client-declared content type into `{mime, charset}`, the
+  charset reduced to a closed set of atoms (`nil` when absent or
+  unrecognised). The upload boundary matches `mime` against its
+  allowlist and persists `charset` beside it. Single source of truth:
+  `Grappa.Uploads.ContentType`.
+  """
+  @spec parse_content_type(String.t()) :: {String.t(), ContentType.charset() | nil}
+  defdelegate parse_content_type(raw), to: __MODULE__.ContentType, as: :parse
+
+  @doc """
+  Rebuild a `content-type` header value from a stored `{mime, charset}`
+  pair, re-spelling the charset canonically. The client's own parameter
+  run is never stored and never echoed (#1256).
+  """
+  @spec content_type_header(String.t(), ContentType.charset() | nil) :: String.t()
+  defdelegate content_type_header(mime, charset), to: __MODULE__.ContentType, as: :header
 
   @doc """
   Compose the on-disk path for a slug. Validates the slug shape at

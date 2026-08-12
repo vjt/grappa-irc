@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  baseMime,
   categoryOf,
   DOCUMENT_MIMES_OFFICE,
   DOCUMENT_MIMES_PORTABLE,
@@ -35,7 +36,17 @@ describe("categoryOf — full MIME matrix", () => {
 // constructor encodes as UTF-8 by spec). An exact-string gate dropped
 // exactly that correctly-labelled File, client-side, before it could
 // reach the upload — the mirror of the server's 415.
-describe("categoryOf — parameter tolerance", () => {
+describe("baseMime — parameter tolerance", () => {
+  it.each([
+    ["text/plain", "text/plain"],
+    ["text/plain; charset=utf-8", "text/plain"],
+    ["text/plain;charset=utf-8", "text/plain"],
+    [" TEXT/Plain ; Charset=UTF-8", "text/plain"],
+    ["", ""],
+  ])("%j → %j", (mime, expected) => {
+    expect(baseMime(mime)).toBe(expected);
+  });
+
   it("a labelled paste File still categorises as a document", () => {
     expect(categoryOf("text/plain; charset=utf-8")).toBe("document");
   });

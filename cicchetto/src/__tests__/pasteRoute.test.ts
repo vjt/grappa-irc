@@ -336,7 +336,7 @@ describe("uploadPastedText — the File declares its encoding", () => {
     uploadPastedText("perché è così", "freenode", "#a");
 
     expect(dropUpload).toHaveBeenCalledTimes(1);
-    const [[files, slug, channel]] = vi.mocked(dropUpload).mock.calls;
+    const [files, slug, channel] = vi.mocked(dropUpload).mock.calls[0] ?? [];
     expect(slug).toBe("freenode");
     expect(channel).toBe("#a");
     const file = files?.[0] as File;
