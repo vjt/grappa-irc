@@ -40203,3 +40203,74 @@ operator's OWN outbound `/notice @#chan` needed nothing: #1225 already
 keeps the raw wire target in `meta.notice_target`, sigil intact, so
 nothing is destroyed on that path. And #1247's routing is untouched —
 `@#chan` still lands in the channel window.
+
+---
+
+## 2026-08-12 — #1251: a type-A mode is a list, and which numeric answers it is not a constant
+
+Only `+b` was reachable. `/banlist` had a complete path — verb, accumulator,
+367/368 clauses, modal — and every OTHER type-A channel mode had none of it:
+`346/347/348/349/728/729` appeared nowhere in `lib/`. vjt's ruling on the
+issue was "supportarle tutte", so the fix is not "+e and +I" but the generic
+form: the query is driven by `ISupport.chanmodes.a` (per-network 005 data),
+the accumulator is keyed by `{channel, mode}` instead of by channel alone,
+and `Grappa.Session.ListModes` holds the numeric-pair table.
+
+**Both ircds were read before a line was written, and the issue's own table
+turned out to be half right.** bahamut `src/s_err.c:812` and solanum
+`include/messages.h:231` both define 728, and they hardcode a DIFFERENT
+letter into the format string: `":%s 728 %s %s z %s %s %lu"` (restrict list)
+against `":%s 728 %s %s q %s %s %lu"` (quiet list). So `z → 728/729` is a
+bahamut fact, not a protocol fact — the same pair is `q` on the Libera
+family. The 346/348/367 rows carry no letter at all; their numeric IS the
+letter. That asymmetry is the whole design: two clause pairs in
+`EventRouter`, one that names its mode from the numeric and one that reads it
+off the wire. A hardcoded `z` would have dropped every quiet row on solanum,
+and it would have looked like a working feature on Azzurra.
+
+**The queryable set is published, not derived.** `isupport_changed` gained
+`list_modes_queryable` — `chanmodes_a` filtered through the pair table — and
+cic renders exactly that. The alternative was for the client to hold its own
+copy of the numeric table, which would let it offer a query the server cannot
+answer. A letter the network advertises and grappa has no pair for appears in
+`chanmodes_a` and NOT in `list_modes_queryable`: that difference IS the quiet
+degradation vjt asked for, visible rather than implicit. `Session.Server`
+re-checks the letter against the live 005 anyway (`unsupported_list_mode`, a
+typed token rather than the catch-all's `upstream_unavailable` lie) — the
+published set is an affordance, not the gate.
+
+**The wire kind stays `banlist_bundle`.** It now carries `mode`, which is
+additive; renaming the kind would be a REMOVAL, which the #447 contract does
+not allow. The same reasoning keeps the `"banlist"` channel verb, whose new
+`"mode"` field defaults to `"b"` — that default is precisely what a
+pre-#1251 client relies on. The names are historical; the payload is honest.
+
+**The "is this a list query?" decision moved from the parser to compose.**
+`/mode #chan +b` used to become a `banlist` command inside `slashCommands.ts`
+via a `/^[+-]?b$/` test. That cannot generalise: whether a bare `+q` is a
+LIST or a flag is 005 data, and the parser is pure. So the parser now keeps
+the literal `mode` / `mode-apply-current` shape — sign included, because
+`-m` with no param is a real mode change — and `compose.ts`, which can see
+`isupportForNetwork`, intercepts. The fallback when the letter is not a list
+on this network is the pre-existing execute path, unchanged.
+
+**Editing stays `+b`-only, deliberately.** Add/remove in the modal go through
+the `ban`/`unban` verbs, which derive a mask from a bare nick and chunk per
+ISUPPORT `MODES=`. Generalising that wants a list-add/remove verb pair with
+the same treatment, not a modal that quietly sends raw MODE lines for four
+letters and a chunked one for the fifth. For the other lists the modal is a
+viewer and says so, pointing at `/mode #chan +e <mask>`.
+
+**Named, not fixed: a non-op query does not terminate.** solanum
+(`ircd/chmode.c`, the `MODE_QUERY` branch) answers a non-op `MODE #chan e`
+with 482 and no terminator, and bahamut (`src/channel.c:1478`) does the same
+for `z` — it `break`s before RPL_ENDOFRESTRICTLIST. The accumulator is
+bounded regardless (the S10 lazy `@pending_ttl_ms` sweep evicts it on the
+next prime) and the 482 itself stays a VISIBLE red row in the channel window,
+which is why 482 was NOT delegated: it is a generic channel-op error shared
+by kick/topic/mode, and delegating it globally to reach one accumulator would
+strip the severity off all of them. What the operator sees is the error plus
+a modal that keeps saying "Loading". Pre-#1251 this could not happen, because
+both ircds let anyone read the ban list; it becomes reachable exactly because
+the other lists are now reachable. A server-side watchdog that flushed a
+`timed_out` bundle is the obvious cure and is deliberately not in this change.
