@@ -10860,8 +10860,17 @@ defmodule Grappa.Session.ServerTest do
         ":irc.test.org 005 grappa-test CHANMODES=bz,k,l,imnpst :are supported\r\n"
       )
 
-      # Barrier: the gate below reads state.isupport, so the 005 must be
-      # APPLIED before the query — a GenServer call serialises behind it.
+      # Barrier: `feed` only puts bytes on the socket, and the gate below
+      # reads `state.isupport` — so wait for the broadcast the merge emits
+      # before asking. Without it the query races the 005 and the session
+      # still holds the pre-005 seed (which HAS `e`, so the test would fail
+      # by reporting the opposite of what it measures).
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :isupport_changed}
+                     },
+                     1_500
+
       assert {:ok, isupport} = Grappa.Session.get_isupport({:user, user.id}, network.id)
       assert "z" in isupport.chanmodes.a
 
@@ -10899,10 +10908,21 @@ defmodule Grappa.Session.ServerTest do
     # whose replies this ircd never sends would never terminate.
     test "#1251 a letter this network does not advertise is refused, and never reaches the wire",
          %{server: server, user: user, network: network, pid: pid} do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
       IRCServer.feed(
         server,
         ":irc.test.org 005 grappa-test CHANMODES=bz,k,l,imnpst :are supported\r\n"
       )
+
+      # Same barrier as the sibling above — and here it is load-bearing for
+      # the MEANING of the test: the pre-005 seed advertises `e`, so a raced
+      # read would assert against a table that has not been narrowed yet.
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :isupport_changed}
+                     },
+                     1_500
 
       assert {:ok, isupport} = Grappa.Session.get_isupport({:user, user.id}, network.id)
       refute "e" in isupport.chanmodes.a

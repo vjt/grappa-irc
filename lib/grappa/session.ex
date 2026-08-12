@@ -1881,8 +1881,7 @@ defmodule Grappa.Session do
   """
   @spec send_list_mode(subject(), integer(), String.t(), String.t(), reply_to()) ::
           :ok
-          | {:error,
-             :no_session | :invalid_line | :unsupported_list_mode | send_transport_error()}
+          | {:error, :no_session | :invalid_line | :unsupported_list_mode | send_transport_error()}
   def send_list_mode(subject, network_id, channel, mode, reply_to)
       when is_subject(subject) and is_integer(network_id) and is_binary(channel) and
              is_binary(mode) and (is_binary(reply_to) or is_nil(reply_to)) do

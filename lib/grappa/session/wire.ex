@@ -903,7 +903,7 @@ defmodule Grappa.Session.Wire do
   degradation.
   """
   @spec isupport_changed(integer(), ISupport.t(), pos_integer()) :: isupport_changed_payload()
-  def isupport_changed(network_id, %{chanmodes: cm, prefix: prefix}, linelen)
+  def isupport_changed(network_id, %{chanmodes: cm, prefix: prefix} = isupport, linelen)
       when is_integer(network_id) and is_integer(linelen) do
     %{
       kind: :isupport_changed,
@@ -912,7 +912,7 @@ defmodule Grappa.Session.Wire do
       chanmodes_b: Enum.sort(cm.b),
       chanmodes_c: Enum.sort(cm.c),
       chanmodes_d: Enum.sort(cm.d),
-      list_modes_queryable: ListModes.queryable(%{chanmodes: cm}),
+      list_modes_queryable: ListModes.queryable(isupport),
       prefix: prefix,
       frame_budget_base: LineSplit.frame_budget_base(linelen)
     }

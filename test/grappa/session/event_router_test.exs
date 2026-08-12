@@ -5484,7 +5484,7 @@ defmodule Grappa.Session.EventRouterTest do
     # would ship a query whose terminator nothing recognises — exactly the
     # never-terminating request the mode gate exists to prevent.
     test "every mode in ListModes.pairs/0 has a terminator clause that flushes it" do
-      for {mode, {_row, fin}} <- Grappa.Session.ListModes.pairs() do
+      for {mode, {_, fin}} <- Grappa.Session.ListModes.pairs() do
         state = list_mode_pending_state("#test", mode)
 
         params =

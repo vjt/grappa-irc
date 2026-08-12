@@ -1675,6 +1675,10 @@ defmodule GrappaWeb.GrappaChannel do
            | {:nick, String.t()}
            | {:nicks, [String.t()]}
            | {:mask, String.t()}
+           # #1251 — a type-A channel list-mode letter. The VALUE arrives
+           # from a client frame, so the clause still guards `is_binary`:
+           # this type is the caller contract, not a runtime guarantee.
+           | {:list_mode, String.t()}
            | {:who_target, String.t()}
            | {:line, String.t()}
            | {:oper_token, String.t()}

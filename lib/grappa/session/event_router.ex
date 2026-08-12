@@ -3939,7 +3939,7 @@ defmodule Grappa.Session.EventRouter do
   # #1251 — the mode letter a row/end numeric names by ITSELF (the 728/729
   # pair is excluded on purpose: it carries its letter as a param, because
   # bahamut spends it on `z` and solanum on `q`).
-  @spec numeric_list_mode(pos_integer()) :: ListModes.mode()
+  @spec numeric_list_mode(346 | 347 | 348 | 349 | 367 | 368) :: ListModes.mode()
   defp numeric_list_mode(367), do: "b"
   defp numeric_list_mode(368), do: "b"
   defp numeric_list_mode(348), do: "e"
@@ -3987,8 +3987,7 @@ defmodule Grappa.Session.EventRouter do
 
         {:cont, next_state,
          [
-           {:list_mode_bundle, Map.get(accum, :channel_display, channel), mode, accum,
-            Map.get(accum, :reply_to)}
+           {:list_mode_bundle, Map.get(accum, :channel_display, channel), mode, accum, Map.get(accum, :reply_to)}
          ]}
 
       :error ->
