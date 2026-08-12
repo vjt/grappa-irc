@@ -73,7 +73,6 @@ type AddForm = {
   password: string;
   sasl_user: string;
   realname: string;
-  autojoin_channels: string;
 };
 
 const EMPTY_ADD: AddForm = {
@@ -83,7 +82,6 @@ const EMPTY_ADD: AddForm = {
   password: "",
   sasl_user: "",
   realname: "",
-  autojoin_channels: "",
 };
 
 type EditForm = {
@@ -92,7 +90,6 @@ type EditForm = {
   sasl_user: string;
   auth_method: string;
   password: string;
-  autojoin_channels: string;
 };
 
 /** What the last write did to the live session, for one network. */
@@ -105,13 +102,6 @@ type SessionOutcome = {
 // row's `colspan`; derived from the count so adding a column cannot
 // silently desync it.
 const NETWORK_COLUMNS = 6;
-
-function splitChannels(raw: string): string[] {
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s !== "");
-}
 
 const AdminUserPage: Component<Props> = (props) => {
   const [credentials, setCredentials] = createSignal<AdminCredential[] | null>(null);
@@ -192,8 +182,6 @@ const AdminUserPage: Component<Props> = (props) => {
         password: f.password === "" ? undefined : f.password,
         sasl_user: f.sasl_user === "" ? undefined : f.sasl_user,
         realname: f.realname === "" ? undefined : f.realname,
-        autojoin_channels:
-          f.autojoin_channels.trim() === "" ? undefined : splitChannels(f.autojoin_channels),
       });
       recordOutcome(networkId, created);
       setAddForm({ ...EMPTY_ADD });
@@ -214,7 +202,6 @@ const AdminUserPage: Component<Props> = (props) => {
       sasl_user: c.sasl_user ?? "",
       auth_method: c.auth_method,
       password: "",
-      autojoin_channels: c.autojoin_channels.join(", "),
     });
   };
 
@@ -237,10 +224,6 @@ const AdminUserPage: Component<Props> = (props) => {
     if (f.sasl_user !== (c.sasl_user ?? "")) patch.sasl_user = f.sasl_user;
     if (f.auth_method !== c.auth_method) patch.auth_method = f.auth_method;
     if (f.password !== "") patch.password = f.password;
-    const nextAutojoin = splitChannels(f.autojoin_channels);
-    if (JSON.stringify(nextAutojoin) !== JSON.stringify(c.autojoin_channels)) {
-      patch.autojoin_channels = nextAutojoin;
-    }
     if (Object.keys(patch).length === 0) {
       onCancelEdit();
       return;
@@ -435,19 +418,6 @@ const AdminUserPage: Component<Props> = (props) => {
                   }
                   data-testid="admin-user-network-add-realname"
                 />
-                <input
-                  placeholder="autojoin"
-                  aria-label="autojoin"
-                  type="text"
-                  value={addForm().autojoin_channels}
-                  onInput={(e) =>
-                    setAddForm({
-                      ...addForm(),
-                      autojoin_channels: (e.currentTarget as HTMLInputElement).value,
-                    })
-                  }
-                  data-testid="admin-user-network-add-autojoin"
-                />
                 <div class="adm-form-grid-actions">
                   <button
                     type="submit"
@@ -599,13 +569,6 @@ const AdminUserPage: Component<Props> = (props) => {
                                     </AdminBadge>
                                   ),
                                 },
-                                {
-                                  label: "autojoin",
-                                  value:
-                                    c.autojoin_channels.length === 0
-                                      ? "—"
-                                      : c.autojoin_channels.join(", "),
-                                },
                               ]}
                             />
                           </AdminDetailPanel>
@@ -717,14 +680,6 @@ const NetworkEditFields: Component<{
         value={props.form.password}
         onInput={(e) => set({ password: (e.currentTarget as HTMLInputElement).value })}
         data-testid={`admin-user-network-edit-password-${props.networkId}`}
-      />
-      <input
-        placeholder="autojoin"
-        aria-label="autojoin"
-        type="text"
-        value={props.form.autojoin_channels}
-        onInput={(e) => set({ autojoin_channels: (e.currentTarget as HTMLInputElement).value })}
-        data-testid={`admin-user-network-edit-autojoin-${props.networkId}`}
       />
     </>
   );

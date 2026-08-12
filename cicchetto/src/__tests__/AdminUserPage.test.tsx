@@ -238,6 +238,48 @@ describe("AdminUserPage — adding a network", () => {
     });
   });
 
+  // #1157 — vjt: *"`autojoin` makes no sense — remove it."* Channel
+  // restore rides `last_joined_channels`
+  // (`session_plan.ex`, `merge_autojoin/2`), so the admin field was never
+  // the mechanism the bouncer actually uses; offering it invited the
+  // operator to set a list that the next reconnect overwrites.
+  it("offers no autojoin control, on either form", async () => {
+    mountPage();
+    await pageReady();
+
+    fireEvent.click(screen.getByTestId(`admin-user-network-edit-${NETWORK.id}`));
+    expect(screen.queryByTestId(`admin-user-network-edit-autojoin-${NETWORK.id}`)).toBeNull();
+
+    fireEvent.click(screen.getByTestId("admin-user-network-add"));
+    expect(screen.queryByTestId("admin-user-network-add-autojoin")).toBeNull();
+  });
+
+  it("never puts autojoin_channels on a bind", async () => {
+    vi.mocked(adminBindCredential).mockResolvedValue({
+      ...CRED,
+      network_id: OTHER_NETWORK.id,
+      network_slug: OTHER_NETWORK.slug,
+    });
+    mountPage();
+    await pageReady();
+    fireEvent.click(screen.getByTestId("admin-user-network-add"));
+
+    fireEvent.change(screen.getByTestId("admin-user-network-add-network"), {
+      target: { value: String(OTHER_NETWORK.id) },
+    });
+    fireEvent.input(screen.getByTestId("admin-user-network-add-nick"), {
+      target: { value: "newnick" },
+    });
+    fireEvent.click(screen.getByTestId("admin-user-network-add-submit"));
+
+    // The KEY, not the value: the removed form used to send an explicit
+    // `undefined` for an empty box, and `objectContaining` cannot tell
+    // that apart from an absent field.
+    await waitFor(() => expect(adminBindCredential).toHaveBeenCalled());
+    const body = vi.mocked(adminBindCredential).mock.calls[0]?.[1];
+    expect(Object.keys(body ?? {})).not.toContain("autojoin_channels");
+  });
+
   // #410 LOCK, carried over from the deleted Credentials tab suite: the
   // auth-method dropdown enumerates the codegen-emitted closed set, in
   // array order. A server-side rename or reorder regenerates wireTypes.ts
