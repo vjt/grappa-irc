@@ -1,6 +1,7 @@
 import { type Component, createMemo, createSignal, For, onMount, Show } from "solid-js";
 import AdminBadge from "./admin/AdminBadge";
 import AdminCard from "./admin/AdminCard";
+import AdminField from "./admin/AdminField";
 import { AdminEmpty, AdminError, AdminLoading } from "./admin/AdminStatus";
 import { connectionTone } from "./admin/connectionTone";
 import {
@@ -464,73 +465,108 @@ const AdminUserPage: Component<Props> = (props) => {
 
                     <Show when={enabled(net.id)}>
                       <form
-                        class="adm-form-grid"
                         onSubmit={(e) => {
                           void onSave(net, e);
                         }}
                         data-testid={`admin-user-network-form-${net.id}`}
                       >
-                        <input
-                          placeholder="nick"
-                          aria-label={`nick on ${net.slug}`}
-                          type="text"
-                          value={formFor(net.id).nick}
-                          onInput={(e) =>
-                            setForm(net.id, { nick: (e.currentTarget as HTMLInputElement).value })
-                          }
-                          data-testid={`admin-user-network-nick-${net.id}`}
-                          required
-                        />
-                        <input
-                          placeholder="realname"
-                          aria-label={`realname on ${net.slug}`}
-                          type="text"
-                          value={formFor(net.id).realname}
-                          onInput={(e) =>
-                            setForm(net.id, {
-                              realname: (e.currentTarget as HTMLInputElement).value,
-                            })
-                          }
-                          data-testid={`admin-user-network-realname-${net.id}`}
-                        />
-                        <input
-                          placeholder="sasl user"
-                          aria-label={`sasl user on ${net.slug}`}
-                          type="text"
-                          value={formFor(net.id).sasl_user}
-                          onInput={(e) =>
-                            setForm(net.id, {
-                              sasl_user: (e.currentTarget as HTMLInputElement).value,
-                            })
-                          }
-                          data-testid={`admin-user-network-sasl-user-${net.id}`}
-                        />
-                        <select
-                          aria-label={`auth method on ${net.slug}`}
-                          value={formFor(net.id).auth_method}
-                          onChange={(e) =>
-                            setForm(net.id, {
-                              auth_method: (e.currentTarget as HTMLSelectElement).value,
-                            })
-                          }
-                          data-testid={`admin-user-network-auth-method-${net.id}`}
-                        >
-                          <For each={IRCAUTH_FSMAUTH_METHOD}>
-                            {(m) => <option value={m}>auth: {m}</option>}
-                          </For>
-                        </select>
-                        <input
-                          placeholder="password"
-                          aria-label={`password on ${net.slug}`}
-                          type="password"
-                          value={formFor(net.id).password}
-                          onInput={(e) =>
-                            setForm(net.id, {
-                              password: (e.currentTarget as HTMLInputElement).value,
-                            })
-                          }
-                          data-testid={`admin-user-network-password-${net.id}`}
-                        />
+                        {/* #1157 — vjt: "una form piu' umana: fieldset, un
+                            campo per riga". A real `<fieldset>`, so the
+                            group has a name a screen reader reads once
+                            instead of five placeholder-only boxes, and
+                            `.adm-field-rows` (Settings' idiom) to put each
+                            label beside its own control. */}
+                        <fieldset class="adm-fieldset">
+                          <legend class="adm-fieldset-legend">{net.slug} settings</legend>
+                          <div class="adm-field-rows">
+                            <AdminField label="nick" for={`admin-user-network-nick-${net.id}`}>
+                              <input
+                                id={`admin-user-network-nick-${net.id}`}
+                                type="text"
+                                value={formFor(net.id).nick}
+                                onInput={(e) =>
+                                  setForm(net.id, {
+                                    nick: (e.currentTarget as HTMLInputElement).value,
+                                  })
+                                }
+                                data-testid={`admin-user-network-nick-${net.id}`}
+                                required
+                              />
+                            </AdminField>
+                            <AdminField
+                              label="realname"
+                              for={`admin-user-network-realname-${net.id}`}
+                            >
+                              <input
+                                id={`admin-user-network-realname-${net.id}`}
+                                type="text"
+                                value={formFor(net.id).realname}
+                                onInput={(e) =>
+                                  setForm(net.id, {
+                                    realname: (e.currentTarget as HTMLInputElement).value,
+                                  })
+                                }
+                                data-testid={`admin-user-network-realname-${net.id}`}
+                              />
+                            </AdminField>
+                            <AdminField
+                              label="sasl user"
+                              for={`admin-user-network-sasl-user-${net.id}`}
+                            >
+                              <input
+                                id={`admin-user-network-sasl-user-${net.id}`}
+                                type="text"
+                                value={formFor(net.id).sasl_user}
+                                onInput={(e) =>
+                                  setForm(net.id, {
+                                    sasl_user: (e.currentTarget as HTMLInputElement).value,
+                                  })
+                                }
+                                data-testid={`admin-user-network-sasl-user-${net.id}`}
+                              />
+                            </AdminField>
+                            <AdminField
+                              label="auth method"
+                              for={`admin-user-network-auth-method-${net.id}`}
+                            >
+                              <select
+                                id={`admin-user-network-auth-method-${net.id}`}
+                                value={formFor(net.id).auth_method}
+                                onChange={(e) =>
+                                  setForm(net.id, {
+                                    auth_method: (e.currentTarget as HTMLSelectElement).value,
+                                  })
+                                }
+                                data-testid={`admin-user-network-auth-method-${net.id}`}
+                              >
+                                <For each={IRCAUTH_FSMAUTH_METHOD}>
+                                  {(m) => <option value={m}>{m}</option>}
+                                </For>
+                              </select>
+                            </AdminField>
+                            <AdminField
+                              label="password"
+                              for={`admin-user-network-password-${net.id}`}
+                              hint={
+                                credOf(net.id) === undefined
+                                  ? undefined
+                                  : "blank leaves the stored one alone"
+                              }
+                            >
+                              <input
+                                id={`admin-user-network-password-${net.id}`}
+                                type="password"
+                                value={formFor(net.id).password}
+                                onInput={(e) =>
+                                  setForm(net.id, {
+                                    password: (e.currentTarget as HTMLInputElement).value,
+                                  })
+                                }
+                                data-testid={`admin-user-network-password-${net.id}`}
+                              />
+                            </AdminField>
+                          </div>
+                        </fieldset>
                         <div class="adm-form-grid-actions">
                           <button
                             type="submit"

@@ -342,6 +342,43 @@ describe("AdminUserPage — the checkbox is not a write (#1157)", () => {
   });
 });
 
+describe("AdminUserPage — the form is a named group of labelled rows (#1157)", () => {
+  // vjt: *"una form piu' umana: fieldset, un campo per riga — non
+  // stipata com'e' ora."* One field per row is CSS and is measured on a
+  // real viewport; what a DOM test can hold is the half CSS cannot fake
+  // — the group has a NAME and every control has a LABEL bound to it.
+  // The forms this replaced had five placeholder-only boxes, and a
+  // placeholder disappears the moment you type into it.
+  it("wraps the fields in a fieldset that names the network", async () => {
+    mountPage();
+    await pageReady();
+
+    const form = screen.getByTestId(`admin-user-network-form-${NETWORK.id}`);
+    const fieldset = form.querySelector("fieldset");
+    expect(fieldset).not.toBeNull();
+    expect(fieldset?.querySelector("legend")?.textContent).toContain(NETWORK.slug);
+  });
+
+  it("binds a real label to every control in the form", async () => {
+    mountPage();
+    await pageReady();
+
+    const form = screen.getByTestId(`admin-user-network-form-${NETWORK.id}`);
+    const controls = Array.from(form.querySelectorAll("input, select"));
+    // Non-vacuity: an empty control list would satisfy the loop below
+    // without proving anything.
+    expect(controls.length).toBe(5);
+
+    for (const control of controls) {
+      const id = control.getAttribute("id");
+      expect(id, `${control.getAttribute("data-testid")} has no id to label`).not.toBeNull();
+      const label = form.querySelector(`label[for="${id}"]`);
+      expect(label, `no label points at ${id}`).not.toBeNull();
+      expect((label?.textContent ?? "").trim().length).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe("AdminUserPage — editing a bound network", () => {
   it("sends only the fields the operator changed", async () => {
     vi.mocked(adminUpdateCredential).mockResolvedValue({

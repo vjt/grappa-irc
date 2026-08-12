@@ -6631,6 +6631,37 @@ html.resize-dragging * {
   outline-offset: -2px;
 }
 
+/* #1157 — a grouped form inside an admin card (today: one network's
+   settings on the per-user page). vjt asked for fieldsets and one field
+   per row instead of the crammed grid the add/edit forms used.
+
+   `min-inline-size: 0` is the load-bearing line, not decoration, and the
+   reason is measured: #1228 found a <fieldset> defaults to
+   `min-inline-size: min-content` and — unlike every other box here —
+   will NOT shrink below it, so ONE wide child sets a floor the whole
+   fieldset is laid out against and the entire form renders past its
+   container's right edge. The widest child here is the auth <select>,
+   whose intrinsic width comes from its longest OPTION. Same bomb, in the
+   console this time, and at 393px the overflow would land on the panel —
+   which is exactly the pan #1157 exists to delete. */
+.adm-fieldset {
+  min-inline-size: 0;
+  margin: var(--adm-space-3) 0 0;
+  padding: 0 0 var(--adm-space-2);
+  border: 1px solid var(--adm-line);
+  border-radius: var(--adm-radius-sm);
+}
+
+.adm-fieldset-legend {
+  padding: 0 var(--adm-space-2);
+  font-family: var(--adm-font);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--adm-text-dim);
+}
+
 /* A titled block nested INSIDE an expand row (today: the per-vhost
    grants disclosure). Not an `AdminCard` — a card inside a card's own
    table reads as a nesting mistake; this is the flatter, quieter
