@@ -40107,3 +40107,99 @@ commits one, so what is proven is that cic answers the event GBoard emits, not
 that GBoard emits it — the latter rests on the reporter's device A/B. And the
 issue's closing question, whether the `text === ""` arm is really iOS-only or
 the same hole in another hat, is deliberately untouched here.
+
+---
+
+## 2026-08-12 — #1247: the STATUSMSG level was destroyed at ingress, not merely unrendered
+
+A NOTICE to `@#chan` reaches channel ops only. #218 taught the router to
+route it to the channel window; it did not teach anything to remember
+WHY that message was different. `strip_statusmsg_target/2` peeled the
+sigil to get past the channel-prefix dispatch and rebuilt `params`
+without it, and nothing downstream ever saw it again — no scrollback
+row, no PubSub payload. So the reporter's complaint ("it reads like a
+private notice") was not a rendering gap cic could close on its own:
+**the information was gone before persistence, and a client cannot badge
+what never reached the store.** #218 named this in writing as the
+optional half it was leaving open. The routing half shipped in
+`595d6fb6`; the meta half is this.
+
+**The peel now returns what it peeled.** `strip_statusmsg_target/2`
+answers `{msg, sigil}` and the sigil rides `meta.statusmsg` on the rows
+that message produced. One record, read by both doors — the REST fetch
+and the live push serialise the same `meta` through the same
+`Scrollback.Wire.to_json/1`, so a reload and an arrival cannot disagree
+by construction rather than by discipline.
+
+**Where the annotation is applied, and the two carriers rejected.** The
+sigil is known only at the peel, and the persist rows are built ~50
+`do_route/2` clauses later. Threading a third argument would touch every
+one of those clauses to serve the two commands that can bear a sigil.
+Putting a field on `%Grappa.IRC.Message{}` would hang a router
+annotation on the parser's struct — that struct is the wire's shape, and
+extending it for our own bookkeeping is how a parser stops being the
+single source of truth about framing. So the level is applied to the
+ROUTED RESULT: `tag_statusmsg/2` merges it into the meta of the persist
+effects the message produced. It merges (`Map.put` onto the row's own
+map) rather than replaces, because #25's `sender_prefix` and #1070's
+`sender_kind` are already in there — a producer that replaced would pass
+every "is the level recorded?" assertion and silently drop both, which
+is why the router test asserts all three keys on one row.
+
+Every persist effect of the message is tagged, not only the one keyed to
+the stripped channel. A sigil is peeled only off a genuine channel
+target, so every row that message produces describes the same ops-only
+delivery; a channel-equality guard would have been a filter with no case
+that exercises it.
+
+**Absent, never `nil`.** An ordinary channel message carries no
+`statusmsg` key at all. A key present-and-null on every row would make
+"no level" and "level unknown" the same value at the client, and the
+client's test is presence. The `+chan` collision guard (#218's: `+` is
+both a channel sigil and the voice sigil) returns `nil` for the same
+reason — inventing a voice level on a modeless channel anyone can read
+would be worse than the bug being fixed.
+
+**The value is verbatim from the wire, and the set is not ours to
+close.** ISUPPORT `STATUSMSG=` is per-network — bahamut advertises `@+`,
+others `@%+`. This is the documented exception to the closed-set rule:
+the atom-keyed `Meta` allowlist stays closed (`:statusmsg` is on it),
+but the VALUE is whatever the network advertised, because enumerating it
+here would mean silently dropping a level some ircd advertises tomorrow.
+cic gives a word to the two the issue names (`@` → `ops-only`, `+` →
+`voice-only`) and renders any other level as its own sigil — "unknown
+level" and "everyone" must not look alike.
+
+**The badge is a property of the row, not of the notice arm.** It
+renders next to the timestamp, before the body, for every kind: a
+STATUSMSG target is legal on PRIVMSG as well as NOTICE, and putting the
+badge inside the `case "notice"` arm would have left the privmsg form
+silently unmarked — the same class of half-fix this issue is about.
+
+**The e2e's second assertion is the whole point.** The spec badges the
+row on arrival and then RELOADS and badges it again. The first read
+comes off the broadcast, the second off the persisted row; an
+implementation that carried the level on the push alone passes the first
+and fails the second. Without the reload the spec would have proven the
+easy half and left the defect displaced rather than fixed. The peer must
+op us first or bahamut never delivers the notice at all — without that
+`+o` the spec would pass vacuously.
+
+**No wire codegen moved, and that is a fact rather than an assumption.**
+`Scrollback.Wire.t/0` types `meta` as `Meta.t()`, which
+`mix grappa.gen_wire_types` emits as an opaque `Record<string, unknown>`
+(`S_ScrollbackMetaT = {r: "x"}`), so a new meta key does not change
+`wireTypes.ts` or its runtime twin `wireSchema.ts`. Checked with
+`gen_wire_types --check` rather than reasoned about, because the twin is
+exactly the file that stays green when you only update the other one.
+
+**Not done, deliberately.** The issue asks whether the IRC facade
+re-attaches the sigil on the way out. There is no facade: the Phase 6
+IRCv3 listener is unbuilt, and `lib/grappa/irc/` holds the client, the
+parser and CTCP only. When it is built, `meta.statusmsg` is what it will
+read to render `NOTICE @#chan` to a classic client — which is the reason
+to persist the level rather than compute a badge at the WS edge. The
+operator's OWN outbound `/notice @#chan` needed nothing: #1225 already
+keeps the raw wire target in `meta.notice_target`, sigil intact, so
+nothing is destroyed on that path. And #1247's routing is untouched —
+`@#chan` still lands in the channel window.

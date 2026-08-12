@@ -239,6 +239,26 @@ looking. A POST carrying **both** fields is `400 bad_request`.
 Read the recipient off `meta`, never off the row's `channel`: `channel` is the
 source window. A `:notice` row **without** `meta.notice_target` is inbound.
 
+### 5b. Ops-only / voice-only delivery (#218, #1247)
+
+An inbound message addressed to a **STATUSMSG target** (`@#chan` ops-only,
+`+#chan` voice) reaches only the members at that level. grappa routes it to
+the CHANNEL window like any other channel message (#218) and records the level
+it was delivered at in `meta.statusmsg`:
+
+| field | value |
+|---|---|
+| `meta.statusmsg` | the membership sigil, verbatim from the wire — `"@"`, `"+"`, or whatever the network's ISUPPORT `STATUSMSG=` advertises (`"%"` on a `@%+` network) |
+
+The key is **absent** on an ordinary channel message; there is no `null` form,
+so presence is the test. It rides `:notice` and `:privmsg` rows alike, and the
+persisted row (REST) and the live push carry the same value.
+
+Render it. Without it an ops-only broadcast is indistinguishable from one the
+whole channel saw — which is the defect #1247 exists to fix. The sigil set is
+per-network and open-ended, so treat an unrecognised level as "restricted",
+never as "everyone".
+
 ---
 
 ## 6. Rate limiting & flood protection (#630)
