@@ -39874,3 +39874,65 @@ also joins the `nginx-csp-range-parity` pin list, where — like
 `media-src` before it — the un-widened value is a PREFIX of the widened
 one, so pinning anything shorter would let a revert sail through
 `toContain`.
+
+---
+
+## 2026-08-12 — #1250: a guard that did not exist on the path most people paste from
+
+The paste flood cap (#80/#816) was bypassable by picking a different gesture.
+GBoard's clipboard chip does not fire a `paste` event: it commits through the
+input method, which surfaces as `beforeinput` with an `insertFromPaste`
+inputType. Both doors into `routeClipboardPaste` were `paste` listeners, so
+`classifyPaste` never ran — the guard was not weak on Android, it was
+**absent**, and `PASTE_HARD_MESSAGE_LIMIT` was advisory rather than enforced.
+The reporter's own A/B said it plainly: chip → no dialog, long-press Paste →
+dialog. `git grep beforeinput -- cicchetto/src` returned nothing on `main`.
+
+`routePastedInput` is the third door, and the extraction that made #352's
+second door safe is what makes this one safe: `routeGuardedText` now holds the
+drain check and the three-way classify, so textarea-paste, document-paste and
+IME-insertion cannot drift. `insertFromPasteAsQuotation` rides the same arm —
+it becomes the same burst of PRIVMSGs, so it is sized by the same rule.
+
+**The interesting decision was how NOT to ask twice.** A native paste is
+reported to the app twice: as `paste`, and as the `beforeinput` for the
+insertion it causes. The first implementation was a module-level "this gesture
+is already decided" flag released on a macrotask — order-independent, and
+wrong for this codebase: it also makes two pastes *in one task*
+indistinguishable from one. No browser can produce that state; three test
+files produce it constantly, and two of them had to be taught to yield between
+cases before the shape of the mistake was obvious. A guard that quietly
+disarms itself for whoever writes the next paste test is worse than the
+ordering assumption it removes, so it was reverted.
+
+What shipped instead is a structural argument with no bookkeeping at all: the
+UA fires `paste`, and only an UNCANCELLED paste performs the insertion that
+fires `beforeinput`. Both guarded arms cancel, so the second report never
+exists; the pass-through arm lets both fire and is idempotent, because with
+`nativeInsertAvailable` its only decision is "let the browser do it".
+
+**That argument rests on a browser contract, so it was measured rather than
+believed.** #1250's text claims some engines report `beforeinput` first, which
+would mean two dialogs for one gesture. A synthetic `ClipboardEvent` cannot
+settle it — an untrusted event runs no default action, so no `beforeinput`
+ever follows and the measurement is vacuous, which is exactly the trap the
+pre-existing #80 spec's technique would have walked into. The new spec drives
+a REAL clipboard gesture (copy out of a scratch field with the keyboard, then
+paste) and pins the observed sequence. On **chromium and webkit both**, a
+guarded paste is reported exactly once, as `paste`; no `beforeinput` follows
+it. The claim in the issue is not reproduced on either engine we ship, and the
+pin is the thing that will say so out loud if a future engine differs.
+
+**Mutation-checked**, because an e2e that would pass without the fix is not
+evidence: unwiring the IME listener from ComposeBox kills exactly the two IME
+tests and leaves the two ordering tests green — the discrimination the two
+halves of the spec are supposed to have. (The first attempt at that mutant
+broke `tsc` instead, so the suite never ran and the red meant nothing; a
+mutant has to compile before its red is a measurement.)
+
+**Stated limits.** The IME tests dispatch a synthetic
+`beforeinput[insertFromPaste]`: Playwright cannot drive GBoard and no CDP verb
+commits one, so what is proven is that cic answers the event GBoard emits, not
+that GBoard emits it — the latter rests on the reporter's device A/B. And the
+issue's closing question, whether the `text === ""` arm is really iOS-only or
+the same hole in another hat, is deliberately untouched here.
