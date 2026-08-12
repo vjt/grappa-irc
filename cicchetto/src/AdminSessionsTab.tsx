@@ -9,6 +9,7 @@ import { AdminEmpty, AdminError } from "./admin/AdminStatus";
 import AdminTable from "./admin/AdminTable";
 import { useRefreshSlot } from "./admin/refreshSlot";
 import { renderEnded } from "./admin/sessionLogFormat";
+import ContextMenu from "./ContextMenu";
 import InlineConfirmButton from "./InlineConfirmButton";
 import {
   type AdminSubjectRow,
@@ -36,6 +37,7 @@ import {
   adminTerminateSession,
 } from "./lib/api";
 import { token } from "./lib/auth";
+import { isAdminNarrow } from "./lib/theme";
 
 // #1157 — the unified admin Sessions view. The Visitors tab is gone;
 // this one lists ACTIVE AND INACTIVE sessions for both subject kinds.
@@ -102,6 +104,29 @@ function confirmKey(key: string, kind: ActionKind | "delete"): string {
   return `${key}:${kind}`;
 }
 
+// #1157 — which verbs the actions cell renders AS BUTTONS. Dictated
+// (vjt, 2026-08-09): below 900px the cell holds ONE control and the
+// verbs live behind a dropdown. Above it they stay side by side.
+//
+// A one-verb row is left alone: it already IS one control, and wrapping
+// it in a menu would charge a tap to reach a list of one. So the rule
+// the cell keeps at every width is "one control", not "always a menu".
+//
+// `armed` is the escape from the obvious bug in that: `InlineConfirmButton`
+// is sticky and the PARENT owns `armed`, so once a verb is picked its
+// confirmation has to be on screen — otherwise the menu would arm a
+// button the operator cannot see, let alone confirm.
+function cellActions(
+  row: AdminSubjectRow,
+  narrow: boolean,
+  armed: ActionKind | null,
+): ActionKind[] {
+  const verbs = rowActions(row);
+  if (!narrow) return verbs;
+  if (armed !== null) return [armed];
+  return verbs.length > 1 ? [] : verbs;
+}
+
 function renderCap(cap: number | null): string {
   // Mirrors the AdminNetworksTab cap-cell convention: `null` is the
   // "unlimited" sentinel per `Networks.update_network_caps/2`.
@@ -120,6 +145,15 @@ const AdminSessionsTab: Component = () => {
   // tab's drill-in to `AdminUserPage`, and deliberately not a route: the
   // admin console has none.
   const [endedOpen, setEndedOpen] = createSignal(false);
+  // #1157 — the open row's verb dropdown, anchored to the button that
+  // opened it. Anchored to the BUTTON RECT rather than the pointer so a
+  // keyboard activation (clientX/Y both 0) does not open it in the
+  // viewport's top-left corner.
+  const [actionsMenu, setActionsMenu] = createSignal<{
+    key: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
 
@@ -141,12 +175,22 @@ const AdminSessionsTab: Component = () => {
   const live = createMemo<AdminSubjectRow[]>(() => liveSessions(rows()));
   const ended = createMemo(() => endedSessions(rows()));
 
+  /** The verb this row is currently asking the operator to confirm. */
+  const armedKind = (row: AdminSubjectRow): ActionKind | null =>
+    rowActions(row).find((kind) => confirmingKey() === confirmKey(row.key, kind)) ?? null;
+
+  /** The row shows the dropdown instead of its verbs. */
+  const collapsed = (row: AdminSubjectRow): boolean =>
+    isAdminNarrow() && rowActions(row).length > 1;
+
   const refresh = async (): Promise<void> => {
     const t = token();
     if (t === null) return;
     setLoading(true);
     setError(null);
     setConfirmingKey(null);
+    // The menu names one row's verbs; the refresh may take that row away.
+    setActionsMenu(null);
     try {
       // Five endpoints, one table. The two row-backed ones supply the
       // rows, /admin/sessions supplies the live join, /admin/networks
@@ -420,7 +464,7 @@ const AdminSessionsTab: Component = () => {
                               class="admin-sessions-actions adm-table-sticky-actions"
                               data-label="actions"
                             >
-                              <For each={rowActions(row)}>
+                              <For each={cellActions(row, isAdminNarrow(), armedKind(row))}>
                                 {(kind) => (
                                   <InlineConfirmButton
                                     idleLabel={ACTION_LABEL[kind]}
@@ -433,6 +477,40 @@ const AdminSessionsTab: Component = () => {
                                   />
                                 )}
                               </For>
+                              <Show when={collapsed(row) && armedKind(row) === null}>
+                                <button
+                                  type="button"
+                                  class="adm-btn"
+                                  aria-haspopup="menu"
+                                  aria-label={`actions for ${renderWho(row)}`}
+                                  onClick={(e) => {
+                                    const box = e.currentTarget.getBoundingClientRect();
+                                    setActionsMenu({
+                                      key: row.key,
+                                      x: box.left,
+                                      y: box.bottom,
+                                    });
+                                  }}
+                                  data-testid={`admin-session-actions-menu-${row.key}`}
+                                >
+                                  Actions ▾
+                                </button>
+                              </Show>
+                              {/* The way back out of an armed verb. On desktop
+                              the sibling verb's idle button does this job —
+                              arming one disarms the other — but the collapse
+                              took the sibling away, and the button the
+                              operator tapped to get here went with it. */}
+                              <Show when={collapsed(row) && armedKind(row) !== null}>
+                                <button
+                                  type="button"
+                                  class="adm-btn"
+                                  onClick={() => setConfirmingKey(null)}
+                                  data-testid={`admin-session-actions-cancel-${row.key}`}
+                                >
+                                  Cancel
+                                </button>
+                              </Show>
                               {/* An empty cell reads as a rendering bug. The
                               dash says the absence is the answer. */}
                               <Show when={rowActions(row).length === 0}>—</Show>
@@ -479,6 +557,32 @@ const AdminSessionsTab: Component = () => {
             </AdminCard>
           </Show>
         </div>
+      </Show>
+
+      {/* #1157 — the collapsed cell's dropdown. Reuses the shell the
+          long-press menus use (portal, backdrop, Escape, measured
+          flip/clamp) rather than growing a second popover convention in
+          the console: what differs between them is the item list, which
+          is exactly the part this supplies.
+
+          Picking an item ARMS the verb — the shell closes itself on an
+          action — and the row's own confirmation is what runs it. */}
+      <Show when={actionsMenu()}>
+        {(menu) => (
+          <Show when={live().find((row) => row.key === menu().key)}>
+            {(row) => (
+              <ContextMenu
+                position={{ x: menu().x, y: menu().y }}
+                onClose={() => setActionsMenu(null)}
+                items={rowActions(row()).map((kind) => ({
+                  label: ACTION_LABEL[kind],
+                  enabled: true,
+                  action: () => setConfirmingKey(confirmKey(row().key, kind)),
+                }))}
+              />
+            )}
+          </Show>
+        )}
       </Show>
     </div>
   );
