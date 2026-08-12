@@ -67,17 +67,21 @@ async function openUserPage(page: import("@playwright/test").Page, userId: strin
   await expect(page.getByTestId("admin-user-page")).toBeVisible({ timeout: 10_000 });
 }
 
-/** Fill and submit the `+` form for one network. */
-async function addNetwork(
+/**
+ * Give the user one network, the #1157 way: tick the section, fill the
+ * nick the bind needs, Save. There is no `+` and no network picker —
+ * every configured network already has a section, and the tick is the
+ * whole statement about access.
+ */
+async function enableNetwork(
   page: import("@playwright/test").Page,
   networkId: number,
   nick: string,
 ): Promise<void> {
-  await page.getByTestId("admin-user-network-add").click();
-  await expect(page.getByTestId("admin-user-network-add-form")).toBeVisible();
-  await page.getByTestId("admin-user-network-add-network").selectOption(String(networkId));
-  await page.getByTestId("admin-user-network-add-nick").fill(nick);
-  await page.getByTestId("admin-user-network-add-submit").click();
+  await page.getByTestId(`admin-user-network-enabled-${networkId}`).check();
+  await expect(page.getByTestId(`admin-user-network-form-${networkId}`)).toBeVisible();
+  await page.getByTestId(`admin-user-network-nick-${networkId}`).fill(nick);
+  await page.getByTestId(`admin-user-network-save-${networkId}`).click();
 }
 
 async function createUser(token: string, name: string): Promise<string> {
@@ -184,19 +188,22 @@ test("an operator creates a user and gives it a network in one flow", async ({ p
     await expect(page.getByTestId("admin-user-page")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByTestId("admin-user-page-name")).toHaveText(userName);
 
-    await addNetwork(page, networkId, "flownick");
+    await enableNetwork(page, networkId, "flownick");
 
-    // The operator-visible outcome: the user now has that network.
-    const row = page.getByTestId(`admin-user-network-row-${networkId}`);
-    await expect(row).toBeVisible({ timeout: 10_000 });
-    await expect(row).toContainText(netSlug);
+    // The operator-visible outcome: the section for that network is
+    // ticked, and it names the network it is about.
+    const section = page.getByTestId(`admin-user-network-${networkId}`);
+    await expect(section).toContainText(netSlug);
+    await expect(page.getByTestId(`admin-user-network-enabled-${networkId}`)).toBeChecked({
+      timeout: 10_000,
+    });
 
     // And it survives a reload, so the verdict rests on the server's answer
     // rather than on the reply the form just rendered.
     userId = await findUserId(admin.token, userName);
     await page.reload();
     await openUserPage(page, userId);
-    await expect(page.getByTestId(`admin-user-network-row-${networkId}`)).toBeVisible({
+    await expect(page.getByTestId(`admin-user-network-enabled-${networkId}`)).toBeChecked({
       timeout: 10_000,
     });
   } finally {
@@ -215,7 +222,7 @@ test("an operator creates a user and gives it a network in one flow", async ({ p
   }
 });
 
-test("admin adds a network to an existing user — the row appears", async ({ page }) => {
+test("admin gives an existing user a network — the section ticks", async ({ page }) => {
   const admin = getSeededAdmin();
   const userName = unique("e2eun-add-u");
   const netSlug = unique("e2eun-add-n");
@@ -229,15 +236,17 @@ test("admin adds a network to an existing user — the row appears", async ({ pa
     await adminLogin(page, admin);
     await openUserPage(page, userId);
 
-    // Pre-state: the user is on no networks, so the row this test asserts on
-    // cannot be a leftover from an earlier run.
-    await expect(page.getByTestId("admin-user-networks-empty")).toBeVisible();
+    // Pre-state: the section EXISTS (it is a configured network) and is
+    // NOT ticked, so the tick this test asserts on cannot be a leftover
+    // from an earlier run. Asserting the section's ABSENCE would be the
+    // pre-#1157 claim, and is now false by construction.
+    const tick = page.getByTestId(`admin-user-network-enabled-${networkId}`);
+    await expect(tick).toBeVisible({ timeout: 10_000 });
+    await expect(tick).not.toBeChecked();
 
-    await addNetwork(page, networkId, "boundnick");
+    await enableNetwork(page, networkId, "boundnick");
 
-    await expect(page.getByTestId(`admin-user-network-row-${networkId}`)).toBeVisible({
-      timeout: 10_000,
-    });
+    await expect(tick).toBeChecked({ timeout: 10_000 });
   } finally {
     if (userId !== null && networkId !== null) {
       await unbindBestEffort(admin.token, userId, networkId);
@@ -247,7 +256,9 @@ test("admin adds a network to an existing user — the row appears", async ({ pa
   }
 });
 
-test("admin edits a network (realname change) — the row reports left_alone", async ({ page }) => {
+test("admin edits a network (realname change) — the section reports left_alone", async ({
+  page,
+}) => {
   const admin = getSeededAdmin();
   const userName = unique("e2eun-edit-u");
   const netSlug = unique("e2eun-edit-n");
@@ -262,13 +273,13 @@ test("admin edits a network (realname change) — the row reports left_alone", a
     await adminLogin(page, admin);
     await openUserPage(page, userId);
 
-    await page.getByTestId(`admin-user-network-edit-${networkId}`).click();
-    await expect(page.getByTestId(`admin-user-network-edit-form-${networkId}`)).toBeVisible();
+    // No Edit button to press: a bound network's settings form is simply
+    // open, because the section IS the editor.
+    await expect(page.getByTestId(`admin-user-network-form-${networkId}`)).toBeVisible();
+    await page.getByTestId(`admin-user-network-realname-${networkId}`).fill("Updated Name");
+    await page.getByTestId(`admin-user-network-save-${networkId}`).click();
 
-    await page.getByTestId(`admin-user-network-edit-realname-${networkId}`).fill("Updated Name");
-    await page.getByTestId(`admin-user-network-edit-submit-${networkId}`).click();
-
-    // Row state, not a toast (vjt: a toast throws four values away), and the
+    // Section state, not a toast (vjt: a toast throws four values away), and the
     // raw wire token, per the operator-console policy the banners follow.
     await expect(page.getByTestId(`admin-user-network-session-action-${networkId}`)).toContainText(
       "left_alone",
@@ -283,7 +294,7 @@ test("admin edits a network (realname change) — the row reports left_alone", a
   }
 });
 
-test("admin removes a network via inline-confirm — the row goes", async ({ page }) => {
+test("admin removes a network by unticking it — the tick clears", async ({ page }) => {
   const admin = getSeededAdmin();
   const userName = unique("e2eun-rm-u");
   const netSlug = unique("e2eun-rm-n");
@@ -298,15 +309,22 @@ test("admin removes a network via inline-confirm — the row goes", async ({ pag
     await adminLogin(page, admin);
     await openUserPage(page, userId);
 
-    const removeBtn = page.getByTestId(`admin-user-network-remove-${networkId}`);
-    await expect(removeBtn).toHaveText(/^Remove$/);
-    await removeBtn.click();
-    await expect(removeBtn).toHaveText(/^Confirm remove$/);
-    await removeBtn.click();
+    // Two steps, as before, but over the shape this page now has:
+    // unticking ARMS and the named button fires. Unticking alone must not
+    // delete anything, which is the first assertion.
+    const tick = page.getByTestId(`admin-user-network-enabled-${networkId}`);
+    await tick.uncheck();
+    await expect(page.getByTestId(`admin-user-network-form-${networkId}`)).toHaveCount(0);
+    await expect(page.getByTestId(`admin-user-network-remove-${networkId}`)).toBeVisible();
 
-    await expect(page.getByTestId(`admin-user-network-row-${networkId}`)).toHaveCount(0, {
+    await page.getByTestId(`admin-user-network-remove-${networkId}`).click();
+
+    // The credential is gone: the section stays (the network is still
+    // configured) and its tick is clear.
+    await expect(page.getByTestId(`admin-user-network-remove-${networkId}`)).toHaveCount(0, {
       timeout: 10_000,
     });
+    await expect(tick).not.toBeChecked();
   } finally {
     if (userId !== null && networkId !== null) {
       await unbindBestEffort(admin.token, userId, networkId);

@@ -189,39 +189,52 @@ test("admin binds a credential from the console and the session dials out", asyn
 
     // Pre-state: the user is on no networks yet, so the row this test is about
     // to assert on cannot be a leftover from an earlier run.
-    await expect(page.getByTestId(`admin-user-network-row-${networkId}`)).toHaveCount(0);
+    await expect(page.getByTestId(`admin-user-network-enabled-${networkId}`)).not.toBeChecked();
 
     // The bind goes through the CONSOLE, not the API — the door the operator
     // in the issue actually used, and the one that had no other door on a
     // release image (#1158).
-    await page.getByTestId("admin-user-network-add").click();
-    await expect(page.getByTestId("admin-user-network-add-form")).toBeVisible();
-    await page.getByTestId("admin-user-network-add-network").selectOption({ label: NETWORK_SLUG });
-    await page.getByTestId("admin-user-network-add-nick").fill(nick);
-    await page.getByTestId("admin-user-network-add-auth-method").selectOption("none");
-    await page.getByTestId("admin-user-network-add-submit").click();
+    // #1157 — the bind is now "tick the network's section, fill the nick,
+    // Save". The verb on the wire is the same POST; what changed is that
+    // the console no longer asks WHICH network in a select, because the
+    // section already is one.
+    await page.getByTestId(`admin-user-network-enabled-${networkId}`).check();
+    await expect(page.getByTestId(`admin-user-network-form-${networkId}`)).toBeVisible();
+    await page.getByTestId(`admin-user-network-nick-${networkId}`).fill(nick);
+    await page.getByTestId(`admin-user-network-auth-method-${networkId}`).selectOption("none");
+    await page.getByTestId(`admin-user-network-save-${networkId}`).click();
 
-    const row = page.getByTestId(`admin-user-network-row-${networkId}`);
-    await expect(row).toHaveCount(1, { timeout: 10_000 });
+    await expect(page.getByTestId(`admin-user-network-enabled-${networkId}`)).toBeChecked({
+      timeout: 10_000,
+    });
 
     // The witness. `alive` is the BEAM reading: a Session.Server exists for
-    // this (user, network). Before #1163 this cell read `BEAM has no pid` and
-    // stayed that way until the node restarted.
-    await expect(row).toContainText("alive", { timeout: 10_000 });
-    await expect(row).not.toContainText("BEAM has no pid");
+    // this (user, network). Before #1163 this badge read `BEAM has no pid`
+    // and stayed that way until the node restarted.
+    //
+    // #1157 — read off the two BADGES rather than off the whole row's text.
+    // The section now contains the settings form as well, so a substring
+    // match over it could be satisfied by a field value rather than by the
+    // reading this spec exists to take.
+    const live = page.getByTestId(`admin-user-network-live-${networkId}`);
+    const connection = page.getByTestId(`admin-user-network-connection-${networkId}`);
+    await expect(live).toHaveText("alive", { timeout: 10_000 });
 
-    // The other half of U-0: the DB intent agrees with the BEAM. A row that
-    // says `connected` is only honest when the pid above exists.
-    await expect(row).toContainText("connected");
+    // The other half of U-0: the DB intent agrees with the BEAM. A section
+    // that says `connected` is only honest when the pid above exists.
+    await expect(connection).toHaveText("connected");
 
     // Same two readings after a fresh load, so the verdict rests on a second
-    // GET /admin/credentials rather than on the bind response the tab just
+    // GET /admin/credentials rather than on the bind response the page just
     // rendered.
     await page.reload();
     await openUserPage(page, userId);
-    const reloadedRow = page.getByTestId(`admin-user-network-row-${networkId}`);
-    await expect(reloadedRow).toContainText("alive", { timeout: 10_000 });
-    await expect(reloadedRow).toContainText("connected");
+    await expect(page.getByTestId(`admin-user-network-live-${networkId}`)).toHaveText("alive", {
+      timeout: 10_000,
+    });
+    await expect(page.getByTestId(`admin-user-network-connection-${networkId}`)).toHaveText(
+      "connected",
+    );
   } finally {
     if (userId !== null) {
       await unbind(admin.token, userId, networkId, testInfo);

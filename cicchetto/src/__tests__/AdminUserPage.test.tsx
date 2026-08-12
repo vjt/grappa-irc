@@ -30,20 +30,27 @@ import {
 // #1158 — the per-user admin page, the ONE surface that owns a user's
 // network access now that the Credentials tab is gone.
 //
-// The page is per-USER, so the invariants this suite defends are the ones
-// the deleted tab never had to hold:
+// #1157 reshaped it: no bind flow, one section per CONFIGURED network,
+// and a checkbox that says whether this user has access. So the suite's
+// central fixture is a server with TWO networks where the user is on
+// ONE — the page must render both sections and disagree about them.
 //
-//   * it renders THIS user's networks and no one else's (the list endpoint
-//     is unfiltered — see the `filters` note in the page);
-//   * the user is the page, so adding a network asks for a network, never
-//     for a user;
-//   * `session_action` is per-ROW state carrying all FOUR values. The tab
-//     it replaces surfaced two, and only for PATCH: `onBind` dropped the
-//     POST reply on the floor, so `spawned` / `not_spawned` had no operator
-//     surface at all;
-//   * a row shows the DB state AND the live state side by side, which is
-//     the two-sources rule and the witness `issue1163-admin-bind-dials`
-//     reads.
+// The invariants defended here:
+//
+//   * a section is ticked for THIS user's credential and no one else's
+//     (the list endpoint is unfiltered — see the `filters` note in the
+//     page). The foreign credential in every mount fetch sits on the
+//     second network, so a missing owner filter ticks a box;
+//   * the checkbox is not a write: enabling reveals the form and calls
+//     nothing, disabling a bound network ARMS a removal and calls
+//     nothing. Only Save and the confirm reach the server;
+//   * `session_action` is per-SECTION state carrying all FOUR values.
+//     The tab this page replaced surfaced two, and only for PATCH:
+//     `onBind` dropped the POST reply on the floor, so `spawned` /
+//     `not_spawned` had no operator surface at all;
+//   * a bound section shows the DB state AND the live state side by
+//     side, which is the two-sources rule and the witness
+//     `issue1163-admin-bind-dials` reads.
 
 const USER: AdminUser = {
   id: "00000000-0000-0000-0000-000000000001",
@@ -102,8 +109,9 @@ const CRED: AdminCredential = {
   },
 };
 
-// Same shape, different OWNER. Present in every mount fetch, so any test
-// that finds it on the page has caught a missing owner filter.
+// Same shape, different OWNER, on the network this user is NOT on.
+// Present in every mount fetch, so a missing owner filter shows up as a
+// ticked box rather than as nothing at all.
 const FOREIGN_CRED: AdminCredential = {
   ...CRED,
   user_id: OTHER_USER_ID,
@@ -112,6 +120,7 @@ const FOREIGN_CRED: AdminCredential = {
   nick: "bob",
 };
 
+// This user, on the second network, with no pid behind it.
 const ORPHAN_CRED: AdminCredential = {
   ...CRED,
   network_id: OTHER_NETWORK.id,
@@ -125,7 +134,11 @@ function mountPage(onBack: () => void = () => {}): void {
 }
 
 async function pageReady(): Promise<void> {
-  await waitFor(() => expect(screen.queryByTestId("admin-user-networks-table")).not.toBeNull());
+  await waitFor(() => expect(screen.queryByTestId("admin-user-networks-card")).not.toBeNull());
+}
+
+function checkbox(networkId: number): HTMLInputElement {
+  return screen.getByTestId(`admin-user-network-enabled-${networkId}`) as HTMLInputElement;
 }
 
 beforeEach(() => {
@@ -134,13 +147,39 @@ beforeEach(() => {
   vi.mocked(adminListNetworks).mockResolvedValue([NETWORK, OTHER_NETWORK]);
 });
 
-describe("AdminUserPage — the user's networks", () => {
-  it("renders this user's networks and never another user's", async () => {
+describe("AdminUserPage — a section per configured network (#1157)", () => {
+  it("renders every configured network, not only the ones the user is on", async () => {
     mountPage();
     await pageReady();
 
-    expect(screen.queryByTestId(`admin-user-network-row-${NETWORK.id}`)).not.toBeNull();
-    expect(screen.queryByTestId(`admin-user-network-row-${OTHER_NETWORK.id}`)).toBeNull();
+    expect(screen.queryByTestId(`admin-user-network-${NETWORK.id}`)).not.toBeNull();
+    expect(screen.queryByTestId(`admin-user-network-${OTHER_NETWORK.id}`)).not.toBeNull();
+  });
+
+  it("ticks this user's networks and never another user's", async () => {
+    mountPage();
+    await pageReady();
+
+    expect(checkbox(NETWORK.id).checked).toBe(true);
+    // `FOREIGN_CRED` is a credential on this very network, owned by
+    // someone else. Ticked here means the owner filter is gone.
+    expect(checkbox(OTHER_NETWORK.id).checked).toBe(false);
+  });
+
+  it("shows the settings form only for an enabled network", async () => {
+    mountPage();
+    await pageReady();
+
+    expect(screen.queryByTestId(`admin-user-network-form-${NETWORK.id}`)).not.toBeNull();
+    expect(screen.queryByTestId(`admin-user-network-form-${OTHER_NETWORK.id}`)).toBeNull();
+  });
+
+  it("seeds an enabled section's form from the credential", async () => {
+    mountPage();
+    await pageReady();
+
+    const nick = screen.getByTestId(`admin-user-network-nick-${NETWORK.id}`) as HTMLInputElement;
+    expect(nick.value).toBe(CRED.nick);
   });
 
   it("shows the DB state and the live state side by side", async () => {
@@ -148,22 +187,23 @@ describe("AdminUserPage — the user's networks", () => {
     mountPage();
     await pageReady();
 
-    const connected = screen.getByTestId(`admin-user-network-row-${NETWORK.id}`);
-    expect(connected.textContent).toContain("connected");
-    expect(connected.textContent).toContain("alive");
+    expect(screen.getByTestId(`admin-user-network-connection-${NETWORK.id}`).textContent).toBe(
+      "connected",
+    );
+    expect(screen.getByTestId(`admin-user-network-live-${NETWORK.id}`).textContent).toBe("alive");
 
-    // U-0: a row whose DB says connected while the BEAM has no pid must say
-    // so, rather than inherit the neighbouring row's honesty.
-    const orphan = screen.getByTestId(`admin-user-network-row-${OTHER_NETWORK.id}`);
-    expect(orphan.textContent).toContain("BEAM has no pid");
+    // U-0: a section whose DB says connected while the BEAM has no pid
+    // must say so, rather than inherit its neighbour's honesty.
+    expect(screen.getByTestId(`admin-user-network-live-${OTHER_NETWORK.id}`).textContent).toBe(
+      "BEAM has no pid",
+    );
   });
 
-  it("says the user has no networks rather than rendering an empty table", async () => {
-    vi.mocked(adminListCredentials).mockResolvedValue([FOREIGN_CRED]);
+  it("blames the server, not the user, when no network is configured at all", async () => {
+    vi.mocked(adminListNetworks).mockResolvedValue([]);
     mountPage();
 
     await waitFor(() => expect(screen.queryByTestId("admin-user-networks-empty")).not.toBeNull());
-    expect(screen.queryByTestId("admin-user-networks-table")).toBeNull();
   });
 
   it("calls onBack from the back control", async () => {
@@ -176,55 +216,49 @@ describe("AdminUserPage — the user's networks", () => {
   });
 });
 
-describe("AdminUserPage — adding a network", () => {
-  it("keeps the add form closed until + is pressed", async () => {
+describe("AdminUserPage — the checkbox is not a write (#1157)", () => {
+  it("reveals the form on enable without calling the server", async () => {
     mountPage();
     await pageReady();
 
-    expect(screen.queryByTestId("admin-user-network-add-form")).toBeNull();
-    fireEvent.click(screen.getByTestId("admin-user-network-add"));
-    expect(screen.queryByTestId("admin-user-network-add-form")).not.toBeNull();
+    fireEvent.click(checkbox(OTHER_NETWORK.id));
+
+    expect(screen.queryByTestId(`admin-user-network-form-${OTHER_NETWORK.id}`)).not.toBeNull();
+    // A bind needs a nick; a checkbox cannot supply one, so nothing goes
+    // out until Save.
+    expect(adminBindCredential).not.toHaveBeenCalled();
   });
 
-  it("asks for a network, never for a user — the user IS the page", async () => {
+  it("will not save a newly enabled network until it has a nick", async () => {
     mountPage();
     await pageReady();
-    fireEvent.click(screen.getByTestId("admin-user-network-add"));
+    fireEvent.click(checkbox(OTHER_NETWORK.id));
 
-    expect(screen.queryByTestId("admin-user-network-add-network")).not.toBeNull();
-    expect(screen.queryByTestId("admin-user-network-add-user")).toBeNull();
+    const save = screen.getByTestId(
+      `admin-user-network-save-${OTHER_NETWORK.id}`,
+    ) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+
+    fireEvent.input(screen.getByTestId(`admin-user-network-nick-${OTHER_NETWORK.id}`), {
+      target: { value: "newnick" },
+    });
+    expect(save.disabled).toBe(false);
   });
 
-  it("offers only networks the user is not already on", async () => {
-    mountPage();
-    await pageReady();
-    fireEvent.click(screen.getByTestId("admin-user-network-add"));
-
-    const select = screen.getByTestId("admin-user-network-add-network") as HTMLSelectElement;
-    const values = Array.from(select.options)
-      .map((o) => o.value)
-      .filter((v) => v !== "");
-    expect(values).toEqual([String(OTHER_NETWORK.id)]);
-  });
-
-  it("binds with the page's user and the parsed network id", async () => {
+  it("binds with the page's user and the section's network", async () => {
     vi.mocked(adminBindCredential).mockResolvedValue({
       ...CRED,
       network_id: OTHER_NETWORK.id,
       network_slug: OTHER_NETWORK.slug,
-      session_action: "spawned",
     });
     mountPage();
     await pageReady();
-    fireEvent.click(screen.getByTestId("admin-user-network-add"));
 
-    fireEvent.change(screen.getByTestId("admin-user-network-add-network"), {
-      target: { value: String(OTHER_NETWORK.id) },
-    });
-    fireEvent.input(screen.getByTestId("admin-user-network-add-nick"), {
+    fireEvent.click(checkbox(OTHER_NETWORK.id));
+    fireEvent.input(screen.getByTestId(`admin-user-network-nick-${OTHER_NETWORK.id}`), {
       target: { value: "newnick" },
     });
-    fireEvent.click(screen.getByTestId("admin-user-network-add-submit"));
+    fireEvent.click(screen.getByTestId(`admin-user-network-save-${OTHER_NETWORK.id}`));
 
     await waitFor(() => {
       expect(adminBindCredential).toHaveBeenCalledWith(
@@ -239,22 +273,10 @@ describe("AdminUserPage — adding a network", () => {
   });
 
   // #1157 — vjt: *"`autojoin` makes no sense — remove it."* Channel
-  // restore rides `last_joined_channels`
-  // (`session_plan.ex`, `merge_autojoin/2`), so the admin field was never
-  // the mechanism the bouncer actually uses; offering it invited the
-  // operator to set a list that the next reconnect overwrites.
-  it("offers no autojoin control, on either form", async () => {
-    mountPage();
-    await pageReady();
-
-    fireEvent.click(screen.getByTestId(`admin-user-network-edit-${NETWORK.id}`));
-    expect(screen.queryByTestId(`admin-user-network-edit-autojoin-${NETWORK.id}`)).toBeNull();
-
-    fireEvent.click(screen.getByTestId("admin-user-network-add"));
-    expect(screen.queryByTestId("admin-user-network-add-autojoin")).toBeNull();
-  });
-
-  it("never puts autojoin_channels on a bind", async () => {
+  // restore rides `last_joined_channels` (`session_plan.ex`,
+  // `merge_autojoin/2`), so the admin field was never the mechanism the
+  // bouncer actually uses.
+  it("offers no autojoin control, and never sends one", async () => {
     vi.mocked(adminBindCredential).mockResolvedValue({
       ...CRED,
       network_id: OTHER_NETWORK.id,
@@ -262,15 +284,13 @@ describe("AdminUserPage — adding a network", () => {
     });
     mountPage();
     await pageReady();
-    fireEvent.click(screen.getByTestId("admin-user-network-add"));
+    expect(screen.queryByTestId(`admin-user-network-autojoin-${NETWORK.id}`)).toBeNull();
 
-    fireEvent.change(screen.getByTestId("admin-user-network-add-network"), {
-      target: { value: String(OTHER_NETWORK.id) },
-    });
-    fireEvent.input(screen.getByTestId("admin-user-network-add-nick"), {
+    fireEvent.click(checkbox(OTHER_NETWORK.id));
+    fireEvent.input(screen.getByTestId(`admin-user-network-nick-${OTHER_NETWORK.id}`), {
       target: { value: "newnick" },
     });
-    fireEvent.click(screen.getByTestId("admin-user-network-add-submit"));
+    fireEvent.click(screen.getByTestId(`admin-user-network-save-${OTHER_NETWORK.id}`));
 
     // The KEY, not the value: the removed form used to send an explicit
     // `undefined` for an empty box, and `objectContaining` cannot tell
@@ -280,116 +300,49 @@ describe("AdminUserPage — adding a network", () => {
     expect(Object.keys(body ?? {})).not.toContain("autojoin_channels");
   });
 
-  // #410 LOCK, carried over from the deleted Credentials tab suite: the
-  // auth-method dropdown enumerates the codegen-emitted closed set, in
-  // array order. A server-side rename or reorder regenerates wireTypes.ts
-  // and must fail HERE, not reshuffle the dropdown in silence.
-  it("renders the auth-method dropdown with the closed method set in order", async () => {
+  it("arms a removal on disable instead of performing one", async () => {
     mountPage();
     await pageReady();
-    fireEvent.click(screen.getByTestId("admin-user-network-add"));
 
-    const select = screen.getByTestId("admin-user-network-add-auth-method") as HTMLSelectElement;
-    const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toEqual(["auto", "sasl", "server_pass", "nickserv_identify", "none"]);
+    fireEvent.click(checkbox(NETWORK.id));
+
+    expect(adminUnbindCredential).not.toHaveBeenCalled();
+    expect(checkbox(NETWORK.id).checked).toBe(false);
+    expect(screen.queryByTestId(`admin-user-network-remove-${NETWORK.id}`)).not.toBeNull();
+    // The form goes with the tick: leaving it up would invite an edit to
+    // a credential the operator has just asked to delete.
+    expect(screen.queryByTestId(`admin-user-network-form-${NETWORK.id}`)).toBeNull();
+  });
+
+  it("removes the credential once the armed removal is confirmed", async () => {
+    vi.mocked(adminUnbindCredential).mockResolvedValue(undefined);
+    mountPage();
+    await pageReady();
+
+    fireEvent.click(checkbox(NETWORK.id));
+    fireEvent.click(screen.getByTestId(`admin-user-network-remove-${NETWORK.id}`));
+
+    await waitFor(() => {
+      expect(adminUnbindCredential).toHaveBeenCalledWith("test-bearer", USER.id, NETWORK.id);
+    });
+    await waitFor(() => expect(checkbox(NETWORK.id).checked).toBe(false));
+    expect(screen.queryByTestId(`admin-user-network-remove-${NETWORK.id}`)).toBeNull();
+  });
+
+  it("puts the tick back when the armed removal is cancelled", async () => {
+    mountPage();
+    await pageReady();
+
+    fireEvent.click(checkbox(NETWORK.id));
+    fireEvent.click(screen.getByTestId(`admin-user-network-keep-${NETWORK.id}`));
+
+    expect(adminUnbindCredential).not.toHaveBeenCalled();
+    expect(checkbox(NETWORK.id).checked).toBe(true);
+    expect(screen.queryByTestId(`admin-user-network-form-${NETWORK.id}`)).not.toBeNull();
   });
 });
 
-describe("AdminUserPage — session_action is per-row state", () => {
-  it("reports a bind that dialled, on the row it belongs to", async () => {
-    vi.mocked(adminBindCredential).mockResolvedValue({
-      ...CRED,
-      network_id: OTHER_NETWORK.id,
-      network_slug: OTHER_NETWORK.slug,
-      session_action: "spawned",
-    });
-    vi.mocked(adminListCredentials)
-      .mockResolvedValueOnce([CRED, FOREIGN_CRED])
-      .mockResolvedValue([CRED, FOREIGN_CRED, { ...ORPHAN_CRED, live_state: CRED.live_state }]);
-    mountPage();
-    await pageReady();
-    fireEvent.click(screen.getByTestId("admin-user-network-add"));
-    fireEvent.change(screen.getByTestId("admin-user-network-add-network"), {
-      target: { value: String(OTHER_NETWORK.id) },
-    });
-    fireEvent.input(screen.getByTestId("admin-user-network-add-nick"), {
-      target: { value: "newnick" },
-    });
-    fireEvent.click(screen.getByTestId("admin-user-network-add-submit"));
-
-    await waitFor(() => {
-      const state = screen.queryByTestId(`admin-user-network-session-action-${OTHER_NETWORK.id}`);
-      expect(state).not.toBeNull();
-      expect(state?.textContent).toContain("spawned");
-    });
-  });
-
-  // The half the deleted tab dropped entirely: a bind that did NOT dial
-  // still created the row, and `session_error` is the only thing that says
-  // why. Rendering the action without the reason would be a worse lie than
-  // rendering nothing.
-  it("reports a bind that did not dial, with the refusal", async () => {
-    vi.mocked(adminBindCredential).mockResolvedValue({
-      ...CRED,
-      network_id: OTHER_NETWORK.id,
-      network_slug: OTHER_NETWORK.slug,
-      connection_state: "parked",
-      live_state: null,
-      session_action: "not_spawned",
-      session_error: "user_cap_exceeded",
-    });
-    vi.mocked(adminListCredentials)
-      .mockResolvedValueOnce([CRED, FOREIGN_CRED])
-      .mockResolvedValue([CRED, FOREIGN_CRED, ORPHAN_CRED]);
-    mountPage();
-    await pageReady();
-    fireEvent.click(screen.getByTestId("admin-user-network-add"));
-    fireEvent.change(screen.getByTestId("admin-user-network-add-network"), {
-      target: { value: String(OTHER_NETWORK.id) },
-    });
-    fireEvent.input(screen.getByTestId("admin-user-network-add-nick"), {
-      target: { value: "newnick" },
-    });
-    fireEvent.click(screen.getByTestId("admin-user-network-add-submit"));
-
-    await waitFor(() => {
-      const state = screen.queryByTestId(`admin-user-network-session-action-${OTHER_NETWORK.id}`);
-      expect(state?.textContent).toContain("not_spawned");
-      expect(state?.textContent).toContain("user_cap_exceeded");
-    });
-  });
-
-  it("reports a stopped session on the edited row, and leaves the others alone", async () => {
-    vi.mocked(adminListCredentials).mockResolvedValue([CRED, ORPHAN_CRED]);
-    vi.mocked(adminUpdateCredential).mockResolvedValue({
-      ...CRED,
-      session_action: "stopped",
-    });
-    mountPage();
-    await pageReady();
-
-    fireEvent.click(screen.getByTestId(`admin-user-network-edit-${NETWORK.id}`));
-    fireEvent.input(screen.getByTestId(`admin-user-network-edit-password-${NETWORK.id}`), {
-      target: { value: "new-irc-pass" },
-    });
-    fireEvent.click(screen.getByTestId(`admin-user-network-edit-submit-${NETWORK.id}`));
-
-    await waitFor(() => {
-      expect(adminUpdateCredential).toHaveBeenCalledWith("test-bearer", USER.id, NETWORK.id, {
-        password: "new-irc-pass",
-      });
-    });
-    await waitFor(() => {
-      const state = screen.queryByTestId(`admin-user-network-session-action-${NETWORK.id}`);
-      expect(state?.textContent).toContain("stopped");
-    });
-    expect(
-      screen.queryByTestId(`admin-user-network-session-action-${OTHER_NETWORK.id}`),
-    ).toBeNull();
-  });
-});
-
-describe("AdminUserPage — editing and removing a network", () => {
+describe("AdminUserPage — editing a bound network", () => {
   it("sends only the fields the operator changed", async () => {
     vi.mocked(adminUpdateCredential).mockResolvedValue({
       ...CRED,
@@ -399,11 +352,10 @@ describe("AdminUserPage — editing and removing a network", () => {
     mountPage();
     await pageReady();
 
-    fireEvent.click(screen.getByTestId(`admin-user-network-edit-${NETWORK.id}`));
-    fireEvent.input(screen.getByTestId(`admin-user-network-edit-realname-${NETWORK.id}`), {
+    fireEvent.input(screen.getByTestId(`admin-user-network-realname-${NETWORK.id}`), {
       target: { value: "Alice Smith" },
     });
-    fireEvent.click(screen.getByTestId(`admin-user-network-edit-submit-${NETWORK.id}`));
+    fireEvent.click(screen.getByTestId(`admin-user-network-save-${NETWORK.id}`));
 
     await waitFor(() => {
       expect(adminUpdateCredential).toHaveBeenCalledWith("test-bearer", USER.id, NETWORK.id, {
@@ -412,22 +364,92 @@ describe("AdminUserPage — editing and removing a network", () => {
     });
   });
 
-  it("removes a network behind an inline confirm", async () => {
-    vi.mocked(adminUnbindCredential).mockResolvedValue(undefined);
+  it("refuses to save a bound network nothing has changed on", async () => {
     mountPage();
     await pageReady();
 
-    const btn = screen.getByTestId(`admin-user-network-remove-${NETWORK.id}`);
-    expect(btn.textContent).toBe("Remove");
-    fireEvent.click(btn);
-    expect(btn.textContent).toBe("Confirm remove");
-    fireEvent.click(btn);
+    // An empty PATCH would ask the server to decide whether to stop a
+    // live session over nothing.
+    const save = screen.getByTestId(`admin-user-network-save-${NETWORK.id}`) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+  });
 
-    await waitFor(() => {
-      expect(adminUnbindCredential).toHaveBeenCalledWith("test-bearer", USER.id, NETWORK.id);
+  // #410 LOCK, carried over from the deleted Credentials tab suite: the
+  // auth-method dropdown enumerates the codegen-emitted closed set, in
+  // array order. A server-side rename or reorder regenerates wireTypes.ts
+  // and must fail HERE, not reshuffle the dropdown in silence.
+  it("renders the auth-method dropdown with the closed method set in order", async () => {
+    mountPage();
+    await pageReady();
+
+    const select = screen.getByTestId(
+      `admin-user-network-auth-method-${NETWORK.id}`,
+    ) as HTMLSelectElement;
+    const values = Array.from(select.options).map((o) => o.value);
+    expect(values).toEqual(["auto", "sasl", "server_pass", "nickserv_identify", "none"]);
+  });
+});
+
+describe("AdminUserPage — session_action is per-section state", () => {
+  it("reports a bind that dialled, on the section it belongs to", async () => {
+    vi.mocked(adminBindCredential).mockResolvedValue({
+      ...CRED,
+      network_id: OTHER_NETWORK.id,
+      network_slug: OTHER_NETWORK.slug,
+      session_action: "spawned",
     });
-    await waitFor(() => {
-      expect(screen.queryByTestId(`admin-user-network-row-${NETWORK.id}`)).toBeNull();
+    mountPage();
+    await pageReady();
+
+    fireEvent.click(checkbox(OTHER_NETWORK.id));
+    fireEvent.input(screen.getByTestId(`admin-user-network-nick-${OTHER_NETWORK.id}`), {
+      target: { value: "newnick" },
     });
+    fireEvent.click(screen.getByTestId(`admin-user-network-save-${OTHER_NETWORK.id}`));
+
+    const note = await screen.findByTestId(`admin-user-network-session-action-${OTHER_NETWORK.id}`);
+    expect(note.textContent).toContain("spawned");
+    // On the section it belongs to, and on no other.
+    expect(screen.queryByTestId(`admin-user-network-session-action-${NETWORK.id}`)).toBeNull();
+  });
+
+  it("reports a bind that did not dial, with the refusal", async () => {
+    vi.mocked(adminBindCredential).mockResolvedValue({
+      ...CRED,
+      network_id: OTHER_NETWORK.id,
+      network_slug: OTHER_NETWORK.slug,
+      session_action: "not_spawned",
+      session_error: "resolve_failed",
+    });
+    mountPage();
+    await pageReady();
+
+    fireEvent.click(checkbox(OTHER_NETWORK.id));
+    fireEvent.input(screen.getByTestId(`admin-user-network-nick-${OTHER_NETWORK.id}`), {
+      target: { value: "newnick" },
+    });
+    fireEvent.click(screen.getByTestId(`admin-user-network-save-${OTHER_NETWORK.id}`));
+
+    const note = await screen.findByTestId(`admin-user-network-session-action-${OTHER_NETWORK.id}`);
+    expect(note.textContent).toContain("not_spawned");
+    // The only field that says WHY, and the reason this is not a toast.
+    expect(note.textContent).toContain("resolve_failed");
+  });
+
+  it("reports a stopped session on the edited section", async () => {
+    vi.mocked(adminUpdateCredential).mockResolvedValue({
+      ...CRED,
+      session_action: "stopped",
+    });
+    mountPage();
+    await pageReady();
+
+    fireEvent.input(screen.getByTestId(`admin-user-network-realname-${NETWORK.id}`), {
+      target: { value: "Alice Smith" },
+    });
+    fireEvent.click(screen.getByTestId(`admin-user-network-save-${NETWORK.id}`));
+
+    const note = await screen.findByTestId(`admin-user-network-session-action-${NETWORK.id}`);
+    expect(note.textContent).toContain("stopped");
   });
 });

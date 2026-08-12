@@ -527,12 +527,12 @@ const AdminSessionsTab: Component = () => {
                             >
                               <AdminFacts facts={detailFacts(row)} />
                               <Show when={row.visitor !== null}>
-                                <div class="admin-session-danger">
+                                <div class="adm-danger-strip">
                                   {/* Named for what it destroys. The verb is
                                   identity-wide: it deletes the visitor
                                   and every one of its network rows, not
                                   the row this panel hangs off. */}
-                                  <span class="admin-session-danger-note">
+                                  <span class="adm-danger-note">
                                     deletes the whole visitor identity, on every network
                                   </span>
                                   <InlineConfirmButton

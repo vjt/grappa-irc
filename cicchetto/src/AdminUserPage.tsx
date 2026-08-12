@@ -1,15 +1,11 @@
 import { type Component, createMemo, createSignal, For, onMount, Show } from "solid-js";
 import AdminBadge from "./admin/AdminBadge";
 import AdminCard from "./admin/AdminCard";
-import AdminDetailPanel from "./admin/AdminDetailPanel";
-import AdminFacts from "./admin/AdminFacts";
-import AdminRowName from "./admin/AdminRowName";
 import { AdminEmpty, AdminError, AdminLoading } from "./admin/AdminStatus";
-import AdminTable from "./admin/AdminTable";
 import { connectionTone } from "./admin/connectionTone";
-import InlineConfirmButton from "./InlineConfirmButton";
 import {
   type AdminCredential,
+  type AdminCredentialUpdate,
   type AdminNetwork,
   type AdminUser,
   ApiError,
@@ -25,12 +21,11 @@ import { IRCAUTH_FSMAUTH_METHOD } from "./lib/wireTypes";
 
 // #1158 — one user, one page, and it owns that user's network access.
 //
-// This replaces the Credentials tab, which was a flat list of every
+// This replaced the Credentials tab, which was a flat list of every
 // (user, network) binding in the database fronted by a form whose first
 // two fields were "which user" and "which network". vjt's ruling: the
-// operator's object is the USER, adding a network is a `+` and removing
-// one is a button, and the old tab disappears as an operator surface.
-// The user is the page, so nothing here asks which user.
+// operator's object is the USER. The user is the page, so nothing here
+// asks which user.
 //
 // Reached from the Users tab, which owns the signal that swaps its list
 // for this page. Deliberately NOT a route: the admin console has no
@@ -38,6 +33,27 @@ import { IRCAUTH_FSMAUTH_METHOD } from "./lib/wireTypes";
 // an open product question. Answering it later means adding a route,
 // which is additive; guessing it now would mean inventing the console's
 // first deep link as a side effect of a credentials cleanup.
+//
+// #1157 — and the "bind a credential" flow is gone with it. vjt:
+// *"niente flusso bind credential; al suo posto una sezione per rete
+// configurata con una checkbox `enabled`, e quando e' abilitata compare
+// il form di impostazioni di quella rete."*
+//
+// So the page no longer lists the networks the user HAS beside a `+`
+// offering the ones it has not. It lists every network the server has
+// configured, once, and the checkbox is the whole statement about
+// access. That collapses three surfaces — an add form, an inline edit
+// form, and a per-row detail panel — into one form per section, because
+// they only ever differed in which subset of the same fields they showed
+// and in whether the answer went out as a POST or a PATCH.
+//
+// The checkbox is NOT a write. Enabling reveals the settings form and
+// nothing reaches the server until Save, because a bind needs a nick and
+// a checkbox cannot supply one. Disabling a network that IS bound is
+// destructive — it deletes the credential and stops the session — so it
+// arms rather than fires: the box goes unchecked and the section asks.
+// That is the same two-step as the inline-confirm buttons elsewhere in
+// the console, spread across the two controls this shape already has.
 //
 // Data comes from the endpoints that already exist — no composite
 // create-user-and-bind POST (vjt: two writes, client-driven).
@@ -47,12 +63,10 @@ import { IRCAUTH_FSMAUTH_METHOD } from "./lib/wireTypes";
 // another user's networks on this user's page, which is why the unit
 // suite mounts with a foreign credential in every fetch.
 //
-// `session_action` is per-ROW state, never a toast (vjt: a toast throws
-// away four values). It carries all four — `spawned` / `not_spawned`
-// from the POST, `left_alone` / `stopped` from the PATCH — plus
-// `session_error`, the only field that says why a bind did not dial.
-// The tab this replaces surfaced two of the four, and only for the
-// PATCH: its bind handler dropped the POST reply on the floor.
+// `session_action` is per-SECTION state, never a toast (vjt: a toast
+// throws away four values). It carries all four — `spawned` /
+// `not_spawned` from the POST, `left_alone` / `stopped` from the PATCH —
+// plus `session_error`, the only field that says why a bind did not dial.
 //
 // Raw wire tokens on purpose, per the operator-console policy
 // (AdminSettingsTab lines 33-35, #943): the operator reads the same
@@ -66,30 +80,21 @@ export type Props = {
   onBack: () => void;
 };
 
-type AddForm = {
-  network_id: string;
+/** The settings a credential carries, as the form holds them. */
+type NetworkForm = {
   nick: string;
+  realname: string;
+  sasl_user: string;
   auth_method: string;
   password: string;
-  sasl_user: string;
-  realname: string;
 };
 
-const EMPTY_ADD: AddForm = {
-  network_id: "",
+const EMPTY_FORM: NetworkForm = {
   nick: "",
+  realname: "",
+  sasl_user: "",
   auth_method: "none",
   password: "",
-  sasl_user: "",
-  realname: "",
-};
-
-type EditForm = {
-  nick: string;
-  realname: string;
-  sasl_user: string;
-  auth_method: string;
-  password: string;
 };
 
 /** What the last write did to the live session, for one network. */
@@ -98,29 +103,54 @@ type SessionOutcome = {
   error: NonNullable<AdminCredential["session_error"]> | null;
 };
 
-// network + nick + auth + connection + live + actions. Feeds the detail
-// row's `colspan`; derived from the count so adding a column cannot
-// silently desync it.
-const NETWORK_COLUMNS = 6;
+// The server's truth for a bound network, as a draft. `password` starts
+// empty at every seeding: the stored one is write-only (encrypted at
+// rest, never returned), so a blank box means "leave it alone" and
+// anything typed means "replace it".
+function formOf(c: AdminCredential): NetworkForm {
+  return {
+    nick: c.nick,
+    realname: c.realname ?? "",
+    sasl_user: c.sasl_user ?? "",
+    auth_method: c.auth_method,
+    password: "",
+  };
+}
+
+// Only what the operator changed goes on the wire: the server keys the
+// session kill off the CHANGE SET, so sending an unchanged password
+// would stop a live session for nothing.
+function patchOf(c: AdminCredential, f: NetworkForm): AdminCredentialUpdate {
+  const patch: AdminCredentialUpdate = {};
+  if (f.nick !== c.nick) patch.nick = f.nick;
+  if (f.realname !== (c.realname ?? "")) patch.realname = f.realname;
+  if (f.sasl_user !== (c.sasl_user ?? "")) patch.sasl_user = f.sasl_user;
+  if (f.auth_method !== c.auth_method) patch.auth_method = f.auth_method;
+  if (f.password !== "") patch.password = f.password;
+  return patch;
+}
 
 const AdminUserPage: Component<Props> = (props) => {
   const [credentials, setCredentials] = createSignal<AdminCredential[] | null>(null);
   const [networks, setNetworks] = createSignal<AdminNetwork[]>([]);
   const [error, setError] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
+  const [submitting, setSubmitting] = createSignal<number | null>(null);
 
-  const [adding, setAdding] = createSignal(false);
-  const [addForm, setAddForm] = createSignal<AddForm>({ ...EMPTY_ADD });
-  const [submitting, setSubmitting] = createSignal(false);
+  // The draft per network, seeded lazily from the credential. Absent
+  // means "not touched since the last fetch", which is what lets a
+  // successful save fall back to the server's own answer by simply
+  // dropping the entry.
+  const [forms, setForms] = createSignal<Record<number, NetworkForm>>({});
+  // Enabled by the operator, not yet written — a bind needs a nick.
+  const [pendingEnable, setPendingEnable] = createSignal<Record<number, boolean>>({});
+  // The one network whose removal is armed. Single, like every other
+  // confirm in the console: two armed destructive verbs on one screen is
+  // how the wrong one gets pressed.
+  const [pendingDisable, setPendingDisable] = createSignal<number | null>(null);
 
-  const [editingId, setEditingId] = createSignal<number | null>(null);
-  const [editForm, setEditForm] = createSignal<EditForm | null>(null);
-
-  const [confirmingId, setConfirmingId] = createSignal<number | null>(null);
-  const [detailId, setDetailId] = createSignal<number | null>(null);
-
-  // Keyed by network id, which is the row. A write reports on the row it
-  // touched and says nothing about any other.
+  // Keyed by network id, which is the section. A write reports on the
+  // section it touched and says nothing about any other.
   const [outcomes, setOutcomes] = createSignal<Record<number, SessionOutcome>>({});
 
   /** This user's networks. The list endpoint returns everyone's. */
@@ -128,18 +158,53 @@ const AdminUserPage: Component<Props> = (props) => {
     (credentials() ?? []).filter((c) => c.user_id === props.user.id),
   );
 
-  /** Networks the user is not on yet — the only ones `+` can add. */
-  const addable = createMemo<AdminNetwork[]>(() => {
-    const taken = new Set(mine().map((c) => c.network_id));
-    return networks().filter((n) => !taken.has(n.id));
-  });
+  const credOf = (networkId: number): AdminCredential | undefined =>
+    mine().find((c) => c.network_id === networkId);
+
+  const formFor = (networkId: number): NetworkForm => {
+    const draft = forms()[networkId];
+    if (draft !== undefined) return draft;
+    const c = credOf(networkId);
+    return c === undefined ? { ...EMPTY_FORM } : formOf(c);
+  };
+
+  const setForm = (networkId: number, patch: Partial<NetworkForm>): void => {
+    setForms({ ...forms(), [networkId]: { ...formFor(networkId), ...patch } });
+  };
+
+  const clearForm = (networkId: number): void => {
+    const { [networkId]: _gone, ...rest } = forms();
+    setForms(rest);
+  };
+
+  /** The section shows its settings form. */
+  const enabled = (networkId: number): boolean => {
+    if (pendingDisable() === networkId) return false;
+    return credOf(networkId) !== undefined || pendingEnable()[networkId] === true;
+  };
+
+  /** What Save would send to a BOUND network; `null` when unbound. */
+  const pending = (networkId: number): AdminCredentialUpdate | null => {
+    const c = credOf(networkId);
+    if (c === undefined) return null;
+    return patchOf(c, formFor(networkId));
+  };
+
+  const savable = (networkId: number): boolean => {
+    if (submitting() !== null) return false;
+    if (formFor(networkId).nick.trim() === "") return false;
+    const patch = pending(networkId);
+    // Unbound: Save IS the bind, and a nick is all it needs. Bound: only
+    // when something actually changed, because an empty PATCH would ask
+    // the server to decide whether to stop a session over nothing.
+    return patch === null || Object.keys(patch).length > 0;
+  };
 
   const refresh = async (): Promise<void> => {
     const t = token();
     if (t === null) return;
     setLoading(true);
     setError(null);
-    setConfirmingId(null);
     try {
       const [creds, nets] = await Promise.all([adminListCredentials(t), adminListNetworks(t)]);
       setCredentials(creds);
@@ -160,104 +225,82 @@ const AdminUserPage: Component<Props> = (props) => {
     });
   };
 
-  const onAdd = async (e: Event): Promise<void> => {
+  const onToggle = (net: AdminNetwork): void => {
+    const id = net.id;
+    if (pendingDisable() === id) {
+      // Re-ticking a network whose removal was armed is the cancel.
+      setPendingDisable(null);
+      return;
+    }
+    if (credOf(id) !== undefined) {
+      setPendingDisable(id);
+      return;
+    }
+    if (pendingEnable()[id] === true) {
+      const { [id]: _gone, ...rest } = pendingEnable();
+      setPendingEnable(rest);
+      clearForm(id);
+      return;
+    }
+    setPendingEnable({ ...pendingEnable(), [id]: true });
+  };
+
+  const onSave = async (net: AdminNetwork, e: Event): Promise<void> => {
     e.preventDefault();
     const t = token();
     if (t === null) return;
-    const f = addForm();
-    if (f.network_id === "" || f.nick === "") return;
-    const networkId = Number.parseInt(f.network_id, 10);
-    if (!Number.isFinite(networkId)) {
-      setError("add network: invalid network_id");
-      return;
-    }
-    setSubmitting(true);
+    const id = net.id;
+    const f = formFor(id);
+    const existing = credOf(id);
+    setSubmitting(id);
     setError(null);
     try {
-      const created = await adminBindCredential(t, {
-        user_id: props.user.id,
-        network_id: networkId,
-        nick: f.nick,
-        auth_method: f.auth_method,
-        password: f.password === "" ? undefined : f.password,
-        sasl_user: f.sasl_user === "" ? undefined : f.sasl_user,
-        realname: f.realname === "" ? undefined : f.realname,
-      });
-      recordOutcome(networkId, created);
-      setAddForm({ ...EMPTY_ADD });
-      setAdding(false);
+      const saved =
+        existing === undefined
+          ? await adminBindCredential(t, {
+              user_id: props.user.id,
+              network_id: id,
+              nick: f.nick,
+              auth_method: f.auth_method,
+              password: f.password === "" ? undefined : f.password,
+              sasl_user: f.sasl_user === "" ? undefined : f.sasl_user,
+              realname: f.realname === "" ? undefined : f.realname,
+            })
+          : await adminUpdateCredential(t, props.user.id, id, patchOf(existing, f));
+      recordOutcome(id, saved);
+      // Drop the draft rather than rewriting it: the section then reads
+      // the server's own answer, and the typed password leaves with it.
+      clearForm(id);
+      const { [id]: _gone, ...rest } = pendingEnable();
+      setPendingEnable(rest);
       await refresh();
     } catch (err) {
-      setError(`add network: ${operatorApiError(err, "request_failed")}`);
+      setError(`${net.slug}: ${operatorApiError(err, "request_failed")}`);
     } finally {
-      setSubmitting(false);
+      setSubmitting(null);
     }
   };
 
-  const onArmEdit = (c: AdminCredential): void => {
-    setEditingId(c.network_id);
-    setEditForm({
-      nick: c.nick,
-      realname: c.realname ?? "",
-      sasl_user: c.sasl_user ?? "",
-      auth_method: c.auth_method,
-      password: "",
-    });
-  };
-
-  const onCancelEdit = (): void => {
-    setEditingId(null);
-    setEditForm(null);
-  };
-
-  const onSubmitEdit = async (c: AdminCredential): Promise<void> => {
+  const onRemove = async (net: AdminNetwork): Promise<void> => {
     const t = token();
     if (t === null) return;
-    const f = editForm();
-    if (f === null) return;
-    // Only what the operator changed goes on the wire: the server keys
-    // the session kill off the CHANGE SET, so sending an unchanged
-    // password would stop a live session for nothing.
-    const patch: Parameters<typeof adminUpdateCredential>[3] = {};
-    if (f.nick !== c.nick) patch.nick = f.nick;
-    if (f.realname !== (c.realname ?? "")) patch.realname = f.realname;
-    if (f.sasl_user !== (c.sasl_user ?? "")) patch.sasl_user = f.sasl_user;
-    if (f.auth_method !== c.auth_method) patch.auth_method = f.auth_method;
-    if (f.password !== "") patch.password = f.password;
-    if (Object.keys(patch).length === 0) {
-      onCancelEdit();
-      return;
-    }
+    const id = net.id;
     setError(null);
     try {
-      const updated = await adminUpdateCredential(t, props.user.id, c.network_id, patch);
-      recordOutcome(c.network_id, updated);
-      onCancelEdit();
-      await refresh();
-    } catch (err) {
-      setError(`edit ${c.network_slug}: ${operatorApiError(err, "request_failed")}`);
-    }
-  };
-
-  const onRemove = async (c: AdminCredential): Promise<void> => {
-    const t = token();
-    if (t === null) return;
-    setError(null);
-    try {
-      await adminUnbindCredential(t, props.user.id, c.network_id);
+      await adminUnbindCredential(t, props.user.id, id);
       const cur = credentials();
       if (cur !== null) {
-        setCredentials(
-          cur.filter((x) => !(x.user_id === props.user.id && x.network_id === c.network_id)),
-        );
+        setCredentials(cur.filter((x) => !(x.user_id === props.user.id && x.network_id === id)));
       }
-      // The row is gone; a verdict about its session would outlive it.
-      const { [c.network_id]: _gone, ...rest } = outcomes();
-      setOutcomes(rest);
-      setConfirmingId(null);
+      // The credential is gone; a verdict about its session would
+      // outlive it, and so would a draft of its settings.
+      const { [id]: _goneOutcome, ...restOutcomes } = outcomes();
+      setOutcomes(restOutcomes);
+      clearForm(id);
+      setPendingDisable(null);
     } catch (err) {
-      setError(`remove ${c.network_slug}: ${operatorApiError(err, "request_failed")}`);
-      setConfirmingId(null);
+      setError(`remove ${net.slug}: ${operatorApiError(err, "request_failed")}`);
+      setPendingDisable(null);
     }
   };
 
@@ -297,391 +340,217 @@ const AdminUserPage: Component<Props> = (props) => {
         <Show when={credentials() !== null}>
           <AdminCard
             title="Networks"
-            subtitle="CONNECTION is the DB state, LIVE is the BEAM pid — they can disagree"
+            subtitle="one section per configured network — tick to give this user access; CONNECTION is the DB state, LIVE is the BEAM pid, and they can disagree"
+            data-testid="admin-user-networks-card"
             actions={
-              <>
-                <button
-                  type="button"
-                  class="adm-btn"
-                  disabled={loading()}
-                  onClick={() => {
-                    void refresh();
-                  }}
-                  aria-label="refresh this user's networks"
-                  data-testid="admin-user-networks-refresh"
-                >
-                  Refresh
-                </button>
-                {/* The `+` opens the form; it is in the card head rather
-                    than in the table because the first network a user
-                    gets is added when there is no table to put it in. */}
-                <button
-                  type="button"
-                  class="adm-btn adm-btn--ok"
-                  disabled={addable().length === 0}
-                  onClick={() => setAdding(!adding())}
-                  aria-label="add a network for this user"
-                  data-testid="admin-user-network-add"
-                >
-                  + Add network
-                </button>
-              </>
+              <button
+                type="button"
+                class="adm-btn"
+                disabled={loading()}
+                onClick={() => {
+                  void refresh();
+                }}
+                aria-label="refresh this user's networks"
+                data-testid="admin-user-networks-refresh"
+              >
+                Refresh
+              </button>
             }
           >
-            <Show when={adding()}>
-              <form
-                class="admin-user-network-add-form adm-form-grid"
-                onSubmit={(e) => {
-                  void onAdd(e);
-                }}
-                data-testid="admin-user-network-add-form"
-              >
-                <select
-                  aria-label="network"
-                  value={addForm().network_id}
-                  onChange={(e) =>
-                    setAddForm({
-                      ...addForm(),
-                      network_id: (e.currentTarget as HTMLSelectElement).value,
-                    })
-                  }
-                  data-testid="admin-user-network-add-network"
-                  required
-                >
-                  <option value="">— network —</option>
-                  <For each={addable()}>
-                    {(n) => <option value={String(n.id)}>{n.slug}</option>}
-                  </For>
-                </select>
-                <input
-                  placeholder="nick"
-                  aria-label="nick"
-                  type="text"
-                  value={addForm().nick}
-                  onInput={(e) =>
-                    setAddForm({ ...addForm(), nick: (e.currentTarget as HTMLInputElement).value })
-                  }
-                  data-testid="admin-user-network-add-nick"
-                  required
+            <Show
+              when={networks().length > 0}
+              fallback={
+                // Not "this user is on no networks": with one section per
+                // configured network, an empty page means the SERVER has
+                // none — a different thing, fixed somewhere else.
+                <AdminEmpty
+                  message="no networks are configured on this server"
+                  testId="admin-user-networks-empty"
                 />
-                <select
-                  aria-label="auth method"
-                  value={addForm().auth_method}
-                  onChange={(e) =>
-                    setAddForm({
-                      ...addForm(),
-                      auth_method: (e.currentTarget as HTMLSelectElement).value,
-                    })
-                  }
-                  data-testid="admin-user-network-add-auth-method"
-                >
-                  <For each={IRCAUTH_FSMAUTH_METHOD}>
-                    {(m) => <option value={m}>auth: {m}</option>}
-                  </For>
-                </select>
-                <input
-                  placeholder="password"
-                  aria-label="password"
-                  type="password"
-                  value={addForm().password}
-                  onInput={(e) =>
-                    setAddForm({
-                      ...addForm(),
-                      password: (e.currentTarget as HTMLInputElement).value,
-                    })
-                  }
-                  data-testid="admin-user-network-add-password"
-                />
-                <input
-                  placeholder="sasl user"
-                  aria-label="sasl user"
-                  type="text"
-                  value={addForm().sasl_user}
-                  onInput={(e) =>
-                    setAddForm({
-                      ...addForm(),
-                      sasl_user: (e.currentTarget as HTMLInputElement).value,
-                    })
-                  }
-                  data-testid="admin-user-network-add-sasl-user"
-                />
-                <input
-                  placeholder="realname"
-                  aria-label="realname"
-                  type="text"
-                  value={addForm().realname}
-                  onInput={(e) =>
-                    setAddForm({
-                      ...addForm(),
-                      realname: (e.currentTarget as HTMLInputElement).value,
-                    })
-                  }
-                  data-testid="admin-user-network-add-realname"
-                />
-                <div class="adm-form-grid-actions">
-                  <button
-                    type="submit"
-                    class="adm-btn adm-btn--ok"
-                    disabled={submitting() || addForm().network_id === "" || addForm().nick === ""}
-                    data-testid="admin-user-network-add-submit"
+              }
+            >
+              <For each={networks()}>
+                {(net) => (
+                  <section
+                    class="adm-subsection admin-user-network"
+                    data-testid={`admin-user-network-${net.id}`}
                   >
-                    Add
-                  </button>
-                  <button
-                    type="button"
-                    class="adm-btn adm-btn--danger"
-                    onClick={() => {
-                      setAdding(false);
-                      setAddForm({ ...EMPTY_ADD });
-                    }}
-                    data-testid="admin-user-network-add-cancel"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </form>
-            </Show>
-
-            <Show when={mine().length === 0}>
-              <AdminEmpty
-                message="this user is on no networks"
-                testId="admin-user-networks-empty"
-              />
-            </Show>
-
-            <Show when={mine().length > 0}>
-              <AdminTable data-testid="admin-user-networks-table">
-                <thead>
-                  <tr>
-                    <th class="adm-table-grow">network</th>
-                    {/* Secondary below 900px — they move into the row's
-                        detail panel. See `AdminFacts`. */}
-                    <th class="adm-col-detail">nick</th>
-                    <th class="adm-col-detail">auth</th>
-                    <th class="adm-col-detail">connection</th>
-                    {/* LIVE stays on a phone: "the BEAM has no pid for
-                        this" is the one reading worth seeing without a
-                        tap. */}
-                    <th>live</th>
-                    <th class="adm-table-sticky-actions">actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <For each={mine()}>
-                    {(c) => (
-                      <>
-                        <tr
-                          class="admin-user-network-row"
-                          data-testid={`admin-user-network-row-${c.network_id}`}
-                        >
-                          <td class="adm-cell-title">
-                            <AdminRowName
-                              open={detailId() === c.network_id}
-                              onToggle={() =>
-                                setDetailId(detailId() === c.network_id ? null : c.network_id)
-                              }
-                              label={`details for ${c.network_slug}`}
-                              testId={`admin-user-network-details-${c.network_id}`}
+                    <div class="admin-user-network-head">
+                      <label class="adm-check">
+                        <input
+                          type="checkbox"
+                          checked={enabled(net.id)}
+                          onChange={() => onToggle(net)}
+                          aria-label={`${props.user.name} may use ${net.slug}`}
+                          data-testid={`admin-user-network-enabled-${net.id}`}
+                        />
+                        <span class="adm-subsection-title">{net.slug}</span>
+                      </label>
+                      {/* Both projections, always, for a bound network —
+                          `live: BEAM has no pid` against `connection:
+                          connected` IS the divergence signal, and deriving
+                          either from the other would erase it. */}
+                      <Show when={credOf(net.id)}>
+                        {(c) => (
+                          <span class="admin-user-network-state">
+                            <AdminBadge
+                              tone={connectionTone(c().connection_state)}
+                              testId={`admin-user-network-connection-${net.id}`}
                             >
-                              {c.network_slug}
-                            </AdminRowName>
-                            <Show when={outcomes()[c.network_id]}>
-                              {(outcome) => (
-                                <p
-                                  class="adm-card-sub"
-                                  data-testid={`admin-user-network-session-action-${c.network_id}`}
-                                >
-                                  session: {outcome().action}
-                                  <Show when={outcome().error !== null}> ({outcome().error})</Show>
-                                </p>
-                              )}
-                            </Show>
-                          </td>
-                          <td class="adm-col-detail" data-label="nick">
-                            {c.nick}
-                          </td>
-                          <td class="adm-col-detail" data-label="auth">
-                            {c.auth_method}
-                          </td>
-                          <td class="adm-col-detail" data-label="connection">
-                            <AdminBadge tone={connectionTone(c.connection_state)}>
-                              {c.connection_state}
+                              {c().connection_state}
                             </AdminBadge>
-                          </td>
-                          <td data-label="live">
                             <AdminBadge
                               tone={
-                                c.live_state === null
+                                c().live_state === null
                                   ? "neutral"
-                                  : c.live_state.alive
+                                  : c().live_state?.alive === true
                                     ? "ok"
                                     : "danger"
                               }
+                              testId={`admin-user-network-live-${net.id}`}
                             >
-                              {c.live_state === null
+                              {c().live_state === null
                                 ? "BEAM has no pid"
-                                : c.live_state.alive
+                                : c().live_state?.alive === true
                                   ? "alive"
                                   : "pid dead"}
                             </AdminBadge>
-                          </td>
-                          <td
-                            class="admin-user-network-actions adm-table-sticky-actions"
-                            data-label="actions"
+                          </span>
+                        )}
+                      </Show>
+                    </div>
+
+                    <Show when={outcomes()[net.id]}>
+                      {(outcome) => (
+                        <p
+                          class="adm-card-sub"
+                          data-testid={`admin-user-network-session-action-${net.id}`}
+                        >
+                          session: {outcome().action}
+                          <Show when={outcome().error !== null}> ({outcome().error})</Show>
+                        </p>
+                      )}
+                    </Show>
+
+                    {/* The second half of the two-step. Unticking a bound
+                        network is the arm; this is the fire, and it names
+                        what it destroys rather than repeating the word on
+                        the box. */}
+                    <Show when={pendingDisable() === net.id}>
+                      <div class="adm-danger-strip">
+                        <span class="adm-danger-note">
+                          removes this user's credential for {net.slug} and stops its session
+                        </span>
+                        <button
+                          type="button"
+                          class="adm-btn adm-btn--danger"
+                          onClick={() => {
+                            void onRemove(net);
+                          }}
+                          data-testid={`admin-user-network-remove-${net.id}`}
+                        >
+                          Remove access
+                        </button>
+                        <button
+                          type="button"
+                          class="adm-btn"
+                          onClick={() => setPendingDisable(null)}
+                          data-testid={`admin-user-network-keep-${net.id}`}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </Show>
+
+                    <Show when={enabled(net.id)}>
+                      <form
+                        class="adm-form-grid"
+                        onSubmit={(e) => {
+                          void onSave(net, e);
+                        }}
+                        data-testid={`admin-user-network-form-${net.id}`}
+                      >
+                        <input
+                          placeholder="nick"
+                          aria-label={`nick on ${net.slug}`}
+                          type="text"
+                          value={formFor(net.id).nick}
+                          onInput={(e) =>
+                            setForm(net.id, { nick: (e.currentTarget as HTMLInputElement).value })
+                          }
+                          data-testid={`admin-user-network-nick-${net.id}`}
+                          required
+                        />
+                        <input
+                          placeholder="realname"
+                          aria-label={`realname on ${net.slug}`}
+                          type="text"
+                          value={formFor(net.id).realname}
+                          onInput={(e) =>
+                            setForm(net.id, {
+                              realname: (e.currentTarget as HTMLInputElement).value,
+                            })
+                          }
+                          data-testid={`admin-user-network-realname-${net.id}`}
+                        />
+                        <input
+                          placeholder="sasl user"
+                          aria-label={`sasl user on ${net.slug}`}
+                          type="text"
+                          value={formFor(net.id).sasl_user}
+                          onInput={(e) =>
+                            setForm(net.id, {
+                              sasl_user: (e.currentTarget as HTMLInputElement).value,
+                            })
+                          }
+                          data-testid={`admin-user-network-sasl-user-${net.id}`}
+                        />
+                        <select
+                          aria-label={`auth method on ${net.slug}`}
+                          value={formFor(net.id).auth_method}
+                          onChange={(e) =>
+                            setForm(net.id, {
+                              auth_method: (e.currentTarget as HTMLSelectElement).value,
+                            })
+                          }
+                          data-testid={`admin-user-network-auth-method-${net.id}`}
+                        >
+                          <For each={IRCAUTH_FSMAUTH_METHOD}>
+                            {(m) => <option value={m}>auth: {m}</option>}
+                          </For>
+                        </select>
+                        <input
+                          placeholder="password"
+                          aria-label={`password on ${net.slug}`}
+                          type="password"
+                          value={formFor(net.id).password}
+                          onInput={(e) =>
+                            setForm(net.id, {
+                              password: (e.currentTarget as HTMLInputElement).value,
+                            })
+                          }
+                          data-testid={`admin-user-network-password-${net.id}`}
+                        />
+                        <div class="adm-form-grid-actions">
+                          <button
+                            type="submit"
+                            class="adm-btn adm-btn--ok"
+                            disabled={!savable(net.id)}
+                            data-testid={`admin-user-network-save-${net.id}`}
                           >
-                            <button
-                              type="button"
-                              class="adm-btn"
-                              onClick={() => onArmEdit(c)}
-                              data-testid={`admin-user-network-edit-${c.network_id}`}
-                            >
-                              Edit
-                            </button>
-                            <InlineConfirmButton
-                              idleLabel="Remove"
-                              confirmLabel="Confirm remove"
-                              armed={confirmingId() === c.network_id}
-                              onArm={() => setConfirmingId(c.network_id)}
-                              onConfirm={() => onRemove(c)}
-                              testId={`admin-user-network-remove-${c.network_id}`}
-                              extraClass="delete-btn"
-                            />
-                          </td>
-                        </tr>
-                        <Show when={detailId() === c.network_id}>
-                          <AdminDetailPanel
-                            title={c.network_slug}
-                            subtitle="the columns the table drops on a phone"
-                            onClose={() => setDetailId(null)}
-                            closeLabel="close network details"
-                            columns={NETWORK_COLUMNS}
-                            data-testid={`admin-user-network-detail-${c.network_id}`}
-                          >
-                            <AdminFacts
-                              facts={[
-                                { label: "nick", value: c.nick },
-                                { label: "auth", value: c.auth_method },
-                                {
-                                  label: "connection",
-                                  value: (
-                                    <AdminBadge tone={connectionTone(c.connection_state)}>
-                                      {c.connection_state}
-                                    </AdminBadge>
-                                  ),
-                                },
-                              ]}
-                            />
-                          </AdminDetailPanel>
-                        </Show>
-                        {/* Both halves matter: `editingId` names the row and
-                            `editForm` holds the draft, set in that order, and
-                            the fields read the draft unconditionally. */}
-                        <Show when={editForm() !== null && editingId() === c.network_id}>
-                          <AdminDetailPanel
-                            title={`Edit ${c.network_slug}`}
-                            subtitle="only changed fields are sent; a password or auth-method change stops the live session"
-                            onClose={onCancelEdit}
-                            closeLabel="cancel network edit"
-                            columns={NETWORK_COLUMNS}
-                            data-testid={`admin-user-network-edit-form-${c.network_id}`}
-                          >
-                            <form
-                              class="adm-form-grid"
-                              onSubmit={(e) => {
-                                e.preventDefault();
-                                void onSubmitEdit(c);
-                              }}
-                            >
-                              <NetworkEditFields
-                                form={editForm() as EditForm}
-                                onChange={(next) => setEditForm(next)}
-                                networkId={c.network_id}
-                              />
-                              <div class="adm-form-grid-actions">
-                                <button
-                                  type="submit"
-                                  class="adm-btn adm-btn--ok"
-                                  data-testid={`admin-user-network-edit-submit-${c.network_id}`}
-                                >
-                                  Save
-                                </button>
-                                <button
-                                  type="button"
-                                  class="adm-btn adm-btn--danger"
-                                  onClick={onCancelEdit}
-                                  data-testid={`admin-user-network-edit-cancel-${c.network_id}`}
-                                >
-                                  Cancel
-                                </button>
-                              </div>
-                            </form>
-                          </AdminDetailPanel>
-                        </Show>
-                      </>
-                    )}
-                  </For>
-                </tbody>
-              </AdminTable>
+                            Save
+                          </button>
+                        </div>
+                      </form>
+                    </Show>
+                  </section>
+                )}
+              </For>
             </Show>
           </AdminCard>
         </Show>
       </div>
     </div>
-  );
-};
-
-// Pure controlled inputs; no internal state. The page owns the draft.
-const NetworkEditFields: Component<{
-  form: EditForm;
-  onChange: (next: EditForm) => void;
-  networkId: number;
-}> = (props) => {
-  const set = (patch: Partial<EditForm>): void => {
-    props.onChange({ ...props.form, ...patch });
-  };
-  return (
-    <>
-      <input
-        placeholder="nick"
-        aria-label="nick"
-        type="text"
-        value={props.form.nick}
-        onInput={(e) => set({ nick: (e.currentTarget as HTMLInputElement).value })}
-        data-testid={`admin-user-network-edit-nick-${props.networkId}`}
-      />
-      <input
-        placeholder="realname"
-        aria-label="realname"
-        type="text"
-        value={props.form.realname}
-        onInput={(e) => set({ realname: (e.currentTarget as HTMLInputElement).value })}
-        data-testid={`admin-user-network-edit-realname-${props.networkId}`}
-      />
-      <input
-        placeholder="sasl user"
-        aria-label="sasl user"
-        type="text"
-        value={props.form.sasl_user}
-        onInput={(e) => set({ sasl_user: (e.currentTarget as HTMLInputElement).value })}
-        data-testid={`admin-user-network-edit-sasl-user-${props.networkId}`}
-      />
-      <select
-        aria-label="auth method"
-        value={props.form.auth_method}
-        onChange={(e) => set({ auth_method: (e.currentTarget as HTMLSelectElement).value })}
-        data-testid={`admin-user-network-edit-auth-method-${props.networkId}`}
-      >
-        <For each={IRCAUTH_FSMAUTH_METHOD}>{(m) => <option value={m}>auth: {m}</option>}</For>
-      </select>
-      <input
-        placeholder="password"
-        aria-label="password"
-        type="password"
-        value={props.form.password}
-        onInput={(e) => set({ password: (e.currentTarget as HTMLInputElement).value })}
-        data-testid={`admin-user-network-edit-password-${props.networkId}`}
-      />
-    </>
   );
 };
 

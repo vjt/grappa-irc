@@ -5452,7 +5452,12 @@ html.resize-dragging * {
 
 /* Drill-down danger zone: the note names what Delete destroys, so it must
    read as one unit with the button rather than as loose text beside it. */
-.admin-session-danger {
+/* A destructive verb, its explanation, and a rule separating it from
+   whatever it sits under. Two callers now — the Sessions drill-down's
+   "delete the whole visitor identity" and the user page's "remove this
+   user's access to a network" — so the idiom is named for the SHAPE
+   rather than for either surface. */
+.adm-danger-strip {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -5462,7 +5467,7 @@ html.resize-dragging * {
   border-top: 1px solid var(--adm-line);
 }
 
-.admin-session-danger-note {
+.adm-danger-note {
   font-family: var(--adm-font);
   font-size: 0.75rem;
   color: var(--adm-text-dim);
@@ -6655,6 +6660,25 @@ html.resize-dragging * {
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--adm-text-dim);
+}
+
+/* #1157 — a network section's heading: the tick and the slug, then the
+   two state badges. It WRAPS: the slug is operator-chosen and the widest
+   badge says "BEAM has no pid", so on a 393px phone this row cannot be
+   assumed to fit, and `.adm-check` is `nowrap` by design. Without the
+   wrap the overflow lands on the panel, which is the pan #1157 exists to
+   delete. */
+.admin-user-network-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--adm-space-2) var(--adm-space-3);
+}
+
+.admin-user-network-state {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--adm-space-2);
 }
 
 /* The add-form is set into its own recessed panel so it reads as "this

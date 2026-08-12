@@ -148,7 +148,7 @@ function adminSurfaces(vjtUserId: string): Surface[] {
         await openTab(page, "users");
         await page.getByTestId(`admin-user-networks-${vjtUserId}`).tap();
         await expect(page.getByTestId("admin-user-page")).toBeVisible({ timeout: 10_000 });
-        await expect(page.getByTestId("admin-user-networks-table")).toBeVisible({
+        await expect(page.getByTestId("admin-user-networks-card")).toBeVisible({
           timeout: 10_000,
         });
       },
