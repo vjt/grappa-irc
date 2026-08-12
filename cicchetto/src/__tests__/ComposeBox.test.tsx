@@ -1644,7 +1644,8 @@ describe("ComposeBox", () => {
         expect(orch.triggerUploads).toHaveBeenCalledTimes(1);
         const files = vi.mocked(orch.triggerUploads).mock.calls[0]?.[3] as File[];
         expect(files).toHaveLength(1);
-        expect(files[0]?.type).toBe("text/plain");
+        // #1256 — the File declares the encoding it is built with.
+        expect(files[0]?.type).toBe("text/plain; charset=utf-8");
         // The bytes are the paste itself — an upload that dropped or mangled
         // the text would still satisfy "a file was uploaded".
         await expect(files[0]?.text()).resolves.toBe(FOUR_LINES);
@@ -1708,7 +1709,8 @@ describe("ComposeBox", () => {
         expect(orch.triggerUploads).toHaveBeenCalledTimes(1);
         const files = vi.mocked(orch.triggerUploads).mock.calls[0]?.[3] as File[];
         expect(files).toHaveLength(1);
-        expect(files[0]?.type).toBe("text/plain");
+        // #1256 — the File declares the encoding it is built with.
+        expect(files[0]?.type).toBe("text/plain; charset=utf-8");
         // The bytes are the paste itself — an upload that dropped or mangled
         // the text would still satisfy "a file was uploaded".
         await expect(files[0]?.text()).resolves.toBe(OVER_CAP);

@@ -30,7 +30,12 @@ vi.mock("../lib/dropUpload", () => ({
 import { setDraft } from "../lib/compose";
 import { requestConfirm } from "../lib/confirmDialog";
 import { dropUpload } from "../lib/dropUpload";
-import { routeClipboardPaste, routePastedInput } from "../lib/pasteRoute";
+import {
+  PASTE_UPLOAD_FILENAME,
+  routeClipboardPaste,
+  routePastedInput,
+  uploadPastedText,
+} from "../lib/pasteRoute";
 
 type ClipItem = { kind: string; type: string; getAsFile: () => File | null };
 
@@ -315,5 +320,29 @@ describe("pasteRoute — one gesture cannot ask twice (#1250)", () => {
     expect(setDraft).not.toHaveBeenCalled();
     expect(pastePrevented).not.toHaveBeenCalled();
     expect(inputPrevented).not.toHaveBeenCalled();
+  });
+});
+
+// #1256 — the paste-as-.txt File must DECLARE utf-8. The bytes are ours
+// (File encodes a USVString part as UTF-8 by spec), and a server that
+// stores no charset serves no charset, which a Western-locale browser
+// then decodes as windows-1252 — every accent becomes mojibake.
+describe("uploadPastedText — the File declares its encoding", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("hands dropUpload a text/plain File labelled utf-8", async () => {
+    uploadPastedText("perché è così", "freenode", "#a");
+
+    expect(dropUpload).toHaveBeenCalledTimes(1);
+    const [[files, slug, channel]] = vi.mocked(dropUpload).mock.calls;
+    expect(slug).toBe("freenode");
+    expect(channel).toBe("#a");
+    const file = files?.[0] as File;
+    expect(file.name).toBe(PASTE_UPLOAD_FILENAME);
+    expect(file.type).toBe("text/plain; charset=utf-8");
+    // And the label is true: the bytes really are UTF-8.
+    expect(await file.text()).toBe("perché è così");
   });
 });

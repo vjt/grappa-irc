@@ -30,6 +30,21 @@ describe("categoryOf — full MIME matrix", () => {
   });
 });
 
+// #1256 — a File may carry a charset the sender knows for certain (the
+// paste-as-.txt path builds its File from a JS string, which the File
+// constructor encodes as UTF-8 by spec). An exact-string gate dropped
+// exactly that correctly-labelled File, client-side, before it could
+// reach the upload — the mirror of the server's 415.
+describe("categoryOf — parameter tolerance", () => {
+  it("a labelled paste File still categorises as a document", () => {
+    expect(categoryOf("text/plain; charset=utf-8")).toBe("document");
+  });
+
+  it("a parameter cannot smuggle an unlisted type past the gate", () => {
+    expect(categoryOf("text/html; charset=utf-8")).toBeNull();
+  });
+});
+
 describe("categoryOf — boundary rejection", () => {
   it.each([
     "image/svg+xml",

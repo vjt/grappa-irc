@@ -481,6 +481,103 @@ defmodule GrappaWeb.UploadsControllerTest do
     end
   end
 
+  describe "charset round-trip (#1256)" do
+    # `è` as UTF-8. Served unlabelled, a Western-locale browser decodes
+    # it as windows-1252 and paints `Ã¨` — the bug. The bytes are never
+    # in question; the DECLARATION is.
+    @utf8_bytes "perché è così"
+
+    test "a client declaring utf-8 is accepted — it used to be the one getting 415",
+         %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      upload = upload_fixture("paste.txt", "text/plain; charset=utf-8", @utf8_bytes)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads", %{"file" => upload})
+
+      assert %{"slug" => slug} = json_response(conn, 201)
+      assert Uploads.valid_slug?(slug)
+    end
+
+    test "GET re-emits the declared charset, so the browser stops guessing" do
+      slug =
+        uploaded_slug(
+          Phoenix.ConnTest.build_conn(),
+          "paste.txt",
+          "text/plain; charset=utf-8",
+          @utf8_bytes
+        )
+
+      get_conn = get(Phoenix.ConnTest.build_conn(), "/uploads/" <> slug)
+
+      assert response(get_conn, 200) == @utf8_bytes
+      assert get_resp_header(get_conn, "content-type") == ["text/plain; charset=utf-8"]
+      # The declaration is the fix; sniffing stays off.
+      assert get_resp_header(get_conn, "x-content-type-options") == ["nosniff"]
+    end
+
+    test "an upload that declares no charset stays unlabelled" do
+      # The mirror-image case: a genuinely Latin-1 .txt uploaded by hand
+      # renders correctly today only because nothing is declared. The
+      # label follows what the uploader said, never what we assume.
+      slug =
+        uploaded_slug(Phoenix.ConnTest.build_conn(), "hand.txt", "text/plain", "plain text body")
+
+      get_conn = get(Phoenix.ConnTest.build_conn(), "/uploads/" <> slug)
+
+      assert get_resp_header(get_conn, "content-type") == ["text/plain"]
+    end
+
+    test "a charset outside the closed set is dropped, and the upload still lands" do
+      slug =
+        uploaded_slug(
+          Phoenix.ConnTest.build_conn(),
+          "legacy.txt",
+          "text/plain; charset=iso-8859-1",
+          "caff\xE8"
+        )
+
+      get_conn = get(Phoenix.ConnTest.build_conn(), "/uploads/" <> slug)
+
+      assert get_resp_header(get_conn, "content-type") == ["text/plain"]
+    end
+
+    test "the client's parameter run never reaches the response header" do
+      # With parameters accepted, the declared type is client-controlled
+      # text one hop from a response header. It is reduced to an atom at
+      # the door and the header is rebuilt — otherwise this trades
+      # mojibake for content-type confusion and undercuts nosniff.
+      slug =
+        uploaded_slug(
+          Phoenix.ConnTest.build_conn(),
+          "smuggle.txt",
+          ~s|text/plain; charset="utf-8"; x=1, text/html|,
+          "<script>1</script>"
+        )
+
+      get_conn = get(Phoenix.ConnTest.build_conn(), "/uploads/" <> slug)
+
+      assert get_resp_header(get_conn, "content-type") == ["text/plain; charset=utf-8"]
+    end
+
+    test "a non-text type keeps its parameters off the header" do
+      slug =
+        uploaded_slug(
+          Phoenix.ConnTest.build_conn(),
+          "doc.pdf",
+          "application/pdf; charset=utf-8",
+          "%PDF-FAKE"
+        )
+
+      get_conn = get(Phoenix.ConnTest.build_conn(), "/uploads/" <> slug)
+
+      assert get_resp_header(get_conn, "content-type") == ["application/pdf"]
+    end
+  end
+
   describe "GET /uploads/:slug — Range requests (iOS video playback needs 206)" do
     # 16 known bytes so content-range arithmetic is assertable by eye.
     # text/plain: Range serving is mime-agnostic (send_file on stored
