@@ -258,6 +258,33 @@ Render it. Without it an ops-only broadcast is indistinguishable from one the
 whole channel saw — which is the defect #1247 exists to fix. The sigil set is
 per-network and open-ended, so treat an unrecognised level as "restricted",
 never as "everyone".
+### 5c. Channel list modes — ask the server which ones exist (#1251)
+
+A type-A channel mode is a LIST, not a flag, and WHICH letters are type A is
+per-network 005 data. Two fields carry this:
+
+| where | field | meaning |
+|---|---|---|
+| `isupport_changed` | `chanmodes_a` | every type-A letter the network advertises |
+| `isupport_changed` | `list_modes_queryable` | the subset grappa can actually QUERY |
+| `banlist_bundle` | `mode` | which list this bundle answers for |
+
+Query one with the `"banlist"` channel verb, whose optional `"mode"` field
+defaults to `"b"`: `{"network_id": 3, "channel": "#bofh", "mode": "z"}`. The
+reply is a `banlist_bundle` on your user topic (see §4 — it reaches only the
+socket that asked) carrying the same `mode`.
+
+**Offer `list_modes_queryable`, not `chanmodes_a`.** The difference between
+the two is a letter the network has and grappa cannot read the replies for;
+asking for it earns `unsupported_list_mode` rather than a request that never
+terminates. Do not derive the set from the letters yourself — the numeric
+table behind it is server knowledge, and it is not a constant: `728/729`
+carry bahamut's restrict list (`z`) on one network and solanum's quiet list
+(`q`) on another.
+
+The names are historical. The event is `banlist_bundle` and the verb is
+`"banlist"` because the contract is additive-only (§2) and renaming a
+published kind is a removal; both have carried every list since #1251.
 
 ---
 
