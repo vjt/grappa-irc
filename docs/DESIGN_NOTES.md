@@ -39874,3 +39874,112 @@ also joins the `nginx-csp-range-parity` pin list, where — like
 `media-src` before it — the un-widened value is a PREFIX of the widened
 one, so pinning anything shorter would let a revert sail through
 `toContain`.
+
+---
+
+## 2026-08-12 — #1157 residuals: what "one control" means, and a checkbox that is not a write
+
+The audit that opened this round is the durable part: **most of #1157 had
+already shipped** (rows become cards below 900px and the pan is gone —
+`e45a6733`; Visitors merged into one row-backed Sessions view —
+`ffc8c044` / `e296e697`; all four Vhosts requirements; #1224's ended
+sub-page — `9deecc60`). What was left was five items from the tail of
+vjt's dictation, and they are recorded here because each one settled a
+question the code will otherwise re-open.
+
+### The actions cell keeps ONE control, which is not the same as "always a menu"
+
+Dictated: on mobile disconnect/terminate "collapse into a single button
+with a dropdown". Taken literally, a visitor row — which carries exactly
+one verb (`rowActions`) — would grow a menu holding a list of one, a tap
+spent to reach something already on screen. So the rule implemented is
+the one the dictation is an instance of: **the cell holds one control at
+any width**, which a one-verb row already satisfies and a two-verb row
+reaches through the menu.
+
+**Picking from the menu ARMS the verb; it does not run it.** Equating
+"opened a menu and chose" with "confirmed" would trade a destructive
+verb's confirmation for a UI affordance, and `InlineConfirmButton` stays
+the thing that fires. That creates one hazard the desktop layout never
+had — the button that opened the menu is gone while a verb is armed, and
+the sibling verb whose idle button disarms it on desktop is not rendered
+— so the collapsed cell grows a Cancel. Scoped to the collapsed case:
+nothing vanished on a single-verb row, so nothing has to come back.
+
+`ContextMenu` is reused rather than a second popover convention grown
+inside the console. What differs between a long-press message menu and
+this is the item list; the portal, backdrop, Escape and measured
+flip/clamp are the same problem already solved.
+
+### The per-user page: a checkbox is a statement, not a write
+
+vjt: *"niente flusso bind credential; al suo posto una sezione per rete
+configurata con una checkbox `enabled`."* The page used to answer "which
+networks does this user have?" with a table and "give it another" with a
+`+` opening a form whose first field picked from the networks it did not
+have — two shapes for one fact. One section per CONFIGURED network
+collapses them, and the picker disappears because the section already is
+one. The add form, the inline edit form and the per-row detail panel
+collapse with it: they differed only in which subset of the same fields
+they showed and in whether the answer left as a POST or a PATCH.
+
+Two directions, two different rules, and both are deliberate:
+
+* **Enabling writes nothing.** A bind needs a nick and a tick cannot
+  supply one, so the tick reveals the form and Save is the POST.
+* **Disabling ARMS.** It deletes the credential and stops the session, so
+  it gets the two-step every destructive verb in the console has — here
+  spread over the two controls the shape already offers (untick, then a
+  button that names what it destroys) rather than over one button's two
+  labels.
+
+### `autojoin` was never the mechanism
+
+Removed on vjt's call, and the reason is worth keeping: channel restore
+rides `last_joined_channels` (`session_plan.ex`, `merge_autojoin/2`). The
+admin column was a second, operator-authored list that the session's own
+history overwrites, so setting it invited an operator to configure
+something the next reconnect quietly disagreed with. The field stays on
+the API types and in the mix verbs — this removed the console's offer of
+it, not the server's support.
+
+### The auth selector narrows; the server's closed set does not
+
+Ruled `sasl` / `server_pass` / `none`, confirmed twice. The two dropped
+values are not the operator's to pick, which is what decided the shape:
+
+* `nickserv_identify` is set BY THE SERVER — `registration_changeset/2`
+  flips a credential to it when the #349 wizard sees `+r`, because from
+  then on grappa must auto-identify or the nick is ghosted within the
+  minute. A credential ARRIVES holding it.
+* `auto` is the Bahamut/Azzurra PASS-handoff path documented in
+  `AuthFSM`.
+
+So the DB enum is left alone: narrowing it is a migration over live rows,
+and it belongs to **#1044**, which owns the secret-slot reshape and which
+#1157's own text defers this to ("settled there and rendered here, not
+decided twice").
+
+**The case the narrowing creates is the load-bearing one.** A `<select>`
+whose value matches no option renders as if the first option had been
+chosen, and the next save carries that choice out — silently converting a
+wizard-set `nickserv_identify` into `sasl`. The stored value is therefore
+added to the options, labelled `(set elsewhere)`, and a save that did not
+touch the field sends no `auth_method` at all.
+
+The #410 LOCK could not survive verbatim — "the dropdown enumerates the
+codegen set in array order" is precisely what a curated list breaks — but
+its reason survives in two halves: the offered list is typed
+`readonly IRCAuthFSMAuthMethod[]` so a server-side rename fails the
+build, and a runtime test asserts every offered value is still a member
+of the codegen set.
+
+### The fieldset floor, one storey up from #1228
+
+`<fieldset>` defaults to `min-inline-size: min-content` and will not
+shrink below it, so one wide child sets a floor the whole group is laid
+out against. #1228 measured that on a drawer sub-page; the widest child
+here is the auth `<select>`, sized by its longest option. `.adm-fieldset`
+carries `min-inline-size: 0` for that reason and no other. The oracle
+already existed and now exercises a fieldset: the `subpage:user-page`
+surface in `ux-6-g-admin-mobile-h-scroll`.
