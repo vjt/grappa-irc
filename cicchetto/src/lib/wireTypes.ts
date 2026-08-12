@@ -909,6 +909,7 @@ export type SessionWireIsupportChangedPayload = {
   chanmodes_b: string[];
   chanmodes_c: string[];
   chanmodes_d: string[];
+  list_modes_queryable: string[];
   prefix: Record<string, string>;
   frame_budget_base: number;
 };
@@ -1199,6 +1200,7 @@ export type SessionWireBanlistBundlePayload = {
   kind: "banlist_bundle";
   network: string;
   channel: string;
+  mode: string;
   entries: SessionWireBanlistEntry[];
 };
 
@@ -1555,6 +1557,7 @@ export const ERROR_TOKENS_CHANNEL_ERROR_TOKEN = [
   "persist_failed",
   "invalid_channel",
   "links_in_flight",
+  "unsupported_list_mode",
   "nothing_to_recover",
   "already_identified",
   "recovery_in_progress",

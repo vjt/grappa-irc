@@ -885,6 +885,7 @@ export const S_SessionWireBanlistBundlePayload = {
     kind: { l: "banlist_bundle" },
     network: "s",
     channel: "s",
+    mode: "s",
     entries: { a: S_SessionWireBanlistEntry },
   },
 } as const;
@@ -952,6 +953,7 @@ export const S_SessionWireIsupportChangedPayload = {
     chanmodes_b: { a: "s" },
     chanmodes_c: { a: "s" },
     chanmodes_d: { a: "s" },
+    list_modes_queryable: { a: "s" },
     prefix: { r: "s" },
     frame_budget_base: "i",
   },
@@ -1466,6 +1468,7 @@ export const S_ErrorTokensChannelErrorToken = {
     { l: "persist_failed" },
     { l: "invalid_channel" },
     { l: "links_in_flight" },
+    { l: "unsupported_list_mode" },
     { l: "nothing_to_recover" },
     { l: "already_identified" },
     { l: "recovery_in_progress" },
