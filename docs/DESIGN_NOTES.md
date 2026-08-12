@@ -40289,3 +40289,74 @@ a modal that keeps saying "Loading". Pre-#1251 this could not happen, because
 both ircds let anyone read the ban list; it becomes reachable exactly because
 the other lists are now reachable. A server-side watchdog that flushed a
 `timed_out` bundle is the obvious cure and is deliberately not in this change.
+
+---
+
+## 2026-08-13 — #1256: the label follows what the uploader declared, never what we assume
+
+`GET /uploads/:slug` served `text/plain` with no charset, so a browser had no
+declared encoding and fell back to its locale default — windows-1252 in a
+Western locale. Every accented paste rendered as mojibake: `è` as `Ã¨`, `—` as
+`â€”`. The bytes on disk were always valid UTF-8; `curl` proved it. Only the
+declaration was missing.
+
+**The charset could not get in either, and that is the more interesting half.**
+`validate_mime/1` matched the whole client-declared content type against the
+closed MIME allowlist with `Map.fetch`, which quietly made that allowlist a
+closed *parameter* allowlist too. `text/plain; charset=utf-8` missed, fell into
+the audio extension rescue, and came back 415. The client labelling its
+encoding honestly was the one being refused, and the one saying nothing was
+stored unlabelled — the failure was symmetric and the correct behaviour was
+unreachable from either side.
+
+**Two directions were on the table; vjt picked the one that never guesses.**
+Sniffing the bytes for UTF-8 validity at upload time would have worked for the
+reported case and broken its mirror: a genuinely Latin-1 `.txt` uploaded by
+hand renders correctly *today* precisely because nothing is declared, and most
+short Latin-1 files also happen to be valid UTF-8. The alternative labels only
+where the bytes are ours. `cicchetto/src/lib/pasteRoute.ts` builds its paste
+File from a JS string, and the File constructor encodes a USVString part as
+UTF-8 **by specification** — so for the path that produces this bug the charset
+is a fact, not an estimate. The rule that falls out generalises past the paste
+path: the label follows what the uploader declared, never what we assume.
+
+**The parse and the emit had to move together, and the emit is the security
+half.** Accepting parameters turns `row.mime` into client-controlled text one
+hop from a response header, and the `x-content-type-options: nosniff` at
+`show/2` only pins the browser to whatever *we* declare — so storing the raw
+parameter run would have traded mojibake for content-type confusion and
+undercut the exact protection that makes serving user bytes inline defensible.
+`Grappa.Uploads.ContentType.parse/1` therefore reduces the declared charset to
+an ATOM from a closed set and `header/2` re-spells it from a canonical map:
+there is no path by which a byte the client wrote reaches the header. The
+column is an `Ecto.Enum` fed from that same map, so a charset the header
+builder cannot spell cannot be persisted in the first place.
+
+**An unrecognised charset is DROPPED, not rejected.** `charset=iso-8859-1`
+still lands a 201 and is served unlabelled — which is both the pre-#1256
+behaviour and the correct one, since unlabelled is what the browser's locale
+default already handles. Refusing it would have regressed the mirror-image case
+into a 415 to protect it from a display bug. A charset is read only off a
+`text/*` type, derived from the type rather than kept as a second allowlist
+beside `@mime_categories`, because a second list is a second thing to drift.
+
+**The column is nullable with no backfill.** NULL is not missing data here: it
+is the truthful record that those clients declared nothing. Stamping `utf-8`
+across the existing rows would have been the sniffing direction wearing a
+migration's clothes.
+
+**cic could not simply start labelling.** `categoryOf` was an exact-string gate
+mirroring the server's, so the moment the paste File carried
+`type: "text/plain; charset=utf-8"` it would have been dropped *client-side*,
+before it could even earn the 415 — the same bug, one layer earlier. `baseMime`
+makes the gates parameter-tolerant: the category is a property of the type, not
+of the charset declared alongside it.
+
+**The oracle is the rendered text.** A header assertion proves what the server
+said, not that the browser stopped guessing, so the e2e navigates to the upload
+URL for real and reads the accents back out of the document, with `Ã` as a
+negative control — a byte that cannot occur in the pasted text and appears only
+under a windows-1252 misread. Server-side, the red was measured before the fix
+existed: five of the six new controller assertions failed with
+`unsupported_media_type`, and the sixth — the mirror-image guard — passed, as
+it had to.
