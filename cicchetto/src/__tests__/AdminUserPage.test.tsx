@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminCredential, AdminNetwork, AdminUser } from "../lib/api";
+import { IRCAUTH_FSMAUTH_METHOD } from "../lib/wireTypes";
 
 vi.mock("../lib/auth", () => ({
   token: () => "test-bearer",
@@ -411,19 +412,78 @@ describe("AdminUserPage — editing a bound network", () => {
     expect(save.disabled).toBe(true);
   });
 
-  // #410 LOCK, carried over from the deleted Credentials tab suite: the
-  // auth-method dropdown enumerates the codegen-emitted closed set, in
-  // array order. A server-side rename or reorder regenerates wireTypes.ts
-  // and must fail HERE, not reshuffle the dropdown in silence.
-  it("renders the auth-method dropdown with the closed method set in order", async () => {
+  // #1157 — vjt, confirmed twice: "selettore sasl / server_pass / none".
+  it("offers the three ruled auth methods and nothing else", async () => {
     mountPage();
     await pageReady();
 
     const select = screen.getByTestId(
       `admin-user-network-auth-method-${NETWORK.id}`,
     ) as HTMLSelectElement;
-    const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toEqual(["auto", "sasl", "server_pass", "nickserv_identify", "none"]);
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(["sasl", "server_pass", "none"]);
+  });
+
+  // #410 LOCK, kept through the narrowing. It used to read "the dropdown
+  // enumerates the codegen closed set in array order", which a curated
+  // list cannot satisfy — but the REASON survives: a server-side rename
+  // regenerates `wireTypes.ts`, and an offer the server no longer knows
+  // must fail HERE rather than sit in a dropdown producing 422s. The
+  // compile-time half is the `readonly IRCAuthFSMAuthMethod[]` annotation
+  // on the offered list; this is the runtime half.
+  it("offers only values the server's closed set still contains", async () => {
+    mountPage();
+    await pageReady();
+
+    const select = screen.getByTestId(
+      `admin-user-network-auth-method-${NETWORK.id}`,
+    ) as HTMLSelectElement;
+    for (const option of Array.from(select.options)) {
+      expect(IRCAUTH_FSMAUTH_METHOD as readonly string[], option.value).toContain(option.value);
+    }
+  });
+
+  // The credential this page did not create. `nickserv_identify` is set
+  // by the SERVER when the #349 registration wizard sees `+r`, so a
+  // credential can arrive holding a method the console does not offer —
+  // and a `<select>` whose value matches no option renders as if the
+  // first one had been chosen, which the next save would carry.
+  it("keeps a method it does not offer instead of silently rewriting it", async () => {
+    vi.mocked(adminListCredentials).mockResolvedValue([
+      { ...CRED, auth_method: "nickserv_identify" },
+      FOREIGN_CRED,
+    ]);
+    mountPage();
+    await pageReady();
+
+    const select = screen.getByTestId(
+      `admin-user-network-auth-method-${NETWORK.id}`,
+    ) as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toContain("nickserv_identify");
+    expect(select.value).toBe("nickserv_identify");
+    // Labelled, so the operator can tell it apart from a choice this
+    // console would have offered.
+    expect(select.textContent).toContain("set elsewhere");
+  });
+
+  it("does not send an auth_method the operator never touched", async () => {
+    vi.mocked(adminListCredentials).mockResolvedValue([
+      { ...CRED, auth_method: "nickserv_identify" },
+      FOREIGN_CRED,
+    ]);
+    vi.mocked(adminUpdateCredential).mockResolvedValue({ ...CRED, realname: "Alice Smith" });
+    mountPage();
+    await pageReady();
+
+    fireEvent.input(screen.getByTestId(`admin-user-network-realname-${NETWORK.id}`), {
+      target: { value: "Alice Smith" },
+    });
+    fireEvent.click(screen.getByTestId(`admin-user-network-save-${NETWORK.id}`));
+
+    await waitFor(() => {
+      expect(adminUpdateCredential).toHaveBeenCalledWith("test-bearer", USER.id, NETWORK.id, {
+        realname: "Alice Smith",
+      });
+    });
   });
 });
 

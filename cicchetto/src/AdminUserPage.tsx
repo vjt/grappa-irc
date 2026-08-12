@@ -18,7 +18,7 @@ import {
 } from "./lib/api";
 import { token } from "./lib/auth";
 import { operatorApiError } from "./lib/friendlyApiError";
-import { IRCAUTH_FSMAUTH_METHOD } from "./lib/wireTypes";
+import type { IRCAuthFSMAuthMethod } from "./lib/wireTypes";
 
 // #1158 — one user, one page, and it owns that user's network access.
 //
@@ -80,6 +80,50 @@ export type Props = {
   user: AdminUser;
   onBack: () => void;
 };
+
+// #1157 — what the SELECTOR offers. vjt, confirmed twice (2026-08-10
+// 00:19 and again at 00:31): *"su admin credentials confermo: selettore
+// sasl / server_pass / none"*.
+//
+// This is narrower than the server's closed set on purpose, and the
+// server's set is NOT narrowed to match — measured, both survivors have
+// an owner that is not this console:
+//
+//   * `nickserv_identify` is set BY THE SERVER. `Credential.registration_changeset/2`
+//     flips a credential to it when the #349 registration wizard sees
+//     services confirm the nick (`+r`), because from then on grappa must
+//     auto-identify or the nick gets ghosted within a minute. An operator
+//     never picks it; a credential arrives holding it.
+//   * `auto` is the Bahamut/Azzurra PASS-handoff path documented in
+//     `AuthFSM` — PASS, then SASL if the server advertises it.
+//
+// Dropping either from the DB enum is a migration over live rows and
+// belongs to #1044, which owns the secret-slot reshape and which #1157's
+// own text defers this question to ("settled there and rendered here,
+// not decided twice"). So the console stops OFFERING them and never
+// rewrites one it finds — see `authOptions`.
+//
+// Typed against the codegen union rather than as bare strings: a
+// server-side rename regenerates `wireTypes.ts` and fails HERE, which is
+// the half of the #410 LOCK worth keeping.
+const OFFERED_AUTH_METHODS: readonly IRCAuthFSMAuthMethod[] = ["sasl", "server_pass", "none"];
+
+// The offered set, plus whatever this credential actually holds. A
+// `<select>` whose value matches no option renders as if the operator
+// had chosen the first one, and the next save would quietly carry that
+// choice — so a method set outside this console is shown, labelled, and
+// left alone.
+function authOptions(current: string): string[] {
+  return OFFERED_AUTH_METHODS.includes(current as IRCAuthFSMAuthMethod)
+    ? [...OFFERED_AUTH_METHODS]
+    : [...OFFERED_AUTH_METHODS, current];
+}
+
+function authOptionLabel(method: string): string {
+  return OFFERED_AUTH_METHODS.includes(method as IRCAuthFSMAuthMethod)
+    ? method
+    : `${method} (set elsewhere)`;
+}
 
 /** The settings a credential carries, as the form holds them. */
 type NetworkForm = {
@@ -539,8 +583,8 @@ const AdminUserPage: Component<Props> = (props) => {
                                 }
                                 data-testid={`admin-user-network-auth-method-${net.id}`}
                               >
-                                <For each={IRCAUTH_FSMAUTH_METHOD}>
-                                  {(m) => <option value={m}>{m}</option>}
+                                <For each={authOptions(formFor(net.id).auth_method)}>
+                                  {(m) => <option value={m}>{authOptionLabel(m)}</option>}
                                 </For>
                               </select>
                             </AdminField>
