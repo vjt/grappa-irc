@@ -13,6 +13,10 @@ defmodule Grappa.ServerSettingsTest do
       assert ServerSettings.get_upload_global_cap_bytes() == 10 * 1024 * 1024 * 1024
     end
 
+    test "get_upload_video_max_duration_seconds/0 defaults to 120s" do
+      assert ServerSettings.get_upload_video_max_duration_seconds() == 120
+    end
+
     test "public_view/0 returns defaults under :upload" do
       view = ServerSettings.public_view()
       assert view.upload.active_host == :embedded
@@ -20,6 +24,7 @@ defmodule Grappa.ServerSettingsTest do
       assert view.upload.video_per_file_cap_bytes == 50 * 1024 * 1024
       assert view.upload.document_per_file_cap_bytes == 10 * 1024 * 1024
       assert view.upload.global_cap_bytes == 10 * 1024 * 1024 * 1024
+      assert view.upload.video_max_duration_seconds == 120
       # #324 — the deployment HTTP host alias set is always present (a
       # list; empty when no PHX_HOST is configured, as in test env).
       assert is_list(view.http_host_aliases)
@@ -138,6 +143,30 @@ defmodule Grappa.ServerSettingsTest do
     end
   end
 
+  describe "put_upload_video_max_duration_seconds/1 (#201)" do
+    test "accepts positive integer" do
+      assert :ok = ServerSettings.put_upload_video_max_duration_seconds(45)
+      assert ServerSettings.get_upload_video_max_duration_seconds() == 45
+    end
+
+    test "rejects zero" do
+      assert {:error, :invalid_value} = ServerSettings.put_upload_video_max_duration_seconds(0)
+    end
+
+    test "rejects negative" do
+      assert {:error, :invalid_value} = ServerSettings.put_upload_video_max_duration_seconds(-1)
+    end
+
+    test "rejects a non-integer" do
+      assert {:error, :invalid_value} = ServerSettings.put_upload_video_max_duration_seconds("90")
+    end
+
+    test "a stored non-positive value falls back to the default" do
+      Repo.insert!(%Setting{key: "upload.video_max_duration_seconds", value: "0"})
+      assert ServerSettings.get_upload_video_max_duration_seconds() == 120
+    end
+  end
+
   describe "PubSub broadcast on change" do
     setup do
       Phoenix.PubSub.subscribe(Grappa.PubSub, ServerSettings.topic())
@@ -162,6 +191,15 @@ defmodule Grappa.ServerSettingsTest do
           kind: :server_settings_changed,
           upload: %{video_per_file_cap_bytes: 7_777_777}
         }
+      }
+    end
+
+    test "broadcasts server_settings_changed on put_upload_video_max_duration_seconds" do
+      :ok = ServerSettings.put_upload_video_max_duration_seconds(30)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+        event: "event",
+        payload: %{kind: :server_settings_changed, upload: %{video_max_duration_seconds: 30}}
       }
     end
 

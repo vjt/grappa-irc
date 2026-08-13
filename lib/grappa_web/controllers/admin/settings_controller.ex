@@ -20,7 +20,9 @@ defmodule GrappaWeb.Admin.SettingsController do
             image_per_file_cap_bytes: pos_integer(),
             video_per_file_cap_bytes: pos_integer(),
             document_per_file_cap_bytes: pos_integer(),
-            global_cap_bytes: pos_integer()
+            audio_per_file_cap_bytes: pos_integer(),
+            global_cap_bytes: pos_integer(),
+            video_max_duration_seconds: pos_integer()
           },
           addressing: %{
             mode: "pool_with_reservations" | "static_mapping_with_reservations",
@@ -39,7 +41,9 @@ defmodule GrappaWeb.Admin.SettingsController do
           "image_per_file_cap_bytes" => pos_integer(),
           "video_per_file_cap_bytes" => pos_integer(),
           "document_per_file_cap_bytes" => pos_integer(),
-          "global_cap_bytes" => pos_integer()
+          "audio_per_file_cap_bytes" => pos_integer(),
+          "global_cap_bytes" => pos_integer(),
+          "video_max_duration_seconds" => pos_integer()
         },
         "addressing" => %{
           "mode" => "pool_with_reservations" | "static_mapping_with_reservations",
@@ -186,6 +190,12 @@ defmodule GrappaWeb.Admin.SettingsController do
 
   defp apply_upload_key("global_cap_bytes", _),
     do: {:error, {:invalid_setting, "upload.global_cap_bytes"}}
+
+  defp apply_upload_key("video_max_duration_seconds", n) when is_integer(n) and n > 0,
+    do: ServerSettings.put_upload_video_max_duration_seconds(n)
+
+  defp apply_upload_key("video_max_duration_seconds", _),
+    do: {:error, {:invalid_setting, "upload.video_max_duration_seconds"}}
 
   # Unknown key — ignore but log at warning level. Tolerant of
   # forward-compat shapes cic might send when an admin opens an

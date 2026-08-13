@@ -19,7 +19,9 @@ defmodule GrappaWeb.ServerSettingsController do
           video_per_file_cap_bytes: pos_integer(),
           document_per_file_cap_bytes: pos_integer(),
           audio_per_file_cap_bytes: pos_integer(),
-          global_cap_bytes: pos_integer()
+          global_cap_bytes: pos_integer(),
+          # #201 — video duration ceiling cic enforces before upload.
+          video_max_duration_seconds: pos_integer()
         },
         # #324 — the deployment's HTTP host aliases; cic's media-link
         # classifier admits an upload link on ANY of them. No `kind`

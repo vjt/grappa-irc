@@ -861,6 +861,7 @@ export const S_ServerSettingsWireUploadView = {
     document_per_file_cap_bytes: "i",
     audio_per_file_cap_bytes: "i",
     global_cap_bytes: "i",
+    video_max_duration_seconds: "i",
   },
 } as const;
 

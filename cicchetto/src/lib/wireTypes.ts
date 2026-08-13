@@ -846,6 +846,7 @@ export type ServerSettingsWireUploadView = {
   document_per_file_cap_bytes: number;
   audio_per_file_cap_bytes: number;
   global_cap_bytes: number;
+  video_max_duration_seconds: number;
 };
 
 export type ServerSettingsWireChangedPayload = {

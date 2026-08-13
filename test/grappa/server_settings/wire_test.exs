@@ -14,7 +14,8 @@ defmodule Grappa.ServerSettings.WireTest do
         video_per_file_cap_bytes: 52_428_800,
         document_per_file_cap_bytes: 10_485_760,
         audio_per_file_cap_bytes: 26_214_400,
-        global_cap_bytes: 10_737_418_240
+        global_cap_bytes: 10_737_418_240,
+        video_max_duration_seconds: 120
       },
       http_host_aliases: aliases
     }
@@ -34,6 +35,7 @@ defmodule Grappa.ServerSettings.WireTest do
       assert payload.upload.document_per_file_cap_bytes == 10_485_760
       assert payload.upload.audio_per_file_cap_bytes == 26_214_400
       assert payload.upload.global_cap_bytes == 10_737_418_240
+      assert payload.upload.video_max_duration_seconds == 120
     end
 
     test "passes litterbox host atom through" do
@@ -61,6 +63,7 @@ defmodule Grappa.ServerSettings.WireTest do
       assert decoded["kind"] == "server_settings_changed"
       assert decoded["upload"]["active_host"] == "embedded"
       assert decoded["upload"]["audio_per_file_cap_bytes"] == 26_214_400
+      assert decoded["upload"]["video_max_duration_seconds"] == 120
       assert decoded["http_host_aliases"] == ["irc.sindro.me"]
     end
 
@@ -78,7 +81,8 @@ defmodule Grappa.ServerSettings.WireTest do
                video_per_file_cap_bytes: 52_428_800,
                document_per_file_cap_bytes: 10_485_760,
                audio_per_file_cap_bytes: 26_214_400,
-               global_cap_bytes: 10_737_418_240
+               global_cap_bytes: 10_737_418_240,
+               video_max_duration_seconds: 120
              } =
                Wire.upload_view(%{
                  active_host: :embedded,
@@ -86,7 +90,8 @@ defmodule Grappa.ServerSettings.WireTest do
                  video_per_file_cap_bytes: 52_428_800,
                  document_per_file_cap_bytes: 10_485_760,
                  audio_per_file_cap_bytes: 26_214_400,
-                 global_cap_bytes: 10_737_418_240
+                 global_cap_bytes: 10_737_418_240,
+                 video_max_duration_seconds: 120
                })
     end
 
@@ -98,7 +103,8 @@ defmodule Grappa.ServerSettings.WireTest do
                  video_per_file_cap_bytes: 2,
                  document_per_file_cap_bytes: 3,
                  audio_per_file_cap_bytes: 5,
-                 global_cap_bytes: 4
+                 global_cap_bytes: 4,
+                 video_max_duration_seconds: 6
                })
     end
 

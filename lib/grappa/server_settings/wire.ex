@@ -71,7 +71,8 @@ defmodule Grappa.ServerSettings.Wire do
           video_per_file_cap_bytes: pos_integer(),
           document_per_file_cap_bytes: pos_integer(),
           audio_per_file_cap_bytes: pos_integer(),
-          global_cap_bytes: pos_integer()
+          global_cap_bytes: pos_integer(),
+          video_max_duration_seconds: pos_integer()
         }
 
   @typedoc """
@@ -96,7 +97,8 @@ defmodule Grappa.ServerSettings.Wire do
           video_per_file_cap_bytes: pos_integer(),
           document_per_file_cap_bytes: pos_integer(),
           audio_per_file_cap_bytes: pos_integer(),
-          global_cap_bytes: pos_integer()
+          global_cap_bytes: pos_integer(),
+          video_max_duration_seconds: pos_integer()
         }) :: upload_view()
   def upload_view(%{} = upload) do
     %{
@@ -105,7 +107,11 @@ defmodule Grappa.ServerSettings.Wire do
       video_per_file_cap_bytes: upload.video_per_file_cap_bytes,
       document_per_file_cap_bytes: upload.document_per_file_cap_bytes,
       audio_per_file_cap_bytes: upload.audio_per_file_cap_bytes,
-      global_cap_bytes: upload.global_cap_bytes
+      global_cap_bytes: upload.global_cap_bytes,
+      # #201 — the video duration ceiling cic enforces client-side. A
+      # duration, not a byte count: it rides the upload subtree because
+      # that is where every other upload policy knob already lives.
+      video_max_duration_seconds: upload.video_max_duration_seconds
     }
   end
 

@@ -23,6 +23,16 @@ defmodule GrappaWeb.ServerSettingsControllerTest do
       assert upload["document_per_file_cap_bytes"] == 10 * 1024 * 1024
       assert upload["audio_per_file_cap_bytes"] == 25 * 1024 * 1024
       assert upload["global_cap_bytes"] == 10 * 1024 * 1024 * 1024
+      assert upload["video_max_duration_seconds"] == 120
+    end
+
+    test "an admin-tuned video duration cap reaches the operator view (#201)", %{conn: conn} do
+      :ok = ServerSettings.put_upload_video_max_duration_seconds(45)
+
+      {_, session} = user_and_session([])
+      conn = conn |> put_bearer(session.id) |> get("/api/server-settings")
+      assert %{"upload" => upload} = json_response(conn, 200)
+      assert upload["video_max_duration_seconds"] == 45
     end
 
     test "response carries the deployment HTTP host aliases (#324)", %{conn: conn} do

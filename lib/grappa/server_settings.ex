@@ -19,6 +19,7 @@ defmodule Grappa.ServerSettings do
   | `"upload.document_per_file_cap_bytes"`  | `pos_integer()`            | 10_485_760 (10MB)| UX-6-B |
   | `"upload.audio_per_file_cap_bytes"`     | `pos_integer()`            | 26_214_400 (25MB)| audio-uploads |
   | `"upload.global_cap_bytes"`             | `pos_integer()`            | 10_737_418_240 (10GB) | UX-6-B |
+  | `"upload.video_max_duration_seconds"`   | `pos_integer()`            | 120              | #201 |
   | `"addressing.mode"`                     | `:pool_with_reservations \\| :static_mapping_with_reservations` | `:pool_with_reservations` | #543 |
   | `"addressing.static_mapping_prefix"`    | `String.t()` (v6 CIDR) \\| `nil` | `nil`       | #543 |
 
@@ -30,7 +31,7 @@ defmodule Grappa.ServerSettings do
 
   Returns the operator-visible subset for `GET /api/server-settings`:
   the upload block (active_host + the per-category per-file caps +
-  global_cap_bytes) plus `http_host_aliases` — the deployment's HTTP
+  global_cap_bytes + the #201 video duration ceiling) plus `http_host_aliases` — the deployment's HTTP
   host aliases (#324, from `Grappa.HttpHosts`, config-derived not
   DB-backed) that cic's media-link classifier admits. Admin-only
   settings (when added) stay out of this view.
@@ -87,6 +88,7 @@ defmodule Grappa.ServerSettings do
   @key_upload_document_per_file_cap_bytes "upload.document_per_file_cap_bytes"
   @key_upload_audio_per_file_cap_bytes "upload.audio_per_file_cap_bytes"
   @key_upload_global_cap_bytes "upload.global_cap_bytes"
+  @key_upload_video_max_duration_seconds "upload.video_max_duration_seconds"
 
   # Defaults
   @default_upload_active_host :embedded
@@ -99,6 +101,10 @@ defmodule Grappa.ServerSettings do
   # 20260609204800_rename_per_file_cap_setting_to_image.exs).
   @default_upload_audio_per_file_cap_bytes 25 * 1024 * 1024
   @default_upload_global_cap_bytes 10 * 1024 * 1024 * 1024
+  # #201 — the client-side video duration ceiling, formerly cic's
+  # compile-time `MAX_DURATION_SECONDS`. Same 2 minutes it always was;
+  # what changes is that an operator can now move it without a rebuild.
+  @default_upload_video_max_duration_seconds 120
 
   # #543 outbound addressing mode (admin-only — NOT in public_view/0).
   @key_addressing_mode "addressing.mode"
@@ -127,7 +133,8 @@ defmodule Grappa.ServerSettings do
             video_per_file_cap_bytes: pos_integer(),
             document_per_file_cap_bytes: pos_integer(),
             audio_per_file_cap_bytes: pos_integer(),
-            global_cap_bytes: pos_integer()
+            global_cap_bytes: pos_integer(),
+            video_max_duration_seconds: pos_integer()
           },
           http_host_aliases: [String.t()]
         }
@@ -216,6 +223,33 @@ defmodule Grappa.ServerSettings do
   end
 
   def put_upload_global_cap_bytes(_), do: {:error, :invalid_value}
+
+  # ---- upload.video_max_duration_seconds (#201) --------------------
+
+  @doc """
+  Returns the video-upload duration ceiling in seconds (default 120).
+
+  Enforced client-side by cic's upload orchestrator (the duration probe
+  needs the file, which never leaves the browser when the clip is over
+  the ceiling); this setting is what makes that ceiling operator-tunable
+  instead of a compile-time constant.
+  """
+  @spec get_upload_video_max_duration_seconds() :: pos_integer()
+  def get_upload_video_max_duration_seconds do
+    read_cap(
+      @key_upload_video_max_duration_seconds,
+      @default_upload_video_max_duration_seconds
+    )
+  end
+
+  @doc "Pins the video-upload duration ceiling. Positive integer seconds only."
+  @spec put_upload_video_max_duration_seconds(pos_integer()) ::
+          :ok | {:error, :invalid_value | :db_unavailable}
+  def put_upload_video_max_duration_seconds(n) when is_integer(n) and n > 0 do
+    put_raw(@key_upload_video_max_duration_seconds, Integer.to_string(n))
+  end
+
+  def put_upload_video_max_duration_seconds(_), do: {:error, :invalid_value}
 
   # ---- addressing.mode (#543) --------------------------------------
 
@@ -310,7 +344,8 @@ defmodule Grappa.ServerSettings do
         video_per_file_cap_bytes: get_upload_per_file_cap_bytes(:video),
         document_per_file_cap_bytes: get_upload_per_file_cap_bytes(:document),
         audio_per_file_cap_bytes: get_upload_per_file_cap_bytes(:audio),
-        global_cap_bytes: get_upload_global_cap_bytes()
+        global_cap_bytes: get_upload_global_cap_bytes(),
+        video_max_duration_seconds: get_upload_video_max_duration_seconds()
       },
       # #324 — deployment HTTP host aliases (config, not DB): boot-derived
       # in config/runtime.exs, stashed via Grappa.HttpHosts. cic's media-

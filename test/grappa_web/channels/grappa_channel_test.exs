@@ -1240,7 +1240,8 @@ defmodule GrappaWeb.GrappaChannelTest do
           video_per_file_cap_bytes: video_cap,
           document_per_file_cap_bytes: document_cap,
           audio_per_file_cap_bytes: audio_cap,
-          global_cap_bytes: global_cap_bytes
+          global_cap_bytes: global_cap_bytes,
+          video_max_duration_seconds: video_max_duration
         }
       })
 
@@ -1250,6 +1251,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert is_integer(document_cap) and document_cap > 0
       assert is_integer(audio_cap) and audio_cap > 0
       assert is_integer(global_cap_bytes) and global_cap_bytes > 0
+      assert is_integer(video_max_duration) and video_max_duration > 0
     end
 
     test "after-join snapshot: pushes server_settings_changed for visitor socket" do
