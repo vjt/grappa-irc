@@ -7,7 +7,8 @@ defmodule Grappa.Visitors.SessionPlanTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.Networks.Credentials
+  alias Grappa.Networks.{Credentials, Servers}
+  alias Grappa.Session.Backoff
   alias Grappa.Visitors
   alias Grappa.Visitors.SessionPlan
 
@@ -89,6 +90,25 @@ defmodule Grappa.Visitors.SessionPlanTest do
       {:ok, visitor} = Visitors.find_or_provision_anon("vjt", other.slug, "1.2.3.4")
 
       assert {:error, :network_unconfigured} = SessionPlan.resolve(visitor, network)
+    end
+
+    # #93 — the visitor half of the outer fail-over loop. Same derivation as
+    # the user side (`Grappa.Networks.SessionPlan`): the respawn door reads
+    # the `Session.Backoff` counter the `:transient` cycle already maintains,
+    # so a dead endpoint rolls to the next enabled one instead of parking the
+    # visitor on it forever.
+    test "refresh_plan walks the enabled server ring as failures accrue (#93)" do
+      {network, _} = network_with_server(slug: "azzurra", port: 6667, host: "primary")
+      {:ok, _} = Servers.add_server(network, %{host: "secondary", port: 6667, priority: 9})
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt-ring", "azzurra", "1.2.3.4")
+      on_exit(fn -> Backoff.forget({:visitor, visitor.id}) end)
+
+      assert {:ok, plan} = SessionPlan.resolve(visitor, network)
+      assert plan.host == "primary"
+
+      :ok = Backoff.record_failure({:visitor, visitor.id}, network.id)
+      assert {:ok, second} = plan.refresh_plan.()
+      assert second.host == "secondary"
     end
 
     # CP24 bucket E lifecycle/S1: visitor plans carry a `credential_failer`

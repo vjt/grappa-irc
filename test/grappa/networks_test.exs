@@ -29,6 +29,7 @@ defmodule Grappa.NetworksTest do
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.{Credential, Credentials, Network, Server, Servers, SessionPlan}
   alias Grappa.PubSub.Topic
+  alias Grappa.Session.Backoff
   alias Grappa.Visitors.Visitor
 
   defp user_fixture(name \\ nil) do
@@ -41,6 +42,24 @@ defmodule Grappa.NetworksTest do
     slug = slug || "net-#{System.unique_integer([:positive])}"
     {:ok, network} = Networks.find_or_create_network(%{slug: slug})
     network
+  end
+
+  # #93 — builds the `{host, enabled}` list as an ascending-priority ring,
+  # binds `user` to it and resolves the spawn-door plan.
+  defp bind_ring(user, net, hosts) do
+    Enum.each(Enum.with_index(hosts, 1), fn {{host, enabled}, priority} ->
+      {:ok, _} =
+        Servers.add_server(net, %{host: host, port: 6667, priority: priority, enabled: enabled})
+    end)
+
+    {:ok, _} =
+      Credentials.bind_credential(user, net, %{
+        nick: "vjt",
+        auth_method: :none,
+        autojoin_channels: []
+      })
+
+    user |> Credentials.get_credential!(net) |> SessionPlan.resolve()
   end
 
   describe "find_or_create_network/1" do
@@ -1738,6 +1757,84 @@ defmodule Grappa.NetworksTest do
       # false branch — same semantics, strictly more informative shape).
       :ok = Credentials.unbind_credential(user, net)
       assert plan.refresh_plan.() == {:error, :not_found}
+    end
+  end
+
+  # #93 — the OUTER loop of the two-level fail-over machine (#271 shipped
+  # the inner, per-leaf one inside `Grappa.IRC.Client`). The iteration
+  # mechanism is the existing `:transient` respawn: every abnormal exit
+  # bumps `Session.Backoff`, the supervisor restarts the session, and
+  # `Session.Server.init/1` calls `refresh_plan`. So the ring position is
+  # DERIVED from the failure counter that already exists — no parallel
+  # per-server state to keep in sync.
+  describe "SessionPlan fail-over ring (#93)" do
+    setup do
+      user = user_fixture()
+      net = network_fixture()
+      on_exit(fn -> Backoff.forget({:user, user.id}) end)
+
+      {:ok, user: user, net: net}
+    end
+
+    test "each recorded failure advances the plan to the next enabled server", ctx do
+      %{user: user, net: net} = ctx
+      assert {:ok, plan} = bind_ring(user, net, [{"primary", true}, {"secondary", true}])
+      assert plan.host == "primary"
+
+      :ok = Backoff.record_failure({:user, user.id}, net.id)
+      assert {:ok, second} = plan.refresh_plan.()
+      assert second.host == "secondary"
+    end
+
+    test "the ring wraps back to the primary after the last enabled server", ctx do
+      %{user: user, net: net} = ctx
+
+      assert {:ok, plan} =
+               bind_ring(user, net, [{"primary", true}, {"secondary", true}, {"tertiary", true}])
+
+      for expected <- ["secondary", "tertiary", "primary", "secondary"] do
+        :ok = Backoff.record_failure({:user, user.id}, net.id)
+        assert {:ok, fresh} = plan.refresh_plan.()
+        assert fresh.host == expected
+      end
+    end
+
+    test "a disabled server is not a ring position", ctx do
+      %{user: user, net: net} = ctx
+
+      assert {:ok, plan} =
+               bind_ring(user, net, [{"primary", true}, {"off", false}, {"secondary", true}])
+
+      :ok = Backoff.record_failure({:user, user.id}, net.id)
+      assert {:ok, second} = plan.refresh_plan.()
+      assert second.host == "secondary"
+    end
+
+    test "clearing the failure history puts the ring back on the primary", ctx do
+      %{user: user, net: net} = ctx
+      assert {:ok, plan} = bind_ring(user, net, [{"primary", true}, {"secondary", true}])
+
+      :ok = Backoff.record_failure({:user, user.id}, net.id)
+      assert {:ok, %{host: "secondary"}} = plan.refresh_plan.()
+
+      :ok = Backoff.forget({:user, user.id})
+      assert {:ok, back} = plan.refresh_plan.()
+      assert back.host == "primary"
+    end
+
+    # The spawn doors (Bootstrap, SpawnOrchestrator, the /connect verb) mean
+    # "start this session now", and they reset the ladder before spawning —
+    # so `resolve/1` is pinned to the primary and never reads the counter.
+    # Only the respawn door walks the ring.
+    test "resolve/1 stays on the primary whatever the failure history says", ctx do
+      %{user: user, net: net} = ctx
+      assert {:ok, _} = bind_ring(user, net, [{"primary", true}, {"secondary", true}])
+
+      :ok = Backoff.record_failure({:user, user.id}, net.id)
+      :ok = Backoff.record_failure({:user, user.id}, net.id)
+
+      assert {:ok, plan} = user |> Credentials.get_credential!(net) |> SessionPlan.resolve()
+      assert plan.host == "primary"
     end
   end
 
