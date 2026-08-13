@@ -49,7 +49,10 @@ test.describe("#1283 — TOTP enrolment asks for the account password", () => {
   test("a wrong password is refused as a credential, not as a malformed body", async ({ page }) => {
     const user = specUser();
     await loginAs(page, user);
-    const pane = await openSettingsSection(page, "security");
+    const subpage = await openSettingsSection(page, "security");
+    // Scoped to the TOTP section: the passkey section below is a sibling
+    // inside the same subpage and renders its own alert.
+    const pane = subpage.getByTestId("totp-settings");
 
     const form = pane.getByTestId("totp-enable-form");
     await expect(form).toBeVisible();
@@ -79,7 +82,8 @@ test.describe("#1283 — TOTP enrolment asks for the account password", () => {
   test("the right password reaches the QR and the manual key", async ({ page }) => {
     const user = specUser();
     await loginAs(page, user);
-    const pane = await openSettingsSection(page, "security");
+    const subpage = await openSettingsSection(page, "security");
+    const pane = subpage.getByTestId("totp-settings");
 
     const form = pane.getByTestId("totp-enable-form");
     await form.getByLabel("Account password").fill(user.password);
