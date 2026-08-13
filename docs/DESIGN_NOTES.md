@@ -41380,3 +41380,82 @@ retry is already counted somewhere that survives the restart — a failure
 counter kept for backoff is usually also the attempt ordinal, and deriving the
 second use from it costs one argument instead of one more thing to keep in
 sync.
+<!-- entry #1288 -->
+
+---
+
+## 2026-08-13 — #1288: a catch-up page is one store write, not two hundred
+
+`refreshScrollback` fetches up to `PAGE_LIMIT = 200` rows on every WS
+join-ok and used to ingest them one `appendToScrollback` per row. Each of
+those calls scans the whole pane for a duplicate id, copies the row array,
+copies the channel map, and writes the Solid signal — so a full page did
+O(page × pane) array work and ran the pane's reactive graph **200 times**.
+A reporter's Firefox Profiler trace (desktop, full JS stacks, the
+granularity #408 lacked) put 1917 of 2002 cicchetto samples under that one
+verb, in 21 bursts of 20–180 ms, with DOM construction/teardown and cycle
+collection as the native leaves. It now ingests the page in ONE store write.
+
+**The batched shape already in this module is not the same verb.** The
+issue proposed reusing `mergeIntoScrollback`, and it does dedupe by Set and
+write once — but it deliberately applies no S20 ring cap (a scroll-up
+prepend must not be truncated mid-scroll) and so never invalidates the
+`loadMoreExhausted` latch an eviction implies. Swapping it in was measured
+against the new specs: it passes both cost oracles and breaks four
+invariants — the pane grows to 1200 rows and stays there, no row is ever
+evicted, the latch survives, and an id repeated within one page lands
+twice. It would have removed the ring cap from the reconnect catch-up path,
+which is one of the two paths S20 names, and **every pre-existing cap test
+would have stayed green**, because they all drive `appendToScrollback`
+directly. So `appendPageToScrollback` is the page-shaped verb and
+`appendToScrollback` is now its P=1 case: one implementation, both arities.
+
+**One row scans, a page indexes.** The live WS append pays a single O(n)
+comparison pass and allocates nothing; building a Set of every loaded id
+would cost it two allocations per message on a busy channel, which is more
+of the GC churn the profile complains about. A page cannot afford the scan
+— doing it P times IS the cost being removed.
+
+**The cap is applied once over the union**, not after every row. Identical
+on every ordinary ingest: eviction only drops from the head and the
+protected suffix is decided by the same read cursor, so `min(surplus,
+unprotected-prefix)` does not care whether the surplus arrived in one step
+or in P. The two differ only when a page carries rows OLDER than what is
+being evicted, where the batch keeps the newest CAP rows of the union and
+the loop could keep a late arrival having already dropped a newer row.
+
+**Measured, both sides, same harness** (`scrollbackIngestCost.test.ts`,
+jsdom) — reactive passes / id reads / ms, before → after:
+
+| pane | page | passes | id reads | ms |
+|---|---|---|---|---|
+| 200 | 200 | 200 → 1 | 119 801 → 601 | 0.47 → 0.10 |
+| 500 | 200 | 200 → 1 | 239 801 → 901 | 0.63 → 0.09 |
+| 900 | 200 | 200 → 1 | 389 901 → 1301 | 1.06 → 0.15 |
+
+**The committed oracle measures work, not time.** A wall-clock threshold in
+a shared-runner suite goes red on host load rather than on a regression, so
+the guards assert the reactive-pass count and an id-read bound (every row
+is handed to the store with `id` behind a counting getter). Both are exact
+and reproducible; the ms column above is reported, never asserted, and it
+is jsdom — it excludes the DOM construction the trace shows as the actual
+leaf cost, so it understates the win rather than proving it.
+
+**Displacement on the PAGE axis only, and the pane-axis assertion was
+deleted rather than kept as scenery.** Both shapes are linear in the pane —
+the loop scans it P times, the batch indexes it once — so quadrupling the
+pane moves both numbers (measured ratios 2.86 vs 2.67) and the S20 cap pins
+the pane at 1000 so a "4× pane" is not one. It passed against the unfixed
+code, which is the definition of an assertion that cannot fail.
+
+**Not claimed:** that this explains the #408 sleep-duration correlation.
+That correlation remains consistency, not measurement — nobody has profiled
+across sleep durations, and this note is not the place it becomes a fact.
+The 30% of the reporter's busy window spent in extension content scripts is
+amplification of our DOM churn, measured on their browser, and is neither
+our defect nor the extensions' fault.
+
+**Apply:** when a hot path ingests a COLLECTION through a verb written for
+ONE item, the fix is the page-shaped verb, not the nearest batched
+neighbour — check the neighbour's side effects against the loop's before
+reusing it, because a cost test cannot tell the two apart.

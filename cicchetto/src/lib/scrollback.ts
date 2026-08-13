@@ -129,6 +129,43 @@ const byServerTimeThenId = (a: ScrollbackMessage, b: ScrollbackMessage): number 
   return a.id - b.id;
 };
 
+// #1288 — the rows of `page` the pane does not already hold, in arrival order.
+// First-write-wins, including WITHIN the page: an id repeated twice in one
+// page yields the first occurrence, which is what the per-row loop this
+// replaced did by deduping against a list it was growing as it went.
+//
+// One row SCANS and a page INDEXES, deliberately. The live WS append is the
+// hot path and arrives one row at a time; it pays a single O(n) comparison
+// pass and allocates nothing, where building a Set of every loaded id would
+// cost it two allocations per message on a busy channel — more GC churn, which
+// is the thing the profile complained about. A page cannot afford the scan:
+// doing it P times IS the O(P*n) this exists to remove.
+const freshRows = (
+  existing: ScrollbackMessage[],
+  page: ScrollbackMessage[],
+): ScrollbackMessage[] => {
+  const only = page.length === 1 ? page[0] : undefined;
+  if (only !== undefined) return existing.some((m) => m.id === only.id) ? [] : page;
+  const ids = new Set<number>();
+  for (const m of existing) ids.add(m.id);
+  return page.filter((m) => {
+    if (ids.has(m.id)) return false;
+    ids.add(m.id);
+    return true;
+  });
+};
+
+// Are these rows already in the order the store keeps them? Gates the
+// append-without-sorting fast path below.
+const isCanonicallyOrdered = (rows: ScrollbackMessage[]): boolean => {
+  for (let i = 1; i < rows.length; i++) {
+    const prev = rows[i - 1];
+    const cur = rows[i];
+    if (prev !== undefined && cur !== undefined && byServerTimeThenId(prev, cur) > 0) return false;
+  }
+  return true;
+};
+
 // Trim `rows` (ASC by id) to the ring cap by dropping the OLDEST, but NEVER a
 // row at/after the read cursor: the in-pane `── XX unread ──` divider anchors
 // on the cursor and its unread rows (CLAUDE.md "Read state is server-owned"),
@@ -369,25 +406,61 @@ const exports = identityScopedStore((onIdentityChange) => {
   // no re-sort), so push only when the row is at/after the tail; otherwise
   // re-sort it into position. Costs one comparison against the tail on the hot
   // path and a re-sort only on the rare out-of-order row.
-  const appendToScrollback = (key: ChannelKey, msg: ScrollbackMessage) => {
+  //
+  // #1288 — this is the PAGE-shaped verb, and `appendToScrollback` below is
+  // its P=1 case. The live WS handler ingests one row; `refreshScrollback`
+  // ingests a whole REST catch-up page, and used to do it by calling the
+  // single-row verb once per row. That cost O(page * pane) array work and —
+  // the part that reaches the DOM — one Solid signal write, hence one reactive
+  // pass, PER MESSAGE. A reporter's Firefox Profiler trace (desktop, 9 s
+  // capture) put 1917 of 2002 cicchetto samples under `refreshScrollback`, in
+  // 21 bursts of 20-180 ms, with DOM construction/teardown and cycle
+  // collection as the native leaves. One write per page collapses that to
+  // O(page + pane) and a single pass.
+  //
+  // Why NOT `mergeIntoScrollback`, which is already batched and sits right
+  // below: it is a different verb, not a faster spelling of this one. It
+  // applies no S20 ring cap — deliberately, so a scroll-up prepend is not
+  // truncated mid-scroll — and therefore never invalidates the loadMore
+  // exhausted latch an eviction implies. Reusing it here would have silently
+  // dropped the cap from the reconnect catch-up path, which is one of the two
+  // paths S20 was written for.
+  //
+  // The cap is applied ONCE over the union instead of after every row. Same
+  // result on every ordinary ingest: eviction only ever drops from the head,
+  // the protected suffix is decided by the same read cursor either way, and
+  // the arithmetic (drop min(surplus, unprotected-prefix)) does not care
+  // whether the surplus arrived in one step or P. The two differ only when a
+  // page carries rows OLDER than what the cap is evicting, where the batch
+  // keeps the newest CAP rows of the union and the loop could keep a late
+  // arrival while having already dropped a newer row.
+  const appendPageToScrollback = (key: ChannelKey, page: ScrollbackMessage[]): void => {
+    if (page.length === 0) return;
     // S20: track whether the ring cap evicted older rows so we can reset the
     // loadMore exhausted latch below. Computed inside the pure updater,
     // consumed after it runs (Solid calls a plain-signal updater exactly once,
     // synchronously) — keeps the setter body free of the Set side-effect.
     let evicted = false;
     setScrollbackByChannel((prev) => {
-      const existing = prev[key];
-      if (existing?.some((m) => m.id === msg.id)) return prev;
-      let next: ScrollbackMessage[];
-      if (!existing || existing.length === 0) {
-        next = [msg];
-      } else {
-        const tail = existing[existing.length - 1];
-        next =
-          tail && byServerTimeThenId(msg, tail) < 0
-            ? [...existing, msg].sort(byServerTimeThenId)
-            : [...existing, msg];
-      }
+      const existing = prev[key] ?? [];
+      const fresh = freshRows(existing, page);
+      // Nothing new: return the SAME object so Solid's equality check skips
+      // the write entirely. A wholly-duplicate page (every row already live)
+      // must not re-render the pane.
+      if (fresh.length === 0) return prev;
+      const tail = existing[existing.length - 1];
+      const head = fresh[0];
+      // #423 order-safe insert, generalised from one row to a page: append
+      // without sorting when the arriving rows are themselves in canonical
+      // order AND start at/after the current tail — true of every live append
+      // and of every ASC catch-up page. Re-sort only when they interleave with
+      // rows the pane already holds.
+      const next =
+        head !== undefined &&
+        (tail === undefined || byServerTimeThenId(head, tail) >= 0) &&
+        isCanonicallyOrdered(fresh)
+          ? [...existing, ...fresh]
+          : [...existing, ...fresh].sort(byServerTimeThenId);
       const capped = capScrollbackRing(key, next);
       evicted = capped.length < next.length;
       return { ...prev, [key]: capped };
@@ -396,6 +469,10 @@ const exports = identityScopedStore((onIdentityChange) => {
     // is now stale: the server DOES have rows older than the new oldest. Clear
     // it so a scroll-to-top re-pages the evicted region.
     if (evicted) loadMoreExhausted.delete(key);
+  };
+
+  const appendToScrollback = (key: ChannelKey, msg: ScrollbackMessage) => {
+    appendPageToScrollback(key, [msg]);
   };
 
   // Merge a freshly-fetched REST page into the per-channel list. Server
@@ -1074,13 +1151,14 @@ const exports = identityScopedStore((onIdentityChange) => {
       // api.ts helper signature.
       const page = await listMessagesAfter(t, slug, name, cursor, PAGE_LIMIT);
       if (identityMoved(t)) return;
-      for (const msg of page) {
-        appendToScrollback(key, msg);
-        // Roll the high-water mark forward as we ingest so a second
-        // disconnect mid-refresh resumes from the new highest id
-        // rather than the original cursor.
-        recordSeen(key, msg);
-      }
+      // #1288 — ONE store write for the whole page (see
+      // `appendPageToScrollback`). `recordSeen` still walks it row by row: it
+      // is a plain Map high-water mark with no reactive surface, so iterating
+      // it costs nothing the profile can see, and no await separates it from
+      // the ingest — the "second disconnect mid-refresh" its roll-forward
+      // exists for cannot land between the two.
+      appendPageToScrollback(key, page);
+      for (const msg of page) recordSeen(key, msg);
       // #161: a FULL-cap refresh page means the server tail may be further
       // ahead than what we just appended (a >200-message reconnect re-opens
       // the forward gap). Invalidate the forward-tail latch so the next
