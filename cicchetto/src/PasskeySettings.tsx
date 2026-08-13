@@ -1,5 +1,6 @@
 import { type Component, createSignal, For, onMount, Show } from "solid-js";
 import InlineConfirmButton from "./InlineConfirmButton";
+import { withAccountPassword } from "./lib/accountPassword";
 import {
   deletePasskey,
   finishPasskeyModeChange,
@@ -48,36 +49,13 @@ const PasskeySettings: Component = () => {
   };
   onMount(() => void reload().catch((value) => setError(errorMessage(value))));
 
-  // #729 — FIVE privileged actions consume the account password, and only one
-  // of them (add) used to sit inside the form that visually owned the field.
-  // The other four read the signal from elsewhere in the pane with no prompt
-  // of their own, so a user who never filled that form sent `""` and got a
-  // bare 401 back; and a password typed to ADD a passkey stayed live in the
-  // signal, silently re-usable to change how the account authenticates.
-  //
-  // One gate for all five: refuse locally when the field is empty (naming the
-  // blocker instead of spending a doomed request AND a slot in the server's
-  // login-throttle window), and clear the field in the `finally` — on success
-  // AND on failure, so neither a good password nor a wrong one lingers for
-  // the next click to reuse. Re-typing IS the per-action re-confirmation the
-  // pane owes for a change of this weight.
-  const withPassword = async (run: (accountPassword: string) => Promise<void>): Promise<void> => {
-    setError(null);
-    const accountPassword = password();
-    if (accountPassword === "") {
-      setError("Enter your account password to confirm this change.");
-      return;
-    }
-    setBusy(true);
-    try {
-      await run(accountPassword);
-    } catch (value) {
-      setError(errorMessage(value));
-    } finally {
-      setBusy(false);
-      setPassword("");
-    }
-  };
+  // #729 — FIVE privileged actions here consume the account password, and
+  // only one of them (add) used to sit inside the form that visually owned
+  // the field. The rationale, and the gate itself, moved to
+  // `lib/accountPassword` when #1283 gave the TOTP section its own consumers.
+  const gate = { password, setPassword, setBusy, setError };
+  const withPassword = (run: (accountPassword: string) => Promise<void>): Promise<void> =>
+    withAccountPassword(gate, run);
 
   const register = async (event: Event): Promise<void> => {
     event.preventDefault();
