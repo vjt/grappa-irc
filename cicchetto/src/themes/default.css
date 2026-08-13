@@ -10916,8 +10916,9 @@ html.resize-dragging * {
   overflow: hidden;
   border-radius: 1.25rem; /* overscan rounded corners */
   background: radial-gradient(ellipse at center, #04140b 0%, #020a06 70%, #000 100%);
+  /* phosphor bloom, then inner vignette */
   box-shadow:
-    0 0 1.5rem rgba(51, 255, 136, 0.18), /* phosphor bloom */
+    0 0 1.5rem rgba(51, 255, 136, 0.18),
     inset 0 0 4rem rgba(0, 0, 0, 0.9);
   animation: crt-flicker 4.5s infinite steps(60);
   will-change: opacity;
