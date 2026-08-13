@@ -15,6 +15,7 @@ const wireUpload = (active_host: ServerSettingsWireUploadView["active_host"]) =>
   document_per_file_cap_bytes: 3,
   audio_per_file_cap_bytes: 5,
   global_cap_bytes: 4,
+  video_max_duration_seconds: 90,
 });
 
 describe("serverSettings() — initial state", () => {
@@ -36,6 +37,7 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         document_per_file_cap_bytes: 10_485_760,
         audio_per_file_cap_bytes: 26_214_400,
         global_cap_bytes: 10_737_418_240,
+        video_max_duration_seconds: 90,
       },
     });
 
@@ -48,6 +50,7 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         audio: 26_214_400,
       },
       uploadGlobalCapBytes: 10_737_418_240,
+      uploadVideoMaxDurationSeconds: 90,
       // #324 — absent on the wire → [] (page origin only).
       httpHostAliases: [],
     });
@@ -62,6 +65,7 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         document_per_file_cap_bytes: 7_000_000,
         audio_per_file_cap_bytes: 8_000_000,
         global_cap_bytes: 999_999,
+        video_max_duration_seconds: 90,
       },
     });
 
@@ -85,6 +89,7 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         document_per_file_cap_bytes: 1,
         audio_per_file_cap_bytes: 1,
         global_cap_bytes: 2,
+        video_max_duration_seconds: 90,
       },
     });
     applyServerSettings({
@@ -95,6 +100,7 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         document_per_file_cap_bytes: 5,
         audio_per_file_cap_bytes: 7,
         global_cap_bytes: 6,
+        video_max_duration_seconds: 90,
       },
     });
 
@@ -102,6 +108,7 @@ describe("applyServerSettings/1 — wire → store shape", () => {
       uploadActiveHost: "litterbox",
       uploadPerFileCapBytes: { image: 3, video: 4, document: 5, audio: 7 },
       uploadGlobalCapBytes: 6,
+      uploadVideoMaxDurationSeconds: 90,
       httpHostAliases: [],
     });
   });
@@ -117,6 +124,7 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         document_per_file_cap_bytes: 3,
         audio_per_file_cap_bytes: 5,
         global_cap_bytes: 4,
+        video_max_duration_seconds: 90,
       },
       http_host_aliases: ["irc.sindro.me", "irc.sniffo.org"],
     });
@@ -156,6 +164,7 @@ describe("loadServerSettings/0 — REST initial fetch", () => {
             document_per_file_cap_bytes: 9_999_999,
             audio_per_file_cap_bytes: 5_555_555,
             global_cap_bytes: 88_888_888,
+            video_max_duration_seconds: 90,
           },
         }),
     } as unknown as Response);

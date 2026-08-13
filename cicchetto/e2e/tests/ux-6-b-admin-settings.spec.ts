@@ -65,7 +65,10 @@ test.describe("UX-6-B admin Settings tab", () => {
     const admin = getSeededAdmin();
     const res = await request.put("/admin/settings", {
       headers: { authorization: `Bearer ${admin.token}` },
-      data: { upload: { active_host: "embedded" } },
+      // #201 — the duration cap joins active_host in the reset: the
+      // video-upload specs probe a ~1s clip against it, so a lowered
+      // value left behind would refuse every one of them.
+      data: { upload: { active_host: "embedded", video_max_duration_seconds: 120 } },
     });
     expect(res.ok()).toBe(true);
   });
@@ -120,5 +123,47 @@ test.describe("UX-6-B admin Settings tab", () => {
     expect(response.status()).toBe(200);
 
     await expect(page.getByTestId("admin-settings-saved")).toBeVisible({ timeout: 5_000 });
+  });
+
+  // #201 — the video duration ceiling became a server setting. Full
+  // round trip: form → PUT → DB → the operator-facing GET that cic's
+  // upload orchestrator reads its ceiling from. The REFUSAL itself
+  // (an over-long clip rejected with a message naming the new value)
+  // is pinned by vitest, not here: the only committed video fixture,
+  // e2e/fixtures/tiny.mp4, is exactly 1.000s (mvhd timescale 1000 /
+  // duration 1000) and the smallest settable ceiling is 1s, so no
+  // admin value can make it too long.
+  test("video duration cap: form → PUT → /api/server-settings (#201)", async ({
+    page,
+    request,
+  }) => {
+    const admin = getSeededAdmin();
+    await adminFriendlyLogin(page, admin);
+    await openAdminPaneAndSettingsTab(page);
+
+    const duration = page.getByTestId("admin-settings-video-max-duration");
+    await expect(duration).toHaveValue("120");
+
+    await duration.fill("45");
+    await page.getByTestId("admin-settings-save").click();
+    await expect(page.getByTestId("admin-settings-saved")).toBeVisible({ timeout: 5_000 });
+
+    // The value the CLIENT reads — same door cic hydrates from at boot.
+    const res = await request.get("/api/server-settings", {
+      headers: { authorization: `Bearer ${admin.token}` },
+    });
+    expect(res.ok()).toBe(true);
+    expect((await res.json()).upload.video_max_duration_seconds).toBe(45);
+  });
+
+  test("422 invalid_setting flags the video duration field (#201)", async ({ page }) => {
+    await adminFriendlyLogin(page, getSeededAdmin());
+    await openAdminPaneAndSettingsTab(page);
+
+    const duration = page.getByTestId("admin-settings-video-max-duration");
+    await duration.fill("0");
+    await page.getByTestId("admin-settings-save").click();
+
+    await expect(duration).toHaveClass(/admin-settings-field-error/, { timeout: 5_000 });
   });
 });

@@ -1134,6 +1134,80 @@ describe("userTopic", () => {
     });
   });
 
+  // #201 — the duration ceiling rides the existing settings push. The
+  // narrowing for it is deliberately LENIENT (degrade, don't drop)
+  // while the byte caps stay strict; these pin both halves.
+  describe("server_settings_changed arm — video duration cap (#201)", () => {
+    const uploadWire = (extra: Record<string, unknown>): Record<string, unknown> => ({
+      active_host: "embedded",
+      image_per_file_cap_bytes: 1,
+      video_per_file_cap_bytes: 2,
+      document_per_file_cap_bytes: 3,
+      audio_per_file_cap_bytes: 4,
+      global_cap_bytes: 5,
+      ...extra,
+    });
+
+    afterEach(async () => {
+      const ss = await import("../lib/serverSettings");
+      ss.setServerSettings(null);
+    });
+
+    it("carries the server's value into the store", async () => {
+      const ss = await import("../lib/serverSettings");
+      channelMock.fireEvent({
+        kind: "server_settings_changed",
+        upload: uploadWire({ video_max_duration_seconds: 45 }),
+        http_host_aliases: [],
+      });
+      expect(ss.serverSettings()?.uploadVideoMaxDurationSeconds).toBe(45);
+    });
+
+    it("degrades an ABSENT value to the 120s fallback and still applies the rest", async () => {
+      // A pre-#201 server omits the field. Dropping the push here would
+      // strand the byte caps too — the additive-only wire contract.
+      const ss = await import("../lib/serverSettings");
+      channelMock.fireEvent({
+        kind: "server_settings_changed",
+        upload: uploadWire({}),
+        http_host_aliases: [],
+      });
+      const view = ss.serverSettings();
+      expect(view?.uploadVideoMaxDurationSeconds).toBe(120);
+      expect(view?.uploadPerFileCapBytes.video).toBe(2);
+    });
+
+    it("degrades a malformed value to the fallback, still applying the rest", async () => {
+      const ss = await import("../lib/serverSettings");
+      channelMock.fireEvent({
+        kind: "server_settings_changed",
+        upload: uploadWire({ video_max_duration_seconds: -5 }),
+        http_host_aliases: [],
+      });
+      const view = ss.serverSettings();
+      expect(view?.uploadVideoMaxDurationSeconds).toBe(120);
+      expect(view?.uploadPerFileCapBytes.video).toBe(2);
+    });
+
+    it("a malformed BYTE cap still drops the whole push (strictness unchanged)", async () => {
+      const ss = await import("../lib/serverSettings");
+      channelMock.fireEvent({
+        kind: "server_settings_changed",
+        upload: uploadWire({ video_max_duration_seconds: 45 }),
+        http_host_aliases: [],
+      });
+      expect(ss.serverSettings()?.uploadVideoMaxDurationSeconds).toBe(45);
+
+      channelMock.fireEvent({
+        kind: "server_settings_changed",
+        upload: uploadWire({ video_max_duration_seconds: 99, global_cap_bytes: 0 }),
+        http_host_aliases: [],
+      });
+      // Dropped: the store still holds the previous, valid push.
+      expect(ss.serverSettings()?.uploadVideoMaxDurationSeconds).toBe(45);
+    });
+  });
+
   // P-0b — peer_away dispatch.
   describe("peer_away arm", () => {
     it("calls setPeerAway with (network, peer, message)", async () => {

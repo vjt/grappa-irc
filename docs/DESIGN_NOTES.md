@@ -41082,3 +41082,70 @@ an existing one, resist adding a parallel delivery path just because the
 *registration* handshake differs — a discriminator field for display, not a
 branch in the sender, keeps one audited path instead of two half-audited
 ones.
+
+<!-- entry #201 -->
+
+---
+
+## 2026-08-13 — #201: the video duration ceiling becomes a server setting
+
+cic refused videos longer than two minutes because `videoPolicy.ts` said
+`export const MAX_DURATION_SECONDS = 120`. Moving that to
+`upload.video_max_duration_seconds` (pos_integer, default 120) was a
+straight ride down the rails the BYTE cap `upload.video_per_file_cap_bytes`
+already laid: `ServerSettings` accessor pair -> `public_view/0` ->
+`ServerSettings.Wire.upload_view/1` -> the WS snapshot/push and both REST
+doors -> `serverSettings()` -> an admin field. No new mechanism, no
+migration (settings are key/value rows whose defaults live in code, like
+the audio cap before it). Four decisions are worth keeping.
+
+**It is enforced CLIENT-side, and that is not a gap to close.** Duration is
+not a property of the bytes the way size is: reading it means decoding the
+container, and the whole point of the ceiling is to refuse the clip BEFORE
+it is uploaded. So the server publishes the number and cic enforces it,
+while the byte caps stay enforced at `POST /api/uploads` (413) as they
+always were. A hostile client can ignore the duration ceiling; it cannot
+ignore the per-file and global byte caps, and those are what actually bound
+disk. Reading this setting as a security control would be a mistake — it is
+a policy the server states and the client applies.
+
+**The value travels as a PARAMETER, not as a signal read deep in the
+stack.** `transcodeVideo/5` now takes `maxDurationSeconds` next to the
+`capBytes` it already took, and `uploadOrchestrator` resolves both once per
+attempt. The tempting alternative — have `videoPolicy.ts` read
+`serverSettings()` itself — would have put a solid-js store import into the
+one module that is deliberately dependency-free so it can be imported
+statically while its mediabunny-laden sibling stays behind a dynamic
+`import()`. Reading once per attempt also means the gate inside the
+transcoder and the capability-fallback gate in the orchestrator cannot
+straddle an admin change mid-upload and reject against a number the error
+message never named.
+
+**The client narrowing for this field is LENIENT while the byte caps stay
+strict.** `userTopic.ts` hard-rejects a `server_settings_changed` push whose
+byte caps are malformed. Applying that treatment to the new field would
+have meant a cic built with #201 dropping EVERY settings push from a
+pre-#201 server — stranding the byte caps too — which is exactly the
+failure the additive-only wire contract exists to prevent. Absent or
+malformed duration degrades to the compile-time fallback and the rest of
+the push applies, the same degrade-don't-drop posture `http_host_aliases`
+took in #324. `MAX_DURATION_SECONDS` survives as that fallback and must
+keep mirroring `@default_upload_video_max_duration_seconds`.
+
+**The error copy formats the cap exactly, and does not reuse
+`formatDuration`.** That helper floors (90s -> "1m") because it describes
+elapsed spans, where losing the remainder is harmless. A ceiling that
+understates itself tells the operator a 75-second clip exceeded a "1m"
+limit. So the message says "2 minutes" on whole minutes and "45 seconds"
+otherwise.
+
+**What the tests do NOT prove.** There is no end-to-end Playwright run in
+which a real over-long video is refused with a message naming an
+admin-lowered value. The only committed video fixture,
+`cicchetto/e2e/fixtures/tiny.mp4`, is exactly 1.000s (mvhd timescale 1000,
+duration 1000) and the smallest settable ceiling is 1 second, so no admin
+value can make it too long; producing a longer fixture needs ffmpeg, which
+is not available here. The refusal and its copy are pinned by vitest
+through the existing `__setProbeDurationForTests` seam; the e2e covers the
+admin form -> PUT -> `GET /api/server-settings` round trip, which is the
+door cic hydrates from.

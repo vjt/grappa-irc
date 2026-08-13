@@ -36,6 +36,7 @@ const DEFAULTS: AdminSettingsView = {
     document_per_file_cap_bytes: 10 * 1024 * 1024,
     audio_per_file_cap_bytes: 25 * 1024 * 1024,
     global_cap_bytes: 10 * 1024 * 1024 * 1024,
+    video_max_duration_seconds: 90,
   },
 };
 
@@ -65,6 +66,7 @@ describe("AdminSettingsTab — initial render", () => {
         document_per_file_cap_bytes: 15 * 1024 * 1024,
         audio_per_file_cap_bytes: 30 * 1024 * 1024,
         global_cap_bytes: 20 * 1024 * 1024 * 1024,
+        video_max_duration_seconds: 90,
       },
     });
 
@@ -89,6 +91,12 @@ describe("AdminSettingsTab — initial render", () => {
 
     const global = screen.getByTestId("admin-settings-global-cap") as HTMLInputElement;
     expect(global.value).toBe("20");
+
+    // #201 — seconds straight through, no unit conversion.
+    const videoDuration = screen.getByTestId(
+      "admin-settings-video-max-duration",
+    ) as HTMLInputElement;
+    expect(videoDuration.value).toBe("90");
   });
 
   it("renders an error banner when the initial fetch fails", async () => {
@@ -135,6 +143,11 @@ describe("AdminSettingsTab — save", () => {
     const global = screen.getByTestId("admin-settings-global-cap") as HTMLInputElement;
     fireEvent.input(global, { target: { value: "50" } });
 
+    const videoDuration = screen.getByTestId(
+      "admin-settings-video-max-duration",
+    ) as HTMLInputElement;
+    fireEvent.input(videoDuration, { target: { value: "45" } });
+
     fireEvent.click(screen.getByTestId("admin-settings-save"));
 
     await waitFor(() => {
@@ -146,6 +159,7 @@ describe("AdminSettingsTab — save", () => {
           document_per_file_cap_bytes: 12 * 1024 * 1024,
           audio_per_file_cap_bytes: 20 * 1024 * 1024,
           global_cap_bytes: 50 * 1024 * 1024 * 1024,
+          video_max_duration_seconds: 45,
         },
       });
     });

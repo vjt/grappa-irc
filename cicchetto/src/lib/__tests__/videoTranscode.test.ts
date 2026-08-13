@@ -234,7 +234,13 @@ describe("transcodeVideo", () => {
     const controller = new AbortController();
     controller.abort();
 
-    const result = await transcodeVideo(sampleClip(), cap, noProgress, controller.signal);
+    const result = await transcodeVideo(
+      sampleClip(),
+      cap,
+      MAX_DURATION_SECONDS,
+      noProgress,
+      controller.signal,
+    );
 
     expect(result).toEqual({ error: { kind: "failed", message: "aborted" } });
     expect(h.conversionInit).not.toHaveBeenCalled();
@@ -248,6 +254,7 @@ describe("transcodeVideo", () => {
     const result = await transcodeVideo(
       sampleClip(),
       cap,
+      MAX_DURATION_SECONDS,
       noProgress,
       new AbortController().signal,
     );
@@ -256,10 +263,46 @@ describe("transcodeVideo", () => {
     expect(h.conversionInit).not.toHaveBeenCalled();
   });
 
+  it("#201: the ceiling is the CALLER's value — a lowered cap rejects a clip the fallback allows", async () => {
+    stubWebCodecs();
+    __setProbeDurationForTests(async () => 90);
+
+    const result = await transcodeVideo(
+      sampleClip(),
+      cap,
+      60,
+      noProgress,
+      new AbortController().signal,
+    );
+
+    // 90s is comfortably under the 120s fallback constant; only an
+    // admin-lowered 60s ceiling can reject it.
+    expect(result).toEqual({ error: { kind: "too_long", durationSeconds: 90 } });
+    expect(h.conversionInit).not.toHaveBeenCalled();
+  });
+
+  it("#201: a raised ceiling lets a clip past the 120s fallback", async () => {
+    stubWebCodecs();
+    __setProbeDurationForTests(async () => 300);
+
+    const result = await transcodeVideo(
+      sampleClip(),
+      cap,
+      600,
+      noProgress,
+      new AbortController().signal,
+    );
+
+    // Same 300s clip the test above rejects at 120 — the only
+    // difference is the ceiling the caller handed down.
+    expect("ok" in result).toBe(true);
+  });
+
   it("gate closed (no WebCodecs) with a legal duration → unsupported, encoder detail", async () => {
     const result = await transcodeVideo(
       sampleClip(),
       cap,
+      MAX_DURATION_SECONDS,
       noProgress,
       new AbortController().signal,
     );
@@ -277,6 +320,7 @@ describe("transcodeVideo", () => {
     const result = await transcodeVideo(
       sampleClip(),
       cap,
+      MAX_DURATION_SECONDS,
       noProgress,
       new AbortController().signal,
     );
@@ -292,6 +336,7 @@ describe("transcodeVideo", () => {
     const result = await transcodeVideo(
       sampleClip(),
       cap,
+      MAX_DURATION_SECONDS,
       noProgress,
       new AbortController().signal,
     );
@@ -323,6 +368,7 @@ describe("transcodeVideo", () => {
     const result = await transcodeVideo(
       sampleClip(),
       cap,
+      MAX_DURATION_SECONDS,
       noProgress,
       new AbortController().signal,
     );
@@ -347,7 +393,13 @@ describe("transcodeVideo", () => {
     });
     const seen: number[] = [];
 
-    await transcodeVideo(sampleClip(), cap, (f) => seen.push(f), new AbortController().signal);
+    await transcodeVideo(
+      sampleClip(),
+      cap,
+      MAX_DURATION_SECONDS,
+      (f) => seen.push(f),
+      new AbortController().signal,
+    );
 
     expect(seen).toEqual([0.5]);
   });
@@ -369,6 +421,7 @@ describe("transcodeVideo", () => {
     const result = await transcodeVideo(
       sampleClip(),
       cap,
+      MAX_DURATION_SECONDS,
       noProgress,
       new AbortController().signal,
     );
@@ -396,6 +449,7 @@ describe("transcodeVideo", () => {
     const result = await transcodeVideo(
       sampleClip(),
       cap,
+      MAX_DURATION_SECONDS,
       noProgress,
       new AbortController().signal,
     );
@@ -421,6 +475,7 @@ describe("transcodeVideo", () => {
     const result = await transcodeVideo(
       sampleClip(),
       cap,
+      MAX_DURATION_SECONDS,
       noProgress,
       new AbortController().signal,
     );
@@ -446,7 +501,13 @@ describe("transcodeVideo", () => {
     });
 
     const controller = new AbortController();
-    const pending = transcodeVideo(sampleClip(), cap, noProgress, controller.signal);
+    const pending = transcodeVideo(
+      sampleClip(),
+      cap,
+      MAX_DURATION_SECONDS,
+      noProgress,
+      controller.signal,
+    );
     await vi.waitFor(() => expect(execute).toHaveBeenCalled());
     controller.abort();
 
@@ -455,7 +516,10 @@ describe("transcodeVideo", () => {
     expect(result).toEqual({ error: { kind: "failed", message: "conversion canceled" } });
   });
 
-  it("MAX_DURATION_SECONDS is the spec'd 120s policy ceiling", () => {
+  // #201 — the constant is the FALLBACK now (pre-snapshot / pre-#201
+  // server); the live ceiling is `upload.video_max_duration_seconds`.
+  // It must keep mirroring the server-side default, so the pin stays.
+  it("MAX_DURATION_SECONDS is the 120s fallback ceiling", () => {
     expect(MAX_DURATION_SECONDS).toBe(120);
   });
 });
@@ -481,7 +545,13 @@ describe("transcodeVideo skip-gate", () => {
     h.format = "mp4";
     const file = mp4Clip(16);
 
-    const result = await transcodeVideo(file, cap, noProgress, new AbortController().signal);
+    const result = await transcodeVideo(
+      file,
+      cap,
+      MAX_DURATION_SECONDS,
+      noProgress,
+      new AbortController().signal,
+    );
 
     if (!("ok" in result)) throw new Error(`expected ok, got ${JSON.stringify(result)}`);
     expect(result.ok).toBe(file); // same File identity — untouched
@@ -492,7 +562,13 @@ describe("transcodeVideo skip-gate", () => {
     stubWebCodecs();
     h.format = "mov";
 
-    const result = await transcodeVideo(mp4Clip(16), cap, noProgress, new AbortController().signal);
+    const result = await transcodeVideo(
+      mp4Clip(16),
+      cap,
+      MAX_DURATION_SECONDS,
+      noProgress,
+      new AbortController().signal,
+    );
 
     expect("ok" in result).toBe(true);
     expect(h.conversionInit).toHaveBeenCalled();
@@ -504,7 +580,13 @@ describe("transcodeVideo skip-gate", () => {
     // sampleClip declares video/quicktime; the demuxed container says
     // mp4. The upload would ride the declared type, so the gate must
     // refuse and let the transcode rename it .mp4/video/mp4.
-    await transcodeVideo(sampleClip(), cap, noProgress, new AbortController().signal);
+    await transcodeVideo(
+      sampleClip(),
+      cap,
+      MAX_DURATION_SECONDS,
+      noProgress,
+      new AbortController().signal,
+    );
 
     expect(h.conversionInit).toHaveBeenCalled();
   });
@@ -514,7 +596,13 @@ describe("transcodeVideo skip-gate", () => {
     h.format = "mp4";
     h.codec = "vp9";
 
-    await transcodeVideo(mp4Clip(16), cap, noProgress, new AbortController().signal);
+    await transcodeVideo(
+      mp4Clip(16),
+      cap,
+      MAX_DURATION_SECONDS,
+      noProgress,
+      new AbortController().signal,
+    );
 
     expect(h.conversionInit).toHaveBeenCalled();
   });
@@ -527,6 +615,7 @@ describe("transcodeVideo skip-gate", () => {
     const result = await transcodeVideo(
       mp4Clip(16 * MiB),
       cap,
+      MAX_DURATION_SECONDS,
       noProgress,
       new AbortController().signal,
     );
@@ -543,7 +632,13 @@ describe("transcodeVideo skip-gate", () => {
     // 2MiB file — pins condition 4 independently of condition 3.
     const smallCap = 1 * MiB;
 
-    await transcodeVideo(mp4Clip(2 * MiB), smallCap, noProgress, new AbortController().signal);
+    await transcodeVideo(
+      mp4Clip(2 * MiB),
+      smallCap,
+      MAX_DURATION_SECONDS,
+      noProgress,
+      new AbortController().signal,
+    );
 
     expect(h.conversionInit).toHaveBeenCalled();
   });
@@ -553,7 +648,13 @@ describe("transcodeVideo skip-gate", () => {
     h.format = "mp4";
     h.getFormatThrows = true;
 
-    const result = await transcodeVideo(mp4Clip(16), cap, noProgress, new AbortController().signal);
+    const result = await transcodeVideo(
+      mp4Clip(16),
+      cap,
+      MAX_DURATION_SECONDS,
+      noProgress,
+      new AbortController().signal,
+    );
 
     expect("ok" in result).toBe(true);
     expect(h.conversionInit).toHaveBeenCalled();

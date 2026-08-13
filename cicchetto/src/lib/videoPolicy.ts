@@ -13,13 +13,20 @@
 //
 // Policy vs capability split (the orchestrator's fallback contract):
 // - `too_long` is POLICY — duration is read via a <video> element's
-//   loadedmetadata, which works WITHOUT WebCodecs, so the 2-minute
+//   loadedmetadata, which works WITHOUT WebCodecs, so the duration
 //   ceiling binds on the no-transcode fallback path too.
 // - capability (WebCodecs presence, codec support) is videoTranscode's
 //   business; see that module.
 //
 // Spec: docs/superpowers/specs/2026-06-09-video-doc-uploads-design.md
 
+// FALLBACK ONLY since #201. The live ceiling is the server setting
+// `upload.video_max_duration_seconds`, which reaches cic on the
+// server-settings snapshot/push; uploadOrchestrator resolves it per
+// attempt and passes it down. This constant is what applies before the
+// first snapshot lands (and against a pre-#201 server), and it mirrors
+// `Grappa.ServerSettings` `@default_upload_video_max_duration_seconds`
+// — the two must move together.
 export const MAX_DURATION_SECONDS = 120;
 const RESOLUTION_THRESHOLD_BPS = 2_000_000;
 // Exported for videoTranscode's skip-gate: a source file's OVERALL

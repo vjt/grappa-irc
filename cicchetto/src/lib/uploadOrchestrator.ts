@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import type { ChannelKey } from "./channelKey";
 import { formatBytes } from "./formatBytes";
 import { sendMessage } from "./scrollback";
+import { serverSettings } from "./serverSettings";
 import {
   baseMime,
   categoryOf,
@@ -474,7 +475,29 @@ async function dispatchUpload(
     });
 }
 
-const VIDEO_TOO_LONG_MESSAGE = `Video too long (max ${MAX_DURATION_SECONDS / 60} minutes).`;
+// #201 — the ceiling is a server setting now; MAX_DURATION_SECONDS is
+// only the fallback for the window before the first settings snapshot
+// (and for a pre-#201 server). Read at each gate, never captured in a
+// module const: an admin can move it mid-session and the WS push
+// updates the signal without a reload.
+function videoMaxDurationSeconds(): number {
+  return serverSettings()?.uploadVideoMaxDurationSeconds ?? MAX_DURATION_SECONDS;
+}
+
+// Deliberately NOT `formatDuration` from duration.ts: that one floors
+// (90s → "1m"), which would UNDERSTATE a ceiling and tell the operator
+// a 75s clip was over a "1m" limit. A cap has to name itself exactly.
+function durationLabel(seconds: number): string {
+  if (seconds % 60 === 0) {
+    const minutes = seconds / 60;
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  return `${seconds} second${seconds === 1 ? "" : "s"}`;
+}
+
+function videoTooLongMessage(maxSeconds: number): string {
+  return `Video too long (max ${durationLabel(maxSeconds)}).`;
+}
 
 // Video transform — Task 6 (2026-06-09). Returns the file to upload
 // (transcoded mp4, or the ORIGINAL on a capability fallback), or null
@@ -510,9 +533,14 @@ async function prepareVideo(
   // size the transcode for the embedded default (50MiB) and let the
   // host's actual limit reject the upload if it disagrees.
   const capBytes = host.maxFileSizeBytes("video") ?? 50 * 1024 * 1024;
+  // Read ONCE per attempt so the gate inside transcodeVideo and the
+  // fallback gate below cannot straddle an admin change mid-upload and
+  // reject against a value the message never named.
+  const maxDurationSeconds = videoMaxDurationSeconds();
   const result = await transcodeVideo(
     file,
     capBytes,
+    maxDurationSeconds,
     (fraction) => {
       if (inflight.get(key)?.controller !== controller) return;
       setEntry(key, { filename: file.name, loaded: fraction, total: 1, phase: "transcoding" });
@@ -530,7 +558,7 @@ async function prepareVideo(
       loaded: 0,
       total: 0,
       phase: "transcoding",
-      error: VIDEO_TOO_LONG_MESSAGE,
+      error: videoTooLongMessage(maxDurationSeconds),
     });
     return null;
   }
@@ -539,14 +567,14 @@ async function prepareVideo(
   console.warn("video transcode unavailable, uploading original:", result.error);
   const durationSeconds = await probeDuration(file);
   if (inflight.get(key)?.controller !== controller) return null; // cancelled
-  if (durationSeconds !== null && durationSeconds > MAX_DURATION_SECONDS) {
+  if (durationSeconds !== null && durationSeconds > maxDurationSeconds) {
     inflight.delete(key);
     setEntry(key, {
       filename: file.name,
       loaded: 0,
       total: 0,
       phase: "transcoding",
-      error: VIDEO_TOO_LONG_MESSAGE,
+      error: videoTooLongMessage(maxDurationSeconds),
     });
     return null;
   }

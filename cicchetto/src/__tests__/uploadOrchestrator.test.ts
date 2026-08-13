@@ -42,6 +42,7 @@ const vt = vi.hoisted(() => ({
   transcodes: [] as Array<{
     file: File;
     capBytes: number;
+    maxDurationSeconds: number;
     onProgress: (fraction: number) => void;
     signal: AbortSignal;
     resolve: (
@@ -62,15 +63,22 @@ vi.mock("../lib/videoPolicy", async () => {
 
 vi.mock("../lib/videoTranscode", () => ({
   transcodeVideo: vi.fn(
-    (file: File, capBytes: number, onProgress: (fraction: number) => void, signal: AbortSignal) =>
+    (
+      file: File,
+      capBytes: number,
+      maxDurationSeconds: number,
+      onProgress: (fraction: number) => void,
+      signal: AbortSignal,
+    ) =>
       new Promise((resolve) => {
-        vt.transcodes.push({ file, capBytes, onProgress, signal, resolve });
+        vt.transcodes.push({ file, capBytes, maxDurationSeconds, onProgress, signal, resolve });
       }),
   ),
 }));
 
 import { channelKey } from "../lib/channelKey";
 import { sendMessage } from "../lib/scrollback";
+import { setServerSettings } from "../lib/serverSettings";
 import { activeHost, type UploadHost } from "../lib/uploadHost";
 import {
   acknowledgePrivacy,
@@ -710,6 +718,73 @@ describe("video transcode branch", () => {
 
   afterEach(() => {
     warnSpy.mockRestore();
+    setServerSettings(null);
+  });
+
+  // #201 — the duration ceiling is a server setting. These pin the
+  // three things that broke when it was a compile-time const: the
+  // value handed to the transcoder, the value the reject GATE uses on
+  // the capability-fallback path, and the value the operator READS in
+  // the error copy.
+  const settingsWithVideoDuration = (seconds: number): void => {
+    setServerSettings({
+      uploadActiveHost: "embedded",
+      uploadPerFileCapBytes: { image: 1, video: 5 * 1024 * 1024, document: 1, audio: 1 },
+      uploadGlobalCapBytes: 1,
+      uploadVideoMaxDurationSeconds: seconds,
+      httpHostAliases: [],
+    });
+  };
+
+  it("#201: the live server ceiling is what reaches transcodeVideo", async () => {
+    settingsWithVideoDuration(45);
+    triggerUpload(key, slug, channel, videoClip());
+
+    await awaitTranscodeStart(1);
+    expect(vt.transcodes[0]?.maxDurationSeconds).toBe(45);
+  });
+
+  it("#201: with no settings snapshot yet, the 120s fallback reaches transcodeVideo", async () => {
+    triggerUpload(key, slug, channel, videoClip());
+
+    await awaitTranscodeStart(1);
+    expect(vt.transcodes[0]?.maxDurationSeconds).toBe(120);
+  });
+
+  it("#201: the too-long copy names the LIVE ceiling, not the constant", async () => {
+    settingsWithVideoDuration(45);
+    triggerUpload(key, slug, channel, videoClip());
+
+    await awaitTranscodeStart(1);
+    vt.transcodes[0]?.resolve({ error: { kind: "too_long", durationSeconds: 90 } });
+
+    await vi.waitFor(() =>
+      expect(uploadState(key)?.error).toBe("Video too long (max 45 seconds)."),
+    );
+  });
+
+  it("#201: a whole-minute ceiling still reads in minutes", async () => {
+    settingsWithVideoDuration(60);
+    triggerUpload(key, slug, channel, videoClip());
+
+    await awaitTranscodeStart(1);
+    vt.transcodes[0]?.resolve({ error: { kind: "too_long", durationSeconds: 90 } });
+
+    await vi.waitFor(() => expect(uploadState(key)?.error).toBe("Video too long (max 1 minute)."));
+  });
+
+  it("#201: the capability-fallback gate rejects against the LIVE ceiling", async () => {
+    // 90s is under the 120s fallback constant, so only the admin-set
+    // 60s ceiling can reject it on the fallback path.
+    settingsWithVideoDuration(60);
+    triggerUpload(key, slug, channel, videoClip());
+
+    vt.probeDuration.mockResolvedValue(90);
+    await awaitTranscodeStart(1);
+    vt.transcodes[0]?.resolve({ error: { kind: "failed", message: "encoder blew up" } });
+
+    await vi.waitFor(() => expect(uploadState(key)?.error).toBe("Video too long (max 1 minute)."));
+    expect(pendingResolvers.length).toBe(0);
   });
 
   it("happy path: transcoding phase first, host receives the TRANSCODED file, 🎬 PRIVMSG", async () => {

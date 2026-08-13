@@ -21,6 +21,10 @@ import { token } from "./lib/auth";
 //   * `upload.global_cap_bytes` — global disk-budget ceiling; uploads
 //     reject with 507 insufficient_storage when total live bytes +
 //     incoming would exceed the cap.
+//   * `upload.video_max_duration_seconds` — video duration ceiling
+//     (#201). Unlike the byte caps this one is enforced CLIENT-side:
+//     duration is probed from the file in the browser, so an over-long
+//     clip is refused before a single byte is POSTed.
 //
 // State model: same shape as `AdminVisitorsTab` (fetch on mount,
 // explicit refresh, splice-on-save). UI units differ from wire:
@@ -64,6 +68,9 @@ const AdminSettingsTab: Component = () => {
   const [documentCapMB, setDocumentCapMB] = createSignal<number>(10);
   const [audioCapMB, setAudioCapMB] = createSignal<number>(25);
   const [globalCapGB, setGlobalCapGB] = createSignal<number>(10);
+  // #201 — seconds on the wire AND in the form: a duration cap has no
+  // unit conversion to hide, unlike the MB/GB byte fields above.
+  const [videoMaxDurationS, setVideoMaxDurationS] = createSignal<number>(120);
 
   const applyView = (view: AdminSettingsView): void => {
     setSettings(view);
@@ -73,6 +80,7 @@ const AdminSettingsTab: Component = () => {
     setDocumentCapMB(view.upload.document_per_file_cap_bytes / MIB);
     setAudioCapMB(view.upload.audio_per_file_cap_bytes / MIB);
     setGlobalCapGB(view.upload.global_cap_bytes / GIB);
+    setVideoMaxDurationS(view.upload.video_max_duration_seconds);
   };
 
   // One row per per-type cap (uploads cluster Task 7) — same markup,
@@ -142,6 +150,7 @@ const AdminSettingsTab: Component = () => {
           document_per_file_cap_bytes: Math.round(documentCapMB() * MIB),
           audio_per_file_cap_bytes: Math.round(audioCapMB() * MIB),
           global_cap_bytes: Math.round(globalCapGB() * GIB),
+          video_max_duration_seconds: Math.round(videoMaxDurationS()),
         },
       });
       applyView(view);
@@ -261,6 +270,31 @@ const AdminSettingsTab: Component = () => {
                     disabled={saving()}
                     classList={{
                       "admin-settings-field-error": fieldError() === "upload.global_cap_bytes",
+                    }}
+                  />
+                </AdminField>
+
+                <AdminField
+                  label="Video max duration (s)"
+                  for="admin-settings-video-max-duration"
+                  error={
+                    fieldError() === "upload.video_max_duration_seconds"
+                      ? "must be positive"
+                      : undefined
+                  }
+                >
+                  <input
+                    id="admin-settings-video-max-duration"
+                    data-testid="admin-settings-video-max-duration"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={videoMaxDurationS()}
+                    onInput={(e) => setVideoMaxDurationS(Number(e.currentTarget.value))}
+                    disabled={saving()}
+                    classList={{
+                      "admin-settings-field-error":
+                        fieldError() === "upload.video_max_duration_seconds",
                     }}
                   />
                 </AdminField>

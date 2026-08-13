@@ -54,6 +54,7 @@ import { applyServerSettings } from "./serverSettings";
 import { joinUser } from "./socket";
 import { seedSupportedUmodes } from "./supportedUmodes";
 import { seedUmodes } from "./umodes";
+import { MAX_DURATION_SECONDS } from "./videoPolicy";
 import { setWhoisBundle } from "./whoisCard";
 import { setWhoReply } from "./whoModal";
 import { setWhowasBundle } from "./whowasCard";
@@ -770,6 +771,16 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         !posInt(u.global_cap_bytes)
       )
         return null;
+      // #201 — LENIENT, unlike the caps above: a pre-#201 server omits
+      // the field entirely, and the additive-only wire contract says a
+      // client must not choke on a shape it half-recognises. Hard-
+      // narrowing it here would drop the WHOLE settings push against an
+      // older server and strand the byte caps too. Absent / malformed →
+      // the compile-time default, same degrade-don't-drop posture as
+      // `http_host_aliases` below.
+      const videoMaxDurationSeconds = posInt(u.video_max_duration_seconds)
+        ? u.video_max_duration_seconds
+        : MAX_DURATION_SECONDS;
       // #324 — deployment HTTP host aliases. Lenient: a malformed /
       // absent value degrades to [] (page origin only) rather than
       // dropping the whole settings push (which would strand the upload
@@ -787,6 +798,7 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
           document_per_file_cap_bytes: u.document_per_file_cap_bytes,
           audio_per_file_cap_bytes: u.audio_per_file_cap_bytes,
           global_cap_bytes: u.global_cap_bytes,
+          video_max_duration_seconds: videoMaxDurationSeconds,
         },
         http_host_aliases: httpHostAliases,
       };

@@ -31,6 +31,7 @@ const wireUpload = (
   document_per_file_cap_bytes: 10 * 1024 * 1024,
   audio_per_file_cap_bytes: 25 * 1024 * 1024,
   global_cap_bytes: 10 * 1024 * 1024 * 1024,
+  video_max_duration_seconds: 90,
   ...overrides,
 });
 

@@ -64,6 +64,13 @@ export type ServerSettingsView = {
   uploadActiveHost: ServerSettingsWireUploadView["active_host"];
   uploadPerFileCapBytes: Record<UploadCategory, number>;
   uploadGlobalCapBytes: number;
+  // #201 — the video duration ceiling, formerly videoPolicy's
+  // compile-time `MAX_DURATION_SECONDS`. Copied raw like the byte caps:
+  // consumers read it through an optional chain
+  // (`serverSettings()?.…  ?? MAX_DURATION_SECONDS`), which covers BOTH
+  // the pre-snapshot null view and a pre-#201 server that omits the
+  // field on the REST blind-cast path.
+  uploadVideoMaxDurationSeconds: number;
   // #324 — the deployment's HTTP host aliases (bare lowercased
   // hostnames the server advertised). `mediaLink.ts` admits an upload
   // link on ANY of them (they share the /uploads store). Always an
@@ -106,6 +113,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         audio: raw.upload.audio_per_file_cap_bytes,
       },
       uploadGlobalCapBytes: raw.upload.global_cap_bytes,
+      uploadVideoMaxDurationSeconds: raw.upload.video_max_duration_seconds,
       // #324 — absent (old server / pre-snapshot / REST blind-cast) → []
       // so mediaLink admits the page origin only (pre-#324 behaviour).
       httpHostAliases: raw.http_host_aliases ?? [],

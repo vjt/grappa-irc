@@ -37,8 +37,8 @@
 // 128kbps audio reserve; a comfortable budget (≥ 2 Mbps) gets 720p,
 // a starved one 480p. Never upscale — mediabunny scales to the
 // requested box unconditionally, so the target is clamped to the
-// source track's display height. The budget math + duration ceiling +
-// probe live in videoPolicy.ts (mediabunny-free) so the orchestrator
+// source track's display height. The budget math + duration-ceiling
+// fallback + probe live in videoPolicy.ts (mediabunny-free) so the orchestrator
 // can import them statically while THIS module — the only mediabunny
 // importer — stays behind a dynamic import() in a lazy chunk (Task 6
 // quality-review follow-up, landed with Task 7, 2026-06-09).
@@ -58,7 +58,6 @@ import {
 } from "mediabunny";
 import {
   AUDIO_BUDGET_BPS,
-  MAX_DURATION_SECONDS,
   pickEncodeBitrate,
   pickTargetHeight,
   probeDuration,
@@ -108,7 +107,7 @@ export function __resetVideoTranscodeSupportForTests(): void {
 //      meaningfully shrink it;
 //   4. size within the cap (an over-cap original MUST transcode —
 //      shrinking is the point).
-// Duration policy (≤ MAX_DURATION_SECONDS) is enforced by the caller
+// Duration policy (≤ maxDurationSeconds) is enforced by the caller
 // before this probe runs. Probe failures return false: an unreadable
 // container falls through to the normal transcode/capability path,
 // which owns the diagnostics.
@@ -149,13 +148,19 @@ async function alreadyTargetShape(
 // --------------------------------------------------------------------
 
 /** Transcode `file` to an adaptive-resolution H.264 mp4 sized for
- *  `capBytes`. Resolves `{ok}` with a fresh `<basename>.mp4` File, or
+ *  `capBytes`, rejecting anything longer than `maxDurationSeconds`.
+ *  Resolves `{ok}` with a fresh `<basename>.mp4` File, or
  *  `{error}` per the policy/capability split in the moduledoc. Honors
  *  `signal`: pre-aborted → immediate failed; mid-flight abort cancels
- *  the conversion. */
+ *  the conversion.
+ *
+ *  Both policy numbers arrive as PARAMETERS (#201): the caller reads
+ *  the live server settings once per attempt, exactly as it already
+ *  did for `capBytes`. This module stays free of the settings signal. */
 export async function transcodeVideo(
   file: File,
   capBytes: number,
+  maxDurationSeconds: number,
   onProgress: (fraction: number) => void,
   signal: AbortSignal,
 ): Promise<{ ok: File } | { error: TranscodeError }> {
@@ -163,7 +168,7 @@ export async function transcodeVideo(
 
   // Policy gate FIRST — binds even when the capability gate is closed.
   const durationSeconds = await probeDuration(file);
-  if (durationSeconds !== null && durationSeconds > MAX_DURATION_SECONDS) {
+  if (durationSeconds !== null && durationSeconds > maxDurationSeconds) {
     return { error: { kind: "too_long", durationSeconds } };
   }
 
