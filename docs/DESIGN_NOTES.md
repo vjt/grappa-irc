@@ -40725,10 +40725,28 @@ operator may be partitioning for an unrelated reason.
   `cp -c` clone is instant — but those artefacts were compiled from another
   worktree's source, which is precisely the contamination class this issue
   exists to end. A fresh id starts empty and pays a full compile plus its own
-  PLT. Cost measured on this host: ~209M per id (`_build` 148M, `deps` 33M,
-  `priv/plts` 28M), disk that is free at 885G available. The PLT *build time*
-  is the number that would justify revisiting this, and it has not been
-  measured yet.
+  PLT. **The disk cost was over-estimated before it was measured**: reading
+  the shared tree gave ~209M per id, but a real cold `check.sh` produces
+  **113M** — `_build` 70M, `deps` 32M, `priv/plts` 11M. The shared tree is
+  bigger because it also carries `prod` and PLTs left over from older OTP
+  versions; a fresh id builds dev + test and exactly three current PLTs.
+  Free disk on this host is 885G, so the number was never the constraint.
+  The PLT *build time* is the figure that would justify revisiting this, and
+  it is **not** measured: the only window in which two cold gates ran, the
+  whole e2e suite was running beside them, so every wall-clock reading from
+  it is contaminated.
+
+**Acceptance, and the oracle used.** Two `check.sh` runs, in two separate
+worktrees under ids `w2a` and `w2b`, launched two seconds apart and both cold:
+both `rc=0`, `8 doctests, 59 properties, 5995 tests, 0 failures` each, zero
+`not ok` in either bats leg. They overlapped for their whole ~14 minutes and
+finished five seconds apart. That they went green is half the claim; the other
+half is that they went green *without touching the shared cache*, and the
+oracle for that is displacement, not inspection: the shared
+`_build`/`deps`/`priv/plts` were timestamped before the run, and afterwards
+`find -newermt` reported **0** files modified and the file count was unchanged
+at 8261. An assertion about what the runs DID write would have passed even if
+they had also written somewhere they shouldn't; this one cannot.
 
 **Scope held deliberately.** The docker stack — compose project name, host
 ports — is still single-occupancy, so `integration.sh` and e2e remain one

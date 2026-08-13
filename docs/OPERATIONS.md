@@ -441,9 +441,10 @@ Three things to know before using it:
   shared cache, deliberately: artefacts compiled from another
   worktree's source are the contamination this exists to end. Run
   `GRAPPA_CACHE_ID=<id> scripts/mix.sh deps.get` first, then expect a
-  full compile and a dialyzer PLT build. Measured on this host, the
-  steady-state cost is ~209M of disk per id (`_build` 148M, `deps`
-  33M, `priv/plts` 28M).
+  full compile and a dialyzer PLT build. Measured after a real cold
+  `check.sh`: **113M per id** — `_build` 70M (dev + test; the shared
+  tree is bigger because it also carries `prod`), `deps` 32M,
+  `priv/plts` 11M.
 * **It forces a oneshot container.** A running container cannot be
   remounted, so execing into the live one would silently hand back the
   shared cache. From a main checkout with the stack up, the knob
