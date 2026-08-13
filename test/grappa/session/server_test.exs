@@ -1728,6 +1728,202 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "built-in identify operand form per services flavour (#1286)" do
+    # The built-in identify at 001 used to be the one-argument
+    # `IDENTIFY <password>`, which names no account — so services identify
+    # whatever nick the session happens to be WEARING. Land on an alt after a
+    # 433 and that is the alt, not the account the credential belongs to.
+    #
+    # #885 already fixed the perform-list twin (`$nick` binds the CONFIGURED
+    # nick); this pins the same account-naming form on the built-in site, and
+    # pins the flavours that do NOT get it. The form is chosen per
+    # `services_flavor` because the operand order is not universal — see
+    # `maybe_builtin_identify/3`'s table for the per-daemon sources.
+    #
+    # Reuses `ghost_handler/1` (defined with the GhostRecovery describe): 433
+    # on the first NICK, `001 <nick>_` on the second. That IS the #1286
+    # scenario — the session is welcomed under an alt.
+    defp flavoured_session(port, flavor) do
+      {user, network, _credential} =
+        setup_user_and_network(port, %{
+          nick: "grappa-test",
+          auth_method: :nickserv_identify,
+          password: "s3cr3t-identify",
+          autojoin_channels: []
+        })
+
+      {:ok, _} = Grappa.Networks.update_network_settings(network, %{services_flavor: flavor})
+
+      # Re-read the credential so `SessionPlan.resolve/1` preloads the network
+      # FRESH — the fixture's struct carries the pre-update association, and a
+      # stale flavour here would silently test the default arm every time.
+      {user, network, Credentials.get_credential!(user, network)}
+    end
+
+    # 433 on the first NICK, then the ircd ECHOES the rename before welcoming
+    # the alt.
+    #
+    # 🔴 A REAL ircd does not send this. The echo exists to make observable a
+    # divergence that on the real path originates from `Session.GhostRecovery`
+    # — and which is otherwise unobservable at the only moment that matters.
+    # Measured, not assumed:
+    #
+    #   * `state.nick` has exactly two writers, both in `EventRouter`: the 001
+    #     reconcile (`event_router.ex:1708`) and an OBSERVED self-NICK
+    #     (`:3703`). `Session.Server` never writes it.
+    #   * The 001 reconcile is reached through `delegate/2` at the very END of
+    #     Server's 001 arm (`server.ex:3228`), i.e. strictly AFTER
+    #     `run_perform_and_identify/1` — so it cannot have moved the nick by
+    #     the time the identify line is built.
+    #   * `pending_password` is one-shot: set at init (`server.ex:1233`),
+    #     cleared at the first 001 (`:4218`), never re-set. So a SECOND 001 —
+    #     the only other way to reach the identify with a diverged nick —
+    #     emits no identify at all.
+    #
+    # Net: on every reachable path the live and configured nicks are EQUAL at
+    # the instant the line is built, which is exactly the "ordering accident"
+    # `configured_nick/1` is commented against (`server.ex:4241-48`). Without
+    # this handler the assertion below would pass no matter which of the two
+    # the line was built from.
+    defp alt_nick_echo_handler(nick) do
+      counter = :counters.new(1, [])
+
+      fn state, line ->
+        if String.starts_with?(line, "NICK ") do
+          n = :counters.get(counter, 1)
+          :counters.add(counter, 1, 1)
+
+          reply =
+            case n do
+              0 ->
+                ":server 433 * #{nick} :Nickname is already in use.\r\n"
+
+              _ ->
+                ":#{nick}!u@h NICK :#{nick}_\r\n" <>
+                  ":server 001 #{nick}_ :Welcome\r\n"
+            end
+
+          {:reply, reply, state}
+        else
+          {:reply, nil, state}
+        end
+      end
+    end
+
+    test "azzurra: the identify names the configured nick while the session wears an alt" do
+      {server, port} = start_server(ghost_handler("grappa-test"))
+      {user, network, credential} = flavoured_session(port, :azzurra)
+
+      pid = nickserv_plan(user, network, credential, 60_000)
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "PRIVMSG NickServ :IDENTIFY grappa-test s3cr3t-identify\r\n"),
+          2_000
+        )
+
+      # …and the account-blind form is not ALSO emitted.
+      refute "PRIVMSG NickServ :IDENTIFY s3cr3t-identify\r\n" in IRCServer.sent_lines(server)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "atheme: the identify names the configured nick" do
+      {server, port} = start_server()
+      {user, network, credential} = flavoured_session(port, :atheme)
+
+      pid = nickserv_plan(user, network, credential, 60_000)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "PRIVMSG NickServ :IDENTIFY grappa-test s3cr3t-identify\r\n"),
+          1_000
+        )
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # The account-naming form must never leak onto a flavour that was not
+    # measured to take it, and an unclassified network must take the same
+    # conservative arm as a known-divergent one.
+    for flavor <- [:oftc, :unknown, nil] do
+      test "#{inspect(flavor)}: the identify keeps the account-blind one-argument form" do
+        {server, port} = start_server()
+        {user, network, credential} = flavoured_session(port, unquote(flavor))
+
+        pid = nickserv_plan(user, network, credential, 60_000)
+
+        :ok = await_handshake(server)
+        IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+        {:ok, _} =
+          IRCServer.wait_for_line(
+            server,
+            &(&1 == "PRIVMSG NickServ :IDENTIFY s3cr3t-identify\r\n"),
+            1_000
+          )
+
+        refute Enum.any?(
+                 IRCServer.sent_lines(server),
+                 &String.starts_with?(&1, "PRIVMSG NickServ :IDENTIFY grappa-test ")
+               )
+
+        :ok = GenServer.stop(pid, :normal, 1_000)
+      end
+    end
+
+    test "the identify names the CONFIGURED nick, not the live one, once the two diverge" do
+      {server, port} = start_server(alt_nick_echo_handler("grappa-test"))
+      {user, network, credential} = flavoured_session(port, :azzurra)
+
+      pid = nickserv_plan(user, network, credential, 60_000)
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "PRIVMSG NickServ :IDENTIFY grappa-test s3cr3t-identify\r\n"),
+          2_000
+        )
+
+      # The premise the assertion above rests on: the live nick really had
+      # moved off the configured one by the time the line went out. Without
+      # this the test passes for the wrong reason.
+      assert SessionStateHelpers.fetch(pid).nick == "grappa-test_"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "the account-naming identify still stages the PASSWORD for the +r rendezvous" do
+      {server, port} = start_server()
+      {user, network, credential} = flavoured_session(port, :azzurra)
+
+      pid = nickserv_plan(user, network, credential, 60_000)
+
+      :ok = await_handshake(server)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "PRIVMSG NickServ :IDENTIFY grappa-test s3cr3t-identify\r\n"),
+          1_000
+        )
+
+      # The outbound choke point lifts the LAST token. A second operand that
+      # captured the nick instead would stage — and on +r commit — the account
+      # name as if it were the secret.
+      state = SessionStateHelpers.fetch(pid)
+      assert {"s3cr3t-identify", _deadline} = SessionStateHelpers.pending_auth(state)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "$nickserv_pass resolves from the credential password (#124, retiring #509)" do
     # #509 gave the credential a SECOND NickServ secret that WON over
     # `password_encrypted` and worked on ANY auth method. #124 retired it: one

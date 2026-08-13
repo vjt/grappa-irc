@@ -41082,3 +41082,88 @@ an existing one, resist adding a parallel delivery path just because the
 *registration* handshake differs — a discriminator field for display, not a
 branch in the sender, keeps one audited path instead of two half-audited
 ones.
+<!-- entry #1286 -->
+
+---
+
+## 2026-08-13 — #1286: the built-in NickServ IDENTIFY names the account, on the flavours measured to take it
+
+grappa's built-in identify at 001 (`Session.Server.run_perform_and_identify/1`
+→ `maybe_builtin_identify/3`) emitted the one-argument
+`PRIVMSG NickServ :IDENTIFY <password>`. That form names no account, so
+services identify **the nick the session is currently wearing**. When the
+configured nick is taken upstream the session is welcomed under an alt, and
+the identify then addresses the alt rather than the account the credential
+belongs to.
+
+#885 had already fixed the twin site — `$nick` in the perform-list expander
+binds the CONFIGURED nick, not the live one — but only there. A user who typed
+a nick and a password into the web form and never touched the perform list got
+the one-argument form, so **the default path was the broken one**. The fix
+reuses #885's `configured_nick/1`; there is no second derivation of "which
+nick is the account".
+
+### Only one route reaches this, not two
+
+The issue supposed the alt could come either from `Grappa.IRC.AuthFSM`'s 433
+ladder or from `Session.GhostRecovery`. Measured, it is only the latter:
+`auth_fsm.ex:481-492` intercepts 432/433 for `auth_method: :nickserv_identify`
+with `{:cont, state, []}`, and the ladder clause sits AFTER it (`:499-507`),
+deliberately — its own comment says a ladder NICK there would race the GHOST
+sequence off its own nick. Since the built-in identify only exists for
+`:nickserv_identify`, the ladder is unreachable from it. One scenario:
+`server.ex`'s 433 arm arming GhostRecovery's underscore NICK.
+
+### Unconditional within a flavour, not "only when the nicks differ"
+
+Naming an account equal to the live nick is the SAME code path as omitting it
+on both daemons that take the form — azzurra sets `sameNick` through
+`str_equals_nocase`, and atheme's one-argument spelling is literally a shift to
+`si->su->nick`. So a "only when they differ" guard buys no behavioural
+difference, and it would have to read `state.nick` at a moment where its
+equality with the configured nick is an ordering accident rather than a
+contract (the caveat already carried by `configured_nick/1`). One code path.
+
+### The operand order is per-flavour, so the form is too
+
+The two-operand spelling is not universal across the services sets grappa
+targets, so the form is selected from `services_flavor` — the same shape
+`IdentityState.registered_umode/1` already uses for the registered-umode
+letter: a small table of measured divergences plus a conservative default.
+Read off each daemon's own handler:
+
+* `:azzurra` — `azzurra/services@23473ed src/nickserv.c:1659` (`do_identify`)
+  takes `nick` then `pass`; the one-argument spelling is an internal shift
+  (`:1697-98`).
+* `:atheme` — `atheme/atheme modules/nickserv/identify.c:29-30`
+  (`ns_cmd_login`) takes `target = parv[0]`, `password = parv[1]`. There it is
+  not merely accepted but the ONLY form on a `no_nick_ownership`
+  configuration: the one-argument shift at `:46-51` is compiled behind that
+  check.
+* `:oftc` — `oftc/oftc-ircservices modules/nickserv.c:721` (`m_identify`)
+  reads its operands in the OPPOSITE order (its own help:
+  `Usage: IDENTIFY password [nick]`, `languages/nickserv.en.lang:31`) and its
+  two-operand form additionally forces a nick change (`:758`). That is a
+  different verb, not a different spelling of this one, so grappa emits no
+  two-operand identify there.
+
+Everything else — `:unknown`, and an unclassified `nil` — takes the
+one-argument form as well. **The account-naming form goes only where it was
+measured, never by assumption**; the default arm is the conservative one, and
+adding a flavour to the table is a deliberate act with a source citation
+attached.
+
+### What the tests can and cannot observe
+
+On every reachable path the live nick and the configured nick are EQUAL at the
+instant the line is built: `state.nick` has exactly two writers, both in
+`EventRouter` (the 001 reconcile at `:1708`, an observed self-NICK at `:3703`),
+the 001 reconcile is delegated at the very end of Server's 001 arm — after the
+identify — and `pending_password` is one-shot, cleared at the first 001 and
+never re-set, so a second 001 emits no identify at all. A wire-level test
+therefore cannot tell which of the two values the line was built from. The
+suite buys that discrimination with a fake ircd that echoes the rename before
+welcoming the alt, which a real ircd does not do, plus an assertion on the
+pre-state so the test cannot pass for the wrong reason. The realistic
+alt-nick scenario is covered separately through the genuine 433 → GhostRecovery
+path.

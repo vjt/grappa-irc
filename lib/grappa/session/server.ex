@@ -4276,10 +4276,64 @@ defmodule Grappa.Session.Server do
   # identify.
   @spec maybe_builtin_identify(t(), String.t() | nil, boolean()) :: t()
   defp maybe_builtin_identify(state, secret, false) when is_binary(secret) and secret != "" do
-    send_perform_line(state, "PRIVMSG NickServ :IDENTIFY #{secret}")
+    send_perform_line(state, builtin_identify_line(state, secret))
   end
 
   defp maybe_builtin_identify(state, _, _), do: state
+
+  # GH #1286 — which OPERANDS the built-in identify carries. The
+  # one-argument `IDENTIFY <password>` names no account, so services
+  # identify whatever nick the session is WEARING; land on an alt (the
+  # `Session.GhostRecovery` underscore, the only reachable route here —
+  # `Grappa.IRC.AuthFSM`'s ladder deliberately skips `:nickserv_identify`)
+  # and that is the alt, not the account the credential belongs to. Naming
+  # the account fixes it — the built-in twin of #885's `$nick`, and it
+  # reuses the same `configured_nick/1`, never a second derivation.
+  #
+  # UNCONDITIONAL within a flavour: on both daemons below, naming an
+  # account equal to the live nick is the same code path as omitting it
+  # (azzurra sets `sameNick` via `str_equals_nocase`; atheme's one-argument
+  # form is literally a shift to `si->su->nick`), so a "only when they
+  # differ" guard would buy nothing and would have to read `state.nick` at a
+  # point where its equality with the configured nick is an ordering
+  # accident (see `configured_nick/1`).
+  #
+  # The operand ORDER is not universal, so the form is per-flavour. Read off
+  # each daemon's own handler, not inferred:
+  #
+  #   * `:azzurra` — `azzurra/services@23473ed src/nickserv.c:1659`
+  #     (`do_identify`): `nick = strtok(...)` then `pass = strtok(...)`, and
+  #     the one-argument spelling is an internal shift (`:1697-98`).
+  #   * `:atheme` — `atheme/atheme modules/nickserv/identify.c:29-30`
+  #     (`ns_cmd_login`): `target = parv[0]`, `password = parv[1]`. Naming
+  #     the account is not merely accepted there, it is the ONLY form on a
+  #     `no_nick_ownership` configuration — the one-argument shift at
+  #     `:46-51` is compiled behind that very check.
+  #
+  # Every other flavour keeps the one-argument form, INCLUDING `:unknown`
+  # and an unclassified `nil`: the account-naming form goes only where it
+  # was measured, never by assumption. `:oftc` is a DELIBERATE exclusion
+  # rather than an omission — `oftc/oftc-ircservices modules/nickserv.c:721`
+  # (`m_identify`) reads its operands in the opposite order (its own help
+  # says `Usage: IDENTIFY password [nick]`,
+  # `languages/nickserv.en.lang:31`) and its two-operand form additionally
+  # forces a nick change (`:758`). That is a different verb, not a different
+  # spelling of this one, so grappa does not emit a two-operand identify
+  # there at all.
+  #
+  # `Map.get` for #229 hot-reload safety, mirroring `IdentityState`'s read
+  # of the same field: a process predating `:services_flavor` takes the
+  # conservative arm instead of raising on its next 001.
+  @account_first_identify_flavors [:azzurra, :atheme]
+
+  @spec builtin_identify_line(t(), String.t()) :: String.t()
+  defp builtin_identify_line(state, secret) do
+    if Map.get(state, :services_flavor) in @account_first_identify_flavors do
+      "PRIVMSG NickServ :IDENTIFY #{configured_nick(state)} #{secret}"
+    else
+      "PRIVMSG NickServ :IDENTIFY #{secret}"
+    end
+  end
 
   # Cancel-and-arm the timed `pending_auth` rendezvous slot. Latest-wins
   # serialization for concurrent IDENTIFYs is automatic via Session.Server
