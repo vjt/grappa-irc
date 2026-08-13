@@ -533,6 +533,25 @@ Before adding `config :ex_unit, KEY:` ANYTHING: grep `test/test_helper.exs`
 for `ExUnit.start(...)` opts — opts there silently override config. See
 `feedback_exunit_start_overrides_config`.
 
+## Running two gates at once: `GRAPPA_CACHE_ID` (#1263)
+
+`_build`, `deps` and `priv/plts` are shared by every worktree on a host
+(`scripts/_lib.sh` resolves `REPO_ROOT` through `--git-common-dir`), so
+two concurrent `mix` runs contaminate each other — the class where a red
+names a file your branch never touched. Prefix a gate with a cache id and
+it gets its own triplet, plus a matching `MIX_TEST_PARTITION` so the two
+runs do not share `runtime/grappa_test.db`:
+
+```sh
+GRAPPA_CACHE_ID=w2 scripts/mix.sh deps.get   # once per id — a fresh id is cold
+GRAPPA_CACHE_ID=w2 scripts/check.sh
+```
+
+Unset, everything behaves exactly as before. Full operator notes, the
+first-run cost and what the knob does **not** isolate (the docker stack:
+compose project + ports, so `integration.sh` and e2e are still
+single-occupancy) are in `docs/OPERATIONS.md`.
+
 ## Test-class gotchas (memory pointers)
 
 These bite during cluster work; check the memory before re-investigating.

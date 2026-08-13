@@ -40677,3 +40677,68 @@ fixture. It builds a scratch repository with the real attribute, appends an entr
 on each of two branches and runs a real `git rebase`, so what the gate is judged
 against is what the merge machinery actually produced. A fixture would have
 proved the regex works and nothing about the defect.
+<!-- entry #1263 -->
+
+---
+
+## 2026-08-13 — #1263: the COMPILE lane was a bind mount, so the cure is one too
+
+Two workers on this host cannot run `mix` at the same time. The orchestrator
+papers over it with an exclusive `COMPILE` lane, which means a worker that is
+otherwise ready sits idle for however long the other one's `check.sh` takes.
+That is real throughput lost every day, and it is not a policy choice — it
+falls out of `scripts/_lib.sh` resolving `REPO_ROOT` through
+`--git-common-dir`, so every worktree binds the MAIN repo's `_build`, `deps`
+and `priv/plts`. The lane is a mutex protecting a shared directory.
+
+**So the fix is at the same layer as the cause.** `GRAPPA_CACHE_ID`, when set,
+binds those three paths from `.caches/<id>/` instead. No new machinery: the
+worktree source overrides already prove that "bind something else over `/app/x`"
+is how this codebase redirects a container path, and the knob reuses that verb
+exactly. Unset, `CACHE_VOLUMES` stays empty and expands to nothing — today's
+invocation, byte for byte, which is the non-negotiable part of the ask.
+
+**What the issue got wrong, measured.** Its point 2 says the test database is
+"already solved upstream — `config/test.exs` builds the path from
+`MIX_TEST_PARTITION`, nothing to change, just set it." Half true, and the
+missing half is the half that matters: the *config* side reads the variable,
+but nothing on the shell side ever set it, and `docker compose run` does not
+inherit host environment. Setting `MIX_TEST_PARTITION` on the host was a
+silent no-op. Two isolated `_build`s would still have fought over one
+`runtime/grappa_test.db`. So the knob derives the partition from the id and
+FORWARDS it with `-e`; an explicitly set partition still wins, because an
+operator may be partitioning for an unrelated reason.
+
+**Two decisions worth the ink:**
+
+* **The knob FORCES a oneshot container.** `in_container_or_oneshot` would
+  otherwise exec into the live container on a main checkout — and a running
+  container cannot be remounted, so the caller would receive the shared cache
+  while believing they had asked for an isolated one. Silent loss of the
+  isolation is the only failure mode this knob must not have, so the exec
+  branch is now conditioned on the knob being unset. It is pinned by a pair of
+  bats cases, not one: the second asserts no exec happens, and the first is the
+  reference box proving the fixture can reach the exec branch at all. Without
+  that pair the "no exec" assertion would hold vacuously.
+* **Nothing is seeded from the shared cache.** Copying the warm `_build` and
+  the PLT into a fresh id would make adoption nearly free — on APFS a
+  `cp -c` clone is instant — but those artefacts were compiled from another
+  worktree's source, which is precisely the contamination class this issue
+  exists to end. A fresh id starts empty and pays a full compile plus its own
+  PLT. Cost measured on this host: ~209M per id (`_build` 148M, `deps` 33M,
+  `priv/plts` 28M), disk that is free at 885G available. The PLT *build time*
+  is the number that would justify revisiting this, and it has not been
+  measured yet.
+
+**Scope held deliberately.** The docker stack — compose project name, host
+ports — is still single-occupancy, so `integration.sh` and e2e remain one
+resource and the `STACK` lane stays. This issue kills one lane, not both.
+
+**A fixture trap worth remembering.** The two main-checkout cases build a
+throwaway repo under `$BATS_TEST_TMPDIR`. On macOS that lives under
+`/var/folders`, a symlink to `/private/var/folders`: `_lib.sh` derives
+`SRC_ROOT` from `pwd` (logical) and `REPO_ROOT` from
+`git rev-parse --path-format=absolute` (resolved), so a logical fixture path
+makes the two differ and the fixture silently becomes a WORKTREE — never
+reaching the branch it was built to exercise. It was passing for the wrong
+reason until the path was taken physical with `pwd -P`.

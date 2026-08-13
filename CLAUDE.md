@@ -778,6 +778,13 @@ is due. Don't just look at todo.md.
   a forced rebuild (`scripts/mix.sh --env=dev compile --force`) before you
   believe it, and say in the report which of the two you established. The
   COMPILE lane serialises access; it does NOT make the artefacts yours.
+  **Opt out with `GRAPPA_CACHE_ID=<id>` (#1263):** the three caches then come
+  from `.caches/<id>/` and `MIX_TEST_PARTITION` follows the id, so two ids can
+  run `mix` concurrently. Unset changes nothing. A fresh id is COLD — full
+  compile plus its own dialyzer PLT, nothing seeded (seeding would import the
+  contamination described above). Does NOT isolate the docker stack: compose
+  project and ports are still shared, so `integration.sh` / e2e stay
+  single-occupancy. See `docs/OPERATIONS.md`.
 - **NEVER install hex packages on the host.** Add them to `mix.exs`,
   rebuild the image (`scripts/mix.sh deps.get`).
 - **Don't touch the IRC parser without re-running parser tests.**

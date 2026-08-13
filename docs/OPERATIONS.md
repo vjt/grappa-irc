@@ -414,6 +414,44 @@ without it the task hits a read-only filesystem, and the default RO
 mount is what protects cic source from accidental container-side
 mutation during ordinary mix tasks.
 
+### `GRAPPA_CACHE_ID` — opt-in per-worker build caches (#1263)
+
+The shared cache above is why two people (or two agents) on one host
+cannot run `mix` at the same time: one `_build`, two concurrent
+compiles, and a red naming a file neither branch touched. Set
+`GRAPPA_CACHE_ID` to buy isolation for one caller:
+
+```sh
+GRAPPA_CACHE_ID=w2 scripts/check.sh
+```
+
+`_build`, `deps` and `priv/plts` are then bound from
+`.caches/<id>/` under the main repo instead of the shared tree, and
+`MIX_TEST_PARTITION` is derived from the id and forwarded into the
+container so the two runs cannot collide on one
+`runtime/grappa_test.db` either. Set `MIX_TEST_PARTITION` explicitly
+and it wins.
+
+**Unset, nothing changes** — that is the point of the knob being
+opt-in, and a bats suite pins it (`test/scripts/cache_id_isolation_test.bats`).
+
+Three things to know before using it:
+
+* **The first run on a new id is cold.** Nothing is seeded from the
+  shared cache, deliberately: artefacts compiled from another
+  worktree's source are the contamination this exists to end. Run
+  `GRAPPA_CACHE_ID=<id> scripts/mix.sh deps.get` first, then expect a
+  full compile and a dialyzer PLT build. Measured on this host, the
+  steady-state cost is ~209M of disk per id (`_build` 148M, `deps`
+  33M, `priv/plts` 28M).
+* **It forces a oneshot container.** A running container cannot be
+  remounted, so execing into the live one would silently hand back the
+  shared cache. From a main checkout with the stack up, the knob
+  therefore costs you the warm-exec path.
+* **It does NOT isolate the docker stack.** Compose project name and
+  host ports are still shared, so `scripts/integration.sh` and the e2e
+  stack remain a single-occupancy resource. That is a separate issue.
+
 **Every root-level file a drift-pin test READS needs its own `-v`
 override, or a worktree can never prove a fix green before merge.**
 Root-level files sit outside the directory mounts above, so a worktree
