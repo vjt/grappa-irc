@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@solidjs/testing-library";
+import { fireEvent, render, screen, within } from "@solidjs/testing-library";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ruleBody, themeCss } from "./helpers/themeCss";
 
@@ -77,6 +77,12 @@ describe("#734 TOTP enrolment QR sits in a sized, light-framed box", () => {
     });
 
     render(() => <TotpSettings onBack={() => {}} />);
+    // #1283 — enrolment re-authenticates, so the QR only appears once the
+    // account password has been typed into the enable form.
+    const enable = await screen.findByTestId("totp-enable-form");
+    await fireEvent.input(within(enable).getByLabelText("Account password"), {
+      target: { value: "test-account-password" },
+    });
     await fireEvent.click(await screen.findByRole("button", { name: "enable TOTP" }));
 
     const form = await screen.findByTestId("totp-enrollment-form");

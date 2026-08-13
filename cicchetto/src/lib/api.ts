@@ -1552,13 +1552,25 @@ export async function getTotpStatus(token: string): Promise<{ enabled: boolean }
   return (await res.json()) as { enabled: boolean };
 }
 
-export async function startTotpEnrollment(token: string): Promise<TotpEnrollment> {
+// #1283 — the account password is REQUIRED: the door re-authenticates,
+// because confirming the enrolment it opens revokes every other bearer
+// session and hands out the recovery codes.
+//
+// `readError(res, false)` for the same reason `disableTotp` and every
+// `passkeyRequest` use it: on a re-auth door a 401 says "wrong password",
+// not "your bearer is dead". Armed (the default), one typo here would fire
+// the dead-token handler and log out every tab sharing the bearer — the
+// #739 class, arriving through an AUTHENTICATED endpoint.
+export async function startTotpEnrollment(
+  token: string,
+  password: string,
+): Promise<TotpEnrollment> {
   const res = await fetch("/me/totp/enrollment", {
     method: "POST",
     headers: buildHeaders(token),
-    body: "{}",
+    body: JSON.stringify({ password }),
   });
-  if (!res.ok) throw await readError(res);
+  if (!res.ok) throw await readError(res, false);
   return (await res.json()) as TotpEnrollment;
 }
 

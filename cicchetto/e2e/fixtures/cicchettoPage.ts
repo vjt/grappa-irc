@@ -934,7 +934,8 @@ export type SettingsSection =
   | "watchlists"
   | "aliases"
   | "perform"
-  | "vhost";
+  | "vhost"
+  | "security";
 
 // Open the settings drawer (viewport-aware) and navigate into `section`'s
 // sub-page, returning the sub-page section locator so callers scope assertions

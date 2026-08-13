@@ -41195,3 +41195,65 @@ exemptions and should not grow any.
 **Apply:** when a limit exists to mirror an external system's limit, key it
 on state that system publishes, and let the letter table say what was READ
 at source rather than what is probably true elsewhere.
+<!-- entry #1283 -->
+
+---
+
+## 2026-08-13 — #1283: the enrolment door asks for a password, so cic knocks with one
+
+`POST /me/totp/enrollment` has demanded the account password since c1657c3b.
+cic kept posting a literal `"{}"`, so the controller head never matched, the
+catch-all answered `bad_request`, and every press of **Enable TOTP** rendered
+"The request was malformed." The button could not work for anyone, on any
+substrate, for anybody's password.
+
+**The gate stays; the client learns to knock.** Re-authenticating before
+arming a second factor is the deliberate posture c1657c3b argued for:
+confirming an enrolment revokes every other bearer session and hands out the
+recovery codes, so a borrowed token alone must not be able to arm a factor
+the real owner does not hold. Weakening the server to admit the client would
+undo the fix the client failed to notice.
+
+**The census, because a gate is a sample and not a list.** Seven
+authenticated endpoints require the account password: `POST
+/me/totp/enrollment`, `DELETE /me/totp`, `POST /me/client-tokens`, `POST
+/me/passkeys/registration/options`, `POST /me/passkeys/mode/options`, `POST
+/me/passkeys/passwordless/recovery`, `DELETE /me/passkeys/:id`. c1657c3b made
+exactly ONE of them newly password-gated — the enrolment start — and moved
+`disable_totp/3` onto the new `Accounts.verify_password/2` without changing
+its contract. Of the seven, six were already answered correctly by cic; the
+`/me/client-tokens` mint has no cic caller at all (the issue's "the way the
+client-token mint flow already must" describes an API-only flow — cic has no
+mint UI, and `client_token` appears in `cicchetto/src` only as error copy).
+So the defect was one caller, and the proven negative on the other six is the
+result, not a shrug.
+
+**The half the body fix would have broken.** A password-gated door answers
+401 `invalid_credentials`, and `startTotpEnrollment` read its errors with the
+dead-token handler ARMED — the `readError` default. Sending the password
+without disarming it turns one typo into a logout of every tab sharing the
+bearer: the #739 class, arriving this time through an AUTHENTICATED endpoint.
+`disableTotp` and every `passkeyRequest` already read theirs disarmed for
+exactly this reason. On a re-auth door a 401 means "wrong password", never
+"dead bearer" — that distinction is now the third member of the #739 rule,
+and the reason it has an e2e assertion of its own rather than a comment.
+
+**One gate for the whole pane.** #729 wrote "refuse an empty field locally,
+clear it in the `finally`" for the passkey section's five verbs. The TOTP
+section now has two consumers of its own, so the gate moved to
+`lib/accountPassword.ts` rather than being copied: two copies of the rule
+would drift, and the refusal a user reads must not depend on which section of
+one pane they are standing in. Each section keeps its OWN field — one shared
+field would let a password typed for one section be spent by another, which
+is the #729 defect at pane scope.
+
+Consequently the disable field loses its `required` attribute. A native
+constraint makes the code gate's arm unreachable in a browser while leaving
+it live in the passkey section: two mechanisms for one rule, and only one of
+them testable. The gate is the mechanism.
+
+**Apply:** when a server-side requirement is added to an endpoint, the
+callers are part of the change. And when the added requirement is a
+credential, check what the endpoint's new failure code does on the way back —
+a 401 that used to be unreachable is not the same 401 the caller was written
+against.

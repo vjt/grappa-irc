@@ -45,7 +45,20 @@ const ENROLLMENT = {
 
 const renderSettings = () => render(() => <TotpSettings onBack={() => undefined} />);
 
+const ACCOUNT_PASSWORD = "test-account-password";
+
+// #1283 — starting an enrolment re-authenticates, so every enrolment
+// journey now begins by typing the account password. Scoped to the enable
+// form: the passkey pane below renders a field with the same label.
+const typeAccountPassword = async (formTestId: string, value: string): Promise<void> => {
+  const form = await screen.findByTestId(formTestId);
+  await fireEvent.input(within(form).getByLabelText("Account password"), {
+    target: { value },
+  });
+};
+
 const beginEnrollment = async (): Promise<void> => {
+  await typeAccountPassword("totp-enable-form", ACCOUNT_PASSWORD);
   await fireEvent.click(await screen.findByRole("button", { name: "enable TOTP" }));
   await screen.findByTestId("totp-enrollment-form");
 };
@@ -176,5 +189,72 @@ describe("TotpSettings — enrolment", () => {
     );
     // Still enabled: the pane must not claim a disable that never happened.
     expect(screen.getByTestId("totp-disable-form")).toBeInTheDocument();
+  });
+});
+
+describe("#1283 — starting an enrolment re-authenticates", () => {
+  // `POST /me/totp/enrollment` has demanded the account password since
+  // c1657c3b; the pane went on posting an empty body, so the button could
+  // not work for anyone — every press answered `bad_request`, rendered as
+  // "The request was malformed.". The gate is deliberate (confirming an
+  // enrolment revokes every other bearer and hands out the recovery codes),
+  // so the pane has to ask, exactly as the passkey pane does for its five
+  // privileged verbs and as the disable form already did.
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.getTotpStatus.mockResolvedValue({ enabled: false });
+    api.getPasskeyStatus.mockResolvedValue({ mode: "disabled", passkeys: [] });
+    api.startTotpEnrollment.mockResolvedValue(ENROLLMENT);
+  });
+
+  it("passes the typed account password to the enrolment request", async () => {
+    renderSettings();
+    await beginEnrollment();
+
+    expect(api.startTotpEnrollment).toHaveBeenCalledWith("test-token", ACCOUNT_PASSWORD);
+  });
+
+  it("names the empty field as the blocker instead of spending a doomed request", async () => {
+    renderSettings();
+    await fireEvent.click(await screen.findByRole("button", { name: "enable TOTP" }));
+
+    await waitFor(() =>
+      expect(within(screen.getByTestId("totp-settings")).getByRole("alert")).toHaveTextContent(
+        "Enter your account password to confirm this change.",
+      ),
+    );
+    expect(api.startTotpEnrollment).not.toHaveBeenCalled();
+  });
+
+  it("clears the field after a refusal so the next press cannot reuse it", async () => {
+    api.startTotpEnrollment.mockRejectedValue(new ApiError(401, "invalid_credentials"));
+    renderSettings();
+    await typeAccountPassword("totp-enable-form", "wrong");
+    await fireEvent.click(await screen.findByRole("button", { name: "enable TOTP" }));
+
+    await waitFor(() =>
+      expect(within(screen.getByTestId("totp-settings")).getByRole("alert")).toHaveTextContent(
+        "Invalid name or password.",
+      ),
+    );
+    // The refusal is NOT the malformed-body one the defect produced.
+    expect(within(screen.getByTestId("totp-settings")).getByRole("alert")).not.toHaveTextContent(
+      "The request was malformed.",
+    );
+    // No enrolment was started, and the wrong password does not linger in
+    // the field for the next click to re-send.
+    expect(screen.queryByTestId("totp-enrollment-form")).toBeNull();
+    const form = screen.getByTestId("totp-enable-form");
+    expect((within(form).getByLabelText("Account password") as HTMLInputElement).value).toBe("");
+  });
+
+  it("keeps the field a password field, so it is never rendered in the clear", async () => {
+    renderSettings();
+    const form = await screen.findByTestId("totp-enable-form");
+    const field = within(form).getByLabelText("Account password") as HTMLInputElement;
+
+    expect(field.type).toBe("password");
+    expect(field.autocomplete).toBe("current-password");
   });
 });

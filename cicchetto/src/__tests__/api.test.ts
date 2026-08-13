@@ -1137,3 +1137,44 @@ describe("api.me single-flight (#394)", () => {
     expect((await retry).badge_count).toBe(2);
   });
 });
+
+describe("#1283 — the enrolment door is password-gated, so cic must knock with one", () => {
+  // `POST /me/totp/enrollment` has required the account password since
+  // c1657c3b; `startTotpEnrollment` kept posting a literal `"{}"`, so the
+  // controller head never matched, the catch-all answered `bad_request` and
+  // the pane rendered "The request was malformed." for every user alive.
+  //
+  // The second test is the half the fix would break if it stopped at the
+  // body. A password-gated door can answer 401 `invalid_credentials`, and
+  // this caller read its errors with the dead-token handler ARMED — the
+  // default. Sending the password without disarming it turns one typo into
+  // a logout of every tab sharing the bearer. `disableTotp` and every
+  // `passkeyRequest` already read theirs disarmed for exactly this reason:
+  // on a re-auth door a 401 means "wrong password", never "dead bearer".
+
+  it("sends the account password in the enrolment request body", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ enrollment_token: "t", secret: "s", provisioning_uri: "otpauth://x" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.startTotpEnrollment("bearer", "hunter2");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/me/totp/enrollment");
+    expect(JSON.parse(init.body as string)).toEqual({ password: "hunter2" });
+  });
+
+  it("a wrong password does not fire the dead-token handler", async () => {
+    const handler = vi.fn();
+    api.setOn401Handler(handler);
+    stubFetch(401, { error: "invalid_credentials" });
+    await expect(api.startTotpEnrollment("bearer", "wrong")).rejects.toBeInstanceOf(api.ApiError);
+    expect(handler).not.toHaveBeenCalled();
+  });
+});

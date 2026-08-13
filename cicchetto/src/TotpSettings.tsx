@@ -1,4 +1,5 @@
 import { type Component, createSignal, For, onMount, Show } from "solid-js";
+import { withAccountPassword } from "./lib/accountPassword";
 import {
   confirmTotpEnrollment,
   disableTotp,
@@ -41,16 +42,18 @@ const TotpSettings: Component<Props> = (props) => {
       .catch(reportError);
   });
 
-  const beginEnrollment = async (): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    try {
-      setEnrollment(await startTotpEnrollment(currentToken()));
-    } catch (value) {
-      reportError(value);
-    } finally {
-      setBusy(false);
-    }
+  // #1283 — the two account-password consumers in this section go through
+  // the pane-wide gate (`lib/accountPassword`), the same one the passkey
+  // section below uses. Enrolment re-authenticates because confirming it
+  // revokes every other bearer and hands out the recovery codes; disabling
+  // always did.
+  const gate = { password, setPassword, setBusy, setError };
+
+  const beginEnrollment = async (event: Event): Promise<void> => {
+    event.preventDefault();
+    await withAccountPassword(gate, async (accountPassword) => {
+      setEnrollment(await startTotpEnrollment(currentToken(), accountPassword));
+    });
   };
 
   const confirmEnrollment = async (event: Event): Promise<void> => {
@@ -74,18 +77,11 @@ const TotpSettings: Component<Props> = (props) => {
 
   const disable = async (event: Event): Promise<void> => {
     event.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      await disableTotp(currentToken(), password());
+    await withAccountPassword(gate, async (accountPassword) => {
+      await disableTotp(currentToken(), accountPassword);
       setEnabled(false);
-      setPassword("");
       setRecoveryCodes([]);
-    } catch (value) {
-      reportError(value);
-    } finally {
-      setBusy(false);
-    }
+    });
   };
 
   const copyRecoveryCodes = async (): Promise<void> => {
@@ -116,9 +112,24 @@ const TotpSettings: Component<Props> = (props) => {
 
         <Show when={enabled() === false && enrollment() === null && recoveryCodes().length === 0}>
           <p>Protect account login with codes from an authenticator app.</p>
-          <button type="button" disabled={busy()} onClick={() => void beginEnrollment()}>
-            enable TOTP
-          </button>
+          {/* #1283 — no `required` on the field: the gate in
+              `withAccountPassword` is the ONE mechanism that refuses an empty
+              password across this pane, and a native constraint here would
+              make its arm unreachable in a browser while leaving it live in
+              the passkey section. */}
+          <form onSubmit={beginEnrollment} data-testid="totp-enable-form">
+            <label for="totp-enable-password">Account password</label>
+            <input
+              id="totp-enable-password"
+              type="password"
+              autocomplete="current-password"
+              value={password()}
+              onInput={(event) => setPassword(event.currentTarget.value)}
+            />
+            <button type="submit" disabled={busy()}>
+              enable TOTP
+            </button>
+          </form>
         </Show>
 
         <Show when={enrollment()} keyed>
@@ -176,7 +187,6 @@ const TotpSettings: Component<Props> = (props) => {
               autocomplete="current-password"
               value={password()}
               onInput={(event) => setPassword(event.currentTarget.value)}
-              required
             />
             <button type="submit" disabled={busy()}>
               disable TOTP
