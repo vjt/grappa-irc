@@ -23,7 +23,9 @@
 // read its errors with the dead-token handler ARMED. Sending the password
 // without disarming it would have turned one typo into a logout of every tab
 // sharing the bearer — a regression the fix itself would have introduced.
-// "Still on the security pane, not bounced to /login" is how that is visible.
+// "the refusal is on a pane that is still there" is how that is visible, and
+// it is deliberately ONE assertion rather than two: a separate
+// `pathname !== "/login"` check never fires, because the pane vanishes first.
 //
 // Then the RIGHT password, which has to reach step two: QR and manual key on
 // screen. Enrolment STARTS here and is never confirmed — the returned secret
@@ -59,8 +61,20 @@ test.describe("#1283 — TOTP enrolment asks for the account password", () => {
     await form.getByLabel("Account password").fill("definitely-not-the-password");
     await form.getByRole("button", { name: "enable TOTP" }).click();
 
+    // Two claims in one wait, and the message says so because they fail the
+    // same way. There IS a refusal on the pane — and the pane is still THERE,
+    // which is the survival claim: the door is authenticated, so a wrong
+    // password answers 401, and reading that 401 with the dead-token handler
+    // armed clears the bearer and bounces RequireAuth to /login. Measured:
+    // flipping `readError(res, false)` back to the default kills exactly this
+    // assertion, with the pane gone and nothing to find.
     const alert = pane.getByRole("alert");
-    await expect(alert).toBeVisible();
+    await expect(
+      alert,
+      "no refusal on the TOTP pane — if the pane itself is gone, the 401 was " +
+        "read as a dead bearer and the app logged out (readError must stay " +
+        "disarmed on a re-auth door)",
+    ).toBeVisible();
     // The regression pin. Before the fix EVERY press landed here, whatever
     // was typed, because the request carried no password at all.
     await expect(alert).not.toHaveText(MALFORMED);
@@ -68,11 +82,6 @@ test.describe("#1283 — TOTP enrolment asks for the account password", () => {
 
     // No enrolment was started: no QR, no manual key.
     await expect(pane.getByTestId("totp-enrollment-form")).toHaveCount(0);
-
-    // The 401 must not be read as "this bearer is dead". Still authenticated,
-    // still on the pane.
-    expect(new URL(page.url()).pathname).not.toBe("/login");
-    await expect(pane).toBeVisible();
 
     // The gate clears the field after every attempt, right or wrong, so the
     // next press cannot silently re-send what was just refused.
