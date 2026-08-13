@@ -1744,7 +1744,7 @@ defmodule Grappa.Session.ServerTest do
     # on the first NICK, `001 <nick>_` on the second. That IS the #1286
     # scenario — the session is welcomed under an alt.
     defp flavoured_session(port, flavor) do
-      {user, network, _credential} =
+      {user, network, _} =
         setup_user_and_network(port, %{
           nick: "grappa-test",
           auth_method: :nickserv_identify,
@@ -1790,23 +1790,20 @@ defmodule Grappa.Session.ServerTest do
 
       fn state, line ->
         if String.starts_with?(line, "NICK ") do
-          n = :counters.get(counter, 1)
-          :counters.add(counter, 1, 1)
-
-          reply =
-            case n do
-              0 ->
-                ":server 433 * #{nick} :Nickname is already in use.\r\n"
-
-              _ ->
-                ":#{nick}!u@h NICK :#{nick}_\r\n" <>
-                  ":server 001 #{nick}_ :Welcome\r\n"
-            end
-
-          {:reply, reply, state}
+          {:reply, alt_nick_echo_response(counter, nick), state}
         else
           {:reply, nil, state}
         end
+      end
+    end
+
+    defp alt_nick_echo_response(counter, nick) do
+      n = :counters.get(counter, 1)
+      :counters.add(counter, 1, 1)
+
+      case n do
+        0 -> ":server 433 * #{nick} :Nickname is already in use.\r\n"
+        _ -> ":#{nick}!u@h NICK :#{nick}_\r\n:server 001 #{nick}_ :Welcome\r\n"
       end
     end
 
@@ -1918,7 +1915,7 @@ defmodule Grappa.Session.ServerTest do
       # captured the nick instead would stage — and on +r commit — the account
       # name as if it were the secret.
       state = SessionStateHelpers.fetch(pid)
-      assert {"s3cr3t-identify", _deadline} = SessionStateHelpers.pending_auth(state)
+      assert {"s3cr3t-identify", _} = SessionStateHelpers.pending_auth(state)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
