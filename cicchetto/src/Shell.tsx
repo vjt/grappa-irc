@@ -38,7 +38,12 @@ import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/ne
 import { nickEquals } from "./lib/nickEquals";
 import { createOverlayLock, overlayCount } from "./lib/overlayScrollLock";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
-import { closeToPreviousWindow, selectedChannel, setSelectedChannel } from "./lib/selection";
+import {
+  closeToPreviousWindow,
+  selectedChannel,
+  selectStatusWindow,
+  setSelectedChannel,
+} from "./lib/selection";
 import { settingsOpenTick } from "./lib/settingsNav";
 import { isMobile } from "./lib/theme";
 import { bindEdgeGesture } from "./lib/touchGesture";
@@ -371,6 +376,10 @@ const Shell: Component = () => {
       if (target)
         setSelectedChannel({ networkSlug: target.slug, channelName: target.name, kind: "channel" });
     },
+    // GH #359 — Alt+0. The status window is outside the Alt+1..9 index
+    // space, so this is a distinct verb; the selection store owns which
+    // network's status window it resolves to.
+    selectStatusWindow: () => selectStatusWindow(),
     // GH #235 — next/prev unread now route through the shared
     // `activeWindows` ordering (mention/query tier first, chronological
     // within a tier, cycling), the SAME verb the Alt+A keybinding and

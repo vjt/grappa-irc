@@ -1855,6 +1855,95 @@ describe("selection store", () => {
     });
   });
 
+  // #359 — Alt+0 jumps to the status/server window. The verb resolves WHICH
+  // network's status window purely from live state (the selection's own
+  // network, else the first one in the sidebar's order) — no parallel
+  // "current network" store to drift.
+  describe("selectStatusWindow (#359)", () => {
+    const net = (id: number, slug: string) => ({
+      kind: "user" as const,
+      id,
+      slug,
+      nick: "alice",
+      connection_state: "connected" as const,
+      connection_state_reason: null,
+      connection_state_changed_at: null,
+      inserted_at: "",
+      updated_at: "",
+    });
+
+    it("selects the CURRENT network's server window, not the first network's", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([net(1, "freenode"), net(2, "azzurra")]);
+      const auth = await import("../lib/auth");
+      const selection = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tok359a");
+      await vi.waitFor(() => expect(networks.networks()?.length).toBe(2));
+
+      selection.setSelectedChannel({
+        networkSlug: "azzurra",
+        channelName: "#italia",
+        kind: "channel",
+      });
+      selection.selectStatusWindow();
+
+      expect(selection.selectedChannel()).toEqual({
+        networkSlug: "azzurra",
+        channelName: "$server",
+        kind: "server",
+      });
+    });
+
+    it("falls back to the first network when the selection has no network (home)", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([net(1, "freenode"), net(2, "azzurra")]);
+      const auth = await import("../lib/auth");
+      const selection = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tok359b");
+      await vi.waitFor(() => expect(networks.networks()?.length).toBe(2));
+
+      selection.setSelectedChannel({
+        networkSlug: "$home",
+        channelName: "$home",
+        kind: "home",
+      });
+      selection.selectStatusWindow();
+
+      expect(selection.selectedChannel()).toEqual({
+        networkSlug: "freenode",
+        channelName: "$server",
+        kind: "server",
+      });
+    });
+
+    it("is a no-op when no network is bound", async () => {
+      vi.resetModules();
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([]);
+      const auth = await import("../lib/auth");
+      const selection = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken("tok359c");
+      await vi.waitFor(() => expect(networks.networks()?.length).toBe(0));
+
+      selection.setSelectedChannel({
+        networkSlug: "$home",
+        channelName: "$home",
+        kind: "home",
+      });
+      selection.selectStatusWindow();
+
+      expect(selection.selectedChannel()?.kind).toBe("home");
+    });
+  });
+
   describe("followQueryNick (#373 — focus follows a peer NICK)", () => {
     it("migrates the selection when the exact query window is focused", async () => {
       localStorage.setItem("grappa-token", "tok");

@@ -14,6 +14,7 @@ let handlers: KeybindingHandlers;
 beforeEach(() => {
   handlers = {
     selectChannelByIndex: vi.fn(),
+    selectStatusWindow: vi.fn(),
     nextUnread: vi.fn(),
     prevUnread: vi.fn(),
     insertIntoCompose: vi.fn(),
@@ -39,6 +40,24 @@ describe("keybindings", () => {
 
     dispatch({ key: "9", altKey: true });
     expect(handlers.selectChannelByIndex).toHaveBeenCalledWith(8);
+  });
+
+  it("Alt+0 dispatches selectStatusWindow (GH #359 jump to the status window)", () => {
+    // Matched on `e.code`, like the Alt+A sibling: on a macOS US layout
+    // Option+0 composes `e.key` into "º", so a key-based match would miss
+    // the chord on exactly the platform this session runs on.
+    dispatch({ code: "Digit0", key: "º", altKey: true });
+    expect(handlers.selectStatusWindow).toHaveBeenCalledTimes(1);
+    // It is NOT an index jump: the status window is outside the Alt+1..9
+    // index space (channels/queries only).
+    expect(handlers.selectChannelByIndex).not.toHaveBeenCalled();
+    // ...and it must not leak into the compose auto-focus path.
+    expect(handlers.insertIntoCompose).not.toHaveBeenCalled();
+  });
+
+  it("Digit0 without Alt does NOT dispatch selectStatusWindow", () => {
+    dispatch({ code: "Digit0", key: "0" });
+    expect(handlers.selectStatusWindow).not.toHaveBeenCalled();
   });
 
   it("Ctrl+N dispatches nextUnread", () => {

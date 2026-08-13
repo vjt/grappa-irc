@@ -41082,3 +41082,47 @@ an existing one, resist adding a parallel delivery path just because the
 *registration* handshake differs — a discriminator field for display, not a
 branch in the sender, keeps one audited path instead of two half-audited
 ones.
+<!-- entry #359 -->
+
+---
+
+## 2026-08-13 — #359: the status window was never unaddressable, it was just outside the index space
+
+`Alt+1..9` selected windows by index and `Alt+A` jumped to the next unread
+one, but nothing on the keyboard reached the per-network status window. #359
+filed that gap together with a diagnosis: the status window "is not part of
+the `ActiveWindow` model", so the plumbing to make it selectable at all is
+the real work. Measured, the second half is wrong in a way worth writing
+down, because it is the kind of wrong that grows a parallel window model.
+
+`ActiveWindow` (`activeWindows.ts`) is the ACTIVITY ordering — the tier list
+`Alt+A` walks, and it deliberately excludes server buffers because server
+noise is not activity worth being sent to. `SelectedChannel`
+(`selection.ts`) is the FOCUS model, and there the status window has been an
+ordinary target since UX-4 bucket C: `{slug, "$server", kind: "server"}`, the
+exact tuple the sidebar's network-header row sets on click, backed by real
+`NumericRouter` scrollback. Two models, two jobs. The index space
+`selectChannelByIndex` walks is channels+queries, so the status window is
+genuinely NOT reachable as "index 0" — but that is a statement about one
+verb's domain, not about the window's addressability. The fix is therefore a
+sibling verb (`selectStatusWindow`), not a representation.
+
+Which network's status window is DERIVED at call time, never stored: the
+selection's own network when it has one, else the first network in the
+sidebar's order, else nothing happens. The `$`-sentinel slugs that `home` and
+`admin` carry are unknown to `networkBySlug`, which makes "no network in
+focus" fall out of the existing lookup instead of needing a kind check per
+identity-scoped window — a new one inherits the fallback for free. A stored
+"current network" would have been a second copy of what the selection
+already says, with the usual drift bill.
+
+The chord matches `e.code === "Digit0"`, not `e.key`. #235 already recorded
+why for `Alt+A` — a macOS Option+letter composes `e.key` ("å") — and the
+same holds for Option+digit on a US layout (`Option+0` → "º"). **Known
+divergence, deliberately not widened here: `Alt+1..9` still matches
+`/^[1-9]$/` against `e.key`, so those chords are the ones that would miss on
+macOS.** That is a pre-existing defect in a verb #359 does not touch, it
+wants its own issue and its own test, and folding it in would have made this
+change a two-verb refactor. Recorded so the split reads as a decision rather
+than as an oversight — and so the next reader does not "restore consistency"
+by moving the new chord onto the broken side.

@@ -141,6 +141,7 @@ let handlers: KeybindingHandlers;
 beforeEach(() => {
   handlers = {
     selectChannelByIndex: vi.fn(),
+    selectStatusWindow: vi.fn(),
     nextUnread: vi.fn(),
     prevUnread: vi.fn(),
     insertIntoCompose: vi.fn(),

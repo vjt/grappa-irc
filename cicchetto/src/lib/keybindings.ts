@@ -23,6 +23,7 @@ import { runTopmostOverlayEscape } from "./overlayScrollLock";
 
 export type KeybindingHandlers = {
   selectChannelByIndex: (idx: number) => void; // Alt+1..9 → idx 0..8
+  selectStatusWindow: () => void; // Alt+0
   nextUnread: () => void; // Ctrl+N
   prevUnread: () => void; // Ctrl+P
   insertIntoCompose: (char: string) => void; // any printable key off-compose
@@ -78,6 +79,18 @@ function onKeydown(e: KeyboardEvent): void {
   if (e.altKey && /^[1-9]$/.test(e.key)) {
     e.preventDefault();
     handlers.selectChannelByIndex(Number(e.key) - 1);
+    return;
+  }
+
+  // GH #359 — Alt+0 jumps to the status/server window (irssi's window 0).
+  // A verb of its own, NOT index 0 of the chord above: that index space is
+  // channels/queries only, the status window is outside it. Matched on
+  // `e.code` for the same reason as the Alt+A chord below — a macOS
+  // Option+digit composes `e.key` (US layout: Option+0 → "º"), so a
+  // key-based match would miss the chord there.
+  if (e.altKey && e.code === "Digit0") {
+    e.preventDefault();
+    handlers.selectStatusWindow();
     return;
   }
 

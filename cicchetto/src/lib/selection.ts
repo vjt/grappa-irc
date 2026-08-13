@@ -850,6 +850,31 @@ const exports = identityScopedStore((onIdentityChange) => {
     });
   });
 
+  // #359 — jump to the status/server window (irssi's window 0). The status
+  // window IS an ordinary selection target ({slug, $server, kind: "server"});
+  // what it is NOT is part of the Alt+1..9 index space, which walks
+  // channels/queries only — hence a verb of its own rather than an index.
+  // WHICH network's status window is DERIVED, never stored: the selection's
+  // own network when it has one (channel/query/server/list all carry a real
+  // slug), else the first network in the sidebar's order. The identity-scoped
+  // home/admin windows carry a `$`-sentinel slug that `networkBySlug` does not
+  // know, which is exactly the "no network in focus" signal. No-op when no
+  // network is bound at all.
+  const selectStatusWindow = (): void => {
+    untrack(() => {
+      const sel = selectedChannel();
+      const inFocus =
+        sel !== null && networkBySlug(sel.networkSlug) !== undefined ? sel.networkSlug : undefined;
+      const slug = inFocus ?? (networks() ?? [])[0]?.slug;
+      if (slug === undefined) return;
+      setSelectedChannel({
+        networkSlug: slug,
+        channelName: SERVER_WINDOW_NAME,
+        kind: "server",
+      });
+    });
+  };
+
   // #373 — a query window's peer renamed (observed via a per-channel
   // NICK). If THIS device has that exact query window focused, follow the
   // rename so the focused window keeps routing to the live nick — an
@@ -881,6 +906,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     setSelectedChannel,
     isActiveSelection,
     closeToPreviousWindow,
+    selectStatusWindow,
     setServerSeedCount,
     applySeedEnvelope,
     setCursorIfAdvances,
@@ -896,6 +922,7 @@ export const selectedChannel = exports.selectedChannel;
 export const setSelectedChannel = exports.setSelectedChannel;
 export const isActiveSelection = exports.isActiveSelection;
 export const closeToPreviousWindow = exports.closeToPreviousWindow;
+export const selectStatusWindow = exports.selectStatusWindow;
 export const setServerSeedCount = exports.setServerSeedCount;
 export const applySeedEnvelope = exports.applySeedEnvelope;
 export const setCursorIfAdvances = exports.setCursorIfAdvances;
