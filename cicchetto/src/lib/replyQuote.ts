@@ -17,16 +17,17 @@ export const REPLY_QUOTE_TAIL = " << ";
 // #1235 — how much of the quoted line comes along. Without a cap, replying to a
 // long message drags the whole thing into the compose box and buries the answer.
 //
-// Four readings of "limitiamo a 42 i caratteri" are all defensible; these are
-// the ones ruled on, deliberately kept to one constant plus one function so a
-// change of mind is a one-line edit:
-//   - 42 counts BODY characters and the ellipsis is ADDED past them (45 quoted,
-//     not 42 with three spent on dots);
+// #1277 raised the number to 100: 42 was the original ask ("limitiamo a 42 i
+// caratteri") and read too tight in practice. The four readings ruled on in
+// #1235 stand unchanged, and they are still deliberately kept to one constant
+// plus one function, which is what made raising the number a one-line edit:
+//   - 100 counts BODY characters and the ellipsis is ADDED past them (103
+//     quoted, not 100 with three spent on dots);
 //   - the marker is the literal `...` the request spells, not `…` U+2026;
-//   - the cut is flat at 42, with no backing off to a word boundary;
+//   - the cut is flat at 100, with no backing off to a word boundary;
 //   - the head (`<nick> ` / `* nick `) is outside the count — the nick is not
 //     what overflows.
-export const REPLY_QUOTE_BODY_LIMIT = 42;
+export const REPLY_QUOTE_BODY_LIMIT = 100;
 export const REPLY_QUOTE_ELLIPSIS = "...";
 
 // The quoted body, cut to the limit. Counted in CODE POINTS: a UTF-16 slice can

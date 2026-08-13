@@ -45,14 +45,16 @@ const CHANNEL = AUTOJOIN_CHANNELS[0];
 // already wraps and already hides the caret. This body is far past it, so the
 // ROW wraps and the quote it produces is a capped one, while staying well
 // inside one PRIVMSG so the server-side split budget (#246) never turns it
-// into two scrollback rows.
+// into two scrollback rows. #1277 raised the cap to 100 and left the filler
+// alone: the posted body runs 161 code points with the timestamp, still 61
+// past the cap, and the overflow below was measured rather than assumed.
 const FILLER =
   "che va a capo parecchie volte perche' il textarea e' rows=1 e non cresce, " +
   "quindi il caret finisce sotto la piega e non si vede piu' nulla";
 
-// #1235 capped the quoted body at 42 characters plus a literal `...`, so a
-// single reply can no longer BE six wrapped lines: the longest quote the
-// gesture can now produce is `<nick> ` + 45 + ` << `, about two. The overflow
+// #1235 capped the quoted body plus a literal `...`, so a single reply can no
+// longer BE six wrapped lines: the longest quote the gesture can produce is
+// `<nick> ` + 103 + ` << ` since #1277 raised the cap to 100. The overflow
 // this spec needs is therefore built the way an operator builds it — the reply
 // verb APPENDS, so three replies to the same row stack into a draft that wraps
 // well past the fold, with the caret at the very end of the third. What is
@@ -61,7 +63,7 @@ const FILLER =
 // Hardcoded in lockstep with `REPLY_QUOTE_BODY_LIMIT` / `REPLY_QUOTE_ELLIPSIS`
 // in `src/lib/replyQuote.ts` — the e2e package does not import from `src`, and
 // the house convention here is a mirrored constant with a lockstep comment.
-const QUOTED_BODY_LIMIT = 42;
+const QUOTED_BODY_LIMIT = 100;
 const QUOTED_ELLIPSIS = "...";
 const REPLIES = 3;
 
@@ -79,10 +81,11 @@ function uniqueBody(): string {
   return `issue1105 ${Date.now()} ${FILLER}`;
 }
 
-// Six-ish wrapped lines minus generous slack — three stacked quotes come to
-// about what the single uncapped one used to be. Its job is to fail loudly if
-// the fixture ever stops overflowing, because then "the caret is in view" would
-// be true for the wrong reason.
+// Generous slack under what the fixture actually produces: three stacked
+// quotes measure scrollHeight 269 against clientHeight 42 at this viewport,
+// so 227px of overflow (it was 109px under the 42-char cap). Its job is to
+// fail loudly if the fixture ever stops overflowing, because then "the caret
+// is in view" would be true for the wrong reason.
 const MIN_OVERFLOW_PX = 40;
 
 // A left→right drag on the message row whose text contains `body`. Touch

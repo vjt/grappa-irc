@@ -217,10 +217,12 @@ describe("replyQuote — what must NOT be mistaken for a quote (#1123)", () => {
 
 // #1235 — vjt: "sul reply limitiamo a 42 i caratteri di cui facciamo reply, se
 // sforano mettiamo un ellipsis `...`, e poi mettiamo sempre uno spazio prima
-// del `<<` finale". The cap lives in the WRAPPER, never in `quotableBody`:
-// that helper is shared with `!addquote` (#1107), which archives the line and
-// must keep it whole. `addQuote.test.ts` is the control group for that.
-describe("replyQuote — the quoted body is capped (#1235)", () => {
+// del `<<` finale". #1277 raised that 42 to 100 — the number moved, every
+// reading below did not. The cap lives in the WRAPPER, never in
+// `quotableBody`: that helper is shared with `!addquote` (#1107), which
+// archives the line and must keep it whole. `addQuote.test.ts` is the control
+// group for that.
+describe("replyQuote — the quoted body is capped (#1235, #1277)", () => {
   const AT_LIMIT = "a".repeat(REPLY_QUOTE_BODY_LIMIT);
 
   it("leaves a body at the limit whole, with no ellipsis", () => {
@@ -228,14 +230,14 @@ describe("replyQuote — the quoted body is capped (#1235)", () => {
   });
 
   // The first body over the limit is where an off-by-one shows: one way it
-  // clips a body that fits, the other it lets a 43rd character through.
+  // clips a body that fits, the other it lets a 101st character through.
   it("caps the first body that overflows", () => {
     expect(replyQuote(msg({ body: `${AT_LIMIT}b` }))).toBe(`<vjt> ${AT_LIMIT}... << `);
   });
 
-  // The 42 counts BODY characters and the ellipsis is ADDED past them — the
-  // quoted run is 45, not 42 with three of them spent on dots.
-  it("keeps a full 42 characters and adds the ellipsis after them", () => {
+  // The 100 counts BODY characters and the ellipsis is ADDED past them — the
+  // quoted run is 103, not 100 with three of them spent on dots.
+  it("keeps a full 100 characters and adds the ellipsis after them", () => {
     const quote = replyQuote(msg({ body: "x".repeat(200) })) ?? "";
     const quoted = quote.slice("<vjt> ".length, -REPLY_QUOTE_TAIL.length);
     expect(quoted).toBe(`${"x".repeat(REPLY_QUOTE_BODY_LIMIT)}${REPLY_QUOTE_ELLIPSIS}`);
@@ -251,13 +253,15 @@ describe("replyQuote — the quoted body is capped (#1235)", () => {
     expect(quote).not.toContain("…");
   });
 
-  // A flat cut, with no backing off to the last word boundary: that is
-  // "limitiamo a 42 i caratteri" read literally, and a word-boundary rule would
-  // make the quote length depend on where the spaces happen to fall.
+  // A flat cut, with no backing off to the last word boundary: that is the
+  // request read literally, and a word-boundary rule would make the quote
+  // length depend on where the spaces happen to fall. The body is sized by
+  // hand against 100 so the cut lands INSIDE the last word — a body that
+  // happened to end on a space would pass under either rule.
   it("cuts flat at the limit, mid-word", () => {
-    const body = `${"parola ".repeat(5)}spezzata`;
-    expect(body).toHaveLength(43);
-    expect(replyQuote(msg({ body }))).toBe(`<vjt> ${"parola ".repeat(5)}spezzat... << `);
+    const body = `${"parola ".repeat(14)}spezzata`;
+    expect(body).toHaveLength(106);
+    expect(replyQuote(msg({ body }))).toBe(`<vjt> ${"parola ".repeat(14)}sp... << `);
   });
 
   // The cap is on the BODY: a long nick does not eat into what the sender said.
@@ -274,12 +278,14 @@ describe("replyQuote — the quoted body is capped (#1235)", () => {
     expect(replyQuote(msg({ sender: "alice", body }))).toBe("<alice> breve << ");
   });
 
-  // A UTF-16 slice at 42 can land between the halves of a surrogate pair and
+  // A UTF-16 slice at 100 can land between the halves of a surrogate pair and
   // emit a lone surrogate — an unpaired code unit in the compose box, and from
-  // there onto the wire. The cut counts code points.
+  // there onto the wire. The cut counts code points: the emoji is the 100th of
+  // them but sits at UTF-16 indices 99 and 100, so a unit-wise `slice(0, 100)`
+  // would keep its high surrogate alone.
   it("does not cut an astral character in half", () => {
-    const quote = replyQuote(msg({ body: `${"a".repeat(41)}🍺x` })) ?? "";
-    expect(quote).toBe(`<vjt> ${"a".repeat(41)}🍺... << `);
+    const quote = replyQuote(msg({ body: `${"a".repeat(99)}🍺x` })) ?? "";
+    expect(quote).toBe(`<vjt> ${"a".repeat(99)}🍺... << `);
     expect(quote.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, "")).not.toMatch(/[\uD800-\uDFFF]/);
   });
 });
