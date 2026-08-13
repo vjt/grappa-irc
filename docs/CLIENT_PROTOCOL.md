@@ -356,9 +356,12 @@ Three properties worth designing around:
   may also skip `/auth/login` entirely and present it directly as
   `Authorization: Bearer <token>` / the WS bearer subprotocol (§3a).
 - **It does not expire while idle.** A browser session dies after seven
-  days of silence; a client token does not. Revocation by its owner is
-  the only thing that ends it — expect a `401`, and surface it as "this
-  token was revoked", not as a transient network error.
+  days of silence; a client token does not. Only revocation ends it —
+  by its owner, or by an operator resetting the account's factors or
+  rotating its password. Its owner arming, disarming or changing a
+  second factor does NOT (#1284), so minting the token first and arming
+  the factor afterwards is a safe order. Expect a `401`, and surface it
+  as "this token was revoked", not as a transient network error.
 - **It is scoped.** A client token can read and send as the account, and
   that is all. The account's own credential surfaces — `/admin/*`,
   `/me/totp*`, `/me/passkeys*`, `DELETE /me`, and the token routes

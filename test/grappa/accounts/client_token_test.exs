@@ -8,9 +8,10 @@ defmodule Grappa.Accounts.ClientTokenTest do
   import Grappa.AuthFixtures
 
   alias Grappa.{Accounts, Repo}
-  alias Grappa.Accounts.{Session, Wire}
+  alias Grappa.Accounts.{Session, TOTP, WebAuthn, Wire}
 
   @thirty_days 30 * 24 * 3600
+  @rfc_secret "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
 
   defp idle_for(%Session{} = session, seconds) do
     session
@@ -120,10 +121,11 @@ defmodule Grappa.Accounts.ClientTokenTest do
       assert Accounts.list_client_tokens(user) == []
     end
 
-    test "a credential-material sweep takes the client tokens with it" do
-      # Not a special case in the code, and this arm is what keeps it from
-      # becoming one: arming or resetting a second factor evicts an
-      # account's other sessions, and a client token is one of them.
+    test "a whole-account sweep takes the client tokens with it" do
+      # The revoke-EVERY-session door (admin password rotation, operator
+      # recovery) draws no line at `kind`: nobody proved they hold the
+      # account, so every derived credential goes. Contrast the
+      # revoke-every-OTHER-session door below, which spares them.
       user = user_fixture()
       token = client_token(user, "issued before the reset")
 
@@ -131,6 +133,75 @@ defmodule Grappa.Accounts.ClientTokenTest do
 
       assert {:error, :revoked} = Accounts.authenticate(token.id)
     end
+  end
+
+  # GH #1284. `revoke_other_sessions_for_user!/2` swept by `user_id` alone,
+  # so arming TOTP killed the very credential #1196 exists to keep alive —
+  # silently, with a 401 the operator could not tell from a wrong password.
+  # Each test pins BOTH halves: the token survives AND the browser bearer
+  # still dies, because a filter that revoked nothing would pass on the
+  # first assertion alone.
+  describe "the revoke-other-sessions sweep spares client tokens" do
+    test "arming TOTP" do
+      user = user_fixture()
+      current = session_fixture(user)
+      other = session_fixture(user)
+      token = client_token(user, "bicchierino bridge")
+      now = 1_700_000_000
+      {:ok, code} = TOTP.code_at(@rfc_secret, now)
+
+      assert {:ok, _codes} = Accounts.confirm_totp_enrollment(user, current.id, @rfc_secret, code, now)
+
+      assert {:ok, %Session{kind: :client}} = Accounts.authenticate(token.id)
+      assert {:error, :revoked} = Accounts.authenticate(other.id)
+      assert {:ok, %Session{}} = Accounts.authenticate(current.id)
+    end
+
+    test "disabling TOTP" do
+      {user, password} = user_fixture_with_password()
+      armed = arm(user)
+      current = session_fixture(armed)
+      other = session_fixture(armed)
+      token = client_token(armed, "bicchierino bridge")
+
+      assert {:ok, _user} = Accounts.disable_totp(armed, current.id, password)
+
+      assert {:ok, %Session{kind: :client}} = Accounts.authenticate(token.id)
+      assert {:error, :revoked} = Accounts.authenticate(other.id)
+    end
+
+    test "changing passkey mode" do
+      user = user_fixture()
+      current = session_fixture(user)
+      other = session_fixture(user)
+      token = client_token(user, "bicchierino bridge")
+
+      assert {:ok, :second_factor} = WebAuthn.set_mode(user, :second_factor, current.id, [])
+
+      assert {:ok, %Session{kind: :client}} = Accounts.authenticate(token.id)
+      assert {:error, :revoked} = Accounts.authenticate(other.id)
+    end
+
+    # The other side of the ruling: the recovery door is reached by an
+    # operator, not by a proven account holder, so it keeps burning every
+    # credential. It is a DIFFERENT function (`revoke_sessions_for_user!/1`,
+    # no `other`) and the `kind` filter must not reach it.
+    test "but operator recovery still burns them" do
+      user = user_fixture()
+      armed = arm(user)
+      token = client_token(armed, "bicchierino bridge")
+
+      assert {:ok, _user} = Accounts.reset_totp(armed.name)
+
+      assert {:error, :revoked} = Accounts.authenticate(token.id)
+    end
+  end
+
+  defp arm(user) do
+    now = 1_700_000_000
+    {:ok, code} = TOTP.code_at(@rfc_secret, now)
+    {:ok, _codes} = TOTP.confirm_enrollment(user, @rfc_secret, code, now)
+    Accounts.get_user!(user.id)
   end
 
   describe "authenticate_client_token/5" do

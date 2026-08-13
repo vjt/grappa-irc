@@ -62,13 +62,20 @@ defmodule Grappa.Accounts do
       `GrappaWeb.Plugs.RequireFullSession`, so it can read and send but
       cannot administer, re-credential, or re-mint.
 
-  What is deliberately NOT special-cased: the revoke sweeps. Every
-  credential-material change that already evicts an account's other
-  sessions (`revoke_other_sessions_for_user!/2`, reached from TOTP
-  enrolment / disable; `revoke_sessions_for_user/1`, reached from the
-  operator resets) evicts its client tokens along with them. That is the
-  fail-closed direction and it costs no branch: arming or resetting a
-  second factor is exactly the moment a re-issue is wanted.
+  The third difference is which revoke sweep reaches it (GH #1284), and
+  the line is WHO is at the door:
+
+    * a sweep the account holder triggered, having just proven they hold
+      the account — arming or disarming TOTP, changing passkey mode —
+      spares them (`revoke_other_sessions_for_user!/2`). The point of the
+      credential is to outlive a change to the account's factors; revoking
+      it there made the documented order (mint, then arm) lock the client
+      out at the moment the factor was confirmed;
+    * a sweep nobody proved they hold the account to reach — operator
+      recovery, admin password rotation — takes them
+      (`revoke_sessions_for_user/1` and its `!` twin, no `kind` filter).
+
+  A token's own kill switch is `revoke_client_token/2`.
   """
   use Boundary,
     top_level?: true,
@@ -844,7 +851,19 @@ defmodule Grappa.Accounts do
   end
 
   @doc """
-  Revokes every live bearer for `user` except the current session.
+  Revokes every live WEB bearer for `user` except the current session.
+
+  It does NOT revoke the account's `:client` tokens (GH #1284). Every
+  caller here is a door the account holder has just proven they hold —
+  arming TOTP, disarming it under password, changing passkey mode — and a
+  client token is the credential #1196 exists to keep alive ACROSS such a
+  change. Sweeping by `user_id` alone made the documented order (mint the
+  token, then arm the factor) lock the client out at the moment the factor
+  was confirmed, with a `401` the operator could not tell from a wrong
+  password. The kill switch for a token is `revoke_client_token/2`, and
+  operator recovery still burns everything through the whole-account
+  `revoke_sessions_for_user!/1` — which is a different function, and
+  deliberately carries no `kind` filter.
 
   In-transaction only — every caller (TOTP enrolment/disable, the passkey
   mode transaction) already runs inside a
@@ -857,9 +876,14 @@ defmodule Grappa.Accounts do
   @spec revoke_other_sessions_for_user!(User.t(), Ecto.UUID.t()) :: :ok
   def revoke_other_sessions_for_user!(%User{id: user_id, name: name}, current_session_id)
       when is_binary(current_session_id) do
+    # `!= :client` rather than `== :web`: a future third kind is swept until
+    # someone rules otherwise, which is the fail-closed direction for a
+    # revoke. Only `:client` has an argument for surviving, and it is above.
     query =
       from(s in Session,
-        where: s.user_id == ^user_id and s.id != ^current_session_id and is_nil(s.revoked_at)
+        where:
+          s.user_id == ^user_id and s.id != ^current_session_id and is_nil(s.revoked_at) and
+            s.kind != :client
       )
 
     Repo.update_all(query, set: [revoked_at: DateTime.utc_now()])
