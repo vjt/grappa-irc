@@ -12,7 +12,7 @@ defmodule Grappa.Networks do
     * `Grappa.Networks` (this module) — network slug CRUD +
       T32 connection-state transitions.
     * `Grappa.Networks.Servers` — server-endpoint CRUD + selection
-      policy (`add_server/2`, `list_servers/1`, `pick_server!/1`,
+      policy (`add_server/2`, `list_servers/1`, `pick_server!/2`,
       `remove_server/3`).
     * `Grappa.Networks.Credentials` — per-(user, network) credential
       lifecycle; `unbind_credential/2` detaches a credential + stops the
@@ -193,12 +193,12 @@ defmodule Grappa.Networks do
   ## Why it refuses on `:no_enabled_server`
 
   A user plus a credential still cannot connect: `SessionPlan.resolve/1`
-  picks a server with `Servers.pick_server!/1`, which raises
+  picks a server with `Servers.pick_server!/2`, which raises
   `NoServerError` when the network owns none that is enabled. Binding
   anyway produces a row that READS as access in every listing and
   fails only at spawn time — so the check happens here, at the
   boundary, and no half-access is ever written. The dialability test is
-  `pick_server!/1` itself, not a re-derived predicate, so the two
+  `pick_server!/2` itself, not a re-derived predicate, so the two
   cannot drift apart.
 
   Not atomic across the three writes, and deliberately so: a network
@@ -239,7 +239,7 @@ defmodule Grappa.Networks do
 
   defp ensure_dialable(%Network{} = network) do
     network = Repo.preload(network, :servers, force: true)
-    _ = Servers.pick_server!(network)
+    _ = Servers.pick_server!(network, 0)
     {:ok, network}
   rescue
     NoServerError -> {:error, :no_enabled_server}

@@ -72,24 +72,43 @@ defmodule Grappa.Networks.Servers do
   end
 
   @doc """
-  Picks the lowest-priority enabled server for a `network` whose
-  `:servers` association is preloaded. Tie-broken by row id
-  (insertion order) to match `list_servers/1`. Raises
-  `Grappa.Networks.NoServerError` when every server is disabled OR
-  the network has none — operator misconfiguration is loud, never
-  silent.
+  Picks the enabled server at ring position `attempt` for a `network`
+  whose `:servers` association is preloaded. The ring is ordered by
+  `(priority asc, id asc)` — same order `list_servers/1` returns — so
+  `attempt` 0 is the lowest-priority endpoint, 1 the next one, and the
+  ring wraps. Raises `Grappa.Networks.NoServerError` when every server
+  is disabled OR the network has none — operator misconfiguration is
+  loud, never silent.
 
   Pre-A2/A10 this lived in `Grappa.Session.Server`; the cycle
   inversion lifts the policy where it belongs (Networks owns
   server-list semantics, Session just consumes the picked endpoint).
-  Phase 5 fail-over across the rest of the list is the natural
-  evolution from here.
+
+  ## `attempt` is the caller's, and only two values are meaningful (#93)
+
+  This function is pure policy — it owns "which endpoint sits at
+  position N", nothing else. WHO supplies N is the fail-over machine's
+  outer loop, and there are exactly two kinds of caller:
+
+    * a spawn door (Bootstrap, `SpawnOrchestrator`, the `/connect`
+      verb, the `add_network/3` dialability check) passes `0`. Those
+      doors mean "start this session now" and clear the failure ladder
+      first, so the preferred endpoint is the right one to try.
+    * the respawn door — the `refresh_plan` closure both SessionPlans
+      inject — passes `Grappa.Session.Backoff.failure_count/2`. That
+      counter is bumped once per abnormal session exit and survives the
+      `:transient` restart, so it IS the connect-attempt ordinal with no
+      second structure to keep in sync.
+
+  No default argument on purpose: a caller that does not say which
+  position it wants is a caller that has not decided which door it is.
   """
-  @spec pick_server!(Network.t()) :: Server.t()
-  def pick_server!(%Network{servers: servers, id: nid, slug: slug}) when is_list(servers) do
+  @spec pick_server!(Network.t(), non_neg_integer()) :: Server.t()
+  def pick_server!(%Network{servers: servers, id: nid, slug: slug}, attempt)
+      when is_list(servers) and is_integer(attempt) and attempt >= 0 do
     case servers |> Enum.filter(& &1.enabled) |> Enum.sort_by(&{&1.priority, &1.id}) do
-      [server | _] -> server
       [] -> raise NoServerError, network_id: nid, network_slug: slug
+      ring -> Enum.at(ring, rem(attempt, length(ring)))
     end
   end
 

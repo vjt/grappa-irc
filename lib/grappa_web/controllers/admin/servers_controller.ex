@@ -18,7 +18,7 @@ defmodule GrappaWeb.Admin.ServersController do
 
   ## Session lifecycle on delete (A-6)
 
-  `DELETE` leaves any live `Session.Server` alone — `Servers.pick_server!/1`
+  `DELETE` leaves any live `Session.Server` alone — `Servers.pick_server!/2`
   is only consulted on (re)connect. Live sockets stay open against
   their current host:port regardless of the DB row. Response body
   surfaces `network_session_count: N` (total live sessions on the

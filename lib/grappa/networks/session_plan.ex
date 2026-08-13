@@ -3,7 +3,7 @@ defmodule Grappa.Networks.SessionPlan do
   Pure resolver: credential → primitive `t:Grappa.Session.start_opts/0`.
 
   Reads from `Accounts` for the user name, picks the lowest-priority
-  enabled server via `Grappa.Networks.Servers.pick_server!/1`, and
+  enabled server via `Grappa.Networks.Servers.pick_server!/2`, and
   copies the Cloak-decrypted upstream password into the resulting
   primitive opts map. The output carries no `Credential` / `Network` /
   `Server` / `User` struct refs, so the Session boundary stays
@@ -21,6 +21,7 @@ defmodule Grappa.Networks.SessionPlan do
   alias Grappa.IRC.{Identifier, Identity}
   alias Grappa.Networks.{Credential, Credentials, Network, NoServerError, Server, Servers}
   alias Grappa.Repo
+  alias Grappa.Session.Backoff
 
   @doc """
   Resolves `credential` into the fully-flat opts map that
@@ -36,7 +37,7 @@ defmodule Grappa.Networks.SessionPlan do
 
   Two reachable error tags:
 
-    * `{:error, :no_server}` — `Servers.pick_server!/1` raised; the
+    * `{:error, :no_server}` — `Servers.pick_server!/2` raised; the
       network has zero enabled endpoints. Operator action:
       `mix grappa.add_server`.
     * `{:error, :user_not_found}` — `Accounts.get_user!/1` raised;
@@ -53,7 +54,27 @@ defmodule Grappa.Networks.SessionPlan do
   """
   @spec resolve(Credential.t()) ::
           {:ok, Session.start_opts()} | {:error, :no_server | :user_not_found}
-  def resolve(%Credential{} = credential) do
+  def resolve(%Credential{} = credential), do: resolve_attempt(credential, 0)
+
+  # #93 — the ring-aware resolver behind `resolve/1`. `attempt` is the
+  # connect-attempt ordinal `Servers.pick_server!/2` indexes the enabled
+  # endpoint ring with.
+  #
+  # `resolve/1` pins it to 0 and that is not a default argument in
+  # disguise: its callers are the SPAWN doors (Bootstrap, the `/connect`
+  # verb via `SpawnOrchestrator`, `Operator`), which mean "start this
+  # session now" and clear the failure ladder before spawning. Starting
+  # them anywhere but the preferred endpoint would be wrong, and reading
+  # the counter there would additionally race — `Backoff.reset/2` is a
+  # cast, so a resolve immediately after it can still observe the old
+  # count. The RESPAWN door (`refresh_plan` below) is the one that walks
+  # the ring, and it runs at the only moment the counter is authoritative:
+  # `Backoff.record_failure/2` is a synchronous call from the dying
+  # session's `terminate/2`, so the bump has landed before the supervisor's
+  # restart reaches `Session.Server.init/1`.
+  @spec resolve_attempt(Credential.t(), non_neg_integer()) ::
+          {:ok, Session.start_opts()} | {:error, :no_server | :user_not_found}
+  defp resolve_attempt(%Credential{} = credential, attempt) do
     # Caller may pass a credential straight from
     # `Credentials.list_credentials_for_all_users/0` (network preloaded
     # already) or one fresh from `Credentials.get_credential!/2` (assoc
@@ -61,7 +82,7 @@ defmodule Grappa.Networks.SessionPlan do
     # already-loaded assocs, so no extra query for the Bootstrap path.
     credential = Repo.preload(credential, network: :servers)
     user = Accounts.get_user!(credential.user_id)
-    server = Servers.pick_server!(credential.network)
+    server = Servers.pick_server!(credential.network, attempt)
 
     {:ok, build_plan(user, credential.network, credential, server)}
   rescue
@@ -151,10 +172,22 @@ defmodule Grappa.Networks.SessionPlan do
       # returns `:ignore` and the supervisor drops the child
       # permanently. Operator re-spawns once the underlying config
       # is fixed.
+      #
+      # #93 — this is ALSO the outer loop of the two-level fail-over machine
+      # (#271 shipped the inner, per-leaf one inside `Grappa.IRC.Client`).
+      # There is no loop to write: a connect failure kills the Client, the
+      # linked Session.Server exits abnormally, `terminate/2` bumps
+      # `Backoff`, and the `:transient` supervisor lands us right here. So
+      # the endpoint advances by resolving at the failure count — attempt 0
+      # is the preferred server, attempt 1 the next enabled one, wrapping.
+      # The counter is cleared by the #100 sustained-connection gate, so a
+      # session that stays up returns the ring to the preferred endpoint.
       refresh_plan: fn ->
         case Credentials.get_credential_by_ids(user.id, cred.network_id) do
           {:ok, fresh_cred} ->
-            case resolve(fresh_cred) do
+            attempt = Backoff.failure_count({:user, user.id}, cred.network_id)
+
+            case resolve_attempt(fresh_cred, attempt) do
               {:ok, _} = ok -> ok
               {:error, _} -> {:error, :not_found}
             end

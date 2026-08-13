@@ -36,6 +36,7 @@ defmodule Grappa.Visitors.SessionPlan do
   alias Grappa.{Networks, Repo, Session, Visitors}
   alias Grappa.Networks.{Credential, Credentials, NoServerError, Servers}
   alias Grappa.Networks.SessionPlan, as: NetworksSessionPlan
+  alias Grappa.Session.Backoff
   alias Grappa.Visitors.Visitor
 
   @doc """
@@ -54,12 +55,23 @@ defmodule Grappa.Visitors.SessionPlan do
   """
   @spec resolve(Visitor.t(), Networks.Network.t()) ::
           {:ok, Session.start_opts()} | {:error, :network_unconfigured | :no_server}
-  def resolve(%Visitor{} = visitor, %Networks.Network{} = network) do
+  def resolve(%Visitor{} = visitor, %Networks.Network{} = network),
+    do: resolve_attempt(visitor, network, 0)
+
+  # #93 — the ring-aware resolver behind `resolve/2`, mirroring
+  # `Grappa.Networks.SessionPlan.resolve_attempt/2` field for field:
+  # `attempt` indexes the enabled endpoint ring, `resolve/2` pins it to 0
+  # because its callers are the spawn doors (Bootstrap, `Visitors.Login`,
+  # `Operator`) which clear the failure ladder before spawning, and only
+  # the `refresh_plan` closure below — the respawn door — walks it.
+  @spec resolve_attempt(Visitor.t(), Networks.Network.t(), non_neg_integer()) ::
+          {:ok, Session.start_opts()} | {:error, :network_unconfigured | :no_server}
+  defp resolve_attempt(%Visitor{} = visitor, %Networks.Network{} = network, attempt) do
     with {:ok, credential} <- fetch_credential(visitor, network) do
       network = Repo.preload(network, :servers)
 
       try do
-        server = Servers.pick_server!(network)
+        server = Servers.pick_server!(network, attempt)
         {:ok, build_plan(visitor, credential, network, server)}
       rescue
         NoServerError -> {:error, :no_server}
@@ -267,7 +279,13 @@ defmodule Grappa.Visitors.SessionPlan do
                 {:error, :not_found}
 
               %Networks.Network{} = fresh_network ->
-                case resolve(fresh, fresh_network) do
+                # #93 — the respawn door walks the endpoint ring. Same
+                # derivation as the user side: the `:transient` restart that
+                # lands here has already had its failure recorded, so the
+                # counter IS the connect-attempt ordinal.
+                attempt = Backoff.failure_count({:visitor, visitor.id}, network.id)
+
+                case resolve_attempt(fresh, fresh_network, attempt) do
                   {:ok, _} = ok -> ok
                   {:error, _} -> {:error, :not_found}
                 end

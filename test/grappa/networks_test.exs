@@ -419,7 +419,7 @@ defmodule Grappa.NetworksTest do
   # #1158 — the operator-facing verb pair. `bind_credential/3` writes ONE row
   # and is the internal primitive; a user holding only that row still cannot
   # connect, because `SessionPlan.resolve/1` needs the network to own an
-  # ENABLED server (`pick_server!/1` raises otherwise). `add_network/3` is the
+  # ENABLED server (`pick_server!/2` raises otherwise). `add_network/3` is the
   # composition that makes the access real, and every assertion here uses
   # `SessionPlan.resolve/1` as the oracle rather than counting rows: "the
   # credential exists" is exactly the half-truth the verb was introduced to
@@ -1555,7 +1555,7 @@ defmodule Grappa.NetworksTest do
     end
   end
 
-  describe "pick_server!/1 (A2/A10 — lifted from Session.Server)" do
+  describe "pick_server!/2 (A2/A10 — lifted from Session.Server)" do
     test "returns the lowest-priority enabled server, ties broken by id" do
       net = network_fixture()
       {:ok, _} = Servers.add_server(net, %{host: "h1", port: 6667, priority: 5})
@@ -1563,7 +1563,7 @@ defmodule Grappa.NetworksTest do
       {:ok, _} = Servers.add_server(net, %{host: "h3", port: 6667, priority: 1})
 
       preloaded = Repo.preload(net, :servers)
-      assert %Server{host: "h2"} = Servers.pick_server!(preloaded)
+      assert %Server{host: "h2"} = Servers.pick_server!(preloaded, 0)
     end
 
     test "skips disabled servers even when priority would prefer them" do
@@ -1572,7 +1572,7 @@ defmodule Grappa.NetworksTest do
       {:ok, _} = Servers.add_server(net, %{host: "enabled", port: 6667, priority: 5})
 
       preloaded = Repo.preload(net, :servers)
-      assert %Server{host: "enabled"} = Servers.pick_server!(preloaded)
+      assert %Server{host: "enabled"} = Servers.pick_server!(preloaded, 0)
     end
 
     test "raises NoServerError when every server is disabled" do
@@ -1580,13 +1580,73 @@ defmodule Grappa.NetworksTest do
       {:ok, _} = Servers.add_server(net, %{host: "off", port: 6667, enabled: false})
       preloaded = Repo.preload(net, :servers)
 
-      assert_raise Networks.NoServerError, fn -> Servers.pick_server!(preloaded) end
+      assert_raise Networks.NoServerError, fn -> Servers.pick_server!(preloaded, 0) end
     end
 
     test "raises NoServerError when the network has zero servers" do
       net = network_fixture()
       preloaded = Repo.preload(net, :servers)
-      assert_raise Networks.NoServerError, fn -> Servers.pick_server!(preloaded) end
+      assert_raise Networks.NoServerError, fn -> Servers.pick_server!(preloaded, 0) end
+    end
+
+    # #93 — `attempt` indexes the same `(priority, id)` order `list_servers/1`
+    # returns, so the ring the fail-over machine walks and the list an
+    # operator reads are the same object seen twice.
+    test "attempt indexes the enabled ring in (priority, id) order" do
+      net = network_fixture()
+      {:ok, _} = Servers.add_server(net, %{host: "third", port: 6667, priority: 9})
+      {:ok, _} = Servers.add_server(net, %{host: "first", port: 6667, priority: 1})
+      {:ok, _} = Servers.add_server(net, %{host: "second", port: 6667, priority: 5})
+
+      preloaded = Repo.preload(net, :servers)
+
+      assert %Server{host: "first"} = Servers.pick_server!(preloaded, 0)
+      assert %Server{host: "second"} = Servers.pick_server!(preloaded, 1)
+      assert %Server{host: "third"} = Servers.pick_server!(preloaded, 2)
+    end
+
+    test "attempt wraps around the ring instead of running off its end" do
+      net = network_fixture()
+      {:ok, _} = Servers.add_server(net, %{host: "first", port: 6667, priority: 1})
+      {:ok, _} = Servers.add_server(net, %{host: "second", port: 6667, priority: 2})
+
+      preloaded = Repo.preload(net, :servers)
+
+      assert %Server{host: "first"} = Servers.pick_server!(preloaded, 2)
+      assert %Server{host: "second"} = Servers.pick_server!(preloaded, 3)
+      # The counter is unbounded (`Backoff` never caps the count, only the
+      # wait it computes), so a long-dead network keeps indexing safely.
+      assert %Server{host: "first"} = Servers.pick_server!(preloaded, 1_000_000)
+    end
+
+    test "a disabled server occupies no ring position" do
+      net = network_fixture()
+      {:ok, _} = Servers.add_server(net, %{host: "first", port: 6667, priority: 1})
+      {:ok, _} = Servers.add_server(net, %{host: "off", port: 6667, priority: 2, enabled: false})
+      {:ok, _} = Servers.add_server(net, %{host: "second", port: 6667, priority: 3})
+
+      preloaded = Repo.preload(net, :servers)
+
+      assert %Server{host: "second"} = Servers.pick_server!(preloaded, 1)
+      assert %Server{host: "first"} = Servers.pick_server!(preloaded, 2)
+    end
+
+    test "a single enabled server is every ring position" do
+      net = network_fixture()
+      {:ok, _} = Servers.add_server(net, %{host: "only", port: 6667, priority: 1})
+      preloaded = Repo.preload(net, :servers)
+
+      for attempt <- 0..3 do
+        assert %Server{host: "only"} = Servers.pick_server!(preloaded, attempt)
+      end
+    end
+
+    test "raises NoServerError at any ring position when none is enabled" do
+      net = network_fixture()
+      {:ok, _} = Servers.add_server(net, %{host: "off", port: 6667, enabled: false})
+      preloaded = Repo.preload(net, :servers)
+
+      assert_raise Networks.NoServerError, fn -> Servers.pick_server!(preloaded, 7) end
     end
   end
 
