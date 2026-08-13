@@ -220,9 +220,18 @@ config :grappa, :busy_retry,
 # refills between the sequential POSTs of a single test (deterministic
 # burst→429 without a wall-clock sleep; refill-over-time is proven
 # deterministically at the `TokenBucket` unit level via its now_ms seam).
+#
+# #480 — the oper pair is deliberately DISTINCT on both axes: a wider
+# burst (6 vs 3) so a test can prove the oper branch is the one being
+# used, and a slower refill (0.25 vs 0.5) so the `retry-after` it emits
+# cannot be confused with the ordinary one. Slower, never faster: a
+# refill fast enough to top the bucket up mid-test would turn the
+# expected 429 into a wall-clock race.
 config :grappa, :send_throttle,
   capacity: 3,
-  refill_per_sec: 0.5
+  refill_per_sec: 0.5,
+  oper_capacity: 6,
+  oper_refill_per_sec: 0.25
 
 # GH #630 — the request budget is effectively OFF by default in test:
 # it now meters EVERY WS handle_in verb AND every REST write, so a low

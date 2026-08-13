@@ -101,6 +101,7 @@ defmodule Grappa.Session.Server do
     Backoff,
     Broadcaster,
     EventRouter,
+    FloodAllowance,
     GhostRecovery,
     IdentityState,
     ISupport,
@@ -2621,6 +2622,17 @@ defmodule Grappa.Session.Server do
   # reaches here). See #229 umode hot-reload safety test.
   def handle_call(:get_umodes, _, state) do
     {:reply, {:ok, Map.get(state, :umodes, [])}, state}
+  end
+
+  # #480: returns the UPSTREAM flood allowance this connection has — the
+  # class the inbound send throttle mirrors, derived from the umode set the
+  # session already tracks plus the network's services flavour. Always
+  # succeeds (`:ordinary` before the 221 arrives). `FloodAllowance.classify/1`
+  # reads both facts with `Map.get` defaults, so a live proc whose state
+  # predates either field answers `:ordinary` instead of KeyError-crashing —
+  # and this one is reached on EVERY send, not just an after-join snapshot.
+  def handle_call(:get_flood_allowance, _, state) do
+    {:reply, {:ok, FloodAllowance.classify(state)}, state}
   end
 
   # #249: returns the per-session SUPPORTED umode set (004 RPL_MYINFO). Always

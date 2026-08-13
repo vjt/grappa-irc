@@ -44,7 +44,11 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
   end
 
   defp setup_network(vjt, port, slug \\ "azzurra") do
-    {network, _} = network_with_server(port: port, slug: slug)
+    setup_network(vjt, port, slug, nil)
+  end
+
+  defp setup_network(vjt, port, slug, services_flavor) do
+    {network, _} = network_with_server(port: port, slug: slug, services_flavor: services_flavor)
     _ = credential_fixture(vjt, network, %{nick: "grappa-test", autojoin_channels: []})
     network
   end
@@ -696,6 +700,128 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
 
       :ok = GenServer.stop(pid1, :normal, 1_000)
       :ok = GenServer.stop(pid2, :normal, 1_000)
+    end
+  end
+
+  # #480 — the throttle mirrors the UPSTREAM allowance, so the numbers it
+  # applies depend on what the ircd published about THIS connection, never
+  # on a grappa-side identity tier. Test config: ordinary burst 3, oper
+  # burst 6, oper refill 0.25/s (`config/test.exs`). The classification
+  # itself is `Grappa.Session.FloodAllowance`'s unit contract; what these
+  # prove is that the send door reaches for a different pair of numbers.
+  describe "POST send throttle — the upstream allowance decides the pair (#480)" do
+    setup do
+      :ets.delete_all_objects(TokenBucket.table_name())
+      :ok
+    end
+
+    # The session must have FOLDED the umode set before the first POST, or
+    # the test races its own fixture: a PING answered is proof the session
+    # processed everything fed before it.
+    defp feed_umodes(server, modes) do
+      IRCServer.feed(server, ":irc.test.org 221 grappa-test #{modes}\r\n")
+      IRCServer.feed(server, "PING :umodes\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :umodes\r\n"), 1_000)
+      :ok
+    end
+
+    test "an oper'd session rides the WIDER burst, and still lands on a 429 at its own ceiling",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+      :ok = feed_umodes(server, "+io")
+
+      # Sends 4, 5 and 6 are the discriminating ones: under the ordinary
+      # pair the bucket was empty after 3.
+      for n <- 1..6 do
+        assert json_response(post_body(conn, network, "oper line #{n}"), 201)
+      end
+
+      # Still a bucket, not an open door — the oper allowance is wider,
+      # not absent.
+      assert %{"error" => "rate_limited"} =
+               json_response(post_body(conn, network, "oper flood"), 429)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "the oper 429 carries the OPER refill interval, not the ordinary one",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+      :ok = feed_umodes(server, "+io")
+
+      for n <- 1..6, do: assert(json_response(post_body(conn, network, "oper #{n}"), 201))
+      throttled = post_body(conn, network, "oper flood")
+      assert %{"error" => "rate_limited"} = json_response(throttled, 429)
+
+      # Derived from config, like the #666 ordinary assertion, so the test
+      # tracks the wire contract rather than a magic constant — and the two
+      # intervals are distinct on purpose (4 vs 2).
+      throttle = Application.get_env(:grappa, :send_throttle)
+      expected = Integer.to_string(max(1, ceil(1.0 / throttle[:oper_refill_per_sec])))
+      ordinary = Integer.to_string(max(1, ceil(1.0 / throttle[:refill_per_sec])))
+      refute expected == ordinary
+      assert [^expected] = get_resp_header(throttled, "retry-after")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "an oper carrying the network's no-throttle umode is not metered at all",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      # The exempt letter is per-flavour; bahamut's is the one that was read
+      # at source, so the network has to say it is one.
+      network = setup_network(vjt, port, "azzurra", :azzurra)
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+      :ok = feed_umodes(server, "+Fio")
+
+      # Well past BOTH ceilings (3 ordinary, 6 oper): there is no upstream
+      # throttle to mirror, so grappa mirrors none.
+      for n <- 1..10 do
+        assert json_response(post_body(conn, network, "exempt line #{n}"), 201)
+      end
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "the same +F on an unclassified network is metered on the oper pair",
+         %{conn: conn, vjt: vjt} do
+      # No services_flavor: grappa has not been told which ircd this is, so
+      # `F` carries no verified meaning and the exemption is withheld. The
+      # oper tier still applies — the degradation is graceful.
+      {server, port} = start_server()
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+      :ok = feed_umodes(server, "+Fio")
+
+      for n <- 1..6, do: assert(json_response(post_body(conn, network, "unclassified #{n}"), 201))
+
+      assert %{"error" => "rate_limited"} =
+               json_response(post_body(conn, network, "unclassified flood"), 429)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a plain user is metered on today's numbers, unchanged", %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+      :ok = feed_umodes(server, "+iw")
+
+      for n <- 1..3, do: assert(json_response(post_body(conn, network, "plain #{n}"), 201))
+
+      assert %{"error" => "rate_limited"} =
+               json_response(post_body(conn, network, "plain flood"), 429)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
     end
   end
 

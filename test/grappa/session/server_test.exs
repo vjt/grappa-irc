@@ -4877,6 +4877,133 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  # #480 — the send throttle mirrors the UPSTREAM flood allowance, so the
+  # session answers what that allowance is from the umode set it already
+  # tracks. The letters and their per-flavour table are
+  # `Grappa.Session.FloodAllowance`'s unit contract; what is proven here is
+  # that the live session reads its OWN state and answers over the facade.
+  describe "#480 — upstream flood allowance" do
+    # `welcome_handler/0` is defined further down this module and shared:
+    # `defp` is module-wide, and a second copy here would be the duplicate
+    # the compiler warns about.
+    defp await_umodes(modes) do
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :umode_changed, modes: ^modes}
+                     },
+                     1_000
+
+      :ok
+    end
+
+    test "a session with no oper umode is :ordinary" do
+      {server, port} = start_server(welcome_handler())
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      # Before any 221 the set is empty — the safe direction, not a crash.
+      assert {:ok, :ordinary} = Session.get_flood_allowance({:user, user.id}, network.id)
+
+      IRCServer.feed(server, ":irc.test.org 221 grappa-test +iw\r\n")
+      :ok = await_umodes(["i", "w"])
+
+      assert {:ok, :ordinary} = Session.get_flood_allowance({:user, user.id}, network.id)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "an oper'd session is :oper" do
+      {server, port} = start_server(welcome_handler())
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      # The broadcast is the barrier: the fold has landed before we ask.
+      IRCServer.feed(server, ":irc.test.org 221 grappa-test +io\r\n")
+      :ok = await_umodes(["i", "o"])
+
+      assert {:ok, :oper} = Session.get_flood_allowance({:user, user.id}, network.id)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "an oper with the flavour's no-throttle umode is :exempt" do
+      {server, port} = start_server(welcome_handler())
+      user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+
+      {network, _} =
+        network_with_server(
+          port: port,
+          slug: "test-#{System.unique_integer([:positive])}",
+          services_flavor: :azzurra
+        )
+
+      _ = credential_fixture(user, network, %{})
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      IRCServer.feed(server, ":irc.test.org 221 grappa-test +Fo\r\n")
+      :ok = await_umodes(["F", "o"])
+
+      assert {:ok, :exempt} = Session.get_flood_allowance({:user, user.id}, network.id)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "the SAME umodes on an unclassified network stop at :oper" do
+      # The exempt letter is per-flavour and only bahamut's was read at
+      # source. `setup_user_and_network` leaves services_flavor nil, which
+      # is what an operator who never classified the network has.
+      {server, port} = start_server(welcome_handler())
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      IRCServer.feed(server, ":irc.test.org 221 grappa-test +Fo\r\n")
+      :ok = await_umodes(["F", "o"])
+
+      assert {:ok, :oper} = Session.get_flood_allowance({:user, user.id}, network.id)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "hot-reload safety: a live proc whose state predates :umodes answers :ordinary" do
+      # Same #216 contract the get_umodes reader carries: a plain hot module
+      # reload does not rewrite live process state, and the throttle asks
+      # this on EVERY send — a KeyError here would crash-wave the sessions
+      # under load rather than degrade to today's numbers.
+      {server, port} = start_server(welcome_handler())
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      _ = :sys.replace_state(pid, fn state -> Map.delete(state, :umodes) end)
+
+      assert {:ok, :ordinary} = Session.get_flood_allowance({:user, user.id}, network.id)
+      assert Process.alive?(pid)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "no live session for (subject, network) is :no_session, not a class" do
+      {_, port} = start_server(welcome_handler())
+      {user, network, _} = setup_user_and_network(port)
+
+      assert {:error, :no_session} =
+               Session.get_flood_allowance({:user, user.id}, network.id)
+    end
+  end
+
   describe "#249 — supported umodes (server-advertised umode set from 004)" do
     test "004 RPL_MYINFO stores supported umodes + broadcasts on Topic.user" do
       # 004 advertises the server's supported usermode set (param index 3).

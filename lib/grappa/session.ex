@@ -80,7 +80,7 @@ defmodule Grappa.Session do
     exports: [Backoff, NSInterceptor, Server, Wire]
 
   alias Grappa.IRC.{AuthFSM, CTCP, Identifier}
-  alias Grappa.Session.Server
+  alias Grappa.Session.{FloodAllowance, Server}
 
   require Logger
 
@@ -1474,6 +1474,27 @@ defmodule Grappa.Session do
   def get_umodes(subject, network_id)
       when is_subject(subject) and is_integer(network_id) do
     call_session(subject, network_id, :get_umodes)
+  end
+
+  @doc """
+  Returns the UPSTREAM flood allowance this session's connection has (#480).
+
+  The inbound send throttle (#340) is a mirror of what the ircd itself
+  allows, so it asks the session — the only party holding the upstream's
+  own answer — rather than keying on a grappa-side identity tier. The
+  classes and the umode letters behind them are
+  `Grappa.Session.FloodAllowance`'s contract; a caller picks bucket
+  parameters from the class and never reads a mode letter.
+
+  Always succeeds for a live session (`:ordinary` before the 221 arrives);
+  `{:error, :no_session}` when none is registered for
+  `(subject, network_id)`.
+  """
+  @spec get_flood_allowance(subject(), integer()) ::
+          {:ok, FloodAllowance.t()} | {:error, :no_session}
+  def get_flood_allowance(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    call_session(subject, network_id, :get_flood_allowance)
   end
 
   @doc """

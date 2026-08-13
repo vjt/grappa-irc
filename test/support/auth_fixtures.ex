@@ -153,7 +153,11 @@ defmodule Grappa.AuthFixtures do
     visitor_enabled = Keyword.get(attrs, :visitor_enabled, false)
 
     {:ok, network} =
-      Networks.find_or_create_network(%{slug: slug, visitor_enabled: visitor_enabled})
+      Networks.find_or_create_network(%{
+        slug: slug,
+        visitor_enabled: visitor_enabled,
+        services_flavor: Keyword.get(attrs, :services_flavor)
+      })
 
     {:ok, server} =
       Servers.add_server(network, %{

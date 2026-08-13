@@ -63,6 +63,7 @@ defmodule GrappaWeb.MessagesController do
   alias Grappa.PresenceFilter.Resolver
   alias Grappa.RateLimit.TokenBucket
   alias Grappa.{Scrollback, Session}
+  alias Grappa.Session.FloodAllowance
   alias GrappaWeb.{BodyLimit, Subject}
 
   @default_limit 50
@@ -90,6 +91,22 @@ defmodule GrappaWeb.MessagesController do
   # `max(1, _)` guards a sub-second config from flooring to 0. HTTP Retry-After
   # is integer seconds (RFC 7231 §7.1.3) — coarse but honest for this bucket.
   @send_throttle_retry_after_seconds max(1, ceil(1.0 / @send_throttle_refill_per_sec))
+
+  # #480 — the pair for a connection the upstream meters on its OPER path.
+  # Same bucket, same key, wider numbers: a session that gains (or loses)
+  # `+o` mid-burst simply has its stored level re-capped on the next take,
+  # which is the honest reading of "the allowance changed".
+  @send_throttle_oper_capacity Application.compile_env(
+                                 :grappa,
+                                 [:send_throttle, :oper_capacity],
+                                 50
+                               )
+  @send_throttle_oper_refill_per_sec Application.compile_env(
+                                       :grappa,
+                                       [:send_throttle, :oper_refill_per_sec],
+                                       5.0
+                                     )
+  @send_throttle_oper_retry_after_seconds max(1, ceil(1.0 / @send_throttle_oper_refill_per_sec))
 
   @doc """
   `GET /networks/:network_id/channels/:channel_id/messages` —
@@ -318,17 +335,69 @@ defmodule GrappaWeb.MessagesController do
   # lines of a multi-line paste against the bucket that actually refused —
   # NOT the coarse #630 budget. The bare `:rate_limited` atom stays reserved
   # for the #75 themes daily quota (no meaningful seconds hint).
+  # #480 — WHICH numbers is asked of the session, because the throttle is a
+  # mirror of the allowance the UPSTREAM applies to this connection and the
+  # session is the only party holding that. `:exempt` skips the bucket (there
+  # is nothing to mirror); the outer #630 request budget still meters the
+  # door, so this is not an unmetered path. A session that is gone answers
+  # `:no_session` and takes today's numbers — the send right behind this will
+  # 404 anyway, and guessing generous on the way to a 404 would be the wrong
+  # direction.
+  #
+  # Both this and `take_token/5` carry the `PresenceFilter` treatment for a
+  # config-derived constant: the retry hints come from module attributes, so
+  # Dialyzer narrows the success typing to those literals and reads the
+  # honest `pos_integer()` as a supertype. The general spec is the contract
+  # (the seconds are a tunable, not a promise of the number); the narrow one
+  # would have to be rewritten every time an operator retunes the config.
+  @dialyzer {:nowarn_function, take_send_token: 2}
   @spec take_send_token(Session.subject(), integer()) ::
           :ok | {:error, {:rate_limited, pos_integer()}}
   defp take_send_token(subject, network_id) do
+    case flood_allowance(subject, network_id) do
+      :exempt ->
+        :ok
+
+      :oper ->
+        take_token(
+          subject,
+          network_id,
+          @send_throttle_oper_capacity,
+          @send_throttle_oper_refill_per_sec,
+          @send_throttle_oper_retry_after_seconds
+        )
+
+      :ordinary ->
+        take_token(
+          subject,
+          network_id,
+          @send_throttle_capacity,
+          @send_throttle_refill_per_sec,
+          @send_throttle_retry_after_seconds
+        )
+    end
+  end
+
+  @spec flood_allowance(Session.subject(), integer()) :: FloodAllowance.t()
+  defp flood_allowance(subject, network_id) do
+    case Session.get_flood_allowance(subject, network_id) do
+      {:ok, allowance} -> allowance
+      {:error, :no_session} -> :ordinary
+    end
+  end
+
+  @dialyzer {:nowarn_function, take_token: 5}
+  @spec take_token(Session.subject(), integer(), pos_integer(), number(), pos_integer()) ::
+          :ok | {:error, {:rate_limited, pos_integer()}}
+  defp take_token(subject, network_id, capacity, refill_per_sec, retry_after_seconds) do
     case TokenBucket.take(
            @send_throttle_bucket,
            {subject, network_id},
-           @send_throttle_capacity,
-           @send_throttle_refill_per_sec
+           capacity,
+           refill_per_sec
          ) do
       :ok -> :ok
-      {:error, :rate_limited} -> {:error, {:rate_limited, @send_throttle_retry_after_seconds}}
+      {:error, :rate_limited} -> {:error, {:rate_limited, retry_after_seconds}}
     end
   end
 

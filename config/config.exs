@@ -140,9 +140,23 @@ config :grappa, :busy_retry,
 #   * capacity — burst allowance (5, per bahamut's flood burst).
 #   * refill_per_sec — sustained rate: 1 token every 2s = 0.5/s (bahamut's
 #     ~2s-per-line drip once the burst is spent).
+#
+# GH #480 — the oper pair. On a connection the ircd meters on its OPER
+# path the ordinary numbers stop mirroring anything and start being the
+# binding constraint, refusing a line bahamut would have carried. These
+# are NOT read off the source: `parse.c` / `s_bsd.c` describe a PATH (the
+# penalty accrues on a fraction of messages; the RecvQ check is skipped),
+# never a magnitude. 10x the ordinary pair is a CHOSEN headroom — wide
+# enough that grappa stops being the ceiling, still a bucket rather than
+# an open door, and still a config knob for the operator who measures
+# their own network. `Grappa.Session.FloodAllowance` decides which
+# session gets them; a session the upstream throttles not at all skips
+# the bucket entirely.
 config :grappa, :send_throttle,
   capacity: 5,
-  refill_per_sec: 0.5
+  refill_per_sec: 0.5,
+  oper_capacity: 50,
+  oper_refill_per_sec: 5.0
 
 # GH #630 — coarse per-subject INBOUND request budget spanning EVERY WS
 # `handle_in` verb AND every REST write (POST/PUT/PATCH/DELETE). This is

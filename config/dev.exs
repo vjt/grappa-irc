@@ -58,7 +58,14 @@ config :grappa, :admission, default_max_per_ip_per_network: 10
 # GrappaWeb.MessagesControllerOutboundTest); dev/e2e drive real users, not
 # a flood, so the throttle is effectively off here. Mirror of the
 # :admission relaxation above.
-config :grappa, :send_throttle, capacity: 1_000, refill_per_sec: 1_000
+# #480 — the oper pair rides the same relaxation. Left at the production
+# numbers it would be TIGHTER than the ordinary one here, so an oper'd dev
+# session would get less headroom than a plain one: the mirror inverted.
+config :grappa, :send_throttle,
+  capacity: 1_000,
+  refill_per_sec: 1_000,
+  oper_capacity: 1_000,
+  oper_refill_per_sec: 1_000
 
 # GH #630 — coarse per-subject request budget (see config.exs). Dev/e2e
 # headroom is set HIGH enough that a normal user (and every non-flood e2e
