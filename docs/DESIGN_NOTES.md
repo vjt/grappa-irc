@@ -41082,3 +41082,71 @@ an existing one, resist adding a parallel delivery path just because the
 *registration* handshake differs — a discriminator field for display, not a
 branch in the sender, keeps one audited path instead of two half-audited
 ones.
+<!-- entry #480 -->
+
+---
+
+## 2026-08-13 — #480: the send throttle mirrors the ircd, so it reads the ircd
+
+The inbound send throttle (#340) is a shock absorber: it 429s a flooding
+client *before* bahamut k-lines the connection, and its numbers — burst 5,
+one line per two seconds — were read off the flood allowance bahamut
+applies to an **ordinary** client. Sonic hit the corollary as an
+admin+ircop: on a connection the ircd meters on its oper path, that same
+bucket stops mirroring anything and becomes the binding constraint,
+refusing a line the upstream would have carried.
+
+**The axis is upstream state, not a grappa-side tier.** The tempting shape
+— a "trusted user" flag, an admin bit, an account role — answers a
+different question ("who deserves more?") and drifts from the thing being
+mirrored the moment the ircd changes its mind. What decides the allowance
+is the ircd, so what the throttle reads is what the ircd published about
+this connection: the per-session umode set #229 already tracks.
+`Grappa.Session.FloodAllowance` folds that into `:exempt | :oper |
+:ordinary`, `Session.get_flood_allowance/2` serves it, and the controller
+picks bucket parameters from the class without ever seeing a mode letter.
+The cost is one extra serialized call per POST, on the session that is
+about to handle the send anyway; the alternative — mirroring umodes into an
+ETS table the web edge could read lock-free — duplicates state that already
+exists, and every parallel structure needs housekeeping that will drift.
+
+**Two letters, two different kinds of knowledge.** `+o` is read
+flavour-independently: RFC 1459 fixes it and every ircd in reach spells the
+operator flag that way. The no-throttle letter is not portable at all —
+bahamut's is `F` (`OFLAG_UMODEF`), solanum assigns no `F` in core, and
+nothing was verified for hybrid — so it lives in the per-flavour table
+`IdentityState.registered_umode/1` established for exactly this shape.
+`supported_umodes` (#249) was considered and rejected as the source: 004
+param 3 is a signless concatenation of letters parsed with no meaning
+attached, so it can say `F` EXISTS on this ircd and never that `F` means
+NoMsgThrottle.
+
+**The default is the opposite of #388's, deliberately.** `IdentityState`
+defaults an unclassified network to the bahamut letter to preserve
+pre-#388 behaviour; here there is no prior behaviour to preserve, and the
+two error directions are not symmetric. A withheld exemption costs an oper
+some headroom they still largely get from the `:oper` tier; a wrongly
+granted one switches the throttle off for a connection the upstream is
+still metering, which is precisely the k-line #340 was built to prevent. So
+an unclassified network gets no exempt letter, and **an operator who wants
+the exemption on their bahamut network classifies it
+`services_flavor: :azzurra`** through the admin surface #349 already ships.
+The exemption also requires `+o` alongside the letter: free where the
+letter is an oper flag, and the bound on the damage where it is not.
+
+**The oper numbers are chosen, not measured.** 10x the ordinary pair. The
+issue's citations (`config.h:510`, `parse.c:225-236`, `s_bsd.c:1791-1795`)
+establish that the oper path is qualitatively different — the penalty
+accrues on a fraction of messages, the RecvQ check is skipped — which is a
+PATH, not a magnitude. Nothing here was measured against a live bahamut,
+which is why the pair stays a config knob and why this note says so.
+
+**Not moved:** the whole `send_throttle` block stays `Application.compile_env`.
+The issue floats moving it to runtime config "in the same change"; that is a
+second change with its own risk surface, and the oper axis does not depend
+on it. **Not touched:** the admission per-IP clone cap, which has no tier
+exemptions and should not grow any.
+
+**Apply:** when a limit exists to mirror an external system's limit, key it
+on state that system publishes, and let the letter table say what was READ
+at source rather than what is probably true elsewhere.
