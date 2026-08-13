@@ -150,7 +150,7 @@ defmodule Grappa.Accounts.ClientTokenTest do
       now = 1_700_000_000
       {:ok, code} = TOTP.code_at(@rfc_secret, now)
 
-      assert {:ok, _codes} = Accounts.confirm_totp_enrollment(user, current.id, @rfc_secret, code, now)
+      assert {:ok, _} = Accounts.confirm_totp_enrollment(user, current.id, @rfc_secret, code, now)
 
       assert {:ok, %Session{kind: :client}} = Accounts.authenticate(token.id)
       assert {:error, :revoked} = Accounts.authenticate(other.id)
@@ -164,7 +164,7 @@ defmodule Grappa.Accounts.ClientTokenTest do
       other = session_fixture(armed)
       token = client_token(armed, "bicchierino bridge")
 
-      assert {:ok, _user} = Accounts.disable_totp(armed, current.id, password)
+      assert {:ok, _} = Accounts.disable_totp(armed, current.id, password)
 
       assert {:ok, %Session{kind: :client}} = Accounts.authenticate(token.id)
       assert {:error, :revoked} = Accounts.authenticate(other.id)
@@ -191,7 +191,7 @@ defmodule Grappa.Accounts.ClientTokenTest do
       armed = arm(user)
       token = client_token(armed, "bicchierino bridge")
 
-      assert {:ok, _user} = Accounts.reset_totp(armed.name)
+      assert {:ok, _} = Accounts.reset_totp(armed.name)
 
       assert {:error, :revoked} = Accounts.authenticate(token.id)
     end
@@ -200,7 +200,7 @@ defmodule Grappa.Accounts.ClientTokenTest do
   defp arm(user) do
     now = 1_700_000_000
     {:ok, code} = TOTP.code_at(@rfc_secret, now)
-    {:ok, _codes} = TOTP.confirm_enrollment(user, @rfc_secret, code, now)
+    {:ok, _} = TOTP.confirm_enrollment(user, @rfc_secret, code, now)
     Accounts.get_user!(user.id)
   end
 
