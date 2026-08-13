@@ -40760,3 +40760,19 @@ throwaway repo under `$BATS_TEST_TMPDIR`. On macOS that lives under
 makes the two differ and the fixture silently becomes a WORKTREE — never
 reaching the branch it was built to exercise. It was passing for the wrong
 reason until the path was taken physical with `pwd -P`.
+
+**And its mirror image, which CI found.** The knob-UNSET case had no fixture
+at all — it ran from the ambient cwd, which on this host is a worktree, so it
+saw the oneshot it asserted. CI checks out a MAIN tree, the stubbed
+`docker compose ps -q` answers with a container id, and
+`in_container_or_oneshot` therefore took the exec branch: `not ok 420`, on a
+branch whose code was right. Unset means "today's invocation", and on a main
+checkout with a live container today's invocation IS the exec — the assertion
+was reading a property of the HOST, not of the knob. It was the only case in
+the suite with that exposure, because every other one sets the knob, and the
+knob forces a oneshot in either layout. The cure is the sibling of the fixture
+above, a real `git worktree add`, so the case states the layout it means; the
+added `-v <root>/lib:/app/lib` assertion doubles as that fixture's own witness,
+since `WORKTREE_VOLUMES` is empty unless `SRC_ROOT != REPO_ROOT`. **General
+rule: a test that asserts a shape chosen by an environment predicate must
+establish that environment itself, or it is measuring the host.**

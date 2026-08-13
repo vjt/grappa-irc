@@ -74,13 +74,49 @@ make_main_checkout() {
     printf '%s' "$root"
 }
 
-@test "unset GRAPPA_CACHE_ID: no cache bind, no partition — today's invocation" {
-    run "$MIX_SH" --env=dev compile
+# A throwaway WORKTREE, the sibling fixture: `lib/` plus `.git` as a FILE,
+# produced by a real `git worktree add` so `--git-common-dir` resolves to the
+# base repo exactly as it does in production. Same physical-path requirement
+# as above, for the same reason.
+make_worktree_checkout() {
+    local base wt
+    base="$(cd "$BATS_TEST_TMPDIR" && pwd -P)/wtbase"
+    wt="$(cd "$BATS_TEST_TMPDIR" && pwd -P)/wtree"
+    mkdir -p "$base/lib" "$base/scripts"
+    : > "$base/lib/.keep"
+    cp "$BATS_TEST_DIRNAME/../../scripts/_lib.sh" "$base/scripts/_lib.sh"
+    cp "$BATS_TEST_DIRNAME/../../scripts/mix.sh" "$base/scripts/mix.sh"
+    chmod +x "$base/scripts/mix.sh"
+    git -C "$base" init -q
+    git -C "$base" add -A
+    git -C "$base" -c user.email=bats@example.invalid -c user.name=bats commit -q -m fixture
+    git -C "$base" worktree add -q "$wt" -b probe
+    printf '%s' "$wt"
+}
+
+# The knob-unset case is the ONLY one here whose docker branch depends on the
+# checkout it runs FROM: every other case sets the knob, and the knob forces a
+# oneshot in either layout. So this one has to say which layout it means, and
+# it used to run from the ambient cwd instead — green on a worktree host,
+# where `check.sh` runs, and RED in CI, where the checkout is a main tree and
+# the stubbed `docker compose ps -q` hands back a container id, so
+# `in_container_or_oneshot` took the exec branch and never emitted the oneshot
+# form. Nothing was wrong with the code: unset means "today's invocation", and
+# on a main checkout with a live container today's invocation IS the exec. The
+# assertion was reading a property of the host, not of the knob.
+@test "unset GRAPPA_CACHE_ID from a WORKTREE: no cache bind, no partition — today's invocation" {
+    root="$(make_worktree_checkout)"
+    cd "$root"
+    run "$root/scripts/mix.sh" --env=dev compile
     [ "$status" -eq 0 ]
     refute grep -q '\.caches' "$ARGV_LOG"
     refute grep -q 'MIX_TEST_PARTITION' "$ARGV_LOG"
-    # Still a oneshot with the worktree source overrides — unchanged.
+    # Still a oneshot with the worktree source overrides — unchanged. The
+    # second grep is also the fixture's own witness: WORKTREE_VOLUMES is empty
+    # unless SRC_ROOT != REPO_ROOT, so a fixture that silently resolved as a
+    # main checkout would fail here instead of passing for the wrong reason.
     grep -q 'run --rm --no-deps' "$ARGV_LOG"
+    grep -q -- "-v ${root}/lib:/app/lib" "$ARGV_LOG"
 }
 
 @test "GRAPPA_CACHE_ID binds _build, deps and priv/plts under a per-id root" {
