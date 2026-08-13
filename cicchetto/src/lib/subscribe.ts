@@ -24,7 +24,7 @@ import { nickEquals } from "./nickEquals";
 import { notificationPrefs } from "./notificationPrefs";
 import { isOperatorActionEcho } from "./operatorActionEcho";
 import { isOwnPresenceEvent } from "./ownPresenceEvent";
-import { resolvePing } from "./pingCorrelation";
+import { resolveCtcpReply, resolvePing } from "./pingCorrelation";
 import { shouldNotify } from "./pushTriggers";
 import { setEnsureQueryTopicJoined } from "./queryTopicJoin";
 import { canonicalQueryNick, queryWindowsByNetwork } from "./queryWindows";
@@ -205,12 +205,37 @@ moduleRoot(() => {
   // from the #546/#548 CTCP-routing work). The RTT body is a cic-owned display
   // string (the server sends structured data only), keyed on the correlation's
   // resolved source window, never the peer's.
-  const maybeConsumePingReply = (slug: string, message: ChannelEvent["message"]): boolean => {
-    if (message.kind !== "notice" || message.meta.ctcp_verb !== "PING") return false;
-    const token = message.meta.ctcp_args;
-    if (typeof token !== "string") return false;
+  // #719 — every OTHER verb gets the same treatment, keyed on the VERB rather
+  // than a token (only PING echoes one). A claim MOVES the row to the source
+  // window; no claim leaves it exactly where it was, which is what keeps an
+  // unsolicited probe answer visible on `$server` instead of vanishing.
+  //
+  // The verb folds on BOTH branches. The register side already folded
+  // (`sendCtcpQuery`'s `verb.toUpperCase() === "PING"`), so a case-sensitive
+  // compare here was an asymmetry: a peer answering `ping` in lower case missed
+  // the token table it had a perfectly good entry in. One rule, both ends.
+  const maybeConsumeCtcpReply = (slug: string, message: ChannelEvent["message"]): boolean => {
+    if (message.kind !== "notice") return false;
+    const verb = message.meta.ctcp_verb;
+    if (typeof verb !== "string") return false;
     const networkId = networkIdBySlug(slug);
     if (networkId === undefined) return false;
+
+    if (verb.toUpperCase() !== "PING") {
+      const claim = resolveCtcpReply(networkId, message.sender, verb);
+      if (claim === null) return false;
+      // Re-keyed, NOT rewritten: the row keeps its body and its typed ctcp meta
+      // so ScrollbackPane's notice arm draws "← CTCP VERSION reply from <peer>"
+      // in the source window. Stripping the meta the way the PING arm does would
+      // drop it into the generic body render and leak raw \x01 into the DOM
+      // (#641). The PING arm can strip because it SYNTHESIZES a human body; here
+      // there is nothing to synthesize — the reply already is the answer.
+      appendToScrollback(claim.sourceKey, { ...message, channel: claim.sourceChannel });
+      return true;
+    }
+
+    const token = message.meta.ctcp_args;
+    if (typeof token !== "string") return false;
     const hit = resolvePing(networkId, message.sender, token, Date.now());
     if (hit === null) return false;
     appendToScrollback(hit.sourceKey, {
@@ -234,10 +259,10 @@ moduleRoot(() => {
     message: ChannelEvent["message"],
     ownNick: string | null,
   ): void => {
-    // #591 — swallow a matched CTCP PING reply before it renders raw in this
+    // #591/#719 — claim a matched CTCP reply before it renders raw in this
     // window. Catches every routing path (channel/query/DM-listener); the
     // DM-listener notice arm ALSO gates earlier to suppress its pre-route beep.
-    if (maybeConsumePingReply(slug, message)) return;
+    if (maybeConsumeCtcpReply(slug, message)) return;
     appendToScrollback(key, message);
     // Message-replay-on-reconnect cluster — track high-water mark per
     // topic so the backfill on the NEXT reconnect knows where to
@@ -737,11 +762,11 @@ moduleRoot(() => {
             // NOTICEs (NickServ etc.) never hit this branch — our server
             // routes those to "$server" not the own-nick channel.
             //
-            // #591 — a peer's CTCP PING reply is DM-shaped (lands here at
+            // #591/#719 — a peer's CTCP reply is DM-shaped (lands here at
             // channel == ownNick). Consume a matched one BEFORE the beep below:
             // routeMessage's own gate swallows the raw render, but this arm
             // beeps PRE-route, so the suppression must happen here too.
-            if (maybeConsumePingReply(slug, message)) return;
+            if (maybeConsumeCtcpReply(slug, message)) return;
             // #372: canonical peer re-key — see the PRIVMSG/ACTION arm.
             const peer = canonicalQueryNick(networkId, message.sender);
             const senderKey = channelKey(slug, peer);

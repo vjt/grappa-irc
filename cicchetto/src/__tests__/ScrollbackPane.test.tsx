@@ -660,8 +660,9 @@ describe("ScrollbackPane", () => {
 
   it("renders an uncorrelated inbound CTCP notice from typed meta, never raw \\x01 — #641", () => {
     // #641 — an inbound CTCP reply (a NOTICE carrying \x01VERB [args]\x01) that
-    // matches no pending /ping is NOT consumed by subscribe.ts's
-    // maybeConsumePingReply (that swallows only CORRELATED PING replies). It
+    // matches no pending query is NOT consumed by subscribe.ts's
+    // maybeConsumeCtcpReply (which only claims a reply some outstanding question
+    // of ours can account for). It
     // reaches this render, where — before the fix — the notice arm fell through
     // to the generic body render and leaked the raw \x01 delimiters into the DOM
     // (`-NickServ- ^APING^A`), breaking the "cic NEVER shows \x01" invariant that
@@ -674,8 +675,11 @@ describe("ScrollbackPane", () => {
     //
     // TRAP (#638): /ping NickServ now CORRELATES (token-less service PING replies
     // resolve), so a PING fixture would be consumed upstream and never reach this
-    // render — green for the WRONG reason. VERSION/TIME have NO correlation
-    // machinery: they are the genuinely uncorrelated class this fix must cover.
+    // render — green for the WRONG reason. #719 extended correlation to every
+    // verb, so VERSION/TIME are no longer uncorrelatABLE either — what keeps this
+    // fixture honest is that it seeds the store DIRECTLY, with no pending query
+    // anywhere, which is exactly the unsolicited-probe-answer case. A correlated
+    // non-PING reply reaches this same arm; it just arrives re-keyed.
     const ctcpNotice: ScrollbackMessage[] = [
       {
         id: 1,

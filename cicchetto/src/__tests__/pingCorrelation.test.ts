@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { channelKey } from "../lib/channelKey";
-import { PENDING_TTL_MS, registerPing, resolvePing } from "../lib/pingCorrelation";
+import {
+  PENDING_TTL_MS,
+  registerCtcpQuery,
+  registerPing,
+  resolveCtcpReply,
+  resolvePing,
+} from "../lib/pingCorrelation";
 
 // #591 — the /ping reply-correlation table. Pure register/resolve with time
 // passed in explicitly (sentAtMs at register, nowMs at resolve) so the RTT
@@ -135,5 +141,119 @@ describe("pingCorrelation", () => {
     );
 
     expect(resolvePing(1, "grace", "tok-g1", 6000 + PENDING_TTL_MS)).not.toBeNull();
+  });
+});
+
+// #719 — the VERB-keyed sibling table. A non-PING CTCP reply echoes no token,
+// so the only thing that can attribute it back to the question is the verb the
+// question asked. Same store, same TTL, same one-shot resolve; it returns no
+// RTT because there is no token to time against and the reply renders as the
+// answer it is, not as a round trip.
+describe("pingCorrelation — CTCP query correlation (#719)", () => {
+  it("resolves a non-PING reply to the window the query was sent from", () => {
+    registerCtcpQuery(1, "bob", "VERSION", channelKey("freenode", "#chan"), "#chan", 1000);
+
+    expect(resolveCtcpReply(1, "bob", "VERSION")).toEqual({
+      sourceKey: channelKey("freenode", "#chan"),
+      sourceChannel: "#chan",
+    });
+  });
+
+  it("returns null when nothing matches", () => {
+    expect(resolveCtcpReply(1, "nobody", "VERSION")).toBeNull();
+  });
+
+  it("folds the nick (CASEMAPPING=ascii) — ask Bob, resolve bob", () => {
+    registerCtcpQuery(1, "Bob", "TIME", channelKey("freenode", "#room"), "#room", 2000);
+
+    expect(resolveCtcpReply(1, "bob", "TIME")).toEqual({
+      sourceKey: channelKey("freenode", "#room"),
+      sourceChannel: "#room",
+    });
+  });
+
+  // The verb reaches the table from two directions — a parser that upper-cases
+  // and a menu literal on the way in, a peer's own spelling on the way back.
+  // Neither end controls the other's case, so both fold.
+  it("folds the verb — register lower-case, resolve upper-case and back", () => {
+    registerCtcpQuery(1, "carol", "version", channelKey("freenode", "carol"), "carol", 3000);
+    expect(resolveCtcpReply(1, "carol", "VERSION")).not.toBeNull();
+
+    registerCtcpQuery(1, "carol", "USERINFO", channelKey("freenode", "carol"), "carol", 3100);
+    expect(resolveCtcpReply(1, "carol", "userinfo")).not.toBeNull();
+  });
+
+  it("is one-shot: a second reply to the same query is null", () => {
+    registerCtcpQuery(1, "dave", "SOURCE", channelKey("freenode", "dave"), "dave", 4000);
+
+    expect(resolveCtcpReply(1, "dave", "SOURCE")).not.toBeNull();
+    expect(resolveCtcpReply(1, "dave", "SOURCE")).toBeNull();
+  });
+
+  // The whole point of keying on the verb: a peer answering a question we did
+  // not ask must not be able to claim a window. Otherwise an unsolicited probe
+  // reply would be filed into whatever conversation happened to have an entry.
+  it("does not match across networks, nicks, or verbs", () => {
+    registerCtcpQuery(1, "eve", "CLIENTINFO", channelKey("freenode", "#ops"), "#ops", 5000);
+
+    expect(resolveCtcpReply(2, "eve", "CLIENTINFO")).toBeNull();
+    expect(resolveCtcpReply(1, "mallory", "CLIENTINFO")).toBeNull();
+    expect(resolveCtcpReply(1, "eve", "TIME")).toBeNull();
+    expect(resolveCtcpReply(1, "eve", "CLIENTINFO")).not.toBeNull();
+  });
+
+  // Two tables, not one map with a three-part key: a PING token is opaque
+  // operator-supplied text and could BE a verb. Sharing one map would let
+  // `/ping frank VERSION` be claimed by frank's VERSION reply, filing an RTT
+  // question's answer under the wrong entry. Pinned in both directions.
+  it("cannot cross-claim between the token table and the verb table", () => {
+    registerPing(1, "frank", "VERSION", channelKey("freenode", "#a"), "#a", 6000);
+    registerCtcpQuery(1, "grace", "TIME", channelKey("freenode", "#b"), "#b", 6000);
+
+    // A VERSION reply must not eat frank's pending ping whose TOKEN is "VERSION".
+    expect(resolveCtcpReply(1, "frank", "VERSION")).toBeNull();
+    // A PING reply carrying the token "TIME" must not eat grace's TIME query.
+    expect(resolvePing(1, "grace", "TIME", 6050)).toBeNull();
+    // Both originals survive untouched.
+    expect(resolvePing(1, "frank", "VERSION", 6050)).not.toBeNull();
+    expect(resolveCtcpReply(1, "grace", "TIME")).not.toBeNull();
+  });
+
+  // Same leak guard as the ping table, and it must work ACROSS the two: a
+  // session that only ever runs /ctcp would otherwise never sweep the ping
+  // table, and vice versa. The bound is "queries issued in the last TTL",
+  // whichever door they came through.
+  it("sweeps stale entries in BOTH tables on either register (leak guard)", () => {
+    registerPing(1, "ivan", "tok-i", channelKey("freenode", "ivan"), "ivan", 7000);
+    registerCtcpQuery(1, "judy", "FINGER", channelKey("freenode", "judy"), "judy", 7000);
+
+    // A CTCP query at the horizon must evict the stale entry in EITHER table.
+    registerCtcpQuery(
+      1,
+      "ken",
+      "TIME",
+      channelKey("freenode", "ken"),
+      "ken",
+      7000 + PENDING_TTL_MS,
+    );
+
+    expect(resolvePing(1, "ivan", "tok-i", 7000 + PENDING_TTL_MS + 10)).toBeNull();
+    expect(resolveCtcpReply(1, "judy", "FINGER")).toBeNull();
+    expect(resolveCtcpReply(1, "ken", "TIME")).not.toBeNull();
+  });
+
+  it("keeps an entry still within the TTL horizon on a later register", () => {
+    registerCtcpQuery(1, "laura", "SOURCE", channelKey("freenode", "laura"), "laura", 8000);
+
+    registerCtcpQuery(
+      1,
+      "mike",
+      "TIME",
+      channelKey("freenode", "mike"),
+      "mike",
+      8000 + PENDING_TTL_MS - 1,
+    );
+
+    expect(resolveCtcpReply(1, "laura", "SOURCE")).not.toBeNull();
   });
 });

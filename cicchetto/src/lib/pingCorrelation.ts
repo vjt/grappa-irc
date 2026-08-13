@@ -27,9 +27,27 @@ import { asciiFold } from "./nickEquals";
 // the table is bounded by the pings issued within the last PENDING_TTL_MS.
 // A reply that arrives past the horizon simply isn't correlated (it renders in
 // its normal $server routing) — a CTCP round-trip that slow is not worth an RTT.
+//
+// #719 — the same story for every OTHER CTCP verb. `/ctcp bob VERSION` echoed
+// its question in the source window (#640) but its answer rendered in `$server`,
+// because PING was the only verb anything registered for. The two halves of one
+// round trip landed in two different places.
+//
+// The reply cannot be keyed on a token — only PING echoes one — so the generic
+// table keys on the VERB the question asked, in a table of its OWN. One map with
+// a three-part key would let the two collide: a PING token is opaque
+// operator-supplied text and could BE a verb, so `/ping frank VERSION` and a
+// VERSION reply from frank would fight over one entry.
+//
+// Everything else is deliberately identical to the ping table — the same
+// identity-scoped store, the same TTL horizon, the same one-shot resolve, and a
+// sweep that runs over BOTH maps from EITHER register (a session that only ever
+// ran /ctcp would otherwise never sweep the ping side). What it does NOT return
+// is an RTT: with no token there is nothing to time against, and a non-PING
+// reply renders as the answer it is rather than as a round trip.
 export const PENDING_TTL_MS = 60_000;
 
-type PendingPing = {
+type Pending = {
   sourceKey: ChannelKey;
   sourceChannel: string;
   sentAtMs: number;
@@ -41,9 +59,36 @@ type PendingPing = {
 const pendingKey = (networkId: number, nick: string, token: string): string =>
   `${networkId}\x00${asciiFold(nick)}\x00${token}`;
 
+// #719 — the verb-keyed twin. The nick folds the same way; the VERB folds to
+// upper case because neither end owns the other's spelling — the question comes
+// from a parser that upper-cases OR a menu literal, the answer carries whatever
+// the peer chose to send.
+const queryKey = (networkId: number, nick: string, verb: string): string =>
+  `${networkId}\x00${asciiFold(nick)}\x00${verb.toUpperCase()}`;
+
 const exports_ = identityScopedStore((onIdentityChange) => {
-  const pending = new Map<string, PendingPing>();
-  onIdentityChange(() => pending.clear());
+  const pending = new Map<string, Pending>();
+  const pendingQueries = new Map<string, Pending>();
+  onIdentityChange(() => {
+    pending.clear();
+    pendingQueries.clear();
+  });
+
+  // #637 leak guard — evict entries older than the TTL horizon before
+  // inserting. The horizon is measured against the REGISTERING caller's
+  // sentAtMs, keeping the module wall-clock-free (spec). Bounds the tables to
+  // the queries issued within the last PENDING_TTL_MS, so a run of unmatched
+  // probes can no longer accumulate until logout. Both maps are swept from
+  // either door: the bound is "queries issued in the last TTL", whichever verb
+  // they carried.
+  const sweep = (sentAtMs: number): void => {
+    const horizon = sentAtMs - PENDING_TTL_MS;
+    for (const map of [pending, pendingQueries]) {
+      for (const [key, entry] of map) {
+        if (entry.sentAtMs <= horizon) map.delete(key);
+      }
+    }
+  };
 
   const registerPing = (
     networkId: number,
@@ -53,16 +98,40 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     sourceChannel: string,
     sentAtMs: number,
   ): void => {
-    // #637 leak guard — evict entries older than the TTL horizon before
-    // inserting. The horizon is measured against THIS register's sentAtMs (the
-    // caller's clock), keeping the module wall-clock-free (spec). Bounds the
-    // table to the pings issued within the last PENDING_TTL_MS, so a run of
-    // unmatched /pings can no longer accumulate until logout.
-    const horizon = sentAtMs - PENDING_TTL_MS;
-    for (const [key, entry] of pending) {
-      if (entry.sentAtMs <= horizon) pending.delete(key);
-    }
+    sweep(sentAtMs);
     pending.set(pendingKey(networkId, nick, token), { sourceKey, sourceChannel, sentAtMs });
+  };
+
+  // #719 — register a non-PING CTCP query so its reply can be attributed back
+  // to the window it was asked from.
+  const registerCtcpQuery = (
+    networkId: number,
+    nick: string,
+    verb: string,
+    sourceKey: ChannelKey,
+    sourceChannel: string,
+    sentAtMs: number,
+  ): void => {
+    sweep(sentAtMs);
+    pendingQueries.set(queryKey(networkId, nick, verb), { sourceKey, sourceChannel, sentAtMs });
+  };
+
+  // #719 — the source window for a reply that CLAIMS a pending query, deleting
+  // it (one-shot). Null for a reply matching nothing, which is what keeps an
+  // UNSOLICITED probe answer falling back to `$server`: losing it would hide
+  // the fact that somebody answered a question we never asked. Takes no clock,
+  // unlike its ping twin — there is no RTT to compute, and the TTL horizon is
+  // enforced at register by the sweep, not here.
+  const resolveCtcpReply = (
+    networkId: number,
+    nick: string,
+    verb: string,
+  ): { sourceKey: ChannelKey; sourceChannel: string } | null => {
+    const key = queryKey(networkId, nick, verb);
+    const entry = pendingQueries.get(key);
+    if (entry === undefined) return null;
+    pendingQueries.delete(key);
+    return { sourceKey: entry.sourceKey, sourceChannel: entry.sourceChannel };
   };
 
   // Returns the source window + RTT for a reply that CLAIMS a pending entry,
@@ -74,7 +143,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     token: string,
     nowMs: number,
   ): { sourceKey: ChannelKey; sourceChannel: string; rttMs: number } | null => {
-    const resolve = (key: string, entry: PendingPing) => {
+    const resolve = (key: string, entry: Pending) => {
       pending.delete(key);
       return {
         sourceKey: entry.sourceKey,
@@ -101,7 +170,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     if (token !== "") return null;
     const nickPrefix = `${networkId}\x00${asciiFold(nick)}\x00`;
     let bestKey: string | undefined;
-    let best: PendingPing | undefined;
+    let best: Pending | undefined;
     for (const [key, entry] of pending) {
       if (!key.startsWith(nickPrefix)) continue;
       if (best === undefined || entry.sentAtMs > best.sentAtMs) {
@@ -113,8 +182,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     return resolve(bestKey, best);
   };
 
-  return { registerPing, resolvePing };
+  return { registerPing, resolvePing, registerCtcpQuery, resolveCtcpReply };
 });
 
 export const registerPing = exports_.registerPing;
 export const resolvePing = exports_.resolvePing;
+export const registerCtcpQuery = exports_.registerCtcpQuery;
+export const resolveCtcpReply = exports_.resolveCtcpReply;

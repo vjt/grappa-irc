@@ -1,6 +1,6 @@
 import { channelKey } from "./channelKey";
 import { ctcpFrame } from "./ctcpAction";
-import { registerPing } from "./pingCorrelation";
+import { registerCtcpQuery, registerPing } from "./pingCorrelation";
 import { sendMessage } from "./scrollback";
 
 // #1192 — the ONE door an outbound CTCP query goes through.
@@ -12,11 +12,11 @@ import { sendMessage } from "./scrollback";
 //      is looking at), with the wire recipient travelling in `ctcpTarget`. Send
 //      it to the recipient's window instead and a probe mints a phantom query
 //      tab for somebody the operator never talked to.
-//   2. #600 — a PING's pending correlation entry MUST be registered BEFORE the
+//   2. #600 — the pending correlation entry MUST be registered BEFORE the
 //      send is awaited. `sendMessage` is a REST POST; on a loaded runner its ack
 //      resolves AFTER the peer's reply has already been processed on the
 //      separate, already-open WS. Register behind the await and
-//      `maybeConsumePingReply → resolvePing` finds nothing, the RTT line never
+//      `maybeConsumeCtcpReply → resolvePing` finds nothing, the RTT line never
 //      renders, and the failure is deterministic on CI and invisible locally.
 //
 // compose.ts held both by hand while `/ping` and `/ctcp` were the only callers.
@@ -54,17 +54,36 @@ type CtcpQuery = {
 };
 
 export const sendCtcpQuery = async (query: CtcpQuery): Promise<void> => {
-  // PING is the one verb whose reply cic can attribute back to the question, so
-  // it is the one verb that registers. Everything else is fire-and-forget: its
-  // reply is an asynchronous NOTICE the server routes to `$server`, and a
-  // pending entry for it could only ever leak. Folded because the verb reaches
-  // here from a parser that upper-cases AND from a menu that passes a literal.
+  // EVERY verb registers (#719). PING keys on its token, because that is what
+  // buys the RTT and what disambiguates two pings to one nick; every other verb
+  // keys on the verb itself, because a non-PING reply echoes no token at all.
+  //
+  // This used to be PING-only, on the grounds that a pending entry for anything
+  // else "could only ever leak". The leak was real but the conclusion was too
+  // strong: what bounds the table is the #637 TTL sweep, not the choice of verb,
+  // and the price of not registering was that `/ctcp bob VERSION` asked its
+  // question in one window and got its answer in another. Both tables are swept
+  // by the same horizon, so an unanswered VERSION costs exactly what an
+  // unanswered PING already did.
+  //
+  // Folded because the verb reaches here from a parser that upper-cases AND
+  // from a menu that passes a literal.
+  const sourceKey = channelKey(query.networkSlug, query.sourceChannel);
   if (query.verb.toUpperCase() === "PING") {
     registerPing(
       query.networkId,
       query.targetNick,
       query.args,
-      channelKey(query.networkSlug, query.sourceChannel),
+      sourceKey,
+      query.sourceChannel,
+      query.sentAtMs,
+    );
+  } else {
+    registerCtcpQuery(
+      query.networkId,
+      query.targetNick,
+      query.verb,
+      sourceKey,
       query.sourceChannel,
       query.sentAtMs,
     );

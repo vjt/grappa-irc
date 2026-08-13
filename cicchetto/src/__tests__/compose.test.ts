@@ -140,12 +140,17 @@ vi.mock("../lib/scrollback", () => ({
   sendMessage: vi.fn(),
 }));
 
-// #591 — /ping registers a pending correlation entry; spy it so the test can
-// assert the (networkId, nick, token, sourceKey, sourceChannel, sentAtMs) tuple
-// without exercising the real store.
+// #591/#719 — a CTCP query registers a pending correlation entry (PING in the
+// token table, every other verb in the verb table); spy both so the test can
+// assert the (networkId, nick, token-or-verb, sourceKey, sourceChannel,
+// sentAtMs) tuple without exercising the real store. The whole module is
+// replaced, so a register the seam calls but this mock omits is not a silent
+// no-op — it throws and takes the send with it.
 vi.mock("../lib/pingCorrelation", () => ({
   registerPing: vi.fn(),
   resolvePing: vi.fn(),
+  registerCtcpQuery: vi.fn(),
+  resolveCtcpReply: vi.fn(),
 }));
 
 vi.mock("../lib/members", () => ({
@@ -1343,7 +1348,7 @@ describe("compose submit — slash command dispatch", () => {
   // awaited. `sendPrivmsg` is a REST POST; on a slow/loaded runner its ack can
   // resolve AFTER the peer's CTCP PING reply has already been processed on the
   // (separate, already-open) WS. If registration waited on the send,
-  // `maybeConsumePingReply → resolvePing` would find no pending entry and drop
+  // `maybeConsumeCtcpReply → resolvePing` would find no pending entry and drop
   // the RTT line — the #600 CI timeout (deterministic on the slow CI runner,
   // invisible on a fast local box). Model the slow send with a deferred promise
   // and assert registerPing already fired while the send is still pending.

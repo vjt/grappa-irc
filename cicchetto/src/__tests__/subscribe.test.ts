@@ -1860,7 +1860,7 @@ describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => 
   // #637 — a service's CTCP PING reply is CTCP-framed, so the server routes it to
   // the synthetic `$server` window (event_router route_non_channel_notice,
   // 86416a21); cic subscribes to `$server` via installChannelHandler, whose
-  // `routeMessage` runs the `maybeConsumePingReply` gate. THE BUG: Azzurra
+  // `routeMessage` runs the `maybeConsumeCtcpReply` gate. THE BUG: Azzurra
   // services (NickServ) echo a CTCP PING as a BARE `\x01PING\x01` — token
   // STRIPPED — so grappa hands cic an EMPTY `ctcp_args`. Before #637 that missed
   // the token-keyed pending entry and rendered raw in $server (while /ping a
@@ -2007,6 +2007,141 @@ describe("subscribe — DM-listener (own-nick topic, inbound DM re-key)", () => 
     expect(store.scrollbackByChannel()[channelKey("freenode", "vjt")]?.map((m) => m.body)).toEqual([
       "\x01PING stray-token\x01",
     ]);
+  });
+
+  // #719 — the bug this pins. `/ctcp bob VERSION` from a query window echoed the
+  // QUESTION there (#640) but its ANSWER rendered in $server, because PING was
+  // the only verb anything registered for: the server routes every CTCP-framed
+  // NOTICE to $server by design (#591 route_non_channel_notice, which must NOT
+  // change or it re-mints the control-character query window), so the client is
+  // the only half that can attribute the reply back. Pre-fix this lands in
+  // $server and the source window stays empty.
+  it("#719 — a non-PING CTCP reply claiming a pending query renders in the SOURCE window", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedDmListenerStubs();
+    const { registerCtcpQuery } = await import("../lib/pingCorrelation");
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
+    });
+    // Operator typed `/ctcp vjt VERSION` in the #grappa window.
+    const sourceKey = channelKey("freenode", "#grappa");
+    registerCtcpQuery(1, "vjt", "VERSION", sourceKey, "#grappa", 9958);
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    // Handler index 2 is the $server handler (channels, dm-listener, $server).
+    const serverHandler = eventCalls[2]?.[1] as (p: unknown) => void;
+    serverHandler({
+      kind: "message",
+      message: {
+        id: 800,
+        network: "freenode",
+        channel: "$server",
+        server_time: 0,
+        kind: "notice",
+        sender: "vjt",
+        body: "\x01VERSION irssi 1.4.5\x01",
+        meta: { ctcp_verb: "VERSION", ctcp_args: "irssi 1.4.5" },
+      },
+    });
+    // The answer joined its question: the row moved to the SOURCE window.
+    expect(store.scrollbackByChannel()[sourceKey]?.map((m) => m.body)).toEqual([
+      "\x01VERSION irssi 1.4.5\x01",
+    ]);
+    // ...and it KEEPS its typed meta, unlike the PING arm which synthesizes its
+    // own RTT body. This row is still the raw reply, so ScrollbackPane's notice
+    // CTCP arm must be able to draw "← CTCP VERSION reply from vjt: irssi 1.4.5"
+    // from meta. Strip it and the generic body render leaks raw \x01 (#641).
+    expect(store.scrollbackByChannel()[sourceKey]?.[0]?.meta?.ctcp_verb).toBe("VERSION");
+    expect(store.scrollbackByChannel()[sourceKey]?.[0]?.meta?.ctcp_args).toBe("irssi 1.4.5");
+    // $server did NOT also get a copy — the reply moved, it was not duplicated.
+    expect(store.scrollbackByChannel()[channelKey("freenode", "$server")]).toBeUndefined();
+  });
+
+  // The other half of the #719 rule, and a hard constraint from the issue: a
+  // reply we never asked for must keep falling back to $server. Losing it would
+  // hide the fact that somebody answered a question nobody here asked.
+  it("#719 — a non-PING CTCP reply claiming NOTHING stays in $server", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedDmListenerStubs();
+    const { registerCtcpQuery } = await import("../lib/pingCorrelation");
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
+    });
+    // A pending query exists, but for a DIFFERENT verb — so the TIME reply below
+    // has an entry to be tempted by and must still refuse it.
+    const sourceKey = channelKey("freenode", "#grappa");
+    registerCtcpQuery(1, "mallory", "VERSION", sourceKey, "#grappa", 9958);
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const serverHandler = eventCalls[2]?.[1] as (p: unknown) => void;
+    serverHandler({
+      kind: "message",
+      message: {
+        id: 801,
+        network: "freenode",
+        channel: "$server",
+        server_time: 0,
+        kind: "notice",
+        sender: "mallory",
+        body: "\x01TIME Sat Aug 02 2026\x01",
+        meta: { ctcp_verb: "TIME", ctcp_args: "Sat Aug 02 2026" },
+      },
+    });
+    expect(
+      store.scrollbackByChannel()[channelKey("freenode", "$server")]?.map((m) => m.body),
+    ).toEqual(["\x01TIME Sat Aug 02 2026\x01"]);
+    expect(store.scrollbackByChannel()[sourceKey]).toBeUndefined();
+  });
+
+  // #719 — the verb folds on the way back too. The SEND side already folded
+  // (`sendCtcpQuery` compares `verb.toUpperCase()`), so a peer answering `ping`
+  // in lower case used to miss the token table it had a perfectly good entry in
+  // and render raw in $server. One fold, both ends — otherwise the pair of
+  // compares disagree about what a PING is.
+  it("#719 — a lower-cased PING reply still claims its pending /ping", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedDmListenerStubs();
+    const { registerPing } = await import("../lib/pingCorrelation");
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalledTimes(3);
+    });
+    const sourceKey = channelKey("freenode", "#grappa");
+    registerPing(1, "vjt", "tok-719", sourceKey, "#grappa", 9958);
+    const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
+    const serverHandler = eventCalls[2]?.[1] as (p: unknown) => void;
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    serverHandler({
+      kind: "message",
+      message: {
+        id: 802,
+        network: "freenode",
+        channel: "$server",
+        server_time: 0,
+        kind: "notice",
+        sender: "vjt",
+        body: "\x01ping tok-719\x01",
+        meta: { ctcp_verb: "ping", ctcp_args: "tok-719" },
+      },
+    });
+    nowSpy.mockRestore();
+    // Correlated as a PING: the synthesized RTT line, not a re-keyed raw row.
+    expect(store.scrollbackByChannel()[sourceKey]?.map((m) => m.body)).toEqual([
+      "CTCP PING reply from vjt: 42 ms",
+    ]);
+    expect(store.scrollbackByChannel()[channelKey("freenode", "$server")]).toBeUndefined();
   });
 
   // Self-echo guard: own outbound NOTICEs (server fans out to the

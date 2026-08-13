@@ -775,9 +775,16 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       // body is the raw \x01VERB [args]\x01 frame, classified ONCE on the server
       // (SSOT Grappa.IRC.CTCP.verb_args/1) into typed meta.ctcp_verb /
       // meta.ctcp_args. A CORRELATED /ping reply is consumed upstream
-      // (subscribe.ts maybeConsumePingReply) and never reaches here; an
-      // UNCORRELATED CTCP reply (a stray VERSION/TIME, or a token-less PING that
-      // matched no pending /ping) does. Before this arm it fell through to the
+      // (subscribe.ts maybeConsumeCtcpReply) and never reaches here, because that
+      // gate SYNTHESIZES an RTT line and strips the meta. Everything else does
+      // reach here: an UNCORRELATED reply (a stray VERSION/TIME, or a token-less
+      // PING that matched no pending /ping) in its `$server` routing, and — since
+      // #719 — a CORRELATED non-PING reply too, re-keyed to the window the query
+      // was sent from with its meta deliberately INTACT so this arm can draw it.
+      // That is why the gate must not strip meta on the #719 branch: doing so
+      // would drop the row into the generic body render below and leak raw \x01,
+      // which is the very thing this arm exists to prevent.
+      // Before this arm it fell through to the
       // generic body render below and leaked the raw \x01 into the DOM. Render a
       // human INBOUND line from the TYPED meta instead — cic NEVER parses \x01
       // (the "one IRC parser, on the server" invariant). This is the notice twin
