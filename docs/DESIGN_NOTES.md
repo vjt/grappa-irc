@@ -41082,3 +41082,48 @@ an existing one, resist adding a parallel delivery path just because the
 *registration* handshake differs — a discriminator field for display, not a
 branch in the sender, keeps one audited path instead of two half-audited
 ones.
+<!-- entry #719 -->
+
+---
+
+## 2026-08-13 — #719: a CTCP reply belongs to the window that asked, and shottino does not agree
+
+`/ctcp <nick> VERSION` echoed its question in the source window (#640) and
+rendered its answer in `$server`. `/ping` did not, because PING was the only
+verb anything registered a correlation entry for. The fix extends the
+correlation table to every verb, client-side; the mechanics live in
+`pingCorrelation.ts` and `ctcpQuery.ts`.
+
+Two things worth keeping that the code cannot say on its own.
+
+**The routing decision stays on the client, deliberately.** The server routes
+every CTCP-framed NOTICE to `$server` (`route_non_channel_notice/3`) and must
+keep doing so: that predicate is #591, and before it a CTCP reply took the
+regular-nick branch and `maybe_open_query_window/2` minted a tab full of
+control characters. Attributing a reply to a window is something only the half
+that ASKED can do, and that half is the client.
+
+**cic and shottino now follow different rules, and this was measured, not
+assumed.** `event_router.ex:2745` says shottino "renders it as a card in the
+window the question was asked from". It does not. `card()`
+(`frontends/shottino/shottino.c:7429`) files a row under the window that has
+FOCUS when the answer arrives, falling back to that network's `$server` when
+the focused window belongs to another network — and it does this for every
+verb uniformly. Its `(network, nick, stamp)` ping table carries no source
+window at all; `ping_claim` returns a bool, and all it decides is whether to
+print an RTT and whether to stay quiet on a backfill. The card block's own
+comment (`:7410`) is accurate where the event_router one is not: "the window
+that had focus when the answer arrived".
+
+So the two clients coincide in the common case — ask, and stay where you are —
+and diverge the moment the operator switches windows while a reply is in
+flight: cic files it where the question was asked, shottino where the operator
+is looking. cic's rule is source-at-send because that is what its correlation
+table already expressed for PING, and because it makes both halves of a round
+trip land together no matter where attention went. shottino's is a TUI
+affordance for a client whose reply cards all follow focus.
+
+**Apply:** the `event_router.ex:2745` sentence is wrong and stayed wrong here
+(a server-tree comment fix is not in a cic PR's scope). Before quoting a
+comment about a SIBLING component's behaviour, read that component — this one
+had been repeated into an issue as a design constraint.
