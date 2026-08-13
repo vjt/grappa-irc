@@ -41082,3 +41082,77 @@ an existing one, resist adding a parallel delivery path just because the
 *registration* handshake differs — a discriminator field for display, not a
 branch in the sender, keeps one audited path instead of two half-audited
 ones.
+<!-- entry #93 -->
+
+---
+
+## 2026-08-13 — #93: the outer fail-over loop was already running, it just never advanced
+
+`network_servers` has carried irssi's `(host, port, tls, priority, enabled)`
+shape since the Phase 2 schema, and for just as long only ever the head of
+that list was dialled. A network whose preferred endpoint went down parked
+every session on that endpoint until an operator intervened, however many
+working rows sat behind it. #271 folded this together with its own problem
+into one two-level machine — server as the outer loop, resolved leaf as the
+inner one — and shipped the inner half: `Grappa.IRC.Client` resolves the full
+RR set itself, shuffles it, and rotates across leaves before giving up.
+
+The 2026-08-06 stale-premise audit on the issue called the remainder PARTIAL,
+on the grounds that the backoff half was already shipped (`Session.Backoff`
+plus #100's `@connection_stable_ms` reset gate) and only the server-index
+advance was left. Re-verified a week and a great many commits later against
+`origin/main` `45e88c5e`: still accurate. `pick_server!/1` still took the head
+of `filter(&enabled) |> sort_by({priority, id})`, and `git grep -E
+'failover|next_server'` over `lib` still returned nothing.
+
+What the audit could not see from a cold repo is that **the outer loop needs
+no loop**. The iteration was already running, once per failure, spread across
+process lifetimes: `do_connect/5` fails, the Client stops, the linked
+`Session.Server` exits abnormally, `terminate/2` calls
+`Backoff.record_failure/2` — synchronously, and the docstring says why: so the
+count is visible to the NEXT `init/1` — and the `:transient` supervisor
+restarts the child, whose `init/1` calls the plan's `refresh_plan` closure.
+Every element of `for server in servers_by_priority(enabled)` was in place
+except the part where the body picks a different server. So the fix is to
+resolve at `pick_server!(network, attempt)` with `attempt` read from the
+counter that already exists, and the ring position becomes DERIVED rather than
+tracked: no per-server row of state, nothing to keep in sync, nothing to
+garbage-collect when a server is deleted from under a live session.
+
+The two resolver doors are deliberately NOT the same. `resolve/1` — Bootstrap,
+the `/connect` verb through `SpawnOrchestrator`, `Operator` — stays pinned to
+position 0. That is not a convenience default: those doors mean "start this
+session now" and clear the ladder before spawning, so the preferred endpoint
+is the correct one to try, and reading the counter there would additionally
+race, because `Backoff.reset/2` is a `cast` and a resolve immediately behind
+it can still observe the pre-reset count. The respawn door runs at the one
+moment the counter is authoritative, and it is the only one that walks the
+ring. `pick_server!/2` therefore takes no default argument — a caller that
+does not say which position it wants is a caller that has not decided which
+door it is.
+
+One consequence worth stating plainly, because it is a property of the
+derivation rather than of the original sketch: the exponential ladder remains
+keyed on `(subject, network)`, so it is shared across the whole ring instead
+of one ladder per server row. With three dead endpoints the exponent grows
+1, 2, 3, … across them rather than restarting at the base for each. That is
+the intended reading of "derive instead of duplicate", and it preserves the
+property the ladder exists for — the rate at which we approach an upstream is
+identical to today's whatever the server count, which matters because that
+rate is what got the bouncer's IP k-lined by Azzurra in the first place. A
+single-server network is byte-for-byte unchanged, every attempt folding back
+onto position 0.
+
+Not measured, and not claimed: the wall-clock interval between one endpoint
+and the next. `@connect_failure_sleep_ms` (30s) and the ladder's 5s base are
+source reads, not observations; no stack was stood up for this and no
+end-to-end fail-over was timed. The tests likewise stop at the plan boundary —
+they assert that the respawn door resolves the next endpoint, not that a real
+refused connect reaches that door. That chain is pre-existing behaviour and
+this change does not touch it.
+
+**Apply:** before adding state to advance a retry policy, check whether the
+retry is already counted somewhere that survives the restart — a failure
+counter kept for backoff is usually also the attempt ordinal, and deriving the
+second use from it costs one argument instead of one more thing to keep in
+sync.
