@@ -1,6 +1,6 @@
-// #1107 — the message menu's `!addquote` item puts `!addquote ` plus the
-// message text into the compose box, with the caret at the end and visible,
-// and sends NOTHING. The command is for whatever bot is in the channel; cic
+// #1107 — the message menu's `!addquote` item puts `!addquote `, the sender's
+// `<nick>` head (#1264) and the message text into the compose box, with the
+// caret at the end and visible, and sends NOTHING. The command is for whatever bot is in the channel; cic
 // only fills the box.
 //
 // Harness + limits:
@@ -96,8 +96,10 @@ test("issue1107 — !addquote fills the compose box with the command and the mes
   await menuItem(page, "!addquote").click();
 
   // The payload ruling, at the only place it is observable end to end: the
-  // command, one space, the body — and no `<nick>` head.
-  await expect(ta).toHaveValue(`!addquote ${body}`, { timeout: 5_000 });
+  // command, the sender's `<nick>` head, then the body. #1264 reversed #1107's
+  // bare-body shape — what is quoted is what the operator READ, attribution
+  // included. The nick is the spec subject's own, since it posted the line.
+  await expect(ta).toHaveValue(`!addquote <${specNick()}> ${body}`, { timeout: 5_000 });
 });
 
 test("issue1107 — picking !addquote sends nothing", async ({ page }) => {
@@ -110,7 +112,9 @@ test("issue1107 — picking !addquote sends nothing", async ({ page }) => {
   // Barrier first: the compose value settling is the durable state that says
   // the item has fully run. Only then is the absence below an absence rather
   // than a race with an insertion still in flight.
-  await expect(composeTextarea(page)).toHaveValue(`!addquote ${body}`, { timeout: 5_000 });
+  await expect(composeTextarea(page)).toHaveValue(`!addquote <${specNick()}> ${body}`, {
+    timeout: 5_000,
+  });
 
   // The original row is still the ONLY row carrying this text. A sent command
   // would echo back as a second scrollback line containing the same body.
@@ -153,7 +157,9 @@ test.describe("the caret, where the overflow is real", () => {
 
     await openMenuOnRow(page, body);
     await menuItem(page, "!addquote").click();
-    await expect(composeTextarea(page)).toHaveValue(`!addquote ${body}`, { timeout: 5_000 });
+    await expect(composeTextarea(page)).toHaveValue(`!addquote <${specNick()}> ${body}`, {
+      timeout: 5_000,
+    });
 
     // The #1105/#1113 dependency the issue names, on the real engine jsdom
     // cannot stand in for. The oracle's own overflow guard is what makes this

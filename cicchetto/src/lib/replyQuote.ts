@@ -1,6 +1,6 @@
 import type { ScrollbackMessage } from "./api";
 import { appendToCompose } from "./composeAppend";
-import { quotableBody } from "./quotableBody";
+import { attributionHead, quotableBody } from "./quotableBody";
 
 // #1067 — the reply verb, shared by the left→right swipe on a message row and
 // the long-press menu's Reply item. Both doors, one code path.
@@ -47,12 +47,8 @@ function capQuotedBody(body: string): string {
 export function replyQuote(msg: ScrollbackMessage): string | null {
   const body = quotableBody(msg);
   if (body === null) return null;
-  // #1126 — an action is NOT speech. Quoting `* vjt waves` as `<vjt> waves`
-  // puts a sentence in someone's mouth that they never said, so the quote keeps
-  // the `* nick …` form the scrollback renders. Ruled on the least-surprise
-  // tiebreak; privmsg/notice keep the `<nick> …` shape unchanged.
-  const head = msg.kind === "action" ? `* ${msg.sender}` : `<${msg.sender}>`;
-  return `${head} ${capQuotedBody(body)}${REPLY_QUOTE_TAIL}`;
+  // #1126's heads, shared with `!addquote` since #1264 — see `attributionHead`.
+  return `${attributionHead(msg)} ${capQuotedBody(body)}${REPLY_QUOTE_TAIL}`;
 }
 
 // Drop the quote into the window's compose box with the caret at the end. A

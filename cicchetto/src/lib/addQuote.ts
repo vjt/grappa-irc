@@ -1,31 +1,37 @@
 import type { ScrollbackMessage } from "./api";
 import { appendToCompose } from "./composeAppend";
-import { quotableBody } from "./quotableBody";
+import { attributionHead, quotableBody } from "./quotableBody";
 
 // #1107 — the `!addquote` verb behind the message menu's fourth item. It fills
 // the compose box and stops: nothing is sent, and cic does not know or care
 // what `!addquote` means. Whatever bot sits in the channel interprets it, and
 // the operator gets to read the line before pressing enter.
 //
-// THE PAYLOAD IS THE BARE BODY. The issue leaves that open ("whether the
-// payload is the bare body or carries the nick") because bots differ; it is
-// ruled on the requester's literal words — `!addquote` and then the message.
-// A wrapper is one line away in either direction, and guessing WIDER is the
-// worse guess: a bot that wants attribution can read the nick off the channel,
-// while a bot that stores its input verbatim would put `<vjt>` inside every
-// stored quote with no way for the operator to know until it is recalled.
+// THE PAYLOAD CARRIES THE SENDER (#1264, reversing #1107). It used to be the
+// bare body, on the reasoning that a bot storing its input verbatim would bake
+// `<vjt>` into every stored quote; vjt ruled the other way, and the new rule is
+// the sharper one: **what gets quoted is what the operator READ**. The line in
+// the compose box is the line as the scrollback rendered it, attribution
+// included, so the operator can see before pressing enter exactly what the
+// archive will hold. A bot that wants the nick can no longer only "read it off
+// the channel" — by the time a quote is recalled, that context is gone.
+//
+// There is still no `<< ` tail: that is Reply's, and an archive is not a reply.
 export const ADDQUOTE_COMMAND = "!addquote ";
 
 // The command line for a message, or null when the row has nothing to quote —
 // the same refusals Reply makes, because they are the same question ("did
 // somebody say something here?") and `quotableBody` is where they live.
 //
-// An ACTION contributes its text without the `* nick` form Reply gives it: the
-// payload carries no attribution at all, so half of one for one kind would be
-// a shape the operator cannot predict from the menu.
+// An ACTION keeps the `* nick` form, exactly as Reply gives it (#1264 closed
+// the issue's open question this way). The two kinds therefore head the payload
+// DIFFERENTLY — `<vjt> ciao mondo` against `* vjt pees over the fence` — and
+// that is the predictable shape, not the exception to it: each is the line the
+// scrollback showed. `attributionHead` is shared with `replyQuote` so the two
+// doors cannot drift.
 export function addQuoteCommand(msg: ScrollbackMessage): string | null {
   const body = quotableBody(msg);
-  return body === null ? null : `${ADDQUOTE_COMMAND}${body}`;
+  return body === null ? null : `${ADDQUOTE_COMMAND}${attributionHead(msg)} ${body}`;
 }
 
 // Drop the command into the window's compose box with the caret at the end and

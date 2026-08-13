@@ -150,12 +150,12 @@ describe("the !addquote item", () => {
     expect(labels()).toEqual(["Copy", "Reply", "!addquote", "Select…"]);
   });
 
-  it("drops the command plus the message text into the compose box", () => {
+  it("drops the command, the sender and the message text into the compose box", () => {
     mountCompose();
     render(() => <MessageContextMenu />);
     openOver(scrollbackRow("12:34 <vjt> ciao"), { body: "ciao mondo" });
     fireEvent.click(screen.getByText("!addquote"));
-    expect(getDraft(KEY)).toBe("!addquote ciao mondo");
+    expect(getDraft(KEY)).toBe("!addquote <vjt> ciao mondo");
   });
 
   // Disabled but VISIBLE, the posture Reply already takes: the menu's shape

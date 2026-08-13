@@ -40677,3 +40677,54 @@ fixture. It builds a scratch repository with the real attribute, appends an entr
 on each of two branches and runs a real `git rebase`, so what the gate is judged
 against is what the merge machinery actually produced. A fixture would have
 proved the regex works and nothing about the defect.
+<!-- entry #1264 -->
+
+---
+
+## 2026-08-13 — #1264: `!addquote` carries the sender, reversing #1107 three days later
+
+#1107 ruled the payload was the bare body and wrote the reasoning down: the two
+guesses are not symmetric, a bot that wants attribution can read the nick off
+the channel, a bot that stores its input verbatim would bake `<vjt>` into every
+stored quote. It also pinned the rule with an assertion of its own so a later
+reshaping could not take it silently.
+
+**vjt reversed it, and the reversal comes with a sharper rule than the one it
+replaces: what gets quoted is what the operator READ.** The compose box now
+shows the line as the scrollback rendered it, attribution included, which is
+precisely what makes it reviewable before enter is pressed. The old tiebreak
+underweighted the recall side — "the bot can read the nick off the channel"
+holds at the moment the command arrives and not one second later, and a quote
+is a thing you recall months afterwards, when that context is gone.
+
+So the open question the issue left about ACTION rows is closed the same way:
+
+* PRIVMSG / NOTICE → `!addquote <vjt> ciao mondo`
+* ACTION → `!addquote * vjt pees over the fence`
+
+The two heads DIFFER, and under the new rule that is the predictable shape
+rather than the exception to it — #1107 read a difference between kinds as
+unpredictability, but each of these is the line its own row showed. #1126 had
+already ruled the same way for Reply, from the other side: rendering
+`* vjt waves` as `<vjt> waves` puts a sentence in someone's mouth.
+
+**The head became shared, because the two doors are now one rule.**
+`attributionHead` sits in `lib/quotableBody.ts` next to the body it heads, and
+`replyQuote` lost its inline copy. This is the #1107 argument applied one level
+up: that module exists because copying the quotable-body clauses would have let
+the two doors drift on the next ruling, and the head is now in exactly that
+position. Left duplicated, the next kind would have been taught to one door
+only. `replyQuote`'s output is unchanged, which its own suite still asserts.
+
+**The reversal was carried into the pin, not around it.** #1107's
+`carries no nick — the payload is the bare body` assertion is gone, replaced by
+its inverse rather than deleted: a rule with no pin is a rule the next
+reshaping takes silently, which is the thing #1107 was right about. The two
+comment blocks stating the withdrawn reasoning were rewritten in place, in the
+module and in the test — the #1262 lesson, applied on purpose. Red measured
+before green: 12 assertions across two suites failed on the payload shape, and
+the 12 that passed were the refusal gates, which the change does not touch.
+
+`quotableBody` itself is untouched: the gate ("did somebody say something
+here?"), the CTCP unwrap, the mIRC strip and #1123's nesting cut all still
+answer the same. Only the wrapper moved.

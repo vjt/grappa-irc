@@ -12,7 +12,9 @@ import { mircPlainText } from "./mircFormat";
 // worth of history and would let the two doors drift apart on the next one.
 //
 // The WRAPPER is the caller's business — `replyQuote` puts a `<nick> …<< `
-// around this, `addQuoteCommand` puts `!addquote ` in front of it.
+// around this, `addQuoteCommand` puts `!addquote ` in front of it. The
+// ATTRIBUTION is not: since #1264 both doors head the quote the same way, so
+// `attributionHead` lives here with the body it heads.
 
 // #1123 — the nick charset, mirrored from the server's
 // `Grappa.IRC.Identifier` `@nick_regex` (RFC 2812 §2.3.1: first char is
@@ -61,4 +63,17 @@ export function quotableBody(msg: ScrollbackMessage): string | null {
   // quote said nothing to quote back.
   const body = withoutPreviousQuote(mircPlainText(raw).trim());
   return body === "" ? null : body;
+}
+
+// How the row names its sender, in the form the SCROLLBACK RENDERS it: `<nick>`
+// for speech, `* nick` for an action.
+//
+// #1126 ruled it for Reply — quoting `* vjt waves` as `<vjt> waves` puts a
+// sentence in someone's mouth they never said. #1264 gave `!addquote` the same
+// heads, on the same principle stated from the other side: what gets quoted is
+// what the operator READ. Shared rather than written twice because the two
+// doors are now one rule, and a copy would let the next kind be added to one of
+// them only.
+export function attributionHead(msg: ScrollbackMessage): string {
+  return msg.kind === "action" ? `* ${msg.sender}` : `<${msg.sender}>`;
 }
