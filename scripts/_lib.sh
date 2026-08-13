@@ -113,6 +113,62 @@ die() {
     exit 1
 }
 
+# GRAPPA_CACHE_ID — opt-in per-worker build caches (#1263).
+#
+# UNSET is today's behaviour, byte for byte: CACHE_VOLUMES stays empty,
+# `"${CACHE_VOLUMES[@]}"` expands to nothing, and `_build`/`deps`/`priv/plts`
+# keep arriving through compose.yaml's `./:/app` bind on the MAIN repo. That
+# sharing is deliberate (see REPO_ROOT above) and is also why two workers on
+# one host cannot compile at the same time — the orchestrator hands out an
+# exclusive COMPILE lane and one of them idles.
+#
+# SET: the three caches are bound to `$REPO_ROOT/.caches/<id>/` instead, so
+# two ids can run `mix` concurrently without meeting in one `_build`. The
+# price, paid once per id: a full first compile, a dialyzer PLT of its own,
+# and ~200M of disk. Nothing is seeded from the shared cache on purpose —
+# artefacts compiled from another worktree's source are the very
+# contamination this exists to end, and a fresh id must not inherit it.
+#
+# This block sits AFTER die() because it calls it: at source time a function
+# defined further down does not exist yet.
+declare -ag CACHE_VOLUMES=()
+declare -ag CACHE_ENV=()
+if [ -n "${GRAPPA_CACHE_ID:-}" ]; then
+    # The id becomes a directory name and reaches a `docker -v` argument.
+    # Anything outside this class — a slash, a `..`, a shell metacharacter,
+    # a leading dot — is refused HERE, before any side effect.
+    case "$GRAPPA_CACHE_ID" in
+        *[!A-Za-z0-9._-]* | .*)
+            die "GRAPPA_CACHE_ID must match [A-Za-z0-9._-]+ and may not start with a dot (got '$GRAPPA_CACHE_ID') — it becomes a directory name and a docker -v argument."
+            ;;
+    esac
+
+    CACHE_ROOT="$REPO_ROOT/.caches/$GRAPPA_CACHE_ID"
+    export CACHE_ROOT
+    # Created host-side on purpose: docker would otherwise materialise a
+    # missing bind source itself, as root on Linux, and the UID-dropped
+    # container could then not write into its own cache.
+    mkdir -p "$CACHE_ROOT/_build" "$CACHE_ROOT/deps" "$CACHE_ROOT/priv/plts"
+    CACHE_VOLUMES=(
+        -v "$CACHE_ROOT/_build:/app/_build"
+        -v "$CACHE_ROOT/deps:/app/deps"
+        -v "$CACHE_ROOT/priv/plts:/app/priv/plts"
+    )
+
+    # The test database is the OTHER shared resource, and it is only
+    # half-solved upstream: config/test.exs builds the sqlite path from
+    # MIX_TEST_PARTITION, but nothing on the shell side ever set it, and
+    # `docker compose run` does not inherit host env — so setting it on the
+    # host was a silent no-op and two isolated caches would still have
+    # fought over one runtime/grappa_test.db. Derive it from the id (one
+    # knob, one isolation identity) and FORWARD it across the boundary. An
+    # explicit MIX_TEST_PARTITION wins: the operator may be partitioning
+    # for a different reason.
+    MIX_TEST_PARTITION="${MIX_TEST_PARTITION:-$GRAPPA_CACHE_ID}"
+    export MIX_TEST_PARTITION
+    CACHE_ENV=(-e "MIX_TEST_PARTITION=$MIX_TEST_PARTITION")
+fi
+
 # Guard: refuse to run from a worktree or a non-main branch. Deploy scripts
 # MUST call this as their FIRST step, before any side effect — in_container's
 # own worktree check fires too late to help. ALLOW_DEPLOY_FROM_BRANCH=1
@@ -197,7 +253,8 @@ in_container() {
 # Why: docs/OPERATIONS.md § "Developer and deploy scripts (scripts/*.sh)".
 in_oneshot() {
     docker compose "${COMPOSE_ARGS[@]}" -f "$SRC_ROOT/compose.oneshot.yaml" \
-        run --rm --no-deps "${WORKTREE_VOLUMES[@]}" grappa "$@"
+        run --rm --no-deps "${CACHE_ENV[@]}" \
+        "${WORKTREE_VOLUMES[@]}" "${CACHE_VOLUMES[@]}" grappa "$@"
 }
 
 # Prefer exec into the live container when on main and it's up; otherwise
@@ -206,7 +263,12 @@ in_oneshot() {
 #
 # MIX_ENV is NOT injected here; `scripts/mix.sh` is the policy layer.
 in_container_or_oneshot() {
-    if [ "$SRC_ROOT" = "$REPO_ROOT" ]; then
+    # GRAPPA_CACHE_ID forces the oneshot (#1263). An exec enters a container
+    # whose /app/_build is ALREADY bound to the shared tree, and a running
+    # container cannot be remounted — so execing would hand back the shared
+    # cache while the caller believes they asked for an isolated one. Silent
+    # loss of the isolation is the one failure this knob must not have.
+    if [ "$SRC_ROOT" = "$REPO_ROOT" ] && [ -z "${GRAPPA_CACHE_ID:-}" ]; then
         local cid
         cid="$(docker compose "${COMPOSE_ARGS[@]}" ps -q grappa 2>/dev/null || true)"
         if [ -n "$cid" ]; then

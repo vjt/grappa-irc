@@ -1,5 +1,8 @@
 # ── Elixir / Erlang
 /_build/
+# #1263 — per-worker build caches (GRAPPA_CACHE_ID): one
+# _build/deps/priv/plts triplet per id, opt-in, never shared.
+/.caches/
 /cover/
 /coverage/
 /deps/
