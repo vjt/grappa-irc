@@ -191,6 +191,30 @@ async function installFlickerProbe(page: Page, windowMs: number): Promise<void> 
   }, windowMs);
 }
 
+// BARRIER — the sampler has recorded its BASELINE frame.
+//
+// `installFlickerProbe` schedules the first `requestAnimationFrame` and returns
+// immediately, so "the probe is installed" is NOT "the probe has sampled". Any
+// perturbation dispatched right after the install races that first callback,
+// and on CI the two quantities overlap almost exactly: delivery of a peer
+// PRIVMSG measured ~20ms twice in one trace, against a first-sample delay in
+// [0, ~23ms] (one frame period of phase jitter plus evaluate overhead). That
+// coin flip — not any assertion about the divider — is what greened the same
+// sha on a PR and reddened it on main; the 2500ms window was fully sampled on
+// both sides (150 and 152 frames), so it was never the tight edge.
+//
+// Awaiting a recorded frame before the perturbation is even DISPATCHED is a
+// strict happens-before, not a bigger guess: the row cannot render before the
+// PRIVMSG is sent, so the baseline frame necessarily carries the pre-append
+// height and `grew` cannot be starved of its lower sample.
+async function waitForProbeBaseline(page: Page): Promise<void> {
+  await page.waitForFunction(
+    () => ((window as unknown as { __i1089frames?: unknown[] }).__i1089frames?.length ?? 0) > 0,
+    undefined,
+    { timeout: 10_000 },
+  );
+}
+
 // On failure this dump is the whole story: one entry per CHANGE of the
 // (visibility, divider offset) pair, so a one-frame excursion shows as a
 // visible=…, marker=<off-screen px> entry between two on-divider entries.
@@ -267,13 +291,18 @@ test.describe("issue #1089 — switching into an unread window must not flicker"
     // the latch is armed. It appends BELOW the fold, so nothing above the
     // divider changes: the divider's on-screen offset must not move at all.
     //
-    // Connect + join BEFORE the probe: registration and JOIN take seconds, and
-    // a probe installed first would have expired by the time the line lands —
-    // the sampler would record a flat, untouched timeline and green vacuously.
+    // Connect + join BEFORE the probe so the sampled window holds the append
+    // and nothing else. This ordering used to be justified with "registration
+    // and JOIN take seconds" — that is false on CI: the red run's trace bounds
+    // connect+join at 7ms. The false premise is exactly what made the probe
+    // install look safely far from the `privmsg` and left the two adjacent with
+    // no barrier; `waitForProbeBaseline` is the ordering guarantee, the
+    // statement order is not.
     const peer = await IrcPeer.connect({ nick: `i1089-${Date.now().toString(36).slice(-6)}` });
     try {
       await peer.join(CHANNEL);
       await installFlickerProbe(page, SAMPLE_WINDOW_MS);
+      await waitForProbeBaseline(page);
       const body = `i1089 live append ${Date.now()}`;
       peer.privmsg(CHANNEL, body);
       await expect(scrollbackLines(page).filter({ hasText: body })).toHaveCount(1, {
