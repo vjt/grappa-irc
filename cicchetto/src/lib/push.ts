@@ -5,25 +5,38 @@
 // key, base64url-decodes it for `pushManager.subscribe`, and POSTs
 // the resulting subscription JSON to /push/subscriptions.
 //
-// B2 ships the lower half: VAPID-key fetching + cache, the
+// B2 ships the lower half: VAPID-key fetching, the
 // subscribe/unsubscribe primitives. The B3 settings UI imports this
 // module's `enablePush` / `disablePush` / `listPushDevices` to drive
 // the master toggle dance.
 //
-// ## VAPID public-key cache
+// ## The VAPID public key is fetched, never recalled (#1323)
 //
-// Key fetched from `GET /push/vapid-public-key` on first use, cached
-// in localStorage so subsequent subscribe calls don't round-trip.
-// Refresh path: cic catches `InvalidApplicationServerKey` from the
-// browser's `pushManager.subscribe` and re-fetches once. No HTTP
-// cache headers — operator-rotation is rare and the payload is ~88
-// bytes; localStorage is the authoritative cache.
+// `localStorage["cic.vapidPublicKey"]` used to be a read-through cache:
+// populated on first fetch, returned unconditionally afterwards. That is
+// what made an operator key rotation a silent, permanent kill — measured on
+// staging as `400 {"reason":"VapidPkHashMismatch"}` from Apple (and `403`
+// from FCM for the same failure in Google's vocabulary). The push service
+// binds a subscription to the key that CREATED it, so a client subscribing
+// with the recalled old key produces a perfectly valid subscription the
+// server can never sign for. No exception is raised anywhere: the browser
+// sees nothing inconsistent, the UI says push is on, the server logs a
+// rejection nobody reads.
+//
+// So the same storage key now means something else: **the key the LIVE
+// subscription was created with**, written ONLY after a subscribe succeeds
+// and cleared with the subscription. It is a comparison anchor, never a
+// source. Every subscribe fetches the served key and reconciles against it;
+// on a difference the browser subscription is dropped and re-created. The
+// re-meaning needs no migration — the old cache was populated at subscribe
+// time, so a client broken by a rotation already holds exactly the key it
+// subscribed with, which is what makes it heal on its first ensure seam.
 
 import { ApiError, readError } from "./api";
 import { formatDurationSince } from "./duration";
 import { isIos, isStandalonePwa } from "./platform";
 
-const VAPID_PUBLIC_KEY_STORAGE_KEY = "cic.vapidPublicKey";
+const SUBSCRIBED_VAPID_KEY_STORAGE_KEY = "cic.vapidPublicKey";
 
 /**
  * #459 — THE single, synchronous "can push actually be delivered here?" gate,
@@ -52,18 +65,12 @@ export function pushAvailable(): boolean {
 }
 
 /**
- * Fetches the server's VAPID public key, returning the cached value
- * when present. The key is non-secret per the W3C Push spec; storing
- * it in localStorage is fine.
- *
- * @param forceRefresh — bypass the cache (used after an
- *   `InvalidApplicationServerKey` exception).
+ * The VAPID public key the server signs with, straight from
+ * `GET /push/vapid-public-key`. Always a round-trip: nothing is recalled
+ * from storage (see the moduledoc — recalling it is #1323). The key is
+ * non-secret per the W3C Push spec, and the payload is ~90 bytes.
  */
-export async function getVapidPublicKey(forceRefresh = false): Promise<string> {
-  if (!forceRefresh) {
-    const cached = localStorage.getItem(VAPID_PUBLIC_KEY_STORAGE_KEY);
-    if (cached !== null && cached !== "") return cached;
-  }
+export async function fetchVapidPublicKey(): Promise<string> {
   const res = await fetch("/push/vapid-public-key", {
     headers: { "content-type": "application/json" },
   });
@@ -74,7 +81,6 @@ export async function getVapidPublicKey(forceRefresh = false): Promise<string> {
   if (typeof body.public_key !== "string" || body.public_key === "") {
     throw new ApiError(500, "vapid_malformed");
   }
-  localStorage.setItem(VAPID_PUBLIC_KEY_STORAGE_KEY, body.public_key);
   return body.public_key;
 }
 
@@ -94,11 +100,6 @@ export function vapidKeyToUint8Array(base64Url: string): Uint8Array {
     out[i] = raw.charCodeAt(i);
   }
   return out;
-}
-
-/** Clears the cached VAPID key — used by tests + after a server rotation. */
-export function clearVapidPublicKeyCache(): void {
-  localStorage.removeItem(VAPID_PUBLIC_KEY_STORAGE_KEY);
 }
 
 /**
@@ -223,9 +224,13 @@ export async function listPushDevices(token: string): Promise<PushDeviceSummary[
 const SUBSCRIPTION_ID_STORAGE_KEY = "cic.pushSubscriptionId";
 const SUBSCRIPTION_ENDPOINT_STORAGE_KEY = "cic.pushSubscriptionEndpoint";
 
-function rememberSubscription(id: SubscriptionId, endpoint: string): void {
+function rememberSubscription(id: SubscriptionId, endpoint: string, vapidKey: string): void {
   localStorage.setItem(SUBSCRIPTION_ID_STORAGE_KEY, id);
   localStorage.setItem(SUBSCRIPTION_ENDPOINT_STORAGE_KEY, endpoint);
+  // #1323 — recorded only here, i.e. only once a subscribe has succeeded.
+  // Recording the served key any earlier would make the NEXT reconciliation
+  // read "same key" off a subscription that was never re-created.
+  localStorage.setItem(SUBSCRIBED_VAPID_KEY_STORAGE_KEY, vapidKey);
 }
 
 /**
@@ -248,6 +253,7 @@ export function subscriptionIdForEndpoint(endpoint: string): SubscriptionId | nu
 function forgetSubscription(): void {
   localStorage.removeItem(SUBSCRIPTION_ID_STORAGE_KEY);
   localStorage.removeItem(SUBSCRIPTION_ENDPOINT_STORAGE_KEY);
+  localStorage.removeItem(SUBSCRIBED_VAPID_KEY_STORAGE_KEY);
 }
 
 /**
@@ -283,11 +289,10 @@ export type EnablePushResult =
  *      programmatic re-asks until the user clears site data).
  *   3. If `default`, request permission. On `denied`/`default` after
  *      the prompt, bail with `permission_denied`/`permission_dismissed`.
- *   4. Get the SW registration (waits for ready). Fetch the VAPID
- *      public key (cached). Subscribe via `pushManager.subscribe`.
- *      On `InvalidApplicationServerKey`, refresh the cached key once
- *      and retry — protects against operator-rotated VAPID keys
- *      sticking around in localStorage.
+ *   4. Get the SW registration (waits for ready). Fetch the served VAPID
+ *      public key and reconcile it against the key our live subscription
+ *      was created with (#1323); on a rotation, drop that subscription
+ *      before subscribing with the fresh key.
  *   5. POST the subscription to `/push/subscriptions`. Return the
  *      created subscription's id so the UI can refresh its devices
  *      list directly without an extra GET round-trip.
@@ -314,7 +319,7 @@ export async function enablePush(token: string): Promise<EnablePushResult> {
     return { status: "unsupported", reason: "no_push_manager" };
   }
 
-  const subscription = await subscribeWithVapidRetry(registration);
+  const { subscription, key } = await subscribeWithCurrentVapidKey(registration);
   const json = subscription.toJSON() as {
     endpoint?: string;
     keys?: { p256dh?: string; auth?: string };
@@ -330,7 +335,7 @@ export async function enablePush(token: string): Promise<EnablePushResult> {
     endpoint: json.endpoint,
     keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
   });
-  rememberSubscription(created.id, json.endpoint);
+  rememberSubscription(created.id, json.endpoint, key);
   return { status: "enabled", subscriptionId: created.id };
 }
 
@@ -392,27 +397,32 @@ export async function disablePush(token: string): Promise<boolean> {
  *
  *   * "renewed"   — the browser subscription had dropped; re-subscribed
  *     and POSTed the fresh subscription (superseding the old row).
- *   * "present"   — a live subscription already exists (or a same-endpoint
- *     replay), nothing to do.
+ *   * "rekeyed"   — #1323: the server serves a VAPID key that supersedes the
+ *     one the live subscription was created with, so that subscription can
+ *     never be signed for; it was dropped and re-created with the fresh key.
+ *   * "present"   — a live subscription exists AND was created with the key
+ *     the server still serves (or a same-endpoint replay), nothing to do.
  *   * "skipped"   — the runtime can't push (no Notification / SW /
  *     pushManager) or permission isn't `granted`. Never prompts here.
  *   * "no-intent" — the user never opted in / disabled push (no stashed
  *     endpoint), so there is nothing to renew.
  */
-export type EnsurePushOutcome = "renewed" | "present" | "skipped" | "no-intent";
+export type EnsurePushOutcome = "renewed" | "rekeyed" | "present" | "skipped" | "no-intent";
 
 /**
  * #181 — renew a dropped-but-still-wanted push subscription on the
  * SW-update / app-resume lifecycle seams (wired by `lib/pushResubscribe.ts`).
  *
  * RENEW-ONLY: it never prompts for permission and never opts a user in.
- * It acts only when ALL hold: `Notification.permission === "granted"`, the
- * user previously opted in (a stashed endpoint proves intent — cleared on
- * disable), AND the browser's live `pushManager.getSubscription()` has gone
- * `null` (the silent drop the issue describes). On that exact state it
- * re-subscribes via the SAME VAPID path as the initial enable and POSTs the
- * fresh subscription with `supersedes: <old endpoint>` so the server prunes
- * the ghost row. A `422` replay (endpoint did not rotate) counts as present.
+ * It acts only when BOTH hold: `Notification.permission === "granted"` and
+ * the user previously opted in (a stashed endpoint proves intent — cleared
+ * on disable). Given those, it re-subscribes in two states: the browser's
+ * live `pushManager.getSubscription()` has gone `null` (#181's silent drop),
+ * or the server's VAPID key has moved past the one the live subscription was
+ * created with (#1323's silent mismatch, which no browser reports). Either
+ * way it POSTs the fresh subscription with `supersedes: <old endpoint>` so
+ * the server prunes the row it replaces. A `422` replay (endpoint did not
+ * rotate) counts as present.
  */
 export async function ensurePushSubscription(token: string): Promise<EnsurePushOutcome> {
   if (typeof Notification === "undefined") return "skipped";
@@ -425,10 +435,20 @@ export async function ensurePushSubscription(token: string): Promise<EnsurePushO
   const registration = await navigator.serviceWorker.ready;
   if (registration.pushManager === undefined) return "skipped";
 
-  const existing = await registration.pushManager.getSubscription();
-  if (existing !== null) return "present";
+  // #1323 — the reconciliation seam. A subscription created with a
+  // superseded VAPID key is indistinguishable from a healthy one from here:
+  // it exists, it looks valid, and the push service rejects every send to it
+  // forever. The served key is the only thing that tells them apart, so ask
+  // for it before believing a live subscription.
+  const { key, rotated } = await reconcileVapidKey();
 
-  const subscription = await subscribeWithVapidRetry(registration);
+  const existing = await registration.pushManager.getSubscription();
+  if (existing !== null) {
+    if (!rotated) return "present";
+    await existing.unsubscribe();
+  }
+
+  const subscription = await subscribeWithKey(registration, key);
   const json = subscription.toJSON() as {
     endpoint?: string;
     keys?: { p256dh?: string; auth?: string };
@@ -447,45 +467,84 @@ export async function ensurePushSubscription(token: string): Promise<EnsurePushO
       keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
       supersedes: stashedEndpoint,
     });
-    rememberSubscription(created.id, json.endpoint);
-    return "renewed";
+    rememberSubscription(created.id, json.endpoint, key);
+    return rotated ? "rekeyed" : "renewed";
   } catch (err) {
     if (err instanceof ApiError && err.status === 422) {
       // Endpoint did not rotate — the server row already exists (replay).
       // Re-point the endpoint stash at the live sub; the id is unchanged.
+      // The key record moves too: the subscription in hand WAS created with
+      // it, and leaving the superseded one behind would re-tear-down the
+      // same subscription on every following seam.
       localStorage.setItem(SUBSCRIPTION_ENDPOINT_STORAGE_KEY, json.endpoint);
+      localStorage.setItem(SUBSCRIBED_VAPID_KEY_STORAGE_KEY, key);
       return "present";
     }
     throw err;
   }
 }
 
-async function subscribeWithVapidRetry(
+/**
+ * #1323 — the served key plus whether it supersedes the one our live
+ * subscription was created with. `rotated` is false when we have no record
+ * (nothing was ever subscribed here, or site data was cleared): an absent
+ * record proves nothing, so it must not trigger a teardown.
+ */
+async function reconcileVapidKey(): Promise<{ key: string; rotated: boolean }> {
+  const subscribedWith = localStorage.getItem(SUBSCRIBED_VAPID_KEY_STORAGE_KEY);
+  const key = await fetchVapidPublicKey();
+  return {
+    key,
+    rotated: subscribedWith !== null && subscribedWith !== "" && subscribedWith !== key,
+  };
+}
+
+/**
+ * Subscribes with exactly `key`, dropping a conflicting subscription rather
+ * than giving up. `InvalidAccessError` is the browser refusing to hand back
+ * a subscription bound to a DIFFERENT application server key — re-fetching
+ * the key cannot resolve that (it is already the current one); only
+ * unsubscribing the incumbent can.
+ */
+async function subscribeWithKey(
   registration: ServiceWorkerRegistration,
+  key: string,
 ): Promise<PushSubscription> {
-  const tryOnce = async (forceRefresh: boolean): Promise<PushSubscription> => {
-    const key = await getVapidPublicKey(forceRefresh);
-    const bytes = vapidKeyToUint8Array(key);
-    return registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      // Cast: BufferSource accepts a Uint8Array, but TS DOM lib's
-      // PushSubscriptionOptionsInit narrows applicationServerKey to
-      // ArrayBufferView<ArrayBuffer> (vs the wider ArrayBufferLike
-      // returned by Uint8Array's typed-array union). The runtime
-      // contract is byte-for-byte: we send the raw key bytes.
-      applicationServerKey: bytes as BufferSource,
-    });
+  const options: PushSubscriptionOptionsInit = {
+    userVisibleOnly: true,
+    // Cast: BufferSource accepts a Uint8Array, but TS DOM lib's
+    // PushSubscriptionOptionsInit narrows applicationServerKey to
+    // ArrayBufferView<ArrayBuffer> (vs the wider ArrayBufferLike
+    // returned by Uint8Array's typed-array union). The runtime
+    // contract is byte-for-byte: we send the raw key bytes.
+    applicationServerKey: vapidKeyToUint8Array(key) as BufferSource,
   };
   try {
-    return await tryOnce(false);
+    return await registration.pushManager.subscribe(options);
   } catch (err) {
     if (err instanceof DOMException && err.name === "InvalidAccessError") {
-      // Browsers throw InvalidAccessError when the cached VAPID key no
-      // longer matches the SW's existing subscription (operator key
-      // rotation). Refresh once + retry.
-      clearVapidPublicKeyCache();
-      return tryOnce(true);
+      await dropLiveSubscription(registration);
+      return registration.pushManager.subscribe(options);
     }
     throw err;
   }
+}
+
+/** Releases the browser-side subscription, if the SW still holds one. */
+async function dropLiveSubscription(registration: ServiceWorkerRegistration): Promise<void> {
+  const live = await registration.pushManager.getSubscription();
+  if (live !== null) await live.unsubscribe();
+}
+
+/**
+ * The one subscribe door: reconcile against the served key, drop a
+ * subscription bound to a superseded one, then subscribe. Returns the key it
+ * subscribed with so the caller can record it once the server row exists.
+ */
+async function subscribeWithCurrentVapidKey(
+  registration: ServiceWorkerRegistration,
+): Promise<{ subscription: PushSubscription; key: string }> {
+  const { key, rotated } = await reconcileVapidKey();
+  if (rotated) await dropLiveSubscription(registration);
+  return { subscription: await subscribeWithKey(registration, key), key };
 }

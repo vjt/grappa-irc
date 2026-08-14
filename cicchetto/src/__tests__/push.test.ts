@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  clearVapidPublicKeyCache,
   deletePushSubscription,
   disablePush,
+  enablePush,
   ensurePushSubscription,
+  fetchVapidPublicKey,
   formatDeviceActivity,
-  getVapidPublicKey,
   listPushDevices,
   type PushDeviceSummary,
   postPushSubscription,
@@ -31,9 +31,12 @@ const sample = {
   publicKey: "BJk1234567890abcdefghijklmnopqrstuv-_wxyzABC",
 };
 
+// #1323 — the key the operator rotated TO. Same length class as `sample`
+// so both decode cleanly through `vapidKeyToUint8Array`.
+const ROTATED_KEY = "BRotated9876543210zyxwvutsrqponmlkjihgfe-_AB";
+
 beforeEach(() => {
   localStorage.clear();
-  clearVapidPublicKeyCache();
 });
 
 afterEach(() => {
@@ -46,6 +49,9 @@ afterEach(() => {
 // (pushManager / Notification / fetch); the real push.ts handlers run.
 const SUB_ID_KEY = "cic.pushSubscriptionId";
 const SUB_ENDPOINT_KEY = "cic.pushSubscriptionEndpoint";
+// #1323 — the key the LIVE subscription was created with (not a read-through
+// cache: nothing is ever served from it).
+const SUBSCRIBED_KEY = "cic.vapidPublicKey";
 
 function fakeSub(endpoint: string): PushSubscription {
   return {
@@ -80,14 +86,34 @@ function stubPushEnv(opts: {
   return { getSubscription, subscribe };
 }
 
+// The body of the `POST /push/subscriptions` the run made, or null when it
+// registered nothing.
+function postedSubscription(
+  fetchMock: ReturnType<typeof vi.spyOn>,
+): { endpoint?: string; supersedes?: string } | null {
+  const call = fetchMock.mock.calls.find(
+    (args: unknown[]) =>
+      args[0] === "/push/subscriptions" && (args[1] as RequestInit | undefined)?.method === "POST",
+  ) as [string, RequestInit] | undefined;
+  return call === undefined ? null : JSON.parse(call[1].body as string);
+}
+
+// The application server key bytes handed to the FIRST `pushManager.subscribe`
+// call — the assertion that says WHICH VAPID key a subscription was born with.
+function firstSubscribeKeyBytes(subscribe: ReturnType<typeof vi.fn>): number[] {
+  const [options] = subscribe.mock.calls[0] as [PushSubscriptionOptionsInit];
+  return Array.from(options.applicationServerKey as Uint8Array);
+}
+
 // Route fetch by URL: VAPID key GET, subscription POST, subscription DELETE.
-function stubPushFetch(): ReturnType<typeof vi.spyOn> {
+// `servedKey` is what the server currently signs with — the axis #1323 turns on.
+function stubPushFetch(servedKey: string): ReturnType<typeof vi.spyOn> {
   return vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL, init?) => {
     const url = String(input);
     const method = init?.method ?? "GET";
     if (url.includes("/push/vapid-public-key")) {
       return Promise.resolve(
-        new Response(JSON.stringify({ public_key: sample.publicKey }), { status: 200 }),
+        new Response(JSON.stringify({ public_key: servedKey }), { status: 200 }),
       );
     }
     if (url === "/push/subscriptions" && method === "POST") {
@@ -111,7 +137,7 @@ describe("disablePush — #181: DELETE the stashed row, never orphan it", () => 
     // the push service keeps 2xx-ing a dead endpoint forever.
     localStorage.setItem(SUB_ID_KEY, "srv-ghost");
     localStorage.setItem(SUB_ENDPOINT_KEY, "https://push.example/OLD");
-    const fetchMock = stubPushFetch();
+    const fetchMock = stubPushFetch(sample.publicKey);
     stubPushEnv({ existingSubscription: null });
 
     const removed = await disablePush("tok");
@@ -126,7 +152,7 @@ describe("disablePush — #181: DELETE the stashed row, never orphan it", () => 
   });
 
   it("no server DELETE when there is no stashed id to clean up", async () => {
-    const fetchMock = stubPushFetch();
+    const fetchMock = stubPushFetch(sample.publicKey);
     stubPushEnv({ existingSubscription: null });
     await disablePush("tok");
     expect(fetchMock).not.toHaveBeenCalled();
@@ -137,7 +163,7 @@ describe("ensurePushSubscription — #181: renew a dropped-but-wanted subscripti
   it("re-subscribes and POSTs supersedes=<old endpoint> on a silent drop", async () => {
     localStorage.setItem(SUB_ID_KEY, "srv-old");
     localStorage.setItem(SUB_ENDPOINT_KEY, "https://push.example/OLD");
-    const fetchMock = stubPushFetch();
+    const fetchMock = stubPushFetch(sample.publicKey);
     stubPushEnv({
       permission: "granted",
       existingSubscription: null,
@@ -147,93 +173,168 @@ describe("ensurePushSubscription — #181: renew a dropped-but-wanted subscripti
     const outcome = await ensurePushSubscription("tok");
 
     expect(outcome).toBe("renewed");
-    const post = fetchMock.mock.calls.find(
-      (call: unknown[]) =>
-        call[0] === "/push/subscriptions" &&
-        (call[1] as RequestInit | undefined)?.method === "POST",
-    );
-    expect(post).toBeDefined();
-    const body = JSON.parse((post![1] as RequestInit).body as string);
-    expect(body.endpoint).toBe("https://push.example/NEW");
-    expect(body.supersedes).toBe("https://push.example/OLD");
-    // fresh server id + endpoint stashed for the next cycle
+    const body = postedSubscription(fetchMock);
+    expect(body?.endpoint).toBe("https://push.example/NEW");
+    expect(body?.supersedes).toBe("https://push.example/OLD");
+    // fresh server id + endpoint stashed for the next cycle, plus (#1323) the
+    // key this subscription was created with.
     expect(localStorage.getItem(SUB_ID_KEY)).toBe("srv-new");
     expect(localStorage.getItem(SUB_ENDPOINT_KEY)).toBe("https://push.example/NEW");
+    expect(localStorage.getItem(SUBSCRIBED_KEY)).toBe(sample.publicKey);
   });
 
-  it("no-ops when a live subscription is already present", async () => {
+  it("keeps a live subscription whose key still matches what the server serves", async () => {
     localStorage.setItem(SUB_ID_KEY, "srv-old");
     localStorage.setItem(SUB_ENDPOINT_KEY, "https://push.example/LIVE");
-    const fetchMock = stubPushFetch();
-    stubPushEnv({
-      permission: "granted",
-      existingSubscription: fakeSub("https://push.example/LIVE"),
-    });
+    localStorage.setItem(SUBSCRIBED_KEY, sample.publicKey);
+    const fetchMock = stubPushFetch(sample.publicKey);
+    const live = fakeSub("https://push.example/LIVE");
+    const { subscribe } = stubPushEnv({ permission: "granted", existingSubscription: live });
 
     expect(await ensurePushSubscription("tok")).toBe("present");
-    expect(fetchMock).not.toHaveBeenCalled();
+
+    // #1323 — the key IS revalidated (one GET), it just matched: nothing is
+    // torn down and no row is registered.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/push/vapid-public-key");
+    expect(vi.mocked(live.unsubscribe)).not.toHaveBeenCalled();
+    expect(subscribe).not.toHaveBeenCalled();
   });
 
   it("skips (never prompts) when permission is not granted", async () => {
     localStorage.setItem(SUB_ENDPOINT_KEY, "https://push.example/OLD");
-    const fetchMock = stubPushFetch();
+    const fetchMock = stubPushFetch(sample.publicKey);
     stubPushEnv({ permission: "default", existingSubscription: null });
     expect(await ensurePushSubscription("tok")).toBe("skipped");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("does nothing when the user never opted in (no stashed endpoint = no intent)", async () => {
-    const fetchMock = stubPushFetch();
+    const fetchMock = stubPushFetch(sample.publicKey);
     stubPushEnv({ permission: "granted", existingSubscription: null });
     expect(await ensurePushSubscription("tok")).toBe("no-intent");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
-describe("getVapidPublicKey", () => {
-  it("fetches + caches on first call", async () => {
+// ── #1323 — a rotated VAPID key must heal itself, with no user gesture ──
+// Measured on staging: a subscription created with key A can never be signed
+// for once the server serves key B (`400 VapidPkHashMismatch` from Apple,
+// `403` from FCM). The client held the old key in localStorage and never
+// looked again, so nothing on either side reconciled — push died silently and
+// permanently. These tests pin the reconciliation at both doors.
+describe("#1323 — VAPID rotation heals on the ensure seam", () => {
+  it("drops the stale subscription and re-subscribes with the served key", async () => {
+    localStorage.setItem(SUB_ID_KEY, "srv-old");
+    localStorage.setItem(SUB_ENDPOINT_KEY, "https://push.example/OLD");
+    localStorage.setItem(SUBSCRIBED_KEY, sample.publicKey);
+    const fetchMock = stubPushFetch(ROTATED_KEY);
+    const live = fakeSub("https://push.example/OLD");
+    const { subscribe } = stubPushEnv({
+      permission: "granted",
+      existingSubscription: live,
+      subscribeResult: fakeSub("https://push.example/NEW"),
+    });
+
+    expect(await ensurePushSubscription("tok")).toBe("rekeyed");
+
+    expect(vi.mocked(live.unsubscribe)).toHaveBeenCalled();
+    expect(firstSubscribeKeyBytes(subscribe)).toEqual(
+      Array.from(vapidKeyToUint8Array(ROTATED_KEY)),
+    );
+    expect(postedSubscription(fetchMock)?.endpoint).toBe("https://push.example/NEW");
+    // The record now names the key the LIVE subscription was created with.
+    expect(localStorage.getItem(SUBSCRIBED_KEY)).toBe(ROTATED_KEY);
+    expect(localStorage.getItem(SUB_ENDPOINT_KEY)).toBe("https://push.example/NEW");
+  });
+
+  it("leaves the recorded key untouched when the re-subscribe fails", async () => {
+    // Recording the served key before the subscribe succeeds would re-create
+    // the #1323 silence one seam later: the next pass would see
+    // recorded == served, answer "present", and never heal.
+    localStorage.setItem(SUB_ID_KEY, "srv-old");
+    localStorage.setItem(SUB_ENDPOINT_KEY, "https://push.example/OLD");
+    localStorage.setItem(SUBSCRIBED_KEY, sample.publicKey);
+    stubPushFetch(ROTATED_KEY);
+    const { subscribe } = stubPushEnv({
+      permission: "granted",
+      existingSubscription: fakeSub("https://push.example/OLD"),
+    });
+    subscribe.mockRejectedValue(new Error("subscribe blew up"));
+
+    await expect(ensurePushSubscription("tok")).rejects.toThrow(/subscribe blew up/);
+
+    expect(localStorage.getItem(SUBSCRIBED_KEY)).toBe(sample.publicKey);
+  });
+});
+
+describe("#1323 — enablePush subscribes with the served key, never a recorded one", () => {
+  it("drops a subscription bound to a superseded key before subscribing", async () => {
+    localStorage.setItem(SUB_ID_KEY, "srv-old");
+    localStorage.setItem(SUB_ENDPOINT_KEY, "https://push.example/OLD");
+    localStorage.setItem(SUBSCRIBED_KEY, sample.publicKey);
+    stubPushFetch(ROTATED_KEY);
+    const live = fakeSub("https://push.example/OLD");
+    const { subscribe } = stubPushEnv({
+      permission: "granted",
+      existingSubscription: live,
+      subscribeResult: fakeSub("https://push.example/NEW"),
+    });
+
+    expect(await enablePush("tok")).toEqual({ status: "enabled", subscriptionId: "srv-new" });
+
+    expect(vi.mocked(live.unsubscribe)).toHaveBeenCalled();
+    expect(firstSubscribeKeyBytes(subscribe)).toEqual(
+      Array.from(vapidKeyToUint8Array(ROTATED_KEY)),
+    );
+    expect(localStorage.getItem(SUBSCRIBED_KEY)).toBe(ROTATED_KEY);
+  });
+
+  it("unsubscribes the conflicting subscription when the browser raises InvalidAccessError", async () => {
+    // The browser's own guard: an existing subscription bound to another key.
+    // Re-fetching the key cannot clear it — only unsubscribing can.
+    stubPushFetch(sample.publicKey);
+    const conflicting = fakeSub("https://push.example/CONFLICT");
+    const { subscribe } = stubPushEnv({
+      permission: "granted",
+      existingSubscription: conflicting,
+    });
+    subscribe
+      .mockRejectedValueOnce(new DOMException("different key", "InvalidAccessError"))
+      .mockResolvedValue(fakeSub("https://push.example/NEW"));
+
+    expect(await enablePush("tok")).toEqual({ status: "enabled", subscriptionId: "srv-new" });
+
+    expect(vi.mocked(conflicting.unsubscribe)).toHaveBeenCalled();
+    expect(subscribe).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("fetchVapidPublicKey", () => {
+  it("always GETs — a recorded key is never served in its place (#1323)", async () => {
+    localStorage.setItem(SUBSCRIBED_KEY, "stale-value");
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(
         new Response(JSON.stringify({ public_key: sample.publicKey }), { status: 200 }),
       );
 
-    expect(await getVapidPublicKey()).toBe(sample.publicKey);
+    expect(await fetchVapidPublicKey()).toBe(sample.publicKey);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem("cic.vapidPublicKey")).toBe(sample.publicKey);
-  });
-
-  it("returns cached value on subsequent calls without fetching", async () => {
-    localStorage.setItem("cic.vapidPublicKey", sample.publicKey);
-    const fetchMock = vi.spyOn(globalThis, "fetch");
-
-    expect(await getVapidPublicKey()).toBe(sample.publicKey);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("forceRefresh bypasses the cache", async () => {
-    localStorage.setItem("cic.vapidPublicKey", "stale-value");
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(
-        new Response(JSON.stringify({ public_key: sample.publicKey }), { status: 200 }),
-      );
-
-    expect(await getVapidPublicKey(true)).toBe(sample.publicKey);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem("cic.vapidPublicKey")).toBe(sample.publicKey);
+    // Reading the key does NOT record it: only a successful subscribe does.
+    expect(localStorage.getItem(SUBSCRIBED_KEY)).toBe("stale-value");
   });
 
   it("throws ApiError on non-OK response", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 500 }));
-    await expect(getVapidPublicKey()).rejects.toThrow(/500/);
+    await expect(fetchVapidPublicKey()).rejects.toThrow(/500/);
   });
 
   it("throws ApiError on malformed body", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({}), { status: 200 }),
     );
-    await expect(getVapidPublicKey()).rejects.toThrow(/vapid_malformed/);
+    await expect(fetchVapidPublicKey()).rejects.toThrow(/vapid_malformed/);
   });
 });
 

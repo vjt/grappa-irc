@@ -42452,3 +42452,63 @@ primary method it is. The issue named that cost and vjt asked for the move
 anyway. The doors sit LAST in the panel, adjacent to Connect, because they
 are actions rather than identity fields like realname/ident — a placement
 choice, cheap to flip, not a constraint.
+<!-- entry #1323 -->
+
+---
+
+## 2026-08-14 — #1323: a key you recall is a key you never check
+
+Web push from staging was rejected on every attempt. Probing Apple's real
+endpoint with a freshly signed VAPID JWT returned `400
+{"reason":"VapidPkHashMismatch"}`; FCM had answered `403` to an Android
+subscription the same day, which is the same failure in Google's vocabulary.
+The server was cleared by measurement, not assumption: `GET
+/push/vapid-public-key` served byte-for-byte the key the container signs
+with, and the keypair was internally consistent.
+
+The mismatch was client-side. `cic.vapidPublicKey` in localStorage was a
+read-through cache: populated on first fetch, returned unconditionally ever
+after, refreshed only when the browser raised
+`InvalidApplicationServerKey`. That trigger cannot fire on the failure we
+had — the browser raises it when an EXISTING subscription conflicts with a
+NEW key handed to `subscribe()`, and here the client handed it the OLD key
+it had just recalled. Nothing is inconsistent from the browser's seat, so it
+produces a perfectly valid subscription that the server can never sign for.
+The UI says push is on; the server logs a rejection nobody reads; no state
+exists in which anything looks wrong. Any VAPID rotation was therefore a
+silent, permanent kill for every already-installed client.
+
+**The storage key was re-meant rather than deleted.** It now records *the key
+the LIVE subscription was created with*, written ONLY after a subscribe
+succeeds and cleared with the subscription — a comparison anchor, never a
+source. Every subscribe fetches the served key (`fetchVapidPublicKey`, no
+recall path left to misuse) and reconciles; on a difference the browser
+subscription is unsubscribed and re-created with the fresh key. Recording the
+served key any earlier — at fetch time, as the old cache did — would restore
+the silence one seam later: a failed re-subscribe would leave
+`recorded == served`, and the next pass would read that as health.
+
+The re-meaning needs no migration, which is why it was preferred to a new
+key. The old cache was only ever populated at subscribe time, so a client
+broken by the rotation already holds exactly the key it subscribed with —
+the fleet heals on its first seam.
+
+**The reconciliation lives on the ensure seam, not only at the toggle.** The
+ruling asked for no user gesture and for a rotation that heals itself; a
+check that runs only inside `enablePush` waits for a toggle that a working-
+looking client never gets. So `ensurePushSubscription` — already wired to
+boot / `controllerchange` / `visibilitychange` by #181 — reconciles before it
+believes a live subscription, and reports the teardown as its own outcome
+(`rekeyed`, distinct from #181's `renewed`). `InvalidAccessError` recovery
+changed accordingly: re-fetching the key cannot clear a subscription bound to
+a different one, so the retry now unsubscribes the incumbent instead.
+
+**Accepted costs, stated so they are not read as oversights.** One ~150-byte
+GET per resume seam for opted-in users (single-flighted by
+`pushResubscribe`), deliberately unthrottled: a throttle would be duplicated
+state that drifts, guarding a request smaller than the headers carrying it.
+And the superseded server row is left in place — `400` deliberately never
+sweeps (#1325, closed `not planned`), so the row costs one wasted request per
+notification forever. Having the client delete the row it is itself replacing
+is a different mechanism from a reason-string reap, and it is held pending a
+ruling rather than assumed.
