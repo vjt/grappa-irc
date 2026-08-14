@@ -44,6 +44,29 @@
 // pane left at the tail would advance the cursor to the newest row, unread
 // would fall to zero, and the ceiling would never be approached.
 //
+// ── Why the peer joins during SETUP, and not as part of the gesture ──────
+//
+// A peer's JOIN is a scrollback row like any other. Server side, an
+// other-user JOIN emits `:persist :join` (`lib/grappa/session/event_router.ex`,
+// pinned by `test/grappa/session/event_router_test.exs:1727` — "JOIN-other
+// adds nick to state.members[channel] + emits :persist :join"). Client side
+// nothing filters it back out: `subscribe.ts`'s `routeMessage` appends every
+// message with no kind gate, and `capScrollbackRing`'s `unreadHeld` counts
+// rows by id with no kind gate either.
+//
+// So a JOIN issued AFTER the cursor is planted lands above it, and the
+// "one row" crossing is really TWO: the JOIN takes the protected region past
+// the ceiling and the bound bites once (banner at `unreadHeld`), then the
+// PRIVMSG bites it again — and `scrollback.ts`'s accumulation on the second
+// bite (`current.missed + unreadDropped`, deliberate: after the first bite the
+// store only ever holds one page, so a recount would report the bound forever
+// while the operator is thousands behind) reports `UNREAD_BOUND + 1`.
+//
+// That number is an artefact of the setup, not the behaviour under test. The
+// peer therefore joins BEFORE anything is measured, so its row is part of the
+// read history the cursor is planted into, and the gesture is the single
+// PRIVMSG this spec says it is.
+//
 // ── NOT covered here, deliberately ───────────────────────────────────────
 //
 // The far-behind banner's own behaviour (jump, dismiss, badge) belongs to
@@ -79,6 +102,7 @@ const UNREAD_BOUND = 200;
 // above the bound so the planted cursor has somewhere to sit.
 const SEED_COUNT = 420;
 const SEED_SENDER = "seed-bot";
+const PEER_NICK = "bound1229";
 
 // One short of the ceiling: the protected region is the cursor row plus the
 // rows after it, so `UNREAD_BOUND - 1` unread rows leave exactly `UNREAD_BOUND`
@@ -118,66 +142,83 @@ test.describe("#1229 — the unread retention bound", () => {
       { [NETWORK_SLUG]: [{ name: CHANNEL, seedCount: SEED_COUNT, seedSender: SEED_SENDER }] },
     );
 
-    const rows = await fetchAllMessagesAsc(vjt.token, NETWORK_SLUG, CHANNEL);
-    expect(rows.length).toBeGreaterThan(UNREAD_BEFORE + 20);
-
-    const cursorRow = rows[rows.length - 1 - UNREAD_BEFORE];
-    const oldestUnread = rows[rows.length - UNREAD_BEFORE];
-    const readContextRow = rows[rows.length - 1 - UNREAD_BEFORE - 10];
-    if (!cursorRow || !oldestUnread || !readContextRow) {
-      throw new Error("#1229 spec: seeded rows missing an index");
-    }
-    // Precondition, guarded rather than assumed: exactly one short of the
-    // ceiling. One row above and the pane would already be far behind on load.
-    expect(rows.filter((r) => r.id > cursorRow.id).length).toBe(UNREAD_BEFORE);
-
-    await setReadCursorToId(vjt.token, NETWORK_SLUG, CHANNEL, cursorRow.id);
-
-    await loginAs(page, vjt);
-    await selectChannel(page, NETWORK_SLUG, CHANNEL);
-
-    const bar = page.locator('[data-testid="far-behind-bar"]');
-    const marker = page.locator('[data-testid="unread-marker"]');
-    await expect(marker).toBeAttached({ timeout: OUTCOME_TIMEOUT_MS });
-    await expect(bar).toHaveCount(0);
-
-    // Scroll up into the read context. Not to the very top: that is the
-    // `loadMore` trigger, and a prepend would move `scrollTop` for reasons
-    // that have nothing to do with the bound.
-    await page.evaluate(() => {
-      const el = document.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
-      if (el === null) throw new Error("#1229 spec: scrollback container missing");
-      el.scrollTop = Math.floor(el.scrollHeight * 0.25);
-    });
-    const before = await scrollGeometry(page);
-    expect(before.scrollTop).toBeGreaterThan(0);
-    expect(before.scrollHeight - before.scrollTop - before.clientHeight).toBeGreaterThan(
-      SCROLL_TOLERANCE_PX,
-    );
-
-    // The settle writer runs on a debounce; give it its window and then prove
-    // it did NOT move the cursor. Forward-only refusal is what holds the
-    // precondition, so it is asserted, not assumed.
-    await expect
-      .poll(() => getReadCursor(vjt.token, NETWORK_SLUG, CHANNEL), {
-        timeout: OUTCOME_TIMEOUT_MS,
-      })
-      .toBe(cursorRow.id);
-
-    const oldestUnreadLine = page.locator(
-      `.scrollback-line:has-text(${JSON.stringify(oldestUnread.body)})`,
-    );
-    const readContextLine = page.locator(
-      `.scrollback-line:has-text(${JSON.stringify(readContextRow.body)})`,
-    );
-    await expect(oldestUnreadLine).toHaveCount(1);
-    await expect(readContextLine).toHaveCount(1);
-
-    // ── The gesture: one live row, which makes the protected region one past
-    // the ceiling.
-    const peer = await IrcPeer.connect({ nick: "bound1229" });
+    const peer = await IrcPeer.connect({ nick: PEER_NICK });
     try {
       await peer.join(CHANNEL);
+      // `join()` resolves on the ircd's echo to the PEER, which says nothing
+      // about grappa having persisted the row it produces on OUR session. The
+      // cursor is planted by id, so wait for that row to exist before reading
+      // the ids — otherwise it lands above the cursor and is unread after all,
+      // which is the whole failure this ordering exists to prevent.
+      await expect
+        .poll(
+          async () => {
+            const seen = await fetchAllMessagesAsc(vjt.token, NETWORK_SLUG, CHANNEL);
+            return seen.some((r) => r.kind === "join" && r.sender === PEER_NICK);
+          },
+          { timeout: OUTCOME_TIMEOUT_MS },
+        )
+        .toBe(true);
+
+      const rows = await fetchAllMessagesAsc(vjt.token, NETWORK_SLUG, CHANNEL);
+      expect(rows.length).toBeGreaterThan(UNREAD_BEFORE + 20);
+
+      const cursorRow = rows[rows.length - 1 - UNREAD_BEFORE];
+      const oldestUnread = rows[rows.length - UNREAD_BEFORE];
+      const readContextRow = rows[rows.length - 1 - UNREAD_BEFORE - 10];
+      if (!cursorRow || !oldestUnread || !readContextRow) {
+        throw new Error("#1229 spec: seeded rows missing an index");
+      }
+      // Precondition, guarded rather than assumed: exactly one short of the
+      // ceiling. One row above and the pane would already be far behind on
+      // load. This is also what proves the peer's JOIN landed BELOW the
+      // cursor — if it had not, this count would be one too high.
+      expect(rows.filter((r) => r.id > cursorRow.id).length).toBe(UNREAD_BEFORE);
+
+      await setReadCursorToId(vjt.token, NETWORK_SLUG, CHANNEL, cursorRow.id);
+
+      await loginAs(page, vjt);
+      await selectChannel(page, NETWORK_SLUG, CHANNEL);
+
+      const bar = page.locator('[data-testid="far-behind-bar"]');
+      const marker = page.locator('[data-testid="unread-marker"]');
+      await expect(marker).toBeAttached({ timeout: OUTCOME_TIMEOUT_MS });
+      await expect(bar).toHaveCount(0);
+
+      // Scroll up into the read context. Not to the very top: that is the
+      // `loadMore` trigger, and a prepend would move `scrollTop` for reasons
+      // that have nothing to do with the bound.
+      await page.evaluate(() => {
+        const el = document.querySelector('[data-testid="scrollback"]') as HTMLDivElement | null;
+        if (el === null) throw new Error("#1229 spec: scrollback container missing");
+        el.scrollTop = Math.floor(el.scrollHeight * 0.25);
+      });
+      const before = await scrollGeometry(page);
+      expect(before.scrollTop).toBeGreaterThan(0);
+      expect(before.scrollHeight - before.scrollTop - before.clientHeight).toBeGreaterThan(
+        SCROLL_TOLERANCE_PX,
+      );
+
+      // The settle writer runs on a debounce; give it its window and then
+      // prove it did NOT move the cursor. Forward-only refusal is what holds
+      // the precondition, so it is asserted, not assumed.
+      await expect
+        .poll(() => getReadCursor(vjt.token, NETWORK_SLUG, CHANNEL), {
+          timeout: OUTCOME_TIMEOUT_MS,
+        })
+        .toBe(cursorRow.id);
+
+      const oldestUnreadLine = page.locator(
+        `.scrollback-line:has-text(${JSON.stringify(oldestUnread.body)})`,
+      );
+      const readContextLine = page.locator(
+        `.scrollback-line:has-text(${JSON.stringify(readContextRow.body)})`,
+      );
+      await expect(oldestUnreadLine).toHaveCount(1);
+      await expect(readContextLine).toHaveCount(1);
+
+      // ── The gesture: one live row, which makes the protected region one
+      // past the ceiling.
       peer.privmsg(CHANNEL, "the row that crosses the ceiling");
 
       // (2) the state transition, seen from outside
