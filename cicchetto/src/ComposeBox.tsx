@@ -27,6 +27,7 @@ import { composePlaceholder } from "./lib/composePlaceholder";
 import { diagPush } from "./lib/diagLog";
 import { frameBudgetForTarget } from "./lib/frameBudget";
 import { frameBudgetBaseForNetwork } from "./lib/isupport";
+import { createNetworkReconnect } from "./lib/networkReconnect";
 import { networkBySlug } from "./lib/networks";
 import { routeClipboardPaste, routePastedInput } from "./lib/pasteRoute";
 import {
@@ -432,16 +433,41 @@ const ComposeBox: Component<Props> = (props) => {
     });
   };
 
-  const greyed = (): boolean => {
-    // Bucket F H4: only UserNetwork carries connection_state. Narrow on
-    // network.kind before reading the field; visitor networks are
-    // never greyed at the network level (visitors have no credential
-    // row to park / fail).
+  // Bucket F H4: only UserNetwork carries connection_state. Narrow on
+  // network.kind before reading the field; visitor networks are
+  // never greyed at the network level (visitors have no credential
+  // row to park / fail).
+  //
+  // #1331 — split out of `greyed()` because the two causes are no longer
+  // equivalent: a parked/failed NETWORK can be reconnected from here, a
+  // failed/kicked WINDOW under a live network cannot (there is nothing to
+  // unpark; the way back in is /join). The boolean below still collapses
+  // them for the visual, which is unchanged.
+  const networkGreyedState = (): string | null => {
     const net = networkBySlug(props.networkSlug);
-    if (net?.kind === "user" && NETWORK_GREYED_STATES.has(net.connection_state)) return true;
+    if (net?.kind !== "user") return null;
+    return NETWORK_GREYED_STATES.has(net.connection_state) ? net.connection_state : null;
+  };
+
+  const greyed = (): boolean => {
+    if (networkGreyedState() !== null) return true;
     const s = windowStateByChannel()[key()];
     return s !== undefined && NOT_JOINED_STATES.has(s);
   };
+
+  // #1331 — the way OUT, where the operator meets the state. `selection.ts`
+  // only redirects to Home on the park TRANSITION, so a cold load or a walk
+  // back into the window lands on a greyed compose whose only exit was
+  // knowing to go to the home pane. Same PATCH the HomePane chip and the
+  // `/connect` slash arm issue — no new verb, no new store: the slug is
+  // already a prop and the state already comes from the networks store.
+  // The verb + its pending latch + the friendly error mapping come from the
+  // shared unit; the SINK is this component's own #356 feedback seam
+  // (sticky, role=alert), so the reconnect failure lands on the one error
+  // line the compose box already has instead of a second one beside it.
+  const reconnector = createNetworkReconnect((message) =>
+    setFeedback(message === null ? null : { text: message, severity: "error" }),
+  );
 
   // #1108 — what this draft will do to the wire, from the budget the SERVER
   // published for this network (`frame_budget_base`; cic never computes the
@@ -907,7 +933,25 @@ const ComposeBox: Component<Props> = (props) => {
         )}
       </Show>
       <Show when={greyed()}>
-        <p class="compose-box-not-joined muted">(not joined)</p>
+        <p class="compose-box-not-joined muted">
+          (not joined)
+          {/* #1331 — the action rides the line that already states the
+              state, and only on the NETWORK cause. Same accessible name as
+              the HomePane chip (`Reconnect <slug>`): it is the same verb on
+              the same subject, and the two never render together (HomePane
+              renders no compose box). */}
+          <Show when={networkGreyedState()}>
+            <button
+              type="button"
+              class="compose-box-reconnect"
+              disabled={reconnector.pending()}
+              aria-label={`Reconnect ${props.networkSlug}`}
+              onClick={() => void reconnector.reconnect(props.networkSlug)}
+            >
+              {reconnector.pending() ? "Reconnecting…" : "Reconnect"}
+            </button>
+          </Show>
+        </p>
       </Show>
       {/* #356 — feedback seam. Severity drives BOTH the class (red error vs
           green notice) and the ARIA live role: role=alert (assertive) for

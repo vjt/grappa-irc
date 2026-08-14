@@ -77,6 +77,18 @@ vi.mock("../lib/uploadHost", async () => {
 let mockWindowState: Record<string, string> = {};
 let mockNetworkConnectionState: Record<string, string | undefined> = {};
 
+// #1331 — the seam's reconnect issues the SAME `PATCH /networks/:slug` the
+// HomePane chip and the `/connect` slash arm already issue. Only that one
+// export is replaced: everything else in `lib/api` stays real, because the
+// module is a transitive dependency of half the compose path and a blanket
+// factory would silently stub verbs these tests rely on.
+const mockPatchNetwork = vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => ({}));
+
+vi.mock("../lib/api", async () => {
+  const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
+  return { ...actual, patchNetwork: (...args: unknown[]) => mockPatchNetwork(...args) };
+});
+
 vi.mock("../lib/windowState", () => ({
   windowStateByChannel: () => mockWindowState,
 }));
@@ -102,6 +114,10 @@ vi.mock("../lib/networks", () => ({
 }));
 
 import ComposeBox from "../ComposeBox";
+// #1331 — the reconnect reads the REAL token store (the seam calls
+// `token()` exactly as every other authed verb does); the mock stops at the
+// network boundary.
+import { setToken } from "../lib/auth";
 // #1226 — the REAL away store, not a mock: it is the production feed for the
 // seam (userTopic's `away_confirmed` arm calls exactly this setter).
 import { setAwayState } from "../lib/awayStatus";
@@ -132,6 +148,7 @@ beforeEach(() => {
   setMockQueueFull(false);
   mockFramePreview = null;
   mockFrameBudgetBase = 393;
+  setToken(null);
 });
 
 describe("ComposeBox", () => {
@@ -1113,6 +1130,67 @@ describe("ComposeBox", () => {
       render(() => <ComposeBox networkSlug="freenode" channelName="vjt" />);
       const form = document.querySelector(".compose-box");
       expect(form?.classList.contains("compose-box-greyed")).toBe(true);
+    });
+  });
+
+  // #1331 — the way OUT of the state the seam above renders. The greyed
+  // compose is where the operator MEETS a parked network (selection.ts only
+  // redirects to Home on the transition, so a cold load or a walk back into
+  // the window lands here with no exit), and the reconnect chip lived only
+  // on HomePane. The action is gated on the NETWORK cause, not on `greyed()`:
+  // a kicked or failed WINDOW under a live network has nothing to reconnect.
+  describe("#1331 — inline reconnect in the greyed seam", () => {
+    it("offers Reconnect when the network is parked", () => {
+      mockNetworkConnectionState = { freenode: "parked" };
+      mockWindowState = { "freenode #a": "joined" };
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      expect(screen.getByRole("button", { name: /reconnect freenode/i })).toBeInTheDocument();
+    });
+
+    it("offers Reconnect when the network is failed", () => {
+      mockNetworkConnectionState = { freenode: "failed" };
+      mockWindowState = {};
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      expect(screen.getByRole("button", { name: /reconnect freenode/i })).toBeInTheDocument();
+    });
+
+    it("does NOT offer Reconnect for a KICKED window on a live network", () => {
+      mockNetworkConnectionState = { freenode: "connected" };
+      mockWindowState = { "freenode #a": "kicked" };
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const form = document.querySelector(".compose-box");
+      expect(form?.classList.contains("compose-box-greyed")).toBe(true);
+      expect(screen.queryByRole("button", { name: /reconnect/i })).toBeNull();
+    });
+
+    it("does NOT offer Reconnect when nothing is greyed", () => {
+      mockNetworkConnectionState = { freenode: "connected" };
+      mockWindowState = { "freenode #a": "joined" };
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      expect(screen.queryByRole("button", { name: /reconnect/i })).toBeNull();
+    });
+
+    it("clicking it issues the unpark PATCH for THIS network", async () => {
+      setToken("tok-1331");
+      mockNetworkConnectionState = { freenode: "parked" };
+      mockWindowState = {};
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      fireEvent.click(screen.getByRole("button", { name: /reconnect freenode/i }));
+      await waitFor(() =>
+        expect(mockPatchNetwork).toHaveBeenCalledWith("tok-1331", "freenode", {
+          connection_state: "connected",
+        }),
+      );
+    });
+
+    it("surfaces a rejected reconnect in the existing error seam", async () => {
+      setToken("tok-1331");
+      mockPatchNetwork.mockRejectedValueOnce(new Error("boom"));
+      mockNetworkConnectionState = { freenode: "failed" };
+      mockWindowState = {};
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      fireEvent.click(screen.getByRole("button", { name: /reconnect freenode/i }));
+      await waitFor(() => expect(document.querySelector(".compose-box-error")).not.toBeNull());
     });
   });
 

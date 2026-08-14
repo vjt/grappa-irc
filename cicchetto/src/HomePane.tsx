@@ -5,7 +5,6 @@ import {
   addNetwork,
   type ConnectionState,
   getFeaturedChannels,
-  patchNetwork,
   postJoin,
 } from "./lib/api";
 import { token } from "./lib/auth";
@@ -20,6 +19,7 @@ import {
   type SessionLifetimeCopy,
 } from "./lib/homeSessionCopy";
 import { identifiedForNetwork } from "./lib/identity";
+import { createNetworkReconnect } from "./lib/networkReconnect";
 import { networkIdBySlug, refetchNetworks, refetchUser, user } from "./lib/networks";
 import { flavorForSlug, registerableFlavor } from "./lib/registrationTemplates";
 import { openRegistrationWizard } from "./lib/registrationWizard";
@@ -421,33 +421,15 @@ const ConnectedRow: Component<{ row: HomeRow }> = (props) => {
 };
 
 const DisconnectedRow: Component<{ row: HomeRow }> = (props) => {
+  // #1331 — the PATCH, the pending latch and the friendly error mapping moved
+  // to `lib/networkReconnect` when the greyed compose seam grew the same
+  // action; this row keeps its own error SINK (the `role="alert"` span below)
+  // and nothing else. Server emits connection_state_changed (REV-J M15 folded
+  // the prior home_network_state_changed arm into it), userTopic.ts patches
+  // homeData() in place, and this sub-component unmounts — no local success
+  // state to clean up.
   const [error, setError] = createSignal<string | null>(null);
-  const [pending, setPending] = createSignal(false);
-
-  const onReconnect = async () => {
-    const t = token();
-    if (!t) return;
-    setError(null);
-    setPending(true);
-    try {
-      await patchNetwork(t, props.row.slug, { connection_state: "connected" });
-      // Server emits connection_state_changed (REV-J M15 folded the
-      // prior home_network_state_changed arm into it); userTopic.ts
-      // patches homeData() in place. The row will re-render as
-      // connected and this sub-component will unmount — no local state
-      // cleanup needed.
-    } catch (err) {
-      // feedback_silent_retry_anti_pattern: errors MUST surface above
-      // the threshold. friendlyApiError maps known cap/admission codes
-      // to operator-facing copy; unknown errors collapse to the
-      // ApiError.message verbatim (status + code token).
-      const friendly =
-        err instanceof ApiError ? friendlyApiError(err) : "reconnect failed (unknown error)";
-      setError(friendly);
-    } finally {
-      setPending(false);
-    }
-  };
+  const reconnector = createNetworkReconnect(setError);
 
   return (
     <li
@@ -474,11 +456,11 @@ const DisconnectedRow: Component<{ row: HomeRow }> = (props) => {
           <button
             type="button"
             class="adm-btn home-pane-network-action home-pane-network-reconnect"
-            disabled={pending()}
+            disabled={reconnector.pending()}
             aria-label={`Reconnect ${props.row.slug}`}
-            onClick={() => void onReconnect()}
+            onClick={() => void reconnector.reconnect(props.row.slug)}
           >
-            {pending() ? "Reconnecting…" : "Reconnect"}
+            {reconnector.pending() ? "Reconnecting…" : "Reconnect"}
           </button>
         </div>
       </div>

@@ -2023,6 +2023,38 @@ html.resize-dragging * {
   font-style: italic;
 }
 
+/* #1331 — the reconnect action on the seam that already states the network
+   is parked. Same fill/hover/disabled idiom as the HomePane chip
+   (.home-pane-network-reconnect) because it is the same verb on the same
+   subject; only the geometry is smaller, since it rides an inline muted
+   line rather than a card heading. `--tap-min` is 44px ABSOLUTE: rem here
+   would track the user's text-size setting and shrink the tap target below
+   the HIG floor at S/M. */
+.compose-box-reconnect {
+  margin-left: 0.5rem;
+  min-height: var(--tap-min);
+  padding: 0.15rem 0.6rem;
+  background: var(--accent);
+  color: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  font-weight: bold;
+  font-style: normal;
+  cursor: pointer;
+}
+
+.compose-box-reconnect:hover:not(:disabled) {
+  background: var(--bg);
+  color: var(--accent);
+}
+
+.compose-box-reconnect:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
 /* TopicBar */
 
 .topic-bar {
