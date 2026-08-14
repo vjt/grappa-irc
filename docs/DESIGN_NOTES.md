@@ -42452,3 +42452,51 @@ primary method it is. The issue named that cost and vjt asked for the move
 anyway. The doors sit LAST in the panel, adjacent to Connect, because they
 are actions rather than identity fields like realname/ident — a placement
 choice, cheap to flip, not a constraint.
+<!-- entry #1321 -->
+
+---
+
+## 2026-08-14 — #1321: the rejection reason, by the only route that carries it
+
+A rejected web push logged a bare status code, which is indistinguishable
+from a bad JWT, a stale application server key, a clock skew or an expired
+subscription. The services write the reason into the response body, and
+reading it turns an afternoon of guessing into a one-field diagnosis.
+
+**Why a telemetry sink and not plumbing.** `ExNudge.send_notification/3`
+binds the response on the failure branch and returns
+`{:error, {:http_error, status}}`, so the response never leaves the library
+by the call path — and its own `@spec` for `send_notifications/3` promises a
+response it does not hand back, the same unreliability `Grappa.Push.Sender`
+already documents about the library's declared types. There was therefore no
+"plumb it through the sender" branch to choose. The body leaves by exactly
+one route: the library's `[:ex_nudge, :send_notification]` event carries it
+as `metadata.error_reason` for every non-2xx the library did not classify
+itself. `Grappa.Push.VendorLog` attaches there, in the shape the tree already
+uses for `Grappa.SessionLog` and `Grappa.DbLatency`.
+
+**The issue's ask needs amending on one point: `retry-after` is
+unreachable.** Response HEADERS never leave the library by any route,
+telemetry included, and there is no bump to wait for (1.0.2, 2025-07-28, is
+the latest release). The ruling asked for the status AND the body; the body
+can be had, the headers cannot.
+
+**An integer `http_status_code` is the exact discriminator.** The library
+classifies 410 / 413 and transport failures itself and passes an atom in
+place of the response, so those events carry a nil status and no body. The
+sink keys on the integer, which is also its silence boundary: those paths
+already log at the sender with everything there is to say, and a second line
+would be noise. Per log honesty the silence is "no body was carried", not
+"work was skipped".
+
+**Two constraints on what reaches stdout**, which persists across restarts
+and ships out with any log forwarder. The line records the endpoint's HOST
+only and never its path, because a path segment can itself be a credential;
+an operator correlates with the sender's own line for the same delivery. And
+the reason is length-capped and folded onto one line — it is vendor text of
+unbounded size and arbitrary bytes, so it is made valid UTF-8 before folding,
+and the cap is what stops an error page from becoming a log flood.
+
+**Scope held.** Per the maintainer's ruling on #1323 the reason string is for
+human diagnosis only: no code matches on it, and the 404 / 410 sweep is
+untouched — a 400 sweeps nothing, whatever reason it carries.

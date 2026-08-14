@@ -31,6 +31,7 @@ Grappa.Application
 ├── Grappa.AdminEvents                 (M-11 admin-event ring buffer + telemetry sink)
 ├── Grappa.SessionLog                  (#215 IRC session-lifecycle log sink)
 ├── Grappa.DbLatency                   (#357 SQLite write/query-latency telemetry sink)
+├── Grappa.Push.VendorLog              (#1321 push rejection-reason telemetry sink)
 ├── Grappa.ShareTokens                 (ETS one-shot share-link tokens, both subject kinds)
 ├── Grappa.RateLimit.DailyQuota        (#75 per-(bucket, subject, day) creation quota)
 ├── Grappa.RateLimit.FailureWindow     (S6 per-(bucket, key) login-throttle window)
