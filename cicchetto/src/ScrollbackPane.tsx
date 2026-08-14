@@ -3022,22 +3022,15 @@ const ScrollbackPane: Component<Props> = (props) => {
     if (isOverlayFrozen()) {
       intents.push({ kind: "overlay-freeze", key: k, lifetime: "sticky" });
     }
-    // #1229 — the `farBehindByChannel` conjunct is NOT redundant with the DOM
-    // probe beside it. This gate runs at the commit frame; the write it admits
-    // lands two frames later (`dispatchScrollWrite`'s deferred leg). A rows
-    // change that arms far-behind sets that signal SYNCHRONOUSLY with the rows,
-    // while the divider it suppresses (`injectMarker`, the same conjunct) is
-    // still in the DOM here — so the probe says yes, and by the time
-    // "marker-or-tail" resolves there is no marker and it falls to the TAIL,
-    // yanking a reader parked in their history and re-arming follow-mode.
-    // Entering far-behind IS the scroll contract — stay where you are, the
-    // jump-back affordance carries the count — so the activation is DENIED
-    // rather than re-aimed: there is no divider left to activate on.
-    if (
-      markerActivationPending() &&
-      farBehindByChannel()[k] === undefined &&
-      listRef.querySelector('[data-testid="unread-marker"]')
-    ) {
+    // #1229 — this DOM probe is what keeps a suppressed divider from being
+    // activated: crossing the unread ceiling drops the divider (`injectMarker`),
+    // and the deferred leg of a marker-activation would then find no node and
+    // fall to the TAIL, yanking a reader parked in their history. The probe only
+    // answers correctly because the store publishes the pruned rows and the
+    // far-behind flag in ONE flush, so the divider is already gone from the DOM
+    // by the time this gate runs. Split into two writes it said yes to a divider
+    // that was about to vanish — see `appendPageToScrollback`'s batch.
+    if (markerActivationPending() && listRef.querySelector('[data-testid="unread-marker"]')) {
       intents.push({ kind: "marker-activation", key: k, lifetime: "sticky" });
     }
     if (followMode()) {
