@@ -113,8 +113,8 @@ defmodule Grappa.Push.VendorLog do
       when is_integer(status) do
     Logger.warning("push.vendor rejected",
       status: status,
-      vendor: host(metadata),
-      reason: reason(metadata)
+      vendor: host(Map.get(metadata, :endpoint)),
+      reason: reason(Map.get(metadata, :error_reason))
     )
   end
 
@@ -123,8 +123,8 @@ defmodule Grappa.Push.VendorLog do
   # The endpoint's host and nothing else — a path segment can itself be
   # a credential. `ExNudge` hands over an endpoint it has already
   # partially masked; this does not rely on that.
-  @spec host(map()) :: String.t()
-  defp host(%{endpoint: endpoint}) when is_binary(endpoint) do
+  @spec host(term()) :: String.t()
+  defp host(endpoint) when is_binary(endpoint) do
     case URI.parse(endpoint) do
       %URI{host: host} when is_binary(host) -> host
       _ -> "unknown"
@@ -137,9 +137,9 @@ defmodule Grappa.Push.VendorLog do
   # declared types are already known to be narrower than what it returns
   # (see `Grappa.Push.Sender.normalize/1`), so a non-binary reason is
   # reported rather than crashed on.
-  @spec reason(map()) :: String.t()
-  defp reason(%{error_reason: body}) when is_binary(body), do: body |> cap() |> one_line()
-  defp reason(%{error_reason: other}), do: inspect(other)
+  @spec reason(term()) :: String.t()
+  defp reason(body) when is_binary(body), do: body |> cap() |> one_line()
+  defp reason(other), do: inspect(other)
 
   @spec cap(binary()) :: binary()
   defp cap(body) when byte_size(body) <= @max_reason_bytes, do: body
