@@ -1530,21 +1530,25 @@ describe("appendToScrollback — S20 per-channel ring cap", () => {
     const scrollback = await import("../lib/scrollback");
     const cap = scrollback.SCROLLBACK_RING_CAP;
     const key = channelKey("freenode", "#grappa");
-    // Cursor near the very start → almost the whole buffer is "unread"
-    // (id > cursor). Appending well past the cap must NOT drop any row
-    // with id >= cursor — dropping the boundary would break the divider.
-    const cursor = 5;
-    mockGetReadCursor.mockReturnValue(cursor);
+    // Appending well past the cap must NOT drop any row with id >= cursor —
+    // dropping the boundary would break the divider. #1229 put a ceiling on
+    // that exemption, so the scenario is stated within it: the unread region
+    // here is one page minus one, where the S20 promise still holds in full.
+    // Above the ceiling the window becomes far-behind instead — pinned in
+    // "appendToScrollback — #1229 unread-retention bound" below.
     const total = cap + 200;
+    const cursor = total - (scrollback.UNREAD_RETENTION_CAP - 1);
+    mockGetReadCursor.mockReturnValue(cursor);
     for (let i = 1; i <= total; i++) scrollback.appendToScrollback(key, mkRow(i));
     const ids = (scrollback.scrollbackByChannel()[key] ?? []).map((m) => m.id);
-    // The divider anchor (the cursor row) + every unread row survive, even
-    // though that leaves the buffer temporarily above the cap.
+    // The divider anchor (the cursor row) + every unread row survive.
     expect(ids).toContain(cursor);
     for (let i = cursor; i <= total; i++) expect(ids).toContain(i);
-    // Only the read rows below the cursor (id < cursor) are evictable.
+    // Read rows below the cursor are the evictable ones, and were evicted.
     expect(ids).not.toContain(1);
-    expect(ids).not.toContain(cursor - 1);
+    expect(ids).not.toContain(total - cap);
+    // The exemption held without tipping into far-behind.
+    expect(scrollback.farBehindByChannel()[key]).toBeUndefined();
   });
 
   it("resets the loadMore exhausted latch on eviction so scroll-up can re-page older history", async () => {
@@ -1569,6 +1573,94 @@ describe("appendToScrollback — S20 per-channel ring cap", () => {
     vi.mocked(api.listMessages).mockResolvedValueOnce([]);
     await scrollback.loadMore("freenode", "#grappa");
     expect(api.listMessages).toHaveBeenCalledTimes(2);
+  });
+});
+
+// #1229 — S20's exemption had no ceiling: every row at/after the read cursor
+// was unevictable, so a busy channel the operator never reads holds ALL of
+// them and the ring cap does nothing (the module said so itself). Measured on
+// the reporter's window: 1084 unread rows, and because the pane renders every
+// retained row (`<For each={rows()}>`, no virtualisation) that is ~26 MB of
+// renderer memory in ONE window, against a per-web-process ceiling on iOS.
+//
+// The bound reuses the threshold the codebase already has rather than adding a
+// second one: `isFarBehind(gap) = gap > PAGE_LIMIT`. Past one page of unread
+// the client ALREADY considers the window far behind and already has the UX
+// for it (`anchorAtTail` keeps one page, the divider is suppressed, the
+// "N unread — jump back" banner + `jumpToUnread` rebuild the region from the
+// server). So: retain one page of unread, and enter that existing state
+// instead of inventing a new one.
+describe("appendToScrollback — #1229 unread-retention bound", () => {
+  const mkRow = (id: number): import("../lib/api").ScrollbackMessage => ({
+    id,
+    network: "freenode",
+    channel: "#grappa",
+    server_time: id,
+    kind: "privmsg",
+    sender: "peer",
+    body: `line ${id}`,
+    meta: {},
+  });
+
+  it("bounds an all-unread channel at one page instead of growing without limit", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const cursor = 5;
+    mockGetReadCursor.mockReturnValue(cursor);
+    const scrollback = await import("../lib/scrollback");
+    const bound = scrollback.UNREAD_RETENTION_CAP;
+    const key = channelKey("freenode", "#grappa");
+    // Well past BOTH the ring cap and the unread bound, with a cursor near
+    // the start — the shape that grew without limit before this bound.
+    const total = scrollback.SCROLLBACK_RING_CAP + 200;
+    for (let i = 1; i <= total; i++) scrollback.appendToScrollback(key, mkRow(i));
+    const rows = scrollback.scrollbackByChannel()[key] ?? [];
+    // The bound is on the UNREAD region: one page of it survives, and it is the
+    // NEWEST page — the live tail is never what gets dropped.
+    expect(rows.filter((m) => m.id > cursor).length).toBe(bound);
+    expect(rows[rows.length - 1]?.id).toBe(total);
+    // The read context below the divider is untouched by this bound (the ring
+    // cap still owns it), so the total is that plus one page — bounded, where
+    // before the fix it was `total` and grew with every arriving row.
+    expect(rows.length).toBe(cursor - 1 + bound);
+  });
+
+  it("hands the pruned window to the existing far-behind state, with an honest missed count", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const cursor = 5;
+    mockGetReadCursor.mockReturnValue(cursor);
+    const scrollback = await import("../lib/scrollback");
+    const key = channelKey("freenode", "#grappa");
+    const total = scrollback.SCROLLBACK_RING_CAP + 200;
+    for (let i = 1; i <= total; i++) scrollback.appendToScrollback(key, mkRow(i));
+    const far = scrollback.farBehindByChannel()[key];
+    // `resumeFrom` is the untouched read cursor — `jumpToUnread` rebuilds the
+    // region around it from the server, exactly as it does after
+    // `anchorAtTail`.
+    expect(far?.resumeFrom).toBe(cursor);
+    // `missed` must be the TOTAL unread (id > cursor), not the slice still
+    // held: the banner would otherwise under-report by an order of magnitude
+    // once the pruning has been running for a while.
+    expect(far?.missed).toBe(total - cursor);
+  });
+
+  it("leaves the divider contract untouched while the unread region fits in one page", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const scrollback = await import("../lib/scrollback");
+    const cap = scrollback.SCROLLBACK_RING_CAP;
+    const key = channelKey("freenode", "#grappa");
+    // 101 unread — under the bound, so S20's behaviour must be byte-identical:
+    // evict from the read prefix only, never the boundary or its unread rows.
+    const total = cap + 100;
+    const cursor = total - 100;
+    mockGetReadCursor.mockReturnValue(cursor);
+    for (let i = 1; i <= total; i++) scrollback.appendToScrollback(key, mkRow(i));
+    const rows = scrollback.scrollbackByChannel()[key] ?? [];
+    const ids = rows.map((m) => m.id);
+    expect(rows.length).toBe(cap);
+    expect(ids).toContain(cursor);
+    for (let i = cursor; i <= total; i++) expect(ids).toContain(i);
+    // No pruning of unread happened → the window is NOT far behind.
+    expect(scrollback.farBehindByChannel()[key]).toBeUndefined();
   });
 });
 

@@ -94,11 +94,9 @@ import { getResumeCursor, recordSeen } from "./reconnectBackfill";
 //     up re-pages them.
 //   * A channel that is BUSY but never focused this session, carrying a stale
 //     non-null cursor (e.g. set on another device), holds every live row as
-//     unread (id > cursor) → all protected → the buffer can grow past the
-//     cap. That is the cost of the divider invariant, not an oversight: those
-//     rows can't be dropped without corrupting the (server-authoritative)
-//     unread count + divider. It bounds the moment the operator reads the
-//     channel — the cursor advances and the now-read rows become evictable.
+//     unread (id > cursor) → all protected. #1229 bounds that case too — see
+//     `UNREAD_RETENTION_CAP` below; up to one page of unread is still exempt,
+//     so this cap remains a soft ceiling by exactly that much.
 export const SCROLLBACK_RING_CAP = 1000;
 
 // #693 — ONE page. The server's `@max_http_limit`, and the ceiling on every
@@ -119,6 +117,29 @@ const PAGE_LIMIT = 200;
 // bottom (200 rows a gesture) to reach the present. At or below it, one more
 // fetch drains the rest, so contiguity is cheap and worth keeping.
 const isFarBehind = (gap: number): boolean => gap > PAGE_LIMIT;
+
+// #1229 — the ceiling S20's cursor exemption never had. Every row at/after the
+// read cursor was unevictable, so a channel the operator does not read holds
+// ALL of them and the ring cap above does nothing. Measured on the reporter's
+// window: 1084 unread rows; and because the pane renders every retained row
+// (`<For each={rows()}>`, no virtualisation) each one costs ~19-26 KB of
+// renderer memory, i.e. ~26 MB in ONE window against a ceiling iOS applies per
+// web process. Retention and rendered DOM are the same curve, so bounding the
+// store IS the DOM fix.
+//
+// The number is PAGE_LIMIT and deliberately not a new constant: `isFarBehind`
+// already draws the line at "more than one page behind", so past this bound the
+// client ALREADY classifies the window as far behind, and already has the whole
+// apparatus for it — `anchorAtTail` keeps exactly one page, the divider is
+// suppressed (`ScrollbackPane`'s `injectMarker` gate), and the
+// "N unread — jump back" banner + `jumpToUnread` rebuild the region from the
+// server, which owns it. A second threshold here would be a second answer to
+// the same question, free to drift from the first.
+//
+// So the rule is: retain one page of unread and enter that existing state,
+// rather than invent a pruned-window UX. Below the bound nothing changes — the
+// divider contract is byte-identical to S20.
+export const UNREAD_RETENTION_CAP = PAGE_LIMIT;
 
 // Canonical scrollback ordering: `server_time` ASC, `id` ASC tie-break —
 // the client mirror of the server's `[desc: server_time, desc: id]`
@@ -174,19 +195,71 @@ const isCanonicallyOrdered = (rows: ScrollbackMessage[]): boolean => {
 // cursor); a pathological all-unread channel simply holds above the cap until
 // the operator reads (advancing the cursor makes those rows evictable). With
 // no cursor (fresh channel, no divider) eviction is unconstrained.
-const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): ScrollbackMessage[] => {
-  if (rows.length <= SCROLLBACK_RING_CAP) return rows;
-  let dropCount = rows.length - SCROLLBACK_RING_CAP;
+// What the cap did, so the caller can arm the far-behind state without the
+// pure updater reaching for a signal. `unreadDropped > 0` is the ONLY way a row
+// at/after the cursor ever leaves the store on this path.
+type CappedRing = {
+  rows: ScrollbackMessage[];
+  unreadDropped: number;
+  // Unread rows (id > cursor) held BEFORE the drop — the banner's count the
+  // first time the bound bites. Afterwards the caller accumulates.
+  unreadHeld: number;
+  cursor: number | null;
+};
+
+const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): CappedRing => {
   const decoded = decodeChannelKey(key);
   const cursor = decoded ? getReadCursor(decoded.slug, decoded.name) : null;
-  if (cursor !== null) {
-    // Rows are ASC by id, so the first index with id >= cursor bounds the
-    // evictable prefix (everything before it is read-context below the divider).
-    const firstProtected = rows.findIndex((m) => m.id >= cursor);
-    const maxDroppable = firstProtected === -1 ? rows.length : firstProtected;
+  // Rows are ASC by id, so the first index with id >= cursor bounds the
+  // evictable prefix (everything before it is read-context below the divider).
+  const firstProtected = cursor === null ? -1 : rows.findIndex((m) => m.id >= cursor);
+  const protectedCount = firstProtected === -1 ? 0 : rows.length - firstProtected;
+
+  // #1229 — the protected region has a ceiling of its own, applied BEFORE the
+  // ring cap because it can bite while the total is still under it (900 unread
+  // and no read history is 900 rows the operator cannot see the top of).
+  //
+  // It drops the OLDEST unread — the rows just under the divider — and not
+  // simply "everything but the newest page", which would have been one slice
+  // instead of two. The difference is the operator scrolled UP reading history
+  // while a busy channel runs on below them: their cursor sits at the last row
+  // they can see, so the arriving rows are unread and the ceiling bites: the
+  // one-slice version deletes the screen they are reading, the pane jumps to
+  // the tail. Dropping from just below the divider instead removes rows that
+  // are off-screen BELOW, leaving `scrollTop` and everything above it intact.
+  // What remains of the read context is then trimmed by the ring cap, exactly
+  // as it was before this bound existed.
+  const overflowUnread =
+    cursor !== null && protectedCount > UNREAD_RETENTION_CAP
+      ? protectedCount - UNREAD_RETENTION_CAP
+      : 0;
+  const afterUnreadTrim =
+    overflowUnread > 0
+      ? [...rows.slice(0, firstProtected), ...rows.slice(firstProtected + overflowUnread)]
+      : rows;
+
+  const unreadHeld =
+    cursor === null
+      ? 0
+      : (() => {
+          const firstUnread = rows.findIndex((m) => m.id > cursor);
+          return firstUnread === -1 ? 0 : rows.length - firstUnread;
+        })();
+
+  const surplus = afterUnreadTrim.length - SCROLLBACK_RING_CAP;
+  let dropCount = surplus > 0 ? surplus : 0;
+  if (cursor !== null && dropCount > 0) {
+    // The evictable prefix shrank with the unread trim only in its tail, so the
+    // read-context boundary is still where it was: `firstProtected`.
+    const maxDroppable = firstProtected === -1 ? afterUnreadTrim.length : firstProtected;
     if (dropCount > maxDroppable) dropCount = maxDroppable;
   }
-  return dropCount > 0 ? rows.slice(dropCount) : rows;
+  return {
+    rows: dropCount > 0 ? afterUnreadTrim.slice(dropCount) : afterUnreadTrim,
+    unreadDropped: overflowUnread,
+    unreadHeld,
+    cursor,
+  };
 };
 
 // #788 — how THE identity rule applies to this module. The predicate itself,
@@ -441,6 +514,13 @@ const exports = identityScopedStore((onIdentityChange) => {
     // consumed after it runs (Solid calls a plain-signal updater exactly once,
     // synchronously) — keeps the setter body free of the Set side-effect.
     let evicted = false;
+    // #1229 — same shape as `evicted` above, for the other side effect the cap
+    // can imply: rows at/after the cursor were dropped, so the window is now
+    // far behind and the pane must say so instead of drawing a divider it can
+    // no longer place.
+    let unreadDropped = 0;
+    let unreadHeld = 0;
+    let prunedCursor = 0;
     setScrollbackByChannel((prev) => {
       const existing = prev[key] ?? [];
       const fresh = freshRows(existing, page);
@@ -462,13 +542,34 @@ const exports = identityScopedStore((onIdentityChange) => {
           ? [...existing, ...fresh]
           : [...existing, ...fresh].sort(byServerTimeThenId);
       const capped = capScrollbackRing(key, next);
-      evicted = capped.length < next.length;
-      return { ...prev, [key]: capped };
+      evicted = capped.rows.length < next.length;
+      unreadDropped = capped.unreadDropped;
+      unreadHeld = capped.unreadHeld;
+      prunedCursor = capped.cursor ?? 0;
+      return { ...prev, [key]: capped.rows };
     });
     // Eviction removed older history → the loadMore exhausted latch (if set)
     // is now stale: the server DOES have rows older than the new oldest. Clear
     // it so a scroll-to-top re-pages the evicted region.
     if (evicted) loadMoreExhausted.delete(key);
+    // #1229 — the pruned window joins the #693 far-behind state: divider
+    // suppressed, "N unread — jump back" banner up, `jumpToUnread` rebuilding
+    // the region from the server around this same `resumeFrom`. `missed`
+    // ACCUMULATES once the state is up: after the first bite the store only
+    // ever holds one page, so a recount would report 200 forever while the
+    // operator is thousands behind.
+    if (unreadDropped > 0) {
+      setFarBehindByChannel((prev) => {
+        const current = prev[key];
+        return {
+          ...prev,
+          [key]: {
+            missed: current === undefined ? unreadHeld : current.missed + unreadDropped,
+            resumeFrom: prunedCursor,
+          },
+        };
+      });
+    }
   };
 
   const appendToScrollback = (key: ChannelKey, msg: ScrollbackMessage) => {

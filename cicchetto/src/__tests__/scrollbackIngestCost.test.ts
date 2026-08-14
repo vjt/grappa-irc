@@ -258,7 +258,10 @@ describe("#1288 — the batched ingest keeps every per-row invariant", () => {
     const api = await import("../lib/api");
     const scrollback = await import("../lib/scrollback");
     const cap = scrollback.SCROLLBACK_RING_CAP;
-    const cursor = 5;
+    // #1229 — stated within the unread ceiling, where this promise still holds
+    // in full: one page minus one of unread. Past the ceiling the page ingest
+    // prunes to a page and arms far-behind, pinned in the sibling case below.
+    const cursor = cap + 200 - (scrollback.UNREAD_RETENTION_CAP - 1);
     mockGetReadCursor.mockReturnValue(cursor);
     seedPane(scrollback, cap, { reads: 0 });
 
@@ -272,7 +275,29 @@ describe("#1288 — the batched ingest keeps every per-row invariant", () => {
     // The divider anchor and every unread row survive, above the cap.
     for (let i = cursor; i <= cap + 200; i++) expect(ids).toContain(i);
     // Only the read rows below the cursor were evictable.
-    expect(ids).not.toContain(cursor - 1);
+    expect(ids).not.toContain(cursor - cap);
+    expect(scrollback.farBehindByChannel()[KEY]).toBeUndefined();
+  });
+
+  it("#1229 — a page that lands past the unread ceiling prunes to one page and arms far-behind", async () => {
+    const api = await import("../lib/api");
+    const scrollback = await import("../lib/scrollback");
+    const cap = scrollback.SCROLLBACK_RING_CAP;
+    const bound = scrollback.UNREAD_RETENTION_CAP;
+    const cursor = 5;
+    mockGetReadCursor.mockReturnValue(cursor);
+    seedPane(scrollback, cap, { reads: 0 });
+
+    const page = Array.from({ length: 200 }, (_, i) => plainRow(cap + 1 + i));
+    mockGetResumeCursor.mockReturnValue(cap);
+    vi.mocked(api.listMessagesAfter).mockResolvedValue(page);
+    vi.mocked(api.countMessagesAfter).mockResolvedValue(0);
+    await scrollback.refreshScrollback(SLUG, CHAN);
+
+    const rows = scrollback.scrollbackByChannel()[KEY] ?? [];
+    expect(rows.filter((m) => m.id > cursor).length).toBe(bound);
+    expect(rows[rows.length - 1]?.id).toBe(cap + 200);
+    expect(scrollback.farBehindByChannel()[KEY]?.resumeFrom).toBe(cursor);
   });
 
   it("resets the loadMore exhausted latch when a page evicts older history", async () => {
