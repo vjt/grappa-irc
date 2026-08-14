@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js";
+import { batch, createSignal } from "solid-js";
 import {
   sendMessage as apiSendMessage,
   countMessagesAfter,
@@ -529,55 +529,66 @@ const exports = identityScopedStore((onIdentityChange) => {
     let unreadDropped = 0;
     let unreadHeld = 0;
     let prunedCursor = 0;
-    setScrollbackByChannel((prev) => {
-      const existing = prev[key] ?? [];
-      const fresh = freshRows(existing, page);
-      // Nothing new: return the SAME object so Solid's equality check skips
-      // the write entirely. A wholly-duplicate page (every row already live)
-      // must not re-render the pane.
-      if (fresh.length === 0) return prev;
-      const tail = existing[existing.length - 1];
-      const head = fresh[0];
-      // #423 order-safe insert, generalised from one row to a page: append
-      // without sorting when the arriving rows are themselves in canonical
-      // order AND start at/after the current tail — true of every live append
-      // and of every ASC catch-up page. Re-sort only when they interleave with
-      // rows the pane already holds.
-      const next =
-        head !== undefined &&
-        (tail === undefined || byServerTimeThenId(head, tail) >= 0) &&
-        isCanonicallyOrdered(fresh)
-          ? [...existing, ...fresh]
-          : [...existing, ...fresh].sort(byServerTimeThenId);
-      const capped = capScrollbackRing(key, next);
-      evicted = capped.rows.length < next.length;
-      unreadDropped = capped.unreadDropped;
-      unreadHeld = capped.unreadHeld;
-      prunedCursor = capped.cursor ?? 0;
-      return { ...prev, [key]: capped.rows };
-    });
-    // Eviction removed older history → the loadMore exhausted latch (if set)
-    // is now stale: the server DOES have rows older than the new oldest. Clear
-    // it so a scroll-to-top re-pages the evicted region.
-    if (evicted) loadMoreExhausted.delete(key);
-    // #1229 — the pruned window joins the #693 far-behind state: divider
-    // suppressed, "N unread — jump back" banner up, `jumpToUnread` rebuilding
-    // the region from the server around this same `resumeFrom`. `missed`
-    // ACCUMULATES once the state is up: after the first bite the store only
-    // ever holds one page, so a recount would report 200 forever while the
-    // operator is thousands behind.
-    if (unreadDropped > 0) {
-      setFarBehindByChannel((prev) => {
-        const current = prev[key];
-        return {
-          ...prev,
-          [key]: {
-            missed: current === undefined ? unreadHeld : current.missed + unreadDropped,
-            resumeFrom: prunedCursor,
-          },
-        };
+    // #1229 — the rows and the far-behind flag are ONE state transition and must
+    // reach consumers in ONE flush. Published as two writes, Solid runs every
+    // effect of the rows change FIRST, in a world where the window has already
+    // been pruned but is not yet far behind — a state that never logically
+    // exists. `ScrollbackPane`'s content-change gate is one such consumer and it
+    // read exactly that: it admitted a divider activation (divider still
+    // rendered, far-behind not yet set) whose deferred write landed two frames
+    // later with the divider suppressed, and tail-snapped a reader parked in
+    // their history.
+    batch(() => {
+      setScrollbackByChannel((prev) => {
+        const existing = prev[key] ?? [];
+        const fresh = freshRows(existing, page);
+        // Nothing new: return the SAME object so Solid's equality check skips
+        // the write entirely. A wholly-duplicate page (every row already live)
+        // must not re-render the pane.
+        if (fresh.length === 0) return prev;
+        const tail = existing[existing.length - 1];
+        const head = fresh[0];
+        // #423 order-safe insert, generalised from one row to a page: append
+        // without sorting when the arriving rows are themselves in canonical
+        // order AND start at/after the current tail — true of every live append
+        // and of every ASC catch-up page. Re-sort only when they interleave with
+        // rows the pane already holds.
+        const next =
+          head !== undefined &&
+          (tail === undefined || byServerTimeThenId(head, tail) >= 0) &&
+          isCanonicallyOrdered(fresh)
+            ? [...existing, ...fresh]
+            : [...existing, ...fresh].sort(byServerTimeThenId);
+        const capped = capScrollbackRing(key, next);
+        evicted = capped.rows.length < next.length;
+        unreadDropped = capped.unreadDropped;
+        unreadHeld = capped.unreadHeld;
+        prunedCursor = capped.cursor ?? 0;
+        return { ...prev, [key]: capped.rows };
       });
-    }
+      // Eviction removed older history → the loadMore exhausted latch (if set)
+      // is now stale: the server DOES have rows older than the new oldest. Clear
+      // it so a scroll-to-top re-pages the evicted region.
+      if (evicted) loadMoreExhausted.delete(key);
+      // #1229 — the pruned window joins the #693 far-behind state: divider
+      // suppressed, "N unread — jump back" banner up, `jumpToUnread` rebuilding
+      // the region from the server around this same `resumeFrom`. `missed`
+      // ACCUMULATES once the state is up: after the first bite the store only
+      // ever holds one page, so a recount would report 200 forever while the
+      // operator is thousands behind.
+      if (unreadDropped > 0) {
+        setFarBehindByChannel((prev) => {
+          const current = prev[key];
+          return {
+            ...prev,
+            [key]: {
+              missed: current === undefined ? unreadHeld : current.missed + unreadDropped,
+              resumeFrom: prunedCursor,
+            },
+          };
+        });
+      }
+    });
   };
 
   const appendToScrollback = (key: ChannelKey, msg: ScrollbackMessage) => {

@@ -1,5 +1,5 @@
 import { render, screen, waitFor, within } from "@solidjs/testing-library";
-import { createSignal } from "solid-js";
+import { batch, createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage, WhoisBundle } from "../lib/api";
 import { activeAudio, closeAudio } from "../lib/audioPlayer";
@@ -1835,6 +1835,64 @@ describe("ScrollbackPane", () => {
       await flushRaf();
 
       expect(scrollIntoViewSpy).toHaveBeenCalledWith({ block: "start" });
+    });
+
+    // #1229 — the content-change gate and the deferred write read the divider
+    // TWO FRAMES apart. When ONE rows change both admits the marker-activation
+    // intent and arms far-behind — which is exactly what crossing the unread
+    // ceiling does — the divider is suppressed (`injectMarker`, the
+    // `farBehindByChannel` conjunct) before the deferred leg runs, so
+    // "marker-or-tail" finds no node and falls to the TAIL, yanking a reader who
+    // was parked in their history and re-arming follow-mode. Measured in CI on
+    // this spec's e2e twin: scrollTop 1324 → 1078 (the sync leg, divider still
+    // mounted) → 4954 (the deferred leg, tail), while only one row of 23px had
+    // left the list. Entering far-behind promises the reader "you stay where you
+    // are, here is jump-back"; the pane must not contradict the affordance it
+    // just rendered, so the intent is denied rather than re-aimed.
+    it("a rows change that arms far-behind fires NO activation scroll (#1229)", async () => {
+      seedReadCursor("freenode", "#grappa", 1);
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const list = screen.getByTestId("scrollback") as HTMLDivElement;
+      await flushRaf();
+      // Pre-state, asserted rather than assumed: the divider IS mounted (so the
+      // gate has a node to admit the intent on) and the latch is still armed —
+      // nothing here is operator input or an own send.
+      expect(screen.queryByTestId("unread-marker")).not.toBeNull();
+
+      // The reader scrolls UP into their history: followMode goes false, so a
+      // tail-follow intent cannot be what moves the pane below.
+      Object.defineProperty(list, "scrollHeight", { value: 5000, configurable: true });
+      Object.defineProperty(list, "clientHeight", { value: 500, configurable: true });
+      Object.defineProperty(list, "scrollTop", { value: 400, writable: true, configurable: true });
+      list.dispatchEvent(new Event("scroll"));
+      list.scrollTop = 100;
+      list.dispatchEvent(new Event("scroll"));
+      await waitFor(() => expect(screen.queryByTestId("scroll-to-bottom")).not.toBeNull());
+      await flushRaf();
+      scrollIntoViewSpy.mockClear();
+
+      // Crossing the ceiling: one row lands AND the window enters far-behind in
+      // the same commit.
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+      // ONE flush, mirroring the store: `appendPageToScrollback` publishes the
+      // pruned rows and the far-behind flag inside a single `batch`, pinned by
+      // "publishes the pruned rows and the far-behind flag in ONE flush" in
+      // scrollback.test.ts. Two separate writes here would drive the pane
+      // through a state the store cannot produce.
+      batch(() => {
+        setScrollback({
+          "freenode #grappa": [
+            ...fixture,
+            { ...proto, id: 4, server_time: 1_700_000_003_000, sender: "peer", body: "crossing" },
+          ],
+        });
+        setFarBehind({ "freenode #grappa": { missed: 201, resumeFrom: 1 } });
+      });
+      await flushRaf();
+
+      expect(scrollIntoViewSpy).not.toHaveBeenCalled();
     });
   });
 

@@ -3022,7 +3022,22 @@ const ScrollbackPane: Component<Props> = (props) => {
     if (isOverlayFrozen()) {
       intents.push({ kind: "overlay-freeze", key: k, lifetime: "sticky" });
     }
-    if (markerActivationPending() && listRef.querySelector('[data-testid="unread-marker"]')) {
+    // #1229 — the `farBehindByChannel` conjunct is NOT redundant with the DOM
+    // probe beside it. This gate runs at the commit frame; the write it admits
+    // lands two frames later (`dispatchScrollWrite`'s deferred leg). A rows
+    // change that arms far-behind sets that signal SYNCHRONOUSLY with the rows,
+    // while the divider it suppresses (`injectMarker`, the same conjunct) is
+    // still in the DOM here — so the probe says yes, and by the time
+    // "marker-or-tail" resolves there is no marker and it falls to the TAIL,
+    // yanking a reader parked in their history and re-arming follow-mode.
+    // Entering far-behind IS the scroll contract — stay where you are, the
+    // jump-back affordance carries the count — so the activation is DENIED
+    // rather than re-aimed: there is no divider left to activate on.
+    if (
+      markerActivationPending() &&
+      farBehindByChannel()[k] === undefined &&
+      listRef.querySelector('[data-testid="unread-marker"]')
+    ) {
       intents.push({ kind: "marker-activation", key: k, lifetime: "sticky" });
     }
     if (followMode()) {

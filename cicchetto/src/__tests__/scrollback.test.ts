@@ -1688,6 +1688,43 @@ describe("appendToScrollback — #1229 unread-retention bound", () => {
     expect(far?.missed).toBe(total - cursor);
   });
 
+  // The prune and the far-behind arming are ONE transition, so a consumer woken
+  // by the rows change must not be able to observe the window pruned but not yet
+  // far behind. `ScrollbackPane`'s content-change gate reads exactly that pair:
+  // on the two-write version it saw a still-rendered divider with far-behind
+  // unset, admitted a divider activation, and the deferred write then landed
+  // with the divider suppressed and tail-snapped a reader parked in history.
+  it("publishes the pruned rows and the far-behind flag in ONE flush", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const scrollback = await import("../lib/scrollback");
+    const bound = scrollback.UNREAD_RETENTION_CAP;
+    const key = channelKey("freenode", "#grappa");
+    const cursor = 10;
+    mockGetReadCursor.mockReturnValue(cursor);
+    // One short of the ceiling: the NEXT append is the crossing.
+    const total = cursor + bound;
+    for (let i = 1; i <= total; i++) scrollback.appendToScrollback(key, mkRow(i));
+    expect(scrollback.farBehindByChannel()[key]).toBeUndefined();
+
+    const seen: boolean[] = [];
+    const dispose = createRoot((d) => {
+      createEffect(
+        on(
+          () => scrollback.scrollbackByChannel()[key],
+          () => void seen.push(scrollback.farBehindByChannel()[key] !== undefined),
+          { defer: true },
+        ),
+      );
+      return d;
+    });
+    scrollback.appendToScrollback(key, mkRow(total + 1));
+    await new Promise((r) => queueMicrotask(() => r(undefined)));
+    dispose();
+
+    // Woken once, and the window was ALREADY far behind when it woke.
+    expect(seen).toEqual([true]);
+  });
+
   it("leaves the divider contract untouched while the unread region fits in one page", async () => {
     localStorage.setItem("grappa-token", "tok");
     const scrollback = await import("../lib/scrollback");
