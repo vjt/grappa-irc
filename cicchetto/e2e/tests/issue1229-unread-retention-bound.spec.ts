@@ -17,9 +17,10 @@
 // ── What this spec pins, and why each assertion is here ──────────────────
 //
 // The gesture is ONE live PRIVMSG, not a flood. The cursor is planted so the
-// window sits at one page of unread MINUS one, so a single arriving row is the
-// whole crossing — a burst would prove the same thing while also inviting the
-// ircd's flood kill into the spec.
+// window sits at exactly one page of unread — the widest window every path
+// still calls near — so a single arriving row is the whole crossing; a burst
+// would prove the same thing while also inviting the ircd's flood kill into
+// the spec.
 //
 //   1. Before the gesture: no bar, and the in-pane divider is there. Without
 //      this the outcome could be a bar that was already up for another reason
@@ -104,10 +105,12 @@ const SEED_COUNT = 420;
 const SEED_SENDER = "seed-bot";
 const PEER_NICK = "bound1229";
 
-// One short of the ceiling: the protected region is the cursor row plus the
-// rows after it, so `UNREAD_BOUND - 1` unread rows leave exactly `UNREAD_BOUND`
-// protected — the last state before the bound bites.
-const UNREAD_BEFORE = UNREAD_BOUND - 1;
+// AT the ceiling, which is the last state before the bound bites: the bound is
+// on the UNREAD region alone (the boundary row the divider anchors on is never
+// this bound's to drop), and it is crossed at `> UNREAD_BOUND` — the same
+// comparison `isFarBehind` makes, so a window holding exactly one page is still
+// classified near by every path. One arriving row is the whole crossing.
+const UNREAD_BEFORE = UNREAD_BOUND;
 
 const OUTCOME_TIMEOUT_MS = 10_000;
 // The tolerance `issue196-preview-scroll-preserve` uses for "the viewport did
@@ -169,10 +172,10 @@ test.describe("#1229 — the unread retention bound", () => {
       if (!cursorRow || !oldestUnread || !readContextRow) {
         throw new Error("#1229 spec: seeded rows missing an index");
       }
-      // Precondition, guarded rather than assumed: exactly one short of the
-      // ceiling. One row above and the pane would already be far behind on
-      // load. This is also what proves the peer's JOIN landed BELOW the
-      // cursor — if it had not, this count would be one too high.
+      // Precondition, guarded rather than assumed: exactly AT the ceiling. One
+      // row above and the pane would already be far behind on load. This is
+      // also what proves the peer's JOIN landed BELOW the cursor — if it had
+      // not, this count would be one too high.
       expect(rows.filter((r) => r.id > cursorRow.id).length).toBe(UNREAD_BEFORE);
 
       await setReadCursorToId(vjt.token, NETWORK_SLUG, CHANNEL, cursorRow.id);
@@ -223,7 +226,9 @@ test.describe("#1229 — the unread retention bound", () => {
 
       // (2) the state transition, seen from outside
       await expect(bar).toBeVisible({ timeout: OUTCOME_TIMEOUT_MS });
-      await expect(bar).toContainText(String(UNREAD_BOUND));
+      // The count is how far behind the operator actually is, taken BEFORE the
+      // bite and so including the row that crossed — not the page still held.
+      await expect(bar).toContainText(String(UNREAD_BOUND + 1));
       await expect(marker).toHaveCount(0);
 
       // (3) pruned from the divider, not from the screen

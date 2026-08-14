@@ -213,7 +213,14 @@ const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): CappedRi
   // Rows are ASC by id, so the first index with id >= cursor bounds the
   // evictable prefix (everything before it is read-context below the divider).
   const firstProtected = cursor === null ? -1 : rows.findIndex((m) => m.id >= cursor);
-  const protectedCount = firstProtected === -1 ? 0 : rows.length - firstProtected;
+  // The UNREAD region is `id > cursor` — one row narrower than the protected
+  // region, which also holds the boundary row the divider anchors on. The
+  // ceiling below is on THIS count, so both numbers are needed and they are
+  // not interchangeable: measuring the ceiling against the protected region
+  // instead spends the boundary row as the first eviction and moves the bite
+  // one row early (see the two invariants restated below).
+  const firstUnread = cursor === null ? -1 : rows.findIndex((m) => m.id > cursor);
+  const unreadCount = firstUnread === -1 ? 0 : rows.length - firstUnread;
 
   // #1229 — the protected region has a ceiling of its own, applied BEFORE the
   // ring cap because it can bite while the total is still under it (900 unread
@@ -229,22 +236,23 @@ const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): CappedRi
   // are off-screen BELOW, leaving `scrollTop` and everything above it intact.
   // What remains of the read context is then trimmed by the ring cap, exactly
   // as it was before this bound existed.
+  //
+  // Two invariants decide the arithmetic, and both are one row wide:
+  //   * the BOUNDARY row (`id === cursor`, the newest READ row) is not this
+  //     bound's to drop — it is what the divider anchors on, and the rule this
+  //     whole function is built around exempts `id >= cursor`. So the trim
+  //     starts at `firstUnread`, never at `firstProtected`.
+  //   * the ceiling is crossed at `unreadCount > UNREAD_RETENTION_CAP`, the
+  //     SAME comparison `isFarBehind` makes, because the bound's job is to
+  //     deliver the window into that state. Biting at `=== CAP` would arm the
+  //     banner for a window the reload path's gap probe still calls near, and
+  //     the shared constant exists precisely so those two cannot disagree.
   const overflowUnread =
-    cursor !== null && protectedCount > UNREAD_RETENTION_CAP
-      ? protectedCount - UNREAD_RETENTION_CAP
-      : 0;
+    unreadCount > UNREAD_RETENTION_CAP ? unreadCount - UNREAD_RETENTION_CAP : 0;
   const afterUnreadTrim =
     overflowUnread > 0
-      ? [...rows.slice(0, firstProtected), ...rows.slice(firstProtected + overflowUnread)]
+      ? [...rows.slice(0, firstUnread), ...rows.slice(firstUnread + overflowUnread)]
       : rows;
-
-  const unreadHeld =
-    cursor === null
-      ? 0
-      : (() => {
-          const firstUnread = rows.findIndex((m) => m.id > cursor);
-          return firstUnread === -1 ? 0 : rows.length - firstUnread;
-        })();
 
   const surplus = afterUnreadTrim.length - SCROLLBACK_RING_CAP;
   let dropCount = surplus > 0 ? surplus : 0;
@@ -257,7 +265,7 @@ const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): CappedRi
   return {
     rows: dropCount > 0 ? afterUnreadTrim.slice(dropCount) : afterUnreadTrim,
     unreadDropped: overflowUnread,
-    unreadHeld,
+    unreadHeld: unreadCount,
     cursor,
   };
 };

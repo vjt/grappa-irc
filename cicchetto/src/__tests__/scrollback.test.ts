@@ -1618,10 +1618,55 @@ describe("appendToScrollback — #1229 unread-retention bound", () => {
     // NEWEST page — the live tail is never what gets dropped.
     expect(rows.filter((m) => m.id > cursor).length).toBe(bound);
     expect(rows[rows.length - 1]?.id).toBe(total);
-    // The read context below the divider is untouched by this bound (the ring
-    // cap still owns it), so the total is that plus one page — bounded, where
-    // before the fix it was `total` and grew with every arriving row.
-    expect(rows.length).toBe(cursor - 1 + bound);
+    // The read context is untouched by this bound (the ring cap still owns
+    // it), boundary row included: `cursor` read rows plus one page of unread —
+    // bounded, where before the fix it was `total` and grew with every
+    // arriving row.
+    expect(rows.length).toBe(cursor + bound);
+    expect(rows.map((m) => m.id)).toContain(cursor);
+  });
+
+  // The FIRST bite, by exactly one row. Every other case in this file sits a
+  // page or more away from the ceiling, where a one-row phase error in the
+  // trim is invisible — so nothing pinned WHICH end the trim takes, nor WHERE
+  // the threshold sits. Those are the two facts the bound is made of.
+  it("bites one row past the ceiling, dropping the OLDEST unread and never the boundary", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const scrollback = await import("../lib/scrollback");
+    const bound = scrollback.UNREAD_RETENTION_CAP;
+    const key = channelKey("freenode", "#grappa");
+    const cursor = 10;
+    mockGetReadCursor.mockReturnValue(cursor);
+    const total = cursor + bound + 1;
+    for (let i = 1; i <= total; i++) scrollback.appendToScrollback(key, mkRow(i));
+    const ids = (scrollback.scrollbackByChannel()[key] ?? []).map((m) => m.id);
+    // The boundary row is READ. The divider anchors on it and this module's
+    // rule exempts `id >= cursor`, so it is not this bound's to drop: the
+    // ceiling is on the UNREAD region, and the row that leaves is the oldest
+    // unread — the one just under the divider.
+    expect(ids).toContain(cursor);
+    expect(ids).not.toContain(cursor + 1);
+    expect(ids.filter((id) => id > cursor).length).toBe(bound);
+    expect(ids[ids.length - 1]).toBe(total);
+  });
+
+  it("does not bite AT one page of unread — the line `isFarBehind` already draws", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const scrollback = await import("../lib/scrollback");
+    const bound = scrollback.UNREAD_RETENTION_CAP;
+    const key = channelKey("freenode", "#grappa");
+    const cursor = 10;
+    mockGetReadCursor.mockReturnValue(cursor);
+    // Exactly one page of unread. `isFarBehind(gap) = gap > PAGE_LIMIT` calls
+    // this window near, and the bound shares that constant deliberately: a
+    // bite here would arm the far-behind banner for a window that the reload
+    // path (`loadInitialScrollback`'s gap probe) classifies as not far behind,
+    // which is the drift the shared constant exists to prevent.
+    const total = cursor + bound;
+    for (let i = 1; i <= total; i++) scrollback.appendToScrollback(key, mkRow(i));
+    const rows = scrollback.scrollbackByChannel()[key] ?? [];
+    expect(rows.length).toBe(total);
+    expect(scrollback.farBehindByChannel()[key]).toBeUndefined();
   });
 
   it("hands the pruned window to the existing far-behind state, with an honest missed count", async () => {
