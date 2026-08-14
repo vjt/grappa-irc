@@ -42566,3 +42566,67 @@ GET per resume seam for opted-in users (single-flighted by
 state that drifts, guarding a request smaller than the headers carrying it.
 The size is an estimate — the ~88-byte base64url key plus its JSON envelope —
 not a measurement; nobody has counted the bytes on the wire.
+<!-- entry #1229 -->
+
+---
+
+## 2026-08-14 — #1229: the unread exemption gets a ceiling, and the DOM follows the store
+
+S20 capped the per-channel ring at 1000 rows but exempted every row at or
+after the read cursor, because the in-pane divider anchors on that boundary.
+The exemption had no ceiling of its own, and the module said so in its own
+comment: a channel the operator never reads holds ALL of its unread rows and
+the cap does nothing. That was accepted as "the cost of the divider
+invariant". What was missing was its price.
+
+Measured on `origin/main` before choosing anything:
+
+- The pane renders EVERY retained row. `<For each={rows()}>`, no windowing,
+  no slice anywhere in the render path: 1084 retained rows produce 1084
+  `.scrollback-line` nodes, ratio 1.0000 (day separators only ever ADD rows,
+  never subtract). So there is no screen-bounded ceiling on the DOM.
+- A rendered row costs 32.3 KB of renderer RSS over the first 500 and 18.8 KB
+  marginal past that — chromium, real theme CSS, 390x844, production row
+  markup, `VmRSS` of the renderer process, fresh browser per data point. The
+  same row costs 249 B as a JS object (JSC).
+- So the reporter's 1084-unread window is ~26.5 MB in ONE window, ~100x the
+  stored bytes, against a memory ceiling iOS applies per web process.
+
+Retention and rendered DOM are therefore one curve, which is why the ruling
+took pruning over `content-visibility` or virtualisation: bounding the store
+IS the DOM fix, and it is the only one of the three that converts an
+unbounded term into a bounded one.
+
+**The number is `PAGE_LIMIT`, not a new constant.** `isFarBehind(gap) = gap >
+PAGE_LIMIT` already draws the line at "more than one page behind", so past
+this bound the client ALREADY classifies the window as far behind and already
+owns the apparatus for it: `anchorAtTail` keeps exactly one page, the divider
+is suppressed, and the "N unread — jump back" banner plus `jumpToUnread`
+rebuild the region from the server that owns it. A second threshold would be
+a second answer to the same question, free to drift from the first. The work
+was to REACH that state sooner, not to invent a pruned-window UX.
+
+**It drops the oldest unread, not "everything but the newest page."** The
+one-slice version is simpler and was rejected: the operator scrolled UP
+reading history has their cursor at the last row they can see, so rows
+arriving below are unread, and when the ceiling bites the one-slice version
+deletes the screen they are reading and the pane jumps to the tail. Dropping
+from just below the divider removes rows that are off-screen BELOW, so
+`scrollTop` and everything above it survive; what is left of the read context
+is then trimmed by the ring cap exactly as before. The e2e pins that
+property, not just the banner.
+
+**`missed` accumulates.** After the first bite the store only ever holds one
+page, so recomputing the banner's count from the rows would report 200 for
+ever while the operator is thousands behind.
+
+**What this does NOT do, recorded because the issue it is filed under moved
+while it was being written.** #1229 was reported as a half-height shell after
+returning from a long background. That frame reproduces with the ADMIN pane
+focused — `AdminPane` and `ScrollbackPane` are alternative branches of one
+`<Switch>`, so there are zero `.scrollback-line` nodes mounted — and it
+therefore cannot be explained by scrollback weight, by this bound, or by the
+unread count. This entry records a real and measured memory fix; it does not
+record a fix for the reported symptom, and the two must not be fused. The
+half-height frame's live hypothesis is the height RECALCULATION when a pane
+is unmounted and remounted by that `<Switch>` on return from background.
