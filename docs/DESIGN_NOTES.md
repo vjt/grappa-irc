@@ -42566,3 +42566,79 @@ GET per resume seam for opted-in users (single-flighted by
 state that drifts, guarding a request smaller than the headers carrying it.
 The size is an estimate — the ~88-byte base64url key plus its JSON envelope —
 not a measurement; nobody has counted the bytes on the wire.
+<!-- entry #1331 -->
+
+---
+
+## 2026-08-14 — #1331: put the exit where the operator meets the dead end
+
+The greyed compose seam already stated that a network was parked. The only
+way *out* of it was the chip on `HomePane`, which the operator had to know to
+go and find. `lib/selection.ts:712-742` softens that and deliberately stops
+short: it redirects to Home on the park **transition** only, so that a parked
+window stays reachable for its history (`:700-702`). Three entries therefore
+still land on a greyed compose with no exit — a cold load with the network
+already parked, a walk back into the window, and another device parking it
+while this tab was closed. The first two are pinned as intentional by
+`src/__tests__/selection.test.ts:828` and `:853`; the fix is an exit at the
+dead end, not another redirect, so both stay green.
+
+**Three placements were on the table, and the tiebreak was cost, not taste.**
+An action on the sidebar row was ruled out. That left the action inline in
+the seam, or a single implementation on `HomePane` with the seam pointing at
+it. The rule was set *before* measuring: inline **if** it costs no serious
+prop-drilling — at most two hops and no new plumbing — otherwise point at
+HomePane and keep one home for the verb.
+
+**Measured: zero hops.** `ComposeBox`'s props are `{ networkSlug, channelName }`
+and nothing else (`ComposeBox.tsx:102-105`), and both call sites already pass
+the slug (`Shell.tsx:708`, `:989`); the state comes from `networkBySlug`, a
+module-scope store accessor rather than a prop; the verb needs `patchNetwork`
+and `token`, two plain imports. No new context, no new store, no `Shell.tsx`
+edit. Zero is below the threshold, so the seam gets the button.
+
+**The action is gated on the NETWORK cause, not on the collapsed `greyed()`
+boolean.** A failed or kicked *window* under a live network has nothing to
+unpark — the way back in is `/join` — so `networkGreyedState()` was split out
+of `greyed()` and the button hangs off that. The greyed visual and the
+`(not joined)` copy are unchanged.
+
+**A second surface for a verb is an extraction, not a copy.** The PATCH is
+one line, but the UX around it is not: awaited request, pending latch,
+friendly-mapped failure. That trio was a closure inside `HomePane`'s
+`DisconnectedRow`, and two hand-rolled implementations of the same recovery
+drift. `lib/networkReconnect.ts` now owns it and `DisconnectedRow` was moved
+onto it **in the same commit** — an extraction that leaves the original
+behind is just a copy with a preamble. The error *sink* stays with the caller,
+because each surface already owns an error line and a second one beside it
+would contradict the first: HomePane keeps its `role="alert"` span, the seam
+uses the #356 feedback line.
+
+**`lib/reconnect.ts` was left out on purpose, and the boundary is worth
+recording because the name argues against it.** Despite being called that, it
+is the #282 vhost bounce: it selects **connected** networks and does
+park-then-connect. On a parked network that is the wrong verb on the wrong
+set.
+
+**No confirmation modal — and this is a decision on record, not an
+omission.** The #195 confirm modal belongs to **Disconnect**; Reconnect is
+the awaited-PATCH UX by the ruling on #283 (2026-07-20), recorded in the
+comment on `HomePane`'s `onDisconnect` (`:299-307`: *"match the ×, not
+Reconnect's awaited-PATCH UX"*). Reconnect is also trivially reversible,
+which is the property that modal exists to protect. The comment alone is only
+an older opinion; what settles it is the consequence — five e2e specs press
+Reconnect with no confirm step and would hang on the click
+(`cp15-b6-parked-disconnect-reconnect.spec.ts:208`,
+`issue100-reconnecting-badge.spec.ts:123`,
+`issue248-lusers-no-auto-surface.spec.ts:106`,
+`issue38-keyed-tab-dismiss-after-rejoin-fail.spec.ts:113`,
+`issue511-failed-autojoin-dismiss-durable.spec.ts:133`). Changing the verb's
+UX is therefore a separate change that would touch the chip too and rewrite
+those five specs.
+
+**Not claimed:** the affordance is pinned at unit level only — no e2e was
+written or run, and nothing was checked in a real browser or on a mobile
+viewport. That those five specs scope their chip click to
+`.home-pane-network-row-parked`, and so cannot be made ambiguous by the
+seam's identically-named control, is read from their source rather than
+observed.
