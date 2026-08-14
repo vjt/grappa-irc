@@ -42503,12 +42503,18 @@ believes a live subscription, and reports the teardown as its own outcome
 changed accordingly: re-fetching the key cannot clear a subscription bound to
 a different one, so the retry now unsubscribes the incumbent instead.
 
-**Accepted costs, stated so they are not read as oversights.** One ~150-byte
+**The row it replaces is named on the way in.** The `rekeyed` POST carries
+`supersedes: <old endpoint>`, exactly as `renewed` does — #181's field, on the
+wire since then and implemented server-side, so same problem, same solution
+and no new mechanism. This is the opposite of the reap #1325 declined: there
+the SERVER would infer a row's death from a run of 4xx it must read a vendor
+string to understand; here the CLIENT declares the one row it is itself
+replacing, at the moment it replaces it, with no status parsing anywhere. A
+`400` still sweeps nothing.
+
+**Accepted cost, stated so it is not read as an oversight.** One ~150-byte
 GET per resume seam for opted-in users (single-flighted by
 `pushResubscribe`), deliberately unthrottled: a throttle would be duplicated
 state that drifts, guarding a request smaller than the headers carrying it.
-And the superseded server row is left in place — `400` deliberately never
-sweeps (#1325, closed `not planned`), so the row costs one wasted request per
-notification forever. Having the client delete the row it is itself replacing
-is a different mechanism from a reason-string reap, and it is held pending a
-ruling rather than assumed.
+The size is an estimate — the ~88-byte base64url key plus its JSON envelope —
+not a measurement; nobody has counted the bytes on the wire.

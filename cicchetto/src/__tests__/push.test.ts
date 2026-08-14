@@ -242,7 +242,12 @@ describe("#1323 — VAPID rotation heals on the ensure seam", () => {
     expect(firstSubscribeKeyBytes(subscribe)).toEqual(
       Array.from(vapidKeyToUint8Array(ROTATED_KEY)),
     );
-    expect(postedSubscription(fetchMock)?.endpoint).toBe("https://push.example/NEW");
+    const body = postedSubscription(fetchMock);
+    expect(body?.endpoint).toBe("https://push.example/NEW");
+    // The row the client is REPLACING is named on the way in — the same #181
+    // `supersedes` the renew branch uses, not a reap: the server is told which
+    // row died, it does not infer it from a 4xx (the thing #1325 declined).
+    expect(body?.supersedes).toBe("https://push.example/OLD");
     // The record now names the key the LIVE subscription was created with.
     expect(localStorage.getItem(SUBSCRIBED_KEY)).toBe(ROTATED_KEY);
     expect(localStorage.getItem(SUB_ENDPOINT_KEY)).toBe("https://push.example/NEW");
