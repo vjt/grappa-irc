@@ -534,6 +534,12 @@ config :logger, :console,
     :endpoint,
     :status,
     :count,
+    # #1321 — `Grappa.Push.VendorLog`'s rejection line. `:vendor` is the
+    # HOST of the push service that rejected a delivery: the line records
+    # the host only, never the path, because a path segment can itself be
+    # a credential. The reason string itself rides the pre-existing
+    # `:reason` key, length-capped at the sink.
+    :vendor,
     # M-11 admin-events: `:topic` is the PubSub topic that failed (string,
     # e.g. `"grappa:admin:events"`); `:kind` is the typed event-kind atom
     # (`:visitor_deleted`, `:circuit_reset`, etc.) that was about to be

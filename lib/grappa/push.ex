@@ -79,7 +79,7 @@ defmodule Grappa.Push do
       Grappa.Visitors.Visitor,
       Grappa.WSPresence
     ],
-    exports: [BadgeSource, Payload, Sender, Subscription, Triggers]
+    exports: [BadgeSource, Payload, Sender, Subscription, Triggers, VendorLog]
 
   import Ecto.Query
 

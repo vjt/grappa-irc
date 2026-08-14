@@ -269,6 +269,18 @@ defmodule Grappa.Application do
         # attach); unlike AdminEvents/SessionLog it needs NO sandbox
         # allow — the fold touches no Repo.
         {Grappa.DbLatency, attach_telemetry: attach_db_latency_telemetry?()},
+        # VendorLog (#1321): singleton GenServer that attaches to the
+        # `[:ex_nudge, :send_notification]` event in init/1 and logs the
+        # rejection reason a push service returned in the response body —
+        # the ONLY route by which that body leaves the library, so the
+        # sender cannot report it itself. Same slot as the sinks above and
+        # BEFORE Endpoint, so a delivery triggered by the first WS event
+        # already has a handler; it holds no state at all beyond the
+        # attachment, so nothing orders it against Repo/Registry. Restart:
+        # :permanent (infrastructure). `attach_telemetry: false` in test
+        # env so the handler doesn't write into every suite's captured
+        # Logger stream (per-test opt-in via manual attach).
+        {Grappa.Push.VendorLog, attach_telemetry: attach_push_vendor_log_telemetry?()},
         # ShareTokens: ETS-backed one-shot set for share-link token
         # redemption (#1306 — both subject kinds; the ledger keys on the
         # token string, which carries no kind). Must come before Endpoint
@@ -575,6 +587,14 @@ defmodule Grappa.Application do
   @spec attach_db_latency_telemetry?() :: boolean()
   defp attach_db_latency_telemetry?,
     do: Application.get_env(:grappa, :attach_db_latency_telemetry, true)
+
+  # #1321 — same test-env opt-out shape. The reason is neither sandbox
+  # ownership nor determinism: the handler only logs, and a globally
+  # attached one would emit into the Logger stream any test captures.
+  # Defaults true — prod/dev attach at boot.
+  @spec attach_push_vendor_log_telemetry?() :: boolean()
+  defp attach_push_vendor_log_telemetry?,
+    do: Application.get_env(:grappa, :attach_push_vendor_log_telemetry, true)
 
   @impl Application
   def config_change(changed, _, removed) do

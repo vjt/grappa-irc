@@ -157,6 +157,11 @@ config :grappa, :attach_session_log_telemetry, false
 # would make snapshot assertions flaky. Aggregation tests attach the
 # handler explicitly + drain via `reset/0` (test/grappa/db_latency_test.exs).
 config :grappa, :attach_db_latency_telemetry, false
+# #1321 — VendorLog singleton attach OFF in test env. The handler only
+# logs, so a global attach would write a push rejection into whatever
+# test happens to be capturing the Logger stream. Its own tests attach
+# the handler explicitly (test/grappa/push/vendor_log_test.exs).
+config :grappa, :attach_push_vendor_log_telemetry, false
 config :phoenix, :plug_init_mode, :runtime
 config :phoenix, :json_library, Jason
 
