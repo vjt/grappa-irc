@@ -481,6 +481,13 @@ defmodule GrappaWeb.MessagesController do
     end
   end
 
+  # #1338 W-S1 — same catch-all, same reason as `parse_after/1` above: the
+  # three cursors reach here straight off `Plug.Conn.Query`, which decodes
+  # `?before[]=1` to a LIST and `?before[k]=1` to a MAP. Without it those are
+  # a FunctionClauseError — a 500 with a stacktrace, past the
+  # FallbackController, for a plainly malformed request.
+  defp parse_int(_), do: {:error, :bad_request}
+
   defp parse_limit(nil), do: {:ok, @default_limit}
 
   # HTTP-boundary ceiling per CLAUDE.md "Validate at the boundary". The
@@ -493,4 +500,8 @@ defmodule GrappaWeb.MessagesController do
       _ -> {:error, :bad_request}
     end
   end
+
+  # #1338 W-S1 — `?limit[]=1` is the list-shaped twin of the cursor case
+  # above. `nil` (absent) has its own clause and keeps the default.
+  defp parse_limit(_), do: {:error, :bad_request}
 end

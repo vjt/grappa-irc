@@ -320,6 +320,24 @@ defmodule GrappaWeb.MessagesControllerTest do
     assert json_response(conn, 400)["error"] == "bad_request"
   end
 
+  # #1338 W-S1 — `Plug.Conn.Query` decodes `?before[]=1` to a LIST and
+  # `?limit[a]=1` to a MAP. Both are shapes a client can send with no
+  # cooperation from us, and this controller's rule is "present and
+  # unparseable = 400" — not a 500 with a stacktrace past the
+  # FallbackController. `parse_after/1` already carries this catch-all;
+  # these four params were the ones left behind.
+  for param <- ~w(before after around limit) do
+    test "GET a list-valued ?#{param} returns 400, not a 500", %{conn: conn} do
+      conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?#{unquote(param)}[]=1")
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    test "GET a map-valued ?#{param} returns 400, not a 500", %{conn: conn} do
+      conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?#{unquote(param)}[k]=1")
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+  end
+
   test "GET ?limit=200 is accepted (boundary)", %{conn: conn, user: user, network: network} do
     seed(user, network)
     conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?limit=200")
