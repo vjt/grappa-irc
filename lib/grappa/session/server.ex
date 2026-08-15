@@ -468,7 +468,7 @@ defmodule Grappa.Session.Server do
   @typedoc """
   In-flight JOIN tracking entry (CP15 B2). Recorded on every outbound
   JOIN — both cic-initiated `Session.send_join/4` calls and the 001
-  RPL_WELCOME autojoin loop — keyed by `Identifier.canonical_channel/1`
+  RPL_WELCOME autojoin loop — keyed by `Identifier.canonical_target/1`
   (ASCII, #364/#525) of the channel so a 471/473/474/475/403/405 failure
   numeric can correlate even when the upstream echoes a case-folded
   channel name. The fold is A-Z-only (CASEMAPPING=ascii) — brackets
@@ -2278,7 +2278,7 @@ defmodule Grappa.Session.Server do
   # scrollback). #540 A2: `target` arrives RAW (Session.send_who/3 no longer
   # folds it — it may be a channel, a mask, or extended-WHO flag args like
   # `+s <server>`), so `target_display` preserves case for the modal header.
-  # The accumulator KEY is folded here via `canonical_channel/1` so
+  # The accumulator KEY is folded here via `canonical_target/1` so
   # `#Chan`/`#chan` share one key (concurrent channel-WHO separation) WITHOUT
   # corrupting the raw wire form. Replaces any prior accumulator for the same
   # key (running /who twice without a 315 in between drops the first).
@@ -2722,7 +2722,7 @@ defmodule Grappa.Session.Server do
   end
 
   # Returns the userhost cache entry for `nick`. Nick lookup is case-insensitive
-  # (ASCII, #121/#525) — fold via Identifier.canonical_nick at read time, mirroring
+  # (ASCII, #121/#525) — fold via Identifier.canonical_target at read time, mirroring
   # write-time folding in EventRouter. Returns {:ok, entry} or {:error, :not_cached}.
   # Public via `Grappa.Session.lookup_userhost/3`.
   #

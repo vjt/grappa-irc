@@ -256,10 +256,12 @@ defmodule Grappa.Session.EventRouter do
   effects, PubSub broadcasts) observes a single key per channel
   regardless of upstream casing.
 
-  The lowercase predicate is sigil-aware
-  (`Identifier.canonical_channel/1` only folds `#&!+`-prefixed
-  strings) so nick params (PRIVMSG target = nick for DMs, MODE target
-  = nick for user-mode-on-self, NICK new-nick, KICK target nick,
+  The lowercase predicate is sigil-aware — not because the fold is
+  (`Identifier.canonical_target/1` folds `A-Z` on ANY identifier since
+  #537), but because `normalize_channel/2`'s first head only matches
+  `#&!+`-prefixed strings. So nick params (PRIVMSG target = nick for
+  DMs, MODE target = nick for user-mode-on-self, NICK new-nick, KICK
+  target nick,
   numerics carrying target nicks) pass through unchanged — case is
   meaningful for nick display and CTCP visibility row's `dm_with`
   column.
@@ -361,8 +363,8 @@ defmodule Grappa.Session.EventRouter do
   # underlying channel window, NOT the network/`$server` tab or a query
   # window. Strip a leading statusmsg sigil from a `:notice`/`:privmsg`
   # param-0 target BEFORE canonicalisation + the channel-prefix dispatch,
-  # so `build_persist` / `canonical_channel` receive a clean `#chan` (no
-  # need to widen `canonical_channel`'s sigil set, which is shared with
+  # so `build_persist` / `normalize_channel/2` receive a clean `#chan` (no
+  # need to widen that head's sigil set, which mirrors
   # `Scrollback.target_kind/1`). Runs BEFORE `canonicalize_channel_params/1`
   # so the peeled `#Chan` still gets case-folded to `#chan`.
   #
@@ -3356,10 +3358,10 @@ defmodule Grappa.Session.EventRouter do
   #
   # Bucket A unified the canonicalisation at every channel-bearing
   # boundary (Session entry API, schema changesets, this module's
-  # clauses, Topic.channel/3, backfill migration). This delegates to
-  # `Identifier.canonical_channel/1` so the sigil-aware predicate
-  # (`#&!+`-only; nick targets pass through unchanged) is the single
-  # source of truth.
+  # clauses, Topic.channel/3, backfill migration). The FOLD is
+  # `Identifier.canonical_target/2`; the sigil gate is the `#&!+`
+  # guard clause on the first head below — it lives HERE, not inside
+  # `Identifier`, because #537 made the fold shape-blind on purpose.
   # #537 axis 2 — the upstream→us KEY fold, network-aware. `casemapping`
   # comes from `state.isupport` (005-derived), threaded from `route/2`.
   # SIGIL-GATED like the old `canonical_channel/1`: channel-shaped input

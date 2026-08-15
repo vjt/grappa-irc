@@ -44,7 +44,7 @@ defmodule Grappa.ChannelDirectory.WireTest do
 
   test "featured match folds ASCII case, not brackets (#525)" do
     # Directory names are stored VERBATIM (case-preserving display); the
-    # featured set is stored canonical (ASCII-folded via canonical_channel/1
+    # featured set is stored canonical (ASCII-folded via canonical_target/1
     # — A-Z only, brackets preserved). A bracket-char channel `#Foo[1]` from
     # the directory must mark featured against the folded `#foo[1]`; the
     # brace twin `#foo{1}` is a DIFFERENT channel (#525).

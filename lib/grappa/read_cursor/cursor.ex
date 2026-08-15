@@ -94,9 +94,9 @@ defmodule Grappa.ReadCursor.Cursor do
     )
   end
 
-  # #532 D — defense-in-depth canonicalisation, SHAPE-APPROPRIATE. Was
-  # `canonical_channel/1` (UX-4 bucket A), which is a no-op for a DM-peer
-  # nick — so a nick-keyed cursor stored whatever casing reached the
+  # #532 D — defense-in-depth canonicalisation. Was `canonical_channel/1`
+  # (UX-4 bucket A), which WAS a no-op for a DM-peer nick — so a
+  # nick-keyed cursor stored whatever casing reached the
   # changeset, forking one DM window into one row per casing. The write
   # boundary (`ReadCursor.set/4`) now pre-folds via `canonical_target/1`;
   # this last-line-of-defence fold uses the same function so ANY writer

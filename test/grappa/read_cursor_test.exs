@@ -128,7 +128,7 @@ defmodule Grappa.ReadCursorTest do
       # The client sends the peer window key at two different casings — the
       # #532 prod evidence (`NickTemporaneo` then `nicktemporaneo`). Both
       # must land on ONE cursor row (the read path already resolves the
-      # window case-insensitively via canonical_nick/1).
+      # window case-insensitively via canonical_target/1).
       {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "NickTemp", m1.id)
       {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "nicktemp", m2.id)
 

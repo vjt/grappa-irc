@@ -39,7 +39,7 @@ defmodule Grappa.Session.PartCleanup do
   ## Case-canonicalisation contract
 
   `cleanup_local/2` canonicalises `channel` ONCE at the top via
-  `Identifier.canonical_channel/1` and uses the canonical key for EVERY
+  `Identifier.canonical_target/1` and uses the canonical key for EVERY
   map and MapSet delete — `members`, `topics`, `channel_modes`,
   `channels_created`, `seeded_channels`, and the `WindowState`
   projection alike. Callers MAY pass mixed-case (`"#Italia"`) and the

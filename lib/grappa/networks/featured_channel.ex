@@ -7,7 +7,7 @@ defmodule Grappa.Networks.FeaturedChannel do
   `(network_id, name)` is unique; re-adding surfaces
   `{:error, :already_exists}` via `Grappa.Networks.FeaturedChannels`.
   `name` is stored **lowercased** per the channel case-fold invariant —
-  every channel-keyed table downcases (`Identifier.canonical_channel/1`),
+  every channel-keyed table downcases (`Identifier.canonical_target/1`),
   and the directory-label match downcases the directory entry name
   before comparing, so `#Chan`/`#chan`/`#CHAN` collapse to one row and
   match one directory entry. `enabled: false` parks a row without

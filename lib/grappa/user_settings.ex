@@ -1528,12 +1528,12 @@ defmodule Grappa.UserSettings do
   end
 
   # trim + case-fold + drop empties + dedup. Preserves order on first
-  # occurrence. The fold is identity-key-correct per list type (ASCII,
-  # #121/#525): `private_messages_only` is a nick list → canonical_nick/1
-  # (CASEMAPPING=ascii — folds `A-Z` ONLY); `channel_messages_only` is a
-  # channel list → canonical_channel/1 (sigil-gated ASCII fold, #364/#525 —
-  # folds `A-Z` like nicks, brackets `[ ] \ ~` left UNTOUCHED so
-  # foo[bar]/foo{bar} stay DISTINCT). A bare String.downcase is wrong not
+  # occurrence. Both list types fold through `list_fold/1` → the one
+  # `canonical_target/1` (ASCII, #121/#525/#537): a nick list
+  # (`private_messages_only`) and a channel list
+  # (`channel_messages_only`) fold `A-Z` IDENTICALLY, brackets
+  # `[ ] \ ~` left UNTOUCHED so foo[bar]/foo{bar} stay DISTINCT — see
+  # `list_fold/1` below for why the sigil gate is gone. A bare String.downcase is wrong not
   # for the brackets but because it Unicode-over-folds non-ASCII (e.g.
   # #CAFÉ/#café), diverging from the ASCII fold the stored list + the
   # folded sender in Triggers.sender_in_whitelist?/2 use.

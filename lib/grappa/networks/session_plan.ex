@@ -356,7 +356,7 @@ defmodule Grappa.Networks.SessionPlan do
   # operator autojoin (stable) with last-live snapshot (runtime). Order:
   # operator entries first to preserve operator-intent join order; then
   # snapshot entries the operator didn't already cover. Dedupe folds via
-  # `Identifier.canonical_channel/1` (ASCII, #364/#525) — NOT bare
+  # `Identifier.canonical_target/1` (ASCII, #364/#525/#537) — NOT bare
   # `String.downcase`, which would Unicode-over-fold non-ASCII channels and
   # diverge from the ASCII fold. Brackets `[ ] \ ~` are NOT folded, so
   # `#foo[1]`/`#foo{1}` remain DISTINCT autojoins on bahamut

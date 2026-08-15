@@ -115,11 +115,11 @@ defmodule GrappaWeb.ArchiveController do
       # CASEMAPPING (`:ascii` when no pid → byte-identical to the pure-ASCII
       # fold, so prod is unchanged), the stateless controller's twin of the
       # Server's write-time `fold_key/2`: an rfc1459 `#Foo[1]` deletes the one
-      # window keyed `#foo{1}`. Shape-aware (delegates to the sigil-gated
-      # `canonical_target/1`): a channel folds A-Z; a nick-shaped DM folds via
-      # `canonical_nick/1`, and `delete_for_dm/3` re-folds the peer through the
-      # shared ASCII `where_dm_peer/2` so the delete lands on the same window
-      # the read path resolves.
+      # window keyed `#foo{1}`. Shape-BLIND since #537: `canonical_target/2`
+      # folds `A-Z` the same way for a channel and for a nick-shaped DM
+      # target, and `delete_for_dm/3` re-folds the peer through the shared
+      # ASCII `where_dm_peer/2` so the delete lands on the same window the
+      # read path resolves.
       canonical_target =
         Grappa.IRC.Identifier.canonical_target(target, Session.casemapping(session_subject, network.id))
 

@@ -46,7 +46,7 @@ defmodule Grappa.QueryWindows do
   ascii-fold(target_nick))` so "FooBar"/"foobar" are the same DM target,
   while "nick[1]"/"nick{1}" are DISTINCT (the ircd keeps them apart). The
   fold is `Grappa.IRC.Identifier.nick_fold/1` (query side) /
-  `canonical_nick/1` (in-memory), now plain `lower()`; the stored
+  `canonical_target/1` (in-memory), now plain `lower()`; the stored
   `target_nick` column is case-preserving (original input wins). The SQL
   fold expression in the index, the `conflict_target/1` upsert fragment,
   and `nick_fold/1` MUST stay character-identical or sqlite stops using
@@ -358,7 +358,7 @@ defmodule Grappa.QueryWindows do
   Case-insensitive under the ASCII fold (#121/#372/#525): `open?(s, n,
   "SeenServ")` matches a stored `"seenserv"` window. `"nick[1]"` and
   `"nick{1}"` are DISTINCT windows (brackets `[ ] \\ ~` are NOT folded).
-  Folds `target_nick` via `Identifier.canonical_nick/1` and delegates to
+  Folds `target_nick` via `Identifier.canonical_target/1` and delegates to
   the same `new_window_exists?/3` exists-query the fold-collision path in
   `rename/4` uses — character-identical to the folded unique **expression**
   index, so the check is sargable.

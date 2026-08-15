@@ -15,7 +15,7 @@ defmodule Grappa.IRC.Identity do
 
   `Identifier` owns the pure predicate + fold PRIMITIVES (`valid_nick?/1`,
   `valid_ident?/1`, `safe_line_token?/1`, `sanitize_ident/1`,
-  `canonical_nick/1`, …). This module owns the CHANGESET-LEVEL wiring —
+  `canonical_target/1`, …). This module owns the CHANGESET-LEVEL wiring —
   the `validate_change/3` callbacks, the `sanitize_ident` changeset step,
   and the effective-value fallbacks — that adapts those primitives to a
   changeset boundary. Every function here delegates to `Identifier`; the

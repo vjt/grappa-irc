@@ -958,7 +958,7 @@ defmodule Grappa.Networks.Credentials do
   owns `(nick, network)` — else it provisions a new one.
 
   Folds both the `nick` column and the supplied `nick` through the SAME
-  casemapper (`Identifier.nick_fold/1` fragment + `canonical_nick/1`), so
+  casemapper (`Identifier.nick_fold/1` fragment + `canonical_target/1`), so
   it matches the phase-4b folded partial unique index
   (`network_credentials_visitor_folded_nick_network_id_index`) and stays
   index-eligible. Visitor-scoped BY CONSTRUCTION (`WHERE visitor_id IS NOT
@@ -992,7 +992,7 @@ defmodule Grappa.Networks.Credentials do
   slug), ordered by nick then network.
 
   The nick match is ASCII-folded (GH #121/#525) on BOTH sides — the query
-  via `Identifier.canonical_nick/1`, the column via the
+  via `Identifier.canonical_target/1`, the column via the
   `Identifier.nick_fold/1` fragment — so a case variant resolves the same
   way login does (a bracket variant like foo[bar]/foo{bar} stays DISTINCT,
   per CASEMAPPING=ascii). The folded query is then LIKE-escaped via

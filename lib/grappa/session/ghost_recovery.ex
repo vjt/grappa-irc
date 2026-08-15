@@ -103,7 +103,7 @@ defmodule Grappa.Session.GhostRecovery do
 
   # S2 (#364) — the 401/311 echo (`params[1]`) comes from the ghost holder's
   # server-side user record and can differ in case (or bracket-fold) from the
-  # configured `orig_nick`. Fold BOTH sides via `Identifier.canonical_nick/1`
+  # configured `orig_nick`. Fold BOTH sides via `Identifier.canonical_target/1`
   # (GH #121, mirror of `EventRouter.nick_eq?/2`) — a bare `==` guard missed a
   # `kazam`-for-`Kazam` echo, stranding the FSM on the no-op catch-all until
   # the 8s `:ghost_timeout` forced `:failed`. A non-matching queried nick

@@ -123,10 +123,11 @@ defmodule Grappa.ReadCursor do
   @spec get(subject(), integer(), String.t()) :: Cursor.t() | nil
   def get(subject, network_id, channel)
       when is_integer(network_id) and is_binary(channel) and channel != "" do
-    # #532 D — canonicalise the window key SHAPE-APPROPRIATELY: a channel
-    # folds via canonical_channel, a DM-peer nick via canonical_nick. Using
-    # canonical_channel alone was a no-op for nicks, so a `NickTemp` lookup
-    # missed the folded `nicktemp` cursor row the read path resolves to.
+    # #532 D — canonicalise the window key via `canonical_target/1`, which
+    # folds a channel and a DM-peer nick identically. The pre-#537
+    # sigil-gated `canonical_channel/1` was a no-op for nicks, so a
+    # `NickTemp` lookup missed the folded `nicktemp` cursor row the read
+    # path resolves to.
     channel = Identifier.canonical_target(channel)
 
     Cursor
@@ -171,8 +172,9 @@ defmodule Grappa.ReadCursor do
   def set(subject, network_id, channel, message_id)
       when is_integer(network_id) and is_binary(channel) and channel != "" and
              is_integer(message_id) and message_id > 0 do
-    # #532 D — canonicalise once at the entry boundary, SHAPE-APPROPRIATELY
-    # (channel via canonical_channel, DM-peer nick via canonical_nick),
+    # #532 D — canonicalise once at the entry boundary via
+    # `canonical_target/1` (one shape-blind fold for a channel AND a
+    # DM-peer nick),
     # so every downstream call (`message_belongs?/4` validator + `do_set/4`
     # → `get/3` + `Cursor.changeset/2`) observes the ONE canonical key the
     # read path resolves to. Before this the nick branch was a no-op and a
@@ -263,8 +265,8 @@ defmodule Grappa.ReadCursor do
   already resolves via `Push.BadgeCount.live_nick_windows/1`) drives a
   per-network exclusion in the JOIN `on:`: a row that is BOTH non-content
   AND the subject's own presence — `nick_fold(sender) ==
-  canonical_nick(own_nick)` (self-PART, a KICK they issued, a case-only
-  self-rename) OR `nick_fold(meta.new_nick) == canonical_nick(own_nick)`
+  canonical_target(own_nick)` (self-PART, a KICK they issued, a case-only
+  self-rename) OR `nick_fold(meta.new_nick) == canonical_target(own_nick)`
   (a genuine self-rename's `:nick_change` row, whose `sender` is the OLD
   nick and whose `meta.new_nick` is the live one) — for ITS network does
   not join, so it never lands in the `events` bucket. Such an action is not

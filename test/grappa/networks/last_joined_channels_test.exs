@@ -234,7 +234,7 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
 
     test "dedupes ASCII case variants (#525 — CASEMAPPING=ascii)" do
       # `#foo[1]` and `#FOO[1]` are ONE channel to bahamut (A-Z fold,
-      # brackets preserved). The merge must fold via canonical_channel/1 so
+      # brackets preserved). The merge must fold via canonical_target/1 so
       # the snapshot variant is recognised as already covered by the
       # operator entry (whose case wins). The brace twin `#foo{1}` would be
       # a DIFFERENT channel (#525).

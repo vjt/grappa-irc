@@ -115,8 +115,9 @@ defmodule Grappa.Session.EventRouterTest do
     # persist effects, PubSub broadcasts) observes a single key per
     # channel regardless of upstream casing. Nicks (DM-target PRIVMSG,
     # user-MODE on self, KICK target nick, WHOIS numerics) pass
-    # through unchanged because `Identifier.canonical_channel/1` is
-    # sigil-aware.
+    # through unchanged because `EventRouter.normalize_channel/2`'s first
+    # head only matches a `#&!+` sigil — the fold itself
+    # (`Identifier.canonical_target/2`) is shape-blind since #537.
 
     test "JOIN #UpperChan keys state.members on the canonical lowercase form" do
       state = base_state()

@@ -37,7 +37,7 @@ defmodule Grappa.ChannelDirectory.Wire do
   ASCII-folded name is in `featured_names` — the network's enabled
   `network_featured_channels` set (GH #85). Directory names are stored
   VERBATIM (case-preserving display), the featured set canonical, so the
-  compare MUST fold the directory name via `Identifier.canonical_channel/1`
+  compare MUST fold the directory name via `Identifier.canonical_target/1`
   (#364/#525 — a bare `String.downcase` would Unicode-over-fold non-ASCII
   like `#CAFÉ` and diverge from the ASCII-only stored set; brackets
   `[ ] \ ~` are NOT folded, so `#foo[1]` and `#foo{1}` are DISTINCT

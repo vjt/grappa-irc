@@ -31,7 +31,7 @@ defmodule Grappa.Notify do
   leaving `[ ] \\ ~` UNTOUCHED — #121/#364 assumed rfc1459 and over-folded
   the brackets, #525 narrowed it). The
   fold is `Grappa.IRC.Identifier.nick_fold/1` (query side) /
-  `canonical_nick/1` (in-memory), now plain `lower()`; the stored `nick`
+  `canonical_target/1` (in-memory), now plain `lower()`; the stored `nick`
   column is case-preserving (first add wins). The SQL fold expression in
   the index, the `conflict_target/1` upsert fragment, and `nick_fold/1`
   MUST stay character-identical or sqlite stops using the index.
@@ -68,7 +68,7 @@ defmodule Grappa.Notify do
 
   Standalone context. Deps mirror `Grappa.QueryWindows`:
     * `Grappa.Repo` — persistence.
-    * `Grappa.IRC` — `Identifier.nick_fold/1` + `canonical_nick/1`.
+    * `Grappa.IRC` — `Identifier.nick_fold/1` + `canonical_target/1`.
     * `Grappa.Subject` — XOR FK helper.
     * `Grappa.Accounts` / `Grappa.Networks` — FK references.
     * `Grappa.PubSub` — `Topic.user/1` for the `notify_list` broadcast.

@@ -81,9 +81,13 @@ defmodule Grappa.PubSub.Topic do
   @doc """
   Builds the per-(user, network, channel) fan-out topic.
 
-  UX-4 bucket A: the `channel_name` segment is canonicalised to
-  lowercase via `Grappa.IRC.Identifier.canonical_channel/1` (sigil-
-  aware — nicks for DM windows pass through unchanged). Every
+  UX-4 bucket A: the `channel_name` segment is canonicalised via
+  `Grappa.IRC.Identifier.canonical_target/1`, which folds `A-Z`
+  UNCONDITIONALLY — a DM window's segment is a peer nick and folds
+  exactly like a channel (#537 collapsed the former sigil-gated
+  `canonical_channel/1`, which did leave a nick verbatim). So the
+  topic for a DM with `Guest87449` is `…/channel:guest87449`; build
+  it with the raw nick and you subscribe to nothing. Every
   broadcaster, every subscriber-side `Channel.join/3` callback, and
   every `parse/1` callsite observe the same topic string regardless
   of whether the producer received the channel name from upstream

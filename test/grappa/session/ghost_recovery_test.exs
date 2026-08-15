@@ -115,7 +115,7 @@ defmodule Grappa.Session.GhostRecoveryTest do
     # Pre-fix these guarded `when queried == orig` (bare ==), so a folded
     # echo missed the clause, fell to the no-op catch-all, and stalled the FSM
     # until the 8s :ghost_timeout forced :failed — a one-round-trip recovery
-    # silently degraded. Both sides must fold via Identifier.canonical_nick/1
+    # silently degraded. Both sides must fold via Identifier.canonical_target/1
     # (GH #121), mirroring EventRouter.nick_eq?/2.
     test ":awaiting_whois on 401 for a CASE-differing echo still succeeds (#364 S2)" do
       state = %GhostRecovery{

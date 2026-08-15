@@ -2065,7 +2065,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     # #540 A1/A2 — extended WHO flag args forward verbatim, NOT folded as a
     # channel. cic sends the full argument string (`+S HelloWorld`) in the
     # `channel` slot; the server must (1) accept the space (multi-token WHO),
-    # and (2) NOT run it through canonical_channel/1 — folding the `+`-sigil
+    # and (2) NOT run it through canonical_target/1 — folding the `+`-sigil
     # token would lowercase the away-message/server arg (`+s helloworld`),
     # corrupting a case-sensitive value. The raw args reach upstream.
     test "who: forwards extended flag args upstream, case-preserved (#540 A1/A2)", %{

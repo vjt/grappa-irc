@@ -3272,7 +3272,7 @@ defmodule Grappa.ScrollbackTest do
   end
 
   # REV-B / H17 (2026-05-22 codebase review). Write side canonicalises
-  # channel names via `Identifier.canonical_channel/1` (sigil-aware);
+  # channel names via `Identifier.canonical_target/1`;
   # delete side did raw `String.downcase/1`. ASCII channels agree
   # today (both shapes collapse to `String.downcase/1` for `[A-Z]`),
   # but any future canonicalisation extension would silently make the

@@ -21,7 +21,7 @@ defmodule Grappa.Push.Triggers do
   ## Decision logic — `should_notify?/5`
 
   The FIRST question is "is this row mine?", decided by IDENTITY
-  (`Identifier.canonical_target(sender) == canonical_nick(own_nick)`), NOT
+  (`Identifier.canonical_target(sender) == canonical_target(own_nick)`), NOT
   by window shape:
 
     0. **Own row** (`sender` folds to `own_nick`) — never notify (#532 C).
@@ -356,7 +356,7 @@ defmodule Grappa.Push.Triggers do
   end
 
   # #532 C — is this row the subject's OWN message? Folded identity
-  # compare (`Identifier.canonical_nick/1`, #121) between the row's sender
+  # compare (`Identifier.canonical_target/1`, #121) between the row's sender
   # and the live own_nick, NOT the window-shape `channel == own_nick` test
   # (which only holds for INBOUND DMs, so it can't recognise an outbound
   # DM as self-authored). The row already carries everything needed to
@@ -373,7 +373,7 @@ defmodule Grappa.Push.Triggers do
   # inbound branch + cic's dm-listener channelKey rule. #537 — the
   # `channel` KEY is now folded at the persist boundary
   # (`Message.canonicalize_channel/1`), so this compare MUST fold both
-  # sides (`canonical_nick/1`) or a mixed-case own_nick fails to match
+  # sides (`canonical_target/1`) or a mixed-case own_nick fails to match
   # its own folded DM rows.
   defp dm?(%Message{channel: channel}, own_nick) when is_binary(channel) and is_binary(own_nick),
     do: Identifier.canonical_target(channel) == Identifier.canonical_target(own_nick)

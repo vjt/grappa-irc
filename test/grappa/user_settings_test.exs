@@ -446,13 +446,13 @@ defmodule Grappa.UserSettingsTest do
 
       prefs = %{
         channel_messages_all: false,
-        # #525: channels fold via canonical_channel under CASEMAPPING=ascii
+        # #525: channels fold via canonical_target under CASEMAPPING=ascii
         # (A-Z only, brackets preserved), so `#Foo[X]` → `#foo[x]` (was the
         # #364 rfc1459 `#foo{x}` over-fold).
         channel_messages_only: ["#Foo[X]"],
         channel_mentions: true,
         private_messages_all: false,
-        # Nicks fold via canonical_nick (ASCII): case only; `[ ~` are kept.
+        # Nicks fold via the same canonical_target (ASCII): case only; `[ ~` are kept.
         private_messages_only: ["Foo[Bar]", "quux~"],
         presence_online: false,
         presence_offline: false

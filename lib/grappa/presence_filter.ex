@@ -17,7 +17,7 @@ defmodule Grappa.PresenceFilter do
   load-bearing there — members store, windowState, #372 re-key, own-JOIN
   auto-focus); the server filters only the HISTORY read paths. The two paths
   answer different questions, so the rule is expressed once per language —
-  like `canonical_nick`/`nickEquals`. Keep them in lockstep:
+  like `canonical_target`/`nickEquals`. Keep them in lockstep:
   `@large_channel_threshold` MUST equal cic's `LARGE_CHANNEL_THRESHOLD`.
 
   ## The tri-state (must not flatten to a boolean — #449/#458 paletto)

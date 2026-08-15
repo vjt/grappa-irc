@@ -673,11 +673,11 @@ defmodule Grappa.Scrollback do
   # The two matched clauses in each branch below, because a rename splits
   # identity across the row:
   #
-  #   * `nick_fold(sender) == canonical_nick(own_nick)` — own CONTENT (a
+  #   * `nick_fold(sender) == canonical_target(own_nick)` — own CONTENT (a
   #     PRIVMSG/ACTION/NOTICE the operator sent, #576), a self-PART or a KICK
   #     the subject issued, and a case-only self-rename (`sender` is the
   #     current/live nick in all of these).
-  #   * `nick_fold(meta.new_nick) == canonical_nick(own_nick)` — PRESENCE
+  #   * `nick_fold(meta.new_nick) == canonical_target(own_nick)` — PRESENCE
   #     ONLY: a genuine self-rename's `:nick_change` row is persisted with
   #     `sender = OLD nick` and `meta.new_nick = NEW nick`; the live nick is
   #     the NEW one, so only the `new_nick` clause catches the TERMINAL
@@ -1093,7 +1093,7 @@ defmodule Grappa.Scrollback do
   # stored case-PRESERVED (nick display rule, `message.ex`), so every MATCH
   # folds via `Identifier.nick_fold/1` — the same query-side twin the WHOIS
   # / query_windows lookups use (#121).
-  # `folded_peer` MUST already be `Identifier.canonical_nick/1`-folded by
+  # `folded_peer` MUST already be `Identifier.canonical_target/1`-folded by
   # the caller (the value side of the fold).
   #
   # #393 — SARGABLE single predicate on `fold(COALESCE(dm_with, channel))`.
@@ -1198,12 +1198,12 @@ defmodule Grappa.Scrollback do
   def delete_for_dm(subject, network_id, peer)
       when is_integer(network_id) and is_binary(peer) do
     # REV-B / H17 (2026-05-22 codebase review): route through
-    # `Identifier.canonical_channel/1` for boundary single-sourcing
-    # consistency with `delete_for_channel/3` + the controller. The
-    # call is a no-op on nick-shaped input (no sigil → pass-through);
-    # `canonical_nick/1` then folds it to the value side of the match.
-    canonical_peer = Identifier.canonical_target(peer)
-    folded_peer = Identifier.canonical_target(canonical_peer)
+    # `Identifier.canonical_target/1` for boundary single-sourcing
+    # consistency with `delete_for_channel/3` + the controller. ONE call:
+    # pre-#537 this was two (the sigil-gated `canonical_channel/1`, a
+    # no-op on nick-shaped input, then `canonical_nick/1` for the value
+    # side) — the collapsed fold makes the second application identity.
+    folded_peer = Identifier.canonical_target(peer)
 
     # `where_dm_peer/2` (shared with the read path, #372) matches both
     # DM directions AND the orphan-channel arm. UX-3 Z (2026-05-18): the
@@ -1536,12 +1536,12 @@ defmodule Grappa.Scrollback do
   def delete_for_channel(subject, network_id, channel)
       when is_integer(network_id) and is_binary(channel) do
     # REV-B / H17 (2026-05-22 codebase review): single-source the
-    # canonicalisation rule via `Identifier.canonical_channel/1` so the
+    # canonicalisation rule via `Identifier.canonical_target/1` so the
     # delete path observes the SAME normalisation the write path
     # applies in `Grappa.Scrollback.Message.canonicalize_channel/1` +
     # the UX-4-A backfill migration. Pre-fix the delete path raw-
-    # downcased while the write path called the sigil-aware
-    # `canonical_channel`. ASCII channels agree today (both shapes
+    # downcased while the write path called the then-sigil-aware
+    # `canonical_channel/1`. ASCII channels agree today (both shapes
     # collapse to `String.downcase/1` for `[A-Z]`), but any future
     # canonicalisation extension (Unicode-aware casefold, leading-`!`
     # strip, etc.) would silently make the delete miss its target
