@@ -48,7 +48,6 @@ import type {
   NetworksWireVisitorNetworkWithNickJson,
   NotifyWireEntry,
   QueryWindowsWireWindowsEntry,
-  RateLimitWireWebSessionSeveredEvent,
   ScrollbackMessageKind,
   ScrollbackWireArchiveWireEntry,
   ScrollbackWireT,
@@ -1327,12 +1326,17 @@ export type WireUserEvent =
   // inbound, the server broadcasts this on the user topic, THEN revokes the
   // bearer + closes the socket. cic latches `severedForFlood` (floodSever.ts)
   // so the re-login screen shows a dedicated "disconnected for sending too
-  // fast" banner. The arm reuses the generated `RateLimitWireWebSessionSevered
-  // Event` shape DIRECTLY — equality holds by construction, so no `_Assert_`
-  // pin is needed (same SSOT posture as the #410 leaf-enum aliases). `code`
-  // is a closed single-value set ("rate_limit_flood") narrowed strictly at
-  // ingress in userTopic.ts.
-  | RateLimitWireWebSessionSeveredEvent;
+  // fast" banner.
+  //
+  // #1338 X-S14 — `code` is WIDER here than in the generated mirror
+  // (`RateLimitWireWebSessionSeveredEvent` pins today's sole
+  // "rate_limit_flood"). Deliberate, and the same call as
+  // `recover_result.reason` above: the server may add a sever reason
+  // additively (#447), the drop-to-login action does not depend on the code,
+  // and a narrower ingress type would turn an additive token into a dropped
+  // terminal event. The generated literal stays the SERVER's honest
+  // statement of what it emits today; tolerance is the client's job.
+  | { kind: "web_session_severed"; code: string };
 
 // M-11 — Admin events stream. Discriminated union mirrors
 // `Grappa.AdminEvents.Wire`'s closed `event_kind` enum. Server emits

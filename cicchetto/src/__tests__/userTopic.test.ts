@@ -1981,18 +1981,33 @@ describe("userTopic", () => {
       expect(flagOrder).toBeLessThan(clearOrder);
     });
 
-    it("drops the event when code is not rate_limit_flood (narrower rejects)", async () => {
-      const fs = await import("../lib/floodSever");
+    // #1338 X-S14 — the sever ACTION (drop to login) does not depend on the
+    // code; the code only selects the copy. An additively-added sever reason
+    // must therefore still bounce the user to the login screen, generic
+    // banner and all, instead of leaving them on a dead shell holding a
+    // revoked bearer waiting for the WS reconnect-failure path (#630's
+    // stated must-not-happen).
+    it("clears auth on an unrecognised code (unknown-is-never-fatal)", async () => {
       const authMod = await import("../lib/auth");
-      channelMock.fireEvent({ kind: "web_session_severed", code: "something_else" });
-      expect(fs.setSeveredForFlood).not.toHaveBeenCalled();
-      expect(authMod.clearLocalAuth).not.toHaveBeenCalled();
+      channelMock.fireEvent({ kind: "web_session_severed", code: "operator_kill" });
+      expect(authMod.clearLocalAuth).toHaveBeenCalled();
     });
 
+    it("does NOT latch the flood copy for an unrecognised code", async () => {
+      const fs = await import("../lib/floodSever");
+      channelMock.fireEvent({ kind: "web_session_severed", code: "operator_kill" });
+      expect(fs.setSeveredForFlood).not.toHaveBeenCalled();
+    });
+
+    // The tolerance is over the VALUE of a required field, not over its
+    // absence: a payload with no `code` is malformed, not additive, and the
+    // narrower still rejects it.
     it("drops the event when code is missing (narrower rejects)", async () => {
       const fs = await import("../lib/floodSever");
+      const authMod = await import("../lib/auth");
       channelMock.fireEvent({ kind: "web_session_severed" });
       expect(fs.setSeveredForFlood).not.toHaveBeenCalled();
+      expect(authMod.clearLocalAuth).not.toHaveBeenCalled();
     });
 
     it("does NOT latch the flag for unrelated events", async () => {
@@ -2212,10 +2227,12 @@ describe("narrowUserEvent — links_bundle (#238)", () => {
   });
 });
 
-// #630 — web_session_severed: the inbound-flood sever event. `code` is a
-// closed single-value set ("rate_limit_flood"), narrowed strictly at ingress
-// (mirrors the away_confirmed / connection_progress closed-set guards).
-describe("narrowUserEvent — web_session_severed (#630)", () => {
+// #630 — web_session_severed: the inbound-flood sever event. #1338 X-S14
+// widened `code` from the closed literal to any string: the server may add a
+// sever reason additively (#447), and the event's action is code-independent,
+// so narrowing on the value would drop a terminal event. Same posture as the
+// `recover_result.reason` arm two cases up.
+describe("narrowUserEvent — web_session_severed (#630, #1338)", () => {
   it("narrows a valid rate_limit_flood event", async () => {
     const { narrowUserEvent } = await import("../lib/userTopic");
     expect(narrowUserEvent({ kind: "web_session_severed", code: "rate_limit_flood" })).toEqual({
@@ -2224,13 +2241,21 @@ describe("narrowUserEvent — web_session_severed (#630)", () => {
     });
   });
 
-  it("rejects an unknown code", async () => {
+  it("passes an unrecognised code through verbatim", async () => {
     const { narrowUserEvent } = await import("../lib/userTopic");
-    expect(narrowUserEvent({ kind: "web_session_severed", code: "nope" })).toBeNull();
+    expect(narrowUserEvent({ kind: "web_session_severed", code: "operator_kill" })).toEqual({
+      kind: "web_session_severed",
+      code: "operator_kill",
+    });
   });
 
   it("rejects a missing code", async () => {
     const { narrowUserEvent } = await import("../lib/userTopic");
     expect(narrowUserEvent({ kind: "web_session_severed" })).toBeNull();
+  });
+
+  it("rejects a non-string code", async () => {
+    const { narrowUserEvent } = await import("../lib/userTopic");
+    expect(narrowUserEvent({ kind: "web_session_severed", code: 42 })).toBeNull();
   });
 });

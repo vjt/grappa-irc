@@ -1010,11 +1010,16 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         reason: r.reason as string | null,
       };
     case "web_session_severed":
-      // #630 — inbound-flood web-session sever. `code` is a closed
-      // single-value set; anything but "rate_limit_flood" drops the payload
-      // (mirrors the away_confirmed / connection_progress closed-set guards).
-      if (r.code !== "rate_limit_flood") return null;
-      return { kind: "web_session_severed", code: "rate_limit_flood" };
+      // #630 — inbound-flood web-session sever. #1338 X-S14 widened `code`
+      // from the closed literal to any string, the `recover_result.reason`
+      // posture two arms up: the server may add a sever reason additively
+      // (#447), the event's ACTION does not depend on the code, and dropping
+      // a terminal event over an unrecognised value would strand the client
+      // on a dead shell holding a revoked bearer. The value is carried
+      // verbatim — it selects copy, nothing else. A missing or non-string
+      // `code` is malformed rather than additive, and still drops.
+      if (typeof r.code !== "string") return null;
+      return { kind: "web_session_severed", code: r.code };
     default:
       return null;
   }
@@ -1648,7 +1653,11 @@ moduleRoot(() => {
           //       setToken(null) does NOT reset the flood flag (the clear is
           //       guarded on a non-null bearer), so the banner survives to be
           //       rendered on the login screen.
-          setSeveredForFlood(true);
+          // #1338 X-S14 — step (2) is UNCONDITIONAL, step (1) is the copy.
+          // Only "rate_limit_flood" earns the dedicated flood banner; any
+          // other sever reason still drops to login, on the generic
+          // logged-out screen `Grappa.RateLimit.Wire` names as the fallback.
+          if (payload.code === "rate_limit_flood") setSeveredForFlood(true);
           clearLocalAuth();
           return;
 
