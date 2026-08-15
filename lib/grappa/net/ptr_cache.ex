@@ -139,16 +139,21 @@ defmodule Grappa.Net.PtrCache do
     name = Keyword.get(opts, :name, __MODULE__)
     _ = :ets.new(name, [:named_table, :set, :public, read_concurrency: true])
 
-    state = %{
-      table: name,
-      resolver: Keyword.get(opts, :resolver, &PtrResolver.resolve/1),
-      min_ttl_ms: Keyword.get(opts, :min_ttl_ms, @min_ttl_ms),
-      max_ttl_ms: Keyword.get(opts, :max_ttl_ms, @max_ttl_ms),
-      negative_ttl_ms: Keyword.get(opts, :negative_ttl_ms, @negative_ttl_ms),
-      error_ttl_ms: Keyword.get(opts, :error_ttl_ms, @error_ttl_ms)
-    }
-
-    {:ok, state}
+    # Returned as a literal, not via an intermediate binding: the deploy
+    # preflight reads the state shape out of the `{:ok, %{...}}` in this
+    # very clause (`Grappa.Deploy.Preflight.extract_state_block/1`), and a
+    # map bound to a variable first is invisible to it — a field-add here
+    # would then classify HOT and the next callback would pattern-match the
+    # new shape against the old in-memory state (#1343 D-S1).
+    {:ok,
+     %{
+       table: name,
+       resolver: Keyword.get(opts, :resolver, &PtrResolver.resolve/1),
+       min_ttl_ms: Keyword.get(opts, :min_ttl_ms, @min_ttl_ms),
+       max_ttl_ms: Keyword.get(opts, :max_ttl_ms, @max_ttl_ms),
+       negative_ttl_ms: Keyword.get(opts, :negative_ttl_ms, @negative_ttl_ms),
+       error_ttl_ms: Keyword.get(opts, :error_ttl_ms, @error_ttl_ms)
+     }}
   end
 
   @impl GenServer
