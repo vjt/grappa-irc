@@ -359,6 +359,19 @@ defmodule Grappa.Session.Backoff do
   @spec cap_ms() :: unquote(@cap_ms)
   def cap_ms, do: @cap_ms
 
+  @doc """
+  The exponent clamp — the knee of the curve. From failure count
+  `max_exponent() + 1` on, every further failure yields the same capped
+  wait.
+
+  Public for the same reason as `base_ms/0` and `cap_ms/0`: the #1350
+  consumer pin walks the fail-over ring PAST this point, and a test that
+  hardcoded the knee would keep passing below it the day the tuning
+  moves.
+  """
+  @spec max_exponent() :: unquote(@max_exponent)
+  def max_exponent, do: @max_exponent
+
   @doc false
   @spec entries() :: [entry()]
   def entries do
