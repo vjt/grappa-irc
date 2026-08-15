@@ -47,11 +47,11 @@ defmodule GrappaWeb.SessionRevocationListener do
 
   use GenServer
 
-  require Logger
-
   alias Grappa.Accounts.Revocations
   alias Grappa.Subject
   alias GrappaWeb.UserSocket
+
+  require Logger
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, :ok, opts)
