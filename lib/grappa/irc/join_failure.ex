@@ -51,8 +51,8 @@ defmodule Grappa.IRC.JoinFailure do
 
   ## Measured exclusions
 
-  * **437** — the one collision that is NOT inert, and the reason the guard
-    below matches `params[1]` and nothing looser. On solanum it is
+  * **437** — the one collision that is NOT inert, and the proof that the
+    `params[1]` guard is a correlation, not a safety filter. On solanum it is
     ERR_UNAVAILRESOURCE, a real JOIN exit (`m_join.c:242/303/328`). On
     bahamut 437 is a DIFFERENT numeric, ERR_BANNICKCHANGE
     (`include/numeric.h:333`), and its `params[1]` is **a channel**:

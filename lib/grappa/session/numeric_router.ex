@@ -1054,12 +1054,15 @@ defmodule Grappa.Session.NumericRouter do
   # neither. It also keeps a cross-flavour numeric collision inert (485 is
   # a quarantined-channel refusal on bahamut and ERR_BANNEDNICK on solanum).
   #
-  # `params[1]` is the WHOLE correlation on purpose — do not loosen it to
-  # "a channel anywhere in the params". 437 is the counter-example that
-  # earned its exclusion: on bahamut it is ERR_BANNICKCHANGE and carries a
-  # channel there for a NICK failure (`m_nick.c:525`), so a looser guard
-  # would flip a live window to `:failed` off a nick error. See
-  # `Grappa.IRC.JoinFailure`'s exclusion list before adding a code.
+  # `params[1]` is the WHOLE correlation, and it is NOT a filter that makes
+  # any code safe to add. 437 is the proof: on bahamut it is
+  # ERR_BANNICKCHANGE and puts a CHANNEL at `params[1]`
+  # (`m_nick.c:525` passes `chptr->chname`) for a NICK failure, so it would
+  # correlate against a live in-flight JOIN and flip that window to
+  # `:failed` — under this exact guard, not a looser one. What protects us
+  # is that 437 is not in the set. Read `Grappa.IRC.JoinFailure`'s
+  # exclusion list before adding a code, and check the ircd's format
+  # string: membership is a claim about MEANING, not about shape.
   @join_failure_numerics MapSet.new(JoinFailure.numerics())
 
   # The param shape is the handler's shape, `[_, channel, reason | _]`, not
