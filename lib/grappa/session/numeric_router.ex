@@ -182,7 +182,7 @@ defmodule Grappa.Session.NumericRouter do
       into this set, which is the same correlation EventRouter's
       `{:join_failed, …}` clause performs. Uncorrelated ones stay on the
       normal route and remain visible, and a code that means something
-      else outside a JOIN (437's nick form, 476/485 on solanum) is inert.
+      else outside a JOIN (476/485 across the two ircds) is inert.
     * `casemapping` — the network's identifier casemapping from 005
       (`ISupport.casemapping/1`), `:ascii` when no 005 has landed. #537:
       the accumulator keys above are written with the NETWORK fold, so
@@ -1033,9 +1033,9 @@ defmodule Grappa.Session.NumericRouter do
   end
 
   # #1345 — the join-failure gate runs AHEAD of the class dispatch, on the
-  # same "delegation wins" precedence the label arm above uses. It has to:
-  # 437 ERR_UNAVAILRESOURCE is deny-listed for its NICK form, and the
-  # channel form would never reach `:scan` to be tested there.
+  # same "delegation wins" precedence the label arm above uses, so that a
+  # member of the set is never intercepted by the deny list on its way to
+  # the correlation test.
   @spec param_derived_route(1..999, Message.t(), router_state()) :: routing_decision()
   defp param_derived_route(code, msg, state) do
     if join_failure_leg?(code, msg.params, state) do
@@ -1052,9 +1052,14 @@ defmodule Grappa.Session.NumericRouter do
   # so the two decisions cannot disagree — matched, only EventRouter
   # persists; unmatched, only the scan route does; never both, never
   # neither. It also keeps a cross-flavour numeric collision inert (485 is
-  # a quarantined-channel refusal on bahamut and ERR_BANNEDNICK on solanum)
-  # and leaves 437's nick form on its deny-listed route, since a nick never
-  # folds into the channel set.
+  # a quarantined-channel refusal on bahamut and ERR_BANNEDNICK on solanum).
+  #
+  # `params[1]` is the WHOLE correlation on purpose — do not loosen it to
+  # "a channel anywhere in the params". 437 is the counter-example that
+  # earned its exclusion: on bahamut it is ERR_BANNICKCHANGE and carries a
+  # channel there for a NICK failure (`m_nick.c:525`), so a looser guard
+  # would flip a live window to `:failed` off a nick error. See
+  # `Grappa.IRC.JoinFailure`'s exclusion list before adding a code.
   @join_failure_numerics MapSet.new(JoinFailure.numerics())
 
   # The param shape is the handler's shape, `[_, channel, reason | _]`, not

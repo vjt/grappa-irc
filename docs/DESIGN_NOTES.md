@@ -42725,7 +42725,7 @@ sweeps `:pending`), and cic drew a greyed tab that never resolved.
 `Grappa.IRC.JoinFailure` is now the single enumeration and every consumer
 derives from it. The set is read out of the two bound ircds rather than an
 RFC (azzurra/bahamut `5c41c8b`, solanum `2ce64de`), one citation per code in
-the moduledoc: **403 405 437 471 473 474 475 476 477 479 480 485**.
+the moduledoc: **403 405 471 473 474 475 476 477 479 480 485**.
 
 **481 is excluded, and that corrects the two texts that put it in.** It IS a
 `can_join` exit on bahamut (`+O` oper-only, `channel.c:1967`), but its format
@@ -42739,14 +42739,26 @@ instead of merely forgetting it. Deliberately not built here. 443
 (channel at `params[2]`) and 470 (a redirect, not a refusal) are excluded for
 shape, also on record in the moduledoc.
 
+**437 is excluded too, and it is the exclusion worth remembering.** It IS a
+JOIN exit on solanum (ERR_UNAVAILRESOURCE), but on bahamut 437 is a different
+numeric altogether — ERR_BANNICKCHANGE (`numeric.h:333`) — and `m_nick.c:525`
+passes it `chptr->chname`, so its `params[1]` is **a channel** while the
+failure is a nick change. That is a false positive the correlation cannot
+distinguish: a `/nick` while banned on a channel whose JOIN is still in
+flight would flip a live window to `:failed`. A juped channel on Libera
+therefore keeps sitting at `:pending` — the deliberate side of the trade,
+because prod is bahamut. **Cross-flavour collisions are only inert when the
+other meaning cannot present the same shape**, which is true of 476 and 485
+(solanum defines both in `numeric.h` and gives neither a `NUMERIC_STR_`, so
+core never emits them) and false of 437.
+
 **Delegation is now correlation-gated, and that is the load-bearing half.**
 `join_failure_leg?/3` delegates a member of the set only when its `params[1]`
 folds to a channel whose JOIN is in flight — the same match `EventRouter`
 performs — and it runs ahead of the deny list, on the precedence a label
-already loses to. Flat membership could not have carried this set: 437 is
-deny-listed for its NICK form, and 476/485 mean different things on the two
-ircds (ONLYSSLCLIENTS vs BADCHANMASK; CHANBANREASON vs BANNEDNICK). Under the
-gate a cross-flavour collision is inert by construction.
+already loses to. Flat membership could not have carried a set that holds
+codes meaning other things elsewhere. The correlation is `params[1]` and
+nothing looser, and 437 is the reason to keep it that way.
 
 **What the gate also repairs is a silent drop that was already there.** The
 handler's own comment promised that an uncorrelated 403/473/… "falls through

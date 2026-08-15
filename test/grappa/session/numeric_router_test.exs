@@ -946,14 +946,6 @@ defmodule Grappa.Session.NumericRouterTest do
     # measured code delegate when it correlates, and does none of them
     # delegate when it does not? Truncating the set turns the pin red;
     # breaking the gate turns these red.
-    # 437 is the one member that is ALSO deny-listed (for its nick form), so
-    # its uncorrelated route is `$server`, not the channel window. Every
-    # other member falls to the param scan.
-    uncorrelated = fn
-      437, _channel -> {:server, nil}
-      _code, channel -> {:channel, channel}
-    end
-
     for code <- JoinFailure.numerics() do
       test "#{code} on an in-flight JOIN is delegated to EventRouter" do
         m = msg(unquote(code), ["vjt", "#sniffo", "Cannot join channel"])
@@ -968,14 +960,14 @@ defmodule Grappa.Session.NumericRouterTest do
         # in silence rather than landing in a window.
         m = msg(unquote(code), ["vjt", "#sniffo", "Cannot join channel"])
 
-        assert unquote(Macro.escape(uncorrelated.(code, "#sniffo"))) == NumericRouter.route(m, state())
+        assert {:channel, "#sniffo"} = NumericRouter.route(m, state())
       end
 
       test "#{code} for a DIFFERENT channel than the in-flight one is not delegated" do
         m = msg(unquote(code), ["vjt", "#altrove", "Cannot join channel"])
         st = state(in_flight_channels: MapSet.new(["#sniffo"]))
 
-        assert unquote(Macro.escape(uncorrelated.(code, "#altrove"))) == NumericRouter.route(m, st)
+        assert {:channel, "#altrove"} = NumericRouter.route(m, st)
       end
     end
 
@@ -1010,12 +1002,14 @@ defmodule Grappa.Session.NumericRouterTest do
       assert {:channel, "#foo[1]"} = NumericRouter.route(m, st)
     end
 
-    test "437's NICK form keeps its deny-listed $server route while a JOIN is in flight" do
-      # ERR_UNAVAILRESOURCE is dual-use: `Nick/channel is temporarily
-      # unavailable`. The channel form belongs to the JOIN, the nick form
-      # answers a /nick — and the gate separates them by shape, because a
-      # nick never folds into the in-flight CHANNEL set.
-      m = msg(437, ["vjt", "presanick", "Nick/channel is temporarily unavailable"])
+    test "437 is NOT delegated even when its channel matches an in-flight JOIN" do
+      # The exclusion that shape alone would not have caught. On bahamut —
+      # all of prod — 437 is ERR_BANNICKCHANGE and `params[1]` is the
+      # channel a NICK was refused on (`m_nick.c:525`), a perfect false
+      # positive for the correlation. Keeping it out of the set is what
+      # stops a nick error from flipping a live window to :failed; the
+      # numeric stays on its deny-listed $server route.
+      m = msg(437, ["vjt", "#sniffo", "Cannot change nickname while banned or moderated on channel"])
       st = state(in_flight_channels: MapSet.new(["#sniffo"]))
 
       assert {:server, nil} = NumericRouter.route(m, st)

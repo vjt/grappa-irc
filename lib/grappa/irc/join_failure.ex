@@ -27,29 +27,44 @@ defmodule Grappa.IRC.JoinFailure do
   |-----|---------|---------|
   | 403 | `channel.c:2221` NOSUCHCHANNEL | `m_join.c:213` NOSUCHCHANNEL |
   | 405 | `channel.c:2354` TOOMANYCHANNELS | `m_join.c:317` TOOMANYCHANNELS |
-  | 437 | — (nick-only) | `m_join.c:242/303/328` UNAVAILRESOURCE |
   | 471 | `can_join channel.c:1971` (+l) | `can_join channel.c:776` (+l) |
   | 473 | `can_join channel.c:1941` (+i) | `can_join channel.c:761` (+i) |
   | 474 | `can_join channel.c:1939` (+b) | `can_join channel.c:737` (+b) |
   | 475 | `can_join channel.c:1969` (+k) | `can_join channel.c:743` (+k) |
-  | 476 | `can_join channel.c:1973` ONLYSSLCLIENTS | BADCHANMASK — not a JOIN exit |
+  | 476 | `can_join channel.c:1973` ONLYSSLCLIENTS | BADCHANMASK, no format string |
   | 477 | `can_join channel.c:1937/1943/1945` (+R) | `can_join channel.c:778` (+r) |
-  | 479 | defined, unemitted | `m_join.c:198/221` BADCHANNAME |
-  | 480 | `s_err.c` NULL slot | `can_join channel.c:785` THROTTLE (+j) |
-  | 485 | `channel.c:2313` CHANBANREASON (quarantine) | BANNEDNICK — unrelated |
+  | 479 | `check_channelname channel.c:2002`, called from `m_join:2204` | `m_join.c:198/221` |
+  | 480 | not in `numeric.h` | `can_join channel.c:785` THROTTLE (+j) |
+  | 485 | `channel.c:2313` CHANBANREASON (quarantine) | BANNEDNICK, no format string |
 
-  **The same number means different things on the two ircds** (476, 485),
-  which is exactly why nothing here maps a numeric to a phrase: the
-  `reason` that reaches cic is the ircd's OWN trailing text, and the code
-  travels beside it as `meta.numeric`. A flavour-blind sentence written by
-  us would tell an Azzurra user their channel mask was malformed when the
-  server said "Only SSL clients can join". Cross-flavour collisions are
-  inert for a second reason too: delegation is correlation-gated, so a
-  numeric only ever reaches the join-failure path when its `params[1]`
-  matches a channel whose JOIN we have in flight.
+  **The same number means different things on the two ircds**, which is
+  exactly why nothing here maps a numeric to a phrase: the `reason` that
+  reaches cic is the ircd's OWN trailing text, and the code travels beside
+  it as `meta.numeric`. A flavour-blind sentence written by us would tell
+  an Azzurra user their channel mask was malformed when the server said
+  "Only SSL clients can join". The two collisions above are additionally
+  inert on the wire: solanum defines 476 and 485 in `include/numeric.h`
+  but gives neither a `NUMERIC_STR_` format string, so core never emits
+  them. And even an emitted collision would have to arrive for a channel
+  whose JOIN we hold in flight before it reached this path at all —
+  delegation is correlation-gated.
 
   ## Measured exclusions
 
+  * **437** — the one collision that is NOT inert, and the reason the guard
+    below matches `params[1]` and nothing looser. On solanum it is
+    ERR_UNAVAILRESOURCE, a real JOIN exit (`m_join.c:242/303/328`). On
+    bahamut 437 is a DIFFERENT numeric, ERR_BANNICKCHANGE
+    (`include/numeric.h:333`), and its `params[1]` is **a channel**:
+    `m_nick.c:525` passes `lp->value.chptr->chname` for
+    `":%s 437 %s %s :Cannot change nickname while banned or moderated on
+    channel"`. So on prod a `/nick` while banned on a channel whose JOIN we
+    still hold in flight would correlate and flip a live window to
+    `:failed` with a nick-change reason — the ghost-correlation hazard the
+    self-JOIN strip in `server.ex:5600` already guards against for the
+    real failure numerics. A juped channel on Libera therefore keeps
+    sitting at `:pending`; that is the deliberate side of the trade, and
+    covering it needs the flavour, not a wider set.
   * **481 ERR_NOPRIVILEGES** — a genuine `can_join` exit on bahamut
     (`channel.c:1967`, `+O` oper-only channels), but its format string
     carries NO channel: `":%s 481 %s :Permission Denied, …"`
@@ -66,7 +81,17 @@ defmodule Grappa.IRC.JoinFailure do
     params, and the honest handling is a rename, not a failure.
   """
 
-  @numerics [403, 405, 437, 471, 473, 474, 475, 476, 477, 479, 480, 485]
+  @numerics [403, 405, 471, 473, 474, 475, 476, 477, 479, 480, 485]
+
+  @typedoc """
+  One measured join-failure numeric.
+
+  The union mirrors `@numerics` exactly, and has to: `:underspecs` rejects a
+  contract wider than the success typing, and a contract narrower than it is
+  invalid, so a code added to one and not the other is a Dialyzer error in
+  either direction. The two cannot drift apart in silence.
+  """
+  @type t :: 403 | 405 | 471 | 473 | 474 | 475 | 476 | 477 | 479 | 480 | 485
 
   @doc """
   The join-failure numeric set, ascending.
@@ -75,6 +100,6 @@ defmodule Grappa.IRC.JoinFailure do
   (`@join_failure_numerics JoinFailure.numerics()`) so it can be used in a
   guard; that makes every consumer recompile when this list changes.
   """
-  @spec numerics() :: [pos_integer(), ...]
+  @spec numerics() :: [t(), ...]
   def numerics, do: @numerics
 end

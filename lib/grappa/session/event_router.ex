@@ -1748,8 +1748,8 @@ defmodule Grappa.Session.EventRouter do
   # EventRouter alone, and the numeric catch-all here returns no effect,
   # so an uncorrelated one was dropped in silence. Correlation-gated
   # delegation makes the promise true again — and it is what lets the set
-  # hold codes that mean something else outside a JOIN (437's nick form,
-  # 476/485 on solanum), since those never match an in-flight channel.
+  # hold a code that means something else on the other bound ircd (476,
+  # 485), since those never match an in-flight channel.
   @join_failure_numerics JoinFailure.numerics()
 
   defp do_route(

@@ -23,8 +23,6 @@ defmodule Grappa.IRC.JoinFailureTest do
     403,
     # 405 ERR_TOOMANYCHANNELS — bahamut channel.c:2354, solanum m_join.c:317
     405,
-    # 437 ERR_UNAVAILRESOURCE — solanum m_join.c:242/303/328 (channel form)
-    437,
     # 471 ERR_CHANNELISFULL (+l) — both, can_join
     471,
     # 473 ERR_INVITEONLYCHAN (+i) — both, can_join
@@ -63,6 +61,16 @@ defmodule Grappa.IRC.JoinFailureTest do
       refute 481 in JoinFailure.numerics()
       refute 443 in JoinFailure.numerics()
       refute 470 in JoinFailure.numerics()
+    end
+
+    test "excludes 437 — on bahamut it is ERR_BANNICKCHANGE and carries a channel" do
+      # The one exclusion that is NOT about shape. 437 IS a JOIN exit on
+      # solanum (UNAVAILRESOURCE), but on bahamut — all of prod — it is a
+      # different numeric whose params[1] is the channel a NICK was refused
+      # on (`m_nick.c:525`). It would correlate against a live in-flight
+      # JOIN and flip that window to :failed off a nick error, so it stays
+      # out and a juped channel on Libera keeps sitting at :pending.
+      refute 437 in JoinFailure.numerics()
     end
 
     test "is ascending and duplicate-free" do
