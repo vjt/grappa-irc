@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
-import { addQuoteCommand, addQuoteToCompose } from "../lib/addQuote";
+import { ADDQUOTE_COMMAND, addQuoteCommand, addQuoteToCompose } from "../lib/addQuote";
 import type { ScrollbackMessage } from "../lib/api";
 import { channelKey } from "../lib/channelKey";
 import { getDraft, setDraft } from "../lib/compose";
@@ -176,6 +176,56 @@ describe("addQuoteToCompose", () => {
     setDraft(KEY, "bozza ");
     addQuoteToCompose(msg({}), NET, CHAN);
     expect(getDraft(KEY)).toBe("bozza !addquote <vjt> ciao mondo");
+  });
+
+  // #1356 — ONE verb, N payloads. A second long-press while a quote is already
+  // in the draft appends that message's `<nick> body` and nothing else: a
+  // second `!addquote` mid-line leaves the bot reading one command, and the
+  // rest of the line gets swallowed into the first quote's body.
+  it("appends a second quote without repeating the verb", () => {
+    mountCompose();
+    addQuoteToCompose(msg({ sender: "ska", body: "io oggi ho messo un reggiseno" }), NET, CHAN);
+    addQuoteToCompose(msg({ id: 2, sender: "alk", body: "se lo allacciano davanti" }), NET, CHAN);
+    expect(getDraft(KEY)).toBe(
+      "!addquote <ska> io oggi ho messo un reggiseno <alk> se lo allacciano davanti",
+    );
+  });
+
+  // N, not two: an implementation that only recognises the verb at the HEAD of
+  // the draft, or that flips a one-shot flag, passes the arm above and repeats
+  // the verb here.
+  it("keeps accumulating past the second payload", () => {
+    mountCompose();
+    for (const sender of ["ska", "alk", "cle"]) {
+      addQuoteToCompose(msg({ sender, body: `detto da ${sender}` }), NET, CHAN);
+    }
+    expect(getDraft(KEY)).toBe(
+      "!addquote <ska> detto da ska <alk> detto da alk <cle> detto da cle",
+    );
+  });
+
+  // The accumulated payload keeps the head the SCROLLBACK rendered (#1264), so
+  // an action joins the line as `* nick` — the verb is what must not repeat,
+  // the attribution is what must not be dropped.
+  it("accumulates an action under its rendered head", () => {
+    mountCompose();
+    addQuoteToCompose(msg({ sender: "ska", body: "primo" }), NET, CHAN);
+    addQuoteToCompose(
+      msg({ id: 2, kind: "action", sender: "alk", body: "\x01ACTION waves\x01" }),
+      NET,
+      CHAN,
+    );
+    expect(getDraft(KEY)).toBe("!addquote <ska> primo * alk waves");
+  });
+
+  // The verb carries its own trailing space, so a hand-typed `!addquote ` must
+  // not earn a second one. Same door, same draft inspection: the separator is
+  // ONE space, and only where there is not one already.
+  it("does not double the space after a hand-typed verb", () => {
+    mountCompose();
+    setDraft(KEY, ADDQUOTE_COMMAND);
+    addQuoteToCompose(msg({}), NET, CHAN);
+    expect(getDraft(KEY)).toBe("!addquote <vjt> ciao mondo");
   });
 
   it("writes nothing for an unquotable row", () => {

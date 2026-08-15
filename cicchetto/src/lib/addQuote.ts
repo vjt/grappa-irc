@@ -1,4 +1,6 @@
 import type { ScrollbackMessage } from "./api";
+import { channelKey } from "./channelKey";
+import { getDraft } from "./compose";
 import { appendToCompose } from "./composeAppend";
 import { attributionHead, quotableBody } from "./quotableBody";
 
@@ -34,6 +36,34 @@ export function addQuoteCommand(msg: ScrollbackMessage): string | null {
   return body === null ? null : `${ADDQUOTE_COMMAND}${attributionHead(msg)} ${body}`;
 }
 
+// #1356 — ONE verb, N payloads. What a long-press adds to THIS draft: the whole
+// command when the line has no `!addquote` yet, and the bare `<nick> body` when
+// it already does. A second verb mid-line is not a second quote — the bot reads
+// one command per line, so everything past the first `!addquote` is swallowed
+// into the first quote's body.
+//
+// The rule lives HERE and not in `appendToCompose`, which the reply quote
+// (#1067) and the off-compose printable-key handler also go through: for those
+// two, appending to an existing draft is exactly right. Blind concatenation is
+// the shared verb; knowing what `!addquote` means is this door's business.
+//
+// `includes`, not `startsWith`: a half-typed draft (`ciao !addquote <a> x`)
+// still holds a command the bot will read as one. A draft that merely mentions
+// the verb in prose therefore suppresses it too — accepted, because on the same
+// line the bot would not tell the two apart either.
+//
+// The separator is ONE space and no token (vjt's spec is emphatic on the token:
+// there is none). It goes in only when the draft does not already end in
+// whitespace, so a hand-typed `!addquote ` — the verb ships its own trailing
+// space — does not earn a second one.
+export function addQuoteAppendText(draft: string, msg: ScrollbackMessage): string | null {
+  const body = quotableBody(msg);
+  if (body === null) return null;
+  const payload = `${attributionHead(msg)} ${body}`;
+  if (!draft.includes(ADDQUOTE_COMMAND)) return `${ADDQUOTE_COMMAND}${payload}`;
+  return draft.endsWith(" ") ? payload : ` ${payload}`;
+}
+
 // Drop the command into the window's compose box with the caret at the end and
 // REVEALED — `!addquote ` plus a body overflows the rows=1 textarea nearly
 // every time, which is why #1107 waited on #1105/#1113. `appendToCompose` owns
@@ -43,7 +73,7 @@ export function addQuoteToCompose(
   networkSlug: string,
   channelName: string,
 ): void {
-  const command = addQuoteCommand(msg);
-  if (command === null) return;
-  appendToCompose(networkSlug, channelName, command);
+  const text = addQuoteAppendText(getDraft(channelKey(networkSlug, channelName)), msg);
+  if (text === null) return;
+  appendToCompose(networkSlug, channelName, text);
 }
