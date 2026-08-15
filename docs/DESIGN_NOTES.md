@@ -43020,3 +43020,55 @@ worker host for the whole of this work, so `check.sh`, `mix.sh` and
 unobserved, and CI on the PR is the only arbiter. The measured ircd citations
 come from the public `azzurra/bahamut` and `solanum-ircd/solanum` trees at the
 refs above, not from a running server.
+<!-- entry #1356 -->
+
+---
+
+## 2026-08-15 — #1356/#1357: the compose line accumulates, and what must not repeat differs by door
+
+`appendToCompose` does `getDraft(key) + text` and never looks at the draft.
+Three doors ride it — `!addquote`, the reply quote, and the off-compose
+printable-key handler — and two of them were producing garbage from that one
+blindness: a second long-press wrote `<ska> primo!addquote <alk> secondo`
+(the bot reads one command per line, so the second quote was not malformed,
+it was eaten), and a second reply buried the first ` << ` mid-line, where
+the marker reads as quoted text and the answer at the caret belongs to the
+last quote only.
+
+**One root, opposite remedies — which is why they stayed two issues.** vjt's
+rulings agree on the LINE (it accumulates, in both doors) and diverge on what
+must not repeat: for `!addquote` the VERB, for reply the MARKER. So the fix
+belongs in each door and not in the shared verb, where a guard would break
+the printable-key handler, for which appending to a live draft is simply
+correct.
+
+**`!addquote` (#1356)** appends the bare `<nick> body` when the draft already
+holds the command. The predicate is `includes`, not `startsWith`: a half-typed
+draft still carries a command the bot will read as one. Cost accepted and
+named — a draft that merely mentions the verb in prose suppresses it too, and
+on the same line the bot could not tell those apart either. The separator is
+one space and no token, added only when the draft does not already end in
+whitespace, so the verb's own trailing space is not doubled.
+
+**Reply (#1357)** strips the marker only when the tail is at the END. The
+tail's LEADING space (#1235, so it never sits flush against the last word) is
+then exactly the separator the next quote needs, so nothing new was invented
+to keep two quotes apart. Once the operator has typed their answer the tail is
+mid-line and is no longer ours: cutting it there rewrites a human's sentence
+to fix our own duplication, so that line keeps two markers on purpose. Refusing
+the second swipe was ruled out; replace-semantics (last swipe wins) was NOT —
+vjt: "start with 2, we change it later if needed" — so the whole decision is
+`draftBeforeReplyQuote`, one function to swap.
+
+**Why `updateCompose` exists.** Reply must REMOVE characters, which append
+cannot express. Doing it as a `setDraft` beside the append would split one
+edit into two writes that disagree exactly when no composer is mounted: the
+strip lands, the quote does not. So the focus + iOS-scroll-short-circuit +
+caret-reveal dance is now parameterised by a draft transform, with
+`appendToCompose` one line on top of it. `!addquote` deliberately stays on the
+append verb — it must not touch the composer at all for an unquotable row,
+and a transform callback would focus one.
+
+**Not established:** jsdom only. Both behaviours are asserted on the compose
+STORE; that a real engine shows the caret after the surviving tail is the
+e2e's job and no e2e was run for this pair.
