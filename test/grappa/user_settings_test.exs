@@ -933,6 +933,135 @@ defmodule Grappa.UserSettingsTest do
     end
   end
 
+  describe "rename_muted_target/4 (#1340 K-S2 — the mute joins the #373 set)" do
+    test "moves the mute from the old nick to the new one, on that network only" do
+      user = user_fixture()
+
+      assert {:ok, _} =
+               put_muted(user, %{
+                 "azzurra guest" => %{"until" => nil},
+                 "libera guest" => %{"until" => nil},
+                 "azzurra #linux" => %{"until" => nil}
+               })
+
+      assert {:ok, :renamed} =
+               UserSettings.rename_muted_target({:user, user.id}, "azzurra", "guest", "Guest2")
+
+      # The renamed peer is still silenced, under the identity they now
+      # carry; the same nick on another network and the channel mute beside
+      # it are untouched — the rename is one conversation moving, not a sweep.
+      assert read_muted(user) == %{
+               "azzurra guest2" => %{"until" => nil},
+               "libera guest" => %{"until" => nil},
+               "azzurra #linux" => %{"until" => nil}
+             }
+    end
+
+    test "carries the snooze expiry across, rather than promoting it to permanent" do
+      user = user_fixture()
+      until = System.system_time(:second) + 3_600
+
+      assert {:ok, _} = put_muted(user, %{"azzurra guest" => %{"until" => until}})
+
+      assert {:ok, :renamed} =
+               UserSettings.rename_muted_target({:user, user.id}, "azzurra", "guest", "Guest2")
+
+      assert read_muted(user) == %{"azzurra guest2" => %{"until" => until}}
+    end
+
+    test "folds BOTH sides, so the stored key and the wire casing need not agree" do
+      user = user_fixture()
+
+      # Stored folded (every writer folds), renamed from the RAW casing the
+      # NICK line carries — the #121/#372 key/display split.
+      assert {:ok, _} = put_muted(user, %{"azzurra guest87449" => %{"until" => nil}})
+
+      assert {:ok, :renamed} =
+               UserSettings.rename_muted_target(
+                 {:user, user.id},
+                 "azzurra",
+                 "Guest87449",
+                 "NickTemporaneo"
+               )
+
+      assert read_muted(user) == %{"azzurra nicktemporaneo" => %{"until" => nil}}
+    end
+
+    test "a case-only NICK is a no-op, not a self-destructive re-key" do
+      user = user_fixture()
+
+      assert {:ok, _} = put_muted(user, %{"azzurra guest" => %{"until" => nil}})
+
+      assert {:ok, :noop} =
+               UserSettings.rename_muted_target({:user, user.id}, "azzurra", "guest", "GUEST")
+
+      assert read_muted(user) == %{"azzurra guest" => %{"until" => nil}}
+    end
+
+    test "on a fold-collision the DESTINATION's own entry survives" do
+      user = user_fixture()
+      until = System.system_time(:second) + 3_600
+
+      # Both identities muted: `guest` permanently, `guest2` snoozed. The
+      # operator's choice about the identity that SURVIVES is the one that
+      # means something after the rename.
+      assert {:ok, _} =
+               put_muted(user, %{
+                 "azzurra guest" => %{"until" => nil},
+                 "azzurra guest2" => %{"until" => until}
+               })
+
+      assert {:ok, :renamed} =
+               UserSettings.rename_muted_target({:user, user.id}, "azzurra", "guest", "guest2")
+
+      assert read_muted(user) == %{"azzurra guest2" => %{"until" => until}}
+    end
+
+    test "an unmuted peer renaming changes nothing" do
+      user = user_fixture()
+
+      assert {:ok, _} = put_muted(user, %{"azzurra #linux" => %{"until" => nil}})
+
+      assert {:ok, :noop} =
+               UserSettings.rename_muted_target({:user, user.id}, "azzurra", "guest", "Guest2")
+
+      assert read_muted(user) == %{"azzurra #linux" => %{"until" => nil}}
+    end
+
+    test "a subject with no settings row at all is a no-op, not a crash" do
+      user = user_fixture()
+
+      assert {:ok, :noop} =
+               UserSettings.rename_muted_target({:user, user.id}, "azzurra", "guest", "Guest2")
+    end
+
+    test "leaves every OTHER notification pref exactly as it was" do
+      user = user_fixture()
+
+      assert {:ok, _} =
+               UserSettings.put_notification_prefs(
+                 {:user, user.id},
+                 %{
+                   base_prefs(%{"azzurra guest" => %{"until" => nil}})
+                   | channel_messages_only: ["#linux"],
+                     private_messages_all: false,
+                     private_messages_only: ["bob"]
+                 }
+               )
+
+      before = UserSettings.get_notification_prefs({:user, user.id})
+
+      assert {:ok, :renamed} =
+               UserSettings.rename_muted_target({:user, user.id}, "azzurra", "guest", "Guest2")
+
+      after_rename = UserSettings.get_notification_prefs({:user, user.id})
+
+      # A rename migrates what the operator already chose; it is not a new
+      # choice, so nothing but the mute key may move.
+      assert Map.delete(before, :muted_targets) == Map.delete(after_rename, :muted_targets)
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # upload_ttl_seconds accessors (UX-4 bucket M, 2026-05-19)
   # ---------------------------------------------------------------------------

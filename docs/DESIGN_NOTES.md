@@ -42706,3 +42706,107 @@ viewport. That those five specs scope their chip click to
 `.home-pane-network-row-parked`, and so cannot be made ambiguous by the
 seam's identically-named control, is read from their source rather than
 observed.
+<!-- entry #1340 -->
+
+---
+
+## 2026-08-15 — #1340: a nick you captured is a nick you stop tracking
+
+Two findings from the 2026-08-15 codebase review, one class: something holds a
+nick from before the rename, so a `/nick` forks the identity in silence. #373
+closed that class for three stores and left it open for a closure and a map.
+
+### C-S1 — the per-channel WS handler held a snapshot
+
+`installChannelHandler` took `ownNick` as a VALUE, resolved when the topic was
+joined. `own_nick_changed` → `mutateNetworkNick` re-runs all four join effects,
+but each is guarded by `if (joined.has(key)) continue;`, so an already-joined
+channel keeps the handler it was built with — forever. Only the DM listener
+recovered, and only because the new own nick mints a new `channelKey`.
+
+The fix is an ACCESSOR read per event. Not the one the review proposed:
+`() => ownNickForNetwork(net, u)` closes over the same row object
+`mutateNetworkNick` REPLACES (`prev.map(n => n.id === id ? {...n, nick} : n)`),
+so it is exactly as stale as the string was. The accessor resolves from the
+SLUG through the live `networkBySlug` memo, `untrack`ed like the sibling
+`untrack(user)` in `routeMessage`. Rejoining the topics on a rename was
+rejected: heavier than the problem, and it races the JOIN echo the way #200's
+revert did.
+
+Dropping the two now-dead `const u = user()` reads also removed reactive
+tracking the loops no longer need. That tracking never bought anything: it
+re-ran the effect when `/me` resolved, and the `joined` guard then skipped
+every channel — the same short-circuit this entry is about. The accessor makes
+a late `/me` self-healing instead.
+
+**The measurable claim, and it corrects a comment on record.**
+`issue498-badge-follows-live-nick.spec.ts` states in its header that the
+client-side foreground increment "uses cic's own `ownNickForNetwork`, updated
+by `own_nick_changed` — also already correct". It is not: with the snapshot in
+place a mention of the NEW nick did not beep, measured in `subscribe.test.ts`.
+It stays unusable as a #498 observable, but for the OTHER reason — the server
+pushes the mention against the live nick regardless, so the title moves either
+way. The header now says so.
+
+**Which is why the e2e witness asserts the TEARDOWN.** Three of the four
+consequences are masked end-to-end: the beep and the title bump are shadowed
+by the server's own push, and the stranded window state draws no sidebar row
+(`pseudoChannelsForNetwork` skips `"joined"`, and the server has already
+dropped the channel from `channels_changed`). What only cic can decide is
+whether a PART was OURS. On a stale nick it decides no, `setParted` never
+fires, and the Channel plus its handler stay on the socket: #200's leak,
+reopened by any `/nick`. Read through `__cic_joinedTopicKeys`, measured RED
+with the fix reverted (`["azzurra i498-user", "azzurra $server", "azzurra
+#i498", "azzurra i1340-4a65ec10"]` — the topic key still there after the
+sidebar row had gone) and GREEN with it in place.
+
+The witness lives in the #498 spec file because it needs the one thing that
+file already provides and nothing else does: a session whose live nick can be
+destructively renamed without poisoning the shared vjt identity.
+
+### K-S2 — `muted_targets` was never added to the migration set
+
+#1038 re-keyed the mute on `(network, target)` where, for a DM, the target IS
+the peer nick. That made it a nick-keyed store, and nothing carried it: mute
+`guest`, they `/nick Guest2`, and the window, the DM history and the cursor
+all move while the mute key does not. The peer starts notifying again with no
+UI event explaining why, and the orphan renders in the drawer's mute picker
+for a conversation that no longer exists.
+
+`UserSettings.rename_muted_target/4` is a surgical read-modify-write over the
+stored map, deliberately not a `put_notification_prefs/2`: that writer
+full-replaces the prefs through the whole validation pipeline and its reader
+counterpart prunes elapsed snoozes. A rename migrates what the operator
+already chose — it must not rewrite the other seven fields, must not turn
+itself into a snooze sweep, and must not be refusable by the
+at-least-one-trigger guard.
+
+On a fold-collision the DESTINATION entry survives (`Map.put_new`). Both keys
+mean "silence this conversation", so the union is the only sane merge, and the
+`until` worth keeping is the one set against the identity that lives on.
+
+**Placement diverges from the review's text, with the reason on the line
+above it.** The review said to add it to the `:renamed` arm. It is
+UNCONDITIONAL instead: a mute outlives the window it silenced — closing a tab
+does not unmute it — so gating on the window row would strand exactly the mute
+nobody can then see to fix. The precedent is three lines below in the same
+function: the `:unknown` presence reset is unconditional for the same reason,
+"presence and windows are independent stores". The SELF arm is the opposite
+and stays INSIDE `migrate_self_window`'s gate, because there the row count is
+the only evidence that the window at our old nick is ours rather than a
+peer's who bore it before us.
+
+**Residual, named rather than papered over:** `notification_prefs` has no
+broadcast — cic hydrates it on every user-topic join. The server push
+predicate honours the migrated key immediately; cic's foreground beep and the
+settings drawer keep the pre-rename map until the next (re)join or reload. A
+new user-topic event would fix that and was not written: it is a wire-token
+change for a window that closes on the next reconnect.
+
+### Not established
+
+The e2e RED run surfaced a SECOND leak in the same output and it is not fixed
+here: after a rename the DM-listener holds BOTH own-nick topics
+(`"azzurra i498-user"` and `"azzurra i1340-…"`). That loop keys on the own
+nick, so the rename mints a new key and joins it, and nothing leaves the old
+one. Same family as #200, out of this bucket's scope, no issue filed yet.

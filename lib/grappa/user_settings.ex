@@ -559,6 +559,89 @@ defmodule Grappa.UserSettings do
     end
   end
 
+  @doc """
+  Moves ONE `muted_targets` entry from `old_target` to `new_target` on
+  `network_slug` — the mute's membership of the #373 nick-migration set.
+
+  Since #1038 the mute key is `(network, target)` and, for a DM, the target IS
+  the peer's nick, which makes `muted_targets` a nick-keyed store like the
+  three the peer-NICK arm already migrates. Left out of that set, a mute is
+  the one thing a rename does NOT carry: the window, the DM history and the
+  read cursor all follow, the mute key does not, and the peer the operator
+  silenced starts notifying again with nothing on screen to explain why.
+  Called from `Session.Server`'s `:peer_nick_renamed` arm and from the
+  `:own_nick_renamed` self-window migration.
+
+  ## Why it is not a `put_notification_prefs/2`
+
+  That writer full-replaces the prefs map through the whole validation
+  pipeline, and its reader counterpart PRUNES elapsed snoozes. Re-keying one
+  entry must not silently rewrite the other seven fields, must not turn a
+  rename into a snooze sweep, and must not be refusable by the
+  at-least-one-trigger guard — a rename is a MIGRATION of what the operator
+  already chose, never a new choice. So this is a surgical read-modify-write
+  over the stored map.
+
+  ## Collision
+
+  On a fold-collision — the operator had ALSO muted the destination nick —
+  the DESTINATION entry stays and the source entry is dropped. Both keys mean
+  "silence this conversation", so the union is the only sane merge, and the
+  `until` to keep is the one the operator set against the identity that
+  survives. This is the mute's shape of the same fold-collision merge
+  `QueryWindows.rename/4` performs on the window row.
+
+  Returns `{:ok, :noop}` when the two keys fold equal (a case-only NICK), when
+  the subject has no settings row, or when nothing was muted under
+  `old_target`.
+
+  > #### The client copy lags {: .warning}
+  >
+  > `notification_prefs` has NO broadcast — cic hydrates it on every
+  > user-topic join (`userTopic.ts`). The SERVER push predicate honours the
+  > migrated key immediately; cic's foreground beep and the settings drawer
+  > keep the pre-rename map until the next (re)join or reload.
+  """
+  @spec rename_muted_target(Subject.t(), String.t(), String.t(), String.t()) ::
+          {:ok, :renamed | :noop} | {:error, Ecto.Changeset.t() | :db_unavailable}
+  def rename_muted_target({_, _} = subject, network_slug, old_target, new_target)
+      when is_binary(network_slug) and is_binary(old_target) and is_binary(new_target) do
+    old_key = Identifier.channel_key(network_slug, old_target)
+    new_key = Identifier.channel_key(network_slug, new_target)
+
+    if old_key == new_key do
+      {:ok, :noop}
+    else
+      rekey_muted_target(fetch_existing_or_nil(subject), old_key, new_key)
+    end
+  end
+
+  @spec rekey_muted_target(Settings.t() | nil, String.t(), String.t()) ::
+          {:ok, :renamed | :noop} | {:error, Ecto.Changeset.t() | :db_unavailable}
+  defp rekey_muted_target(nil, _old_key, _new_key), do: {:ok, :noop}
+
+  defp rekey_muted_target(%Settings{} = settings, old_key, new_key) do
+    prefs = Map.get(settings.data, @notification_prefs_key, %{})
+    muted = if is_map(prefs), do: Map.get(prefs, "muted_targets", %{}), else: %{}
+
+    case is_map(muted) and Map.has_key?(muted, old_key) do
+      false ->
+        {:ok, :noop}
+
+      true ->
+        {entry, without_old} = Map.pop(muted, old_key)
+        # put_new, not put: the destination's own entry wins the collision.
+        next_muted = Map.put_new(without_old, new_key, entry)
+        next_prefs = Map.put(prefs, "muted_targets", next_muted)
+        next_data = Map.put(settings.data, @notification_prefs_key, next_prefs)
+
+        case persist(Settings.changeset(settings, %{data: next_data})) do
+          {:ok, _settings} -> {:ok, :renamed}
+          {:error, _} = error -> error
+        end
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # upload_ttl_seconds accessors (UX-4 bucket M, 2026-05-19)
   # ---------------------------------------------------------------------------

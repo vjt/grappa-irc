@@ -6109,6 +6109,18 @@ defmodule Grappa.Session.Server do
   # immaterial: those are `channel=#chan, dm_with=nil` and never match the
   # DM fold, so migrating after them is a no-op interaction.
   defp apply_effects([{:peer_nick_renamed, old_nick, new_nick} | rest], state) do
+    # #1340 K-S2 — the per-conversation mute joined this set when #1038 keyed
+    # it on `(network, peer nick)`. UNCONDITIONAL, and deliberately not inside
+    # the `:renamed` arm the review proposed: the mute outlives the window
+    # that was muted (closing a tab does not unmute it), so gating on the
+    # window row would strand exactly the mute nobody can see to fix. Same
+    # reasoning, and the same placement, as the presence reset at the foot of
+    # this arm — independent stores of the moved identity, each migrated on
+    # its own terms. It sits ahead of the barrier broadcast because a rename
+    # must never be observable half-applied.
+    {:ok, _mute} =
+      UserSettings.rename_muted_target(state.subject, state.network_slug, old_nick, new_nick)
+
     case QueryWindows.rename(
            state.subject,
            state.network_id,
@@ -6218,6 +6230,14 @@ defmodule Grappa.Session.Server do
       :ok = ReadCursor.rename_dm_peer(state.subject, state.network_id, old_nick, new_nick)
 
       {:ok, window} = QueryWindows.rename(state.subject, state.network_id, old_nick, new_nick)
+
+      # #1340 K-S2 — the self window's mute follows too, and INSIDE the gate,
+      # unlike the peer arm where it is unconditional. Here the row count is
+      # the only evidence that the window at our old nick is OURS; ungated,
+      # our rename would quietly re-file a mute the operator set against a
+      # peer who bore that nick before us.
+      {:ok, _mute} =
+        UserSettings.rename_muted_target(state.subject, state.network_slug, old_nick, new_nick)
 
       # Broadcast LAST, and only when a window actually moved: the event is
       # the truthful "rename fully applied" barrier (#373 rename-order fix).

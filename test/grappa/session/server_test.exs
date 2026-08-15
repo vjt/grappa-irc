@@ -3162,6 +3162,56 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
+
+    test "#1340 K-S2 — the per-conversation MUTE follows the peer NICK too" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      own = "grappa-test"
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      net_id = network.id
+      slug = network.slug
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      # The operator silenced this peer. Since #1038 that mute is keyed on
+      # `(network, peer nick)` — a nick-keyed store, so the rename below must
+      # carry it, exactly as it carries the window, the history and the cursor.
+      assert {:ok, _} =
+               put_all_muted({:user, user.id}, %{"#{slug} guest87449" => %{"until" => nil}})
+
+      IRCServer.feed(server, ":Guest87449!~g@host JOIN #sniffo\r\n")
+      IRCServer.feed(server, ":Guest87449!~g@host PRIVMSG #{own} :ciao\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :query_windows_list,
+                         windows: %{^net_id => [%{target_nick: "Guest87449"}]}
+                       }
+                     },
+                     1_000
+
+      IRCServer.feed(server, ":Guest87449!~g@host NICK :NickTemporaneo\r\n")
+
+      # Same truthful barrier the sibling test uses: the broadcast is emitted
+      # after the migration, so reading the prefs below cannot race it.
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :query_windows_list, windows: %{^net_id => [_ | _]}}
+                     },
+                     1_000
+
+      # Silenced before, silenced after. Left out of the set, the key would
+      # still read `guest87449` and the peer would start notifying again with
+      # nothing on screen to explain why.
+      assert Grappa.UserSettings.get_notification_prefs({:user, user.id}).muted_targets == %{
+               "#{slug} nicktemporaneo" => %{"until" => nil}
+             }
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
   end
 
   describe "#948 — the SELF window follows OUR OWN NICK change" do
@@ -3280,6 +3330,111 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
+
+    test "#1340 K-S2 — the self window's MUTE follows our own NICK" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      own = "grappa-test"
+      subject = {:user, user.id}
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      net_id = network.id
+      slug = network.slug
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      assert {:ok, _} = put_all_muted(subject, %{"#{slug} #{own}" => %{"until" => nil}})
+
+      IRCServer.feed(server, ":#{own}!~g@host PRIVMSG #{own} :nota per me\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :query_windows_list,
+                         windows: %{^net_id => [%{target_nick: ^own}]}
+                       }
+                     },
+                     1_000
+
+      IRCServer.feed(server, ":#{own}!~g@host NICK :grappa-new\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :query_windows_list, windows: %{^net_id => [_ | _]}}
+                     },
+                     1_000
+
+      assert Grappa.UserSettings.get_notification_prefs(subject).muted_targets == %{
+               "#{slug} grappa-new" => %{"until" => nil}
+             }
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # The same gate, applied to the mute. With no self rows the window at our
+    # old nick belongs to a PEER who bore it before us — and so does the mute
+    # standing on that key. Migrating it would silence our new identity on
+    # their behalf and un-silence them.
+    test "#1340 K-S2 — a self /nick with no self conversation leaves a same-named peer's MUTE alone" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      own = "grappa-test"
+      subject = {:user, user.id}
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      net_id = network.id
+      slug = network.slug
+
+      {:ok, _} =
+        Scrollback.persist_event(%{
+          user_id: user.id,
+          network_id: net_id,
+          channel: own,
+          server_time: System.system_time(:millisecond),
+          kind: :privmsg,
+          sender: "previous-me",
+          body: "ciao",
+          dm_with: own
+        })
+
+      {:ok, _} = QueryWindows.open(subject, net_id, own, user.name)
+      assert {:ok, _} = put_all_muted(subject, %{"#{slug} #{own}" => %{"until" => nil}})
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      IRCServer.feed(server, ":#{own}!~g@host NICK :grappa-new\r\n")
+
+      refute_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :query_windows_list}
+                     },
+                     300
+
+      assert Grappa.UserSettings.get_notification_prefs(subject).muted_targets == %{
+               "#{slug} #{own}" => %{"until" => nil}
+             }
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
+  # #1340 K-S2 — the full prefs shape `put_notification_prefs/2` demands, with
+  # only the mute map varying. Inline in each caller it is eight lines of
+  # noise around the one field under test.
+  defp put_all_muted(subject, muted) do
+    Grappa.UserSettings.put_notification_prefs(subject, %{
+      channel_messages_all: false,
+      channel_messages_only: [],
+      channel_mentions: true,
+      private_messages_all: true,
+      private_messages_only: [],
+      presence_online: false,
+      presence_offline: false,
+      muted_targets: muted
+    })
   end
 
   describe "push notifications (B4) — trigger dispatch on inbound PRIVMSG" do

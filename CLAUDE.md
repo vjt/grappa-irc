@@ -151,13 +151,18 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   a fold-collision with an existing `new` window), the DM scrollback
   (`Scrollback.rename_dm_peer/4` — `dm_with` + outbound/orphan `channel`),
   the DM read cursor (`ReadCursor.rename_dm_peer/4` — else the migrated
-  history reads fully unread), and cic's own caches
+  history reads fully unread), the per-conversation MUTE
+  (`UserSettings.rename_muted_target/4` — nick-keyed since #1038 keyed it
+  `(network, peer)`; #1340), and cic's own caches
   (`scrollback.renameScrollbackKey` + `readCursor.renameReadCursorChannel`
   + `selection.followQueryNick`, driven by the per-channel `nick_change`,
   mirroring `members.ts`). Server-driven: `EventRouter` emits
   `{:peer_nick_renamed, old, new}`, `Session.Server.apply_effects/2`
   renames the row (`QueryWindows.rename/4`, no broadcast), migrates the
-  DM history + read cursor on `:renamed` only, and THEN broadcasts
+  DM history + read cursor on `:renamed` only, migrates the mute
+  UNCONDITIONALLY (a mute outlives the window it silenced, so gating it on
+  the window row would strand it — same posture as the `:unknown` presence
+  reset in that arm), and THEN broadcasts
   `query_windows_list` (`QueryWindows.broadcast_windows_list/2`) — the
   broadcast is a truthful "rename fully applied" barrier, so a consumer
   reacting to the event is guaranteed the history has already moved
@@ -170,8 +175,10 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   window (`/msg <ownnick>`, GH #948) — and it has its own set** on
   `{:own_nick_renamed, old, new}`: `Scrollback.rename_self_window/4`
   (rows) → `ReadCursor.rename_dm_peer/4` → `QueryWindows.rename/4` →
-  broadcast, GATED on a non-zero row count (the inverse of the peer
-  arm, which gates on the window). A window at our old nick is EITHER
+  `UserSettings.rename_muted_target/4` → broadcast, GATED on a non-zero
+  row count (the inverse of the peer arm, which gates on the window) —
+  and the mute is INSIDE that gate here, unlike the peer arm, because the
+  row count is the only evidence the window is ours (#1340). A window at our old nick is EITHER
   our self window OR a leftover query with a peer who bore that nick
   before us, and the fold-unique index makes those ONE row — only the
   scrollback's `sender` separates them (folded to MATCH; the fold is
