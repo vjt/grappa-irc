@@ -331,12 +331,10 @@ defmodule Grappa.Session.EventRouter do
   # the handler guard below held six, and the two drifted apart in the
   # only direction that matters: a 477 folded here reached no handler.
   # Both now read `JoinFailure.numerics()`.
-  @channel_param1_numerics [332, 333, 331, 329, 324, 366, 352, 367, 368] ++
-                             JoinFailure.numerics()
+  @channel_param1_numerics [332, 333, 331, 329, 324, 366, 352, 367, 368] ++ JoinFailure.numerics()
 
   defp do_canonicalize_params({:numeric, n}, [own_nick, ch | rest], cm)
-       when n in @channel_param1_numerics and
-              is_binary(ch) do
+       when n in @channel_param1_numerics and is_binary(ch) do
     [own_nick, normalize_channel(ch, cm) | rest]
   end
 

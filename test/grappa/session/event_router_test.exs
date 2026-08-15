@@ -1921,8 +1921,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg({:numeric, 477}, ["vjt", "#Foo[1]", "identify first"], {:server, "irc.test.org"})
 
-      assert {:cont, next_state, [{:join_failed, "#foo{1}", _, 477}]} =
-               EventRouter.route(m, state)
+      assert {:cont, next_state, [{:join_failed, "#foo{1}", _, 477}]} = EventRouter.route(m, state)
 
       refute Map.has_key?(next_state.in_flight_joins, "#foo{1}")
     end

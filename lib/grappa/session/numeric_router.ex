@@ -1062,13 +1062,9 @@ defmodule Grappa.Session.NumericRouter do
   # then declines to match is exactly the silent drop this gate exists to
   # end. The two predicates have to be the same predicate.
   @spec join_failure_leg?(1..999, [term()], router_state()) :: boolean()
-  defp join_failure_leg?(code, [_, channel, reason | _], state)
-       when is_binary(channel) and is_binary(reason) do
+  defp join_failure_leg?(code, [_, channel, reason | _], state) when is_binary(channel) and is_binary(reason) do
     MapSet.member?(@join_failure_numerics, code) and
-      MapSet.member?(
-        state.in_flight_channels,
-        Identifier.canonical_target(channel, state.casemapping)
-      )
+      MapSet.member?(state.in_flight_channels, Identifier.canonical_target(channel, state.casemapping))
   end
 
   defp join_failure_leg?(_, _, _), do: false

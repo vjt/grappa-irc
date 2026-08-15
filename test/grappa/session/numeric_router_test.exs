@@ -968,16 +968,14 @@ defmodule Grappa.Session.NumericRouterTest do
         # in silence rather than landing in a window.
         m = msg(unquote(code), ["vjt", "#sniffo", "Cannot join channel"])
 
-        assert unquote(Macro.escape(uncorrelated.(code, "#sniffo"))) ==
-                 NumericRouter.route(m, state())
+        assert unquote(Macro.escape(uncorrelated.(code, "#sniffo"))) == NumericRouter.route(m, state())
       end
 
       test "#{code} for a DIFFERENT channel than the in-flight one is not delegated" do
         m = msg(unquote(code), ["vjt", "#altrove", "Cannot join channel"])
         st = state(in_flight_channels: MapSet.new(["#sniffo"]))
 
-        assert unquote(Macro.escape(uncorrelated.(code, "#altrove"))) ==
-                 NumericRouter.route(m, st)
+        assert unquote(Macro.escape(uncorrelated.(code, "#altrove"))) == NumericRouter.route(m, st)
       end
     end
 
