@@ -59,6 +59,55 @@ matched_refs() {
     }
 }
 
+# Every `image:tag@sha256:<digest>` token in the reference set above, one per
+# line. Splitting on `@sha256:` keeps `oven/bun:1` and `oven/bun:1-alpine`
+# distinct families — they are different images and carry different digests.
+pinned_tokens() {
+    matched_refs | grep -oE '[a-z0-9./_-]+:[a-zA-Z0-9._-]+@sha256:[0-9a-f]{64}'
+}
+
+@test "all references to one image:tag carry the SAME digest (#1343)" {
+    # `oven/bun:1` is transcribed four times (compose.yaml, scripts/bun.sh,
+    # .github/workflows/ci.yml, cicchetto/e2e/compose.yaml) and ci.yml states
+    # the equality in prose only — the shape #441 rejected. It matters beyond
+    # tidiness: scripts/bun.sh and compose.yaml bind the SAME host bun cache
+    # (runtime/bun-cache, docs/OPERATIONS.md), so a bump that touches three of
+    # the four surfaces as a lockfile/cache disagreement in CI, never as a
+    # "wrong image" error.
+    tokens="$(pinned_tokens)"
+    families="$(printf '%s\n' "$tokens" | sed 's/@sha256:.*//' | sort -u)"
+
+    multi_ref_families=0
+    conflicts=""
+
+    for family in $families; do
+        refs="$(printf '%s\n' "$tokens" | grep -cF -- "$family@sha256:")"
+        digests="$(printf '%s\n' "$tokens" | grep -F -- "$family@sha256:" | sed 's/.*@sha256://' | sort -u)"
+
+        [ "$refs" -ge 2 ] && multi_ref_families=$((multi_ref_families + 1))
+
+        if [ "$(printf '%s\n' "$digests" | grep -c .)" -gt 1 ]; then
+            conflicts="${conflicts}${family}: $(printf '%s' "$digests" | tr '\n' ' ')
+"
+        fi
+    done
+
+    # Guard against a vacuous pass, same reasoning as the count check above:
+    # with every family down to a single reference this test asserts nothing.
+    [ "$multi_ref_families" -ge 1 ] || {
+        echo "no image:tag is referenced twice — the equality assertion is vacuous:" >&2
+        printf '%s\n' "$tokens" >&2
+        return 1
+    }
+
+    [ -z "$conflicts" ] || {
+        echo "DIVERGENT digests for the same image:tag — bump every surface together (#1343):" >&2
+        printf '%s' "$conflicts" >&2
+        printf '%s\n' "$(pinned_tokens | sort)" >&2
+        return 1
+    }
+}
+
 @test "pinned base-image digests are well-formed sha256:<64 lowercase hex> (#103)" {
     # A truncated or typo'd digest would fail the pull loudly at build time,
     # but catching it here turns a slow CI-build failure into a fast unit fail.

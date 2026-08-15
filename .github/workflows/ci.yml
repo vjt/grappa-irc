@@ -342,6 +342,9 @@ jobs:
     # in compose.yaml (#103 supply-chain). Checking types with the exact
     # runtime that builds the bundle means one bump moves both, instead of
     # CI and the build image drifting apart on separate bun versions.
+    # "one bump moves both" is enforced, not just stated:
+    # test/infra/base_image_digest_pin_test.bats fails when two surfaces
+    # spell the same image:tag with different digests (#1343).
     # Refresh on an intentional bump:
     #   docker buildx imagetools inspect oven/bun:1 --format '{{.Manifest.Digest}}'
     container:
