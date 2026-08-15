@@ -379,4 +379,40 @@ describe("replyToMessage", () => {
     replyToMessage(msg({ kind: "part", body: null }), NET, CHAN);
     expect(getDraft(KEY)).toBe("");
   });
+
+  // #1357 — the line accumulates, the MARKER does not repeat (vjt, 2026-08-15).
+  // A second reply used to bury the first tail mid-line, where `<<` reads as
+  // part of the quoted text and the answer typed at the caret belongs to the
+  // last quote only. The tail's own LEADING space (#1235, so it never sits
+  // flush against the last word) is what separates the two quotes afterwards.
+  it("keeps both quotes and moves the tail to the end", () => {
+    mountCompose();
+    replyToMessage(msg({ sender: "a", body: "primo" }), NET, CHAN);
+    replyToMessage(msg({ id: 2, sender: "b", body: "secondo" }), NET, CHAN);
+    expect(getDraft(KEY)).toBe("<a> primo <b> secondo << ");
+  });
+
+  // Stated as a COUNT rather than as a shape, because "one marker" is the
+  // ruling — an implementation that emits the right string for two replies and
+  // a second tail for three passes the arm above.
+  it("leaves exactly one tail after N replies", () => {
+    mountCompose();
+    for (const sender of ["a", "b", "c"]) {
+      replyToMessage(msg({ sender, body: `da ${sender}` }), NET, CHAN);
+    }
+    expect(getDraft(KEY)).toBe("<a> da a <b> da b <c> da c << ");
+    expect(getDraft(KEY).split(REPLY_QUOTE_TAIL.trim())).toHaveLength(2);
+  });
+
+  // Acceptance criterion 3: once the operator has typed their answer, the tail
+  // is no longer at the end and is no longer OURS to remove — cutting it there
+  // would rewrite their sentence, and the new quote must still land after what
+  // they wrote. So this line keeps two markers, deliberately: the alternative
+  // is mangling text a human typed.
+  it("does not touch a tail the operator has already typed past", () => {
+    mountCompose();
+    setDraft(KEY, "<a> primo << ciao");
+    replyToMessage(msg({ sender: "b", body: "secondo" }), NET, CHAN);
+    expect(getDraft(KEY)).toBe("<a> primo << ciao<b> secondo << ");
+  });
 });

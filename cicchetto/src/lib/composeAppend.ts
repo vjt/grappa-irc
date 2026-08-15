@@ -16,11 +16,29 @@ import { placeCaretAtEndInView } from "./composeCaret";
 // DOM-touching by nature (the caret is not in the store), so it lives here
 // rather than in `lib/compose.ts`, which is deliberately DOM-free.
 export function appendToCompose(networkSlug: string, channelName: string, text: string): void {
+  updateCompose(networkSlug, channelName, (draft) => draft + text);
+}
+
+// #1357 — the same dance for a door that must REWRITE the draft rather than
+// only extend it: the second reply drops the first quote's now-mid-line ` << `
+// marker before adding its own. Append cannot express that, and doing it as a
+// `setDraft` next to an `appendToCompose` call would split one edit into two
+// writes that disagree when there is no composer mounted — the strip would
+// land and the quote would not.
+//
+// `next` receives the current draft and returns the whole new one. Everything
+// below the first line is why this exists as one function: focus, the iOS
+// scroll short-circuit and the caret reveal are a single dance, and a second
+// copy of it is a second place to forget one of the three.
+export function updateCompose(
+  networkSlug: string,
+  channelName: string,
+  next: (draft: string) => string,
+): void {
   const ta = document.querySelector<HTMLTextAreaElement>(".compose-box textarea");
   if (ta === null) return;
   const key = channelKey(networkSlug, channelName);
-  const next = getDraft(key) + text;
-  setDraft(key, next);
+  setDraft(key, next(getDraft(key)));
   // UX-6 D9 — `preventScroll: true` short-circuits iOS Safari's "scroll the
   // focused input into view" auto-scroll path (WebKit `_zoomToFocusRect` in
   // WKContentView). Baseline since iOS Safari 15.5; without it iOS shifts the

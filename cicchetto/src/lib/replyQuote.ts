@@ -1,5 +1,5 @@
 import type { ScrollbackMessage } from "./api";
-import { appendToCompose } from "./composeAppend";
+import { updateCompose } from "./composeAppend";
 import { attributionHead, quotableBody } from "./quotableBody";
 
 // #1067 — the reply verb, shared by the left→right swipe on a message row and
@@ -52,6 +52,32 @@ export function replyQuote(msg: ScrollbackMessage): string | null {
   return `${attributionHead(msg)} ${capQuotedBody(body)}${REPLY_QUOTE_TAIL}`;
 }
 
+// The marker and its trailing space — the part of the tail a second reply takes
+// back. The LEADING space stays: #1235 put it there so the tail never sits
+// flush against the last word, and it is exactly the one space the next quote
+// needs in front of it. Derived from the tail rather than spelled again, so the
+// two cannot drift.
+const REPLY_QUOTE_MARKER = REPLY_QUOTE_TAIL.trimStart();
+
+// #1357 — what the draft must look like BEFORE this reply's quote is appended.
+// vjt's ruling (2026-08-15): the line accumulates, the marker does not repeat,
+// so a draft that ENDS with our tail sheds the marker and the new quote brings
+// the only one — `<a> primo <b> secondo << `.
+//
+// Only when the tail is at the END. Once the operator has typed their answer
+// the tail is mid-line, and cutting it there rewrites a human's sentence to fix
+// our own duplication; that line keeps two markers on purpose, because the
+// alternative is mangling text somebody wrote.
+//
+// THIS is the function to change if replace-semantics ever wins (vjt: "start
+// with 2, we change it later if needed") — last-swipe-wins means returning the
+// draft with its whole quote removed instead of just the marker. The door below
+// hands it the draft and appends to whatever comes back, so nothing else moves.
+export function draftBeforeReplyQuote(draft: string): string {
+  if (!draft.endsWith(REPLY_QUOTE_TAIL)) return draft;
+  return draft.slice(0, draft.length - REPLY_QUOTE_MARKER.length);
+}
+
 // Drop the quote into the window's compose box with the caret at the end. A
 // no-op for a row with nothing to quote — the gesture still slid and snapped
 // back, which is the honest feedback for "armed, but this row has no reply".
@@ -62,5 +88,5 @@ export function replyToMessage(
 ): void {
   const quote = replyQuote(msg);
   if (quote === null) return;
-  appendToCompose(networkSlug, channelName, quote);
+  updateCompose(networkSlug, channelName, (draft) => draftBeforeReplyQuote(draft) + quote);
 }
