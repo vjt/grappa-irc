@@ -822,6 +822,26 @@ defmodule Grappa.Session.NumericRouterTest do
       assert :delegated = NumericRouter.route(m, st)
     end
 
+    test "the whois-leg guard folds with the NETWORK casemapping (#1345 I-S2)" do
+      # `whois_pending` keys are WRITTEN with `canonical_target/2` at the
+      # network's casemapping (event_router.ex `normalize_nick/2`), so the
+      # read has to fold the same way. Reading with the arity-1 ASCII fold
+      # made an rfc1459 target holding `[ ] \ ~` key as `foo{1}` and look
+      # up as `foo[1]`: the leg missed and fell to the very param scan
+      # #221 exists to avoid.
+      m = msg(617, ["vjt", "alice[1]", "some new WHOIS line"])
+      st = state(whois_targets: MapSet.new(["alice{1}"]), casemapping: :rfc1459)
+
+      assert :delegated = NumericRouter.route(m, st)
+    end
+
+    test "the whois-leg fold does NOT over-fold on an :ascii network (#525 posture)" do
+      m = msg(617, ["vjt", "alice[1]", "some new WHOIS line"])
+      st = state(whois_targets: MapSet.new(["alice{1}"]), casemapping: :ascii)
+
+      assert {:query, "alice[1]"} = NumericRouter.route(m, st)
+    end
+
     test "an unknown numeric with NO matching in-flight whois still param-scans (query for the nick)" do
       # No whois in flight → the nick-shaped param routes to a query window
       # exactly as before (pre-#221 behaviour preserved for the non-whois case).

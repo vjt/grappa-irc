@@ -42706,3 +42706,75 @@ viewport. That those five specs scope their chip click to
 `.home-pane-network-row-parked`, and so cannot be made ambiguous by the
 seam's identically-named control, is read from their source rather than
 observed.
+<!-- entry #1345 -->
+
+---
+
+## 2026-08-15 — #1345: one measured numeric set, and delegation that has to correlate
+
+Three lists claimed to enumerate the same thing — the numerics that abort a
+JOIN. The channel-param canonicaliser in `EventRouter` named eight, the
+handler guard one screen below it named six, and `NumericRouter`'s
+`@delegated_numerics` mirrored the same six. **477 ERR_NEEDREGGEDNICK was in
+the list that folds the channel and absent from the two that act on it**, so a
+`+R` channel — ordinary on the networks we serve — produced no
+`{:join_failed, …}` at all: the in-flight entry sat until the lazy 30 s
+sweep, `window_state[chan]` stayed `:pending` **permanently** (nothing else
+sweeps `:pending`), and cic drew a greyed tab that never resolved.
+
+`Grappa.IRC.JoinFailure` is now the single enumeration and every consumer
+derives from it. The set is read out of the two bound ircds rather than an
+RFC (azzurra/bahamut `5c41c8b`, solanum `2ce64de`), one citation per code in
+the moduledoc: **403 405 437 471 473 474 475 476 477 479 480 485**.
+
+**481 is excluded, and that corrects the two texts that put it in.** It IS a
+`can_join` exit on bahamut (`+O` oper-only, `channel.c:1967`), but its format
+string carries no channel: `":%s 481 %s :Permission Denied, …"`
+(`s_err.c:550`) has two `%s`, and the `name` m_join hands it is dropped on the
+floor. There is nothing on the wire to correlate, so a `+O` refusal cannot
+reach its window and that window still stalls at `:pending`. **The only cure
+for the uncorrelatable class is a timeout on the in-flight JOIN, not another
+numeric** — the 30 s sweep already exists and could transition the window
+instead of merely forgetting it. Deliberately not built here. 443
+(channel at `params[2]`) and 470 (a redirect, not a refusal) are excluded for
+shape, also on record in the moduledoc.
+
+**Delegation is now correlation-gated, and that is the load-bearing half.**
+`join_failure_leg?/3` delegates a member of the set only when its `params[1]`
+folds to a channel whose JOIN is in flight — the same match `EventRouter`
+performs — and it runs ahead of the deny list, on the precedence a label
+already loses to. Flat membership could not have carried this set: 437 is
+deny-listed for its NICK form, and 476/485 mean different things on the two
+ircds (ONLYSSLCLIENTS vs BADCHANMASK; CHANBANREASON vs BANNEDNICK). Under the
+gate a cross-flavour collision is inert by construction.
+
+**What the gate also repairs is a silent drop that was already there.** The
+handler's own comment promised that an uncorrelated 403/473/… "falls through
+— the caller's NumericRouter `$server` route persists it as a server
+message". Measured, that was false for as long as the codes were
+unconditionally delegated: `Server.delegate/2` hands the numeric to
+`EventRouter` alone, whose numeric catch-all returns `[]`, and nothing
+persisted it anywhere. An unsolicited 403 for `/topic #nowhere` was answered
+with silence. Uncorrelated numerics take the param scan again.
+
+**Nothing maps a numeric to a phrase, on purpose.** `reason` is the ircd's own
+trailing text and the code travels beside it as `meta.numeric`; cic stores
+both verbatim. A sentence written by us would have to be flavour-blind, and
+would tell an Azzurra user their channel mask was malformed when the server
+said "Only SSL clients can join" — the shape of the known
+`sec-nickserv-identify-oftc` defect.
+
+**I-S2, same commit's neighbourhood:** `whois_leg?/3` read `whois_pending`
+with the arity-1 ASCII fold while `EventRouter` writes those keys with
+`canonical_target/2` at the network casemapping. On rfc1459 a target holding
+`[ ] \ ~` was written `foo{1}` and looked up as `foo[1]`, so the leg missed
+and fell to the param scan #221 exists to avoid. `router_state()` now carries
+the casemapping — which is also what lets the join gate fold the echoed
+channel network-aware — and both reads fold with it.
+
+**Not established:** no gate ran locally. Docker Desktop was down on the
+worker host for the whole of this work, so `check.sh`, `mix.sh` and
+`integration.sh` were all unavailable; every test here is written but
+unobserved, and CI on the PR is the only arbiter. The measured ircd citations
+come from the public `azzurra/bahamut` and `solanum-ircd/solanum` trees at the
+refs above, not from a running server.

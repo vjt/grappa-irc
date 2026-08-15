@@ -1121,9 +1121,17 @@ defmodule Grappa.Session.NumericRouter do
   # of a WHOIS in flight AND the code is one this WHOIS may still absorb.
   # Any other param shape (empty, own-nick-only, channel-shaped) yields
   # false → normal param scan.
+  #
+  # #1345 I-S2 — the fold is network-aware (`canonical_target/2`) because
+  # the keys were WRITTEN that way: EventRouter builds `whois_pending`
+  # with `normalize_nick(target, casemapping(state))`. Reading them back
+  # with the arity-1 ASCII fold made the two disagree on an rfc1459
+  # network — a target holding `[ ] \ ~` keys as `foo{1}` and was looked
+  # up as `foo[1]`, so the leg missed and fell to the param scan #221
+  # exists to avoid. CLAUDE.md #537: a folded WRITE forces a folded READ.
   @spec whois_leg?(1..999, [term()], router_state()) :: boolean()
   defp whois_leg?(code, [_, target | _], state) when is_binary(target) do
-    key = Identifier.canonical_target(target)
+    key = Identifier.canonical_target(target, state.casemapping)
 
     MapSet.member?(state.whois_targets, key) and
       absorbable_whois_leg?(code, MapSet.member?(state.whois_nosuchnick_absorbed, key))
