@@ -4154,3 +4154,81 @@ describe("subscribe — #1108 the cold snapshot seeds the frame budget", () => {
     expect(isupport.frameBudgetBaseForNetwork(1)).toBe(481);
   });
 });
+
+// #1340 C-S1 — the per-channel handler must read the LIVE own nick.
+//
+// `own_nick_changed` patches the networks list (`mutateNetworkNick`), which
+// re-runs the join effects, but every install loop is guarded by
+// `joined.has(key)` — so an already-joined channel topic keeps whatever
+// handler it was built with. Before the fix that handler carried the nick as
+// a VALUE captured at topic-join, and after any `/nick` (or a NickServ ghost
+// recovery) every own-identity test inside it answered against the retired
+// nick. These three drive a real rename through the store and then exercise
+// the handler, rather than asserting that an accessor exists.
+describe("subscribe — own nick after a rename (#1340 C-S1)", () => {
+  const seedAndJoin = async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    await seedStubs();
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+    return store;
+  };
+
+  it("own PART on a channel joined BEFORE the rename still projects to absence and tears the subscription down", async () => {
+    // The #200 half: a stale own nick makes `ownPart` false, so the
+    // windowState entry lingers AND the Channel + its handler stay on the
+    // socket forever — the leak #200 closed, reopened by any rename.
+    const store = await seedAndJoin();
+    const windowState = await import("../lib/windowState");
+
+    store.mutateNetworkNick(1, "zelda");
+    fireMessageEvent("#grappa", { id: 30, kind: "part", sender: "zelda" });
+
+    expect(windowState.setParted).toHaveBeenCalledWith(channelKey("freenode", "#grappa"));
+    expect(mockChannel.leave).toHaveBeenCalled();
+  });
+
+  it("a mention of the NEW nick beeps on an unfocused channel joined before the rename", async () => {
+    // The user-visible half: `shouldNotify` is the mirror of the server push
+    // predicate, and the server pushes against the live nick. With a stale
+    // nick the phone buzzes and the tab stays silent.
+    const store = await seedAndJoin();
+    const beep = await import("../lib/beep");
+
+    store.mutateNetworkNick(1, "zelda");
+    fireMessageEvent("#grappa", { id: 31, sender: "bob", body: "zelda: ping" });
+
+    expect(beep.playBeep).toHaveBeenCalled();
+  });
+
+  it("our OWN second rename is not mirrored as a peer rename", async () => {
+    // To a stale closure our own next `/nick` looks like somebody else's, so
+    // the #373 peer-migration arm fires on our own identity — cic originating
+    // a rename it is supposed to mirror. Observed through the rail WHOIS
+    // cache, one of the three caches that arm moves.
+    const store = await seedAndJoin();
+    const rail = await import("../lib/railWhois");
+
+    store.mutateNetworkNick(1, "zelda");
+    rail.ingestRailWhois("freenode", "zelda", {
+      target: "zelda",
+      host: "own.example",
+    } as never);
+
+    fireMessageEvent("#grappa", {
+      id: 32,
+      kind: "nick_change",
+      sender: "zelda",
+      meta: { new_nick: "zelda2" },
+    });
+
+    expect(rail.railWhoisFor("freenode", "zelda")?.host).toBe("own.example");
+    expect(rail.railWhoisFor("freenode", "zelda2")).toBeUndefined();
+  });
+});

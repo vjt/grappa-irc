@@ -14,6 +14,7 @@ import { setServerMention } from "./mentions";
 import { moduleRoot } from "./moduleRoot";
 import {
   channelsBySlug,
+  networkBySlug,
   networkIdBySlug,
   networks,
   refetchChannels,
@@ -386,14 +387,33 @@ moduleRoot(() => {
   // broadcast → `channelsBySlug` drops the channel → close-watcher fires
   // its MRU/server/home picker for the focused-channel case. #200 also
   // tears down the per-channel WS subscription on own-PART (see below).
+  //
+  // #1340 C-S1: the own nick is resolved PER EVENT, never captured when the
+  // topic is joined. `own_nick_changed` → `mutateNetworkNick` re-runs the
+  // join effects, but each one is guarded by `joined.has(key)`, so an
+  // already-joined channel keeps the handler it was built with — a captured
+  // value would answer every own-identity test below against the retired
+  // nick for the rest of the session. Re-joining the topics on a rename was
+  // rejected: it is heavier than the problem and races the JOIN echo the way
+  // #200's revert did. Resolving from the SLUG (not from a captured
+  // `Network`) is what makes it live — `mutateNetworkNick` maps the list into
+  // fresh row objects, so a closure over the row is exactly as stale as a
+  // closure over the string.
+  const ownNickForSlug = (slug: string): string | null =>
+    untrack(() => {
+      const net = networkBySlug(slug);
+      return net === undefined ? null : ownNickForNetwork(net, user());
+    });
+
   const installChannelHandler = (
     phx: Channel,
     slug: string,
     name: string,
     key: ChannelKey,
-    ownNick: string | null,
+    ownNickAt: () => string | null,
   ) => {
     phx.on("event", (raw: unknown) => {
+      const ownNick = ownNickAt();
       // #159 E2E gap seam — a test may silence live delivery for THIS
       // per-channel topic (keyed on `key`) while the socket and every
       // OTHER channel stay live, to reproduce the socket-stays-open
@@ -885,16 +905,10 @@ moduleRoot(() => {
     if (!t) return;
     const name = socketUserName();
     const nets = networks();
-    const u = user();
     if (!name || !cbs) return;
     for (const [slug, list] of Object.entries(cbs)) {
-      // Resolve own IRC nick for this slug so BUG4/BUG5 handlers can
-      // detect self-JOIN/PART events. Single-source via
-      // `ownNickForNetwork(net, me)` — see api.ts moduledoc for why
-      // displayNick(u) is the WRONG fallback (cic H3 root cause).
       const net = nets?.find((n) => n.slug === slug) ?? null;
       if (net === null) continue;
-      const ownNick = ownNickForNetwork(net, u);
       for (const ch of list) {
         const key = channelKey(slug, ch.name);
         if (joined.has(key)) continue;
@@ -911,7 +925,7 @@ moduleRoot(() => {
           // subscription, never a merely-issued join.
           stampChannelReady(key);
         });
-        installChannelHandler(phx, slug, ch.name, key, ownNick);
+        installChannelHandler(phx, slug, ch.name, key, () => ownNickForSlug(slug));
         joined.set(key, phx);
       }
     }
@@ -940,7 +954,6 @@ moduleRoot(() => {
     if (!t) return;
     const name = socketUserName();
     const nets = networks();
-    const u = user();
     if (!name || !nets) return;
     for (const [key, state] of Object.entries(states)) {
       // Pre-subscribe on any NOT-JOINED state that has no other live
@@ -964,7 +977,6 @@ moduleRoot(() => {
       if (joined.has(typedKey)) continue;
       const net = nets.find((n) => n.slug === slug) ?? null;
       if (net === null) continue;
-      const ownNick = ownNickForNetwork(net, u);
       const phx = joinChannel(name, slug, channelName, (reply) => {
         applyJoinReplyAndSeed(slug, channelName, reply);
         void refreshScrollback(slug, channelName);
@@ -976,7 +988,7 @@ moduleRoot(() => {
         // every channel-topic join ACK stamps `__cic_channelReady`.
         stampChannelReady(typedKey);
       });
-      installChannelHandler(phx, slug, channelName, typedKey, ownNick);
+      installChannelHandler(phx, slug, channelName, typedKey, () => ownNickForSlug(slug));
       joined.set(typedKey, phx);
     }
   });
@@ -1005,17 +1017,16 @@ moduleRoot(() => {
   // `ENSURE_JOIN_ACK_TIMEOUT_MS` so a wedged WS (e.g. #193 WS-blocked-but-
   // REST-up) can't hang the send forever — past the cap the send proceeds and
   // the reconnect self-heal (refreshScrollback on the eventual rejoin) recovers
-  // the row. Own-nick uses `ownNickForNetwork` (visitor → me.nick; user →
+  // the row. Own-nick comes from `ownNickForSlug` (visitor → me.nick; user →
   // per-credential net.nick), never the displayNick fallback (cic H3).
   const ENSURE_JOIN_ACK_TIMEOUT_MS = 4000;
   const ensureQueryTopicJoined = (slug: string, target: string): Promise<void> => {
     const userName = socketUserName();
     const nets = networks();
-    const u = user();
     if (!userName || !nets) return Promise.resolve();
     const net = nets.find((n) => n.slug === slug);
     if (!net) return Promise.resolve();
-    const ownNick = ownNickForNetwork(net, u);
+    const ownNick = ownNickForSlug(slug);
     if (nickEquals(target, ownNick)) return Promise.resolve();
     const key = channelKey(slug, target);
     const pending = queryJoinAcks.get(key);
@@ -1028,7 +1039,7 @@ moduleRoot(() => {
         stampQueryWindowReady(slug, target);
         resolve();
       });
-      installChannelHandler(phx, slug, target, key, ownNick);
+      installChannelHandler(phx, slug, target, key, () => ownNickForSlug(slug));
       joined.set(key, phx);
     });
     const bounded = Promise.race([
@@ -1161,7 +1172,7 @@ moduleRoot(() => {
         applyJoinReplyAndSeed(net.slug, SERVER_WINDOW_NAME, reply);
         void refreshScrollback(net.slug, SERVER_WINDOW_NAME);
       });
-      installChannelHandler(phx, net.slug, SERVER_WINDOW_NAME, key, null);
+      installChannelHandler(phx, net.slug, SERVER_WINDOW_NAME, key, () => null);
       joined.set(key, phx);
     }
   });
