@@ -11,7 +11,7 @@ defmodule Grappa.Session.EventRouterTest do
   """
   use ExUnit.Case, async: true
 
-  alias Grappa.IRC.{Message, Parser}
+  alias Grappa.IRC.{JoinFailure, Message, Parser}
   alias Grappa.Session.{EventRouter, GhostRecovery, ISupport, Wire}
 
   @user_id "00000000-0000-0000-0000-000000000001"
@@ -1815,14 +1815,14 @@ defmodule Grappa.Session.EventRouterTest do
     # §2.2 lookup) and strips the matched entry from the returned next_state
     # so a re-issued JOIN can be tracked again without stale interference.
 
-    for {numeric, reason} <- [
-          {471, "Cannot join channel (+l)"},
-          {473, "Cannot join channel (+i)"},
-          {474, "Cannot join channel (+b)"},
-          {475, "Cannot join channel (+k)"},
-          {403, "No such channel"},
-          {405, "You have joined too many channels"}
-        ] do
+    # #1345 — driven by `JoinFailure.numerics()`, not by a literal that has
+    # to be remembered: the six hardcoded here used to be a THIRD copy of a
+    # set the router and the canonicaliser each held separately, and 476/477
+    # were missing from two of the three. The set itself is pinned against a
+    # hand-written measured literal in `Grappa.IRC.JoinFailureTest`.
+    for numeric <- JoinFailure.numerics() do
+      reason = "Cannot join channel"
+
       test "#{numeric} on in-flight #channel emits {:join_failed, _, _, #{numeric}} + strips entry" do
         state = in_flight_state("#sniffo")
 
@@ -1867,9 +1867,12 @@ defmodule Grappa.Session.EventRouterTest do
       end
 
       test "#{numeric} with no in-flight entry emits NO :join_failed effect" do
-        # Falls through to NumericRouter's existing $server route via the
-        # scan-router path (re-asserted in Session.Server integration).
-        # EventRouter itself returns no :join_failed and leaves state alone.
+        # EventRouter returns no :join_failed and leaves state alone. #1345 —
+        # what happens NEXT is the correlation gate's business: with nothing
+        # in flight `NumericRouter` never delegates the numeric in the first
+        # place, so it takes its ordinary route and stays visible. Before the
+        # gate, delegation was unconditional and this arm was where the
+        # numeric quietly died.
         state = base_state(%{in_flight_joins: %{}})
 
         m =
@@ -1882,6 +1885,46 @@ defmodule Grappa.Session.EventRouterTest do
         assert {:cont, ^state, effects} = EventRouter.route(m, state)
         refute Enum.any?(effects, &match?({:join_failed, _, _, _}, &1))
       end
+    end
+
+    test "477 on a +R channel fails the window and carries the SERVER's own reason" do
+      # The #1345 defect in one case: bahamut's `can_join` 477 for a `+R`
+      # channel (`src/channel.c:1943`) produced no effect at all, so the
+      # window sat at `:pending` forever. The reason travels verbatim —
+      # nothing here maps a numeric to a phrase, because 476/485 mean
+      # different things on the two bound ircds.
+      reason = "You need to identify to a registered nick to join that channel."
+      state = in_flight_state("#sniffo")
+      m = msg({:numeric, 477}, ["vjt", "#sniffo", reason], {:server, "irc.test.org"})
+
+      assert {:cont, _, [{:join_failed, "#sniffo", ^reason, 477}]} = EventRouter.route(m, state)
+    end
+
+    test "476 means ONLYSSLCLIENTS on bahamut and still fails the window" do
+      reason = "Only SSL clients can join"
+      state = in_flight_state("#sniffo")
+      m = msg({:numeric, 476}, ["vjt", "#sniffo", reason], {:server, "irc.test.org"})
+
+      assert {:cont, _, [{:join_failed, "#sniffo", ^reason, 476}]} = EventRouter.route(m, state)
+    end
+
+    test "the in-flight lookup folds the channel network-aware on rfc1459" do
+      # `#Foo[1]` echoed back for an in-flight `#foo{1}` is the SAME channel
+      # on solanum, so the correlation must hit. The canonicalisation guard
+      # this depends on reads the join-failure set too — deriving both from
+      # `JoinFailure.numerics()` is what keeps them in step.
+      state =
+        base_state(%{
+          isupport: %{ISupport.default() | casemapping: :rfc1459},
+          in_flight_joins: %{"#foo{1}" => {"#foo{1}", 12_345, nil}}
+        })
+
+      m = msg({:numeric, 477}, ["vjt", "#Foo[1]", "identify first"], {:server, "irc.test.org"})
+
+      assert {:cont, next_state, [{:join_failed, "#foo{1}", _, 477}]} =
+               EventRouter.route(m, state)
+
+      refute Map.has_key?(next_state.in_flight_joins, "#foo{1}")
     end
   end
 

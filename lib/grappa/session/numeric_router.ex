@@ -61,6 +61,15 @@ defmodule Grappa.Session.NumericRouter do
         hostnames whose syntax overlaps with nicks) → `{:query, nick}`.
      c. else → `{:server, nil}`.
 
+  Two of the delegations are **correlation-gated** rather than flat set
+  membership, and both run at priority 1: `whois_leg?/3` (#221, a numeric
+  whose `params[1]` is a WHOIS in flight) and `join_failure_leg?/3` (#1345,
+  a `Grappa.IRC.JoinFailure` code whose `params[1]` is a JOIN in flight).
+  A gated delegation is the right shape whenever the SAME numeric is
+  owned by a handler in one context and is ordinary routable content in
+  another — it delegates the correlated occurrence and leaves every other
+  one visible, which flat membership cannot express.
+
   ## Design notes
 
   * The deny list is closed-set on purpose — adding a numeric to it is a
@@ -118,7 +127,7 @@ defmodule Grappa.Session.NumericRouter do
   `Grappa.Session.EventRouter` for delegated numeric handling.
   """
 
-  alias Grappa.IRC.{Identifier, Message}
+  alias Grappa.IRC.{Identifier, JoinFailure, Message}
 
   @typedoc """
   The resolved routing destination for a numeric.
@@ -167,12 +176,27 @@ defmodule Grappa.Session.NumericRouter do
     * `whois_nosuchnick_absorbed` — the subset of `whois_targets` whose
       pending WHOIS has ALREADY absorbed a 401 ERR_NOSUCHNICK (#785). See
       the error-class carve-out on `absorbable_whois_leg?/2`.
+    * `in_flight_channels` — the folded-key set of JOINs currently in
+      flight (`MapSet.new(Map.keys(state.in_flight_joins))`). #1345: a
+      join-failure numeric is delegated ONLY when its `params[1]` folds
+      into this set, which is the same correlation EventRouter's
+      `{:join_failed, …}` clause performs. Uncorrelated ones stay on the
+      normal route and remain visible, and a code that means something
+      else outside a JOIN (437's nick form, 476/485 on solanum) is inert.
+    * `casemapping` — the network's identifier casemapping from 005
+      (`ISupport.casemapping/1`), `:ascii` when no 005 has landed. #537:
+      the accumulator keys above are written with the NETWORK fold, so
+      every read here must fold the same way. On an rfc1459 network a
+      key holding `[ ] \\ ~` is written `foo{1}`, and an ASCII-only read
+      looking for `foo[1]` misses it.
   """
   @type router_state :: %{
           required(:own_nick) => String.t() | nil,
           required(:labels_pending) => %{String.t() => window_ref()},
           required(:whois_targets) => MapSet.t(String.t()),
-          required(:whois_nosuchnick_absorbed) => MapSet.t(String.t())
+          required(:whois_nosuchnick_absorbed) => MapSet.t(String.t()),
+          required(:in_flight_channels) => MapSet.t(String.t()),
+          required(:casemapping) => Identifier.casemapping()
         }
 
   # ---------------------------------------------------------------------------
@@ -653,20 +677,21 @@ defmodule Grappa.Session.NumericRouter do
                         371,
                         374,
                         351,
-                        # CP15 B2 — JOIN failure numerics. EventRouter
-                        # correlates against state.in_flight_joins and
-                        # emits {:join_failed, ch, reason, code}. The
-                        # apply_effects arm in Session.Server persists a
-                        # :notice row + broadcasts on the per-channel
-                        # topic — without delegation, the param-derived
-                        # scan-route also persists the same numeric on
-                        # `$server`, doubling the row.
-                        471,
-                        473,
-                        474,
-                        475,
-                        403,
-                        405,
+                        # CP15 B2 — the JOIN failure numerics USED to sit
+                        # here as an unconditional six. #1345 moved them
+                        # to `join_failure_leg?/3`, a correlation gate on
+                        # the same in-flight-JOIN match EventRouter's
+                        # `{:join_failed, …}` clause performs — see
+                        # `Grappa.IRC.JoinFailure` for the measured set.
+                        # The double-persist this block existed to prevent
+                        # is still prevented (matched → delegated only,
+                        # uncorrelated → scan only, never both), and the
+                        # gate is what lets the set carry codes that mean
+                        # something else outside a JOIN: unconditional
+                        # delegation would have swallowed those in silence,
+                        # because `Server.delegate/2` hands the numeric to
+                        # EventRouter alone and its numeric catch-all
+                        # returns no effect.
                         # Cluster `channel-created-notice` 2026-05-13 —
                         # channel-state numerics that EventRouter caches
                         # into state.{topics, channel_modes, channels_created}
@@ -848,14 +873,25 @@ defmodule Grappa.Session.NumericRouter do
           String.t() | nil,
           %{String.t() => window_ref()},
           MapSet.t(String.t()),
-          MapSet.t(String.t())
+          MapSet.t(String.t()),
+          MapSet.t(String.t()),
+          Identifier.casemapping()
         ) :: router_state()
-  def new_router_state(own_nick, labels_pending, whois_targets, whois_nosuchnick_absorbed) do
+  def new_router_state(
+        own_nick,
+        labels_pending,
+        whois_targets,
+        whois_nosuchnick_absorbed,
+        in_flight_channels,
+        casemapping
+      ) do
     %{
       own_nick: own_nick,
       labels_pending: labels_pending,
       whois_targets: whois_targets,
-      whois_nosuchnick_absorbed: whois_nosuchnick_absorbed
+      whois_nosuchnick_absorbed: whois_nosuchnick_absorbed,
+      in_flight_channels: in_flight_channels,
+      casemapping: casemapping
     }
   end
 
@@ -956,7 +992,8 @@ defmodule Grappa.Session.NumericRouter do
         # lingering away label is harmless (bounded by prepare_label's
         # lazy TTL sweep on the next away command; 305/306 both delegate,
         # so it can never misroute another numeric).
-        if MapSet.member?(@delegated_numerics, code) do
+        if MapSet.member?(@delegated_numerics, code) or
+             join_failure_leg?(code, msg.params, state) do
           :delegated
         else
           window_ref_to_decision(window_ref)
@@ -995,10 +1032,46 @@ defmodule Grappa.Session.NumericRouter do
     end
   end
 
+  # #1345 — the join-failure gate runs AHEAD of the class dispatch, on the
+  # same "delegation wins" precedence the label arm above uses. It has to:
+  # 437 ERR_UNAVAILRESOURCE is deny-listed for its NICK form, and the
+  # channel form would never reach `:scan` to be tested there.
   @spec param_derived_route(1..999, Message.t(), router_state()) :: routing_decision()
   defp param_derived_route(code, msg, state) do
-    route_for_class(numeric_class(code), msg, state)
+    if join_failure_leg?(code, msg.params, state) do
+      :delegated
+    else
+      route_for_class(numeric_class(code), msg, state)
+    end
   end
+
+  # True iff `code` can abort a JOIN (`Grappa.IRC.JoinFailure`, measured
+  # against both bound ircds) AND `params[1]` folds to a channel whose JOIN
+  # is in flight right now. That second half is the whole design: it is the
+  # SAME correlation EventRouter runs before emitting `{:join_failed, …}`,
+  # so the two decisions cannot disagree — matched, only EventRouter
+  # persists; unmatched, only the scan route does; never both, never
+  # neither. It also keeps a cross-flavour numeric collision inert (485 is
+  # a quarantined-channel refusal on bahamut and ERR_BANNEDNICK on solanum)
+  # and leaves 437's nick form on its deny-listed route, since a nick never
+  # folds into the channel set.
+  @join_failure_numerics MapSet.new(JoinFailure.numerics())
+
+  # The param shape is the handler's shape, `[_, channel, reason | _]`, not
+  # merely "something at params[1]": a delegation the EventRouter clause
+  # then declines to match is exactly the silent drop this gate exists to
+  # end. The two predicates have to be the same predicate.
+  @spec join_failure_leg?(1..999, [term()], router_state()) :: boolean()
+  defp join_failure_leg?(code, [_, channel, reason | _], state)
+       when is_binary(channel) and is_binary(reason) do
+    MapSet.member?(@join_failure_numerics, code) and
+      MapSet.member?(
+        state.in_flight_channels,
+        Identifier.canonical_target(channel, state.casemapping)
+      )
+  end
+
+  defp join_failure_leg?(_, _, _), do: false
 
   # HIGH-31 (no-silent-drops B6.9a 2026-05-14): pre-fix this was a
   # 3-arm `cond` chain inside `param_derived_route/3`, mixing the

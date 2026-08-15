@@ -5704,11 +5704,12 @@ defmodule Grappa.Session.ServerTest do
       assert row.body == "Cannot join channel (+i)"
       assert row.meta == %{numeric: 473}
 
-      # Regression: NumericRouter @delegated_numerics must include 473 so
-      # the param-derived $server scan-route does NOT also persist a row
-      # for the same numeric. Without delegation the channel would get
-      # one notice (apply_effects) AND $server would get one notice (scan
-      # route) — the failure would surface twice.
+      # Regression: NumericRouter must delegate 473 while the JOIN is in
+      # flight (#1345's `join_failure_leg?/3`) so the param-derived
+      # scan-route does NOT also persist a row for the same numeric.
+      # Without delegation the channel would get one notice
+      # (apply_effects) AND the scan route another — the failure would
+      # surface twice.
       assert [] = Scrollback.fetch({:user, user.id}, network.id, "$server", nil, 10, nil, false)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
@@ -5757,8 +5758,9 @@ defmodule Grappa.Session.ServerTest do
     test "473 with no in-flight entry does NOT emit join_failed broadcast (regression)" do
       # No-match: the failure numeric arrives without an in-flight tracker
       # (server-emitted, or post-TTL-sweep). EventRouter must NOT emit
-      # :join_failed; the existing NumericRouter $server route persists
-      # it as a server-window notice. The user-topic stays silent (F1).
+      # :join_failed, and the router must not delegate it either — it
+      # takes the param scan to the channel window (#1345; the sibling
+      # test below asserts that landing). The user-topic stays silent (F1).
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
 
@@ -5782,6 +5784,96 @@ defmodule Grappa.Session.ServerTest do
       state = SessionStateHelpers.fetch(pid)
       assert WindowState.state_of(SessionStateHelpers.window_state(state), "#sniffo") == nil
       assert WindowState.failure_meta(SessionStateHelpers.window_state(state), "#sniffo") == nil
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "477 ERR_NEEDREGGEDNICK flips the window to :failed and ships the numeric to cic (#1345)" do
+      # The defect #1345 was filed for, end to end. 477 is a `+R`
+      # registered-only refusal (bahamut `src/channel.c:1943`, solanum
+      # `ircd/channel.c:778`) — common on the networks we serve, and until
+      # now missing from BOTH the handler guard and the delegated set, so
+      # the JOIN produced no effect at all: the window sat at `:pending`
+      # forever and cic drew a greyed tab that never resolved.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+      :ok = Session.send_join({:user, user.id}, network.id, "#registrati", nil)
+
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      reason = "You need to identify to a registered nick to join that channel."
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 477 grappa-test #registrati :#{reason}\r\n"
+      )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{
+                         kind: :join_failed,
+                         channel: "#registrati",
+                         state: :failed,
+                         reason: ^reason,
+                         numeric: 477
+                       }
+                     },
+                     1_000
+
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+
+      state = SessionStateHelpers.fetch(pid)
+      assert WindowState.state_of(SessionStateHelpers.window_state(state), "#registrati") == :failed
+
+      assert WindowState.failure_meta(SessionStateHelpers.window_state(state), "#registrati") ==
+               %{reason: reason, numeric: 477}
+
+      refute Map.has_key?(SessionStateHelpers.in_flight_joins(state), "#registrati")
+
+      # The reason cic renders is the ircd's OWN trailing text plus the raw
+      # code — nothing on this path maps a numeric to a phrase, because the
+      # two bound ircds disagree about what 476 and 485 mean.
+      [row] = Scrollback.fetch({:user, user.id}, network.id, "#registrati", nil, 10, nil, false)
+      assert row.kind == :notice
+      assert row.body == reason
+      assert row.meta == %{numeric: 477}
+
+      # Correlation-gated delegation still suppresses the scan route, so the
+      # failure surfaces once, not twice.
+      assert [] = Scrollback.fetch({:user, user.id}, network.id, "$server", nil, 10, nil, false)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "an UNCORRELATED join-failure numeric stays visible instead of vanishing (#1345)" do
+      # The other half of the gate. While these codes were delegated
+      # unconditionally, an uncorrelated one reached `Server.delegate/2` →
+      # EventRouter's numeric catch-all → no effect → nothing persisted
+      # anywhere: a `/topic #nowhere` 403 answered with silence. Delegating
+      # only the correlated occurrence puts it back on the scan route.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+
+      :ok = await_handshake(server)
+
+      # No send_join → in_flight_joins is empty.
+      IRCServer.feed(server, ":irc.test.org 403 grappa-test #nowhere :No such channel\r\n")
+
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+
+      [row] = Scrollback.fetch({:user, user.id}, network.id, "#nowhere", nil, 10, nil, false)
+      assert row.kind == :notice
+      assert row.body == "No such channel"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

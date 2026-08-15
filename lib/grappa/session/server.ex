@@ -4913,11 +4913,12 @@ defmodule Grappa.Session.Server do
   # ---------------------------------------------------------------------------
 
   # Builds the `NumericRouter.router_state()` view from full Session.Server
-  # state. CP13: the router only needs `own_nick` (to skip the params[0]
-  # echo and exclude self-mentions from query candidates) and
-  # `labels_pending` (for labeled-response correlation). It no longer reads
-  # `last_command_window` or `open_query_nicks` — the new "scan-then-server"
-  # fallback is purely syntactic on params.
+  # state. CP13: the router needs `own_nick` (to skip the params[0] echo and
+  # exclude self-mentions from query candidates) and `labels_pending` (for
+  # labeled-response correlation). It no longer reads `last_command_window`
+  # or `open_query_nicks` — the "scan-then-server" fallback is purely
+  # syntactic on params. The two correlation sets that follow (#221 WHOIS,
+  # #1345 in-flight JOIN) are what keep a stateful numeric off the scan.
   defp build_router_state(state) do
     NumericRouter.new_router_state(
       state.nick,
@@ -4929,7 +4930,16 @@ defmodule Grappa.Session.Server do
       MapSet.new(Map.keys(Map.get(state, :whois_pending, %{}))),
       # #785 — of those, the ones whose bundle already absorbed a 401. The
       # accumulator shape is EventRouter's, so the derivation lives there.
-      EventRouter.whois_nosuchnick_absorbed(state)
+      EventRouter.whois_nosuchnick_absorbed(state),
+      # #1345 — the in-flight JOIN keys (already folded by
+      # `record_in_flight_join/2`). Lets the router delegate a join-failure
+      # numeric ONLY when it correlates, so an uncorrelated one stays
+      # visible instead of vanishing into EventRouter's numeric catch-all.
+      # Map.get keeps a pre-CP15 hot-reloaded state map safe.
+      MapSet.new(Map.keys(Map.get(state, :in_flight_joins, %{}))),
+      # #537 — the fold both accumulator reads above must use: the keys
+      # were written network-aware, so the lookup has to be too.
+      session_casemapping(state)
     )
   end
 

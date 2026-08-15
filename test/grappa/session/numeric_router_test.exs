@@ -12,7 +12,7 @@ defmodule Grappa.Session.NumericRouterTest do
 
   use ExUnitProperties
 
-  alias Grappa.IRC.Message
+  alias Grappa.IRC.{JoinFailure, Message}
   alias Grappa.Session.NumericRouter
 
   # ---------------------------------------------------------------------------
@@ -32,7 +32,9 @@ defmodule Grappa.Session.NumericRouterTest do
       own_nick: Keyword.get(opts, :own_nick, "vjt"),
       labels_pending: Keyword.get(opts, :labels_pending, %{}),
       whois_targets: Keyword.get(opts, :whois_targets, MapSet.new()),
-      whois_nosuchnick_absorbed: Keyword.get(opts, :whois_nosuchnick_absorbed, MapSet.new())
+      whois_nosuchnick_absorbed: Keyword.get(opts, :whois_nosuchnick_absorbed, MapSet.new()),
+      in_flight_channels: Keyword.get(opts, :in_flight_channels, MapSet.new()),
+      casemapping: Keyword.get(opts, :casemapping, :ascii)
     }
   end
 
@@ -153,13 +155,11 @@ defmodule Grappa.Session.NumericRouterTest do
     259,
     423,
     447,
-    # CP15 B2 — JOIN failure numerics (EventRouter handles them now)
-    471,
-    473,
-    474,
-    475,
-    403,
-    405,
+    # CP15 B2 — the JOIN failure numerics are NOT here any more (#1345).
+    # They are delegated by `join_failure_leg?/3`, gated on an in-flight
+    # JOIN, and get their own describe block below: flat membership would
+    # have swallowed every uncorrelated occurrence, which is why this
+    # mirror must NOT grow them back.
     # Channel-state numerics (EventRouter caches into state.topics /
     # state.channel_modes / state.channels_created — must be delegated
     # so Server.handle_info doesn't double-persist them as `:notice`
@@ -913,6 +913,116 @@ defmodule Grappa.Session.NumericRouterTest do
     test "a 401 with NO whois in flight routes to the query window (pre-#221 behaviour)" do
       m = msg(401, ["vjt", "ghost", "No such nick/channel"])
       assert {:query, "ghost"} = NumericRouter.route(m, state())
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # #1345 — the join-failure correlation gate
+  # ---------------------------------------------------------------------------
+
+  describe "join-failure gate (#1345)" do
+    # The set is pinned by its own literal in `Grappa.IRC.JoinFailureTest`;
+    # iterating it here asks the behavioural question instead: does EVERY
+    # measured code delegate when it correlates, and does none of them
+    # delegate when it does not? Truncating the set turns the pin red;
+    # breaking the gate turns these red.
+    # 437 is the one member that is ALSO deny-listed (for its nick form), so
+    # its uncorrelated route is `$server`, not the channel window. Every
+    # other member falls to the param scan.
+    uncorrelated = fn
+      437, _channel -> {:server, nil}
+      _code, channel -> {:channel, channel}
+    end
+
+    for code <- JoinFailure.numerics() do
+      test "#{code} on an in-flight JOIN is delegated to EventRouter" do
+        m = msg(unquote(code), ["vjt", "#sniffo", "Cannot join channel"])
+        st = state(in_flight_channels: MapSet.new(["#sniffo"]))
+
+        assert :delegated = NumericRouter.route(m, st)
+      end
+
+      test "#{code} with NO in-flight JOIN stays visible on its normal route" do
+        # The pre-#1345 unconditional delegation sent this to EventRouter's
+        # numeric catch-all, which emits no effect — so the row was dropped
+        # in silence rather than landing in a window.
+        m = msg(unquote(code), ["vjt", "#sniffo", "Cannot join channel"])
+
+        assert unquote(Macro.escape(uncorrelated.(code, "#sniffo"))) ==
+                 NumericRouter.route(m, state())
+      end
+
+      test "#{code} for a DIFFERENT channel than the in-flight one is not delegated" do
+        m = msg(unquote(code), ["vjt", "#altrove", "Cannot join channel"])
+        st = state(in_flight_channels: MapSet.new(["#sniffo"]))
+
+        assert unquote(Macro.escape(uncorrelated.(code, "#altrove"))) ==
+                 NumericRouter.route(m, st)
+      end
+    end
+
+    test "477 is the code #1345 was filed for — a +R channel must reach the handler" do
+      m = msg(477, ["vjt", "#sniffo", "You need to identify to a registered nick"])
+      st = state(in_flight_channels: MapSet.new(["#sniffo"]))
+
+      assert :delegated = NumericRouter.route(m, st)
+    end
+
+    test "the gate folds the echoed channel case-insensitively (ASCII)" do
+      m = msg(477, ["vjt", "#SNIFFO", "You need to identify"])
+      st = state(in_flight_channels: MapSet.new(["#sniffo"]))
+
+      assert :delegated = NumericRouter.route(m, st)
+    end
+
+    test "the gate folds with the NETWORK casemapping on rfc1459" do
+      # `#foo[1]` and `#foo{1}` are ONE channel on solanum/Libera, so the
+      # in-flight key written as `#foo{1}` must match the `#foo[1]` the
+      # server echoes back. Same write/read fold rule as the WHOIS leg.
+      m = msg(477, ["vjt", "#foo[1]", "You need to identify"])
+      st = state(in_flight_channels: MapSet.new(["#foo{1}"]), casemapping: :rfc1459)
+
+      assert :delegated = NumericRouter.route(m, st)
+    end
+
+    test "on :ascii the same pair stays DISTINCT (no over-fold)" do
+      m = msg(477, ["vjt", "#foo[1]", "You need to identify"])
+      st = state(in_flight_channels: MapSet.new(["#foo{1}"]), casemapping: :ascii)
+
+      assert {:channel, "#foo[1]"} = NumericRouter.route(m, st)
+    end
+
+    test "437's NICK form keeps its deny-listed $server route while a JOIN is in flight" do
+      # ERR_UNAVAILRESOURCE is dual-use: `Nick/channel is temporarily
+      # unavailable`. The channel form belongs to the JOIN, the nick form
+      # answers a /nick — and the gate separates them by shape, because a
+      # nick never folds into the in-flight CHANNEL set.
+      m = msg(437, ["vjt", "presanick", "Nick/channel is temporarily unavailable"])
+      st = state(in_flight_channels: MapSet.new(["#sniffo"]))
+
+      assert {:server, nil} = NumericRouter.route(m, st)
+    end
+
+    test "a non-join numeric with a channel param is untouched by the gate" do
+      # 482 ERR_CHANOPRIVSNEEDED answers a MODE/KICK, and can perfectly well
+      # arrive for a channel whose JOIN is in flight. It is not in the set,
+      # so it routes to the channel window as always.
+      m = msg(482, ["vjt", "#sniffo", "You're not channel operator"])
+      st = state(in_flight_channels: MapSet.new(["#sniffo"]))
+
+      assert {:channel, "#sniffo"} = NumericRouter.route(m, st)
+    end
+
+    test "delegation still wins over a matching label" do
+      m = msg_tagged(477, ["vjt", "#sniffo", "You need to identify"], "lbl")
+
+      st =
+        state(
+          in_flight_channels: MapSet.new(["#sniffo"]),
+          labels_pending: %{"lbl" => %{kind: :server, target: nil}}
+        )
+
+      assert :delegated = NumericRouter.route(m, st)
     end
   end
 

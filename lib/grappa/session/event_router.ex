@@ -88,7 +88,7 @@ defmodule Grappa.Session.EventRouter do
   in `Session.Server.handle_info` — out of this router's scope.
   """
 
-  alias Grappa.IRC.{CTCP, Identifier, Message}
+  alias Grappa.IRC.{CTCP, Identifier, JoinFailure, Message}
   alias Grappa.{Scrollback, Session}
   alias Grappa.Session.{IdentityState, ISupport, ListModes, NumericRouter, Presence}
 
@@ -323,11 +323,19 @@ defmodule Grappa.Session.EventRouter do
   # Numerics where channel is at param 1 (after the own-nick echo).
   # 332 RPL_TOPIC / 333 RPL_TOPICWHOTIME / 331 RPL_NOTOPIC / 329
   # RPL_CREATIONTIME / 324 RPL_CHANNELMODEIS / 366 RPL_ENDOFNAMES /
-  # 352 RPL_WHOREPLY / join-failure 403/405/471/473/474/475/476/477 /
-  # #376 BANLIST 367 RPL_BANLIST + 368 RPL_ENDOFBANLIST (fold the
-  # channel key so the bundle keys/broadcasts on one window — #364).
+  # 352 RPL_WHOREPLY / #376 BANLIST 367 RPL_BANLIST + 368
+  # RPL_ENDOFBANLIST (fold the channel key so the bundle
+  # keys/broadcasts on one window — #364), plus the join-failure set.
+  #
+  # #1345 — that last group used to be an eight-code literal here while
+  # the handler guard below held six, and the two drifted apart in the
+  # only direction that matters: a 477 folded here reached no handler.
+  # Both now read `JoinFailure.numerics()`.
+  @channel_param1_numerics [332, 333, 331, 329, 324, 366, 352, 367, 368] ++
+                             JoinFailure.numerics()
+
   defp do_canonicalize_params({:numeric, n}, [own_nick, ch | rest], cm)
-       when n in [332, 333, 331, 329, 324, 366, 352, 367, 368, 403, 405, 471, 473, 474, 475, 476, 477] and
+       when n in @channel_param1_numerics and
               is_binary(ch) do
     [own_nick, normalize_channel(ch, cm) | rest]
   end
@@ -1724,19 +1732,27 @@ defmodule Grappa.Session.EventRouter do
     end
   end
 
-  # CP15 B2 — JOIN failure numerics. Six codes carry the same shape:
+  # CP15 B2 — JOIN failure numerics. Every code in the set carries the
+  # same shape:
   #   :server <code> <own_nick_echo> <channel> :<reason>
   # When the channel matches an in-flight JOIN (case-insensitive RFC 2812
   # §2.2 lookup against state.in_flight_joins), emit {:join_failed, ch,
   # reason, numeric} and strip the entry from state. NumericRouter marks
-  # these codes :delegated so the existing scan-based persist path doesn't
-  # double-process — the apply_effects arm in Session.Server is the
-  # canonical persist + broadcast surface.
+  # the numeric :delegated on exactly the same correlation so the
+  # scan-based persist path doesn't double-process — the apply_effects arm
+  # in Session.Server is the canonical persist + broadcast surface.
   #
-  # No-match (server emits an unsolicited 471/473/etc., or the in-flight
-  # entry was already swept by TTL): fall through with no effect — the
-  # caller's NumericRouter $server route persists it as a server message.
-  @join_failure_numerics [471, 473, 474, 475, 403, 405]
+  # No-match (server emits an unsolicited 403/474/etc., or the in-flight
+  # entry was already swept by TTL): fall through with no effect. #1345 —
+  # this comment used to promise the caller's NumericRouter "$server route
+  # persists it as a server message", which was false for as long as the
+  # codes were UNCONDITIONALLY delegated: `Server.delegate/2` routes to
+  # EventRouter alone, and the numeric catch-all here returns no effect,
+  # so an uncorrelated one was dropped in silence. Correlation-gated
+  # delegation makes the promise true again — and it is what lets the set
+  # hold codes that mean something else outside a JOIN (437's nick form,
+  # 476/485 on solanum), since those never match an in-flight channel.
+  @join_failure_numerics JoinFailure.numerics()
 
   defp do_route(
          %Message{command: {:numeric, code}, params: [_, channel, reason | _]},
@@ -3893,7 +3909,7 @@ defmodule Grappa.Session.EventRouter do
 
   DERIVED from the `extra_lines` fold that absorbed it rather than tracked in
   a parallel flag — the fold IS the absorption, so the two cannot drift.
-  `Session.Server` feeds this into `NumericRouter.new_router_state/4` so the
+  `Session.Server` feeds this into `NumericRouter.new_router_state/6` so the
   operator's NEXT 401 for the same nick routes to its query window instead of
   being eaten by the bundle too.
 
