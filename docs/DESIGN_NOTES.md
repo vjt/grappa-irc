@@ -42706,3 +42706,60 @@ viewport. That those five specs scope their chip click to
 `.home-pane-network-row-parked`, and so cannot be made ambiguous by the
 seam's identically-named control, is read from their source rather than
 observed.
+<!-- entry #1343 -->
+
+---
+
+## 2026-08-15 — #1343: three hand-maintained lists get a gate, and one of them was lying
+
+The 2026-08-15 code review found the same shape three times: a list the docs
+call authoritative, maintained by hand, with nothing holding it to that claim
+(M-S1 migration versions, D-S1 `LongLivedModules`, D-S5 the `oven/bun` digest).
+Each fix here is a gate, not a behaviour change, and each was proved by
+introducing the drift it must catch.
+
+**Migration versions (M-S1) are gated in bats, not ExUnit.** The review asked
+for a `~10-line async: true` test. The invariant is over filenames in a
+directory — no BEAM, no database, no compile — so it sits with the other
+repo-shape gates in `test/infra/`. It reads the filesystem rather than
+`git ls-files` because Ecto globs the directory: an untracked `.exs` there is
+a migration to the migrator. Three assertions: parseable names, unique
+versions, and a RATCHET on the count of round hand-typed stamps (40 of 86 on
+main). A ratchet rather than an allowlist of the 40, because an allowlist is
+the same hand-maintained shape the issue exists to remove. What this does NOT
+do is see the dangerous regime: a version already present in
+`schema_migrations` makes both files drop out of pending and the run reports
+success. That needs a preflight comparing versions against the table, which
+`Preflight` does not do — it filters changed git paths.
+
+**`LongLivedModules` (D-S1) loses its judgement clause.** The moduledoc said
+listing a pure-ETS module was "a judgement call, not a contradiction", and the
+drift that licensed was measured: nine GenServers carrying exactly the shapes
+`Preflight.extract_state_block/1` reads were absent, including `Accounts.Reaper`
+whose two listed sibling reapers differ from it in nothing. The rule is now
+mechanical — a GenServer with an extractable state block is tracked, full stop
+— and `LongLivedModulesMembershipTest` derives the candidate set from
+`Application.spec(:grappa, :modules)` filtered to the `GenServer` behaviour, so
+there is no second enumeration to drift. It deliberately covers children the
+supervision-tree pin cannot: `Net.SourceAliasManager` is a conditional child
+that does not boot in the test env (and was missing from the CLAUDE.md tree
+entirely, which is why that pin never noticed), and `GrappaWeb` children live
+outside the tree the pin walks.
+
+Two things the review did not have. `Preflight.module_to_path/1` hardcoded
+`lib/grappa/` and stripped `Elixir.Grappa.`, so **no `GrappaWeb` module could
+ever be state-shape checked** — listing one would resolve to a nonsense path,
+which is absent at both revs, compares equal, and classifies HOT. And adding
+`Net.PtrCache` as the review asked would have been **inert**: it bound its
+six-field map to a variable before `{:ok, state}`, and the extractor only
+reads a literal. Hence the membership test's second assertion — a tracked
+module whose source yields no state block is a listing that buys no check
+while reading as coverage — and hence `PtrCache.init/1` now returns the
+literal. `webauthn_challenge_store.ex` was renamed to the path its module name
+implies for the same reason: the mapping is a convention, and a file that
+breaks it fails silently in the HOT direction.
+
+**The digest (D-S5)** is grouped by the `image:tag` before `@sha256:` and every
+family must carry one digest, so `oven/bun:1` and `oven/bun:1-alpine` stay
+distinct and `nginx:alpine` is covered for free. `ci.yml` stated the equality
+in prose; the prose now points at the gate.
