@@ -43092,6 +43092,16 @@ and `subscribe.ts` dispatch into the same idempotent setters, so nothing ever
 forced the docs to be true. A third-party client following them subscribes
 per-channel and never observes a live join or kick.
 
+**Why it spread to four surfaces: the log never carried the correction.**
+`grep -n 'broadcast_window_state' docs/DESIGN_NOTES.md` returns nothing before
+this entry. F1 changed the carrier in May and was recorded only in code
+comments; the sole statement in the decision log is CP15's original
+"transitions emit typed events on the per-channel topic" (2026-05, above),
+which was true when written and has been superseded ever since. It stays as
+written — the log is chronological and entries are not rewritten — but it is
+the reason every later author copied the wrong carrier: they checked the
+authority, and the authority was three months stale.
+
 `subscribe.ts` was the one surface already stating it correctly, and it is the
 wording the rest now follow. The split is also written into
 `CLIENT_PROTOCOL.md` §4: it is a topic-selection fact a client author cannot
