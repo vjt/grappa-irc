@@ -19,13 +19,35 @@ defmodule GrappaWeb.SessionRevocationListener do
   teardown broadcast goes through `GrappaWeb.Endpoint`, and a node
   without one has no sockets to close either.
 
-  No catch-all `handle_info/2`. `Revocations.announce/1` is the sole
-  publisher on the topic, so an unrecognised message means a second
-  publisher appeared — a crash surfaces it rather than dropping the
-  teardown silently.
+  ## Why the catch-all does not weaken the teardown (#1338 M-S2)
+
+  This module used to have no catch-all `handle_info/2`, on the argument
+  that `Revocations.announce/1` is the sole publisher on the topic, so an
+  unrecognised message means a second publisher appeared and a crash
+  surfaces it. The catch-all keeps that surfacing — it logs at warning
+  with the allowlisted `unexpected:` key, the same shape `Grappa.IRC.Client`
+  uses — while removing the two ways the crash made teardown WORSE, not
+  better:
+
+    * The teardown this process performs is per-MESSAGE and stateless. A
+      crash cannot roll back or retry the unrecognised message; it only
+      discards the mailbox behind it, so a genuine `{:sessions_revoked, _}`
+      queued after an unknown one dies with it. The catch-all drops the
+      message it cannot read and serves the next — strictly more teardown,
+      never less.
+    * A second publisher is a repeating condition, not a one-shot. Crashing
+      per message walks the supervisor's restart intensity, and the process
+      that turns bearer death into WS teardown is then gone for good — the
+      failure mode is silent revocations, precisely what the crash was
+      meant to prevent.
+
+  Nothing here recovers from an unknown message: it is logged loudly and
+  dropped. What survives is the ability to tear down the NEXT one.
   """
 
   use GenServer
+
+  require Logger
 
   alias Grappa.Accounts.Revocations
   alias Grappa.Subject
@@ -43,6 +65,11 @@ defmodule GrappaWeb.SessionRevocationListener do
   @impl GenServer
   def handle_info({:sessions_revoked, subject}, state) do
     :ok = subject |> Subject.label() |> UserSocket.disconnect_user_name()
+    {:noreply, state}
+  end
+
+  def handle_info(msg, state) do
+    Logger.warning("unexpected mailbox message", unexpected: inspect(msg))
     {:noreply, state}
   end
 end

@@ -3733,6 +3733,29 @@ defmodule Grappa.Session.Server do
 
   def handle_info({:irc, %Message{} = msg}, state), do: delegate(msg, state)
 
+  # #1338 M-S2 — the EXIT class stays FATAL, ahead of the catch-all below.
+  # `init/1` traps exits, so a linked process dying abnormally arrives as a
+  # mailbox message; the clean `:normal` / `:shutdown` reasons have their own
+  # clause above. Answering a dead dependency with a log line is exactly the
+  # "safety net that silently absorbs the next class of bug" CLAUDE.md names,
+  # so an abnormal reason is propagated: `terminate/2` records the Backoff
+  # failure and the `:transient` supervisor rebuilds the session with fresh
+  # state, which is what happened pre-#1338 via the FunctionClauseError.
+  def handle_info({:EXIT, _, reason}, state), do: {:stop, reason, state}
+
+  # #1338 M-S2 — unknown-is-never-fatal, verbatim from `IRC.Client`. This
+  # process subscribes to `Topic.ws_presence/1` and `Topic.user_settings/1`,
+  # and the #447 additive-only contract lets a publisher add an event type at
+  # any time with no version bump and no compile error. Without this clause
+  # the first such addition takes down EVERY session of that subject with a
+  # FunctionClauseError — dropping a live IRC connection over a change made
+  # in an unrelated context. Loud, logged, and narrower than it looks: the
+  # EXIT class is handled above.
+  def handle_info(msg, state) do
+    Logger.warning("unexpected mailbox message", unexpected: inspect(msg))
+    {:noreply, state}
+  end
+
   # Terminal failure handling — k-line or permanent SASL (Decision C,
   # locked). Fires the `credential_failer` callback (if present) in a
   # detached, SUPERVISED Task so the DB transition + PubSub broadcast happen

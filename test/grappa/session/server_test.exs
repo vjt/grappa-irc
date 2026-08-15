@@ -989,12 +989,19 @@ defmodule Grappa.Session.ServerTest do
     # the linked-Client EXIT clause + `do_start_client/2` only; any other
     # crash class bypassed the bump and the `:transient` respawn fired with
     # no delay. The fix funnels the call into `terminate/2`'s abnormal-
-    # reason clause so every crash path bumps once. Synthesize via an
-    # unhandled message: handle_info has no catchall, so the server raises
-    # FunctionClauseError → GenServer treats the callback raise as an
-    # abnormal exit → terminate/2 fires with non-`:normal`/`:shutdown`
-    # reason → Backoff.record_failure runs.
-    test "non-Client-EXIT crash (callback raise) DOES record a Backoff failure (H12)" do
+    # reason clause so every crash path bumps once.
+    #
+    # Synthesized via an abnormal EXIT from an UNLINKED sender. It used to be
+    # an unhandled message, on the premise that `handle_info` had no
+    # catch-all; #1338 M-S2 added one (a supervised process must not die of
+    # an additively-published event), so that mechanism now returns
+    # `{:noreply, state}` and proves nothing. The EXIT class is deliberately
+    # excluded from the catch-all and is still fatal, which keeps a
+    # non-Client crash class available here: trap_exit turns
+    # `Process.exit/2` into a mailbox message → the EXIT clause stops with
+    # the abnormal reason → terminate/2 fires with non-`:normal`/`:shutdown`
+    # → Backoff.record_failure runs.
+    test "non-Client-EXIT crash DOES record a Backoff failure (H12)" do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
@@ -1006,9 +1013,9 @@ defmodule Grappa.Session.ServerTest do
       Process.flag(:trap_exit, true)
 
       # Suppress the expected GenServer crash report from polluting test
-      # output. The server WILL raise — that's the point of the test.
+      # output. The server WILL die — that's the point of the test.
       ExUnit.CaptureLog.capture_log(fn ->
-        send(pid, {:rev_d_h12_synthetic_unhandled, :rev_d_h12})
+        Process.exit(pid, :rev_d_h12_synthetic_crash)
         assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_500
       end)
 
@@ -12486,6 +12493,68 @@ defmodule Grappa.Session.ServerTest do
                        }
                      },
                      1_000
+    end
+  end
+
+  describe "unmodelled mailbox message (#1338 M-S2)" do
+    test "an unrecognised message is logged and the session keeps serving" do
+      # The server subscribes to `Topic.ws_presence/1` and
+      # `Topic.user_settings/1` — the settings bridge is a surface the
+      # #447 additive-only contract lets grow WITHOUT a version bump. Before
+      # #1338 a second tuple published by `Grappa.UserSettings` reached 40
+      # clauses and no catch-all: FunctionClauseError, supervisor restart,
+      # and the user's IRC connection dropped by an unrelated context.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      ref = Process.monitor(pid)
+
+      log =
+        capture_log(fn ->
+          send(pid, {:user_settings_changed, :a_key_this_version_never_heard_of, true})
+
+          # A synchronous call behind the send: the mailbox is FIFO, so a
+          # reply proves the unknown message was processed, not merely
+          # queued. `connection_info/2` is the probe rather than
+          # `casemapping/2`, which answers `:ascii` for a DEAD session too
+          # and would pass against the very crash under test.
+          assert {:ok, %{server: "127.0.0.1", port: ^port}} =
+                   Session.connection_info({:user, user.id}, network.id)
+        end)
+
+      refute_receive {:DOWN, ^ref, :process, ^pid, _}, 100
+      assert Process.alive?(pid)
+      assert log =~ "unexpected mailbox message"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "an abnormal EXIT from a linked process still stops the session" do
+      # The guard on the catch-all above. `init/1` sets `trap_exit`, so an
+      # abnormal exit from a linked process arrives as a MESSAGE — and a
+      # blanket catch-all would answer a dead dependency with a log line.
+      # Only `:normal` / `:shutdown` are survivable (their own clause);
+      # everything else must still take the session down so the supervisor
+      # rebuilds it. Green before #1338 (FunctionClauseError) and after
+      # (an explicit `{:stop, reason, state}`): the mutant it kills is a
+      # catch-all placed ahead of the EXIT class.
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      ref = Process.monitor(pid)
+      Process.flag(:trap_exit, true)
+
+      capture_log(fn ->
+        send(pid, {:EXIT, self(), :synthetic_linked_sibling_crash})
+
+        assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 1_500
+      end)
+
+      refute Process.alive?(pid)
     end
   end
 end
