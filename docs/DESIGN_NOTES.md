@@ -43020,3 +43020,114 @@ worker host for the whole of this work, so `check.sh`, `mix.sh` and
 unobserved, and CI on the PR is the only arbiter. The measured ircd citations
 come from the public `azzurra/bahamut` and `solanum-ircd/solanum` trees at the
 refs above, not from a running server.
+<!-- entry #1354 -->
+
+---
+
+## 2026-08-15 — #1354: where a doc and the code disagree, the code is the truth
+
+Three findings from the 2026-08-15 codebase review (K-S1, X-S3, L-S14), one
+class: documentation that outlived its subject. The interesting part is not
+the count, it is that a stale doc does not stay merely stale — it drifts into
+asserting the INVERSE of what the code does, and then it is worse than no doc
+at all.
+
+### The fold: 51 references to two functions that #537 deleted
+
+`Identifier.canonical_channel/1` (sigil-gated — it folded `#&!+`-prefixed
+strings and left a nick verbatim) and `canonical_nick/1` were collapsed into
+the one shape-blind `canonical_target/1`. Recounted here: **51 live mentions in
+`lib/`, 10 in `test/`** (the review said 11 for `test/`). After this sweep: 15,
+every one of them an explicit historical contrast ("the former", "pre-#537",
+"was", "REPLACES") — those are load-bearing and stay, because the WHY of the
+collapse is the thing a future reader needs.
+
+The review named two members as semantically inverted. There are **five**, and
+they are one family: each asserts that the fold is shape-aware, which is
+exactly the property #537 removed.
+
+- `PubSub.Topic.channel/3`'s `@doc` — ExDoc-visible, the worst of the set. It
+  told a client author that "nicks for DM windows pass through unchanged"
+  while the body two lines down folds unconditionally. Anyone building a
+  subscriber or the Phase-6 facade off it constructs
+  `…/channel:Guest87449` and receives nothing.
+- `ArchiveController` — "Shape-aware (delegates to the sigil-gated
+  `canonical_target/1`)". `canonical_target/1` is not sigil-gated.
+- `ReadCursor.get/3` — claims a per-shape dispatch ("a channel folds via
+  canonical_channel, a DM-peer nick via canonical_nick") that no longer exists.
+- `Scrollback.delete_for_dm/3` — "The call is a no-op on nick-shaped input".
+  It is not, and the comment existed to justify a two-step fold. The second
+  step is now the identity, so the redundant call went with the comment; the
+  fold is a plain ASCII `A-Z` lowercase and is idempotent, so this is
+  behaviour-preserving.
+- `EventRouter.normalize_channel/2` — claimed `canonical_channel/1` was "the
+  single source of truth" for the sigil predicate. The gate is the `#&!+`
+  guard clause on the function's own first head. The block contradicted
+  itself: three lines below, "SIGIL-GATED like the OLD `canonical_channel/1`"
+  was already correct.
+
+**One review claim is retracted.** `ReadCursor.Cursor`'s comment was cited as a
+sixth inversion. It is not: it reads "Was `canonical_channel/1`, which is a
+no-op for a DM-peer nick" and the next sentence names `canonical_target/1` as
+what the code now calls, which matches the call two lines down. It is a
+historical contrast with a present-tense verb on a dead function — fixed to
+past tense, not rewritten as an inversion.
+
+### The carrier topic: `joined` / `join_failed` / `kicked` ride the USER topic
+
+F1 (2026-05-15) moved the three terminal window-state events off the
+per-channel topic, because a fast `pending → terminal` transition raced cic's
+own `phx.join` and Phoenix PubSub does not replay. `broadcast_window_state/2`
+does exactly one thing: `Broadcaster.to_user/2`. The per-channel topic sees
+these kinds ONLY as the cold-subscribe snapshot — a per-socket `push/3` from
+`push_window_state_if_known/4`, not a broadcast.
+
+Seven published statements said otherwise, across four surfaces: CLAUDE.md's
+window-state invariant; `window_state.ex`, which QUOTES that invariant
+verbatim and inherited the error; `server.ex`'s `join_failed` and `kicked`
+arms plus the `window_state` typedoc; and three cic comments naming
+`Session.Server.broadcast_window_state_dual/3` — a helper that does not exist
+anywhere in `lib/`. The reference client works anyway because `userTopic.ts`
+and `subscribe.ts` dispatch into the same idempotent setters, so nothing ever
+forced the docs to be true. A third-party client following them subscribes
+per-channel and never observes a live join or kick.
+
+`subscribe.ts` was the one surface already stating it correctly, and it is the
+wording the rest now follow. The split is also written into
+`CLIENT_PROTOCOL.md` §4: it is a topic-selection fact a client author cannot
+derive, because the payloads are byte-identical on both carriers.
+
+Two further §4 corrections found while adding it: the channel segment was
+documented as "case-folded under rfc1459", which is wrong in the direction
+that matters (the fold is ASCII `A-Z`, so `#foo[1]` and `#foo{1}` are
+DIFFERENT topics — rfc1459 would make them one); and the topic table's
+`topic.ex:NN` pointers had all three drifted, so they now name the functions,
+which cannot rot the same way.
+
+### The supervision diagram
+
+`Grappa.Net.SourceAliasManager` was added to CLAUDE.md by #1343 while this was
+in flight, so only the ordering remained: the diagram put
+`Accounts.WebAuthnChallengeStore` after `Net.PtrCache`, the code starts it
+between `RateLimit.FailureWindow` and `RateLimit.TokenBucket`. The diagram now
+matches `application.ex` child-for-child, in order.
+
+**The pin cannot catch this class, and that is structural.**
+`application_supervision_tree_test.exs` asserts doc ⊇ RUNNING children, which
+is the right direction for "added a child, forgot the doc" — but a child the
+test env does not start is invisible to it. `SourceAliasManager`
+(`:start_source_alias_manager` false in test) is the second such child after
+`Bootstrap`, whose absence the pin documents as deliberate. Closing that gap
+means either a hand-maintained list of boot-opt-out children — the exact shape
+#1343 spent a diff replacing — or parsing `application.ex`, which the pin's
+own comment rejects on #112 grounds. Left open deliberately; it wants a design
+call, not a patch.
+
+**Not established:** nothing here was verified against a running system, and
+nothing needed to be — every change is a comment, a doc, or the removal of one
+provably-idempotent duplicate call. The claims about runtime behaviour were
+read off the source (`broadcast_window_state/2` → `Broadcaster.to_user/2` →
+`Topic.user/1`; `canonical_target/1` → `fold_ascii/1`), not observed on the
+wire. No gate was run to prove the topic claim in §4 empirically; a test that
+asserts `joined` does NOT arrive on the per-channel topic would pin it, and
+does not exist.
