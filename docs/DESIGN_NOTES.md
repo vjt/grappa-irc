@@ -42706,3 +42706,72 @@ viewport. That those five specs scope their chip click to
 `.home-pane-network-row-parked`, and so cannot be made ambiguous by the
 seam's identically-named control, is read from their source rather than
 observed.
+<!-- entry #1338 -->
+
+---
+
+## 2026-08-15 — #1338: unknown-is-never-fatal at three boundaries, and the one place it must not reach
+
+Three findings from the 2026-08-15 codebase review (M-S2, W-S1, X-S14) are
+one class: a supervised process or a boundary that treats an unrecognised
+but legal input as FATAL, against the additive-only contract. Each is fixed
+by inheriting a shape the codebase already carries — `IRC.Client`'s logging
+`handle_info` catch-all, `MessagesController.parse_after/1`'s
+"present-and-unparseable = 400", and the `recover_result.reason` widening in
+`api.ts`. Only two things here are decisions rather than transcription.
+
+**`SessionRevocationListener`'s missing catch-all was DOCUMENTED as
+deliberate, and is reversed anyway.** The moduledoc argued that
+`Revocations.announce/1` is the sole publisher, so an unknown message means a
+second publisher appeared and a crash surfaces it. Two answers. First, the
+catch-all surfaces it too — a `Logger.warning` on the allowlisted
+`unexpected:` key, greppable, the same line `IRC.Client` has emitted for a
+year; "crash so someone notices" buys nothing a log does not, and costs the
+mailbox behind the unknown message, so a genuine `{:sessions_revoked, _}`
+queued behind it dies unserved. Second, a second publisher is a REPEATING
+condition: crashing per message walks the supervisor's restart intensity, and
+the process that turns bearer death into WS teardown is then gone for good.
+The old rationale optimised for noticing a bug and, in doing so, chose the
+failure mode (silent un-revoked sessions) it was trying to prevent. The
+moduledoc now states why the catch-all does not weaken the teardown, not
+merely that it exists — the guarantee is per-message and stateless, so
+dropping the message we cannot read and serving the next is strictly more
+teardown, never less.
+
+**In `Session.Server` the EXIT class is carved OUT of the catch-all, and that
+carve-out is load-bearing.** `init/1` traps exits, so an abnormal exit from a
+linked process arrives as a mailbox message; a blanket catch-all would answer
+a dead dependency with a log line — verbatim the "safety net that silently
+absorbs the next class of bug" CLAUDE.md names. An explicit
+`{:EXIT, _, reason} -> {:stop, reason, state}` sits AHEAD of the catch-all
+(the clean `:normal` / `:shutdown` clause is further up and keeps its own
+non-restart semantics), preserving what the pre-#1338 `FunctionClauseError`
+did by accident: `terminate/2` records the Backoff failure and the
+`:transient` supervisor rebuilds. This has a visible consequence in the test
+suite. REV-D's H12 regression used to synthesize a non-Client crash by
+sending an unhandled message — a mechanism that only worked BECAUSE there was
+no catch-all — and now drives `Process.exit/2` through the EXIT clause
+instead. That test is therefore the alarm on the carve-out: widen the
+catch-all over the EXIT class and H12 goes red.
+
+**X-S14 is widened on the CLIENT only.** `Grappa.RateLimit.Wire`'s typespec
+keeps `code: :rate_limit_flood` — an honest statement of the single reason
+the server emits today, and the `@doc`'s claim that a second one is a
+reviewed addition stays true. What was wrong was the client narrowing on that
+VALUE: the sever's action (latch, clear local auth, drop to login) does not
+depend on the code, the code only selects copy, so rejecting an unrecognised
+one left the client on a dead shell holding a revoked bearer — the #630
+comment's stated must-not-happen. `userTopic.ts` now accepts any string and
+carries it verbatim; only `"rate_limit_flood"` latches the dedicated banner,
+anything else lands on the generic logged-out screen `RateLimit.Wire` already
+names as the fallback. `api.ts` hand-widens the arm to `code: string` instead
+of reusing the generated literal mirror, the same deliberate divergence
+`recover_result.reason` documents two arms up. The tolerance is over the
+VALUE of a required field, not over its absence: a payload with no `code`, or
+a non-string one, is malformed rather than additive and still drops.
+
+**Not claimed.** No e2e was run: `issue630-flood-protection.spec.ts` exercises
+the known code only, and that path is unchanged by construction, but nothing
+was observed in a browser. Nothing here was observed in production either —
+all three are contract fixes for inputs no publisher sends TODAY, which is
+exactly why none of them had a compile error to catch them.
