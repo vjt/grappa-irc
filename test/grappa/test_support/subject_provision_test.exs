@@ -81,6 +81,18 @@ defmodule Grappa.TestSupport.SubjectProvisionTest do
       assert {:error, :user_not_found} = SubjectProvision.teardown!("nobody-by-that-name")
     end
 
+    test "a case-variant spelling of the name tears down the same subject (#1353)" do
+      # This resolves the account the same way every other account reader
+      # does: the name is an identity key, so the teardown a spec asks for
+      # cannot depend on how the harness capitalised it.
+      user = user_fixture(name: unique_name())
+      typed = String.upcase(user.name)
+      refute typed == user.name
+
+      assert :ok = SubjectProvision.teardown!(typed)
+      assert Accounts.get_user_by_name(user.name) == nil
+    end
+
     test "removes the user, its credential and everything keyed to it" do
       user = user_fixture(name: unique_name())
       network = network_fixture()

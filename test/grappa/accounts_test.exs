@@ -33,6 +33,19 @@ defmodule Grappa.AccountsTest do
       assert "has already been taken" in errors_on(cs).name
     end
 
+    test "rejects a name that differs from an existing one only by case (#1353)" do
+      # One account per folded name: the folded unique index is what makes
+      # `vjt` and `VJT` the same account rather than two, and the
+      # changeset carries that index's name so the violation arrives as a
+      # changeset error rather than an `Ecto.ConstraintError`.
+      assert {:ok, _} = Accounts.create_user(%{name: "Dup-Case", password: @password})
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               Accounts.create_user(%{name: "dup-case", password: @password})
+
+      assert "has already been taken" in errors_on(cs).name
+    end
+
     test "rejects a too-short password" do
       assert {:error, %Ecto.Changeset{} = cs} =
                Accounts.create_user(%{name: "vjt", password: "short"})
@@ -173,16 +186,47 @@ defmodule Grappa.AccountsTest do
                nil
     end
 
-    # Account names are the account key — a distinct namespace from the
-    # ASCII-folded IRC nick. The lookup is case-SENSITIVE (plain
-    # `Repo.get_by(User, name:)`), the SAME semantics
-    # `get_user_by_credentials/2` uses, so the two account lookups can
-    # never disagree on what "the account named X" is (the #404 dispatch
-    # relies on this).
-    test "is case-sensitive (does NOT nick-fold the name)" do
-      {:ok, _} = Accounts.create_user(%{name: "CaseAcct", password: @password})
-      assert %User{name: "CaseAcct"} = Accounts.get_user_by_name("CaseAcct")
-      assert Accounts.get_user_by_name("caseacct") == nil
+    # #1353 — the account name is an identity KEY, so it folds like every
+    # other identity key in the schema, and the row keeps its raw
+    # spelling for display. This arm replaces one that pinned the
+    # opposite ("is case-sensitive"): the property that test was
+    # protecting — the two account lookups never disagree about what "the
+    # account named X" is — is unchanged and asserted directly below;
+    # only the fold moved, and it moved for both of them at once.
+    test "resolves a case-variant spelling to the same account (#1353)" do
+      {:ok, user} = Accounts.create_user(%{name: "CaseAcct", password: @password})
+
+      assert %User{id: id, name: "CaseAcct"} = Accounts.get_user_by_name("caseacct")
+      assert id == user.id
+      assert %User{id: ^id} = Accounts.get_user_by_name("CASEACCT")
+      assert %User{id: ^id} = Accounts.get_user_by_name("CaseAcct")
+    end
+
+    test "the display spelling is the one the account was created with (#1353)" do
+      # Folding is a MATCH, never a write: the column stays raw so the
+      # operator sees the name they chose.
+      {:ok, _} = Accounts.create_user(%{name: "MixedCase", password: @password})
+
+      assert %User{name: "MixedCase"} = Accounts.get_user_by_name("mixedcase")
+    end
+
+    test "get_user_by_name!/1 folds the same way (#1353)" do
+      {:ok, user} = Accounts.create_user(%{name: "BangAcct", password: @password})
+
+      assert %User{id: id} = Accounts.get_user_by_name!("bangacct")
+      assert id == user.id
+    end
+
+    test "the two account lookups agree on what the account named X is (#1353)" do
+      # The #404 dispatch reads `get_user_by_name/1` to decide which door
+      # a bare identifier takes, and `get_user_by_credentials/2` then
+      # authenticates it. A spelling that resolves for one and not the
+      # other would route an account holder to the wrong door.
+      {:ok, user} = Accounts.create_user(%{name: "AgreeAcct", password: @password})
+
+      assert %User{id: id} = Accounts.get_user_by_name("agreeacct")
+      assert {:ok, %User{id: ^id}} = Accounts.get_user_by_credentials("agreeacct", @password)
+      assert id == user.id
     end
   end
 

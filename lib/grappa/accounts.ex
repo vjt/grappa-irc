@@ -83,6 +83,7 @@ defmodule Grappa.Accounts do
       Grappa.Accounts.Revocations,
       Grappa.Ecto.Like,
       Grappa.EncryptedBinary,
+      Grappa.IRC,
       Grappa.Repo,
       Grappa.Visitors.Visitor
     ],
@@ -92,9 +93,11 @@ defmodule Grappa.Accounts do
 
   alias Grappa.Accounts.{Passkey, RecoveryCodes, Revocations, Session, TOTP, TOTPRecoveryCode, User}
   alias Grappa.Ecto.Like
+  alias Grappa.IRC.Identifier
   alias Grappa.Repo
   alias Grappa.Visitors.Visitor
 
+  require Identifier
   require Logger
 
   @type subject :: {:user, Ecto.UUID.t()} | {:visitor, Ecto.UUID.t()}
@@ -106,10 +109,11 @@ defmodule Grappa.Accounts do
   Creates a user from `name` + plaintext `password`.
 
   Validation lives in `User.changeset/2`; uniqueness on `name` is
-  enforced by both the changeset's `unique_constraint/2` and the
-  `users_name_index` DB index — concurrent inserts that race the
-  in-process check still surface `{:error, changeset}` on the second
-  insert.
+  enforced by the changeset's two `unique_constraint/2` calls and the
+  two DB indexes behind them — `users_name_index` (byte-exact) and
+  `users_folded_name_index` (ASCII fold, #1353) — so concurrent inserts
+  that race the in-process check still surface `{:error, changeset}` on
+  the second insert, whichever spelling it used.
   """
   @spec create_user(%{required(:name) => String.t(), required(:password) => String.t()}) ::
           {:ok, User.t()} | {:error, Ecto.Changeset.t()}
@@ -131,7 +135,7 @@ defmodule Grappa.Accounts do
           {:ok, User.t()} | {:error, :invalid_credentials}
   def get_user_by_credentials(name, password)
       when is_binary(name) and is_binary(password) do
-    case Repo.get_by(User, name: name) do
+    case Repo.one(by_folded_name(name)) do
       %User{} = user ->
         with :ok <- verify_password(user, password), do: {:ok, user}
 
@@ -316,13 +320,16 @@ defmodule Grappa.Accounts do
   end
 
   @doc """
-  Fetches a user by `name`. Raises `Ecto.NoResultsError` on miss.
+  Fetches a user by `name`, case-insensitively. Raises
+  `Ecto.NoResultsError` on miss.
 
   Used by the operator-side mix tasks where a typo in `--user`
   should fail loudly with a stack trace, not silently no-op.
   """
   @spec get_user_by_name!(String.t()) :: User.t()
-  def get_user_by_name!(name) when is_binary(name), do: Repo.get_by!(User, name: name)
+  def get_user_by_name!(name) when is_binary(name) do
+    Repo.one!(by_folded_name(name))
+  end
 
   @doc """
   Typed-nil sibling of `get_user_by_name!/1` — fetches a user by `name`,
@@ -333,13 +340,32 @@ defmodule Grappa.Accounts do
   bare login identifier classifies as an IRC nick, this decides whether
   it ALSO names an existing account (→ route to the account credential,
   never a silently-provisioned guest) or not (→ visitor path). Matches
-  the case-sensitive `name`-key semantics of `get_user_by_credentials/2`
-  so the two account lookups can never disagree on what "an account
-  named X" is — account names are the account key, a distinct namespace
-  from the ASCII-folded IRC nick.
+  the `name`-key semantics of `get_user_by_credentials/2` so the two
+  account lookups can never disagree on what "an account named X" is.
+
+  #1353 — that shared semantics is now the ASCII fold. An account name
+  is an identity KEY, and this schema folds identity keys at the MATCH
+  while storing them raw for display (#121/#525), so `vjt` and `VJT`
+  name one account here exactly as they name one nick on the wire. The
+  `users_folded_name_index` is what makes that true of the table as
+  well as of this reader.
   """
   @spec get_user_by_name(String.t()) :: User.t() | nil
-  def get_user_by_name(name) when is_binary(name), do: Repo.get_by(User, name: name)
+  def get_user_by_name(name) when is_binary(name) do
+    Repo.one(by_folded_name(name))
+  end
+
+  # The single folded-name query the three account readers share. Folds
+  # the INPUT in Elixir (`canonical_target/1`) and the COLUMN in SQL
+  # (`nick_fold/1`, the byte-pinned `lower()`), which is the expression
+  # `users_folded_name_index` is built on — so this is an index lookup,
+  # not a scan.
+  @spec by_folded_name(String.t()) :: Ecto.Query.t()
+  defp by_folded_name(name) do
+    folded = Identifier.canonical_target(name)
+
+    from(u in User, where: Identifier.nick_fold(u.name) == ^folded)
+  end
 
   @doc """
   Toggle the operator-authorization `is_admin` bit on `user`. The M

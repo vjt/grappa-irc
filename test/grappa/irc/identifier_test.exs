@@ -821,6 +821,10 @@ defmodule Grappa.IRC.IdentifierTest do
     # literals stay tied to nick_fold_sql/1.
     @refold_migration "priv/repo/migrations/20260729120000_refold_identifiers_ascii.exs"
 
+    # #1353 added a live folded index the re-fold migration predates, so
+    # it carries its own copy of the fold literal and needs its own pin.
+    @folded_name_migration "priv/repo/migrations/20260815210238_add_folded_name_index_to_users.exs"
+
     # Pre-#525 migrations legitimately embed the rfc1459 four-replace fold
     # (correct when written; #525 supersedes their LIVE indexes). The
     # re-fold migration's own down/0 restores the rfc1459 indexes as its
@@ -850,6 +854,18 @@ defmodule Grappa.IRC.IdentifierTest do
         assert String.contains?(source, Identifier.nick_fold_sql(col)),
                "#{@refold_migration} is missing #{Identifier.nick_fold_sql(col)}"
       end
+    end
+
+    test "the #1353 folded-name index embeds the ASCII fold from nick_fold_sql/1" do
+      source = File.read!(@folded_name_migration)
+
+      # The whole attribute line, not the bare expression: that migration
+      # spells `lower(name)` in its moduledoc too, so a pin on the
+      # expression alone would survive a drift in the index itself.
+      expected = ~s(@folded_name "#{Identifier.nick_fold_sql("name")}")
+
+      assert String.contains?(source, expected),
+             "#{@folded_name_migration} is missing #{expected}"
     end
 
     test "no migration newer than the #525 re-fold reintroduces the rfc1459 fold" do

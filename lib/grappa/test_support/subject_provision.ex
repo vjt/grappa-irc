@@ -56,13 +56,12 @@ if Mix.env() in [:dev, :test] do
       deps: [
         Grappa.Accounts,
         Grappa.Networks,
-        Grappa.Repo,
         Grappa.TestSupport.SubjectSession
       ]
 
     import Grappa.TestSupport.SubjectSession, only: [measure: 1]
 
-    alias Grappa.{Accounts, Networks, Repo, TestSupport.SubjectSession}
+    alias Grappa.{Accounts, Networks, TestSupport.SubjectSession}
 
     require Logger
 
@@ -223,7 +222,7 @@ if Mix.env() in [:dev, :test] do
     """
     @spec teardown!(String.t()) :: :ok | {:error, :user_not_found | :last_admin}
     def teardown!(name) when is_binary(name) do
-      case Repo.get_by(Accounts.User, name: name) do
+      case Accounts.get_user_by_name(name) do
         nil ->
           {:error, :user_not_found}
 

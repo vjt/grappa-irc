@@ -179,7 +179,7 @@ if Mix.env() in [:dev, :test] do
     """
     @spec reset!(String.t(), reset_opts()) :: {:ok, phases()} | {:error, reset_error()}
     def reset!(user_name, opts) when is_binary(user_name) and is_map(opts) do
-      case Repo.get_by(Accounts.User, name: user_name) do
+      case Accounts.get_user_by_name(user_name) do
         nil -> {:error, :user_not_found}
         %Accounts.User{} = user -> do_reset(user, opts)
       end

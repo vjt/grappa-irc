@@ -68,6 +68,17 @@ defmodule Grappa.TestSupport.SubjectResetTest do
       assert Notify.list({:user, user.id}, network.id) == []
     end
 
+    test "a case-variant spelling of the name resets the same subject (#1353)", %{
+      user: user,
+      network: network
+    } do
+      typed = String.upcase(user.name)
+      refute typed == user.name
+
+      assert {:ok, _} = SubjectReset.reset!(typed, %{})
+      assert ReadCursor.get({:user, user.id}, network.id, "#bofh") == nil
+    end
+
     test "does not touch other users", %{user: user, network: network} do
       other = user_fixture(name: "other-test-reset-#{System.unique_integer([:positive])}")
 

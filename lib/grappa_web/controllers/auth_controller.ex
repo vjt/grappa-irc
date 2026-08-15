@@ -368,12 +368,16 @@ defmodule GrappaWeb.AuthController do
   # next attempt). A name with NO matching account routes to the visitor
   # path exactly as before, so anonymous IRC still works.
   #
-  # Account names are matched the ACCOUNT way — the case-sensitive
-  # `Accounts.get_user_by_name/1`, the SAME `name` key
-  # `mode1_login/3` + `get_user_by_credentials/2` use — NOT the ASCII
-  # nick fold (#121/#525). Account name is the account key, a namespace distinct from
-  # the IRC nick; folding it here would diverge from the email branch and
-  # fork what "the account named X" means across the two login doors.
+  # Account names are matched the ACCOUNT way — `Accounts.get_user_by_name/1`,
+  # the SAME `name` key `mode1_login/3` + `get_user_by_credentials/2` use.
+  #
+  # #1353 — that key folds. An account name is an identity KEY, and this
+  # schema folds identity keys at the MATCH while keeping the stored
+  # spelling for display (#121/#525), so `vjt` and `VJT` reach one
+  # account here just as they reach one nick on the wire. The fold lives
+  # in the CONTEXT reader, not at this branch, which is what keeps the
+  # two login doors saying the same thing about "the account named X":
+  # the email branch resolves its local part through the same function.
   @spec nick_login(
           Plug.Conn.t(),
           String.t(),

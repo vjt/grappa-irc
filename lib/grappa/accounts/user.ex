@@ -75,7 +75,22 @@ defmodule Grappa.Accounts.User do
     |> validate_length(:name, min: 1, max: 64)
     |> validate_format(:name, @name_format, message: "must start with a letter, then alphanumeric/_/-")
     |> validate_length(:password, min: 8, max: 256)
+    # Measured #1353: removing this line reddens NO test, because SQLite
+    # names the folded index first when an exact duplicate violates both.
+    # It stays anyway — which index a conflict reports is index-resolution
+    # order, not a contract, so a later migration that recreates the two
+    # in another order would put the byte-exact violation back on this
+    # line, and without it that violation escapes as a raise instead of a
+    # changeset error. One declaration per index, not one per observed
+    # message.
     |> unique_constraint(:name)
+    # #1353 — the folded index is the one that decides identity: it is
+    # what makes `vjt` and `VJT` one account rather than two. Named
+    # explicitly because ecto derives its default constraint name from
+    # the COLUMN, which reaches `users_name_index` only; without this the
+    # folded violation would surface as an `Ecto.ConstraintError` raise
+    # instead of a changeset error.
+    |> unique_constraint(:name, name: :users_folded_name_index)
     |> put_password_hash()
   end
 

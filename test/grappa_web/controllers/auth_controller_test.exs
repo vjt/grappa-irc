@@ -543,6 +543,38 @@ defmodule GrappaWeb.AuthControllerTest do
       assert is_nil(session.revoked_at)
     end
 
+    test "a case-variant spelling of the account name takes the account door (#1353)",
+         %{conn: conn} do
+      # The dispatch asks `Accounts.get_user_by_name/1` which door this
+      # identifier belongs to, and the account name is an identity key,
+      # so the answer does not depend on how the holder capitalised it.
+      # No visitor network is configured in this describe, so the visitor
+      # door is not merely unlikely here — it is unreachable, and the 200
+      # below could not come from it.
+      {user, password} = user_fixture_with_password()
+      typed = String.upcase(user.name)
+
+      # The fixture picks the stored spelling, so pin the pre-state: if a
+      # future fixture name were already upper-case this test would still
+      # pass while asserting nothing.
+      refute typed == user.name
+
+      body =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/auth/login", %{"identifier" => typed, "password" => password})
+        |> json_response(200)
+
+      assert body["subject"]["kind"] == "user"
+      assert body["subject"]["id"] == user.id
+      # The envelope carries the STORED spelling, not the typed one.
+      assert body["subject"]["name"] == user.name
+
+      session = Repo.get(Session, body["token"])
+      assert session.user_id == user.id
+      assert is_nil(session.visitor_id)
+    end
+
     test "bare account name + wrong password → 401 invalid_credentials, no guest provisioned",
          %{conn: conn} do
       {user, _} = user_fixture_with_password()
