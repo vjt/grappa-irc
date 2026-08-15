@@ -198,10 +198,11 @@ emits them only once, to your socket alone, as the join-time snapshot of
 a window that already reached that state before you subscribed. So:
 subscribe to the user topic at connect and drive window state from there;
 if you wait on the per-channel topic for a live `joined`, it never
-arrives. (`members_seeded`, `topic_changed`, `channel_modes_changed` and
-message events ARE per-channel — they are all post-join by definition.)
-This is a topic-selection fact you cannot derive from the payloads, which
-are byte-identical on both carriers.
+arrives. Everything the per-channel topic broadcasts in its own right —
+messages, members, topic, modes, read cursor — is post-join by
+definition, which is precisely why window state cannot live there. This
+is a topic-selection fact you cannot derive from the payloads, which are
+byte-identical on both carriers.
 
 **Not every user-topic event reaches every connection (#1088).** The reply
 to an informational command you issued — `who_reply`, `names_reply`,

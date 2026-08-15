@@ -255,9 +255,10 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   per-channel broadcast raced cic's own `phx.join` and Phoenix PubSub
   does not replay. The per-channel topic carries window state ONLY as
   the cold-subscribe snapshot — a per-socket `push/3` from
-  `push_window_state_if_known/4`, not a broadcast. (`members_seeded`,
-  `topic_changed` and `channel_modes_changed` ARE genuinely
-  per-channel broadcasts; they are always post-join-handshake.) A
+  `push_window_state_if_known/4`, not a broadcast. The per-channel
+  topic's OWN traffic is the post-join-handshake set, and its SSOT is
+  the `Broadcaster.to_channel/3` call sites — do NOT restate that list
+  in prose anywhere, an enumeration of it is what rotted here. A
   third-party client that subscribes per-channel and waits for a live
   `joined` waits forever. cic's `lib/windowState.ts` mirrors via
   `lib/userTopic.ts` (live) + `lib/subscribe.ts` (snapshot) dispatch. `:invited` (#78) is a
