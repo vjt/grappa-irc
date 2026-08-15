@@ -244,6 +244,26 @@ defmodule Grappa.Deploy.Preflight do
   end
 
   @doc """
+  `Grappa.Foo.Bar` → `lib/grappa/foo/bar.ex`, `GrappaWeb.Foo` →
+  `lib/grappa_web/foo.ex`. `Macro.underscore/1` handles CamelCase →
+  snake_case and dot-to-slash.
+
+  The mapping is a naming CONVENTION, not a lookup: a module whose file
+  does not sit where its name says loses its state-shape check silently,
+  because a path that exists at neither rev compares equal and classifies
+  HOT. `Grappa.HotReload.LongLivedModulesMembershipTest` holds every
+  candidate module to it.
+  """
+  @spec module_to_path(module()) :: String.t()
+  def module_to_path(mod) when is_atom(mod) do
+    "lib/" <>
+      (mod
+       |> Atom.to_string()
+       |> String.replace_prefix("Elixir.", "")
+       |> Macro.underscore()) <> ".ex"
+  end
+
+  @doc """
   Compare two revisions of the same source file's `@type t :: %{...}`
   and `defstruct` blocks. Returns `:cold` if the blocks differ
   (field-additions or removals), `:hot` if equivalent (including
@@ -777,16 +797,6 @@ defmodule Grappa.Deploy.Preflight do
     |> Macro.to_string()
     |> String.replace(~r/\s+/, " ")
     |> String.trim()
-  end
-
-  # `Grappa.Foo.Bar` → `lib/grappa/foo/bar.ex`.
-  # Macro.underscore handles CamelCase → snake_case + dot-to-slash.
-  defp module_to_path(mod) do
-    "lib/grappa/" <>
-      (mod
-       |> Atom.to_string()
-       |> String.replace_prefix("Elixir.Grappa.", "")
-       |> Macro.underscore()) <> ".ex"
   end
 
   # Compare a single long-lived-module file's state-shape between two
