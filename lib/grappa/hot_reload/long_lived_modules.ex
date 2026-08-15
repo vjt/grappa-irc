@@ -35,14 +35,26 @@ defmodule Grappa.HotReload.LongLivedModules do
 
   ## What goes here
 
-  A module belongs in `@modules` if:
+  A module belongs in `@modules` if it is a `GenServer` and
+  `Grappa.Deploy.Preflight.extract_state_block/1` finds a state block in
+  its source — a `defstruct`, an `@type t :: %{...}`, or an `init/1`
+  returning a `{:ok, %{...}}` literal.
 
-    - it is a `GenServer` (or other long-lived process) supervised
-      by the top-level application supervisor with `restart: :permanent`
-      or `:transient`, AND
-    - it carries non-trivial state that is fed by callbacks (not
-      just an empty map placeholder for processes that store
-      everything in ETS).
+  **That is a mechanical test, not a judgement call**, and
+  `Grappa.HotReload.LongLivedModulesMembershipTest` runs it over every
+  `GenServer` the `:grappa` application ships (GH #1343 / D-S1). It used
+  to be a judgement call — "a pure-ETS module may be listed or not" — and
+  the drift that licensed was measured: nine `GenServer`s carrying
+  exactly the shapes the extractor reads were absent, four of them
+  reapers and telemetry sinks whose listed siblings differ in nothing.
+  An empty `{:ok, %{}}` earns an entry for the same reason it always
+  did — the day it gains its first field, the field-add IS the
+  hot-unsafe change, and only a listed module gets checked.
+
+  The gate is one-directional by design: it can prove that a stateful
+  `GenServer` is tracked, never that a tracked module is supervised.
+  `Grappa.IRC.Client` and `Grappa.IRC.AuthFSM` live under a session, not
+  under the application supervisor, and belong here all the same.
 
   Helper modules whose `defstruct` is a *field* of a long-lived
   module's state (e.g. `Grappa.Session.AwayState` is a field of
@@ -50,21 +62,21 @@ defmodule Grappa.HotReload.LongLivedModules do
   they are not directly supervised but their shape is part of the
   parent's hot-reload surface.
 
-  Modules that hold ETS only (state := `%{}` empty) may still be
-  listed — `Grappa.Session.Backoff` and `Grappa.Admission.NetworkCircuit`
-  are. Their `init/1` returns a stable `{:ok, %{}}`, so the state-shape
-  check extracts an empty map that never differs across revs → they are
-  a permanent no-op today, harmless, and the entry future-proofs the day
-  one gains non-ETS state (the check would then catch the field-add).
-  A pure-ETS module that is *not* listed is equally fine — its
-  hot-reload surface is the function bodies, which `Phoenix.CodeReloader`
-  handles natively. Listing is a judgement call, not a contradiction.
+  A `GenServer` the extractor sees NOTHING in is out of scope, and the
+  membership test also refuses a listing it cannot see a shape for — an
+  entry that buys no check reads as coverage while providing none. When
+  the shape is real but invisible, make it visible rather than listing
+  around it: `Grappa.Net.PtrCache` held a six-field map bound to a
+  variable before returning it, so listing it would have been inert
+  until its `init/1` returned the literal.
 
   ## Adding a new module
 
-  When introducing a new long-lived `GenServer`:
+  When introducing a new long-lived `GenServer` (the membership test
+  fails until step 1 is done, so this is a checklist, not a courtesy):
 
-    1. Add the module atom to `@modules` here.
+    1. Add the module atom to `@modules` here — and to the `long_lived`
+       union below, which Dialyzer holds to the same set.
     2. If it has a `defstruct`, `Grappa.Deploy.Preflight` extracts
        its shape via the Elixir tokenizer — covers field-additions,
        removals, and rearrangements.
@@ -94,11 +106,20 @@ defmodule Grappa.HotReload.LongLivedModules do
     Grappa.WSPresence,
     Grappa.Admission.NetworkCircuit,
     Grappa.AdminEvents,
+    Grappa.SessionLog,
+    Grappa.DbLatency,
+    Grappa.ShareTokens,
+    Grappa.RateLimit.DailyQuota,
+    Grappa.RateLimit.FailureWindow,
+    Grappa.RateLimit.TokenBucket,
+    Grappa.Net.PtrCache,
     Grappa.Session.Server,
     Grappa.IRC.Client,
     Grappa.IRC.AuthFSM,
+    Grappa.Net.SourceAliasManager,
     Grappa.Visitors.Reaper,
-    Grappa.Uploads.Reaper
+    Grappa.Uploads.Reaper,
+    Grappa.Accounts.Reaper
   ]
 
   # Helper struct modules whose defstruct is a *field* of one of the
@@ -121,11 +142,20 @@ defmodule Grappa.HotReload.LongLivedModules do
           | Grappa.WSPresence
           | Grappa.Admission.NetworkCircuit
           | Grappa.AdminEvents
+          | Grappa.SessionLog
+          | Grappa.DbLatency
+          | Grappa.ShareTokens
+          | Grappa.RateLimit.DailyQuota
+          | Grappa.RateLimit.FailureWindow
+          | Grappa.RateLimit.TokenBucket
+          | Grappa.Net.PtrCache
           | Grappa.Session.Server
           | Grappa.IRC.Client
           | Grappa.IRC.AuthFSM
+          | Grappa.Net.SourceAliasManager
           | Grappa.Visitors.Reaper
           | Grappa.Uploads.Reaper
+          | Grappa.Accounts.Reaper
 
   @typedoc """
   One of the helper struct modules whose `defstruct` is a field of a
