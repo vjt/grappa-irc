@@ -618,7 +618,7 @@ defmodule Grappa.UserSettings do
 
   @spec rekey_muted_target(Settings.t() | nil, String.t(), String.t()) ::
           {:ok, :renamed | :noop} | {:error, Ecto.Changeset.t() | :db_unavailable}
-  defp rekey_muted_target(nil, _old_key, _new_key), do: {:ok, :noop}
+  defp rekey_muted_target(nil, _, _), do: {:ok, :noop}
 
   defp rekey_muted_target(%Settings{} = settings, old_key, new_key) do
     prefs = Map.get(settings.data, @notification_prefs_key, %{})
@@ -636,7 +636,7 @@ defmodule Grappa.UserSettings do
         next_data = Map.put(settings.data, @notification_prefs_key, next_prefs)
 
         case persist(Settings.changeset(settings, %{data: next_data})) do
-          {:ok, _settings} -> {:ok, :renamed}
+          {:ok, _} -> {:ok, :renamed}
           {:error, _} = error -> error
         end
     end

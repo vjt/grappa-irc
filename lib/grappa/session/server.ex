@@ -6118,7 +6118,7 @@ defmodule Grappa.Session.Server do
     # this arm — independent stores of the moved identity, each migrated on
     # its own terms. It sits ahead of the barrier broadcast because a rename
     # must never be observable half-applied.
-    {:ok, _mute} =
+    {:ok, _} =
       UserSettings.rename_muted_target(state.subject, state.network_slug, old_nick, new_nick)
 
     case QueryWindows.rename(
@@ -6236,7 +6236,7 @@ defmodule Grappa.Session.Server do
       # the only evidence that the window at our old nick is OURS; ungated,
       # our rename would quietly re-file a mute the operator set against a
       # peer who bore that nick before us.
-      {:ok, _mute} =
+      {:ok, _} =
         UserSettings.rename_muted_target(state.subject, state.network_slug, old_nick, new_nick)
 
       # Broadcast LAST, and only when a window actually moved: the event is
