@@ -111,6 +111,35 @@ defmodule Grappa.Visitors.SessionPlanTest do
       assert second.host == "secondary"
     end
 
+    # #1350 — the visitor half of the past-the-knee pin (the user half
+    # lives in `Grappa.NetworksTest`, which also witnesses that
+    # `max_exponent/0` is where the wait flattens). Two respawn doors read
+    # the same unclamped counter, so a write-side clamp would freeze both;
+    # pinning one door would leave the other free to regress alone.
+    test "refresh_plan keeps walking the ring past the exponent knee (#1350)" do
+      {network, _} = network_with_server(slug: "azzurra", port: 6667, host: "primary")
+      {:ok, _} = Servers.add_server(network, %{host: "secondary", port: 6667, priority: 9})
+      {:ok, _} = Servers.add_server(network, %{host: "tertiary", port: 6667, priority: 10})
+      {:ok, visitor} = Visitors.find_or_provision_anon("vjt-knee", "azzurra", "1.2.3.4")
+      on_exit(fn -> Backoff.forget({:visitor, visitor.id}) end)
+
+      assert {:ok, plan} = SessionPlan.resolve(visitor, network)
+
+      ring = network |> Servers.list_servers() |> Enum.filter(& &1.enabled) |> Enum.map(& &1.host)
+      walk = Backoff.max_exponent() + 1 + length(ring)
+
+      walked =
+        for _ <- 1..walk do
+          :ok = Backoff.record_failure({:visitor, visitor.id}, network.id)
+          assert {:ok, fresh} = plan.refresh_plan.()
+          fresh.host
+        end
+
+      expected = ring |> Stream.cycle() |> Stream.drop(1) |> Enum.take(walk)
+
+      assert walked == expected
+    end
+
     # CP24 bucket E lifecycle/S1: visitor plans carry a `credential_failer`
     # callback that expires the row on K-line / permanent SASL.
     test "plan injects credential_failer that expires the visitor on call" do

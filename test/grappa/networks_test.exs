@@ -46,6 +46,17 @@ defmodule Grappa.NetworksTest do
 
   # #93 — builds the `{host, enabled}` list as an ascending-priority ring,
   # binds `user` to it and resolves the spawn-door plan.
+  # Shared by the two fail-over ring describes (#93 below the exponent
+  # knee, #1350 past it). `Backoff` is an application-wide singleton with
+  # no sandbox, so the counter has to be evicted per test.
+  defp ring_ctx do
+    user = user_fixture()
+    net = network_fixture()
+    on_exit(fn -> Backoff.forget({:user, user.id}) end)
+
+    {:ok, user: user, net: net}
+  end
+
   defp bind_ring(user, net, hosts) do
     Enum.each(Enum.with_index(hosts, 1), fn {{host, enabled}, priority} ->
       {:ok, _} =
@@ -60,6 +71,14 @@ defmodule Grappa.NetworksTest do
       })
 
     user |> Credentials.get_credential!(net) |> SessionPlan.resolve()
+  end
+
+  # The endpoint ring as `pick_server!/2` indexes it — `list_servers/1`
+  # returns the `(priority, id)` order the picker sorts by, so the
+  # expected fail-over walk is derived from production, not transcribed
+  # from the fixture's insertion order.
+  defp enabled_ring(net) do
+    net |> Servers.list_servers() |> Enum.filter(& &1.enabled) |> Enum.map(& &1.host)
   end
 
   describe "find_or_create_network/1" do
@@ -1829,11 +1848,7 @@ defmodule Grappa.NetworksTest do
   # per-server state to keep in sync.
   describe "SessionPlan fail-over ring (#93)" do
     setup do
-      user = user_fixture()
-      net = network_fixture()
-      on_exit(fn -> Backoff.forget({:user, user.id}) end)
-
-      {:ok, user: user, net: net}
+      ring_ctx()
     end
 
     test "each recorded failure advances the plan to the next enabled server", ctx do
@@ -1895,6 +1910,93 @@ defmodule Grappa.NetworksTest do
 
       assert {:ok, plan} = user |> Credentials.get_credential!(net) |> SessionPlan.resolve()
       assert plan.host == "primary"
+    end
+  end
+
+  # #1350 — #1349 bounded the backoff EXPONENT and left the stored count
+  # deliberately UNCLAMPED, because that same count is the fail-over ring
+  # ordinal. #1349 pinned that consequence at the counter (`failure_count/2`
+  # still answers 1_025 after 1_025 failures); this pins it where it is
+  # load-bearing — at the respawn door, past the knee, where the wait has
+  # stopped growing and the endpoint must NOT stop moving with it. The
+  # #93 tests above all sit BELOW the knee.
+  #
+  # The first test is the anti-vacuity witness for the second: it fixes
+  # that the count the walk derives really does sit on the flat part of
+  # the curve. Split into two tests so each dies on its own mutant
+  # instead of shadowing the other.
+  describe "SessionPlan fail-over ring past the exponent knee (#1350)" do
+    setup do
+      ring_ctx()
+    end
+
+    # One-sided on purpose: the ±25% jitter windows of the last rung below
+    # the knee and the cap overlap at the production tuning, so "not yet
+    # capped one failure earlier" is not assertable without a flake.
+    test "the knee the walk derives is where the wait has flattened at the cap", ctx do
+      %{user: user, net: net} = ctx
+      cap = Backoff.cap_ms()
+      jitter = trunc(cap * 0.25)
+
+      for _ <- 1..(Backoff.max_exponent() + 1) do
+        :ok = Backoff.record_failure({:user, user.id}, net.id)
+      end
+
+      ms = Backoff.wait_ms({:user, user.id}, net.id)
+
+      assert ms >= cap - jitter
+      assert ms <= cap + jitter
+    end
+
+    test "the endpoint keeps advancing once the wait has flattened", ctx do
+      %{user: user, net: net} = ctx
+      assert {:ok, plan} = bind_ring(user, net, [{"primary", true}, {"secondary", true}, {"tertiary", true}])
+
+      ring = enabled_ring(net)
+      # A full ring PAST the flattening point, so the tail of the walk is
+      # entirely on the flat part of the curve.
+      walk = Backoff.max_exponent() + 1 + length(ring)
+
+      walked =
+        for _ <- 1..walk do
+          :ok = Backoff.record_failure({:user, user.id}, net.id)
+          assert {:ok, fresh} = plan.refresh_plan.()
+          fresh.host
+        end
+
+      # `list_servers/1` returns the same `(priority, id)` order
+      # `pick_server!/2` indexes, so the walk is that order cycled — the
+      # Nth failure is ring position N, one past the primary.
+      expected = ring |> Stream.cycle() |> Stream.drop(1) |> Enum.take(walk)
+
+      assert walked == expected
+    end
+
+    # The count whose pre-#1349 `:math.pow/2` exponent overflowed the
+    # double. Nothing the test computes can put it below a knee, so this
+    # claim rests on no derivation of its own — the price is that it can
+    # only assert the ring's SHAPE (every endpoint visited once per
+    # revolution), not its phase.
+    @overflow_count 1_025
+
+    test "the ring still advances at the count that used to raise badarith", ctx do
+      %{user: user, net: net} = ctx
+      assert {:ok, plan} = bind_ring(user, net, [{"primary", true}, {"secondary", true}, {"tertiary", true}])
+
+      ring = enabled_ring(net)
+
+      for _ <- 1..(@overflow_count - length(ring)) do
+        :ok = Backoff.record_failure({:user, user.id}, net.id)
+      end
+
+      walked =
+        for _ <- 1..length(ring) do
+          :ok = Backoff.record_failure({:user, user.id}, net.id)
+          assert {:ok, fresh} = plan.refresh_plan.()
+          fresh.host
+        end
+
+      assert Enum.sort(walked) == Enum.sort(ring)
     end
   end
 
