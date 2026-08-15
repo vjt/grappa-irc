@@ -1192,14 +1192,16 @@ export type WireUserEvent =
       peer: string;
     }
   // F1 (visitor-parity-and-nickserv cluster, 2026-05-15) — typed
-  // window-state terminal events dual-broadcast on `Topic.user/1`
-  // alongside the per-channel topic. Server-side
-  // `Session.Server.broadcast_window_state_dual/3` closes the
-  // subscribe-then-broadcast race where a fast `pending → terminal`
-  // transition fires the per-channel broadcast BEFORE cic's phx.join
-  // handler is registered (Phoenix PubSub no-replay). User-topic is
-  // joined at cic boot so it cannot race a subscribe — guaranteed
-  // delivery. Same wire shape as the per-channel arms above; cic's
+  // window-state terminal events broadcast on `Topic.user/1` ONLY.
+  // Server-side `Session.Server.broadcast_window_state/2` (→
+  // `Broadcaster.to_user/2`) MOVED them off the per-channel topic to
+  // close the subscribe-then-broadcast race where a fast
+  // `pending → terminal` transition fired the per-channel broadcast
+  // BEFORE cic's phx.join handler was registered (Phoenix PubSub
+  // no-replay). User-topic is joined at cic boot so it cannot race a
+  // subscribe — guaranteed delivery. The per-channel arms still see
+  // this wire shape, but only as the cold-subscribe snapshot
+  // (`push_window_state_if_known/4`, a per-socket push). cic's
   // `userTopic.ts` dispatch routes them to the same
   // `setJoined/setFailed/setKicked` setters which are last-write-wins
   // idempotent.

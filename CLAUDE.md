@@ -246,12 +246,21 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
 - **Window state model lives on the server.** `Grappa.Session.Server`
   owns `window_states %{channel => :pending | :invited | :joined |
   :failed | :kicked | :parked}` + sibling `window_failure_{reasons,numerics}`
-  + `window_kicked_meta` maps. Transitions emit typed events on the
-  per-channel topic (`kind: "joined" | "join_failed" | "kicked" |
-  "members_seeded"`) OR the user-topic (`window_pending` /
-  `window_invited` — chicken-and-egg states cic must see BEFORE it
-  subscribes per-channel); cic's `lib/windowState.ts` mirrors via
-  `lib/subscribe.ts` + `lib/userTopic.ts` dispatch. `:invited` (#78) is a
+  + `window_kicked_meta` maps. **Every LIVE window-state transition
+  broadcasts on the USER topic** — `window_pending` / `window_invited`
+  (chicken-and-egg states cic must see BEFORE it subscribes
+  per-channel) and, since F1 (2026-05-15), the three terminal events
+  too (`kind: "joined" | "join_failed" | "kicked"`, via
+  `broadcast_window_state/2` → `Broadcaster.to_user/2`), because a
+  per-channel broadcast raced cic's own `phx.join` and Phoenix PubSub
+  does not replay. The per-channel topic carries window state ONLY as
+  the cold-subscribe snapshot — a per-socket `push/3` from
+  `push_window_state_if_known/4`, not a broadcast. (`members_seeded`,
+  `topic_changed` and `channel_modes_changed` ARE genuinely
+  per-channel broadcasts; they are always post-join-handshake.) A
+  third-party client that subscribes per-channel and waits for a live
+  `joined` waits forever. cic's `lib/windowState.ts` mirrors via
+  `lib/userTopic.ts` (live) + `lib/subscribe.ts` (snapshot) dispatch. `:invited` (#78) is a
   not-joined greyed tab opened by an inbound INVITE we didn't request —
   see DESIGN_NOTES 2026-06-28. cic NEVER originates state — no
   optimistic STATE assumptions, no parallel client-side state

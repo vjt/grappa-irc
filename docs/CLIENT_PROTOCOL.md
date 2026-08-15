@@ -178,14 +178,30 @@ Topics are user-rooted (single source of truth
 
 | topic | shape | source |
 |-------|-------|--------|
-| user | `grappa:user:{user}` | `topic.ex:64` |
-| network | `grappa:user:{user}/network:{slug}` | `topic.ex:70` |
-| channel | `grappa:user:{user}/network:{slug}/channel:{chan}` | `topic.ex:92` |
+| user | `grappa:user:{user}` | `Topic.user/1` |
+| network | `grappa:user:{user}/network:{slug}` | `Topic.network/2` |
+| channel | `grappa:user:{user}/network:{slug}/channel:{chan}` | `Topic.channel/3` |
 
-Channel segments are case-folded under rfc1459 server-side, so join with
-any casing and you land on the canonical window. Events push on the
-matching topic as `"event"` frames; treat unknown `kind` values as
-ignorable per §2.
+The channel segment is ASCII-folded server-side — `A-Z` only, so join with
+any casing and you land on the canonical window, but `#foo[1]` and
+`#foo{1}` are DIFFERENT topics and non-ASCII case (`#CAFÉ` vs `#café`) is
+NOT folded. The fold is shape-blind: a DM window's segment is the peer
+nick and folds the same way, so the topic for a query with `Guest87449`
+is `…/channel:guest87449`. Events push on the matching topic as `"event"`
+frames; treat unknown `kind` values as ignorable per §2.
+
+**Window state is a USER-topic event, not a per-channel one.** The
+transitions that open, fail, or close a window — `window_pending`,
+`window_invited`, and the three terminal kinds `joined`, `join_failed`,
+`kicked` — are broadcast on your **user** topic. The per-channel topic
+emits them only once, to your socket alone, as the join-time snapshot of
+a window that already reached that state before you subscribed. So:
+subscribe to the user topic at connect and drive window state from there;
+if you wait on the per-channel topic for a live `joined`, it never
+arrives. (`members_seeded`, `topic_changed`, `channel_modes_changed` and
+message events ARE per-channel — they are all post-join by definition.)
+This is a topic-selection fact you cannot derive from the payloads, which
+are byte-identical on both carriers.
 
 **Not every user-topic event reaches every connection (#1088).** The reply
 to an informational command you issued — `who_reply`, `names_reply`,

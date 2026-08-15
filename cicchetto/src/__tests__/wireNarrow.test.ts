@@ -544,7 +544,7 @@ describe("narrowChannelEvent (bucket G H4+U3)", () => {
 // single-source contract; the existing narrowChannelEvent arm tests
 // above implicitly exercise this code path. These tests give the
 // helper direct coverage so a future caller (e.g. a per-arm test
-// for narrowUserEvent's user-topic dual-broadcast routing) can
+// for narrowUserEvent's user-topic live routing) can
 // reuse the assertions.
 describe("narrowWindowStateEvent (REV-A H1)", () => {
   it("narrows a valid joined arm", () => {
@@ -578,7 +578,7 @@ describe("narrowWindowStateEvent (REV-A H1)", () => {
     });
   });
 
-  // S13 — dual-broadcast path (user-topic) must accept null numeric too;
+  // S13 — the live path (user-topic) must accept null numeric too;
   // both narrowers share this contract.
   it("narrows a join_failed arm with null numeric", () => {
     expect(

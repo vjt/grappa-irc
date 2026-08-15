@@ -442,8 +442,9 @@ defmodule Grappa.Session.Server do
 
   @typedoc """
   Per-channel window state (CP15 — event-driven windows). The Session
-  Server is the single source of truth; cic projects from broadcast
-  events on the per-channel topic.
+  Server is the single source of truth; cic projects from the live
+  broadcasts on the USER topic (F1 — see `broadcast_window_state/2`)
+  plus the per-channel cold-subscribe snapshot.
 
   Storage owned by `Grappa.Session.WindowState` (cluster #6 extraction).
   This typedef is the on-process atom shape; see that module for the
@@ -5647,8 +5648,9 @@ defmodule Grappa.Session.Server do
   #      MOTD's BUG2 fix; meta.numeric is the only structured datum cic
   #      needs to render the failure differently from a regular notice.
   #   3. Event broadcast — typed `kind: "join_failed"` payload on the
-  #      per-channel topic (sibling to the B1 `joined` event). Cic flips
-  #      the window's render state without polling.
+  #      USER topic (sibling to the B1 `joined` event; F1 moved both off
+  #      the per-channel topic — see `broadcast_window_state/2`). Cic
+  #      flips the window's render state without polling.
   defp apply_effects([{:join_failed, channel, reason, numeric} | rest], state) do
     attrs =
       Session.put_subject_id(
@@ -5786,10 +5788,11 @@ defmodule Grappa.Session.Server do
   #      reason. The window stays in the active sidebar (greyed) so
   #      the operator can /join to retry; archiving on KICK would
   #      punish the victim.
-  #   2. Event broadcast — typed `kind: "kicked"` payload on the
-  #      per-channel topic carrying `by` + `reason` so cic can render the
-  #      kick reason banner without parsing the scrollback row. The
-  #      :persist :kick row alongside is the audit trail.
+  #   2. Event broadcast — typed `kind: "kicked"` payload on the USER
+  #      topic (F1, like its `joined` / `join_failed` siblings — see
+  #      `broadcast_window_state/2`) carrying `by` + `reason` so cic can
+  #      render the kick reason banner without parsing the scrollback
+  #      row. The :persist :kick row alongside is the audit trail.
   defp apply_effects([{:kicked, channel, by, reason} | rest], state) do
     broadcast_window_state(
       state,

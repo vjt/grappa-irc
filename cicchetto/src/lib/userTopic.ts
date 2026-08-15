@@ -919,9 +919,12 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
     case "join_failed":
     case "kicked":
       // F1 (visitor-parity-and-nickserv cluster, 2026-05-15) — typed
-      // window-state terminal events dual-broadcast on user-topic by
-      // `Session.Server.broadcast_window_state_dual/3` to close the
-      // subscribe-then-broadcast race. REV-A H1 (2026-05-22) — shape
+      // window-state terminal events broadcast on user-topic ONLY by
+      // `Session.Server.broadcast_window_state/2`, moved off the
+      // per-channel topic to close the subscribe-then-broadcast race.
+      // This is the LIVE carrier; the per-channel arms in
+      // `subscribe.ts` see these kinds only as the cold snapshot.
+      // REV-A H1 (2026-05-22) — shape
       // narrowing extracted to shared `narrowWindowStateEvent` so any
       // future server-side field add to e.g. `Session.Wire.kicked/4`
       // lands once at the helper. Dispatcher routes the typed result to
@@ -1479,13 +1482,13 @@ moduleRoot(() => {
           return;
 
         case "joined":
-          // F1 (visitor-parity-and-nickserv cluster, 2026-05-15) — typed
-          // window-state terminal events ALSO arrive on user-topic as a
-          // safety net for the subscribe-then-broadcast race documented
-          // at `Session.Server.broadcast_window_state_dual/3`. Same
-          // setter the per-channel arm at `subscribe.ts` calls;
-          // last-write-wins idempotent so dual-delivery (per-channel
-          // arrives a tick later than user-topic) is safe.
+          // F1 (visitor-parity-and-nickserv cluster, 2026-05-15) — this
+          // is where a LIVE window-state transition arrives; the
+          // per-channel topic no longer broadcasts it, per
+          // `Session.Server.broadcast_window_state/2`. Same setter the
+          // per-channel arm at `subscribe.ts` calls for the cold
+          // snapshot; last-write-wins idempotent so both-paths arrival
+          // on a cold reconnect is safe.
           setJoined(channelKey(payload.network, payload.channel));
           return;
 

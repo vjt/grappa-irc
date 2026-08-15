@@ -18,9 +18,11 @@ defmodule Grappa.Session.WindowState do
   > Window state model lives on the server. `Grappa.Session.Server`
   > owns `window_states %{channel => :pending | :invited | :joined | :failed |
   > :kicked | :parked}` + sibling `window_failure_{reasons,numerics}`
-  > + `window_kicked_meta` maps. Transitions emit typed events on the
-  > per-channel topic; cic's `lib/windowState.ts` mirrors via
-  > `lib/subscribe.ts` dispatch. cic NEVER originates state.
+  > + `window_kicked_meta` maps. Every LIVE transition broadcasts on the
+  > USER topic; the per-channel topic carries window state only as the
+  > cold-subscribe snapshot. cic's `lib/windowState.ts` mirrors via
+  > `lib/userTopic.ts` + `lib/subscribe.ts` dispatch. cic NEVER
+  > originates state.
 
   This module is the storage for that invariant. Every state
   transition emitted by `Session.Server.apply_effects/2`

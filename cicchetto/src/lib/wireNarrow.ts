@@ -301,10 +301,11 @@ export function narrowWhoUsers(raw: unknown): WhoUser[] | null {
 
 // REV-A H1 — shared narrower for the three window-state terminal-event
 // arms (joined / join_failed / kicked). F1 (visitor-parity 2026-05-15)
-// added a user-topic dual-broadcast of these three arms to close a
-// subscribe-then-broadcast race, leaving the byte-identical shape
-// narrowing duplicated across `narrowChannelEvent` here and
-// `narrowUserEvent` in `userTopic.ts`. A future server-side field add
+// MOVED the live broadcast of these three arms to the user topic to
+// close a subscribe-then-broadcast race, leaving the per-channel arms
+// here to carry only the cold-subscribe snapshot — so the
+// byte-identical shape narrowing is duplicated across
+// `narrowChannelEvent` here and `narrowUserEvent` in `userTopic.ts`. A future server-side field add
 // to e.g. `Session.Wire.kicked/4` would land at one site and silently
 // drift at the other.
 //
@@ -459,8 +460,9 @@ export function narrowChannelEvent(raw: unknown): WireChannelEvent | null {
     case "joined":
     case "join_failed":
     case "kicked":
-      // REV-A H1 — shared narrower across per-channel topic + user-topic
-      // dual-broadcast (see `narrowWindowStateEvent` moduledoc above).
+      // REV-A H1 — shared narrower across the per-channel cold snapshot
+      // and the user-topic live broadcast (see `narrowWindowStateEvent`
+      // moduledoc above).
       return narrowWindowStateEvent(r);
     case "read_cursor_set":
       if (typeof r.last_read_message_id !== "number") return null;
