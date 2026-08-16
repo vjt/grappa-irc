@@ -1068,7 +1068,10 @@ defmodule Grappa.Session.WireTest do
     # `mode` is what tells the client WHICH list it got. A bundle that
     # dropped it would render solanum's quiet list as a ban list.
     test "carries the queried mode letter verbatim (not always b)" do
-      accum = %ListModeAccum{channel_display: "#c", entries: [%ListModeAccum.Entry{mask: "*!*@muted", setter: "op", set_ts: "1"}]}
+      accum = %ListModeAccum{
+        channel_display: "#c",
+        entries: [%ListModeAccum.Entry{mask: "*!*@muted", setter: "op", set_ts: "1"}]
+      }
 
       assert Wire.banlist_bundle("libera", "#c", "q", accum).mode == "q"
       assert Wire.banlist_bundle("azzurra", "#c", "z", accum).mode == "z"
@@ -1076,7 +1079,10 @@ defmodule Grappa.Session.WireTest do
     end
 
     test "entry with nil setter/set_ts (older ircd) round-trips nils" do
-      accum = %ListModeAccum{channel_display: "#c", entries: [%ListModeAccum.Entry{mask: "*!*@h", setter: nil, set_ts: nil}]}
+      accum = %ListModeAccum{
+        channel_display: "#c",
+        entries: [%ListModeAccum.Entry{mask: "*!*@h", setter: nil, set_ts: nil}]
+      }
       payload = Wire.banlist_bundle("net", "#c", "b", accum)
 
       assert payload.entries == [%{mask: "*!*@h", setter: nil, set_ts: nil}]

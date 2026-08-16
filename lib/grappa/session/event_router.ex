@@ -94,9 +94,9 @@ defmodule Grappa.Session.EventRouter do
   alias Grappa.Session.{
     IdentityState,
     ISupport,
+    LinksAccum,
     ListModeAccum,
     ListModes,
-    LinksAccum,
     LusersAccum,
     NumericRouter,
     Presence,
