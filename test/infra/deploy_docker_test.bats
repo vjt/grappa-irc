@@ -93,8 +93,10 @@ EOF
     # it again.
     make_env
     # An ambient MIX_ENV from the developer's shell would satisfy the D-S3
-    # cases without the script having established anything.
-    unset MIX_ENV
+    # cases without the script having established anything. An ambient
+    # GRAPPA_CACHE_ID would make every case in this file refuse (#1409): bats
+    # runs on the host and inherits the caller's environment whole.
+    unset MIX_ENV GRAPPA_CACHE_ID
     export PREFLIGHT_RC=0
     export RELOAD_FAILS=0
     export HOT_HEALTHCHECK_RETRIES=2 HOT_HEALTHCHECK_SLEEP=0
@@ -403,4 +405,38 @@ seed_mix_env() {
     [ "$status" -ne 0 ]
     [[ "$output" == *".env"* ]]
     refute grep -q "docker" "$ARGV_LOG"           # died before any side effect
+}
+
+# --- GRAPPA_CACHE_ID is not honourable on this substrate (#1409) -------------
+#
+# GRAPPA_CACHE_ID (#1263) binds `.caches/<id>` over `_build`, `deps` and
+# `priv/plts` — on `compose run`, which is the only compose verb that takes
+# `-v`. A deploy is not made of oneshots alone: the long-running container
+# comes up through `compose up`, which has no `-v` at all. Threading the binds
+# through the six oneshots would migrate the database inside the isolated cache
+# and then boot the box from the shared one, so the operator would get HALF an
+# isolation and no way to see it. The substrate says so instead, once, in the
+# hook set both doors source.
+#
+# The two cases below are a PAIR. The second is not a duplicate of the auto-mode
+# case above: it is the control that stops the first from passing because the
+# fixture died of something else, and it is also the ⛔ pin — with the variable
+# absent, this deploy is the one that shipped before the guard existed.
+
+@test "GRAPPA_CACHE_ID set: the deploy is refused by name, before any docker call (#1409)" {
+    export GRAPPA_CACHE_ID=w9
+    commit_upstream lib/base.txt > /dev/null
+
+    run_deploy
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"GRAPPA_CACHE_ID"* ]]
+    refute grep -q "docker" "$ARGV_LOG"
+}
+
+@test "GRAPPA_CACHE_ID unset: the same deploy runs — the refusal is the variable (#1409)" {
+    commit_upstream lib/base.txt > /dev/null
+
+    run_deploy
+    [ "$status" -eq 0 ]
+    grep -q "docker" "$ARGV_LOG"
 }

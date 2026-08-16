@@ -76,6 +76,9 @@ GRAPPA_PUBLISH=127.0.0.1:3100
 EOF
 
     # ---- env the script needs ------------------------------------------
+    # An ambient GRAPPA_CACHE_ID would make every case in this file refuse
+    # (#1409): bats runs on the host and inherits the caller's environment.
+    unset GRAPPA_CACHE_ID
     export PREFLIGHT_RC=0
     export RELOAD_FAILS=0
     export HOT_HEALTHCHECK_RETRIES=2 HOT_HEALTHCHECK_SLEEP=0
@@ -185,6 +188,23 @@ run_update() {
     run_update
     [ "$status" -ne 0 ]
     refute grep -q "force-recreate" "$ARGV_LOG"
+}
+
+@test "update: GRAPPA_CACHE_ID is refused on this door too — one guard, both doors (#1409)" {
+    # The refusal lives in the hook set this door SHARES with
+    # scripts/deploy.sh (#1384), so it must fire identically here. Control for
+    # this case: "box up + code change + HOT verdict reloads" below is this
+    # exact body with the variable absent, and it stays green.
+    export GRAPPA_CACHE_ID=w9
+    commit_upstream lib/base.txt > /dev/null
+
+    run_update
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"GRAPPA_CACHE_ID"* ]]
+    # Refused at the top of substrate_pull: nothing pulled, nothing recreated.
+    [ "$(git -C "$REPO_ROOT" rev-parse HEAD)" != "$(git -C "$UPSTREAM" rev-parse HEAD)" ]
+    refute grep -q "force-recreate" "$ARGV_LOG"
+    refute grep -q "run --no-start" "$ARGV_LOG"
 }
 
 @test "update: a box owned by another checkout is refused, and the owner is named" {
