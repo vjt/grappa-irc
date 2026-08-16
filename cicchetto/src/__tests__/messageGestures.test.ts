@@ -4,6 +4,8 @@ import { LONG_PRESS_MS } from "../lib/keepKeyboard";
 import {
   bindMessageGestures,
   HOLD_MOVE_TOLERANCE_PX,
+  HOLD_MS_VAR,
+  HOLDING_CLASS,
   SWIPE_MAX_SLIDE_PX,
   SWIPING_CLASS,
 } from "../lib/messageGestures";
@@ -332,5 +334,105 @@ describe("bindMessageGestures — a row the call site refuses (#1156)", () => {
     swipeRight(body, 90);
     expect(onReply).toHaveBeenCalledTimes(1);
     expect(onReply.mock.calls[0]?.[0]).toBe(row);
+  });
+});
+
+// #1413 — the hold used to run its 500ms in total silence: the timer armed on
+// touchstart and NOTHING was drawn until the menu was already up, so the press
+// read as a dead touch. The sibling gesture has never had that problem — the
+// swipe slides the row under the finger, and #1156 refused to arm that slide
+// where nothing could be quoted precisely because the slide IS the promise. The
+// hold makes the same promise, so it has to show the same kind of evidence.
+//
+// The class is driven off the SAME state the timer is driven off: one machine,
+// so what is painted and what will fire cannot disagree. Every way the timer
+// can die — release, drift past the tolerance, cancel, dispose — unpaints it,
+// because they all pass through `cancelHold`.
+//
+// jsdom proves the MECHANICS only. Whether the ramp reads as an acknowledgement
+// on a real phone, and whether iOS paints anything of its own during those
+// 500ms, is a device call.
+describe("bindMessageGestures — the hold announces itself (#1413)", () => {
+  it("paints the row from touchstart, while the timer is still running", () => {
+    fireTouch(body, "touchstart", { clientX: CENTER_X, clientY: 300 });
+    expect(row.classList.contains(HOLDING_CLASS)).toBe(true);
+    vi.advanceTimersByTime(LONG_PRESS_MS - 50);
+    expect(row.classList.contains(HOLDING_CLASS)).toBe(true);
+    expect(onLongPress).not.toHaveBeenCalled();
+  });
+
+  // Hands the ramp its duration from the constant rather than letting the
+  // stylesheet keep a second copy of 500 — the two would drift the day the
+  // threshold moves, and the cue would then finish early or late.
+  it("hands the CSS the hold duration, so the ramp cannot drift from the timer", () => {
+    fireTouch(body, "touchstart", { clientX: CENTER_X, clientY: 300 });
+    expect(row.style.getPropertyValue(HOLD_MS_VAR)).toBe(`${LONG_PRESS_MS}ms`);
+  });
+
+  it("unpaints it when the menu opens: the promise has been kept", () => {
+    fireTouch(body, "touchstart", { clientX: CENTER_X, clientY: 300 });
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+    expect(onLongPress).toHaveBeenCalledTimes(1);
+    expect(row.classList.contains(HOLDING_CLASS)).toBe(false);
+    expect(row.style.getPropertyValue(HOLD_MS_VAR)).toBe("");
+  });
+
+  it("unpaints it on the release of a short tap", () => {
+    fireTouch(body, "touchstart", { clientX: CENTER_X, clientY: 300 });
+    vi.advanceTimersByTime(LONG_PRESS_MS - 50);
+    fireTouch(body, "touchend", { clientX: CENTER_X, clientY: 300 });
+    expect(row.classList.contains(HOLDING_CLASS)).toBe(false);
+  });
+
+  // The same escape the timer already honours: past the tolerance this is a
+  // scroll or a swipe, and a row still lit under a scrolling finger would be
+  // promising a menu that is no longer coming.
+  it("unpaints it once the finger drifts past the tolerance", () => {
+    fireTouch(body, "touchstart", { clientX: CENTER_X, clientY: 300 });
+    fireTouch(body, "touchmove", {
+      clientX: CENTER_X,
+      clientY: 300 + HOLD_MOVE_TOLERANCE_PX + 5,
+    });
+    expect(row.classList.contains(HOLDING_CLASS)).toBe(false);
+    vi.advanceTimersByTime(LONG_PRESS_MS + 100);
+    expect(onLongPress).not.toHaveBeenCalled();
+  });
+
+  it("keeps it through a jitter under the tolerance (a real finger is never still)", () => {
+    fireTouch(body, "touchstart", { clientX: CENTER_X, clientY: 300 });
+    fireTouch(body, "touchmove", { clientX: CENTER_X + 2, clientY: 303 });
+    expect(row.classList.contains(HOLDING_CLASS)).toBe(true);
+  });
+
+  it("unpaints it on touchcancel", () => {
+    fireTouch(body, "touchstart", { clientX: CENTER_X, clientY: 300 });
+    fireTouch(body, "touchcancel", { clientX: CENTER_X, clientY: 300 });
+    expect(row.classList.contains(HOLDING_CLASS)).toBe(false);
+  });
+
+  it("unpaints it when the binder is disposed mid-touch", () => {
+    fireTouch(body, "touchstart", { clientX: CENTER_X, clientY: 300 });
+    dispose();
+    expect(row.classList.contains(HOLDING_CLASS)).toBe(false);
+  });
+
+  // Never paints where the hold never armed: the cue means "a menu is coming",
+  // and on an inline control (#350 link, #354 nick) it is not.
+  it("never paints a row whose hold never armed", () => {
+    fireTouch(link, "touchstart", { clientX: CENTER_X, clientY: 300 });
+    expect(row.classList.contains(HOLDING_CLASS)).toBe(false);
+    vi.advanceTimersByTime(LONG_PRESS_MS + 100);
+    expect(onLongPress).not.toHaveBeenCalled();
+  });
+
+  // #1156 gates the SWIPE, not the hold: the menu opens on a join row too, so
+  // the cue that announces it has to appear there as well. Reading the paint
+  // off the swipe's arming state would have left presence rows silent.
+  it("paints a row the call site refuses a reply for (the hold arms there too)", () => {
+    fireTouch(refusedBody, "touchstart", { clientX: CENTER_X, clientY: 300 });
+    expect(refusedRow.classList.contains(HOLDING_CLASS)).toBe(true);
+    vi.advanceTimersByTime(LONG_PRESS_MS);
+    expect(onLongPress).toHaveBeenCalledTimes(1);
+    expect(refusedRow.classList.contains(HOLDING_CLASS)).toBe(false);
   });
 });

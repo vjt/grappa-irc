@@ -2914,6 +2914,58 @@ html.resize-dragging * {
   opacity: 0.75;
 }
 
+/* #1413 — what the hold shows while it runs. The 500ms used to pass with
+   nothing drawn at all, so the press read as a dead touch: the sibling swipe
+   slides the row under the finger and #1156 refused to arm that slide where
+   nothing could be quoted, on the grounds that the slide IS the promise. The
+   hold makes the same promise and owed the same evidence.
+
+   It RAMPS rather than snapping on, because the complaint is an unknown DELAY:
+   a cue that appears instantly says "touched", one that fills says "wait, and
+   for this long". Starting from transparent also means a flick that cancels
+   within a few tens of ms has painted next to nothing. The duration is
+   `--hold-ms`, set by the binder from LONG_PRESS_MS — the stylesheet keeps no
+   second copy of 500 to drift from the timer.
+
+   Placed AFTER the mention and highlight rules on purpose: those set the
+   `background` SHORTHAND, which resets `background-image`, so a tint declared
+   above them would be wiped off exactly the rows that already carry a colour.
+   Declared as a background LAYER rather than a `background-color` for the same
+   reason — it composes over whatever they put underneath instead of replacing
+   it.
+
+   Paint only: no `position`, no `filter`, no `user-select`, nothing that moves
+   a box or joins the selection machinery iOS starts over copyable text during
+   a long press (`lib/keepKeyboard.ts` exists because that path is delicate).
+   Whether iOS paints something of its own underneath is a device question this
+   rule does not answer. */
+.scrollback-line.scrollback-line-holding {
+  animation-name: scrollback-hold;
+  animation-duration: var(--hold-ms);
+  animation-timing-function: linear;
+  /* Holds the tint on the last frame so a timer running a frame behind the
+     animation cannot flash the row back to bare before the menu arrives. */
+  animation-fill-mode: forwards;
+}
+
+@keyframes scrollback-hold {
+  from {
+    background-image: linear-gradient(transparent, transparent);
+  }
+  to {
+    background-image: linear-gradient(var(--border), var(--border));
+  }
+}
+
+/* The acknowledgement stays, the motion goes: reduced-motion asks for no
+   animation, not for the dead touch back. */
+@media (prefers-reduced-motion: reduce) {
+  .scrollback-line.scrollback-line-holding {
+    animation-name: none;
+    background-image: linear-gradient(var(--border), var(--border));
+  }
+}
+
 /* #237: on-JOIN inline topic line. Presentational row (not .scrollback-line)
    derived from the topic store; prints the FULL topic in the buffer flow so
    the mobile-truncated TopicBar is no longer the only surface. The row wraps

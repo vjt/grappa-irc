@@ -44,6 +44,17 @@ export const HOLD_MOVE_TOLERANCE_PX = 10;
 // so the slide tracks the finger instead of easing behind it.
 export const SWIPING_CLASS = "scrollback-line-swiping";
 
+// #1413 — carried by the row for exactly as long as the hold timer is running.
+// The stylesheet ramps a tint under it so the press is acknowledged the instant
+// it lands and the wait reads as a wait: before this, the 500ms ran with
+// nothing drawn and the hold felt like a dead touch.
+export const HOLDING_CLASS = "scrollback-line-holding";
+
+// The ramp's duration, handed to CSS at arm time rather than written into the
+// stylesheet: LONG_PRESS_MS is the one threshold, and a second copy of 500 in
+// a rule would finish early or late the day the threshold moves.
+export const HOLD_MS_VAR = "--hold-ms";
+
 // Exported since #1115: the desktop `contextmenu` door resolves the row the
 // same way this binder does, and two copies of the selector would let the two
 // doors open over different elements.
@@ -76,10 +87,24 @@ export function bindMessageGestures(el: HTMLElement, params: MessageGestureParam
   let claimed = false; // rightward intent proven → we own the gesture
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
   let held = false; // the menu opened during THIS touch
+  // #1413 — the row currently wearing the cue. Tracked separately from `row`,
+  // which is the SWIPE's arming state: #1156 leaves a presence row unarmed for
+  // the swipe while the hold still arms on it, so reading the paint off `row`
+  // would leave exactly those rows silent.
+  let pressed: HTMLElement | null = null;
 
+  // The ONE teardown for the hold, in both senses: the timer that would open
+  // the menu and the cue that promises it. Every exit runs through here —
+  // release, drift past the tolerance, cancel, dispose, and the fire itself —
+  // so what is painted and what will fire cannot disagree.
   const cancelHold = (): void => {
     if (holdTimer !== undefined) clearTimeout(holdTimer);
     holdTimer = undefined;
+    if (pressed !== null) {
+      pressed.classList.remove(HOLDING_CLASS);
+      pressed.style.removeProperty(HOLD_MS_VAR);
+      pressed = null;
+    }
   };
 
   const release = (): void => {
@@ -129,8 +154,15 @@ export function bindMessageGestures(el: HTMLElement, params: MessageGestureParam
     if (params.canReply(line)) row = line;
     const at = start;
     const held_ = line;
+    // #1413 — armed and announced in the same breath. The cue is the hold's
+    // half of what the swipe gets for free from the slide.
+    pressed = line;
+    line.style.setProperty(HOLD_MS_VAR, `${LONG_PRESS_MS}ms`);
+    line.classList.add(HOLDING_CLASS);
     holdTimer = setTimeout(() => {
-      holdTimer = undefined;
+      // Unpaint through the shared teardown: the menu is up, the promise the
+      // cue was making has been kept, and there is nothing left to wait for.
+      cancelHold();
       held = true;
       // Disarm the swipe: this touch has become a press, and its release must
       // not also quote the message.
