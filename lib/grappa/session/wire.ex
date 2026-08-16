@@ -59,6 +59,7 @@ defmodule Grappa.Session.Wire do
 
   alias Grappa.IRC.LineSplit
   alias Grappa.Scrollback.Message
+
   alias Grappa.Session.{
     EventRouter,
     ISupport,

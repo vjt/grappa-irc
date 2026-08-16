@@ -22,6 +22,7 @@ defmodule Grappa.Session.WireTest do
 
   alias Grappa.RelayFrameHelpers
   alias Grappa.Scrollback.Message
+
   alias Grappa.Session.{
     ISupport,
     LinksAccum,
@@ -1083,6 +1084,7 @@ defmodule Grappa.Session.WireTest do
         channel_display: "#c",
         entries: [%ListModeAccum.Entry{mask: "*!*@h", setter: nil, set_ts: nil}]
       }
+
       payload = Wire.banlist_bundle("net", "#c", "b", accum)
 
       assert payload.entries == [%{mask: "*!*@h", setter: nil, set_ts: nil}]
@@ -1135,6 +1137,7 @@ defmodule Grappa.Session.WireTest do
             %LinksAccum.Entry{server: "s.host", linked_to: nil, hopcount: nil, description: nil}
           ]
         }
+
       payload = Wire.links_bundle("net", accum)
 
       assert payload.entries == [%{server: "s.host", linked_to: nil, hopcount: nil, description: nil}]

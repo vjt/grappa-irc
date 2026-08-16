@@ -91,6 +91,7 @@ defmodule Grappa.Session.EventRouter do
 
   alias Grappa.IRC.{CTCP, Identifier, JoinFailure, Message}
   alias Grappa.{Scrollback, Session}
+
   alias Grappa.Session.{
     IdentityState,
     ISupport,
@@ -1974,8 +1975,7 @@ defmodule Grappa.Session.EventRouter do
        when is_list(params) do
     [n, i, s] = extract_lusers_ints(List.last(params), 3)
 
-    {:cont,
-     Map.put(state, :lusers_pending, %LusersAccum{total_users: n, invisible: i, servers: s}), []}
+    {:cont, Map.put(state, :lusers_pending, %LusersAccum{total_users: n, invisible: i, servers: s}), []}
   end
 
   # 252 RPL_LUSEROP: `<N> :IRC Operators online`.
@@ -2038,6 +2038,7 @@ defmodule Grappa.Session.EventRouter do
        )
        when is_list(params) do
     [n, m] = extract_lusers_ints(List.last(params), 2)
+
     accum =
       struct!(Map.get(state, :lusers_pending) || %LusersAccum{}, %{current_global: n, max_global: m})
 
@@ -2129,8 +2130,8 @@ defmodule Grappa.Session.EventRouter do
         # reach the same one connection.
         {:cont, next_state,
          [
-           {:whowas_bundle, target_display,
-            %WhowasAccum{target_display: target_display, not_found: true}, accum.reply_to}
+           {:whowas_bundle, target_display, %WhowasAccum{target_display: target_display, not_found: true},
+            accum.reply_to}
          ]}
 
       :error ->
@@ -2238,12 +2239,14 @@ defmodule Grappa.Session.EventRouter do
        )
        when is_binary(server) and is_binary(linked_to) do
     {hopcount, description} = parse_links_trailing(List.last(rest))
+
     entry = %LinksAccum.Entry{
       server: server,
       linked_to: linked_to,
       hopcount: hopcount,
       description: description
     }
+
     {:cont, links_append_entry(state, entry), []}
   end
 
