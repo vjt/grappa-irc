@@ -12,6 +12,7 @@ defmodule Grappa.Session.EventRouterTest do
   use ExUnit.Case, async: true
 
   alias Grappa.IRC.{JoinFailure, Message, Parser}
+
   alias Grappa.Session.{
     EventRouter,
     GhostRecovery,
@@ -5108,7 +5109,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.lusers_pending == %{total_users: 1234, invisible: 56, servers: 3}
+      assert new_state.lusers_pending == %LusersAccum{total_users: 1234, invisible: 56, servers: 3}
     end
 
     test "252 RPL_LUSEROP folds operators count from positional param" do
@@ -5122,9 +5123,9 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.lusers_pending[:operators] == 7
+      assert new_state.lusers_pending.operators == 7
       # prior fields preserved
-      assert new_state.lusers_pending[:total_users] == 1234
+      assert new_state.lusers_pending.total_users == 1234
     end
 
     test "253 RPL_LUSERUNKNOWN folds unknown_connections (when present)" do
@@ -5138,7 +5139,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.lusers_pending[:unknown_connections] == 2
+      assert new_state.lusers_pending.unknown_connections == 2
     end
 
     test "254 RPL_LUSERCHANNELS folds channels_formed" do
@@ -5152,7 +5153,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.lusers_pending[:channels_formed] == 89
+      assert new_state.lusers_pending.channels_formed == 89
     end
 
     test "255 RPL_LUSERME folds local_clients + local_servers from trailing" do
@@ -5166,8 +5167,8 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.lusers_pending[:local_clients] == 100
-      assert new_state.lusers_pending[:local_servers] == 1
+      assert new_state.lusers_pending.local_clients == 100
+      assert new_state.lusers_pending.local_servers == 1
     end
 
     test "265 RPL_LOCALUSERS folds current_local + max_local from trailing" do
@@ -5181,12 +5182,12 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.lusers_pending[:current_local] == 100
-      assert new_state.lusers_pending[:max_local] == 200
+      assert new_state.lusers_pending.current_local == 100
+      assert new_state.lusers_pending.max_local == 200
     end
 
     test "266 RPL_GLOBALUSERS flushes :lusers_bundle effect with full accum + clears pending" do
-      accum_so_far = %{
+      accum_so_far = %LusersAccum{
         total_users: 1234,
         invisible: 56,
         servers: 3,
@@ -5271,8 +5272,8 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, []} = EventRouter.route(m, state)
 
-      assert new_state.whowas_pending["alice"][:entries] == [
-               %{user: "alice_u", host: "alice.host", realname: "Alice Liddell"}
+      assert new_state.whowas_pending["alice"].entries == [
+               %WhowasAccum.Entry{user: "alice_u", host: "alice.host", realname: "Alice Liddell"}
              ]
     end
 
@@ -5310,12 +5311,12 @@ defmodule Grappa.Session.EventRouterTest do
       {:cont, s1, []} = EventRouter.route(m1, state)
       {:cont, s2, []} = EventRouter.route(m2, s1)
 
-      entries = s2.whowas_pending["alice"][:entries]
+      entries = s2.whowas_pending["alice"].entries
       assert length(entries) == 2
       # Head = most recent (m2). Wire builder reads `hd(entries)` for the
       # most-recent projection per MVP scope.
-      assert Enum.at(entries, 0) == %{user: "u2", host: "h2", realname: "Alice@h2"}
-      assert Enum.at(entries, 1) == %{user: "u1", host: "h1", realname: "Alice@h1"}
+      assert Enum.at(entries, 0) == %WhowasAccum.Entry{user: "u2", host: "h2", realname: "Alice@h2"}
+      assert Enum.at(entries, 1) == %WhowasAccum.Entry{user: "u1", host: "h1", realname: "Alice@h1"}
     end
 
     test "312 with whowas_pending and NO whois_pending folds server + logoff_time into MOST-RECENT entry (head)" do
@@ -5323,12 +5324,12 @@ defmodule Grappa.Session.EventRouterTest do
         base_state(%{
           whois_pending: %{},
           whowas_pending: %{
-            "alice" => %{
+            "alice" => %WhowasAccum{
               target_display: "alice",
               # Most recent entry (m2) at head; older (m1) at tail.
               entries: [
-                %{user: "u2", host: "h2", realname: "Alice@h2"},
-                %{user: "u1", host: "h1", realname: "Alice@h1"}
+                %WhowasAccum.Entry{user: "u2", host: "h2", realname: "Alice@h2"},
+                %WhowasAccum.Entry{user: "u1", host: "h1", realname: "Alice@h1"}
               ]
             }
           }
@@ -5342,14 +5343,14 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      [head, older] = new_state.whowas_pending["alice"][:entries]
-      assert head[:server] == "irc.test.org"
-      assert head[:logoff_time] == "Mon May 13 12:34:56 2026"
+      [head, older] = new_state.whowas_pending["alice"].entries
+      assert head.server == "irc.test.org"
+      assert head.logoff_time == "Mon May 13 12:34:56 2026"
       # head's original fields preserved
-      assert head[:user] == "u2"
+      assert head.user == "u2"
       # older entry untouched
-      assert older[:user] == "u1"
-      refute Map.has_key?(older, :server)
+      assert older.user == "u1"
+      assert older.server == nil
     end
 
     test "312 with whois_pending entry takes precedence over whowas_pending (WHOIS-bias)" do
@@ -5372,9 +5373,9 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.whois_pending["alice"].server == "irc.test.org"
       assert new_state.whois_pending["alice"].server_info == "irc.test.org server info"
       # whowas entry untouched
-      [last] = new_state.whowas_pending["alice"][:entries]
-      refute Map.has_key?(last, :server)
-      refute Map.has_key?(last, :logoff_time)
+      [last] = new_state.whowas_pending["alice"].entries
+      assert last.server == nil
+      assert last.logoff_time == nil
     end
 
     test "312 with whowas_pending but EMPTY entries list is a no-op (defensive)" do
@@ -5392,14 +5393,14 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whowas_pending["alice"][:entries] == []
+      assert new_state.whowas_pending["alice"].entries == []
     end
 
     test "369 RPL_ENDOFWHOWAS emits :whowas_bundle effect with accum + drops entry" do
       state =
         base_state(%{
           whowas_pending: %{
-            "alice" => %{
+            "alice" => %WhowasAccum{
               target_display: "Alice",
               entries: [%WhowasAccum.Entry{user: "u", host: "h", realname: "Alice"}]
             }
@@ -5490,7 +5491,7 @@ defmodule Grappa.Session.EventRouterTest do
     end
 
     defp entries_for(state, channel, mode) do
-      state.list_mode_pending[{Grappa.IRC.Identifier.canonical_target(channel), mode}][:entries]
+      state.list_mode_pending[{Grappa.IRC.Identifier.canonical_target(channel), mode}].entries
     end
 
     test "367 RPL_BANLIST appends a ban entry to entries list" do
@@ -5506,7 +5507,7 @@ defmodule Grappa.Session.EventRouterTest do
       {:cont, new_state, []} = EventRouter.route(m, state)
 
       assert entries_for(new_state, "#test", "b") == [
-               %{mask: "*!*@banned.host", setter: "op!u@h", set_ts: "1784572878"}
+               %ListModeAccum.Entry{mask: "*!*@banned.host", setter: "op!u@h", set_ts: "1784572878"}
              ]
     end
 
@@ -5532,7 +5533,7 @@ defmodule Grappa.Session.EventRouterTest do
       {:cont, new_state, []} = EventRouter.route(m, state)
 
       assert entries_for(new_state, "#test", "b") == [
-               %{mask: "*!*@old.host", setter: nil, set_ts: nil}
+               %ListModeAccum.Entry{mask: "*!*@old.host", setter: nil, set_ts: nil}
              ]
     end
 
@@ -5632,7 +5633,7 @@ defmodule Grappa.Session.EventRouterTest do
         msg({:numeric, 348}, ["vjt", "#test", "*!*@safe.host", "op", "111"], {:server, "irc.t"})
 
       {:cont, s1, []} = EventRouter.route(m348, state)
-      assert entries_for(s1, "#test", "e") == [%{mask: "*!*@safe.host", setter: "op", set_ts: "111"}]
+      assert entries_for(s1, "#test", "e") == [%ListModeAccum.Entry{mask: "*!*@safe.host", setter: "op", set_ts: "111"}]
 
       m349 = msg({:numeric, 349}, ["vjt", "#test", "End of Channel Exception List"], {:server, "irc.t"})
       {:cont, s2, [{:list_mode_bundle, "#test", "e", accum, _}]} = EventRouter.route(m349, s1)
@@ -5661,7 +5662,7 @@ defmodule Grappa.Session.EventRouterTest do
         msg({:numeric, 728}, ["vjt", "#test", "z", "*!*@rogue", "op", "333"], {:server, "irc.t"})
 
       {:cont, s1, []} = EventRouter.route(m728, state)
-      assert entries_for(s1, "#test", "z") == [%{mask: "*!*@rogue", setter: "op", set_ts: "333"}]
+      assert entries_for(s1, "#test", "z") == [%ListModeAccum.Entry{mask: "*!*@rogue", setter: "op", set_ts: "333"}]
 
       m729 = msg({:numeric, 729}, ["vjt", "#test", "z", "End of Channel Restrict List"], {:server, "irc.t"})
       {:cont, s2, [{:list_mode_bundle, "#test", "z", accum, _}]} = EventRouter.route(m729, s1)
@@ -6424,8 +6425,8 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, []} = EventRouter.route(m, state)
 
-      assert new_state.links_pending[:entries] == [
-               %{
+      assert new_state.links_pending.entries == [
+               %LinksAccum.Entry{
                  server: "leaf.azzurra.org",
                  linked_to: "hub.azzurra.org",
                  hopcount: 1,
@@ -6459,7 +6460,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      [entry] = new_state.links_pending[:entries]
+      [entry] = new_state.links_pending.entries
       assert entry.server == "hub.azzurra.org"
       assert entry.linked_to == "hub.azzurra.org"
       assert entry.hopcount == 0
@@ -6486,7 +6487,7 @@ defmodule Grappa.Session.EventRouterTest do
       {:cont, s1, []} = EventRouter.route(m1, state)
       {:cont, s2, []} = EventRouter.route(m2, s1)
 
-      entries = s2.links_pending[:entries]
+      entries = s2.links_pending.entries
       assert length(entries) == 2
       # Head = most recent (m2); wire builder reverses to restore wire order.
       assert Enum.at(entries, 0).server == "leaf.azzurra.org"
@@ -6504,7 +6505,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      [entry] = new_state.links_pending[:entries]
+      [entry] = new_state.links_pending.entries
       assert entry.hopcount == 0
       assert entry.description == ""
     end
