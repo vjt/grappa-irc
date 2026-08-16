@@ -45042,3 +45042,70 @@ setup-beam call sites read back from the parse tree, which proves the
 files are well-formed and wired, not that the runner resolves the
 versions. `scripts/shellcheck.sh` was not run and did not need to be —
 no shell script changed.
+<!-- entry #1406 X-S8 -->
+
+---
+
+## 2026-08-16 — #1406: three closed sets reach the codegen by re-export, and the spec is derived from the allowlist
+
+`grappa.gen_wire_types` only walks `lib/grappa/**/*wire.ex`. Three closed sets
+that cic depends on live outside that glob — the window states
+(`session/window_state.ex`), the theme token vocabularies
+(`themes/token_model.ex`) and the built-in background catalog
+(`themes/builtin_backgrounds.ex`) — so nothing generated ever referenced them
+and cic held a hand transcription of each, with a "mirror of …" comment and no
+gate. CLAUDE.md's rule that adding a window state is a server change cic just
+mirrors was true as prose and unenforced as code: the server could add a
+seventh state and `tsc` would say nothing.
+
+### The mechanism: name the type at the wire boundary
+
+`Grappa.Session.Wire` re-exports `WindowState.window_state/0`, and
+`Grappa.Themes.Wire` re-exports the font-family / background-size vocabularies
+plus `BuiltinBackgrounds.t/0`. Nothing moves modules; a `@type` at the boundary
+that already publishes the payload is enough for the walk to see it, and it is
+the boundary-preserving widen `@extra_globs` used for `GrappaWeb.ErrorTokens`
+in #411, one level down.
+
+A re-export was needed rather than a field annotation because **no payload
+carries the window-state union**: each event pins its own literal (`state:
+:joined`, `state: :failed`, …) and `:parked` never rides a `state` field at
+all. The set exists as a set nowhere on the wire, which is exactly why it was
+invisible to a codegen that walks payloads.
+
+### The spec is DERIVED from the allowlist, not written beside it
+
+`TokenModel`'s SSOT is `@font_families` / `@size_modes` — string lists that
+`sanitize_font/1` and `sanitize_size/1` guard with. Writing an atom-union
+`@type` next to them would have created a second closed set to keep in step:
+the very defect this issue series exists to close. The specs are therefore
+spliced out of the attributes at compile time with `unquote/1`, so the
+sanitiser's list and the generated const are one list. If the two ever
+disagree, the codegen test says so by name — it compares the emitted array to
+`TokenModel.font_families/0` rather than to a hardcoded expectation.
+
+The window states have no runtime enumerator (the SSOT is the typespec), so
+their test does hardcode the six. That is deliberate: it is the one thing that
+makes a seventh state a conscious edit instead of a silent widen.
+
+### cic ALIASES the generated type; it does not pin a copy
+
+`windowState.ts` and `themesApi.ts` now alias the generated types
+(`export type WindowState = SessionWireWindowState;`) rather than keeping a
+transcription guarded by an `Equal<>` assert. This is the #410 / `WireAdminEvent`
+posture: a derived type cannot drift, so the assert would be an identity — the
+same finding this issue's X-S1 slice measured on the five `Omit<…, "kind">`
+pins. The pin that matters is the one that still bites: every member of all
+three sets appears as a literal in cic source (`"parked"` at 21 sites,
+`"cover"` at 22), so narrowing the server set narrows the client union and
+`tsc` names every site that assigned the removed member.
+
+### The hole this leaves, on purpose
+
+`ThemeColorKey` stays a hand mirror. Its nick slots are the pattern template
+literal `nick_${number}`, which TS degrades to an index signature — so a
+payload missing `nick_5` type-checks today while the server sanitiser requires
+all 27 keys. Narrowing it to the server's exact set is a behaviour change with
+consumer fallout across the theme editor and its tests, not a re-export, and it
+is tracked on #1406 rather than smuggled in here. Three vocabularies of four
+are pinned; the fourth is declared debt.
