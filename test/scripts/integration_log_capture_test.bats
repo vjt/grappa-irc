@@ -81,9 +81,17 @@ EOF
 { printf 'docker'; for a in "\$@"; do printf ' %s' "\$a"; done; printf '\n'; } >> "$LOG"
 case "\$2" in
     ps)
-        if [[ " \$* " == *" --services "* ]]; then
+        if [[ " \$* " == *" --format "* ]]; then
+            # Service / State / ExitCode, the shape measured on a live
+            # stack. Note hub: a RUNNING container also reports 0, which
+            # is why the discriminant is the PAIR and not the code alone.
+            printf 'grappa-test\t%s\t%s\n' "\${FAKE_GRAPPA_STATE:-running}" "\${FAKE_GRAPPA_EXIT:-0}"
+            printf 'hub\trunning\t0\n'
+            printf 'newcomer-svc\trunning\t0\n'
+            printf 'builder-oneshot\texited\t0\n'
+        elif [[ " \$* " == *" --services "* ]]; then
             # 'newcomer-svc' is the derivation probe: no hand list has it.
-            printf '%s\n' grappa-test hub newcomer-svc
+            printf '%s\n' grappa-test hub newcomer-svc builder-oneshot
         else
             printf 'NAME STATUS\n'
         fi
@@ -111,6 +119,13 @@ case "\$2" in
                     printf '2026-08-16T12:09:09.535000000Z healthcheck ok\n'
                     ;;
             esac
+        elif [ "\$svc" = builder-oneshot ]; then
+            # A build container's silence is the interval BETWEEN two
+            # invocations, not a stall. Measured at 111.3 s and 12.9 s on
+            # two real runs — it trips on essentially every run, which is
+            # why it must never retain anything by itself.
+            printf '2026-08-16T14:33:51.370000000Z files generated\n'
+            printf '2026-08-16T14:35:42.634000000Z bun install v1.3.14\n'
         else
             printf 'fake container output for %s\n' "\$svc"
         fi
@@ -175,7 +190,7 @@ first_line() {
     # The verdict is recorded on a red too. Retention is unconditional
     # here, but WHAT was observed still is not — a red that carried damage
     # without a stall has to stay countable alongside the greens.
-    grep -q 'RETENTION.*kept=yes.*by_gap=1.*by_dropped=1' "$CENSUS"
+    grep -q 'RETENTION.*kept=yes.*by_service_gap=1.*by_dropped=1' "$CENSUS"
 }
 
 @test "a CLEAN green run writes the census and keeps no raw logs" {
@@ -197,12 +212,19 @@ first_line() {
     grep -q 'grappa-test.*maxgap=5.0' "$CENSUS"
     grep -q 'grappa-test.*gaps_ge_10=0' "$CENSUS"
     grep -q 'grappa-test.*dropped=0' "$CENSUS"
-    refute grep -q 'GAP' "$CENSUS"
     # A quiet service reads as quiet rather than as missing.
     grep -q 'hub.*maxgap=0.0' "$CENSUS"
 
-    # The 275 MB is the thing that could not be kept on every green: with
-    # nothing measured, there is nothing to forensick, so the bytes go.
+    # MEASURING and RETAINING are two jobs. The build one-shot's 111 s
+    # silence IS censused — dropping it from the measurement would hide a
+    # build that got slower — and it retains NOTHING, because a container
+    # that is quiet while not building is not stalled. Both halves, or
+    # this pins only one of them.
+    grep -q '^builder-oneshot	GAP	111.3' "$CENSUS"
+    grep -q 'RETENTION.*by_service_gap=0' "$CENSUS"
+
+    # The 253 MB is the thing that could not be kept on every green: with
+    # nothing measured on a SERVICE, there is nothing to forensick.
     [ ! -e "$LOGS_DIR/grappa-test.log" ]
     [ ! -e "$LOGS_DIR/hub.log" ]
     [ ! -e "$LOGS_DIR/compose-ps.txt" ]
@@ -214,7 +236,7 @@ first_line() {
     # The verdict is recorded even when nothing was retained, so "no
     # damage" and "not looked at" stay distinguishable in the artifact.
     grep -q 'RETENTION.*kept=no' "$CENSUS"
-    grep -q 'RETENTION.*by_gap=0.*by_dropped=0' "$CENSUS"
+    grep -q 'RETENTION.*by_service_gap=0.*by_dropped=0' "$CENSUS"
 
     # ...and the stack still came down.
     grep -q 'testnet down' "$LOG"
@@ -236,7 +258,7 @@ first_line() {
     [ -s "$LOGS_DIR/compose-ps.txt" ]
     grep -q 'db=30064.1ms query returned' "$LOGS_DIR/grappa-test.log"
 
-    grep -q 'RETENTION.*kept=yes.*by_gap=1' "$CENSUS"
+    grep -q 'RETENTION.*kept=yes.*by_service_gap=1' "$CENSUS"
 }
 
 @test "a green run with DAMAGE but no stall keeps the bytes, and says so" {
@@ -250,7 +272,7 @@ first_line() {
     grep -q 'grappa-test.*maxgap=5.0' "$CENSUS"
     grep -q 'grappa-test.*gaps_ge_10=0' "$CENSUS"
     grep -q 'grappa-test.*dropped=1' "$CENSUS"
-    refute grep -q 'GAP' "$CENSUS"
+    refute grep -q '^grappa-test	GAP' "$CENSUS"
 
     # Retention is a different job from attribution. A gap is a proxy for
     # a mechanism; a dropped row IS the damage. Discarding the bytes here
@@ -261,5 +283,32 @@ first_line() {
 
     # And the census says WHICH trigger fired, so that class becomes
     # countable rather than merely retained: one grep over the artifacts.
-    grep -q 'RETENTION.*kept=yes.*by_gap=0.*by_dropped=1' "$CENSUS"
+    grep -q 'RETENTION.*kept=yes.*by_service_gap=0.*by_dropped=1' "$CENSUS"
+}
+
+@test "a CRASHED service is still a service: its silence retains" {
+    cd "$MAIN"
+    # Exited, but NON-ZERO. This is the hole in "skip whatever exited":
+    # a one-shot that finished and a service that died are both `exited`,
+    # and only the code tells them apart.
+    FAKE_RUNNER_RC=0 FAKE_STREAM=stall FAKE_GRAPPA_STATE=exited FAKE_GRAPPA_EXIT=1 \
+        run "$MAIN/scripts/integration.sh"
+
+    [ "$status" -eq 0 ]
+    grep -q 'RETENTION.*kept=yes.*by_service_gap=1' "$CENSUS"
+    [ -s "$LOGS_DIR/grappa-test.log" ]
+}
+
+@test "a RUNNING service reporting exit code 0 is not mistaken for a one-shot" {
+    cd "$MAIN"
+    # Measured on a live stack: `hub|running|0`. A running container
+    # reports ExitCode 0 exactly like a completed one-shot, so keying on
+    # the code alone would make EVERY service ineligible and retention
+    # would silently never fire again — the feature would report a
+    # verdict it had stopped computing.
+    FAKE_RUNNER_RC=0 FAKE_STREAM=stall run "$MAIN/scripts/integration.sh"
+
+    [ "$status" -eq 0 ]
+    grep -q '^grappa-test	GAP	30.1' "$CENSUS"
+    grep -q 'RETENTION.*kept=yes.*by_service_gap=1' "$CENSUS"
 }
