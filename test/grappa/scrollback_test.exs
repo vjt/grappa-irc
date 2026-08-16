@@ -120,16 +120,60 @@ defmodule Grappa.ScrollbackTest do
   # respective `..._id_kind` index (kind at the tail = no per-row table
   # fetch). `kind` is read by the GROUP BY, so a covering plan requires it in
   # the index — this is the regression guard for the kind-at-tail claim.
-  defp count_split_query(subject, net, target) do
-    ck = Message.content_kinds()
+  #
+  # #1372 — this used to REBUILD the aggregate here. That local copy is what
+  # blinded the pin: it called `channel_or_dm_where(target, nil)`, and at
+  # `own_nick = nil` `exclude_own_authored/3` is the identity clause
+  # (`scrollback.ex:718`), so the predicate #532 A and #576 later bolted onto
+  # the production query never entered the pinned SQL. The pin went on
+  # asserting COVERING against a shape production had stopped running, and
+  # stayed green straight through the regression it existed to catch. So the
+  # plan is now taken off the query the production function ACTUALLY emits,
+  # captured from Ecto's own telemetry — there is no second copy left to
+  # drift. Verified result- and byte-identical to the deleted local rebuild
+  # at (own_nick: nil, hide_presence: false) before it was removed.
+  defp count_split_plan(subject, net, target, own_nick) do
+    {sql, params} =
+      capture_one_query(fn ->
+        Scrollback.count_after_split(subject, net.id, target, 0, own_nick, false)
+      end)
 
-    Message
-    |> subject_filter(subject)
-    |> where([m], m.network_id == ^net.id)
-    |> Scrollback.channel_or_dm_where(target, nil)
-    |> where([m], m.id > ^0)
-    |> group_by([m], fragment("CASE WHEN ? THEN 1 ELSE 0 END", m.kind in ^ck))
-    |> select([m], {fragment("CASE WHEN ? THEN 1 ELSE 0 END", m.kind in ^ck), count(m.id)})
+    {:ok, %{rows: rows}} = Repo.query("EXPLAIN QUERY PLAN " <> sql, params)
+    rows |> List.flatten() |> Enum.map_join("\n", &to_string/1)
+  end
+
+  # Returns the single `{sql, params}` Ecto emitted while `fun` ran. Ecto
+  # publishes `[:grappa, :repo, :query]` synchronously in the caller process,
+  # so the capture needs no synchronisation. Matching on ONE query is part of
+  # the contract: if `count_after_split/6` ever becomes multi-statement, this
+  # raises instead of silently pinning whichever statement came last.
+  defp capture_one_query(fun) do
+    ref = make_ref()
+    test_pid = self()
+
+    :telemetry.attach(
+      {__MODULE__, ref},
+      [:grappa, :repo, :query],
+      fn _, _, meta, _ -> send(test_pid, {ref, meta.query, meta.params}) end,
+      nil
+    )
+
+    try do
+      fun.()
+    after
+      :telemetry.detach({__MODULE__, ref})
+    end
+
+    [captured] = drain_queries(ref, [])
+    captured
+  end
+
+  defp drain_queries(ref, acc) do
+    receive do
+      {^ref, sql, params} -> drain_queries(ref, [{sql, params} | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
   end
 
   # #393 — messages index name list + a single index's committed DDL.
@@ -2010,7 +2054,7 @@ defmodule Grappa.ScrollbackTest do
       # COVERING — no per-row table fetch (the exact 432ms DM bug #393 fixed).
       # This is the DM twin of the channel COVERING assertion; it regresses
       # loudly if `kind` is ever dropped from the coalesce index tail.
-      plan = explain_plan(count_split_query({:user, user.id}, net, "peer"))
+      plan = count_split_plan({:user, user.id}, net, "peer", nil)
 
       assert plan =~ "USING COVERING INDEX messages_user_id_network_id_dm_coalesce_fold_id_kind_index",
              "expected the DM count_after_split covered by the coalesce kind index, got:\n#{plan}"
@@ -2170,7 +2214,7 @@ defmodule Grappa.ScrollbackTest do
 
     test "channel count_after_split is served by the COVERING kind index (no table fetch)",
          %{user: user, network: net} do
-      plan = explain_plan(count_split_query({:user, user.id}, net, "#linux"))
+      plan = count_split_plan({:user, user.id}, net, "#linux", nil)
 
       assert plan =~ "USING COVERING INDEX messages_user_id_network_id_channel_id_kind_index",
              "expected count_after_split channel query covered by the kind index, got:\n#{plan}"
@@ -2180,7 +2224,7 @@ defmodule Grappa.ScrollbackTest do
          %{network: net} do
       {:ok, visitor} = Grappa.Visitors.find_or_provision_anon("v-#{uniq()}", net.slug, "1.2.3.4")
 
-      plan = explain_plan(count_split_query({:visitor, visitor.id}, net, "#linux"))
+      plan = count_split_plan({:visitor, visitor.id}, net, "#linux", nil)
 
       assert plan =~ "USING COVERING INDEX messages_visitor_id_network_id_channel_id_kind_index",
              "expected visitor count_after_split channel query covered by the kind index, got:\n#{plan}"
