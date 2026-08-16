@@ -10,6 +10,14 @@
 # asserted "the logs exist" would pass against a capture placed after the
 # tear-down, i.e. against the bug.
 #
+# #1429 — and it must leave a GAP CENSUS behind on EVERY run, green
+# included. This file used to carry a test asserting the opposite ("a
+# green run captures nothing"), which pinned ~91% of runs as unable to
+# answer whether a server-side stall had happened at all. The bytes were
+# the thing that could not be kept (~275 MB per run); the census is a few
+# KB, so it is streamed out of the same `docker compose logs` and the raw
+# bytes are materialised only on a red.
+#
 # Stubs, not a real stack: a `docker` on PATH records every invocation
 # and answers the three queries the capture makes, and testnet.sh is
 # replaced by a recorder. Both append to ONE log, so the order between
@@ -19,12 +27,17 @@
 # contain — the capture derives it from `docker compose ps`, and a
 # derived set is the difference between covering the service added next
 # year and covering the one somebody remembered.
+#
+# The stub's grappa-test stream carries a real 30.064 s hole and two
+# damage signatures, so the census assertions have an oracle: a census
+# that merely EXISTS, or that reports a constant, cannot satisfy them.
 
 load ../bats_helpers
 
 setup() {
     INTEGRATION_SH="$BATS_TEST_DIRNAME/../../scripts/integration.sh"
     LIB_SH="$BATS_TEST_DIRNAME/../../scripts/_lib.sh"
+    SCAN_AWK="$BATS_TEST_DIRNAME/../../scripts/log-gap-scan.awk"
     VERSION_SH="$BATS_TEST_DIRNAME/../../infra/packaging/version.sh"
 
     TMP="$(cd "$BATS_TEST_TMPDIR" && pwd -P)"
@@ -35,6 +48,9 @@ setup() {
     mkdir -p "$MAIN/scripts" "$MAIN/infra/packaging" "$MAIN/lib" "$MAIN/cicchetto/e2e"
     cp "$INTEGRATION_SH" "$MAIN/scripts/integration.sh"
     cp "$LIB_SH" "$MAIN/scripts/_lib.sh"
+    # The census scanner travels with the script that invokes it: a copy
+    # that omitted it would exercise a capture whose scanner is missing.
+    cp "$SCAN_AWK" "$MAIN/scripts/log-gap-scan.awk"
     # integration.sh derives GRAPPA_VERSION from the repo-root VERSION file
     # (#652) before anything else; under set -e it must succeed.
     cp "$VERSION_SH" "$MAIN/infra/packaging/version.sh"
@@ -72,7 +88,17 @@ case "\$2" in
             printf 'NAME STATUS\n'
         fi
         ;;
-    logs) printf 'fake container output for %s\n' "\${*: -1}" ;;
+    logs)
+        svc="\${*: -1}"
+        if [ "\$svc" = grappa-test ]; then
+            # \`docker logs --timestamps\` shape, with a 30.064 s hole
+            # between the two lines and a damage signature on each.
+            printf '2026-08-16T12:09:04.535000000Z scrollback row dropped\n'
+            printf '2026-08-16T12:09:34.599000000Z db=30064.1ms query returned\n'
+        else
+            printf 'fake container output for %s\n' "\$svc"
+        fi
+        ;;
     run)  exit "\${FAKE_RUNNER_RC:-0}" ;;
 esac
 exit 0
@@ -81,6 +107,7 @@ EOF
     export PATH="$STUB:$PATH"
 
     LOGS_DIR="$MAIN/cicchetto/e2e/container-logs"
+    CENSUS="$LOGS_DIR/gap-scan.tsv"
 }
 
 # First occurrence of a pattern in the shared invocation log, as a line
@@ -115,18 +142,53 @@ first_line() {
     [ -s "$LOGS_DIR/newcomer-svc.log" ]
     [ -s "$LOGS_DIR/compose-ps.txt" ]
 
-    grep -q 'fake container output for grappa-test' "$LOGS_DIR/grappa-test.log"
+    grep -q 'db=30064.1ms query returned' "$LOGS_DIR/grappa-test.log"
 }
 
-@test "a green run captures nothing" {
+@test "a failed run writes the census alongside the raw logs" {
+    cd "$MAIN"
+    FAKE_RUNNER_RC=1 run "$MAIN/scripts/integration.sh"
+    [ "$status" -eq 1 ]
+
+    # The red path keeps both. The census costs nothing beside the bytes,
+    # and one instrument that behaves the same on both exits is easier to
+    # keep honest than a green-only second one.
+    [ -s "$CENSUS" ]
+    grep -q 'grappa-test.*maxgap=30.1' "$CENSUS"
+}
+
+@test "a green run writes the gap census and keeps no raw logs" {
     cd "$MAIN"
     FAKE_RUNNER_RC=0 run "$MAIN/scripts/integration.sh"
+
+    # Evidence collection, not a new assertion: a green run stays green.
     [ "$status" -eq 0 ]
 
-    # Failure-only: collecting on every run is how an artifact store
-    # becomes a landfill, and a green run's logs answer no question.
-    refute grep -q 'docker compose logs' "$LOG"
-    [ ! -d "$LOGS_DIR" ]
+    # The census is written, and its service set is DERIVED — including
+    # the one no hand list contains.
+    [ -s "$CENSUS" ]
+    grep -q '^grappa-test' "$CENSUS"
+    grep -q '^hub' "$CENSUS"
+    grep -q '^newcomer-svc' "$CENSUS"
+
+    # ...and it MEASURED. These values come from the stub's stream, so a
+    # census that reported a constant, or scanned nothing, cannot pass.
+    grep -q 'grappa-test.*maxgap=30.1' "$CENSUS"
+    grep -q 'grappa-test.*dropped=1' "$CENSUS"
+    grep -q 'grappa-test.*db30=1' "$CENSUS"
+    # A quiet service reads as quiet rather than as missing.
+    grep -q 'hub.*maxgap=0.0' "$CENSUS"
+
+    # The 275 MB is the thing that could not be kept: the raw per-service
+    # logs must NOT survive a green run.
+    [ ! -e "$LOGS_DIR/grappa-test.log" ]
+    [ ! -e "$LOGS_DIR/hub.log" ]
+    [ ! -e "$LOGS_DIR/compose-ps.txt" ]
+
+    # The census also reaches stdout, which CI retains as the job log for
+    # a green run without any artifact at all.
+    grep -q 'maxgap=30.1' <<<"$output"
+
     # ...and the stack still came down.
     grep -q 'testnet down' "$LOG"
 }
