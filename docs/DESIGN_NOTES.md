@@ -43755,3 +43755,76 @@ re-read inside when there is work — buys back a sub-millisecond, WAL-frame-fre
 lock acquisition at the price of a second SELECT on the write path and a
 duplicated "is this key muted?" predicate. Not taken; if nick-change churn ever
 shows up in the #357 write-latency counters, that is the knob.
+<!-- entry #1404a -->
+
+---
+
+## 2026-08-16 — #1404: three guards on the session process
+
+Hardening from the 2026-08-15 review. Stated at the level of the control,
+per the terms the tracking issue sets: what is guarded now, and why the
+guard has the shape it has.
+
+### A valueless message-tag carries `""`
+
+IRCv3 message-tags §3.2 gives `@foo` and `@foo=` the same absent value, so
+`Grappa.IRC.Parser` now gives them the same representation, and
+`Message.tags` narrows from `String.t() | true` to `String.t()`.
+
+The narrowing is the point, not the spelling. `NumericRouter.label_lookup/2`
+splits on `nil` versus binary; with a third inhabitant in the type that
+split was partial, and the partiality was DECLARED, so nothing could
+object to it. With the type narrowed, the two clauses cover the domain and
+the compiler can prove it — a catch-all clause would have covered the same
+ground while leaving the next consumer to rediscover the same trap.
+
+The parser test now asserts that the two spellings AGREE rather than
+pinning each to its own literal, which is the property that actually has
+to hold. Routing is pinned from a real parse: a value shape only the
+parser produces is exactly the shape a hand-built fixture never exercises.
+
+### The CTCP auto-reply has a ceiling, and it covers both costs
+
+`Grappa.Session.AutoReplyBudget` — pure token-bucket arithmetic, held in
+the session's own state. `EventRouter` emits `{:auto_reply, line, persist}`
+as ONE effect, and `Session.Server` spends one token for the pair, then
+expands it back into the ordinary `{:reply, _}` and `{:persist, _, _}`
+arms. A stranger chooses how often this path runs, and each run costs both
+an upstream frame and a row in the shared sqlite file; metering them
+separately would let the scrollback claim an answer that never went out.
+
+**Why not `RateLimit.TokenBucket`.** That bucket is right for what it
+does: it meters the SUBJECT's own sends, a human sets the pace, and a
+node-global GenServer suits a `(subject, network)` key. This path is paced
+by whoever sends the query. Routing it through a node-global process would
+let any peer on any bound network enqueue serialized work for the whole
+node — a bound that relocates a flood rather than stopping one. A
+per-sender ledger was rejected twice over: it grows a keyspace with the
+number of strangers who ask, and it does not bound the aggregate, which is
+the quantity the upstream meters.
+
+The numbers are the ORDINARY send drip of #340 rather than a pair of their
+own. An answer grappa emits on a stranger's command may not consume more
+of the upstream's allowance than the operator's own client may, and an
+operator who re-measures their network moves one pair, not two that drift.
+
+### `format_status/1` on `Session.Server`
+
+Upstream credentials are plaintext in that state for as long as the
+handshake needs them — decrypted from Cloak at boot, threaded to the wire.
+`redact: true` guards the columns, `@derive Inspect` guards `AuthFSM`,
+`filter_parameters` guards HTTP params, and none of the three is consulted
+when OTP renders a GenServer's state through `inspect/2`. `format_status/1`
+owns that door. The house `@derive {Inspect, except: …}` pattern is not
+available: this state is a bare map, not a struct.
+
+Redaction is uniform — present becomes `:redacted`, absent stays `nil`.
+The operator keeps the diagnostic that matters, and what has to stay
+current is one list of keys rather than a set of per-key value shapes.
+
+**The test asserts on the VALUE, not on the key**, walking the whole
+formatted term. This state map is a declared target for regrouping; a
+key-name assertion would keep passing after the keys moved under a nested
+struct while the guard had stopped covering them. Written this way, the
+regrouping breaks the test loudly. Two mutants pin it: a pass-through
+callback, and one key dropped from the list, which fails naming that key.
