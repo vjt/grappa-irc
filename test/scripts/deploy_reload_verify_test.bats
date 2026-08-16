@@ -65,6 +65,11 @@ setup() {
     git -C "$REPO" config user.email test@grappa.local
     git -C "$REPO" config user.name "bats"
 
+    # #1377: the hot path requires .env too now (establish_deploy_env, at the
+    # top of substrate_pull). These cases are about the reload contract, so
+    # the box they run against is an installed one.
+    echo "SECRET_KEY_BASE=x" > "$REPO/.env"
+
     # Fast healthcheck loop for tests (prod defaults stay in the script).
     export HOT_HEALTHCHECK_RETRIES=3 HOT_HEALTHCHECK_SLEEP=0
 

@@ -604,6 +604,18 @@ itself. **The preflight hook's stdout contract:** it prints `→ <kind>:
 (HOT) / 3 (COLD); anything else is not a verdict and the library aborts
 on it.
 
+**`.env` and `MIX_ENV` are established for BOTH paths, in
+`establish_deploy_env` (#1377).** They used to live inside
+`substrate_build`, which returns early on hot — so a hot deploy reached
+the theme seed with no `MIX_ENV` in the shell, compose fell back to
+`.env` for the interpolation, and `.env.example` ships `MIX_ENV=dev`:
+cold seeded `grappa_prod.db`, hot seeded `grappa_dev.db` on the same
+box, silently. The function runs at the top of `substrate_pull` — the
+earliest hook, so it lands after the library's flag parse (an unknown
+flag still reads as a usage error) and before the first side effect.
+Consequence for operators: a box with no `.env` now fails the same way
+on hot as it always did on cold.
+
 **Hot deploys are the normal case.** `git pull` plus `POST
 /admin/reload` swaps modules in the live BEAM with no restart, and
 sessions (`Session.Server`, `IRC.Client`) keep their state. What cannot

@@ -66,6 +66,11 @@ setup() {
     printf '9.9.9\n' > "$MAIN/VERSION"
     printf 'defmodule Grappa.MixProject do\n  @version "9.9.9"\nend\n' > "$MAIN/mix.exs"
     : > "$MAIN/compose.yaml"
+    # #1377: deploy.sh requires .env on BOTH paths now, checked at the top of
+    # substrate_pull. Without it the positive case below would die before the
+    # pull echo it reads as "the guard did not over-fire" — for the wrong
+    # reason.
+    echo "SECRET_KEY_BASE=x" > "$MAIN/.env"
     touch "$MAIN/runtime/.gitkeep"
     echo base > "$MAIN/lib/base.ex"
     git -C "$MAIN" add -A

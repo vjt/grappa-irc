@@ -49,7 +49,33 @@ COLD_HEALTHCHECK_SLEEP="${COLD_HEALTHCHECK_SLEEP:-2}"
 
 # ---- substrate hooks ------------------------------------------------
 
+# Preconditions for EVERY compose invocation this script makes, on BOTH
+# paths. They used to live inside substrate_build, behind its
+# `[ "$MODE" = cold ] || return 0`: a HOT deploy therefore reached
+# substrate_seed with no `.env` check and no MIX_ENV in the shell, compose
+# fell back to `.env` for the interpolation, and `.env.example` ships
+# `MIX_ENV=dev` — so compose.yaml resolved DATABASE_PATH to
+# `grappa_dev.db`. COLD seeded prod, HOT seeded the DEV database on the
+# same box, silently, and hot is the documented normal case (#1377 D-S3).
+#
+# `.env` carries the prod secrets runtime.exs refuses to boot without, and
+# MIX_ENV picks the database every oneshot opens — neither is a property of
+# the image build.
+establish_deploy_env() {
+	if [ ! -f .env ]; then
+		die "no .env file. Copy .env.example and fill in SECRET_KEY_BASE + SECRET_SIGNING_SALT + GRAPPA_ENCRYPTION_KEY."
+	fi
+
+	MIX_ENV=${MIX_ENV:-prod}
+	export MIX_ENV
+}
+
 substrate_pull() {
+	# The earliest hook the lib calls, so the preconditions land here: AFTER
+	# the flag parse inside deploy_main (an unknown flag must still read as a
+	# usage error, not as a missing .env) and BEFORE the first side effect.
+	establish_deploy_env
+
 	# Pull first so the preflight diffs against what we are ABOUT to deploy.
 	# Both endpoints are RESOLVED shas — NEW_SHA goes into the marker.
 	PREV_SHA="$(git rev-parse HEAD)"
@@ -95,13 +121,6 @@ substrate_build() {
 	# bind-mounted source tree (compose.yaml mounts ./:/app). Cold path
 	# rebuilds the toolchain image.
 	[ "$MODE" = cold ] || return 0
-
-	if [ ! -f .env ]; then
-		die "no .env file. Copy .env.example and fill in SECRET_KEY_BASE + SECRET_SIGNING_SALT + GRAPPA_ENCRYPTION_KEY."
-	fi
-
-	MIX_ENV=${MIX_ENV:-prod}
-	export MIX_ENV
 
 	echo "Building grappa image..."
 	docker compose "${COMPOSE_ARGS[@]}" --profile prod build grappa

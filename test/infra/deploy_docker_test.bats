@@ -41,6 +41,12 @@ setup() {
     ARGV_LOG="$BATS_TEST_TMPDIR/argv.log"
     : > "$ARGV_LOG"
     export ARGV_LOG
+    # A SECOND log, carrying the MIX_ENV each compose invocation inherited.
+    # Separate from ARGV_LOG on purpose: every ordering assertion below greps
+    # that file by line number, so the env must not widen those lines.
+    ENV_LOG="$BATS_TEST_TMPDIR/env.log"
+    : > "$ENV_LOG"
+    export ENV_LOG
     export HOME="$BATS_TEST_TMPDIR/home"
     mkdir -p "$HOME"
 
@@ -79,6 +85,13 @@ EOF
     git -C "$REPO_ROOT" config user.name "bats"
 
     # ---- env the script needs ------------------------------------------
+    # The default fixture is an INSTALLED box: since #1377 every path
+    # requires .env, not just cold. The two cases about its absence remove
+    # it again.
+    make_env
+    # An ambient MIX_ENV from the developer's shell would satisfy the D-S3
+    # cases without the script having established anything.
+    unset MIX_ENV
     export PREFLIGHT_RC=0
     export RELOAD_FAILS=0
     export HOT_HEALTHCHECK_RETRIES=2 HOT_HEALTHCHECK_SLEEP=0
@@ -96,6 +109,7 @@ EOF
     cat > "$FAKE_DIR/docker" <<'EOF'
 #!/bin/sh
 printf 'docker %s\n' "$*" >> "$ARGV_LOG"
+printf 'MIX_ENV=%s | docker %s\n' "${MIX_ENV-<unset>}" "$*" >> "$ENV_LOG"
 case "$*" in
     *"ps -q grappa"*)  echo fakecid ;;
     *"run --no-start"*) exit "$PREFLIGHT_RC" ;;
@@ -181,7 +195,6 @@ run_deploy() {
 }
 
 @test "--force-cold skips preflight and cold-deploys" {
-    make_env
     run_deploy --force-cold
     [ "$status" -eq 0 ]
     refute grep -q "run --no-start" "$ARGV_LOG"
@@ -225,7 +238,7 @@ run_deploy() {
 @test "cold path requires a .env file" {
     export PREFLIGHT_RC=3
     commit_upstream lib/base.txt > /dev/null
-    # no make_env
+    rm -f "$REPO_ROOT/.env"
 
     run_deploy
     [ "$status" -ne 0 ]
@@ -234,7 +247,6 @@ run_deploy() {
 
 @test "cold path order: build -> cicchetto-build -> deps.get -> migrate -> up -> healthcheck" {
     export PREFLIGHT_RC=3
-    make_env
     commit_upstream lib/base.txt > /dev/null
 
     run_deploy
@@ -268,7 +280,6 @@ run_deploy() {
 
 @test "cold deploy writes the completed-deploy marker as final step" {
     export PREFLIGHT_RC=3
-    make_env
     new="$(commit_upstream lib/base.txt)"
 
     run_deploy
@@ -337,4 +348,56 @@ run_deploy() {
     run_deploy
     [ "$status" -eq 0 ]
     [[ "$output" == *"re-exec"* ]]
+}
+
+# --- #1377 D-S3: MIX_ENV is established for BOTH paths, not just cold --------
+#
+# `substrate_build` used to own the `.env` check and the
+# `MIX_ENV=${MIX_ENV:-prod}; export MIX_ENV` line, behind an early
+# `[ "$MODE" = cold ] || return 0`. So a HOT deploy reached `substrate_seed`
+# with MIX_ENV unset in the shell, compose fell back to `.env`, and
+# `.env.example` ships `MIX_ENV=dev` uncommented — measured against the real
+# compose.yaml, `docker compose --env-file .env.example config` then resolves
+# `DATABASE_PATH: /app/runtime/grappa_dev.db`. COLD seeded prod, HOT seeded
+# dev, and hot is the documented normal case.
+#
+# The env each compose invocation inherited is recorded in ENV_LOG by the
+# same stub that writes ARGV_LOG.
+
+# The MIX_ENV the seed oneshot inherited: `MIX_ENV=prod`, or `MIX_ENV=<unset>`.
+seed_mix_env() {
+    grep 'grappa.seed_themes' "$ENV_LOG" | head -1 | cut -d' ' -f1
+}
+
+@test "hot path: the seed oneshot carries MIX_ENV=prod, not the .env default (#1377 D-S3)" {
+    commit_upstream lib/base.txt > /dev/null
+
+    run_deploy
+    [ "$status" -eq 0 ]
+    grep -q "grappa.seed_themes" "$ARGV_LOG"      # the seed really ran
+    [ "$(seed_mix_env)" = "MIX_ENV=prod" ] || {
+        echo "hot seed ran with $(seed_mix_env) — compose falls back to .env (grappa_dev.db)" >&2
+        return 1
+    }
+}
+
+@test "cold path: the seed oneshot carries MIX_ENV=prod too (#1377 D-S3)" {
+    export PREFLIGHT_RC=3
+    commit_upstream lib/base.txt > /dev/null
+
+    run_deploy
+    [ "$status" -eq 0 ]
+    [ "$(seed_mix_env)" = "MIX_ENV=prod" ]
+}
+
+@test "hot path refuses to start without a .env, same as cold (#1377 D-S3)" {
+    # The check is path-independent now: every compose oneshot this script
+    # runs — reload, seed, healthcheck — reads .env for the prod secrets.
+    commit_upstream lib/base.txt > /dev/null
+    rm -f "$REPO_ROOT/.env"
+
+    run_deploy --force-hot
+    [ "$status" -ne 0 ]
+    [[ "$output" == *".env"* ]]
+    refute grep -q "docker" "$ARGV_LOG"           # died before any side effect
 }
