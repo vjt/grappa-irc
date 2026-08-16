@@ -1604,14 +1604,24 @@ export async function disableTotp(token: string, password: string): Promise<void
   if (!res.ok) throw await readError(res, false);
 }
 
-async function passkeyRequest<T>(path: string, body: unknown, token?: string): Promise<T> {
+// #1400 — every path routed through here is a POST that renders JSON. The
+// only `:no_content` in `PasskeyController` is `delete/2`, and cic calls that
+// route with a bare `fetch`, never this helper. The 204 arm this used to
+// carry was therefore unreachable, and it asserted `undefined` as `T` — a
+// value no caller can survive. A future 204 here now throws on the empty
+// body, which is the loud failure; the silent `undefined` was not.
+async function passkeyRequest<T extends object>(
+  path: string,
+  body: unknown,
+  token?: string,
+): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
     headers: buildHeaders(token),
     body: JSON.stringify(body),
   });
   if (!res.ok) throw await readError(res, false);
-  return (res.status === 204 ? undefined : await res.json()) as T;
+  return (await res.json()) as T;
 }
 
 export const getPasskeyLoginOptions = (identifier: string): Promise<PasskeyOptions> =>
