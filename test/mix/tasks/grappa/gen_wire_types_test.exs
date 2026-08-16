@@ -335,7 +335,7 @@ defmodule Mix.Tasks.Grappa.GenWireTypesTest do
     test "every admin index envelope survives a full generate/0 run" do
       full = GenWireTypes.generate()
 
-      for {mod, envelope, _key, _row} <- admin_index_envelopes() do
+      for {mod, envelope, _, _} <- admin_index_envelopes() do
         assert full =~ ~s(export type #{envelope} = {),
                "#{inspect(mod)}'s index envelope is missing from the full walk"
       end
