@@ -65,6 +65,16 @@ export type ScrollbackMetaT = Record<string, unknown>;
 
 export type SessionISupportCasemapping = IRCIdentifierCasemapping;
 
+export const SESSION_WINDOW_STATE_WINDOW_STATE = [
+  "pending",
+  "invited",
+  "joined",
+  "failed",
+  "kicked",
+  "parked",
+] as const;
+export type SessionWindowStateWindowState = (typeof SESSION_WINDOW_STATE_WINDOW_STATE)[number];
+
 export const SESSION_LOG_EVENT = [
   "connected",
   "registered",
@@ -75,6 +85,21 @@ export const SESSION_LOG_EVENT = [
   "nick_changed",
 ] as const;
 export type SessionLogEvent = (typeof SESSION_LOG_EVENT)[number];
+
+export const THEMES_TOKEN_MODEL_FONT_FAMILY = [
+  "mono-default",
+  "jetbrains-mono",
+  "fira-code",
+  "iosevka",
+  "hack",
+  "cascadia-code",
+  "source-code-pro",
+  "ibm-plex-mono",
+] as const;
+export type ThemesTokenModelFontFamily = (typeof THEMES_TOKEN_MODEL_FONT_FAMILY)[number];
+
+export const THEMES_TOKEN_MODEL_SIZE_MODE = ["cover", "repeat"] as const;
+export type ThemesTokenModelSizeMode = (typeof THEMES_TOKEN_MODEL_SIZE_MODE)[number];
 
 export const WINDOW_COUNTS_SEVERITY = ["mention", "message", "event", "none"] as const;
 export type WindowCountsSeverity = (typeof WINDOW_COUNTS_SEVERITY)[number];
@@ -930,6 +955,8 @@ export const SESSION_WIRE_WIRE_EVENT_KIND = [
 ] as const;
 export type SessionWireWireEventKind = (typeof SESSION_WIRE_WIRE_EVENT_KIND)[number];
 
+export type SessionWireWindowState = SessionWindowStateWindowState;
+
 export type SessionWireChannelsChangedPayload = {
   kind: "channels_changed";
 };
@@ -1405,6 +1432,10 @@ export type SubjectSearchAdminWireResultJson = {
 };
 
 // === Grappa.Themes.Wire ===
+
+export type ThemesWireFontFamily = ThemesTokenModelFontFamily;
+
+export type ThemesWireBackgroundSize = ThemesTokenModelSizeMode;
 
 export type ThemesWireT = {
   id: number;

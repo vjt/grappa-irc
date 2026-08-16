@@ -25,12 +25,15 @@ import {
   NETWORKS_NETWORK_SERVICES_FLAVOR,
   SCROLLBACK_MESSAGE_KIND,
   SESSION_LOG_EVENT,
+  SESSION_WINDOW_STATE_WINDOW_STATE,
   SESSION_WIRE_RECOVER_OUTCOME,
   SESSION_WIRE_RECOVER_REASON,
   SESSION_WIRE_RECOVER_STATUS,
   SESSION_WIRE_RECOVER_STEP,
   SESSION_WIRE_SERVER_REPLY_SOURCE,
   SESSION_WIRE_WIRE_EVENT_KIND,
+  THEMES_TOKEN_MODEL_FONT_FAMILY,
+  THEMES_TOKEN_MODEL_SIZE_MODE,
   WINDOW_COUNTS_SEVERITY,
 } from "./wireTypes";
 
@@ -910,6 +913,11 @@ export const S_ServerSettingsWireChangedPayload = {
 // Grappa.Session.ISupport.casemapping/0
 export const S_SessionISupportCasemapping = S_IRCIdentifierCasemapping;
 
+// Grappa.Session.WindowState.window_state/0
+export const S_SessionWindowStateWindowState = {
+  e: [...SESSION_WINDOW_STATE_WINDOW_STATE],
+} as const;
+
 // Grappa.Session.Wire.away_confirmed_payload/0
 export const S_SessionWireAwayConfirmedPayload = {
   o: { kind: { l: "away_confirmed" }, network: "s", state: { e: ["present", "away"] } },
@@ -1339,6 +1347,9 @@ export const S_SessionWireWindowPendingPayload = {
   o: { kind: { l: "window_pending" }, network: "s", channel: "s", state: { l: "pending" } },
 } as const;
 
+// Grappa.Session.Wire.window_state/0
+export const S_SessionWireWindowState = S_SessionWindowStateWindowState;
+
 // Grappa.Session.Wire.wire_event_kind/0
 export const S_SessionWireWireEventKind = { e: [...SESSION_WIRE_WIRE_EVENT_KIND] } as const;
 
@@ -1382,6 +1393,18 @@ export const S_SessionLogWireSessionsResult = {
 export const S_SubjectSearchAdminWireResultJson = {
   o: { type: { e: ["user", "visitor"] }, id: "s", network: { u: ["s", "z"] }, nick: "s" },
 } as const;
+
+// Grappa.Themes.TokenModel.font_family/0
+export const S_ThemesTokenModelFontFamily = { e: [...THEMES_TOKEN_MODEL_FONT_FAMILY] } as const;
+
+// Grappa.Themes.TokenModel.size_mode/0
+export const S_ThemesTokenModelSizeMode = { e: [...THEMES_TOKEN_MODEL_SIZE_MODE] } as const;
+
+// Grappa.Themes.Wire.background_size/0
+export const S_ThemesWireBackgroundSize = S_ThemesTokenModelSizeMode;
+
+// Grappa.Themes.Wire.font_family/0
+export const S_ThemesWireFontFamily = S_ThemesTokenModelFontFamily;
 
 // Grappa.Themes.Wire.t/0
 export const S_ThemesWireT = {

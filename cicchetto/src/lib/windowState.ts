@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { identityScopedStore } from "./identityScopedStore";
 import { selectedChannel } from "./selection";
+import type { SessionWireWindowState } from "./wireTypes";
 
 // CP15 B5: cic mirror of the server-side per-(network, channel) window
 // state machine. The server splits state across three maps so each
@@ -29,7 +30,15 @@ import { selectedChannel } from "./selection";
 // all three maps are emptied so a new bearer doesn't see the prior
 // tenant's window states.
 
-export type WindowState = "pending" | "invited" | "joined" | "failed" | "kicked" | "parked";
+// #1406 X-S8 — DERIVED from the server SSOT, not transcribed. This used to be
+// a hand-written six-token union: CLAUDE.md says adding a state is a server
+// change cic just mirrors, but the mirror was a copy nothing would have
+// widened. `Grappa.Session.Wire` now re-exports
+// `Grappa.Session.WindowState.window_state/0`, so a seventh state arrives here
+// on the next `grappa.gen_wire_types` run and tsc reports every site that does
+// not handle it. Aliasing (rather than pinning a copy with `Equal<>`) is the
+// #410 / `WireAdminEvent` posture: a derived type cannot drift by construction.
+export type WindowState = SessionWireWindowState;
 
 export type WindowFailure = {
   reason: string | null;

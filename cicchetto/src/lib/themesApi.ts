@@ -17,23 +17,22 @@
 import { buildHeaders, readError } from "./api";
 import { getOrCreateClientId } from "./clientId";
 import { narrowThemeResponse } from "./wireNarrow";
-import type { ThemesWireT } from "./wireTypes";
+import type { ThemesWireBackgroundSize, ThemesWireFontFamily, ThemesWireT } from "./wireTypes";
 
-// The closed font-family allow-list — mirror of
-// `Grappa.Themes.TokenModel.font_families/0`. `mono-default` maps to the
-// existing `--font-mono` stack (no font file); the rest each get a
-// self-hosted `@font-face` (sub-task 8, deferred).
-export type ThemeFontFamily =
-  | "mono-default"
-  | "jetbrains-mono"
-  | "fira-code"
-  | "iosevka"
-  | "hack"
-  | "cascadia-code"
-  | "source-code-pro"
-  | "ibm-plex-mono";
+// The closed font-family allow-list — #1406 X-S9, DERIVED from
+// `Grappa.Themes.TokenModel.font_families/0` (the same list `sanitize_font/1`
+// guards with) instead of mirrored by hand. `mono-default` maps to the existing
+// `--font-mono` stack (no font file); the rest each get a self-hosted
+// `@font-face` (sub-task 8, deferred).
+export type ThemeFontFamily = ThemesWireFontFamily;
 
-// The 27 color keys — mirror of `Grappa.Themes.TokenModel.color_keys/0`.
+// The 27 color keys — still a HAND mirror of
+// `Grappa.Themes.TokenModel.color_keys/0`, and the one vocabulary #1406 X-S9
+// leaves unpinned: `nick_${number}` is a pattern template literal that TS
+// degrades to an index signature, so narrowing it to the server's exact 16
+// nick slots is a behaviour change (a payload missing `nick_5` type-checks
+// today and would stop) with real consumer fallout, not a re-export. Declared
+// debt, tracked on #1406, deliberately out of this slice.
 // Each value is a strict `#rrggbb` string (validated server-side; cic
 // treats them as opaque CSS color literals via `customTheme.ts`).
 export type ThemeColorKey =
@@ -56,10 +55,11 @@ export type TokenColors = Record<ThemeColorKey, string>;
 // Producers can only express what this allows; anything else is dropped
 // server-side (safe-by-construction). `customTheme.ts` consumes this to
 // generate scoped CSS custom properties.
-// Background sizing — mirror of `Grappa.Themes.TokenModel.size_modes/0`.
-// `cover` = full-bleed (the v1 built-in set + every upload); `repeat` =
-// seamless tile (the deferred #294 pattern set).
-export type ThemeBackgroundSize = "cover" | "repeat";
+// Background sizing — #1406 X-S9, derived from
+// `Grappa.Themes.TokenModel.size_modes/0`. `cover` = full-bleed (the v1
+// built-in set + every upload); `repeat` = seamless tile (the deferred #294
+// pattern set).
+export type ThemeBackgroundSize = ThemesWireBackgroundSize;
 
 export type TokenPayload = {
   colors: TokenColors;
@@ -79,7 +79,15 @@ export type TokenPayload = {
 };
 
 // One entry in the built-in background catalog (`GET /themes/backgrounds`) —
-// mirror of `Grappa.Themes.BuiltinBackgrounds.t`. The picker consumes this;
+// still a HAND mirror of `Grappa.Themes.BuiltinBackgrounds.t`, and the second
+// vocabulary #1406 X-S9 leaves unpinned. Not for lack of trying: the
+// re-export was written and MEASURED, and the codegen cannot render that type
+// — `t/0`'s `variant: variant()` is a same-module ref the external-type path
+// has no registry for, so the generated files came out with `variant: Variant`
+// (TS2304, a name nothing declares) and a `THEMES_BUILTIN_BACKGROUNDS_VARIANT`
+// import (TS2724, a const neither emitter declares). The fix belongs to the
+// emitter; restating the four fields server-side to route around it would have
+// been the same twin this slice exists to delete. The picker consumes this;
 // `path` is the static /backgrounds/<key>.webp URL the asset is served at.
 export type BuiltinBackground = {
   key: string;
