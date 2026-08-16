@@ -107,8 +107,41 @@ capture_container_logs() {
 # the bytes of a run that lost data without stalling would make "damage
 # WITHOUT a stall" permanently unobservable — the class nobody can
 # currently prove exists.
-census_has_gap() {
-    grep -q -- $'\tGAP\t' "$CENSUS_FILE" 2>/dev/null
+#
+# And a silence is only a trigger where silence MEANS something — see
+# retention_eligible_services below.
+
+# Services whose silence means something, DERIVED from compose rather
+# than hand-listed (the #441 lesson again).
+#
+# A container that EXITED CLEANLY is a one-shot that finished — the cic
+# build, the cert init. Its silence is the interval between invocations,
+# not a stall: measured at 111.3 s and 12.9 s on two consecutive runs, so
+# retaining on it would retain on essentially every run and restore the
+# landfill this change exists to avoid. A container that exited NON-ZERO
+# crashed, and its silence does mean something.
+#
+# The discriminant is the PAIR, never the code alone. Sampled on a live
+# stack: `hub|running|0` — a RUNNING container reports ExitCode 0 exactly
+# like a completed one-shot. Keying on the code would make every service
+# ineligible and retention would stop firing while still printing a
+# verdict.
+retention_eligible_services() {
+    cd "$E2E_DIR" || return 0
+    docker compose ps --all --format '{{.Service}}\t{{.State}}\t{{.ExitCode}}' 2>/dev/null \
+        | awk -F'\t' '!($2 == "exited" && $3 == "0") { print $1 }'
+}
+
+# A silence on one of those services. Not "a silence anywhere".
+census_has_service_gap() {
+    local svc
+    while IFS= read -r svc; do
+        [ -n "$svc" ] || continue
+        if grep -q -- "^$svc"$'\tGAP\t' "$CENSUS_FILE" 2>/dev/null; then
+            return 0
+        fi
+    done < <(retention_eligible_services)
+    return 1
 }
 
 census_has_dropped() {
@@ -119,13 +152,13 @@ census_has_dropped() {
 # "damage without a stall" COUNTABLE across artifacts rather than merely
 # retained: one grep over the uploads answers whether the class exists.
 record_retention() {
-    printf 'RUN\tRETENTION\tkept=%s\tby_gap=%s\tby_dropped=%s\n' \
+    printf 'RUN\tRETENTION\tkept=%s\tby_service_gap=%s\tby_dropped=%s\n' \
         "$1" "$2" "$3" >>"$CENSUS_FILE"
 }
 
 cleanup() {
     local rc=$?
-    local by_gap=0 by_dropped=0 kept=no
+    local by_service_gap=0 by_dropped=0 kept=no
 
     # The census on both exits; the bytes on a red, and on a green when
     # either trigger fired. Evidence collection, never an assertion — no
@@ -137,10 +170,10 @@ cleanup() {
         capture_container_logs census-only
     fi
 
-    if census_has_gap; then by_gap=1; fi
+    if census_has_service_gap; then by_service_gap=1; fi
     if census_has_dropped; then by_dropped=1; fi
 
-    if [ "$kept" = no ] && { [ "$by_gap" = 1 ] || [ "$by_dropped" = 1 ]; }; then
+    if [ "$kept" = no ] && { [ "$by_service_gap" = 1 ] || [ "$by_dropped" = 1 ]; }; then
         # The one green worth its bytes. Costs a second extraction, which
         # is the right place to spend it.
         echo "=== #1429: census tripped on a GREEN run — keeping the bytes ==="
@@ -150,7 +183,7 @@ cleanup() {
 
     # AFTER the last capture: capture_container_logs truncates the census,
     # so a verdict written before it would be wiped by it.
-    record_retention "$kept" "$by_gap" "$by_dropped"
+    record_retention "$kept" "$by_service_gap" "$by_dropped"
 
     if [ "${KEEP_STACK:-}" != "1" ]; then
         "$TESTNET" down 2>&1 || true

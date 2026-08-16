@@ -912,15 +912,69 @@ extraction on the rare interesting green and nothing at all on a clean
 one — the alternative, teeing 253 MB to disk on every green and
 unlinking it afterwards, pays on the common case to save on the rare.
 
+**🔴 READING THE CENSUS: a gap does not tell you which way the
+causation runs.** A silence in a container's log is not evidence that
+the container was stuck. A Playwright spec hung on a locator stops
+driving the stack, and a server with no traffic logs nothing — so the
+silence can be the EFFECT of the failure rather than its cause. This is
+not hypothetical: the first real red this instrument met showed a
+16.7 s silence on `grappa-test` spanning exactly the failing spec's
+lifetime (provisioned 14:40:14, silence 14:40:15.008 → 14:40:31.720,
+failed 14:40:32) — and that spec then passed 3/3 in isolation, with
+every damage counter at zero. Read it as an environment stall and you
+would have exonerated a spec on no evidence.
+
+So:
+
+| what the census shows | what it licenses |
+|---|---|
+| gap **+ a damage signature** (`db30` / `idle30` / `dropped` / `saturated`) | a stall — the environment is implicated, the spec is not |
+| **bare gap**, every damage counter zero | **nothing.** Traffic drought and a stalled process look identical from here |
+
+The counters therefore live on the same line as the gap, deliberately:
+the gap alone is not a verdict, and putting them in a separate report
+invites reading it as one.
+
 **ATTRIBUTION and RETENTION are different jobs, and only the first is
 single-criterion.** Blaming a red uses ONE rule — a silence at or over
-`GAP_THRESHOLD` — and that rule stands alone. Deciding what evidence to
+`GAP_THRESHOLD` **carrying a damage signature** — and that rule stands
+alone. Deciding what evidence to
 still have tomorrow answers a different question, and there a silence
 is only a PROXY for the mechanism while a dropped row IS the damage. So
-retention fires on **a gap ≥ `GAP_THRESHOLD` OR a non-zero `dropped`**.
-Retaining only on the gap would make *damage WITHOUT a stall*
-permanently unobservable — the class nobody can currently prove exists,
-precisely because its evidence was always discarded.
+retention fires on **a gap ≥ `GAP_THRESHOLD` on an ELIGIBLE SERVICE, OR
+a non-zero `dropped`**. Retaining only on the gap would make *damage
+WITHOUT a stall* permanently unobservable — the class nobody can
+currently prove exists, precisely because its evidence was always
+discarded.
+
+**Eligible means "a container whose silence means something", and the
+set is derived, not listed.** A container that exited CLEANLY is a
+one-shot that finished — the cic build, the cert init — and its silence
+is the interval between invocations. Measured: `cicchetto-build-test`
+exceeded the threshold on both runs it was observed on (111.3 s and
+12.9 s), so retaining on it would retain on essentially every run and
+restore the landfill. A container that exited NON-ZERO crashed, and its
+silence does mean something.
+
+⚠️ **The discriminant is the PAIR `(State, ExitCode)`, never the exit
+code alone.** Sampled on a live stack rather than assumed:
+
+```
+hub|running|0          <- a RUNNING container also reports 0
+cert-init|exited|0     <- a completed one-shot
+grappa-test|running|0
+```
+
+Key on the code by itself and every running service becomes ineligible:
+retention stops firing entirely while the census keeps printing a
+verdict it is no longer computing. `retention_eligible_services` is
+therefore `!(State == exited && ExitCode == 0)`, and
+`integration_log_capture_test.bats` carries a case for exactly that
+mutant.
+
+The census still measures every container — a build one-shot's gap is
+reported and simply retains nothing, which is why the field is named
+`by_service_gap` and not `by_gap`.
 
 **The census records WHICH trigger fired**, as its last line:
 

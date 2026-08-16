@@ -11,6 +11,26 @@
 # the MEASUREMENT taken from those same bytes costs a few KB, so the
 # stream is scanned in flight and only a red materialises it to disk.
 #
+# 🔴 HOW TO READ A GAP — the direction of causation is NOT given.
+#
+# A silence in a log is not evidence that the process was stuck. A
+# Playwright spec hung on a locator stops driving the stack, and a server
+# with no traffic logs nothing: the silence is then the EFFECT of the
+# failure, not its cause. Measured instance — a 16.7 s silence on
+# grappa-test spanning exactly the lifetime of a failing spec (provision
+# 14:40:14, silence 14:40:15.008 -> 14:40:31.720, failure 14:40:32), with
+# every damage counter at zero, and that spec passing 3/3 in isolation.
+#
+#   gap + a DAMAGE SIGNATURE (db30 / idle30 / dropped / saturated)
+#       => a stall. The environment is implicated, the spec is not.
+#   BARE gap (every damage counter zero)
+#       => attributes NOTHING. Traffic drought and a stalled process
+#          look identical from here.
+#
+# This is why the counters share the line with the gap rather than living
+# in a separate report: the gap alone is not a verdict, and separating
+# them invites reading it as one.
+#
 # What it reports, per service:
 #   - the largest silence between consecutive timestamped lines, and when
 #     it started. A quiet stack still logs its 5 s healthcheck cadence, so
