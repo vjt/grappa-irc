@@ -1881,88 +1881,36 @@ defmodule Grappa.ScrollbackTest do
       assert Enum.map(alice_page, & &1.body) == ["to alice"]
     end
 
-    # Codebase review 2026-05-08 H1: the original CP14 B3 index
-    # `(network_id, dm_with, server_time)` had no leading subject
-    # column, so the OR arm of channel_or_dm_where/2 walked rows for
-    # every user/visitor on the network sharing that peer name and
-    # post-filtered by `subject_where/2`. The fix replaces it with two
-    # subject-leading composites that mirror the channel-side shape:
+    # #1372 P-S4 — the two `EXPLAIN QUERY PLAN` tests that used to sit here
+    # pinned a query production no longer runs. They hand-wrote
+    # `(channel = ? OR dm_with = ?)`, the two-arm disjunction #393 DELETED from
+    # `where_dm_peer/2` when it collapsed the DM match to the single folded
+    # `lower(COALESCE(dm_with, channel)) = ?`. Their `acceptable` name lists
+    # were the four `dm_with` indexes this commit drops, so they were the only
+    # thing left in the repo referencing them — a test keeping an index alive
+    # for a reader that no longer exists. Same defect class as the blind
+    # covering pin two commits back: an EXPLAIN of a locally rebuilt query.
     #
-    #   * (user_id, network_id, dm_with, server_time)
-    #   * (visitor_id, network_id, dm_with, server_time)
-    #
-    # These tests pin the SQLite query planner's choice so the
-    # subject-leading shape can never silently regress to a slow
-    # cross-subject scan. EXPLAIN QUERY PLAN is the only observable
-    # signal that the index leadership matters; functional output is
-    # identical either way.
-    #
-    # REV-B / H18 (2026-05-22 codebase review): the regression
-    # invariant is "subject-LEADING", not "this specific index name".
-    # The new REV-B covering index (`messages_archive_user_idx` on
-    # `(user_id, network_id, COALESCE(dm_with, channel), server_time)`)
-    # is ALSO subject-leading; SQLite's planner may pick it for the
-    # DM-fetch OR-shape because the COALESCE column matches BOTH OR
-    # arms in a single walk. Either choice preserves the H1
-    # invariant — the `refute` against the subject-less
-    # `messages_network_id_dm_with_server_time_index` is the
-    # invariant; the asserted name list permits the planner to pick
-    # the more selective subject-leading composite.
-    test "EXPLAIN QUERY PLAN: user-side DM fetch picks a subject-leading composite",
-         %{user: user, network: net} do
-      {:ok, %{rows: rows}} =
-        Repo.query("""
-        EXPLAIN QUERY PLAN
-        SELECT * FROM messages
-        WHERE user_id = '#{user.id}'
-          AND network_id = #{net.id}
-          AND (channel = 'peer' OR dm_with = 'peer')
-        ORDER BY server_time DESC, id DESC
-        LIMIT 50
-        """)
+    # Their invariant SURVIVES, asserted against the real query instead: the
+    # #393 B describe below pins that the production DM read seeks a
+    # SUBJECT-LEADING index (`messages_<subject>_id_network_id_dm_coalesce_…`)
+    # and refutes the network-wide scan. That IS the 2026-05-08 H1 rule — no
+    # cross-subject walk — measured on the predicate production emits. The
+    # deleted tests also `refute`d
+    # `messages_network_id_dm_with_server_time_index`, an index absent from
+    # every migration, so that arm had already gone vacuous.
+    test "the four dead dm_with indexes are dropped" do
+      names = messages_index_names()
 
-      plan_text = rows |> List.flatten() |> Enum.map_join("\n", &to_string/1)
-
-      acceptable = [
-        "messages_user_id_network_id_dm_with_server_time_index",
-        "messages_archive_user_idx"
-      ]
-
-      assert Enum.any?(acceptable, &String.contains?(plan_text, &1)),
-             "expected dm_with arm to use a subject-leading composite (#{Enum.join(acceptable, " OR ")}), got plan:\n#{plan_text}"
-
-      refute plan_text =~ "messages_network_id_dm_with_server_time_index",
-             "old subject-less index must NOT be used:\n#{plan_text}"
-    end
-
-    test "EXPLAIN QUERY PLAN: visitor-side DM fetch picks a subject-leading composite",
-         %{network: net} do
-      {:ok, visitor} =
-        Grappa.Visitors.find_or_provision_anon("v-#{uniq()}", net.slug, "1.2.3.4")
-
-      {:ok, %{rows: rows}} =
-        Repo.query("""
-        EXPLAIN QUERY PLAN
-        SELECT * FROM messages
-        WHERE visitor_id = '#{visitor.id}'
-          AND network_id = #{net.id}
-          AND (channel = 'peer' OR dm_with = 'peer')
-        ORDER BY server_time DESC, id DESC
-        LIMIT 50
-        """)
-
-      plan_text = rows |> List.flatten() |> Enum.map_join("\n", &to_string/1)
-
-      acceptable = [
-        "messages_visitor_id_network_id_dm_with_server_time_index",
-        "messages_archive_visitor_idx"
-      ]
-
-      assert Enum.any?(acceptable, &String.contains?(plan_text, &1)),
-             "expected dm_with arm to use a subject-leading composite (#{Enum.join(acceptable, " OR ")}), got plan:\n#{plan_text}"
-
-      refute plan_text =~ "messages_network_id_dm_with_server_time_index",
-             "old subject-less index must NOT be used:\n#{plan_text}"
+      for idx <- ~w(
+            messages_user_id_network_id_dm_with_server_time_index
+            messages_visitor_id_network_id_dm_with_server_time_index
+            messages_user_id_network_id_dm_with_id_index
+            messages_visitor_id_network_id_dm_with_id_index
+          ) do
+        refute idx in names,
+               "#{idx} is write amplification with no reader: every `dm_with` predicate in lib/ folds the column, and a plain B-tree on the raw column cannot seek a folded match"
+      end
     end
   end
 
@@ -3621,13 +3569,22 @@ defmodule Grappa.ScrollbackTest do
 
       # #393 dropped the two `..._channel_id` composites in favour of the
       # `..._channel_id_kind` covering supersets (same prefix, `kind` at the
-      # tail). The `dm_with` id-twins are unchanged. Either the composite OR
-      # its covering superset satisfies the CP29 R-2 no-sort invariant.
+      # tail). Either the composite OR its covering superset satisfies the
+      # CP29 R-2 no-sort invariant.
+      #
+      # #1372 P-S4 — the DM half named the `..._dm_with_id` twins. Those are
+      # dropped: they index the RAW column, and since #393 collapsed the DM
+      # match to `lower(COALESCE(dm_with, channel)) = ?` no read can seek
+      # them. The invariant itself is untouched — a table rebuild must still
+      # leave the DM id-cursor read seekable and sort-free — so it now names
+      # the index that ACTUALLY serves it, the folded-COALESCE covering pair.
+      # Measured: the DM `fetch_after` shape plans
+      # `SEARCH … (… AND <expr>=? AND id>?)` on exactly these.
       for idx <- [
             "messages_visitor_id_network_id_channel_id_kind_index",
             "messages_user_id_network_id_channel_id_kind_index",
-            "messages_visitor_id_network_id_dm_with_id_index",
-            "messages_user_id_network_id_dm_with_id_index"
+            "messages_visitor_id_network_id_dm_coalesce_fold_id_kind_index",
+            "messages_user_id_network_id_dm_coalesce_fold_id_kind_index"
           ] do
         assert idx in names,
                "#{idx} missing — CP29 R-2-class drift (a table-rebuild migration " <>
