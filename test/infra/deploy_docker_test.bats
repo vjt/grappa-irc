@@ -440,3 +440,17 @@ seed_mix_env() {
     [ "$status" -eq 0 ]
     grep -q "docker" "$ARGV_LOG"
 }
+
+@test "GRAPPA_CACHE_ID outranks the .env check — it holds on an uninstalled box too (#1409)" {
+    # The guard is about the operator's environment being incompatible with
+    # this substrate, which is true whether or not the box was ever
+    # installed. Without this case the placement is only a comment: moving
+    # the guard below the .env check leaves every other case green.
+    export GRAPPA_CACHE_ID=w9
+    commit_upstream lib/base.txt > /dev/null
+    rm -f "$REPO_ROOT/.env"
+
+    run_deploy
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"GRAPPA_CACHE_ID"* ]]
+}
