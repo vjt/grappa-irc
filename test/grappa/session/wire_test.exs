@@ -1034,8 +1034,8 @@ defmodule Grappa.Session.WireTest do
       accum = %ListModeAccum{
         channel_display: "#Test",
         entries: [
-          %{mask: "b!*@2", setter: "op2", set_ts: "222"},
-          %{mask: "a!*@1", setter: "op1", set_ts: "111"}
+          %ListModeAccum.Entry{mask: "b!*@2", setter: "op2", set_ts: "222"},
+          %ListModeAccum.Entry{mask: "a!*@1", setter: "op1", set_ts: "111"}
         ]
       }
 
