@@ -91,7 +91,18 @@ defmodule Grappa.Session.EventRouter do
 
   alias Grappa.IRC.{CTCP, Identifier, JoinFailure, Message}
   alias Grappa.{Scrollback, Session}
-  alias Grappa.Session.{IdentityState, ISupport, ListModes, NumericRouter, Presence, WhoisAccum}
+  alias Grappa.Session.{
+    IdentityState,
+    ISupport,
+    ListModeAccum,
+    ListModes,
+    LinksAccum,
+    LusersAccum,
+    NumericRouter,
+    Presence,
+    WhoisAccum,
+    WhowasAccum
+  }
 
   @typedoc """
   The Session.Server state subset this module reads + mutates. The
@@ -232,16 +243,16 @@ defmodule Grappa.Session.EventRouter do
           # lifts it out of the `*_pending` accumulator it just drained; `nil`
           # means no connection owns this reply and `Session.Server` falls
           # back to the per-user fan-out.
-          | {:whois_bundle, target :: String.t(), accum :: map(), Grappa.Session.reply_to()}
+          | {:whois_bundle, target :: String.t(), WhoisAccum.t(), Grappa.Session.reply_to()}
           | {:peer_away, peer :: String.t(), away_message :: String.t()}
           | {:invite_ack, channel :: String.t(), peer :: String.t()}
           | {:rejoin_invited, channel :: String.t()}
           | {:invited, channel :: String.t(), inviter :: String.t()}
-          | {:lusers_bundle, accum :: map()}
-          | {:whowas_bundle, target :: String.t(), accum :: map(), Grappa.Session.reply_to()}
-          | {:list_mode_bundle, channel :: String.t(), mode :: ListModes.mode(), accum :: map(),
+          | {:lusers_bundle, LusersAccum.t()}
+          | {:whowas_bundle, target :: String.t(), WhowasAccum.t(), Grappa.Session.reply_to()}
+          | {:list_mode_bundle, channel :: String.t(), mode :: ListModes.mode(), ListModeAccum.t(),
              Grappa.Session.reply_to()}
-          | {:links_bundle, accum :: map(), Grappa.Session.reply_to()}
+          | {:links_bundle, LinksAccum.t(), Grappa.Session.reply_to()}
           | {:umode_changed, modes :: [String.t()]}
           | {:supported_umodes_changed, modes :: [String.t()]}
           | {:session_identity_changed, :acquired | :lost}
@@ -1675,7 +1686,7 @@ defmodule Grappa.Session.EventRouter do
     case drain_key && Map.fetch(pending, drain_key) do
       {:ok, accum} ->
         next_state = %{state | who_pending: Map.delete(pending, drain_key)}
-        target_display = Map.get(accum, :target_display, target)
+        target_display = accum.target_display || target
 
         # Replies prepended LIFO in who_fold for O(1) fold — reverse to
         # restore server wire order before emitting.
@@ -1963,7 +1974,8 @@ defmodule Grappa.Session.EventRouter do
        when is_list(params) do
     [n, i, s] = extract_lusers_ints(List.last(params), 3)
 
-    {:cont, Map.put(state, :lusers_pending, %{total_users: n, invisible: i, servers: s}), []}
+    {:cont,
+     Map.put(state, :lusers_pending, %LusersAccum{total_users: n, invisible: i, servers: s}), []}
   end
 
   # 252 RPL_LUSEROP: `<N> :IRC Operators online`.
@@ -2026,7 +2038,9 @@ defmodule Grappa.Session.EventRouter do
        )
        when is_list(params) do
     [n, m] = extract_lusers_ints(List.last(params), 2)
-    accum = Map.merge(Map.get(state, :lusers_pending) || %{}, %{current_global: n, max_global: m})
+    accum =
+      struct!(Map.get(state, :lusers_pending) || %LusersAccum{}, %{current_global: n, max_global: m})
+
     {:cont, Map.put(state, :lusers_pending, nil), [{:lusers_bundle, accum}]}
   end
 
@@ -2062,7 +2076,7 @@ defmodule Grappa.Session.EventRouter do
        )
        when is_binary(target) and is_binary(user) and is_binary(host) do
     realname = whois_trailing(rest)
-    entry = %{user: user, host: host, realname: realname}
+    entry = %WhowasAccum.Entry{user: user, host: host, realname: realname}
     {:cont, whowas_append_entry(state, target, entry), []}
   end
 
@@ -2083,7 +2097,7 @@ defmodule Grappa.Session.EventRouter do
 
         {:cont, next_state,
          [
-           {:whowas_bundle, Map.get(accum, :target_display, target), accum, Map.get(accum, :reply_to)}
+           {:whowas_bundle, accum.target_display || target, accum, accum.reply_to}
          ]}
 
       :error ->
@@ -2107,7 +2121,7 @@ defmodule Grappa.Session.EventRouter do
     case Map.fetch(pending, nick_key) do
       {:ok, accum} ->
         next_state = %{state | whowas_pending: Map.delete(pending, nick_key)}
-        target_display = Map.get(accum, :target_display, target)
+        target_display = accum.target_display || target
 
         # The not-found bundle is built fresh rather than drained, so
         # `reply_to` is lifted off the accumulator explicitly — a 406 is as
@@ -2115,8 +2129,8 @@ defmodule Grappa.Session.EventRouter do
         # reach the same one connection.
         {:cont, next_state,
          [
-           {:whowas_bundle, target_display, %{target_display: target_display, not_found: true},
-            Map.get(accum, :reply_to)}
+           {:whowas_bundle, target_display,
+            %WhowasAccum{target_display: target_display, not_found: true}, accum.reply_to}
          ]}
 
       :error ->
@@ -2154,7 +2168,7 @@ defmodule Grappa.Session.EventRouter do
          state
        )
        when numeric in [367, 348, 346] and is_binary(channel) and is_binary(mask) do
-    entry = %{mask: mask, setter: Enum.at(rest, 0), set_ts: Enum.at(rest, 1)}
+    entry = %ListModeAccum.Entry{mask: mask, setter: Enum.at(rest, 0), set_ts: Enum.at(rest, 1)}
     {:cont, list_mode_append_entry(state, channel, numeric_list_mode(numeric), entry), []}
   end
 
@@ -2167,7 +2181,7 @@ defmodule Grappa.Session.EventRouter do
          state
        )
        when is_binary(channel) and is_binary(mask) and byte_size(mode) == 1 do
-    entry = %{mask: mask, setter: Enum.at(rest, 0), set_ts: Enum.at(rest, 1)}
+    entry = %ListModeAccum.Entry{mask: mask, setter: Enum.at(rest, 0), set_ts: Enum.at(rest, 1)}
     {:cont, list_mode_append_entry(state, channel, mode, entry), []}
   end
 
@@ -2224,7 +2238,12 @@ defmodule Grappa.Session.EventRouter do
        )
        when is_binary(server) and is_binary(linked_to) do
     {hopcount, description} = parse_links_trailing(List.last(rest))
-    entry = %{server: server, linked_to: linked_to, hopcount: hopcount, description: description}
+    entry = %LinksAccum.Entry{
+      server: server,
+      linked_to: linked_to,
+      hopcount: hopcount,
+      description: description
+    }
     {:cont, links_append_entry(state, entry), []}
   end
 
@@ -2239,8 +2258,8 @@ defmodule Grappa.Session.EventRouter do
       nil ->
         {:cont, state, []}
 
-      accum when is_map(accum) ->
-        {:cont, %{state | links_pending: nil}, [{:links_bundle, accum, Map.get(accum, :reply_to)}]}
+      %LinksAccum{} = accum ->
+        {:cont, %{state | links_pending: nil}, [{:links_bundle, accum, accum.reply_to}]}
     end
   end
 
@@ -4056,8 +4075,8 @@ defmodule Grappa.Session.EventRouter do
   # 252 before 251 — defensive).
   @spec lusers_fold(state(), map()) :: state()
   defp lusers_fold(state, fold) when is_map(fold) do
-    accum = Map.get(state, :lusers_pending) || %{}
-    Map.put(state, :lusers_pending, Map.merge(accum, fold))
+    accum = struct!(Map.get(state, :lusers_pending) || %LusersAccum{}, fold)
+    Map.put(state, :lusers_pending, accum)
   end
 
   # P-0c — append a 314 RPL_WHOWASUSER entry to the WHOWAS accumulator's
@@ -4067,9 +4086,9 @@ defmodule Grappa.Session.EventRouter do
   # builder reads `hd(entries)` for the most-recent projection.
   # Skips when no whowas_pending entry exists (operator never issued
   # /whowas; an unsolicited 314 is not actionable).
-  @spec whowas_append_entry(state(), String.t(), map()) :: state()
-  defp whowas_append_entry(state, target, entry)
-       when is_binary(target) and is_map(entry) do
+  @spec whowas_append_entry(state(), String.t(), WhowasAccum.Entry.t()) :: state()
+  defp whowas_append_entry(state, target, %WhowasAccum.Entry{} = entry)
+       when is_binary(target) do
     pending = Map.get(state, :whowas_pending, %{})
     nick_key = normalize_nick(target, casemapping(state))
 
@@ -4078,8 +4097,7 @@ defmodule Grappa.Session.EventRouter do
         state
 
       {:ok, accum} ->
-        entries = [entry | Map.get(accum, :entries, [])]
-        merged = Map.put(accum, :entries, entries)
+        merged = %{accum | entries: [entry | accum.entries]}
         %{state | whowas_pending: Map.put(pending, nick_key, merged)}
     end
   end
@@ -4103,9 +4121,10 @@ defmodule Grappa.Session.EventRouter do
   # (unsolicited row — the operator never issued the query; not actionable).
   # Mirror of `whowas_append_entry/3` but keyed by `{folded channel (#364),
   # mode}`, not nick.
-  @spec list_mode_append_entry(state(), String.t(), ListModes.mode(), map()) :: state()
-  defp list_mode_append_entry(state, channel, mode, entry)
-       when is_binary(channel) and is_binary(mode) and is_map(entry) do
+  @spec list_mode_append_entry(state(), String.t(), ListModes.mode(), ListModeAccum.Entry.t()) ::
+          state()
+  defp list_mode_append_entry(state, channel, mode, %ListModeAccum.Entry{} = entry)
+       when is_binary(channel) and is_binary(mode) do
     pending = Map.get(state, :list_mode_pending, %{})
     key = {normalize_channel(channel, casemapping(state)), mode}
 
@@ -4114,8 +4133,7 @@ defmodule Grappa.Session.EventRouter do
         state
 
       {:ok, accum} ->
-        entries = [entry | Map.get(accum, :entries, [])]
-        merged = Map.put(accum, :entries, entries)
+        merged = %{accum | entries: [entry | accum.entries]}
         Map.put(state, :list_mode_pending, Map.put(pending, key, merged))
     end
   end
@@ -4135,7 +4153,7 @@ defmodule Grappa.Session.EventRouter do
 
         {:cont, next_state,
          [
-           {:list_mode_bundle, Map.get(accum, :channel_display, channel), mode, accum, Map.get(accum, :reply_to)}
+           {:list_mode_bundle, accum.channel_display || channel, mode, accum, accum.reply_to}
          ]}
 
       :error ->
@@ -4151,15 +4169,14 @@ defmodule Grappa.Session.EventRouter do
   # /links; not actionable). Un-keyed (one topology per network, like
   # LUSERS), so unlike whowas/banlist there is no per-target map —
   # `links_pending` is `nil | %{entries: [...]}`.
-  @spec links_append_entry(state(), map()) :: state()
-  defp links_append_entry(state, entry) when is_map(entry) do
+  @spec links_append_entry(state(), LinksAccum.Entry.t()) :: state()
+  defp links_append_entry(state, %LinksAccum.Entry{} = entry) do
     case Map.get(state, :links_pending) do
       nil ->
         state
 
-      accum when is_map(accum) ->
-        entries = [entry | Map.get(accum, :entries, [])]
-        %{state | links_pending: Map.put(accum, :entries, entries)}
+      %LinksAccum{} = accum ->
+        %{state | links_pending: %{accum | entries: [entry | accum.entries]}}
     end
   end
 
@@ -4195,13 +4212,12 @@ defmodule Grappa.Session.EventRouter do
         state
 
       {:ok, accum} ->
-        case Map.get(accum, :entries, []) do
+        case accum.entries do
           [] ->
             state
 
           [head | tail] ->
-            new_entries = [Map.merge(head, fold) | tail]
-            merged = Map.put(accum, :entries, new_entries)
+            merged = %{accum | entries: [struct!(head, fold) | tail]}
             %{state | whowas_pending: Map.put(pending, nick_key, merged)}
         end
     end

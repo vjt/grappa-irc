@@ -107,7 +107,10 @@ defmodule Grappa.Session.Server do
     GhostRecovery,
     IdentityState,
     ISupport,
+    LinksAccum,
+    ListModeAccum,
     ListModes,
+    LusersAccum,
     ModeChunker,
     NSInterceptor,
     NumericRouter,
@@ -117,6 +120,7 @@ defmodule Grappa.Session.Server do
     Presence,
     RecoverIdentity,
     WhoisAccum,
+    WhowasAccum,
     WindowState
   }
 
@@ -857,7 +861,7 @@ defmodule Grappa.Session.Server do
           # `nil` = no bundle in progress (idle); the map starts on the
           # first LUSERS numeric and fills until flush. NOT persisted
           # across crashes — operator types /lusers to refresh.
-          lusers_pending: nil | map(),
+          lusers_pending: LusersAccum.t() | nil,
           # #238/#513 — pending LINKS topology accumulator. Un-keyed (one
           # topology per network, like LUSERS) but PRIMED on `:send_links`
           # (unlike LUSERS): `nil` = idle, `%{entries: [...], mask: mask,
@@ -878,7 +882,7 @@ defmodule Grappa.Session.Server do
           # GATED on staleness: past `@links_stale_ms` the pending is treated
           # as abandoned and a fresh /links clobbers + re-sends. So restricted
           # networks are never bricked. NOT persisted across crashes.
-          links_pending: nil | map(),
+          links_pending: LinksAccum.t() | nil,
           # #127 — per-source server-text-reply accumulators, primed by
           # `:send_info` / `:send_version` / `:send_motd`. `nil` = idle (no
           # explicit request in flight); `%{lines: [...]}` = collecting the
@@ -911,7 +915,7 @@ defmodule Grappa.Session.Server do
           # `not_found: true`. Bounded by in-flight /whowas commands
           # (typically 0-1 at a time) AND the S10 lazy @pending_ttl_ms sweep
           # (withheld 369/406 can't strand the entry). NOT persisted.
-          whowas_pending: %{String.t() => map()},
+          whowas_pending: %{String.t() => WhowasAccum.t()},
           # #376/#1251 — pending channel LIST-MODE accumulators keyed by
           # `{FOLDED channel (#364), mode letter}`, not nick. A type-A mode is
           # a LIST (`b` bans, `e` exempts, `I` invex, `z`/`q` restrict/quiet),
@@ -924,7 +928,7 @@ defmodule Grappa.Session.Server do
           # @pending_ttl_ms sweep (a withheld terminator — e.g. the 482 an
           # ircd answers a non-op `MODE #chan e` with — can't strand the
           # entry). NOT persisted across crashes.
-          list_mode_pending: %{{String.t(), ListModes.mode()} => map()},
+          list_mode_pending: %{{String.t(), ListModes.mode()} => ListModeAccum.t()},
           # Channel directory (#84) refresh tunables — config-derived at
           # boot (`config :grappa, Grappa.ChannelDirectory`), opts-overridable
           # in `do_init/1` so tests can pin them. Read by later tasks: the
@@ -2131,7 +2135,7 @@ defmodule Grappa.Session.Server do
         {:reply, Client.send_links(state.client, mask),
          %{
            state
-           | links_pending: %{entries: [], mask: mask, requested_at: now, reply_to: reply_to}
+           | links_pending: %LinksAccum{mask: mask, requested_at: now, reply_to: reply_to}
          }}
     end
   end
@@ -2246,10 +2250,9 @@ defmodule Grappa.Session.Server do
       chan_key = fold_key(state, channel)
 
       next_pending =
-        prime_pending(state.list_mode_pending, {chan_key, mode}, %{
+        prime_pending(state.list_mode_pending, {chan_key, mode}, %ListModeAccum{
           channel_display: chan_key,
           mode: mode,
-          entries: [],
           reply_to: reply_to
         })
 
@@ -2317,9 +2320,8 @@ defmodule Grappa.Session.Server do
     nick_key = fold_key(state, target)
 
     next_pending =
-      prime_pending(state.whowas_pending, nick_key, %{
+      prime_pending(state.whowas_pending, nick_key, %WhowasAccum{
         target_display: target,
-        entries: [],
         reply_to: reply_to
       })
 

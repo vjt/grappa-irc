@@ -12,7 +12,17 @@ defmodule Grappa.Session.EventRouterTest do
   use ExUnit.Case, async: true
 
   alias Grappa.IRC.{JoinFailure, Message, Parser}
-  alias Grappa.Session.{EventRouter, GhostRecovery, ISupport, WhoisAccum, Wire}
+  alias Grappa.Session.{
+    EventRouter,
+    GhostRecovery,
+    ISupport,
+    LinksAccum,
+    ListModeAccum,
+    LusersAccum,
+    WhoisAccum,
+    WhowasAccum,
+    Wire
+  }
 
   @user_id "00000000-0000-0000-0000-000000000001"
   @subject {:user, @user_id}
@@ -5102,7 +5112,7 @@ defmodule Grappa.Session.EventRouterTest do
     end
 
     test "252 RPL_LUSEROP folds operators count from positional param" do
-      state = base_state(%{lusers_pending: %{total_users: 1234, invisible: 56, servers: 3}})
+      state = base_state(%{lusers_pending: %LusersAccum{total_users: 1234, invisible: 56, servers: 3}})
 
       m =
         msg(
@@ -5118,7 +5128,7 @@ defmodule Grappa.Session.EventRouterTest do
     end
 
     test "253 RPL_LUSERUNKNOWN folds unknown_connections (when present)" do
-      state = base_state(%{lusers_pending: %{total_users: 1234}})
+      state = base_state(%{lusers_pending: %LusersAccum{total_users: 1234}})
 
       m =
         msg(
@@ -5132,7 +5142,7 @@ defmodule Grappa.Session.EventRouterTest do
     end
 
     test "254 RPL_LUSERCHANNELS folds channels_formed" do
-      state = base_state(%{lusers_pending: %{total_users: 1234}})
+      state = base_state(%{lusers_pending: %LusersAccum{total_users: 1234}})
 
       m =
         msg(
@@ -5146,7 +5156,7 @@ defmodule Grappa.Session.EventRouterTest do
     end
 
     test "255 RPL_LUSERME folds local_clients + local_servers from trailing" do
-      state = base_state(%{lusers_pending: %{}})
+      state = base_state(%{lusers_pending: %LusersAccum{}})
 
       m =
         msg(
@@ -5161,7 +5171,7 @@ defmodule Grappa.Session.EventRouterTest do
     end
 
     test "265 RPL_LOCALUSERS folds current_local + max_local from trailing" do
-      state = base_state(%{lusers_pending: %{}})
+      state = base_state(%{lusers_pending: %LusersAccum{}})
 
       m =
         msg(
@@ -5217,11 +5227,11 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, _, [{:lusers_bundle, accum}]} = EventRouter.route(m, state)
-      assert accum == %{current_global: 42, max_global: 100}
+      assert accum == %LusersAccum{current_global: 42, max_global: 100}
     end
 
     test "251 resets the accumulator (start of new sequence drops prior partial)" do
-      state = base_state(%{lusers_pending: %{stale: :data, leftover: 42}})
+      state = base_state(%{lusers_pending: %LusersAccum{operators: 7, max_global: 42}})
 
       m =
         msg(
@@ -5231,7 +5241,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.lusers_pending == %{total_users: 5, invisible: 0, servers: 1}
+      assert new_state.lusers_pending == %LusersAccum{total_users: 5, invisible: 0, servers: 1}
     end
   end
 
@@ -5244,7 +5254,7 @@ defmodule Grappa.Session.EventRouterTest do
     defp whowas_pending_state(target_display) do
       base_state(%{
         whowas_pending: %{
-          String.downcase(target_display) => %{target_display: target_display, entries: []}
+          String.downcase(target_display) => %WhowasAccum{target_display: target_display, entries: []}
         }
       })
     end
@@ -5347,7 +5357,7 @@ defmodule Grappa.Session.EventRouterTest do
         base_state(%{
           whois_pending: %{"alice" => %WhoisAccum{target_display: "alice"}},
           whowas_pending: %{
-            "alice" => %{target_display: "alice", entries: [%{user: "u", host: "h"}]}
+            "alice" => %WhowasAccum{target_display: "alice", entries: [%WhowasAccum.Entry{user: "u", host: "h"}]}
           }
         })
 
@@ -5371,7 +5381,7 @@ defmodule Grappa.Session.EventRouterTest do
       state =
         base_state(%{
           whois_pending: %{},
-          whowas_pending: %{"alice" => %{target_display: "alice", entries: []}}
+          whowas_pending: %{"alice" => %WhowasAccum{target_display: "alice", entries: []}}
         })
 
       m =
@@ -5391,7 +5401,7 @@ defmodule Grappa.Session.EventRouterTest do
           whowas_pending: %{
             "alice" => %{
               target_display: "Alice",
-              entries: [%{user: "u", host: "h", realname: "Alice"}]
+              entries: [%WhowasAccum.Entry{user: "u", host: "h", realname: "Alice"}]
             }
           }
         })
@@ -5416,13 +5426,13 @@ defmodule Grappa.Session.EventRouterTest do
     test "369 lookup is case-insensitive on target nick (RFC 2812 §2.2)" do
       state =
         base_state(%{
-          whowas_pending: %{"alice" => %{target_display: "alice", entries: [%{user: "u"}]}}
+          whowas_pending: %{"alice" => %WhowasAccum{target_display: "alice", entries: [%WhowasAccum.Entry{user: "u"}]}}
         })
 
       m = msg({:numeric, 369}, ["vjt", "ALICE", "End of WHOWAS"], {:server, "irc.test.org"})
 
       {:cont, new_state, [{:whowas_bundle, _, accum, _}]} = EventRouter.route(m, state)
-      assert hd(accum.entries)[:user] == "u"
+      assert hd(accum.entries).user == "u"
       assert new_state.whowas_pending == %{}
     end
 
@@ -5470,7 +5480,7 @@ defmodule Grappa.Session.EventRouterTest do
     defp list_mode_pending_state(channel_display, mode) do
       base_state(%{
         list_mode_pending: %{
-          {Grappa.IRC.Identifier.canonical_target(channel_display), mode} => %{
+          {Grappa.IRC.Identifier.canonical_target(channel_display), mode} => %ListModeAccum{
             channel_display: channel_display,
             mode: mode,
             entries: []
@@ -5544,17 +5554,17 @@ defmodule Grappa.Session.EventRouterTest do
       # The EFFECT accum stores entries reversed (head = most recent 367,
       # O(1) prepend); `Wire.banlist_bundle/3` reverses to restore the wire
       # order (asserted in wire_test). Here we lock the storage contract.
-      assert Enum.map(accum.entries, & &1[:mask]) == ["b!*@2", "a!*@1"]
+      assert Enum.map(accum.entries, & &1.mask) == ["b!*@2", "a!*@1"]
     end
 
     test "368 RPL_ENDOFBANLIST emits :list_mode_bundle effect + drops entry" do
       state =
         base_state(%{
           list_mode_pending: %{
-            {"#test", "b"} => %{
+            {"#test", "b"} => %ListModeAccum{
               channel_display: "#Test",
               mode: "b",
-              entries: [%{mask: "*!*@h", setter: "op", set_ts: "1784572878"}]
+              entries: [%ListModeAccum.Entry{mask: "*!*@h", setter: "op", set_ts: "1784572878"}]
             }
           }
         })
@@ -5690,8 +5700,8 @@ defmodule Grappa.Session.EventRouterTest do
       state =
         base_state(%{
           list_mode_pending: %{
-            {"#test", "b"} => %{channel_display: "#test", mode: "b", entries: []},
-            {"#test", "e"} => %{channel_display: "#test", mode: "e", entries: []}
+            {"#test", "b"} => %ListModeAccum{channel_display: "#test", mode: "b", entries: []},
+            {"#test", "e"} => %ListModeAccum{channel_display: "#test", mode: "e", entries: []}
           }
         })
 
@@ -5701,8 +5711,8 @@ defmodule Grappa.Session.EventRouterTest do
       {:cont, s1, []} = EventRouter.route(m367, state)
       {:cont, s2, []} = EventRouter.route(m348, s1)
 
-      assert Enum.map(entries_for(s2, "#test", "b"), & &1[:mask]) == ["*!*@banned"]
-      assert Enum.map(entries_for(s2, "#test", "e"), & &1[:mask]) == ["*!*@exempt"]
+      assert Enum.map(entries_for(s2, "#test", "b"), & &1.mask) == ["*!*@banned"]
+      assert Enum.map(entries_for(s2, "#test", "e"), & &1.mask) == ["*!*@exempt"]
 
       # And the ban terminator drains ONLY the ban list.
       m368 = msg({:numeric, 368}, ["vjt", "#test", "End of Channel Ban List"], {:server, "irc.t"})
@@ -6399,7 +6409,7 @@ defmodule Grappa.Session.EventRouterTest do
     # prime gate makes an unsolicited 364/365 a no-op (an ircd never
     # emits LINKS unrequested — LINKS is not in the connect burst).
     defp links_pending_state do
-      base_state(%{links_pending: %{entries: []}})
+      base_state(%{links_pending: %LinksAccum{entries: []}})
     end
 
     test "364 RPL_LINKS appends a {server, linked_to, hopcount, description} entry" do
@@ -6502,7 +6512,7 @@ defmodule Grappa.Session.EventRouterTest do
     test "365 RPL_ENDOFLINKS flushes {:links_bundle, accum, reply_to} and clears links_pending" do
       state =
         base_state(%{
-          links_pending: %{
+          links_pending: %LinksAccum{
             entries: [
               %{server: "leaf.azzurra.org", linked_to: "hub.azzurra.org", hopcount: 1, description: "Leaf"},
               %{server: "hub.azzurra.org", linked_to: "hub.azzurra.org", hopcount: 0, description: "Hub"}
@@ -6525,7 +6535,7 @@ defmodule Grappa.Session.EventRouterTest do
     end
 
     test "365 with an EMPTY entries list (restricted/hidden topology) flushes an empty bundle" do
-      state = base_state(%{links_pending: %{entries: []}})
+      state = base_state(%{links_pending: %LinksAccum{entries: []}})
 
       m =
         msg(

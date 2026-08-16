@@ -128,8 +128,12 @@ defmodule Grappa.HotReload.LongLivedModules do
   @state_helpers [
     Grappa.Session.AwayState,
     Grappa.Session.GhostRecovery,
+    Grappa.Session.LinksAccum,
+    Grappa.Session.ListModeAccum,
+    Grappa.Session.LusersAccum,
     Grappa.Session.RecoverIdentity,
     Grappa.Session.WhoisAccum,
+    Grappa.Session.WhowasAccum,
     Grappa.Session.WindowState
   ]
 
@@ -165,8 +169,12 @@ defmodule Grappa.HotReload.LongLivedModules do
   @type state_helper ::
           Grappa.Session.AwayState
           | Grappa.Session.GhostRecovery
+          | Grappa.Session.LinksAccum
+          | Grappa.Session.ListModeAccum
+          | Grappa.Session.LusersAccum
           | Grappa.Session.RecoverIdentity
           | Grappa.Session.WhoisAccum
+          | Grappa.Session.WhowasAccum
           | Grappa.Session.WindowState
 
   @doc """

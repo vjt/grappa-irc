@@ -59,7 +59,16 @@ defmodule Grappa.Session.Wire do
 
   alias Grappa.IRC.LineSplit
   alias Grappa.Scrollback.Message
-  alias Grappa.Session.{EventRouter, ISupport, ListModes, WhoisAccum}
+  alias Grappa.Session.{
+    EventRouter,
+    ISupport,
+    LinksAccum,
+    ListModeAccum,
+    ListModes,
+    LusersAccum,
+    WhoisAccum,
+    WhowasAccum
+  }
 
   @typedoc """
   The closed set of event kinds emitted by Session. Useful when
@@ -1551,24 +1560,23 @@ defmodule Grappa.Session.Wire do
   persisted — operator types /lusers to refresh; cic shows the most
   recent snapshot only.
   """
-  @spec lusers_bundle(String.t(), map()) :: lusers_bundle_payload()
-  def lusers_bundle(network_slug, accum)
-      when is_binary(network_slug) and is_map(accum) do
+  @spec lusers_bundle(String.t(), LusersAccum.t()) :: lusers_bundle_payload()
+  def lusers_bundle(network_slug, %LusersAccum{} = accum) when is_binary(network_slug) do
     %{
       kind: :lusers_bundle,
       network: network_slug,
-      total_users: Map.get(accum, :total_users),
-      invisible: Map.get(accum, :invisible),
-      servers: Map.get(accum, :servers),
-      operators: Map.get(accum, :operators),
-      unknown_connections: Map.get(accum, :unknown_connections),
-      channels_formed: Map.get(accum, :channels_formed),
-      local_clients: Map.get(accum, :local_clients),
-      local_servers: Map.get(accum, :local_servers),
-      current_local: Map.get(accum, :current_local),
-      max_local: Map.get(accum, :max_local),
-      current_global: Map.get(accum, :current_global),
-      max_global: Map.get(accum, :max_global)
+      total_users: accum.total_users,
+      invisible: accum.invisible,
+      servers: accum.servers,
+      operators: accum.operators,
+      unknown_connections: accum.unknown_connections,
+      channels_formed: accum.channels_formed,
+      local_clients: accum.local_clients,
+      local_servers: accum.local_servers,
+      current_local: accum.current_local,
+      max_local: accum.max_local,
+      current_global: accum.current_global,
+      max_global: accum.max_global
     }
   end
 
@@ -1584,17 +1592,21 @@ defmodule Grappa.Session.Wire do
   user/host/realname/server/logoff_time fields. NOT persisted —
   operator types /whowas to refresh.
   """
-  @spec whowas_bundle(String.t(), String.t(), map()) :: whowas_bundle_payload()
-  def whowas_bundle(network_slug, target, accum)
-      when is_binary(network_slug) and is_binary(target) and is_map(accum) do
-    not_found = Map.get(accum, :not_found, false)
+  @spec whowas_bundle(String.t(), String.t(), WhowasAccum.t()) :: whowas_bundle_payload()
+  def whowas_bundle(network_slug, target, %WhowasAccum{} = accum)
+      when is_binary(network_slug) and is_binary(target) do
+    not_found = accum.not_found
 
+    # #1391 — the empty case is an empty ENTRY, not an empty map: every
+    # projection below is now a struct field access, and `%{}` has no fields.
+    # A `not_found` bundle and a bundle whose 369 arrived with no 314 both
+    # ship the same all-nil historical fields, exactly as before.
     last_entry =
       if not_found do
-        %{}
+        %WhowasAccum.Entry{}
       else
-        case Map.get(accum, :entries, []) do
-          [] -> %{}
+        case accum.entries do
+          [] -> %WhowasAccum.Entry{}
           # Entries are stored REVERSED by EventRouter (head = most
           # recent 314 RPL_WHOWASUSER). MVP renders only the most-
           # recent entry; multi-history is out of scope.
@@ -1606,11 +1618,11 @@ defmodule Grappa.Session.Wire do
       kind: :whowas_bundle,
       network: network_slug,
       target: target,
-      user: Map.get(last_entry, :user),
-      host: Map.get(last_entry, :host),
-      realname: Map.get(last_entry, :realname),
-      server: Map.get(last_entry, :server),
-      logoff_time: Map.get(last_entry, :logoff_time),
+      user: last_entry.user,
+      host: last_entry.host,
+      realname: last_entry.realname,
+      server: last_entry.server,
+      logoff_time: last_entry.logoff_time,
       not_found: not_found
     }
   end
@@ -1631,19 +1643,15 @@ defmodule Grappa.Session.Wire do
   `mode` is the type-A letter the bundle answers for; see
   `banlist_bundle_payload/0` for why the kind keeps its `b`-era name.
   """
-  @spec banlist_bundle(String.t(), String.t(), String.t(), map()) :: banlist_bundle_payload()
-  def banlist_bundle(network_slug, channel, mode, accum)
-      when is_binary(network_slug) and is_binary(channel) and is_binary(mode) and is_map(accum) do
+  @spec banlist_bundle(String.t(), String.t(), String.t(), ListModeAccum.t()) ::
+          banlist_bundle_payload()
+  def banlist_bundle(network_slug, channel, mode, %ListModeAccum{} = accum)
+      when is_binary(network_slug) and is_binary(channel) and is_binary(mode) do
     entries =
-      accum
-      |> Map.get(:entries, [])
+      accum.entries
       |> Enum.reverse()
       |> Enum.map(fn e ->
-        %{
-          mask: Map.get(e, :mask),
-          setter: Map.get(e, :setter),
-          set_ts: Map.get(e, :set_ts)
-        }
+        %{mask: e.mask, setter: e.setter, set_ts: e.set_ts}
       end)
 
     %{
@@ -1672,26 +1680,24 @@ defmodule Grappa.Session.Wire do
   it is the restricted-topology signal. NOT persisted — operator types
   /links to refresh.
   """
-  @spec links_bundle(String.t(), map()) :: links_bundle_payload()
-  def links_bundle(network_slug, accum)
-      when is_binary(network_slug) and is_map(accum) do
+  @spec links_bundle(String.t(), LinksAccum.t()) :: links_bundle_payload()
+  def links_bundle(network_slug, %LinksAccum{} = accum) when is_binary(network_slug) do
     entries =
-      accum
-      |> Map.get(:entries, [])
+      accum.entries
       |> Enum.reverse()
       |> Enum.map(fn e ->
         %{
-          server: Map.get(e, :server),
-          linked_to: Map.get(e, :linked_to),
-          hopcount: Map.get(e, :hopcount),
-          description: Map.get(e, :description)
+          server: e.server,
+          linked_to: e.linked_to,
+          hopcount: e.hopcount,
+          description: e.description
         }
       end)
 
     %{
       kind: :links_bundle,
       network: network_slug,
-      mask: Map.get(accum, :mask),
+      mask: accum.mask,
       entries: entries
     }
   end

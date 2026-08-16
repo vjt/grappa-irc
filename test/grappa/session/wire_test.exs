@@ -22,7 +22,15 @@ defmodule Grappa.Session.WireTest do
 
   alias Grappa.RelayFrameHelpers
   alias Grappa.Scrollback.Message
-  alias Grappa.Session.{ISupport, WhoisAccum, Wire}
+  alias Grappa.Session.{
+    ISupport,
+    LinksAccum,
+    ListModeAccum,
+    LusersAccum,
+    WhoisAccum,
+    WhowasAccum,
+    Wire
+  }
 
   describe "channels_changed/0" do
     test "returns the discriminator-only payload" do
@@ -909,7 +917,7 @@ defmodule Grappa.Session.WireTest do
 
   describe "lusers_bundle/2" do
     test "projects accum integers into the wire shape, all 12 numeric fields present" do
-      accum = %{
+      accum = %LusersAccum{
         total_users: 1234,
         invisible: 56,
         servers: 3,
@@ -945,7 +953,7 @@ defmodule Grappa.Session.WireTest do
     end
 
     test "missing accum keys project to nil (graceful degradation for partial bundles)" do
-      payload = Wire.lusers_bundle("net", %{total_users: 42})
+      payload = Wire.lusers_bundle("net", %LusersAccum{total_users: 42})
 
       assert payload.kind == :lusers_bundle
       assert payload.total_users == 42
@@ -959,17 +967,17 @@ defmodule Grappa.Session.WireTest do
     test "projects MOST-RECENT entry (head of reversed list) into typed historical fields" do
       # EventRouter stores entries reversed (head = most recent 314).
       # Wire builder reads `hd(entries)` for the projection.
-      accum = %{
+      accum = %WhowasAccum{
         target_display: "Alice",
         entries: [
-          %{
+          %WhowasAccum.Entry{
             user: "alice_u",
             host: "alice.host",
             realname: "Alice Liddell",
             server: "irc.test.org",
             logoff_time: "Mon May 13 12:34:56 2026"
           },
-          %{user: "old_u", host: "old.host", realname: "Old Alice"}
+          %WhowasAccum.Entry{user: "old_u", host: "old.host", realname: "Old Alice"}
         ]
       }
 
@@ -989,7 +997,7 @@ defmodule Grappa.Session.WireTest do
     end
 
     test "not_found: true projects nil for all historical fields (406 ERR_WASNOSUCHNICK case)" do
-      payload = Wire.whowas_bundle("net", "ghost", %{not_found: true})
+      payload = Wire.whowas_bundle("net", "ghost", %WhowasAccum{not_found: true})
 
       assert payload == %{
                kind: :whowas_bundle,
@@ -1005,7 +1013,7 @@ defmodule Grappa.Session.WireTest do
     end
 
     test "empty entries with not_found absent defaults to not_found: false + nil fields" do
-      payload = Wire.whowas_bundle("net", "alice", %{entries: []})
+      payload = Wire.whowas_bundle("net", "alice", %WhowasAccum{})
 
       assert payload.kind == :whowas_bundle
       assert payload.target == "alice"
@@ -1022,7 +1030,7 @@ defmodule Grappa.Session.WireTest do
   describe "banlist_bundle/4" do
     test "ships all entries in wire order with mask/setter/set_ts" do
       # EventRouter prepends (head = most recent 367); wire builder reverses.
-      accum = %{
+      accum = %ListModeAccum{
         channel_display: "#Test",
         entries: [
           %{mask: "b!*@2", setter: "op2", set_ts: "222"},
@@ -1045,7 +1053,7 @@ defmodule Grappa.Session.WireTest do
     end
 
     test "empty entries → empty list (channel with no bans)" do
-      payload = Wire.banlist_bundle("net", "#empty", "b", %{channel_display: "#empty", entries: []})
+      payload = Wire.banlist_bundle("net", "#empty", "b", %ListModeAccum{channel_display: "#empty"})
 
       assert payload == %{
                kind: :banlist_bundle,
@@ -1060,7 +1068,7 @@ defmodule Grappa.Session.WireTest do
     # `mode` is what tells the client WHICH list it got. A bundle that
     # dropped it would render solanum's quiet list as a ban list.
     test "carries the queried mode letter verbatim (not always b)" do
-      accum = %{channel_display: "#c", entries: [%{mask: "*!*@muted", setter: "op", set_ts: "1"}]}
+      accum = %ListModeAccum{channel_display: "#c", entries: [%ListModeAccum.Entry{mask: "*!*@muted", setter: "op", set_ts: "1"}]}
 
       assert Wire.banlist_bundle("libera", "#c", "q", accum).mode == "q"
       assert Wire.banlist_bundle("azzurra", "#c", "z", accum).mode == "z"
@@ -1068,7 +1076,7 @@ defmodule Grappa.Session.WireTest do
     end
 
     test "entry with nil setter/set_ts (older ircd) round-trips nils" do
-      accum = %{channel_display: "#c", entries: [%{mask: "*!*@h", setter: nil, set_ts: nil}]}
+      accum = %ListModeAccum{channel_display: "#c", entries: [%ListModeAccum.Entry{mask: "*!*@h", setter: nil, set_ts: nil}]}
       payload = Wire.banlist_bundle("net", "#c", "b", accum)
 
       assert payload.entries == [%{mask: "*!*@h", setter: nil, set_ts: nil}]
@@ -1079,10 +1087,10 @@ defmodule Grappa.Session.WireTest do
     test "ships all topology entries in wire order (reverses EventRouter's prepend)" do
       # EventRouter prepends (head = most recent 364); wire builder reverses
       # so the wire order matches the ircd emit order (root first).
-      accum = %{
+      accum = %LinksAccum{
         entries: [
-          %{server: "leaf.azzurra.org", linked_to: "hub.azzurra.org", hopcount: 1, description: "Leaf"},
-          %{server: "hub.azzurra.org", linked_to: "hub.azzurra.org", hopcount: 0, description: "Hub"}
+          %LinksAccum.Entry{server: "leaf.azzurra.org", linked_to: "hub.azzurra.org", hopcount: 1, description: "Leaf"},
+          %LinksAccum.Entry{server: "hub.azzurra.org", linked_to: "hub.azzurra.org", hopcount: 0, description: "Hub"}
         ]
       }
 
@@ -1100,7 +1108,7 @@ defmodule Grappa.Session.WireTest do
     end
 
     test "empty entries + no mask → empty list, mask nil (restricted/hidden topology)" do
-      payload = Wire.links_bundle("net", %{entries: []})
+      payload = Wire.links_bundle("net", %LinksAccum{})
 
       assert payload == %{kind: :links_bundle, network: "net", mask: nil, entries: []}
     end
@@ -1109,13 +1117,18 @@ defmodule Grappa.Session.WireTest do
       # An empty bundle WITH a mask means the mask matched nothing (e.g.
       # `/links all` answered with a bare 365) — cic renders "no server
       # matches <mask>", not "hides topology".
-      payload = Wire.links_bundle("net", %{entries: [], mask: "all"})
+      payload = Wire.links_bundle("net", %LinksAccum{mask: "all"})
 
       assert payload == %{kind: :links_bundle, network: "net", mask: "all", entries: []}
     end
 
     test "entry with nil linked_to/hopcount/description (malformed line) round-trips nils" do
-      accum = %{entries: [%{server: "s.host", linked_to: nil, hopcount: nil, description: nil}]}
+      accum =
+        %LinksAccum{
+          entries: [
+            %LinksAccum.Entry{server: "s.host", linked_to: nil, hopcount: nil, description: nil}
+          ]
+        }
       payload = Wire.links_bundle("net", accum)
 
       assert payload.entries == [%{server: "s.host", linked_to: nil, hopcount: nil, description: nil}]
@@ -1139,11 +1152,11 @@ defmodule Grappa.Session.WireTest do
         Wire.whois_bundle("net", "alice", %WhoisAccum{}),
         Wire.peer_away("net", "alice", "Gone fishing"),
         Wire.invite_ack("net", "#italia", "alice"),
-        Wire.lusers_bundle("net", %{}),
-        Wire.whowas_bundle("net", "alice", %{}),
-        Wire.whowas_bundle("net", "ghost", %{not_found: true}),
-        Wire.banlist_bundle("net", "#c", "b", %{channel_display: "#c", entries: []}),
-        Wire.links_bundle("net", %{entries: []}),
+        Wire.lusers_bundle("net", %LusersAccum{}),
+        Wire.whowas_bundle("net", "alice", %WhowasAccum{}),
+        Wire.whowas_bundle("net", "ghost", %WhowasAccum{not_found: true}),
+        Wire.banlist_bundle("net", "#c", "b", %ListModeAccum{channel_display: "#c"}),
+        Wire.links_bundle("net", %LinksAccum{}),
         Wire.connection_progress("net", :connecting),
         Wire.connection_progress("net", :connected)
       ]
