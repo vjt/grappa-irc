@@ -212,12 +212,6 @@ defmodule Grappa.IRC.IdentifierTest do
       assert Identifier.peel_statusmsg("@+#chan", @bahamut) == {"#chan", "@+"}
     end
 
-    test "the run records EVERY level, so a consumer cannot claim ops-only for a line voice also saw" do
-      {_, run} = Identifier.peel_statusmsg("@+#chan", @bahamut)
-      assert run == "@+"
-      refute run == "@"
-    end
-
     test "collision guard: a modeless +chan is left whole and records no level" do
       # `+chan` is a CHANNEL named `+chan`, not a voice-targeted `+#chan`.
       # Peeling the `+` would leave `chan`, which is not a channel, so the
