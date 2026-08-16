@@ -6,16 +6,20 @@ defmodule Grappa.Session.AutoReplyBudgetTest do
   arithmetic rather than by sleeping — the reason `take/2` takes `now_ms`
   at all.
 
-  The ceiling is read from the module (`capacity/0`, `refill_per_sec/0`)
-  rather than re-typed here: a test that hardcodes 5 keeps passing after an
-  operator lowers the configured burst to 1, which is the one change these
-  tests exist to notice.
+  The ceiling is read from the SAME config keys the module reads, never
+  re-typed: a test that hardcodes 5 keeps passing after an operator lowers
+  the configured burst to 1, which is the one change these tests exist to
+  notice. The module exposes no accessor for them on purpose — a function
+  returning a compile-time constant cannot carry a spec that is both
+  general and true under `:underspecs`.
   """
   use ExUnit.Case, async: true
 
   alias Grappa.Session.AutoReplyBudget
 
   @t0 1_000_000
+  @capacity Application.compile_env(:grappa, [:send_throttle, :capacity], 5)
+  @refill_per_sec Application.compile_env(:grappa, [:send_throttle, :refill_per_sec], 0.5)
 
   defp drain(budget, 0, _), do: budget
 
@@ -30,15 +34,13 @@ defmodule Grappa.Session.AutoReplyBudgetTest do
     end
 
     test "the burst is exactly `capacity` takes, and the next one is refused" do
-      capacity = AutoReplyBudget.capacity()
-
-      drained = drain(AutoReplyBudget.new(@t0), capacity, @t0)
+      drained = drain(AutoReplyBudget.new(@t0), @capacity, @t0)
 
       assert {:error, :rate_limited, _} = AutoReplyBudget.take(drained, @t0)
     end
 
     test "a refused take consumes nothing — it stays refused at the same instant" do
-      drained = drain(AutoReplyBudget.new(@t0), AutoReplyBudget.capacity(), @t0)
+      drained = drain(AutoReplyBudget.new(@t0), @capacity, @t0)
 
       {:error, :rate_limited, after_first} = AutoReplyBudget.take(drained, @t0)
 
@@ -46,8 +48,8 @@ defmodule Grappa.Session.AutoReplyBudgetTest do
     end
 
     test "one token's worth of elapsed time buys exactly one more answer" do
-      drained = drain(AutoReplyBudget.new(@t0), AutoReplyBudget.capacity(), @t0)
-      one_token_ms = ceil(1000 / AutoReplyBudget.refill_per_sec())
+      drained = drain(AutoReplyBudget.new(@t0), @capacity, @t0)
+      one_token_ms = ceil(1000 / @refill_per_sec)
 
       {:ok, spent} = AutoReplyBudget.take(drained, @t0 + one_token_ms)
 
@@ -59,15 +61,15 @@ defmodule Grappa.Session.AutoReplyBudgetTest do
     test "refill is capped at capacity — an idle century does not buy a bigger burst" do
       century_ms = 100 * 365 * 24 * 60 * 60 * 1000
 
-      drained = drain(AutoReplyBudget.new(@t0), AutoReplyBudget.capacity(), @t0)
-      recovered = drain(drained, AutoReplyBudget.capacity(), @t0 + century_ms)
+      drained = drain(AutoReplyBudget.new(@t0), @capacity, @t0)
+      recovered = drain(drained, @capacity, @t0 + century_ms)
 
       assert {:error, :rate_limited, _} = AutoReplyBudget.take(recovered, @t0 + century_ms)
     end
 
     test "a refused take still advances the clock, so the interval is not credited twice" do
-      one_token_ms = ceil(1000 / AutoReplyBudget.refill_per_sec())
-      drained = drain(AutoReplyBudget.new(@t0), AutoReplyBudget.capacity(), @t0)
+      one_token_ms = ceil(1000 / @refill_per_sec)
+      drained = drain(AutoReplyBudget.new(@t0), @capacity, @t0)
 
       # Refused mid-interval: the partial refill is banked and stamped.
       {:error, :rate_limited, mid} = AutoReplyBudget.take(drained, @t0 + div(one_token_ms, 2))

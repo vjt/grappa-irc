@@ -43803,10 +43803,22 @@ per-sender ledger was rejected twice over: it grows a keyspace with the
 number of strangers who ask, and it does not bound the aggregate, which is
 the quantity the upstream meters.
 
-The numbers are the ORDINARY send drip of #340 rather than a pair of their
-own. An answer grappa emits on a stranger's command may not consume more
-of the upstream's allowance than the operator's own client may, and an
-operator who re-measures their network moves one pair, not two that drift.
+The numbers are READ FROM `:send_throttle` — the ORDINARY pair — rather
+than duplicated into a knob of their own. An answer grappa emits on a
+stranger's command may not consume more of the upstream's allowance than
+the operator's own client may, and sharing the config key makes that a
+property of the code instead of a promise in a comment: re-measuring a
+network moves one pair, not two that drift. The oper pair is deliberately
+not read there; it describes a connection the ircd meters loosely, which
+says nothing about courtesy answers.
+
+The module exposes no accessor for either number, and the tests read the
+same config keys. A function returning a compile-time constant cannot
+carry a spec that is both general and true under `:underspecs` — the
+success typing is the literal — and the alternative, pinning the spec to
+today's literal the way `Grappa.Protocol` does, is only correct there
+because that constant is not configurable. Here it would break the build
+of an operator who retunes the pair.
 
 ### `format_status/1` on `Session.Server`
 

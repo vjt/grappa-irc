@@ -1669,7 +1669,7 @@ defmodule Grappa.Session.Server do
   defp redact_key(key, state) do
     case Map.get(state, key) do
       nil -> state
-      _held -> Map.put(state, key, :redacted)
+      _ -> Map.put(state, key, :redacted)
     end
   end
 

@@ -35,7 +35,6 @@ defmodule Grappa.Session.ServerTest do
   alias Grappa.Networks.{Credentials, SessionPlan}
 
   alias Grappa.Session.{
-    AutoReplyBudget,
     AwayState,
     Backoff,
     GhostRecovery,
@@ -2829,6 +2828,9 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    # Read from the same config key the budget module reads, never retyped.
+    @auto_reply_capacity Application.compile_env(:grappa, [:send_throttle, :capacity], 5)
+
     # #1404 — the auto-answer is paced by whoever asks, and each answer
     # costs an outbound frame AND a row in the shared sqlite file. Both are
     # bounded by ONE budget, so the two counts must move together: a row
@@ -2854,8 +2856,7 @@ defmodule Grappa.Session.ServerTest do
       pid = start_session_for(user, network)
       :ok = await_handshake(server)
 
-      capacity = AutoReplyBudget.capacity()
-      queries = capacity * 4
+      queries = @auto_reply_capacity * 4
 
       for n <- 1..queries do
         IRCServer.feed(server, ":bob!~b@host PRIVMSG vjt :\x01PING #{n}\x01\r\n")
@@ -2893,7 +2894,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert rows > 0, "the ceiling must bound the courtesy answer, not remove it"
       assert rows < queries, "every query was answered — nothing bounded the burst"
-      assert rows <= capacity + 1
+      assert rows <= @auto_reply_capacity + 1
 
       # The rows are final at this point; the outbound frames may still be
       # crossing the loopback socket, so converge on the count rather than

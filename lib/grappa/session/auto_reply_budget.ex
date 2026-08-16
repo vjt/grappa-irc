@@ -38,14 +38,16 @@ defmodule Grappa.Session.AutoReplyBudget do
   behaviour testable without sleeping.
   """
 
-  # Deliberately the ORDINARY send drip of #340 (`config :grappa,
-  # :send_throttle`), not a number of its own: an answer grappa emits on a
-  # stranger's command may not consume more of the upstream's allowance
-  # than the operator's own client is allowed to consume. Tying the two
-  # together also means an operator who re-measures their network's
-  # allowance moves one pair of numbers, not two that drift.
-  @capacity Application.compile_env(:grappa, [:auto_reply_budget, :capacity], 5)
-  @refill_per_sec Application.compile_env(:grappa, [:auto_reply_budget, :refill_per_sec], 0.5)
+  # READ FROM `:send_throttle`, not from a knob of this module's own. An
+  # answer grappa emits on a stranger's command may not consume more of the
+  # upstream's allowance than the operator's own client is allowed to
+  # consume — and an operator who re-measures their network's allowance
+  # should move one pair of numbers, not two that drift. Sharing the source
+  # makes that a property of the code rather than a promise in a comment.
+  # The ORDINARY pair specifically: the oper pair belongs to a connection
+  # the ircd meters loosely, which says nothing about courtesy answers.
+  @capacity Application.compile_env(:grappa, [:send_throttle, :capacity], 5)
+  @refill_per_sec Application.compile_env(:grappa, [:send_throttle, :refill_per_sec], 0.5)
 
   @typedoc """
   Remaining tokens plus the monotonic stamp they were computed at.
@@ -79,17 +81,4 @@ defmodule Grappa.Session.AutoReplyBudget do
       {:error, :rate_limited, %{tokens: refilled, last_ms: now_ms}}
     end
   end
-
-  @doc """
-  The configured burst allowance — exposed so a test states the ceiling by
-  reading it rather than by re-typing the number.
-  """
-  @spec capacity() :: pos_integer()
-  def capacity, do: @capacity
-
-  @doc """
-  The configured sustained refill rate, in tokens per second.
-  """
-  @spec refill_per_sec() :: number()
-  def refill_per_sec, do: @refill_per_sec
 end
