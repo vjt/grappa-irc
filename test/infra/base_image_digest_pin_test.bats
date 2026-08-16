@@ -87,7 +87,13 @@ pinned_tokens() {
         [ "$refs" -ge 2 ] && multi_ref_families=$((multi_ref_families + 1))
 
         if [ "$(printf '%s\n' "$digests" | grep -c .)" -gt 1 ]; then
+            # Name the FILES, not just the family (#1377). The four oven/bun:1
+            # references are textually identical, so a report of "these two
+            # digests disagree" leaves the reader to grep for which of four
+            # surfaces was bumped and which were not — and the whole point of
+            # the failure is that they are easy to miss one at a time.
             conflicts="${conflicts}${family}: $(printf '%s' "$digests" | tr '\n' ' ')
+$(matched_refs | grep -F -- "$family@sha256:" | sed 's/^/    /')
 "
         fi
     done
@@ -103,7 +109,6 @@ pinned_tokens() {
     [ -z "$conflicts" ] || {
         echo "DIVERGENT digests for the same image:tag — bump every surface together (#1343):" >&2
         printf '%s' "$conflicts" >&2
-        printf '%s\n' "$(pinned_tokens | sort)" >&2
         return 1
     }
 }
