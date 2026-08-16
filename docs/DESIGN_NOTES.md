@@ -43368,3 +43368,73 @@ when a reset actually happens. With `pool_size: 10` under continuous reads
 that is a real possibility, and it is the most likely reason prod's WAL was at
 168 MiB rather than the ~64 MiB the threshold alone predicts. The change lowers
 the pressure and bounds the recovery; it does not promise a ceiling.
+<!-- entry #1358 -->
+
+---
+
+## 2026-08-16 — #1358: a seam sibling moved the composer, and node identity is a blind oracle
+
+vjt's report was an iOS one: deleting characters from a draft that is over the
+single-frame limit closes the keyboard as the draft crosses back under it. The
+mechanism underneath is not iOS and not a `blur()` — nothing in `ComposeBox`
+calls one. `ComposeBox`'s root is a fragment whose children are, in order: the
+byte countdown, the `<form>`, the uploads block, the greyed line, the feedback
+seam. Crossing the limit DOWNWARD flips two of those in the same flush — the
+split warning leaves below the form, the countdown arrives above it — and
+Solid reconciled that by DETACHING the form and re-attaching it after the new
+sibling. The focused textarea rode along inside it, and a detached element
+loses the focus in every engine, with nobody calling anything.
+
+**Measured, not reasoned: one transition out of eight.** `MutationObserver`
+over the container, the gesture a single `input` on the textarea, the compose
+store and frame budget the real ones. The countdown appearing, changing value
+inside the band or disappearing on its own: clean. The split warning
+appearing, disappearing or changing its text on its own: clean. The crossing
+UPWARD — countdown out above, warning in below: clean. Only the DOWNWARD
+crossing moves the form, which is exactly the direction a deleting thumb
+travels, and exactly why the report named deletion.
+
+**The node-identity oracle the issue proposed is a FALSE NEGATIVE.** Across
+that transition Solid hands back the SAME `<textarea>` and the SAME `<form>`
+object: an assert that the node did not change passes while the keyboard is
+already gone. The oracle is `document.activeElement`, and the detach is worth
+reporting beside it so a red says why. This generalises past this box — for
+any "did my focus survive the re-render" question, node identity answers a
+different question than the one being asked.
+
+**cic unit tests have a real DOM, and this class of bug is measurable there.**
+`vitest.config.ts` runs `environment: "jsdom"`, and jsdom resets
+`document.activeElement` to `<body>` when the focused node leaves the document.
+Solid reconciles with plain `removeChild`/`insertBefore` on the same nodes in
+every DOM, so the movement and the focus loss are both engine-independent and
+neither needs a browser or a device. Only the keyboard consequence is iOS's,
+and that half stays vjt's device-verify. An issue that says a DOM measurement
+needs e2e is describing the host it was written on, not this repo.
+
+**The fix is a stable parent, not a stable node count.** The `Show` now sits
+inside an always-mounted `div`, so the appear/disappear happens where the form
+is not a sibling. Two alternatives were measured and rejected. An
+always-mounted `<p>` whose text merely empties — the shape the issue suggested
+— also measures clean, but the defect is the identity of the node in the slot
+rather than the number of slots, and that shape additionally changes an
+unrelated observable contract ("hidden means the node is absent"), costing two
+green assertions elsewhere; the slot leaves the component's observable
+behaviour identical except for the bug. A `fallback` on the existing `Show` is
+WORSE, and measurably so: it breaks the upward crossing too, because swapping
+the node in the slot is the very thing that relocates the form.
+
+**Re-focusing after the fact stays forbidden.** It papers over a DOM move
+instead of preventing it, and it fights the UX-6-D `preventScroll` history in
+`composeAppend.ts`.
+
+**The empty slot is layout-inert, checked rather than assumed.** An
+always-mounted child consumes a `gap` even at zero height, which would be a
+permanent phantom space above the box. Its only parent is `.drop-upload-zone`
+(both `ComposeBox` mount sites are inside it), `display:flex;
+flex-direction:column` with no `gap` or `row-gap`, and `themes/default.css` —
+the one stylesheet — carries no `:empty` rule anywhere. The slot therefore
+needs no CSS rule and has none.
+
+**Not established:** that the slot is visually inert in a real engine (the
+check above is static), and the detach-to-keyboard chain on iOS, which remains
+vjt's device measurement.
