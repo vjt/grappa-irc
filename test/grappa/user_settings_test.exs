@@ -1686,4 +1686,48 @@ defmodule Grappa.UserSettingsTest do
       refute_receive {:auto_away_debounce_changed, _}, 100
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # #1374 P-S7 — the in-transaction (`!`) seam
+  # ---------------------------------------------------------------------------
+
+  describe "in-transaction seam (#1374 P-S7)" do
+    # `Grappa.Visitors.create_anon/4` seeds the incognito upload TTL as the
+    # third statement of an already-open `BusyRetry.run(fn ->
+    # immediate_transaction(…) end)`. The retrying spelling ran TWO more
+    # retry loops in there — `get_or_init/1` and `persist/1` — each sleeping
+    # while holding the transaction's connection and each converting the
+    # busy into a return value that `Repo.rollback/1` then surfaced as a 503
+    # WITHOUT the enclosing engine ever spending its budget.
+    #
+    # What this measures: the `!` spelling has NO retry loop, so the armed
+    # fault (which fires only at the top of a `BusyRetry.run` attempt) has
+    # nothing to grab and the write lands; its retrying twin, on the same
+    # armed faults, degrades. That is the whole difference between the two,
+    # and it is what a mutant swapping `persist!/1` back to `persist/1`
+    # breaks.
+    #
+    # What it does NOT establish: that a REAL SQLITE_BUSY raises through to
+    # the caller's transaction. The pool_size:1 Sandbox cannot produce one
+    # (that is why the injection seam exists), and the seam reaches only
+    # code already inside a retry loop — the very thing the `!` variant
+    # lacks. The raise-through is argued from `Repo.update/1`'s own
+    # behaviour, not measured here.
+    test "the `!` setters carry no retry loop, where their twins degrade" do
+      seam_visitor = visitor_fixture()
+      twin_visitor = visitor_fixture()
+
+      Repo.BusyRetry.inject_transient_faults(10_000)
+
+      assert {:ok, %Settings{}} =
+               UserSettings.put_upload_ttl_seconds!({:visitor, seam_visitor.id}, 3_600)
+
+      assert UserSettings.get_upload_ttl_seconds({:visitor, seam_visitor.id}) == 3_600
+
+      assert {:error, :db_unavailable} =
+               UserSettings.put_upload_ttl_seconds({:visitor, twin_visitor.id}, 3_600)
+
+      assert UserSettings.get_upload_ttl_seconds({:visitor, twin_visitor.id}) == nil
+    end
+  end
 end
