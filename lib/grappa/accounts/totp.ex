@@ -45,7 +45,7 @@ defmodule Grappa.Accounts.TOTP do
       when is_binary(secret) and is_binary(code) and is_integer(unix_seconds) do
     with {:ok, step} <- matching_step(secret, code, unix_seconds) do
       now = DateTime.utc_now()
-      Repo.transaction(fn -> arm(user_id, secret, step, now) end)
+      Repo.immediate_transaction(fn -> arm(user_id, secret, step, now) end)
     end
   end
 
@@ -53,7 +53,7 @@ defmodule Grappa.Accounts.TOTP do
   @spec verify(User.t(), String.t(), integer()) :: {:ok, :totp | :recovery} | {:error, verify_error()}
   def verify(%User{id: user_id}, code, unix_seconds)
       when is_binary(code) and is_integer(unix_seconds) do
-    Repo.transaction(fn ->
+    Repo.immediate_transaction(fn ->
       user = Repo.get!(User, user_id)
 
       if is_nil(user.totp_enabled_at) or is_nil(user.totp_secret_encrypted) do

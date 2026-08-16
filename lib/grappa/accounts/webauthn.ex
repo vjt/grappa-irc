@@ -378,7 +378,9 @@ defmodule Grappa.Accounts.WebAuthn do
 
   defp run_mode_transaction(user, mode, current_session_id, recovery_codes) do
     Repo.BusyRetry.run(fn ->
-      Repo.transaction(fn -> set_mode_transaction(user, mode, current_session_id, recovery_codes) end)
+      Repo.immediate_transaction(fn ->
+        set_mode_transaction(user, mode, current_session_id, recovery_codes)
+      end)
     end)
   end
 

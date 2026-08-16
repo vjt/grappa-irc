@@ -775,7 +775,7 @@ defmodule Grappa.Accounts do
     * **in-transaction** — the `!` variants
       (`revoke_other_sessions_for_user!/2` and the private
       `revoke_sessions_for_user!/1`). Reached only from inside a
-      `Repo.BusyRetry.run(fn -> Repo.transaction(…) end)`, where the
+      `Repo.BusyRetry.run(fn -> Repo.immediate_transaction(…) end)`, where the
       enclosing engine retries the WHOLE transaction. They deliberately do
       NOT retry: a nested retry would sleep while holding the open
       transaction's connection, extending the very contention it waits on,
@@ -944,7 +944,7 @@ defmodule Grappa.Accounts do
 
   In-transaction only — every caller (TOTP enrolment/disable, the passkey
   mode transaction) already runs inside a
-  `Repo.BusyRetry.run(fn -> Repo.transaction(…) end)`, so this RAISES on
+  `Repo.BusyRetry.run(fn -> Repo.immediate_transaction(…) end)`, so this RAISES on
   SQLITE_BUSY rather than retrying: the raise is what aborts the
   transaction and hands the retry to the enclosing engine. See the family
   contract on `revoke_session/1`. A caller with no such enclosure wants a
@@ -978,7 +978,7 @@ defmodule Grappa.Accounts do
           {:ok, [String.t()]} | {:error, term()}
   def confirm_totp_enrollment(user, current_session_id, secret, code, unix_seconds) do
     Repo.BusyRetry.run(fn ->
-      Repo.transaction(fn ->
+      Repo.immediate_transaction(fn ->
         confirm_totp_transaction(user, current_session_id, secret, code, unix_seconds)
       end)
     end)
@@ -1045,7 +1045,14 @@ defmodule Grappa.Accounts do
           | {:error, :invalid_two_factor | :two_factor_replayed | :db_unavailable}
   def verify_second_factor(%User{} = user, code, unix_seconds)
       when is_binary(code) and is_integer(unix_seconds) do
-    case TOTP.verify(user, code, unix_seconds) do
+    # #1374 P-S3 — the retry belongs HERE, at the boundary, not inside
+    # `TOTP.verify/3`: the transaction is what must be retried, and it opens
+    # inside that function. Until #1374 this was the one second-factor path
+    # with no retry at all, so a transient busy raised through as a 500 at
+    # the login door where #518 promises a typed 503. The recovery-code arm
+    # below owns its OWN budget (`consume_recovery_code/2`) and is reached
+    # only after this run has returned, so the two never nest.
+    case Repo.BusyRetry.run(fn -> TOTP.verify(user, code, unix_seconds) end) do
       {:error, :two_factor_not_enabled} -> spend_recovery_code(user, code)
       result -> result
     end
@@ -1110,7 +1117,7 @@ defmodule Grappa.Accounts do
   end
 
   defp run_totp_reset(user),
-    do: Repo.BusyRetry.run(fn -> Repo.transaction(fn -> totp_reset_transaction(user) end) end)
+    do: Repo.BusyRetry.run(fn -> Repo.immediate_transaction(fn -> totp_reset_transaction(user) end) end)
 
   defp totp_reset_transaction(user) do
     user_query = from(u in User, where: u.id == ^user.id)
@@ -1139,7 +1146,7 @@ defmodule Grappa.Accounts do
   end
 
   defp run_passkey_reset(user) do
-    Repo.BusyRetry.run(fn -> Repo.transaction(fn -> reset_passkeys_transaction(user) end) end)
+    Repo.BusyRetry.run(fn -> Repo.immediate_transaction(fn -> reset_passkeys_transaction(user) end) end)
   end
 
   defp reset_passkeys_transaction(user) do
@@ -1163,7 +1170,7 @@ defmodule Grappa.Accounts do
 
   defp run_disable_totp_transaction(user, current_session_id) do
     Repo.BusyRetry.run(fn ->
-      Repo.transaction(fn -> disable_totp_transaction(user, current_session_id) end)
+      Repo.immediate_transaction(fn -> disable_totp_transaction(user, current_session_id) end)
     end)
   end
 
