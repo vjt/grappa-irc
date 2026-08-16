@@ -396,11 +396,17 @@ defmodule Mix.Tasks.Grappa.GenWireTypesTest do
                TokenModel.size_modes()
     end
 
-    test "the built-in background catalog entry reaches the wire boundary" do
+    # The third theme vocabulary, `BuiltinBackgrounds.t/0`, is NOT re-exported —
+    # the codegen cannot render it (its `variant: variant()` is a same-module
+    # ref the external-type path has no registry for, so the two emitters
+    # disagree and both emit a dangling name). This pins the ABSENCE so the
+    # next attempt starts from the measurement rather than rediscovering the
+    # TS2304 through the client compiler.
+    test "the built-in background catalog is absent from the generated file" do
       full = GenWireTypes.generate()
 
-      assert full =~ ~s|export type ThemesWireBuiltinBackground = ThemesBuiltinBackgroundsT;|
-      assert const_arms(full, "THEMES_BUILTIN_BACKGROUNDS_VARIANT") == ~w(dark light)
+      refute full =~ "ThemesWireBuiltinBackground"
+      refute full =~ "ThemesBuiltinBackgroundsT"
     end
   end
 

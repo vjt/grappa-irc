@@ -42,7 +42,6 @@ defmodule Grappa.Themes.Wire do
 
   alias Grappa.Accounts.User
   alias Grappa.Themes
-  alias Grappa.Themes.BuiltinBackgrounds
   alias Grappa.Themes.Theme
   alias Grappa.Themes.TokenModel
   alias Grappa.Visitors.Visitor
@@ -68,12 +67,19 @@ defmodule Grappa.Themes.Wire do
   @typedoc "The closed background sizing modes (#294), re-exported per `font_family/0`."
   @type background_size :: TokenModel.size_mode()
 
-  @typedoc """
-  One entry of the built-in background catalog, re-exported per `font_family/0`.
-  `GET /themes/backgrounds` serves a list of these and had no generated
-  counterpart at all before #1406 X-S9.
-  """
-  @type builtin_background :: BuiltinBackgrounds.t()
+  # `Grappa.Themes.BuiltinBackgrounds.t/0` is DELIBERATELY not re-exported here,
+  # and `GET /themes/backgrounds` therefore still has no generated counterpart.
+  # Measured on #1406: the codegen cannot render it. `t/0` carries
+  # `variant: variant()`, a same-module `user_type`, and the EXTERNAL-type path
+  # renders one type at a time with no sibling registry — so the types half
+  # emits `variant: Variant` (the `camelize` fallback, a name nothing declares:
+  # `TS2304`) while the schema half imports `THEMES_BUILTIN_BACKGROUNDS_VARIANT`
+  # (`TS2724`), a const neither half emits. The two emitters disagree, and the
+  # failure lands on the CLIENT compiler rather than on the generator.
+  # `gen_wire_types.ex`'s own comment rules out teaching the external path to
+  # resolve refs, so the fix is the emitter's to make (fail loudly first), not
+  # a shape restated here — a hand copy of the four fields would reintroduce
+  # exactly the twin this issue removes.
 
   # The rich viewer subject (as carried in `conn.assigns.current_subject`) is
   # inlined into `to_wire/2`'s spec rather than exposed as a public `@type` — a
