@@ -74,6 +74,25 @@ COLD_HEALTHCHECK_SLEEP="${COLD_HEALTHCHECK_SLEEP:-2}"
 # installed that way was covered and a hand-installed one was not. One
 # mechanism now, for both doors.
 establish_deploy_env() {
+	# GRAPPA_CACHE_ID (#1263) is honourable by `compose run` and by nothing
+	# else: `run` is the only compose verb that takes `-v`, and `up` — which
+	# is how the long-running container is created — takes none. Threading
+	# the per-id binds through this substrate's oneshots would therefore
+	# migrate the database inside `.caches/<id>` and then boot the box from
+	# the shared `_build`/`deps`, which is not isolation but a deploy split
+	# across two caches with nothing in the output to say so. Refuse instead:
+	# an operator who set the variable asked for isolation, and silently
+	# giving them half of it is the failure mode, not the fix.
+	#
+	# First in the function, ahead of the .env check: this one is about the
+	# operator's environment being incompatible with the substrate at all,
+	# and it holds whether or not the box is installed. Still inside the
+	# hook (not at source time), for the reason the file header gives — the
+	# flag parse must run first, so `--bogus` stays a usage error.
+	if [ -n "${GRAPPA_CACHE_ID:-}" ]; then
+		die "GRAPPA_CACHE_ID is set ('$GRAPPA_CACHE_ID') and the Docker deploy substrate cannot honour it: only 'compose run' accepts -v, so the oneshots would use the per-id caches while 'compose up' boots the container from the shared ones. Unset GRAPPA_CACHE_ID to deploy."
+	fi
+
 	if [ ! -f .env ]; then
 		die "no .env file. Copy .env.example and fill in SECRET_KEY_BASE + SECRET_SIGNING_SALT + GRAPPA_ENCRYPTION_KEY."
 	fi
