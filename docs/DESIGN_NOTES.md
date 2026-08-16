@@ -43368,3 +43368,72 @@ when a reset actually happens. With `pool_size: 10` under continuous reads
 that is a real possibility, and it is the most likely reason prod's WAL was at
 168 MiB rather than the ~64 MiB the threshold alone predicts. The change lowers
 the pressure and bounds the recovery; it does not promise a ceiling.
+<!-- entry #1377 -->
+
+---
+
+## 2026-08-16 — #1377: a precondition inside a mode-gated hook is a per-mode precondition
+
+Bucket I of the 2026-08-15 codebase review — D-S3 (HIGH), D-S4, D-S5. Two were
+real. The third had been closed the same day the review was written, which is
+its own lesson about reading a review as a document rather than as a
+measurement.
+
+**D-S3, and the shape worth keeping.** `scripts/deploy.sh` held its `.env`
+check and its `MIX_ENV=${MIX_ENV:-prod}; export MIX_ENV` inside
+`substrate_build` — a hook the shared library calls on BOTH paths, but which
+opens with `[ "$MODE" = cold ] || return 0`. So both lines ran on cold and
+neither on hot, and nothing complained, because the hot path did not fail: it
+diverged. `docker compose` falls back to `.env` for a variable absent from the
+shell, `.env.example` ships `MIX_ENV=dev` uncommented, and `compose.yaml`
+derives `DATABASE_PATH` from that same variable — so the theme seed opened
+`grappa_dev.db` on a box whose cold deploys had always opened `grappa_prod.db`.
+Measured against the real files, not inferred from them: `docker compose
+--env-file .env.example --profile prod config` resolves `MIX_ENV: dev` +
+`/app/runtime/grappa_dev.db` with no shell `MIX_ENV`, and `prod` +
+`grappa_prod.db` with `MIX_ENV=prod` exported.
+
+The durable rule is not "hoist that check". It is that **a precondition placed
+inside a mode-guarded hook quietly becomes a per-mode precondition**, and the
+resulting bug is silent by construction: the mode that keeps the precondition
+is the one that would have failed loudly, so the mode that loses it is the one
+nobody hears about. Preconditions belong at the first hook the shared algorithm
+calls. File scope was rejected on ordering: the library parses flags inside
+`deploy_main`, so a check above that turns an unknown flag into a
+missing-`.env` error. The top of `substrate_pull` is after the parse and before
+the first side effect, which is the whole of what the placement has to satisfy.
+
+**D-S4 — a hand list is a snapshot, twice over.** The `dash -n` step in
+`ci.yml` named five paths and covered five of the twenty-eight files that
+declare the sh dialect on line 1, missing two of the three `infra/lib/` libs
+this log already calls strict POSIX. Its comment defended the list because "the
+honest derivation for it is a separate piece of work" — the derivation is a
+dozen lines, and it is #441's, one dialect down: read the dialect declaration
+each file already carries for shellcheck instead of keeping a second copy of
+it. Recorded because it will be tempting again: the argument that a set is
+"a claim about where files run, not about what they are" is exactly the
+argument that lets a snapshot outlive its accuracy.
+
+Worth knowing before trusting that gate: `dash -n` checks GRAMMAR. `arr=(a b)`
+is a syntax error to it, `[[ 1 == 1 ]]` and `local x` are not — they parse as
+ordinary commands and fail only when they run. shellcheck in `sh` dialect
+(SC3xxx) is what covers that half, over the same files. Neither gate is a
+superset of the other.
+
+**D-S5 — refused, with the mutation as the evidence.** The finding says no gate
+holds the four `oven/bun:1` transcriptions to one digest. One does:
+`test/infra/base_image_digest_pin_test.bats` grew it in #1343, landed
+2026-08-15, commit subject naming D-S5. A zeroed digest in `scripts/bun.sh`
+fails it. What the mutation did surface is that the report named the family and
+dumped the tokens — and the four tokens are textually identical, so it proved a
+divergence while leaving the reader to grep for which surface moved. It now
+lists the matching `path:line` refs instead.
+
+**What this does NOT establish.** Nothing here was exercised on a real Docker
+substrate: the D-S3 chain is proven by `docker compose config` (client-side
+interpolation, no daemon) plus a bats run against a stubbed `docker`, and no
+container was started, no seed was run, and no `grappa_prod.db` was written.
+The claim that the hot path now seeds prod rests on the shell exporting
+`MIX_ENV=prod` before the oneshot, which the suite observes directly; the step
+from there to the database file is compose's, and is evidenced by its own
+`config` output rather than by a deploy.
