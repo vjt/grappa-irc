@@ -170,7 +170,8 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   old→new (broadcasting mid-migration raced a follow-on
   `Scrollback.fetch`; #373 rename-order fix). A NEW nick-keyed store MUST
   be added to this migration set or a rename silently strands its
-  old-nick rows. Boundary limit: IRC delivers a NICK only to
+  old-nick rows — the set and its one retried transaction live in
+  `Grappa.NickMigration` (#1374), not in `Session.Server`. Boundary limit: IRC delivers a NICK only to
   channel-sharing peers, so a query with someone in no shared channel
   cannot follow. **Our OWN nick keys exactly one window — the SELF
   window (`/msg <ownnick>`, GH #948) — and it has its own set** on

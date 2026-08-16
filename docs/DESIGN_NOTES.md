@@ -43368,3 +43368,65 @@ when a reset actually happens. With `pool_size: 10` under continuous reads
 that is a real possibility, and it is the most likely reason prod's WAL was at
 168 MiB rather than the ~64 MiB the threshold alone predicts. The change lowers
 the pressure and bounds the recovery; it does not promise a ceiling.
+<!-- entry #1374 -->
+
+---
+
+## 2026-08-16 — #1374: one busy-retry discipline for the write path, and what the fault seam cannot see
+
+Four findings from the 2026-08-15 review (P-S2, P-S3, P-S7, P-S8) share one
+rule, and it is the durable part of this change: **the retry goes OUTSIDE the
+transaction, the transaction goes INSIDE it, and no retry loop ever opens
+inside an already-open transaction.** `Repo.BusyRetry.run(fn ->
+Repo.immediate_transaction(fn -> … end) end)` is the only correct nesting.
+Retrying a step is not retrying a transaction; a nested retry sleeps while
+holding the enclosing transaction's connection and extends the very contention
+it waits on.
+
+Two consequences fall out. Code reached only from inside an open transaction
+needs a NON-retrying seam that RAISES, because the raise is what aborts the
+transaction and hands the retry to the enclosing engine — that is the `!`
+family (`persist!/1`, `get_or_init!/1`, `put_upload_ttl_seconds!/2`,
+`rename_muted_target!/4`). And a set of writes that must land together needs
+one owner: `Grappa.NickMigration` is now the home of the nick-rename set, a
+TOP-LEVEL boundary rather than a supervised child, so `Session` can span four
+contexts without acquiring a `Grappa.Repo` dep it deliberately lacks. The
+`query_windows_list` broadcast stays in `Session.Server` after the `:ok`
+return: it is the #373 "rename fully applied" barrier and a retried attempt
+must not re-fire it.
+
+**The write-transaction spelling is now gated statically, because it cannot be
+gated at runtime.** exqlite emits `BEGIN IMMEDIATE` only when
+`transaction_status == :idle` (`connection.ex:297-316`); nested, every mode
+collapses to `SAVEPOINT exqlite_savepoint`. Under the SQL Sandbox every test
+already runs inside a transaction, so `immediate_transaction/1` is always a
+savepoint there and no ExUnit oracle can distinguish it from `transaction/1` —
+the "put the deferred spelling back" mutant is unkillable at runtime. The
+defect is undecidable at runtime and decidable at compile time, so
+`test/grappa/repo/transaction_mode_gate_test.exs` walks the AST of `lib/**/*.ex`
+instead. Its blind spot is declared in its own moduledoc: a renaming alias
+escapes it, and a genuinely read-only transaction must say so by calling a
+`deferred_transaction/1` sibling, deliberately not written because it would be
+dead code today.
+
+**The fault-injection seam has a reach, and it is narrower than it looks.**
+`BusyRetry`'s injected fault fires only at the top of a `BusyRetry.run`
+attempt. Established by mutation, not assumed: removing the wrapper from
+`NickMigration.migrate/1` did not make the write fail, it made the write
+LAND. Three things follow, and they bound what any future test here can claim.
+A code path with no retry loop has no fault point at all, so the seam cannot
+show a raise escaping an unretried writer — that claim stays argued from
+`Repo.update/1`'s behaviour. A saturating fault fires before the first step of
+a transaction, so removing `immediate_transaction` from a retried chain leaves
+every test green: atomicity is NOT measurable in-process, and the mutant that
+should have bought it survives. And a fault cannot be aimed mid-chain, because
+a first attempt that succeeds means there is no second attempt to arm.
+
+Two review claims did not survive measurement, recorded so nobody re-derives
+them. The 2FA door does NOT answer 500 on a sustained busy; it already answers
+503, from a retry DOWNSTREAM of `TOTP.verify/3`. Its real defect was that
+`totp_last_used_step` advanced anyway, so the user paid a redeemable code for a
+degraded response. And P-S8's count was wrong in three different ways at once —
+prose said five, four were named, the file:line list held six; seven are fixed,
+including `update_visitor_last_joined_channels/3`, which the review never
+mentions and which is session-driven exactly like its user-side twin.
