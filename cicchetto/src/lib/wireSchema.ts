@@ -46,6 +46,11 @@ export const S_AccountsAdminWireT = {
   },
 } as const;
 
+// Grappa.Accounts.AdminWire.index_payload/0
+export const S_AccountsAdminWireIndexPayload = {
+  o: { users: { a: S_AccountsAdminWireT } },
+} as const;
+
 // Grappa.Accounts.Wire.client_token_json/0
 export const S_AccountsWireClientTokenJson = {
   o: {
@@ -558,6 +563,11 @@ export const S_LiveIntrospectionAdminWireT = {
   },
 } as const;
 
+// Grappa.LiveIntrospection.AdminWire.index_payload/0
+export const S_LiveIntrospectionAdminWireIndexPayload = {
+  o: { sessions: { a: S_LiveIntrospectionAdminWireT } },
+} as const;
+
 // Grappa.Networks.Network.services_flavor/0
 export const S_NetworksNetworkServicesFlavor = {
   e: [...NETWORKS_NETWORK_SERVICES_FLAVOR],
@@ -600,16 +610,6 @@ export const S_NetworksCredentialsAdminWireLiveStateJson = {
   },
 } as const;
 
-// Grappa.Networks.Credentials.AdminWire.session_action/0
-export const S_NetworksCredentialsAdminWireSessionAction = {
-  e: [...NETWORKS_CREDENTIALS_ADMIN_WIRE_SESSION_ACTION],
-} as const;
-
-// Grappa.Networks.Credentials.AdminWire.spawn_error/0
-export const S_NetworksCredentialsAdminWireSpawnError = {
-  e: [...NETWORKS_CREDENTIALS_ADMIN_WIRE_SPAWN_ERROR],
-} as const;
-
 // Grappa.Networks.Credentials.AdminWire.t/0
 export const S_NetworksCredentialsAdminWireT = {
   o: {
@@ -636,6 +636,21 @@ export const S_NetworksCredentialsAdminWireT = {
   },
 } as const;
 
+// Grappa.Networks.Credentials.AdminWire.index_payload/0
+export const S_NetworksCredentialsAdminWireIndexPayload = {
+  o: { credentials: { a: S_NetworksCredentialsAdminWireT } },
+} as const;
+
+// Grappa.Networks.Credentials.AdminWire.session_action/0
+export const S_NetworksCredentialsAdminWireSessionAction = {
+  e: [...NETWORKS_CREDENTIALS_ADMIN_WIRE_SESSION_ACTION],
+} as const;
+
+// Grappa.Networks.Credentials.AdminWire.spawn_error/0
+export const S_NetworksCredentialsAdminWireSpawnError = {
+  e: [...NETWORKS_CREDENTIALS_ADMIN_WIRE_SPAWN_ERROR],
+} as const;
+
 // Grappa.Networks.FeaturedChannels.AdminWire.t/0
 export const S_NetworksFeaturedChannelsAdminWireT = {
   o: {
@@ -648,6 +663,11 @@ export const S_NetworksFeaturedChannelsAdminWireT = {
     inserted_at: "s",
     updated_at: "s",
   },
+} as const;
+
+// Grappa.Networks.FeaturedChannels.AdminWire.index_payload/0
+export const S_NetworksFeaturedChannelsAdminWireIndexPayload = {
+  o: { featured_channels: { a: S_NetworksFeaturedChannelsAdminWireT } },
 } as const;
 
 // Grappa.Networks.FeaturedChannels.Wire.link/0
@@ -674,6 +694,11 @@ export const S_NetworksServersAdminWireT = {
     inserted_at: "s",
     updated_at: "s",
   },
+} as const;
+
+// Grappa.Networks.Servers.AdminWire.index_payload/0
+export const S_NetworksServersAdminWireIndexPayload = {
+  o: { servers: { a: S_NetworksServersAdminWireT } },
 } as const;
 
 // Grappa.Networks.Wire.available_network_row/0
@@ -1438,6 +1463,11 @@ export const S_VisitorsAdminWireT = {
     last_seen_at: { u: ["s", "z"] },
     networks: { a: S_VisitorsAdminWireNetworkJson },
   },
+} as const;
+
+// Grappa.Visitors.AdminWire.index_payload/0
+export const S_VisitorsAdminWireIndexPayload = {
+  o: { visitors: { a: S_VisitorsAdminWireT } },
 } as const;
 
 // Grappa.Visitors.Wire.credential_json/0
