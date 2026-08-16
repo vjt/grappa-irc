@@ -1153,7 +1153,7 @@ defmodule Grappa.Session.ServerTest do
 
     defp secret_needles do
       Enum.map(@secrets, fn
-        {_, {needle, _deadline}} -> needle
+        {_, {needle, _}} -> needle
         {_, needle} -> needle
       end)
     end

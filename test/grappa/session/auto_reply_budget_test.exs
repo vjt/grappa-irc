@@ -17,7 +17,7 @@ defmodule Grappa.Session.AutoReplyBudgetTest do
 
   @t0 1_000_000
 
-  defp drain(budget, 0, _now), do: budget
+  defp drain(budget, 0, _), do: budget
 
   defp drain(budget, n, now) when n > 0 do
     {:ok, next} = AutoReplyBudget.take(budget, now)

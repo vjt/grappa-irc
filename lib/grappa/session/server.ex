@@ -1656,19 +1656,21 @@ defmodule Grappa.Session.Server do
   ]
 
   @impl GenServer
-  def format_status(status) do
-    Map.update(status, :state, nil, fn
-      state when is_map(state) ->
-        Enum.reduce(@redacted_state_keys, state, fn key, acc ->
-          case Map.get(acc, key) do
-            nil -> acc
-            _ -> Map.put(acc, key, :redacted)
-          end
-        end)
+  def format_status(status), do: Map.update(status, :state, nil, &redact_secrets/1)
 
-      other ->
-        other
-    end)
+  @spec redact_secrets(term()) :: term()
+  defp redact_secrets(state) when is_map(state) do
+    Enum.reduce(@redacted_state_keys, state, &redact_key/2)
+  end
+
+  defp redact_secrets(other), do: other
+
+  @spec redact_key(atom(), map()) :: map()
+  defp redact_key(key, state) do
+    case Map.get(state, key) do
+      nil -> state
+      _held -> Map.put(state, key, :redacted)
+    end
   end
 
   @impl GenServer
