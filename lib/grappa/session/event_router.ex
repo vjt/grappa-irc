@@ -1686,7 +1686,7 @@ defmodule Grappa.Session.EventRouter do
     case drain_key && Map.fetch(pending, drain_key) do
       {:ok, accum} ->
         next_state = %{state | who_pending: Map.delete(pending, drain_key)}
-        target_display = accum.target_display || target
+        target_display = Map.get(accum, :target_display, target)
 
         # Replies prepended LIFO in who_fold for O(1) fold — reverse to
         # restore server wire order before emitting.
