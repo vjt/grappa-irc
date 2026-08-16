@@ -13,6 +13,7 @@ defmodule Grappa.Session.NumericRouterTest do
   use ExUnitProperties
 
   alias Grappa.IRC.{JoinFailure, Message}
+  alias Grappa.IRC.Parser
   alias Grappa.Session.NumericRouter
 
   # ---------------------------------------------------------------------------
@@ -1081,6 +1082,20 @@ defmodule Grappa.Session.NumericRouterTest do
 
       state =
         state(labels_pending: %{"abc" => %{kind: :channel, target: "#other"}})
+
+      assert {:channel, "#sniffo"} = NumericRouter.route(m, state)
+    end
+
+    # Routed from a REAL parse, not a hand-built `%Message{}`: the value a
+    # bare `@label` (no `=`) carries is the parser's answer, and this test
+    # exists to pin that the whole chain is total for it. Every numeric
+    # enters `route/2` through the label lookup, so a value shape the lookup
+    # cannot match makes the FIRST numeric of a connection unroutable —
+    # which is the property under test, not the tag's spelling.
+    test "a valueless `@label` on the wire still routes by params" do
+      {:ok, m} = Parser.parse("@label :irc.example.org 404 vjt #sniffo :Cannot send")
+
+      state = state(labels_pending: %{"abc" => %{kind: :channel, target: "#other"}})
 
       assert {:channel, "#sniffo"} = NumericRouter.route(m, state)
     end

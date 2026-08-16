@@ -62,9 +62,13 @@ defmodule Grappa.IRC.MessageTest do
       assert Message.tag(msg, "account") == nil
     end
 
-    test "tag/2 returns true for tag-only entries (no = in the wire form)" do
-      msg = %Message{command: :privmsg, tags: %{"draft/typing" => true}}
-      assert Message.tag(msg, "draft/typing") == true
+    # `""` and not `nil`: the tag IS present. A consumer distinguishing
+    # "absent" from "present but valueless" must be able to, and the only
+    # thing that carries that distinction is the nil/binary split.
+    test "tag/2 returns \"\" for tag-only entries (no = in the wire form)" do
+      msg = %Message{command: :privmsg, tags: %{"draft/typing" => ""}}
+      assert Message.tag(msg, "draft/typing") == ""
+      refute Message.tag(msg, "draft/typing") == nil
     end
 
     test "tag/3 returns the default when the tag is absent" do

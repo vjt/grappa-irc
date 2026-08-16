@@ -72,7 +72,7 @@ defmodule Grappa.IRC.Message do
           | {:numeric, 1..999}
           | {:unknown, String.t()}
 
-  @type tags :: %{optional(String.t()) => String.t() | true}
+  @type tags :: %{optional(String.t()) => String.t()}
 
   @type t :: %__MODULE__{
           tags: tags(),
@@ -139,21 +139,24 @@ defmodule Grappa.IRC.Message do
 
   @doc """
   Returns the value of an IRCv3 message-tag, or `nil` when the tag is
-  absent. Tag-only entries (`@account` with no `=`) yield `true`.
+  absent. A tag-only entry (`@account`, no `=`) yields `""`, the same as
+  `@account=` — IRCv3 message-tags §3.2 gives both an absent value, so a
+  consumer never has to branch on which spelling arrived.
 
   Centralised accessor so consumers do not poke at the `tags` map
   directly — keeps the storage shape (today: a `%{String.t() => ...}`
   map; tomorrow: maybe a struct with normalized vendor-prefix keys) an
   implementation detail of this module.
   """
-  @spec tag(t(), String.t()) :: String.t() | true | nil
+  @spec tag(t(), String.t()) :: String.t() | nil
   def tag(%__MODULE__{tags: tags}, key) when is_binary(key), do: Map.get(tags, key)
 
   @doc """
   Returns the value of an IRCv3 message-tag, or `default` when absent.
-  Tag-only entries (`@account` with no `=`) yield `true`.
+  A tag-only entry (`@account`, no `=`) yields `""`, not the default —
+  the tag IS present, it just carries no value.
   """
-  @spec tag(t(), String.t(), default) :: String.t() | true | default when default: term()
+  @spec tag(t(), String.t(), default) :: String.t() | default when default: term()
   def tag(%__MODULE__{tags: tags}, key, default) when is_binary(key),
     do: Map.get(tags, key, default)
 end

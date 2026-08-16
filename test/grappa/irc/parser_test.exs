@@ -193,11 +193,12 @@ defmodule Grappa.IRC.ParserTest do
                Parser.parse("@time=2026-04-25T12:00:00.000Z;account=vjt :vjt!~vjt@host PRIVMSG #x :hi")
     end
 
-    test "tag without value (key-only): value is `true`" do
-      assert {:ok, %Message{tags: %{"foo" => true}}} = Parser.parse("@foo PING :x")
-    end
-
-    test "tag with empty value (key=): value is empty string" do
+    # IRCv3 message-tags §3.2 gives `@foo` and `@foo=` the same absent
+    # value, so the parser gives them the same representation. Asserted as
+    # one pair rather than two independent cases: the property is that the
+    # two spellings AGREE, and two separate literals would let one drift.
+    test "tag without value (key-only) parses identically to an empty value" do
+      assert {:ok, %Message{tags: %{"foo" => ""}}} = Parser.parse("@foo PING :x")
       assert {:ok, %Message{tags: %{"foo" => ""}}} = Parser.parse("@foo= PING :x")
     end
 

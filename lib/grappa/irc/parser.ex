@@ -194,10 +194,15 @@ defmodule Grappa.IRC.Parser do
     |> Map.new(&parse_tag/1)
   end
 
+  # A tag with no `=` and a tag with an empty value are the SAME thing per
+  # IRCv3 message-tags §3.2 — both carry an absent value — so both yield
+  # `""`. The alternative (a boolean for the first form) would make the tag
+  # map heterogeneous, which costs every consumer a value-shape branch it
+  # has no domain reason to write; the type below is the enforcement.
   defp parse_tag(entry) do
     case String.split(entry, "=", parts: 2) do
       [key, value] -> {key, unescape_tag_value(value)}
-      [key] -> {key, true}
+      [key] -> {key, ""}
     end
   end
 
