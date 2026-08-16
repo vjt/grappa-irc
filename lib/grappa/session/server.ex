@@ -1631,6 +1631,46 @@ defmodule Grappa.Session.Server do
   # dead code post-boundary-fix and removed per
   # `feedback_no_silent_drops_closed` (a safety net that catches an
   # impossible exception silently absorbs the next class of bug).
+  # The state map carries upstream credentials in PLAINTEXT for as long as
+  # the handshake needs them — that is the design (they are decrypted from
+  # Cloak at boot and threaded to the wire), and every existing protection
+  # stops one layer short of a crash report: the schema columns are
+  # `redact: true`, `AuthFSM` derives `Inspect`, `filter_parameters` covers
+  # HTTP params. None of them is consulted when OTP formats a dying
+  # GenServer, which prints `State:` through `inspect/2`.
+  #
+  # `@derive {Inspect, except: …}` is the house pattern and is NOT
+  # available here: this state is a bare map, not a struct. `format_status/1`
+  # is the callback that owns the same question for a GenServer.
+  #
+  # Redaction is uniform — present ⇒ `:redacted`, absent stays `nil` — so
+  # the operator keeps the one diagnostic that matters (was a secret held
+  # at crash time) and the list below stays a list of KEYS, with no
+  # per-key value shapes to keep in step.
+  @redacted_state_keys [
+    :pending_auth,
+    :pending_password,
+    :pending_registration_secret,
+    :perform_list,
+    :oper_pass
+  ]
+
+  @impl GenServer
+  def format_status(status) do
+    Map.update(status, :state, nil, fn
+      state when is_map(state) ->
+        Enum.reduce(@redacted_state_keys, state, fn key, acc ->
+          case Map.get(acc, key) do
+            nil -> acc
+            _ -> Map.put(acc, key, :redacted)
+          end
+        end)
+
+      other ->
+        other
+    end)
+  end
+
   @impl GenServer
   def terminate(reason, state)
       when reason == :shutdown or (is_tuple(reason) and elem(reason, 0) == :shutdown) do

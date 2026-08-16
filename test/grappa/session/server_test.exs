@@ -1128,6 +1128,83 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "format_status/1 — upstream credentials never reach a status dump" do
+    # The upstream credentials are plaintext in this state by design: they
+    # are decrypted from Cloak at boot and threaded to the wire. Everything
+    # that protects them elsewhere — `redact: true` on the columns,
+    # `@derive Inspect` on AuthFSM, `filter_parameters` on HTTP params —
+    # stops before OTP formats a dying process, which prints the state
+    # through `inspect/2`. `format_status/1` is the callback that owns
+    # that door, and `:sys.get_status/1` routes through the very same one.
+    #
+    # The oracle is deliberately the VALUE, not the key: it inspects the
+    # whole formatted term and asks whether the secret is anywhere in it.
+    # That is what keeps the test honest across a state-map regrouping —
+    # move these keys under a nested struct and a key-name assertion would
+    # still pass while the guard had quietly stopped covering them.
+    @secrets %{
+      pending_password: "ns-plaintext-must-not-print",
+      oper_pass: "oper-plaintext-must-not-print",
+      pending_registration_secret: "register-plaintext-must-not-print",
+      perform_list: "PRIVMSG NickServ :IDENTIFY perform-plaintext-must-not-print",
+      pending_auth: {"rendezvous-plaintext-must-not-print", 123_456}
+    }
+
+    defp secret_needles do
+      Enum.map(@secrets, fn
+        {_, {needle, _deadline}} -> needle
+        {_, needle} -> needle
+      end)
+    end
+
+    defp deep_inspect(term) do
+      inspect(term, limit: :infinity, printable_limit: :infinity, structs: false)
+    end
+
+    test "every credential-bearing state key is redacted in the status dump" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      :sys.replace_state(pid, &Map.merge(&1, @secrets))
+
+      # Pre-state: without this the refute below would pass on a session
+      # that never held a secret in the first place.
+      raw = deep_inspect(:sys.get_state(pid))
+
+      for needle <- secret_needles() do
+        assert raw =~ needle, "planting failed — #{needle} is not in the live state"
+      end
+
+      dumped = deep_inspect(:sys.get_status(pid))
+
+      for needle <- secret_needles() do
+        refute dumped =~ needle, "#{needle} reached a status dump"
+      end
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "absent stays absent — redaction does not invent a secret that was never held" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      status = Server.format_status(%{state: :sys.get_state(pid)})
+
+      # A session that holds no oper password must not read as one that
+      # holds a redacted one: `nil` is a diagnostic, and flattening it into
+      # `:redacted` would tell the operator the opposite of the truth.
+      assert status.state.oper_pass == nil
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "terminate/2 — clean QUIT on supervisor shutdown" do
     # When the BEAM stops (SIGTERM, Application.stop, scripts/deploy.sh
     # recreating the container), the SessionSupervisor takes each
