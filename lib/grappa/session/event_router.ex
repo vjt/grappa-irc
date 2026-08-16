@@ -198,8 +198,7 @@ defmodule Grappa.Session.EventRouter do
   @type effect ::
           {:persist, Grappa.Scrollback.Message.kind(), persist_attrs()}
           | {:reply, iodata()}
-          | {:auto_reply, iodata(),
-             {:persist, Grappa.Scrollback.Message.kind(), persist_attrs()}}
+          | {:auto_reply, iodata(), {:persist, Grappa.Scrollback.Message.kind(), persist_attrs()}}
           | {:identity_secret_confirmed, String.t()}
           | {:visitor_nick_changed, String.t()}
           | {:topic_changed, String.t(), topic_entry()}

@@ -33,6 +33,7 @@ defmodule Grappa.Session.ServerTest do
   alias Grappa.IRC.Message
   alias Grappa.{IRCServer, PubSub.Topic, QueryWindows, ReadCursor, Repo, Scrollback, Session, WSPresence}
   alias Grappa.Networks.{Credentials, SessionPlan}
+
   alias Grappa.Session.{
     AutoReplyBudget,
     AwayState,
