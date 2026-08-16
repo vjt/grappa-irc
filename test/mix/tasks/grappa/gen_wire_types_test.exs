@@ -353,15 +353,13 @@ defmodule Mix.Tasks.Grappa.GenWireTypesTest do
       {Grappa.Accounts.AdminWire, "AccountsAdminWireIndexPayload", "users", "AccountsAdminWireT"},
       {Grappa.LiveIntrospection.AdminWire, "LiveIntrospectionAdminWireIndexPayload", "sessions",
        "LiveIntrospectionAdminWireT"},
-      {Grappa.Networks.Credentials.AdminWire, "NetworksCredentialsAdminWireIndexPayload",
-       "credentials", "NetworksCredentialsAdminWireT"},
-      {Grappa.Networks.FeaturedChannels.AdminWire,
-       "NetworksFeaturedChannelsAdminWireIndexPayload", "featured_channels",
+      {Grappa.Networks.Credentials.AdminWire, "NetworksCredentialsAdminWireIndexPayload", "credentials",
+       "NetworksCredentialsAdminWireT"},
+      {Grappa.Networks.FeaturedChannels.AdminWire, "NetworksFeaturedChannelsAdminWireIndexPayload", "featured_channels",
        "NetworksFeaturedChannelsAdminWireT"},
       {Grappa.Networks.Servers.AdminWire, "NetworksServersAdminWireIndexPayload", "servers",
        "NetworksServersAdminWireT"},
-      {Grappa.Visitors.AdminWire, "VisitorsAdminWireIndexPayload", "visitors",
-       "VisitorsAdminWireT"}
+      {Grappa.Visitors.AdminWire, "VisitorsAdminWireIndexPayload", "visitors", "VisitorsAdminWireT"}
     ]
   end
 
