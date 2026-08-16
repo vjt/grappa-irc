@@ -45086,6 +45086,45 @@ else's product, break on their upgrade with our tree unchanged, and cost
 a docker run inside a CI already near forty minutes (#1331 cost
 tiebreak).
 
+### D-S7, fourth piece: the cache id this substrate cannot honour
+
+The review's other branch for the same finding was to route the six
+`run --rm` through `in_oneshot`, which would hand them `CACHE_ENV` and
+`CACHE_VOLUMES` — the per-worker caches of #1263, which they currently
+lack under `GRAPPA_CACHE_ID`. Declined, on one measured asymmetry:
+**`docker compose up` exposes no `-v`** (its only `-V` is
+`--renew-anon-volumes`) while `run` does. The oneshots could therefore
+take the per-id binds and the long-running container they migrate FOR
+could not. The operator would get a deploy that migrated the database
+inside `.caches/<id>` and then booted the box from the shared
+`_build`/`deps` — not isolation, a deploy split across two caches, with
+nothing in the output to say which half it was on. Half an isolation is
+a worse outcome than none, so passing the arrays to the oneshots alone
+is not the smaller version of the fix; it is a different, worse fix.
+
+What is left is to say so. One guard, in the hook set both Docker doors
+have shared since #1384, so the answer does not depend on which door the
+operator walked through — `scripts/deploy.sh` and `infra/docker/deploy.sh
+update` alike refuse when `GRAPPA_CACHE_ID` is set, naming the variable
+and the reason. It sits first in `establish_deploy_env`, ahead of the
+`.env` check, because it is about the environment being incompatible
+with the substrate at all rather than about the box being installed; it
+stays inside the hook rather than at source time so the flag parse still
+runs first and `--bogus` remains a usage error. **Unset — every deploy
+that runs today — the path is byte for byte the previous one**, one
+`[ -n ]` and nothing else. `scripts/deploy-cic.sh` is out of scope: it
+touches no Elixir cache.
+
+**Never observed. This was deduced by reading the two compose surfaces,
+not reproduced from an incident** — no operator has reported a deploy
+gone half-isolated, and none is known to have run one.
+
+One consequence worth writing down, because it bit the suites before it
+could bite an operator: bats runs on the HOST and inherits the caller's
+environment whole, so `GRAPPA_CACHE_ID=w2 scripts/bats.sh` would now turn
+every deploy case in the two Docker suites red. Both `setup()`s unset it,
+the way `cache_id_isolation_test.bats` already did.
+
 ### D-S11: the fallback was dead code, and the tool died mute
 
 The review had `db.sh` "silently reporting `dev`" and then failing on the
