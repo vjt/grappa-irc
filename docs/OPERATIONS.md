@@ -902,18 +902,41 @@ either way, and the disk only when the bytes are being kept. The
 workflow uploads the census with `if: always()` and leaves the three
 existing `if: failure()` artifact steps alone.
 
-**A green run that MEASURED a stall keeps its bytes.** Discarding them
-on every green would throw the evidence away in exactly the interesting
-case: a census reading *"30 s hole on a passing run"* is the first
-non-blind green there has ever been, and a census cannot be
-forensicked. So `census_tripped` re-reads the census it just wrote and,
-if any silence was named, captures again with the bytes. Costs a second
+**A green run that measured something keeps its bytes.** Discarding
+them on every green would throw the evidence away in exactly the
+interesting case: a census reading *"30 s hole on a passing run"* is
+the first non-blind green there has ever been, and a census cannot be
+forensicked. So the trap re-reads the census it just wrote and, if
+either trigger fired, captures again with the bytes. Costs a second
 extraction on the rare interesting green and nothing at all on a clean
-one. The trigger is the scanner's OWN verdict at `GAP_THRESHOLD` — the
-same threshold that attributes the reds, deliberately not a second
-criterion to keep in step. Known consequence: a damage signature
-WITHOUT a silence (a dropped row, a saturated pool, neither preceded by
-a gap ≥10 s) is reported in the census but does not retain the bytes.
+one — the alternative, teeing 253 MB to disk on every green and
+unlinking it afterwards, pays on the common case to save on the rare.
+
+**ATTRIBUTION and RETENTION are different jobs, and only the first is
+single-criterion.** Blaming a red uses ONE rule — a silence at or over
+`GAP_THRESHOLD` — and that rule stands alone. Deciding what evidence to
+still have tomorrow answers a different question, and there a silence
+is only a PROXY for the mechanism while a dropped row IS the damage. So
+retention fires on **a gap ≥ `GAP_THRESHOLD` OR a non-zero `dropped`**.
+Retaining only on the gap would make *damage WITHOUT a stall*
+permanently unobservable — the class nobody can currently prove exists,
+precisely because its evidence was always discarded.
+
+**The census records WHICH trigger fired**, as its last line:
+
+```
+RUN	RETENTION	kept=yes	by_gap=0	by_dropped=1
+```
+
+Retained is not the same as countable. With the field, *damage without
+a stall* is one grep over the uploaded artifacts
+(`kept=yes by_gap=0 by_dropped=1`); without it, the class is kept and
+still unmeasurable. The line is written AFTER the last capture, because
+the capture truncates the census and a verdict written earlier would be
+wiped by it. It is recorded on reds too: retention is unconditional
+there, but *what was observed* is not, and a red carrying damage
+without a stall has to stay countable alongside the greens. If the
+volume ever grows, the cut is decided on that count, not on caution.
 
 That makes the scanner load-bearing in a way a report never is: it no
 longer describes the run, it decides what evidence survives it. A

@@ -97,32 +97,60 @@ capture_container_logs() {
     fi
 }
 
-# Did the census name at least one silence at or over GAP_THRESHOLD? This
-# is the retention trigger, so it reads the scanner's OWN verdict rather
-# than re-deciding what a stall is — one criterion, not two.
-census_tripped() {
+# The two retention triggers, read off the census the trap just wrote.
+#
+# ATTRIBUTION and RETENTION are different jobs, and only the first is
+# single-criterion. Blaming a red uses ONE rule — a silence at or over
+# GAP_THRESHOLD — and that rule is untouched here. Deciding what evidence
+# to still have tomorrow is the other job, and there a silence is only a
+# PROXY for the mechanism while a dropped row IS the damage. Discarding
+# the bytes of a run that lost data without stalling would make "damage
+# WITHOUT a stall" permanently unobservable — the class nobody can
+# currently prove exists.
+census_has_gap() {
     grep -q -- $'\tGAP\t' "$CENSUS_FILE" 2>/dev/null
+}
+
+census_has_dropped() {
+    grep -qE -- $'\tdropped=[1-9]' "$CENSUS_FILE" 2>/dev/null
+}
+
+# Which trigger fired, as the census's last line. Costs nothing and makes
+# "damage without a stall" COUNTABLE across artifacts rather than merely
+# retained: one grep over the uploads answers whether the class exists.
+record_retention() {
+    printf 'RUN\tRETENTION\tkept=%s\tby_gap=%s\tby_dropped=%s\n' \
+        "$1" "$2" "$3" >>"$CENSUS_FILE"
 }
 
 cleanup() {
     local rc=$?
+    local by_gap=0 by_dropped=0 kept=no
 
-    # The census on both exits; the bytes on a red, and on a green only
-    # when the census itself tripped. Evidence collection, never an
-    # assertion — no branch here touches $rc.
+    # The census on both exits; the bytes on a red, and on a green when
+    # either trigger fired. Evidence collection, never an assertion — no
+    # branch here touches $rc.
     if [ "$rc" -ne 0 ]; then
         capture_container_logs raw
+        kept=yes
     else
         capture_container_logs census-only
-        if census_tripped; then
-            # The one green worth its bytes: a measured stall on a passing
-            # run is the first non-blind green there has been, and a
-            # census cannot be forensicked. Costs a second extraction,
-            # which is the right place to spend it.
-            echo "=== #1429: census tripped on a GREEN run — keeping the bytes ==="
-            capture_container_logs raw
-        fi
     fi
+
+    if census_has_gap; then by_gap=1; fi
+    if census_has_dropped; then by_dropped=1; fi
+
+    if [ "$kept" = no ] && { [ "$by_gap" = 1 ] || [ "$by_dropped" = 1 ]; }; then
+        # The one green worth its bytes. Costs a second extraction, which
+        # is the right place to spend it.
+        echo "=== #1429: census tripped on a GREEN run — keeping the bytes ==="
+        capture_container_logs raw
+        kept=yes
+    fi
+
+    # AFTER the last capture: capture_container_logs truncates the census,
+    # so a verdict written before it would be wiped by it.
+    record_retention "$kept" "$by_gap" "$by_dropped"
 
     if [ "${KEEP_STACK:-}" != "1" ]; then
         "$TESTNET" down 2>&1 || true
