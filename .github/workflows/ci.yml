@@ -160,24 +160,21 @@ jobs:
         # convention. Needs the fetch-depth: 0 above.
         run: scripts/design-notes-gate.sh
 
-      - name: POSIX-parse the shared deploy lib + its sh consumers (#503)
+      - name: POSIX-parse the sh-dialect scripts (#503, derived by #1377)
         # A DIFFERENT property from the lint above, with a different tool:
-        # the shared deploy lib (infra/lib/deploy_common.sh) must stay strict
-        # POSIX sh so dash can run it as the FreeBSD jail's /bin/sh. dash -n
-        # parses; shellcheck lints. A reintroduced bashism in the shared
-        # algorithm fails here instead of silently breaking the jail deploy —
+        # the shared deploy lib (infra/lib/deploy_common.sh) and its sh
+        # consumers must stay strict POSIX so dash can run them as the FreeBSD
+        # jail's /bin/sh. dash -n parses; shellcheck lints. A reintroduced
+        # bashism fails here instead of silently breaking the jail deploy —
         # the copy-paste-drift class #503 exists to kill.
         #
-        # Still a hand-written list, deliberately: #441 derived the SHELLCHECK
-        # set, and this one is not the same question — "which files must parse
-        # under dash" is a claim about where they run, and the honest
-        # derivation for it is a separate piece of work.
-        run: |
-          dash -n infra/lib/deploy_common.sh
-          dash -n infra/freebsd/deploy.sh
-          dash -n infra/docker/assert-abi-lockstep.sh
-          dash -n infra/docker/release-entrypoint.sh
-          dash -n infra/docker/get.sh
+        # The set is DERIVED, like the shellcheck one (#441). The hand list
+        # this replaced covered five of the twenty-eight files that declare
+        # the sh dialect, missing two of the three POSIX libs under
+        # infra/lib/ and all twelve jail rails; the derivation reads each
+        # file's own line-1 declaration instead of keeping a second copy of
+        # it. Covered by test/infra/posix_parse_gate_test.bats.
+        run: scripts/posix-parse.sh
 
       - name: Cloud provider-door drift-guard (#665)
         # Prove every provider door (infra/aws today, infra/terraform later)

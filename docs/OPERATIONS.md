@@ -979,6 +979,21 @@ gate. Note that the in-file `# shellcheck source=` directives are part
 of the gate, not decoration; a comment sweep is exactly the operation
 that deletes them.
 
+### `scripts/posix-parse.sh` — the same idea, one dialect down (#1377)
+
+**A different property, a different tool: shellcheck lints, `dash -n`
+parses.** Files that run as the FreeBSD jail's `/bin/sh` must be strict
+POSIX, and this gate is the interpreter itself agreeing. Same derivation
+discipline as its sibling above, one question narrower — membership is
+the file's own line-1 dialect declaration (`#!/bin/sh`-family shebang,
+or a `# shellcheck shell=sh` directive), which is the answer each file
+already gives shellcheck. Twenty-eight files today; the `ci.yml` hand
+list it replaced named five and missed, among others, two of the three
+POSIX libs under `infra/lib/`. `--list` prints the set. A missing `dash`
+is a hard `exit 1`, same doctrine as the missing-docker branch above.
+See § "The shared deploy library (infra/lib/)" for what the gate is
+protecting and for what `dash -n` does NOT catch.
+
 ### `scripts/quickstart*.sh` — deprecated shims (#503)
 
 The three quickstart scripts (`quickstart.sh`, `-update.sh`, `-stop.sh`)
@@ -2810,6 +2825,17 @@ bash arrays, no `[[ ]]`, no `local` — so the FreeBSD jail's `/bin/sh`
 can run them. Consumers keep their own shebangs and may use bashisms in
 their own hooks. This section is the WHY behind those files; the files
 themselves say only what they do (#1159).
+
+**That claim is gated, and over a DERIVED set (#1377).**
+`scripts/posix-parse.sh` runs `dash -n` over every file under `bin/`,
+`infra/` and `scripts/` whose first line declares the sh dialect — a
+`#!/bin/sh`-family shebang, or the `# shellcheck shell=sh` directive
+these three libs use in place of one. Twenty-eight files today; the
+hand-written list in `ci.yml` it replaced named five, and two of the
+three libs above were not among them. `dash -n` checks GRAMMAR only
+(`arr=(a b)` is a syntax error; `[[ ]]` and `local` parse fine and fail
+at run time) — shellcheck's sh dialect, over the same files, is what
+covers the rest.
 
 **Why a shared library exists at all: the 2026-06-11 outage.** Before
 #503 each substrate had its own near-identical deploy script, and the
