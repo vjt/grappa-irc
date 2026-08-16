@@ -68,7 +68,8 @@ defmodule Grappa.Session.Wire do
     ListModes,
     LusersAccum,
     WhoisAccum,
-    WhowasAccum
+    WhowasAccum,
+    WindowState
   }
 
   @typedoc """
@@ -114,6 +115,21 @@ defmodule Grappa.Session.Wire do
           | :presence_changed
           | :presence_error
           | :presence_snapshot
+
+  @typedoc """
+  The closed set of per-channel window states, re-exported from
+  `Grappa.Session.WindowState` so it reaches the codegen (#1406 X-S8).
+
+  No single payload carries the whole union — each event pins its own literal
+  (`state: :joined`, `state: :failed`, …) and `:parked` never rides a `state`
+  field at all — so nothing under `@wire_glob` referenced the SSOT and cic's
+  `windowState.ts` restated all six states by hand. CLAUDE.md says adding a
+  state is a server change cic just mirrors; naming the type here is what makes
+  that true mechanically, because `mix grappa.gen_wire_types` then emits the
+  set as a generated const and a seventh state widens the client union on
+  regeneration instead of on someone remembering.
+  """
+  @type window_state :: WindowState.window_state()
 
   @type channels_changed_payload :: %{kind: :channels_changed}
 

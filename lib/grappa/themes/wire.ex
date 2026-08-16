@@ -42,13 +42,38 @@ defmodule Grappa.Themes.Wire do
 
   alias Grappa.Accounts.User
   alias Grappa.Themes
+  alias Grappa.Themes.BuiltinBackgrounds
   alias Grappa.Themes.Theme
+  alias Grappa.Themes.TokenModel
   alias Grappa.Visitors.Visitor
 
   # #299 author model A — the fallback attribution label, used only when a
   # theme carries no `author_nick` snapshot (legacy / never-published visitor
   # themes). A closed constant.
   @guest_author "guest"
+
+  @typedoc """
+  The closed font-family vocabulary, re-exported from
+  `Grappa.Themes.TokenModel` so it reaches the codegen (#1406 X-S9).
+
+  `token_model.ex` is not a `*wire.ex` file, so nothing under
+  `@wire_glob` used to see the vocabulary and cic transcribed it by hand
+  (`themesApi.ts`, four "mirror of …" comments and no gate). Naming the type
+  HERE — at the wire boundary that already publishes the payload it belongs to
+  — makes `mix grappa.gen_wire_types` emit it as a generated const, and the
+  `--check` drift gate then guards a copy nobody has to remember to update.
+  """
+  @type font_family :: TokenModel.font_family()
+
+  @typedoc "The closed background sizing modes (#294), re-exported per `font_family/0`."
+  @type background_size :: TokenModel.size_mode()
+
+  @typedoc """
+  One entry of the built-in background catalog, re-exported per `font_family/0`.
+  `GET /themes/backgrounds` serves a list of these and had no generated
+  counterpart at all before #1406 X-S9.
+  """
+  @type builtin_background :: BuiltinBackgrounds.t()
 
   # The rich viewer subject (as carried in `conn.assigns.current_subject`) is
   # inlined into `to_wire/2`'s spec rather than exposed as a public `@type` — a
@@ -67,10 +92,12 @@ defmodule Grappa.Themes.Wire do
           mine: boolean(),
           # The sanitized closed-token map (`Grappa.Themes.TokenModel.token_map()`
           # — string-keyed: `"colors"` / `"font_family"` / `"background"`). Typed
-          # as an open string-keyed map, NOT a bare `map()`: cic owns the closed
-          # token vocabulary in `themesApi.ts`, so the wire codegen emits
-          # `Record<string, unknown>` (a bare `map()` would trip the
-          # gen_wire_types "defeats codegen" warning for the same output).
+          # as an open string-keyed map, NOT a bare `map()`, so the wire codegen
+          # emits `Record<string, unknown>` (a bare `map()` would trip the
+          # gen_wire_types "defeats codegen" warning for the same output). The
+          # VALUE vocabularies are pinned separately, as `font_family/0` and
+          # `background_size/0` above (#1406 X-S9); the 27 color KEYS stay
+          # cic-owned in `themesApi.ts` and remain UNpinned.
           payload: %{optional(String.t()) => term()},
           inserted_at: String.t()
         }

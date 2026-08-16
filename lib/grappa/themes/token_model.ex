@@ -85,6 +85,36 @@ defmodule Grappa.Themes.TokenModel do
 
   @type token_map :: %{String.t() => term()}
 
+  @typedoc """
+  The closed font-family allowlist, as a type. **Derived from
+  `@font_families`** — the same list `sanitize_font/1` guards with, spliced
+  into the spec at compile time instead of restated beside it (#1406 X-S9).
+
+  A hand-written twin union would be a SECOND closed set to keep in step, which
+  is precisely the defect being closed here: `Grappa.Themes.Wire` re-exports
+  this type so `mix grappa.gen_wire_types` emits the vocabulary as a generated
+  const, and cic stops transcribing it by hand.
+  """
+  @type font_family ::
+          unquote(
+            @font_families
+            |> Enum.map(&String.to_atom/1)
+            |> Enum.reverse()
+            |> Enum.reduce(fn arm, acc -> quote(do: unquote(arm) | unquote(acc)) end)
+          )
+
+  @typedoc """
+  The closed background sizing modes (#294), as a type. Derived from
+  `@size_modes` on the same terms as `font_family/0` above.
+  """
+  @type size_mode ::
+          unquote(
+            @size_modes
+            |> Enum.map(&String.to_atom/1)
+            |> Enum.reverse()
+            |> Enum.reduce(fn arm, acc -> quote(do: unquote(arm) | unquote(acc)) end)
+          )
+
   @doc "The frozen list of 27 color token keys (string form)."
   @spec color_keys() :: [String.t()]
   def color_keys, do: @color_keys

@@ -1,6 +1,7 @@
 defmodule Mix.Tasks.Grappa.GenWireTypesTest do
   use ExUnit.Case, async: true
 
+  alias Grappa.Themes.TokenModel
   alias Mix.Tasks.Grappa.GenWireTypes
 
   describe "type mapping" do
@@ -361,6 +362,58 @@ defmodule Mix.Tasks.Grappa.GenWireTypesTest do
        "NetworksServersAdminWireT"},
       {Grappa.Visitors.AdminWire, "VisitorsAdminWireIndexPayload", "visitors", "VisitorsAdminWireT"}
     ]
+  end
+
+  # #1406 X-S8/X-S9 — three closed sets whose SSOT lives OUTSIDE `@wire_glob`
+  # (`session/window_state.ex`, `themes/token_model.ex`,
+  # `themes/builtin_backgrounds.ex`). Nothing generated referenced them, so cic
+  # transcribed all three by hand and no gate would have reported a widen. The
+  # fix is a re-export at the wire boundary; these pin that the re-export
+  # actually reaches the emitted file, and — for the two vocabularies that HAVE
+  # a runtime allowlist — that the emitted array IS that allowlist rather than a
+  # typespec twin of it, which is the whole reason the specs are `unquote`d out
+  # of the attribute instead of written twice.
+  describe "closed sets re-exported to reach the codegen (#1406 X-S8/X-S9)" do
+    test "the window-state SSOT is emitted as a const and aliased at the wire boundary" do
+      full = GenWireTypes.generate()
+
+      # Hardcoded deliberately: `Grappa.Session.WindowState` publishes the set
+      # as a typespec with no runtime enumerator, so this list is the only thing
+      # that makes a SEVENTH state a conscious edit instead of a silent widen.
+      assert const_arms(full, "SESSION_WINDOW_STATE_WINDOW_STATE") ==
+               ~w(pending invited joined failed kicked parked)
+
+      assert full =~ ~s|export type SessionWireWindowState = SessionWindowStateWindowState;|
+    end
+
+    test "the derived font-family spec emits EXACTLY the sanitizer's allowlist" do
+      assert const_arms(GenWireTypes.generate(), "THEMES_TOKEN_MODEL_FONT_FAMILY") ==
+               TokenModel.font_families()
+    end
+
+    test "the derived size-mode spec emits EXACTLY the sanitizer's allowlist" do
+      assert const_arms(GenWireTypes.generate(), "THEMES_TOKEN_MODEL_SIZE_MODE") ==
+               TokenModel.size_modes()
+    end
+
+    test "the built-in background catalog entry reaches the wire boundary" do
+      full = GenWireTypes.generate()
+
+      assert full =~ ~s|export type ThemesWireBuiltinBackground = ThemesBuiltinBackgroundsT;|
+      assert const_arms(full, "THEMES_BUILTIN_BACKGROUNDS_VARIANT") == ~w(dark light)
+    end
+  end
+
+  # The quoted elements of an emitted `as const` array, in order. Tolerates
+  # biome's inline-vs-one-per-line wrapping (the `bun run check` gate owns the
+  # whitespace) by cutting at the array's own closing bracket.
+  defp const_arms(output, const_name) do
+    [_, tail] = String.split(output, "export const #{const_name} = [", parts: 2)
+    [body, _] = String.split(tail, "]", parts: 2)
+
+    ~r/"([^"]+)"/
+    |> Regex.scan(body, capture: :all_but_first)
+    |> List.flatten()
   end
 
   describe "--check exit code helper" do
