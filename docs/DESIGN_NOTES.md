@@ -44539,3 +44539,76 @@ and cannot be read in jsdom either. What is established is that WE draw
 nothing before this change and something after it. Whether the reporter
 now sees an acknowledgement in time is a device verification, still
 owed — and stated as owed rather than parked.
+<!-- entry #1391 -->
+
+---
+
+## 2026-08-16 — #1391: the reply accumulators are structs, and the check lives in the pattern
+
+The five in-flight reply accumulators — WHOIS, WHOWAS, LUSERS, LINKS and the
+type-A LIST-MODE — were bare maps carried in `Session.Server` state and read
+in `Session.Wire` through fifty-five `Map.get/2` calls. `Map.get/2` has no
+key-membership check, so a misspelt field read `nil` and the payload shipped
+a null the client could not tell from a genuinely absent one. A map `@type`
+would not have helped: it documents the key set without enforcing it, and
+all fifty-five reads would have stayed exactly as unsafe.
+
+They are structs now, and the reads are field accesses. The gain is measured
+rather than asserted, with one mutant at a time, injected exactly once and
+the restore verified:
+
+  * READER — misspell a field in `wire.ex` and it is a COMPILE error:
+    `unknown key`, `typing violation`, the exact line. Elixir 1.19's
+    set-theoretic inference, not Dialyzer, and `--warnings-as-errors` makes
+    it a red build.
+  * WRITER — misspell a key in a producer and it compiles clean, then dies
+    at runtime on `struct!/2` with a `KeyError`. `struct!/2` is deliberately
+    the only write door, which is also why there is NO separate type for a
+    fold's delta: a second declaration of the key set is a second thing to
+    drift.
+
+The negative belongs here too, because it bounds the claim. On the WHOIS
+accumulator `struct!/2` added no coverage the tests did not already have —
+eight sampled fields were all asserted at accumulator level, so the writer
+mutant would have died anyway. What it buys is that the guard no longer
+DEPENDS on that coverage. The reader guard is the net gain.
+
+### The check does not survive a list, unless you put it in the pattern
+
+The mutants came back split, and the split is the durable finding. A
+misspelt field on an ACCUMULATOR is a compile error; the same misspelling on
+an ENTRY — the nested `Entry` structs under WHOWAS, LINKS and LIST-MODE —
+compiled clean and only died at runtime.
+
+Inference works from VALUES, not from `@type` specs, and it does not carry
+an element type out of a list. `accum.entries` is declared `[Entry.t()]`,
+but `[head | _] -> head` or `fn e ->` leaves the binding `dynamic()` and
+every read through it unchecked. Naming the struct in the PATTERN —
+`[%Entry{} = head | _]`, `fn %Entry{} = e ->` — restores it, and the two
+surviving mutants then die at compile time like the other two.
+
+So the rule for any future accumulator: the struct declaration is not the
+guard. The guard is the struct appearing in a pattern on the path the value
+actually travels. The `@type` documents; the pattern enforces.
+
+That stricter clause immediately caught something the mutants could not: a
+test feeding `banlist_bundle/4` entries that were bare maps. Nothing would
+ever have flagged it, because a map and the struct built from it project to
+the same payload — the assertion passed while the declared element type was
+a fiction.
+
+### Two shapes, one function
+
+The entry struct is the INTERNAL accumulator shape; the payload stays a
+plain map. `banlist_entry/0` and `links_entry/0` are what the TS codegen
+reads and what Jason encodes, so the builders project struct → map, and the
+tests assert bare maps on the payload side and structs on the input side.
+Deliberately two things, at the two ends of one function.
+
+The `Entry` modules are NESTED in their accumulator's file rather than given
+files of their own, and the reason is measured:
+`Deploy.Preflight.collect_state_blocks/1` walks a whole file's AST and
+collects EVERY `defstruct` in it, so an entry beside its parent inherits the
+parent's cold-deploy check with no second `@state_helpers` registration.
+Separate files would have cost three files and six registry lines for
+identical coverage.
