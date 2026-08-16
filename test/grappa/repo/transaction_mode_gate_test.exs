@@ -63,7 +63,7 @@ defmodule Grappa.Repo.TransactionModeGateTest do
 
   @spec scan(Path.t()) :: [{Path.t(), pos_integer()}]
   defp scan(path) do
-    {_ast, offenders} =
+    {_, offenders} =
       path
       |> File.read!()
       |> Code.string_to_quoted!()
@@ -81,7 +81,7 @@ defmodule Grappa.Repo.TransactionModeGateTest do
   # (a pipe leaves the call node with one fewer). `immediate_transaction`
   # is a DIFFERENT function name and never matches here.
   @spec transaction_call_line(Macro.t()) :: pos_integer() | nil
-  defp transaction_call_line({{:., _, [{:__aliases__, _, segments}, :transaction]}, meta, _args}) do
+  defp transaction_call_line({{:., _, [{:__aliases__, _, segments}, :transaction]}, meta, _}) do
     if List.last(segments) == :Repo, do: Keyword.get(meta, :line), else: nil
   end
 

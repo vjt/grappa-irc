@@ -28,6 +28,7 @@ defmodule GrappaWeb.AuthControllerTest do
   alias Grappa.Networks.Credential
   alias Grappa.PubSub.Topic
   alias Grappa.RateLimit.FailureWindow
+  alias Grappa.Repo.BusyRetry
   alias Grappa.Session.Server, as: SessionServer
   alias Grappa.Visitors.Visitor
   alias GrappaWeb.PasskeyOrigin
@@ -274,7 +275,7 @@ defmodule GrappaWeb.AuthControllerTest do
       armed_step = Repo.get!(Grappa.Accounts.User, user.id).totp_last_used_step
       assert is_integer(armed_step)
 
-      Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+      BusyRetry.inject_transient_faults(10_000)
 
       degraded =
         post(conn, "/auth/totp/verify", %{
@@ -700,7 +701,7 @@ defmodule GrappaWeb.AuthControllerTest do
       {_, port} = start_server()
       {_, _} = setup_visitor_network(port)
 
-      Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+      BusyRetry.inject_transient_faults(10_000)
 
       conn = post(conn, "/auth/login", %{"identifier" => "vjt"})
 
@@ -1012,7 +1013,7 @@ defmodule GrappaWeb.AuthControllerTest do
     test "returns 503 db_unavailable when the revoke degrades, leaving the bearer live",
          %{conn: conn} do
       {_, session} = user_and_session()
-      Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+      BusyRetry.inject_transient_faults(10_000)
 
       conn =
         conn
