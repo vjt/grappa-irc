@@ -50,6 +50,29 @@ const VHOST_VIEW = {
   selection: [],
 };
 
+// The `PATCH /networks/:slug` 200 body — a mirror of
+// `Grappa.Networks.Wire.credential_to_json/1`, which the client validates
+// against `S_NetworksWireCredentialJson` before returning. `connection_state`
+// is overwritten per request with the state that was asked for, so the stub
+// answers like the server (the response IS the updated credential). If the
+// wire grows a required field this fixture goes stale and this spec reddens —
+// truthfully, and with the narrower naming the shape.
+const CREDENTIAL_JSON = {
+  network: ANCHOR,
+  nick: "e2e-p282",
+  ident: null,
+  realname: null,
+  sasl_user: null,
+  auth_method: "none",
+  auth_command_template: null,
+  autojoin_channels: [],
+  connection_state: "parked",
+  connection_state_reason: null,
+  connection_state_changed_at: null,
+  inserted_at: "2026-08-16T00:00:00Z",
+  updated_at: "2026-08-16T00:00:00Z",
+};
+
 async function waitForNetworkState(
   token: string,
   slug: string,
@@ -102,11 +125,24 @@ async function bootToVhostPage(
 
   // Record + short-circuit the connection_state PATCH (the reconnect verb's
   // wire trace). Non-PATCH requests to this exact path fall through.
+  //
+  // The fulfilled body is a FULL `credential_json` echoing the requested
+  // state, not `{}`. Since #1400 `patchNetwork` runs the response through
+  // `narrowCredentialResponse`, which THROWS `WireShapeError` on a shape the
+  // bundle cannot read — and `bounce()` awaits the park before issuing the
+  // reconnect, so one unreadable response silently costs the second PATCH.
+  // `{}` is a body the server never sends: `Wire.credential_to_json/1` always
+  // renders all thirteen fields.
   await page.route(`**/networks/${ANCHOR}`, (route) => {
     if (route.request().method() === "PATCH") {
       const body = route.request().postDataJSON() as { connection_state?: string } | null;
-      if (typeof body?.connection_state === "string") patches.push(body.connection_state);
-      return route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+      const state = body?.connection_state;
+      if (typeof state === "string") patches.push(state);
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ...CREDENTIAL_JSON, connection_state: state ?? "parked" }),
+      });
     }
     return route.continue();
   });
