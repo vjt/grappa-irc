@@ -75,11 +75,28 @@ defmodule Grappa.Repo.Migrations.AddOwnAuthoredExprsToMessagesCoveringIndexes do
 
   ## Deploy
 
-  New migration file — Preflight Class 5 forces **COLD**. The four
-  `CREATE INDEX` builds took 2.6s in total over 650k rows locally (per-index
-  split in the PR body); they share one migration transaction, so schedule
-  off a traffic peak. Expand-class: no schema-shape change, so the running
-  old code is unaffected by the added index columns.
+  New migration file — Preflight Class 5 forces **COLD**. All four
+  `CREATE INDEX` builds share ONE migration transaction, so the number that
+  sizes the window is that transaction, not the per-index split.
+
+  Measured on a corpus built at prod's ACTUAL row count (1,943,545 rows —
+  vjt read it off the jail 2026-08-16; #393's 654k is three weeks stale and
+  three times too small), fresh copy per rep so none inherits the previous
+  page cache: **9.55 / 9.66 / 9.85 s** for this migration's `up/0`, and
+  9.72-10.14 s for it plus the P-S4 drop back to back. 2.99x the rows cost
+  3.24x the time, which is the mild superlinearity a sort-dominated build
+  should show.
+
+  That is a LOCAL number. Scaled by the host ratio #393 recorded for the same
+  operation on the same table (prod 1.6-2.0s per channel index and
+  2.442/2.570s per DM index at 654k, against 0.52-0.69s locally at 650k —
+  a 3-4.5x factor, and conservative because those indexes were NARROWER than
+  these), prod should land around **30-45 seconds** for the migrate step.
+  Nobody has measured an index build on prod's substrate at 1.9M rows; this
+  is an explicit extrapolation, not an observation.
+
+  Expand-class: no schema-shape change, so the running old code is unaffected
+  by the added index columns.
 
   See DESIGN_NOTES 2026-08-16.
   """
