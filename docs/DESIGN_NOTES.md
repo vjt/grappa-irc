@@ -43368,3 +43368,68 @@ when a reset actually happens. With `pool_size: 10` under continuous reads
 that is a real possibility, and it is the most likely reason prod's WAL was at
 168 MiB rather than the ~64 MiB the threshold alone predicts. The change lowers
 the pressure and bounds the recovery; it does not promise a ceiling.
+<!-- entry #1372 -->
+
+---
+
+## 2026-08-16 — #1372: the unread aggregate lost its covering index, and the pin that should have caught it was blind
+
+`Scrollback.count_after_split/6` is the query behind the cold-load `/me` seed
+and the per-channel join reply (`WindowCounts.snapshot/7`). #393 shipped two
+covering index families for it on 2026-07-25 — `kind` at the tail so the
+content-vs-event GROUP BY could be answered without touching the table —
+because the non-covering form was the prod incident of that morning: its
+migration moduledoc records 80ms → 5-7ms, ~15x.
+
+Four and six days later #532 A and #576 added `exclude_own_authored/3` to the
+same aggregate. The predicate reads `lower(sender)` and
+`json_extract(meta, '$.new_nick')`, neither of which was in any index on
+`messages`, so SQLite went back to one table row-fetch per post-cursor row.
+Neither entry mentions an index, a covering property or an EXPLAIN.
+
+**The finding that outlived the fix is the pin.** The 2026-08-15 review read
+this as "no covering pin exists". One did — three of them, asserting
+`USING COVERING INDEX` — and they were green throughout. They EXPLAINed a
+LOCAL REBUILD of the aggregate that passed `own_nick: nil`, and at nil
+`exclude_own_authored/3` is the identity clause, so the predicate that caused
+the regression never entered the pinned SQL. Measured on one 650k-row corpus,
+same channel, same cursor: the pinned shape reads 1,676 page fetches and says
+COVERING; the production shape reads 175,576 and does not. A pin on a branch
+production does not take is worse than no pin, because it reports safety. The
+cure is not a second pin beside it: the plan is now read off the SQL the
+production function actually emits, captured from `[:grappa, :repo, :query]`
+telemetry, so no second copy of the query exists to drift. Rule for any future
+plan pin: **EXPLAIN what production emitted, never what the test can rebuild.**
+
+**Why widening, and not seek-and-subtract.** Both shapes were measured on the
+same corpus before either was written. Appending the two expressions to the
+four existing indexes restores COVERING (175,576 → 1,886 page fetches, 93x,
+identical results) at **no measurable INSERT cost** — widening an entry adds no
+b-tree. Counting own-authored rows as a second seek and subtracting costs
+**+37% on INSERT**, because it adds four new b-trees to the highest-write-rate
+table in the codebase; and it is not a subtraction but inclusion-exclusion
+across three seeks, since a case-only self-rename matches both arms of the
+disjunction. Dearer and more fragile, for a read that is already served.
+Widening alone with `lower(sender)` was also measured: it does NOT restore
+COVERING. Both expressions are load-bearing.
+
+The four dead `dm_with` indexes (P-S4) are dropped in the same PR rather than
+deferred, because that is what makes the write side a net win: the pair is 25%
+faster on INSERT and 22% smaller in index bytes than main is today, where the
+widening alone is merely neutral. An 11-shape plan sweep confirms nothing else
+regresses, and that the four dropped indexes served no production read — the
+only thing referencing them was a pair of tests EXPLAINing the
+`(channel = ? OR dm_with = ?)` disjunction #393 deleted from production, the
+same defect class as the blind pin.
+
+**Not established.** There is no prod copy on this lane; the corpus is
+synthetic and its distributions — notably the ~4% own-`sender` share — are
+chosen, not observed. Page fetches are reported instead of milliseconds
+precisely because they are deterministic and host-independent; the wall-clock
+figures are warm macOS, not the m42 jail, and cold-cache timing is unmeasured.
+Local `CREATE INDEX` is 0.51-0.66s per index at 650k rows, but #393's own prod
+record of 1.6-2.6s per index at 654k rows is the better predictor for the COLD
+window. And the open question from #1353 stays open: *why* a pool connection
+that did not serve the `CREATE INDEX` plans differently — schema cache or
+transaction visibility — is still unmeasured, and `pool_size: 1` remains a
+remedy whose mechanism nobody has characterised.

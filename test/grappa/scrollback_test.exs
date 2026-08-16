@@ -30,6 +30,29 @@ defmodule Grappa.ScrollbackTest do
 
   defp uniq, do: System.unique_integer([:positive])
 
+  # #1372 — the `meta.new_nick` half of `exclude_own_authored/3`, as it is
+  # spelled in the covering-index DDL. The `sender` half has a lib-side SSOT
+  # (`Identifier.nick_fold_sql/1`); this one does not — it lives as an Ecto
+  # `fragment` (`scrollback.ex:724`, `:740`), and a migration cannot call into
+  # `lib/`. So the migration inlines it and THIS attribute is the guard, the
+  # same posture #393 took for its folded-COALESCE literal.
+  #
+  # Whitespace and the table alias may differ between the index DDL and the
+  # emitted query (`json_extract(m0."meta", '$.new_nick')`): SQLite matches
+  # indexed expressions after parsing, not textually. Measured — an index
+  # written without the space still yields COVERING for the aliased query.
+  # What may NOT differ is the JSON PATH: change `$.new_nick` on either side
+  # and the index silently stops applying.
+  @new_nick_index_expr "json_extract(meta, '$.new_nick')"
+
+  # #1372 — the own nick the covering pins pass to `count_after_split/6`. It
+  # MUST be non-nil and MUST NOT equal the target: nil short-circuits
+  # `exclude_own_authored/3` to the identity clause (the blind spot this issue
+  # is about), and a target equal to it takes the #576 self-window branch,
+  # which strips presence only. Either would pin a shape the cold `/me` seed
+  # and the per-channel join reply do not take.
+  @own_nick "vjt"
+
   defp sample(user, network, i, overrides \\ %{}) do
     Map.merge(
       %{
@@ -1998,6 +2021,21 @@ defmodule Grappa.ScrollbackTest do
       end
     end
 
+    # #1372 arm 1 of 2 — the DM twin of the channel DDL arm. Same split, same
+    # reason: this one names the missing expression, the plan test names the
+    # lost COVERING.
+    test "the DM covering indexes carry both exclude_own_authored/3 expressions" do
+      for idx <- @dm_coalesce_index_names do
+        ddl = index_ddl(idx)
+
+        assert ddl =~ Identifier.nick_fold_sql("sender"),
+               "#{idx} lost the folded `sender` expression — the DM aggregate falls back to a per-row table fetch:\n#{ddl}"
+
+        assert ddl =~ @new_nick_index_expr,
+               "#{idx} lost the `#{@new_nick_index_expr}` expression — same fallback:\n#{ddl}"
+      end
+    end
+
     test "user-side DM read SEEKS the folded COALESCE value on the covering index",
          %{user: user, network: net} do
       plan = explain_plan(folded_dm_read_query({:user, user.id}, net, "peer"))
@@ -2054,7 +2092,7 @@ defmodule Grappa.ScrollbackTest do
       # COVERING — no per-row table fetch (the exact 432ms DM bug #393 fixed).
       # This is the DM twin of the channel COVERING assertion; it regresses
       # loudly if `kind` is ever dropped from the coalesce index tail.
-      plan = count_split_plan({:user, user.id}, net, "peer", nil)
+      plan = count_split_plan({:user, user.id}, net, "peer", @own_nick)
 
       assert plan =~ "USING COVERING INDEX messages_user_id_network_id_dm_coalesce_fold_id_kind_index",
              "expected the DM count_after_split covered by the coalesce kind index, got:\n#{plan}"
@@ -2198,11 +2236,33 @@ defmodule Grappa.ScrollbackTest do
   # via `create_if_not_exists`. dev/test/CI create them normally — these
   # assertions hold in BOTH states.
   describe "#393 A — channel unread-count covering index" do
+    @channel_covering_index_names ~w(
+      messages_user_id_network_id_channel_id_kind_index
+      messages_visitor_id_network_id_channel_id_kind_index
+    )
+
     test "the two channel+id+kind covering indexes exist on messages" do
       names = messages_index_names()
 
       assert "messages_user_id_network_id_channel_id_kind_index" in names
       assert "messages_visitor_id_network_id_channel_id_kind_index" in names
+    end
+
+    # #1372, arm 1 of 2 — the DDL SQLite actually stored. Arm 2 (below) reads
+    # the plan. Split deliberately: a plan assertion alone cannot say WHICH of
+    # the two expressions went missing, and "not COVERING" is the same message
+    # whether an expression drifted or the planner merely passed the index
+    # over. This arm names the expression; that one names the lost COVERING.
+    test "the channel covering indexes carry both exclude_own_authored/3 expressions" do
+      for idx <- @channel_covering_index_names do
+        ddl = index_ddl(idx)
+
+        assert ddl =~ Identifier.nick_fold_sql("sender"),
+               "#{idx} lost the folded `sender` expression — the aggregate falls back to a per-row table fetch:\n#{ddl}"
+
+        assert ddl =~ @new_nick_index_expr,
+               "#{idx} lost the `#{@new_nick_index_expr}` expression — same fallback:\n#{ddl}"
+      end
     end
 
     test "the two now-redundant channel+id composites are dropped" do
@@ -2214,7 +2274,7 @@ defmodule Grappa.ScrollbackTest do
 
     test "channel count_after_split is served by the COVERING kind index (no table fetch)",
          %{user: user, network: net} do
-      plan = count_split_plan({:user, user.id}, net, "#linux", nil)
+      plan = count_split_plan({:user, user.id}, net, "#linux", @own_nick)
 
       assert plan =~ "USING COVERING INDEX messages_user_id_network_id_channel_id_kind_index",
              "expected count_after_split channel query covered by the kind index, got:\n#{plan}"
@@ -2224,7 +2284,7 @@ defmodule Grappa.ScrollbackTest do
          %{network: net} do
       {:ok, visitor} = Grappa.Visitors.find_or_provision_anon("v-#{uniq()}", net.slug, "1.2.3.4")
 
-      plan = count_split_plan({:visitor, visitor.id}, net, "#linux", nil)
+      plan = count_split_plan({:visitor, visitor.id}, net, "#linux", @own_nick)
 
       assert plan =~ "USING COVERING INDEX messages_visitor_id_network_id_channel_id_kind_index",
              "expected visitor count_after_split channel query covered by the kind index, got:\n#{plan}"
