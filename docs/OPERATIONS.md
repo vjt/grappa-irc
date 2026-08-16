@@ -873,12 +873,37 @@ destroys the containers — by the time a CI workflow step could run
 failure would have to be diagnosed from the browser side alone. The
 Playwright trace shows the browser half of a failure whose cause is
 usually upstream (grappa, bahamut, services). One file per container.
-Capture is failure-only: a green run's logs answer no question, and
-capturing them every time is how an artifact store becomes a landfill.
 The run prints the captured sizes, so what this costs per failed run is
 a measurement rather than an estimate — that is the number to revisit
 if it ever grows into something worth capping. `KEEP_STACK=1` opts out
 of the tear-down entirely for iterative debugging.
+
+**The BYTES are failure-only; the MEASUREMENT is not (#1429).** Keeping
+every run's logs is how an artifact store becomes a landfill — ~275 MB
+uncompressed per run, ~20 MB in the artifact, and a fortnight's green
+runs are on the order of 9 GB. But discarding them wholesale made the
+other half of the sentence false: a green run's logs answered the one
+question nobody could otherwise ask, because the open question about
+the 30.1 s stall regime (#1420, #1421) is whether it also hits the runs
+that PASS, and those were exactly the runs kept blind. The census that
+came out of that investigation covered 7 of 59 runs *that produced
+logs* — never 7 of 626, because the other 567 were never asked.
+
+So the trap now streams each service's log through
+`scripts/log-gap-scan.awk` on every exit and keeps only what it
+measured: the largest silence between consecutive lines, every silence
+at or over `GAP_THRESHOLD` (10 s — above the 5 s healthcheck cadence,
+below the 30 s `busy_timeout`), and counts of the damage signatures
+(`db=3xxxx`, `idle=3xxxx`, a dropped scrollback row, a saturated pool).
+That lands in `container-logs/gap-scan.tsv`, a few KB, and on stdout as
+well — on a green CI run the job log is the copy that survives without
+an artifact. `tee` is the mechanism: on a red the stream reaches both
+the disk and the scanner, on a green only the scanner. The workflow
+uploads the census with `if: always()` and leaves the three existing
+`if: failure()` artifact steps alone.
+
+This is evidence collection, not a gate: neither branch of the trap
+touches the exit code, and a green run stays green.
 
 **The service list for that capture is DERIVED, never hand-written
 (the #441 lesson).** A hand list stops covering the service added after

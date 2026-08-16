@@ -18,6 +18,8 @@
 #     propagated.
 #   - Trap on EXIT runs `testnet.sh down`; on a NON-ZERO exit it first
 #     dumps every container's log to cicchetto/e2e/container-logs/.
+#   - On EVERY exit, green included, it writes a gap census beside them
+#     (#1429): the same streams, scanned in flight, a few KB.
 #   - KEEP_STACK=1 opts out of the tear-down for iterative debugging.
 #
 # Canonical "which test runner do I use?" + e2e cascade-vs-flake-vs-real-bug
@@ -38,40 +40,72 @@ GRAPPA_VERSION="$("$SRC_ROOT/infra/packaging/version.sh")"
 export GRAPPA_VERSION
 
 LOG_DIR="$E2E_DIR/container-logs"
+CENSUS_FILE="$LOG_DIR/gap-scan.tsv"
+SCAN_AWK="$(cd "$(dirname "$0")" && pwd)/log-gap-scan.awk"
 
-# One log file per container, written BEFORE the tear-down destroys them.
-# Why: docs/OPERATIONS.md § "Developer and deploy scripts (scripts/*.sh)" (#702).
+# Inter-line silence worth naming, in seconds. Above the stack's 5 s
+# healthcheck cadence, below the 30 s busy_timeout whose expiry #1420 is
+# counting — so an idle stack scores zero gaps and a stalled one scores.
+GAP_THRESHOLD=10
+
+# One log file per container, written BEFORE the tear-down destroys them,
+# plus the gap census taken from the same streams on EVERY exit.
+# Why: docs/OPERATIONS.md § "Developer and deploy scripts (scripts/*.sh)"
+# (#702, #1429).
+#
+# $1 is "raw" to also materialise the streams to disk, anything else to
+# keep the census alone. Required: the caller holds the exit code.
 capture_container_logs() {
-    local services svc
+    local mode="$1"
+    local services svc sink
+
     mkdir -p "$LOG_DIR"
     cd "$E2E_DIR" || return 0
 
     # DERIVED from what compose actually has containers for, never a hand
     # list. `compose run --rm` one-shots are already gone and self-exclude.
-    docker compose ps --all >"$LOG_DIR/compose-ps.txt" 2>&1 || true
+    if [ "$mode" = raw ]; then
+        docker compose ps --all >"$LOG_DIR/compose-ps.txt" 2>&1 || true
+    fi
     services="$(docker compose ps --all --services 2>/dev/null || true)"
 
+    : >"$CENSUS_FILE"
     while IFS= read -r svc; do
         [ -n "$svc" ] || continue
+        if [ "$mode" = raw ]; then sink="$LOG_DIR/$svc.log"; else sink=/dev/null; fi
         # --timestamps so a server-side event can be lined up against the
-        # trace's clock across services; --no-log-prefix because the
-        # service name is already the filename.
-        docker compose logs --no-color --timestamps --no-log-prefix "$svc" \
-            >"$LOG_DIR/$svc.log" 2>&1 || true
+        # trace's clock across services — and so the census can measure the
+        # silence BETWEEN lines; --no-log-prefix because the service name
+        # is already the filename. `tee` is what lets the ~275 MB reach the
+        # scanner without reaching the disk on a green run.
+        docker compose logs --no-color --timestamps --no-log-prefix "$svc" 2>&1 \
+            | tee "$sink" \
+            | awk -v SVC="$svc" -v THRESH="$GAP_THRESHOLD" -f "$SCAN_AWK" \
+                >>"$CENSUS_FILE" || true
     done <<<"$services"
 
-    # Print the sizes — what a failed run costs in artifacts is measured,
-    # not estimated.
-    echo "=== #702: container logs captured to $LOG_DIR ==="
-    ls -l "$LOG_DIR" || true
+    # To stdout as well: on a green run CI keeps the job log and no
+    # artifact, so this is the copy that survives by default.
+    echo "=== #1429: log gap census (threshold ${GAP_THRESHOLD}s) ==="
+    cat "$CENSUS_FILE" || true
+
+    if [ "$mode" = raw ]; then
+        # Print the sizes — what a failed run costs in artifacts is
+        # measured, not estimated.
+        echo "=== #702: container logs captured to $LOG_DIR ==="
+        ls -l "$LOG_DIR" || true
+    fi
 }
 
 cleanup() {
     local rc=$?
 
-    # Failure-only — a green run's logs answer no question.
+    # The census on both exits; the bytes only on a red. Evidence
+    # collection, never an assertion — neither branch touches $rc.
     if [ "$rc" -ne 0 ]; then
-        capture_container_logs
+        capture_container_logs raw
+    else
+        capture_container_logs census-only
     fi
 
     if [ "${KEEP_STACK:-}" != "1" ]; then
