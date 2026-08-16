@@ -59,7 +59,7 @@ defmodule Grappa.Session.Wire do
 
   alias Grappa.IRC.LineSplit
   alias Grappa.Scrollback.Message
-  alias Grappa.Session.{EventRouter, ISupport, ListModes}
+  alias Grappa.Session.{EventRouter, ISupport, ListModes, WhoisAccum}
 
   @typedoc """
   The closed set of event kinds emitted by Session. Useful when
@@ -1461,52 +1461,53 @@ defmodule Grappa.Session.Wire do
   network and replaces on each new bundle (one card visible at a time
   per network).
   """
-  @spec whois_bundle(String.t(), String.t(), map()) :: whois_bundle_payload()
-  def whois_bundle(network_slug, target, accum)
-      when is_binary(network_slug) and is_binary(target) and is_map(accum) do
+  # #1391 — field access, not `Map.get/2,3`. The defaults that used to sit on
+  # the third argument of each `Map.get` now live once on `WhoisAccum`'s
+  # `defstruct`, next to the data: `source` still defaults to `:user`, the
+  # flags to `false`, `channels` / `extra_lines` to nil (a `null` on the wire,
+  # which is NOT the same value as `[]`). Duplication removed, not moved.
+  @spec whois_bundle(String.t(), String.t(), WhoisAccum.t()) :: whois_bundle_payload()
+  def whois_bundle(network_slug, target, %WhoisAccum{} = accum)
+      when is_binary(network_slug) and is_binary(target) do
     %{
       kind: :whois_bundle,
       network: network_slug,
       target: target,
-      # #606 — request origin, defaulting to :user for a bundle primed by
-      # pre-#606 code (hot-deploy in-flight accumulator) or any path that
-      # somehow skipped it. Jason encodes the atom to "user"/"rail".
-      source: Map.get(accum, :source, :user),
-      user: Map.get(accum, :user),
-      host: Map.get(accum, :host),
-      realname: Map.get(accum, :realname),
-      server: Map.get(accum, :server),
-      server_info: Map.get(accum, :server_info),
-      is_operator: Map.get(accum, :is_operator, false),
+      # #606 — request origin. Jason encodes the atom to "user"/"rail".
+      source: accum.source,
+      user: accum.user,
+      host: accum.host,
+      realname: accum.realname,
+      server: accum.server,
+      server_info: accum.server_info,
+      is_operator: accum.is_operator,
       # #367 — trailing role text from 313 (nil for a bare 313 or no oper).
-      oper_text: Map.get(accum, :oper_text),
-      idle_seconds: Map.get(accum, :idle_seconds),
-      signon: Map.get(accum, :signon),
-      channels: Map.get(accum, :channels),
-      # P-0a — 11 new WHOIS-leg flags / strings folded by EventRouter.
-      # Booleans default to false; strings default to nil. cic localizes.
-      using_ssl: Map.get(accum, :using_ssl, false),
-      is_registered: Map.get(accum, :is_registered, false),
-      is_admin: Map.get(accum, :is_admin, false),
-      is_services_admin: Map.get(accum, :is_services_admin, false),
-      is_helper: Map.get(accum, :is_helper, false),
-      is_chanop: Map.get(accum, :is_chanop, false),
-      is_agent: Map.get(accum, :is_agent, false),
-      is_java: Map.get(accum, :is_java, false),
-      umodes: Map.get(accum, :umodes),
-      away_message: Map.get(accum, :away_message),
-      actually_host: Map.get(accum, :actually_host),
-      actually_ip: Map.get(accum, :actually_ip),
-      # #221 — solanum WHOIS-leg fields. Booleans default false, strings /
-      # lists nil, so a bahamut bundle (none of these numerics fired)
-      # marshals unchanged.
-      account: Map.get(accum, :account),
-      secure: Map.get(accum, :secure, false),
-      secure_cipher: Map.get(accum, :secure_cipher),
-      certfp: Map.get(accum, :certfp),
+      oper_text: accum.oper_text,
+      idle_seconds: accum.idle_seconds,
+      signon: accum.signon,
+      channels: accum.channels,
+      # P-0a — 11 WHOIS-leg flags / strings folded by EventRouter.
+      using_ssl: accum.using_ssl,
+      is_registered: accum.is_registered,
+      is_admin: accum.is_admin,
+      is_services_admin: accum.is_services_admin,
+      is_helper: accum.is_helper,
+      is_chanop: accum.is_chanop,
+      is_agent: accum.is_agent,
+      is_java: accum.is_java,
+      umodes: accum.umodes,
+      away_message: accum.away_message,
+      actually_host: accum.actually_host,
+      actually_ip: accum.actually_ip,
+      # #221 — solanum WHOIS-leg fields. A bahamut bundle (none of these
+      # numerics fired) marshals unchanged off the struct defaults.
+      account: accum.account,
+      secure: accum.secure,
+      secure_cipher: accum.secure_cipher,
+      certfp: accum.certfp,
       # #221 — extra_lines are prepended LIFO by whois_extra_line_fold for
       # O(1) fold; reverse here so cic sees them in arrival (wire) order.
-      extra_lines: reverse_extra_lines(Map.get(accum, :extra_lines))
+      extra_lines: reverse_extra_lines(accum.extra_lines)
     }
   end
 

@@ -41,6 +41,7 @@ defmodule Grappa.Session.ServerTest do
     ISupport,
     RecoverIdentity,
     Server,
+    WhoisAccum,
     WindowState
   }
 
@@ -11030,7 +11031,7 @@ defmodule Grappa.Session.ServerTest do
 
       _ =
         :sys.replace_state(pid, fn state ->
-          %{state | whois_pending: %{"ghost" => %{target_display: "ghost", __primed_at_ms: stale_at}}}
+          %{state | whois_pending: %{"ghost" => %WhoisAccum{target_display: "ghost", __primed_at_ms: stale_at}}}
         end)
 
       assert :ok = Session.send_whois({:user, user.id}, network.id, "fresh", nil, :user, nil)
@@ -11053,7 +11054,7 @@ defmodule Grappa.Session.ServerTest do
 
       _ =
         :sys.replace_state(pid, fn state ->
-          %{state | whois_pending: %{"recent" => %{target_display: "recent", __primed_at_ms: recent_at}}}
+          %{state | whois_pending: %{"recent" => %WhoisAccum{target_display: "recent", __primed_at_ms: recent_at}}}
         end)
 
       assert :ok = Session.send_whois({:user, user.id}, network.id, "fresh", nil, :user, nil)

@@ -91,7 +91,7 @@ defmodule Grappa.Session.EventRouter do
 
   alias Grappa.IRC.{CTCP, Identifier, JoinFailure, Message}
   alias Grappa.{Scrollback, Session}
-  alias Grappa.Session.{IdentityState, ISupport, ListModes, NumericRouter, Presence}
+  alias Grappa.Session.{IdentityState, ISupport, ListModes, NumericRouter, Presence, WhoisAccum}
 
   @typedoc """
   The Session.Server state subset this module reads + mutates. The
@@ -1341,7 +1341,7 @@ defmodule Grappa.Session.EventRouter do
 
         {:cont, next_state,
          [
-           {:whois_bundle, Map.get(accum, :target_display, target), accum, Map.get(accum, :reply_to)}
+           {:whois_bundle, accum.target_display || target, accum, accum.reply_to}
          ]}
 
       :error ->
@@ -3915,16 +3915,23 @@ defmodule Grappa.Session.EventRouter do
   # special-case appends to the existing `:channels` list rather than
   # overwriting (319 may chunk over multiple lines).
   @spec whois_fold(state(), String.t(), map()) :: state()
+  # The fold delta stays `map()` deliberately — see `whois_merge/2`.
   # #944 — has the pending bundle for `nick_key` started ARRIVING? Derived from
   # the 311 fold rather than tracked separately: 311 RPL_WHOISUSER is the first
   # numeric of every WHOIS reply and the only one that folds `:user`, so its
   # presence in the accumulator IS the "bundle open" fact. A primed-but-unopened
   # entry means we asked and upstream has not answered yet, which is exactly
   # when a 301 must be read as the standalone reply to our own PRIVMSG.
-  @spec whois_bundle_open?(map(), String.t()) :: boolean()
+  # #1391 — `accum.user != nil`, NOT `Map.has_key?`: every key of a struct
+  # always exists, so the pre-struct membership test would answer `true` for a
+  # primed-but-unanswered bundle and break the 301 discrimination above. The
+  # two are equivalent because 311 is the only writer of `:user` and its head
+  # guards `is_binary(user)`, so the field is nil exactly when 311 has not
+  # arrived.
+  @spec whois_bundle_open?(%{String.t() => WhoisAccum.t()}, String.t()) :: boolean()
   defp whois_bundle_open?(pending, nick_key) do
     case Map.fetch(pending, nick_key) do
-      {:ok, accum} -> Map.has_key?(accum, :user)
+      {:ok, accum} -> accum.user != nil
       :error -> false
     end
   end
@@ -3946,17 +3953,31 @@ defmodule Grappa.Session.EventRouter do
   # Most fields overwrite. `:channels_chunk` (319 partial list) appends
   # into `:channels` instead of replacing — accumulating across multi-line
   # responses for users in many channels.
-  @spec whois_merge(map(), map()) :: map()
-  defp whois_merge(accum, fold) do
-    Enum.reduce(fold, accum, fn
-      {:channels_chunk, chans}, acc ->
-        existing = Map.get(acc, :channels, [])
-        Map.put(acc, :channels, existing ++ chans)
+  #
+  # #1391 — `struct!/2` is the WRITE-side guard: a fold key `WhoisAccum` does
+  # not declare raises `KeyError` here instead of writing a field nobody reads,
+  # which is how a producer typo used to reach the client as a silent `null`.
+  # `:channels_chunk` is popped FIRST because it is a verb, not a field — it
+  # means "append to `:channels`" — and `struct!/2` would (correctly) reject it.
+  # No separate delta type: enumerating the legal fold keys would be a second
+  # copy of the struct's own field list, and the two would drift.
+  @spec whois_merge(WhoisAccum.t(), map()) :: WhoisAccum.t()
+  defp whois_merge(%WhoisAccum{} = accum, fold) when is_map(fold) do
+    {chunk, fields} = Map.pop(fold, :channels_chunk)
 
-      {k, v}, acc ->
-        Map.put(acc, k, v)
-    end)
+    accum
+    |> append_whois_channels(chunk)
+    |> struct!(fields)
   end
+
+  @spec append_whois_channels(WhoisAccum.t(), [String.t()] | nil) :: WhoisAccum.t()
+  defp append_whois_channels(accum, nil), do: accum
+
+  # `|| []` — `channels` defaults to nil (the wire ships `null` when 319 never
+  # arrived; an empty list is a different value), so the first chunk appends
+  # onto nothing rather than onto `[]`.
+  defp append_whois_channels(accum, chans) when is_list(chans),
+    do: %{accum | channels: (accum.channels || []) ++ chans}
 
   # #221 — append one unhandled/free-form WHOIS-leg numeric to the
   # `extra_lines` accumulator (arrival order preserved). Used by 320
@@ -3988,8 +4009,8 @@ defmodule Grappa.Session.EventRouter do
         # window by Server, so folding it here would double it into the
         # card as well.
         if NumericRouter.absorbable_whois_leg?(code, nosuchnick_absorbed?(accum)) do
-          existing = Map.get(accum, :extra_lines, [])
-          merged = Map.put(accum, :extra_lines, [%{numeric: code, text: text} | existing])
+          existing = accum.extra_lines || []
+          merged = %{accum | extra_lines: [%{numeric: code, text: text} | existing]}
           %{state | whois_pending: Map.put(pending, nick_key, merged)}
         else
           state
@@ -4021,13 +4042,11 @@ defmodule Grappa.Session.EventRouter do
         do: key
   end
 
-  @spec nosuchnick_absorbed?(map()) :: boolean()
-  defp nosuchnick_absorbed?(accum) when is_map(accum) do
+  @spec nosuchnick_absorbed?(WhoisAccum.t()) :: boolean()
+  defp nosuchnick_absorbed?(%WhoisAccum{} = accum) do
     nosuchnick = NumericRouter.nosuchnick_numeric()
 
-    accum
-    |> Map.get(:extra_lines, [])
-    |> Enum.any?(&(Map.get(&1, :numeric) == nosuchnick))
+    Enum.any?(accum.extra_lines || [], &(Map.get(&1, :numeric) == nosuchnick))
   end
 
   # P-0d — fold one or more LUSERS fields into `state.lusers_pending`.

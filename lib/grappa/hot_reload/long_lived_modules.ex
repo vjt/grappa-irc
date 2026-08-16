@@ -129,6 +129,7 @@ defmodule Grappa.HotReload.LongLivedModules do
     Grappa.Session.AwayState,
     Grappa.Session.GhostRecovery,
     Grappa.Session.RecoverIdentity,
+    Grappa.Session.WhoisAccum,
     Grappa.Session.WindowState
   ]
 
@@ -165,6 +166,7 @@ defmodule Grappa.HotReload.LongLivedModules do
           Grappa.Session.AwayState
           | Grappa.Session.GhostRecovery
           | Grappa.Session.RecoverIdentity
+          | Grappa.Session.WhoisAccum
           | Grappa.Session.WindowState
 
   @doc """

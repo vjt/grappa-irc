@@ -12,7 +12,7 @@ defmodule Grappa.Session.EventRouterTest do
   use ExUnit.Case, async: true
 
   alias Grappa.IRC.{JoinFailure, Message, Parser}
-  alias Grappa.Session.{EventRouter, GhostRecovery, ISupport, Wire}
+  alias Grappa.Session.{EventRouter, GhostRecovery, ISupport, WhoisAccum, Wire}
 
   @user_id "00000000-0000-0000-0000-000000000001"
   @subject {:user, @user_id}
@@ -4073,7 +4073,7 @@ defmodule Grappa.Session.EventRouterTest do
     defp whois_pending_state(target_display) do
       base_state(%{
         whois_pending: %{
-          String.downcase(target_display) => %{target_display: target_display}
+          String.downcase(target_display) => %WhoisAccum{target_display: target_display}
         }
       })
     end
@@ -4090,9 +4090,9 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, []} = EventRouter.route(m, state)
 
-      assert new_state.whois_pending["alice"][:user] == "alice_u"
-      assert new_state.whois_pending["alice"][:host] == "alice.host"
-      assert new_state.whois_pending["alice"][:realname] == "Alice Realname"
+      assert new_state.whois_pending["alice"].user == "alice_u"
+      assert new_state.whois_pending["alice"].host == "alice.host"
+      assert new_state.whois_pending["alice"].realname == "Alice Realname"
       # userhost_cache also still updates (existing S2.4 behaviour).
       assert new_state.userhost_cache["alice"] == %{user: "alice_u", host: "alice.host"}
     end
@@ -4124,8 +4124,8 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:server] == "irc.azzurra.org"
-      assert new_state.whois_pending["alice"][:server_info] == "Azzurra Hub"
+      assert new_state.whois_pending["alice"].server == "irc.azzurra.org"
+      assert new_state.whois_pending["alice"].server_info == "Azzurra Hub"
     end
 
     test "313 RPL_WHOISOPERATOR folds is_operator: true + oper_text from trailing" do
@@ -4139,11 +4139,11 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:is_operator] == true
+      assert new_state.whois_pending["alice"].is_operator == true
       # #367 — the ircd role text distinguishes IRC Operator from Server /
       # Services Administrator; it is upstream pass-through data, captured
       # verbatim (NOT a grappa-localized string — see the bundle note).
-      assert new_state.whois_pending["alice"][:oper_text] == "is a Services Administrator"
+      assert new_state.whois_pending["alice"].oper_text == "is a Services Administrator"
     end
 
     test "313 RPL_WHOISOPERATOR with no trailing text folds is_operator: true, oper_text nil" do
@@ -4155,8 +4155,8 @@ defmodule Grappa.Session.EventRouterTest do
       m = msg({:numeric, 313}, ["vjt", "alice"], {:server, "irc.test.org"})
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:is_operator] == true
-      assert new_state.whois_pending["alice"][:oper_text] == nil
+      assert new_state.whois_pending["alice"].is_operator == true
+      assert new_state.whois_pending["alice"].oper_text == nil
     end
 
     test "317 RPL_WHOISIDLE folds idle_seconds + signon (3-arg shape)" do
@@ -4170,8 +4170,8 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:idle_seconds] == 42
-      assert new_state.whois_pending["alice"][:signon] == 1_700_000_000
+      assert new_state.whois_pending["alice"].idle_seconds == 42
+      assert new_state.whois_pending["alice"].signon == 1_700_000_000
     end
 
     test "317 with only idle_seconds (no signon) folds idle_seconds; signon absent" do
@@ -4180,8 +4180,8 @@ defmodule Grappa.Session.EventRouterTest do
       m = msg({:numeric, 317}, ["vjt", "alice", "42", "seconds idle"], {:server, "irc.test.org"})
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:idle_seconds] == 42
-      refute Map.has_key?(new_state.whois_pending["alice"], :signon)
+      assert new_state.whois_pending["alice"].idle_seconds == 42
+      assert new_state.whois_pending["alice"].signon == nil
     end
 
     test "319 RPL_WHOISCHANNELS folds the channels list (split on whitespace, prefixes preserved)" do
@@ -4195,7 +4195,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:channels] == ["@#italia", "+#grappa", "#lobby"]
+      assert new_state.whois_pending["alice"].channels == ["@#italia", "+#grappa", "#lobby"]
     end
 
     test "319 chunks across multiple lines append (not overwrite)" do
@@ -4206,14 +4206,14 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, s1, []} = EventRouter.route(m1, state)
       {:cont, s2, []} = EventRouter.route(m2, s1)
-      assert s2.whois_pending["alice"][:channels] == ["@#a", "+#b", "#c", "#d"]
+      assert s2.whois_pending["alice"].channels == ["@#a", "+#b", "#c", "#d"]
     end
 
     test "318 RPL_ENDOFWHOIS emits :whois_bundle effect with accum + drops entry" do
       state =
         base_state(%{
           whois_pending: %{
-            "alice" => %{
+            "alice" => %WhoisAccum{
               target_display: "Alice",
               user: "alice_u",
               host: "alice.host",
@@ -4226,8 +4226,8 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, [{:whois_bundle, target, accum, _}]} = EventRouter.route(m, state)
       assert target == "Alice"
-      assert accum[:user] == "alice_u"
-      assert accum[:realname] == "Alice Liddell"
+      assert accum.user == "alice_u"
+      assert accum.realname == "Alice Liddell"
       assert new_state.whois_pending == %{}
     end
 
@@ -4242,13 +4242,13 @@ defmodule Grappa.Session.EventRouterTest do
 
     test "318 lookup is case-insensitive on target nick (RFC 2812 §2.2)" do
       state =
-        base_state(%{whois_pending: %{"alice" => %{target_display: "alice", user: "u"}}})
+        base_state(%{whois_pending: %{"alice" => %WhoisAccum{target_display: "alice", user: "u"}}})
 
       # Server may echo a different case for the target than what the user typed.
       m = msg({:numeric, 318}, ["vjt", "ALICE", "End of /WHOIS list"], {:server, "irc.test.org"})
 
       {:cont, new_state, [{:whois_bundle, _, accum, _}]} = EventRouter.route(m, state)
-      assert accum[:user] == "u"
+      assert accum.user == "u"
       assert new_state.whois_pending == %{}
     end
   end
@@ -4274,7 +4274,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:using_ssl] == true
+      assert new_state.whois_pending["alice"].using_ssl == true
     end
 
     test "275 with no whois_pending entry is silently ignored (no fold, no notice)" do
@@ -4313,7 +4313,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:away_message] == "Gone fishing"
+      assert new_state.whois_pending["alice"].away_message == "Gone fishing"
     end
 
     # #944 — a pending WHOIS is NOT enough to claim a 301. Bahamut answers a
@@ -4339,7 +4339,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, [{:peer_away, "alice", "Gone fishing"}]} = EventRouter.route(m, state)
-      refute Map.has_key?(new_state.whois_pending["alice"], :away_message)
+      assert new_state.whois_pending["alice"].away_message == nil
     end
 
     test "301 with no whois_pending entry emits :peer_away typed effect (P-0b standalone)" do
@@ -4377,7 +4377,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:is_registered] == true
+      assert new_state.whois_pending["alice"].is_registered == true
     end
 
     test "308 RPL_WHOISADMIN folds is_admin: true" do
@@ -4391,7 +4391,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:is_admin] == true
+      assert new_state.whois_pending["alice"].is_admin == true
     end
 
     test "309 RPL_WHOISSADMIN folds is_services_admin: true" do
@@ -4405,7 +4405,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:is_services_admin] == true
+      assert new_state.whois_pending["alice"].is_services_admin == true
     end
 
     test "310 RPL_WHOISHELPER folds is_helper: true" do
@@ -4419,7 +4419,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:is_helper] == true
+      assert new_state.whois_pending["alice"].is_helper == true
     end
 
     test "316 RPL_WHOISCHANOP folds is_chanop: true" do
@@ -4428,7 +4428,7 @@ defmodule Grappa.Session.EventRouterTest do
       m = msg({:numeric, 316}, ["vjt", "alice", "is a chanop"], {:server, "irc.test.org"})
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:is_chanop] == true
+      assert new_state.whois_pending["alice"].is_chanop == true
     end
 
     test "325 RPL_WHOISAGENT folds is_agent: true (Azzurra services)" do
@@ -4442,7 +4442,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:is_agent] == true
+      assert new_state.whois_pending["alice"].is_agent == true
     end
 
     test "326 RPL_WHOISMODES extracts mode string from localized prefix" do
@@ -4456,7 +4456,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:umodes] == "+iZ"
+      assert new_state.whois_pending["alice"].umodes == "+iZ"
     end
 
     test "326 with unexpected template (not the Bahamut prefix) folds nothing" do
@@ -4470,7 +4470,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      refute Map.has_key?(new_state.whois_pending["alice"], :umodes)
+      assert new_state.whois_pending["alice"].umodes == nil
     end
 
     test "339 RPL_WHOISJAVA folds is_java: true" do
@@ -4479,7 +4479,7 @@ defmodule Grappa.Session.EventRouterTest do
       m = msg({:numeric, 339}, ["vjt", "alice", "is a Java User"], {:server, "irc.test.org"})
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:is_java] == true
+      assert new_state.whois_pending["alice"].is_java == true
     end
 
     test "378 RPL_WHOISACTUALLY extracts host + ip from localized template" do
@@ -4493,8 +4493,8 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:actually_host] == "real.host.example"
-      assert new_state.whois_pending["alice"][:actually_ip] == "192.0.2.42"
+      assert new_state.whois_pending["alice"].actually_host == "real.host.example"
+      assert new_state.whois_pending["alice"].actually_ip == "192.0.2.42"
     end
 
     test "378 with malformed template folds nothing" do
@@ -4508,8 +4508,8 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      refute Map.has_key?(new_state.whois_pending["alice"], :actually_host)
-      refute Map.has_key?(new_state.whois_pending["alice"], :actually_ip)
+      assert new_state.whois_pending["alice"].actually_host == nil
+      assert new_state.whois_pending["alice"].actually_ip == nil
     end
 
     test "318 RPL_ENDOFWHOIS bundle carries all P-0a flags through to wire payload" do
@@ -4570,7 +4570,7 @@ defmodule Grappa.Session.EventRouterTest do
     end
 
     test "wire payload defaults all P-0a booleans to false when accum is empty" do
-      payload = Wire.whois_bundle("test-net", "ghost", %{})
+      payload = Wire.whois_bundle("test-net", "ghost", %WhoisAccum{})
 
       assert payload.using_ssl == false
       assert payload.is_registered == false
@@ -4794,7 +4794,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:account] == "AliceAccount"
+      assert new_state.whois_pending["alice"].account == "AliceAccount"
     end
 
     test "330 with no whois_pending entry is silently ignored (no fold, no notice)" do
@@ -4831,8 +4831,8 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:secure] == true
-      assert new_state.whois_pending["alice"][:secure_cipher] == "TLSv1.3, TLS_AES_256_GCM_SHA384"
+      assert new_state.whois_pending["alice"].secure == true
+      assert new_state.whois_pending["alice"].secure_cipher == "TLSv1.3, TLS_AES_256_GCM_SHA384"
     end
 
     test "671 RPL_WHOISSECURE with no bracketed cipher still folds secure: true (nil cipher)" do
@@ -4849,8 +4849,8 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:secure] == true
-      refute Map.has_key?(new_state.whois_pending["alice"], :secure_cipher)
+      assert new_state.whois_pending["alice"].secure == true
+      assert new_state.whois_pending["alice"].secure_cipher == nil
     end
 
     test "276 RPL_WHOISCERTFP folds certfp from the trailing tail token" do
@@ -4864,7 +4864,7 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:certfp] == "deadbeefcafef00d"
+      assert new_state.whois_pending["alice"].certfp == "deadbeefcafef00d"
     end
 
     test "338 RPL_WHOISACTUALLY (solanum) folds the IP from the middle param" do
@@ -4883,11 +4883,11 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:actually_ip] == "203.0.113.7"
+      assert new_state.whois_pending["alice"].actually_ip == "203.0.113.7"
       # The localized "actually using host" trailing must NOT leak into any
       # field (feedback_no_localized_strings_server_side).
-      refute new_state.whois_pending["alice"][:actually_host] == "actually using host"
-      refute new_state.whois_pending["alice"][:actually_ip] == "actually using host"
+      refute new_state.whois_pending["alice"].actually_host == "actually using host"
+      refute new_state.whois_pending["alice"].actually_ip == "actually using host"
     end
 
     test "338 with no whois_pending entry is silently ignored (no fold)" do
@@ -4916,7 +4916,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, []} = EventRouter.route(m, state)
 
-      assert new_state.whois_pending["alice"][:extra_lines] == [
+      assert new_state.whois_pending["alice"].extra_lines == [
                %{numeric: 320, text: "is a Libera.Chat volunteer staff member"}
              ]
     end
@@ -4984,7 +4984,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, []} = EventRouter.route(m, state)
 
-      assert new_state.whois_pending["alice"][:extra_lines] == [
+      assert new_state.whois_pending["alice"].extra_lines == [
                %{numeric: 617, text: "is doing something new and typed nowhere yet"}
              ]
     end
@@ -5009,7 +5009,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, []} = EventRouter.route(m, state)
 
-      assert new_state.whois_pending["alice"][:extra_lines] == [
+      assert new_state.whois_pending["alice"].extra_lines == [
                %{numeric: 340, text: "is currently shunned"}
              ]
     end
@@ -5199,11 +5199,11 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, [{:lusers_bundle, accum}]} = EventRouter.route(m, state)
       assert new_state.lusers_pending == nil
-      assert accum[:current_global] == 1234
-      assert accum[:max_global] == 5000
+      assert accum.current_global == 1234
+      assert accum.max_global == 5000
       # prior folded fields survive into the bundle
-      assert accum[:total_users] == 1234
-      assert accum[:operators] == 7
+      assert accum.total_users == 1234
+      assert accum.operators == 7
     end
 
     test "266 with no prior pending (sequence-out-of-order) still emits a bundle with the global counts" do
@@ -5345,7 +5345,7 @@ defmodule Grappa.Session.EventRouterTest do
     test "312 with whois_pending entry takes precedence over whowas_pending (WHOIS-bias)" do
       state =
         base_state(%{
-          whois_pending: %{"alice" => %{target_display: "alice"}},
+          whois_pending: %{"alice" => %WhoisAccum{target_display: "alice"}},
           whowas_pending: %{
             "alice" => %{target_display: "alice", entries: [%{user: "u", host: "h"}]}
           }
@@ -5359,8 +5359,8 @@ defmodule Grappa.Session.EventRouterTest do
         )
 
       {:cont, new_state, []} = EventRouter.route(m, state)
-      assert new_state.whois_pending["alice"][:server] == "irc.test.org"
-      assert new_state.whois_pending["alice"][:server_info] == "irc.test.org server info"
+      assert new_state.whois_pending["alice"].server == "irc.test.org"
+      assert new_state.whois_pending["alice"].server_info == "irc.test.org server info"
       # whowas entry untouched
       [last] = new_state.whowas_pending["alice"][:entries]
       refute Map.has_key?(last, :server)
@@ -5400,7 +5400,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, [{:whowas_bundle, target, accum, _}]} = EventRouter.route(m, state)
       assert target == "Alice"
-      assert length(accum[:entries]) == 1
+      assert length(accum.entries) == 1
       assert new_state.whowas_pending == %{}
     end
 
@@ -5422,7 +5422,7 @@ defmodule Grappa.Session.EventRouterTest do
       m = msg({:numeric, 369}, ["vjt", "ALICE", "End of WHOWAS"], {:server, "irc.test.org"})
 
       {:cont, new_state, [{:whowas_bundle, _, accum, _}]} = EventRouter.route(m, state)
-      assert hd(accum[:entries])[:user] == "u"
+      assert hd(accum.entries)[:user] == "u"
       assert new_state.whowas_pending == %{}
     end
 
@@ -5438,7 +5438,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, [{:whowas_bundle, target, accum, _}]} = EventRouter.route(m, state)
       assert target == "ghost"
-      assert accum[:not_found] == true
+      assert accum.not_found == true
       assert new_state.whowas_pending == %{}
     end
 
@@ -5544,7 +5544,7 @@ defmodule Grappa.Session.EventRouterTest do
       # The EFFECT accum stores entries reversed (head = most recent 367,
       # O(1) prepend); `Wire.banlist_bundle/3` reverses to restore the wire
       # order (asserted in wire_test). Here we lock the storage contract.
-      assert Enum.map(accum[:entries], & &1[:mask]) == ["b!*@2", "a!*@1"]
+      assert Enum.map(accum.entries, & &1[:mask]) == ["b!*@2", "a!*@1"]
     end
 
     test "368 RPL_ENDOFBANLIST emits :list_mode_bundle effect + drops entry" do
@@ -5573,7 +5573,7 @@ defmodule Grappa.Session.EventRouterTest do
       # already folded it, so the live `channel_display` is the canonical
       # spelling (#364) — see the server.ex :send_list_mode comment.
       assert channel == "#Test"
-      assert length(accum[:entries]) == 1
+      assert length(accum.entries) == 1
       assert new_state.list_mode_pending == %{}
     end
 
@@ -5604,7 +5604,7 @@ defmodule Grappa.Session.EventRouterTest do
         msg({:numeric, 368}, ["vjt", "#CHAN", "End"], {:server, "irc.test.org"})
 
       {:cont, s2, [{:list_mode_bundle, _, "b", accum, _}]} = EventRouter.route(m368, s1)
-      assert length(accum[:entries]) == 1
+      assert length(accum.entries) == 1
       assert s2.list_mode_pending == %{}
     end
   end
@@ -5627,7 +5627,7 @@ defmodule Grappa.Session.EventRouterTest do
       m349 = msg({:numeric, 349}, ["vjt", "#test", "End of Channel Exception List"], {:server, "irc.t"})
       {:cont, s2, [{:list_mode_bundle, "#test", "e", accum, _}]} = EventRouter.route(m349, s1)
 
-      assert length(accum[:entries]) == 1
+      assert length(accum.entries) == 1
       assert s2.list_mode_pending == %{}
     end
 
@@ -5640,7 +5640,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       m347 = msg({:numeric, 347}, ["vjt", "#test", "End of Channel Invite List"], {:server, "irc.t"})
       {:cont, _, [{:list_mode_bundle, "#test", "I", accum, _}]} = EventRouter.route(m347, s1)
-      assert length(accum[:entries]) == 1
+      assert length(accum.entries) == 1
     end
 
     # bahamut src/s_err.c:812 — `":%s 728 %s %s z %s %s %lu"`.
@@ -5656,7 +5656,7 @@ defmodule Grappa.Session.EventRouterTest do
       m729 = msg({:numeric, 729}, ["vjt", "#test", "z", "End of Channel Restrict List"], {:server, "irc.t"})
       {:cont, s2, [{:list_mode_bundle, "#test", "z", accum, _}]} = EventRouter.route(m729, s1)
 
-      assert length(accum[:entries]) == 1
+      assert length(accum.entries) == 1
       assert s2.list_mode_pending == %{}
     end
 
@@ -6521,7 +6521,7 @@ defmodule Grappa.Session.EventRouterTest do
       assert new_state.links_pending == nil
       # Accumulator carries the entries as-stored (reversed); the wire
       # builder restores wire order.
-      assert length(accum[:entries]) == 2
+      assert length(accum.entries) == 2
     end
 
     test "365 with an EMPTY entries list (restricted/hidden topology) flushes an empty bundle" do
@@ -6536,7 +6536,7 @@ defmodule Grappa.Session.EventRouterTest do
 
       {:cont, new_state, [{:links_bundle, accum, _}]} = EventRouter.route(m, state)
       assert new_state.links_pending == nil
-      assert accum[:entries] == []
+      assert accum.entries == []
     end
 
     test "365 with NO links_pending is silently ignored (unsolicited terminator)" do

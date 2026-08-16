@@ -116,6 +116,7 @@ defmodule Grappa.Session.Server do
     Persistor,
     Presence,
     RecoverIdentity,
+    WhoisAccum,
     WindowState
   }
 
@@ -836,7 +837,7 @@ defmodule Grappa.Session.Server do
           # AND a lazy @pending_ttl_ms sweep (S10) — a withheld 318 can't
           # strand the entry. Each value carries an internal `:__primed_at_ms`
           # stamp (invisible to the wire builder's explicit field extraction).
-          whois_pending: %{String.t() => map()},
+          whois_pending: %{String.t() => WhoisAccum.t()},
           # CP22 cluster B — per-target WHO accumulator. Keyed by
           # lowercased target channel. Entry shape:
           # `%{target_display: String.t(), replies: [map()]}` where each
@@ -2293,7 +2294,7 @@ defmodule Grappa.Session.Server do
     nick_key = fold_key(state, target)
 
     next_pending =
-      prime_pending(state.whois_pending, nick_key, %{
+      prime_pending(state.whois_pending, nick_key, %WhoisAccum{
         target_display: target,
         source: origin,
         reply_to: reply_to
@@ -4981,6 +4982,12 @@ defmodule Grappa.Session.Server do
   # `*_bundle` builders read the accumulator via explicit `Map.get` field
   # extraction — and dies with the entry on drain (Map.delete of the whole key),
   # so no drain site needs to know about it.
+  # #1391 — `Map.put` and not `%{value | __primed_at_ms: now}`: this helper is
+  # generic over FIVE keyed accumulators and only `whois_pending` carries a
+  # struct so far. The update syntax would raise on the four that are still
+  # plain maps without the key. Convert this to the update syntax — which
+  # fails loudly on an accumulator that forgot to declare the field — once all
+  # five are structs; until then it is the one map-generic seam left.
   @spec prime_pending(%{optional(term()) => map()}, term(), map()) ::
           %{optional(term()) => map()}
   defp prime_pending(pending, key, value) when is_map(pending) and is_map(value) do

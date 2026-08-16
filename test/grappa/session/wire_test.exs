@@ -22,7 +22,7 @@ defmodule Grappa.Session.WireTest do
 
   alias Grappa.RelayFrameHelpers
   alias Grappa.Scrollback.Message
-  alias Grappa.Session.{ISupport, Wire}
+  alias Grappa.Session.{ISupport, WhoisAccum, Wire}
 
   describe "channels_changed/0" do
     test "returns the discriminator-only payload" do
@@ -744,7 +744,7 @@ defmodule Grappa.Session.WireTest do
 
   describe "whois_bundle/3" do
     test "projects the accum map into the wire shape with kind: injected" do
-      accum = %{
+      accum = %WhoisAccum{
         user: "alice_u",
         host: "alice.host",
         realname: "Alice Liddell",
@@ -803,7 +803,7 @@ defmodule Grappa.Session.WireTest do
     end
 
     test "tolerates an empty accum (no numerics fired before 318) — every field nil; is_operator false" do
-      payload = Wire.whois_bundle("azzurra", "ghost", %{})
+      payload = Wire.whois_bundle("azzurra", "ghost", %WhoisAccum{})
 
       assert payload == %{
                kind: :whois_bundle,
@@ -845,7 +845,7 @@ defmodule Grappa.Session.WireTest do
     end
 
     test "#221 — projects solanum fields (account/secure/certfp/actually_ip/extra_lines)" do
-      accum = %{
+      accum = %WhoisAccum{
         account: "AliceAccount",
         secure: true,
         secure_cipher: "TLSv1.3, TLS_AES_256_GCM_SHA384",
@@ -870,7 +870,7 @@ defmodule Grappa.Session.WireTest do
     # verbatim. :rail is the query-rail auto-fetch; anything else defaults to
     # :user (proven by the two exact-map tests above, which prime no :source).
     test "projects the accum :source (rail auto-fetch) into the wire shape" do
-      payload = Wire.whois_bundle("azzurra", "alice", %{source: :rail})
+      payload = Wire.whois_bundle("azzurra", "alice", %WhoisAccum{source: :rail})
       assert payload.source == :rail
     end
   end
@@ -1136,7 +1136,7 @@ defmodule Grappa.Session.WireTest do
         Wire.kicked("net", "#c", "by", "r"),
         Wire.away_confirmed("net", :present),
         Wire.mentions_bundle("net", "from", "to", nil, []),
-        Wire.whois_bundle("net", "alice", %{}),
+        Wire.whois_bundle("net", "alice", %WhoisAccum{}),
         Wire.peer_away("net", "alice", "Gone fishing"),
         Wire.invite_ack("net", "#italia", "alice"),
         Wire.lusers_bundle("net", %{}),
