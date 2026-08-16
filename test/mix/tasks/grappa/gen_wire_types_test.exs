@@ -311,6 +311,60 @@ defmodule Mix.Tasks.Grappa.GenWireTypesTest do
     end
   end
 
+  # #1393 — the admin index ROWS were already codegen-visible: every admin
+  # controller builds them with an `AdminWire.*_to_admin_json/…`. Only the
+  # collection ENVELOPE was an inline map literal in the controller, so the
+  # shape a client actually receives had no generated schema and cic cast to
+  # a hand-written mirror instead. `Grappa.Networks.FeaturedChannels.Wire`
+  # was the one REST envelope that already had a Wire home — and therefore
+  # the one that was already generated. These pin the same treatment for the
+  # six admin index doors.
+  describe "admin index envelopes (#1393)" do
+    test "each admin index envelope renders as its row type in an array, under the wire key" do
+      for {mod, envelope, key, row} <- admin_index_envelopes() do
+        output = GenWireTypes.render_module_for_test(mod)
+
+        assert output =~ ~s(export type #{envelope} = {),
+               "#{inspect(mod)} emits no `#{envelope}` — the index envelope has no @type"
+
+        assert output =~ ~s(  #{key}: #{row}[];),
+               "`#{envelope}` does not wrap `#{row}[]` under the `#{key}` key"
+      end
+    end
+
+    test "every admin index envelope survives a full generate/0 run" do
+      full = GenWireTypes.generate()
+
+      for {mod, envelope, _key, _row} <- admin_index_envelopes() do
+        assert full =~ ~s(export type #{envelope} = {),
+               "#{inspect(mod)}'s index envelope is missing from the full walk"
+      end
+    end
+  end
+
+  # The six `GET /admin/*` index doors whose row already had a Wire module:
+  # `{wire module, emitted envelope alias, JSON key, emitted row alias}`.
+  # `Grappa.Networks.AdminWire` is deliberately absent — its controller
+  # composes `circuit_state` + `live_counts` onto the row, and that
+  # composition cannot move into the wire without forming the
+  # `Networks → Admission` boundary cycle its moduledoc documents.
+  defp admin_index_envelopes do
+    [
+      {Grappa.Accounts.AdminWire, "AccountsAdminWireIndexPayload", "users", "AccountsAdminWireT"},
+      {Grappa.LiveIntrospection.AdminWire, "LiveIntrospectionAdminWireIndexPayload", "sessions",
+       "LiveIntrospectionAdminWireT"},
+      {Grappa.Networks.Credentials.AdminWire, "NetworksCredentialsAdminWireIndexPayload",
+       "credentials", "NetworksCredentialsAdminWireT"},
+      {Grappa.Networks.FeaturedChannels.AdminWire,
+       "NetworksFeaturedChannelsAdminWireIndexPayload", "featured_channels",
+       "NetworksFeaturedChannelsAdminWireT"},
+      {Grappa.Networks.Servers.AdminWire, "NetworksServersAdminWireIndexPayload", "servers",
+       "NetworksServersAdminWireT"},
+      {Grappa.Visitors.AdminWire, "VisitorsAdminWireIndexPayload", "visitors",
+       "VisitorsAdminWireT"}
+    ]
+  end
+
   describe "--check exit code helper" do
     test "compare_committed/2 returns :ok when committed file matches generated" do
       tmp = Path.join(System.tmp_dir!(), "wireTypes.ts.gentest")
