@@ -37,18 +37,24 @@ setup() {
     ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
     OVERLAY="$ROOT/compose.oneshot.yaml"
     LIB="$ROOT/scripts/_lib.sh"
+
+    # The claim is about the KEYS the overlay SETS, not about whether the
+    # file may explain why they are gone. Grepping the comments too would
+    # make the explanation itself a failure, so strip them first.
+    KEYS="$BATS_TEST_TMPDIR/keys"
+    grep -v '^[[:space:]]*#' "$OVERLAY" > "$KEYS"
 }
 
 @test "the overlay still disables the healthcheck — the one key that is load-bearing" {
-    grep -q 'disable: true' "$OVERLAY"
+    grep -q 'disable: true' "$KEYS"
 }
 
 @test "the overlay no longer claims a container_name collision" {
-    refute grep -q 'container_name' "$OVERLAY"
+    refute grep -q 'container_name' "$KEYS"
 }
 
 @test "the overlay no longer resets ports it never inherited" {
-    refute grep -q 'ports' "$OVERLAY"
+    refute grep -q 'ports' "$KEYS"
 }
 
 @test "_lib.sh no longer claims the overlay drops inherited host bindings" {

@@ -95,6 +95,13 @@ services:
       # Literal defaults, NOT the empty-default form used above: an empty
       # string reaches String.to_integer/1 and crashes at boot (#369 X1).
       POOL_SIZE: ${POOL_SIZE:-10}
+      # PORT is NOT SUPPORTED on this substrate (#1409 D-S6): this line is
+      # the only Docker-side consumer. The container side of the publish
+      # above, the healthcheck below, the Dockerfile probe, and the deploy
+      # POSTs all hardcode 4000, so an override makes the app listen
+      # somewhere nothing looks. Move the port with GRAPPA_PUBLISH (host
+      # side) instead. Honoured end to end only on the Docker-free
+      # substrates.
       PORT: ${PORT:-4000}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     healthcheck:

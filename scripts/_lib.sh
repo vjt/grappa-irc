@@ -246,10 +246,13 @@ in_container() {
 # Run a one-shot mix task without the long-running container (e.g. `mix
 # deps.get` before first boot), layering worktree source overrides.
 #
-# `compose.oneshot.yaml` MUST stay layered LAST — its `ports: !reset []` +
-# `container_name: !reset null` drop host-side bindings inherited from the
-# base file or the personal override. Its path is absolute via $SRC_ROOT so
-# it resolves to the worktree copy, like the WORKTREE_VOLUMES mounts.
+# `compose.oneshot.yaml` carries ONE key, `healthcheck: disable: true`, and
+# it is layered here because `run` DOES inherit the service healthcheck
+# while a oneshot never boots phx.server. It used to also reset
+# `container_name` and `ports` against a collision that measurement showed
+# does not happen — see that file for the numbers. Its path is absolute via
+# $SRC_ROOT so it resolves to the worktree copy, like the WORKTREE_VOLUMES
+# mounts.
 # Why: docs/OPERATIONS.md § "Developer and deploy scripts (scripts/*.sh)".
 in_oneshot() {
     docker compose "${COMPOSE_ARGS[@]}" -f "$SRC_ROOT/compose.oneshot.yaml" \

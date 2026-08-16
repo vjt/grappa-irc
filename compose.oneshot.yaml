@@ -2,14 +2,20 @@
 # `in_oneshot()` for ephemeral mix tasks (test, credo, dialyzer, format,
 # deps.get, ecto.migrate) that have to coexist with a running container.
 #
-# Without it a oneshot inherits `container_name: grappa` and the host
-# port-publishes, and both collide with the long-lived copy.
+# ONE key, because one is all that is needed (#1409 D-S7). This file used to
+# also `!reset` `container_name` and `ports` against a stated collision with
+# the long-lived copy. Measured 2026-08-16 with `grappa` up and holding
+# 192.168.53.12:4000: `compose run` names its container
+# `grappa-grappa-run-<hash>` and never `grappa`, creates it with
+# `PortBindings: {}` (with `--service-ports` as the positive control, which
+# DOES bind), and sets `RestartPolicy: no` on its own. Three no-ops guarding
+# a hazard that does not exist — which is why six deploy-path `run --rm`
+# invocations never layered this file and never collided.
+#
+# The healthcheck is the exception: it IS inherited in full, and a oneshot
+# never boots phx.server, so the /healthz probe would fail forever.
 
 services:
   grappa:
-    container_name: !reset null
-    ports: !reset []
-    # A oneshot never boots phx.server, so the /healthz probe would always fail.
     healthcheck:
       disable: true
-    restart: "no"
