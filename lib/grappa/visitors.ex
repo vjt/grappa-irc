@@ -237,7 +237,12 @@ defmodule Grappa.Visitors do
          {:ok, _} <- seed_incognito_upload_ttl(visitor, incognito) do
       visitor
     else
-      {:error, changeset} -> Repo.rollback(changeset)
+      # #1374 P-S7 — `reason`, not `changeset`: the seed step can also fail
+      # with a plain `{:error, %Ecto.Changeset{}}` from a validation, and
+      # `create_anon/4`'s spec admits `:db_unavailable` from the enclosing
+      # engine. Naming the binding after one of the shapes invited the next
+      # reader to pattern-match `%Ecto.Changeset{}` on the rollback value.
+      {:error, reason} -> Repo.rollback(reason)
     end
   end
 
@@ -250,12 +255,19 @@ defmodule Grappa.Visitors do
   # the holder raises it up to the 72h ladder from the drawer and the server
   # leaves them be (vjt 2026-07-26). Non-incognito provisions leave the pref
   # unset and fall through to the standard 24h upload default.
+  # #1374 P-S7 — the `!` seam: this runs as the third statement of
+  # `create_anon/4`'s OPEN transaction, so it must not retry. The retrying
+  # spelling ran two nested `BusyRetry.run` loops here, each sleeping while
+  # holding the transaction's connection (extending the contention it was
+  # waiting on) and each converting the busy into a return value, which
+  # `Repo.rollback/1` then turned into a 503 WITHOUT the enclosing engine
+  # ever spending its own budget. The raise is what hands the retry up.
   @spec seed_incognito_upload_ttl(Visitor.t(), boolean()) ::
-          {:ok, term()} | {:error, Ecto.Changeset.t() | :db_unavailable}
+          {:ok, term()} | {:error, Ecto.Changeset.t()}
   defp seed_incognito_upload_ttl(_, false), do: {:ok, :not_incognito}
 
   defp seed_incognito_upload_ttl(%Visitor{id: id}, true),
-    do: UserSettings.put_upload_ttl_seconds({:visitor, id}, @incognito_upload_ttl_seconds)
+    do: UserSettings.put_upload_ttl_seconds!({:visitor, id}, @incognito_upload_ttl_seconds)
 
   @doc """
   #211 phase 7 — resolve the visitor's `(visitor_id, network_id)`

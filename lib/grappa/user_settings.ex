@@ -341,15 +341,34 @@ defmodule Grappa.UserSettings do
   @spec get_or_init(Subject.t()) ::
           {:ok, Settings.t()} | {:error, Ecto.Changeset.t() | :db_unavailable}
   def get_or_init({_, _} = subject) do
+    # #523 — ride out a transient SQLITE_BUSY on the row init; sustained
+    # saturation degrades to `{:error, :db_unavailable}` → a clean 503 (#518)
+    # at every PUT /me/settings setter (they all init through here first).
+    do_get_or_init(subject, fn op -> Repo.BusyRetry.run(op) end)
+  end
+
+  @doc """
+  In-transaction variant of `get_or_init/1` (#1374 P-S7).
+
+  Same init, no retry: reached only from inside an enclosing
+  `Repo.BusyRetry.run(fn -> Repo.immediate_transaction(…) end)`, where a
+  nested retry would sleep holding the open transaction's connection and
+  would swallow the raise the transaction needs to abort on. See the
+  family contract on `rename_muted_target!/4`.
+  """
+  @spec get_or_init!(Subject.t()) ::
+          {:ok, Settings.t()} | {:error, Ecto.Changeset.t()}
+  def get_or_init!({_, _} = subject), do: do_get_or_init(subject, fn op -> op.() end)
+
+  @spec do_get_or_init(Subject.t(), ((-> term()) -> term())) ::
+          {:ok, Settings.t()} | {:error, Ecto.Changeset.t() | :db_unavailable}
+  defp do_get_or_init(subject, run) do
     with :ok <- validate_subject_exists(subject) do
       attrs = Subject.put_subject_id(%{data: %{}}, subject)
       cs = Settings.changeset(%Settings{}, attrs)
 
-      # #523 — ride out a transient SQLITE_BUSY on the row init; sustained
-      # saturation degrades to `{:error, :db_unavailable}` → a clean 503 (#518)
-      # at every PUT /me/settings setter (they all init through here first).
       insert_result =
-        Repo.BusyRetry.run(fn ->
+        run.(fn ->
           Repo.insert(cs, on_conflict: :nothing, conflict_target: conflict_target(subject))
         end)
 
@@ -756,8 +775,36 @@ defmodule Grappa.UserSettings do
   @spec put_upload_ttl_seconds(Subject.t(), pos_integer() | nil) ::
           {:ok, Settings.t()} | {:error, Ecto.Changeset.t() | :db_unavailable}
   def put_upload_ttl_seconds({_, _} = subject, seconds) do
+    do_put_upload_ttl_seconds(subject, seconds, &get_or_init/1, &persist/1)
+  end
+
+  @doc """
+  In-transaction variant of `put_upload_ttl_seconds/2` (#1374 P-S7).
+
+  Same write, no retry at either step. `Grappa.Visitors.create_anon/4`
+  seeds the incognito TTL as the third statement of an already-open
+  `Repo.BusyRetry.run(fn -> Repo.immediate_transaction(…) end)`; the
+  retrying spelling ran TWO more retry loops inside that transaction,
+  each sleeping on the connection it holds — extending the very
+  contention it waits on — and each turning the busy into a return value
+  where the transaction needed the raise. See the family contract on
+  `rename_muted_target!/4`.
+  """
+  @spec put_upload_ttl_seconds!(Subject.t(), pos_integer() | nil) ::
+          {:ok, Settings.t()} | {:error, Ecto.Changeset.t()}
+  def put_upload_ttl_seconds!({_, _} = subject, seconds) do
+    do_put_upload_ttl_seconds(subject, seconds, &get_or_init!/1, &persist!/1)
+  end
+
+  @spec do_put_upload_ttl_seconds(
+          Subject.t(),
+          pos_integer() | nil,
+          (Subject.t() -> {:ok, Settings.t()} | {:error, Ecto.Changeset.t() | :db_unavailable}),
+          (Ecto.Changeset.t() -> {:ok, Settings.t()} | {:error, Ecto.Changeset.t() | :db_unavailable})
+        ) :: {:ok, Settings.t()} | {:error, Ecto.Changeset.t() | :db_unavailable}
+  defp do_put_upload_ttl_seconds(subject, seconds, init_fun, persist_fun) do
     with :ok <- validate_upload_ttl_seconds(seconds, subject),
-         {:ok, settings} <- get_or_init(subject) do
+         {:ok, settings} <- init_fun.(subject) do
       merged_data =
         case seconds do
           nil -> Map.delete(settings.data, @upload_ttl_seconds_key)
@@ -765,7 +812,7 @@ defmodule Grappa.UserSettings do
         end
 
       cs = Settings.changeset(settings, %{data: merged_data})
-      persist(cs)
+      persist_fun.(cs)
     end
   end
 
