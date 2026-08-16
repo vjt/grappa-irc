@@ -947,7 +947,7 @@ defmodule Grappa.Visitors do
   mid-flight — race tolerated).
   """
   @spec update_last_joined_channels(Ecto.UUID.t(), pos_integer(), [String.t()]) ::
-          :ok | {:error, :not_found | Ecto.Changeset.t()}
+          :ok | {:error, :not_found | Ecto.Changeset.t() | :db_unavailable}
   def update_last_joined_channels(visitor_id, network_id, channels)
       when is_binary(visitor_id) and is_integer(network_id) and is_list(channels) do
     Credentials.update_visitor_last_joined_channels(visitor_id, network_id, channels)
@@ -967,7 +967,7 @@ defmodule Grappa.Visitors do
   network).
   """
   @spec remove_autojoin_channel(Visitor.t(), pos_integer(), String.t()) ::
-          {:ok, Credential.t()} | {:error, :not_found | Ecto.Changeset.t()}
+          {:ok, Credential.t()} | {:error, :not_found | Ecto.Changeset.t() | :db_unavailable}
   def remove_autojoin_channel(%Visitor{id: id}, network_id, channel_name)
       when is_integer(network_id) and is_binary(channel_name) do
     Credentials.remove_visitor_last_joined_channel(id, network_id, channel_name)

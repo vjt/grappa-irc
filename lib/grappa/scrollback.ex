@@ -1194,7 +1194,8 @@ defmodule Grappa.Scrollback do
   cic tabs refresh their archive section AND invalidate the in-memory
   scrollback cache for the deleted target (UX-7-B 2026-05-22).
   """
-  @spec delete_for_dm(subject(), integer(), String.t()) :: {:ok, non_neg_integer()}
+  @spec delete_for_dm(subject(), integer(), String.t()) ::
+          {:ok, non_neg_integer()} | {:error, :db_unavailable}
   def delete_for_dm(subject, network_id, peer)
       when is_integer(network_id) and is_binary(peer) do
     # REV-B / H17 (2026-05-22 codebase review): route through
@@ -1214,14 +1215,24 @@ defmodule Grappa.Scrollback do
     # in archive (surfaced by `list_archive/3`'s COALESCE) yet
     # `delete_for_dm` returned a silent `{:ok, 0}` and the operator's
     # "really delete" tap did nothing.
-    {count, _} =
-      Message
-      |> subject_where(subject)
-      |> where([m], m.network_id == ^network_id)
-      |> where_dm_peer(folded_peer)
-      |> Repo.delete_all()
-
-    {:ok, count}
+    # #1374 P-S8 — web-reachable (`DELETE /networks/:slug/archive`), so a
+    # transient busy degrades to the typed 503 (#518) instead of the 500 a
+    # naked `delete_all` raises. NOT `with_pool_retry/1`: that wrapper's #336
+    # contract is best-effort DURABILITY for the session's own persist path,
+    # and it swallows even a non-transient fault to keep the session up. A
+    # web write has no session to protect and must not report a purge that
+    # did not happen. Idempotent, so a retried statement is safe.
+    case BusyRetry.run(fn ->
+           {:ok,
+            Message
+            |> subject_where(subject)
+            |> where([m], m.network_id == ^network_id)
+            |> where_dm_peer(folded_peer)
+            |> Repo.delete_all()}
+         end) do
+      {:ok, {count, _}} -> {:ok, count}
+      {:error, :db_unavailable} = err -> err
+    end
   end
 
   @doc """
@@ -1532,7 +1543,8 @@ defmodule Grappa.Scrollback do
   back from upstream. cic's confirm-modal copy makes the rejoinable
   contract explicit.
   """
-  @spec delete_for_channel(subject(), integer(), String.t()) :: {:ok, non_neg_integer()}
+  @spec delete_for_channel(subject(), integer(), String.t()) ::
+          {:ok, non_neg_integer()} | {:error, :db_unavailable}
   def delete_for_channel(subject, network_id, channel)
       when is_integer(network_id) and is_binary(channel) do
     # REV-B / H17 (2026-05-22 codebase review): single-source the
@@ -1549,14 +1561,18 @@ defmodule Grappa.Scrollback do
     # `lower()` fragment) is the correct comparison.
     canonical = Identifier.canonical_target(channel)
 
-    {count, _} =
-      Message
-      |> subject_where(subject)
-      |> where([m], m.network_id == ^network_id)
-      |> where([m], m.channel == ^canonical)
-      |> Repo.delete_all()
-
-    {:ok, count}
+    # #1374 P-S8 — same web-reachable 503 door as `delete_for_dm/3`.
+    case BusyRetry.run(fn ->
+           {:ok,
+            Message
+            |> subject_where(subject)
+            |> where([m], m.network_id == ^network_id)
+            |> where([m], m.channel == ^canonical)
+            |> Repo.delete_all()}
+         end) do
+      {:ok, {count, _}} -> {:ok, count}
+      {:error, :db_unavailable} = err -> err
+    end
   end
 
   @doc """

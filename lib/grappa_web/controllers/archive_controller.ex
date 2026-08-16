@@ -141,7 +141,7 @@ defmodule GrappaWeb.ArchiveController do
   def delete(_, _), do: {:error, :bad_request}
 
   @spec delete_for_target(String.t(), Grappa.Subject.t(), pos_integer()) ::
-          {:ok, non_neg_integer()}
+          {:ok, non_neg_integer()} | {:error, :db_unavailable}
   defp delete_for_target(canonical_target, session_subject, network_id) do
     case Scrollback.target_kind(canonical_target) do
       :channel ->

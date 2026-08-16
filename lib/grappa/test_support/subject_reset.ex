@@ -292,7 +292,18 @@ if Mix.env() in [:dev, :test] do
       count = Map.get(spec, :seed_count, 0)
       sender = Map.get(spec, :seed_sender, "seed-bot")
 
-      {:ok, _} = Scrollback.delete_for_channel({:user, user.id}, cred.network_id, name)
+      # #1374 P-S8 gave the purge a `:db_unavailable` terminal. This is the
+      # e2e baseline reset: a half-drained surface poisons every following
+      # spec, so the honest move is the loud stop the moduledoc already
+      # prefers over silent retry — with the reason named, unlike the bare
+      # MatchError a strict bind would now raise.
+      case Scrollback.delete_for_channel({:user, user.id}, cred.network_id, name) do
+        {:ok, _} ->
+          :ok
+
+        {:error, :db_unavailable} ->
+          raise "subject reset: scrollback purge for #{name} found the DB saturated — baseline not clean"
+      end
 
       SubjectSession.seed_channel(user.id, cred.network_id, name, count, sender)
     end
