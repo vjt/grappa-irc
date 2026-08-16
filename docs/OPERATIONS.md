@@ -897,13 +897,35 @@ below the 30 s `busy_timeout`), and counts of the damage signatures
 (`db=3xxxx`, `idle=3xxxx`, a dropped scrollback row, a saturated pool).
 That lands in `container-logs/gap-scan.tsv`, a few KB, and on stdout as
 well — on a green CI run the job log is the copy that survives without
-an artifact. `tee` is the mechanism: on a red the stream reaches both
-the disk and the scanner, on a green only the scanner. The workflow
-uploads the census with `if: always()` and leaves the three existing
-`if: failure()` artifact steps alone.
+an artifact. `tee` is the mechanism: the stream reaches the scanner
+either way, and the disk only when the bytes are being kept. The
+workflow uploads the census with `if: always()` and leaves the three
+existing `if: failure()` artifact steps alone.
 
-This is evidence collection, not a gate: neither branch of the trap
-touches the exit code, and a green run stays green.
+**A green run that MEASURED a stall keeps its bytes.** Discarding them
+on every green would throw the evidence away in exactly the interesting
+case: a census reading *"30 s hole on a passing run"* is the first
+non-blind green there has ever been, and a census cannot be
+forensicked. So `census_tripped` re-reads the census it just wrote and,
+if any silence was named, captures again with the bytes. Costs a second
+extraction on the rare interesting green and nothing at all on a clean
+one. The trigger is the scanner's OWN verdict at `GAP_THRESHOLD` — the
+same threshold that attributes the reds, deliberately not a second
+criterion to keep in step. Known consequence: a damage signature
+WITHOUT a silence (a dropped row, a saturated pool, neither preceded by
+a gap ≥10 s) is reported in the census but does not retain the bytes.
+
+That makes the scanner load-bearing in a way a report never is: it no
+longer describes the run, it decides what evidence survives it. A
+silent change to what counts as a gap would move the retention policy
+without touching the script that implements it — which is why
+`scripts/log-gap-scan.awk` is pinned clause by clause in
+`test/scripts/log_gap_scan_test.bats` (threshold boundary from both
+sides, arithmetic, midnight rollover, one case per damage signature,
+and the refusal to default a missing threshold).
+
+This is evidence collection, not a gate: no branch of the trap touches
+the exit code, and a green run stays green.
 
 **The service list for that capture is DERIVED, never hand-written
 (the #441 lesson).** A hand list stops covering the service added after

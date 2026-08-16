@@ -97,15 +97,31 @@ capture_container_logs() {
     fi
 }
 
+# Did the census name at least one silence at or over GAP_THRESHOLD? This
+# is the retention trigger, so it reads the scanner's OWN verdict rather
+# than re-deciding what a stall is — one criterion, not two.
+census_tripped() {
+    grep -q -- $'\tGAP\t' "$CENSUS_FILE" 2>/dev/null
+}
+
 cleanup() {
     local rc=$?
 
-    # The census on both exits; the bytes only on a red. Evidence
-    # collection, never an assertion — neither branch touches $rc.
+    # The census on both exits; the bytes on a red, and on a green only
+    # when the census itself tripped. Evidence collection, never an
+    # assertion — no branch here touches $rc.
     if [ "$rc" -ne 0 ]; then
         capture_container_logs raw
     else
         capture_container_logs census-only
+        if census_tripped; then
+            # The one green worth its bytes: a measured stall on a passing
+            # run is the first non-blind green there has been, and a
+            # census cannot be forensicked. Costs a second extraction,
+            # which is the right place to spend it.
+            echo "=== #1429: census tripped on a GREEN run — keeping the bytes ==="
+            capture_container_logs raw
+        fi
     fi
 
     if [ "${KEEP_STACK:-}" != "1" ]; then
