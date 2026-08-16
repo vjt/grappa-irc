@@ -440,6 +440,36 @@ defmodule Grappa.Session.EventRouterPropertyTest do
     end
   end
 
+  # #1303 — the single-sigil peel broke on a target carrying more than one,
+  # and WHICH way it broke depended on the second sigil: `@%#chan` peeled
+  # nothing and landed in `$server`, `@+#chan` peeled one and persisted to a
+  # phantom `+#chan`. The property covers every run the advertised set can
+  # spell, so neither shape depends on a unit example being remembered.
+  property "#1303: a multi-sigil STATUSMSG target routes to the channel and records the whole run" do
+    check all(
+            body <- ascii_nick_gen(),
+            run <- list_of(member_of(["@", "+"]), min_length: 1, max_length: 3)
+          ) do
+      channel = "#" <> body
+      prefix = Enum.join(run)
+
+      m = %Message{
+        command: :notice,
+        params: [prefix <> channel, "ops heads up"],
+        prefix: {:nick, "someuser", "u", "h"},
+        tags: %{}
+      }
+
+      assert {:cont, _, [{:persist, :notice, attrs}]} = EventRouter.route(m, min_state())
+
+      assert attrs.channel == String.downcase(channel),
+             "statusmsg target #{prefix <> channel} should route to #{String.downcase(channel)}, got #{attrs.channel}"
+
+      assert attrs.meta.statusmsg == prefix,
+             "target #{prefix <> channel} should record the whole run #{prefix}, got #{inspect(attrs.meta[:statusmsg])}"
+    end
+  end
+
   property "#218 collision: a bare +channel (no channel sigil after +) is never mis-stripped" do
     check all(body <- ascii_nick_gen()) do
       # `ascii_nick_gen` never starts with a channel sigil, so `+<body>` is

@@ -224,6 +224,98 @@ defmodule Grappa.IRC.Identifier do
   def valid_channel?(s) when is_binary(s), do: Regex.match?(@channel_regex, s)
   def valid_channel?(_), do: false
 
+  # RFC 2812 §1.3 channel sigils, as a first-BYTE test. Deliberately the
+  # same four characters `@channel_regex` opens with, and deliberately
+  # weaker than the regex: "does a channel start here" is a different
+  # question from "is this a well-formed channel name", and the STATUSMSG
+  # peel needs the former to decide where a target's name begins.
+  @channel_sigils ["#", "&", "!", "+"]
+
+  @doc """
+  True iff `s` STARTS with an RFC 2812 channel sigil (`#`, `&`, `!`, `+`).
+
+  First byte only — it does not validate the rest of the name. This is the
+  "a channel starts here" test, the single source of truth shared by
+  `EventRouter`'s channel-NOTICE dispatch guard and `peel_statusmsg/2`.
+  The two MUST agree byte-for-byte: the peel's whole contract is that what
+  it hands back is something the dispatch will recognise as a channel, and
+  two independent sigil lists would drift into a target that peels here and
+  routes to `$server` there.
+  """
+  @spec channel_sigil?(term()) :: boolean()
+  def channel_sigil?(<<c::binary-size(1), _::binary>>), do: c in @channel_sigils
+  def channel_sigil?(_), do: false
+
+  @doc """
+  Peels a STATUSMSG prefix off an IRC message target.
+
+  Returns `{underlying channel, peeled run}` when `target` is a channel
+  addressed at one or more membership levels, else `{target unchanged,
+  nil}`. `statusmsg` is the network's advertised sigil set
+  (`ISupport.statusmsg/1`) — never a hardcoded list, because the set is
+  per-network (bahamut `@+`, others `@%+`, UnrealIRCd-shaped networks add
+  owner/admin).
+
+  ## What gets peeled (#218, #1303)
+
+  The LONGEST leading run of advertised sigils whose remainder still starts
+  a channel. A character outside the advertised set is not a sigil — it is
+  part of the name, and the walk stops there.
+
+  Greedy alone is not enough, and the reason is the `+` collision: `+` is
+  both the voice sigil and an RFC channel sigil. On bahamut's `@+`, a plain
+  greedy peel of `@+chan` (an ops-level notice to the modeless channel
+  `+chan`) takes both bytes, finds `chan` is no channel, and has to roll the
+  whole peel back to `$server` — regressing a target the single-sigil peel
+  already routed correctly. Backtracking one sigil at a time until the
+  remainder is a channel resolves `@+chan` to `+chan` at level `@`, and
+  `@+#chan` to `#chan` at level `@+`, without a special case for either.
+
+  Rolling the peel back WHOLE when no split works is what keeps the
+  collision guard honest: `+chan` peels to `chan`, which is no channel, so
+  nothing is peeled and no voice level is invented on a channel anyone can
+  read.
+
+  ## What the run means (#1303 ruling)
+
+  Every peeled sigil, in the order it arrived on the wire — `"@+"`, not
+  `"@"`. A STATUSMSG target reaches the UNION of the named levels, so
+  `@+#chan` was seen by ops AND by voiced members; recording only the
+  outermost would let a consumer claim ops-only for a line half the channel
+  read, with the `+` gone and no reader able to correct it. Consumers MUST
+  NOT assume the run is one character.
+
+  No sorting step: PREFIX is advertised highest-first and clients emit
+  sigils in that order, so a well-formed target arrives already ordered.
+  A perverse spelling is recorded as it arrived rather than rewritten —
+  what was delivered is a fact, and a canonical spelling would be our
+  invention.
+  """
+  @spec peel_statusmsg(binary(), [String.t()]) :: {binary(), String.t() | nil}
+  def peel_statusmsg(target, statusmsg) when is_binary(target) and is_list(statusmsg) do
+    case longest_peel(target, statusmsg, "") do
+      {run, channel} -> {channel, run}
+      nil -> {target, nil}
+    end
+  end
+
+  # Longest-first walk: recurse past this sigil before considering a split
+  # here, so the deepest viable split wins and shorter ones are the fallback.
+  @spec longest_peel(binary(), [String.t()], String.t()) :: {String.t(), binary()} | nil
+  defp longest_peel(rest, statusmsg, run) do
+    case deeper_peel(rest, statusmsg, run) do
+      nil -> if run != "" and channel_sigil?(rest), do: {run, rest}, else: nil
+      deeper -> deeper
+    end
+  end
+
+  @spec deeper_peel(binary(), [String.t()], String.t()) :: {String.t(), binary()} | nil
+  defp deeper_peel(<<sigil::binary-size(1), rest::binary>>, statusmsg, run) do
+    if sigil in statusmsg, do: longest_peel(rest, statusmsg, run <> sigil), else: nil
+  end
+
+  defp deeper_peel(_, _, _), do: nil
+
   @doc """
   Strips a SINGLE leading `~` from a user-supplied IRC ident (GH #152).
 

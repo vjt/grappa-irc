@@ -1482,6 +1482,121 @@ defmodule Grappa.Session.EventRouterTest do
     end
   end
 
+  # #1303 — a target may carry MORE THAN ONE sigil, and the single-sigil peel
+  # broke in two different directions depending on which sigil sat second.
+  # Both are ingress misroutes: one loud (`$server`), one silent (a channel
+  # window nobody is in). The row-level assertions live here because the
+  # peel's whole purpose is where the row LANDS; `IdentifierTest` pins the
+  # peel itself.
+  describe "route/2 — #1303 multi-sigil STATUSMSG targets" do
+    test "case A: @%#chan lands in the channel window, not $server" do
+      # `@` peeled, remainder `%#chan` was not a channel, so the old guard
+      # declined the peel entirely and the non-channel arm took the row.
+      isupport = ISupport.merge_isupport(["x", "STATUSMSG=@%+"], ISupport.default())
+      state = base_state(%{isupport: isupport})
+
+      m = msg(:notice, ["@%#italia", "ops and halfops"], {:nick, "op", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} = EventRouter.route(m, state)
+
+      assert attrs.channel == "#italia"
+      refute attrs.channel == "$server"
+    end
+
+    test "case B: @+#chan lands in #chan, NOT the phantom +#chan" do
+      # The silent one: `+#chan` passes the channel-prefix test, so the row
+      # was persisted and broadcast against a channel nobody is in. It reads
+      # to the operator as "the message vanished".
+      state = base_state()
+
+      m = msg(:notice, ["@+#italia", "ops and voice"], {:nick, "op", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} = EventRouter.route(m, state)
+
+      assert attrs.channel == "#italia"
+      refute attrs.channel == "+#italia"
+    end
+
+    test "the recorded level is the WHOLE run, not the outermost sigil" do
+      # A STATUSMSG target reaches the UNION of the named levels, so
+      # `@+#chan` was seen by ops AND by voiced members. Recording `"@"`
+      # would badge as ops-only a line half the channel read, and no reader
+      # could correct it because the `+` would simply be gone.
+      state = base_state()
+
+      m = msg(:notice, ["@+#italia", "ops and voice"], {:nick, "op", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} = EventRouter.route(m, state)
+
+      assert attrs.meta.statusmsg == "@+"
+    end
+
+    test "the run is per-network: the same target records less where the level is unadvertised" do
+      # Under bahamut's `@+` there is no halfop level, so `@%#chan` peels
+      # only the `@` and `%#italia` is the channel name as far as we know.
+      # `%` not being advertised makes it part of the name, not a level —
+      # and the row must NOT claim a halfop delivery that this network
+      # cannot express.
+      state = base_state()
+
+      m = msg(:notice, ["@%#italia", "ops and halfops"], {:nick, "op", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} = EventRouter.route(m, state)
+
+      refute attrs.meta[:statusmsg] == "@%"
+    end
+
+    test "PRIVMSG takes the same ingress door as NOTICE" do
+      isupport = ISupport.merge_isupport(["x", "STATUSMSG=@%+"], ISupport.default())
+      state = base_state(%{isupport: isupport})
+
+      m = msg(:privmsg, ["@%#italia", "ops chatter"], {:nick, "op", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :privmsg, attrs}]} = EventRouter.route(m, state)
+
+      assert attrs.channel == "#italia"
+      assert attrs.meta.statusmsg == "@%"
+    end
+
+    test "multi-sigil peel THEN casefold: @%#Italia keys the folded channel" do
+      isupport = ISupport.merge_isupport(["x", "STATUSMSG=@%+"], ISupport.default())
+      state = base_state(%{isupport: isupport})
+
+      m = msg(:notice, ["@%#Italia", "casefold me"], {:nick, "op", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, %{channel: "#italia"}}]} =
+               EventRouter.route(m, state)
+    end
+
+    test "regression guard: @+chan still resolves to the modeless channel +chan" do
+      # `+chan` is a real channel and `@` is the level. Peeling every
+      # advertised sigil without backtracking would strip `@+`, find `chan`
+      # is no channel, roll the peel back whole, and send an ops-only notice
+      # to `$server` — breaking a case the single-sigil peel already got
+      # right. Control for the two cases above: it must be green BEFORE the
+      # fix as well as after.
+      state = base_state()
+
+      m = msg(:notice, ["@+chan", "ops of a modeless channel"], {:nick, "op", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} = EventRouter.route(m, state)
+
+      assert attrs.channel == "+chan"
+      assert attrs.meta.statusmsg == "@"
+    end
+
+    test "regression guard: ++chan still resolves to +chan at the voice level" do
+      state = base_state()
+
+      m = msg(:notice, ["++chan", "voiced of a modeless channel"], {:nick, "v", "u", "h.example.com"})
+
+      assert {:cont, ^state, [{:persist, :notice, attrs}]} = EventRouter.route(m, state)
+
+      assert attrs.channel == "+chan"
+      assert attrs.meta.statusmsg == "+"
+    end
+  end
+
   describe "route/2 — #127 server-reply modals (INFO/VERSION/MOTD)" do
     # Explicit /motd primes state.motd_pending; the 375/372 burst folds and
     # 376 RPL_ENDOFMOTD drains ONE {:server_reply, :motd, lines} effect in

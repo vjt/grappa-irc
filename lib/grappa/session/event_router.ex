@@ -388,7 +388,7 @@ defmodule Grappa.Session.EventRouter do
   # #218 — a STATUSMSG target (`@#chan` ops-only, `+#chan` voice) is a
   # channel message prefixed with a membership sigil; it belongs in the
   # underlying channel window, NOT the network/`$server` tab or a query
-  # window. Strip a leading statusmsg sigil from a `:notice`/`:privmsg`
+  # window. Strip the statusmsg sigils from a `:notice`/`:privmsg`
   # param-0 target BEFORE canonicalisation + the channel-prefix dispatch,
   # so `build_persist` / `normalize_channel/2` receive a clean `#chan` (no
   # need to widen that head's sigil set, which mirrors
@@ -409,30 +409,20 @@ defmodule Grappa.Session.EventRouter do
   # peeling it to route the row and then discarding it destroys the level at
   # ingress, so no consumer downstream can badge what never reached the store.
   # `nil` when nothing was peeled — the vast majority of traffic.
+  #
+  # #1303 — the peel itself moved to `Identifier.peel_statusmsg/2`, which the
+  # POST boundary needs too (`/notice @#chan` was refused as malformed because
+  # nothing outside this module knew what a sigil was). One definition of
+  # "what is a STATUSMSG sigil on this network" for ingress and egress; the
+  # sigil SET still arrives from the per-network 005, never hardcoded.
   @spec strip_statusmsg_target(Message.t(), [String.t()]) :: {Message.t(), String.t() | nil}
   defp strip_statusmsg_target(%Message{command: cmd, params: [target | rest]} = msg, statusmsg)
        when cmd in [:notice, :privmsg] and is_binary(target) do
-    {stripped, level} = strip_statusmsg_prefix(target, statusmsg)
+    {stripped, level} = Identifier.peel_statusmsg(target, statusmsg)
     {%{msg | params: [stripped | rest]}, level}
   end
 
   defp strip_statusmsg_target(msg, _), do: {msg, nil}
-
-  # Peels ONE leading statusmsg sigil iff (a) it is in the network's
-  # advertised set AND (b) a channel sigil (`#&!+`) immediately follows —
-  # so a real `+chan` (voice-typed channel, `+` NOT followed by a channel
-  # sigil) is never mis-stripped (the `+` collision: `+` is both a channel
-  # sigil and the voice membership sigil). Returns `{underlying channel,
-  # peeled sigil}`, else `{target unchanged, nil}` — the `nil` is what keeps
-  # the collision guard from inventing a voice level on a modeless `+chan`.
-  # Reuses `channel_target?/1` so the "what follows is a channel" test agrees
-  # byte-for-byte with the channel-NOTICE dispatch guard.
-  @spec strip_statusmsg_prefix(binary(), [String.t()]) :: {binary(), String.t() | nil}
-  defp strip_statusmsg_prefix(<<sigil::binary-size(1), rest::binary>> = target, statusmsg) do
-    if sigil in statusmsg and channel_target?(rest), do: {rest, sigil}, else: {target, nil}
-  end
-
-  defp strip_statusmsg_prefix(target, _), do: {target, nil}
 
   # #1247 — record the delivery level on the rows this message produced.
   #
@@ -3092,9 +3082,13 @@ defmodule Grappa.Session.EventRouter do
   # prefix check (not `Identifier.valid_channel?/1`) because the NOTICE
   # site needs it inside a `when` guard where Regex.match? is illegal;
   # routing must not diverge between the two arms for a pathological name.
+  #
+  # #1303 — delegates rather than holding its own copy of the four sigils.
+  # `Identifier.peel_statusmsg/2` hands back a target this arm has to
+  # recognise as a channel; two independent lists would drift into a target
+  # that peels there and lands in `$server` here.
   @spec channel_target?(binary()) :: boolean()
-  defp channel_target?(<<c::binary-size(1), _::binary>>), do: c in ["#", "&", "!", "+"]
-  defp channel_target?(_), do: false
+  defp channel_target?(target), do: Identifier.channel_sigil?(target)
 
   @spec channels_with_member(members(), String.t()) :: [String.t()]
   defp channels_with_member(members, nick) do

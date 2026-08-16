@@ -162,6 +162,117 @@ defmodule Grappa.IRC.IdentifierTest do
     end
   end
 
+  describe "channel_sigil?/1" do
+    test "true for the four RFC channel sigils" do
+      assert Identifier.channel_sigil?("#chan")
+      assert Identifier.channel_sigil?("&local")
+      assert Identifier.channel_sigil?("!safe")
+      assert Identifier.channel_sigil?("+modeless")
+    end
+
+    test "false for a nick, a statusmsg sigil, and the empty string" do
+      refute Identifier.channel_sigil?("someone")
+      refute Identifier.channel_sigil?("@#chan")
+      refute Identifier.channel_sigil?("")
+    end
+
+    test "first byte only — it does NOT validate the rest of the name" do
+      # Deliberately weaker than `valid_channel?/1`: this is the
+      # "does a channel start here" test the STATUSMSG peel needs, and it
+      # must agree byte-for-byte with the channel-NOTICE dispatch guard in
+      # EventRouter. A name `valid_channel?/1` would reject still answers
+      # true here.
+      assert Identifier.channel_sigil?("#with space")
+      refute Identifier.valid_channel?("#with space")
+    end
+  end
+
+  # #1303 — a STATUSMSG target can carry MORE THAN ONE sigil (`@%#chan` on a
+  # network advertising `@%+`), and the single-sigil peel misrouted both
+  # shapes it can meet: `@%#chan` peeled nothing (the remainder `%#chan` is
+  # not a channel) and landed in `$server`, while `@+#chan` peeled only the
+  # `@` and persisted to `+#chan` — a phantom channel nobody is in.
+  describe "peel_statusmsg/2 (#218 single sigil, #1303 the whole run)" do
+    @bahamut ["@", "+"]
+    @halfop ["@", "%", "+"]
+
+    test "peels one advertised sigil off a channel target — the #218 case" do
+      assert Identifier.peel_statusmsg("@#chan", @bahamut) == {"#chan", "@"}
+      assert Identifier.peel_statusmsg("+#chan", @bahamut) == {"#chan", "+"}
+    end
+
+    test "#1303 case A: @%#chan peels BOTH and records the whole run" do
+      assert Identifier.peel_statusmsg("@%#chan", @halfop) == {"#chan", "@%"}
+    end
+
+    test "#1303 case B: @+#chan resolves to #chan, NOT the phantom +#chan" do
+      # The silent one. `+` is a channel sigil in its own right, so the
+      # single peel accepted `+#chan` as the underlying channel and wrote
+      # scrollback to a window nobody is in.
+      assert Identifier.peel_statusmsg("@+#chan", @bahamut) == {"#chan", "@+"}
+    end
+
+    test "the run records EVERY level, so a consumer cannot claim ops-only for a line voice also saw" do
+      {_, run} = Identifier.peel_statusmsg("@+#chan", @bahamut)
+      assert run == "@+"
+      refute run == "@"
+    end
+
+    test "collision guard: a modeless +chan is left whole and records no level" do
+      # `+chan` is a CHANNEL named `+chan`, not a voice-targeted `+#chan`.
+      # Peeling the `+` would leave `chan`, which is not a channel, so the
+      # whole peel rolls back.
+      assert Identifier.peel_statusmsg("+chan", @bahamut) == {"+chan", nil}
+    end
+
+    test "backtracks to the LONGEST run whose remainder is still a channel: @+chan" do
+      # `+chan` is a real modeless channel and `@` is the level. A peel that
+      # took every advertised sigil greedily without backtracking would
+      # strip `@+`, find `chan` is not a channel, roll the whole thing back,
+      # and misroute an ops-only notice to `$server` — a REGRESSION of what
+      # the single-sigil peel already got right.
+      assert Identifier.peel_statusmsg("@+chan", @bahamut) == {"+chan", "@"}
+    end
+
+    test "backtracks when the sigil and the channel prefix are the same byte: ++chan" do
+      assert Identifier.peel_statusmsg("++chan", @bahamut) == {"+chan", "+"}
+    end
+
+    test "a sigil the network does not advertise is part of the name, not a level" do
+      # Under bahamut's `@+` there is no halfop level, so `%#chan` is not a
+      # STATUSMSG target at all and must not be peeled.
+      assert Identifier.peel_statusmsg("%#chan", @bahamut) == {"%#chan", nil}
+    end
+
+    test "a plain channel and a plain nick pass through untouched" do
+      assert Identifier.peel_statusmsg("#chan", @bahamut) == {"#chan", nil}
+      assert Identifier.peel_statusmsg("someone", @bahamut) == {"someone", nil}
+    end
+
+    test "a sigil with nothing usable behind it is not a peel" do
+      assert Identifier.peel_statusmsg("@", @bahamut) == {"@", nil}
+      assert Identifier.peel_statusmsg("@someone", @bahamut) == {"@someone", nil}
+      assert Identifier.peel_statusmsg("", @bahamut) == {"", nil}
+    end
+
+    test "an empty advertised set peels nothing" do
+      # A network that advertises `STATUSMSG=` with no sigils has no levels;
+      # every target is its own name.
+      assert Identifier.peel_statusmsg("@#chan", []) == {"@#chan", nil}
+    end
+
+    test "the run is the order the sigils arrived on the wire — no sort, no rewrite" do
+      # On a well-formed target the wire order IS the advertised order
+      # (PREFIX is advertised highest-first and clients emit it that way),
+      # which is why no sorting step is needed. What this pins is that we do
+      # not INVENT an order: a target that arrives `%@#chan` records `"%@"`,
+      # the truth of what was delivered, rather than being rewritten into a
+      # canonical spelling we made up.
+      assert Identifier.peel_statusmsg("@%#chan", @halfop) == {"#chan", "@%"}
+      assert Identifier.peel_statusmsg("%@#chan", @halfop) == {"#chan", "%@"}
+    end
+  end
+
   describe "sanitize_ident/1" do
     test "strips a single leading tilde (the identd-verified anti-spoof guard)" do
       # grappa runs no identd; the ircd tilde-prefixes unverified idents.

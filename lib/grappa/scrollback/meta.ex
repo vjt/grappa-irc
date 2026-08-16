@@ -140,12 +140,12 @@ defmodule Grappa.Scrollback.Meta do
                                                                   Its ABSENCE on a :notice row is what
                                                                   marks the row INBOUND.)
       :notice  | :privmsg           →  + %{statusmsg: String.t()}
-                                                                 (#1247: the STATUSMSG membership sigil
+                                                                 (#1247: the STATUSMSG membership level
                                                                   the message was DELIVERED at —
                                                                   `@#chan` reaches channel ops only,
                                                                   `+#chan` voiced members. #218 peels the
-                                                                  sigil to route the row to the channel
-                                                                  window; this is the peeled sigil kept
+                                                                  sigils to route the row to the channel
+                                                                  window; this is what was peeled, kept
                                                                   rather than dropped, so a consumer can
                                                                   tell an ops-only broadcast from one the
                                                                   whole channel saw. Verbatim from the
@@ -155,7 +155,14 @@ defmodule Grappa.Scrollback.Meta do
                                                                   `@%+`) — NOT a closed set this end can
                                                                   enumerate. ABSENT on an ordinary
                                                                   channel message; there is no nil form,
-                                                                  presence IS the test.)
+                                                                  presence IS the test.
+                                                                  #1303: the WHOLE peeled run, not one
+                                                                  character — `@+#chan` records `"@+"`.
+                                                                  A STATUSMSG target reaches the UNION of
+                                                                  the named levels, so recording only the
+                                                                  outermost would badge as ops-only a line
+                                                                  voiced members also read. Consumers MUST
+                                                                  NOT assume length 1.)
 
   Phase 1 only writes `:privmsg` rows where `meta = %{}` so Phase 1
   exercises only the empty-map path. The allowlist + atomization is
