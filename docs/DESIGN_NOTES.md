@@ -44406,3 +44406,99 @@ accept. Refusals are logged per occurrence: the volume is bounded by
 whatever rate upstream lets a sender INVITE at, and it rotates, whereas the
 alternative is an operator who never learns that invitations are being
 turned away.
+<!-- entry #1413 -->
+
+---
+
+## 2026-08-16 — #1413: the hold had nothing to show for itself
+
+An iOS user reported that the long-press message menu feels like a dead
+touch. Their proposal was to fire the menu on a timer from touchstart
+instead of on release — which is already exactly what happens, and has
+since #1067. The report was still right; it just named the wrong cause.
+The 500ms was not too long. It was invisible.
+
+### Why the number was not the knob
+
+`LONG_PRESS_MS` is imported by `lib/keepKeyboard.ts` to tell a tap from a
+hold for the keyboard gate, deliberately rather than redeclared, so that
+one press cannot be a hold for one handler and a tap for the other.
+Shortening it to make the menu feel quicker would silently shorten that
+gate too. It is a shared threshold, not a tuning dial, and it is
+untouched here.
+
+`navigator.vibrate` was on the table as the cheap answer and was
+rejected: iOS Safari does not implement it, so the one person who
+reported this would have got nothing. A haptic can only ever be an extra
+on platforms that have one — never the fix.
+
+### The argument the sibling gesture had already made
+
+The swipe on the same row is self-describing: the row slides under the
+finger, so the gesture proves it is armed while it is still reversible.
+#1156 refused to arm that slide on rows with nothing to quote precisely
+because the slide IS the promise, and a promise that cannot be kept must
+not be made. The hold makes the same promise as the swipe — something is
+about to happen — and made it with nothing on screen at all.
+
+So the fix signals the hold rather than shortening it, which is what the
+issue proposed and what the twin-gesture argument independently
+demands.
+
+### One machine, not two
+
+The cue is added and removed by the same code that arms and disarms the
+timer, and every teardown runs through `cancelHold`: release, drift past
+`HOLD_MOVE_TOLERANCE_PX`, touchcancel, dispose, and the fire itself. A
+second observer of the touch stream would have been free to disagree
+with the one that actually opens the menu — a row still lit under a
+scrolling finger promises a menu that is no longer coming.
+
+It is tracked apart from the swipe's arming state on purpose. #1156
+leaves a presence row unarmed for the swipe while the hold still arms on
+it (Copy and Select… are useful on a join), so keying the paint to the
+swipe's state would have left exactly those rows silent. That mistake is
+pinned by a mutant in the unit suite rather than by a comment.
+
+### It ramps, and the stylesheet keeps no second copy of 500
+
+The complaint is of an unknown DELAY, not of an unacknowledged touch. A
+cue that snaps on says "touched"; one that fills says "wait, and for
+this long" — the same information the swipe conveys by tracking the
+finger. Ramping from transparent also means a flick that cancels within
+a few tens of milliseconds has painted next to nothing.
+
+The duration reaches CSS as a `--hold-ms` custom property written by the
+binder from `LONG_PRESS_MS`. A hardcoded `500ms` in the rule would have
+been a second copy of the threshold, finishing early or late the day the
+first one moves.
+
+### Where the rule sits is load-bearing
+
+The tint is a `background-image` LAYER, declared AFTER the mention and
+highlight rules. Those set the `background` SHORTHAND, which resets
+`background-image`, so a tint declared above them would have been wiped
+off exactly the rows that already carry a colour — and a
+`background-color` would have replaced those colours instead of
+composing over them.
+
+Nothing else is touched: no `position`, no `filter`, no `user-select`,
+nothing that moves a box or joins the selection machinery iOS starts
+over copyable text during a long press. `keepKeyboard.ts` exists because
+that path is delicate, and this change stays out of it.
+
+### What is bought, and what is still owed
+
+The unit suite proves the state machine in jsdom; seven mutants
+establish that every one of its assertions bites, three of them killing
+exactly one test. The e2e proves the PAINT — `getComputedStyle`, sampled
+while the touch is live, so a stylesheet that never matches cannot pass
+— across all three exits.
+
+Neither buys the feel. Playwright's webkit is not iOS Safari, and
+whether iOS paints anything of its own during those 500ms (a
+touch-callout, a selection affordance) cannot be read from the source
+and cannot be read in jsdom either. What is established is that WE draw
+nothing before this change and something after it. Whether the reporter
+now sees an acknowledgement in time is a device verification, still
+owed — and stated as owed rather than parked.
