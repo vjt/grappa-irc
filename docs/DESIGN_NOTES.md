@@ -45095,17 +45095,57 @@ makes a seventh state a conscious edit instead of a silent widen.
 transcription guarded by an `Equal<>` assert. This is the #410 / `WireAdminEvent`
 posture: a derived type cannot drift, so the assert would be an identity — the
 same finding this issue's X-S1 slice measured on the five `Omit<…, "kind">`
-pins. The pin that matters is the one that still bites: every member of all
-three sets appears as a literal in cic source (`"parked"` at 21 sites,
-`"cover"` at 22), so narrowing the server set narrows the client union and
-`tsc` names every site that assigned the removed member.
+pins.
 
-### The hole this leaves, on purpose
+**How much each alias then DETECTS is not uniform, and a mutation campaign is
+the only thing that tells you which.** Removing a member from the server SSOT
+and regenerating:
+
+  * the theme vocabularies FAIL LOUDLY. Dropping `iosevka` from
+    `@font_families` is `TS2322` at `ThemeEditor.tsx:44` — the surviving hand
+    list `FONT_FAMILIES: ThemeFontFamily[]` cannot outlive a font the server
+    drops. Dropping `repeat` from `@size_modes` is `TS2367` at
+    `customTheme.ts:107`, the comparison losing its overlap.
+  * the window states detect NOTHING. `"parked"` has no writer at all
+    (`setParted` deletes the key), and the five that are written go in through
+    a COMPUTED key — `{...prev, [key]: "kicked"}` — which TypeScript does not
+    check against `Record<ChannelKey, WindowState>`. Dropping `:kicked` from
+    the SSOT, regenerating, and confirming the generated array had really lost
+    it left `bun run check` green.
+
+So for `window_state` the alias buys the derivation (one source, no hand copy
+to update) and nothing else; the detection lives in the codegen test that
+hardcodes the six states. That asymmetry is worth knowing before trusting a
+future alias to be a gate: a derived type is only a tripwire where the client
+actually spells the members out in a checked position. An earlier draft of this
+entry claimed the opposite from a `grep` count of `"parked"` — the count was
+conflating two different closed sets, since `parked` is also a
+`NetworksCredentialConnectionState`.
+
+### The two holes this leaves
 
 `ThemeColorKey` stays a hand mirror. Its nick slots are the pattern template
 literal `nick_${number}`, which TS degrades to an index signature — so a
 payload missing `nick_5` type-checks today while the server sanitiser requires
 all 27 keys. Narrowing it to the server's exact set is a behaviour change with
 consumer fallout across the theme editor and its tests, not a re-export, and it
-is tracked on #1406 rather than smuggled in here. Three vocabularies of four
-are pinned; the fourth is declared debt.
+is tracked on #1406 rather than smuggled in here.
+
+`BuiltinBackground` stays a hand mirror too, and that one is not a choice: **the
+codegen cannot render it.** The re-export was written and run.
+`BuiltinBackgrounds.t/0` carries `variant: variant()`, a same-module
+`user_type`, and the EXTERNAL-type path renders one type at a time with no
+sibling registry — so the types half fell back to `camelize/1` and emitted
+`variant: Variant` (`TS2304`, a name nothing declares) while the schema half
+computed `THEMES_BUILTIN_BACKGROUNDS_VARIANT` and imported it (`TS2724`, a const
+neither half emits). The two emitters disagree, and the whole failure surfaces
+on the CLIENT compiler rather than on the generator. `gen_wire_types.ex`'s own
+comment already forbids the tempting cure — promote the type into a wire module
+rather than teach the external path to resolve refs — and restating the four
+fields in `Themes.Wire` to route around it would have rebuilt the twin this
+slice deletes. The emitter's job is to FAIL LOUDLY there instead of inventing
+an identifier, which is a typographic silent-swallow; that fix travels with the
+other codegen work, and a test here pins the absence meanwhile.
+
+Two vocabularies of four are pinned. Both holes are declared in the code that
+carries them, not only here.
