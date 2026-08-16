@@ -91,16 +91,26 @@ case "\$2" in
     logs)
         svc="\${*: -1}"
         if [ "\$svc" = grappa-test ]; then
-            if [ "\${FAKE_STALL:-1}" = 1 ]; then
-                # \`docker logs --timestamps\` shape, with a 30.064 s hole
-                # between the two lines and a damage signature on each.
-                printf '2026-08-16T12:09:04.535000000Z scrollback row dropped\n'
-                printf '2026-08-16T12:09:34.599000000Z db=30064.1ms query returned\n'
-            else
-                # A healthy stack: the 5 s healthcheck cadence, no damage.
-                printf '2026-08-16T12:09:04.535000000Z healthcheck ok\n'
-                printf '2026-08-16T12:09:09.535000000Z healthcheck ok\n'
-            fi
+            case "\${FAKE_STREAM:-stall}" in
+                stall)
+                    # \`docker logs --timestamps\` shape, with a 30.064 s
+                    # hole between the two lines and damage on each.
+                    printf '2026-08-16T12:09:04.535000000Z scrollback row dropped\n'
+                    printf '2026-08-16T12:09:34.599000000Z db=30064.1ms query returned\n'
+                    ;;
+                damage)
+                    # DAMAGE WITHOUT A STALL: a dropped row at the 5 s
+                    # healthcheck cadence. The class that used to be
+                    # unobservable, because nothing here trips a gap.
+                    printf '2026-08-16T12:09:04.535000000Z healthcheck ok\n'
+                    printf '2026-08-16T12:09:09.535000000Z scrollback row dropped\n'
+                    ;;
+                clean)
+                    # A healthy stack: the cadence, and nothing else.
+                    printf '2026-08-16T12:09:04.535000000Z healthcheck ok\n'
+                    printf '2026-08-16T12:09:09.535000000Z healthcheck ok\n'
+                    ;;
+            esac
         else
             printf 'fake container output for %s\n' "\$svc"
         fi
@@ -161,11 +171,16 @@ first_line() {
     # keep honest than a green-only second one.
     [ -s "$CENSUS" ]
     grep -q 'grappa-test.*maxgap=30.1' "$CENSUS"
+
+    # The verdict is recorded on a red too. Retention is unconditional
+    # here, but WHAT was observed still is not — a red that carried damage
+    # without a stall has to stay countable alongside the greens.
+    grep -q 'RETENTION.*kept=yes.*by_gap=1.*by_dropped=1' "$CENSUS"
 }
 
 @test "a CLEAN green run writes the census and keeps no raw logs" {
     cd "$MAIN"
-    FAKE_RUNNER_RC=0 FAKE_STALL=0 run "$MAIN/scripts/integration.sh"
+    FAKE_RUNNER_RC=0 FAKE_STREAM=clean run "$MAIN/scripts/integration.sh"
 
     # Evidence collection, not a new assertion: a green run stays green.
     [ "$status" -eq 0 ]
@@ -196,13 +211,18 @@ first_line() {
     # a green run without any artifact at all.
     grep -q 'maxgap=5.0' <<<"$output"
 
+    # The verdict is recorded even when nothing was retained, so "no
+    # damage" and "not looked at" stay distinguishable in the artifact.
+    grep -q 'RETENTION.*kept=no' "$CENSUS"
+    grep -q 'RETENTION.*by_gap=0.*by_dropped=0' "$CENSUS"
+
     # ...and the stack still came down.
     grep -q 'testnet down' "$LOG"
 }
 
 @test "a green run that MEASURED a stall keeps the bytes too" {
     cd "$MAIN"
-    FAKE_RUNNER_RC=0 FAKE_STALL=1 run "$MAIN/scripts/integration.sh"
+    FAKE_RUNNER_RC=0 FAKE_STREAM=stall run "$MAIN/scripts/integration.sh"
 
     # Still not a gate: measuring a stall does not fail the run.
     [ "$status" -eq 0 ]
@@ -210,10 +230,36 @@ first_line() {
 
     # A green run that measured a stall is the first non-blind green there
     # has ever been, and the census alone cannot be forensicked — so this
-    # is the one green whose bytes are worth keeping. The trigger is the
-    # census's OWN verdict at the same threshold, not a second criterion.
+    # is the one green whose bytes are worth keeping.
     [ -s "$LOGS_DIR/grappa-test.log" ]
     [ -s "$LOGS_DIR/hub.log" ]
     [ -s "$LOGS_DIR/compose-ps.txt" ]
     grep -q 'db=30064.1ms query returned' "$LOGS_DIR/grappa-test.log"
+
+    grep -q 'RETENTION.*kept=yes.*by_gap=1' "$CENSUS"
+}
+
+@test "a green run with DAMAGE but no stall keeps the bytes, and says so" {
+    cd "$MAIN"
+    FAKE_RUNNER_RC=0 FAKE_STREAM=damage run "$MAIN/scripts/integration.sh"
+
+    [ "$status" -eq 0 ]
+
+    # Nothing here trips a silence: the cadence is 5 s, under the
+    # threshold. The damage is the only signal.
+    grep -q 'grappa-test.*maxgap=5.0' "$CENSUS"
+    grep -q 'grappa-test.*gaps_ge_10=0' "$CENSUS"
+    grep -q 'grappa-test.*dropped=1' "$CENSUS"
+    refute grep -q 'GAP' "$CENSUS"
+
+    # Retention is a different job from attribution. A gap is a proxy for
+    # a mechanism; a dropped row IS the damage. Discarding the bytes here
+    # would make "damage WITHOUT a stall" permanently unobservable —
+    # which is the class nobody can currently prove exists.
+    [ -s "$LOGS_DIR/grappa-test.log" ]
+    grep -q 'scrollback row dropped' "$LOGS_DIR/grappa-test.log"
+
+    # And the census says WHICH trigger fired, so that class becomes
+    # countable rather than merely retained: one grep over the artifacts.
+    grep -q 'RETENTION.*kept=yes.*by_gap=0.*by_dropped=1' "$CENSUS"
 }
