@@ -148,6 +148,29 @@ if config_env() == :prod do
 
   config :grappa, :uploads_storage_root, uploads_storage_root
 
+  # #1355 — the WAL's steady-state byte envelope. ONE number, in BYTES,
+  # feeding both PRAGMAs below, because both express a byte-shaped intent:
+  #
+  #   * `journal_size_limit` takes bytes directly.
+  #   * `wal_autocheckpoint` takes PAGES, so `Grappa.Repo.init/2` divides this
+  #     by the DB file's LIVE `page_size` before the pool opens. NEVER pin a
+  #     page count here: `docs/zfs-baseline-2026-07-31.md` moved prod from
+  #     `page_size 4096` to `65536`, and the untouched 1000-page default
+  #     silently went from ~4 MiB to ~64 MiB.
+  #
+  # 16 MiB is a TUNING CHOICE, not a measurement, argued between two bounds:
+  # SQLite's own default was ~4 MiB here before the page-size change, but a
+  # 64 KiB page makes a one-row update dirty 16× more WAL bytes, so pinning
+  # 4 MiB would checkpoint far more often in wall-clock terms than this
+  # deployment ever did. 16 MiB keeps the checkpoint cadence in the same
+  # order as the pre-ZFS one while capping the WAL an order of magnitude
+  # below the 168 MiB observed in #1355 — and it is a whole number of pages
+  # at both 4096 and 65536, so no rounding either way.
+  #
+  # Deliberately NOT an env var: it is a tuning constant, not an operator
+  # knob, and every env var carries a registry/compose/.env.example tax.
+  wal_checkpoint_bytes = 16 * 1024 * 1024
+
   # NB: `:cic_dist_root` is derived ABOVE, hoisted out of this prod block
   # (all envs except :test) since #485 — see the comment there, which
   # folds in the #526 jail-CWD knowledge that used to live here.
@@ -188,7 +211,18 @@ if config_env() == :prod do
     # Insurance against future dep upgrades; zero runtime behavior
     # change today.
     synchronous: :normal,
-    foreign_keys: :on
+    foreign_keys: :on,
+    # #1355, same "defaults are right by accident" class as the two above —
+    # except here the default stopped being right the moment the page size
+    # changed. `wal_autocheckpoint` was never set (SQLite's 1000 pages), and
+    # `journal_size_limit` defaults to -1, meaning a checkpointed WAL is
+    # RECYCLED at its high-water mark rather than truncated — which is why
+    # prod's `-wal` reached 168 MiB and stayed there. Pinning the limit to
+    # the same envelope as the checkpoint threshold means the steady-state
+    # WAL is recycled with no truncate churn (it is already at that size),
+    # while a burst-grown one comes back down at the next reset.
+    wal_checkpoint_bytes: wal_checkpoint_bytes,
+    journal_size_limit: wal_checkpoint_bytes
 
   # Every missing-secret raise routes through here (#862). The per-site
   # messages used to name `scripts/mix.sh …`, which exists in exactly ONE of

@@ -24,6 +24,10 @@ stays in the tree for the day someone IS authorised to run it; **it was not run.
 | ZFS `recordsize` (DB dataset) | **128K** | 64K |
 | SQLite pages per ZFS record | **32** (128K ÷ 4K) | **1** (64K ÷ 64K) |
 
+> ⚠️ **`page_size` is not a storage-only knob — see
+> [What page_size also moves](#what-page_size-also-moves-1355) below before
+> changing it again.**
+
 Dataset `tank/bastille/jails/grappa/root` (the jail root, where the DB lives):
 
 | property | value | source |
@@ -85,6 +89,43 @@ Stated plainly so nobody over-reads it later:
   `SQLITE_BUSY` must not surface as a 500 — **not on a benchmark delta.** The
   storage migration and the busy-retry fix are two independent improvements that
   happen to touch the same symptom.
+
+---
+
+## What `page_size` also moves (#1355)
+
+**Added 2026-08-16, after the fact.** The migration above changed `page_size`
+for storage-alignment reasons and changed nothing else on purpose. It moved one
+more thing anyway, and it took two weeks and a 168 MiB WAL to notice:
+
+**`PRAGMA wal_autocheckpoint` counts PAGES, not bytes.** SQLite's default of
+1000 pages meant a passive checkpoint was attempted roughly every **4 MiB** at
+`page_size 4096`. At `65536` the same untouched default means roughly
+**64 MiB** — a 16× longer checkpoint interval, arrived at without changing a
+line of config, and precisely the opposite of the small-frequent-writes posture
+this migration was tuning for. `journal_size_limit`'s `-1` default compounded
+it: a checkpointed WAL is recycled at its high-water mark, never truncated, so
+the file only ever grew.
+
+**The cure, and the rule it leaves behind.** `config/runtime.exs` now pins the
+threshold in **BYTES** (`wal_checkpoint_bytes`, 16 MiB) alongside
+`journal_size_limit` (same value, so a burst-grown WAL comes back down), and
+`Grappa.Repo.init/2` divides it by the file's LIVE `page_size` on the #506
+serial pre-pool connection to get the page count the PRAGMA takes.
+
+> **So: never pin a page count.** Any SQLite setting denominated in pages
+> (`wal_autocheckpoint`, `cache_size` when positive, `mmap_size` interactions)
+> must be expressed in bytes and derived from the live `page_size`, or the next
+> page-size change moves it silently. `cache_size: -64_000` is already correct
+> by this rule — the negative form IS the byte form (KiB), which is why it did
+> not drift here.
+
+Numbers, and what they are not: 16 MiB is a **tuning choice argued in the
+#1355 PR**, not a measurement — no before/after was taken on prod. The
+reasoning and the limits are in `docs/DESIGN_NOTES.md` (2026-08-16, #1355),
+including the honest caveat that a passive checkpoint cannot reset a WAL while
+a reader holds an older snapshot, so the threshold bounds pressure rather than
+guaranteeing a ceiling.
 
 ---
 

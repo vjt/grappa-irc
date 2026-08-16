@@ -43271,3 +43271,57 @@ against a path it asserts absent beforehand, rather than reasoning about it.
 pending counts it OBSERVED, never "no pending migrations, nothing to do" — a
 pending count of zero is the silent regime's own signature, so a fast path
 that reports the absence of work would be reporting the defect as health.
+<!-- entry #1355 -->
+
+---
+
+## 2026-08-16 — #1355: the WAL checkpoint threshold is a byte count, derived at boot
+
+**The defect was a unit mismatch that a good change walked into.**
+`PRAGMA wal_autocheckpoint` counts PAGES. The ZFS baseline
+(`docs/zfs-baseline-2026-07-31.md`) moved prod from `page_size 4096` to
+`65536` to make one SQLite page land on exactly one ZFS record — right on its
+own terms — and the untouched 1000-page default went from ~4 MiB to ~64 MiB
+as a side effect. Nothing in `config/runtime.exs` mentioned either number, so
+there was no line to review and no line to change. Measured on prod in the
+issue: a 168 MiB `-wal` that had not reset since that morning.
+
+**So the config declares BYTES and the page count is derived, never pinned.**
+`config/runtime.exs` sets `wal_checkpoint_bytes`, and `Grappa.Repo.init/2`
+divides it by the DB file's LIVE `page_size` before the pool opens. Pinning a
+page count — even a correctly re-computed one — would leave the same trap
+armed for the next person who changes the page size, which is the whole point
+of the issue and not a detail of it. The derivation rounds UP because
+`wal_autocheckpoint = 0` does not checkpoint eagerly, it disables automatic
+checkpointing outright.
+
+**The derivation site is the #506 serial pre-pool connection, reused.** That
+connection already exists and already runs before any pool connection, for the
+rollback→WAL switch; the live `page_size` is one more PRAGMA read on it, and
+`init/2` returns the config the pool is then started with. Nothing else in the
+boot sequence can see the real page size — `runtime.exs` cannot open the file,
+and a per-connection hook would re-derive the same constant N times. `:runtime`
+stays pure, as #506 requires.
+
+**`journal_size_limit` is pinned to the same envelope, and that is a
+deliberate equality.** Its `-1` default means a checkpointed WAL is recycled at
+its high-water mark rather than truncated, which is why the prod file never
+came back down. Setting it equal to the checkpoint threshold means the
+steady-state WAL is already at the limit and truncation is a no-op — no
+truncate/regrow churn — while a burst-grown WAL is cut back at the next reset.
+
+**16 MiB is a tuning choice and is argued as one, not measured.** Two bounds:
+this deployment ran its whole life at SQLite's ~4 MiB effective threshold, but
+a 64 KiB page makes a single-row update dirty 16× more WAL bytes, so pinning
+4 MiB would checkpoint far more often in wall-clock terms than it ever did.
+16 MiB sits between them, caps the WAL an order of magnitude below the
+observed 168 MiB, and is a whole number of pages at both 4096 and 65536.
+
+**What this does NOT establish.** No before/after measurement was taken — there
+is no prod DB in this worktree, and the issue's figures are vjt-claude's. And
+a passive autocheckpoint is not a guarantee: it cannot reset a WAL while a
+reader still holds an older snapshot, and `journal_size_limit` only truncates
+when a reset actually happens. With `pool_size: 10` under continuous reads
+that is a real possibility, and it is the most likely reason prod's WAL was at
+168 MiB rather than the ~64 MiB the threshold alone predicts. The change lowers
+the pressure and bounds the recovery; it does not promise a ceiling.
