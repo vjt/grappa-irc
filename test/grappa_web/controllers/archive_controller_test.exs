@@ -180,6 +180,32 @@ defmodule GrappaWeb.ArchiveControllerTest do
       assert slug == net.slug
     end
 
+    # #1374 P-S8 — the two archive purges were the last web-reachable
+    # scrollback writes with no retry: a transient SQLITE_BUSY raised out of
+    # `Repo.delete_all` and left the operator with a 500 where #518 promises
+    # a typed 503, on a door #523 B1's own stated scope already covered.
+    test "sustained DB busy on a purge is a typed 503, and the rows survive",
+         %{conn: conn, vjt: vjt} do
+      net = net_with_credential(vjt)
+      :ok = seed_archive_rows(vjt, net)
+
+      Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(vjt.name))
+
+      Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+
+      degraded = delete(conn, "/networks/#{net.slug}/archive/#{URI.encode_www_form("#a")}")
+
+      assert json_response(degraded, 503) == %{"error" => "db_unavailable"}
+
+      # Refused, not half-done: the rows are still there, and NO purge was
+      # announced — a broadcast here would tell every cic tab to drop a
+      # cache the server still holds.
+      remaining = Scrollback.list_archive({:user, vjt.id}, net.id, MapSet.new())
+      assert Enum.any?(remaining, &(&1.target == "#a"))
+
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :archive_purged}}
+    end
+
     test "query-shaped target → 204 + drops DM rows + broadcasts archive_purged",
          %{conn: conn, vjt: vjt} do
       net = net_with_credential(vjt)

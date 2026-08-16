@@ -3300,6 +3300,49 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "#1374 P-S8 — the session-driven credential persisters" do
+    # `update_last_joined_channels/3` fires on every self-JOIN / self-PART /
+    # self-KICK and `update_away/4` on every away transition. Both did
+    # `Repo.get_by` + `Repo.update` with no retry: the call sites handle a
+    # RETURNED `{:error, _}` with a warning, but a transient busy RAISED and
+    # the raise escaped the persister closure into the GenServer. Bootstrap
+    # spawning N sessions x M autojoin channels is that write burst.
+    test "a sustained DB busy on the rejoin snapshot drops it and the session survives" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      Repo.BusyRetry.arm_faults(pid, 10_000, fire_on: 1)
+      on_exit(fn -> Repo.BusyRetry.disarm_faults(pid) end)
+
+      log =
+        capture_log(fn ->
+          # A self-JOIN is the cheapest trigger: it mutates the members
+          # keyset, which is the ONLY thing that arms the snapshot write.
+          IRCServer.feed(server, ":grappa-test!~g@host JOIN #busy-room\r\n")
+
+          # DB-free FIFO barrier (see the peer-rename test): the PONG proves
+          # the JOIN was fully handled, and the armed fault cannot starve it.
+          IRCServer.feed(server, "PING :snapshot-barrier\r\n")
+          assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "PONG"), 2_000)
+        end)
+
+      assert Process.alive?(pid)
+      assert log =~ "last_joined_channels persist failed"
+      assert log =~ "db_unavailable"
+
+      # Dropped, not written: the credential still carries the pre-JOIN
+      # snapshot. Read through the context, never a raw Repo query.
+      {:ok, cred} = Credentials.get_credential(user, network)
+      refute "#busy-room" in cred.last_joined_channels
+
+      Repo.BusyRetry.disarm_faults(pid)
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "#948 — the SELF window follows OUR OWN NICK change" do
     test "a self /nick migrates the self window row, its scrollback and its read cursor" do
       {server, port} = start_server()
