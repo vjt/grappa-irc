@@ -96,6 +96,8 @@ defmodule Grappa.Networks.Credentials.AdminWire do
           live_state: live_state_json() | nil
         }
 
+  @type index_payload :: %{credentials: [t()]}
+
   @typedoc """
   What the admin verb did to the session for
   `{:user, user_id} × network_id`. ONE wire key, `session_action`, so ONE
@@ -280,6 +282,10 @@ defmodule Grappa.Networks.Credentials.AdminWire do
   def with_bind_outcome(%{} = json, {:not_spawned, reason}) do
     Map.merge(json, %{session_action: :not_spawned, session_error: error_tag(reason)})
   end
+
+  @doc "Wraps the rendered rows as the `GET /admin/credentials` envelope."
+  @spec index_payload([t()]) :: index_payload()
+  def index_payload(rows) when is_list(rows), do: %{credentials: rows}
 
   @spec error_tag(spawn_error() | {spawn_error(), term()}) :: spawn_error()
   defp error_tag({tag, _}) when is_atom(tag), do: tag

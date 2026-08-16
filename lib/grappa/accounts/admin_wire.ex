@@ -42,6 +42,8 @@ defmodule Grappa.Accounts.AdminWire do
           live_session_count: non_neg_integer()
         }
 
+  @type index_payload :: %{users: [t()]}
+
   @doc """
   Render a User row + injected live session count to the admin JSON
   shape. The count is supplied by the controller from a single
@@ -60,4 +62,8 @@ defmodule Grappa.Accounts.AdminWire do
       live_session_count: live_session_count
     }
   end
+
+  @doc "Wraps the rendered rows as the `GET /admin/users` envelope."
+  @spec index_payload([t()]) :: index_payload()
+  def index_payload(rows) when is_list(rows), do: %{users: rows}
 end

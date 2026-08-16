@@ -59,7 +59,7 @@ defmodule GrappaWeb.Admin.UsersController do
         AdminWire.user_to_admin_json(user, Map.get(counts, user.id, 0))
       end
 
-    json(conn, %{users: rows})
+    json(conn, AdminWire.index_payload(rows))
   end
 
   @doc """

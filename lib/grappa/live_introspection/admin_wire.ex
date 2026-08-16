@@ -61,6 +61,8 @@ defmodule Grappa.LiveIntrospection.AdminWire do
           live_state: live_state_json()
         }
 
+  @type index_payload :: %{sessions: [t()]}
+
   @doc """
   Render one `SessionEntry` + its resolved `subject_label` +
   optional `last_seen_at` to the admin JSON shape.
@@ -137,6 +139,10 @@ defmodule Grappa.LiveIntrospection.AdminWire do
       }
     }
   end
+
+  @doc "Wraps the rendered rows as the `GET /admin/sessions` envelope."
+  @spec index_payload([t()]) :: index_payload()
+  def index_payload(rows) when is_list(rows), do: %{sessions: rows}
 
   defp encode_last_seen(nil), do: nil
   defp encode_last_seen(%DateTime{} = dt), do: DateTime.to_iso8601(dt)

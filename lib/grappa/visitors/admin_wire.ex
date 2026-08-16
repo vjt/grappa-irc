@@ -72,6 +72,8 @@ defmodule Grappa.Visitors.AdminWire do
           networks: [network_json()]
         }
 
+  @type index_payload :: %{visitors: [t()]}
+
   @doc """
   Render a visitor row + its per-network credentials-with-live-state to
   the admin JSON shape. `per_network` is the `[{credential, live}]` list
@@ -149,4 +151,8 @@ defmodule Grappa.Visitors.AdminWire do
       introspection_degraded: entry.introspection_degraded
     }
   end
+
+  @doc "Wraps the rendered rows as the `GET /admin/visitors` envelope."
+  @spec index_payload([t()]) :: index_payload()
+  def index_payload(rows) when is_list(rows), do: %{visitors: rows}
 end

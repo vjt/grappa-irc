@@ -38,7 +38,7 @@ defmodule GrappaWeb.Admin.FeaturedChannelsController do
         |> FeaturedChannels.list_channels()
         |> Enum.map(&AdminWire.featured_channel_to_admin_json/1)
 
-      json(conn, %{featured_channels: rows})
+      json(conn, AdminWire.index_payload(rows))
     end
   end
 

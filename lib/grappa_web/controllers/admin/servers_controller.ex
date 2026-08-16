@@ -51,7 +51,7 @@ defmodule GrappaWeb.Admin.ServersController do
         |> Servers.list_servers()
         |> Enum.map(&ServerWire.server_to_admin_json/1)
 
-      json(conn, %{servers: rows})
+      json(conn, ServerWire.index_payload(rows))
     end
   end
 

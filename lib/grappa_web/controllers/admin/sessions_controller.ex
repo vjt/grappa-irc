@@ -124,7 +124,7 @@ defmodule GrappaWeb.Admin.SessionsController do
         )
       end)
 
-    json(conn, %{sessions: rows})
+    json(conn, AdminWire.index_payload(rows))
   end
 
   # Split the registry-scan into `(user_ids, visitor_ids)` so each

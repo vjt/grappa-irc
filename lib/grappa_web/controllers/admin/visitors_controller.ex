@@ -80,7 +80,7 @@ defmodule GrappaWeb.Admin.VisitorsController do
         AdminWire.visitor_to_admin_json(v, per_network, touch.last_seen_at, touch.ip)
       end
 
-    json(conn, %{visitors: rows})
+    json(conn, AdminWire.index_payload(rows))
   end
 
   @doc """

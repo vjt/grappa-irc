@@ -88,7 +88,7 @@ defmodule GrappaWeb.Admin.CredentialsController do
         )
       end
 
-    json(conn, %{credentials: rows})
+    json(conn, AdminWire.index_payload(rows))
   end
 
   # Single-row twin of the batch above, for the create / update replies.

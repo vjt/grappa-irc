@@ -27,6 +27,8 @@ defmodule Grappa.Networks.Servers.AdminWire do
           updated_at: DateTime.t()
         }
 
+  @type index_payload :: %{servers: [t()]}
+
   @doc """
   Renders a Server row to the admin JSON shape. The `:network`
   preloaded association is intentionally NOT projected — it would leak
@@ -51,4 +53,8 @@ defmodule Grappa.Networks.Servers.AdminWire do
       updated_at: server.updated_at
     }
   end
+
+  @doc "Wraps the rendered rows as the network's `servers` index envelope."
+  @spec index_payload([t()]) :: index_payload()
+  def index_payload(rows) when is_list(rows), do: %{servers: rows}
 end
