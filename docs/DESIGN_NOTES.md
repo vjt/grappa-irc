@@ -45042,3 +45042,101 @@ setup-beam call sites read back from the parse tree, which proves the
 files are well-formed and wired, not that the runner resolves the
 versions. `scripts/shellcheck.sh` was not run and did not need to be —
 no shell script changed.
+<!-- entry #1303 -->
+
+---
+
+## 2026-08-16 — #1303 + #1301: STATUSMSG is a run, the 005 is the only sigil list, and a recipient is not a window key
+
+Three operator reports on a self-hosted 1.1.0 landed in the same place: the
+STATUSMSG prefix. `@#chan` was refused on send, `@%#chan` misrouted on
+receive, and `@+#chan` misrouted silently. They are one defect class — every
+place that has to decide "is this a membership sigil?" had its own answer,
+and only one of them read the network's 005.
+
+### The peel is the longest run whose remainder is still a channel
+
+`@%#chan` peeled the `@`, found `%#chan` was not a channel, declined the peel
+whole and landed in `$server`. `@+#chan` peeled the `@` and accepted `+#chan`
+as the underlying channel — `+` is an RFC channel prefix in its own right —
+so the row was persisted and broadcast against a channel nobody is in. The
+second is the one that matters more, precisely because nobody reported it:
+it reads as "the message vanished", not "the message went to the wrong tab".
+
+The fix peels every leading sigil the network advertises, and rolls the peel
+back **whole** when what remains is not a channel. Plain greedy was tried on
+paper and rejected, because the `+` collision turns it into a regression:
+on bahamut's `@+` it strips both bytes of `@+chan` — an ops-level notice to
+the modeless channel `+chan` — finds `chan` is no channel, rolls back, and
+sends the row to `$server`. That target routes correctly today under the
+single-sigil peel, so plain greedy would have traded two fixed shapes for two
+broken ones. Backtracking one sigil at a time until the remainder is a
+channel resolves `@+chan`, `++chan`, `@+#chan` and `@%#chan` with no special
+case for any of them, and leaves the modeless-`+chan` guard where it was.
+
+### `meta.statusmsg` is the whole run, because delivery is a union
+
+`@+#chan` records `"@+"`, not `"@"`. A STATUSMSG target reaches the union of
+the named levels, so that line was seen by ops **and** by voiced members.
+Recording only the outermost sigil would let a consumer badge as ops-only a
+line half the channel read — wrong in the direction that matters, and
+uncorrectable downstream because the `+` would simply be gone. The field was
+already typed `String.t()`, so this needs no schema change; what it changes
+is that consumers must stop assuming length 1.
+
+No sorting step, and none is needed: PREFIX is advertised highest-first and
+clients emit sigils in that order, so a well-formed target arrives already
+ordered. A perverse spelling is recorded as it arrived rather than rewritten.
+Rank could not have been recovered anyway — `parse_prefix/1` ends in
+`Map.new/1` and the map crosses the wire as a JSON object, alphabetical by
+mode letter, so the advertised order is destroyed at parse time and never
+reaches a client. The STATUSMSG list is the one place order survives.
+
+### A wire recipient may carry a sigil; a window key may not
+
+`/notice @#chan` 400ed because the POST boundary tested the raw target
+against the channel regex and the nick regex. `@` and `%` were rejected;
+`+#chan` and `&#chan` passed **by accident**, because `+` and `&` are channel
+prefixes — so the voice-level notice worked while the ops-level one, the form
+operators use most, did not.
+
+The fix is a separate validator rather than a widening of
+`validate_post_target_name/1`, and the deciding measurement is where the row
+is keyed. `handle_notice_send/4` keys the echo to the SOURCE window and
+carries the recipient in `meta.notice_target`, so a sigil on a notice
+recipient never becomes a window key. The plain arm is the opposite: there
+the URL channel is both the wire target and the persist key, so admitting
+`@#chan` would manufacture a phantom `@#chan` window — the outbound twin of
+the very defect fixed above. Two arms, two meanings of "target", two doors.
+
+The target reaches the wire **verbatim**. Peeling to validate is not
+permission to rewrite: what `@%#chan` means is the ircd's ruling, so a
+canonicalised target would answer a question nobody asked, and a refusal on
+our own authority would hide the ircd's error behind ours. If the network
+rejects it, the operator sees the truth.
+
+### One sigil list, from the 005, in one place
+
+`Identifier.peel_statusmsg/2` is now the single answer to "what is a STATUSMSG
+sigil on this network", shared by ingress and egress; the SET still arrives
+from the per-network 005 and is never hardcoded. `EventRouter`'s
+`channel_target?/1` delegates to `Identifier.channel_sigil?/1` rather than
+keeping a second copy of `#&!+`: the peel's contract is that what it returns
+is something the dispatch recognises as a channel, and two independent lists
+would drift into a target that peels in one place and lands in `$server` in
+the other.
+
+`Session.statusmsg/2` is the sibling of `casemapping/2` (#537) and exists for
+the same reason — the stateless POST boundary has no `state.isupport`, and
+only the live session has seen the 005. It degrades to the bahamut default
+rather than the empty set: an empty set would refuse every sigil on a parked
+network, which is precisely the failure this issue reported.
+
+### What this does not reach
+
+The member-prefix sigils are a different, adjacent list, and roughly ten
+sites in `lib/` and `cicchetto/src/` still spell `@`/`%`/`+` by hand for
+ranking, glyphs and tier labels. None of them is STATUSMSG and none is
+touched here; they belong to the #1402 class of hand-narrowed closed sets.
+The badge that renders `meta.statusmsg` still names only two levels and still
+assumes one character — that is #1302, deliberately a separate change.
