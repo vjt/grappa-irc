@@ -33,7 +33,17 @@ defmodule Grappa.Session.ServerTest do
   alias Grappa.IRC.Message
   alias Grappa.{IRCServer, PubSub.Topic, QueryWindows, ReadCursor, Repo, Scrollback, Session, WSPresence}
   alias Grappa.Networks.{Credentials, SessionPlan}
-  alias Grappa.Session.{AwayState, Backoff, GhostRecovery, ISupport, RecoverIdentity, Server, WindowState}
+  alias Grappa.Session.{
+    AutoReplyBudget,
+    AwayState,
+    Backoff,
+    GhostRecovery,
+    ISupport,
+    RecoverIdentity,
+    Server,
+    WindowState
+  }
+
   alias Grappa.SessionStateHelpers
   alias Grappa.WindowCounts.PushSource
 
@@ -91,6 +101,23 @@ defmodule Grappa.Session.ServerTest do
   defp await_handshake(server) do
     {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
     :ok
+  end
+
+  # Poll until the fake ircd has seen `target` CTCP PING answers, or the
+  # deadline passes — a condition, not a sleep. Returns whatever the last
+  # sample was so the caller asserts on a number rather than on a timeout.
+  defp await_ctcp_ping_answers(server, target) do
+    await_ctcp_ping_answers(server, target, System.monotonic_time(:millisecond) + 2_000)
+  end
+
+  defp await_ctcp_ping_answers(server, target, deadline) do
+    seen = Enum.count(IRCServer.sent_lines(server), &String.contains?(&1, "\x01PING"))
+
+    cond do
+      seen >= target -> seen
+      System.monotonic_time(:millisecond) >= deadline -> seen
+      true -> await_ctcp_ping_answers(server, target, deadline)
+    end
   end
 
   # #543 INC-6 — a full synthetic connect plan (no `refresh_plan`, so the
@@ -2720,6 +2747,83 @@ defmodule Grappa.Session.ServerTest do
 
       assert Enum.any?(entries, &(&1.target_nick == "bob"))
       assert QueryWindows.open?({:user, user.id}, net_id, "bob")
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # #1404 — the auto-answer is paced by whoever asks, and each answer
+    # costs an outbound frame AND a row in the shared sqlite file. Both are
+    # bounded by ONE budget, so the two counts must move together: a row
+    # claiming the query was answered, beside a line that never went out,
+    # would be a worse outcome than dropping the pair.
+    #
+    # The oracle is the RATIO, not an absolute — `capacity` is a config
+    # knob, so it is read from the module rather than retyped, and the
+    # assertion is that answers are strictly fewer than queries. Refill is
+    # one token per two seconds, so a burst fed in one go cannot earn a
+    # second helping while the feed is in flight; `sent + 1` absorbs at
+    # most one token of slack should the box be slow enough to cross it.
+    test "#1404 a burst of peer CTCP queries is answered under a ceiling, line and row together" do
+      {server, port} = start_server()
+      {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
+
+      # The per-channel topic, not the user topic: these rows land at
+      # `channel = own_nick` (the DM-shaped key an inbound query takes), and
+      # a `:message` broadcast rides the channel topic.
+      :ok =
+        Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.channel(user.name, network.slug, "vjt"))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      capacity = AutoReplyBudget.capacity()
+      queries = capacity * 4
+
+      for n <- 1..queries do
+        IRCServer.feed(server, ":bob!~b@host PRIVMSG vjt :\x01PING #{n}\x01\r\n")
+      end
+
+      # Barrier, and the reason it is a plain PRIVMSG rather than a
+      # `:sys.get_state/1`: the queries are still in flight through the
+      # IRCServer → socket → Client hop when the feed loop returns, so a
+      # round-trip to the session proves only that ITS mailbox is empty.
+      # The session routes inbound in arrival order and persists after each
+      # one, so the broadcast for a marker fed LAST is a durable witness
+      # that every query ahead of it was already routed — answered or
+      # dropped. `assert_receive` matches anywhere in the mailbox, so the
+      # visibility rows queued ahead of the marker do not hide it.
+      marker = "burst drained"
+      IRCServer.feed(server, ":bob!~b@host PRIVMSG vjt :#{marker}\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :message, message: %{body: ^marker}}
+                     },
+                     5_000
+
+      # Counted straight off the table rather than through `fetch/7`: the
+      # quantity under test is "how many rows did the flood write", and a
+      # read path with its own windowing and own-nick semantics would put a
+      # second thing between the assertion and the answer.
+      rows =
+        Grappa.Scrollback.Message
+        |> Ecto.Query.where(
+          [m],
+          m.network_id == ^network.id and m.body == "CTCP PING query → answered"
+        )
+        |> Repo.aggregate(:count)
+
+      assert rows > 0, "the ceiling must bound the courtesy answer, not remove it"
+      assert rows < queries, "every query was answered — nothing bounded the burst"
+      assert rows <= capacity + 1
+
+      # The rows are final at this point; the outbound frames may still be
+      # crossing the loopback socket, so converge on the count rather than
+      # sampling it once. Equality is the property under test — one budget
+      # buys both, so a wire count that never reaches the row count is the
+      # failure this waits to expose.
+      assert await_ctcp_ping_answers(server, rows) == rows,
+             "the visibility row and the outbound line must not diverge"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

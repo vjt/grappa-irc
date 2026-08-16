@@ -158,6 +158,23 @@ config :grappa, :send_throttle,
   oper_capacity: 50,
   oper_refill_per_sec: 5.0
 
+# #1404 — the ceiling on answers a session emits on a STRANGER's command
+# (the CTCP VERSION / PING auto-replies). Distinct from `:send_throttle`
+# above in WHO sets the pace: that one meters the operator's own sends and
+# lives in a node-global `RateLimit.TokenBucket`; this one meters a rate
+# chosen by whoever sends the query, so the arithmetic is pure and the
+# bucket lives in the session's own state — a remote-paced path must not
+# be able to enqueue serialized calls into a node-global process.
+#
+# Same pair of numbers as the ORDINARY send drip on purpose: an answer
+# grappa emits on a stranger's command may not consume more of the
+# upstream's flood allowance than the operator's own client is allowed to.
+# One query costs an outbound frame AND a scrollback row, and one token
+# buys both — see `Grappa.Session.AutoReplyBudget`.
+config :grappa, :auto_reply_budget,
+  capacity: 5,
+  refill_per_sec: 0.5
+
 # GH #630 — coarse per-subject INBOUND request budget spanning EVERY WS
 # `handle_in` verb AND every REST write (POST/PUT/PATCH/DELETE). This is
 # the shared OUTER gate that a flooder cannot dodge by switching surface;

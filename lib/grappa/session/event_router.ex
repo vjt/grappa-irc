@@ -10,6 +10,7 @@ defmodule Grappa.Session.EventRouter do
       @type effect ::
               {:persist, kind, persist_attrs}    -- write a Scrollback row
               | {:reply, iodata()}                -- send a line upstream
+              | {:auto_reply, iodata(), persist}   -- both, or neither, under a ceiling
               | {:topic_changed, channel, topic_entry()}
               | {:channel_modes_changed, channel, channel_mode_entry()}
               | {:members_seeded, channel, members} -- 366 RPL_ENDOFNAMES landed; carries snapshot
@@ -197,6 +198,8 @@ defmodule Grappa.Session.EventRouter do
   @type effect ::
           {:persist, Grappa.Scrollback.Message.kind(), persist_attrs()}
           | {:reply, iodata()}
+          | {:auto_reply, iodata(),
+             {:persist, Grappa.Scrollback.Message.kind(), persist_attrs()}}
           | {:identity_secret_confirmed, String.t()}
           | {:visitor_nick_changed, String.t()}
           | {:topic_changed, String.t(), topic_entry()}
@@ -442,15 +445,21 @@ defmodule Grappa.Session.EventRouter do
   # responses MUST go via NOTICE (not PRIVMSG) to the SENDER's nick to
   # prevent reply loops between two responsive bots.
   #
-  # Two effects:
-  #   1. {:reply, line}    — outbound NOTICE response. Client.send_line
-  #      guarantees CRLF at the transport boundary (see ensure_crlf/1
-  #      in irc/client.ex), so callers don't need to remember.
+  # ONE effect carrying two, `{:auto_reply, line, persist}`:
+  #   1. the outbound NOTICE response. Client.send_line guarantees CRLF at
+  #      the transport boundary (see ensure_crlf/1 in irc/client.ex), so
+  #      callers don't need to remember.
   #   2. {:persist, :notice, attrs} — visible scrollback row in the DM
   #      window for the sender, so cic shows "alice queried grappa for
   #      VERSION" instead of silently consuming the CTCP. CTCP framing
   #      stripped from body for readability; the notice kind matches the
   #      outbound reply (also a NOTICE), pairing query + answer visually.
+  #
+  # They travel as one effect rather than two because the ceiling in
+  # `Session.Server` (`AutoReplyBudget`) must decide for the pair: a row
+  # saying the query was answered, next to a line that was never sent, is
+  # worse than neither. The rate at which this arm can fire is chosen by
+  # whoever sends the query, not by the operator — hence a ceiling at all.
   defp do_route(%Message{command: :privmsg, params: [target, body]} = msg, state)
        when is_binary(target) and is_binary(body) and
               binary_part(body, 0, 1) == <<0x01>> do
@@ -494,7 +503,7 @@ defmodule Grappa.Session.EventRouter do
         {state2, persist_eff} =
           build_persist(state, :notice, dm_channel, sender, notice_body, sender_meta(msg))
 
-        {:cont, state2, [{:reply, reply}, persist_eff]}
+        {:cont, state2, [{:auto_reply, reply, persist_eff}]}
 
       {"PING", _} ->
         # Answered in its own function, not inline: this clause was at
@@ -2899,7 +2908,7 @@ defmodule Grappa.Session.EventRouter do
         sender_meta(msg)
       )
 
-    {:cont, state2, [{:reply, reply}, persist_eff]}
+    {:cont, state2, [{:auto_reply, reply, persist_eff}]}
   end
 
   # #591 — the typed CTCP meta for a persisted row whose body is a CTCP frame,

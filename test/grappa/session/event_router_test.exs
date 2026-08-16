@@ -503,7 +503,7 @@ defmodule Grappa.Session.EventRouterTest do
       body = <<0x01, "VERSION", 0x01>>
       m = msg(:privmsg, ["vjt", body], {:nick, "alice", "u", "h"})
 
-      assert {:cont, ^state, [{:reply, line}, {:persist, :notice, attrs}]} =
+      assert {:cont, ^state, [{:auto_reply, line, {:persist, :notice, attrs}}]} =
                EventRouter.route(m, state)
 
       # RFC 2812 + CTCP spec: response goes via NOTICE (NOT PRIVMSG) to
@@ -593,7 +593,7 @@ defmodule Grappa.Session.EventRouterTest do
       body = <<0x01, "PING 1753776000123", 0x01>>
       m = msg(:privmsg, ["vjt", body], {:nick, "alice", "u", "h"})
 
-      assert {:cont, _, [{:reply, line}, {:persist, :notice, attrs}]} =
+      assert {:cont, _, [{:auto_reply, line, {:persist, :notice, attrs}}]} =
                EventRouter.route(m, state)
 
       assert IO.iodata_to_binary(line) == "NOTICE alice :\x01PING 1753776000123\x01"
@@ -615,7 +615,7 @@ defmodule Grappa.Session.EventRouterTest do
       body = <<0x01, "PING", 0x01>>
       m = msg(:privmsg, ["vjt", body], {:nick, "alice", "u", "h"})
 
-      assert {:cont, _, [{:reply, line}, {:persist, :notice, _}]} =
+      assert {:cont, _, [{:auto_reply, line, {:persist, :notice, _}}]} =
                EventRouter.route(m, state)
 
       assert IO.iodata_to_binary(line) == "NOTICE alice :\x01PING\x01"
@@ -633,7 +633,7 @@ defmodule Grappa.Session.EventRouterTest do
       body = <<0x01, "VERSION", 0x01>>
       m = msg(:privmsg, ["#italia", body], {:nick, "alice", "u", "h"})
 
-      assert {:cont, ^state, [{:reply, line}, {:persist, :notice, attrs}]} =
+      assert {:cont, ^state, [{:auto_reply, line, {:persist, :notice, attrs}}]} =
                EventRouter.route(m, state)
 
       assert IO.iodata_to_binary(line) =~ "NOTICE alice :"
@@ -649,7 +649,7 @@ defmodule Grappa.Session.EventRouterTest do
       body = <<0x01, "VERSION ", 0x01>>
       m = msg(:privmsg, ["vjt", body], {:nick, "alice", "u", "h"})
 
-      assert {:cont, ^state, [{:reply, _}, {:persist, :notice, _}]} =
+      assert {:cont, ^state, [{:auto_reply, _, {:persist, :notice, _}}]} =
                EventRouter.route(m, state)
     end
 

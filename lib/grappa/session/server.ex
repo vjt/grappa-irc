@@ -98,6 +98,7 @@ defmodule Grappa.Session.Server do
   alias Grappa.Scrollback.Wire
 
   alias Grappa.Session.{
+    AutoReplyBudget,
     AwayState,
     Backoff,
     Broadcaster,
@@ -594,6 +595,11 @@ defmodule Grappa.Session.Server do
           # on …" line.
           channels_created: %{String.t() => DateTime.t()},
           userhost_cache: EventRouter.userhost_cache(),
+          # The ceiling on answers this session emits on a stranger's
+          # command (CTCP VERSION/PING). Read with a `Map.get` default so a
+          # process hot-reloaded across the field's introduction answers
+          # instead of KeyError-crashing (the #216 contract).
+          auto_reply_budget: AutoReplyBudget.t(),
           # CP15 B1 + cluster #6 extraction: per-channel window state
           # bundle (states + failure_reasons + failure_numerics +
           # kicked_meta in one struct). Sibling to `members` —
@@ -1204,6 +1210,7 @@ defmodule Grappa.Session.Server do
       channel_modes: %{},
       channels_created: %{},
       userhost_cache: %{},
+      auto_reply_budget: AutoReplyBudget.new(System.monotonic_time(:millisecond)),
       window_state: WindowState.new(),
       in_flight_joins: %{},
       awaiting_invite: MapSet.new(),
@@ -6009,6 +6016,39 @@ defmodule Grappa.Session.Server do
     end
 
     apply_effects(rest, state)
+  end
+
+  # An answer emitted on a STRANGER's command (CTCP VERSION / PING), under
+  # a ceiling. Whoever sends the query chooses the rate, and each one costs
+  # an outbound frame plus a row in the shared sqlite file — two quantities
+  # nothing else on this path bounds, since `RateLimit.TokenBucket` and
+  # `RequestBudget` both meter the SUBJECT's own sends at the web edge.
+  #
+  # Allowed ⇒ expand back into the two ordinary effects, so the line still
+  # leaves through the one `{:reply, _}` door and the row through the one
+  # `{:persist, _, _}` door. Denied ⇒ drop BOTH: the pair travels together
+  # precisely so the scrollback can never claim an answer that never went
+  # out. Not logged per drop — a log line per dropped query would restore
+  # the write amplification the ceiling exists to remove.
+  # `Map.get`/`Map.put`, not `state.field`/`%{state | field}`: a process
+  # hot-reloaded across this field's introduction has no such key, and the
+  # #216 contract is that it answers rather than KeyError-crashes. A fresh
+  # (full) budget is the honest default — it has emitted nothing this
+  # incarnation can account for.
+  defp apply_effects([{:auto_reply, line, persist_eff} | rest], state) do
+    now_ms = System.monotonic_time(:millisecond)
+    budget = Map.get_lazy(state, :auto_reply_budget, fn -> AutoReplyBudget.new(now_ms) end)
+
+    case AutoReplyBudget.take(budget, now_ms) do
+      {:ok, spent} ->
+        apply_effects(
+          [{:reply, line}, persist_eff | rest],
+          Map.put(state, :auto_reply_budget, spent)
+        )
+
+      {:error, :rate_limited, spent} ->
+        apply_effects(rest, Map.put(state, :auto_reply_budget, spent))
+    end
   end
 
   defp apply_effects([{:reply, line} | rest], state) do
