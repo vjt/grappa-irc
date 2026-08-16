@@ -62,6 +62,31 @@ defmodule Grappa.NickMigration do
   disconnecting a user over, and the old-nick state it leaves behind is
   self-consistent. Before #1374 the same busy RAISED through strict
   `{:ok, _} =` binds and took the session down mid-migration.
+
+  ## The transaction earns its place PROSPECTIVELY — do not remove it
+
+  Today no test can kill a mutant that deletes `immediate_transaction/1`
+  from `migrate/1`, and that is a property of the CURRENT step list, not a
+  licence. Every step here is total on real data: the two scrollback
+  renames are `update_all`, `ReadCursor.rename_dm_peer/4` handles a
+  fold-collision by dropping the stale cursor, `QueryWindows.rename/4`
+  merges on collision and even rescues the unique-index race, and the
+  mute's changeset validates only `data` presence and the subject XOR,
+  neither of which a rename of an existing row can violate. The one
+  failure the chain admits — the enclosing retry's budget running out —
+  fires before the first step by construction. Nothing can fail in the
+  middle, so nothing can be observed rolling back.
+
+  That changes the moment the set grows, and CLAUDE.md says it WILL: "A
+  NEW nick-keyed store MUST be added to this migration set or a rename
+  silently strands its old-nick rows." A new store is under no obligation
+  to be total — the next one may carry a validation, a unique constraint,
+  or a genuine `{:error, _}` arm. On that day a half-applied identity
+  becomes reachable and this transaction is the only thing standing
+  between a rename and a window pointing at history that moved without
+  it. It is here for the step that has not been written yet, and the
+  test that will finally be able to buy it is the one that adds a
+  fallible step.
   """
 
   use Boundary,
