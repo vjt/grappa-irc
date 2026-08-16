@@ -91,10 +91,16 @@ case "\$2" in
     logs)
         svc="\${*: -1}"
         if [ "\$svc" = grappa-test ]; then
-            # \`docker logs --timestamps\` shape, with a 30.064 s hole
-            # between the two lines and a damage signature on each.
-            printf '2026-08-16T12:09:04.535000000Z scrollback row dropped\n'
-            printf '2026-08-16T12:09:34.599000000Z db=30064.1ms query returned\n'
+            if [ "\${FAKE_STALL:-1}" = 1 ]; then
+                # \`docker logs --timestamps\` shape, with a 30.064 s hole
+                # between the two lines and a damage signature on each.
+                printf '2026-08-16T12:09:04.535000000Z scrollback row dropped\n'
+                printf '2026-08-16T12:09:34.599000000Z db=30064.1ms query returned\n'
+            else
+                # A healthy stack: the 5 s healthcheck cadence, no damage.
+                printf '2026-08-16T12:09:04.535000000Z healthcheck ok\n'
+                printf '2026-08-16T12:09:09.535000000Z healthcheck ok\n'
+            fi
         else
             printf 'fake container output for %s\n' "\$svc"
         fi
@@ -157,9 +163,9 @@ first_line() {
     grep -q 'grappa-test.*maxgap=30.1' "$CENSUS"
 }
 
-@test "a green run writes the gap census and keeps no raw logs" {
+@test "a CLEAN green run writes the census and keeps no raw logs" {
     cd "$MAIN"
-    FAKE_RUNNER_RC=0 run "$MAIN/scripts/integration.sh"
+    FAKE_RUNNER_RC=0 FAKE_STALL=0 run "$MAIN/scripts/integration.sh"
 
     # Evidence collection, not a new assertion: a green run stays green.
     [ "$status" -eq 0 ]
@@ -171,24 +177,43 @@ first_line() {
     grep -q '^hub' "$CENSUS"
     grep -q '^newcomer-svc' "$CENSUS"
 
-    # ...and it MEASURED. These values come from the stub's stream, so a
+    # ...and it MEASURED. The healthcheck cadence is named as such, so a
     # census that reported a constant, or scanned nothing, cannot pass.
-    grep -q 'grappa-test.*maxgap=30.1' "$CENSUS"
-    grep -q 'grappa-test.*dropped=1' "$CENSUS"
-    grep -q 'grappa-test.*db30=1' "$CENSUS"
+    grep -q 'grappa-test.*maxgap=5.0' "$CENSUS"
+    grep -q 'grappa-test.*gaps_ge_10=0' "$CENSUS"
+    grep -q 'grappa-test.*dropped=0' "$CENSUS"
+    refute grep -q 'GAP' "$CENSUS"
     # A quiet service reads as quiet rather than as missing.
     grep -q 'hub.*maxgap=0.0' "$CENSUS"
 
-    # The 275 MB is the thing that could not be kept: the raw per-service
-    # logs must NOT survive a green run.
+    # The 275 MB is the thing that could not be kept on every green: with
+    # nothing measured, there is nothing to forensick, so the bytes go.
     [ ! -e "$LOGS_DIR/grappa-test.log" ]
     [ ! -e "$LOGS_DIR/hub.log" ]
     [ ! -e "$LOGS_DIR/compose-ps.txt" ]
 
     # The census also reaches stdout, which CI retains as the job log for
     # a green run without any artifact at all.
-    grep -q 'maxgap=30.1' <<<"$output"
+    grep -q 'maxgap=5.0' <<<"$output"
 
     # ...and the stack still came down.
     grep -q 'testnet down' "$LOG"
+}
+
+@test "a green run that MEASURED a stall keeps the bytes too" {
+    cd "$MAIN"
+    FAKE_RUNNER_RC=0 FAKE_STALL=1 run "$MAIN/scripts/integration.sh"
+
+    # Still not a gate: measuring a stall does not fail the run.
+    [ "$status" -eq 0 ]
+    grep -q 'grappa-test.*maxgap=30.1' "$CENSUS"
+
+    # A green run that measured a stall is the first non-blind green there
+    # has ever been, and the census alone cannot be forensicked — so this
+    # is the one green whose bytes are worth keeping. The trigger is the
+    # census's OWN verdict at the same threshold, not a second criterion.
+    [ -s "$LOGS_DIR/grappa-test.log" ]
+    [ -s "$LOGS_DIR/hub.log" ]
+    [ -s "$LOGS_DIR/compose-ps.txt" ]
+    grep -q 'db=30064.1ms query returned' "$LOGS_DIR/grappa-test.log"
 }
