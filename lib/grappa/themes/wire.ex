@@ -42,8 +42,7 @@ defmodule Grappa.Themes.Wire do
 
   alias Grappa.Accounts.User
   alias Grappa.Themes
-  alias Grappa.Themes.Theme
-  alias Grappa.Themes.TokenModel
+  alias Grappa.Themes.{Theme, TokenModel}
   alias Grappa.Visitors.Visitor
 
   # #299 author model A — the fallback attribution label, used only when a
