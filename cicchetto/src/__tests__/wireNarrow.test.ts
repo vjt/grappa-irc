@@ -3,7 +3,10 @@ import {
   narrowAdminEvent,
   narrowAdminSnapshot,
   narrowChannelEvent,
+  narrowMessageResponse,
+  narrowThemeResponse,
   narrowWindowStateEvent,
+  WireShapeError,
 } from "../lib/wireNarrow";
 import { ADMISSION_FLOW } from "../lib/wireTypes";
 
@@ -1175,5 +1178,84 @@ describe("narrowAdminSnapshot (REV-G H24)", () => {
     const good = { kind: "reaper_swept", count: 3, at: "2026-05-22T12:00:00Z" };
     const bad = { kind: "reaper_swept", count: "3", at: "2026-05-22T12:00:00Z" };
     expect(narrowAdminSnapshot({ events: [good, bad] })).toBeNull();
+  });
+});
+
+// ── #1400 — the REST boundary narrowers ────────────────────────────
+//
+// The WS narrowers above answer `null` and the caller drops the push, because
+// another tick is coming. A REST response has no next tick, so vjt's ruling on
+// #1400 makes the REST family FAIL LOUD instead. These cases pin the three
+// facts that ruling turns on — it throws on a missing required field, it
+// tolerates an extra one, and what it returns is a RECONSTRUCTION rather than
+// the body it was handed.
+
+describe("REST narrowers (#1400)", () => {
+  const theme = {
+    id: 7,
+    name: "solarized-night",
+    author: "vjt",
+    built_in: false,
+    published: true,
+    apply_count: 12,
+    in_use: 3,
+    mine: true,
+    payload: { colors: { bg: "#002b36" } },
+    inserted_at: "2026-08-16T10:00:00Z",
+  };
+
+  it("returns the payload when the shape matches", () => {
+    expect(narrowThemeResponse(theme)).toEqual(theme);
+  });
+
+  it("THROWS on a missing required field rather than answering null", () => {
+    // The deploy-window case the ruling is about: a bundle newer than its
+    // server. The old cast turned this into `undefined` in a renderer.
+    const { in_use: _dropped, ...older } = theme;
+    expect(() => narrowThemeResponse(older)).toThrow(WireShapeError);
+  });
+
+  it("throws on a wrong-typed required field", () => {
+    expect(() => narrowThemeResponse({ ...theme, apply_count: "12" })).toThrow(WireShapeError);
+  });
+
+  it("names the shape, not the endpoint, on the thrown error", () => {
+    // One label per schema; the stack carries the call site. Twenty-four
+    // hand-written endpoint strings would be twenty-four things to drift.
+    expect(() => narrowThemeResponse({})).toThrow(/theme/);
+  });
+
+  it("tolerates an EXTRA field — the contract is additive (#447)", () => {
+    expect(() => narrowThemeResponse({ ...theme, a_field_from_the_future: 1 })).not.toThrow();
+  });
+
+  it("RECONSTRUCTS the object from declared fields, dropping the undeclared", () => {
+    // The behaviour change a cast did not have: what comes back is built from
+    // the schema, not the parsed body. Measured to be shape-preserving across
+    // the twelve shapes today — asserted here so it stops being invisible.
+    const out = narrowThemeResponse({ ...theme, a_field_from_the_future: 1 });
+    expect(out).toEqual(theme);
+    expect("a_field_from_the_future" in out).toBe(false);
+  });
+
+  it("narrows a message row on the 201 arm", () => {
+    const row = {
+      id: 4321,
+      network: "azzurra",
+      channel: "#italia",
+      server_time: 1_700_000_000,
+      kind: "privmsg",
+      sender: "vjt",
+      body: "ciao",
+      meta: {},
+    };
+    expect(narrowMessageResponse(row)).toEqual(row);
+  });
+
+  it("throws on the 202 ack body — it is not a message and has no schema", () => {
+    // #1430. The caller reads the STATUS and never brings `{ok: true}` here;
+    // this asserts that if it ever did, the boundary would say so loudly
+    // rather than hand back a row-shaped object with no id.
+    expect(() => narrowMessageResponse({ ok: true })).toThrow(WireShapeError);
   });
 });

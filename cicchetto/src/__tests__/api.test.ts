@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../lib/api";
+import { WireShapeError } from "../lib/wireNarrow";
 
 // `api.ts` boundary: REST shape + 401 dead-token detect. The 401
 // handler registry is the only mutable module-level state — explicit
@@ -1176,5 +1177,66 @@ describe("#1283 — the enrolment door is password-gated, so cic must knock with
     stubFetch(401, { error: "invalid_credentials" });
     await expect(api.startTotpEnrollment("bearer", "wrong")).rejects.toBeInstanceOf(api.ApiError);
     expect(handler).not.toHaveBeenCalled();
+  });
+});
+
+// ── #1400 / #1430 — the REST boundary at the api doors ─────────────
+
+describe("sendMessage reads the STATUS, not just res.ok (#1430)", () => {
+  const row = {
+    id: 4321,
+    network: "azzurra",
+    channel: "#italia",
+    server_time: 1_700_000_000,
+    kind: "privmsg",
+    sender: "vjt",
+    body: "ciao",
+    meta: {},
+  };
+
+  it("returns the narrowed row on 201", async () => {
+    stubFetch(201, row);
+    await expect(api.sendMessage("t", "azzurra", "#italia", "ciao")).resolves.toEqual(row);
+  });
+
+  it("returns null on the 202 ack instead of an id-less object", async () => {
+    // The server's `:no_persist` arm — a *Serv target, /notice to a service, a
+    // no-persist CTCP. 202 is `res.ok`, so before #1430 `{ok: true}` was cast
+    // to a ScrollbackMessage and the caller read `row.id` as undefined.
+    stubFetch(202, { ok: true });
+    await expect(
+      api.sendMessage("t", "nickserv-net", "NickServ", "IDENTIFY x"),
+    ).resolves.toBeNull();
+  });
+
+  it("fails loud on a 201 whose row does not match the schema", async () => {
+    stubFetch(201, { ...row, id: "4321" });
+    await expect(api.sendMessage("t", "azzurra", "#italia", "ciao")).rejects.toBeInstanceOf(
+      WireShapeError,
+    );
+  });
+});
+
+describe("converted REST doors fail loud on a shape mismatch (#1400)", () => {
+  it("rejects an admin vhost response that is missing a required field", async () => {
+    // The deploy-window case: cic ahead of its server. Before #1400 this
+    // returned a type-checked value with a hole in it.
+    stubFetch(201, { id: 1, address: "1.2.3.4", in_pool: true });
+    await expect(api.adminCreateVhost("t", { address: "1.2.3.4" })).rejects.toBeInstanceOf(
+      WireShapeError,
+    );
+  });
+
+  it("passes a complete admin vhost response through", async () => {
+    const vhost = {
+      id: 1,
+      address: "1.2.3.4",
+      in_pool: true,
+      generally_available: false,
+      inserted_at: "2026-08-16T10:00:00Z",
+      updated_at: "2026-08-16T10:00:00Z",
+    };
+    stubFetch(201, vhost);
+    await expect(api.adminCreateVhost("t", { address: "1.2.3.4" })).resolves.toEqual(vhost);
   });
 });

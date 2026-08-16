@@ -15,6 +15,22 @@ import { bootFetch } from "./bootFetch";
 import type { ModesEntry, TopicEntry } from "./channelTopic";
 import { getOrCreateClientId } from "./clientId";
 import type { MemberEntry } from "./memberTypes";
+// #1400 — the REST boundary narrowers. `wireNarrow.ts` is the only module that
+// names a generated `S_*` schema; every door here calls a narrower, so the
+// schema constants stay in one place and the failure mode stays in one place.
+import {
+  narrowAdminFeaturedChannelResponse,
+  narrowAdminServerResponse,
+  narrowAdminUserResponse,
+  narrowAdminVhostGrantResponse,
+  narrowAdminVhostResponse,
+  narrowCredentialResponse,
+  narrowDirectoryPageResponse,
+  narrowFeaturedChannelsResponse,
+  narrowMessageResponse,
+  narrowSessionLogListResponse,
+  narrowSessionLogSessionsResponse,
+} from "./wireNarrow";
 // S15/S3 — derive the upload-settings wire shape from the codegen
 // mirror of `Grappa.ServerSettings.Wire.upload_view/0`; the
 // `active_host` closed set (`"embedded" | "litterbox"`) is pinned by
@@ -53,8 +69,6 @@ import type {
   ScrollbackWireT,
   ServerSettingsWireUploadView,
   SessionISupportCasemapping,
-  SessionLogWireListResult,
-  SessionLogWireSessionsResult,
   SessionLogWireT,
   SessionWireBanlistBundlePayload,
   SessionWireBanlistEntry,
@@ -1915,7 +1929,7 @@ export async function adminListSessionLog(
   const url = limit === undefined ? "/admin/session_log" : `/admin/session_log?limit=${limit}`;
   const res = await fetch(url, { headers: buildHeaders(token) });
   if (!res.ok) throw await readError(res);
-  const body = (await res.json()) as SessionLogWireListResult;
+  const body = narrowSessionLogListResponse(await res.json());
   return body.session_log;
 }
 
@@ -1936,7 +1950,7 @@ export async function adminListSessionLogSessions(
       : `/admin/session_log/sessions?limit=${limit}`;
   const res = await fetch(url, { headers: buildHeaders(token) });
   if (!res.ok) throw await readError(res);
-  const body = (await res.json()) as SessionLogWireSessionsResult;
+  const body = narrowSessionLogSessionsResponse(await res.json());
   return body.session_log_sessions;
 }
 
@@ -2079,7 +2093,7 @@ export async function adminCreateVhost(token: string, body: AdminVhostCreate): P
     body: JSON.stringify(body),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as AdminVhost;
+  return narrowAdminVhostResponse(await res.json());
 }
 
 export async function adminPatchVhost(
@@ -2093,7 +2107,7 @@ export async function adminPatchVhost(
     body: JSON.stringify(body),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as AdminVhost;
+  return narrowAdminVhostResponse(await res.json());
 }
 
 export async function adminDeleteVhost(token: string, id: number): Promise<void> {
@@ -2115,7 +2129,7 @@ export async function adminGrantVhost(
     body: JSON.stringify(body),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as AdminVhostGrant;
+  return narrowAdminVhostGrantResponse(await res.json());
 }
 
 export async function adminRevokeVhostGrant(token: string, grantId: number): Promise<void> {
@@ -2299,7 +2313,7 @@ export async function listDirectory(
     { headers: buildHeaders(token) },
   );
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as DirectoryPage;
+  return narrowDirectoryPageResponse(await res.json());
 }
 
 // Mirror of `GrappaWeb.DirectoryController.refresh/2`. POSTs to kick off
@@ -2422,13 +2436,31 @@ export async function countMessagesAfter(
 // instead of in a comment nobody reads.
 export type MessageRelay = { kind: "ctcp" | "notice"; target: string };
 
+// #1400 / #1430 — this door is a union discriminated by STATUS, not by a field
+// in the body, and until now the client did not read the discriminant.
+// `MessagesController.render_send_result/2` answers either
+//
+//   201 + the persisted row (`Grappa.Scrollback.Wire.to_json/1`)
+//   202 + `{ok: true}`      — an ack for a send the server deliberately did not
+//                             persist: a `*Serv` target, `/notice` to a
+//                             service, a no-persist CTCP
+//
+// and 202 is `res.ok`, so the old `as ScrollbackMessage` cast covered both and
+// handed the caller an object with no `id`. `postTopic` below already reads its
+// own 202 correctly ("we don't read the 202 body"); this door did not.
+//
+// `null` is the 202, and it means "accepted, no row" — not "failed". The 201
+// arm narrows strictly like every other REST door. The 202 body is NOT narrowed
+// and NOT cast: it carries no domain data, and writing a schema for two keys
+// the server never typespec'd would be the second SSOT the codegen exists to
+// prevent.
 export async function sendMessage(
   token: string,
   networkSlug: string,
   channelName: string,
   body: string,
   relay?: MessageRelay,
-): Promise<ScrollbackMessage> {
+): Promise<ScrollbackMessage | null> {
   const payload =
     relay === undefined
       ? { body }
@@ -2444,7 +2476,8 @@ export async function sendMessage(
     },
   );
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as ScrollbackMessage;
+  if (res.status === 202) return null;
+  return narrowMessageResponse(await res.json());
 }
 
 // Mirror of `GrappaWeb.ChannelsController.topic/2`. Sets the topic on
@@ -2669,7 +2702,7 @@ export async function patchNetwork(
     body: JSON.stringify(body),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as CredentialJson;
+  return narrowCredentialResponse(await res.json());
 }
 
 // #211 phase 4c/6 — visitor multi-network ACCRETION: attach + spawn an
@@ -2703,7 +2736,7 @@ export async function updateNetworkIdentity(
     body: JSON.stringify(fields),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as CredentialJson;
+  return narrowCredentialResponse(await res.json());
 }
 
 // #189 — per-network on-connect perform list. `perform_list` is the raw
@@ -2743,7 +2776,7 @@ export async function putNetworkPassword(
     body: JSON.stringify({ password }),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as CredentialJson;
+  return narrowCredentialResponse(await res.json());
 }
 
 export async function getPerform(token: string, networkSlug: string): Promise<PerformView> {
@@ -2802,7 +2835,7 @@ export async function adminCreateUser(token: string, body: AdminUserCreate): Pro
     body: JSON.stringify(body),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as AdminUser;
+  return narrowAdminUserResponse(await res.json());
 }
 
 export async function adminUpdateUserAdmin(
@@ -2816,7 +2849,7 @@ export async function adminUpdateUserAdmin(
     body: JSON.stringify({ is_admin }),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as AdminUser;
+  return narrowAdminUserResponse(await res.json());
 }
 
 export async function adminUpdateUserPassword(
@@ -2830,7 +2863,7 @@ export async function adminUpdateUserPassword(
     body: JSON.stringify({ password }),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as AdminUser;
+  return narrowAdminUserResponse(await res.json());
 }
 
 export async function adminDeleteUser(token: string, id: string): Promise<void> {
@@ -2912,7 +2945,7 @@ export async function adminAddServer(
     body: JSON.stringify(body),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as AdminServer;
+  return narrowAdminServerResponse(await res.json());
 }
 
 export async function adminUpdateServer(
@@ -2932,7 +2965,7 @@ export async function adminUpdateServer(
     },
   );
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as AdminServer;
+  return narrowAdminServerResponse(await res.json());
 }
 
 export async function adminDeleteServer(
@@ -2985,7 +3018,7 @@ export async function getFeaturedChannels(
     headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);
-  return ((await res.json()) as FeaturedChannelsResponse).channels;
+  return narrowFeaturedChannelsResponse(await res.json()).channels;
 }
 
 export async function adminListFeaturedChannels(
@@ -3010,7 +3043,7 @@ export async function adminAddFeaturedChannel(
     { method: "POST", headers: buildHeaders(token), body: JSON.stringify(body) },
   );
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as AdminFeaturedChannel;
+  return narrowAdminFeaturedChannelResponse(await res.json());
 }
 
 export async function adminUpdateFeaturedChannel(
@@ -3026,7 +3059,7 @@ export async function adminUpdateFeaturedChannel(
     { method: "PUT", headers: buildHeaders(token), body: JSON.stringify(body) },
   );
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as AdminFeaturedChannel;
+  return narrowAdminFeaturedChannelResponse(await res.json());
 }
 
 export async function adminDeleteFeaturedChannel(

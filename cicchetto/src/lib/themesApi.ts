@@ -16,6 +16,7 @@
 
 import { buildHeaders, readError } from "./api";
 import { getOrCreateClientId } from "./clientId";
+import { narrowThemeResponse } from "./wireNarrow";
 import type { ThemesWireT } from "./wireTypes";
 
 // The closed font-family allow-list — mirror of
@@ -135,7 +136,7 @@ export async function listBuiltinBackgrounds(token: string): Promise<BuiltinBack
 export async function getTheme(token: string, id: number): Promise<ThemesWireT> {
   const res = await fetch(`/themes/${id}`, { headers: buildHeaders(token) });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as ThemesWireT;
+  return narrowThemeResponse(await res.json());
 }
 
 export async function createTheme(token: string, body: CreateThemeBody): Promise<ThemesWireT> {
@@ -145,7 +146,7 @@ export async function createTheme(token: string, body: CreateThemeBody): Promise
     body: JSON.stringify(body),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as ThemesWireT;
+  return narrowThemeResponse(await res.json());
 }
 
 export async function updateTheme(
@@ -159,7 +160,7 @@ export async function updateTheme(
     body: JSON.stringify(body),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as ThemesWireT;
+  return narrowThemeResponse(await res.json());
 }
 
 export async function deleteTheme(token: string, id: number): Promise<void> {
@@ -176,7 +177,7 @@ export async function publishTheme(token: string, id: number): Promise<ThemesWir
     headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as ThemesWireT;
+  return narrowThemeResponse(await res.json());
 }
 
 export async function unpublishTheme(token: string, id: number): Promise<ThemesWireT> {
@@ -185,7 +186,7 @@ export async function unpublishTheme(token: string, id: number): Promise<ThemesW
     headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as ThemesWireT;
+  return narrowThemeResponse(await res.json());
 }
 
 export async function copyTheme(token: string, id: number): Promise<ThemesWireT> {
@@ -194,7 +195,7 @@ export async function copyTheme(token: string, id: number): Promise<ThemesWireT>
     headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);
-  return (await res.json()) as ThemesWireT;
+  return narrowThemeResponse(await res.json());
 }
 
 // #358 — the resolved day/night theme pair. `light` is the day (light-mode)

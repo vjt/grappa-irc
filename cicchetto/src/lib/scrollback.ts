@@ -1174,7 +1174,15 @@ const exports = identityScopedStore((onIdentityChange) => {
     const local = scrollbackByChannel()[key];
     const hasRenderedRow = local !== undefined && local.length > 0;
     const current = getReadCursor(slug, name);
-    if (hasRenderedRow && (current === null || row.id > current)) {
+    // #1430 — `null` is the server's 202 "accepted, no row": a `*Serv` target,
+    // `/notice` to a service, a no-persist CTCP. Nothing was persisted, so
+    // there is no id to advance the cursor TO and no row to advance it PAST.
+    // The gate is skipped whole rather than run against an absent id — which
+    // is what the old cast produced, since `{ok: true} as ScrollbackMessage`
+    // reaches here with `id` undefined and a null cursor lets the disjunct
+    // through. The send-relatch below still fires: the operator did send in
+    // this window, and that is unchanged by whether a row came back.
+    if (row !== null && hasRenderedRow && (current === null || row.id > current)) {
       void setReadCursor(t, slug, name, row.id);
     }
     // Send-relatch (post-resolve half): fire AFTER the optimistic cursor

@@ -11,11 +11,39 @@ import type { MemberEntry } from "./memberTypes";
 // #429 — the generated RUNTIME schemas. `S_*` consts are the same typespecs
 // `wireTypes.ts` mirrors at compile time, emitted as data so the boundary can
 // enforce them after tsc has erased the types.
-import { S_AdminEventsWireEvent, S_AdminOverviewWireT, S_SessionLogWireT } from "./wireSchema";
+import {
+  S_AccountsAdminWireT,
+  S_AdminEventsWireEvent,
+  S_AdminOverviewWireT,
+  S_ChannelDirectoryWireIndexPayload,
+  S_NetworksFeaturedChannelsAdminWireT,
+  S_NetworksFeaturedChannelsWireIndexPayload,
+  S_NetworksServersAdminWireT,
+  S_NetworksWireCredentialJson,
+  S_ScrollbackWireT,
+  S_SessionLogWireListResult,
+  S_SessionLogWireSessionsResult,
+  S_SessionLogWireT,
+  S_ThemesWireT,
+  S_VhostsAdminWireGrantJson,
+  S_VhostsAdminWireVhostJson,
+} from "./wireSchema";
 import type {
+  AccountsAdminWireT,
   AdminOverviewWireT,
+  ChannelDirectoryWireIndexPayload,
+  NetworksFeaturedChannelsAdminWireT,
+  NetworksFeaturedChannelsWireIndexPayload,
+  NetworksServersAdminWireT,
+  NetworksWireCredentialJson,
+  ScrollbackWireT,
   SessionISupportCasemapping,
+  SessionLogWireListResult,
+  SessionLogWireSessionsResult,
   SessionLogWireT,
+  ThemesWireT,
+  VhostsAdminWireGrantJson,
+  VhostsAdminWireVhostJson,
   WindowCountsSeverity,
 } from "./wireTypes";
 // #410 — the runtime allowlists derive from the codegen-emitted `as const`
@@ -27,6 +55,7 @@ import {
   SCROLLBACK_MESSAGE_KIND,
   WINDOW_COUNTS_SEVERITY,
 } from "./wireTypes";
+import type { Infer, WireNode } from "./wireValidate";
 import { validate } from "./wireValidate";
 
 // #267 — narrow the window_counts severity to the closed union, defaulting
@@ -653,4 +682,154 @@ export function narrowSessionLogEntry(raw: unknown): SessionLogWireT | null {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;
   return validate(S_SessionLogWireT, r.old_nick === undefined ? { ...r, old_nick: null } : r);
+}
+
+// ── #1400 — the REST boundary ──────────────────────────────────────
+//
+// The narrowers above serve the WS edge, where `T | null` is the right shape
+// because the caller drops the push and waits: `adminOverview.ts` states it —
+// "A malformed push KEEPS the last good reading … the next honest tick is only
+// an interval away". A REST response has no next tick. Handing the caller
+// `null` would leave it with nothing and no way to say why, so the two edges
+// need different failure MODES over the same schemas.
+//
+// The mode, per vjt's ruling on #1400: FAIL LOUD. A required field that the
+// payload does not carry — the case a deploy window produces, cic newer than
+// its server — makes the boundary reject the response and the surface fail
+// VISIBLY. It does not fall through to `undefined` in a renderer. Extra fields
+// stay harmless: the contract is additive (#447) and `validate` already ignores
+// undeclared keys rather than rejecting them.
+//
+// ## The mode lives HERE, once
+//
+// `narrowRest` is the only place that decides what a REST shape mismatch does.
+// The twelve narrowers below choose a schema and a label; none of them decides
+// how to fail. Thirteen copies of a throw would be thirteen chances to soften
+// one of them into a silent default.
+//
+// ## Where a tolerance goes, when one is needed
+//
+// Not into `narrowRest`, and not into a per-shape `if`. The house pattern is a
+// WRAPPER around the validate call, named as policy — `old_nick` in
+// `narrowSessionLogEntry` above is the worked example, and #1393 measured that
+// exactly three of ~30 arms needed one. A field known to be new gets a wrapper
+// that defaults it; everything else stays strict.
+//
+// ## What the conversion changes about the value
+//
+// A cast handed the caller the parsed body VERBATIM. `validate` hands back an
+// object RECONSTRUCTED from the declared fields only (`walkObject`,
+// `wireValidate.ts:223`). Any key the server sends that its own typespec does
+// not declare is dropped here rather than travelling on unnoticed. Measured
+// before this landed: across the twelve shapes, the twenty render paths behind
+// them attach no such key — every one renders a `*.Wire` result and nothing
+// else — so the reconstruction is shape-preserving today. It is not guaranteed
+// to stay that way by anything but that measurement.
+
+/**
+ * A REST response whose shape the running bundle cannot read.
+ *
+ * Deliberately NOT an `ApiError`. That class carries a `code` from the server's
+ * generated error-token set, and `friendlyApiError` maps it; minting a token
+ * the server never emits would repeat the very defect #1400 records against
+ * the hand-rolled `"Unauthorized"`. This is a client-side boundary rejection,
+ * so it is its own class and `errorMessage` renders its `message` through the
+ * plain-`Error` arm.
+ */
+export class WireShapeError extends Error {
+  readonly shape: string;
+
+  constructor(shape: string) {
+    super(`the server sent a ${shape} this version of the app cannot read`);
+    this.name = "WireShapeError";
+    this.shape = shape;
+  }
+}
+
+/**
+ * The REST failure mode, in one place. Validates `raw` against a generated
+ * schema and THROWS on mismatch — see the section note above for why REST
+ * cannot answer with `null` the way the WS narrowers do.
+ *
+ * `shape` names the wire shape, not the endpoint: the stack already carries
+ * the call site, and one label per schema cannot drift out of step with the
+ * twenty-four call sites the way twenty-four hand-written endpoint strings
+ * could.
+ */
+function narrowRest<const N extends WireNode>(node: N, raw: unknown, shape: string): Infer<N> {
+  const out = validate(node, raw);
+  if (out === null) throw new WireShapeError(shape);
+  return out;
+}
+
+/** `GET /themes/:id`, `POST /themes`, `PATCH /themes/:id`, publish/unpublish/copy. */
+export function narrowThemeResponse(raw: unknown): ThemesWireT {
+  return narrowRest(S_ThemesWireT, raw, "theme");
+}
+
+/** `PATCH /networks/:slug`, `PATCH /networks/:slug/identity`, `PUT /networks/:slug/password`. */
+export function narrowCredentialResponse(raw: unknown): NetworksWireCredentialJson {
+  return narrowRest(S_NetworksWireCredentialJson, raw, "network credential");
+}
+
+/** `POST /admin/users`, `PATCH /admin/users/:id`, `PUT /admin/users/:id/password`. */
+export function narrowAdminUserResponse(raw: unknown): AccountsAdminWireT {
+  return narrowRest(S_AccountsAdminWireT, raw, "user");
+}
+
+/** `POST /admin/vhosts`, `PATCH /admin/vhosts/:id`. */
+export function narrowAdminVhostResponse(raw: unknown): VhostsAdminWireVhostJson {
+  return narrowRest(S_VhostsAdminWireVhostJson, raw, "vhost");
+}
+
+/** `POST /admin/vhosts/:id/grants`. */
+export function narrowAdminVhostGrantResponse(raw: unknown): VhostsAdminWireGrantJson {
+  return narrowRest(S_VhostsAdminWireGrantJson, raw, "vhost grant");
+}
+
+/** `POST` + `PUT /admin/networks/:id/servers[/:id]`. */
+export function narrowAdminServerResponse(raw: unknown): NetworksServersAdminWireT {
+  return narrowRest(S_NetworksServersAdminWireT, raw, "server");
+}
+
+/** `POST` + `PUT /admin/networks/:id/featured_channels[/:id]`. */
+export function narrowAdminFeaturedChannelResponse(
+  raw: unknown,
+): NetworksFeaturedChannelsAdminWireT {
+  return narrowRest(S_NetworksFeaturedChannelsAdminWireT, raw, "featured channel");
+}
+
+/**
+ * The **201** arm of `POST /networks/:slug/channels/:channel/messages` only.
+ *
+ * That endpoint is a union discriminated by STATUS, not by a field: 202 carries
+ * `%{ok: true}` — an ack for a send the server deliberately did not persist (a
+ * `*Serv` target, `/notice` to a service, a no-persist CTCP). The caller reads
+ * the status and never brings the 202 body here; there is no schema for it and
+ * inventing one for two keys would be a second SSOT. See #1430.
+ */
+export function narrowMessageResponse(raw: unknown): ScrollbackWireT {
+  return narrowRest(S_ScrollbackWireT, raw, "message");
+}
+
+/** `GET /admin/session_log`. */
+export function narrowSessionLogListResponse(raw: unknown): SessionLogWireListResult {
+  return narrowRest(S_SessionLogWireListResult, raw, "session log");
+}
+
+/** `GET /admin/session_log/sessions`. */
+export function narrowSessionLogSessionsResponse(raw: unknown): SessionLogWireSessionsResult {
+  return narrowRest(S_SessionLogWireSessionsResult, raw, "session list");
+}
+
+/** `GET /networks/:slug/featured`. */
+export function narrowFeaturedChannelsResponse(
+  raw: unknown,
+): NetworksFeaturedChannelsWireIndexPayload {
+  return narrowRest(S_NetworksFeaturedChannelsWireIndexPayload, raw, "featured channel list");
+}
+
+/** `GET /networks/:slug/directory`. */
+export function narrowDirectoryPageResponse(raw: unknown): ChannelDirectoryWireIndexPayload {
+  return narrowRest(S_ChannelDirectoryWireIndexPayload, raw, "channel directory page");
 }
