@@ -45042,3 +45042,93 @@ setup-beam call sites read back from the parse tree, which proves the
 files are well-formed and wired, not that the runner resolves the
 versions. `scripts/shellcheck.sh` was not run and did not need to be —
 no shell script changed.
+<!-- entry #1409 -->
+
+---
+
+## 2026-08-16 — #1409: three infra findings, and what measurement did to their premises
+
+Bucket I of the 2026-08-15 review. All three findings survive; none of
+the three survives in the shape the review wrote it, and one of them was
+posed as an either/or that only an experiment could settle.
+
+### D-S7: the collision the overlay guarded against does not happen
+
+`compose.oneshot.yaml` and `_lib.sh` both stated that a oneshot without
+the overlay "inherits `container_name: grappa` and the host
+port-publishes, and both collide with the long-lived copy". Six
+`compose run --rm` invocations on the deploy path never layered it and
+never collided. Both could not be true.
+
+The first experiment was worthless and is recorded because of it. With
+`grappa` up and holding `192.168.53.12:4000`, the raw `run --rm`
+succeeded — but the falsification step, the same run with
+`--service-ports`, ALSO succeeded. A collision oracle cannot separate
+"`run` suppresses the publish" from "this host tolerates a double bind",
+so the pass proved nothing.
+
+Measuring the thing itself instead, via `docker inspect` on the
+ephemeral container, with `--service-ports` as the positive control:
+
+| overlay key | measured without it | verdict |
+|---|---|---|
+| `container_name: !reset null` | `/grappa-grappa-run-3f90d538d15f` | no-op |
+| `ports: !reset []` | `PortBindings: {}` (control: binds `192.168.53.12:4000`) | no-op |
+| `restart: "no"` | `RestartPolicy: no` already | no-op |
+| `healthcheck: disable: true` | full `curl /healthz`, 5 retries, INHERITED | load-bearing |
+
+So the prose was the defect and the file reduces to one key. **Scope of
+that measurement, which bounds the claim: Docker Desktop on macOS, one
+Compose version, one host, on 2026-08-16. It was not verified on the
+Linux the CI runs.** The bats suite deliberately pins OUR file and not
+Compose's semantics — a test asserting `PortBindings` would pin someone
+else's product, break on their upgrade with our tree unchanged, and cost
+a docker run inside a CI already near forty minutes (#1331 cost
+tiebreak).
+
+### D-S11: the fallback was dead code, and the tool died mute
+
+The review had `db.sh` "silently reporting `dev`" and then failing on the
+next `in_container` call. Measured from a real worktree, it exits 1
+having written nothing to either stream, and never reaches the second
+call.
+
+`die` is an `exit 1`. An `exit` inside a command substitution terminates
+the SUBSHELL, so in
+
+    env="$(in_container printenv MIX_ENV 2>/dev/null || echo dev)"
+
+the `|| echo dev` could never run — it was dead the day it was written.
+`env` came back empty, `set -e` ended the script on the assignment, and
+the message was already inside `2>/dev/null`. General rule worth
+carrying: **a `|| fallback` on a command substitution whose command can
+`exit` is not a fallback.** It only catches a non-zero RETURN.
+
+The repair the review advised — quote `$MODE_ARG` — would have added a
+second bug: quoting an empty scalar hands sqlite3 `""` as its first
+argument, which it reads as a filename. The unquoted form was getting
+that right by accident, so the mode became an array, which gets it right
+on purpose. A green-before-and-after test pins it, and the mutant that
+applies the review's advice is what makes that test worth its line.
+
+### D-S6: honest documentation beats a knob with no user
+
+`PORT` is honoured by exactly one Docker-side consumer, the compose line
+that passes it into the app; everything else hardcodes 4000. Docker is
+the local dev stack, so threading it would mean the publish, two
+healthchecks, three probes and two POSTs for no user. It is marked
+unsupported in the two places an operator reads, with `GRAPPA_PUBLISH`
+named as the knob that does work. The drift gate that pins "no consumer"
+first points the same grep at `infra/linux/install.sh`, the substrate
+that DOES honour `${PORT}`: if that known-positive stops matching, the
+probe is broken and every absence assertion is vacuous.
+
+### What the review's line numbers cost
+
+Two of the three findings cite `scripts/deploy.sh` lines that do not
+exist: it has been a 69-line consumer since #1384 and the six raw
+`run --rm` now live in `infra/lib/deploy_docker.sh` plus
+`scripts/deploy-cic.sh`. The "one-character-edit hazard" phrase quoted
+from `_lib.sh` is not in the file either. A review pinned to a base
+(`575e203a`) that has since moved is a set of claims to re-locate, not a
+map to follow.
