@@ -134,7 +134,7 @@ defmodule GrappaWeb.Validation do
   @spec validate_wire_recipient_name(String.t(), [String.t()]) :: :ok | {:error, :bad_request}
   def validate_wire_recipient_name(name, statusmsg)
       when is_binary(name) and is_list(statusmsg) do
-    {peeled, _run} = Identifier.peel_statusmsg(name, statusmsg)
+    {peeled, _} = Identifier.peel_statusmsg(name, statusmsg)
     validate_post_target_name(peeled)
   end
 
