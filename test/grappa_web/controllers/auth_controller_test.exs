@@ -246,6 +246,51 @@ defmodule GrappaWeb.AuthControllerTest do
       assert session_count() == 1
     end
 
+    # #1374 P-S3 — the 2FA door was the ONE second-factor path with no
+    # `BusyRetry` anywhere: `verify_second_factor/3` called `TOTP.verify/3`
+    # bare, and `TOTP.verify/3` is the #524 shape exactly (a `Repo.get!` READ
+    # then a conditional `update_all` WRITE inside one DEFERRED transaction).
+    # A transient busy there surfaced as an uncaught `Exqlite.Error` — a 500
+    # at the login door, where #518 promises a typed 503.
+    #
+    # The Sandbox cannot raise a real SQLITE_BUSY (pool_size 1, no
+    # self-contention), hence the seam. Armed AFTER the password step so the
+    # faults can only land on the verify request.
+    test "sustained DB busy at the TOTP door is a typed 503, not a 500", %{conn: conn} do
+      {user, password} = user_fixture_with_password()
+      secret = arm_totp(user)
+      on_exit(fn -> clear_totp_window(user.id) end)
+
+      pending =
+        conn
+        |> post("/auth/login", %{"identifier" => user.name, "password" => password})
+        |> json_response(202)
+
+      {:ok, code} = TOTP.code_at(secret, System.system_time(:second))
+
+      # `arm_totp/1` already spent the PREVIOUS step, so the pre-state is a
+      # non-nil step — read it rather than assume nil, or the assertion below
+      # would pass against a value the enrolment set.
+      armed_step = Repo.get!(Grappa.Accounts.User, user.id).totp_last_used_step
+      assert is_integer(armed_step)
+
+      Grappa.Repo.BusyRetry.inject_transient_faults(10_000)
+
+      degraded =
+        post(conn, "/auth/totp/verify", %{
+          "challenge_token" => pending["challenge_token"],
+          "code" => code
+        })
+
+      assert json_response(degraded, 503) == %{"error" => "db_unavailable"}
+
+      # Degraded, not half-spent: no bearer, and the TOTP step was NOT
+      # consumed — the code is still redeemable once the DB frees up. A
+      # rolled-back transaction is what makes that true.
+      assert session_count() == 0
+      assert Repo.get!(Grappa.Accounts.User, user.id).totp_last_used_step == armed_step
+    end
+
     test "invalid TOTP never mints a bearer", %{conn: conn} do
       {user, password} = user_fixture_with_password()
       _ = arm_totp(user)
