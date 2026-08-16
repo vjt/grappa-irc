@@ -92,12 +92,51 @@ defmodule GrappaWeb.Validation do
   bytes upstream, pollute the synthetic Server-window scrollback via the
   single-source echo path, and probe operator privileges. The synthetic
   is for *reading* server-window scrollback, never for *writing*.
-  Used by `MessagesController.create/2`.
+
+  Used by `MessagesController.create/2`'s plain arm, where the target is
+  ALSO the persist key. The notice/CTCP arms take
+  `validate_wire_recipient_name/2` instead — see there for why a wire
+  recipient may carry a STATUSMSG sigil and a window key may not.
   """
   @spec validate_post_target_name(String.t()) :: :ok | {:error, :bad_request}
   def validate_post_target_name("$server"), do: {:error, :bad_request}
 
   def validate_post_target_name(name), do: validate_target_name(name)
+
+  @doc """
+  Like `validate_post_target_name/1` but for a WIRE RECIPIENT: additionally
+  accepts a channel addressed at a membership level (`@#chan`, `@%#chan`),
+  peeling the network's advertised STATUSMSG sigils before testing the name
+  behind them. `statusmsg` comes from `Grappa.Session.statusmsg/2`.
+
+  #1301 — `/notice @#chan` was refused as malformed. A STATUSMSG sigil is
+  neither a channel prefix nor a nick character, so the raw target matched
+  neither validator and the POST 400ed. `@` and `%` were refused outright;
+  `+#chan` and `&#chan` passed, but by accident — `+` and `&` are RFC
+  channel prefixes, so the voice-level notice worked while the ops-level
+  one, the common case, did not.
+
+  ## Why this is a separate validator, not a widening
+
+  `validate_post_target_name/1` also guards the plain `channel_id` arm,
+  where the target IS the persist key. Admitting `@#chan` there would key
+  scrollback to a window nobody is in — the outbound twin of the phantom
+  `+#chan` window #1303 fixes on the inbound side. On the notice/CTCP arms
+  the recipient is not a key: the echo row is keyed to the SOURCE window and
+  the recipient rides `meta.notice_target`, so a sigil costs nothing there.
+  The two arms differ in what the target IS, so they take different doors.
+
+  The peeled remainder is what gets validated; the target reaches the wire
+  **verbatim**. Peeling to validate is not permission to rewrite — what
+  `@%#chan` means is the ircd's ruling, and a target we canonicalised (or
+  refused on our own authority) would answer a question nobody asked.
+  """
+  @spec validate_wire_recipient_name(String.t(), [String.t()]) :: :ok | {:error, :bad_request}
+  def validate_wire_recipient_name(name, statusmsg)
+      when is_binary(name) and is_list(statusmsg) do
+    {peeled, _run} = Identifier.peel_statusmsg(name, statusmsg)
+    validate_post_target_name(peeled)
+  end
 
   @doc """
   Atomizes a whitelisted subset of string-keyed `params` into an

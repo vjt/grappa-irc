@@ -57,7 +57,12 @@ defmodule GrappaWeb.MessagesController do
   """
   use GrappaWeb, :controller
 
-  import GrappaWeb.Validation, only: [validate_target_name: 1, validate_post_target_name: 1]
+  import GrappaWeb.Validation,
+    only: [
+      validate_target_name: 1,
+      validate_post_target_name: 1,
+      validate_wire_recipient_name: 2
+    ]
 
   alias Grappa.IRC.Identifier
   alias Grappa.PresenceFilter.Resolver
@@ -263,14 +268,15 @@ defmodule GrappaWeb.MessagesController do
     # #640 — a CTCP QUERY (/ctcp, /ping). `channel` (the URL) is the SOURCE
     # window the echo renders in — `validate_target_name` (NOT the post variant)
     # so `$server` is allowed (a /ping typed in the server window is legit).
-    # `ctcp_target` is the wire recipient — `validate_post_target_name` (a real
-    # channel/nick, never the read-only `$server`). The session persists the
-    # echo to `source`, relays the frame to `ctcp_target`, and NEVER opens a
-    # query window for it (the phantom-window bug). One send-token as for a
-    # plain PRIVMSG. `send_ctcp` always persists a row (no `:no_persist` arm).
+    # `ctcp_target` is the wire recipient — `validate_wire_recipient_name` (a
+    # real channel/nick, a channel at a membership level, never the read-only
+    # `$server`). The session persists the echo to `source`, relays the frame
+    # to `ctcp_target`, and NEVER opens a query window for it (the
+    # phantom-window bug). One send-token as for a plain PRIVMSG. `send_ctcp`
+    # always persists a row (no `:no_persist` arm).
     with :ok <- BodyLimit.check(body),
          :ok <- validate_target_name(channel),
-         :ok <- validate_post_target_name(ctcp_target),
+         :ok <- validate_wire_recipient_name(ctcp_target, Session.statusmsg(subject, network.id)),
          :ok <- take_send_token(subject, network.id),
          {:ok, result} <- Session.send_ctcp(subject, network.id, channel, ctcp_target, body) do
       render_send_result(conn, result)
@@ -285,13 +291,15 @@ defmodule GrappaWeb.MessagesController do
     # #1225 — `/notice <target> <text>`. Same door shape as the #640 CTCP arm
     # above: `channel` (the URL) is the SOURCE window the echo renders in, so it
     # takes `validate_target_name` (a `/notice` typed in `$server` is legit);
-    # `notice_target` is the wire recipient, so it takes the POST variant (a
-    # real nick or channel, never the read-only `$server`). One send-token, as
-    # for a plain PRIVMSG. A *serv recipient answers `{:ok, :no_persist}` (W12),
-    # which `render_send_result/2` already renders as 202.
+    # `notice_target` is the wire recipient, so it takes the recipient variant
+    # (a real nick or channel, or a channel at a membership level per #1301,
+    # never the read-only `$server`). One send-token, as for a plain PRIVMSG.
+    # A *serv recipient answers `{:ok, :no_persist}` (W12), which
+    # `render_send_result/2` already renders as 202.
     with :ok <- BodyLimit.check(body),
          :ok <- validate_target_name(channel),
-         :ok <- validate_post_target_name(notice_target),
+         :ok <-
+           validate_wire_recipient_name(notice_target, Session.statusmsg(subject, network.id)),
          :ok <- take_send_token(subject, network.id),
          {:ok, result} <- Session.send_notice(subject, network.id, channel, notice_target, body) do
       render_send_result(conn, result)

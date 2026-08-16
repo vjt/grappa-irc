@@ -2552,6 +2552,15 @@ defmodule Grappa.Session.Server do
     {:reply, session_casemapping(state), state}
   end
 
+  # #1301 — the network's advertised STATUSMSG sigil set, for the stateless
+  # POST boundary to tell `@#chan` (a channel at ops level) from a malformed
+  # target. Same `Map.get` hot-reload safety as `:casemapping`. Public via
+  # `Grappa.Session.statusmsg/2`, which degrades to the bahamut default when
+  # there is no live pid.
+  def handle_call(:statusmsg, _, state) do
+    {:reply, ISupport.statusmsg(Map.get(state, :isupport, ISupport.default())), state}
+  end
+
   # #247 — the authoritative /notify presence map for this session.
   # Public via `Grappa.Session.presence_snapshot/2`; consumed by the
   # channel after-join snapshot and the REST notify listing (DB list +

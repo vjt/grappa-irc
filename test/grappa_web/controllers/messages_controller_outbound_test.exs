@@ -294,6 +294,62 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    test "#1301: notice_target = @#chan reaches the wire VERBATIM and echoes to the source window",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      # `/notice @#sniffo heads up` — the form operators use most, refused as
+      # malformed before #1301 because the raw `@#sniffo` matched neither the
+      # channel regex nor the nick regex at the POST boundary.
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/channels/%23sniffo/messages", %{
+          "body" => "heads up",
+          "notice_target" => "@#sniffo"
+        })
+
+      body = json_response(conn, 201)
+      assert body["channel"] == "#sniffo"
+      assert body["meta"]["notice_target"] == "@#sniffo"
+
+      # VERBATIM on the wire: the sigil is peeled to VALIDATE, never to
+      # rewrite. What `@#sniffo` means is the ircd's ruling, not ours, so a
+      # canonicalised target would be us answering a question we were not
+      # asked — and a refusal would be us inventing one.
+      assert {:ok, "NOTICE @#sniffo :heads up\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "NOTICE @"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "#1301: a sigil is still refused on the URL channel_id — that one IS a window key",
+         %{conn: conn, vjt: vjt} do
+      {server, port} = start_server()
+      network = setup_network(vjt, port)
+      pid = start_session_for(vjt, network)
+      :ok = await_handshake(server)
+
+      # The control for the test above. On the plain arm the URL channel is
+      # BOTH the wire target and the persist key, so admitting a sigil here
+      # would key scrollback to `@#sniffo` — a window nobody is in, the
+      # outbound twin of #1303 case B. The two arms take deliberately
+      # different validators.
+      conn =
+        conn
+        |> put_req_header("content-type", "application/json")
+        |> post("/networks/#{network.slug}/channels/%40%23sniffo/messages", %{
+          "body" => "heads up"
+        })
+
+      assert json_response(conn, 400)["error"] == "bad_request"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "#1225: a /notice to NickServ does not archive a mistyped identify password",
          %{conn: conn, vjt: vjt} do
       {server, port} = start_server()

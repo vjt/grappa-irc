@@ -87,4 +87,78 @@ defmodule GrappaWeb.ValidationTest do
                %{nick: "vjt"}
     end
   end
+
+  # #1301 — `/notice @#chan` was refused as malformed. The wire recipient of a
+  # NOTICE/CTCP is not a window key: it may carry the network's STATUSMSG
+  # sigils, which are neither a channel prefix nor a nick character, so the
+  # raw target matched neither validator and the POST 400ed.
+  #
+  # This is a SEPARATE validator rather than a widening of
+  # `validate_post_target_name/1`: that one also guards the `channel_id` arm,
+  # where the target IS the persist key, so admitting `@#chan` there would
+  # manufacture a phantom `@#chan` window on the outbound side — the exact
+  # defect #1303 fixes on the inbound side.
+  describe "validate_wire_recipient_name/2 (#1301)" do
+    @bahamut ["@", "+"]
+    @halfop ["@", "%", "+"]
+
+    test "accepts an ops-level channel target — the reported case" do
+      assert Validation.validate_wire_recipient_name("@#chan", @bahamut) == :ok
+    end
+
+    test "accepts a multi-sigil target: the ircd is the authority on what it means" do
+      assert Validation.validate_wire_recipient_name("@%#chan", @halfop) == :ok
+    end
+
+    test "the sigil set is per-network: an unadvertised level is not a sigil" do
+      # A `%` prefix on bahamut (`STATUSMSG=@+`) is not a level — it is a
+      # channel name starting with `%`, which is not a legal channel.
+      assert Validation.validate_wire_recipient_name("%#chan", @bahamut) ==
+               {:error, :bad_request}
+
+      assert Validation.validate_wire_recipient_name("%#chan", @halfop) == :ok
+    end
+
+    test "a plain channel and a plain nick are unaffected" do
+      assert Validation.validate_wire_recipient_name("#chan", @bahamut) == :ok
+      assert Validation.validate_wire_recipient_name("carol", @bahamut) == :ok
+      assert Validation.validate_wire_recipient_name("+chan", @bahamut) == :ok
+    end
+
+    test "a sigil does not smuggle the read-only $server synthetic" do
+      # `validate_post_target_name/1` rejects `$server` because a write to it
+      # is an RFC 2812 server-mask PRIVMSG. Peeling must not open a side door:
+      # `@` in front of it peels nothing (there is no channel behind it), so
+      # the refusal stands on the raw target.
+      assert Validation.validate_wire_recipient_name("$server", @bahamut) ==
+               {:error, :bad_request}
+
+      assert Validation.validate_wire_recipient_name("@$server", @bahamut) ==
+               {:error, :bad_request}
+    end
+
+    test "a sigil in front of a NICK is not a STATUSMSG target" do
+      # STATUSMSG addresses a channel at a membership level. `@carol` is
+      # neither a channel nor a legal nick, and inventing an acceptance for it
+      # would ship a target no ircd can route.
+      assert Validation.validate_wire_recipient_name("@carol", @bahamut) ==
+               {:error, :bad_request}
+    end
+
+    test "the peel does not weaken the channel-shape check behind it" do
+      # The peel tests only the first byte of the remainder; the FULL channel
+      # validator still runs on it. A space or a CRLF behind a sigil must stay
+      # refused — the alternative is a target that splits the wire line.
+      assert Validation.validate_wire_recipient_name("@#with space", @bahamut) ==
+               {:error, :bad_request}
+
+      assert Validation.validate_wire_recipient_name("@#chan\r\nQUIT", @bahamut) ==
+               {:error, :bad_request}
+    end
+
+    test "an empty advertised set falls back to the plain target rules" do
+      assert Validation.validate_wire_recipient_name("#chan", []) == :ok
+      assert Validation.validate_wire_recipient_name("@#chan", []) == {:error, :bad_request}
+    end
+  end
 end

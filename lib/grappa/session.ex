@@ -84,7 +84,7 @@ defmodule Grappa.Session do
     exports: [Backoff, NSInterceptor, Server, Wire]
 
   alias Grappa.IRC.{AuthFSM, CTCP, Identifier}
-  alias Grappa.Session.{FloodAllowance, Server}
+  alias Grappa.Session.{FloodAllowance, ISupport, Server}
 
   require Logger
 
@@ -1308,6 +1308,33 @@ defmodule Grappa.Session do
     case call_session(subject, network_id, :casemapping) do
       mapping when mapping in [:ascii, :rfc1459, :rfc1459_strict] -> mapping
       _ -> :ascii
+    end
+  end
+
+  @doc """
+  Returns the network's IRC `STATUSMSG` sigil set as observed by the LIVE
+  session at `(subject, network_id)` — e.g. `["@", "+"]`, `["@", "%", "+"]`.
+
+  #1301 — sibling of `casemapping/2`, and there for the same reason: the
+  stateless POST boundary has to decide whether `@#chan` is a channel
+  addressed at a membership level or a malformed name, and only the live
+  session has seen the 005 that says which sigils this network has. This is
+  the ingress source `GrappaWeb.Validation.validate_wire_recipient_name/2`
+  feeds into `Identifier.peel_statusmsg/2`.
+
+  Returns the bahamut default (`ISupport.default_statusmsg/0`) whenever there
+  is no live session or the call cannot complete. That is the SAME value a
+  live session reports before its 005 arrives, so a parked network answers
+  what every prod network has always advertised rather than refusing every
+  sigil — and a refusal is the failure mode that matters here, since it is
+  what #1301 reported.
+  """
+  @spec statusmsg(subject(), integer()) :: [String.t()]
+  def statusmsg(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    case call_session(subject, network_id, :statusmsg) do
+      sigils when is_list(sigils) -> sigils
+      _ -> ISupport.default_statusmsg()
     end
   end
 

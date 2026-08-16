@@ -451,6 +451,72 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  describe "statusmsg/2 (#1301)" do
+    # Sibling of `casemapping/2` and for the same reason: the POST boundary
+    # must decide whether `@#chan` is a STATUSMSG target on THIS network, and
+    # only the live session has seen the 005 that says so. Degrades to the
+    # bahamut default (`["@", "+"]`) with no live pid — the same value a
+    # session that has not yet seen a 005 reports, so a parked network answers
+    # what prod has always assumed rather than refusing every sigil.
+
+    test "returns the live session's advertised STATUSMSG set once a 005 carries it" do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 005 grappa-test STATUSMSG=@%+ PREFIX=(ohv)@%+ :are supported\r\n"
+      )
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :isupport_changed}
+                     },
+                     1_000
+
+      assert Session.statusmsg({:user, user.id}, network.id) == ["@", "%", "+"]
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "returns the bahamut default before any 005 STATUSMSG" do
+      handler = fn state, line ->
+        if String.starts_with?(line, "USER ") do
+          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
+        else
+          {:reply, nil, state}
+        end
+      end
+
+      {server, port} = start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = await_handshake(server)
+
+      assert Session.statusmsg({:user, user.id}, network.id) == ISupport.default_statusmsg()
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "returns the bahamut default when no session is registered" do
+      assert Session.statusmsg({:user, Ecto.UUID.generate()}, -1) == ISupport.default_statusmsg()
+    end
+  end
+
   describe "init/1 non-blocking (C2)" do
     # Pairs with `Grappa.IRC.ClientTest`'s C2 test. `Session.Server.init/1`
     # must NOT call `Client.start_link/1` synchronously: Bootstrap iterates
