@@ -83,8 +83,8 @@ defmodule Grappa.Session.Server do
     ChannelDirectory,
     Log,
     Mentions,
+    NickMigration,
     QueryWindows,
-    ReadCursor,
     Scrollback,
     Session,
     SessionLog,
@@ -6149,33 +6149,19 @@ defmodule Grappa.Session.Server do
   # immaterial: those are `channel=#chan, dm_with=nil` and never match the
   # DM fold, so migrating after them is a no-op interaction.
   defp apply_effects([{:peer_nick_renamed, old_nick, new_nick} | rest], state) do
-    # #1340 K-S2 — the per-conversation mute joined this set when #1038 keyed
-    # it on `(network, peer nick)`. UNCONDITIONAL, and deliberately not inside
-    # the `:renamed` arm the review proposed: the mute outlives the window
-    # that was muted (closing a tab does not unmute it), so gating on the
-    # window row would strand exactly the mute nobody can see to fix. Same
-    # reasoning, and the same placement, as the presence reset at the foot of
-    # this arm — independent stores of the moved identity, each migrated on
-    # its own terms. It sits ahead of the barrier broadcast because a rename
-    # must never be observable half-applied.
-    {:ok, _} =
-      UserSettings.rename_muted_target(state.subject, state.network_slug, old_nick, new_nick)
-
-    case QueryWindows.rename(
+    # #1374 P-S2 — the whole set moves inside ONE retried transaction owned by
+    # `Grappa.NickMigration` (the mute included, unconditionally: it outlives
+    # the window it silenced). What stays here is what is the SESSION's to
+    # decide — the barrier broadcast, which must fire once, after a committed
+    # migration, and never from inside a retry.
+    case NickMigration.peer_renamed(
            state.subject,
            state.network_id,
+           state.network_slug,
            old_nick,
            new_nick
          ) do
-      {:ok, :renamed} ->
-        {:ok, migrated} =
-          Scrollback.rename_dm_peer(state.subject, state.network_id, old_nick, new_nick)
-
-        # Read cursor follows too, else the migrated history reads as fully
-        # unread under the new window (no cursor row → count from 0).
-        :ok = ReadCursor.rename_dm_peer(state.subject, state.network_id, old_nick, new_nick)
-
-        # Broadcast LAST — the event is the "everything migrated" barrier.
+      {:ok, %{window: :renamed, rows: migrated}} ->
         :ok = QueryWindows.broadcast_windows_list(state.subject, state.subject_label)
 
         Logger.info("query window followed peer NICK",
@@ -6184,8 +6170,19 @@ defmodule Grappa.Session.Server do
           rows_migrated: migrated
         )
 
-      {:ok, :noop} ->
+      {:ok, %{window: :noop}} ->
         :ok
+
+      {:error, reason} ->
+        # #590 background-DROP: a rename is not worth disconnecting the user
+        # over, and nothing was applied, so the old-nick state left behind is
+        # self-consistent. Pre-#1374 this was a MatchError that killed the
+        # session mid-migration.
+        Logger.warning("peer NICK migration db unavailable — session continues",
+          old_nick: old_nick,
+          new_nick: new_nick,
+          reason: inspect(reason)
+        )
     end
 
     # #378 — a rename is not a presence transition. The vacated nick draws a
@@ -6198,19 +6195,11 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, reset_presence_for(state, old_nick))
   end
 
-  # #514: WE renamed. Deliberately NOT the peer arm above with the arguments
-  # swapped — for the rows #514 owns, our own nick is not a window key, so
-  # nothing moves: an inbound DM's window is `dm_with` (the peer) and its
-  # read cursor is keyed there too, both untouched by our rename. What goes
-  # stale is the own-nick TAG each inbound row carries in `channel`, which
-  # `Push.Triggers.dm?/2` compares to the LIVE nick (#498) when
-  # `Push.BadgeCount` folds the notify predicate back over history. One
-  # store, one UPDATE, no barrier.
-  #
-  # #948 then found the ONE window our own nick does key: the SELF window
-  # (`/msg <ownnick>`). `migrate_self_window/3` below handles it, and it is
-  # a genuine window-key migration with the full peer-rename set behind it
-  # — hence the barrier broadcast the tag re-key must not fire.
+  # #514 / #948: WE renamed. Deliberately NOT the peer arm above with the
+  # arguments swapped — WHAT moves differs (the inbound-DM own-nick TAG
+  # always, the SELF window only behind its row-count gate), and
+  # `Grappa.NickMigration.own_renamed/5` owns that distinction and the
+  # transaction around it.
   #
   # `state` here is the POST-route state, so `state.nick` already reads the
   # NEW nick. The arm never consults it — both nicks travel in the effect —
@@ -6221,70 +6210,43 @@ defmodule Grappa.Session.Server do
   # with `dm_with = nil`, and the migration predicate requires a non-nil
   # `dm_with`, so they can never be swept up.
   defp apply_effects([{:own_nick_renamed, old_nick, new_nick} | rest], state) do
-    {:ok, migrated} =
-      Scrollback.rename_own_nick(state.subject, state.network_id, old_nick, new_nick)
+    case NickMigration.own_renamed(
+           state.subject,
+           state.network_id,
+           state.network_slug,
+           old_nick,
+           new_nick
+         ) do
+      {:ok, result} ->
+        log_own_rename(state, old_nick, new_nick, result)
 
-    if migrated > 0 do
-      Logger.info("inbound DM rows re-keyed to our new nick",
-        old_nick: old_nick,
-        new_nick: new_nick,
-        rows_migrated: migrated
-      )
+      {:error, reason} ->
+        Logger.warning("own NICK migration db unavailable — session continues",
+          old_nick: old_nick,
+          new_nick: new_nick,
+          reason: inspect(reason)
+        )
     end
-
-    migrate_self_window(state, old_nick, new_nick)
 
     apply_effects(rest, state)
   end
 
-  # #948 — the SELF window (`/msg <ownnick>`) is the one window keyed on OUR
-  # nick, so our rename moves it exactly like #373 moves a peer's: rows,
-  # cursor, window row, then the barrier broadcast LAST.
-  #
-  # The scrollback count is the GATE, and it runs FIRST — the inversion of
-  # the #373 arm, which gates on `QueryWindows.rename/4` instead. There, the
-  # window row alone identifies the thing being renamed. Here it cannot: a
-  # window standing at our old nick is EITHER our self window or a leftover
-  # query with a peer who bore that nick before we took it, and the two are
-  # one row under the fold-unique index. Only the scrollback rows carry the
-  # `sender` that tells them apart (`Scrollback.rename_self_window/4`), so a
-  # zero count means "no self conversation here" and we touch neither the
-  # window nor the cursor — following the rename would otherwise file the
-  # peer's identity under our new nick.
-  #
-  # The gate cuts the other way too, and that is accepted rather than
-  # overlooked: a GENUINE self window whose history was purged (or which was
-  # opened and never written to) also counts zero, so its tab stays at the
-  # nick we just vacated. With no rows there is no history to strand and no
-  # evidence to decide on, and the alternative — moving every window at our
-  # old nick — is the corruption above. An empty orphan tab is the cheaper
-  # of the two wrongs.
-  @spec migrate_self_window(t(), String.t(), String.t()) :: :ok
-  defp migrate_self_window(state, old_nick, new_nick) do
-    {:ok, migrated} =
-      Scrollback.rename_self_window(state.subject, state.network_id, old_nick, new_nick)
+  # The session-side half of an own-nick migration: what an operator reads
+  # back, and the ONE broadcast. The barrier fires only when a window
+  # actually moved — `:noop` is a real state (the self window can be CLOSED
+  # while its history lives in Archive: the rows still had to follow, but
+  # announcing a window move would be a lie).
+  @spec log_own_rename(t(), String.t(), String.t(), NickMigration.own_result()) :: :ok
+  defp log_own_rename(state, old_nick, new_nick, %{tag_rows: tag_rows, rows: rows, window: window}) do
+    if tag_rows > 0 do
+      Logger.info("inbound DM rows re-keyed to our new nick",
+        old_nick: old_nick,
+        new_nick: new_nick,
+        rows_migrated: tag_rows
+      )
+    end
 
-    if migrated > 0 do
-      # Else the migrated history reads fully unread under the new key
-      # (no cursor row → `WindowCounts` counts from 0), the #373 lesson.
-      :ok = ReadCursor.rename_dm_peer(state.subject, state.network_id, old_nick, new_nick)
-
-      {:ok, window} = QueryWindows.rename(state.subject, state.network_id, old_nick, new_nick)
-
-      # #1340 K-S2 — the self window's mute follows too, and INSIDE the gate,
-      # unlike the peer arm where it is unconditional. Here the row count is
-      # the only evidence that the window at our old nick is OURS; ungated,
-      # our rename would quietly re-file a mute the operator set against a
-      # peer who bore that nick before us.
-      {:ok, _} =
-        UserSettings.rename_muted_target(state.subject, state.network_slug, old_nick, new_nick)
-
-      # Broadcast LAST, and only when a window actually moved: the event is
-      # the truthful "rename fully applied" barrier (#373 rename-order fix).
-      # `:noop` is a real state — the self window can be CLOSED while its
-      # history lives in Archive. The rows still had to follow, or the
-      # archive entry reads as a stranded query bearing our old nick; but
-      # no window moved, so announcing one would be a lie.
+    if rows > 0 do
       if window == :renamed do
         :ok = QueryWindows.broadcast_windows_list(state.subject, state.subject_label)
       end
@@ -6295,7 +6257,7 @@ defmodule Grappa.Session.Server do
       Logger.info("self window followed our own NICK",
         old_nick: old_nick,
         new_nick: new_nick,
-        rows_migrated: migrated,
+        rows_migrated: rows,
         window: window
       )
     end

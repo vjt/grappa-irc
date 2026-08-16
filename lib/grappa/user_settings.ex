@@ -639,21 +639,58 @@ defmodule Grappa.UserSettings do
           {:ok, :renamed | :noop} | {:error, Ecto.Changeset.t() | :db_unavailable}
   def rename_muted_target({_, _} = subject, network_slug, old_target, new_target)
       when is_binary(network_slug) and is_binary(old_target) and is_binary(new_target) do
+    do_rename_muted_target(subject, network_slug, old_target, new_target, &persist/1)
+  end
+
+  @doc """
+  In-transaction variant of `rename_muted_target/4` (#1374 P-S2).
+
+  Identical migration, one difference that is the whole contract: it does
+  NOT retry. It is reached only from inside a `Repo.BusyRetry.run(fn ->
+  Repo.immediate_transaction(…) end)` — `Grappa.NickMigration`, which owns
+  the nick-rename set — where the enclosing engine retries the WHOLE
+  transaction. A nested retry there would sleep while holding the open
+  transaction's connection, extending the very contention it waits on, and
+  would convert a raise the transaction needs into a return value. The bang
+  is the contract: a transient busy RAISES through to the caller's budget.
+
+  Mirrors the `Grappa.Accounts` revoke family's caller-facing/in-transaction
+  split (`accounts.ex`, "The family contract (#636)").
+  """
+  @spec rename_muted_target!(Subject.t(), String.t(), String.t(), String.t()) ::
+          {:ok, :renamed | :noop} | {:error, Ecto.Changeset.t()}
+  def rename_muted_target!({_, _} = subject, network_slug, old_target, new_target)
+      when is_binary(network_slug) and is_binary(old_target) and is_binary(new_target) do
+    do_rename_muted_target(subject, network_slug, old_target, new_target, &persist!/1)
+  end
+
+  @spec do_rename_muted_target(
+          Subject.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          (Ecto.Changeset.t() -> {:ok, Settings.t()} | {:error, Ecto.Changeset.t() | :db_unavailable})
+        ) :: {:ok, :renamed | :noop} | {:error, Ecto.Changeset.t() | :db_unavailable}
+  defp do_rename_muted_target(subject, network_slug, old_target, new_target, persist_fun) do
     old_key = Identifier.channel_key(network_slug, old_target)
     new_key = Identifier.channel_key(network_slug, new_target)
 
     if old_key == new_key do
       {:ok, :noop}
     else
-      rekey_muted_target(fetch_existing_or_nil(subject), old_key, new_key)
+      rekey_muted_target(fetch_existing_or_nil(subject), old_key, new_key, persist_fun)
     end
   end
 
-  @spec rekey_muted_target(Settings.t() | nil, String.t(), String.t()) ::
-          {:ok, :renamed | :noop} | {:error, Ecto.Changeset.t() | :db_unavailable}
-  defp rekey_muted_target(nil, _, _), do: {:ok, :noop}
+  @spec rekey_muted_target(
+          Settings.t() | nil,
+          String.t(),
+          String.t(),
+          (Ecto.Changeset.t() -> {:ok, Settings.t()} | {:error, Ecto.Changeset.t() | :db_unavailable})
+        ) :: {:ok, :renamed | :noop} | {:error, Ecto.Changeset.t() | :db_unavailable}
+  defp rekey_muted_target(nil, _, _, _), do: {:ok, :noop}
 
-  defp rekey_muted_target(%Settings{} = settings, old_key, new_key) do
+  defp rekey_muted_target(%Settings{} = settings, old_key, new_key, persist_fun) do
     prefs = Map.get(settings.data, @notification_prefs_key, %{})
     muted = if is_map(prefs), do: Map.get(prefs, "muted_targets", %{}), else: %{}
 
@@ -668,7 +705,7 @@ defmodule Grappa.UserSettings do
         next_prefs = Map.put(prefs, "muted_targets", next_muted)
         next_data = Map.put(settings.data, @notification_prefs_key, next_prefs)
 
-        case persist(Settings.changeset(settings, %{data: next_data})) do
+        case persist_fun.(Settings.changeset(settings, %{data: next_data})) do
           {:ok, _} -> {:ok, :renamed}
           {:error, _} = error -> error
         end
@@ -1302,6 +1339,14 @@ defmodule Grappa.UserSettings do
   @spec persist(Ecto.Changeset.t()) ::
           {:ok, Settings.t()} | {:error, Ecto.Changeset.t() | :db_unavailable}
   defp persist(cs), do: Repo.BusyRetry.run(fn -> Repo.update(cs) end)
+
+  # #1374 P-S2 — the in-transaction twin of `persist/1`, for `!` callers
+  # already inside someone else's `BusyRetry.run(fn -> immediate_transaction`.
+  # No retry BY DESIGN: the busy must raise through so the enclosing engine
+  # can roll the transaction back and retry it whole (see
+  # `rename_muted_target!/4`).
+  @spec persist!(Ecto.Changeset.t()) :: {:ok, Settings.t()} | {:error, Ecto.Changeset.t()}
+  defp persist!(cs), do: Repo.update(cs)
 
   # Mirror of `Grappa.QueryWindows.conflict_target/1` — partial
   # indexes carry the predicate so the upsert must repeat it.

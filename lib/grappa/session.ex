@@ -60,10 +60,14 @@ defmodule Grappa.Session do
       # takes NO Session dep (its live-holder source is an injected fn), so no
       # Boundary cycle.
       Grappa.Net.SourceAliasManager,
+      # #1374 P-S2 — the nick-rename migration SET (and the transaction
+      # around it) lives in its own top-level boundary: it spans four
+      # contexts, and reaching `Repo.immediate_transaction/1` from here
+      # would mean a Session -> Repo dep this boundary deliberately lacks.
+      Grappa.NickMigration,
       Grappa.PubSub,
       Grappa.Push,
       Grappa.QueryWindows,
-      Grappa.ReadCursor,
       Grappa.Scrollback,
       Grappa.SessionLog,
       Grappa.Subject,
