@@ -657,17 +657,32 @@ const ComposeBox: Component<Props> = (props) => {
           visual: aria-hidden, because a live region that changes on every
           keystroke is noise, and the thing worth ANNOUNCING (the draft will
           split) is the polite seam line below. */}
-      <Show when={frameCountdown()} keyed>
-        {(label) => (
-          <p
-            class="compose-box-frame-countdown"
-            data-testid="compose-frame-countdown"
-            aria-hidden="true"
-          >
-            {label}
-          </p>
-        )}
-      </Show>
+      {/* #1358 — the slot is ALWAYS mounted; only its content comes and goes.
+          The countdown used to be a bare `Show` among the root fragment's
+          children, and when it arrived in the same flush the split warning
+          left — the draft shrinking back under the frame limit — Solid
+          reconciled the fragment by DETACHING the <form> and re-attaching it
+          after the new sibling. The focused textarea rode along, and a
+          detached element loses the focus with nobody calling blur(): on iOS
+          that closes the keyboard mid-edit. A stable parent keeps the
+          appear/disappear inside this slot, where the form is not a sibling.
+          Measured in ComposeBoxFrameSeam.test.tsx over all eight seam
+          transitions; only that one moved the form, and only downward.
+          The node identity of the textarea is NOT the oracle — Solid handed
+          back the same node object across the move, focus already gone. */}
+      <div class="compose-box-frame-countdown-slot">
+        <Show when={frameCountdown()} keyed>
+          {(label) => (
+            <p
+              class="compose-box-frame-countdown"
+              data-testid="compose-frame-countdown"
+              aria-hidden="true"
+            >
+              {label}
+            </p>
+          )}
+        </Show>
+      </div>
       <form
         class={`compose-box${greyed() ? " compose-box-greyed" : ""}`}
         onSubmit={(e) => {
