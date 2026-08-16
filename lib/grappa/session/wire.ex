@@ -1611,7 +1611,13 @@ defmodule Grappa.Session.Wire do
           # Entries are stored REVERSED by EventRouter (head = most
           # recent 314 RPL_WHOWASUSER). MVP renders only the most-
           # recent entry; multi-history is out of scope.
-          [head | _] -> head
+          #
+          # #1391 — the match is `%Entry{} = head`, not a bare `head`, and it
+          # is load-bearing: inference does not carry an element type out of a
+          # list, so a bare binding leaves the reads below `dynamic()` and a
+          # misspelt field survives compilation (measured — it then dies at
+          # runtime on KeyError, one gate later than the accumulator layer).
+          [%WhowasAccum.Entry{} = head | _] -> head
         end
       end
 
@@ -1651,7 +1657,9 @@ defmodule Grappa.Session.Wire do
     entries =
       accum.entries
       |> Enum.reverse()
-      |> Enum.map(fn e ->
+      # The `%Entry{}` in the head is the compile-time guard — see
+      # `whowas_bundle/3` for why a bare `e` would not be one.
+      |> Enum.map(fn %ListModeAccum.Entry{} = e ->
         %{mask: e.mask, setter: e.setter, set_ts: e.set_ts}
       end)
 
@@ -1686,7 +1694,9 @@ defmodule Grappa.Session.Wire do
     entries =
       accum.entries
       |> Enum.reverse()
-      |> Enum.map(fn e ->
+      # Same guard as `banlist_bundle/4` — the struct in the head is what
+      # keeps these four reads checked at compile time.
+      |> Enum.map(fn %LinksAccum.Entry{} = e ->
         %{
           server: e.server,
           linked_to: e.linked_to,
