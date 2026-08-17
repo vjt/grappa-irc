@@ -1386,7 +1386,7 @@ export async function inlineNickColorVar(locator: Locator): Promise<string> {
   return match[0];
 }
 
-// #1336 — page the scrollback UP with a wheel gesture that has demonstrably
+// #1336 — move the scrollback with a wheel gesture that has demonstrably
 // LANDED before the caller moves on.
 //
 // `page.mouse.wheel()` resolves before the scroll is applied (measured: the
@@ -1397,23 +1397,32 @@ export async function inlineNickColorVar(locator: Locator): Promise<string> {
 // testnet) owns the hover → wheel → moved-and-held wait and REJECTS both a
 // gesture that never landed and one still in flight.
 //
-// `pixels` is the distance to travel UP, positive; the DOM's negative-is-up
-// sign convention is applied here so callers read as the operator's intent.
+// `deltaY` carries the DOM's own sign convention: NEGATIVE scrolls up.
 // Sampling every 50 ms: two agreeing samples then mean the pane has held
 // still for 50 ms, which chromium's wheel animation (hundreds of ms of
 // continuous travel, measured) does not do mid-flight.
-export async function pageScrollbackUp(
+export async function pageScrollbackBy(
   page: Page,
-  pixels: number,
+  deltaY: number,
   timeoutMs: number,
 ): Promise<ScrollGestureResult> {
   const pane = page.locator('[data-testid="scrollback"]');
   return await scrollByGesture(
     {
       hover: () => pane.hover(),
-      wheel: async (deltaY: number) => await page.mouse.wheel(0, deltaY),
+      wheel: async (delta: number) => await page.mouse.wheel(0, delta),
       scrollTop: () => pane.evaluate((el) => el.scrollTop),
     },
-    { deltaY: -pixels, timeoutMs, pollMs: 50 },
+    { deltaY, timeoutMs, pollMs: 50 },
   );
+}
+
+// `pixels` is the distance to travel UP, positive, so the call site reads as
+// the operator's intent rather than as a DOM sign.
+export async function pageScrollbackUp(
+  page: Page,
+  pixels: number,
+  timeoutMs: number,
+): Promise<ScrollGestureResult> {
+  return await pageScrollbackBy(page, -pixels, timeoutMs);
 }
