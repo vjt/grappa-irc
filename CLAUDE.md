@@ -21,6 +21,7 @@ Top-level supervision tree:
 ```
 Grappa.Application
 ├── Grappa.Vault                       (Cloak — encrypts at-rest creds; before Repo)
+├── Grappa.Repo.LockWatch              (#1420 write-lock holder/waiter observer; before Repo — owns the ETS table the BEGIN IMMEDIATE seam writes to)
 ├── Grappa.Repo                        (Ecto + sqlite)
 ├── Phoenix.PubSub                     (name: Grappa.PubSub)
 ├── Registry                           (name: Grappa.SessionRegistry)
@@ -52,6 +53,9 @@ Grappa.Application
 
 Child order is load-bearing — see `lib/grappa/application.ex` for the
 why-comment per child. Vault before Repo (Cloak schema callbacks);
+LockWatch before Repo (#1420: it owns the ETS table
+`Repo.immediate_transaction/1` writes on every write transaction, and the
+seam self-disables while the table is absent);
 Backoff/WSPresence/NetworkCircuit before SessionSupervisor (ETS
 tables read directly from `Session.Server`'s start path); Bootstrap
 LAST (depends on Registry + SessionSupervisor existing). `Grappa.SpawnOrchestrator`

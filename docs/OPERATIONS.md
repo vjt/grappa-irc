@@ -4592,7 +4592,7 @@ hand-attach — read it through either door (both drive the same
   (`204`). `:admin_authn`-gated (admin bearer + `is_admin`); reached
   through the dumb proxy, no allowlist to maintain (#485).
 
-The handler folds **two** signal families:
+The handler folds **three** signal families:
 
 - **`[:grappa, :repo, :query]`** (Ecto's per-query telemetry) into a
   `{source, op}` table — `SELECT count(...)` split from plain `SELECT`. This is
@@ -4602,6 +4602,42 @@ The handler folds **two** signal families:
   against the baseline.
 - **the D1 write-path spans** into `send_privmsg` / `persist` / `contention`
   rows.
+- **`[:grappa, :repo, :lock_stall, :detected | :resolved]`** (#1420) into the
+  bounded `lock stalls` ring — the WRITE-LOCK HOLDER.
+
+### Reading a write-lock stall (#1420)
+
+The two families above are **completion-driven**: they fire when a query
+finishes. A process that opens `BEGIN IMMEDIATE` and then sits still emits
+nothing at all while it sits, so the only thing that ever reached the log was
+its victims — the 30.1 s `busy_timeout` rows of everybody queued behind it.
+`Grappa.Repo.LockWatch` reads at the `BEGIN IMMEDIATE` seam instead, which
+separates the **holder** from the **waiters**.
+
+A stall is reported only when a holder has held past
+`:lock_watch, :stall_threshold_ms` **with at least one waiter queued behind
+it** — a slow uncontended write is not a stall. Each episode appears twice: a
+`detected` row carrying the holder's sampled **stacktrace** plus the queue, and
+a `resolved` row carrying the total hold.
+
+Two doors, and for an incident they answer different questions:
+
+- **`Logger.warning`** — fires the moment the stall is detected, so it lands in
+  container logs and CI artefacts. This is the door that matters when the
+  evidence is a log after the fact.
+- **`bin/grappa db-latency` / `GET /admin/db_latency`** — the last 20 episodes,
+  newest first, for a node you can still reach.
+
+**What the stack tells you.** The holder's frames are the answer to "why is it
+not proceeding": a `Logger` frame means the transaction is blocked on logging;
+a `DBConnection` checkout frame means a pool-topology deadlock; anything else
+is a third answer nobody has predicted yet. That distinction is the whole
+reason the instrument exists — before it, both looked identical from the logs.
+
+**Off-switch:** `config :grappa, :lock_watch, enabled: false`. Disabled, the
+write path pays one `:persistent_term` read per write transaction and does no
+ETS work. It is **off in `:test`** (under the Sandbox's `pool_size: 1` every
+write transaction is a holder).
 
 **Taking a 25s under-load sample:** `bin/grappa db-latency-reset` → wait 25s
 **under genuine daytime load** → `bin/grappa db-latency`. Counters are
