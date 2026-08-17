@@ -14,9 +14,10 @@ defmodule Grappa.Push.Triggers do
   still calls directly: a presence transition persists no row, so there is
   nothing for `Persistor` to be the guardian of.
 
-  Both calls are fire-and-forget — Triggers spawns an unlinked `Task` so
-  the hot path stays sub-millisecond and Sender failures don't bleed into
-  the mailbox.
+  Both calls are fire-and-forget — Triggers hands the work to
+  `Grappa.TaskSupervisor` so the hot path stays sub-millisecond and Sender
+  failures don't bleed into the mailbox. Detached but supervised: the
+  worker is visible and its crash is a report, not a disappearance.
 
   ## Decision logic — `should_notify?/5`
 
@@ -169,7 +170,7 @@ defmodule Grappa.Push.Triggers do
   notification preferences and, on a match, fires the Web Push
   fan-out via `Push.Sender.send_to_subject/2`.
 
-  Fire-and-forget — spawns an unlinked `Task` and returns `:ok`
+  Fire-and-forget — starts a supervised task and returns `:ok`
   immediately. Per-message work (prefs lookup, mention regex,
   Sender fan-out) happens out-of-band so the Session.Server hot
   path never blocks on it.
@@ -189,8 +190,11 @@ defmodule Grappa.Push.Triggers do
       own_nick: own_nick
     } = ctx
 
-    {:ok, _} =
-      Task.start(fn ->
+    # Discarded, not matched: a supervisor can refuse to start a child,
+    # and a strict match would turn a skipped notification into a crash
+    # on the session hot path the day a ceiling is configured.
+    _ =
+      Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
         prefs = UserSettings.get_notification_prefs(subject)
         patterns = UserSettings.get_highlight_patterns(subject)
 
@@ -222,8 +226,8 @@ defmodule Grappa.Push.Triggers do
   @doc """
   Dispatches the Web Push for one `/notify` presence report (#378).
 
-  Same fire-and-forget shape as `evaluate_and_dispatch/2`: unlinked `Task`,
-  always `:ok`, no `try/rescue` (the no-silent-drops contract above).
+  Same fire-and-forget shape as `evaluate_and_dispatch/2`: supervised
+  task, always `:ok`, no `try/rescue` (the no-silent-drops contract above).
 
   A baseline (`:initial`) short-circuits in the FUNCTION HEAD, before the
   Task spawn — that is the whole point of splitting the clause rather than
@@ -240,8 +244,11 @@ defmodule Grappa.Push.Triggers do
       when is_binary(nick) and presence in [:online, :offline] and is_map(ctx) do
     %{subject: subject, subject_label: subject_label, network_slug: network_slug} = ctx
 
-    {:ok, _} =
-      Task.start(fn ->
+    # Discarded, not matched: a supervisor can refuse to start a child,
+    # and a strict match would turn a skipped notification into a crash
+    # on the session hot path the day a ceiling is configured.
+    _ =
+      Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
         prefs = UserSettings.get_notification_prefs(subject)
 
         # #182 — the same foreground-suppression gate as the message path,

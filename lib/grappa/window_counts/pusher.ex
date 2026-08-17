@@ -16,9 +16,9 @@ defmodule Grappa.WindowCounts.Pusher do
   `push/1` gates on live WS presence (`WSPresence.ws_count/1` > 0): if
   no socket is connected for the subject, it skips — the next
   `join_reply` / `/me` re-seeds the absolute snapshot on reconnect, so a
-  disconnected subject costs nothing. When connected, it spawns an
-  unlinked `Task` (like `Push.Triggers`) so the Session hot path never
-  blocks on the snapshot's DB work, then `emit/1` computes the fresh
+  disconnected subject costs nothing. When connected, it hands the work
+  to `Grappa.TaskSupervisor` (like `Push.Triggers`) so the Session hot
+  path never blocks on the snapshot's DB work, then `emit/1` computes the fresh
   `WindowCounts.snapshot/7` (cursor from `ReadCursor`, highlight patterns
   from `UserSettings`) and broadcasts the `window_counts` event on the
   per-channel topic. cic replaces its stored snapshot verbatim.
@@ -46,15 +46,23 @@ defmodule Grappa.WindowCounts.Pusher do
   @impl PushSource
   @spec push(PushSource.ctx()) :: :ok
   def push(%{subject_label: subject_label} = ctx) do
-    # `_ =` — the `if` is evaluated for its side effect (spawning the
-    # emit Task); its `{:ok, pid} | nil` value is intentionally discarded
-    # (dialyzer `:unmatched_returns`).
+    # `_ =` — the `if` is evaluated for its side effect (starting the
+    # emit task); its value is intentionally discarded (dialyzer
+    # `:unmatched_returns`).
     _ =
       if WSPresence.ws_count(subject_label) > 0 do
-        # Fire-and-forget — the snapshot DB work stays off the Session hot
-        # path. A dead Task just means the live-render optimization is
-        # skipped for this row; the next seed re-bases the count.
-        {:ok, _} = Task.start(fn -> emit(ctx) end)
+        # Detached, but not orphaned: under `Grappa.TaskSupervisor` (S37)
+        # the worker is visible to the operator and a crash in it is a
+        # report rather than a silent disappearance. The snapshot DB work
+        # stays off the Session hot path either way. A worker that never
+        # runs just means the live-render optimization is skipped for this
+        # row; the next seed re-bases the count.
+        #
+        # The return is DISCARDED, not matched. `Task.start/1` could not
+        # fail, but a supervisor can refuse — and the day this supervisor
+        # is given a child ceiling, a strict match here would turn a
+        # skipped optimization into a crash on the session hot path.
+        Task.Supervisor.start_child(Grappa.TaskSupervisor, fn -> emit(ctx) end)
       end
 
     :ok
