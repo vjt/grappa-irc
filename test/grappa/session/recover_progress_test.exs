@@ -62,8 +62,11 @@ defmodule Grappa.Session.RecoverProgressTest do
   defp explore([], seen, terminals), do: %{states: seen, terminals: terminals}
 
   defp explore([{fsm, rows, path} | queue], seen, terminals) do
-    {next_queue, next_seen, next_terminals} =
-      Enum.reduce(@inputs, {queue, seen, terminals}, fn input, {q, s, t} ->
+    # The frontier this node opens is built by PREPENDING and reversed once at
+    # the end, then appended to the queue as a whole — breadth-first order kept
+    # without growing the queue one `++ [item]` at a time.
+    {frontier, next_seen, next_terminals} =
+      Enum.reduce(@inputs, {[], seen, terminals}, fn input, {f, s, t} ->
         {next_fsm, steps} = hop(fsm, input)
         next_rows = upsert(rows, steps)
         next_path = [input | path]
@@ -71,24 +74,24 @@ defmodule Grappa.Session.RecoverProgressTest do
 
         cond do
           Map.has_key?(s, key) ->
-            {q, s, t}
+            {f, s, t}
 
           next_fsm.phase in [:succeeded, :failed] ->
             terminal = %{phase: next_fsm.phase, from: fsm.phase, rows: next_rows, path: next_path}
-            {q, Map.put(s, key, true), [terminal | t]}
+            {f, Map.put(s, key, true), [terminal | t]}
 
           true ->
-            {q ++ [{next_fsm, next_rows, next_path}], Map.put(s, key, true), t}
+            {[{next_fsm, next_rows, next_path} | f], Map.put(s, key, true), t}
         end
       end)
 
-    explore(next_queue, next_seen, next_terminals)
+    explore(queue ++ Enum.reverse(frontier), next_seen, next_terminals)
   end
 
   # The client's rule: one row per step name, last write wins, rows nobody
   # updates are left exactly as they were.
   defp upsert(rows, steps) do
-    Enum.reduce(steps, rows, fn {step, status, _reason}, acc -> Map.put(acc, step, status) end)
+    Enum.reduce(steps, rows, fn {step, status, _}, acc -> Map.put(acc, step, status) end)
   end
 
   describe "the happy path" do
