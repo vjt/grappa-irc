@@ -91,11 +91,6 @@ defmodule Grappa.IRC.ClientTest do
   # initial handshake (NICK/USER guaranteed to be the last lines of
   # the always-sent prefix). Eliminates the `Process.sleep(20)` pattern
   # that races on the IRCServer's accept-loop sock assignment.
-  defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER "), 1_000)
-    :ok
-  end
-
   # Handler that replies CAP * LS :sasl=PLAIN to a CAP LS, ACKs the
   # CAP REQ :sasl, prompts AUTHENTICATE PLAIN with `+`, and answers
   # the base64 payload with the configured numeric (903 by default).
@@ -344,7 +339,7 @@ defmodule Grappa.IRC.ClientTest do
     test "send_nick/2 emits NICK new\\r\\n" do
       {server, port} = start_server()
       client = start_client(port)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       :ok = Client.send_nick(client, "vjt-away")
 
@@ -762,7 +757,7 @@ defmodule Grappa.IRC.ClientTest do
     test "send_line/2 returns {:error, :closed} when socket is closed-but-not-nil (no raise)" do
       {server, port} = start_server()
       client = start_client(port)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Snapshot the live socket, close it underneath the Client, then
       # send. handle_call({:send, _}, _, state) hands the closed-but-
@@ -801,7 +796,7 @@ defmodule Grappa.IRC.ClientTest do
       # before we could send anything).
       {server, port} = start_server()
       client = start_client(port)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       :sys.replace_state(client, fn state -> %{state | socket: nil} end)
 
@@ -851,7 +846,7 @@ defmodule Grappa.IRC.ClientTest do
       port = IRCServer.port(server)
 
       _ = start_client(port, %{source_address: "127.0.0.2"})
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, {{127, 0, 0, 2}, _}} = IRCServer.peername(server)
     end
@@ -861,7 +856,7 @@ defmodule Grappa.IRC.ClientTest do
       port = IRCServer.port(server)
 
       _ = start_client(port, %{source_address: nil})
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, {{127, 0, 0, 1}, _}} = IRCServer.peername(server)
     end
@@ -890,7 +885,7 @@ defmodule Grappa.IRC.ClientTest do
     test "single PRIVMSG line dispatched as parsed Message struct" do
       {server, port} = start_server()
       _ = start_client(port)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :hello\r\n")
 
@@ -906,7 +901,7 @@ defmodule Grappa.IRC.ClientTest do
     test "burst of 50 server lines dispatched in order with no loss (active:once re-arm)" do
       {server, port} = start_server()
       _ = start_client(port)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       Enum.each(1..50, fn i ->
         IRCServer.feed(server, ":a!~a@h PRIVMSG #x :msg #{i}\r\n")
@@ -923,7 +918,7 @@ defmodule Grappa.IRC.ClientTest do
     test "mid-line server write coalesced via OS-level packet:line buffering" do
       {server, port} = start_server()
       _ = start_client(port)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, "PING :fo")
       # Intentional sleep: half a line in, force the OS-level packet:line
@@ -939,7 +934,7 @@ defmodule Grappa.IRC.ClientTest do
     test "malformed inbound line: parse error is logged, client stays alive" do
       {server, port} = start_server()
       client = start_client(port)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       log =
         capture_log(fn ->
@@ -1374,7 +1369,7 @@ defmodule Grappa.IRC.ClientTest do
       # Client should have sent: PASS, CAP LS, NICK, USER. Then on 421,
       # no further action. No PRIVMSG NickServ from the client side
       # (server-side handoff handles it).
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # 421 :Unknown command CAP arrives in the dispatch_to mailbox AFTER
       # the client has parsed it — deterministic synchronisation point.
@@ -1864,7 +1859,7 @@ defmodule Grappa.IRC.ClientTest do
     end
 
     test "rejected lines never reach the server socket", %{server: server, client: client} do
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       lines_before = IRCServer.sent_lines(server)
 
       _ = Client.send_privmsg(client, "#chan", "hi\r\nQUIT :pwn")
@@ -2520,7 +2515,7 @@ defmodule Grappa.IRC.ClientTest do
       # it received is what the model must have charged for.
       {server, port} = start_server(rfc_handler())
       client = start_client(port)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       :ok = Client.send_line(client, "PING :probe\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PING :probe\r\n"), 1_000)

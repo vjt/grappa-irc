@@ -52,11 +52,6 @@ defmodule GrappaWeb.SessionControllerTest do
     port
   end
 
-  defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 5_000)
-    :ok
-  end
-
   # A registered visitor = identified on some network. #211 phase 7 —
   # `commit_password/3` writes the per-network Cloak-encrypted secret on
   # the `(visitor, network)` credential; "registered/permanent" is DERIVED
@@ -77,7 +72,7 @@ defmodule GrappaWeb.SessionControllerTest do
 
       # The visitor is live on network A.
       _ = start_visitor_session_for(visitor, network_a)
-      :ok = await_handshake(server_a)
+      :ok = IRCServer.await_handshake(server_a, 5_000)
       assert is_pid(Grappa.Session.whereis({:visitor, visitor.id}, network_a.id))
 
       # A SECOND visitor_enabled network B with its own fake upstream.
@@ -340,7 +335,7 @@ defmodule GrappaWeb.SessionControllerTest do
       # #211 phase 7 — anon ⟺ NOT registered (derived from the credentials).
       refute Credentials.visitor_registered?(visitor.id)
       _ = start_visitor_session_for(visitor, network_a)
-      :ok = await_handshake(server_a)
+      :ok = IRCServer.await_handshake(server_a, 5_000)
 
       {server_b, port_b} = start_server()
       {network_b, _} = network_with_server(port: port_b, slug: "beta", visitor_enabled: true)

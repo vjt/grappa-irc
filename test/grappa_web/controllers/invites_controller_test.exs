@@ -46,11 +46,6 @@ defmodule GrappaWeb.InvitesControllerTest do
 
   defp u, do: System.unique_integer([:positive])
 
-  defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
-    :ok
-  end
-
   # Drive a real inbound INVITE through the parser + EventRouter rather than
   # poking window state directly — the fold that keys the window happens on
   # that ingress path, and a test that bypassed it would pass while the real
@@ -71,7 +66,7 @@ defmodule GrappaWeb.InvitesControllerTest do
       network = setup_network(vjt, port, "azzurra-#{u()}")
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(vjt.name))
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = invite(server, "#random")
 
       conn = delete(conn, "/networks/#{network.slug}/invites/%23random")
@@ -96,7 +91,7 @@ defmodule GrappaWeb.InvitesControllerTest do
       {server, port} = start_server()
       network = setup_network(vjt, port, "azzurra-#{u()}")
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = invite(server, "#random")
 
       conn = delete(conn, "/networks/#{network.slug}/invites/%23RANDOM")
@@ -112,7 +107,7 @@ defmodule GrappaWeb.InvitesControllerTest do
       {server, port} = start_server()
       network = setup_network(vjt, port, "azzurra-#{u()}")
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#live\r\n")
       IRCServer.feed(server, "PING :flush\r\n")
@@ -130,7 +125,7 @@ defmodule GrappaWeb.InvitesControllerTest do
       {server, port} = start_server()
       network = setup_network(vjt, port, "azzurra-#{u()}")
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn = delete(conn, "/networks/#{network.slug}/invites/%23never")
 

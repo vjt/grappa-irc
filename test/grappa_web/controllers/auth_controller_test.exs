@@ -61,11 +61,6 @@ defmodule GrappaWeb.AuthControllerTest do
   defp feed_001(server, nick),
     do: IRCServer.feed(server, ":irc.test.org 001 #{nick} :Welcome\r\n")
 
-  defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
-    :ok
-  end
-
   defp stop_visitor_session(visitor_id, network_id),
     do: :ok = Grappa.Session.stop_session({:visitor, visitor_id}, network_id)
 
@@ -647,7 +642,7 @@ defmodule GrappaWeb.AuthControllerTest do
 
       task = Task.async(fn -> post(conn, "/auth/login", %{"identifier" => "vjt"}) end)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
 
       result = Task.await(task, 10_000)
@@ -722,7 +717,7 @@ defmodule GrappaWeb.AuthControllerTest do
 
       task = Task.async(fn -> post(conn, "/auth/login", %{"identifier" => "vjt "}) end)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
 
       result = Task.await(task, 10_000)
@@ -951,7 +946,7 @@ defmodule GrappaWeb.AuthControllerTest do
           post(conn, "/auth/login", %{"identifier" => "ghost", "incognito" => true})
         end)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "ghost")
 
       resp = Task.await(task, 10_000)
@@ -1060,7 +1055,7 @@ defmodule GrappaWeb.AuthControllerTest do
           )
         end)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
 
       {:ok, %{visitor: visitor, token: token}} = Task.await(task, 10_000)
@@ -1129,7 +1124,7 @@ defmodule GrappaWeb.AuthControllerTest do
           )
         end)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
 
       {:ok, %{visitor: visitor, token: token}} = Task.await(task, 10_000)
@@ -1180,7 +1175,7 @@ defmodule GrappaWeb.AuthControllerTest do
           )
         end)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
 
       {:ok, %{visitor: visitor, token: token}} = Task.await(task, 10_000)
@@ -1228,7 +1223,7 @@ defmodule GrappaWeb.AuthControllerTest do
       _ = credential_fixture(user, network)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       ref = Process.monitor(pid)
 
       {:ok, session} = Accounts.create_session({:user, user.id}, "1.2.3.4", nil, [])
@@ -1270,8 +1265,8 @@ defmodule GrappaWeb.AuthControllerTest do
 
       pid1 = start_session_for(user, network1)
       pid2 = start_session_for(user, network2)
-      :ok = await_handshake(server1)
-      :ok = await_handshake(server2)
+      :ok = IRCServer.await_handshake(server1, 1_000)
+      :ok = IRCServer.await_handshake(server2, 1_000)
       ref1 = Process.monitor(pid1)
       ref2 = Process.monitor(pid2)
 
@@ -1376,7 +1371,7 @@ defmodule GrappaWeb.AuthControllerTest do
           )
         end)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
 
       {:ok, %{visitor: visitor, token: token}} = Task.await(task, 10_000)

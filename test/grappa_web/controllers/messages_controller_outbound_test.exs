@@ -51,18 +51,13 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
     network
   end
 
-  defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
-    :ok
-  end
-
   describe "GET presence filter — #458 member-count (unset) branch" do
     test "unset pref on a LARGE channel (>= threshold members) hides presence via the size default",
          %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Seed the live Session with >= LARGE_CHANNEL_THRESHOLD members so the
       # controller reads the count and an UNSET pref resolves to HIDE. This is
@@ -126,7 +121,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
         )
 
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         conn
@@ -182,7 +177,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # /ping carol typed in #sniffo: cic POSTs to the SOURCE window (the URL
       # channel_id, #sniffo) with ctcp_target=carol (the wire recipient). The
@@ -221,7 +216,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # The wire recipient is validated with validate_post_target_name, which
       # rejects the read-only $server synthetic (a CTCP frame can't target it).
@@ -243,7 +238,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # `/notice carol heads up` typed in #sniffo: cic POSTs to the SOURCE window
       # (the URL channel_id) with notice_target=carol. Mirror of the #640
@@ -277,7 +272,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         conn
@@ -297,7 +292,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # `/notice @#sniffo heads up` — the form operators use most, refused as
       # malformed before #1301 because the raw `@#sniffo` matched neither the
@@ -329,7 +324,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # The control for the test above. On the plain arm the URL channel is
       # BOTH the wire target and the persist key, so admitting a sigil here
@@ -353,7 +348,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # The W12 carve-out at the DOOR, not just in the session: a fat-fingered
       # `/notice nickserv identify <pass>` must reach the wire and leave nothing
@@ -385,7 +380,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Two relay verbs in one POST is not a shape the client can mean. Refusing
       # it out loud beats letting clause ORDER silently pick a winner.
@@ -408,7 +403,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       handler_id = {__MODULE__, System.unique_integer([:positive])}
       test_pid = self()
@@ -447,7 +442,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn1 =
         conn
@@ -475,7 +470,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn1 =
         conn
@@ -512,7 +507,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
         )
 
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         conn
@@ -644,7 +639,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         conn
@@ -692,7 +687,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # capacity == 3 (test config): three sends ride the burst.
       for n <- 1..3 do
@@ -718,7 +713,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Drain the burst (capacity 3 in test config), then trip the empty bucket.
       for n <- 1..3, do: assert(json_response(post_body(conn, network, "line #{n}"), 201))
@@ -738,12 +733,12 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server1, port1} = start_server()
       net1 = setup_network(vjt, port1, "azzurra")
       pid1 = start_session_for(vjt, net1)
-      :ok = await_handshake(server1)
+      :ok = IRCServer.await_handshake(server1, 1_000)
 
       {server2, port2} = start_server()
       net2 = setup_network(vjt, port2, "second-net")
       pid2 = start_session_for(vjt, net2)
-      :ok = await_handshake(server2)
+      :ok = IRCServer.await_handshake(server2, 1_000)
 
       # Drain net1's bucket entirely (capacity 3 + one throttled).
       for n <- 1..3, do: assert(json_response(post_body(conn, net1, "n1-#{n}"), 201))
@@ -784,7 +779,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = feed_umodes(server, "+io")
 
       # Sends 4, 5 and 6 are the discriminating ones: under the ordinary
@@ -806,7 +801,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = feed_umodes(server, "+io")
 
       for n <- 1..6, do: assert(json_response(post_body(conn, network, "oper #{n}"), 201))
@@ -832,7 +827,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       # at source, so the network has to say it is one.
       network = setup_network(vjt, port, "azzurra", :azzurra)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = feed_umodes(server, "+Fio")
 
       # Well past BOTH ceilings (3 ordinary, 6 oper): there is no upstream
@@ -852,7 +847,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = feed_umodes(server, "+Fio")
 
       for n <- 1..6, do: assert(json_response(post_body(conn, network, "unclassified #{n}"), 201))
@@ -867,7 +862,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = feed_umodes(server, "+iw")
 
       for n <- 1..3, do: assert(json_response(post_body(conn, network, "plain #{n}"), 201))
@@ -900,7 +895,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
         )
 
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         conn
@@ -932,7 +927,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         conn

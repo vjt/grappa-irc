@@ -66,11 +66,6 @@ defmodule Grappa.Visitors.LoginTest do
     c
   end
 
-  defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
-    :ok
-  end
-
   defp login_input(overrides \\ %{}) do
     Map.merge(
       %{
@@ -117,7 +112,7 @@ defmodule Grappa.Visitors.LoginTest do
 
       task = Task.async(fn -> Login.login(login_input(), []) end)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
 
       assert {:ok, %{visitor: %Visitor{} = v, token: token}} = Task.await(task, 10_000)
@@ -137,7 +132,7 @@ defmodule Grappa.Visitors.LoginTest do
 
       task = Task.async(fn -> Login.login(login_input(%{incognito: true}), []) end)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
 
       assert {:ok, %{visitor: %Visitor{} = v}} = Task.await(task, 10_000)
@@ -236,7 +231,7 @@ defmodule Grappa.Visitors.LoginTest do
 
       task = Task.async(fn -> Login.login(login_input(%{password: "freshpass"}), []) end)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
 
       # Case 1 provisions an anon visitor, but a non-nil login password
@@ -274,7 +269,7 @@ defmodule Grappa.Visitors.LoginTest do
 
       task = Task.async(fn -> Login.login(login_input(%{password: ""}), []) end)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
 
       assert {:ok, %{visitor: %Visitor{} = v, token: token}} = Task.await(task, 10_000)
@@ -445,7 +440,7 @@ defmodule Grappa.Visitors.LoginTest do
 
       task = Task.async(fn -> Login.login(login_input(%{password: "s3cret"}), []) end)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
 
       # AuthFSM emits `PRIVMSG NickServ :IDENTIFY s3cret` at 001 for the
@@ -506,7 +501,7 @@ defmodule Grappa.Visitors.LoginTest do
       # (live session + :parked row) and the next reboot's Bootstrap
       # parked-skip would silently drop the just-established session.
       task = Task.async(fn -> Login.login(login_input(%{password: "s3cret"}), []) end)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
       assert {:ok, _} = Task.await(task, 10_000)
 
@@ -519,7 +514,7 @@ defmodule Grappa.Visitors.LoginTest do
          %{server: server, network: network, visitor: visitor} do
       # First login spawns the live session for this identity.
       task1 = Task.async(fn -> Login.login(login_input(%{password: "s3cret"}), []) end)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
       assert {:ok, %{token: first_token}} = Task.await(task1, 10_000)
 
@@ -777,7 +772,7 @@ defmodule Grappa.Visitors.LoginTest do
       {network, _} = setup_visitor_network(port)
 
       task = Task.async(fn -> Login.login(login_input(%{ip: nil}), []) end)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
 
       assert {:ok, %{visitor: %Visitor{} = v}} = Task.await(task, 10_000)
@@ -792,7 +787,7 @@ defmodule Grappa.Visitors.LoginTest do
       {network, _} = setup_visitor_network(port)
 
       task = Task.async(fn -> Login.login(login_input(%{ip: "not-an-ip"}), []) end)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
 
       assert {:ok, %{visitor: %Visitor{} = v}} = Task.await(task, 10_000)
@@ -842,7 +837,7 @@ defmodule Grappa.Visitors.LoginTest do
       #    connects to the fake cleanly). The login carries the trusted client
       #    IP through to record_login_client_source.
       task = Task.async(fn -> Login.login(login_input(%{ip: client_ip}), []) end)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_001(server, "vjt")
       assert {:ok, %{visitor: %Visitor{} = v}} = Task.await(task, 10_000)
 

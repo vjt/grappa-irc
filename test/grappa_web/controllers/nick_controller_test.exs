@@ -46,11 +46,6 @@ defmodule GrappaWeb.NickControllerTest do
     network
   end
 
-  defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
-    :ok
-  end
-
   setup %{conn: conn} do
     vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
     session = session_fixture(vjt)
@@ -63,7 +58,7 @@ defmodule GrappaWeb.NickControllerTest do
       slug = "az-nick-#{System.unique_integer([:positive])}"
       network = setup_network(vjt, port, slug)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         conn
@@ -134,7 +129,7 @@ defmodule GrappaWeb.NickControllerTest do
       {visitor, network} = visitor_with_network(port, nick: old_nick)
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       new_nick = "v9new-#{System.unique_integer([:positive])}"
 
@@ -188,7 +183,7 @@ defmodule GrappaWeb.NickControllerTest do
       _ = visitor_fixture(nick: target_nick, network_slug: network.slug)
 
       pid = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         Phoenix.ConnTest.build_conn()
@@ -217,7 +212,7 @@ defmodule GrappaWeb.NickControllerTest do
       {visitor, network} = visitor_with_network(port, nick: old_nick)
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Free in the registry — nothing squats it locally. Upstream is the
       # one that says no.
@@ -269,7 +264,7 @@ defmodule GrappaWeb.NickControllerTest do
       {:ok, _} = Visitors.commit_password(holder.id, network.id, "s3cret")
 
       pid = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       # Snapshot lines after handshake: NICK + USER are emitted at
       # connect-time. Asserting "no NEW NICK line" against a fresh
       # snapshot is the right granularity — `wait_for_line/3` matches

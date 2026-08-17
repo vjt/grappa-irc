@@ -52,17 +52,12 @@ defmodule GrappaWeb.ChannelsControllerTest do
     network
   end
 
-  defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
-    :ok
-  end
-
   describe "POST /networks/:network_id/channels" do
     test "with active session sends JOIN upstream and returns 202", %{conn: conn, vjt: vjt} do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         conn
@@ -82,7 +77,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         conn
@@ -231,7 +226,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         conn
@@ -284,7 +279,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         conn
@@ -323,7 +318,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn = delete(conn, "/networks/#{network.slug}/channels/%23sniffo")
 
@@ -385,7 +380,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         delete(
@@ -407,7 +402,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn = delete(conn, "/networks/#{network.slug}/channels/%23sniffo?reason=")
 
@@ -428,7 +423,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       {network, _} = network_with_server(port: port, slug: "az-1208-crlf-#{u()}")
       _ = credential_fixture(vjt, network, %{autojoin_channels: ["#sniffo", "#other"]})
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         delete(conn, "/networks/#{network.slug}/channels/%23sniffo?reason=bye%0AQUIT+%3Apwn")
@@ -449,7 +444,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       {server, port} = start_server()
       network = setup_network(vjt, port)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       oversize = String.duplicate("a", GrappaWeb.BodyLimit.max_body_bytes() + 1)
 
@@ -483,7 +478,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       {network, _} = network_with_server(port: port, slug: "az-bug5a-#{u()}")
       _ = credential_fixture(vjt, network, %{autojoin_channels: ["#grappa", "#other"]})
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn = delete(conn, "/networks/#{network.slug}/channels/%23grappa")
       assert json_response(conn, 202) == %{"ok" => true}
@@ -502,7 +497,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       {network, _} = network_with_server(port: port, slug: "az-bug5a-noop-#{u()}")
       _ = credential_fixture(vjt, network, %{autojoin_channels: ["#other"]})
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # #grappa is NOT in autojoin_channels — DELETE should still succeed and
       # leave the list unchanged.
@@ -530,7 +525,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       {network, _} = network_with_server(port: port, slug: "az-m16-#{u()}")
       _ = credential_fixture(vjt, network, %{autojoin_channels: ["#grappa"]})
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Race-synthesis: delete the credential row out from under the
       # request after the session is up. The controller's
@@ -568,7 +563,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
         )
 
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Seed window_state[#unjoined] = :failed (e.g. prior +i JOIN rejection)
       # so the eager wipe has something to clear. Without this seed the
@@ -615,7 +610,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       _ = credential_fixture(vjt, network, %{autojoin_channels: []})
 
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Seed state.members[#chan] + window_state[#chan]=:joined to mirror a
       # post-JOIN session. The eager-wipe path must clean both even though
@@ -659,7 +654,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       {network, _} = network_with_server(port: port, slug: "az-lastjoined-#{u()}")
       _ = credential_fixture(vjt, network, %{autojoin_channels: []})
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Seed two live-joined channels synchronously; last_joined starts empty.
       :sys.replace_state(pid, fn s ->
@@ -810,7 +805,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       slug = "az-topic-#{u()}"
       network = setup_network(vjt, port, slug)
       pid = start_session_for(vjt, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         conn
@@ -906,7 +901,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       {visitor, network} = visitor_with_network(port)
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         Phoenix.ConnTest.build_conn()
@@ -928,7 +923,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       {visitor, network} = visitor_with_network(port)
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         Phoenix.ConnTest.build_conn()
@@ -973,7 +968,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       _ = visitor_channel_fixture(visitor, network.slug, "#italia")
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Seed live membership synchronously (dodges the self-JOIN echo race).
       {:ok, cred} = Grappa.Networks.Credentials.get_visitor_credential(visitor.id, network.id)
@@ -1019,7 +1014,7 @@ defmodule GrappaWeb.ChannelsControllerTest do
       _ = visitor_channel_fixture(visitor, network.slug, "#italia")
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       conn =
         Phoenix.ConnTest.build_conn()

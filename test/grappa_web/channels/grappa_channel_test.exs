@@ -198,13 +198,8 @@ defmodule GrappaWeb.GrappaChannelTest do
     cred.nick
   end
 
-  defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
-    :ok
-  end
-
   defp welcome_session_on_channel(server, channel) do
-    :ok = await_handshake(server)
+    :ok = IRCServer.await_handshake(server, 1_000)
     IRCServer.feed(server, ":irc.test.org 001 grappa-snap :Welcome\r\n")
     {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #{channel}"), 1_000)
     IRCServer.feed(server, ":grappa-snap!u@h JOIN :#{channel}\r\n")
@@ -218,7 +213,7 @@ defmodule GrappaWeb.GrappaChannelTest do
   # row), so the JOIN is driven explicitly via `Session.send_join/4` rather
   # than waiting for the 001-autojoin loop.
   defp welcome_visitor_on_channel(server, subject, network_id, nick, channel) do
-    :ok = await_handshake(server)
+    :ok = IRCServer.await_handshake(server, 1_000)
     IRCServer.feed(server, ":irc.test.org 001 #{nick} :Welcome\r\n")
     :ok = Session.send_join(subject, network_id, channel, nil)
     {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #{channel}"), 1_000)
@@ -541,7 +536,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       {irc_server, port} = start_irc_server()
       {user, network} = setup_user_and_network_with_session(port)
 
-      :ok = await_handshake(irc_server)
+      :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 grappa-snap :Welcome\r\n")
       {:ok, _} = IRCServer.wait_for_line(irc_server, &String.starts_with?(&1, "JOIN #snap"), 1_000)
 
@@ -844,7 +839,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # Seed the watch list BEFORE end-of-MOTD so arm_presence reads it.
       {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user.name)
 
-      :ok = await_handshake(irc_server)
+      :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 grappa-snap :Welcome\r\n")
       IRCServer.feed(irc_server, ":irc.test.org 005 grappa-snap WATCH=128 :are supported\r\n")
       IRCServer.feed(irc_server, ":irc.test.org 376 grappa-snap :End of MOTD\r\n")
@@ -1023,7 +1018,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # Registration WITHOUT joining any channel — the deliberate difference
       # from `welcome_session_on_channel/2`, which is the only reason this
       # test does the handshake by hand.
-      :ok = await_handshake(irc_server)
+      :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 grappa-snap :Welcome\r\n")
 
       IRCServer.feed(
@@ -1703,7 +1698,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     test "op: visitor socket ships MODE upstream (issue #153 — no visitor gate)" do
       {server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
 
       visitor_name = "visitor:#{visitor.id}"
@@ -1807,7 +1802,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     test "topic_set: visitor socket ships TOPIC upstream (issue #153)" do
       {server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
 
       visitor_name = "visitor:#{visitor.id}"
@@ -1873,7 +1868,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     test "oper: visitor socket ships OPER upstream (issue #148 — not visitor_not_allowed)" do
       {server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
 
       visitor_name = "visitor:#{visitor.id}"
@@ -1998,7 +1993,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     test "raw: visitor socket ships the line verbatim upstream (issue #153)" do
       {server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
 
       visitor_name = "visitor:#{visitor.id}"
@@ -2408,7 +2403,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     test "visitor socket: whois with live session sends WHOIS upstream" do
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
-      :ok = await_handshake(irc_server)
+      :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
       flush_server(irc_server)
 
@@ -2437,7 +2432,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     test "visitor socket: whois with server emits WHOIS <server> <nick> upstream (#198)" do
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
-      :ok = await_handshake(irc_server)
+      :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
       flush_server(irc_server)
 
@@ -2495,7 +2490,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # `Session.send_whois/4` is called).
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
-      :ok = await_handshake(irc_server)
+      :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
       flush_server(irc_server)
 
@@ -2525,7 +2520,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     test "whois with source: rail marks the broadcast bundle source: :rail" do
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
-      :ok = await_handshake(irc_server)
+      :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
       flush_server(irc_server)
 
@@ -2590,7 +2585,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     test "visitor socket: away set with live session sends AWAY :reason upstream" do
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
-      :ok = await_handshake(irc_server)
+      :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
       flush_server(irc_server)
 
@@ -2616,7 +2611,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     test "visitor socket: away unset after set issues bare AWAY upstream" do
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
-      :ok = await_handshake(irc_server)
+      :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
       flush_server(irc_server)
 
@@ -2690,7 +2685,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     test "visitor socket: invite with live session sends INVITE nick #chan upstream" do
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
-      :ok = await_handshake(irc_server)
+      :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
       flush_server(irc_server)
 
@@ -2745,7 +2740,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # users do (mirror of the C3 WHOIS malformed-nick test).
       {irc_server, port} = start_irc_server()
       {visitor, network} = setup_visitor_and_network_with_session(port)
-      :ok = await_handshake(irc_server)
+      :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
       flush_server(irc_server)
 
@@ -2788,7 +2783,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       test "visitor socket: #{@verb} with live session sends upstream line" do
         {irc_server, port} = start_irc_server()
         {visitor, network} = setup_visitor_and_network_with_session(port)
-        :ok = await_handshake(irc_server)
+        :ok = IRCServer.await_handshake(irc_server, 1_000)
         IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
         flush_server(irc_server)
 
@@ -2845,7 +2840,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       test "visitor socket: #{@verb} with malformed channel returns a validation error" do
         {irc_server, port} = start_irc_server()
         {visitor, network} = setup_visitor_and_network_with_session(port)
-        :ok = await_handshake(irc_server)
+        :ok = IRCServer.await_handshake(irc_server, 1_000)
         IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
         flush_server(irc_server)
 

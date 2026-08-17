@@ -58,11 +58,6 @@ defmodule Grappa.Networks.ConnectionStateTest do
     Repo.get_by!(Credential, user_id: cred.user_id, network_id: cred.network_id)
   end
 
-  defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
-    :ok
-  end
-
   describe "connect/1" do
     test "transitions :parked → :connected, clears reason, broadcasts" do
       {_, port} = start_server()
@@ -153,7 +148,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       ref = Process.monitor(pid)
 
       assert {:ok, updated} = Networks.disconnect(cred, "user-disconnect")
@@ -236,7 +231,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       ref = Process.monitor(pid)
 
       assert {:ok, updated} = Networks.mark_failed(cred, "k-line: G:Lined")

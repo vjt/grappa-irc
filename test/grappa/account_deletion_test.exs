@@ -38,11 +38,6 @@ defmodule Grappa.AccountDeletionTest do
     {server, Grappa.IRCServer.port(server)}
   end
 
-  defp await_handshake(server) do
-    {:ok, _} = Grappa.IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 5_000)
-    :ok
-  end
-
   # A registered visitor = identified on some network. #211 phase 7 —
   # `commit_password/3` writes the per-network secret + flips the credential's
   # `auth_method` to `:nickserv_identify`; registration is DERIVED from that
@@ -83,8 +78,8 @@ defmodule Grappa.AccountDeletionTest do
 
       pid1 = start_session_for(user, network1)
       pid2 = start_session_for(user, network2)
-      :ok = await_handshake(server1)
-      :ok = await_handshake(server2)
+      :ok = Grappa.IRCServer.await_handshake(server1, 5_000)
+      :ok = Grappa.IRCServer.await_handshake(server2, 5_000)
       ref1 = Process.monitor(pid1)
       ref2 = Process.monitor(pid2)
 
@@ -120,7 +115,7 @@ defmodule Grappa.AccountDeletionTest do
       {visitor, network} = registered_visitor(port)
 
       pid = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
+      :ok = Grappa.IRCServer.await_handshake(server, 5_000)
       ref = Process.monitor(pid)
 
       session = visitor_session_fixture(visitor)

@@ -99,11 +99,6 @@ defmodule Grappa.Session.ServerTest do
     {user, network, credential}
   end
 
-  defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
-    :ok
-  end
-
   # Poll until the fake ircd has seen `target` CTCP PING answers, or the
   # deadline passes — a condition, not a sleep. Returns whatever the last
   # sample was so the caller asserts on a number rather than on a timeout.
@@ -225,7 +220,7 @@ defmodule Grappa.Session.ServerTest do
           1_000
         )
     else
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
     end
 
     %{server: server, pid: pid, network: network, subject: subject, label: label}
@@ -399,7 +394,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
       _ = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, {"127.0.0.1", ^port}} =
                Session.peer_address({:user, user.id}, network.id)
@@ -423,7 +418,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
       _ = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, %{server: "127.0.0.1", port: ^port, tls: false, registered: false}} =
                Session.connection_info({:user, user.id}, network.id)
@@ -448,7 +443,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":irc.test.org 221 grappa-test +r\r\n")
 
@@ -482,7 +477,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       before = DateTime.utc_now()
       _ = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, %{connected_at: %DateTime{} = at}} =
                Session.connection_info({:user, user.id}, network.id)
@@ -520,7 +515,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # CASEMAPPING alongside PREFIX so the isupport_changed broadcast fires
       # and serves as the "005 processed" barrier before we read the facade.
@@ -553,7 +548,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert Session.casemapping({:user, user.id}, network.id) == :ascii
 
@@ -588,7 +583,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(
         server,
@@ -619,7 +614,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert Session.statusmsg({:user, user.id}, network.id) == ISupport.default_statusmsg()
 
@@ -731,7 +726,7 @@ defmodule Grappa.Session.ServerTest do
       init_opts = Map.put(stale_opts, :refresh_plan, refresh_plan)
 
       {:ok, pid} = Server.start_link(init_opts)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       state = SessionStateHelpers.fetch(pid)
 
@@ -887,7 +882,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, pid} =
         Session.start_session({:user, user.id}, network.id, derived_alias_opts(user, network, port, addr))
 
-      await_handshake(server)
+      IRCServer.await_handshake(server, 1_000)
 
       # The crash-survival holder index the manager reads at reconcile.
       assert addr in Session.live_derived_sources()
@@ -911,7 +906,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, pid} =
         Session.start_session({:user, user.id}, network.id, derived_alias_opts(user, network, port, addr))
 
-      await_handshake(server)
+      IRCServer.await_handshake(server, 1_000)
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
@@ -934,8 +929,8 @@ defmodule Grappa.Session.ServerTest do
       {:ok, pid2} =
         Session.start_session({:user, user2.id}, net2.id, derived_alias_opts(user2, net2, port2, addr))
 
-      await_handshake(server1)
-      await_handshake(server2)
+      IRCServer.await_handshake(server1, 1_000)
+      IRCServer.await_handshake(server2, 1_000)
 
       # The de-duplicated holder set reports the shared address ONCE despite two
       # live holders. Scoped to `addr` (not `== [addr]`) so an async-GC-lagged
@@ -955,7 +950,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, pid} =
         Session.start_session({:user, user.id}, network.id, derived_alias_opts(user, network, port, nil))
 
-      await_handshake(server)
+      IRCServer.await_handshake(server, 1_000)
 
       # This session registered NO holder entry — pid-scoped so it's robust to
       # async-GC-lagged entries from other tests (proves the manager + holder
@@ -1100,7 +1095,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Reset Backoff to a known-zero baseline (handshake/connect could
       # have left a stale entry from a previous run in the singleton ETS
@@ -1140,7 +1135,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = Backoff.reset({:user, user.id}, network.id)
 
       state = SessionStateHelpers.fetch(pid)
@@ -1173,7 +1168,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = Backoff.reset({:user, user.id}, network.id)
 
       state = SessionStateHelpers.fetch(pid)
@@ -1214,7 +1209,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = Backoff.reset({:user, user.id}, network.id)
 
       ref = Process.monitor(pid)
@@ -1257,7 +1252,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       state = SessionStateHelpers.fetch(pid)
       client_pid = SessionStateHelpers.client(state)
@@ -1291,7 +1286,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       state = SessionStateHelpers.fetch(pid)
       client_pid = SessionStateHelpers.client(state)
@@ -1347,7 +1342,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       :sys.replace_state(pid, &Map.merge(&1, @secrets))
 
@@ -1373,7 +1368,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       status = Server.format_status(%{state: :sys.get_state(pid)})
 
@@ -1401,7 +1396,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       ref = Process.monitor(pid)
       Process.flag(:trap_exit, true)
@@ -1425,7 +1420,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       ref = Process.monitor(pid)
       Process.flag(:trap_exit, true)
@@ -1453,7 +1448,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       ref = Process.monitor(pid)
       Process.flag(:trap_exit, true)
@@ -1494,7 +1489,7 @@ defmodule Grappa.Session.ServerTest do
         {server, port} = start_server()
         {user, network, _} = setup_user_and_network(port)
         pid = start_session_for(user, network)
-        :ok = await_handshake(server)
+        :ok = IRCServer.await_handshake(server, 1_000)
 
         # Model the production race: swap the linked Client for a bare
         # (unlinked, non-GenServer) process that, on the first {:send, _}
@@ -1689,7 +1684,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       assert {:ok, "JOIN #sniffo\r\n"} =
@@ -1708,7 +1703,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
       Process.sleep(100)
 
@@ -1746,7 +1741,7 @@ defmodule Grappa.Session.ServerTest do
       # Long fallback so ONLY the +r echo can trigger the JOINs in-window.
       pid = nickserv_plan(user, network, credential, 60_000)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       # 001 alone must NOT fire autojoin: identify is still async, no +r yet.
@@ -1782,7 +1777,7 @@ defmodule Grappa.Session.ServerTest do
       # timer elapses, so a silent/slow NickServ never hangs autojoin.
       pid = nickserv_plan(user, network, credential, 400)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       # Deferred: no JOIN on 001, and none before the fallback elapses.
@@ -1811,7 +1806,7 @@ defmodule Grappa.Session.ServerTest do
       # latch must ensure the JOIN is emitted once, never twice.
       pid = nickserv_plan(user, network, credential, 120)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
       IRCServer.feed(server, ":irc.test.org MODE grappa-test :+r\r\n")
 
@@ -1842,7 +1837,7 @@ defmodule Grappa.Session.ServerTest do
       # on 001 exactly as it did pre-#347.
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       assert {:ok, "JOIN #sniffo\r\n"} =
@@ -1898,7 +1893,7 @@ defmodule Grappa.Session.ServerTest do
       cred_with_perform = put_perform_list(credential, "MODE grappa-test +x\nWHOIS grappa-test")
       pid = nickserv_plan(user, network, cred_with_perform, 60_000)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       # The built-in identify still fires — the list did not consume the var.
@@ -1938,7 +1933,7 @@ defmodule Grappa.Session.ServerTest do
       cred_with_perform = put_perform_list(credential, "NS IDENTIFY $nickserv_pass")
       pid = nickserv_plan(user, network, cred_with_perform, 60_000)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       {:ok, _} =
@@ -1970,7 +1965,7 @@ defmodule Grappa.Session.ServerTest do
       cred_with_perform = put_perform_list(credential, "NS IDENTIFY hunter2")
       pid = nickserv_plan(user, network, cred_with_perform, 60_000)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       {:ok, _} =
@@ -2001,7 +1996,7 @@ defmodule Grappa.Session.ServerTest do
       cred_with_perform = put_perform_list(credential, "MODE grappa-test +x")
       pid = nickserv_plan(user, network, cred_with_perform, 60_000)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       # Perform line runs at 001…
@@ -2061,7 +2056,7 @@ defmodule Grappa.Session.ServerTest do
       cred = seed_server_pass_slot(credential, "ns-secret")
       pid = nickserv_plan(user, network, cred, 60_000)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       # The umode query is emitted at the END of the same 001 clause that runs
@@ -2096,7 +2091,7 @@ defmodule Grappa.Session.ServerTest do
       cred = seed_server_pass_slot(credential, "stale-override")
       pid = nickserv_plan(user, network, cred, 60_000)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       {:ok, _} =
@@ -2133,7 +2128,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = nickserv_plan(user, network, cred, 60_000)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "MODE grappa-test +x\r\n"), 1_000)
@@ -2177,7 +2172,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = nickserv_plan(user, network, cred, 60_000)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       {:ok, _} =
@@ -2211,7 +2206,7 @@ defmodule Grappa.Session.ServerTest do
       cred = seed_server_pass_slot(credential, "ns-secret")
       pid = nickserv_plan(user, network, cred, 60_000)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       assert {:ok, "JOIN #sniffo\r\n"} =
@@ -2237,7 +2232,7 @@ defmodule Grappa.Session.ServerTest do
       # window and this "fires immediately" test would pass either way (mirror).
       pid = nickserv_plan(user, network, credential, 60_000)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       # No identify expected → no defer; the JOIN lands on 001 as before #509.
@@ -2271,7 +2266,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo", "Bar"], user.name)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_registration(server, "WATCH=128")
 
       assert {:ok, "WATCH +Foo +Bar\r\n"} =
@@ -2286,7 +2281,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo", "Bar"], user.name)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_registration(server, "MONITOR=100 WATCH=128")
 
       assert {:ok, "MONITOR + Foo,Bar\r\n"} =
@@ -2306,7 +2301,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user.name)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_registration(server, "")
 
       assert {:ok, "WATCH +Foo\r\n"} =
@@ -2323,7 +2318,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user.name)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_registration(server, "")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "WATCH +Foo\r\n"), 1_000)
 
@@ -2341,7 +2336,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user.name)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_registration(server, "")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "WATCH +Foo\r\n"), 1_000)
       IRCServer.feed(server, ":irc.test.org 421 grappa-test WATCH :Unknown command\r\n")
@@ -2366,7 +2361,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_registration(server, "WATCH=128")
 
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "WATCH +Foo\r\n"), 1_000)
@@ -2403,7 +2398,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user.name)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_registration(server, "WATCH=128")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "WATCH +Foo\r\n"), 1_000)
 
@@ -2421,7 +2416,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, _} = Grappa.Notify.add({:user, user.id}, network.id, ["Foo"], user.name)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       feed_registration(server, "WATCH=128")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "WATCH +Foo\r\n"), 1_000)
 
@@ -2461,7 +2456,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       own_nick = SessionStateHelpers.nick(SessionStateHelpers.fetch(pid))
 
@@ -2491,7 +2486,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, "PING :irc.test.org\r\n")
 
       assert {:ok, "PONG :irc.test.org\r\n"} =
@@ -2518,7 +2513,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":irc.test.org PONG irc.test.org :grappa-liveness\r\n")
       IRCServer.feed(server, "PING :irc.test.org\r\n")
@@ -2561,7 +2556,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Upstream confirms away-set.
       IRCServer.feed(server, ":irc.test.org 306 grappa-test :You have been marked as being away\r\n")
@@ -2600,7 +2595,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":irc.test.org 305 grappa-test :You are no longer marked as being away\r\n")
 
@@ -2630,7 +2625,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       assert :ok = Session.send_links({:user, user.id}, network.id, "all", nil)
@@ -2655,7 +2650,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       assert :ok = Session.send_links({:user, user.id}, network.id, nil, nil)
@@ -2679,7 +2674,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       assert :ok = Session.send_links({:user, user.id}, network.id, nil, nil)
@@ -2708,7 +2703,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       assert :ok = Session.send_links({:user, user.id}, network.id, nil, nil)
@@ -2767,7 +2762,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :hello\r\n")
 
@@ -2801,7 +2796,7 @@ defmodule Grappa.Session.ServerTest do
         )
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, msg} =
                Session.send_privmsg({:user, user.id}, network.id, "#sniffo", "hi all")
@@ -2834,7 +2829,7 @@ defmodule Grappa.Session.ServerTest do
         )
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#sniffo", nil)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
@@ -2873,7 +2868,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":alice!~a@host PRIVMSG vjt :hey there\r\n")
 
@@ -2917,7 +2912,7 @@ defmodule Grappa.Session.ServerTest do
         )
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":bob!~b@host NOTICE vjt :ping\r\n")
 
@@ -2960,7 +2955,7 @@ defmodule Grappa.Session.ServerTest do
         )
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":bob!~b@host NOTICE vjt :ping\r\n")
 
@@ -2991,7 +2986,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":bob!~b@host PRIVMSG vjt :\x01VERSION\x01\r\n")
 
@@ -3035,7 +3030,7 @@ defmodule Grappa.Session.ServerTest do
         Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.channel(user.name, network.slug, "vjt"))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       queries = @auto_reply_capacity * 4
 
@@ -3095,7 +3090,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":NickServ!serv@services PRIVMSG vjt :You are now identified\r\n")
 
@@ -3120,7 +3115,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # The operator DMs a NEW peer — with no browser attached (or another
       # device connected), the window must still open server-side so
@@ -3145,7 +3140,7 @@ defmodule Grappa.Session.ServerTest do
       net_id = network.id
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, _} = Session.send_privmsg({:user, user.id}, net_id, "#sniffo", "hi all")
 
@@ -3182,7 +3177,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.channel(user.name, network.slug, "vjt"))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Arm the fault on the SESSION pid, firing on the auto-open's
       # `BusyRetry.run` — NOT the persist's. The session-pid fault-CHECKS that
@@ -3236,7 +3231,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :hello\r\n")
 
       msg =
@@ -3276,7 +3271,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :hello\r\n")
 
       refute_receive %Phoenix.Socket.Broadcast{event: "event", payload: _}, 200
@@ -3295,7 +3290,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :hello\r\n")
 
       refute_receive %Phoenix.Socket.Broadcast{event: "event", payload: _}, 200
@@ -3311,7 +3306,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org PRIVMSG #sniffo :system message\r\n")
 
       assert_receive %Phoenix.Socket.Broadcast{
@@ -3351,7 +3346,7 @@ defmodule Grappa.Session.ServerTest do
         )
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Empty body → :privmsg is a body-required kind → changeset error →
       # persist_event returns {:error, %Ecto.Changeset{}}. Pre-#336 the
@@ -3412,7 +3407,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # Force linelen so fragmentation is deterministic on any IRC server
@@ -3480,7 +3475,7 @@ defmodule Grappa.Session.ServerTest do
       own = "grappa-test"
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       net_id = network.id
       topic = Topic.user(user.name)
@@ -3543,7 +3538,7 @@ defmodule Grappa.Session.ServerTest do
       own = "grappa-test"
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       net_id = network.id
       slug = network.slug
@@ -3600,7 +3595,7 @@ defmodule Grappa.Session.ServerTest do
       subject = {:user, user.id}
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       net_id = network.id
       slug = network.slug
@@ -3679,7 +3674,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       Repo.BusyRetry.arm_faults(pid, 10_000, fire_on: 1)
       on_exit(fn -> Repo.BusyRetry.disarm_faults(pid) end)
@@ -3718,7 +3713,7 @@ defmodule Grappa.Session.ServerTest do
       subject = {:user, user.id}
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       net_id = network.id
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
@@ -3785,7 +3780,7 @@ defmodule Grappa.Session.ServerTest do
       subject = {:user, user.id}
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       net_id = network.id
 
@@ -3834,7 +3829,7 @@ defmodule Grappa.Session.ServerTest do
       subject = {:user, user.id}
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       net_id = network.id
       slug = network.slug
@@ -3879,7 +3874,7 @@ defmodule Grappa.Session.ServerTest do
       subject = {:user, user.id}
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       net_id = network.id
       slug = network.slug
@@ -3984,7 +3979,7 @@ defmodule Grappa.Session.ServerTest do
       _ = push_subscription_fixture(user, endpoint)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":alice!~a@host PRIVMSG #sniffo :vjt: ping\r\n")
 
@@ -4014,7 +4009,7 @@ defmodule Grappa.Session.ServerTest do
       _ = push_subscription_fixture(user, endpoint)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Default prefs: channel_messages_all=false, channel_mentions=true.
       # Body has no mention → no notify.
@@ -4037,7 +4032,7 @@ defmodule Grappa.Session.ServerTest do
       _ = push_subscription_fixture(user, endpoint)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Inbound DM → channel == own_nick ("vjt").
       IRCServer.feed(server, ":alice!~a@host PRIVMSG vjt :hi there\r\n")
@@ -4064,7 +4059,7 @@ defmodule Grappa.Session.ServerTest do
       _ = push_subscription_fixture(user, endpoint)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":alice!~a@host JOIN #sniffo\r\n")
       IRCServer.feed(server, ":alice!~a@host NOTICE #sniffo :vjt fyi\r\n")
@@ -4088,7 +4083,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":bob!~b@host JOIN #sniffo\r\n")
       IRCServer.feed(server, ":bob!~b@host PART #sniffo :bye\r\n")
 
@@ -4142,7 +4137,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       # Autojoin JOIN signals Session has processed `001` fully.
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
@@ -4177,7 +4172,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # Forced upstream rename — services or operator-driven.
@@ -4214,7 +4209,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":alice!~a@host NICK :alice2\r\n")
@@ -4255,7 +4250,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       action_body = "\x01ACTION waves at the channel\x01"
@@ -4301,7 +4296,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # /ctcp #sniffo VERSION → cic sends \x01VERSION\x01 as the PRIVMSG body.
@@ -4357,7 +4352,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server(rfc_handler)
       {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       %{server: server, user: user, network: network, pid: pid}
     end
 
@@ -4681,7 +4676,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server(rfc_handler)
       {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       %{server: server, user: user, network: network, pid: pid}
     end
 
@@ -4753,7 +4748,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # Seed members so grappa-test is op (@) in #test, then wait for the
@@ -4781,7 +4776,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       log =
         capture_log(fn ->
@@ -4824,7 +4819,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
@@ -4855,7 +4850,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
@@ -4899,7 +4894,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
@@ -4944,7 +4939,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #a"), 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #b"), 1_000)
 
@@ -5009,7 +5004,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
@@ -5068,7 +5063,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
@@ -5105,7 +5100,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
@@ -5156,7 +5151,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # Drain the self-JOIN echo + its `joined` broadcast first so the
@@ -5195,7 +5190,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(
         server,
@@ -5240,7 +5235,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, isupport} = Session.get_isupport({:user, user.id}, network.id)
       assert isupport == ISupport.default()
@@ -5273,7 +5268,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Simulate the stale-proc shape: strip :isupport from the live state.
       # (`:sys.replace_state` returns the NEW state, not `:ok`.)
@@ -5326,7 +5321,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # No CHANMODES / PREFIX / STATUSMSG / CASEMAPPING token: the isupport
       # capability table is byte-for-byte what it was.
@@ -5368,7 +5363,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, "MODE grappa-test\r\n"} =
                IRCServer.wait_for_line(server, &(&1 == "MODE grappa-test\r\n"), 1_000)
@@ -5395,7 +5390,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Upstream answers the umode query with the current set.
       IRCServer.feed(server, ":irc.test.org 221 grappa-test +iwS\r\n")
@@ -5433,7 +5428,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, []} = Session.get_umodes({:user, user.id}, network.id)
 
@@ -5460,7 +5455,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Seed the base set via 221, then apply a mid-session delta.
       IRCServer.feed(server, ":irc.test.org 221 grappa-test +i\r\n")
@@ -5502,7 +5497,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Simulate the stale-proc shape: strip :umodes from the live state.
       _ = :sys.replace_state(pid, fn state -> Map.delete(state, :umodes) end)
@@ -5553,7 +5548,7 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Before any 221 the set is empty — the safe direction, not a crash.
       assert {:ok, :ordinary} = Session.get_flood_allowance({:user, user.id}, network.id)
@@ -5572,7 +5567,7 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # The broadcast is the barrier: the fold has landed before we ask.
       IRCServer.feed(server, ":irc.test.org 221 grappa-test +io\r\n")
@@ -5598,7 +5593,7 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":irc.test.org 221 grappa-test +Fo\r\n")
       :ok = await_umodes(["F", "o"])
@@ -5617,7 +5612,7 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":irc.test.org 221 grappa-test +Fo\r\n")
       :ok = await_umodes(["F", "o"])
@@ -5636,7 +5631,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       _ = :sys.replace_state(pid, fn state -> Map.delete(state, :umodes) end)
 
@@ -5676,7 +5671,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(
         server,
@@ -5717,7 +5712,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, []} = Session.get_supported_umodes({:user, user.id}, network.id)
 
@@ -5745,7 +5740,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Simulate the stale-proc shape: strip :supported_umodes from live state.
       _ = :sys.replace_state(pid, fn state -> Map.delete(state, :supported_umodes) end)
@@ -5801,7 +5796,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#Sniffo", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
@@ -5831,7 +5826,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#Sniffo", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
@@ -5867,7 +5862,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       :ok = Session.send_join({:user, user.id}, network.id, "#alfa,#beta", nil)
 
@@ -5904,7 +5899,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       :ok = Session.send_join({:user, user.id}, network.id, "#Alfa,#BETA", nil)
 
@@ -5941,7 +5936,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":someguy!u@h INVITE grappa-test :#random\r\n")
 
@@ -6006,7 +6001,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":someguy!u@h INVITE grappa-test :#random\r\n")
       assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :window_invited}}, 1_000
@@ -6067,7 +6062,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#live\r\n")
       IRCServer.feed(server, "PING :flush\r\n")
@@ -6096,7 +6091,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Operator initiates a JOIN → window goes :pending.
       :ok = Session.send_join({:user, user.id}, network.id, "#pendingchan", nil)
@@ -6131,7 +6126,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       cap = WindowState.invited_cap()
 
@@ -6183,7 +6178,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       assert_receive %Phoenix.Socket.Broadcast{
@@ -6219,7 +6214,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#sniffo", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
@@ -6252,7 +6247,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#sniffo", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
@@ -6319,7 +6314,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"), 1_000)
@@ -6354,7 +6349,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#sniffo", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
@@ -6430,7 +6425,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#sniffo-bk", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
@@ -6464,7 +6459,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Feed 473 BEFORE any send_join — in_flight_joins is empty.
       IRCServer.feed(
@@ -6498,7 +6493,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       :ok = Session.send_join({:user, user.id}, network.id, "#registrati", nil)
 
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
@@ -6559,7 +6554,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # No send_join → in_flight_joins is empty.
       IRCServer.feed(server, ":irc.test.org 403 grappa-test #nowhere :No such channel\r\n")
@@ -6586,7 +6581,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       stale_at = System.monotonic_time(:millisecond) - 60_000
 
@@ -6615,7 +6610,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       recent_at = System.monotonic_time(:millisecond) - 5_000
 
@@ -6659,7 +6654,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # Drive into :joined state via self-JOIN echo, then seed a stale
@@ -6722,7 +6717,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # Drain the self-JOIN echo + its `joined` broadcast first.
@@ -6765,7 +6760,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # Drive into :joined state via self-JOIN echo.
@@ -6823,7 +6818,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
@@ -6863,7 +6858,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # Drain the self-JOIN broadcast so the mailbox is clean.
@@ -6902,7 +6897,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#test\r\n")
@@ -6971,7 +6966,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # Self-JOIN echo only — no 353/366. SessionStateHelpers.members(state)[#test] exists
@@ -7002,7 +6997,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # Self-JOIN, then a 353 with ONLY own_nick, then 366. Since the
@@ -7047,7 +7042,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#one\r\n")
@@ -7077,7 +7072,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#seeded\r\n")
@@ -7172,7 +7167,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert :ok =
                Session.send_topic({:user, user.id}, network.id, "#italia", "new topic")
@@ -7231,7 +7226,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert :ok = Session.send_nick({:user, user.id}, network.id, "vjt-away")
 
@@ -7281,7 +7276,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#newchan\r\n")
 
@@ -7299,7 +7294,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#existing\r\n")
@@ -7320,7 +7315,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#existing\r\n")
@@ -7339,7 +7334,7 @@ defmodule Grappa.Session.ServerTest do
         setup_user_and_network(port, %{autojoin_channels: ["#existing"]})
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#existing\r\n")
@@ -7367,7 +7362,7 @@ defmodule Grappa.Session.ServerTest do
         setup_user_and_network(port, %{autojoin_channels: ["#existing"]})
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#existing\r\n")
@@ -7413,7 +7408,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       IRCServer.feed(server, ":grappa-test!u@h JOIN :#existing\r\n")
@@ -7454,7 +7449,7 @@ defmodule Grappa.Session.ServerTest do
       plan = Map.merge(base_plan, %{notify_pid: parent, notify_ref: ref})
       {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       assert_receive {:session_ready, ^ref}, 5_000
@@ -7472,7 +7467,7 @@ defmodule Grappa.Session.ServerTest do
       plan = Map.merge(base_plan, %{notify_pid: parent, notify_ref: ref})
       {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
       assert_receive {:session_ready, ^ref}, 5_000
 
@@ -7487,7 +7482,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       refute_receive {:session_ready, _}, 200
@@ -7518,7 +7513,7 @@ defmodule Grappa.Session.ServerTest do
       plan = Map.put(base_plan, :connection_stable_ms, 60_000)
       {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       # Autojoin JOIN proves 001 was fully processed — record_success, if it
@@ -7552,7 +7547,7 @@ defmodule Grappa.Session.ServerTest do
       plan = Map.put(base_plan, :connection_stable_ms, 500)
       {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       expected_key = {{:user, user.id}, network.id}
@@ -7603,7 +7598,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert network_slug == network.slug
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       # "connected" clears the badge the instant 001 lands.
@@ -7627,7 +7622,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       :ok =
         Phoenix.PubSub.subscribe(
@@ -7649,7 +7644,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, :no_persist} =
                Session.send_privmsg({:user, user.id}, network.id, "ChanServ", "REGISTER #x pwd")
@@ -7664,7 +7659,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, :no_persist} =
                Session.send_privmsg({:user, user.id}, network.id, "nickserv", "IDENTIFY pwd")
@@ -7679,7 +7674,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       :ok =
         Phoenix.PubSub.subscribe(
@@ -7709,7 +7704,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       :ok =
         Phoenix.PubSub.subscribe(
@@ -7730,7 +7725,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       :ok =
         Phoenix.PubSub.subscribe(
@@ -7751,7 +7746,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       for target <- ["BotServ", "OperServ", "HostServ", "HelpServ", "MemoServ"] do
         assert {:ok, :no_persist} =
@@ -7772,7 +7767,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, :no_persist} =
                Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
@@ -7875,7 +7870,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY old")
       Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY new")
@@ -7891,7 +7886,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
       send(pid, :pending_auth_timeout)
@@ -7909,7 +7904,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       Session.send_privmsg({:user, user.id}, network.id, "ChanServ", "REGISTER #x pwd")
 
@@ -7925,7 +7920,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       Session.send_privmsg({:user, user.id}, network.id, "#italia", "ciao")
 
@@ -7944,7 +7939,7 @@ defmodule Grappa.Session.ServerTest do
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, :no_persist} =
                Session.send_privmsg(
@@ -7984,7 +7979,7 @@ defmodule Grappa.Session.ServerTest do
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Drive the identify through the RAW `/quote` path, NOT send_privmsg.
       # `:id` lowercase exercises the Task-1 broadened grammar; the raw
@@ -8023,7 +8018,7 @@ defmodule Grappa.Session.ServerTest do
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       Session.send_privmsg({:visitor, visitor.id}, network.id, "NickServ", "IDENTIFY wrong")
       send(pid, :pending_auth_timeout)
@@ -8042,7 +8037,7 @@ defmodule Grappa.Session.ServerTest do
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       mode_msg = %Message{
         command: :mode,
@@ -8064,7 +8059,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       Session.send_privmsg({:user, user.id}, network.id, "NickServ", "IDENTIFY s3cret")
       assert match?({"s3cret", _}, SessionStateHelpers.pending_auth(SessionStateHelpers.fetch(pid)))
@@ -8107,7 +8102,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert :ok =
                Session.send_raw(
@@ -8135,7 +8130,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert :ok = Session.send_raw({:user, user.id}, network.id, "WHOIS somebody")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "WHOIS somebody\r\n"), 1_000)
@@ -8154,7 +8149,7 @@ defmodule Grappa.Session.ServerTest do
       assert cred.auth_method == :none
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # The wizard's REGISTER leaves the wire (wire-only, no scrollback) and
       # stages the untimed registration secret.
@@ -8195,7 +8190,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # A manual NickServ IDENTIFY stages the TIMED pending_auth slot — not a
       # registration. This is #124's territory, not commit-on-+r: the +r must
@@ -8240,7 +8235,7 @@ defmodule Grappa.Session.ServerTest do
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       Session.send_privmsg(
         {:visitor, visitor.id},
@@ -8270,7 +8265,7 @@ defmodule Grappa.Session.ServerTest do
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       Session.send_privmsg(
         {:visitor, visitor.id},
@@ -8306,7 +8301,7 @@ defmodule Grappa.Session.ServerTest do
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       Session.send_privmsg(
         {:visitor, visitor.id},
@@ -8343,7 +8338,7 @@ defmodule Grappa.Session.ServerTest do
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Stage the timed identify slot AND the untimed register slot.
       Session.send_privmsg({:visitor, visitor.id}, network.id, "NickServ", "IDENTIFY identifypass")
@@ -8378,7 +8373,7 @@ defmodule Grappa.Session.ServerTest do
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # A plain identify stages the TIMED slot only — the register slot
       # stays nil (the slots are independent).
@@ -8412,7 +8407,7 @@ defmodule Grappa.Session.ServerTest do
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       Session.send_privmsg(
         {:visitor, visitor.id},
@@ -8453,7 +8448,7 @@ defmodule Grappa.Session.ServerTest do
       original_nick = visitor_nick(visitor)
 
       pid = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Services rename us to a Guest — a self-NICK echo (sender == our nick).
       nick_msg = %Message{
@@ -8479,7 +8474,7 @@ defmodule Grappa.Session.ServerTest do
       original_nick = visitor_nick(visitor)
 
       pid = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       nick_msg = %Message{
         command: :nick,
@@ -8515,7 +8510,7 @@ defmodule Grappa.Session.ServerTest do
         setup_user_and_network(port, %{auth_method: :nickserv_identify, password: "oldpass"})
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, :no_persist} =
                Session.send_privmsg(
@@ -8544,7 +8539,7 @@ defmodule Grappa.Session.ServerTest do
         setup_user_and_network(port, %{auth_method: :nickserv_identify, password: "oldpass"})
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, :no_persist} =
                Session.send_privmsg(
@@ -8571,7 +8566,7 @@ defmodule Grappa.Session.ServerTest do
       # password) — the only state in which SET PASSWD is meaningful.
       {:ok, _} = Grappa.Visitors.commit_password(visitor.id, network.id, "oldpass")
       pid = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, :no_persist} =
                Session.send_privmsg(
@@ -8598,7 +8593,7 @@ defmodule Grappa.Session.ServerTest do
       {visitor, network} = visitor_with_network(port)
       # Anon visitor: ephemeral (expires_at set), no committed password.
       pid = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       refute is_nil(Repo.reload!(visitor).expires_at)
 
       assert {:ok, :no_persist} =
@@ -8628,7 +8623,7 @@ defmodule Grappa.Session.ServerTest do
         setup_user_and_network(port, %{auth_method: :nickserv_identify, password: "oldpass"})
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, :no_persist} =
                Session.send_privmsg({:user, user.id}, network.id, "NickServ", "SET EMAIL me@x.io")
@@ -8656,7 +8651,7 @@ defmodule Grappa.Session.ServerTest do
         setup_user_and_network(port, %{auth_method: :nickserv_identify, password: "oldpass"})
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, :no_persist} =
                Session.send_privmsg(
@@ -8687,7 +8682,7 @@ defmodule Grappa.Session.ServerTest do
         setup_user_and_network(port, %{auth_method: :nickserv_identify, password: "oldpass"})
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, :no_persist} =
                Session.send_privmsg(
@@ -8713,7 +8708,7 @@ defmodule Grappa.Session.ServerTest do
         setup_user_and_network(port, %{auth_method: :nickserv_identify, password: "oldpass"})
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Under 5 bytes — CSNS_ERROR_INSECURE_PASSWORD. Services change
       # nothing, so an optimistic commit would desync the credential.
@@ -8738,7 +8733,7 @@ defmodule Grappa.Session.ServerTest do
       # the visitor recovers the account from inside grappa.
       {:ok, _} = Grappa.Visitors.commit_password(visitor.id, network.id, "oldpass")
       pid = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert {:ok, :no_persist} =
                Session.send_privmsg(
@@ -8809,7 +8804,7 @@ defmodule Grappa.Session.ServerTest do
       {visitor, network} = visitor_with_network(port, nick: nick)
       pid = start_visitor_session_for(visitor, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, "PING :flush\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
 
@@ -8850,7 +8845,7 @@ defmodule Grappa.Session.ServerTest do
       pid = start_session_for(user, network)
       ref = Process.monitor(pid)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
       # Wait for autojoin so 001 is fully processed
@@ -8906,7 +8901,7 @@ defmodule Grappa.Session.ServerTest do
       pid = start_session_for(user, network)
       ref = Process.monitor(pid)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
@@ -8952,7 +8947,7 @@ defmodule Grappa.Session.ServerTest do
       pid = start_session_for(user, network)
       ref = Process.monitor(pid)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # state.nick == "grappa-test"; "GRAPPA-TEST" folds equal (ascii).
       msg = %Message{
@@ -8978,7 +8973,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       msg = %Message{
         command: :kill,
@@ -9012,7 +9007,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       msg = %Message{command: :kill, params: [], prefix: {:server, "irc.test.org"}, tags: %{}}
       send(pid, {:irc, msg})
@@ -9035,7 +9030,7 @@ defmodule Grappa.Session.ServerTest do
       pid = start_session_for(user, network)
       ref = Process.monitor(pid)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # "SASL authentication failed" = upstream rejected SASL credentials permanently.
       msg = %Message{
@@ -9074,7 +9069,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # "SASL authentication aborted" is transient — client/server abort, not wrong password.
       msg = %Message{
@@ -9111,7 +9106,7 @@ defmodule Grappa.Session.ServerTest do
 
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       msg = %Message{
         command: {:numeric, 904},
@@ -9186,7 +9181,7 @@ defmodule Grappa.Session.ServerTest do
       {:ok, visitor_pid} = Grappa.Session.start_session(visitor_subject, network.id, visitor_plan)
       ref = Process.monitor(visitor_pid)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       msg = %Message{
         command: {:numeric, 465},
@@ -9209,7 +9204,7 @@ defmodule Grappa.Session.ServerTest do
   # Shared helper: boot a session, send 001 + autojoin JOIN-self, then
   # flush to ensure both numerics are processed before tests inspect state.
   defp welcome_session_on_channel(server, channel) do
-    :ok = await_handshake(server)
+    :ok = IRCServer.await_handshake(server, 1_000)
     IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
 
     # UX-4 bucket A: outbound JOIN line carries the canonical
@@ -9873,7 +9868,7 @@ defmodule Grappa.Session.ServerTest do
       # `ghost_recovery` FSM is armed on the Session.
       capture_log(fn ->
         pid = start_visitor_session_for(visitor, network)
-        :ok = await_handshake(server)
+        :ok = IRCServer.await_handshake(server, 1_000)
 
         {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "NICK #{nick}_\r\n"), 1_000)
 
@@ -10352,7 +10347,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       assert :ok = Session.set_explicit_away({:user, user.id}, network.id, "brb")
@@ -10380,7 +10375,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Credentials.update_away(user.id, network.id, "lunch", since)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # User-visible behaviour: other IRC users must see us away again, so
       # the bouncer re-emits AWAY :lunch to the (fresh, away-forgetting)
@@ -10403,7 +10398,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # GenServer.call returns only after the synchronous persist, so the DB
@@ -10424,7 +10419,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       :ok = Session.set_explicit_away({:user, user.id}, network.id, "gone")
@@ -10444,7 +10439,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       :ok = Session.set_auto_away({:user, user.id}, network.id)
@@ -10465,7 +10460,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # Auto-away held ONLY in memory (never persisted). A same-process
@@ -10492,7 +10487,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       :ok = Session.set_explicit_away({:user, user.id}, network.id, "gone")
@@ -10511,7 +10506,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # Present state — no explicit away set
@@ -10526,7 +10521,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       assert :ok = Session.set_auto_away({:user, user.id}, network.id)
@@ -10552,7 +10547,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # The session subscribes to Topic.ws_presence(user.name); WSPresence
@@ -10607,7 +10602,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       :ok = WSPresence.reset_for_test()
@@ -10665,7 +10660,7 @@ defmodule Grappa.Session.ServerTest do
         )
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       device = visible_device(user)
@@ -10694,7 +10689,7 @@ defmodule Grappa.Session.ServerTest do
         )
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       device = visible_device(user)
@@ -10717,7 +10712,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       device = visible_device(user)
@@ -10746,7 +10741,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # The session booted with the 600s default; the user retunes it
@@ -10775,7 +10770,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       device = visible_device(user)
@@ -10820,7 +10815,7 @@ defmodule Grappa.Session.ServerTest do
         )
 
       pid = start_visitor_session_for(visitor, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       :ok = WSPresence.reset_for_test()
       device = spawn(fn -> Process.sleep(:infinity) end)
@@ -10842,7 +10837,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # Set explicit away first
@@ -10865,7 +10860,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # First set auto
@@ -10886,7 +10881,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       :ok = Session.set_auto_away({:user, user.id}, network.id)
@@ -10905,7 +10900,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       :ok = Session.set_explicit_away({:user, user.id}, network.id, "manual")
@@ -10926,7 +10921,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       assert :ok = Session.unset_auto_away({:user, user.id}, network.id)
@@ -10961,7 +10956,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       # Subscribe to the user-level PubSub topic before the away round-trip.
@@ -11015,7 +11010,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
       user_topic = Topic.user(user.name)
@@ -12302,7 +12297,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert :ok = Session.send_topic_clear({:user, user.id}, network.id, "#test")
 
@@ -12329,7 +12324,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert :ok = Session.send_oper({:user, user.id}, network.id, "vjt", "s3cret")
 
@@ -12350,7 +12345,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # Test env sets `config :logger, level: :warning` (config/test.exs)
       # so :info-level logs are filtered globally before any capture
@@ -12473,7 +12468,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       assert :ok = Session.send_raw({:user, user.id}, network.id, "PING :foo.bar")
 
@@ -12518,7 +12513,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 404 vjt #sniffo :Cannot send to channel\r\n")
 
       assert_message_event(
@@ -12554,7 +12549,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 421 vjt BLEH :Unknown command\r\n")
 
       assert_message_event(
@@ -12589,7 +12584,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 401 vjt ghost :No such nick/channel\r\n")
 
       assert_message_event(
@@ -12618,7 +12613,7 @@ defmodule Grappa.Session.ServerTest do
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # /msg ghost hi — the outbound DM opens the server-side query window for
       # ghost (#422 maybe_open_query_window), exactly as compose.ts's /msg does.
@@ -12654,7 +12649,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 372 vjt :- Welcome to TestNet\r\n")
 
       # Exactly one event for this MOTD line.
@@ -12697,7 +12692,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
 
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       IRCServer.feed(
         server,
@@ -12919,7 +12914,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#secret"]})
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       # 001 RPL_WELCOME drives the autojoin loop → JOIN #secret upstream.
       IRCServer.feed(server, ":irc.test 001 grappa-test :Welcome\r\n")
@@ -12947,7 +12942,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#keyed"]})
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test 001 grappa-test :Welcome\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #keyed"), 1_000)
       IRCServer.feed(server, ":irc.test 475 grappa-test #keyed :Cannot join channel (+k)\r\n")
@@ -12966,7 +12961,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#bofh"]})
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test 001 grappa-test :Welcome\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #bofh"), 1_000)
       # A 473 for a channel never in autojoin (simulates a manual /join fail).
@@ -12982,7 +12977,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#full"]})
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test 001 grappa-test :Welcome\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #full"), 1_000)
 
@@ -13001,7 +12996,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#secret"]})
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test 001 grappa-test :Welcome\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #secret"), 1_000)
       IRCServer.feed(server, ":irc.test 473 grappa-test #secret :Cannot join channel (+i)\r\n")
@@ -13026,7 +13021,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#secret"]})
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test 001 grappa-test :Welcome\r\n")
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #secret"), 1_000)
       IRCServer.feed(server, ":irc.test 473 grappa-test #secret :Cannot join channel (+i)\r\n")
@@ -13418,7 +13413,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       ref = Process.monitor(pid)
 
@@ -13454,7 +13449,7 @@ defmodule Grappa.Session.ServerTest do
       {server, port} = start_server()
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
-      :ok = await_handshake(server)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       ref = Process.monitor(pid)
       Process.flag(:trap_exit, true)

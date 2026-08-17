@@ -34,17 +34,12 @@ defmodule Grappa.Session.DirectoryTest do
     {user, network, credential}
   end
 
-  defp await_handshake(server) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "USER"), 1_000)
-    :ok
-  end
-
   test "refresh issues LIST upstream" do
     {server, port} = start_server()
     {user, network, _} = setup_user_and_network(port)
 
     _ = start_session_for(user, network)
-    :ok = await_handshake(server)
+    :ok = IRCServer.await_handshake(server, 1_000)
 
     assert :ok = Session.refresh_directory({:user, user.id}, network.id)
 
@@ -57,7 +52,7 @@ defmodule Grappa.Session.DirectoryTest do
     {user, network, _} = setup_user_and_network(port)
 
     _ = start_session_for(user, network)
-    :ok = await_handshake(server)
+    :ok = IRCServer.await_handshake(server, 1_000)
 
     assert :ok = Session.refresh_directory({:user, user.id}, network.id)
 
@@ -83,7 +78,7 @@ defmodule Grappa.Session.DirectoryTest do
       _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
     end)
 
-    :ok = await_handshake(server)
+    :ok = IRCServer.await_handshake(server, 1_000)
 
     # Subscribe BEFORE triggering so the (50ms-out) failed ping can't race
     # the subscribe. `subject_label` for a user session is `user.name`.
@@ -124,7 +119,7 @@ defmodule Grappa.Session.DirectoryTest do
       _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
     end)
 
-    :ok = await_handshake(server)
+    :ok = IRCServer.await_handshake(server, 1_000)
     :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
     :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.channel(user.name, network.slug, "$server"))
 
@@ -156,7 +151,7 @@ defmodule Grappa.Session.DirectoryTest do
     {user, network, _} = setup_user_and_network(port)
 
     _ = start_session_for(user, network)
-    :ok = await_handshake(server)
+    :ok = IRCServer.await_handshake(server, 1_000)
 
     # Subscribe before triggering so the `directory_complete` ping can't race
     # the subscribe. The broadcast (323 processed) is the sync point — once it
@@ -209,7 +204,7 @@ defmodule Grappa.Session.DirectoryTest do
       _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
     end)
 
-    :ok = await_handshake(server)
+    :ok = IRCServer.await_handshake(server, 1_000)
     :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
     assert :ok = Session.refresh_directory({:user, user.id}, network.id)
