@@ -830,5 +830,4 @@ defmodule Grappa.ReadCursor do
     |> Grappa.Scrollback.channel_or_dm_where(channel, nil)
     |> Repo.exists?()
   end
-
 end
