@@ -45778,3 +45778,58 @@ causes #1420 names — a `Logger` call inside the transaction, or a
 pool-checkout deadlock. It turns that choice from a guess into a reading.
 Narrowing `BEGIN IMMEDIATE` is a separate decision about what we accept
 losing, and it is not this change's to make.
+
+### Cost, measured — and one number deliberately withheld
+
+Two measurements, because they answer different questions.
+
+**The seam itself is resolvable and clean.** `observe/1` around a no-op,
+200_000 calls per block, five blocks per regime, alternating:
+
+| regime | ns/call | block range |
+|---|---|---|
+| armed | 355.8 | 69598–72395 us |
+| disarmed | 95.5 | 18837–19696 us |
+| delta | **260.3 ns** | ranges do not overlap |
+
+Note the disarmed cost is not zero: **~95 ns/call is the price of the
+off-switch itself** — a `:persistent_term` read, an `:ets.whereis/1`, and the
+two process-dictionary operations that are deliberately unconditional so the
+nesting counter cannot leak when the watchdog restarts. That was paid on
+purpose, and now it is quantified.
+
+**The end-to-end cost is NOT RESOLVABLE by this method.** Real
+`BEGIN IMMEDIATE` + INSERT against a WAL temp file, 2_000 transactions per
+block, four blocks per regime, alternating. The observed delta was **2.124 %**,
+but the spread WITHIN a single regime was **3.8 %** — larger than the signal,
+with the blocks overlapping (armed `[95907, 97075, 96699, 93451]` against
+disarmed `[96943, 93367, 94226, 94374]`: the armed minimum sits below the
+disarmed maximum).
+
+The clause was fixed before the numbers were seen and is not being adjusted
+now that they have been: **2.124 % is not a measurement, it is noise, and it
+is above the 1 % threshold that was declared in advance.** It may not be
+reported as "under threshold" and it may not be reported as "2 %".
+
+Composing the two measured quantities — 260.3 ns of seam on a 47.15 us
+transaction — gives roughly **0.55 %**, under the threshold. That figure is
+**DERIVED, not measured end-to-end**, and it is host-specific: where a
+transaction costs more (ZFS, `page_size 65536`) the share falls, where it
+costs less it rises. So the threshold is satisfied by derivation, and the
+difference between the two statuses is the point, not a quibble.
+
+### Armed is not observed
+
+The observer defaults ON (`config/config.exs`) and is OFF only under
+`:test`, where the Sandbox's `pool_size: 1` makes every write transaction a
+holder and the output would be noise rather than signal. CI is covered: the
+integration stack runs `MIX_ENV: dev` (`cicchetto/e2e/compose.yaml`, service
+`grappa-test`), so it inherits the armed default and will write its warning.
+
+**It will not necessarily be read.** `scripts/integration.sh` discards
+container logs on a GREEN run (#1429), so a stall report from a passing run
+is produced and then thrown away. The open question in #1420 — whether the
+stall also hits runs that pass — therefore stays open until #1429 changes,
+and it stays open for a reason this change cannot fix from here. Arming the
+instrument and observing it are two different things, and only the first is
+done.
