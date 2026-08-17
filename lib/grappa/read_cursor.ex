@@ -96,9 +96,8 @@ defmodule Grappa.ReadCursor do
   alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
   alias Grappa.ReadCursor.{Cursor, Wire}
-  alias Grappa.Repo
   alias Grappa.Scrollback.Message
-  alias Grappa.Subject
+  alias Grappa.{Repo, Subject}
 
   # Identifier.nick_fold/1 is a query macro (ASCII fold fragment) used by
   # rename_dm_peer/4 to match a DM cursor by the fold of the peer nick.

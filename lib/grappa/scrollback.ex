@@ -50,10 +50,9 @@ defmodule Grappa.Scrollback do
   import Ecto.Query
 
   alias Grappa.IRC.Identifier
-  alias Grappa.Repo
   alias Grappa.Repo.BusyRetry
   alias Grappa.Scrollback.{Message, Meta, Telemetry}
-  alias Grappa.Subject
+  alias Grappa.{Repo, Subject}
 
   # Identifier.nick_fold/1 is a query macro (ASCII fold fragment, #121/#525).
   require Identifier
