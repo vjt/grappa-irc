@@ -32,6 +32,10 @@ defmodule Grappa.IRCServer do
   on `Process.sleep` constants. Returns `{:ok, matched_line}` or
   `{:error, :timeout}`.
 
+  `await_handshake/2` is the one named barrier built on it: registration
+  is what a session test waits for before it can assert anything, and it
+  used to be re-declared locally in thirteen files (#1397).
+
   Implementation (M-irc-2): the wait is a single GenServer call that
   either replies immediately (the predicate matches some buffered line)
   or registers a `{ref, predicate, from}` waiter on server state and
@@ -120,6 +124,32 @@ defmodule Grappa.IRCServer do
     # of leaving them to time out — the timeout loss-of-signal hid
     # genuine close races behind the same deadline as no-line cases.
     GenServer.call(server, {:wait_for, predicate, timeout}, timeout + 100)
+  end
+
+  @doc """
+  Blocks until the client has sent its `USER` registration line, then
+  returns `:ok`. A miss raises the `MatchError` from the `{:ok, _}`
+  match, which is the failure a test wants to see: the barrier the rest
+  of the test leans on never happened.
+
+  `timeout` carries NO default, deliberately. Commit `84fe0850` removed
+  the default timeout from `wait_for_line/3` under the CLAUDE.md
+  no-default-arguments rule and spelled the value at every call site;
+  the thirteen local copies this replaces (#1397) had re-hidden that
+  same value behind a zero-argument wrapper — eleven at `1_000`, two at
+  `5_000`. A default here restores the silent-degradation path that
+  ruling removed and halves the budget of the two 5s sites by accident.
+  The budget stays where it is decidable: at the call site.
+
+  The predicate keeps the trailing space, the stricter of the two
+  spellings the copies had drifted into. `lib/` sends exactly one line
+  beginning with `USER` and never `USERHOST`, so both spellings select
+  the same line today — the strict one also says so.
+  """
+  @spec await_handshake(pid(), pos_integer()) :: :ok
+  def await_handshake(server, timeout) do
+    {:ok, _} = wait_for_line(server, &String.starts_with?(&1, "USER "), timeout)
+    :ok
   end
 
   ## GenServer
