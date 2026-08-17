@@ -850,12 +850,21 @@ defmodule Grappa.Session.Server do
 
   ## GenServer callbacks
 
-  # `init/1` is intentionally non-blocking — `Client.start_link/1` runs
-  # in `handle_continue(:start_client, _)` so a slow upstream cannot
-  # serialize Bootstrap's per-credential `Enum.reduce` start_child
-  # loop. Pairs with `Grappa.IRC.Client.init/1`'s own `{:continue,
-  # :connect}` deferral; together they keep boot O(1) per session
-  # regardless of upstream reachability.
+  # `init/1` defers the UPSTREAM SOCKET, not everything —
+  # `Client.start_link/1` runs in `handle_continue(:start_client, _)`
+  # so a slow upstream cannot serialize Bootstrap's per-credential
+  # `Enum.reduce` start_child loop. Pairs with
+  # `Grappa.IRC.Client.init/1`'s own `{:continue, :connect}` deferral;
+  # together they keep boot O(1) in upstream reachability.
+  #
+  # It is NOT read-free, and the older wording ("intentionally
+  # non-blocking", full stop) read as if it were: the `refresh_plan`
+  # closure below re-resolves the plan from the DB, so Bootstrap's loop
+  # does pay those queries per credential. Synchronous by necessity —
+  # `:ignore` is the spawn door's only synchronous "not viable" signal
+  # (see `Grappa.Session`'s A2 section for why `handle_continue` cannot
+  # carry it). The boot cost has never been measured; measure before
+  # quoting a figure for it.
   @impl GenServer
   def init(opts) do
     :ok = Log.set_session_context(opts.subject_label, opts.network_slug)

@@ -47121,3 +47121,88 @@ three axes (timeout `1_000` ×11 vs `5_000` ×2, prefix `"USER"` ×12 vs `"USER 
 decision: two files have already found one second insufficient. Consolidating it
 is choosing a barrier value, not removing a duplicate, and it must be bought with
 its own reason.
+<!-- entry #1410 -->
+
+---
+
+## 2026-08-17 — #1410: `init/1` does read the DB; the two sentences that denied it now say so
+
+Two live documents claimed `Grappa.Session.Server.init/1` performs no DB reads.
+Both were false, in different ways and to different degrees, and this entry
+records which half of each was wrong, why the obvious code fix is the wrong fix,
+and what the correction deliberately leaves open.
+
+### What the code actually does
+
+`init/1` invokes the injected `refresh_plan` closure before building any state.
+There are **two** injectors, not one: `Grappa.Networks.SessionPlan` (user side)
+and `Grappa.Visitors.SessionPlan` (visitor side). Both walk the DB — the user
+side reads the credential, preloads `network: :servers` and fetches the user;
+the visitor side reads the visitor row, reloads the network, then resolves.
+So the reads happen on every spawn and every `:transient` restart, for both
+subject kinds, inside the Session process.
+
+### Why the obvious fix is wrong
+
+Moving the re-resolve into `handle_continue` would restore the "non-blocking"
+sentence literally and is the first idea anyone has. It is wrong, and the
+reason is a boundary contract rather than a performance argument: `init/1`
+returning `:ignore` is the **only synchronous** "this subject is no longer
+viable" signal the spawn door has. `Grappa.SpawnOrchestrator` maps it to
+`{:ok, :ignored}` and `Grappa.Bootstrap.classify_outcome/3` counts it. From
+`handle_continue` the caller would instead observe `{:ok, pid}` followed by a
+silent death a moment later — precisely the "No silent-swallow at boundaries"
+failure CLAUDE.md names. The end-to-end path is already pinned by
+`spawn_orchestrator_test.exs` ("refresh_plan returning `{:error, :not_found}`
+-> `{:ok, :ignored}`, no session spawned"), so the refactor would go red rather
+than ship quietly. No new test was added here: buying a guard that already
+exists would be ornament.
+
+The reads are also load-bearing for a second, independent reason. The #93
+endpoint ring advances by resolving at the failure count, and that counter is
+authoritative only at this moment: `Backoff.record_failure/2` is a synchronous
+call from the dying session's `terminate/2`, so the bump has landed before the
+supervisor reaches `init/1`. Deferring the read moves it away from the only
+instant at which it is correct.
+
+### Which sentence was wrong, and how
+
+The A2 paragraph in `Grappa.Session` conflated two different claims. The one it
+should make — no `Credential` / `Network` / `Server` / `Visitor` struct refs
+cross the Session boundary — is **intact**, and is what the `Boundary` deps
+enforce. The parenthetical it added on top ("no `Repo`, no `Networks`, no
+`Accounts`, no `Visitors` reads") was an over-claim about runtime behaviour that
+the dependency mechanism never bought. The comment above `init/1` was false only
+in half: the upstream-socket deferral to `handle_continue({:start_client, _})`
+holds; the DB half did not.
+
+### What stays open, deliberately
+
+Two things are named in the corrected text rather than fixed.
+
+First, on the **spawn** door the re-resolve is redundant: `Bootstrap` calls
+`SessionPlan.resolve/1` and hands the resolved plan to `start_child`, whose
+`init/1` immediately resolves it again. Only the **respawn** door needs the
+re-read. One closure cannot tell the two doors apart, and the obvious flag does
+not work — `DynamicSupervisor` caches the spawn-time child spec, so a
+"plan is already fresh" key in `opts` would be replayed on every restart, which
+is the opposite of what it must mean. Anything that does work (a one-shot side
+channel, a stateful closure) is heavier than the duplication it removes.
+
+Second, `Boundary` is **structurally blind** to this class. A closure built in
+`Networks` and invoked in `Session` carries no module reference, so no
+compile-time checker can see the edge. That is why the deps list can honestly
+omit `Repo` / `Networks` / `Accounts` while those reads happen — and why the
+next closure of this shape will be equally invisible. #1398 (bucket I) reasons
+about the `Networks -> Session` inversion partly from the sentence corrected
+here; its premise has moved and is being told so.
+
+### Not established
+
+Nothing was executed for this entry: no query log, no timing of the spawn loop,
+no `EXPLAIN`. The issue's "N x 3 queries" remains a derivation from the call
+chain, not a measurement, and this correction deliberately declines to quote a
+boot-time figure — it says the cost exists and is unmeasured. Likewise the
+claim that a fix belongs in the code rather than the prose is **not** made here:
+the code was measured to be right and the prose wrong, which is the whole reason
+this slice touches no `.ex` behaviour.

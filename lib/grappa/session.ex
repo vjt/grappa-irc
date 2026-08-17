@@ -39,9 +39,28 @@ defmodule Grappa.Session do
   `Grappa.Networks.SessionPlan.resolve/1` (user-side) and
   `Grappa.Visitors.SessionPlan.resolve/1` (visitor-side) are the
   canonical producers of that plan; `Bootstrap` threads the resolved
-  opts in. The Server's `init/1` is therefore a pure data consumer
-  (no `Repo`, no `Networks`, no `Accounts`, no `Visitors` reads),
-  which keeps the Session boundary deps minimal.
+  opts in. That struct-ref ban IS the invariant, and it is what the
+  `Boundary` deps below enforce.
+
+  It does NOT mean `init/1` performs no DB reads. Both producers also
+  inject a `refresh_plan` closure, and `Server.init/1` invokes it, so
+  each spawn AND each `:transient` restart re-resolves the plan from
+  the DB inside the Session process. Deliberate on both counts: the
+  respawn door needs live truth (the 2026-05-27 zombie class) and the
+  #93 endpoint ring reads a failure counter that is authoritative only
+  there; and it is SYNCHRONOUS because `init/1`'s `:ignore` is the
+  spawn door's only synchronous "subject no longer viable" signal —
+  `Grappa.SpawnOrchestrator` maps it to `{:ok, :ignored}` and
+  `Bootstrap` counts it, so deferring the re-resolve to
+  `handle_continue` would turn a reported failure into a silent death.
+
+  Two consequences stay open. On the SPAWN door the re-resolve
+  duplicates the resolution its caller performed microseconds earlier,
+  and one closure cannot tell the two doors apart. And `Boundary` is
+  structurally blind to this class: a closure built in `Networks` or
+  `Visitors` and invoked here carries no module reference for a
+  compile-time checker to see, which is why the deps list below can
+  omit `Repo` / `Networks` / `Accounts` while those reads happen.
   """
 
   # `Server` is exported for the test path only — `server_test.exs`
