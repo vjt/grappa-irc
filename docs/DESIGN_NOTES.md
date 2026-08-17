@@ -45810,3 +45810,71 @@ matters. It is gone as a side effect of the fix, and no test asserts
 it — `default.css` was not touched.
 
 _Deploy: **--cic HOT, client-only.** No server, schema or wire change._
+<!-- entry #1402 -->
+
+---
+
+## 2026-08-17 — #1402 (bucket M, A3 first slice): the window-state copies are gone, and the detection they were assumed to give was never there
+
+Two of the six restatements of the window-state set were byte-identical
+`new Set(["failed", "kicked", "parked"])` declarations in `ComposeBox.tsx` and
+`Sidebar.tsx`, and a third was `PseudoRow["state"]`, a hand-written four-token
+subset. This slice removes all three: one `NOT_JOINED_STATES` typed
+`ReadonlySet<WindowState>`, and `Exclude<WindowState, "invited" | "joined">`
+for the row type. The `state as PseudoRow["state"]` cast at the push site goes
+too — the two `continue` guards above it already narrow the union, so the cast
+was not carrying the assignment, only silencing the compiler.
+
+### What this does NOT buy, measured rather than assumed
+
+The issue, this entry's own predecessor at `windowState.ts`, and the recon that
+opened the slice all say the same thing: that once the type derives from the
+server set, a seventh window state makes `tsc` report every site that does not
+handle it. **It does not, and the claim is now measured false.**
+
+A seventh state (`"locked"`) was injected into the emitted
+`SESSION_WINDOW_STATE_WINDOW_STATE` const and `tsc --noEmit` was run against
+both the unfixed and the fixed tree: **rc=0 with zero errors on both.** The
+instrument was proved able to fail first — a deliberate required field on
+`PseudoRow` produced `TS2741` at rc=1 — so the green is a real negative and not
+a broken harness. The reason is structural, not a gap to plug: `Exclude<T, …>`
+is defined relative to `T` and therefore GROWS with it, and a `Set` is under no
+obligation to be exhaustive. Both are "cannot drift" constructs. Neither is a
+"must be handled" construct, and no amount of removing casts turns one into the
+other.
+
+What the typing does buy was measured with the opposite mutant. Removing
+`"parked"` from the emitted const produces `TS2769` at
+`windowStateSets.ts:26`, naming the site — and produced **nothing at all** on
+the unfixed tree, where the `Set<string>` accepted the orphaned member without
+comment. So the slice detects a state being REMOVED or RENAMED upstream, and is
+blind to one being ADDED.
+
+### Why the blind half is being left blind
+
+Making an added state red would contradict a live invariant. CLAUDE.md's
+window-state section closes with "New states automatically inherit
+synthetic-row + greyed-class treatment as long as they land in
+`windowStateByChannel`" — silence on a seventh state is the DOCUMENTED
+behaviour, not an oversight, and the shape shipped here delivers exactly it.
+An exhaustiveness assertion against the emitted const would catch the addition,
+and it is deliberately NOT in this slice: it is a change to what the invariant
+promises, which is vjt's call and not a slice's. The sentence at
+`windowState.ts:37-39` that asserts the opposite is knowingly left standing for
+the same reason — correcting it presumes the ruling.
+
+### Where the constant lives, and why not where it belongs
+
+`NOT_JOINED_STATES` sits in a new `lib/windowStateSets.ts` rather than beside
+`WindowState` in `windowState.ts`. Putting it in the natural home failed 24
+tests: `windowState.ts` builds a Solid module root at import time through
+`selection.ts`, and Sidebar, ComposeBox and Shell each replace the whole module
+with `vi.mock`. Restating the set inside three mocks would rebuild, in test
+land, the duplication this slice deletes; `importOriginal` pulls the real
+module's import-time side effects through those suites' other partial mocks and
+fails on an unrelated `../lib/networks` stub. The new module imports
+`WindowState` as a type, which is erased, so it carries no runtime edge to the
+store and no suite needs to know it exists.
+
+_Shipping note: bundle-only, and nothing about the server or the wire moves —
+the emitted const is read, never rewritten._
