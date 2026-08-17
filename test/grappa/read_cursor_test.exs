@@ -113,6 +113,30 @@ defmodule Grappa.ReadCursorTest do
     end
   end
 
+  # #1392 — `ReadCursor` kept a private `subject_filter/2`, the third
+  # spelling of one predicate. Its two clauses were exact synonyms of
+  # `Grappa.Subject.subject_where/2` on the whole valid domain; they
+  # differed only OFF it, where this module fell through to a
+  # `FunctionClauseError` while `Grappa.Scrollback` raised an
+  # `ArgumentError` naming the value. Folding the spelling away carries
+  # the better diagnostic here too, so these pin a real behaviour
+  # change, not the fold's transparency.
+  describe "malformed subject — fail-loud (#1392)" do
+    test "get/3 raises ArgumentError naming the subject" do
+      net = network_fixture()
+
+      assert_raise ArgumentError, ~r/unknown subject: \{:typo, "x"\}/, fn ->
+        ReadCursor.get({:typo, "x"}, net.id, "#sniffo")
+      end
+    end
+
+    test "bulk_for_subject/1 raises ArgumentError naming the subject" do
+      assert_raise ArgumentError, ~r/unknown subject: nil/, fn ->
+        ReadCursor.bulk_for_subject(nil)
+      end
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # DM-window nick fold — one window ⇒ one cursor row (#532 D)
   # ---------------------------------------------------------------------------

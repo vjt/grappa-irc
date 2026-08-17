@@ -1,6 +1,7 @@
 defmodule Grappa.SubjectTest do
   @moduledoc """
-  Tests for the subject-label codec (#413).
+  Tests for the subject-label codec (#413) and the fail-loud posture of
+  `subject_where/2` (#1392).
 
   `label/1` + `from_label/1` are the single source of truth for the
   user-rooted topic-label encoding — `user.name` for users,
@@ -9,10 +10,17 @@ defmodule Grappa.SubjectTest do
   silent dead-drop on drift: a subject that no longer round-trips
   does not raise, it just stops matching, far from the cause. The
   property test is exactly the shape an encode/decode pair calls for.
+
+  `subject_where/2`'s happy path is not restated here: it is exercised
+  by the 38 call sites across nine contexts, whose own context tests
+  run real queries and would go red on a swapped FK column. What those
+  call sites do NOT pin is the off-domain clause, which is the one
+  `Grappa.Scrollback` used to own alone.
   """
   use ExUnit.Case, async: true
   use ExUnitProperties
 
+  alias Grappa.ReadCursor.Cursor
   alias Grappa.Subject
 
   describe "label/1" do
@@ -45,6 +53,39 @@ defmodule Grappa.SubjectTest do
     property "visitor ids survive label |> from_label" do
       check all(id <- visitor_id()) do
         assert Subject.from_label(Subject.label({:visitor, id})) == {:visitor, id}
+      end
+    end
+  end
+
+  # #1392 — the fall-through promoted here from
+  # `Grappa.Scrollback.subject_where/2` (added by B5.4 L-pers-2). It is
+  # the ONE clause the three former spellings disagreed on: `Scrollback`
+  # raised `ArgumentError` naming the offending value, `Grappa.Subject`
+  # and `Grappa.ReadCursor` fell through to a `FunctionClauseError`
+  # whose Erlang-level message hides both the value and the function.
+  # Folding the two privates into this module without the fall-through
+  # would have been a diagnostic regression at 12 call sites, so the
+  # clause travels WITH the function.
+  #
+  # These assert the inspected value is IN the message, not merely that
+  # something raised: naming the subject is the entire reason the clause
+  # exists over a bare pattern-match failure.
+  describe "subject_where/2 — fail-loud off the valid domain (#1392)" do
+    test "an unknown discriminator raises ArgumentError naming the subject" do
+      assert_raise ArgumentError, ~r/unknown subject: \{:typo, "x"\}/, fn ->
+        Subject.subject_where(Cursor, {:typo, "x"})
+      end
+    end
+
+    test "a nil subject raises ArgumentError naming the subject" do
+      assert_raise ArgumentError, ~r/unknown subject: nil/, fn ->
+        Subject.subject_where(Cursor, nil)
+      end
+    end
+
+    test "a well-tagged subject with a non-binary id raises ArgumentError naming it" do
+      assert_raise ArgumentError, ~r/unknown subject: \{:user, nil\}/, fn ->
+        Subject.subject_where(Cursor, {:user, nil})
       end
     end
   end
