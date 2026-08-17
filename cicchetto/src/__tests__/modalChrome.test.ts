@@ -74,8 +74,24 @@ type Rule = { selectors: string[]; body: string };
  * rules nested inside one, which resolve under a condition this file does not
  * model. The "bare class selectors only" assertion below is what makes that
  * safe: it fails if a site is ever reached from inside a media query.
+ *
+ * Memoised, because the clone census below resolves EVERY bare class in the
+ * sheet and each `resolve` re-parses: 1427 parses of a 435 KB stylesheet for
+ * one assertion pair, measured at 1117 ms of that test's 1185 ms — 94%, and
+ * the 5 s default is what #1419 kept tripping on. `themeCss` is read once at
+ * import, so the parse is a pure function of a constant and the cache cannot
+ * go stale. The budget is left at the default deliberately: nothing here
+ * asserts a duration, so a timeout bump would have hidden the cost instead of
+ * removing it.
  */
+let parsedRules: Rule[] | undefined;
+
 function topLevelRules(): Rule[] {
+  parsedRules ??= parseTopLevelRules();
+  return parsedRules;
+}
+
+function parseTopLevelRules(): Rule[] {
   const stripped = themeCss.replace(/\/\*[\s\S]*?\*\//g, "");
   const rules: Rule[] = [];
   for (const match of stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
