@@ -47121,3 +47121,68 @@ three axes (timeout `1_000` ×11 vs `5_000` ×2, prefix `"USER"` ×12 vs `"USER 
 decision: two files have already found one second insufficient. Consolidating it
 is choosing a barrier value, not removing a duplicate, and it must be bought with
 its own reason.
+<!-- entry #1398 -->
+
+---
+
+## 2026-08-17 — #1398: pin the cycle count the acyclicity proof cannot see
+
+The declared Boundary graph is acyclic and the compiler enforces that: `mix.exs`
+puts `:boundary` in `compilers` with `check: [in: true, out: true]`, so a declared
+cycle never reaches CI. What nothing watches is the other half.
+
+### Why a waiver is an invisible edge
+
+A `dirty_xrefs` entry is a real dependency the checker has been told to ignore.
+Counting the five current waivers as the edges they are turns the acyclic graph
+into **31 elementary cycles over 12 boundaries**. That is not a new defect — it is
+the same one the 2026-08-15 architecture review found, and the one the 2026-07-20
+review found before it with three waivers instead of five. The population grew and
+nothing noticed, twice, until a human read the annotations by hand.
+
+This entry adds no fix. It adds a **ratchet**: a test that counts the cycles closed
+by declared deps plus waivers and fails when the number rises above a pinned
+budget. The next waiver that closes a cycle now has to be argued for in the diff
+that introduces it.
+
+### What the number is, and how it was reached
+
+31, measured on `236dd328`: 1 cycle of length 2, 4 of length 3, 11 of length 4,
+11 of length 5, 4 of length 6, all fed by five waivers that every one of them
+names `Grappa.Networks.Network`. The shortest is `Networks -> Scrollback ->
+Networks` — two nodes, touching neither `Session` nor `LiveIntrospection`, which
+is why the review's "five cycles sharing one prefix" does not describe the shape.
+The highest-leverage single arc is `Scrollback -> Networks` at 19 of the 31, and
+**no single arc cuts all of them.**
+
+Three independent measurements agree on 31: two hand-written source parsers and
+this gate. The gate is the one to trust, because it reads the **compiled
+`Boundary` attribute** — the same annotation `GrappaWeb.BoundaryTest` and
+`Grappa.Visitors.VisitorBoundaryTest` read, and the source CLAUDE.md's
+architecture-test rule points at ("use `Boundary` annotations — not
+string-matching"). The two source parsers disagreed with each other about how many
+`use Boundary` blocks even exist (99 against 107) while agreeing on the cycles; a
+disagreement about the input is exactly the failure mode reading the compiler's
+own record avoids.
+
+### The declared limit of this gate
+
+It counts DECLARED edges plus waivers, and nothing else. The runtime edges this
+codebase relies on for cycle avoidance — the injected closures, the behaviours
+resolved from `:persistent_term`, the supervisor-level `held_source_fn` — carry no
+module reference, so no compile-time mechanism can see them and none of them move
+this number. A closure that opens a cycle passes this gate silently. That limit is
+written into the test body rather than left for a reader to infer, because a gate
+whose blind spot is undocumented gets read as broader than it is.
+
+### Direction, recorded but not taken
+
+Removing the five waivers is equivalent to zeroing the set, since the declared
+graph is already acyclic. All five name the same target, and this repo has
+executed that move once before: the twelve `dirty_xrefs: [Grappa.Visitors.Visitor]`
+waivers went to zero by promoting the schema to a `top_level?: true` boundary with
+empty `deps:`. The same move here cannot be scoped to `Network` alone —
+`networks/network.ex` aliases the `has_many` siblings it binds, so the minimum unit
+is the four-schema cluster, priced at roughly fifteen files and atomic. That is a
+purchase, not a slice, and it is deliberately left to #1398 rather than smuggled in
+behind a gate.
