@@ -46985,3 +46985,65 @@ the CONFIGURATION — that the package is thin, that its version comes from
 the header, that its output directory is outside every upload glob — which
 is what can be held still without a Linux toolchain. Whether nfpm accepts
 these two files is proven by the first CI run, not here._
+<!-- entry #1395 -->
+
+---
+
+## 2026-08-17 — #1395: the user login DECISION moves; the throttle, the challenge and the render do not
+
+The user ladder was a `defp` chain inside `GrappaWeb.AuthController`, reachable
+only from an HTTP action: all 64 tests over that controller need a `Plug.Conn`,
+against 33 conn-free tests for the visitor twin. `Grappa.Accounts.Login.authenticate/1`
+now answers the decision — name plus password in, and the door the account still
+has to walk through out — with no `conn` anywhere in it.
+
+**What the issue proposed and this did NOT do.** #1395 asked for a full sibling
+of `Grappa.Visitors.Login`, with the second-factor ladder, the challenge minting
+and the throttles all lifted, and the 22 `visitor_error_response/4` clauses moved
+to `FallbackController`. Measurement refuted three of those four, and the ruling
+kept only the residue:
+
+  * **The throttles stay at the edge.** `Grappa.Visitors.Login` — the twin held
+    up as the model — contains no rate limiting at all: the visitor window lives
+    in the controller, above the call into the context. `GrappaWeb.LoginThrottle`
+    argues the placement in its own moduledoc, and `Grappa.Accounts` depends on
+    neither `Grappa.RateLimit` nor `Grappa.AdminEvents`, exactly as
+    `Grappa.Visitors` does not. Lifting the window would be the trade a shipped
+    module refuses, for a context standing in the identical position.
+
+  * **The challenge cannot be lifted.** Minting it needs `Phoenix.Token.sign/3`
+    against `GrappaWeb.Endpoint`, and the passkey options need
+    `GrappaWeb.PasskeyOrigin`. `GrappaWeb` already depends on `Grappa.Accounts`,
+    so carrying either into the context closes a cycle `Boundary` rejects.
+
+  * **The 22 error clauses stay put**, and are visitor-half code that has nothing
+    to do with this door. Twenty are pure identity pass-throughs whose relocation
+    would change no behaviour while deleting a documented audit index (L-web-1);
+    one inverts a written decision about who may query `Visitors`; and the
+    catch-all is load-bearing. `FallbackController` has 71 `call/2` clauses and
+    **no** catch-all, and `:no_server` is the one member of
+    `Visitors.Login.login_error()` no clause names — so today it renders a clean
+    `500 {"error":"internal"}` only because that catch-all totalises. Removing it
+    turns a declared error into a `FunctionClauseError` and a raw 500.
+
+**The one thing that had to become explicit.** The throttle used to be charged
+inside `authenticate_mode1/3`, upstream of the ladder, so "was this a guess?" was
+answered by call order rather than by a value. With one function answering the
+whole decision, the two refusals must be distinguishable: `{:error,
+:invalid_credentials}` is a wrong credential and charges the window, `{:error,
+:passwordless}` presented the RIGHT password and is refused because the password
+door is shut for that account. Both render the same uniform 401 — the caller maps
+them — but collapsing the tags would silently start charging a user's own window
+for a configuration choice. **This is the general rule the slice pays for: when a
+decision moves out of a chain, every distinction the chain expressed positionally
+has to reappear in the return type, or it is lost without a diff to show for it.**
+
+**Naming.** The call site is spelled `Accounts.Login.authenticate/1`, not
+aliased. `Login` inside `AuthController` is already `Grappa.Visitors.Login`, the
+other half of the same polymorphism; an alias would have made the two
+confusable at a glance, and — measured while writing this — a bare `Login.` in
+that module silently resolves to the visitor one.
+
+_Not established here: no timing claim about Argon2 or suite duration, and the
+`:passwordless` ordering (password verified first, mode checked second) is
+preserved from the original `cond` rather than re-derived from the domain._

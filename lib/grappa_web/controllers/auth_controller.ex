@@ -444,33 +444,43 @@ defmodule GrappaWeb.AuthController do
     |> render(:login, token: session.id, subject: {:user, user})
   end
 
+  # #1395 — the DECISION (does the credential verify, and which door is
+  # left) is `Accounts.Login.authenticate/1`, reachable without a `conn`.
+  # What stays here is what is genuinely request-shaped: charging the
+  # throttle, minting the challenge, and rendering.
+  #
+  # The two error tags are NOT interchangeable even though both answer 401
+  # `invalid_credentials` on the wire. `:invalid_credentials` is a guess and
+  # charges the window; `:passwordless` presented the RIGHT password and is
+  # refused because the password door is shut for that account, so charging
+  # it would spend a user's own window on a configuration choice. Before
+  # #1395 the distinction was implicit in the call order — the throttle was
+  # charged inside `authenticate_mode1/3`, upstream of the ladder — and it
+  # has to be explicit now that one function answers both.
   @spec password_login(Plug.Conn.t(), String.t(), String.t(), String.t() | nil) ::
           Plug.Conn.t() | {:error, term()}
   defp password_login(conn, name, password, ip) do
-    with {:ok, user} <- authenticate_mode1(name, password, ip) do
-      second_factor_ladder(conn, user)
-    end
-  end
+    # Spelled `Accounts.Login` rather than aliased: `Login` in this module is
+    # already `Grappa.Visitors.Login`, the other half of the same
+    # polymorphism, and the two must never be confusable at a call site.
+    case Accounts.Login.authenticate(%{name: name, password: password}) do
+      {:ok, user} ->
+        mint_user_session(conn, user)
 
-  # The post-password ladder: which door (if any) the account still has
-  # to walk through before a bearer is minted.
-  @spec second_factor_ladder(Plug.Conn.t(), Accounts.User.t()) ::
-          Plug.Conn.t() | {:error, term()}
-  defp second_factor_ladder(conn, user) do
-    cond do
-      user.passkey_mode == :passwordless ->
-        {:error, :invalid_credentials}
-
-      user.passkey_mode == :second_factor ->
+      {:second_factor, :passkey, user} ->
         passkey_second_factor(conn, user)
 
-      TOTP.enabled?(user) ->
+      {:second_factor, :totp, user} ->
         conn
         |> put_status(:accepted)
         |> json(%{two_factor_required: true, challenge_token: sign_challenge(user, conn)})
 
-      true ->
-        mint_user_session(conn, user)
+      {:error, :invalid_credentials} ->
+        :ok = charge_mode1_failure(ip)
+        {:error, :invalid_credentials}
+
+      {:error, :passwordless} ->
+        {:error, :invalid_credentials}
     end
   end
 
@@ -609,17 +619,17 @@ defmodule GrappaWeb.AuthController do
     end
   end
 
-  @spec authenticate_mode1(String.t() | nil, String.t(), String.t() | nil) ::
-          {:ok, Grappa.Accounts.User.t()} | {:error, :invalid_credentials}
-  defp authenticate_mode1(name, password, ip) do
-    case Accounts.get_user_by_credentials(name, password) do
-      {:ok, _} = ok ->
-        ok
-
-      {:error, _} = err ->
-        _ = LoginThrottle.charge(@mode1_bucket, ip, @mode1_window_ms, @mode1_max_failures)
-        err
-    end
+  # #1395 — the verify half of the former `authenticate_mode1/3` moved into
+  # `Accounts.Login.authenticate/1`; the charge stayed, because the window is
+  # request-edge policy (`LoginThrottle`'s own moduledoc argues it, and
+  # `Grappa.Visitors.Login` holds no throttle at all for the same reason).
+  # Kept beside the constants it reads: they are declared here, below
+  # `password_login/4`, and a module attribute is only in scope after its
+  # declaration.
+  @spec charge_mode1_failure(String.t() | nil) :: :ok
+  defp charge_mode1_failure(ip) do
+    _ = LoginThrottle.charge(@mode1_bucket, ip, @mode1_window_ms, @mode1_max_failures)
+    :ok
   end
 
   # W3: `captcha_token` arrives as a 4th explicit param so the

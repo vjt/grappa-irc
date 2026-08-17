@@ -87,7 +87,7 @@ defmodule Grappa.Accounts do
       Grappa.Repo,
       Grappa.Visitors.Visitor
     ],
-    exports: [User, Session, Wire, AdminWire, TOTP, TOTPRecoveryCode, Passkey, WebAuthn]
+    exports: [User, Session, Wire, AdminWire, Login, TOTP, TOTPRecoveryCode, Passkey, WebAuthn]
 
   import Ecto.Query
 
