@@ -165,6 +165,26 @@ describe("#1336 S2 — waitForScrollRest, and the barrier it replaces", () => {
     expect(message).toMatch(/last \d+/);
   });
 
+  it("does not call a pane written every 20ms 'at rest', however fast it is read", async () => {
+    // The fakes above answer from a script, so two reads taken in the same
+    // millisecond look exactly like two reads a poll apart — a barrier that
+    // compares samples with no gap between them passes every one of those
+    // tests while being worthless. This pane answers from a CLOCK instead,
+    // which is the only way the omission becomes visible.
+    //
+    // Not hypothetical: the first version of this barrier resolved instantly
+    // in situ against a pane an injected `setInterval` was moving 1px every
+    // 20ms, and the spec then failed downstream on an anonymous number
+    // instead of here, by name.
+    const start = Date.now();
+    const movingPane: Pick<ScrollPane, "scrollTop"> = {
+      scrollTop: async () => 1078 - Math.floor((Date.now() - start) / 20),
+    };
+    expect(await failureOf(waitForScrollRest(movingPane, { timeoutMs: 300, pollMs: 50 }))).toContain(
+      "never came to rest",
+    );
+  });
+
   it("resolves at the position the pane was ALREADY holding", async () => {
     // A settled pane is settled; the barrier is about rest, not about movement
     // (that is `scrollByGesture`'s job, and it rejects a pane that never moved).

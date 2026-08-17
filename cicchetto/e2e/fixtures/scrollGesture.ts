@@ -138,13 +138,22 @@ async function sampleUntilRest(
   let moved = false;
 
   while (Date.now() < deadline) {
+    // The gap comes FIRST, so every pair being compared is `pollMs` apart.
+    // Sleeping at the end of the body instead leaves the very first
+    // comparison — baseline against the first sample — separated by nothing
+    // but a round trip, and a pane read twice in the same millisecond reads
+    // equal whatever it is doing. Measured: with the sleep at the end, this
+    // barrier resolved instantly against a pane being written every 20ms,
+    // which is precisely the "satisfied without the thing it claims" defect
+    // the barrier exists to refuse. The unit fakes cannot see it — they have
+    // no clock — so `movingPane` below supplies one.
+    await sleep(pollMs);
     const current = await read();
     if (current !== baseline) moved = true;
     if (current === previous && (!requireMove || moved)) {
       return { settled: current, last: current, moved };
     }
     previous = current;
-    await sleep(pollMs);
   }
 
   return { settled: null, last: previous, moved };
