@@ -47,6 +47,7 @@ import {
   uploadState,
 } from "./lib/uploadOrchestrator";
 import { windowStateByChannel } from "./lib/windowState";
+import { NOT_JOINED_STATES } from "./lib/windowStateSets";
 
 // Sticky-bottom compose surface. Reads + writes compose.ts state;
 // dispatches submit on Enter; arrow keys walk per-channel history.
@@ -109,7 +110,6 @@ export type Props = {
 // it is not on screen while composing normally.
 const COUNTDOWN_FROM = 10;
 
-const NOT_JOINED_STATES = new Set(["failed", "kicked", "parked"]);
 const NETWORK_GREYED_STATES = new Set(["parked", "failed"]);
 
 // #356 — how long a green success/notice stays up before self-clearing.

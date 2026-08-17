@@ -28,6 +28,7 @@ import {
   SERVER_WINDOW_NAME,
 } from "./lib/windowKinds";
 import { windowStateByChannel } from "./lib/windowState";
+import { NOT_JOINED_STATES } from "./lib/windowStateSets";
 import NickText from "./NickText";
 import WindowBadges from "./WindowBadges";
 
@@ -87,10 +88,6 @@ import WindowBadges from "./WindowBadges";
 //   per-window `:parked` events from `Session.Server.terminate/2`; cic
 //   derives the cascade from the network-level state.
 
-// #902 — `invited` left this set with the pseudo-row itself: an unanswered
-// invite is announced by the top banner now, so no sidebar row carries that
-// state to grey out.
-const NOT_JOINED_STATES = new Set(["failed", "kicked", "parked"]);
 const NETWORK_GREYED_STATES = new Set(["parked", "failed"]);
 
 // #96 — a row's state, spoken. Every non-live sidebar row is rendered muted +

@@ -2,7 +2,7 @@ import { type ChannelKey, decodeChannelKey } from "./channelKey";
 import { channelsBySlug } from "./networks";
 import { queryWindowsByNetwork } from "./queryWindows";
 import { isMobile } from "./theme";
-import { windowStateByChannel } from "./windowState";
+import { type WindowState, windowStateByChannel } from "./windowState";
 
 // Synthetic window rows: keys with windowState != "joined" whose
 // (slug, name) is NOT yet in channelsBySlug AND not a known query
@@ -60,7 +60,7 @@ import { windowStateByChannel } from "./windowState";
 
 export type PseudoRow = {
   name: string;
-  state: "pending" | "failed" | "kicked" | "parked";
+  state: Exclude<WindowState, "invited" | "joined">;
 };
 
 export function pseudoChannelsForNetwork(slug: string, networkId: number): PseudoRow[] {
@@ -83,7 +83,7 @@ export function pseudoChannelsForNetwork(slug: string, networkId: number): Pseud
     const name = decoded.name;
     if (live.has(name)) continue;
     if (queries.has(name)) continue;
-    out.push({ name, state: state as PseudoRow["state"] });
+    out.push({ name, state });
   }
   return out;
 }
