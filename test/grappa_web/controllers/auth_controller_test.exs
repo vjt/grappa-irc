@@ -1466,6 +1466,35 @@ defmodule GrappaWeb.AuthControllerTest do
       assert json_response(wrong_login(conn, user, 2), 401)["error"] == "invalid_credentials"
     end
 
+    test "a passwordless account's RIGHT password is refused without charging", %{conn: conn} do
+      # #1395 made this distinction explicit: `Accounts.Login.authenticate/1`
+      # answers `:passwordless` rather than `:invalid_credentials`, and only
+      # the latter reaches `charge_mode1_failure/1`. Both leave as the same
+      # uniform 401, so the ONLY observable difference is the counter — and
+      # nothing asserted it before, which is what let the two tags look
+      # interchangeable. Charging here would spend a user's own window on a
+      # configuration choice they made, not on anybody's guess.
+      {user, password} = user_fixture_with_password()
+
+      user
+      |> Ecto.Changeset.change(passkey_mode: :passwordless)
+      |> Repo.update!()
+
+      right_password = fn ->
+        conn
+        |> with_ip(6)
+        |> post("/auth/login", %{"identifier" => "#{user.name}@x.com", "password" => password})
+      end
+
+      for _ <- 1..10 do
+        assert json_response(right_password.(), 401)["error"] == "invalid_credentials"
+      end
+
+      # @mode1_max_failures is 10, so the 11th attempt is 429 the moment any
+      # of the ten above charged the window. Still 401 means none did.
+      assert json_response(right_password.(), 401)["error"] == "invalid_credentials"
+    end
+
     test "a tripped IP doesn't affect logins from another IP", %{conn: conn} do
       {user, password} = user_fixture_with_password()
 
