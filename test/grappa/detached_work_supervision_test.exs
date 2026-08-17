@@ -77,7 +77,6 @@ defmodule Grappa.DetachedWorkSupervisionTest do
       })
 
     park_session(ctx.subject, ctx.network.id)
-    before = supervised_count()
 
     :ok =
       Pusher.push(%{
@@ -89,20 +88,21 @@ defmodule Grappa.DetachedWorkSupervisionTest do
         own_nick: @own_nick
       })
 
-    # The worker exists and is parked — without this the count below could
-    # be read before it ever started, and an empty list would read as
-    # "unsupervised" when it means "not yet spawned".
-    assert_receive :worker_parked, 2_000
+    # The parked worker names ITSELF: the stand-in reports the pid blocked
+    # inside the call. Identity, not a count — a count is inflated by a
+    # worker another test left dying, which is exactly what made an earlier
+    # version of this test fail while the code was already correct.
+    assert_receive {:worker_parked, worker}, 2_000
 
-    assert supervised_count() > before,
+    assert MapSet.member?(supervised_pids(), worker),
            "the window-counts worker is not a child of the task supervisor"
   end
 
   test "the message-notification worker runs under the task supervisor", ctx do
-    {:ok, _} = UserSettings.put_notification_prefs(ctx.subject, %{private_messages_all: true})
+    set_pref(ctx.subject, :private_messages_all, true)
 
     park_presence()
-    before = supervised_count()
+    before = supervised_pids()
 
     :ok = Triggers.evaluate_and_dispatch(inbound_dm(ctx), trigger_ctx(ctx))
 
@@ -110,20 +110,36 @@ defmodule Grappa.DetachedWorkSupervisionTest do
   end
 
   test "the presence-notification worker runs under the task supervisor", ctx do
-    {:ok, _} = UserSettings.put_notification_prefs(ctx.subject, %{presence_online: true})
+    set_pref(ctx.subject, :presence_online, true)
 
     park_presence()
-    before = supervised_count()
+    before = supervised_pids()
 
     :ok = Triggers.dispatch_presence(@peer, :online, :transition, trigger_ctx(ctx))
 
     assert_supervised_worker_appears(before, "presence-notification")
   end
 
-  defp supervised_count do
+  # The setter validates the WHOLE preference map, so flipping one key
+  # means reading the current map through the same context that writes it
+  # rather than hand-rolling a literal here — a literal would be a second
+  # copy of the defaults, silently stale the day one of them changes.
+  defp set_pref(subject, key, value) do
+    prefs =
+      subject
+      |> UserSettings.get_notification_prefs()
+      |> Map.put(key, value)
+
+    {:ok, _} = UserSettings.put_notification_prefs(subject, prefs)
+    :ok
+  end
+
+  # A SET, not a count. Another test's worker can still be dying while this
+  # one starts; a count cannot tell "one arrived" from "one left".
+  defp supervised_pids do
     Grappa.TaskSupervisor
     |> Task.Supervisor.children()
-    |> length()
+    |> MapSet.new()
   end
 
   # An inbound DM: `channel` carries the own nick, which is what marks the
@@ -170,8 +186,8 @@ defmodule Grappa.DetachedWorkSupervisionTest do
 
   defp park_loop(notify) do
     receive do
-      {:"$gen_call", _, {:list_members, _}} ->
-        send(notify, :worker_parked)
+      {:"$gen_call", {caller, _}, {:list_members, _}} ->
+        send(notify, {:worker_parked, caller})
         park_loop(notify)
 
       _ ->
@@ -209,7 +225,7 @@ defmodule Grappa.DetachedWorkSupervisionTest do
   end
 
   defp assert_supervised_worker_appears(before, which, attempts) do
-    if supervised_count() > before do
+    if MapSet.difference(supervised_pids(), before) |> Enum.any?() do
       :ok
     else
       Process.sleep(10)
