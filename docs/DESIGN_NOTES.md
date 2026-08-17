@@ -46526,3 +46526,79 @@ how pins disappear one at a time.
 
 _Not measured here: nothing in this entry claims a verdict for the full
 suite or the type gates; those are a separate run._
+<!-- entry #1393 -->
+
+---
+
+## 2026-08-17 — #1393: a tolerance may only be as wide as the typespec it excuses
+
+`banlist_bundle`'s narrower in `userTopic.ts` coerced any non-string `mode`
+— a number, an explicit `null` — into `"b"`. It now drops such a payload.
+Absent `mode` still means `b`. The change is small; the reason it is
+recorded here is that the arm's own comment argued for the old behaviour,
+so the code alone reads as a regression against a written policy.
+
+### The comment named a model stricter than itself
+
+The fallback justified itself as "additive-tolerant like `links_bundle`'s
+`mask`". The two arms did not implement the same policy. `links_bundle`
+guards its field —
+
+```ts
+if (r.mask !== undefined && r.mask !== null && typeof r.mask !== "string") return null;
+```
+
+— and drops a wrong-typed `mask`. `banlist_bundle` had no guard, so
+`typeof r.mode === "string" ? r.mode : "b"` swallowed everything. An arm
+claiming parity with a sibling that is strictly stricter is the kind of
+divergence a reader cannot see without opening both files, which is why it
+survived from #1251 to here.
+
+### Why the fix is STRICTER than the model it imitates
+
+Not zeal — the typespecs differ, and that difference is the whole ruling:
+
+| wire typespec | field | so an explicit `null` is |
+|---|---|---|
+| `Grappa.Session.Wire.links_bundle_payload/0` | `mask: string \| null` | a shape the server really sends → tolerated |
+| `Grappa.Session.Wire.banlist_bundle_payload/0` | `mode: string`, required | impossible from any grappa → dropped |
+
+So the correct port of the `mask` posture onto `mode` tolerates **absence
+only**. Absence is an older server, which is exactly and only what #1251
+excused when it added the field; **that tolerance survives, and the test
+pinning it is unchanged**. A key that is PRESENT carrying a non-string
+cannot have come from a grappa of any vintage — it is mangling.
+
+The general rule this is an instance of: **a cross-vintage tolerance is
+sized by what an older peer can actually emit, not by what the current
+narrower happens not to reject.** Read the typespec of the field before
+widening or narrowing a fallback; two fields that look alike at the call
+site can have different nullability, and the looser one is not the
+template.
+
+### Why dropping beats coercing here
+
+Two rulings point the same way. #1400 settled that the client boundary
+FAILS LOUD: a required field arriving with the wrong type is not invented.
+And #1251 added `mode` precisely so a list-mode bundle is not mislabelled —
+without it "the modal would render solanum's quiet list under a Bans
+heading". Answering a mangled value with `"b"` reinstates exactly the
+mis-attribution the field exists to prevent, which on this surface is the
+largest available surprise: the modal would assert, in its heading, a fact
+about the payload that the payload denies. An empty modal is a smaller
+lie than a confidently mislabelled one.
+
+### Provenance, and what stays unmeasured
+
+The divergence was not spotted by reading; it came out of the #1393 census
+(`cicchetto/src/__tests__/wireUserBoundary.test.ts`), which mutates every
+field of every user-topic arm against its generated schema. That census
+also settles the bucket it was built for: of 42 arms, 34 agree with their
+schema in both directions, and all 8 that diverge carry a written,
+issue-numbered rationale for diverging — `banlist_bundle` was the only one
+whose rationale falsified itself. The census measures; it migrates nothing,
+and the question of what #1393 does next is not settled here.
+
+_Not claimed: that a wrong-typed `mode` was ever observed in production.
+The finding is an inconsistency between two sibling arms, measured in the
+source, not an incident. Nothing here changes what the server emits._
