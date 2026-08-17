@@ -45535,3 +45535,122 @@ jsdom. `role="img"` stays — ARIA does prohibit the name there, so no AT
 owes us the reading — but that is the spec, not a measurement, and the
 tests now pin the spec-legal SHAPE with a byRole query instead of
 pretending the name assertion proves it.
+<!-- entry #1392 -->
+
+---
+
+## 2026-08-17 — #1392: three spellings of one subject predicate, and the claims measurement retired
+
+Bucket C of the 2026-08-15 architecture review. `Grappa.Subject`'s moduledoc
+has declared it the single source of truth for the
+`{:user, uuid} | {:visitor, uuid}` discriminator since the V1 visitor-parity
+promotion, and named `Grappa.Scrollback` and `Grappa.ReadCursor` as the
+contexts it was promoted OUT of. Neither of them referenced `Grappa.Subject`
+at all. The promotion reached nine modules and stopped one short of the two it
+was named after.
+
+Counted at `f59b0c7e`: `Subject.subject_where/2` served 19 call sites across
+seven modules, `Scrollback.subject_where/2` (private) 12, and
+`ReadCursor.subject_filter/2` (private) 7. A fourth spelling sat on the write
+side — `ReadCursor.subject_attrs/1`, one call site, duplicating
+`Subject.put_subject_id/2`.
+
+### The predicate did not diverge; the diagnostic did
+
+All three built the same clause: the same `is_binary/1` guards on both
+branches, the same equality against the same FK column, and the same
+**positional** binding — `[m]` in one, `[row]` in the other two, both index 0.
+That last detail is what makes the fold a substitution rather than a rewrite:
+no call site's query shape can change the result, because the binding is
+resolved by position and the position is identical. No value in the valid
+domain makes any two of them build a different query.
+
+They differed OFF the domain, and there the difference is real.
+`Scrollback` carried an explicit fall-through raising `ArgumentError` with the
+inspected subject, added by B5.4 L-pers-2 precisely because a
+`FunctionClauseError` hides both the offending value and the function name.
+`Subject` and `ReadCursor` had no such clause.
+
+So the fold could not be a deletion. Dropping the two privates and letting
+`Subject.subject_where/2` answer would have removed that diagnostic from 12
+call sites; the clause was promoted **with** the function instead. That is a
+behaviour change and the commit says so rather than claiming none: 19 existing
+`Subject.subject_where/2` call sites and 7 former `subject_filter/2` ones move
+from `FunctionClauseError` to `ArgumentError`. Nothing in `test/` asserted
+`FunctionClauseError` on these functions, and the two pins that already
+existed (`scrollback_test.exs`, `~r/unknown subject:/`) stay green untouched —
+which is the evidence the fold is transparent at the Scrollback boundary.
+
+### What the issue text claimed and the code did not
+
+Two figures in the issue body do not reproduce, and the code wins:
+
+`subject_filter/2` has **7** call sites, not 8. Classifying all twelve
+occurrences of the token in `read_cursor.ex`: seven calls, two clauses, one
+`@spec`, and two mentions in prose. The likeliest source of the eighth is the
+`@spec` or the cross-reference comment, but no base was constructed that
+yields 8, so that stays a guess.
+
+"Seven modules re-declare the type literal" merges three different types. Only
+**four** declarations are verbatim clones of `Subject.t()` (`accounts.ex`,
+`read_cursor.ex`, `scrollback.ex`, `session.ex`). Two more —
+`accounts/revocations.ex`, `rate_limit/request_budget.ex` — spell the id as
+`String.t()`, which is strictly WIDER than `Ecto.UUID.t() :: <<_::288>>`;
+substituting `Subject.t()` there narrows a type rather than deduplicating one.
+Three others (`account_deletion.ex`, `themes.ex`, `grappa_web/subject.ex`) are
+the rich-struct shape. The issue excluded `account_deletion.ex` for exactly
+that reason but did not name `themes.ex`, which is the same animal and equally
+uncollapsible: a core context cannot depend on `GrappaWeb`.
+
+Three of the four true clones collapse here. `accounts.ex:103` does not:
+`Grappa.Accounts` is a DEP of `Grappa.Subject`, so referencing `Subject.t()`
+from inside it would close `Subject → Accounts → Subject` if Boundary tracks
+remote type references. Whether it does was not established — the repo
+contains no discriminating case, since every remote `Grappa.X.t()` in a core
+`@spec` sits in a boundary that already declares `X`. The declaration is worth
+two `@spec` sites, so the cheap move is to leave it and say why.
+
+### The write-side asymmetry is real and unreachable
+
+`Subject.put_subject_id/2` guards `is_map(attrs) and is_binary(uid)`.
+`ReadCursor.subject_attrs/1` had no guard at all, so `{:user, nil}` returned
+`%{user_id: nil}` — a value where every sibling raises, flowing into
+`Cursor.changeset/2` and failing late at the XOR CHECK instead of early at the
+call site.
+
+Tracing it settled the question the other way, and that is worth recording:
+both paths into `upsert_cursor/5` (`do_set/4` and `force_write/4`) call
+`get/3` first, and every public entry passes through `message_belongs?/4` as
+well — all of them subject-guarded. A malformed subject raises before
+`subject_attrs/1` is ever reached. The asymmetry was measured; the exploit path
+does not exist. Folding it into `put_subject_id/2` is therefore deduplication,
+not a fix, and it is recorded as such rather than dressed up as one.
+
+`put_subject_id/2` keeps its `FunctionClauseError` posture deliberately. Giving
+it the same `ArgumentError` fall-through would be a second behaviour change
+across 24 call sites that nothing here asks for; a hard failure on a malformed
+shape is already the right answer, and uniformity for its own sake can be its
+own change.
+
+### Two sentences in the moduledoc that were not true
+
+`subject_where/2`'s `@doc` promised a
+`WHERE user_id = ? AND visitor_id IS NULL`-shaped clause. None of the three
+spellings ever emitted the second conjunct — all three emit the single
+equality, and the DB-level XOR CHECK is what makes it redundant. Harmless at
+runtime, but it is the sentence a reader would use to reason about subject
+isolation, so it stated a guarantee the code did not provide.
+
+The same `@doc` told multi-join callers to write the where-clause themselves.
+`ReadCursor.bulk_for_subject/1` has always been a multi-join caller and has
+always been correct, because the real precondition is narrower than "no
+joins": binding 0 must be the table carrying the subject FK. Stated as written,
+the caveat would have forbidden a fold that is exactly equivalent.
+
+### Left out, and named so nobody has to re-derive it
+
+`request_budget.ex:58-63` justifies its local declaration as keeping "the
+`Grappa.RateLimit` boundary free of a `Grappa.Session` dep". That reason is
+stale — the type has lived in `Grappa.Subject`, not `Grappa.Session`, since the
+V1 promotion. It is left alone anyway, because its `String.t()` is the wider
+type and narrowing it is a separate judgement with its own risk.
