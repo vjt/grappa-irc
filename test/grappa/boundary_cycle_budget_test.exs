@@ -95,7 +95,7 @@ defmodule Grappa.BoundaryCycleBudgetTest do
     end
   end
 
-  defp dep_name({module, _mode}), do: module
+  defp dep_name({module, _}), do: module
   defp dep_name(module) when is_atom(module), do: module
 
   @spec owning_boundary(module(), MapSet.t(module())) :: module() | nil
