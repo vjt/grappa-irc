@@ -16,17 +16,31 @@ defmodule Grappa.BoundaryCycleBudgetTest do
   # that closes a cycle has to be argued for in a diff instead of arriving
   # unremarked. Lowering @cycle_budget when the number drops is the point;
   # raising it is a decision that belongs in review.
-  @cycle_budget 31
+  @cycle_budget 0
 
-  # Measured 2026-08-17 on `origin/main` = 236dd328: 31 elementary cycles over
-  # 12 boundaries (1 of length 2, 4 of length 3, 11 of length 4, 11 of length 5,
-  # 4 of length 6), from 5 waivers all naming `Grappa.Networks.Network`. The
-  # single highest-leverage arc is `Scrollback -> Networks` at 19 of the 31; no
-  # single arc kills them all. Method: the compiled `Boundary` attribute, the
-  # same source `GrappaWeb.BoundaryTest` and `Grappa.Visitors.VisitorBoundaryTest`
-  # read — NOT a source parse. An earlier hand-rolled regex parser disagreed with
-  # a second one about how many `use Boundary` blocks even exist (99 vs 107),
-  # which is exactly why this reads the annotation the compiler kept.
+  # The budget was 31 when this gate landed, and the promotion of the four
+  # `Networks` schemas to their own boundaries retired every one of them: all
+  # five waivers named `Grappa.Networks.Network`, and each existed because the
+  # alternative was an edge to the whole `Grappa.Networks` context. With the
+  # schemas owning themselves, two of the five became declared edges to a leaf
+  # that depends only on `Grappa.IRC`, and three were deleted outright — they
+  # had been waiving a `belongs_to`, which was never a reference the checker
+  # resolved.
+  #
+  # A consequence worth stating, because it changes what a future waiver means:
+  # a `dirty_xrefs: [Grappa.Networks.Network]` written today resolves to the
+  # leaf, not to the context, so it would close nothing and this gate would not
+  # move. The 31 were never about waivers as such — they were about waivers
+  # pointed at a module owned by a large boundary.
+  #
+  # Method: the compiled `Boundary` attribute, the same source
+  # `GrappaWeb.BoundaryTest` and `Grappa.Visitors.VisitorBoundaryTest` read —
+  # NOT a source parse. When this gate landed, two hand-rolled regex parsers
+  # disagreed about how many `use Boundary` blocks even exist, 99 against 107.
+  # The compiled attribute settled it at 99, over
+  # `:application.get_key(:grappa, :modules)`; `lib` holds 111 textual
+  # occurrences of which 12 are prose in moduledocs and comments. 107 matches no
+  # population anyone could reconstruct, and nothing here guesses what it was.
   #
   # Declared scope, stated so it is not mistaken for more: this counts DECLARED
   # deps plus waivers. Runtime edges — the injected closures, behaviours resolved

@@ -47441,3 +47441,101 @@ empty `deps:`. The same move here cannot be scoped to `Network` alone —
 is the four-schema cluster, priced at roughly fifteen files and atomic. That is a
 purchase, not a slice, and it is deliberately left to #1398 rather than smuggled in
 behind a gate.
+<!-- entry #1398p -->
+
+---
+
+## 2026-08-17 — #1398: the four Networks schemas own themselves, and 31 cycles go with them
+
+Every `dirty_xrefs` waiver in the tree named `Grappa.Networks.Network` — five
+of them, grown from three between two reviews with nothing watching. Counting
+those waivers as the edges they are turned an acyclic declared graph into one
+with 31 elementary cycles over 12 boundaries. The waivers existed because the
+only alternative on offer was worse: a consumer that needed the schema struct
+had to declare a dep on the entire `Grappa.Networks` context, and that edge is
+what closed the cycles.
+
+The fix is that the schemas stop being part of the context. `Network`, `Server`,
+`Credential` and `FeaturedChannel` each carry `use Boundary, top_level?: true`
+with a deps list measured from their real outbound edges — `Grappa.IRC` for
+three of them, nothing at all for `Server`. A consumer now declares an edge to a
+leaf, and a leaf closes nothing.
+
+**The premise this was planned under was wrong, and the correction is the
+interesting part.** Two earlier reconnaissance passes, including one of mine,
+concluded that four separate leaves were impossible: `server.ex`,
+`credential.ex` and `featured_channel.ex` all name `Network`, so four leaves
+looked like four two-cycles, and the only Boundary-expressible form looked like
+one boundary holding all four schemas — which, since no namespace contains
+exactly those four, meant moving files and renaming modules. Roughly fifteen
+files of rename, and a cold deploy, because renamed modules are beams that
+disappear.
+
+None of that was needed. Every reference among the four is a `has_many` or
+`belongs_to` argument and a typespec, and #1399 had just established against the
+compiler — by deleting seven deps of exactly that shape and staying green under
+`--warnings-as-errors` — that those are atoms in metadata rather than references
+the checker resolves. There is no back-edge, so there is no cycle, so there is
+nothing to merge into a shared namespace. The move is four annotations. No
+module is renamed, no file moves, and the deploy stays hot.
+
+The general lesson is about the measurement, not the outcome: **counting
+references without classifying them measures the wrong population.** Both
+earlier passes counted names and got a real number; the number just did not
+answer the question being asked of it. The reference *kind* is what decides
+whether an edge exists.
+
+**How the five waivers split.** `ReadCursor` holds three `join: n in Network`
+slug lookups and `Scrollback` matches `%Network{slug: slug}` in its wire
+contract, so those two trade a waiver for a declared edge. The other three —
+`ChannelDirectory`, `Notify`, `QueryWindows` — held none, and their waivers are
+deleted with nothing declared in their place, which the compiler accepts.
+
+That last clause is deliberately narrow, because a measurement taken while
+proving the mutant contradicts the wider claim this entry originally made.
+Boundary has a second check: it warns when a `dirty_xrefs` entry is
+unnecessary, and under `--warnings-as-errors` that warning fails the build. The
+mutant tripped it. So the three waivers were run against that check on every
+green build of `main` and never tripped it — measured directly, `origin/main`
+compiles with zero such warnings while still carrying all three. Boundary
+therefore considered them USED, and yet deleting them here produces no
+forbidden reference.
+
+Both halves are measured and they are not obviously compatible; the mechanism
+that reconciles them was not established, and is not guessed at here. What the
+promotion does establish is narrower and sufficient: after it, those three
+boundaries need no declaration of any kind. The earlier sentence in this entry
+— that the waivers "never covered anything" — claimed more than the evidence
+supports and is withdrawn.
+
+**One judgement call was left for the compiler rather than settled by reading.**
+`Notify` and `QueryWindows` pass the schema module as a plain argument to
+`check_exists/4`, the way `Admission` passes it to `Repo.get/2`. Whether that
+is a reference Boundary resolves is not something source inspection answers.
+Declaring the dep would have been the comfortable choice and the wrong one: an
+undeclarable dependency asserted anyway is exactly the defect being removed
+here, and it fails silently. Omitting it fails loudly, at the build, with the
+line number. The choice was made for falsifiability.
+
+**What the gate proves and what it does not.** The budget moves to the number
+the gate itself measures after the promotion, not to a number this entry
+asserts. It is a count over DECLARED deps plus waivers: injected closures,
+behaviours resolved from `:persistent_term` and the supervisor-level
+`held_source_fn` carry no module reference any compile-time mechanism can see,
+so the runtime graph remains denser than anything measured here, and a closure
+that opens a cycle still moves nothing.
+
+A second limit is new and worth recording, because it inverts how a future
+waiver reads: now that the schemas are leaves, a `dirty_xrefs:` pointed at one
+of them would close no cycle and the gate would stay green. The 31 were never
+about waivers as such — they were about waivers pointed at a module owned by a
+large boundary. The gate lost sensitivity on that target by making the target
+harmless.
+
+_Not established: no behaviour changes and nothing here was exercised against
+production or a live session — these are compile-time annotations. The
+reference measurement that selected the file set is a regex over source, so a
+reference built by macro or `Module.concat/1` would be invisible to it; the
+compiler, not the parser, is what makes the set safe, and a file appearing
+beyond the declared set would mean the parser missed a consumer rather than
+that the set grew._
