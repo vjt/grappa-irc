@@ -79,7 +79,10 @@ defmodule Grappa.Notify do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.IRC, Grappa.PubSub, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
+    # No `Grappa.Accounts` dep: `User` is reached only by `Entry`'s
+    # `belongs_to` and its typespec — metadata atoms, not a reference
+    # Boundary can gate (#1399).
+    deps: [Grappa.IRC, Grappa.PubSub, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
     # Networks.Network is an FK-reference-only xref (belongs_to + the
     # existence pre-check), NOT a full dep: a `deps:` edge would close
     # the cycle Session -> Notify -> Networks -> LiveIntrospection ->

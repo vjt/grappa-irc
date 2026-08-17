@@ -15,7 +15,10 @@ defmodule Grappa.ChannelDirectory do
     # `Grappa.IRC` — `Wire.mark_featured/2` folds directory names via
     # `Identifier.canonical_target/1` (ASCII, #364/#525/#537) to key them against
     # the canonical featured set.
-    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
+    # No `Grappa.Accounts` dep: `User` is reached only by `Entry`'s
+    # `belongs_to` and its typespec — metadata atoms, not a reference
+    # Boundary can gate (#1399).
+    deps: [Grappa.IRC, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
     # `Networks.Network` is referenced ONLY by `Entry`'s
     # `belongs_to :network` (struct/schema access — no `Grappa.Networks`
     # function call anywhere in this boundary). A full `Grappa.Networks`

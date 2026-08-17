@@ -71,8 +71,10 @@ defmodule Grappa.ReadCursor do
 
   use Boundary,
     top_level?: true,
+    # No `Grappa.Accounts` dep: `User` is reached only by `Cursor`'s
+    # `belongs_to` and its typespec — metadata atoms, not a reference
+    # Boundary can gate (#1399).
     deps: [
-      Grappa.Accounts,
       Grappa.IRC,
       Grappa.PubSub,
       Grappa.Repo,

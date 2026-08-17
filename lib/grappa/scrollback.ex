@@ -33,7 +33,10 @@ defmodule Grappa.Scrollback do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
+    # No `Grappa.Accounts` dep: `User` is reached only by `Message`'s
+    # `belongs_to` and its typespec — metadata atoms, not a reference
+    # Boundary can gate (#1399).
+    deps: [Grappa.IRC, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
     # `Networks.Network` is referenced by `Scrollback.Message` (the
     # `belongs_to :network` association) and `Scrollback.Wire` (the
     # `%Network{slug: _}` pattern that A1+A26 made the wire-shape

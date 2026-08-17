@@ -47291,3 +47291,80 @@ _Not established: nothing here measures how many of these workers can be alive
 at once, or what happens at any particular number, and the file says so. The
 question of whether that concurrency wants a bound is open and is not answered
 by this change._
+<!-- entry #1399 -->
+
+---
+
+## 2026-08-17 — #1399: seven boundaries stop declaring a dependency they never had
+
+Bucket J of the 2026-08-15 architecture review says one problem — "a boundary
+needs only a schema" — has three incompatible resolutions, and asks for the
+thirteen struct-only `Grappa.Accounts` deps to be *narrowed*. Measuring the tree
+first changed the answer for seven of them: there is nothing to narrow, because
+there was never an edge.
+
+`Grappa.ChannelDirectory`, `Grappa.Notify`, `Grappa.Push`, `Grappa.QueryWindows`,
+`Grappa.ReadCursor`, `Grappa.Scrollback` and `Grappa.UserSettings` each declared
+`Grappa.Accounts` in `deps:`. Each reaches `Accounts.User` exactly twice, in one
+schema file, in the same two shapes: a `belongs_to :user, User` association
+argument and a `user: User.t()` typespec. Both are module names that end up as
+atoms in metadata rather than as remote calls, so the xref-based checker has no
+reference to police. The dep bought nothing.
+
+**The tree already answered this, and nobody had noticed.** `Grappa.Uploads`
+holds the identical pair — `uploads/upload.ex` aliases `Grappa.Accounts.User`
+and declares `belongs_to :user, User` — with **no** `Grappa.Accounts` dep and no
+waiver, and it has been compiling green for as long as it has existed.
+`Grappa.TestSupport.SubjectSession` is a second instance, via a typespec. So the
+review's "three resolutions" undercounts: a fourth, *declare nothing*, was
+already live and already correct. Seven of the thirteen belong to it.
+
+**Why deleting rather than narrowing.** Narrowing `Grappa.Accounts` to
+`Grappa.Accounts.User` would encode a dependency the compiler cannot see, on a
+module that is not a boundary today, to satisfy a rule none of these seven
+actually violate — and it would have to be undone the day `Accounts.User` is
+promoted. Deleting states the truth that the compiler can check: these
+boundaries do not depend on `Grappa.Accounts`. Where an issue's prose and the
+measured tree disagree, the tree wins.
+
+**The deletion is falsifiable, and the falsifier was armed first.** Boundary
+reports cross-boundary references as advisory warnings; only
+`mix compile --warnings-as-errors` — the first step of the `ci.check` alias, for
+exactly this reason — turns them into a failed build. So a green compile after
+seven deletions proves nothing unless the checker is known to bite. Before the
+deletions, one mutant removed the `Grappa.Accounts` dep from `Grappa.Subject`,
+which holds a real reference (`%User{}` in `from_assigns/1`). The build went red
+with exactly one violation, at exactly that line, naming exactly
+`Grappa.Accounts.User` — one mutant, one assertion, nothing else moved. With the
+mutant reverted and the seven deps gone, the same command is green with zero
+forbidden references. Had any of the seven carried an edge the source
+measurement missed, this is where it would have surfaced.
+
+**A stale number, settled while the lane was held.** Two hand-written parsers
+had disagreed about how many `use Boundary` declarations the tree even contains
+— 99 against 107 — and that disagreement was written into the #1398 cycle-budget
+gate as an open question. The compiled attribute settles it: **99**, counted from
+`Boundary` module attributes over `:application.get_key(:grappa, :modules)`. The
+source measurement agrees exactly, and the arithmetic explains itself — `lib`
+holds 111 textual occurrences of `use Boundary`, of which 12 are prose in
+moduledocs and comments, leaving 99 declarations. 107 corresponds to no
+population that could be reconstructed here, and no explanation for it is
+offered rather than invented.
+
+Comments at the seven sites say why the dep is absent, because absence is not
+self-documenting: the next reader finds a `belongs_to` pointing at another
+boundary's schema and, without a note, closes the "gap".
+
+_Not established: the other six of the thirteen are untouched — four hold real
+edges (`Subject`, `Themes`, `Admission`, `Vhosts`) and need `Accounts.User` and
+`Accounts.Session` promoted first, which is a separate change with a larger
+population than the review states, since promoting them removes both from
+`Grappa.Accounts`' `exports:` and forces every boundary holding a real edge to
+declare the new dep. The `Networks.Network` half of the bucket is a schema-cluster
+move, not an annotation change, and is tracked separately. The A7 finding — 11
+`top_level?: true` boundaries nested in another boundary's namespace — is
+deliberately not addressed: without a convention distinguishing a carve-out from
+a context internal there is no oracle to satisfy. The rule this entry describes
+is not written next to the Boundary paragraph in CLAUDE.md, so a future boundary
+that needs only a schema can still invent a fifth resolution; that edit is
+vjt's._
