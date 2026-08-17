@@ -55,6 +55,7 @@ defmodule Grappa.Admission do
       Grappa.Accounts,
       Grappa.Networks,
       Grappa.Networks.Credential,
+      Grappa.Networks.Network,
       Grappa.RateLimit,
       Grappa.Repo
     ],

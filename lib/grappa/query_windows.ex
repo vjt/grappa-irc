@@ -97,15 +97,12 @@ defmodule Grappa.QueryWindows do
   use Boundary,
     top_level?: true,
     deps: [Grappa.Accounts, Grappa.IRC, Grappa.PubSub, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
-    # `Networks.Network` is referenced ONLY as a schema — the
-    # `belongs_to :network` association + the FK-existence `Repo.exists?`
-    # query in `check_exists/4`. Declared a dirty xref (NOT a real dep),
-    # mirroring `Grappa.Scrollback` / `Grappa.ReadCursor`: a real
-    # `QueryWindows → Networks` edge would close the cycle
-    # `Session → QueryWindows → Networks → Session` once #373 made
-    # Session depend on QueryWindows (for `rename/4` on a peer NICK).
-    # The struct-only reference carries no behaviour Boundary could gate.
-    dirty_xrefs: [Grappa.Networks.Network],
+    # No `Networks.Network` dep and no waiver (#1398), same call as
+    # `Grappa.Notify`: `Window`'s `belongs_to` is not a resolved reference,
+    # and the FK pre-check at `check_exists/4` passes the module as a plain
+    # argument. The old cycle this waiver avoided,
+    # `Session → QueryWindows → Networks → Session`, cannot form through a
+    # leaf that depends only on `Grappa.IRC`.
     exports: [Window, Wire]
 
   import Ecto.Query

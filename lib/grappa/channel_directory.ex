@@ -16,18 +16,8 @@ defmodule Grappa.ChannelDirectory do
     # `Identifier.canonical_target/1` (ASCII, #364/#525/#537) to key them against
     # the canonical featured set.
     deps: [Grappa.Accounts, Grappa.IRC, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
-    # `Networks.Network` is referenced ONLY by `Entry`'s
-    # `belongs_to :network` (struct/schema access — no `Grappa.Networks`
-    # function call anywhere in this boundary). A full `Grappa.Networks`
-    # dep would close the Cluster-2 cycle
-    # `ChannelDirectory → Networks → Session → ChannelDirectory` the moment
-    # `Session.Server` drives the refresh lifecycle (#84 —
-    # `replace_start/2` / `ingest/3` / `finalize/2`). Mirror of the
-    # `Networks.Network` dirty_xref in `Grappa.Scrollback`: schema-only
-    # access whose Boundary checks we lose on a use case Boundary couldn't
-    # gate anyway (struct field access goes through no function we'd want
-    # to police). Intentional.
-    dirty_xrefs: [Grappa.Networks.Network],
+    # No `Networks.Network` dep and no waiver: `Entry` reaches it only by
+    # `belongs_to` and a typespec, which the checker does not resolve (#1398).
     exports: [Entry, Wire]
 
   import Ecto.Query

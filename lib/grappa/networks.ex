@@ -61,6 +61,7 @@ defmodule Grappa.Networks do
       # context verbs and reaches its own schemas across a declared edge.
       Grappa.Networks.Credential,
       Grappa.Networks.FeaturedChannel,
+      Grappa.Networks.Network,
       Grappa.Networks.Server,
       Grappa.Session,
       Grappa.Subject,
@@ -76,7 +77,6 @@ defmodule Grappa.Networks do
       FeaturedChannels,
       FeaturedChannels.AdminWire,
       FeaturedChannels.Wire,
-      Network,
       NoServerError,
       Servers,
       Servers.AdminWire,

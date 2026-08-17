@@ -77,17 +77,15 @@ defmodule Grappa.ReadCursor do
       Grappa.PubSub,
       Grappa.Repo,
       Grappa.Scrollback,
+      # The three `join: n in Network` slug lookups are a real reference, and
+      # since #1398 made the schema its own leaf boundary this is a declared
+      # edge rather than the waiver it used to be. The cycle the waiver
+      # avoided — `Session → ReadCursor → Networks → Session` — cannot form
+      # through the leaf: it depends on `Grappa.IRC` and nothing else.
+      Grappa.Networks.Network,
       Grappa.Subject,
       Grappa.Visitors.Visitor
     ],
-    # `Networks.Network` is referenced ONLY as a schema — the
-    # `belongs_to :network` FK association + the `join: n in Network`
-    # slug lookup in `bulk_for_subject/1` (field access, no Networks
-    # context call). Demoted from a real dep to a struct-only dirty xref
-    # (#373) so `Session → ReadCursor → Networks → Session` doesn't close
-    # once Session depends on ReadCursor for `rename_dm_peer/4`; mirrors
-    # `Grappa.Scrollback` / `Grappa.QueryWindows`.
-    dirty_xrefs: [Grappa.Networks.Network],
     exports: [Cursor, Wire]
 
   import Ecto.Query

@@ -34,6 +34,7 @@ defmodule GrappaWeb do
         Grappa.Net.SourceAliasManager,
         Grappa.Networks,
         Grappa.Networks.Credential,
+        Grappa.Networks.Network,
         Grappa.Notify,
         Grappa.Operator,
         Grappa.OutboundV6Pool,

@@ -22,6 +22,20 @@ defmodule Grappa.Networks.Network do
   Primary key is an autoincrement INTEGER — networks are an internal
   identifier; the slug is the public handle.
   """
+
+  # Its own boundary, last of the four Networks schemas (#1398). This is the
+  # one the five `dirty_xrefs` waivers all named: a consumer that needed the
+  # struct had to either waive the check or take a dep on the whole
+  # `Grappa.Networks` context, and that second edge is what closed 31 cycles.
+  # With the schema owning itself, the waivers become either a declared edge
+  # to a leaf or nothing at all.
+  #
+  # `deps: [Grappa.IRC]` is the changeset's `Identifier.valid_network_slug?/1`.
+  # The three `has_many` siblings are association arguments, not references
+  # the checker resolves, so this leaf does not depend on them — which is why
+  # four separate leaves work and no namespace move was needed.
+  use Boundary, top_level?: true, deps: [Grappa.IRC]
+
   use Ecto.Schema
   import Ecto.Changeset
 

@@ -67,6 +67,7 @@ defmodule Grappa.Operator do
       Grappa.LiveIntrospection,
       Grappa.Networks,
       Grappa.Networks.Credential,
+      Grappa.Networks.Network,
       Grappa.Session,
       # #269 — the admin Visitors-tab Reconnect verb reuses the connect
       # core (admission → backoff-reset → spawn) through the shared

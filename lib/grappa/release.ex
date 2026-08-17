@@ -46,6 +46,7 @@ defmodule Grappa.Release do
       Grappa.Accounts,
       Grappa.Deploy.MigrationAudit,
       Grappa.Networks,
+      Grappa.Networks.Network,
       Grappa.Repo,
       Grappa.Themes,
       Grappa.Vault

@@ -146,6 +146,7 @@ defmodule Grappa.Bootstrap do
     deps: [
       Grappa.Networks,
       Grappa.Networks.Credential,
+      Grappa.Networks.Network,
       Grappa.OutboundV6Pool,
       Grappa.Session,
       Grappa.SpawnOrchestrator,

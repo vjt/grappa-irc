@@ -33,18 +33,20 @@ defmodule Grappa.Scrollback do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
-    # `Networks.Network` is referenced by `Scrollback.Message` (the
-    # `belongs_to :network` association) and `Scrollback.Wire` (the
-    # `%Network{slug: _}` pattern that A1+A26 made the wire-shape
-    # contract). Declaring that ref a dirty xref lets Cluster 2's
-    # Networks → Session cycle inversion land without a transitive cycle
-    # (which would otherwise close
-    # `Scrollback → Networks → Session → Scrollback`). The struct-only
-    # nature of the dep means we lose Boundary checks on a use case
-    # Boundary couldn't help with anyway (struct field access doesn't go
-    # through any function call we'd want to gate); the cost is intentional.
-    dirty_xrefs: [Grappa.Networks.Network],
+    deps: [
+      Grappa.Accounts,
+      Grappa.IRC,
+      # `Wire.to_json/1` matches `%Network{slug: slug}`, the wire-shape
+      # contract from A1+A26 — a real reference, declared since #1398 made
+      # the schema its own leaf. `Message`'s `belongs_to :network` is not
+      # what pays for this edge; the struct pattern is. The transitive cycle
+      # the waiver avoided, `Scrollback → Networks → Session → Scrollback`,
+      # cannot form through a leaf that depends only on `Grappa.IRC`.
+      Grappa.Networks.Network,
+      Grappa.Repo,
+      Grappa.Subject,
+      Grappa.Visitors.Visitor
+    ],
     exports: [Message, Wire]
 
   import Ecto.Query

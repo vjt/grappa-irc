@@ -80,11 +80,11 @@ defmodule Grappa.Notify do
   use Boundary,
     top_level?: true,
     deps: [Grappa.Accounts, Grappa.IRC, Grappa.PubSub, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
-    # Networks.Network is an FK-reference-only xref (belongs_to + the
-    # existence pre-check), NOT a full dep: a `deps:` edge would close
-    # the cycle Session -> Notify -> Networks -> LiveIntrospection ->
-    # Session (Session reads the notify list at the end-of-MOTD arm).
-    dirty_xrefs: [Grappa.Networks.Network],
+    # No `Networks.Network` dep and no waiver (#1398). `Entry`'s
+    # `belongs_to` is not a resolved reference; the FK pre-check at
+    # `check_exists/4` passes the module as a plain argument, which the
+    # compiler is left to judge — if that is a reference, this line becomes a
+    # declared dep on the leaf, which no longer closes a cycle either way.
     exports: [Entry, Wire]
 
   import Ecto.Query
