@@ -40,9 +40,11 @@ defmodule Grappa.ReadCursor do
 
   Mirrors `Grappa.Scrollback.Message`'s convention. The subject
   discriminated union (`{:user, uuid}` | `{:visitor, uuid}`) is the
-  same tagged-tuple shape Scrollback's `fetch/6` accepts. Same predicate
-  helpers (`subject_filter/1`, `subject_attrs/1`) keep the per-subject
-  iso boundary uniform across contexts.
+  same tagged-tuple shape Scrollback's `fetch/6` accepts, and since
+  #1392 it is the same CODE: the private `subject_filter/2` and
+  `subject_attrs/1` this module used to carry were synonyms of
+  `Grappa.Subject.subject_where/2` and `Grappa.Subject.put_subject_id/2`,
+  and now call them.
 
   ## Boundary
 
@@ -58,6 +60,9 @@ defmodule Grappa.ReadCursor do
       `messages` table by id.
     * `Grappa.PubSub` — `Topic.channel/3` for the `read_cursor_set`
       cross-device broadcast.
+    * `Grappa.Subject` — the subject discriminator itself: `t/0`,
+      `subject_where/2` for every read, `put_subject_id/2` for the
+      insert (#1392).
 
   The `Cursor` schema module is internal; callers receive `%Cursor{}`
   structs by type but MUST NOT alias or import the schema module
@@ -66,7 +71,15 @@ defmodule Grappa.ReadCursor do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.IRC, Grappa.PubSub, Grappa.Repo, Grappa.Scrollback, Grappa.Visitors.Visitor],
+    deps: [
+      Grappa.Accounts,
+      Grappa.IRC,
+      Grappa.PubSub,
+      Grappa.Repo,
+      Grappa.Scrollback,
+      Grappa.Subject,
+      Grappa.Visitors.Visitor
+    ],
     # `Networks.Network` is referenced ONLY as a schema — the
     # `belongs_to :network` FK association + the `join: n in Network`
     # slug lookup in `bulk_for_subject/1` (field access, no Networks
@@ -85,6 +98,7 @@ defmodule Grappa.ReadCursor do
   alias Grappa.ReadCursor.{Cursor, Wire}
   alias Grappa.Repo
   alias Grappa.Scrollback.Message
+  alias Grappa.Subject
 
   # Identifier.nick_fold/1 is a query macro (ASCII fold fragment) used by
   # rename_dm_peer/4 to match a DM cursor by the fold of the peer nick.
@@ -99,7 +113,7 @@ defmodule Grappa.ReadCursor do
   tagged-tuple shape across both contexts so callers don't need to
   re-encode the principal at every boundary.
   """
-  @type subject :: {:user, Ecto.UUID.t()} | {:visitor, Ecto.UUID.t()}
+  @type subject :: Subject.t()
 
   @typedoc """
   Bulk envelope shape: nested `%{network_slug => %{channel => message_id}}`.
@@ -131,7 +145,7 @@ defmodule Grappa.ReadCursor do
     channel = Identifier.canonical_target(channel)
 
     Cursor
-    |> subject_filter(subject)
+    |> Subject.subject_where(subject)
     |> where([c], c.network_id == ^network_id and c.channel == ^channel)
     |> Repo.one()
   end
@@ -209,7 +223,7 @@ defmodule Grappa.ReadCursor do
       )
 
     base
-    |> subject_filter(subject)
+    |> Subject.subject_where(subject)
     |> Repo.all()
     |> Enum.reduce(%{}, fn {slug, channel, id}, acc ->
       Map.update(acc, slug, %{channel => id}, &Map.put(&1, channel, id))
@@ -346,7 +360,7 @@ defmodule Grappa.ReadCursor do
       )
 
     query
-    |> subject_filter(subject)
+    |> Subject.subject_where(subject)
     |> Repo.all()
     |> Enum.reduce(%{}, fn {slug, channel, bucket, n}, acc ->
       key = if bucket == 1, do: :messages, else: :events
@@ -408,12 +422,12 @@ defmodule Grappa.ReadCursor do
       )
 
     # Scope the DRIVING `read_cursors` to the subject via the shared
-    # `subject_filter/2` (binding 0 == `rc`), identical to
+    # `Subject.subject_where/2` (binding 0 == `rc`), identical to
     # `bulk_unread_split/3` + `bulk_for_subject/1` — one way to express
     # "these cursors are mine". `subject_pair/1` is still needed for the
     # `on:`-clause match on `messages` (a join-side filter belongs in `on:`,
     # not `where`, so the JOIN keeps its driving row).
-    scoped = subject_filter(ranked, subject)
+    scoped = Subject.subject_where(ranked, subject)
 
     capped =
       from(r in subquery(scoped),
@@ -662,7 +676,7 @@ defmodule Grappa.ReadCursor do
     else
       old_query =
         Cursor
-        |> subject_filter(subject)
+        |> Subject.subject_where(subject)
         |> where(
           [c],
           c.network_id == ^network_id and Identifier.nick_fold(c.channel) == ^folded_old
@@ -701,7 +715,7 @@ defmodule Grappa.ReadCursor do
   @spec cursor_folds_to?(subject(), integer(), String.t()) :: boolean()
   defp cursor_folds_to?(subject, network_id, folded) do
     Cursor
-    |> subject_filter(subject)
+    |> Subject.subject_where(subject)
     |> where([c], c.network_id == ^network_id and Identifier.nick_fold(c.channel) == ^folded)
     |> Repo.exists?()
   end
@@ -776,11 +790,14 @@ defmodule Grappa.ReadCursor do
 
   defp upsert_cursor(nil, subject, network_id, channel, message_id) do
     attrs =
-      Map.merge(subject_attrs(subject), %{
-        network_id: network_id,
-        channel: channel,
-        last_read_message_id: message_id
-      })
+      Subject.put_subject_id(
+        %{
+          network_id: network_id,
+          channel: channel,
+          last_read_message_id: message_id
+        },
+        subject
+      )
 
     %Cursor{}
     |> Cursor.changeset(attrs)
@@ -808,27 +825,10 @@ defmodule Grappa.ReadCursor do
     # narrowing is a read-time concern (scrollback display), not a
     # write-time concern (cursor validity).
     Message
-    |> subject_filter(subject)
+    |> Subject.subject_where(subject)
     |> where([m], m.id == ^message_id and m.network_id == ^network_id)
     |> Grappa.Scrollback.channel_or_dm_where(channel, nil)
     |> Repo.exists?()
   end
 
-  # Mirrors `Grappa.Scrollback.subject_where/2` — same tagged-tuple
-  # discriminator, same `m.user_id` / `m.visitor_id` partition. Reused
-  # across `Cursor` queries (binding name `c`) and `Message` existence
-  # queries (binding name `m`); Ecto's binding-by-position lookup
-  # works on both since each query has a single from-binding.
-  @spec subject_filter(Ecto.Queryable.t(), subject()) :: Ecto.Query.t()
-  defp subject_filter(queryable, {:user, user_id}) when is_binary(user_id) do
-    where(queryable, [row], row.user_id == ^user_id)
-  end
-
-  defp subject_filter(queryable, {:visitor, visitor_id}) when is_binary(visitor_id) do
-    where(queryable, [row], row.visitor_id == ^visitor_id)
-  end
-
-  @spec subject_attrs(subject()) :: %{atom() => Ecto.UUID.t()}
-  defp subject_attrs({:user, user_id}), do: %{user_id: user_id}
-  defp subject_attrs({:visitor, visitor_id}), do: %{visitor_id: visitor_id}
 end

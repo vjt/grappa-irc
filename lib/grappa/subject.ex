@@ -73,18 +73,27 @@ defmodule Grappa.Subject do
     do: Map.put(attrs, :visitor_id, vid)
 
   @doc """
-  Adds a `WHERE user_id = ? AND visitor_id IS NULL`-shaped clause
-  (or its visitor mirror) to `queryable`.
+  Adds a `WHERE user_id = ?` clause (or its visitor mirror) to
+  `queryable`.
 
-  Mirror of the per-context private `subject_where/2` helpers in
-  `Grappa.Scrollback` and `Grappa.ReadCursor` — promoted to the
-  shared boundary so new contexts (V1: query_windows, push,
-  user_settings) don't each grow their own copy.
+  Only the one equality — NOT the `AND visitor_id IS NULL` this
+  docstring used to promise, which no spelling of the helper has ever
+  emitted. The second conjunct is redundant under the DB-level XOR
+  CHECK, so the omission is correct; the sentence was not, and it is
+  the sentence a reader reaches for when reasoning about subject
+  isolation (#1392).
 
-  Uses positional binding `[row]` — the queryable must have a
-  single from-binding (the common case for context-internal
-  filters). Multi-join callers should write the where-clause
-  directly.
+  The only spelling of this predicate. `Grappa.Scrollback` and
+  `Grappa.ReadCursor` kept private synonyms until #1392 folded them
+  here, which is what the V1 promotion had claimed since it landed.
+
+  Uses positional binding `[row]`, so the precondition is that
+  **binding 0 carries the subject FK** — not that the query has a
+  single from-binding, as this docstring used to say.
+  `ReadCursor.bulk_for_subject/1` joins `networks` and has always been
+  a correct caller: the join is at position 1, the cursor at 0. A
+  caller whose subject-scoped table is NOT the from-binding must write
+  the where-clause directly.
   """
   @spec subject_where(Ecto.Queryable.t(), t()) :: Ecto.Query.t()
   def subject_where(queryable, {:user, user_id}) when is_binary(user_id),
@@ -92,6 +101,26 @@ defmodule Grappa.Subject do
 
   def subject_where(queryable, {:visitor, visitor_id}) when is_binary(visitor_id),
     do: where(queryable, [row], row.visitor_id == ^visitor_id)
+
+  # B5.4 L-pers-2, promoted from `Grappa.Scrollback` by #1392: explicit
+  # fall-through replaces an implicit FunctionClauseError (Erlang-level
+  # message hides both the offending value and the function name).
+  # ArgumentError carries the inspected subject so caller bugs (typo
+  # `:users` for `:user`, `nil` from a stale ref, leftover atom from a
+  # refactor) surface with actionable diagnostics.
+  #
+  # This clause is why the fold is not a deletion. Retiring the two
+  # private spellings without it would have stripped the diagnostic
+  # from Scrollback's 12 call sites; carrying it along instead moves
+  # the other 26 UP to it, which is a behaviour change in the fail-loud
+  # direction and is named as one.
+  #
+  # `put_subject_id/2` deliberately keeps the bare FunctionClauseError:
+  # giving it this clause too is a second behaviour change across its
+  # own call sites that nothing has asked for, and a hard failure on a
+  # malformed shape is already the right answer.
+  def subject_where(_, other),
+    do: raise(ArgumentError, "unknown subject: #{inspect(other)}")
 
   @doc """
   Resolves the bare-id subject from `Plug.Conn.assigns`.

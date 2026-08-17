@@ -117,7 +117,7 @@ defmodule Grappa.Session do
   `(visitor, network_id)` for the same `network_id` and even the
   same UUID never collide.
   """
-  @type subject :: {:user, Ecto.UUID.t()} | {:visitor, Ecto.UUID.t()}
+  @type subject :: Grappa.Subject.t()
 
   @typedoc """
   #1088 — the connection an informational reply is addressed to: the

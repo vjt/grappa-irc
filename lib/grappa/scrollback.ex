@@ -33,7 +33,7 @@ defmodule Grappa.Scrollback do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Repo, Grappa.Visitors.Visitor],
+    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
     # `Networks.Network` is referenced by `Scrollback.Message` (the
     # `belongs_to :network` association) and `Scrollback.Wire` (the
     # `%Network{slug: _}` pattern that A1+A26 made the wire-shape
@@ -53,6 +53,7 @@ defmodule Grappa.Scrollback do
   alias Grappa.Repo
   alias Grappa.Repo.BusyRetry
   alias Grappa.Scrollback.{Message, Meta, Telemetry}
+  alias Grappa.Subject
 
   # Identifier.nick_fold/1 is a query macro (ASCII fold fragment, #121/#525).
   require Identifier
@@ -334,7 +335,7 @@ defmodule Grappa.Scrollback do
   defp nick_shaped?("$server"), do: false
   defp nick_shaped?(name) when is_binary(name), do: target_kind(name) == :query
 
-  @type subject :: {:user, Ecto.UUID.t()} | {:visitor, Ecto.UUID.t()}
+  @type subject :: Subject.t()
 
   @doc """
   Fetches up to `limit` messages for `(subject, network_id, channel)`,
@@ -421,7 +422,7 @@ defmodule Grappa.Scrollback do
     capped = min(limit, @max_limit)
 
     Message
-    |> subject_where(subject)
+    |> Subject.subject_where(subject)
     |> where([m], m.network_id == ^network_id)
     |> channel_or_dm_where(channel, own_nick)
     |> maybe_exclude_presence(hide_presence)
@@ -499,7 +500,7 @@ defmodule Grappa.Scrollback do
     capped = min(limit, @max_limit)
 
     Message
-    |> subject_where(subject)
+    |> Subject.subject_where(subject)
     |> where([m], m.network_id == ^network_id)
     |> channel_or_dm_where(channel, own_nick)
     |> maybe_exclude_presence(hide_presence)
@@ -565,7 +566,7 @@ defmodule Grappa.Scrollback do
       when is_integer(network_id) and is_integer(after_id) and
              (is_binary(own_nick) or is_nil(own_nick)) and is_boolean(hide_presence) do
     Message
-    |> subject_where(subject)
+    |> Subject.subject_where(subject)
     |> where([m], m.network_id == ^network_id)
     |> channel_or_dm_where(channel, own_nick)
     |> maybe_exclude_presence(hide_presence)
@@ -643,7 +644,7 @@ defmodule Grappa.Scrollback do
 
     query =
       Message
-      |> subject_where(subject)
+      |> Subject.subject_where(subject)
       |> where([m], m.network_id == ^network_id)
       |> channel_or_dm_where(channel, own_nick)
       |> maybe_exclude_presence(hide_presence)
@@ -783,7 +784,7 @@ defmodule Grappa.Scrollback do
              (is_binary(own_nick) or is_nil(own_nick)) and
              is_integer(limit) and limit > 0 do
     Message
-    |> subject_where(subject)
+    |> Subject.subject_where(subject)
     |> where([m], m.network_id == ^network_id)
     |> channel_or_dm_where(channel, own_nick)
     |> where([m], m.id > ^after_id)
@@ -851,7 +852,7 @@ defmodule Grappa.Scrollback do
 
     base =
       Message
-      |> subject_where(subject)
+      |> Subject.subject_where(subject)
       |> where([m], m.network_id == ^network_id)
       |> channel_or_dm_where(channel, own_nick)
       |> maybe_exclude_presence(hide_presence)
@@ -939,7 +940,7 @@ defmodule Grappa.Scrollback do
     folded_active = MapSet.new(active_keyset, &Identifier.canonical_target/1)
 
     Message
-    |> subject_where(subject)
+    |> Subject.subject_where(subject)
     |> where([m], m.network_id == ^network_id)
     |> group_by([m], Identifier.nick_fold(fragment("COALESCE(?, ?)", m.dm_with, m.channel)))
     |> select([m], %{
@@ -1132,22 +1133,6 @@ defmodule Grappa.Scrollback do
     )
   end
 
-  defp subject_where(query, {:user, user_id}) when is_binary(user_id),
-    do: where(query, [m], m.user_id == ^user_id)
-
-  defp subject_where(query, {:visitor, visitor_id}) when is_binary(visitor_id),
-    do: where(query, [m], m.visitor_id == ^visitor_id)
-
-  # B5.4 L-pers-2: explicit fall-through replaces an implicit
-  # FunctionClauseError (Erlang-level message hides both the
-  # offending value and the function name). ArgumentError carries
-  # the inspected subject so caller bugs (typo `:users` for `:user`,
-  # `nil` from a stale ref, leftover atom from a refactor) surface
-  # with actionable diagnostics. Same fail-loud behaviour, better
-  # post-mortem.
-  defp subject_where(_, other),
-    do: raise(ArgumentError, "unknown subject: #{inspect(other)}")
-
   defp maybe_before(query, nil), do: query
 
   # Cursor key is monotonic id post-CP29 R-2 — was server_time, but
@@ -1225,7 +1210,7 @@ defmodule Grappa.Scrollback do
     case BusyRetry.run(fn ->
            {:ok,
             Message
-            |> subject_where(subject)
+            |> Subject.subject_where(subject)
             |> where([m], m.network_id == ^network_id)
             |> where_dm_peer(folded_peer)
             |> Repo.delete_all()}
@@ -1278,7 +1263,7 @@ defmodule Grappa.Scrollback do
     else
       base =
         Message
-        |> subject_where(subject)
+        |> Subject.subject_where(subject)
         |> where([m], m.network_id == ^network_id)
 
       # DISTINCT migrated-row count via the shared DM-peer predicate — the
@@ -1400,7 +1385,7 @@ defmodule Grappa.Scrollback do
     else
       {count, _} =
         Message
-        |> subject_where(subject)
+        |> Subject.subject_where(subject)
         |> where([m], m.network_id == ^network_id)
         |> where(
           [m],
@@ -1510,7 +1495,7 @@ defmodule Grappa.Scrollback do
     else
       {count, _} =
         Message
-        |> subject_where(subject)
+        |> Subject.subject_where(subject)
         |> where([m], m.network_id == ^network_id)
         |> where(
           [m],
@@ -1565,7 +1550,7 @@ defmodule Grappa.Scrollback do
     case BusyRetry.run(fn ->
            {:ok,
             Message
-            |> subject_where(subject)
+            |> Subject.subject_where(subject)
             |> where([m], m.network_id == ^network_id)
             |> where([m], m.channel == ^canonical)
             |> Repo.delete_all()}
