@@ -13,9 +13,18 @@ import { validate } from "../lib/wireValidate";
 // list. For each arm it synthesises a valid payload from the GENERATED
 // schema, mutates it field by field, and records what the hand narrower and
 // the schema each do with it. Arms where the two agree are a proved dead end
-// — nothing to gain by swapping them. Arms where the hand narrower ACCEPTS
-// what the schema rejects are permissiveness holes, and they are the only
-// place a migration buys safety rather than line count.
+// — nothing to gain by swapping them.
+//
+// A disagreement is measured in BOTH directions, because they cost opposite
+// things and one alone cannot settle whether an arm is worth migrating:
+//
+//   * the hand narrower ACCEPTS what the schema rejects — a permissiveness
+//     hole, the only place a migration buys safety rather than line count;
+//   * the schema ACCEPTS what the hand narrower rejects — strictness the
+//     migration would silently LOSE, since the typespec is the looser of the
+//     two and swapping in the generated check drops the hand-written guard.
+//
+// Measuring one direction only would report an asymmetry as a parity.
 //
 // Arms are matched to schemas by their `kind` LITERAL, not by a camelised
 // name: the name heuristic missed three arms whose schema lives under a
@@ -97,6 +106,7 @@ type ArmReport = {
   schema: string;
   fields: number;
   handAcceptsSchemaRejects: string;
+  schemaAcceptsHandRejects: string;
   schemaRejectsValid: boolean;
 };
 
@@ -106,15 +116,17 @@ function censusArm(kind: string, schemaName: string, node: WireNode): ArmReport 
   const fields = Object.keys(valid).filter((f) => f !== "kind");
 
   const holes: string[] = [];
+  const losses: string[] = [];
   for (const f of fields) {
     for (const [label, mutated] of [
       ["drop", without(valid, f)],
       ["null", { ...valid, [f]: null }],
       ["wrong-type", { ...valid, [f]: wrongType(valid[f]) }],
     ] as const) {
-      if (verdict(hand, mutated) === "accept" && verdict(generated, mutated) === "reject") {
-        holes.push(`${f}/${label}`);
-      }
+      const byHand = verdict(hand, mutated);
+      const bySchema = verdict(generated, mutated);
+      if (byHand === "accept" && bySchema === "reject") holes.push(`${f}/${label}`);
+      if (bySchema === "accept" && byHand === "reject") losses.push(`${f}/${label}`);
     }
   }
 
@@ -123,6 +135,7 @@ function censusArm(kind: string, schemaName: string, node: WireNode): ArmReport 
     schema: schemaName,
     fields: fields.length,
     handAcceptsSchemaRejects: holes.length === 0 ? "-" : holes.join(", "),
+    schemaAcceptsHandRejects: losses.length === 0 ? "-" : losses.join(", "),
     // The oracle's own sanity check: a schema that rejects its OWN sample
     // means the sampler and the schema disagree, and every verdict on that
     // arm is noise rather than a measurement.
@@ -160,6 +173,17 @@ const weakened: Narrower = (raw) => {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
   return typeof r.network === "string" ? { kind: "away_confirmed", ...r } : null;
+};
+
+// The control for the OTHER direction, which needs its own mutant: an arm
+// agreeing in one direction says nothing about the other. `whowas_bundle`'s
+// `user` is `string | null` in the typespec, so the schema accepts a null the
+// hand narrower here refuses ON PURPOSE — and `user/null` has to show up as a
+// loss.
+const strengthened: Narrower = (raw) => {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  return typeof r.user === "string" ? { kind: "whowas_bundle", ...r } : null;
 };
 
 // The 42 `case` labels of `narrowUserEvent`, transcribed from the switch so
@@ -228,6 +252,24 @@ describe("#1393 — user-topic boundary census", () => {
     `);
   });
 
+  it("detects a strengthened boundary (control for the second direction)", () => {
+    const node = candidatesFor("whowas_bundle")[0].node;
+    const valid = sample(node) as Record<string, unknown>;
+    const generated: Narrower = (raw) => validate(node, raw);
+    const losses = Object.keys(valid)
+      .filter((f) => f !== "kind")
+      .filter(
+        (f) =>
+          verdict(generated, { ...valid, [f]: null }) === "accept" &&
+          verdict(strengthened, { ...valid, [f]: null }) === "reject",
+      );
+    expect(losses).toMatchInlineSnapshot(`
+      [
+        "user",
+      ]
+    `);
+  });
+
   // Reconciliation. The census walks SCHEMAS (indexed by kind literal), while
   // the thing under test is the hand `switch` in `userTopic.ts`. Those two
   // sets are not the same by construction, so the difference is reported
@@ -257,23 +299,33 @@ describe("#1393 — user-topic boundary census", () => {
     const reports = handArms.flatMap((k) =>
       candidatesFor(k).map(({ name, node }) => censusArm(k, name, node)),
     );
-    const holes = reports.filter((r) => r.handAcceptsSchemaRejects !== "-");
+    const divergent = reports.filter(
+      (r) => r.handAcceptsSchemaRejects !== "-" || r.schemaAcceptsHandRejects !== "-",
+    );
+    // Counted over distinct ARMS, not over reports: an ambiguous `kind`
+    // literal is censused once per candidate schema, so `reports.length`
+    // overcounts the boundary by however many duplicates the wire happens to
+    // carry. The parity figure the verdict rests on is an arm count.
+    const divergentArms = new Set(divergent.map((r) => r.arm));
     expect({
       armsWithSchema: handArms.length,
       armsCensused: reports.length,
+      armsAtParity: handArms.length - divergentArms.size,
       brokenOracles: reports.filter((r) => r.schemaRejectsValid).map((r) => r.arm),
-      holes,
+      divergent,
     }).toMatchInlineSnapshot(`
       {
+        "armsAtParity": 34,
         "armsCensused": 43,
         "armsWithSchema": 42,
         "brokenOracles": [],
-        "holes": [
+        "divergent": [
           {
             "arm": "bundle_hash",
             "fields": 2,
             "handAcceptsSchemaRejects": "version/null, version/wrong-type",
             "schema": "S_CicWireBundleHashPayload",
+            "schemaAcceptsHandRejects": "-",
             "schemaRejectsValid": false,
           },
           {
@@ -281,6 +333,7 @@ describe("#1393 — user-topic boundary census", () => {
             "fields": 2,
             "handAcceptsSchemaRejects": "http_host_aliases/drop, http_host_aliases/null, http_host_aliases/wrong-type",
             "schema": "S_ServerSettingsWireChangedPayload",
+            "schemaAcceptsHandRejects": "-",
             "schemaRejectsValid": false,
           },
           {
@@ -288,6 +341,7 @@ describe("#1393 — user-topic boundary census", () => {
             "fields": 4,
             "handAcceptsSchemaRejects": "mode/drop, mode/null, mode/wrong-type",
             "schema": "S_SessionWireBanlistBundlePayload",
+            "schemaAcceptsHandRejects": "-",
             "schemaRejectsValid": false,
           },
           {
@@ -295,6 +349,7 @@ describe("#1393 — user-topic boundary census", () => {
             "fields": 15,
             "handAcceptsSchemaRejects": "list_modes_queryable/drop, list_modes_queryable/null, list_modes_queryable/wrong-type, prefix_order/drop, prefix_order/null, prefix_order/wrong-type, chantypes/drop, chantypes/null, chantypes/wrong-type, casemapping/drop, casemapping/null, casemapping/wrong-type, maxlist/drop, maxlist/null, maxlist/wrong-type, nicklen/drop, nicklen/wrong-type, channellen/drop, channellen/wrong-type, topiclen/drop, topiclen/wrong-type, frame_budget_base/drop, frame_budget_base/null, frame_budget_base/wrong-type",
             "schema": "S_SessionWireIsupportChangedPayload",
+            "schemaAcceptsHandRejects": "-",
             "schemaRejectsValid": false,
           },
           {
@@ -302,6 +357,7 @@ describe("#1393 — user-topic boundary census", () => {
             "fields": 3,
             "handAcceptsSchemaRejects": "mask/drop",
             "schema": "S_SessionWireLinksBundlePayload",
+            "schemaAcceptsHandRejects": "-",
             "schemaRejectsValid": false,
           },
           {
@@ -309,6 +365,7 @@ describe("#1393 — user-topic boundary census", () => {
             "fields": 13,
             "handAcceptsSchemaRejects": "total_users/drop, total_users/wrong-type, invisible/drop, invisible/wrong-type, servers/drop, servers/wrong-type, operators/drop, operators/wrong-type, unknown_connections/drop, unknown_connections/wrong-type, channels_formed/drop, channels_formed/wrong-type, local_clients/drop, local_clients/wrong-type, local_servers/drop, local_servers/wrong-type, current_local/drop, current_local/wrong-type, max_local/drop, max_local/wrong-type, current_global/drop, current_global/wrong-type, max_global/drop, max_global/wrong-type",
             "schema": "S_SessionWireLusersBundlePayload",
+            "schemaAcceptsHandRejects": "-",
             "schemaRejectsValid": false,
           },
           {
@@ -316,6 +373,7 @@ describe("#1393 — user-topic boundary census", () => {
             "fields": 30,
             "handAcceptsSchemaRejects": "source/drop, source/null, source/wrong-type, extra_lines/drop",
             "schema": "S_SessionWireWhoisBundlePayload",
+            "schemaAcceptsHandRejects": "-",
             "schemaRejectsValid": false,
           },
           {
@@ -323,6 +381,7 @@ describe("#1393 — user-topic boundary census", () => {
             "fields": 4,
             "handAcceptsSchemaRejects": "inviter/drop, inviter/null, inviter/wrong-type",
             "schema": "S_SessionWireWindowInvitedPayload",
+            "schemaAcceptsHandRejects": "-",
             "schemaRejectsValid": false,
           },
         ],
