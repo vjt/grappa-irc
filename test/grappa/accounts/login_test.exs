@@ -33,7 +33,7 @@ defmodule Grappa.Accounts.LoginTest do
     enrollment = TOTP.new_enrollment(user, "Grappa test")
     previous_step = System.system_time(:second) - 30
     {:ok, code} = TOTP.code_at(enrollment.secret, previous_step)
-    {:ok, _recovery_codes} = TOTP.confirm_enrollment(user, enrollment.secret, code, previous_step)
+    {:ok, _} = TOTP.confirm_enrollment(user, enrollment.secret, code, previous_step)
     user
   end
 
@@ -46,7 +46,7 @@ defmodule Grappa.Accounts.LoginTest do
     end
 
     test "a wrong password is refused as :invalid_credentials" do
-      {user, _password} = user_fixture_with_password()
+      {user, _} = user_fixture_with_password()
 
       assert {:error, :invalid_credentials} =
                Login.authenticate(%{name: user.name, password: "not-the-password"})
@@ -75,7 +75,7 @@ defmodule Grappa.Accounts.LoginTest do
   describe "authenticate/1 — which door the account still has to walk through" do
     test "an account in passkey :second_factor mode is sent to the passkey door" do
       {user, password} = user_fixture_with_password()
-      user = set_passkey_mode(user, :second_factor)
+      set_passkey_mode(user, :second_factor)
 
       assert {:second_factor, :passkey, %User{id: id}} =
                Login.authenticate(%{name: user.name, password: password})
@@ -88,15 +88,15 @@ defmodule Grappa.Accounts.LoginTest do
       # same 401, but the throttle must NOT be charged: the credential was
       # correct, so this is not a guess.
       {user, password} = user_fixture_with_password()
-      user = set_passkey_mode(user, :passwordless)
+      set_passkey_mode(user, :passwordless)
 
       assert {:error, :passwordless} =
                Login.authenticate(%{name: user.name, password: password})
     end
 
     test "a :passwordless account with a WRONG password is a guess, not a closed door" do
-      {user, _password} = user_fixture_with_password()
-      user = set_passkey_mode(user, :passwordless)
+      {user, _} = user_fixture_with_password()
+      set_passkey_mode(user, :passwordless)
 
       assert {:error, :invalid_credentials} =
                Login.authenticate(%{name: user.name, password: "not-the-password"})
@@ -104,7 +104,7 @@ defmodule Grappa.Accounts.LoginTest do
 
     test "an account with TOTP armed is sent to the code door" do
       {user, password} = user_fixture_with_password()
-      user = arm_totp(user)
+      arm_totp(user)
 
       assert {:second_factor, :totp, %User{id: id}} =
                Login.authenticate(%{name: user.name, password: password})
@@ -117,10 +117,9 @@ defmodule Grappa.Accounts.LoginTest do
       # account holding both is offered the passkey.
       {user, password} = user_fixture_with_password()
 
-      user =
-        user
-        |> arm_totp()
-        |> set_passkey_mode(:second_factor)
+      user
+      |> arm_totp()
+      |> set_passkey_mode(:second_factor)
 
       assert {:second_factor, :passkey, _} =
                Login.authenticate(%{name: user.name, password: password})
@@ -130,7 +129,7 @@ defmodule Grappa.Accounts.LoginTest do
       # The third arm of the closed `passkey_mode` set, spelled so the exit is
       # exercised rather than inherited from a catch-all.
       {user, password} = user_fixture_with_password()
-      user = set_passkey_mode(user, :disabled)
+      set_passkey_mode(user, :disabled)
 
       assert {:ok, %User{}} = Login.authenticate(%{name: user.name, password: password})
     end
