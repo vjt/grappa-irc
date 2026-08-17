@@ -45717,3 +45717,64 @@ test; that witness had to withhold the 001 welcome, because the shared
 fixture's welcome runs `run_perform_and_identify/1`, whose own capture site
 re-stages the same secret and would have left the witness green with the
 sniff removed from the door.
+<!-- entry #1420 -->
+
+---
+
+## 2026-08-17 — #1420: the write-lock observer, and why every earlier DB signal measured the victim
+
+Six CI runs stalled for exactly 30.1 s each — `busy_timeout: 30_000`, never
+12 s, never 47 s — and the census could name the victims every time and the
+cause not once. That asymmetry is not bad luck, it is a property of the
+instruments we had.
+
+**Every DB signal grappa emitted before this was completion-driven.** Ecto's
+`[:grappa, :repo, :query]` fires when a query FINISHES, so a process that
+opens `BEGIN IMMEDIATE` and then sits still emits nothing at all while it
+sits; the only rows reaching the log are the 30-second `begin`s and
+`SELECT`s of everybody queued behind it. `BusyRetry`'s `:on_contention` hook
+lives inside a `rescue`, so by construction it counts whoever caught the
+exception. The #1429 census greps container logs after the fact and sees the
+silence, not its author. Three instruments, one blind spot, and it is the
+same blind spot every time: **the holder is the one process in the system
+that is not finishing anything, and all we measured were finishes.**
+
+`Grappa.Repo.LockWatch` reads at the seam instead of at the completion.
+`Grappa.Repo.immediate_transaction/1` is the only producer of `BEGIN
+IMMEDIATE` in the tree, and ecto_sqlite3 executes that statement BEFORE
+invoking the transaction fun — so the fun's first statement is an exact,
+free "the lock is mine now" edge. Before it, the caller is a WAITER; after
+it, the HOLDER. The watchdog reports only a holder past a threshold WITH a
+queue behind it, and samples that holder's live `current_stacktrace` — the
+datum the issue records as missing ("separating the two needs a running
+stack"). A waiter is captured the same way whether it is blocked on SQLite's
+`busy_timeout` or queued on a DBConnection checkout, so the two candidate
+topologies stay distinguishable by their stacks rather than by argument.
+
+Decisions worth keeping:
+
+- **No caller label is stored, and `immediate_transaction/1` grew no label
+  argument.** When the watchdog fires, the holder is still inside the
+  transaction, so its stack already carries every caller frame. The identity
+  is derived at report time and the write path pays nothing for it.
+- **The seam self-disables when its ETS table is absent.** The watchdog owns
+  that table, so a restart briefly removes it — and without the check,
+  `acquired` would raise INSIDE a caller's transaction. An observer that
+  aborts the write it is watching is worse than no observer.
+- **Dead rows are reaped on the scan, never on the write path.** A process
+  killed mid-transaction never releases; an unreaped row would have the
+  instrument accusing a corpse forever while the real contention went
+  unnamed.
+- **No new noun.** Episodes fold into `Grappa.DbLatency`'s bounded ring, so
+  `GET /admin/db_latency` and `bin/grappa db-latency` inherit them with no
+  new controller and no new verb. The `Logger.warning` is the door that
+  matters for CI, where the evidence is container logs.
+- **Off in test.** Under the Sandbox's `pool_size: 1` every write
+  transaction is a holder; the observer's own tests arm it explicitly and
+  disarm on exit.
+
+What this deliberately does NOT do: it does not choose between the two
+causes #1420 names — a `Logger` call inside the transaction, or a
+pool-checkout deadlock. It turns that choice from a guess into a reading.
+Narrowing `BEGIN IMMEDIATE` is a separate decision about what we accept
+losing, and it is not this change's to make.

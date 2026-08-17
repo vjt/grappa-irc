@@ -1018,7 +1018,32 @@ defmodule Grappa.Operator do
       )
     )
 
+    # #1420 — the holder side. Printed LAST and one block per episode rather
+    # than as a table row: the payload that answers "why did the holder
+    # pause" is a stacktrace, and a stacktrace does not fit a column.
+    IO.puts("# lock stalls (write-lock holder vs waiters) — newest first")
+
+    Enum.each(snapshot.lock_stalls, fn stall ->
+      IO.puts(
+        "#{stall.phase}\tholder=#{stall.holder_pid}\theld_ms=#{stall.held_ms}" <>
+          "\twaiters=#{stall.waiter_count}"
+      )
+
+      Enum.each(lock_stall_detail_lines(stall), &IO.puts/1)
+    end)
+
     :ok
+  end
+
+  # A `:resolved` row carries no samples (the episode is over and there is
+  # nothing left to inspect), so it renders as its header line alone.
+  @spec lock_stall_detail_lines(DbLatency.lock_stall_row()) :: [String.t()]
+  defp lock_stall_detail_lines(%{holder: nil}), do: []
+
+  defp lock_stall_detail_lines(%{holder: holder, waiters: waiters}) do
+    ["  holder at #{holder.current_function} (#{holder.status}, mailbox #{holder.message_queue_len})"] ++
+      Enum.map(holder.stacktrace, &"    #{&1}") ++
+      Enum.map(waiters, &"  waiter #{&1.pid} waiting #{&1.elapsed_ms}ms at #{&1.current_function}")
   end
 
   @doc """

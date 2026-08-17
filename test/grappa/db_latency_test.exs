@@ -22,7 +22,9 @@ defmodule Grappa.DbLatencyTest do
     [:grappa, :repo, :query],
     [:grappa, :scrollback, :persist, :stop],
     [:grappa, :session, :send_privmsg, :stop],
-    [:grappa, :scrollback, :persist, :contention]
+    [:grappa, :scrollback, :persist, :contention],
+    [:grappa, :repo, :lock_stall, :detected],
+    [:grappa, :repo, :lock_stall, :resolved]
   ]
 
   # Native-unit duration for a whole number of milliseconds, via the
@@ -46,6 +48,7 @@ defmodule Grappa.DbLatencyTest do
       assert snapshot.send_privmsg.n == 0
       assert snapshot.persist.n == 0
       assert snapshot.contention.n == 0
+      assert snapshot.lock_stalls == []
     end
   end
 
@@ -185,6 +188,54 @@ defmodule Grappa.DbLatencyTest do
       assert contention.busy_locked == 1
       assert contention.queue_timeout == 1
       assert contention.dropped == 1
+    end
+
+    test "[:grappa, :repo, :lock_stall, :*] folds both brackets of an episode, newest first" do
+      :telemetry.execute(
+        [:grappa, :repo, :lock_stall, :detected],
+        %{held_ms: 2_400, waiter_count: 2},
+        %{
+          holder: %{pid: "#PID<0.111.0>", stacktrace: ["Foo.bar/1"]},
+          waiters: [%{pid: "#PID<0.222.0>"}, %{pid: "#PID<0.333.0>"}]
+        }
+      )
+
+      :telemetry.execute(
+        [:grappa, :repo, :lock_stall, :resolved],
+        %{held_ms: 30_120},
+        %{holder_pid: "#PID<0.111.0>"}
+      )
+
+      assert [resolved, detected] = DbLatency.snapshot().lock_stalls
+
+      # Newest first: an operator reading a live incident wants the last
+      # thing that happened at the top, not to scroll a boot-long history.
+      assert resolved.phase == :resolved
+      assert resolved.held_ms == 30_120
+      assert resolved.holder == nil
+
+      assert detected.phase == :detected
+      assert detected.waiter_count == 2
+      assert detected.holder.stacktrace == ["Foo.bar/1"]
+      assert length(detected.waiters) == 2
+    end
+
+    test "the lock-stall ring is bounded, keeping the newest episodes" do
+      for n <- 1..25 do
+        :telemetry.execute(
+          [:grappa, :repo, :lock_stall, :resolved],
+          %{held_ms: n},
+          %{holder_pid: "#PID<0.#{n}.0>"}
+        )
+      end
+
+      stalls = DbLatency.snapshot().lock_stalls
+
+      # These rows carry sampled stacktraces; unbounded, they would grow the
+      # singleton's heap for as long as the node lives.
+      assert length(stalls) == 20
+      assert hd(stalls).held_ms == 25
+      assert List.last(stalls).held_ms == 6
     end
 
     test "reset/0 zeroes accumulated state" do

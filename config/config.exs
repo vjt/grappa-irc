@@ -121,6 +121,26 @@ config :grappa, :session, connection_stable_ms: 60_000
 #   * backoff_ms — base per-attempt linear backoff (× attempt).
 #   * backoff_cap_ms — ceiling per sleep so late attempts don't stretch a
 #     single wait past a fifth of a second.
+# #1420 — the write-lock holder/waiter observer (`Grappa.Repo.LockWatch`).
+# Every DB signal that predates it is completion-driven and therefore measures
+# the VICTIM: Ecto's per-query event fires when a query FINISHES, so a process
+# holding `RESERVED` while it sits idle emits nothing, and only the 30.1s
+# `busy_timeout` of everybody queued behind it reaches the log. This observer
+# takes the reading at the `BEGIN IMMEDIATE` seam instead, which separates the
+# HOLDER from the WAITERS, and samples the holder's live stack when it stalls.
+#
+#   * enabled — arms both the watchdog timer and the write-path seam. OFF
+#     costs one :persistent_term read per write transaction and nothing more.
+#   * stall_threshold_ms — how long a holder must hold, WITH a queue behind
+#     it, before it is reported. Well under the 30_000 busy_timeout so the
+#     report lands while the stall is happening, not after the victims have
+#     already timed out.
+#   * tick_ms — watchdog scan cadence.
+config :grappa, :lock_watch,
+  enabled: true,
+  stall_threshold_ms: 2_000,
+  tick_ms: 1_000
+
 config :grappa, :busy_retry,
   budget_ms: 1_500,
   backoff_ms: 25,

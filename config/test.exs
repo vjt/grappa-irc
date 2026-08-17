@@ -157,6 +157,17 @@ config :grappa, :attach_session_log_telemetry, false
 # would make snapshot assertions flaky. Aggregation tests attach the
 # handler explicitly + drain via `reset/0` (test/grappa/db_latency_test.exs).
 config :grappa, :attach_db_latency_telemetry, false
+# #1420 — LockWatch DISARMED in test env. The suite runs pool_size: 1 under
+# the Sandbox, where every write transaction shares one connection: each of
+# them would register as a holder, and any test slow enough to cross the
+# threshold would emit a warning into whatever test is capturing the Logger
+# stream. `lock_watch_test.exs` arms it explicitly (put_test_enabled/1) and
+# disarms on_exit. The table is still created, so arming needs no restart.
+config :grappa, :lock_watch,
+  enabled: false,
+  stall_threshold_ms: 2_000,
+  tick_ms: 1_000
+
 # #1321 — VendorLog singleton attach OFF in test env. The handler only
 # logs, so a global attach would write a push rejection into whatever
 # test happens to be capturing the Logger stream. Its own tests attach

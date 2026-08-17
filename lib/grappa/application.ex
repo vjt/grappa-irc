@@ -188,6 +188,15 @@ defmodule Grappa.Application do
         # up, the type callback would crash with `:noproc`.
         Grappa.Vault,
 
+        # LockWatch before Repo (#1420): it owns the ETS table that
+        # `Repo.immediate_transaction/1` writes to on every write
+        # transaction, so the table must exist before the first one can
+        # run. Placing it after Repo would leave a boot window in which
+        # the seam self-disables — and the seam checks for the table
+        # precisely so a watchdog restart can never abort a caller's
+        # transaction. Depends on nothing itself (ETS + a timer).
+        {Grappa.Repo.LockWatch, lock_watch_opts()},
+
         # Must come first (after Vault): every context that touches the
         # DB depends on Repo being up. Sessions write Scrollback rows;
         # Phase 2 schemas (network_credentials) carry encrypted columns
@@ -609,6 +618,18 @@ defmodule Grappa.Application do
   @spec attach_db_latency_telemetry?() :: boolean()
   defp attach_db_latency_telemetry?,
     do: Application.get_env(:grappa, :attach_db_latency_telemetry, true)
+
+  # #1420 — the write-lock holder/waiter observer. Read at boot, injected
+  # via start_link opts (never a runtime Application.get_env in a
+  # callback). `enabled` is the off-switch: it gates BOTH the watchdog
+  # timer and the write-path seam, so switching it off costs one
+  # :persistent_term read per write transaction and nothing else.
+  # `fetch_env!` and not a defaulted `get_env`: the three keys are declared
+  # together in config/config.exs, and a half-configured observer that
+  # silently falls back to invented thresholds is worse than a loud boot
+  # failure naming the missing key.
+  @spec lock_watch_opts() :: keyword()
+  defp lock_watch_opts, do: Application.fetch_env!(:grappa, :lock_watch)
 
   # #1321 — same test-env opt-out shape. The reason is neither sandbox
   # ownership nor determinism: the handler only logs, and a globally

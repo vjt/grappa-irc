@@ -9,11 +9,13 @@ defmodule Grappa.Repo do
   the full reasoning. Resist the urge to introduce dynamic Repos.
   """
 
-  use Boundary, top_level?: true, deps: [], exports: [BusyRetry]
+  use Boundary, top_level?: true, deps: [], exports: [BusyRetry, LockWatch]
 
   use Ecto.Repo,
     otp_app: :grappa,
     adapter: Ecto.Adapters.SQLite3
+
+  alias Grappa.Repo.LockWatch
 
   # #506 — pre-switch the database to WAL on a SINGLE connection before the pool
   # (or `mix ecto.migrate`'s ≥2 Ecto.Migrator connections) open.
@@ -178,9 +180,30 @@ defmodule Grappa.Repo do
   together when a caller first needs it. Advertising the `Multi` failure
   4-tuple now (with no caller that can produce it) forces every caller's
   `@spec` to carry an impossible return — Dialyzer flags exactly that.
+
+  ## Observability
+
+  This is the ONLY producer of `BEGIN IMMEDIATE` in the tree, which makes it
+  the one seam where the holder of SQLite's write lock can be told apart
+  from the processes queued behind it. `Grappa.Repo.LockWatch.observe/1`
+  wraps the call and is handed back the `acquired` callback, which fires as
+  the FIRST statement inside the transaction body — i.e. once
+  `BEGIN IMMEDIATE` has actually granted the lock, which is what makes a
+  holder distinguishable from a waiter. Nothing else changes: `observe/1`
+  passes `transaction/2`'s return value and any raise or `rollback/1` throw
+  through untouched, so the transaction's semantics are exactly what they
+  were before (#1420).
   """
   @spec immediate_transaction(fun()) :: {:ok, any()} | {:error, any()}
   def immediate_transaction(fun) do
-    transaction(fun, mode: :immediate)
+    LockWatch.observe(fn acquired ->
+      transaction(
+        fn ->
+          acquired.()
+          fun.()
+        end,
+        mode: :immediate
+      )
+    end)
   end
 end

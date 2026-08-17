@@ -18,7 +18,7 @@ defmodule Grappa.DbLatency do
   measurements into small in-memory running counters. No Repo, no
   PubSub, no schema.
 
-  ## Two signal families, one handler
+  ## Three signal families, one handler
 
   The handler consumes both the D1 write-path spans AND Ecto's built-in
   per-query telemetry, because the two answer two different open
@@ -46,6 +46,15 @@ defmodule Grappa.DbLatency do
           (budget-exhausted rows lost).
         - **mechanism 3 (pure insert / index write-amplification):** the
           `persist` row `mean_ms` on its own, watched as the table grows.
+
+    * **`[:grappa, :repo, :lock_stall, :detected | :resolved]`** (#1420) —
+      the write-lock HOLDER, which neither family above can see. Both of
+      them are completion-driven, so a process sitting idle inside
+      `BEGIN IMMEDIATE` emits nothing while it sits and only its victims
+      show up (as 30.1s `busy_timeout` rows). `Grappa.Repo.LockWatch`
+      reads at the seam instead and hands over the holder's sampled stack
+      plus the queue behind it; here they are kept as a bounded ring, so
+      the existing CLI and admin doors surface them with no new noun.
 
   ## Reading a window
 
@@ -83,8 +92,16 @@ defmodule Grappa.DbLatency do
     [:grappa, :repo, :query],
     [:grappa, :scrollback, :persist, :stop],
     [:grappa, :session, :send_privmsg, :stop],
-    [:grappa, :scrollback, :persist, :contention]
+    [:grappa, :scrollback, :persist, :contention],
+    [:grappa, :repo, :lock_stall, :detected],
+    [:grappa, :repo, :lock_stall, :resolved]
   ]
+
+  # #1420 — the lock-stall ring is bounded: these rows carry sampled
+  # stacktraces, so an unbounded list would grow the singleton's heap for as
+  # long as the node stays up. Twenty episodes is far more than any single
+  # incident produces and still fits in one admin response.
+  @lock_stall_ring 20
 
   @type op :: :select | :insert | :update | :delete | :count | :other
 
@@ -111,11 +128,27 @@ defmodule Grappa.DbLatency do
           dropped: non_neg_integer()
         }
 
+  @typedoc """
+  One write-lock stall episode (#1420). `:detected` carries the holder's
+  sampled stack and the queue behind it; `:resolved` brackets the same
+  episode with the TOTAL hold and no samples (by then there is nothing left
+  to sample). Newest first.
+  """
+  @type lock_stall_row :: %{
+          phase: :detected | :resolved,
+          holder_pid: String.t(),
+          held_ms: non_neg_integer(),
+          waiter_count: non_neg_integer(),
+          holder: map() | nil,
+          waiters: [map()]
+        }
+
   @type snapshot :: %{
           queries: [query_row()],
           send_privmsg: span_row(),
           persist: span_row(),
-          contention: contention_row()
+          contention: contention_row(),
+          lock_stalls: [lock_stall_row()]
         }
 
   # Internal accumulators carry NATIVE time units (integer sums); the
@@ -123,13 +156,15 @@ defmodule Grappa.DbLatency do
   defstruct queries: %{},
             send_privmsg: %{n: 0, total: 0, outcomes: %{}},
             persist: %{n: 0, total: 0, outcomes: %{}},
-            contention: %{n: 0, queue_timeout: 0, busy_locked: 0, dropped: 0}
+            contention: %{n: 0, queue_timeout: 0, busy_locked: 0, dropped: 0},
+            lock_stalls: []
 
   @type t :: %__MODULE__{
           queries: %{{String.t() | nil, op()} => %{n: non_neg_integer(), total: integer(), queue: integer()}},
           send_privmsg: %{n: non_neg_integer(), total: integer(), outcomes: %{atom() => non_neg_integer()}},
           persist: %{n: non_neg_integer(), total: integer(), outcomes: %{atom() => non_neg_integer()}},
-          contention: contention_row()
+          contention: contention_row(),
+          lock_stalls: [lock_stall_row()]
         }
 
   ## ----- Public API ---------------------------------------------------
@@ -229,6 +264,33 @@ defmodule Grappa.DbLatency do
     end
   end
 
+  defp fold([:grappa, :repo, :lock_stall, :detected], measurements, metadata, state) do
+    push_stall(state, %{
+      phase: :detected,
+      holder_pid: metadata.holder.pid,
+      held_ms: measurements.held_ms,
+      waiter_count: measurements.waiter_count,
+      holder: metadata.holder,
+      waiters: metadata.waiters
+    })
+  end
+
+  defp fold([:grappa, :repo, :lock_stall, :resolved], measurements, metadata, state) do
+    push_stall(state, %{
+      phase: :resolved,
+      holder_pid: metadata.holder_pid,
+      held_ms: measurements.held_ms,
+      waiter_count: 0,
+      holder: nil,
+      waiters: []
+    })
+  end
+
+  @spec push_stall(t(), lock_stall_row()) :: t()
+  defp push_stall(state, row) do
+    %{state | lock_stalls: Enum.take([row | state.lock_stalls], @lock_stall_ring)}
+  end
+
   # Accumulate one span's duration + outcome tally.
   @spec add_span(map(), map(), map()) :: map()
   defp add_span(acc, measurements, metadata) do
@@ -293,7 +355,8 @@ defmodule Grappa.DbLatency do
       queries: queries,
       send_privmsg: span_snapshot(state.send_privmsg),
       persist: span_snapshot(state.persist),
-      contention: state.contention
+      contention: state.contention,
+      lock_stalls: state.lock_stalls
     }
   end
 
