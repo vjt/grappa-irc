@@ -1575,6 +1575,40 @@ describe("userTopic", () => {
       });
       expect(bc.setBanlistBundle).not.toHaveBeenCalled();
     });
+
+    // #1393 — the #1251 tolerance is for a server that predates `mode`, and
+    // that server sends no key at all. A key that IS there carrying something
+    // other than a letter is mangling, and coercing it to "b" renders whatever
+    // list arrived under the "Bans" heading — the exact mis-attribution #1251
+    // added the field to end. `Grappa.Session.Wire.banlist_bundle_payload/0`
+    // declares `mode` a plain required string, so neither of these two shapes
+    // can come from any grappa.
+    it("drops payload with a non-string `mode` (mangled, not an older server)", async () => {
+      const bc = await import("../lib/banlistCard");
+      channelMock.fireEvent({
+        kind: "banlist_bundle",
+        network: "azzurra",
+        channel: "#test",
+        mode: 42,
+        entries: [],
+      });
+      expect(bc.setBanlistBundle).not.toHaveBeenCalled();
+    });
+
+    // Unlike `links_bundle.mask`, which IS `string | null` in the typespec and
+    // so tolerates an explicit null, `mode` is non-nullable: a null is as
+    // impossible on the wire as a number.
+    it("drops payload with a null `mode`", async () => {
+      const bc = await import("../lib/banlistCard");
+      channelMock.fireEvent({
+        kind: "banlist_bundle",
+        network: "azzurra",
+        channel: "#test",
+        mode: null,
+        entries: [],
+      });
+      expect(bc.setBanlistBundle).not.toHaveBeenCalled();
+    });
   });
 
   describe("invite_ack arm (P-0e + P-0f)", () => {

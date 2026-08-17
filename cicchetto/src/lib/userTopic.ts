@@ -881,6 +881,16 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         !Array.isArray(r.entries)
       )
         return null;
+      // #1251 — WHICH list this is, and the tolerance is for ABSENCE only: a
+      // grappa predating the field omits the key entirely and could only ever
+      // have sent the ban list, so absent means `b` (unknown-is-never-fatal,
+      // #447). #1393 — a key that IS present carrying a non-string is
+      // mangling, not an older peer, and coercing it to `b` would render
+      // whatever list arrived under the "Bans" heading: the mis-attribution
+      // #1251 exists to end. Stricter than `links_bundle`'s `mask`, which this
+      // arm used to claim to mirror, only because the typespecs differ —
+      // `mask` is `string | null`, `mode` is a plain required string.
+      if (r.mode !== undefined && typeof r.mode !== "string") return null;
       const entries: BanlistEntry[] = [];
       for (const raw of r.entries) {
         const entry = narrowBanlistEntry(raw);
@@ -891,9 +901,6 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
         kind: "banlist_bundle",
         network: r.network,
         channel: r.channel,
-        // #1251 — WHICH list this is. Additive-tolerant like links_bundle's
-        // `mask`: a grappa that predates the field could only ever have sent
-        // the ban list, so absent means `b` (unknown-is-never-fatal, #447).
         mode: typeof r.mode === "string" ? r.mode : "b",
         entries,
       };
