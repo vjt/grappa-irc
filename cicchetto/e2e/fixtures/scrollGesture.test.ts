@@ -12,7 +12,7 @@
 // inside the next step.
 
 import { describe, expect, it } from "vitest";
-import { type ScrollPane, scrollByGesture } from "./scrollGesture";
+import { type ScrollPane, scrollByGesture, waitForScrollRest } from "./scrollGesture";
 
 type Recorded = { calls: string[]; pane: ScrollPane };
 
@@ -93,5 +93,82 @@ describe("#1336 — scrollByGesture", () => {
     expect(
       await failureOf(scrollByGesture(pane, { deltaY: -4000, timeoutMs: 20, pollMs: 1 })),
     ).toContain("never settled");
+  });
+});
+
+// The scrollTop writes a SWITCH into #bofh performs, recorded in-page on the
+// dev host (2026-08-17, #1336 S2 probe, four iterations at CPU throttle 1x/6x/
+// 12x/20x — the shape was identical in all four, only the timings stretched):
+//
+//     t=0ms   354   the $server pane we switch away from
+//     t=45ms    7   the rows recreation resets scrollTop to the top
+//     t=59ms 1055   the marker jump, in flight
+//     t=78ms 1078   the marker, at rest
+//
+// and the pane's own geometry at that moment: scrollHeight 1627, clientHeight
+// 212, so maxScroll = 1415. These are DATA, not an example — every assertion
+// below is arithmetic on them.
+// Only the three POST-CLICK writes: 354 is where the $server pane we switch
+// away from was sitting, and the barrier cannot sample it — the spec gates on
+// the row count and the marker existing first, which the switch must complete
+// to satisfy. Replaying it would overstate the defect.
+const MEASURED_SWITCH_WRITES = [7, 1055, 1078] as const;
+const MEASURED_MAX_SCROLL = 1415;
+const MARKER_SCROLL_TOP = 1078;
+const SCROLL_BOTTOM_THRESHOLD_PX = 50;
+
+describe("#1336 S2 — waitForScrollRest, and the barrier it replaces", () => {
+  // The defect, executed rather than argued. The pre-send barrier in
+  // scroll-on-window-switch.spec.ts is `distance-to-bottom > 50`, and
+  // `expect.poll` returns on the FIRST evaluation that satisfies it. Replayed
+  // against the writes actually recorded, that first satisfying sample is the
+  // RESET (scrollTop 7, distance 1408) — the moment the rows were recreated
+  // and the marker jump had not happened yet. The barrier cannot tell "the
+  // switch landed on the marker" from "the pane is at the top on its way
+  // there", because both are far from the bottom.
+  it("the OLD distance-only predicate is satisfied by the reset, not by the marker", () => {
+    const distances = MEASURED_SWITCH_WRITES.map((st) => MEASURED_MAX_SCROLL - st);
+    const firstAccepted = distances.findIndex((d) => d > SCROLL_BOTTOM_THRESHOLD_PX);
+
+    expect(MEASURED_SWITCH_WRITES[firstAccepted]).toBe(7);
+    expect(distances[firstAccepted]).toBe(1408);
+    // …and the position it was supposed to be waiting for is 337 away from the
+    // bottom — the number #1079 reported, twice, on two trees.
+    expect(MEASURED_MAX_SCROLL - MARKER_SCROLL_TOP).toBe(337);
+  });
+
+  it("waits past the reset and the in-flight sample, and reports the MARKER", async () => {
+    const { pane } = fakePane([...MEASURED_SWITCH_WRITES, MARKER_SCROLL_TOP]);
+    expect(await waitForScrollRest(pane, { timeoutMs: 1_000, pollMs: 1 })).toBe(MARKER_SCROLL_TOP);
+  });
+
+  it("does not mistake two equal samples STRADDLING a move for rest", async () => {
+    // A pane that returns to a value it already held is not the same as a pane
+    // that never left it: only ADJACENT agreement is rest. Without that, the
+    // 1078 here would be read as rest while the pane is still travelling.
+    const { pane } = fakePane([1078, 7, 1078, 400, 400]);
+    expect(await waitForScrollRest(pane, { timeoutMs: 1_000, pollMs: 1 })).toBe(400);
+  });
+
+  it("REJECTS a pane that never comes to rest, naming the last position", async () => {
+    let value = 1078;
+    const pane: ScrollPane = {
+      hover: async () => {},
+      wheel: async () => {},
+      scrollTop: async () => {
+        value -= 10;
+        return value;
+      },
+    };
+    const message = await failureOf(waitForScrollRest(pane, { timeoutMs: 20, pollMs: 1 }));
+    expect(message).toContain("never came to rest");
+    expect(message).toMatch(/last \d+/);
+  });
+
+  it("resolves at the position the pane was ALREADY holding", async () => {
+    // A settled pane is settled; the barrier is about rest, not about movement
+    // (that is `scrollByGesture`'s job, and it rejects a pane that never moved).
+    const { pane } = fakePane([1078, 1078]);
+    expect(await waitForScrollRest(pane, { timeoutMs: 1_000, pollMs: 1 })).toBe(1078);
   });
 });

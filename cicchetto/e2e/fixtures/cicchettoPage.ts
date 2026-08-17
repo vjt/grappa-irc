@@ -62,7 +62,7 @@
 
 import { expect, type Locator, type Page } from "@playwright/test";
 import type { SeededUser } from "./grappaApi";
-import { type ScrollGestureResult, scrollByGesture } from "./scrollGesture";
+import { type ScrollGestureResult, scrollByGesture, waitForScrollRest } from "./scrollGesture";
 
 const SHELL_READY_TIMEOUT_MS = 10_000;
 const MOBILE_BREAKPOINT_PX = 768;
@@ -1425,4 +1425,27 @@ export async function pageScrollbackUp(
   timeoutMs: number,
 ): Promise<ScrollGestureResult> {
   return await pageScrollbackBy(page, -pixels, timeoutMs);
+}
+
+// #1336 S2 — the same wait with no gesture in front of it: hold until the
+// pane STOPS being written to, and report where it stopped.
+//
+// For a spec that parks on the unread marker through a PROGRAMMATIC
+// activation rather than a wheel. Recorded in-page, such a switch writes
+// `scrollTop` three times — the rows recreation resetting to the top, the
+// marker jump in flight, the marker — and a "distance from the bottom is
+// large" barrier is satisfied by the FIRST of the three, which is the pane on
+// its way somewhere rather than the pane where the test means it to be.
+//
+// Sampling every 50 ms, matching `pageScrollbackBy`: two agreeing samples mean
+// the pane held still for 50 ms.
+export async function pageScrollbackRest(page: Page, timeoutMs: number): Promise<number> {
+  const pane = page.locator('[data-testid="scrollback"]');
+  return await waitForScrollRest(
+    { scrollTop: () => pane.evaluate((el) => el.scrollTop) },
+    {
+      timeoutMs,
+      pollMs: 50,
+    },
+  );
 }

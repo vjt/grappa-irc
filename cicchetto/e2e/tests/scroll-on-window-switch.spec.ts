@@ -82,6 +82,7 @@ import type { Page } from "@playwright/test";
 import {
   composeSend,
   loginAs,
+  pageScrollbackRest,
   scrollbackLines,
   selectChannel,
   sidebarWindow,
@@ -280,6 +281,14 @@ test.describe("scroll-on-window-switch — re-selecting a window snaps correctly
     const marker = page.locator('[data-testid="unread-marker"]');
     await expect(marker).toHaveCount(1);
 
+    // #1336 S2 — settle BEFORE measuring. The activation writes scrollTop
+    // three times (rows recreation to the top, marker jump in flight, marker),
+    // and every assertion below reads a position, so each one must be taken of
+    // a pane that has stopped. The distance test alone cannot do this: it is
+    // satisfied by the reset too, which is the same pane 1071px from where
+    // this test means it to be. Rejects by name if the pane never holds still.
+    await pageScrollbackRest(page, 10_000);
+
     // Sanity: scrollback overflows (else "not at the tail" is vacuous).
     const g = await scrollbackGeometry(page);
     expect(g.scrollHeight).toBeGreaterThan(g.clientHeight);
@@ -365,6 +374,14 @@ test.describe("scroll-on-window-switch — re-selecting a window snaps correctly
     const marker = page.locator('[data-testid="unread-marker"]');
     await expect(marker).toHaveCount(1);
 
+    // #1336 S2 — settle BEFORE measuring. The activation writes scrollTop
+    // three times (rows recreation to the top, marker jump in flight, marker),
+    // and every assertion below reads a position, so each one must be taken of
+    // a pane that has stopped. The distance test alone cannot do this: it is
+    // satisfied by the reset too, which is the same pane 1071px from where
+    // this test means it to be. Rejects by name if the pane never holds still.
+    await pageScrollbackRest(page, 10_000);
+
     const g = await scrollbackGeometry(page);
     expect(g.scrollHeight).toBeGreaterThan(g.clientHeight);
 
@@ -442,6 +459,14 @@ test.describe("scroll-on-window-switch — re-selecting a window snaps correctly
 
     const marker = page.locator('[data-testid="unread-marker"]');
     await expect(marker).toHaveCount(1);
+
+    // #1336 S2 — settle BEFORE measuring. The activation writes scrollTop
+    // three times (rows recreation to the top, marker jump in flight, marker),
+    // and every assertion below reads a position, so each one must be taken of
+    // a pane that has stopped. The distance test alone cannot do this: it is
+    // satisfied by the reset too, which is the same pane 1071px from where
+    // this test means it to be. Rejects by name if the pane never holds still.
+    await pageScrollbackRest(page, 10_000);
 
     // Sanity: the pane overflows (else "not at the tail" is vacuous).
     const g = await scrollbackGeometry(page);

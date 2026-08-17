@@ -60,7 +60,95 @@ export type ScrollGestureResult = {
   readonly to: number;
 };
 
+export type ScrollRestOptions = {
+  // Budget for the pane to stop moving.
+  readonly timeoutMs: number;
+  // Gap between scrollTop samples.
+  readonly pollMs: number;
+};
+
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Wait for the pane to STOP, and report where it stopped. Rejects rather than
+// resolving when it never held still, for the same reason `scrollByGesture`
+// rejects: a caller about to assert on a position must not be handed one the
+// pane is still leaving.
+//
+// This is the half of the gesture contract that has nothing to do with a
+// wheel, and #1336 S2 is why it exists separately. `scroll-on-window-switch`
+// parks on the unread marker through a PROGRAMMATIC activation and then sends,
+// and its pre-send barrier was `distance-to-bottom > 50`. Recorded in-page,
+// the switch writes scrollTop three times — `7` (the rows recreation resetting
+// to the top), `1055` (the marker jump in flight), `1078` (the marker) — and
+// the FIRST of those already satisfies `> 50` by a wide margin (distance 1408
+// against a maxScroll of 1415). So the barrier could clear on the reset, with
+// the marker jump still to come; the jump is a scrollTop DECREASE, `onScroll`
+// reads a decrease as the operator leaving the tail, and a decrease landing
+// after a send freezes the pane at the marker — 337 from the bottom, which is
+// the number #1079 reported twice.
+//
+// A gate satisfied by a state that is not the one it names is not a gate. The
+// distance test says "not at the bottom" while meaning "the switch has
+// finished"; rest is the missing half, and unlike the distance it cannot be
+// true of a pane mid-jump.
+export async function waitForScrollRest(
+  pane: Pick<ScrollPane, "scrollTop">,
+  opts: ScrollRestOptions,
+): Promise<number> {
+  const { timeoutMs, pollMs } = opts;
+  const read = (): Promise<number> => pane.scrollTop();
+  const rest = await sampleUntilRest(read, await read(), false, timeoutMs, pollMs);
+
+  if (rest.settled === null) {
+    throw new Error(
+      `waitForScrollRest: the pane never came to rest within ${timeoutMs}ms ` +
+        `(last ${rest.last}) — it is still being written to`,
+    );
+  }
+  return rest.settled;
+}
+
+type RestProbe = {
+  readonly settled: number | null;
+  readonly last: number;
+  readonly moved: boolean;
+};
+
+// The one sampling loop both public waits are built from: read `scrollTop`
+// until two ADJACENT reads agree.
+//
+// Adjacency is load-bearing. A pane that returns to a position it held a
+// moment ago has not stopped — it has passed through twice — so comparing
+// against anything other than the immediately preceding sample would call a
+// round trip "rest".
+//
+// `requireMove` is the 20% the two callers do not share. A GESTURE has to
+// displace the pane, so resting back on the baseline is a failure (the wheel
+// was never delivered); a BARRIER only has to establish that nothing is being
+// written any more, and a pane that was already still satisfies it.
+async function sampleUntilRest(
+  read: () => Promise<number>,
+  baseline: number,
+  requireMove: boolean,
+  timeoutMs: number,
+  pollMs: number,
+): Promise<RestProbe> {
+  const deadline = Date.now() + timeoutMs;
+  let previous = baseline;
+  let moved = false;
+
+  while (Date.now() < deadline) {
+    const current = await read();
+    if (current !== baseline) moved = true;
+    if (current === previous && (!requireMove || moved)) {
+      return { settled: current, last: current, moved };
+    }
+    previous = current;
+    await sleep(pollMs);
+  }
+
+  return { settled: null, last: previous, moved };
+}
 
 // Perform the gesture and resolve only once the pane has moved AND come to
 // rest. Rejects rather than resolving on either failure, because "it did not
@@ -85,24 +173,13 @@ export async function scrollByGesture(
   await pane.hover();
   await pane.wheel(deltaY);
 
-  const deadline = Date.now() + timeoutMs;
-  let moved = false;
-  let previous = from;
-
-  while (Date.now() < deadline) {
-    const current = await pane.scrollTop();
-    if (current !== from) {
-      if (moved && current === previous) return { from, to: current };
-      moved = true;
-    }
-    previous = current;
-    await sleep(pollMs);
-  }
+  const rest = await sampleUntilRest(() => pane.scrollTop(), from, true, timeoutMs, pollMs);
+  if (rest.settled !== null) return { from, to: rest.settled };
 
   throw new Error(
-    moved
+    rest.moved
       ? `scrollByGesture: wheel(${deltaY}) never settled within ${timeoutMs}ms ` +
-          `(from ${from}, last ${previous}) — the pane was still moving when the budget ran out`
+          `(from ${from}, last ${rest.last}) — the pane was still moving when the budget ran out`
       : `scrollByGesture: wheel(${deltaY}) never moved the pane within ${timeoutMs}ms ` +
           `(scrollTop stayed ${from}) — the gesture was not delivered, or the pane is already clamped`,
   );
