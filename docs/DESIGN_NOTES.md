@@ -45645,3 +45645,54 @@ GENERATED artefact looks like someone else's red precisely because no hand
 edited it.** The cheap discriminator that would have caught it in one step:
 biome names the failing file, and `src/lib/wireTypes.ts` was in this
 branch's diff.
+<!-- entry #1336 -->
+
+---
+
+## 2026-08-17 — #1336: a gesture nobody watched, and the two ways to be green about one
+
+`cursor-forward-only.spec.ts` drove nine wheel gestures through two
+hand-rolled `mouse.move` + `mouse.wheel` helpers. Every caller then slept a
+fixed `SETTLE_WAIT_MS` — 500 ms of product debounce plus 500 ms of slack —
+and read the cursor ONCE, with no assertion that retries. `page.mouse.wheel()`
+resolves before the scroll is applied (~250 ms, measured on #1080), so half
+that slack was already owed to a dispatch nobody waited for.
+
+Measured BEFORE touching it, deleting one gesture at a time, chromium,
+`--grep "forward-only contract"`, on a host whose #1429 census was clean
+(`db30=0`, `gaps_ge_10=0` on every service):
+
+| mutant | kills | what survived, and why |
+|---|---|---|
+| `scrollByPx` deleted | 2 of 6 | only the two STRICT inequalities notice. The equality test, the no-retreat test and the audit-"strengthened" disjunction all accept "nothing moved" |
+| `scrollToBottom` deleted | 0 of 6 | nobody was watching it at all |
+
+The sharpest of those: *"scroll back to bottom advances cursor to tail"*
+passes with the scroll-back-to-bottom removed, because the cursor is
+forward-only and the preceding scroll-up cannot retreat it off the tail it
+is already sitting on. **The contract under test is what makes its own
+verification vacuous** — not load, not timing.
+
+Both helpers now go through `pageScrollbackBy`, the signed sibling of
+#1080's `pageScrollbackUp` over the same unit-tested `scrollGesture` core,
+which waits for the pane to MOVE and then HOLD and rejects when it did
+neither. The attribution is one displacement — remove the hover, so the
+wheel is dispatched away from the pane — run on both sides of the change:
+
+| | reds | what the red says |
+|---|---|---|
+| before | 2 of 6 | `expect(701).toBeLessThan(701)` — it accuses the product |
+| after | 6 of 6 | `never moved the pane (scrollTop stayed 4029)` — it accuses the gesture, by name |
+
+Converted spec green at 6/6 in 29.1 s, against 32.4 s for the baseline: a
+condition-wait that resolves on arrival costs nothing when the gesture lands.
+
+**What this does NOT do, stated because the epic exists to refuse exactly
+this kind of overclaim.** It does not repair those four assertions: the
+disjunction still accepts "nothing moved", and `scrollToBottom`'s effect is
+still asserted by no one. It closes one of the two holes — being green about
+a gesture that never happened — and leaves the other open. And a prediction
+of mine died here: I expected the converted `scrollToBottom` to REJECT as
+"already clamped" and thereby prove itself a no-op. It did not reject. The
+pane does move; the gesture is real and merely unobserved, which is a
+narrower and different claim than the one I set out to make.
