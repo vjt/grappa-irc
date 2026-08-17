@@ -225,7 +225,7 @@ defmodule Grappa.DetachedWorkSupervisionTest do
   end
 
   defp assert_supervised_worker_appears(before, which, attempts) do
-    if MapSet.difference(supervised_pids(), before) |> Enum.any?() do
+    if Enum.any?(MapSet.difference(supervised_pids(), before)) do
       :ok
     else
       Process.sleep(10)
