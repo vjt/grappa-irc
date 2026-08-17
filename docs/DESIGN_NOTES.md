@@ -46985,3 +46985,53 @@ the CONFIGURATION — that the package is thin, that its version comes from
 the header, that its output directory is outside every upload glob — which
 is what can be held still without a Linux toolchain. Whether nfpm accepts
 these two files is proven by the first CI run, not here._
+<!-- entry #1404e -->
+
+---
+
+## 2026-08-17 — #1404: the detached hand-offs become supervised work, and only that
+
+Three places hand work off the session hot path so the session never blocks
+on it: the window-counts snapshot and the two push-notification dispatches.
+All three started that work with a bare spawn, so the worker belonged to
+nobody — outside the supervision tree, invisible to the operator, and its
+crash a disappearance rather than a report. Every other detached spawn in the
+tree already goes through `Grappa.TaskSupervisor`, and S37 wrote the rule
+down; these three predate it. They now follow it, and a test asserts each of
+them does.
+
+**What this buys, stated narrowly on purpose: supervision and visibility. Not
+a ceiling.** The concurrency of that work is exactly what it was. A ceiling on
+detached work is a child-spec setting (`max_children`) and the tree configures
+none, so routing the spawn through a supervisor cannot add one — routing
+changes the spawn verb, not the child spec. The moduledocs that used to say
+"unlinked task" are corrected, and they are corrected to say what is true
+rather than to say something better: a docstring that implied a bound here
+would be the very shape of defect this work exists to remove, moved out of the
+code and into the prose where it is harder to notice.
+
+**Why the start result is discarded rather than matched.** This is the one way
+the change is not a mechanical verb swap. `Task.start/1` cannot fail, so a
+`{:ok, _} =` around it was free. `Task.Supervisor.start_child/2` can refuse —
+`{:error, :max_children}` — the day a ceiling exists. A strict match would then
+turn a skipped best-effort optimisation into a crash on the session hot path,
+which is the opposite of what a ceiling is for. Two older call sites already
+carry that strict match; this change deliberately declines to add two more, and
+disarming those two is a separate decision with a separate blast radius.
+
+**How the guard catches the worker.** A worker that has already finished is
+indistinguishable from one that was never supervised, since the supervisor's
+child list is empty either way, so each test parks its worker and asks while it
+is parked. Both parks are real infrastructure rather than a stand-in for the
+subject: a process registered where the session would be, which never answers,
+holds the snapshot worker inside its live-count call; and OTP's own
+`:sys.suspend/1` on the presence singleton holds the two notification workers
+where they consult it. The assertion is the pid's membership in the child set,
+not the size of that set — a count cannot distinguish "one arrived" from "one
+left", and an earlier version of this guard failed against correct code because
+another test's worker was still dying while it measured.
+
+_Not established: nothing here measures how many of these workers can be alive
+at once, or what happens at any particular number, and the file says so. The
+question of whether that concurrency wants a bound is open and is not answered
+by this change._
