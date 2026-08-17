@@ -49,6 +49,7 @@ defmodule Grappa.Visitors.Reaper do
     deps: [
       Grappa.AdminEvents,
       Grappa.Networks,
+      Grappa.Networks.Credential,
       Grappa.Session,
       Grappa.Subject,
       Grappa.Visitors,

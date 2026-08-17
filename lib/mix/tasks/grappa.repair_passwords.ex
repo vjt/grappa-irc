@@ -70,7 +70,13 @@ defmodule Mix.Tasks.Grappa.RepairPasswords do
   """
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Networks, Grappa.Session, Mix.Tasks.Grappa.Boot, Mix.Tasks.Grappa.OptionParsing]
+    deps: [
+      Grappa.Networks,
+      Grappa.Networks.Credential,
+      Grappa.Session,
+      Mix.Tasks.Grappa.Boot,
+      Mix.Tasks.Grappa.OptionParsing
+    ]
 
   use Mix.Task
 

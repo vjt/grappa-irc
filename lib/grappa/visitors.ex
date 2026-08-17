@@ -68,6 +68,7 @@ defmodule Grappa.Visitors do
       Grappa.IRC,
       Grappa.LiveIntrospection,
       Grappa.Networks,
+      Grappa.Networks.Credential,
       Grappa.Repo,
       Grappa.Session,
       Grappa.SpawnOrchestrator,

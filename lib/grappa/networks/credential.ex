@@ -50,6 +50,16 @@ defmodule Grappa.Networks.Credential do
   uniqueness now lives in the two partial unique indexes above rather
   than the PK.
   """
+
+  # Its own boundary, like the other three Networks schemas (#1398). Of the
+  # five names this module aliases, only `Grappa.IRC` is declared: the
+  # changeset calls `Identity.sanitize_ident/1` and `Identifier`. `User`,
+  # `Visitor` and `EncryptedBinary` arrive only as `belongs_to` and `field`
+  # arguments, and `Network` only as a `belongs_to` and a typespec — none of
+  # them a reference the checker resolves, so declaring them would state a
+  # dependency nothing can verify.
+  use Boundary, top_level?: true, deps: [Grappa.IRC]
+
   use Ecto.Schema
   import Ecto.Changeset
 

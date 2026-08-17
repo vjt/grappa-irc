@@ -145,6 +145,7 @@ defmodule Grappa.Bootstrap do
     top_level?: true,
     deps: [
       Grappa.Networks,
+      Grappa.Networks.Credential,
       Grappa.OutboundV6Pool,
       Grappa.Session,
       Grappa.SpawnOrchestrator,

@@ -71,6 +71,7 @@ if Mix.env() in [:dev, :test] do
         Grappa.Accounts,
         Grappa.Admission,
         Grappa.Networks,
+        Grappa.Networks.Credential,
         Grappa.Notify,
         Grappa.Push,
         Grappa.QueryWindows,

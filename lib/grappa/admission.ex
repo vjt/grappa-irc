@@ -51,7 +51,13 @@ defmodule Grappa.Admission do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.Networks, Grappa.RateLimit, Grappa.Repo],
+    deps: [
+      Grappa.Accounts,
+      Grappa.Networks,
+      Grappa.Networks.Credential,
+      Grappa.RateLimit,
+      Grappa.Repo
+    ],
     exports: [Captcha, Config, NetworkCircuit, NetworkCircuit.AdminWire, Telemetry]
 
   import Ecto.Query

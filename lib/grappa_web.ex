@@ -33,6 +33,7 @@ defmodule GrappaWeb do
         Grappa.Net.PtrCache,
         Grappa.Net.SourceAliasManager,
         Grappa.Networks,
+        Grappa.Networks.Credential,
         Grappa.Notify,
         Grappa.Operator,
         Grappa.OutboundV6Pool,

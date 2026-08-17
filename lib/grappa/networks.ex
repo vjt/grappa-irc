@@ -59,6 +59,7 @@ defmodule Grappa.Networks do
       Grappa.Net.SourceAliasManager,
       # The schemas are their own boundaries (#1398): this umbrella holds the
       # context verbs and reaches its own schemas across a declared edge.
+      Grappa.Networks.Credential,
       Grappa.Networks.FeaturedChannel,
       Grappa.Networks.Server,
       Grappa.Session,
@@ -70,7 +71,6 @@ defmodule Grappa.Networks do
     ],
     exports: [
       AdminWire,
-      Credential,
       Credentials,
       Credentials.AdminWire,
       FeaturedChannels,
