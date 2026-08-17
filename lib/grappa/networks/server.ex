@@ -12,6 +12,15 @@ defmodule Grappa.Networks.Server do
   surfaces `{:error, :already_exists}` from the context, not a raw
   Ecto changeset error.
   """
+
+  # Its own boundary so that a consumer needing the schema does not have to
+  # take a dep on all of `Grappa.Networks` — the edge that closed 31 cycles
+  # and drove five `dirty_xrefs` waivers (#1398/#1399). `deps: []` because
+  # this module references nothing outside itself: `Network` appears only as
+  # a `belongs_to` argument and in a typespec, neither of which is a
+  # reference the checker resolves. Mirror of `Grappa.Visitors.Visitor` (#415).
+  use Boundary, top_level?: true, deps: []
+
   use Ecto.Schema
   import Ecto.Changeset
 

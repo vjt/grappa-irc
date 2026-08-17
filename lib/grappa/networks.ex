@@ -57,6 +57,9 @@ defmodule Grappa.Networks do
       # the addressing config so effective_source/3 stays the single decision
       # point (a disarmed mode 2 HOLDs :mode2_disarmed).
       Grappa.Net.SourceAliasManager,
+      # The schemas are their own boundaries (#1398): this umbrella holds the
+      # context verbs and reaches its own schemas across a declared edge.
+      Grappa.Networks.Server,
       Grappa.Session,
       Grappa.Subject,
       Grappa.Vault,
@@ -75,7 +78,6 @@ defmodule Grappa.Networks do
       FeaturedChannels.Wire,
       Network,
       NoServerError,
-      Server,
       Servers,
       Servers.AdminWire,
       SessionPlan,
