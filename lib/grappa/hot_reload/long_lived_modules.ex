@@ -102,6 +102,9 @@ defmodule Grappa.HotReload.LongLivedModules do
   # would silently false-COLD when typespec union lines matched the
   # shape — review C4 / CP28 incident class).
   @modules [
+    # #1420 — first, because it is the one child that boots BEFORE Repo
+    # (it owns the ETS table the BEGIN IMMEDIATE seam writes to).
+    Grappa.Repo.LockWatch,
     Grappa.Session.Backoff,
     Grappa.WSPresence,
     Grappa.Admission.NetworkCircuit,
@@ -143,7 +146,8 @@ defmodule Grappa.HotReload.LongLivedModules do
   `:underspecs` (a divergence shows up as `contract_supertype`).
   """
   @type long_lived ::
-          Grappa.Session.Backoff
+          Grappa.Repo.LockWatch
+          | Grappa.Session.Backoff
           | Grappa.WSPresence
           | Grappa.Admission.NetworkCircuit
           | Grappa.AdminEvents

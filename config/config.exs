@@ -403,6 +403,12 @@ config :logger, :console,
     # key the operator cannot tell a NickServ IDENTIFY that never went out
     # from a lost CTCP reply, which are not the same incident.
     :origin,
+    # #1420 — LockWatch tags how long the write-lock holder has held and how
+    # many writers are queued behind it. Without these two keys the backend
+    # drops the structured half of a stall report, leaving only the prose —
+    # and the log line IS the door that reaches CI container logs.
+    :held_ms,
+    :waiters,
     :pid,
     :unexpected,
     # Bootstrap summary: how many credentials we enumerated and how

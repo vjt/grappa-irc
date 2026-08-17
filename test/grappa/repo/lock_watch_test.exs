@@ -50,7 +50,7 @@ defmodule Grappa.Repo.LockWatchTest do
       :telemetry.attach(
         handler,
         @detected,
-        fn _event, measurements, metadata, _ ->
+        fn _, measurements, metadata, _ ->
           send(test_pid, {:stall, measurements, metadata})
         end,
         nil
@@ -198,20 +198,7 @@ defmodule Grappa.Repo.LockWatchTest do
   defp start_writer(id, after_insert) do
     test_pid = self()
 
-    {pid, ref} =
-      spawn_monitor(fn ->
-        LockWatch.observe(fn acquired ->
-          TmpRepo.transaction(
-            fn ->
-              acquired.()
-              TmpRepo.query!("INSERT INTO t VALUES (#{id})")
-              send(test_pid, {:holding, self()})
-              if after_insert == :park, do: park_until_released()
-            end,
-            mode: :immediate
-          )
-        end)
-      end)
+    {pid, ref} = spawn_monitor(fn -> observed_write(id, after_insert, test_pid) end)
 
     # A failing assertion would otherwise leave this process parked inside
     # its transaction, holding both the file lock and a watch-table row, and
@@ -219,6 +206,24 @@ defmodule Grappa.Repo.LockWatchTest do
     on_exit(fn -> Process.exit(pid, :kill) end)
 
     {pid, ref}
+  end
+
+  # Split out of `start_writer/2` so no body nests deeper than two levels.
+  # `observe/1` is production's own wrapper — the point is that the test
+  # drives the real edge sequence rather than a hand-written copy of it.
+  defp observed_write(id, after_insert, test_pid) do
+    LockWatch.observe(fn acquired ->
+      TmpRepo.transaction(fn -> insert_then(id, after_insert, test_pid, acquired) end,
+        mode: :immediate
+      )
+    end)
+  end
+
+  defp insert_then(id, after_insert, test_pid, acquired) do
+    acquired.()
+    TmpRepo.query!("INSERT INTO t VALUES (?)", [id])
+    send(test_pid, {:holding, self()})
+    if after_insert == :park, do: park_until_released()
   end
 
   # Named, and named distinctively, because its frame IS the oracle for the
@@ -242,7 +247,7 @@ defmodule Grappa.Repo.LockWatchTest do
 
   defp pids(samples), do: Enum.map(samples, & &1.pid)
 
-  defp await_until(_fun, 0), do: flunk("condition never held: #{inspect(LockWatch.inspect_lock())}")
+  defp await_until(_, 0), do: flunk("condition never held: #{inspect(LockWatch.inspect_lock())}")
 
   defp await_until(fun, attempts) do
     if fun.() do

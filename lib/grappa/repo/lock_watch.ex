@@ -141,7 +141,11 @@ defmodule Grappa.Repo.LockWatch do
   defstruct [:stall_threshold_ms, :tick_ms, :enabled]
 
   @type t :: %__MODULE__{
-          stall_threshold_ms: pos_integer(),
+          # non_neg, not pos: a threshold of 0 means "report every contended
+          # holder at once" — noisy, but a coherent operator choice, and the
+          # setting the tests use to take a reading without waiting on a
+          # clock. `tick_ms` stays pos: a zero tick is a busy loop.
+          stall_threshold_ms: non_neg_integer(),
           tick_ms: pos_integer(),
           enabled: boolean()
         }
@@ -243,7 +247,7 @@ defmodule Grappa.Repo.LockWatch do
   end
 
   @spec close_episode([row()]) :: :ok
-  defp close_episode([{_pid, :holding, since, true}]) do
+  defp close_episode([{_, :holding, since, true}]) do
     held_ms = now_ms() - since
 
     Logger.warning(
@@ -307,7 +311,7 @@ defmodule Grappa.Repo.LockWatch do
     _ = :ets.new(@table, [:named_table, :public, :set, write_concurrency: true])
     :persistent_term.put(@enabled_key, state.enabled)
 
-    if state.enabled, do: Process.send_after(self(), :tick, state.tick_ms)
+    _ = if state.enabled, do: Process.send_after(self(), :tick, state.tick_ms)
 
     {:ok, state}
   end
@@ -330,7 +334,7 @@ defmodule Grappa.Repo.LockWatch do
   # A stall is a holder past the threshold WITH a queue behind it. Neither
   # half alone qualifies: a lone slow transaction blocks nobody, and waiters
   # with no holder are the pool's business, not the write lock's.
-  @spec detect(integer(), pos_integer()) :: :ok
+  @spec detect(integer(), non_neg_integer()) :: :ok
   defp detect(now, threshold_ms) do
     {holders, waiters} = partition(rows(), now)
 
@@ -385,7 +389,7 @@ defmodule Grappa.Repo.LockWatch do
   end
 
   @spec alive?(row()) :: boolean()
-  defp alive?({pid, _role, _since, _reported?}) do
+  defp alive?({pid, _, _, _}) do
     if Process.alive?(pid) do
       true
     else
@@ -396,7 +400,7 @@ defmodule Grappa.Repo.LockWatch do
 
   @spec partition([row()], integer()) :: {[{pid(), non_neg_integer()}], [{pid(), non_neg_integer()}]}
   defp partition(rows, now) do
-    {holding, waiting} = Enum.split_with(rows, fn {_pid, role, _since, _} -> role == :holding end)
+    {holding, waiting} = Enum.split_with(rows, fn {_, role, _, _} -> role == :holding end)
 
     {Enum.map(holding, fn {pid, _, since, _} -> {pid, now - since} end),
      Enum.map(waiting, fn {pid, _, since, _} -> {pid, now - since} end)}
@@ -405,7 +409,7 @@ defmodule Grappa.Repo.LockWatch do
   @spec unreported?(pid()) :: boolean()
   defp unreported?(pid) do
     case :ets.lookup(@table, pid) do
-      [{_pid, _role, _since, reported?}] -> not reported?
+      [{_, _, _, reported?}] -> not reported?
       [] -> false
     end
   end
