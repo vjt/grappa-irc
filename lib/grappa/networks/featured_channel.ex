@@ -15,6 +15,14 @@ defmodule Grappa.Networks.FeaturedChannel do
 
   Mirrors `Grappa.Networks.Server` (the sibling per-network sub-resource).
   """
+
+  # Its own boundary, like the other three Networks schemas (#1398). The dep
+  # on `Grappa.IRC` is a real one — `Identifier.canonical_target/1` and
+  # `valid_channel?/1` are called from the changeset — while `Network` is
+  # reached only as a `belongs_to` argument and a typespec, which the checker
+  # does not resolve, so it is not declared.
+  use Boundary, top_level?: true, deps: [Grappa.IRC]
+
   use Ecto.Schema
 
   import Ecto.Changeset
