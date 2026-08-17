@@ -47516,3 +47516,77 @@ _Not established: how many of the remaining 105 atoms are actually logged. The
 scan proves absence, never disuse, so the count of dead entries is a floor and
 not a measurement. The 39-arm `do_handle_in` door and the per-verb table that
 #1403's HIGH proposes are untouched by this work._
+<!-- entry #1397-f1 -->
+
+---
+
+## 2026-08-17 — #1397 F1: the handshake barrier takes its timeout as an argument, and the "live decision" was a removed default
+
+The #1397 entry above closes by holding `await_handshake` out of the
+qualified-call reasoning, on the grounds that its timeout axis is "a live
+decision: two files have already found one second insufficient." **That
+sentence is withdrawn. The history does not say it.**
+
+Both 5s sites were born at 5s. `test/grappa/account_deletion_test.exs` arrived
+in `5775e55a` (#157, 2026-06-29) and
+`test/grappa_web/controllers/session_controller_test.exs` in `5e6f7c53` (#126,
+same day); reading each file at the commit that introduced its wrapper shows
+`5_000` already there. Neither was ever raised from `1_000` in response to a
+failure, because neither was ever at `1_000`. Two new files written the same
+day by authors who picked a wider budget is not evidence that one second is
+too tight — it is not evidence about one second at all.
+
+**And the 1s majority was never chosen either.** Eight of the ten majority
+copies trace to a single commit, `84fe0850` (2026-05-08), which removed the
+default timeout from `IRCServer.wait_for_line/3` under the CLAUDE.md
+no-default-arguments rule and stamped the old default explicitly at ~150 call
+sites. The value the copies agree on is the value the default used to hide.
+Thirteen local wrappers then promptly re-hid it behind a zero-argument helper —
+the rule was obeyed at one layer and undone at the next, in the same file.
+
+### So the hoisted verb has no default
+
+`IRCServer.await_handshake(server, timeout)` requires the budget. Giving it a
+default would re-hide, on the same function family, exactly what `84fe0850`
+went to un-hide, and it would silently halve the two 5s sites the moment their
+`defp` disappeared. The timeout was never duplication; it was a parameter with
+thirteen hard-coded callers. It stays at the call site, where the test that
+pays for it can be read.
+
+The other two axes are duplication and they close. The alias axis dies with the
+local definitions. The prefix axis closes on the strict `"USER "`: `lib/` sends
+exactly one line beginning with `USER` (`auth_fsm.ex`) and no `USERHOST`
+anywhere, so both spellings select the same line — the strict one also says so,
+and a test asserts that `USERHOST` does not satisfy the barrier.
+
+### The arity is pinned by a test, not by the comment above it
+
+A rule stated in a docstring is a rule until the next session. `refute
+function_exported?(Grappa.IRCServer, :await_handshake, 1)` is the same rule
+stated in a way that goes red. Bought with the mutant: adding `\\ 1_000` back
+to the definition kills that assertion and only that one — four tests, one
+failure, the other three still green.
+
+### The collision claim above is no longer an inference
+
+The #1397 entry states the import/local collision as "the documented Elixir
+rule plus the 110-to-0 evidence", explicitly not a build anyone watched fail.
+It has now been watched. Adding `admin_session/0` to `Grappa.AuthFixtures` and
+compiling one of the fourteen files that define it locally and import the
+module wholesale:
+
+    error: imported Grappa.AuthFixtures.admin_session/0 conflicts with local function
+    == Compilation error in file .../admin/circuit_controller_test.exs ==
+
+The mutation was reverted. The consequence for the rest of the bucket is
+unchanged in direction and now firm in kind: the `admin_session` slice is
+atomic across fifteen files, and no slicing plan can pretend otherwise.
+
+_Not established: whether one second is the right budget. This work falsified
+the argument for changing it, not the value — no suite timing, no attributed
+flake, no Argon2 measurement was taken, and the design deliberately avoids
+having to answer. Also unmeasured: `start_server` (21 clauses over 20 files)
+and the fixture trio, which needs a ruling first — substituting AuthFixtures'
+placeholder hash for a real Argon2 one changes what fourteen files prove, and
+the local `visitor_fixture` calls the production provisioning verb the
+canonical one bypasses._
