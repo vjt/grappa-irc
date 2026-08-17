@@ -38,7 +38,7 @@ defmodule Grappa.IRCServerTest do
 
   test "raises when the registration line never arrives inside the budget" do
     {:ok, server} = IRCServer.start_link(IRCServer.passthrough_handler())
-    _sock = connected_client(server)
+    connected_client(server)
 
     assert_raise MatchError, fn -> IRCServer.await_handshake(server, 50) end
   end
