@@ -46526,3 +46526,113 @@ how pins disappear one at a time.
 
 _Not measured here: nothing in this entry claims a verdict for the full
 suite or the type gates; those are a separate run._
+<!-- entry #1336 S2 -->
+
+---
+
+## 2026-08-17 — #1336 S2: the barrier said "not at the bottom" and meant "the switch has finished"
+
+#1079 reports `scroll-on-window-switch` settling 337px from the bottom against
+an expected 50 — the same number twice, on two trees. The shared cause with
+#1080 was established a slice ago: a scrollTop DECREASE landing after a send
+makes `onScroll` disarm the follow intent, `tailFollowWhenSettled` yields, and
+the pane freezes wherever the decrease left it. But that spec has no wheel, so
+its TRIGGER stayed inference, and the previous slice refused to cure an
+inference on the grounds that a barrier silencing an unmeasured write is the
+paper-over this epic exists to refuse. This slice measured it.
+
+### What the switch actually does
+
+An in-page scroll recorder, installed before the sidebar click, four
+iterations at CPU throttle 1x/6x/12x/20x. The shape was identical in all four;
+only the timings stretched:
+
+| t (1x) | scrollTop | what it is |
+|---|---|---|
+| 0ms | 354 | the `$server` pane we switch away from |
+| 45ms | **7** | the rows recreation resetting to the top |
+| 59ms | 1055 | the marker jump, in flight |
+| 78ms | **1078** | the marker, at rest |
+
+Geometry at that moment: `scrollHeight` 1627, `clientHeight` 212, so
+`maxScroll` is 1415. Two arithmetic consequences, both from those measured
+numbers alone. `1415 - 1078 = 337` — the reported failure is the pane sitting
+exactly on the marker, which independently reproduces what the previous slice
+derived. And `1415 - 7 = 1408`.
+
+That second number is the finding. The barrier guarding the send is
+`distance-to-bottom > 50`, and 1408 satisfies it as comfortably as 337 does.
+**The barrier cannot tell "the switch landed on the marker" from "the pane is
+at the top with the marker jump still to come."** It says "not at the bottom"
+while meaning "the activation has finished" — the #1080 shape again, a gate
+satisfied by a state that is not the one it names, except that here the state
+is TRANSIENT rather than pre-existing, which is why reading the spec never
+revealed it.
+
+`waitForScrollRest` is the missing half: the gesture core with the wheel taken
+off, holding until two ADJACENT samples agree and rejecting if the pane never
+stops. Unlike distance, rest cannot be true of a pane mid-jump. Both waits now
+share one sampling loop, and `requireMove` is the only thing they disagree
+about — a gesture resting back on its baseline was never delivered, while a
+barrier is satisfied by a pane that was already still.
+
+### The instrument had the disease it was built to cure
+
+Worth recording because it was caught by measurement and would have survived
+any amount of reading. The first version put the `pollMs` sleep at the END of
+the loop body, so the FIRST comparison — baseline against the first sample —
+was separated by one round trip instead of by a poll. A pane read twice in the
+same millisecond reads equal whatever it is doing, so the barrier resolved
+INSTANTLY against a pane an injected `setInterval` was moving 1px every 20ms,
+and the spec then died downstream on an anonymous number.
+
+The unit fakes could not have caught it: they answer from a script, one value
+per read, so "no gap" and "a poll apart" are the same sequence to them. The
+regression test therefore answers from a CLOCK
+(`1078 - floor(elapsed / 20)`), which is the only shape in which the omission
+is observable — and it is the only one of the eleven cases that the
+sleep-position mutant kills.
+
+### The attribution, both sides
+
+The displacement is an injected `setInterval` writing the pane every 20ms, run
+on both sides of the change, on the same test:
+
+| | what the red says |
+|---|---|
+| barrier removed | `expect(received).toBeLessThanOrEqual(expected)` — it accuses the product |
+| barrier present | `waitForScrollRest: the pane never came to rest within 10000ms (last 576)` — it accuses the barrier's subject, by name |
+
+`576` is itself attributable: `1078 - 10000/20 = 578`, the jitter's own
+position when the budget ran out.
+
+An earlier attempt at that displacement was silently INERT — injected at the
+first of the three call sites while the run was scoped to the third, so it
+never executed and both sides passed identically. That is the same
+inert-injection the gesture helper's "never moved" reject was built for after
+it happened to the previous slice, and it happened again here to the person
+who had just read about it.
+
+### What this does NOT establish
+
+**The natural failure is still not reproduced.** Nobody in this epic has
+reproduced it, and this slice does not either: in eight recorded samples the
+barrier exited at the marker (1078) every single time, never at the reset. So
+the vacuity is proven — the predicate demonstrably admits a state that is not
+the one it names, and that state demonstrably occurs, 45ms into every switch —
+while its EXPLOITATION remains unobserved. What is fixed is a barrier that
+could not distinguish two panes; whether that is the mechanism behind #1079's
+337 is not shown here.
+
+**CPU throttling cannot arbitrate it, measured.** The obvious way to widen the
+window fails, and fails for a structural reason: the barrier polls through the
+page too, so throttling slows the clock and the thing being clocked together.
+The margin between the marker landing and the barrier clearing GREW with the
+rate — 105ms at 1x, 167ms at 20x — instead of closing. Whatever inverts those
+two clocks is not CPU speed, and a late network-timed rows recreation (the
+catch-up refresh the spec's own comments call the "307 race") remains the
+candidate nobody has instrumented.
+
+**The post-send decrease seen at throttled rates is not the freeze.** It is
+`1431 → 1415`, the tail-follow overshooting and clamping to `maxScroll`. It
+would have made a tidy story and it is the wrong one.
