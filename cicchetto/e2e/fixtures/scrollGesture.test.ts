@@ -180,9 +180,9 @@ describe("#1336 S2 — waitForScrollRest, and the barrier it replaces", () => {
     const movingPane: Pick<ScrollPane, "scrollTop"> = {
       scrollTop: async () => 1078 - Math.floor((Date.now() - start) / 20),
     };
-    expect(await failureOf(waitForScrollRest(movingPane, { timeoutMs: 300, pollMs: 50 }))).toContain(
-      "never came to rest",
-    );
+    expect(
+      await failureOf(waitForScrollRest(movingPane, { timeoutMs: 300, pollMs: 50 })),
+    ).toContain("never came to rest");
   });
 
   it("resolves at the position the pane was ALREADY holding", async () => {
