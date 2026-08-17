@@ -46877,3 +46877,61 @@ because reaching it means fabricating a state the FSM cannot emit. And the
 claim that no OTHER consumer names the moved functions was scoped to `lib` and
 `test` — a comment in `cicchetto/src/RecoverModal.tsx` named one, and was
 found only after the move._
+<!-- entry #1468 -->
+
+---
+
+## 2026-08-17 — #1468: the terminal rule is now proven, not exemplified
+
+#623 pt3 set a rule — no progress step may be left `:running` when the recovery
+reaches a terminal state — and two of the five terminal clauses did not honour
+it. A deadline out of `:awaiting_verb_settle` or `:awaiting_nick` reported one
+step, while every path into those phases had passed through
+`:idle -> :awaiting_r`, which sets `identify: :running`. The client upserts one
+row per step name and never touches a row nobody updates, so the modal closed
+reporting a failed recovery with the identify step spinning forever.
+
+The in-code comment that justified leg (a) claimed the identify step "never
+started". That was false — `:awaiting_nick` is reachable only through
+`:awaiting_r` — and it is deleted rather than softened, in the commit that
+cures the clause it was defending.
+
+### What the red buys, and what it deliberately does not
+
+The cure is two clauses. The interesting part is why the gap survived a rule, a
+test for the rule on the sibling leg, and a review: **each leg was pinned by its
+own example, so a clause nobody wrote an example for answered to nothing.**
+
+The replacement is an **exhaustive walk**, not a StreamData property — a
+breadth-first search to fixpoint over the reachable `{phase, verb, rows}` space,
+asserting the invariant at every terminal. The space is finite and small (seven
+phases, one status per step name), so the search is a PROOF over every reachable
+path, retry loops included, where a generator would be a sample with a seed that
+can get lucky. It carries its own vacuity floors: a minimum state count, a
+minimum terminal count, and the assertion that a terminal is reached out of all
+four phases that can fail. `rows` mirrors the CLIENT's rule (`recoverProgress.ts`
+upserts by step name, last write wins) rather than a convenient one — the
+question being asked is what the modal is showing when the modal closes.
+
+### The other three clauses: two by the rule, one vacuously
+
+The issue left it unestablished whether the remaining clauses were correct for
+the same reason or by accident. Established here:
+
+- `:awaiting_r` and `:awaiting_final_r` are correct **by the rule** — the steps
+  that can still be `:running` at those terminals are exactly the ones they
+  reconcile.
+- The catch-all `terminal_steps(_, _, reason)` is correct **only vacuously**:
+  no reachable path reaches it, because `:failed` is only ever entered from the
+  four named phases. It reconciles `nick` alone and would strand rows the day a
+  new phase could fail. It is left as found — a cure nothing can exercise is a
+  claim, not a fix — and the walk is what makes that safe, since the terminal
+  becomes reachable and checked the moment such a phase exists.
+
+One inaccuracy is knowingly left in place: on the bounded-retry path the settle
+marked the reclaim verb `:ok` and the terminal marks it `:failed` again. It
+predates this issue and strands nothing, so curing it would widen past what the
+red buys.
+
+_Not established: how often leg (a) is reached in production. No frequency was
+measured, here or in the issue._

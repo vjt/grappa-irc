@@ -28,18 +28,26 @@ defmodule Grappa.Session.RecoverProgress do
   and it can only stay that way while the projection stays pure. Nothing in
   it may reach for session state.
 
-  ## Known defect carried over: #1468
+  ## The terminal rule (#623 pt3, repaired by #1468)
 
-  A terminal out of `:awaiting_verb_settle` or `:awaiting_nick` reports only
-  one step, but EVERY path into those phases ran through
-  `:idle -> :awaiting_r`, which already set `identify: :running`. The client
-  never reconciles a row nobody updates, so the modal ends with `identify`
-  spinning next to a failed outcome — the very thing #623 pt3 set out to
-  prevent ("RECONCILE every in-flight step on terminal `:failed`").
+  No step may be left `:running` when the recovery reaches a terminal state.
+  The client upserts one row per step name and never touches a row nobody
+  updates, so a step the modal was told was `:running` spins forever unless
+  some later event gives it a final status.
 
-  Slice 4 moved this table AT PARITY and deliberately did NOT cure it:
-  a behaviour change buried in a refactor is invisible to a reviewer reading
-  the diff for a move. The fix is #1468, bought by its own red.
+  Two clauses used to break that rule: a terminal out of
+  `:awaiting_verb_settle` or `:awaiting_nick` reported ONE step, while every
+  path into those phases had gone through `:idle -> :awaiting_r`, which sets
+  `identify: :running`. #1468 reconciles them.
+
+  The clause-by-clause fix is the small half. The reason the gap survived a
+  rule, a test for the rule, and a review is that each leg was pinned by its
+  OWN example, so a clause nobody wrote an example for answered to nothing.
+  What holds the rule now is the exhaustive walk in
+  `recover_progress_test.exs`: a breadth-first search over the reachable
+  `{phase, verb, rows}` space that asserts the invariant at every terminal it
+  can reach. A new phase or a new terminal clause is covered the moment it
+  becomes reachable, without anyone remembering to write its example.
 
   Boundary: inherits the parent `Grappa.Session` boundary — same pattern as
   sibling submodules `Server`, `EventRouter`, `RecoverIdentity`. No
@@ -88,8 +96,7 @@ defmodule Grappa.Session.RecoverProgress do
 
   # #623 pt3 — RECONCILE every in-flight step on terminal :failed (not just one)
   # so the modal never strands a step at :running (the trace "hang"), keyed on
-  # the phase we failed OUT of. Two of the five clauses below do not honour
-  # that rule — see the #1468 note in the moduledoc.
+  # the phase we failed OUT of.
   def steps(old, %{phase: :failed, reason: reason, verb: verb}),
     do: terminal_steps(old, verb, reason)
 
@@ -98,19 +105,31 @@ defmodule Grappa.Session.RecoverProgress do
   def steps(_, _), do: []
 
   # #623 pt3 — the reconciled terminal step list, keyed on the phase we failed
-  # OUT of, with the two reclaim legs kept DISTINCT + trace-diagnosable:
+  # OUT of. Each clause names the steps that can still be `:running` on ANY
+  # path into that phase, plus the one that actually failed, with the two
+  # reclaim legs kept DISTINCT + trace-diagnosable:
   #   * `:awaiting_r` — a clean NICK but `+r` never came → the IDENTIFY failed
   #     (`:wrong_password`); the nick itself landed clean (`:ok`).
-  #   * `:awaiting_verb_settle` — the reclaim verb went unanswered → the verb
-  #     failed (`:services_declined`). **#1468: `identify` — running since the
-  #     start transition — is not reconciled here, nor is `nick` after a retry.**
+  #   * `:awaiting_verb_settle` — the reclaim verb went unanswered
+  #     (`:services_declined`). `identify` has been running since the start
+  #     transition, and `nick` is either already `:failed` (first pass) or
+  #     `:running` again (the bounded retry re-entered this phase after the
+  #     settle set it running). A phase-keyed projection cannot tell those two
+  #     paths apart, and it does not need to: `:failed` is true on both.
   #   * `:awaiting_nick` — leg (a): the re-NICK never landed → the nick failed
-  #     (`:nick_unavailable`). **#1468: `identify` is not reconciled here
-  #     either; the comment this clause used to carry claimed the identify step
-  #     never started, which no reachable path makes true.**
+  #     (`:nick_unavailable`), and `identify` — running since the start — is
+  #     reconciled with it. The comment this clause used to carry said the
+  #     identify step "never started"; that was FALSE, since `:awaiting_nick`
+  #     is only reachable through `:awaiting_r`, which starts it. Deleted
+  #     rather than softened.
   #   * `:awaiting_final_r` — leg (b): the re-NICK landed but `+r` never
   #     confirmed → the identify failed (`:identify_unconfirmed`); the nick is
-  #     already `:ok`.
+  #     already `:ok`, and so is the verb.
+  #
+  # The `verb` row on the retry path is the one thing this list does not get
+  # exactly right, and it predates #1468: the settle marked it `:ok`, and the
+  # terminal marks it `:failed` again. It strands nothing, so #1468 leaves it
+  # as found rather than widening past what its red buys.
   @spec terminal_steps(
           RecoverIdentity.phase(),
           RecoverIdentity.verb(),
@@ -120,14 +139,22 @@ defmodule Grappa.Session.RecoverProgress do
     do: [{:nick, :ok, nil}, {:identify, :failed, reason}]
 
   defp terminal_steps(:awaiting_verb_settle, verb, reason) when verb in [:recover, :release],
-    do: [{verb, :failed, reason}]
+    do: [{:nick, :failed, reason}, {verb, :failed, reason}, {:identify, :failed, reason}]
 
   defp terminal_steps(:awaiting_nick, _, reason),
-    do: [{:nick, :failed, reason}]
+    do: [{:nick, :failed, reason}, {:identify, :failed, reason}]
 
   defp terminal_steps(:awaiting_final_r, _, reason),
     do: [{:nick, :ok, nil}, {:identify, :failed, reason}]
 
+  # No reachable path lands here: `:failed` is only ever entered from the four
+  # phases above (`RecoverIdentity.step/2` has no other clause that stops with
+  # `phase: :failed`), so this default satisfies the rule VACUOUSLY rather than
+  # by honouring it — it reconciles `nick` alone. Left as found, since the
+  # exhaustive walk cannot reach it and a cure nothing can exercise is a claim,
+  # not a fix. The walk is what makes that safe: the day a new phase can fail,
+  # the terminal it produces becomes reachable and the invariant is checked
+  # there, on this clause, without anyone remembering it exists.
   defp terminal_steps(_, _, reason),
     do: [{:nick, :failed, reason}]
 end
