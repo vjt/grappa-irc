@@ -35,7 +35,12 @@
 // a fully-read channel.
 
 import type { Page } from "@playwright/test";
-import { loginAs, scrollbackLines, selectChannel } from "../fixtures/cicchettoPage";
+import {
+  loginAs,
+  pageScrollbackBy,
+  scrollbackLines,
+  selectChannel,
+} from "../fixtures/cicchettoPage";
 import { setReadCursorToId } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
@@ -129,14 +134,23 @@ async function visibleRowIds(page: Page): Promise<number[]> {
   });
 }
 
+// #1336 — every gesture in this file goes through the shared door, which
+// waits for the pane to MOVE and then HOLD and REJECTS when it did neither.
+//
+// Measured before the conversion, on a quiet host: delete the gesture below
+// outright and FOUR of the six tests stay green (`--grep "forward-only
+// contract"`, 4 passed / 2 failed). Only the two strict-inequality assertions
+// notice, and even they blame the product — the red reads
+// `expect(701).toBeLessThan(701)`, never "the wheel was not delivered". The
+// budget is a condition-wait ceiling, not a sleep: it resolves the instant the
+// pane settles.
+const GESTURE_TIMEOUT_MS = 5_000;
+
 async function scrollByPx(page: Page, deltaY: number): Promise<void> {
   // BUGHUNT-2: real WheelEvent so the input-event gate in
   // ScrollbackPane's onScroll passes. Synthetic dispatchEvent(scroll)
   // was gated out post-BUGHUNT-2.
-  const box = await page.locator('[data-testid="scrollback"]').boundingBox();
-  if (!box) throw new Error("scrollback bounding box null");
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.wheel(0, deltaY);
+  await pageScrollbackBy(page, deltaY, GESTURE_TIMEOUT_MS);
 }
 
 async function scrollToBottom(page: Page): Promise<void> {
@@ -147,10 +161,11 @@ async function scrollToBottom(page: Page): Promise<void> {
   // ALSO advances the cursor, but via a DIFFERENT path — a direct
   // reached-bottom advance in `scrollToBottomGesture`, not the settle — so
   // the wheel is what pins the settle contract these tests assert.)
-  const box = await page.locator('[data-testid="scrollback"]').boundingBox();
-  if (!box) throw new Error("scrollback bounding box null");
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.wheel(0, 5000);
+  //
+  // #1336: this one was watched by NOBODY — deleting it left all six tests
+  // green. Through the shared door a wheel that moves nothing is a named
+  // failure instead of a silent pass.
+  await pageScrollbackBy(page, 5000, GESTURE_TIMEOUT_MS);
 }
 
 async function focusChannelAndWaitForRows(page: Page): Promise<void> {
