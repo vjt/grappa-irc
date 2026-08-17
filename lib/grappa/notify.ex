@@ -79,12 +79,12 @@ defmodule Grappa.Notify do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.IRC, Grappa.PubSub, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
-    # No `Networks.Network` dep and no waiver (#1398). `Entry`'s
-    # `belongs_to` is not a resolved reference; the FK pre-check at
-    # `check_exists/4` passes the module as a plain argument, which the
-    # compiler is left to judge — if that is a reference, this line becomes a
-    # declared dep on the leaf, which no longer closes a cycle either way.
+    # Neither `Grappa.Accounts` nor `Networks.Network` is declared, and there
+    # is no waiver for either. `Entry` reaches `User` and `Network` by
+    # `belongs_to` and typespecs, and the FK pre-check at `check_exists/4`
+    # passes the module as a plain argument — measured, none of those three
+    # shapes is a reference the checker resolves (#1399, #1398).
+    deps: [Grappa.IRC, Grappa.PubSub, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
     exports: [Entry, Wire]
 
   import Ecto.Query

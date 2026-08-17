@@ -33,8 +33,10 @@ defmodule Grappa.Scrollback do
 
   use Boundary,
     top_level?: true,
+    # No `Grappa.Accounts` dep: `User` is reached only by `Message`'s
+    # `belongs_to` and its typespec — metadata atoms, not a reference the
+    # checker resolves (#1399).
     deps: [
-      Grappa.Accounts,
       Grappa.IRC,
       # `Wire.to_json/1` matches `%Network{slug: slug}`, the wire-shape
       # contract from A1+A26 — a real reference, declared since #1398 made

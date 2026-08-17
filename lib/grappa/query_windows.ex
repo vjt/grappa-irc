@@ -96,13 +96,14 @@ defmodule Grappa.QueryWindows do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Accounts, Grappa.IRC, Grappa.PubSub, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
-    # No `Networks.Network` dep and no waiver (#1398), same call as
-    # `Grappa.Notify`: `Window`'s `belongs_to` is not a resolved reference,
-    # and the FK pre-check at `check_exists/4` passes the module as a plain
-    # argument. The old cycle this waiver avoided,
-    # `Session → QueryWindows → Networks → Session`, cannot form through a
-    # leaf that depends only on `Grappa.IRC`.
+    # Neither `Grappa.Accounts` nor `Networks.Network` is declared, and there
+    # is no waiver for either — same call as `Grappa.Notify`. `Window` reaches
+    # both by `belongs_to` and typespecs, and the FK pre-check at
+    # `check_exists/4` passes the module as a plain argument; measured, none of
+    # those shapes is a reference the checker resolves (#1399, #1398). The old
+    # cycle the waiver avoided, `Session → QueryWindows → Networks → Session`,
+    # cannot form through a leaf that depends only on `Grappa.IRC`.
+    deps: [Grappa.IRC, Grappa.PubSub, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
     exports: [Window, Wire]
 
   import Ecto.Query

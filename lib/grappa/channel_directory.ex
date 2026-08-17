@@ -15,9 +15,11 @@ defmodule Grappa.ChannelDirectory do
     # `Grappa.IRC` — `Wire.mark_featured/2` folds directory names via
     # `Identifier.canonical_target/1` (ASCII, #364/#525/#537) to key them against
     # the canonical featured set.
-    deps: [Grappa.Accounts, Grappa.IRC, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
-    # No `Networks.Network` dep and no waiver: `Entry` reaches it only by
-    # `belongs_to` and a typespec, which the checker does not resolve (#1398).
+    # Neither `Grappa.Accounts` nor `Networks.Network` is declared, and there
+    # is no waiver for either: `Entry` reaches `User` and `Network` only by
+    # `belongs_to` and a typespec, which are not references the checker
+    # resolves (#1399 for the first, #1398 for the second).
+    deps: [Grappa.IRC, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
     exports: [Entry, Wire]
 
   import Ecto.Query
