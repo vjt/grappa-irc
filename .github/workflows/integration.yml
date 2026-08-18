@@ -118,14 +118,27 @@ jobs:
   e2e:
     name: cicchetto + grappa + azzurra-testnet
     runs-on: ubuntu-latest
-    # 45, not 30: the "~23min of real work, ~2min margin" figure this cap
-    # was set from is stale. Run 30774056306 (590 passed, clean branch,
-    # same runner class) took 25.5min of suite time with the job at
-    # 29m55s — five seconds under the old cap — and #696 was killed at
-    # test 589 of 590 by the timeout alone, not by a failure. A timeout is
-    # a runaway-job backstop, not a performance budget; it should only
-    # fire when something is actually wrong.
-    timeout-minutes: 45
+    # 60, not 45 — third raise (25 -> 30 in 6478ef72, 30 -> 45, now 60),
+    # and the reason to stop doing this arithmetic is measured in #1519:
+    # across 85 green runs on main between 2026-08-11 and 2026-08-18 the
+    # DAILY MEDIAN rose monotonically 36.0 -> 39.6 min, slope
+    # +0.42 min/day, which put 40min runs about five minutes under the
+    # 45 cap. 87% of that wall clock is one strictly serial Playwright
+    # suite (34.3 of 39.6 min; `workers: 1` is load-bearing, see
+    # DESIGN_NOTES) — so the growth is structural, not a regression a
+    # cap can absorb.
+    #
+    # The principle from the 30 -> 45 raise still holds and is why the
+    # new number is deliberately far above the working range: a timeout
+    # is a runaway-job BACKSTOP, not a performance budget, and it should
+    # only fire when something is actually wrong. #696 was killed at test
+    # 589 of 590 by the cap alone, not by a failure; that must not recur.
+    #
+    # This raise buys headroom, it fixes nothing. #1519 holds the
+    # breakdown and the three levers (cache the dep compile, shard the
+    # suite, or make it parallel-safe). If the cap is ever the thing
+    # tracking the suite's growth again, raise the issue, not the number.
+    timeout-minutes: 60
     # `packages: read` so `docker login ghcr.io` can pull the
     # prebuilt bahamut + services images from `ghcr.io/vjt/*` (see
     # cicchetto/e2e/compose.ghcr-vjt.yaml). Default GITHUB_TOKEN has
