@@ -174,13 +174,7 @@ defmodule Grappa.Session.ServerTest do
   # visitor (`:none`, not recoverable). Returns the scaffold map; teardown via
   # `start_visitor_session_for`'s on_exit.
   defp start_recover_visitor(secret) do
-    handler = fn state, line ->
-      if String.starts_with?(line, "USER "),
-        do: {:reply, ":irc 001 #{@recover_nick} :Welcome\r\n", state},
-        else: {:reply, nil, state}
-    end
-
-    {server, port} = IRCServer.start_server(handler)
+    {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", @recover_nick))
 
     {network, _} =
       network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")
@@ -425,13 +419,7 @@ defmodule Grappa.Session.ServerTest do
       # never a bare boolean grappa invents. A 221 RPL_UMODEIS carrying +r
       # populates state.umodes; the umode_changed broadcast is the "processed"
       # barrier before we read connection_info.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -496,13 +484,7 @@ defmodule Grappa.Session.ServerTest do
     # (the safe, prod-invariant default) when there is no live pid.
 
     test "returns the live session's CASEMAPPING once a 005 advertises it" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -531,13 +513,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "returns :ascii (bahamut default) before any 005 CASEMAPPING" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -564,13 +540,7 @@ defmodule Grappa.Session.ServerTest do
     # what prod has always assumed rather than refusing every sigil.
 
     test "returns the live session's advertised STATUSMSG set once a 005 carries it" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -597,13 +567,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "returns the bahamut default before any 005 STATUSMSG" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -2437,13 +2401,7 @@ defmodule Grappa.Session.ServerTest do
   # bytes rather than a hand-built state.
   describe "CAP ACK grants the account axis (#388)" do
     test "an ACKed account-notify turns a self ACCOUNT into an identity acquisition" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -2537,13 +2495,7 @@ defmodule Grappa.Session.ServerTest do
     test "306 RPL_NOWAWAY fires away_confirmed(:away) but persists NO $server row" do
       # Reply to USER with 001 so the session reaches registered before we
       # feed the away numeric (mirrors the 221 RPL_UMODEIS test handler).
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -2576,13 +2528,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "305 RPL_UNAWAY fires away_confirmed(:present) but persists NO $server row" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -3439,13 +3385,7 @@ defmodule Grappa.Session.ServerTest do
     # the LAST fragment so cic's scrollback view aligns with the
     # final row id.
     test "PRIVMSG > linelen splits into N upstream lines + N scrollback rows" do
-      welcomed_handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 grappa-actual :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      welcomed_handler = IRCServer.welcome_handler(":server", "grappa-actual")
 
       {server, port} = IRCServer.start_server(welcomed_handler)
       {user, network, _} = setup_user_and_network(port)
@@ -4205,13 +4145,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "self-NICK rename: subsequent PRIVMSG persists with new nick" do
-      rfc_handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      rfc_handler = IRCServer.welcome_handler(":server", "grappa-test")
 
       {server, port} = IRCServer.start_server(rfc_handler)
       {user, network, _} = setup_user_and_network(port)
@@ -4242,13 +4176,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "other-user NICK rename does NOT affect own SessionStateHelpers.nick(state)" do
-      rfc_handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      rfc_handler = IRCServer.welcome_handler(":server", "grappa-test")
 
       {server, port} = IRCServer.start_server(rfc_handler)
       {user, network, _} = setup_user_and_network(port)
@@ -4279,13 +4207,7 @@ defmodule Grappa.Session.ServerTest do
       # already classified peer ACTIONs correctly (`CTCP.action?/1`); only the
       # outbound persist path hardcoded :privmsg. Pin the fix at the persist
       # boundary — both the persisted row and the broadcast must carry :action.
-      rfc_handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      rfc_handler = IRCServer.welcome_handler(":server", "grappa-test")
 
       {server, port} = IRCServer.start_server(rfc_handler)
       {user, network, _} = setup_user_and_network(port)
@@ -4329,13 +4251,7 @@ defmodule Grappa.Session.ServerTest do
       # already classifies ACTION → :action, so inbound + outbound agree (#14
       # lesson). Non-ACTION CTCP keeps :privmsg and carries typed flat meta
       # (ctcp_verb/ctcp_args) so cic renders "→ CTCP VERB", never \x01.
-      rfc_handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      rfc_handler = IRCServer.welcome_handler(":server", "grappa-test")
 
       {server, port} = IRCServer.start_server(rfc_handler)
       {user, network, _} = setup_user_and_network(port)
@@ -4386,13 +4302,7 @@ defmodule Grappa.Session.ServerTest do
     # above; distinct verb (`send_ctcp` vs `send_privmsg`) so a plain DM still
     # auto-opens.
     setup do
-      rfc_handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      rfc_handler = IRCServer.welcome_handler(":server", "grappa-test")
 
       {server, port} = IRCServer.start_server(rfc_handler)
       {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
@@ -4534,13 +4444,7 @@ defmodule Grappa.Session.ServerTest do
     @notice_nick "vjt"
 
     setup do
-      rfc_handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 #{@notice_nick} :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      rfc_handler = IRCServer.welcome_handler(":server", @notice_nick)
 
       {server, port} = IRCServer.start_server(rfc_handler)
       {user, network, _} = setup_user_and_network(port, %{nick: @notice_nick})
@@ -4710,13 +4614,7 @@ defmodule Grappa.Session.ServerTest do
     # FAILURE opens none either. This is the behavioral falsification target:
     # revert the server gate and this goes RED.
     setup do
-      rfc_handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      rfc_handler = IRCServer.welcome_handler(":server", "grappa-test")
 
       {server, port} = IRCServer.start_server(rfc_handler)
       {user, network, _} = setup_user_and_network(port, %{nick: "vjt"})
@@ -4778,13 +4676,7 @@ defmodule Grappa.Session.ServerTest do
       # Mirror of the inbound EventRouter capture for the outbound door:
       # an operator who holds @ in the channel must have their own message
       # frozen at @ so a later deop doesn't retroactively un-prefix it.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#test"]})
@@ -4849,13 +4741,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "JOIN-self resets members[channel] to %{own_nick => []}" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -4880,13 +4766,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "353 RPL_NAMREPLY populates members with mode prefixes parsed" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -4921,13 +4801,7 @@ defmodule Grappa.Session.ServerTest do
       # "SessionStateHelpers.members(state)[channel] is now populated; re-fetch is safe."
       # Without this, a fresh /join sidebar entry has an empty MembersPane
       # until page reload.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -4969,13 +4843,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "QUIT removes nick from every channel + persists one row per channel" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -5028,13 +4896,7 @@ defmodule Grappa.Session.ServerTest do
       # Both the in-process state map AND the per-channel topic broadcast
       # are part of the contract — cic uses the broadcast to flip the
       # window's render state without polling.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -5093,13 +4955,7 @@ defmodule Grappa.Session.ServerTest do
       # from the moment of join. Every join path (autojoin, /join,
       # NickServ-driven, invite-rejoin) funnels through the self-JOIN echo,
       # so this one arm covers them all.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -5124,13 +4980,7 @@ defmodule Grappa.Session.ServerTest do
       # elicits a 324, EventRouter folds it into channel_modes, and the
       # {:channel_modes_changed} effect broadcasts on the per-channel
       # topic. Guards the full P0 pipeline (query → cache → broadcast).
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -5178,13 +5028,7 @@ defmodule Grappa.Session.ServerTest do
       # Only self-JOIN promotes window state. Other-user JOINs land in
       # scrollback as :persist :join rows and broadcast the row itself
       # via the existing event surface — no `kind: :joined` event.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -5221,13 +5065,7 @@ defmodule Grappa.Session.ServerTest do
 
   describe "#216 — ISUPPORT CHANMODES/PREFIX capability table" do
     test "005 with CHANMODES + PREFIX stores the isupport table + broadcasts on Topic.user" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -5268,13 +5106,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "get_isupport returns the bahamut default before any 005 (always-succeeds)" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -5299,13 +5131,7 @@ defmodule Grappa.Session.ServerTest do
       # reconnect / 005. We reproduce the stale struct with
       # `:sys.replace_state` deleting the key, exactly as a pre-field proc
       # would look post-reload.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -5352,13 +5178,7 @@ defmodule Grappa.Session.ServerTest do
     # would leave every connected client sizing its warning against the
     # previous (usually RFC-default) frame for the rest of the session.
     test "005 that changes ONLY LINELEN still republishes the frame budget" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -5396,13 +5216,7 @@ defmodule Grappa.Session.ServerTest do
       # analogue of #216's `MODE #chan` join-time query. Umodes are
       # per-session (emitted ONCE at registration), so this rides the
       # numeric-1 handler, not the per-channel :joined arm.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -5421,13 +5235,7 @@ defmodule Grappa.Session.ServerTest do
       # umode string, store on the per-session `umodes` field, broadcast the
       # typed `umode_changed` payload on Topic.user (umodes are per
       # (subject, network), like own_nick_changed / isupport_changed).
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -5461,13 +5269,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "get_umodes returns [] before any 221 (always-succeeds)" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -5486,13 +5288,7 @@ defmodule Grappa.Session.ServerTest do
       # modal reflects a mid-session `/umode +x` (and services-set +r/+a at
       # IDENTIFY, which flow through the same branch). Reuse the verb (the
       # existing self-mode branch), add the noun (stored state).
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -5528,13 +5324,7 @@ defmodule Grappa.Session.ServerTest do
       # self-MODE write paths must tolerate the absent key (Map.get default +
       # Map.put, never `%{state | umodes: ...}`) so the sessions don't
       # crash-wave on the next WS reconnect / umode event.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -5702,13 +5492,7 @@ defmodule Grappa.Session.ServerTest do
       # typed supported_umodes_changed payload on Topic.user (umodes are per
       # (subject, network), like umode_changed / isupport_changed). The 004
       # STILL routes to $server for display — see numeric_router_test.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -5745,13 +5529,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "get_supported_umodes returns [] before any 004 (always-succeeds)" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -5771,13 +5549,7 @@ defmodule Grappa.Session.ServerTest do
       # (get_supported_umodes) and the write path (004 fold) must tolerate the
       # absent key (Map.get default + Map.put) rather than KeyError-crashing
       # the :transient proc on the next user-topic snapshot / 004.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port)
@@ -6684,13 +6456,7 @@ defmodule Grappa.Session.ServerTest do
       # arm also clears any lingering failure metadata so a re-join +
       # re-fail gets a fresh reason rather than stale text from a prior
       # failure.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -6742,13 +6508,7 @@ defmodule Grappa.Session.ServerTest do
       # The :persist :part row already broadcasts the UI feed-line via
       # the existing event surface; emitting an additional `kind: parted`
       # would duplicate the signal and force cic to dedupe.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -6785,13 +6545,7 @@ defmodule Grappa.Session.ServerTest do
       # :kicked AND broadcasts kind: :kicked carrying by + reason on
       # the per-channel topic so cic transitions the visual without
       # parsing the scrollback.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -6843,13 +6597,7 @@ defmodule Grappa.Session.ServerTest do
       # IRC permits KICK with no trailing reason param. The :kicked
       # broadcast must carry reason: nil rather than an empty string —
       # cic discriminates "no reason given" from "empty reason given".
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -6883,13 +6631,7 @@ defmodule Grappa.Session.ServerTest do
       # Only self-target KICK transitions window state. Other-target
       # KICKs land in scrollback as :persist :kick rows; the operator
       # is still in the channel.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -6927,13 +6669,7 @@ defmodule Grappa.Session.ServerTest do
 
   describe "list_members/3 snapshot" do
     test "returns members in mIRC sort: @ ops first, + voiced second, plain last" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -6996,13 +6732,7 @@ defmodule Grappa.Session.ServerTest do
     # (cic shows "loading…") and the latter returns `{:ok, []}` (cic
     # shows "no members" empty state).
     test "joined channel pre-366 returns :uninitialized" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -7027,13 +6757,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "joined channel post-366 with empty NAMES returns {:ok, []}" do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
 
@@ -8806,13 +8530,7 @@ defmodule Grappa.Session.ServerTest do
     test "registered visitor: 001 stages pending_auth + clears one-shot field" do
       nick = "v_t16_#{System.unique_integer([:positive])}"
 
-      rfc_handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 #{nick} :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      rfc_handler = IRCServer.welcome_handler(":server", nick)
 
       {server, port} = IRCServer.start_server(rfc_handler)
       {anon_visitor, network} = visitor_with_network(port, nick: nick)
@@ -8842,13 +8560,7 @@ defmodule Grappa.Session.ServerTest do
     test "anon visitor (auth_method :none): 001 does NOT stage pending_auth" do
       nick = "v_t16a_#{System.unique_integer([:positive])}"
 
-      rfc_handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 #{nick} :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      rfc_handler = IRCServer.welcome_handler(":server", nick)
 
       {server, port} = IRCServer.start_server(rfc_handler)
       {visitor, network} = visitor_with_network(port, nick: nick)

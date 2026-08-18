@@ -24,13 +24,7 @@ defmodule GrappaWeb.NickControllerTest do
   # numerics traverse the post-registration path (NumericRouter) instead
   # of AuthFSM's registration clauses.
   defp welcoming_handler do
-    fn state, line ->
-      if String.starts_with?(line, "USER ") do
-        {:reply, ":irc.test.org 001 grappa-test :Welcome\r\n", state}
-      else
-        {:reply, nil, state}
-      end
-    end
+    IRCServer.welcome_handler(":irc.test.org", "grappa-test")
   end
 
   defp setup_network(vjt, port, slug) do

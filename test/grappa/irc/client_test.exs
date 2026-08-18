@@ -134,13 +134,7 @@ defmodule Grappa.IRC.ClientTest do
 
   # Plain RFC 2812 server: no CAP, fires 001 once USER arrives.
   defp rfc_handler do
-    fn state, line ->
-      if String.starts_with?(line, "USER ") do
-        {:reply, ":server 001 grappa-test :Welcome\r\n", state}
-      else
-        {:reply, nil, state}
-      end
-    end
+    IRCServer.welcome_handler(":server", "grappa-test")
   end
 
   describe "peer capture on connect" do
