@@ -49110,3 +49110,87 @@ a lane was not taken. The `/part`-in-a-query-window behaviour the audit found on
 the way (the peer's NICK goes out as a PART target; the server 400s it at
 `validate_channel_name/1`, READ not executed) is behaviour, not record shape,
 and is filed separately.
+<!-- entry #1336-spec-channel -->
+
+---
+
+## 2026-08-18 — #1336: the per-spec subject gets a room of its own
+
+#1078 gave every test its own SUBJECT — its own user, credential, nick,
+seeded scrollback and session — because a shared user can only be cleaned
+by a list, and a list only cleans what somebody remembered to put on it.
+It left one thing shared: the CHANNEL. Every provisioned subject autojoined
+`#bofh`, where the three long-lived seeded users (`vjt`, `m9b-test`,
+`m9b-victim`) sit by compose bind, and bahamut fans a JOIN and a QUIT out
+to whoever is in the room.
+
+### What the residue actually is, measured
+
+A 6-test chromium pilot on `038a33ca`, counting rows in the co-residents'
+scrollback whose sender is a spec subject (`s` + 8 hex):
+
+| run | rows | per test | shape |
+|---|---|---|---|
+| before | 42 | 7.00 | 36 presence (6 JOIN + 6 QUIT each × 3 co-residents) + 6 content |
+| after | 0 | 0 | — |
+| mutant (constant put back to `#bofh`) | 39 | 6.50 | the same 36 presence + 3 content |
+
+The presence half is structural and reproduced to the row; the content half
+is whatever the specs happened to say out loud (two `/me` specs in the
+pilot) and is not stable between runs, which is why the claim rests on the
+36 and not on the totals.
+
+These rows outlive the test that wrote them. The subject is deleted at
+teardown and its OWN copies go with it; the co-residents' copies stay, and
+every later spec reading that channel reads them.
+
+The `~2.9 rows/test` figure inherited from the closed #1137 is NOT this
+number and is not confirmed by it: it averages over the whole suite,
+including the specs that provision no subject at all, so it has a different
+denominator.
+
+### Why the channel's name was changed, and not the specs
+
+It is the CO-RESIDENCE that writes the rows, not the name of the room, so
+the cure is to stop sharing one. A per-TEST channel — the shape the slice
+plan called for — cannot be reached from a module-scope constant, and all
+292 spec files that name `AUTOJOIN_CHANNELS` do so at module scope; every
+one of them also drives the per-spec subject (measured: zero exceptions).
+So a per-test channel would have dragged a 292-file codemod into the
+change, to buy an isolation that `workers: 1` already provides. Changing
+the VALUE of the constant moves all 292 callers without editing one.
+
+`#bofh` is left exactly as seeded, for the specs that drive the seeded
+users directly.
+
+### The constraint this carries, and how it is paid
+
+The cure is correct BECAUSE `playwright.config.ts` runs `workers: 1,
+fullyParallel: false`: at most one per-spec subject is alive at a time, so
+one channel per worker is enough. Under a future `workers: N` the subjects
+would become co-residents of EACH OTHER and the residue would come back
+silently — the worst way. So the name derives from `TEST_PARALLEL_INDEX`,
+which Playwright exports per worker process
+(`playwright/lib/worker/workerMain.js:61`), and the new
+`issue1336-spec-channel-worker-scoped` spec is the oracle that the
+derivation actually resolves inside a worker: it reads `#spec-w0` there,
+and the runner-process
+spelling is deliberately `#spec-wsetup` rather than `#spec-w0` so that a
+name resolved outside a worker cannot impersonate worker zero.
+
+### The one spec that was reading the population
+
+`ux-5-bv` taps a members-pane row that is not self, and took that row from
+the shared channel's ambient population — the three seeded users. It now
+connects its own peer, the same cure the `ux-4-z` bucket-J census got
+earlier in this issue. It is the second and last such site: the sweep for
+non-self member reads (`hasNotText`, `nth()` on members, member-count
+assertions above one, co-resident nicks in live code) found no others.
+
+### What this does not establish
+
+The pilot is six tests, not the suite. Nothing here measures how much
+scrollback the suite carries overall, only what the co-residents were being
+handed per test; and the prose in ~135 spec files still says `#bofh` in
+comments and error strings, which is now stale where it names the seeded
+corpus of the channel under test.
