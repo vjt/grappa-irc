@@ -49194,3 +49194,36 @@ scrollback the suite carries overall, only what the co-residents were being
 handed per test; and the prose in ~135 spec files still says `#bofh` in
 comments and error strings, which is now stale where it names the seeded
 corpus of the channel under test.
+
+### What the full suite says, and how the three reds are attributed
+
+The full run on this branch after the cure is **3 failed / 752 passed
+(31.3m)**; the run before the last commit was **7 failed / 748 passed
+(31.3m)**. The two sets are DISJOINT. All seven earlier reds came back
+green — including `scroll-on-window-switch.spec.ts`, whose URL-encoded
+`%23bofh` survived every grep on the raw spelling and is what the last
+commit derives — and three different specs went red.
+
+Two of the three are the environment, and the run says so in its own
+telemetry. The #1429 gap census in the same log records `grappa-test`
+log gaps of **17.9s at 16:10:26** and **32.6s at 16:19:12** (container
+clock, UTC; `saturated=1`), with `nginx-test` stalling inside both.
+`issue513-links-mask-empty.spec.ts:27` failed at 16:10:31 and
+`unread-cursor-cluster.spec.ts:182` at 16:19:22 — each inside a measured
+gap, and each inside `loginAs` rather than on an assertion of its own
+(`cicchettoPage.ts:580` waiting for the user topic,
+`cicchettoPage.ts:164` waiting for the shell header).
+
+The third is NOT the environment, and is not a flake: it is **#1504**, a
+measured defect predating this branch. `slash-commands-bundle.spec.ts:152`
+(`/q` closes the query window) failed at 16:18:59 with no gap within 13
+seconds, in 6.0s wall-clock, every barrier returning instantly. Its trace
+also rules out the mechanism the spec's own #268 comment names: the `/q`
+submit was NOT dropped by the in-flight guard, because both of
+`composeSend`'s barriers passed — draft taken, `aria-busy="false"`. At the
+failure the selection has moved OFF the query window onto the channel
+while the query row survives carrying one unread, so the close ran and the
+row came back.
+
+No local full-suite baseline was taken on the branch point, so none of the
+above rests on one; the both-sides evidence is CI's.
