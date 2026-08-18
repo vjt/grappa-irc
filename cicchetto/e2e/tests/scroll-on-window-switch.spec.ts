@@ -423,14 +423,17 @@ test.describe("scroll-on-window-switch — re-selecting a window snaps correctly
     // joined channel on its Phoenix join-ok (subscribe.ts) — REFRESH_LIMIT
     // (200) == the seed size, so #bofh loads ALL rows in the background
     // WITHOUT us focusing it. Register the waiter BEFORE loginAs so the
-    // post-boot fetch can't slip past us; awaiting it proves #bofh is warm
-    // (rows in the store) before we switch into it. Without warmth the
+    // post-boot fetch can't slip past us; awaiting it proves the channel is
+    // warm (rows in the store) before we switch into it. Without warmth the
     // switch's scrollToActivation early-returns on an empty pane and the
     // length-effect tails — the marker jump only fires against a settled,
-    // populated pane. The URL is `.../channels/%23bofh/messages?after=…`
-    // (encodeURIComponent("#bofh") === "%23bofh").
-    const bofhWarm = page.waitForResponse(
-      (r) => r.url().includes(`/channels/%23bofh/messages`) && r.status() === 200,
+    // populated pane. The URL is `.../channels/<encoded>/messages?after=…`,
+    // and the encoding is derived rather than spelled: the `%23bofh` this
+    // used to carry survived every `#bofh` grep and outlived the channel
+    // it named (#1336).
+    const channelWarm = page.waitForResponse(
+      (r) =>
+        r.url().includes(`/channels/${encodeURIComponent(CHANNEL)}/messages`) && r.status() === 200,
       { timeout: 20_000 },
     );
 
@@ -445,7 +448,7 @@ test.describe("scroll-on-window-switch — re-selecting a window snaps correctly
     await expect(page.locator('[data-testid="scrollback"]')).toBeVisible({ timeout: 10_000 });
 
     // #bofh scrollback fetched → warm. Only now is the switch a warm one.
-    await bofhWarm;
+    await channelWarm;
 
     // THE SWITCH — click #bofh in the sidebar. key() changes $server→#bofh,
     // firing the channel-switch key-effect (prevKey defined, so NOT the
