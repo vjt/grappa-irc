@@ -14,10 +14,10 @@
 
 import { loginAs, scrollbackLines, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
-import { NETWORK_SLUG } from "../fixtures/seedData";
+import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
-const TEST_CHANNEL = "#bofh";
+const TEST_CHANNEL = AUTOJOIN_CHANNELS[0];
 
 test("CP13 S10 — peer's bold-formatted PRIVMSG renders with .scrollback-mirc-bold span", async ({
   page,

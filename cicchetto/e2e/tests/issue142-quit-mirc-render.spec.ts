@@ -20,10 +20,10 @@
 
 import { loginAs, scrollbackLines, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
-import { NETWORK_SLUG } from "../fixtures/seedData";
+import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
-const TEST_CHANNEL = "#bofh";
+const TEST_CHANNEL = AUTOJOIN_CHANNELS[0];
 
 test("issue142 — QUIT reason renders mIRC bold+color spans (not raw control bytes)", async ({
   page,

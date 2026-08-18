@@ -33,7 +33,7 @@
 
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
-import { NETWORK_SLUG } from "../fixtures/seedData";
+import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
 const PEER_NICK = "p0e-invitee";
@@ -50,7 +50,7 @@ test("P-0e + P-0f — /invite to a peer surfaces invite-ack row in the $server w
   // channel that doesn't have a sidebar slot yet, so /join via
   // composeSend from any focused window. specNick() is needed for
   // selectChannel's join-line wait on the prior step.
-  await selectChannel(page, NETWORK_SLUG, "#bofh", { ownNick: specNick() });
+  await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: specNick() });
   await composeSend(page, `/join ${CHANNEL}`);
   // Wait for the new channel's sidebar entry to appear (proves the
   // JOIN landed + windowState transitioned to :joined; the sidebar

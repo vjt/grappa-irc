@@ -27,10 +27,10 @@ import {
   selectChannel,
 } from "../fixtures/cicchettoPage";
 import { assertMessagePersisted } from "../fixtures/grappaApi";
-import { NETWORK_SLUG } from "../fixtures/seedData";
+import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
-const CHANNEL = "#bofh";
+const CHANNEL = AUTOJOIN_CHANNELS[0];
 
 test("issue #14 — operator's own /me renders as '* nick body', not raw privmsg", async ({
   page,

@@ -60,12 +60,12 @@ test("M9 — sidebar X-button PARTs the channel and dismisses the window", async
   // be installed when the PART echo arrives.
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 
-  // Click the X button on #bofh's sidebar entry.
-  // Sidebar.tsx renders `aria-label="Close #bofh"` — use that as the
-  // selector hook so future cosmetic class changes (.sidebar-close
-  // → .sidebar-x or whatever) don't break the test.
+  // Click the X button on the channel's sidebar entry.
+  // Sidebar.tsx renders `aria-label="Close <channel>"` — use that as
+  // the selector hook so future cosmetic class changes
+  // (.sidebar-close → .sidebar-x or whatever) don't break the test.
   await sidebarWindow(page, NETWORK_SLUG, CHANNEL)
-    .locator('button[aria-label="Close #bofh"]')
+    .locator(`button[aria-label="Close ${CHANNEL}"]`)
     .click();
 
   // #195 — the × now opens an explicit "leave #chan?" confirm modal; the PART

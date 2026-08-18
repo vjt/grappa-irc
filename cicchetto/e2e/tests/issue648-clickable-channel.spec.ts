@@ -28,12 +28,12 @@ import {
 } from "../fixtures/cicchettoPage";
 import { joinChannel, partChannel } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
-import { NETWORK_SLUG } from "../fixtures/seedData";
+import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
 // vjt is autojoined here (seedData.AUTOJOIN_CHANNELS) — the window the peer
 // posts the `#channel`-bearing PRIVMSG into.
-const HOST_CHANNEL = "#bofh";
+const HOST_CHANNEL = AUTOJOIN_CHANNELS[0];
 
 // A fresh peer nick per run — a static nick rotates to `<nick>1` on a 433
 // collision under the shared leaf, and the join matcher waits on the

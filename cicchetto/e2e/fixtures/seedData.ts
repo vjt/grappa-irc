@@ -55,7 +55,35 @@ export const VJT_IDENTIFIER = "vjt@grappa.test";
 
 export const NETWORK_SLUG = "bahamut-test";
 export const NETWORK_NICK = "vjt-grappa";
-export const AUTOJOIN_CHANNELS = ["#bofh"];
+
+// #1336 — the per-spec subject (#1078) autojoins THIS channel, and the
+// three long-lived seeded users (`vjt`, `m9b-test`, `m9b-victim`, bound
+// with `--autojoin '#bofh'` in compose.yaml) are NOT in it. Every
+// provision/teardown used to JOIN and QUIT the shared `#bofh`, and
+// bahamut fanned both out to whoever was sitting there: measured on a
+// 6-test pilot, 42 rows landed in the three co-residents' scrollback,
+// 7.00 per test — rows no spec asked for and every later spec reads.
+//
+// It is the CO-RESIDENCE that writes them, not the channel's name, so
+// the cure is to stop sharing a room, not to rename it. `#bofh` stays
+// exactly as seeded for the specs that drive the seeded users directly.
+//
+// 🔴 Worker-scoped, and the scope is load-bearing: `playwright.config.ts`
+// runs `workers: 1, fullyParallel: false`, so at most ONE per-spec
+// subject is alive at a time and a single channel is enough. Derived
+// from `TEST_PARALLEL_INDEX` (Playwright sets it per worker process,
+// `playwright/lib/worker/workerMain.js`) so that if the suite ever
+// parallelises, the subjects do not silently become co-residents of
+// each other and re-grow the residue this removed. The constant is
+// evaluated once per process, which is what keeps the ~292 spec files
+// that read it unchanged.
+//
+// `globalSetup` runs in the runner process, where Playwright sets no
+// worker index — the `setup` spelling is deliberately NOT `0`, so a
+// channel named `#spec-wsetup` in a failure log reads as "resolved
+// outside a worker" instead of impersonating worker zero.
+const SPEC_WORKER = process.env.TEST_PARALLEL_INDEX ?? "setup";
+export const AUTOJOIN_CHANNELS = [`#spec-w${SPEC_WORKER}`];
 
 // M-cluster M-7 — admin user. Seeded via mix run -e in the seeder
 // sidecar after `create_user` (no --admin flag on the mix task; M-7

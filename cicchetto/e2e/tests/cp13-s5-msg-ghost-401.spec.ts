@@ -28,10 +28,10 @@ import {
   selectChannel,
   sidebarMessageBadge,
 } from "../fixtures/cicchettoPage";
-import { NETWORK_SLUG } from "../fixtures/seedData";
+import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specUser, test } from "../fixtures/test";
 
-const TEST_CHANNEL = "#bofh";
+const TEST_CHANNEL = AUTOJOIN_CHANNELS[0];
 
 test("CP13 S5 — /msg to nonexistent nick: 401 lands in the query window live", async ({ page }) => {
   const vjt = specUser();

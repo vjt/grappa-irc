@@ -33,7 +33,7 @@
 
 import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
-import { NETWORK_SLUG } from "../fixtures/seedData";
+import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
 const PEER_NICK = "members-prefix-buddy";
@@ -46,7 +46,7 @@ test("members pane renders @-prefix + full op nick (not clipped)", async ({ page
   // Focus #bofh first to confirm login + ws-ready, then /join the
   // fresh per-spec channel so vjt is the first user and Bahamut
   // grants +o deterministically.
-  await selectChannel(page, NETWORK_SLUG, "#bofh", { ownNick: specNick() });
+  await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: specNick() });
   await composeSend(page, `/join ${CHANNEL}`);
   await expect(
     page.locator(".sidebar-network-section li").filter({ hasText: CHANNEL }),

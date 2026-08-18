@@ -18,11 +18,11 @@ import {
   sidebarMessageBadge,
   sidebarWindow,
 } from "../fixtures/cicchettoPage";
-import { NETWORK_SLUG } from "../fixtures/seedData";
+import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specUser, test } from "../fixtures/test";
 
 const SERVER_WINDOW_LABEL = "Server";
-const TEST_CHANNEL = "#bofh";
+const TEST_CHANNEL = AUTOJOIN_CHANNELS[0];
 
 test.describe("CP13 server-window cluster", () => {
   test("S6 — bottom numeric-inline pane is gone (no `.numeric-inline-pane` in DOM)", async ({

@@ -53,6 +53,7 @@
 // JS-mounted side-effect bucket. Single visitor login suffices.
 
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
@@ -188,41 +189,52 @@ test("@webkit ux-5-bv — mobile members drawer auto-closes when operator taps a
   // both populated AND own-nick presence as part of the precondition.
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 
-  // Open the mobile members drawer (hamburger in TopicBar).
-  await page.getByLabel(/open members sidebar/i).tap();
-  const drawer = page.locator(".shell-members.open");
-  await expect(drawer).toBeVisible({ timeout: 5_000 });
+  // #1336 — the tap below needs a member that is NOT self, and this
+  // spec is the one place in the suite that read one out of the
+  // channel's ambient population. That population used to be the three
+  // long-lived seeded users sitting in the shared `#bofh`; the per-spec
+  // subject now has the channel to itself, so the peer has to be
+  // brought here rather than assumed.
+  const peer = await IrcPeer.connect({ nick: "ux5bv-buddy" });
+  try {
+    await peer.join(CHANNEL);
 
-  // Members list precondition: populated + own-nick present
-  // (`feedback_e2e_visitor_members_list` mandate). specNick() is the
-  // operator's per-network nick on the auto-join channel.
-  const memberButtons = drawer.locator(".members-pane li .member-name");
-  await expect(memberButtons.first()).toBeVisible({ timeout: 10_000 });
-  const memberCount = await memberButtons.count();
-  expect(memberCount).toBeGreaterThan(0);
-  const ownNickPresent = await drawer
-    .locator(`.members-pane li .member-name:has-text("${specNick()}")`)
-    .count();
-  expect(ownNickPresent).toBeGreaterThan(0);
+    // Open the mobile members drawer (hamburger in TopicBar).
+    await page.getByLabel(/open members sidebar/i).tap();
+    const drawer = page.locator(".shell-members.open");
+    await expect(drawer).toBeVisible({ timeout: 5_000 });
 
-  // Find a member other than self (tapping self would be a no-op).
-  // Structured locator — `hasNotText` rejects any row whose text
-  // contains specNick() as substring (so a "vjt-bot" peer would
-  // also be skipped when own-nick is "vjt"). With the seeded
-  // auto-join channel there's always at least one non-self peer, so
-  // `.first()` resolves; if seeding ever drifts the test fails loud
-  // at the tap rather than running a silent off-by-one loop.
-  const target = drawer
-    .locator(".members-pane li .member-name")
-    .filter({ hasNotText: specNick() })
-    .first();
-  await expect(target).toBeVisible({ timeout: 5_000 });
-  await target.tap();
+    // Members list precondition: populated + own-nick present
+    // (`feedback_e2e_visitor_members_list` mandate). specNick() is the
+    // operator's per-network nick on the auto-join channel.
+    const memberButtons = drawer.locator(".members-pane li .member-name");
+    await expect(memberButtons.first()).toBeVisible({ timeout: 10_000 });
+    const memberCount = await memberButtons.count();
+    expect(memberCount).toBeGreaterThan(0);
+    const ownNickPresent = await drawer
+      .locator(`.members-pane li .member-name:has-text("${specNick()}")`)
+      .count();
+    expect(ownNickPresent).toBeGreaterThan(0);
 
-  // Post-tap: drawer should be CLOSED (BV auto-close contract). Pre-BV
-  // the drawer stayed open over the newly-opened query window's
-  // ComposeBox; on iOS the keyboard overlay then sat on top of the
-  // drawer's bottom launcher footer (BM) leaving no visible compose
-  // surface. Auto-close kills the conflict.
-  await expect(page.locator(".shell-members.open")).toBeHidden({ timeout: 5_000 });
+    // Tap the peer that joined above — tapping self would be a no-op.
+    // Structured locator — `hasNotText` rejects any row whose text
+    // contains specNick() as substring (so a "vjt-bot" peer would
+    // also be skipped when own-nick is "vjt"), which is why the row is
+    // reached by exclusion rather than by the peer's own nick.
+    const target = drawer
+      .locator(".members-pane li .member-name")
+      .filter({ hasNotText: specNick() })
+      .first();
+    await expect(target).toBeVisible({ timeout: 5_000 });
+    await target.tap();
+
+    // Post-tap: drawer should be CLOSED (BV auto-close contract). Pre-BV
+    // the drawer stayed open over the newly-opened query window's
+    // ComposeBox; on iOS the keyboard overlay then sat on top of the
+    // drawer's bottom launcher footer (BM) leaving no visible compose
+    // surface. Auto-close kills the conflict.
+    await expect(page.locator(".shell-members.open")).toBeHidden({ timeout: 5_000 });
+  } finally {
+    await peer.disconnect("ux-5-bv done");
+  }
 });

@@ -17,10 +17,10 @@
 
 import { loginAs, scrollbackLines, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
-import { NETWORK_SLUG } from "../fixtures/seedData";
+import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
-const TEST_CHANNEL = "#bofh";
+const TEST_CHANNEL = AUTOJOIN_CHANNELS[0];
 const tag = (prefix: string) => `${prefix}-${crypto.randomUUID().slice(0, 6)}`;
 
 test("issue455 — *bold* _underline_ /italic/ render client-side with the markers kept", async ({

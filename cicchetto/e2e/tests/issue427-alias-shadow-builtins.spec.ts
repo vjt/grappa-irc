@@ -24,10 +24,10 @@ import {
   selectChannel,
 } from "../fixtures/cicchettoPage";
 import { GRAPPA_BASE_URL } from "../fixtures/grappaApi";
-import { NETWORK_SLUG } from "../fixtures/seedData";
+import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
-const CHANNEL = "#bofh";
+const CHANNEL = AUTOJOIN_CHANNELS[0];
 
 test.setTimeout(90_000);
 
