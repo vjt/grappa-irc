@@ -71,8 +71,7 @@ defmodule Grappa.Session.NickChangeObservabilityTest do
       end
     end
 
-    {:ok, server} = IRCServer.start_link(rfc_handler)
-    port = IRCServer.port(server)
+    {server, port} = IRCServer.start_server(rfc_handler)
 
     user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
     {network, _} = network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")

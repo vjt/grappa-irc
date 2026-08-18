@@ -30,12 +30,12 @@ defmodule Grappa.IRC.ClientOutboundCostTest do
   end
 
   defp start_pair do
-    {:ok, server} = IRCServer.start_link(IRCServer.passthrough_handler())
+    {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
 
     {:ok, client} =
       Client.start_link(%{
         host: "127.0.0.1",
-        port: IRCServer.port(server),
+        port: port,
         tls: false,
         dispatch_to: self(),
         logger_metadata: [],

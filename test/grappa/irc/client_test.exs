@@ -837,8 +837,7 @@ defmodule Grappa.IRC.ClientTest do
       # 127.0.0.1, so the observed peer proves the ifaddr bind took effect.
       # Assumes 127.0.0.2 is loopback-bindable (Linux/RPi: all 127/8 is
       # loopback; a non-Linux host would fail legibly with :eaddrnotavail).
-      {:ok, server} = IRCServer.start_link(IRCServer.passthrough_handler())
-      port = IRCServer.port(server)
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
 
       _ = start_client(port, %{source_address: "127.0.0.2"})
       :ok = IRCServer.await_handshake(server, 1_000)
@@ -847,8 +846,7 @@ defmodule Grappa.IRC.ClientTest do
     end
 
     test "NULL source still connects via the pool/kernel-default path" do
-      {:ok, server} = IRCServer.start_link(IRCServer.passthrough_handler())
-      port = IRCServer.port(server)
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
 
       _ = start_client(port, %{source_address: nil})
       :ok = IRCServer.await_handshake(server, 1_000)

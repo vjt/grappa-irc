@@ -707,8 +707,7 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
   defp uniq, do: System.unique_integer([:positive])
 
   defp start_irc_server do
-    {:ok, server} = IRCServer.start_link(IRCServer.passthrough_handler())
-    {server, IRCServer.port(server)}
+    IRCServer.start_server(IRCServer.passthrough_handler())
   end
 
   defp stop_session_on_exit(user, network) do

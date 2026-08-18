@@ -29,8 +29,7 @@ defmodule Grappa.OperatorTest do
   end
 
   defp start_irc_server do
-    {:ok, server} = Grappa.IRCServer.start_link(Grappa.IRCServer.passthrough_handler())
-    {server, Grappa.IRCServer.port(server)}
+    Grappa.IRCServer.start_server(Grappa.IRCServer.passthrough_handler())
   end
 
   describe "delete_visitor!/1" do
