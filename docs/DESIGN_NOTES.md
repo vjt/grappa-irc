@@ -49110,3 +49110,55 @@ a lane was not taken. The `/part`-in-a-query-window behaviour the audit found on
 the way (the peer's NICK goes out as a PART target; the server 400s it at
 `validate_channel_name/1`, READ not executed) is behaviour, not record shape,
 and is filed separately.
+<!-- entry #1397-e2e-findvjtuserid -->
+
+---
+
+## 2026-08-18 — #1397 (e2e): one user-id lookup, and where a shared helper may live
+
+Five spec files carried the same 14-line `findVjtUserId` — byte-identical, md5
+equal across all five, the only helper in the #1397 census with no drift at
+all. It is now `grappaApi.findUserIdByName(adminToken, userName)`, and the five
+copies are gone.
+
+### The fork the extraction hid
+
+The helper reads `specUser()`, which lives in `fixtures/specSubject.ts`, and
+`specSubject` imports `grappaApi`. Dropping the helper into `grappaApi`
+unchanged would therefore have made the two modules import each other.
+`grappaApi` is the only LEAF of the fixture graph — `grep -c '^import'` is
+**0**, and four fixture modules import it — so that cycle would have been paid
+by the one module that has no dependencies at all, for fourteen lines.
+
+Homing it in `specSubject` instead was the cheaper option and was rejected on
+the boundary, not on the cost: a `GET /admin/users` is a VERB, and verbs are
+what gets reused; parking it in the module whose reason for being is the
+subject would make the first caller who wants a NON-subject user duplicate it
+again. Passing the name as a parameter costs each of the five call sites one
+argument and keeps the leaf a leaf.
+
+Accepting the cycle was the third option and is the one worth naming, because
+**no local gate would have caught it**: neither `tsc` nor biome reports an
+import cycle, so the first symptom would have been an obscure e2e red at some
+later date. The choice here is structural and is NOT defended by a red.
+
+### Why the name changed in the same slice
+
+`findVjtUserId` has been false since #1078 gave every test its own subject: it
+resolves `specUser()`, not `vjt`. With the name now supplied by the caller it
+was false twice over, and the five call sites were being edited anyway, so the
+rename cost no extra lines. A wrong name in a SHARED fixture is the kind of
+thing this suite propagates by copy — which is how there came to be five of
+these in the first place.
+
+### What gated it
+
+`bun run check` is rc=0 (the 59 CSS warnings are pre-existing, measured
+identical on the branch point). The behavioural gate is the five specs
+themselves, run before and after.
+
+One trap worth leaving behind for whoever touches these files next: **ten of
+the eleven tests across them are `@webkit`**, and the chromium project carries
+`grepInvert: /@webkit/`. A scoped run with `--project=chromium` therefore
+executes exactly ONE of the eleven and still reports rc=0 — a green that
+measures almost nothing. These five want `--project=webkit-iphone-15`.
