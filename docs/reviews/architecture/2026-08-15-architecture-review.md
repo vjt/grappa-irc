@@ -53,11 +53,11 @@ Two premises from the 2026-07-20 review were **re-measured and retracted** rathe
 - **C subject-SSOT / J boundary-schemas:** Dependency A2's three populations; 13 boundaries take a full `Grappa.Accounts` dep to name one struct.
 - **G client-layering:** Abstraction A8 (`api.ts`: 3,159 lines, 89 exports, 94 importers, holding transport + the shared type vocabulary + domain derivations + a module-global 401 hook), A9 (a flat 218-module `lib/` with no layer distinction — four spellings of the join verb, two of which fold the channel differently), Responsibility A9 (admin components own fetch/state/error while the chat surface has a store layer), Dependency A5 (29 of 91 components reach past their stores into `api.ts`).
 - **E outbound-door / H additive-contract:** Responsibility A2's 24 sites.
-- **K doc-reality:** Dependency A8 (CLAUDE.md's tree still omits `SourceAliasManager`, whose slot is the single most explained in `application.ex`, and the composition-root DI it performs is documented nowhere), Extension A11 (`CLIENT_PROTOCOL.md` is a per-wire-change hand mirror with no gate at all, while its machine-readable twin is generated and gated).
+- **K doc-reality:** Dependency A8 (CLAUDE.md's tree still omits `SourceAliasManager`, whose slot is the single most explained in `application.ex`, and the composition-root DI it performs is documented nowhere), Extension A11 (`CLIENT_PROTOCOL.md` is a per-wire-change hand mirror with no gate at all, while its machine-readable twin is generated and gated). **⚠️ Falsified in part 2026-08-18 — A8 is dead on both halves (CLAUDE.md has named the manager since `bc7b755b`, dated the same day as this review, and the DI is written up in DESIGN_NOTES), so this bucket is A11 only; A11 itself is alive but weakened — ungated is measured, drift is not. See the annotations under "Concern: dependency architecture" and "Concern: extension & maintainability".**
 - **M closed-sets:** Type leverage A8 (the theme vocabulary declared five times across two languages, pinned only to itself on each side), Duplication A5 (same, from the duplication angle), A8 (upload MIME taxonomy: three server copies CI-pinned, the fourth cross-language copy pinned by a comment), Extension A8 (`CONTENT_KIND_PROJECTION` — the one pair CLAUDE.md singles out as THE single source — held together by prose).
 - **L enum-cost / N verb-plumbing:** Extension A6 (controller rendering is a hard 9/30/0 two-pattern split with no stated rule), A7 (the Logger allowlist is 306 lines / 47% of `config/config.exs`, and a one-directional sync test forces four self-documented dead entries into it).
 - **Duplication A4:** one `SessionEntry` projected to `live_state` three times, already diverged on the `peer_*` fields, with a client comment asserting the opposite and four dead aliases hiding it. **⚠️ Partly falsified 2026-08-18 — the server-side split is a recorded scoping decision (`DESIGN_NOTES.md:23673`) and is NOT a finding; only the client comment + dead aliases survive. See the annotation under "Concern: duplication".**
-- **Client hygiene:** Dependency A3 (the one client import cycle is unchanged from the last review, and `biome.json` still does not enable `noImportCycles` — the codebase already paid for this class once and wrote the post-mortem), A4 (`lib → component` inversions, one of them a hand-rolled twin of a generated wire type living in the view layer).
+- **Client hygiene:** Dependency A3 (the one client import cycle is unchanged from the last review, and `biome.json` still does not enable `noImportCycles` — the codebase already paid for this class once and wrote the post-mortem), A4 (`lib → component` inversions, one of them a hand-rolled twin of a generated wire type living in the view layer). **⚠️ A4's pin clause falsified by mutation 2026-08-18 — the envelope IS pinned (`_Assert_NoUserArmDrift`) and it is the element pin that is vacuous, one of #1510's eleven; the two inversions survive and are the whole of A4. A3 stands, but the post-mortem it cites describes a different, already-resolved pair. See the annotation under "Concern: dependency architecture".**
 
 LOW findings (22) are improvement opportunities — see each concern's section.
 
@@ -146,7 +146,66 @@ LOW findings (22) are improvement opportunities — see each concern's section.
 
 **MEDIUM.** **A3** — a full SCC over the 301-module client graph finds exactly one cycle of size > 1: `selection.ts ↔ windowState.ts`, unchanged from the last review, and `biome.json` still enables only `recommended`, so `noImportCycles` (nursery) is off. The codebase already paid for this class once and wrote the post-mortem in `selection.ts:336-345`. **A4** — the two `lib → component` inversions are unfixed, and one (`mentionsWindow.ts` importing `MentionsBundle` from a `.tsx`) is a hand-rolled sibling of a codegen-emitted type differing in a field name, with the drift gate pinning the element type but not the envelope. **A5** — 29 of 91 components reach past their stores into `api.ts`, because `api.ts` holds the domain derivations they actually want; the Admin surface has stores for its push-driven parts and none for its REST parts, so nine tabs hand-roll the same fetch/loading/error triad. **A6** — two live mechanisms for "bearer death closes the socket", each documented as the single path; `Revocations`' moduledoc says hand-pushing "is a rule and therefore something that drifts: it had, on most of the doors", and the hand-pushed calls were not removed, so several doors now fire both (benign — over-firing — but a reader cannot tell load-bearing from vestigial). **A7** — 11 `top_level?: true` boundaries live inside another boundary's namespace; several are correct carve-outs, but nothing distinguishes a deliberate one from a context internal, so the module name is unreliable in 11 places.
 
+> **⚠️ A4 — the pin clause is FALSIFIED, by mutation (2026-08-18, measured on `origin/main`
+> @ `f339b271`).** "With the drift gate pinning the element type but not the envelope" is
+> backwards on both halves, and the correction changes which fix is worth doing.
+>
+> **The envelope IS pinned, and the pin is live.** Renaming `network` to `network_MUT` in the
+> codegen-emitted `SessionWireMentionsBundlePayload` reddens `bun run check` with
+> `wireTypesAssert.ts(381,3): error TS2344: Type '{ mentions_bundle: "user-topic arms whose cic
+> copy differs from codegen"; }' does not satisfy the constraint 'true'` — that is
+> `_Assert_NoUserArmDrift`, the meta-assert walking every `WireUserEvent` arm against its
+> generated counterpart. The envelope is covered by a walk rather than by a named pin, which is
+> exactly why grepping `wireTypesAssert.ts` for `SessionWireMentionsBundlePayload` finds nothing
+> and suggests the opposite.
+>
+> **The element pin is the vacuous one.** Renaming `sender` in
+> `SessionWireMentionsBundleMessage` also reddens the check, but `wireTypesAssert.ts` emits
+> **zero** diagnostics throughout: both errors come from `userTopic.ts`, where the hand-rolled
+> `MentionsBundle` refuses the generated element. `_Assert_MentionsBundleMessage` compares
+> `MentionsBundleMessage` against `SessionWireMentionsBundleMessage` while `api.ts` declares the
+> former an alias of the latter — one of the eleven alias-vs-itself pins of #1510, here
+> **measured** rather than deduced. Baseline and post-restore runs were both green, so neither
+> red came from a gate that fails to run.
+>
+> **What survives A4:** the two `lib → *.tsx` inversions, measured as exactly two
+> (`keepKeyboard.ts → DiagFloat.tsx`, a value import of `isDiagEnabled`; `mentionsWindow.ts →
+> MentionsWindow.tsx`, a type-only import of `MentionsBundle`). The `network_slug` / `network`
+> difference is real but is a view-layer rename adapted explicitly in `userTopic.ts`'s
+> `mentions_bundle` arm, not an escaped drift — and that hand-rolled view type is, today, the
+> thing that catches an element rename.
+>
+> **ℹ️ A3 — stands, with one citation corrected.** The post-mortem cited at
+> `selection.ts:336-345` is not there (those lines now carry `setServerSeedCount`'s docstring);
+> the real one, further down, describes a **different** pair — `networks.ts ↔ selection.ts` —
+> which was resolved with a one-way arrow. Same class, wrong exhibit. Measured independently:
+> Tarjan over 317 client modules with type-only edges excluded (they are erased at compile time)
+> gives 1,033 value edges and exactly one SCC > 1, `selection.ts ↔ windowState.ts`, both edges
+> value. Counting type-only edges there is a **second** SCC of five (`api`, `auth`,
+> `channelTopic`, `identityScopedStore`, `passkeys`) standing on two type-only edges alone — so
+> if biome's `noImportCycles` counts type imports, enabling it reddens two cycles, not one
+> (whether it does was not measured). Both surviving edges are read inside function bodies,
+> never at module-evaluation time, which is the condition the post-mortem names as the hazard:
+> the cycle is latent, not biting.
+
 **LOW.** **A8** — CLAUDE.md's tree omits `Grappa.Net.SourceAliasManager`, whose slot is the single most explained in `application.ex` (after Endpoint for the boot reconcile, before Bootstrap because #543 sessions call `acquire/1` on connect) and whose composition-root DI (`application.ex:487`) is the best of the four cycle-avoidance mechanisms and documented nowhere. **A9** — client runtime DI slots are module-level mutable globals; two are well-argued cycle breaks, the third (`uploadHost.ts`) exists for test convenience and duplicates the bearer-storage key literal outside its owner. **A10** — `ReadCursor.force_set/4` bypasses the #233 advance-only clamp, ships in the prod release by its own admission, and is gated only at the route layer.
+
+> **⚠️ A8 — FALSIFIED, both halves (2026-08-18, measured on `origin/main` @ `f339b271`).**
+>
+> **"CLAUDE.md's tree omits `Grappa.Net.SourceAliasManager`"** is false: the tree names it,
+> carrying the very ordering rationale the finding says is missing (after Endpoint for the boot
+> reconcile, before Bootstrap because #543 sessions acquire on connect). It landed in
+> `bc7b755b` — *"docs(#1343): put SourceAliasManager in the tree and log the three gates"* —
+> dated **2026-08-15, the same day as this review**. The finding was true when the reading was
+> taken and stale by the time it was written down.
+>
+> **"its composition-root DI is documented nowhere"** is false too, and this is the
+> load-bearing half. `docs/DESIGN_NOTES.md` carries a paragraph of its own, **"The manager stays
+> OFF a `Grappa.Session` dep"**, naming `held_source_fn` as the injected 0-arity fn, giving its
+> default (`&Session.live_derived_sources/0`), stating that it is wired in `application.ex`, and
+> giving the reason: a `Net → Session` edge would run backwards, while the injection keeps the
+> manager inside `Grappa.Net` with no reverse edge and no cycle. `application.ex` repeats it at
+> `source_alias_manager_child/0`. Not a finding — nothing here to pick up.
 
 ---
 
@@ -179,6 +238,26 @@ LOW findings (22) are improvement opportunities — see each concern's section.
 **A5 (HIGH).** One new IRC verb costs **23 files** across five mechanical server layers (controller → facade → `handle_call` → `Client` builder → meta) plus four client layers plus 9 test files; measured as the union of the `#1225` commits. Every layer grew since the last measurement. The parallel WS door adds 39 hand-written `do_handle_in` arms. **Fix:** this is the one place a declarative per-verb table earns its keep — name, arity, target shape, echo policy, meta keys — consumed by the facade, the dispatcher and the builder, collapsing three server layers into one row. `slashCommands.ts` already has table shape, so codegen could make the client half free.
 
 **MEDIUM.** **A6** — controller rendering is a hard two-pattern split with **zero** overlap: 9 controllers use a `*_json.ex` view, 30 render inline, and there is no stated rule, so the choice is made by proximity (two recently-added routes landed on opposite sides in the same window). **A7** — the Logger metadata allowlist is 306 lines / 106 atoms / **47% of `config/config.exs`**, and a one-directional sync test forces every scrollback meta key into it whether or not anything logs it — four entries carry apologetic comments saying exactly that. **A8** — the cross-language drift-gate pattern exists and works, but covers 4 mirrors, missing `CONTENT_KIND_PROJECTION`, the one pair CLAUDE.md and both moduledocs single out as THE single source. **A9** — four env templates, three ungated, and the ungated ones already carry three measured divergences; the substrate with no gate is the FreeBSD jail, i.e. production. **A10** — client tests have three placement conventions and 406 e2e specs compile under a materially weaker tsconfig with no shared base. **A11** — DESIGN_NOTES grew 60% in 26 days (26,723 → **42,708** lines) and `CLIENT_PROTOCOL.md` is a per-wire-change hand mirror with no gate at all, while its machine-readable twin is generated and gated.
+
+> **⚠️ A11 — alive, but weaker than written (2026-08-18, measured on `origin/main` @
+> `f339b271`).** Ungated is true and measured: no file under `test/`, `scripts/`, `.github/` or
+> `cicchetto/` reads the path `docs/CLIENT_PROTOCOL.md`, while the twin really is gated
+> (`wireTypes.ts` / `wireSchema.ts` carry `@generated`, and CI runs
+> `mix grappa.gen_wire_types --check` under a step named "wireTypes drift gate (#767)").
+>
+> Two qualifications a reader needs before sizing the work. **"No gate at all" overstates it:**
+> the version pair IS pinned across both languages — `test/grappa/protocol_test.exs` reads
+> `export const CLIENT_PROTOCOL_VERSION` out of `cicchetto/src/lib/socket.ts` and checks it
+> against `Grappa.Protocol`'s floor. What is ungated is the prose, not the contract.
+> **"Hand mirror" implies a duty the document disclaims:** §2 and §4 tell clients to ignore
+> unrecognised `kind` values, so an incomplete enumeration is by design — 21 of the 37 kinds in
+> the generated `SESSION_WIRE_WIRE_EVENT_KIND` are absent from the document, and under the
+> additive-only rule that is not drift.
+>
+> **No drift measured.** Of the 33 snake_case tokens the document quotes between backticks, zero
+> are absent from `lib/` + `cicchetto/src/lib`. The finding therefore rests on the absence of a
+> gate, not on an observed divergence — and no red can be built for it today, because there is
+> no gate to redden.
 
 **LOW.** **A12** — `isPresenceKind` is a dead export while `ScrollbackPane` hand-maintains its exact complement. **A13** — every context holding a network FK buys a `dirty_xref` waiver (6 of 9), though the count is down sharply from the last review. **A14** — **adding a new context is genuinely cheap** (4–8 files, one line each for the tree, Boundary and config) and needs no work; recorded because the context layer is where the design pays off and a review that only lists costs would misrepresent it.
 
