@@ -48900,3 +48900,103 @@ The unit suite is the whole of it. Eight e2e specs drive these verbs
 (`issue992-admin-command`, `issue148-visitor-oper`, `issue385-user-aliases`,
 `issue409-alias-edit`, `issue409-alias-tab-scope`, `issue427-alias-shadow-builtins`,
 `issue1047-alias-range-param`, `issue460-settings-index`) and none was run here.
+<!-- entry #1396-fanout -->
+
+---
+
+## 2026-08-18 — #1396: the fan-out pair was never blocked, and the boundary is the draft store
+
+`/ame` and `/amsg` were the last pair anyone believed the send pipeline held
+back. They were not blocked, and this entry records the correction rather than
+the conclusion, because the wrong premise is the part that cost time.
+
+### The premise that fell
+
+Carried for weeks, and stated again when this slice was briefed: the fan-out
+pair is held in `compose.ts` by "the pipeline axis", the same force that holds
+`privmsg` / `me` / `msg`. Measured on `d60a7a72`, that is false, and it was
+already false when the belief was last repeated.
+
+Every value the pair reads is an ordinary module import: `sendFanOut`
+(`./sendPipeline`), `requestConfirm` (`./confirmDialog`),
+`joinedChannelsOnNetwork` (`./joinedChannels`), `friendlyError`. It touches the
+composer buffer nowhere — no `sendPacedBody`, no `claimDrafts`, no `getDraft`.
+`FANOUT_CONFIRM_THRESHOLD` was a module-level const in `compose.ts` with exactly
+one reader, so it travelled with the handler.
+
+### What actually changed under it, and what did not
+
+Two lifts made the pair movable, both landed under #1513 and neither of them
+about this pair. They are NOT the same kind of change, and collapsing them into
+"the hoist moved `sendFanOut`" is what let the premise survive:
+
+* `6ef878fe` moved `sendFanOut` into `./sendPipeline`. It had never been a
+  closure — it was already a module-level `const` at column 0 of `compose.ts`.
+  What blocked `commands/` was that it was never EXPORTED, and `compose.ts`
+  imports `commands/*`, so publishing it there would have pointed the
+  dependency back at the importer. The lift is what removed the obstacle, but
+  the obstacle was reachability, not the draft store.
+* `5779c755` lifted `joinedChannelsOnNetwork` out of the controller closure.
+  THIS one had genuinely been a closure. It is the harder half of the
+  unblocking and the half the premise never named.
+
+So the pair was unblocked by a lift that was not aimed at it, and nobody
+re-measured. The lesson is narrow and worth keeping: **when a slice is declined
+for a stated blocker, the blocker is a measurement with an expiry date, not a
+property.** Re-measure it before repeating it.
+
+### Where the boundary really is
+
+The three arms that remain inline — `privmsg`, `me`, `msg` — are held by
+`sendPacedBody`, a closure over `claimDrafts` / `releaseDrafts` / `getDraft`.
+The boundary is the **draft store**, not the send pipeline, and
+`commands/context.ts` has been saying so in its own words ("`compose.ts` keeps
+the store and the send pipeline") while the spoken version drifted to the
+second half of that sentence. The #1513 ruling stands on its own reason (#737:
+publishing `writeState` would make the drain-lock bypass importable) and is not
+reopened here.
+
+State of the switch after this slice: 55 of 59 arms delegate to a
+`*Command(cmd, ctx)` handler; three bodies remain inline, plus the `default`
+exhaustiveness guard, which is not a verb.
+
+### What bought the move
+
+Five mutants on the arm, run against the FULL unit suite before and after, with
+the set of killing tests compared — not just the count:
+
+| mutant | killers before | after | same set |
+|---|---|---|---|
+| fan-out sends to ONE channel | 7 | 7 | yes |
+| confirm gate never fires | 4 | 4 | yes |
+| ACTION framing forced off | 1 | 1 | yes |
+| empty-target guard removed | 1 | 1 | yes |
+| target list left unsorted | 1 | 1 | yes |
+
+The fan-out mutant is the one that matters for a pair whose whole job is
+reaching every channel, and it reddens the same seven tests on both sides.
+
+### A degeneration measured and deliberately not fixed here
+
+The #1396 characterization net does NOT protect the fan-out. Its `ame` and
+`amsg` rows submit into eleven joined channels leaked from the preceding
+`describe` (the net never seeds `windowStateByChannel` itself), so both rows
+stop at the confirm gate and send nothing. The evidence is the mutant table
+above: the fan-out mutant kills seven tests and NONE of them is a net row,
+while the gate mutant kills two net rows.
+
+The net already declares `indistinguishablePairs: [["ame", "amsg"]]`, but the
+CAUSE of that pairing was not declared — seeding the net with two joined
+channels instead of the leaked eleven flips both inline snapshots, which is how
+the leak was established rather than inferred.
+
+Not repaired inside this slice, deliberately: the move is already bought by the
+dedicated `#431` describes, the degeneration is identical before and after, and
+strengthening the net changes two inline snapshots and needs its own red. Same
+call as #1518.
+
+### Limits of this measurement
+
+The unit suite and `bun run check` are the whole of it. No e2e spec was run.
+The `console.warn` on the detached confirm path is unasserted before and after,
+so the mutant table says nothing about it.
