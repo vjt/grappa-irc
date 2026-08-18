@@ -38,28 +38,13 @@
 // references elsewhere don't shift.
 
 import { loginAs, openRailMenu, selectChannel } from "../fixtures/cicchettoPage";
-import { GRAPPA_BASE_URL } from "../fixtures/grappaApi";
+import { findUserIdByName, GRAPPA_BASE_URL } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededAdmin, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
 test.setTimeout(60_000);
-
-async function findVjtUserId(adminToken: string): Promise<string> {
-  const res = await fetch(`${GRAPPA_BASE_URL}/admin/users`, {
-    headers: { authorization: `Bearer ${adminToken}` },
-  });
-  if (!res.ok) {
-    throw new Error(`GET /admin/users → ${res.status} ${await res.text()}`);
-  }
-  const body = (await res.json()) as { users: { id: string; name: string }[] };
-  const vjt = body.users.find((u) => u.name === specUser().name);
-  if (!vjt) {
-    throw new Error(`vjt user not found in admin users list: ${JSON.stringify(body)}`);
-  }
-  return vjt.id;
-}
 
 async function setAdminFlag(adminToken: string, userId: string, isAdmin: boolean): Promise<void> {
   const res = await fetch(`${GRAPPA_BASE_URL}/admin/users/${encodeURIComponent(userId)}`, {
@@ -82,10 +67,10 @@ async function setAdminFlag(adminToken: string, userId: string, isAdmin: boolean
 // string, NOT a real bearer token). That bypassed admin auth → 401
 // → `users.users` undefined → `.find` crashed before reaching the UI
 // assertions. Mirrors the working pattern in ux-6-g-admin-mobile-h-scroll
-// (findVjtUserId + setAdminFlag with `getSeededAdmin().token`).
+// (findUserIdByName + setAdminFlag with `getSeededAdmin().token`).
 async function promoteVjtToAdmin(): Promise<{ revert: () => Promise<void> }> {
   const admin = getSeededAdmin();
-  const vjtUserId = await findVjtUserId(admin.token);
+  const vjtUserId = await findUserIdByName(admin.token, specUser().name);
   await setAdminFlag(admin.token, vjtUserId, true);
   return {
     revert: async () => {

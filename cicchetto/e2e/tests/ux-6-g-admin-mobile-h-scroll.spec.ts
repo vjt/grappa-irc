@@ -54,6 +54,7 @@
 import type { Page } from "@playwright/test";
 import { loginAs, openRailMenu, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
 import {
+  findUserIdByName,
   GRAPPA_BASE_URL,
   listSessionLogSessions,
   mintVisitor,
@@ -170,21 +171,6 @@ type Offender = {
   clientW: number;
 };
 
-async function findVjtUserId(adminToken: string): Promise<string> {
-  const res = await fetch(`${GRAPPA_BASE_URL}/admin/users`, {
-    headers: { authorization: `Bearer ${adminToken}` },
-  });
-  if (!res.ok) {
-    throw new Error(`GET /admin/users → ${res.status} ${await res.text()}`);
-  }
-  const body = (await res.json()) as { users: { id: string; name: string }[] };
-  const vjt = body.users.find((u) => u.name === specUser().name);
-  if (!vjt) {
-    throw new Error(`vjt user not found in admin users list: ${JSON.stringify(body)}`);
-  }
-  return vjt.id;
-}
-
 async function setAdminFlag(adminToken: string, userId: string, isAdmin: boolean): Promise<void> {
   const res = await fetch(`${GRAPPA_BASE_URL}/admin/users/${encodeURIComponent(userId)}`, {
     method: "PATCH",
@@ -264,7 +250,7 @@ test.describe("UX-6-G — admin pane horizontal scroll on mobile", () => {
   // hold the id of a user that no longer exists.
   test.beforeEach(async () => {
     const admin = getSeededAdmin();
-    vjtUserId = await findVjtUserId(admin.token);
+    vjtUserId = await findUserIdByName(admin.token, specUser().name);
   });
 
   test.afterEach(async () => {

@@ -24,7 +24,7 @@
 // shared baseline is restored (mirrors #291).
 
 import { loginAs, openRailMenu, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
-import { GRAPPA_BASE_URL } from "../fixtures/grappaApi";
+import { findUserIdByName, GRAPPA_BASE_URL } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, getSeededAdmin, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
@@ -32,21 +32,6 @@ const CHANNEL = AUTOJOIN_CHANNELS[0];
 const MIN_TAP_TARGET_PX = 44;
 
 test.setTimeout(60_000);
-
-async function findVjtUserId(adminToken: string): Promise<string> {
-  const res = await fetch(`${GRAPPA_BASE_URL}/admin/users`, {
-    headers: { authorization: `Bearer ${adminToken}` },
-  });
-  if (!res.ok) {
-    throw new Error(`GET /admin/users → ${res.status} ${await res.text()}`);
-  }
-  const body = (await res.json()) as { users: { id: string; name: string }[] };
-  const vjt = body.users.find((u) => u.name === specUser().name);
-  if (!vjt) {
-    throw new Error(`vjt user not found in admin users list: ${JSON.stringify(body)}`);
-  }
-  return vjt.id;
-}
 
 async function setAdminFlag(adminToken: string, userId: string, isAdmin: boolean): Promise<void> {
   const res = await fetch(`${GRAPPA_BASE_URL}/admin/users/${encodeURIComponent(userId)}`, {
@@ -78,7 +63,7 @@ test.describe("#299 — admin reachable from the rail actions drawer", () => {
   // user id has to be resolved per test — a once-per-file lookup would
   // hold the id of a user that no longer exists.
   test.beforeEach(async () => {
-    vjtUserId = await findVjtUserId(getSeededAdmin().token);
+    vjtUserId = await findUserIdByName(getSeededAdmin().token, specUser().name);
   });
 
   test.afterEach(async () => {

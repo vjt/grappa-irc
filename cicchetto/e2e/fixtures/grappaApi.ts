@@ -453,6 +453,26 @@ export async function terminateSession(adminToken: string, sessionId: string): P
   }
 }
 
+// The admin surface keys users by id, and a spec that provisions its subject
+// (#1078) only ever learns the NAME — hence the lookup. The name is a
+// PARAMETER and not `specUser()` read from here: this module imports nothing,
+// and reaching for the subject would make it import `specSubject`, which
+// already imports this one.
+export async function findUserIdByName(adminToken: string, userName: string): Promise<string> {
+  const res = await fetch(`${GRAPPA_BASE_URL}/admin/users`, {
+    headers: { authorization: `Bearer ${adminToken}` },
+  });
+  if (!res.ok) {
+    throw new Error(`grappaApi.findUserIdByName: ${res.status} ${await res.text()}`);
+  }
+  const body = (await res.json()) as { users: { id: string; name: string }[] };
+  const user = body.users.find((u) => u.name === userName);
+  if (!user) {
+    throw new Error(`grappaApi.findUserIdByName: ${userName} absent from ${JSON.stringify(body)}`);
+  }
+  return user.id;
+}
+
 // #1158 item 4 — the lifecycle log collapsed to one entry per session.
 // A spec uses this as a PRECONDITION barrier, never as the property under
 // test: the log is a bounded global ring written from an async cast, so a
