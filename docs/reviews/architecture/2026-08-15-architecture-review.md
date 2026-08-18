@@ -56,7 +56,7 @@ Two premises from the 2026-07-20 review were **re-measured and retracted** rathe
 - **K doc-reality:** Dependency A8 (CLAUDE.md's tree still omits `SourceAliasManager`, whose slot is the single most explained in `application.ex`, and the composition-root DI it performs is documented nowhere), Extension A11 (`CLIENT_PROTOCOL.md` is a per-wire-change hand mirror with no gate at all, while its machine-readable twin is generated and gated).
 - **M closed-sets:** Type leverage A8 (the theme vocabulary declared five times across two languages, pinned only to itself on each side), Duplication A5 (same, from the duplication angle), A8 (upload MIME taxonomy: three server copies CI-pinned, the fourth cross-language copy pinned by a comment), Extension A8 (`CONTENT_KIND_PROJECTION` — the one pair CLAUDE.md singles out as THE single source — held together by prose).
 - **L enum-cost / N verb-plumbing:** Extension A6 (controller rendering is a hard 9/30/0 two-pattern split with no stated rule), A7 (the Logger allowlist is 306 lines / 47% of `config/config.exs`, and a one-directional sync test forces four self-documented dead entries into it).
-- **Duplication A4:** one `SessionEntry` projected to `live_state` three times, already diverged on the `peer_*` fields, with a client comment asserting the opposite and four dead aliases hiding it.
+- **Duplication A4:** one `SessionEntry` projected to `live_state` three times, already diverged on the `peer_*` fields, with a client comment asserting the opposite and four dead aliases hiding it. **⚠️ Partly falsified 2026-08-18 — the server-side split is a recorded scoping decision (`DESIGN_NOTES.md:23673`) and is NOT a finding; only the client comment + dead aliases survive. See the annotation under "Concern: duplication".**
 - **Client hygiene:** Dependency A3 (the one client import cycle is unchanged from the last review, and `biome.json` still does not enable `noImportCycles` — the codebase already paid for this class once and wrote the post-mortem), A4 (`lib → component` inversions, one of them a hand-rolled twin of a generated wire type living in the view layer).
 
 LOW findings (22) are improvement opportunities — see each concern's section.
@@ -106,6 +106,31 @@ LOW findings (22) are improvement opportunities — see each concern's section.
 **A3 (HIGH).** 60+ copies of nine e2e helpers. `adminLogin` ×12 byte-identical, plus `adminFriendlyLogin` ×8 — **the same body under a second name**, so a reader grepping one finds 12 of 20 sites. `fetchScrollbackPage` ×10 has already forked three ways on the base URL (two inline hardcodes, one spec-local constant, and the exported `GRAPPA_BASE_URL` that none of them use) and two ways on the return type, while `grappaApi.ts` already ships the three verbs these copies re-implement. The concrete cost is a flake source: `loginAs` learned a `waitForUserTopicReady` barrier (`cicchettoPage.ts:167-172`) and the 20 hand copies stop at `expectShellReady`. **Fix:** one `adminLogin` in the fixtures; move `findVjtUserId`/`setAdminFlag`/`adminPatchCaps`/`bootVisitor` into `grappaApi.ts`; delete `fetchScrollbackPage`/`seedCursor` in favour of the existing helpers.
 
 **MEDIUM.** **A4** — one `SessionEntry` projected to `live_state` JSON three times (`live_introspection/admin_wire.ex:126`, `visitors/admin_wire.ex:139`, `credentials/admin_wire.ex:210`); the two private copies are byte-identical to each other and the owner's is a strict superset (`peer_address`, `peer_port`, `peer_name`), so the operator sees the upstream endpoint on `/admin/sessions` and not on the other two, for no stated reason — while a client comment asserts the opposite and four dead `api.ts` aliases hide it. **A5** — the theme token vocabulary declared five times (server `@color_keys`/`@font_families`/`@size_modes` plus four TS declarations), with only one pair pinned, and pinned to each other rather than to the server. **A6** — 18 hand-inlined union arms have no `wireTypesAssert` pin, and `isupport_changed.frame_budget_base` has already drifted (`number | null` vs `number` vs `integer()`); with no pin, a deliberate widening and an accidental one look identical. **A7** — nine `fetch` sites hand-roll the error shape `readError` owns, inside files whose sibling functions already call it; the hand-rolled `err.code` is `"Unauthorized"`, which is not a member of the generated token set, so `friendlyApiError` cannot map it. **A8** — the upload MIME taxonomy has three server copies with a CI pin and a fourth cross-language copy pinned only by a comment. **A9** — three homes for cic unit tests (246 / 23 / 14 files) with three literal same-name pairs both running, written at different times against overlapping surfaces with different mocks.
+
+> **⚠️ A4 — FALSIFIED IN PART, post-review (2026-08-18, measured on `main` @ `ba1bdc20`).**
+> The clause **"for no stated reason"** is false, and the server-side half of A4 is
+> therefore **not a finding**. `docs/DESIGN_NOTES.md:23673`, inside
+> `## 2026-07-30 — #550: the upstream peer each session landed on (netsplit triage)`,
+> states the scope decision verbatim: *"Scope is the **Sessions tab** (the
+> netsplit-triage door): the operator CLI text formatter (`Grappa.Operator`) and the
+> visitors/credentials admin tabs keep their existing `live_state` subset, and
+> `peer_name` resolution is the Sessions controller's responsibility."* The three-way
+> server split is a deliberate, recorded scoping call, not drift, and **must not be
+> "aligned"** — a naive alignment is also technically wrong: `peer_name` is not a
+> `SessionEntry` field at all (the Sessions controller resolves it through
+> `Net.PtrCache`, #252), so the other two wires could copy two of the three fields and
+> would have to synthesise the third.
+>
+> What survives is **only A4's last clause** — the client comment and the four dead
+> `api.ts` aliases — and it survives *because* of the ruling, not despite it: the
+> codegen already emits three distinct, correct per-owner types (`wireTypes.ts:587`,
+> `:630`, `:1509`), while `api.ts:1831`/`:1833`/`:1875`/`:3087` flattens all three onto
+> the owner's superset under a comment asserting the flattening is correct. All four
+> aliases have **zero** consumers (`git grep -w` over `cicchetto/src` + `cicchetto/e2e`:
+> every hit is the definition itself or the next alias in the chain), so the residue is
+> a trap for the next author, not a live defect. Recorded here rather than only in the
+> issue because this document still drives ~20 open buckets and a false premise left
+> inside it re-raises itself.
 
 **LOW.** **A10** — `MentionsRow` re-declares a generated, asserted type with `kind` widened to `string`, and the narrowed value is assigned straight into it. **A11** — `Mentions.mentioned?/3` and `matchesWatchlist` are two ports of one predicate pinned only transitively, through 11 truth-table rows that use ASCII bodies and no regex metacharacters — so the two escape tables and two flag sets are unexercised. **A12** — `monitor_targets/1` re-derives prefix-nick extraction that `IRC.Parser` owns, against the "one IRC parser" invariant. **A13** — the `refresh_plan` closure scaffold written twice (the rest of the SessionPlan split is correctly separate and should NOT be merged). **A14** — Notify's REST envelope still differs from its WS envelope, half-fixed since the last review. **A15** — `web_session_severed` is one wire discriminator naming two unrelated payloads, currently kept apart only by topic.
 
