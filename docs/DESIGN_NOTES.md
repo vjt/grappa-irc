@@ -49855,3 +49855,68 @@ rewritten call sites type-checks and fails only at runtime. That is the same
 gap the sibling entries name, and on the `seedCursor` slice it was a runtime
 positive control, not the type-checker, that caught exactly such a
 transposition.
+<!-- entry #1397-startserver -->
+
+---
+
+## 2026-08-18 — #1397: the inlined `start_server/1` body, and which wrapper is a lie
+
+`Grappa.IRCServer.start_server/1` has existed for a while and had 548 callers;
+it also had twenty-two hand-written copies of its two-line body across fourteen
+test files. This entry records how those were selected, which ones were left,
+and why two wrappers of the same shape earned opposite treatment.
+
+### The predicate is the property, not the call shape
+
+A `git grep` for `IRCServer.port(` finds 28 callers in `test/`, and a sweep over
+that shape would have been wrong at four of them. The property that makes a site
+convertible is that it starts the fake peer AND immediately wants its port, with
+neither `start_link` nor a seeded handler state being the thing under assertion.
+The four survivors in `client_test.exs` and `irc_server_test.exs` fail exactly
+that test:
+
+  * the `start_link/2` initial-state case needs an arity `start_server/1` cannot
+    express;
+  * the "start_link/1 still works" case has that call as its subject — converting
+    it deletes the assertion;
+  * the S7 tcp_closed-drain case exercises `IRCServer`'s own primitives, and
+    routing it through a convenience built on top makes it fail for a reason that
+    is not the drain;
+  * `irc_server_test.exs` calls `port/1` on a server it is handed, so it was
+    never one of the copies.
+
+Same posture as the `await_handshake/2` pass earlier the same day, where the
+`{:ok, _}`-shaped predicate protected the four sites that assert on the CONTENT
+of the matched line. The census moved under the slice and both readings are
+kept: selected against `393f0f89` it is 28 callers → 6, the six being the four
+above plus two wrappers #1533 was deleting in parallel; rebased onto
+`1a383ac2` with #1533 landed, the same change reads 26 → 4, and the four are
+exactly the reasoned survivors. A count taken against a base that then moves
+is not wrong, it is dated.
+
+### A wrapper over a no-op is a name; a wrapper over an observable is a lie
+
+Ten of the twenty-two copies lived inside a local zero-arg wrapper. The two
+that wrapped `welcome_handler()` were DELETED in #1533 rather than delegated —
+their call sites now name the handler. The eight that wrap
+`passthrough_handler()` are delegated here instead, and the asymmetry is
+deliberate rather than drift.
+
+The one-pattern rule binds cases that are ALIKE, and these two are not. A
+`welcome_handler` peer WRITES a 001, so hiding it behind a local name hides
+whether registration completes: the wrapper misrepresents what the test set up.
+The passthrough peer's entire contract is to do nothing, so a name over it
+hides no observable at all. That is the line — a wrapper over a no-op is a
+name, a wrapper over an observable is a lie — and it is what "same problem,
+same solution" actually ranges over.
+
+The price confirms the reading from the other side: deleting the eight costs 72
+call sites and an `alias` that does not exist in six of the eight files, and
+buys no change in behaviour. The mechanism would be heavier than the problem.
+
+### `port/1` inside an option map
+
+One site (`client_outbound_cost_test.exs`) called `port/1` inside the client's
+option map rather than binding it first. It converts, but the pair binding has to
+reach the map as a plain variable — a reminder that "the port is used once" is
+not the same as "the port is not needed".
