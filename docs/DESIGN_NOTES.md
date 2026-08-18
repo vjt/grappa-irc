@@ -49855,3 +49855,85 @@ rewritten call sites type-checks and fails only at runtime. That is the same
 gap the sibling entries name, and on the `seedCursor` slice it was a runtime
 positive control, not the type-checker, that caught exactly such a
 transposition.
+<!-- entry #1397-networksfam -->
+
+---
+
+## 2026-08-18 — #1397: one credential fixture for the networks/* family, and the residue a name-grep cannot see
+
+Bucket H again, server side. Five files under `test/grappa/networks/`
+(`away`, `commit_password`, `connection_state`, `last_joined_channels`,
+`perform_changeset`) each carried a private `setup_credential` and a private
+`reload`. Both are now in `AuthFixtures` as `user_with_credential/2` and
+`reload_credential/1`; the five copies of each are gone.
+
+### The two axes, and why neither becomes a default
+
+The five `reload` bodies were byte-identical. The five `setup_credential`
+bodies grouped into three md5 classes that are one function on two axes: the
+port (four files pass a dummy `6667`, `connection_state` passes the
+`IRCServer` fake's real port) and a `%{auth_method: :nickserv_identify,
+password: "oldpass"}` merge that only `commit_password` and
+`perform_changeset` want.
+
+Both axes stay at the call site. The port is a required argument, not a
+`6667` default, because the difference between "this file never dials" and
+"this file dials a real fake" is exactly the thing a default would hide —
+the same posture the shared handshake barrier took with its timeout, and
+what the project's no-default-arguments rule asks for anyway. The rotation
+merge is the 20% that does not generalise, so it stays local to the two
+files that want it, renamed `rotating_credential/1` for what it builds. Two
+one-line wrappers survive by design; a shared helper carrying a
+password-rotation default for three files that never rotate a password would
+have been a data-model flag, not reuse.
+
+### Boundary caught the leak the copies were making quietly
+
+`reload_credential/1` first went in as the copies had it — a raw
+`Repo.get_by!(Credential, ...)`. Boundary refused: `AuthFixtures` may name
+`Grappa.Networks.Network` and `Grappa.Accounts.User`, not
+`Grappa.Networks.Credential`. The fix was not to widen the deps and keep the
+raw query but to call `Credentials.get_credential_by_ids/2`, the public verb
+that already runs that query in production — the dep is declared because the
+`%Credential{}` head genuinely references the schema, and the query is no
+longer a second implementation of a context function. Five copies had been
+making the same reference implicitly, one file at a time, where no boundary
+check looks.
+
+### What the census says about the rest, measured on `1a383ac2`
+
+The four helpers earlier slices retired are genuinely at zero local
+definitions: `passthrough_handler`, `admin_session`, `await_handshake`,
+`start_server`. One trap on the way there: `git grep 'def start_server'`
+returns a hit outside `test/support/`, and it is `start_server_with_001` — a
+substring. The anchor that is too wide invents a residue; the anchor that is
+too narrow (`defp? name\(`) reported zero for `passthrough_handler`, whose
+real shape is `defp passthrough_handler, do:` — comma, no parentheses; and
+`git grep -E` has no `\b` or `\s` at all, which produced a whole table of
+plausible zeroes twice on this issue. Every one of those wrong numbers looked
+like good news.
+
+**The largest remaining server-side cluster carries no name.** Grouping the
+`fn state, ... end` handler literals by body rather than by name: 105
+literals over 12 files, 46 distinct bodies — and a single semantic group of
+**62 copies over 7 files** ("if the line starts with `USER`, reply 001
+welcome, else nil"), of which 55 live in `session/server_test.exs` alone.
+Inside those 62, two byte-identical clusters of 41 and 13 differ only in the
+001 prefix spelling (`:irc` vs `:server`). The named `welcome_handler`
+definitions number four. A progress figure grepped by name understates that
+cluster roughly fifteenfold, which is the same blind spot recorded earlier
+for the inlined `passthrough_handler` bodies — that particular inline
+duplication, incidentally, is no longer present on this base.
+
+The issue treats "which 001 spelling is canonical" as a prerequisite for
+consolidating that cluster. It is not: the handshake barrier already
+established the alternative, which is to take the varying part as a required
+argument and let each site keep its own value. That turns the decision into a
+later cleanup instead of a blocker.
+
+_Not established: nothing about the 62 sites' interchangeability in
+behaviour — they were grouped by body, and no test was run to check whether
+any assertion downstream depends on the 001 spelling. No `git log -S`, so
+"differs from" is measured and "derives from" is not. The 105/12 handler
+figure searches `fn state` and is therefore a lower bound, like the issue's
+own e2e count._
