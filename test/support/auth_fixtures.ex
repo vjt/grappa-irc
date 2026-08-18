@@ -229,7 +229,7 @@ defmodule Grappa.AuthFixtures do
   def user_with_credential(port, attrs) when is_integer(port) and is_map(attrs) do
     user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
 
-    {network, _server} =
+    {network, _} =
       network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")
 
     {user, network, credential_fixture(user, network, attrs)}
