@@ -21,6 +21,7 @@ defmodule Grappa.AuthFixtures do
       Grappa.Accounts,
       Grappa.Accounts.User,
       Grappa.Networks,
+      Grappa.Networks.Credential,
       Grappa.Networks.Network,
       Grappa.Repo,
       Grappa.Session,
@@ -212,6 +213,39 @@ defmodule Grappa.AuthFixtures do
 
     {:ok, credential} = Credentials.bind_credential(user, network, Map.merge(base, attrs))
     credential
+  end
+
+  @doc """
+  The whole `(user, network-with-server, credential)` triple in one call,
+  each with a unique name/slug so `async: true` files don't collide.
+
+  `port` is required and carries no default on purpose: a file that never
+  dials the server passes a dummy (`6667`), one that does passes the
+  `IRCServer` fake's real port, and the difference has to stay visible at
+  the call site.
+  """
+  @spec user_with_credential(:inet.port_number(), map()) ::
+          {User.t(), Network.t(), Credential.t()}
+  def user_with_credential(port, attrs) when is_integer(port) and is_map(attrs) do
+    user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+
+    {network, _server} =
+      network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")
+
+    {user, network, credential_fixture(user, network, attrs)}
+  end
+
+  @doc """
+  Re-reads a credential from the DB by its `(user_id, network_id)` pair —
+  the natural key, not `id`, so it still resolves when the row under test
+  was replaced rather than updated.
+  """
+  @spec reload_credential(Credential.t()) :: Credential.t()
+  def reload_credential(%Credential{} = credential) do
+    {:ok, reloaded} =
+      Credentials.get_credential_by_ids(credential.user_id, credential.network_id)
+
+    reloaded
   end
 
   @doc """

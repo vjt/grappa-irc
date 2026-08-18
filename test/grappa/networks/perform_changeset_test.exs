@@ -16,29 +16,16 @@ defmodule Grappa.Networks.PerformChangesetTest do
   alias Grappa.Networks.Credential
   alias Grappa.Repo
 
-  defp setup_credential(attrs \\ %{}) do
-    user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
-
-    {network, _} =
-      network_with_server(port: 6667, slug: "test-#{System.unique_integer([:positive])}")
-
-    cred =
-      credential_fixture(
-        user,
-        network,
-        Map.merge(%{auth_method: :nickserv_identify, password: "oldpass"}, attrs)
-      )
-
-    {user, network, cred}
-  end
-
-  defp reload(%Credential{} = cred) do
-    Repo.get_by!(Credential, user_id: cred.user_id, network_id: cred.network_id)
+  defp rotating_credential(attrs) do
+    user_with_credential(
+      6667,
+      Map.merge(%{auth_method: :nickserv_identify, password: "oldpass"}, attrs)
+    )
   end
 
   describe "Credential.perform_changeset/2" do
     test "encrypts + round-trips perform_list and oper_pass on read (Cloak decrypt)" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = rotating_credential(%{})
 
       cs =
         Credential.perform_changeset(cred, %{
@@ -48,7 +35,7 @@ defmodule Grappa.Networks.PerformChangesetTest do
 
       assert cs.valid?
       {:ok, saved} = Repo.update(cs)
-      reloaded = reload(saved)
+      reloaded = reload_credential(saved)
 
       # After Cloak :load, the *_encrypted fields carry the DECRYPTED plaintext.
       assert reloaded.perform_list_encrypted ==
@@ -58,7 +45,7 @@ defmodule Grappa.Networks.PerformChangesetTest do
     end
 
     test "accessors return the decrypted plaintext, nil when unset" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = rotating_credential(%{})
 
       {:ok, saved} =
         cred
@@ -68,17 +55,17 @@ defmodule Grappa.Networks.PerformChangesetTest do
         })
         |> Repo.update()
 
-      reloaded = reload(saved)
+      reloaded = reload_credential(saved)
       assert Credential.perform_list_text(reloaded) == "MODE $nick +x"
       assert Credential.upstream_oper_pass(reloaded) == "s3cr3t"
 
-      {_, _, bare} = setup_credential()
+      {_, _, bare} = rotating_credential(%{})
       assert Credential.perform_list_text(bare) == nil
       assert Credential.upstream_oper_pass(bare) == nil
     end
 
     test "inspect/1 never leaks perform_list or oper_pass (redact: true)" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = rotating_credential(%{})
 
       {:ok, saved} =
         cred
@@ -88,13 +75,13 @@ defmodule Grappa.Networks.PerformChangesetTest do
         })
         |> Repo.update()
 
-      dump = inspect(reload(saved))
+      dump = inspect(reload_credential(saved))
       refute dump =~ "topsecret"
       refute dump =~ "leakme"
     end
 
     test "a multi-line perform list is accepted (newlines are the line separator)" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = rotating_credential(%{})
 
       cs =
         Credential.perform_changeset(cred, %{
@@ -105,7 +92,7 @@ defmodule Grappa.Networks.PerformChangesetTest do
     end
 
     test "clearing perform_list / oper_pass with empty string stores nil" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = rotating_credential(%{})
 
       {:ok, saved} =
         cred
@@ -120,13 +107,13 @@ defmodule Grappa.Networks.PerformChangesetTest do
         |> Credential.perform_changeset(%{perform_list: "", oper_pass: ""})
         |> Repo.update()
 
-      reloaded = reload(cleared)
+      reloaded = reload_credential(cleared)
       assert Credential.perform_list_text(reloaded) == nil
       assert Credential.upstream_oper_pass(reloaded) == nil
     end
 
     test "omitting oper_pass keeps the stored secret (leave-blank-to-keep)" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = rotating_credential(%{})
 
       {:ok, saved} =
         cred
@@ -140,20 +127,20 @@ defmodule Grappa.Networks.PerformChangesetTest do
         |> Credential.perform_changeset(%{perform_list: "MODE $nick +x"})
         |> Repo.update()
 
-      reloaded = reload(updated)
+      reloaded = reload_credential(updated)
       assert Credential.perform_list_text(reloaded) == "MODE $nick +x"
       assert Credential.upstream_oper_pass(reloaded) == "keepme"
     end
 
     test "rejects a NUL byte in perform_list" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = rotating_credential(%{})
       cs = Credential.perform_changeset(cred, %{perform_list: "MODE $nick +x\0evil"})
       refute cs.valid?
       assert %{perform_list: [_ | _]} = errors_on(cs)
     end
 
     test "rejects CR/LF/NUL in oper_pass (single-line secret)" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = rotating_credential(%{})
       cs = Credential.perform_changeset(cred, %{oper_pass: "bad\r\npass"})
       refute cs.valid?
       assert %{oper_pass: [_ | _]} = errors_on(cs)
@@ -169,18 +156,18 @@ defmodule Grappa.Networks.PerformChangesetTest do
       # the user branch only. The perform editor is a different door and must
       # stay unable to write it — otherwise a secret gets a second editable
       # home, which is the split brain #124 is named after.
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = rotating_credential(%{})
 
       {:ok, saved} =
         cred
         |> Credential.perform_changeset(%{perform_list: "MODE $nick +x", server_pass: "sneaky"})
         |> Repo.update()
 
-      assert reload(saved).server_pass_encrypted == nil
+      assert reload_credential(saved).server_pass_encrypted == nil
     end
 
     test "rejects a perform list over the byte cap" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = rotating_credential(%{})
       huge = String.duplicate("MODE $nick +x\n", 2000)
       cs = Credential.perform_changeset(cred, %{perform_list: huge})
       refute cs.valid?

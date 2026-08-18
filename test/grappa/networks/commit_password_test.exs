@@ -14,46 +14,32 @@ defmodule Grappa.Networks.CommitPasswordTest do
   import Grappa.AuthFixtures
 
   alias Grappa.Networks.{Credential, Credentials}
-  alias Grappa.Repo
 
-  defp setup_credential(attrs \\ %{}) do
-    user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
-
-    {network, _} =
-      network_with_server(port: 6667, slug: "test-#{System.unique_integer([:positive])}")
-
-    cred =
-      credential_fixture(
-        user,
-        network,
-        Map.merge(%{auth_method: :nickserv_identify, password: "oldpass"}, attrs)
-      )
-
-    {user, network, cred}
-  end
-
-  defp reload(%Credential{} = cred) do
-    Repo.get_by!(Credential, user_id: cred.user_id, network_id: cred.network_id)
+  defp rotating_credential(attrs) do
+    user_with_credential(
+      6667,
+      Map.merge(%{auth_method: :nickserv_identify, password: "oldpass"}, attrs)
+    )
   end
 
   describe "Credentials.commit_password/3" do
     test "rotates the stored password and round-trips on read (Cloak decrypt)" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = rotating_credential(%{})
       # password_encrypted carries the DECRYPTED plaintext after load.
       assert cred.password_encrypted == "oldpass"
 
       assert {:ok, %Credential{}} =
                Credentials.commit_password(cred.user_id, cred.network_id, "newpass")
 
-      assert reload(cred).password_encrypted == "newpass"
+      assert reload_credential(cred).password_encrypted == "newpass"
     end
 
     test "preserves every other field — only the password rotates" do
-      {_, _, cred} = setup_credential(%{nick: "vjt", autojoin_channels: ["#grappa", "#italia"]})
+      {_, _, cred} = rotating_credential(%{nick: "vjt", autojoin_channels: ["#grappa", "#italia"]})
 
       assert {:ok, _} = Credentials.commit_password(cred.user_id, cred.network_id, "newpass")
 
-      reloaded = reload(cred)
+      reloaded = reload_credential(cred)
       assert reloaded.nick == "vjt"
       assert reloaded.auth_method == :nickserv_identify
       assert reloaded.autojoin_channels == ["#grappa", "#italia"]
@@ -61,12 +47,12 @@ defmodule Grappa.Networks.CommitPasswordTest do
     end
 
     test "stores a rest-of-line password verbatim, spaces included" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = rotating_credential(%{})
 
       assert {:ok, _} =
                Credentials.commit_password(cred.user_id, cred.network_id, "my new pass phrase")
 
-      assert reload(cred).password_encrypted == "my new pass phrase"
+      assert reload_credential(cred).password_encrypted == "my new pass phrase"
     end
 
     test "{:error, :not_found} for an unknown (user, network)" do
@@ -77,7 +63,7 @@ defmodule Grappa.Networks.CommitPasswordTest do
 
   describe "Credential.password_changeset/2" do
     test "casts and encrypts the new password, touching nothing else" do
-      {_, _, cred} = setup_credential(%{autojoin_channels: ["#grappa"]})
+      {_, _, cred} = rotating_credential(%{autojoin_channels: ["#grappa"]})
 
       cs = Credential.password_changeset(cred, "newpass")
 
@@ -91,13 +77,13 @@ defmodule Grappa.Networks.CommitPasswordTest do
     end
 
     test "rejects a blank password at the changeset boundary" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = rotating_credential(%{})
 
       refute Credential.password_changeset(cred, "").valid?
     end
 
     test "rejects CR/LF/NUL — the stored value is re-interpolated into the wire" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = rotating_credential(%{})
 
       refute Credential.password_changeset(cred, "new\r\npass").valid?
       refute Credential.password_changeset(cred, "new\x00pass").valid?
@@ -111,14 +97,14 @@ defmodule Grappa.Networks.CommitPasswordTest do
 
   describe "Credentials.commit_registration_password/3" do
     test "commits the password AND flips auth_method :none → :nickserv_identify" do
-      {_, _, cred} = setup_credential(%{auth_method: :none, password: nil})
+      {_, _, cred} = rotating_credential(%{auth_method: :none, password: nil})
       assert cred.auth_method == :none
       assert is_nil(cred.password_encrypted)
 
       assert {:ok, %Credential{}} =
                Credentials.commit_registration_password(cred.user_id, cred.network_id, "regpass")
 
-      reloaded = reload(cred)
+      reloaded = reload_credential(cred)
       # The whole point vs commit_password/3: BOTH the password lands AND the
       # binding is promoted to auto-identify (else the registered nick gets
       # services-enforced on the next reconnect).
@@ -128,7 +114,7 @@ defmodule Grappa.Networks.CommitPasswordTest do
 
     test "preserves nick + autojoin — only password + auth_method change" do
       {_, _, cred} =
-        setup_credential(%{
+        rotating_credential(%{
           auth_method: :none,
           password: nil,
           nick: "wizreg",
@@ -138,7 +124,7 @@ defmodule Grappa.Networks.CommitPasswordTest do
       assert {:ok, _} =
                Credentials.commit_registration_password(cred.user_id, cred.network_id, "regpass")
 
-      reloaded = reload(cred)
+      reloaded = reload_credential(cred)
       assert reloaded.nick == "wizreg"
       assert reloaded.autojoin_channels == ["#bofh"]
     end
@@ -152,7 +138,7 @@ defmodule Grappa.Networks.CommitPasswordTest do
   describe "Credential.registration_changeset/2" do
     test "casts the password + flips auth_method, encrypts, touching nothing else" do
       {_, _, cred} =
-        setup_credential(%{auth_method: :none, password: nil, autojoin_channels: ["#grappa"]})
+        rotating_credential(%{auth_method: :none, password: nil, autojoin_channels: ["#grappa"]})
 
       cs = Credential.registration_changeset(cred, "regpass")
 
@@ -164,13 +150,13 @@ defmodule Grappa.Networks.CommitPasswordTest do
     end
 
     test "rejects a blank password at the changeset boundary" do
-      {_, _, cred} = setup_credential(%{auth_method: :none, password: nil})
+      {_, _, cred} = rotating_credential(%{auth_method: :none, password: nil})
 
       refute Credential.registration_changeset(cred, "").valid?
     end
 
     test "rejects CR/LF/NUL — the password is re-interpolated into IDENTIFY" do
-      {_, _, cred} = setup_credential(%{auth_method: :none, password: nil})
+      {_, _, cred} = rotating_credential(%{auth_method: :none, password: nil})
 
       refute Credential.registration_changeset(cred, "re\r\ngpass").valid?
       refute Credential.registration_changeset(cred, "re\x00gpass").valid?

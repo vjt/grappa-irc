@@ -23,16 +23,6 @@ defmodule Grappa.Networks.ConnectionStateTest do
   alias Grappa.Networks.{Credential, Credentials}
   alias Grappa.PubSub.Topic
 
-  defp setup_credential(port, attrs \\ %{}) do
-    user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
-
-    {network, _} =
-      network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")
-
-    credential = credential_fixture(user, network, attrs)
-    {user, network, credential}
-  end
-
   # Sets connection_state on a credential row directly (bypasses
   # validation — tests need to seed `:parked` / `:failed` rows
   # without going through the `Networks.connect/disconnect/mark_failed`
@@ -49,14 +39,10 @@ defmodule Grappa.Networks.ConnectionStateTest do
     |> Repo.update!()
   end
 
-  defp reload(%Credential{} = cred) do
-    Repo.get_by!(Credential, user_id: cred.user_id, network_id: cred.network_id)
-  end
-
   describe "connect/1" do
     test "transitions :parked → :connected, clears reason, broadcasts" do
       {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, fresh} = setup_credential(port)
+      {user, network, fresh} = user_with_credential(port, %{})
       cred = set_state(fresh, :parked, "manual")
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
@@ -90,14 +76,14 @@ defmodule Grappa.Networks.ConnectionStateTest do
       assert is_binary(at)
       assert {:ok, _, 0} = DateTime.from_iso8601(at)
 
-      reloaded = reload(cred)
+      reloaded = reload_credential(cred)
       assert reloaded.connection_state == :connected
       assert reloaded.connection_state_reason == nil
     end
 
     test "transitions :failed → :connected, clears reason, broadcasts" do
       {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, _, fresh} = setup_credential(port)
+      {user, _, fresh} = user_with_credential(port, %{})
       cred = set_state(fresh, :failed, "k-line: trial")
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
@@ -119,7 +105,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
 
     test "idempotent on :connected — returns row unchanged, no broadcast" do
       {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, _, cred} = setup_credential(port)
+      {user, _, cred} = user_with_credential(port, %{})
       assert cred.connection_state == :connected
       original_changed_at = cred.connection_state_changed_at
 
@@ -137,7 +123,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
   describe "disconnect/2" do
     test "from :connected with live session: sends QUIT upstream, terminates session, transitions :parked, broadcasts" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, cred} = setup_credential(port)
+      {user, network, cred} = user_with_credential(port, %{})
       assert cred.connection_state == :connected
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
@@ -172,7 +158,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
 
     test "from :connected with no live session: transitions :parked, broadcasts (best-effort QUIT skipped silently)" do
       {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, _, cred} = setup_credential(port)
+      {user, _, cred} = user_with_credential(port, %{})
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
@@ -193,7 +179,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
 
     test "from :parked: returns {:error, :not_connected} unchanged" do
       {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, _, fresh} = setup_credential(port)
+      {user, _, fresh} = user_with_credential(port, %{})
       cred = set_state(fresh, :parked, "first")
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
@@ -201,18 +187,18 @@ defmodule Grappa.Networks.ConnectionStateTest do
       assert {:error, :not_connected} = Networks.disconnect(cred, "second")
       refute_receive {:connection_state_changed, _}, 100
 
-      reloaded = reload(cred)
+      reloaded = reload_credential(cred)
       assert reloaded.connection_state == :parked
       assert reloaded.connection_state_reason == "first"
     end
 
     test "from :failed: returns {:error, :not_connected} unchanged" do
       {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {_, _, fresh} = setup_credential(port)
+      {_, _, fresh} = user_with_credential(port, %{})
       cred = set_state(fresh, :failed, "k-line: trial")
 
       assert {:error, :not_connected} = Networks.disconnect(cred, "manual")
-      reloaded = reload(cred)
+      reloaded = reload_credential(cred)
       assert reloaded.connection_state == :failed
       assert reloaded.connection_state_reason == "k-line: trial"
     end
@@ -221,7 +207,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
   describe "mark_failed/2" do
     test "from :connected with live session: terminates session, transitions :failed, broadcasts" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, cred} = setup_credential(port)
+      {user, network, cred} = user_with_credential(port, %{})
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
@@ -251,7 +237,7 @@ defmodule Grappa.Networks.ConnectionStateTest do
 
     test "idempotent on :failed: returns row unchanged, no broadcast" do
       {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, _, fresh} = setup_credential(port)
+      {user, _, fresh} = user_with_credential(port, %{})
       cred = set_state(fresh, :failed, "old reason")
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
@@ -265,12 +251,12 @@ defmodule Grappa.Networks.ConnectionStateTest do
 
     test "rejects from :parked: returns {:error, :user_parked}" do
       {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {_, _, fresh} = setup_credential(port)
+      {_, _, fresh} = user_with_credential(port, %{})
       cred = set_state(fresh, :parked, "user wants out")
 
       assert {:error, :user_parked} = Networks.mark_failed(cred, "k-line: trial")
 
-      reloaded = reload(cred)
+      reloaded = reload_credential(cred)
       assert reloaded.connection_state == :parked
       assert reloaded.connection_state_reason == "user wants out"
     end
@@ -279,9 +265,9 @@ defmodule Grappa.Networks.ConnectionStateTest do
   describe "Credentials.list_credentials_for_all_users/0 — filter on :connected" do
     test "returns only :connected credentials, skips :parked + :failed" do
       {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {_, _, cred_connected} = setup_credential(port)
-      {_, _, cred_parked} = setup_credential(port)
-      {_, _, cred_failed} = setup_credential(port)
+      {_, _, cred_connected} = user_with_credential(port, %{})
+      {_, _, cred_parked} = user_with_credential(port, %{})
+      {_, _, cred_failed} = user_with_credential(port, %{})
       _ = set_state(cred_parked, :parked, "manual")
       _ = set_state(cred_failed, :failed, "k-line")
 

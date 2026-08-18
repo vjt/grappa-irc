@@ -24,25 +24,10 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
   import Grappa.AuthFixtures
 
   alias Grappa.Networks.{Credential, Credentials, SessionPlan}
-  alias Grappa.Repo
-
-  defp setup_credential(attrs \\ %{}) do
-    user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
-
-    {network, _} =
-      network_with_server(port: 6667, slug: "test-#{System.unique_integer([:positive])}")
-
-    cred = credential_fixture(user, network, attrs)
-    {user, network, cred}
-  end
-
-  defp reload(%Credential{} = cred) do
-    Repo.get_by!(Credential, user_id: cred.user_id, network_id: cred.network_id)
-  end
 
   describe "Credentials.update_last_joined_channels/3" do
     test "writes the channels list and round-trips on read" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       assert cred.last_joined_channels == []
 
       assert :ok =
@@ -52,7 +37,7 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
                  ["#bofh", "#grappa", "#italia"]
                )
 
-      reloaded = reload(cred)
+      reloaded = reload_credential(cred)
       assert reloaded.last_joined_channels == ["#bofh", "#grappa", "#italia"]
     end
 
@@ -62,7 +47,7 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
     # channel names (UX-4 bucket A) exactly as the wide path did — the
     # persisted values must be byte-identical, not just the cap behaviour.
     test "canonicalises mixed-case channel names (narrow-changeset parity)" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
 
       assert :ok =
                Credentials.update_last_joined_channels(
@@ -71,29 +56,29 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
                  ["#Sniffo", "#BOFH"]
                )
 
-      assert reload(cred).last_joined_channels == ["#sniffo", "#bofh"]
+      assert reload_credential(cred).last_joined_channels == ["#sniffo", "#bofh"]
     end
 
     test "overwrites prior snapshot on each call (latest write wins)" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
 
       assert :ok = Credentials.update_last_joined_channels(cred.user_id, cred.network_id, ["#a"])
-      assert reload(cred).last_joined_channels == ["#a"]
+      assert reload_credential(cred).last_joined_channels == ["#a"]
 
       assert :ok =
                Credentials.update_last_joined_channels(cred.user_id, cred.network_id, ["#b", "#c"])
 
-      assert reload(cred).last_joined_channels == ["#b", "#c"]
+      assert reload_credential(cred).last_joined_channels == ["#b", "#c"]
     end
 
     test "empty list shrinks the snapshot to zero" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
 
       assert :ok =
                Credentials.update_last_joined_channels(cred.user_id, cred.network_id, ["#a", "#b"])
 
       assert :ok = Credentials.update_last_joined_channels(cred.user_id, cred.network_id, [])
-      assert reload(cred).last_joined_channels == []
+      assert reload_credential(cred).last_joined_channels == []
     end
 
     test "{:error, :not_found} for unknown (user, network)" do
@@ -115,7 +100,7 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
     # boot-time merge stay bounded — we drop the tail (the snapshot is
     # already sorted, so "oldest by sort key" == "tail").
     test "caps at 200 entries (tail dropped) on oversize input" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
 
       oversize =
         for n <- 1..250, do: "#chan-" <> String.pad_leading(Integer.to_string(n), 3, "0")
@@ -127,7 +112,7 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
                  oversize
                )
 
-      reloaded = reload(cred)
+      reloaded = reload_credential(cred)
       assert length(reloaded.last_joined_channels) == 200
       # Head retained, tail dropped — the input was already sorted by name,
       # so the tail = lexicographically latest entries.
@@ -137,21 +122,21 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
     end
 
     test "200-entry input round-trips unchanged (boundary)" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       exactly = for n <- 1..200, do: "##{n}"
 
       assert :ok =
                Credentials.update_last_joined_channels(cred.user_id, cred.network_id, exactly)
 
-      assert reload(cred).last_joined_channels == exactly
+      assert reload_credential(cred).last_joined_channels == exactly
     end
 
     property "result length never exceeds 200 regardless of input size" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
 
       check all(input <- StreamData.list_of(channel_name(), max_length: 400), max_runs: 25) do
         :ok = Credentials.update_last_joined_channels(cred.user_id, cred.network_id, input)
-        reloaded = reload(cred)
+        reloaded = reload_credential(cred)
         assert length(reloaded.last_joined_channels) <= 200
         # Cap preserves head order, only tail drops.
         assert reloaded.last_joined_channels == Enum.take(input, 200)
@@ -165,7 +150,7 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
   # strict prefix of the truth for the whole restore window.
   describe "Credentials.merge_last_joined_channels/4" do
     test "a live keyset short of the snapshot leaves the snapshot whole" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       :ok = Credentials.update_last_joined_channels(cred.user_id, cred.network_id, ~w(#a #b #c))
 
       assert :ok =
@@ -176,20 +161,20 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
                  []
                )
 
-      assert reload(cred).last_joined_channels == ~w(#a #b #c)
+      assert reload_credential(cred).last_joined_channels == ~w(#a #b #c)
     end
 
     test "an EMPTY live keyset does not empty the snapshot" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       :ok = Credentials.update_last_joined_channels(cred.user_id, cred.network_id, ~w(#a #b))
 
       assert :ok = Credentials.merge_last_joined_channels(cred.user_id, cred.network_id, [], [])
 
-      assert reload(cred).last_joined_channels == ~w(#a #b)
+      assert reload_credential(cred).last_joined_channels == ~w(#a #b)
     end
 
     test "a departure shrinks the snapshot" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       :ok = Credentials.update_last_joined_channels(cred.user_id, cred.network_id, ~w(#a #b))
 
       assert :ok =
@@ -200,11 +185,11 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
                  ["#a"]
                )
 
-      assert reload(cred).last_joined_channels == ["#b"]
+      assert reload_credential(cred).last_joined_channels == ["#b"]
     end
 
     test "a departure from a channel we were not live in still shrinks it" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       :ok = Credentials.update_last_joined_channels(cred.user_id, cred.network_id, ~w(#a #stale))
 
       assert :ok =
@@ -215,11 +200,11 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
                  ["#stale"]
                )
 
-      assert reload(cred).last_joined_channels == ["#a"]
+      assert reload_credential(cred).last_joined_channels == ["#a"]
     end
 
     test "a channel joined for the first time is appended ahead of the stale tail" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       :ok = Credentials.update_last_joined_channels(cred.user_id, cred.network_id, ["#old"])
 
       assert :ok =
@@ -230,11 +215,11 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
                  []
                )
 
-      assert reload(cred).last_joined_channels == ~w(#new #old)
+      assert reload_credential(cred).last_joined_channels == ~w(#new #old)
     end
 
     test "on overflow the cap drops the not-yet-rejoined tail, not the live keyset" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       stale = for n <- 1..200, do: "#stale-" <> String.pad_leading(Integer.to_string(n), 3, "0")
       :ok = Credentials.update_last_joined_channels(cred.user_id, cred.network_id, stale)
 
@@ -246,7 +231,7 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
                  []
                )
 
-      merged = reload(cred).last_joined_channels
+      merged = reload_credential(cred).last_joined_channels
       assert length(merged) == 200
       assert hd(merged) == "#live"
       refute "#stale-200" in merged
@@ -266,7 +251,7 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
     # `validate_length(:last_joined_channels, max: 200)` is the
     # belt-and-braces guard.
     test "rejects oversize list at the changeset boundary (bypassing the context helper)" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
 
       oversize =
         for n <- 1..250, do: "#chan-" <> String.pad_leading(Integer.to_string(n), 3, "0")
@@ -286,7 +271,7 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
     end
 
     test "accepts exactly the cap length at the changeset boundary (boundary)" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       exactly = for n <- 1..Credential.last_joined_channels_max(), do: "##{n}"
 
       cs = Credential.changeset(cred, %{last_joined_channels: exactly})
@@ -301,7 +286,7 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
   describe "SessionPlan.build_plan boot-merge — autojoin + last_joined" do
     test "merges autojoin_channels + last_joined_channels at session_plan build" do
       {_, _, cred} =
-        setup_credential(%{autojoin_channels: ["#bofh", "#grappa"]})
+        user_with_credential(6667, %{autojoin_channels: ["#bofh", "#grappa"]})
 
       assert :ok =
                Credentials.update_last_joined_channels(
@@ -310,7 +295,7 @@ defmodule Grappa.Networks.LastJoinedChannelsTest do
                  ["#italia", "#linux"]
                )
 
-      reloaded = reload(cred)
+      reloaded = reload_credential(cred)
 
       # Direct call into the helper to verify dedupe + order. The full
       # `SessionPlan.resolve/1` path requires DNS/Server fixtures; the

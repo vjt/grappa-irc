@@ -22,33 +22,19 @@ defmodule Grappa.Networks.AwayTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Networks, Repo}
+  alias Grappa.Networks
   alias Grappa.Networks.{Credential, Credentials, SessionPlan}
-
-  defp setup_credential(attrs \\ %{}) do
-    user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
-
-    {network, _} =
-      network_with_server(port: 6667, slug: "test-#{System.unique_integer([:positive])}")
-
-    cred = credential_fixture(user, network, attrs)
-    {user, network, cred}
-  end
-
-  defp reload(%Credential{} = cred) do
-    Repo.get_by!(Credential, user_id: cred.user_id, network_id: cred.network_id)
-  end
 
   describe "Credentials.update_away/4" do
     test "writes reason + since and round-trips on read" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       assert cred.away_reason == nil
       assert cred.away_since == nil
 
       since = DateTime.utc_now()
       assert :ok = Credentials.update_away(cred.user_id, cred.network_id, "lunch", since)
 
-      reloaded = reload(cred)
+      reloaded = reload_credential(cred)
       assert reloaded.away_reason == "lunch"
       # usec precision preserved (:utc_datetime_usec) — verbatim round-trip
       # is load-bearing for the mentions-window honesty.
@@ -56,13 +42,13 @@ defmodule Grappa.Networks.AwayTest do
     end
 
     test "clears the pair on (nil, nil) — the /back path" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       :ok = Credentials.update_away(cred.user_id, cred.network_id, "gone", DateTime.utc_now())
-      assert reload(cred).away_reason == "gone"
+      assert reload_credential(cred).away_reason == "gone"
 
       assert :ok = Credentials.update_away(cred.user_id, cred.network_id, nil, nil)
 
-      reloaded = reload(cred)
+      reloaded = reload_credential(cred)
       assert reloaded.away_reason == nil
       assert reloaded.away_since == nil
     end
@@ -79,7 +65,7 @@ defmodule Grappa.Networks.AwayTest do
     # `Session.set_explicit_away/3` facade already guards user input; this
     # is the OTHER door (defense-in-depth).
     test "rejects a reason carrying CR/LF/NUL" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
 
       for bad <- ["ha\r\nQUIT", "a\nb", "nul\0byte"] do
         cs = Credential.away_changeset(cred, bad, DateTime.utc_now())
@@ -89,24 +75,24 @@ defmodule Grappa.Networks.AwayTest do
     end
 
     test "accepts a rest-of-line reason with spaces" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       cs = Credential.away_changeset(cred, "out for lunch, back at 2pm", DateTime.utc_now())
       assert cs.valid?
     end
 
     test "the clear changeset (nil, nil) is valid" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       assert Credential.away_changeset(cred, nil, nil).valid?
     end
   end
 
   describe "SessionPlan.resolve/1 away restore threading" do
     test "resolved plan carries restored_away = {reason, since} when persisted" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       since = DateTime.utc_now()
       :ok = Credentials.update_away(cred.user_id, cred.network_id, "brb", since)
 
-      {:ok, plan} = SessionPlan.resolve(reload(cred))
+      {:ok, plan} = SessionPlan.resolve(reload_credential(cred))
 
       assert plan.restored_away == {"brb", since}
       # Persister injected for the user subject (Boundary-clean closure).
@@ -114,9 +100,9 @@ defmodule Grappa.Networks.AwayTest do
     end
 
     test "resolved plan restored_away is nil when not away" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
 
-      {:ok, plan} = SessionPlan.resolve(reload(cred))
+      {:ok, plan} = SessionPlan.resolve(reload_credential(cred))
 
       assert plan.restored_away == nil
     end
@@ -130,7 +116,7 @@ defmodule Grappa.Networks.AwayTest do
     # and hard failures go :failed via `mark_failed/2`. So the clear lives in
     # disconnect/2 alone; nothing else touches the away columns.
     test "manual disconnect (/disconnect, /quit) clears the persisted away" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       :ok = Credentials.update_away(cred.user_id, cred.network_id, "lunch", DateTime.utc_now())
 
       assert {:ok, updated} = Networks.disconnect(cred, "user-disconnect")
@@ -139,14 +125,14 @@ defmodule Grappa.Networks.AwayTest do
       # The away columns are the persisted source of truth (not the returned
       # struct, whose away fields may be stale relative to the fresh clear) —
       # assert the DB row.
-      reloaded = reload(cred)
+      reloaded = reload_credential(cred)
       assert reloaded.connection_state == :parked
       assert reloaded.away_reason == nil
       assert reloaded.away_since == nil
     end
 
     test "automatic mark_failed (k-line / permanent error) PRESERVES the persisted away" do
-      {_, _, cred} = setup_credential()
+      {_, _, cred} = user_with_credential(6667, %{})
       since = DateTime.utc_now()
       :ok = Credentials.update_away(cred.user_id, cred.network_id, "brb", since)
 
@@ -155,7 +141,7 @@ defmodule Grappa.Networks.AwayTest do
 
       # A hard upstream failure is not user intent — the away survives in the
       # DB so a later recovery (/connect → restore → re-send) resumes it.
-      reloaded = reload(cred)
+      reloaded = reload_credential(cred)
       assert reloaded.away_reason == "brb"
       assert reloaded.away_since == since
     end
