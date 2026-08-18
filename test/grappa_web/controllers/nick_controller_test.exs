@@ -20,13 +20,6 @@ defmodule GrappaWeb.NickControllerTest do
   alias Grappa.{IRCServer, Scrollback, Visitors}
   alias Grappa.Networks.Credentials
 
-  # Completes registration (001) so the session is welcomed and inbound
-  # numerics traverse the post-registration path (NumericRouter) instead
-  # of AuthFSM's registration clauses.
-  defp welcoming_handler do
-    IRCServer.welcome_handler(":irc.test.org", "grappa-test")
-  end
-
   defp setup_network(vjt, port, slug) do
     {network, _} = network_with_server(port: port, slug: slug)
     _ = credential_fixture(vjt, network, %{nick: "grappa-test", autojoin_channels: []})
@@ -194,7 +187,7 @@ defmodule GrappaWeb.NickControllerTest do
     # list (`{:server, nil}` — the rejected nick is not a destination).
     test "visitor subject — a nick taken upstream is refused by the ircd's 433, not by the controller (#828)",
          %{conn: _conn} do
-      {server, port} = IRCServer.start_server(welcoming_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc.test.org", "grappa-test"))
       old_nick = "v828c-#{System.unique_integer([:positive])}"
       {visitor, network} = visitor_with_network(port, nick: old_nick)
       session = visitor_session_fixture(visitor)

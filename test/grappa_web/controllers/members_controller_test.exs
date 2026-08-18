@@ -13,16 +13,6 @@ defmodule GrappaWeb.MembersControllerTest do
 
   alias Grappa.{IRCServer, Session}
 
-  defp welcome_handler do
-    fn state, line ->
-      if String.starts_with?(line, "USER ") do
-        {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-      else
-        {:reply, nil, state}
-      end
-    end
-  end
-
   defp setup_session_with_members(vjt, port, slug) do
     {network, _} = network_with_server(port: port, slug: slug)
 
@@ -44,7 +34,7 @@ defmodule GrappaWeb.MembersControllerTest do
 
   describe "GET /networks/:network_id/channels/:channel_id/members" do
     test "returns members in mIRC sort order", %{conn: conn, vjt: vjt} do
-      {server, port} = IRCServer.start_server(welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
       slug = "az-#{System.unique_integer([:positive])}"
       {_, pid} = setup_session_with_members(vjt, port, slug)
 
@@ -73,7 +63,7 @@ defmodule GrappaWeb.MembersControllerTest do
     end
 
     test "404 for cross-user network access (per-user iso)", %{conn: _conn, vjt: vjt} do
-      {_, port} = IRCServer.start_server(welcome_handler())
+      {_, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
       slug = "az-#{System.unique_integer([:positive])}"
       {_, pid} = setup_session_with_members(vjt, port, slug)
 
@@ -90,7 +80,7 @@ defmodule GrappaWeb.MembersControllerTest do
 
     test "404 when no session is registered for (user, network)",
          %{conn: conn, vjt: vjt} do
-      {_, port} = IRCServer.start_server(welcome_handler())
+      {_, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
       slug = "az-#{System.unique_integer([:positive])}"
       {network, pid} = setup_session_with_members(vjt, port, slug)
 
@@ -114,7 +104,7 @@ defmodule GrappaWeb.MembersControllerTest do
       conn: conn,
       vjt: vjt
     } do
-      {server, port} = IRCServer.start_server(welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
       slug = "az-#{System.unique_integer([:positive])}"
       {_, pid} = setup_session_with_members(vjt, port, slug)
 
@@ -138,7 +128,7 @@ defmodule GrappaWeb.MembersControllerTest do
     # {:visitor, _} correctly — handshake + session interaction is the
     # same Session.list_members boundary user-side already exercises.
     test "visitor subject — returns members for visitor's network", %{conn: _conn} do
-      {server, port} = IRCServer.start_server(welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
       {visitor, network} = visitor_with_network(port)
       session = visitor_session_fixture(visitor)
       pid = start_visitor_session_for(visitor, network)

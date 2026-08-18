@@ -132,11 +132,6 @@ defmodule Grappa.IRC.ClientTest do
     end
   end
 
-  # Plain RFC 2812 server: no CAP, fires 001 once USER arrives.
-  defp rfc_handler do
-    IRCServer.welcome_handler(":server", "grappa-test")
-  end
-
   describe "peer capture on connect" do
     test "pushes {:irc_peer, {:ok, {ip, port}}} to dispatch_to once the socket is up" do
       # #550 — the admin Sessions inventory surfaces the destination each
@@ -986,7 +981,7 @@ defmodule Grappa.IRC.ClientTest do
 
   describe "auth_method: :none" do
     test "sends only NICK + USER; no PASS, no CAP, no IDENTIFY" do
-      {server, port} = IRCServer.start_server(rfc_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       _ = start_client(port, %{auth_method: :none})
 
       :ok = IRCServer.await_handshake(server, 1_000)
@@ -1000,7 +995,7 @@ defmodule Grappa.IRC.ClientTest do
 
   describe "auth_method: :server_pass" do
     test "sends PASS BEFORE NICK + USER; no CAP" do
-      {server, port} = IRCServer.start_server(rfc_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
 
       _ =
         start_client(port, %{
@@ -1025,7 +1020,7 @@ defmodule Grappa.IRC.ClientTest do
 
   describe "auth_method: :nickserv_identify" do
     test "sends NICK + USER only; the built-in identify moved to Session.Server (#189)" do
-      {server, port} = IRCServer.start_server(rfc_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
 
       _ =
         start_client(port, %{
@@ -1375,7 +1370,7 @@ defmodule Grappa.IRC.ClientTest do
       # Server fires 001 immediately on USER (rfc_handler) and IGNORES
       # CAP LS entirely. Without the registered-state transition on 001,
       # the client would sit forever waiting for a CAP LS reply.
-      {server, port} = IRCServer.start_server(rfc_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
 
       _ =
         start_client(port, %{
@@ -2031,7 +2026,7 @@ defmodule Grappa.IRC.ClientTest do
     end
 
     test ":none with no password is allowed (the only no-secret branch)" do
-      {server, port} = IRCServer.start_server(rfc_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
 
       _ =
         start_client(port, %{
@@ -2497,7 +2492,7 @@ defmodule Grappa.IRC.ClientTest do
       # an under-count is what would kill the fake-lag hypothesis for the
       # wrong reason. The fake server's own tally is the oracle: whatever
       # it received is what the model must have charged for.
-      {server, port} = IRCServer.start_server(rfc_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       client = start_client(port)
       :ok = IRCServer.await_handshake(server, 1_000)
 

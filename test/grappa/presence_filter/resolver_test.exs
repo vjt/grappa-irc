@@ -20,20 +20,10 @@ defmodule Grappa.PresenceFilter.ResolverTest do
   alias Grappa.{IRCServer, PresenceFilter, UserSettings}
   alias Grappa.PresenceFilter.Resolver
 
-  defp welcome_handler do
-    fn state, line ->
-      if String.starts_with?(line, "USER ") do
-        {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-      else
-        {:reply, nil, state}
-      end
-    end
-  end
-
   # A live session joined to `channel` with exactly `n` members seeded via a
   # 353/366 NAMES burst. Returns `{network, pid, server}`.
   defp session_with_members(user, channel, n) do
-    {server, port} = IRCServer.start_server(welcome_handler())
+    {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
     slug = "az-#{System.unique_integer([:positive])}"
     {network, _} = network_with_server(port: port, slug: slug)
 

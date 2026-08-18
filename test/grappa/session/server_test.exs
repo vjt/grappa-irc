@@ -5364,9 +5364,6 @@ defmodule Grappa.Session.ServerTest do
   # `Grappa.Session.FloodAllowance`'s unit contract; what is proven here is
   # that the live session reads its OWN state and answers over the facade.
   describe "#480 — upstream flood allowance" do
-    # `welcome_handler/0` is defined further down this module and shared:
-    # `defp` is module-wide, and a second copy here would be the duplicate
-    # the compiler warns about.
     defp await_umodes(modes) do
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
@@ -5378,7 +5375,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "a session with no oper umode is :ordinary" do
-      {server, port} = IRCServer.start_server(welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
@@ -5397,7 +5394,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "an oper'd session is :oper" do
-      {server, port} = IRCServer.start_server(welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
@@ -5414,7 +5411,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "an oper with the flavour's no-throttle umode is :exempt" do
-      {server, port} = IRCServer.start_server(welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
       user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
 
       {network, _} =
@@ -5442,7 +5439,7 @@ defmodule Grappa.Session.ServerTest do
       # The exempt letter is per-flavour and only bahamut's was read at
       # source. `setup_user_and_network` leaves services_flavor nil, which
       # is what an operator who never classified the network has.
-      {server, port} = IRCServer.start_server(welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
@@ -5462,7 +5459,7 @@ defmodule Grappa.Session.ServerTest do
       # reload does not rewrite live process state, and the throttle asks
       # this on EVERY send — a KeyError here would crash-wave the sessions
       # under load rather than degrade to today's numbers.
-      {server, port} = IRCServer.start_server(welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
@@ -5477,7 +5474,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "no live session for (subject, network) is :no_session, not a class" do
-      {_, port} = IRCServer.start_server(welcome_handler())
+      {_, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
 
       assert {:error, :no_session} =
@@ -6794,18 +6791,8 @@ defmodule Grappa.Session.ServerTest do
     # hands to `start_server/1` — never answers 001, so registration never
     # completes and no JOIN is ever sent. These tests need the session to
     # actually reach the channels.
-    defp counts_welcome_handler do
-      fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
-    end
-
     test "returns the count per SEEDED channel in one call" do
-      {server, port} = IRCServer.start_server(counts_welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
 
       {user, network, _} =
         setup_user_and_network(port, %{autojoin_channels: ["#one", "#two"]})
@@ -6835,7 +6822,7 @@ defmodule Grappa.Session.ServerTest do
     # twin must OMIT the key, or the caller reads 0 members and shows presence
     # on a channel that is about to turn out to have 900.
     test "omits a channel that has not yet observed 366 (pre-NAMES)" do
-      {server, port} = IRCServer.start_server(counts_welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
 
       {user, network, _} =
         setup_user_and_network(port, %{autojoin_channels: ["#seeded", "#pending"]})
@@ -7029,18 +7016,8 @@ defmodule Grappa.Session.ServerTest do
     # self-KICK collapse to the same heartbeat (channels-list mutation
     # IS the event; cause is irrelevant to subscribers).
 
-    defp welcome_handler do
-      fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":irc 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
-    end
-
     test "self-JOIN broadcasts channels_changed on user topic" do
-      {server, port} = IRCServer.start_server(welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
 
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
@@ -7056,7 +7033,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "self-PART broadcasts channels_changed on user topic" do
-      {server, port} = IRCServer.start_server(welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
 
       {user, network, _} =
         setup_user_and_network(port, %{autojoin_channels: ["#existing"]})
@@ -7077,7 +7054,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "self-KICK broadcasts channels_changed on user topic" do
-      {server, port} = IRCServer.start_server(welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
 
       {user, network, _} =
         setup_user_and_network(port, %{autojoin_channels: ["#existing"]})
@@ -7098,7 +7075,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "other-user JOIN does NOT broadcast (keyset unchanged)" do
-      {server, port} = IRCServer.start_server(welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
 
       {user, network, _} =
         setup_user_and_network(port, %{autojoin_channels: ["#existing"]})
@@ -7126,7 +7103,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "PRIVMSG does NOT broadcast (keyset unchanged)" do
-      {server, port} = IRCServer.start_server(welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
 
       {user, network, _} =
         setup_user_and_network(port, %{autojoin_channels: ["#existing"]})
@@ -7170,7 +7147,7 @@ defmodule Grappa.Session.ServerTest do
     # channels_changed heartbeat emitted right beside it in the cast handler.
 
     test "send_part broadcasts archive_changed on the user topic post-cleanup" do
-      {server, port} = IRCServer.start_server(welcome_handler())
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", "grappa-test"))
 
       {user, network, _} =
         setup_user_and_network(port, %{autojoin_channels: ["#existing"]})
@@ -10116,18 +10093,6 @@ defmodule Grappa.Session.ServerTest do
     # the AWAY lines sent upstream. The handler accepts the handshake and
     # echos back 001 so the session reaches :connected state.
 
-    defp start_server_with_001 do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
-
-      IRCServer.start_server(handler)
-    end
-
     # Condition-poll until at least `want` sent lines match `pred`, or the
     # deadline elapses. `IRCServer.wait_for_line/3` can only match the FIRST
     # buffered line, so a RE-EMIT assertion (#417 same-process reconnect,
@@ -10154,7 +10119,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "set_explicit_away issues AWAY :reason upstream and returns :ok" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10176,7 +10141,7 @@ defmodule Grappa.Session.ServerTest do
     # for the supervisor respawn (a new process whose init re-resolves the
     # plan from the DB via SessionPlan.resolve).
     test "explicit away persisted in DB is restored + re-sent upstream at 001 (#417)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
 
       # Seed the DB exactly as a prior live session would have on
@@ -10205,7 +10170,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "set_explicit_away persists away_reason + away_since to the credential (#417)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10226,7 +10191,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "unset_explicit_away clears the persisted away (#417)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10246,7 +10211,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "set_auto_away does NOT persist — auto-away re-derives from WSPresence (#417)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10267,7 +10232,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "a second 001 re-emits in-memory away upstream — same-process reconnect (#417)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10294,7 +10259,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "unset_explicit_away issues bare AWAY and transitions to :present" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10313,7 +10278,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "unset_explicit_away when not :away_explicit returns {:error, :not_explicit}" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10328,7 +10293,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "set_auto_away when :present issues AWAY :auto-away… upstream" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10354,7 +10319,7 @@ defmodule Grappa.Session.ServerTest do
     # :auto_away_debounce_fire to avoid a real wait (the debounce timing
     # itself is covered by the cancel_and_drain unit tests).
     test "visibility drives auto-away: hidden arms debounce → AWAY, visible unaways (#182)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10409,7 +10374,7 @@ defmodule Grappa.Session.ServerTest do
     # was blocked indefinitely. What makes it reachable is the demotion sweep;
     # what this asserts is the user-visible end of it, a real AWAY line.
     test "a socket that stops affirming visibility stops blocking auto-away (#224)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10458,7 +10423,7 @@ defmodule Grappa.Session.ServerTest do
     # timer only where "nothing happened" needs a witness.
 
     test "the session waits the per-user delay, not the server default (#348)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
 
       # Stored BEFORE the spawn: the value has to be read at the spawn
@@ -10489,7 +10454,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "OFF arms no timer at all and never goes away (#348)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
 
       {:ok, _} =
@@ -10519,7 +10484,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "switching OFF kills a timer armed before the switch (#348)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10548,7 +10513,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "a new delay takes effect on a live session, no restart (#348)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10577,7 +10542,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "retuning re-arms the timer already in flight (#348)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10614,7 +10579,7 @@ defmodule Grappa.Session.ServerTest do
     # forever. The knob and its storage are subject-scoped already, so
     # the only thing in the way was the subscribe gate.
     test "a visitor session goes auto-away when its last device hides (#348)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {visitor, network} = visitor_with_network(port)
       label = Grappa.Subject.label({:visitor, visitor.id})
 
@@ -10644,7 +10609,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "set_auto_away when :away_explicit is a no-op (explicit takes precedence)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10667,7 +10632,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "set_explicit_away when :away_auto overwrites (explicit always wins)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10688,7 +10653,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "unset_auto_away when :away_auto transitions to :present and issues bare AWAY" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10707,7 +10672,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "unset_auto_away when :away_explicit is a no-op (don't touch explicit away)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10728,7 +10693,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "unset_auto_away when :present is a no-op (already not away)" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
       pid = start_session_for(user, network)
 
@@ -10763,7 +10728,7 @@ defmodule Grappa.Session.ServerTest do
     # broadcast a `mentions_bundle` event on the user-level PubSub topic
     # when the session returns from explicit away AND at least one match exists.
     test "unset_explicit_away broadcasts mentions_bundle on user topic when matches found" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
@@ -10817,7 +10782,7 @@ defmodule Grappa.Session.ServerTest do
     end
 
     test "unset_explicit_away does NOT broadcast mentions_bundle when no matches found" do
-      {server, port} = start_server_with_001()
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
       {user, network, _} = setup_user_and_network(port)
 
       pid = start_session_for(user, network)
