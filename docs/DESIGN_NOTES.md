@@ -49855,3 +49855,98 @@ rewritten call sites type-checks and fails only at runtime. That is the same
 gap the sibling entries name, and on the `seedCursor` slice it was a runtime
 positive control, not the type-checker, that caught exactly such a
 transposition.
+<!-- entry #1397-welcome-handler -->
+
+---
+
+## 2026-08-18 — #1397: one 001 handler, and the wrapper rule that cuts both ways
+
+The largest duplicated shape in the test suite was a handler body repeated
+62 times across 7 files: answer a `USER` line with an `001 RPL_WELCOME`,
+stay silent otherwise. It is now `Grappa.IRCServer.welcome_handler/2`, and
+55 of the 62 call it. The remaining 7 are deferred for a reason recorded
+below.
+
+### A name census could not see it
+
+Only 5 of the 62 sat behind a `defp`, so counting helper NAMES undercounted
+this cluster by roughly twelvefold and made the bucket read as nearly done.
+Worse, the five names disagreed with each other: three files called theirs
+`welcome_handler/0`, one `counts_welcome_handler/0`, one
+`start_server_with_001/0` — and a first pass here still missed two more,
+`rfc_handler/0` and `welcoming_handler/0`, because it searched for the
+string `welcome_handler`. They surfaced only from grouping BODIES with the
+names stripped off. The general rule: on a de-duplication bucket, a count
+by name is not evidence, and a zero from a name grep is the least
+trustworthy number available, because it is indistinguishable from done.
+
+### Both arguments mandatory, and why that dissolved the blocker
+
+The issue text assumed consolidating required first deciding which server
+prefix is canonical — the copies split 42 `:irc`, 19 `:server`, 1
+`:irc.test.org`. It does not. Taking the prefix as a mandatory argument
+lets every call site keep the bytes it already had, so the migration is
+behaviour-preserving by construction and the spelling becomes an
+independent cleanup instead of a prerequisite. The nick is a second
+mandatory argument on the same reasoning: 7 of the 62 named someone other
+than `grappa-test`, so it is a second axis and not a detail.
+
+### The wrapper rule, sharpened: a no-op may be hidden, an observable may not
+
+Seven zero-argument wrappers were deleted and their 51 call sites inlined.
+This is the same rule that earlier in this issue SAVED the wrappers hiding
+`passthrough_handler/0`, reaching the opposite verdict because the content
+is opposite. A wrapper hiding a handler that answers nothing costs the call
+site no information. A wrapper hiding a 001 conceals a prefix and a nick
+that go out on the wire and that a test downstream can read — which is what
+a default argument does, wearing a name instead of a `\\`. Under those
+names the seven silently disagreed: two answered from `:server` and
+`:irc.test.org` while three answered from `:irc`, and nothing at any of the
+51 sites said so.
+
+### What the mutants found, which is what stayed GREEN
+
+Two mutants, each disabling one argument, over the six affected files.
+
+Ignoring the NICK killed 11 tests (10 in `server_test`, 1 the new unit
+test). The nick is genuinely load-bearing wherever it varies, so the second
+mandatory argument is justified by measurement and not only by principle.
+
+Ignoring the PREFIX killed exactly one test, and that one is the new unit
+test. **41 migrated call sites had their 001 prefix silently changed — 34
+in `server_test`, 6 in `client_test`, 1 in `nick_controller_test` — and not
+one of them noticed.** Two consequences. First, the premise above is now
+measured rather than argued: unifying the three spellings is a free
+cleanup, carrying zero test risk. Second, the prefix argument is currently
+guarded by nothing except the unit test added here; before it existed, that
+mutant would have killed nothing at all.
+
+### Why 7 sites were left behind
+
+PR #1535 is open and touches four of the same files. The overlap is not
+merely file-level: the tail of those 7 handlers (`end / end / blank`) is
+literally the context of #1535's hunks, so rewriting them would conflict in
+whichever order the branches land. The other 55 are disjoint from every
+hunk in that patch. `git merge-tree` of this branch against #1535's head
+reports a clean merge, which is the check that the deferral actually
+worked; the 7 follow as a second commit here once #1535 is in.
+
+### Method notes worth keeping
+
+A line-keyed exclusion list goes blind the moment the first pass shifts the
+lines under it. The eighth site — the keyword form `if ..., do:, else:`
+inside `start_recover_visitor/1` — fell into the gap between a sweep that
+skipped it as hand-work and a sweep that skipped it as not-a-wrapper. It
+was caught by re-counting the tree, not by trusting either script's report.
+
+`git write-tree` writes the INDEX, not the working tree. It was used here as
+an oracle for a two-commit reconstruction and silently returned the tree of
+the last commit; the comparison that actually held was the shasum of the
+full `git diff` against the state already measured green.
+
+### Limits of this measurement
+
+The mutant table covers the six affected test files, not the suite. No e2e
+spec was run. The 7 deferred sites are unmigrated and untested by any of
+the above; the clean `merge-tree` says the two branches do not collide, not
+that the merged result was ever executed.
