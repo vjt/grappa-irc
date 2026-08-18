@@ -74,6 +74,51 @@ defmodule Grappa.IRCServer do
   def passthrough_handler, do: fn state, _ -> {:reply, nil, state} end
 
   @doc """
+  The registration-completing handler: answers a `USER` line with an
+  `001 RPL_WELCOME` from `prefix` naming `nick`, and stays silent on
+  everything else. What a test hands to `start_server/1` when it needs
+  the session to actually reach `:connected`, rather than merely to
+  observe what the client sent.
+
+  Lifted here from fifty-five copies of the same body across seven
+  files (#1397) — the single largest duplicated shape in the suite, and
+  invisible to a census that counts helper NAMES: only five of the
+  fifty-five had one.
+
+  ## Why both arguments are mandatory
+
+  The copies disagreed on the server prefix (`:irc` in most,
+  `:server` in nineteen, `:irc.test.org` in one) and, in seven of
+  them, on the nick. Consolidating is usually blocked on picking a
+  canonical spelling first; taking both as arguments dissolves that
+  question instead of answering it, because every call site keeps the
+  bytes it already had and the change is behaviour-preserving by
+  construction. Which spelling should win is now an independent
+  cleanup rather than a prerequisite.
+
+  Neither argument carries a default, and no zero-argument wrapper
+  should be added back — not here and not module-locally in a test
+  file, which is where the five named copies had put one. The rule
+  this follows is the one `start_server/1` below records, sharpened:
+  a wrapper may hide a NO-OP, never an OBSERVABLE. Hiding
+  `passthrough_handler/0` was struck down because a call site could no
+  longer say whether it wanted a silent peer or had not thought about
+  the peer at all; hiding a 001 is worse, because the prefix and the
+  nick both go out on the wire and a test downstream can read them.
+  The same rule saved the wrappers that hid a genuine no-op.
+  """
+  @spec welcome_handler(binary(), binary()) :: handler()
+  def welcome_handler(prefix, nick) when is_binary(prefix) and is_binary(nick) do
+    fn state, line ->
+      if String.starts_with?(line, "USER ") do
+        {:reply, "#{prefix} 001 #{nick} :Welcome\r\n", state}
+      else
+        {:reply, nil, state}
+      end
+    end
+  end
+
+  @doc """
   Spawns the fake IRC server with `handler` driving inbound-line
   reactions. Initial handler state is `%{}` — equivalent to
   `start_link/2` with `initial_state` of `%{}`. Use `start_link/2`
