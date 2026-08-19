@@ -49855,3 +49855,83 @@ rewritten call sites type-checks and fails only at runtime. That is the same
 gap the sibling entries name, and on the `seedCursor` slice it was a runtime
 positive control, not the type-checker, that caught exactly such a
 transposition.
+<!-- entry #1397-adminevents-reset -->
+
+---
+
+## 2026-08-19 — #1397: one reset for the AdminEvents ring, and the anchor that hid the family
+
+Bucket H, server side. Seven `setup` blocks opened with the same
+byte-identical line and now call
+`AdmissionStateHelpers.reset_admin_events/0`.
+
+### The line did more than it read
+
+    :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
+
+It reads as "empty the ring". It REBUILDS the struct, so `persist` and
+`retention` also go back to their `defstruct` defaults. A helper written
+from the apparent intent — `%{s | buffer: []}` — would have preserved a
+leaked `persist: true` and quietly changed all seven call sites. Nothing
+asserted the clobber, so a characterization test landed FIRST, in its own
+commit, and asserts the pre-state before performing the gesture (without
+that, the three post-state assertions also pass against a singleton that
+was already at the defaults).
+
+Measured, not assumed. Mutating the helper to the apparent intent kills
+exactly one test — the equivalence test — and leaves the characterization
+test green, because that one exercises the inline gesture rather than the
+helper. Two tests, two different jobs.
+
+### Where it lives, and the name that is a slight stretch
+
+`Grappa.AdmissionStateHelpers` already existed for this exact failure
+mode: application-wide singletons that outlive a sandbox checkout.
+AdminEvents is not an admission singleton, so the module name is now
+marginally wrong. A second support module for one function would have
+been worse: it splits the pattern across two homes, and the next author
+looking for "where do I reset the singleton" finds one of them and
+invents a third spelling. The moduledoc states the tension instead of
+hiding it.
+
+It is deliberately NOT folded into `reset_all/0`. Thirteen files call
+that today without touching the ring; adding it would change what they
+reset while looking like tidying.
+
+### The mutant that measured something else
+
+Making the helper a no-op fails 16 tests in one run and 14 in the next.
+The number is seed-dependent because ExUnit randomises order and this
+reset exists precisely to defend against order — so the right reading is
+"load-bearing", not a fixed count. In the run whose full distribution was
+captured, the failures came from four of the seven files; the resets in
+`networks_controller_test`, `users_controller_test` and
+`credentials_controller_test` contributed none. That is not an argument
+to delete them — one seed proves nothing about the seeds that flake — but
+it does mean three of the seven copies were never covered by an
+assertion.
+
+### The anchor, which is the transferable part
+
+The family was nearly missed. The census that opened this bucket anchored
+on the literal `fn state`, and on that axis the tail genuinely is
+exhausted: after the 001 cluster closed, the largest remaining
+byte-identical group is three copies in a single file. But the anchor was
+the limit, not the tree. `fn state` intercepts 24 of the 45
+`:sys.replace_state` code sites (54 textual occurrences less 9 inside
+comments) because the lambda parameter is spelled four ways — `state` 24,
+`s` 10, `_` 7, `cs` 3. Re-anchoring from "literal `fn state`" to "body of
+a `defp`" and grouping blind to the name surfaces 31 groups spanning two
+or more files, 90 definitions, the largest at 18 copies.
+
+This is the same false zero this repo keeps producing, and it has now
+appeared in four distinct shapes across three days: an anchor too wide
+(`def start_server` matching `start_server_with_001`), too narrow
+(`defp? name\(` answering 0 for a `defp name, do:`), invalid as ERE
+(`\b` and `\s` do not exist in `git grep -E`, and `{` opens an interval,
+so a pattern containing `%Struct{...}` matches nothing at all), and
+prefix-eating (`grep -o` discards what it did not capture, so a follow-on
+`grep -v` filters nothing). A zero is the most suspicious result
+available, not the most reassuring: it is indistinguishable from "already
+done". Cross three methods — by name, by naked grep, by grouping on the
+BODY — before believing one.
