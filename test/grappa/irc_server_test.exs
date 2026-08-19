@@ -143,4 +143,37 @@ defmodule Grappa.IRCServerTest do
                :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false], 1_000)
     end
   end
+
+  # Both of these are named at seventy-two call sites once the eight
+  # `start_irc_server/0` wrappers are gone (#1397 bucket H), and neither
+  # had a test: they were exercised only through whatever their callers
+  # did next. The same reason `welcome_handler/2` earned one above.
+  describe "passthrough_handler/0" do
+    test "replies to nothing, whatever the line, and leaves handler state untouched" do
+      handler = IRCServer.passthrough_handler()
+
+      assert {:reply, nil, %{step: 1}} = handler.(%{step: 1}, "USER vjt 0 * :Marcello\r\n")
+      assert {:reply, nil, %{}} = handler.(%{}, "PING :probe\r\n")
+    end
+  end
+
+  describe "start_server/1" do
+    test "returns a live peer and the port a client actually reaches it on" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+
+      assert is_pid(server) and Process.alive?(server)
+      assert port == IRCServer.port(server)
+
+      {:ok, sock} = :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, active: false])
+      on_exit(fn -> :gen_tcp.close(sock) end)
+
+      # `packet: :line` hands the delimiter to the buffer, so a stored line
+      # keeps its CRLF — which is why every predicate here is a prefix test
+      # rather than an equality.
+      :ok = :gen_tcp.send(sock, "PING :probe\r\n")
+
+      assert {:ok, "PING :probe\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "PING :probe"), 1_000)
+    end
+  end
 end
