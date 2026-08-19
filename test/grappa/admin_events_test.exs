@@ -115,6 +115,41 @@ defmodule Grappa.AdminEventsTest do
     end
   end
 
+  describe "the per-test singleton reset (#1397 bucket H characterization)" do
+    # Seven test files open `setup` with the same byte-identical line:
+    #
+    #     :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
+    #
+    # It reads as "empty the ring", but it REBUILDS the struct, so it also
+    # returns `persist` and `retention` to their `defstruct` defaults
+    # whatever they were. That clobber is the part a shared helper must
+    # preserve, and the part nothing asserted before this test.
+    test "rebuilds the struct whole: buffer emptied AND persist/retention back to defaults" do
+      defaults = %AdminEvents{}
+
+      :ok = AdminEvents.record(Wire.reaper_swept(1))
+      _ = AdminEvents.snapshot()
+
+      :sys.replace_state(AdminEvents, fn s ->
+        %{s | persist: not defaults.persist, retention: defaults.retention + 1}
+      end)
+
+      # Assert the pre-state, or the post-state assertions below pass
+      # against a singleton that was already at the defaults.
+      pre = :sys.get_state(AdminEvents)
+      assert pre.buffer != []
+      assert pre.persist != defaults.persist
+      assert pre.retention != defaults.retention
+
+      :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
+
+      post = :sys.get_state(AdminEvents)
+      assert post.buffer == []
+      assert post.persist == defaults.persist
+      assert post.retention == defaults.retention
+    end
+  end
+
   describe "disk-backing (#215 Option B)" do
     # The singleton boots persist:false in test env (config); flip it on +
     # rely on the setup's Sandbox.allow so the pid's Repo writes land in
