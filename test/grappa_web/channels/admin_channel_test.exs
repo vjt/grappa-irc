@@ -21,16 +21,16 @@ defmodule GrappaWeb.AdminChannelTest do
   import ExUnit.CaptureLog
   import Grappa.AuthFixtures
 
-  alias Grappa.{AdminEvents, AdminOverview, Repo, SessionLog}
+  alias Grappa.{AdminEvents, AdminOverview, AdmissionStateHelpers, Repo, SessionLog}
   alias Grappa.AdminEvents.Wire
   alias Grappa.PubSub.Topic
   alias GrappaWeb.UserSocket
   alias Phoenix.Socket.Broadcast
 
   setup do
-    # AdminEvents is the global singleton — reset buffer per-test so
-    # the snapshot push contains exactly what THIS test queued.
-    :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
+    # The ring must start empty so the snapshot push contains exactly
+    # what THIS test queued.
+    AdmissionStateHelpers.reset_admin_events()
 
     # AdminEvents runs in its own supervised pid; allow it on the
     # sandbox connection ChannelCase already checked out (`async:

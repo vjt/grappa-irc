@@ -26,16 +26,15 @@ defmodule GrappaWeb.Admin.UsersControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, AdminEvents, AdmissionStateHelpers}
+  alias Grappa.{Accounts, AdmissionStateHelpers}
   alias Grappa.PubSub.Topic
   alias GrappaWeb.UserSocket
 
   setup do
     AdmissionStateHelpers.reset_session_supervisor()
-    # Bucket 4: reset the AdminEvents ring buffer per-test so the
-    # snapshot-assertion path (head-of-buffer check) isn't polluted
-    # by prior tests. Same pattern as NetworksControllerTest.
-    :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
+    # Bucket 4: the head-of-buffer assertions need the ring to start
+    # empty, or a prior test's event sits where this test's should.
+    AdmissionStateHelpers.reset_admin_events()
     :ok
   end
 

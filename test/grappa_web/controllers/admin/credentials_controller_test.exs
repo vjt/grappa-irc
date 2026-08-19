@@ -22,14 +22,14 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
   import ExUnit.CaptureLog
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, AdminEvents, AdmissionStateHelpers, Bootstrap, IRCServer, Networks, Session}
+  alias Grappa.{Accounts, AdmissionStateHelpers, Bootstrap, IRCServer, Networks, Session}
   alias Grappa.Bootstrap.Result
   alias Grappa.Networks.{Credential, Credentials}
   alias Grappa.PubSub.Topic
 
   setup do
     AdmissionStateHelpers.reset_all()
-    :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
+    AdmissionStateHelpers.reset_admin_events()
     :ok
   end
 

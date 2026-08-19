@@ -39,7 +39,7 @@ defmodule GrappaWeb.Admin.VisitorsControllerTest do
     # ring buffer here lets the refusal cases assert NOTHING was
     # recorded, which is the half of "incognito is refused" that a
     # status-code assertion alone cannot see.
-    :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
+    AdmissionStateHelpers.reset_admin_events()
     :ok
   end
 

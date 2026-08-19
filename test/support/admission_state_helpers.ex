@@ -1,16 +1,21 @@
 defmodule Grappa.AdmissionStateHelpers do
   @moduledoc """
-  Cross-test reset helpers for the application-singleton ETS tables AND
+  Cross-test reset helpers for the application-wide singletons that
+  survive a sandbox checkout — the ETS tables AND
   `Grappa.SessionSupervisor` Registry that Cluster T31's admission gate
-  reads from.
+  reads from, plus the `Grappa.AdminEvents` ring buffer (#1397 bucket H;
+  it is not an admission singleton, but it has the same lifetime and the
+  same per-test reset need, and a second module for one function would
+  have split the pattern in two).
 
   ## Why this exists (no-silent-drops B6.8 HIGH-12 + T-3 prelude)
 
-  Three application-wide singletons survive `Ecto.Adapters.SQL.Sandbox`
+  Four application-wide singletons survive `Ecto.Adapters.SQL.Sandbox`
   checkout/checkin AND `mix test` boundary across container runs:
 
     * `Grappa.Admission.NetworkCircuit` — ETS table `:admission_network_circuit_state`
     * `Grappa.Session.Backoff` — ETS table `:session_backoff_state`
+    * `Grappa.AdminEvents` — GenServer ring buffer, registered as the module
     * `Grappa.SessionSupervisor` + `Grappa.SessionRegistry` — DynamicSupervisor
       children, indexed by `{:session, subject, network_id}`
 
@@ -50,8 +55,9 @@ defmodule Grappa.AdmissionStateHelpers do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.Admission, Grappa.Session]
+    deps: [Grappa.Admission, Grappa.AdminEvents, Grappa.Session]
 
+  alias Grappa.AdminEvents
   alias Grappa.Admission.NetworkCircuit
   alias Grappa.Session.Backoff
 
@@ -165,6 +171,26 @@ defmodule Grappa.AdmissionStateHelpers do
       :ets.delete(:session_backoff_state, key)
     end
 
+    :ok
+  end
+
+  @doc """
+  Return the `Grappa.AdminEvents` singleton to a freshly-booted struct:
+  empty ring buffer, and `persist` / `retention` back at their
+  `defstruct` defaults.
+
+  Resetting the WHOLE struct rather than just the buffer is deliberate —
+  it is what the seven `setup` blocks this replaced already did, and a
+  suite that leaks `persist: true` writes admin rows from an unrelated
+  test's process. `admin_events_test.exs` locks that clobber.
+
+  Deliberately NOT part of `reset_all/0`: thirteen files call that one
+  today without touching the ring, and folding this in would silently
+  change what they reset.
+  """
+  @spec reset_admin_events() :: :ok
+  def reset_admin_events do
+    :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
     :ok
   end
 

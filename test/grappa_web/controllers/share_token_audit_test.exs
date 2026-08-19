@@ -22,10 +22,10 @@ defmodule GrappaWeb.ShareTokenAuditTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.AdminEvents
+  alias Grappa.{AdminEvents, AdmissionStateHelpers}
 
   setup do
-    :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
+    AdmissionStateHelpers.reset_admin_events()
     :ok
   end
 

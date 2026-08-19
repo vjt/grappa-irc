@@ -33,11 +33,10 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
 
   setup do
     AdmissionStateHelpers.reset_network_circuit()
-    # MED-1: PATCH emits :network_caps_updated via AdminEvents.record/1
-    # (singleton GenServer started by Grappa.Application). Reset the
-    # ring buffer per-test so cross-test contamination doesn't pollute
-    # the assertion. Same pattern as Grappa.AdminEventsTest.
-    :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
+    # MED-1: PATCH emits :network_caps_updated via AdminEvents.record/1,
+    # so the ring has to start empty or a prior test's event pollutes the
+    # head-of-buffer assertion.
+    AdmissionStateHelpers.reset_admin_events()
     :ok
   end
 

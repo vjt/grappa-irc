@@ -51,10 +51,9 @@ defmodule Grappa.AdminEventsTest do
     # this setup-time drain is empty in the steady-state case.
     AdmissionStateHelpers.reset_session_supervisor()
 
-    # AdminEvents is started by Grappa.Application; clear buffer state
-    # per-test by record-then-snapshot-then-drop. Since record/1 is a
-    # cast, drain via call/2 to force serialization.
-    :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
+    # AdminEvents is started by Grappa.Application and outlives every
+    # sandbox checkout, so the ring goes back to a booted struct per test.
+    AdmissionStateHelpers.reset_admin_events()
 
     # M-11: AdminEvents boots with `attach_telemetry: false` under
     # `config :grappa, :attach_admin_telemetry, false` in test env
@@ -147,6 +146,31 @@ defmodule Grappa.AdminEventsTest do
       assert post.buffer == []
       assert post.persist == defaults.persist
       assert post.retention == defaults.retention
+    end
+
+    test "reset_admin_events/0 lands the state the inline gesture landed" do
+      defaults = %AdminEvents{}
+
+      dirty = fn ->
+        :ok = AdminEvents.record(Wire.reaper_swept(1))
+        _ = AdminEvents.snapshot()
+
+        :sys.replace_state(AdminEvents, fn s ->
+          %{s | persist: not defaults.persist, retention: defaults.retention + 1}
+        end)
+      end
+
+      dirty.()
+      :sys.replace_state(AdminEvents, fn _ -> %AdminEvents{buffer: []} end)
+      inline = :sys.get_state(AdminEvents)
+
+      # Re-dirty, or the comparison below is between two clean states and
+      # would hold for a helper that did nothing at all.
+      dirty.()
+      assert :sys.get_state(AdminEvents) != inline
+
+      AdmissionStateHelpers.reset_admin_events()
+      assert :sys.get_state(AdminEvents) == inline
     end
   end
 
