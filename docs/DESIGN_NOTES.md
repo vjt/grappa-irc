@@ -50578,3 +50578,92 @@ shape this entry's own separator had to match, and then a name-only census was
 run anyway, by the same hand. Knowing the rule and holding it are different
 states. Treat any name-level count here as a lower bound on the truth and an
 upper bound on the finding — including the ones in this entry.
+<!-- entry #1397-startircserver -->
+
+---
+
+## 2026-08-19 — #1397 bucket H: the last eight start_irc_server wrappers, and a slice that changed shape underneath
+
+Eight test files each kept a zero-argument `start_irc_server/0` and called it
+from seventy-two sites. They are gone and the handler is spelled at all
+seventy-two, finishing the set #1535 opened.
+
+### The slice was not the same slice by the time it was worked
+
+Planned against a base where each wrapper still held the two-step body —
+`start_link/1` then `port/1` — this was going to be a behavioural
+consolidation onto `start_server/1`, with a characterization test and an
+equivalence oracle, the shape the sibling dead-port slice used. Both were
+written, both passed, both were discriminating under mutants.
+
+Then #1535 landed, and it had already rewritten every one of the eight bodies
+into a one-line delegation to `start_server(passthrough_handler())`. The
+inlining became pure substitution: the expression a call site now carries is
+byte-for-byte the body of the wrapper it replaces. The characterization test
+was pinning a body that no longer existed anywhere, and the equivalence oracle
+had become a comparison between an expression and itself — a green that could
+not fail and therefore could not mean anything.
+
+Both were discarded rather than rebased. Worth recording, because the rebase
+offered to keep them: the conflicts were resolvable and the tests would have
+gone green on the new base. A test that cannot fail passes every review that
+only reads its colour. The signal that something had changed was not the
+conflict, it was the wrapper body inside it.
+
+### What the slice actually needed instead
+
+`passthrough_handler/0` and `start_server/1` are named at seventy-two call
+sites by this change, and neither had a test — like the twenty copies #1535
+removed, they were exercised only through whatever their callers did next.
+So the missing work was never a characterization; it was coverage of the two
+helpers, in the shape `welcome_handler/2` got when #1544 hoisted it: the
+handler checked as a plain function, the server through a socket.
+
+What `passthrough_handler/0` promises is that it answers NOTHING, whatever
+arrives, and leaves handler state alone. That promise is the whole reason a
+call site must be able to name it instead of inheriting it from a
+zero-argument wrapper — and until now nothing said it.
+
+### The sibling family that looks identical and is not
+
+`u()`/`uniq()` — eighteen copies, one hundred and sixty-four call sites —
+stays. It is a pure alias: a short name for a long expression, hiding nothing,
+because there is no argument at the call site to get wrong.
+`start_irc_server()` hid WHICH PEER, which is decidable at the call site and
+is precisely what the earlier ruling says must stay there. Copy count is not
+the criterion; whether the wrapper removes a decision is.
+
+### The alias is a measurement, not a taste
+
+Six of the eight reached the module by its full name. Inlining meant either
+six alias lines or sixty fully-qualified call sites, and the codebase had
+already answered: 460 aliased inline spellings against 0 qualified. The count
+was taken with a fixed-string grep — in a regex `.` is a wildcard, and the
+whole argument is the count.
+
+Two anchors lied during this slice before either number was believed, both in
+the reassuring direction. A predicate written as an equality against
+`"PING :probe"` never matched, because `packet: :line` hands the delimiter to
+the buffer and the stored line keeps its CRLF; that is why every predicate in
+that suite is a prefix test.
+
+The second is **the sixth false zero this bucket has produced**, and the first
+where the anchor was not the pattern but the FILE LIST. A list held in an
+unquoted shell variable reaches `grep` as ONE filename, because zsh does not
+word-split parameter expansions; `grep` here is ugrep, which puts
+`No such file or directory` on stderr and nothing on stdout, so a `| wc -l`
+turns the error into a clean `0`. The residual-count check answered a
+confident zero for a tree that had seventy-two matches in it. Pass a real
+array (`"${files[@]}"`), and when a list-of-files count comes back zero, re-ask
+it against one known-positive file before believing it.
+
+The five before it were all pattern-shaped: an anchor too wide (`def
+start_server` matching `start_server_with_001`), one too narrow (`defp name\(`
+scoring zero against `defp name, do:`), `\s` and `\b` used under POSIX ERE
+where they do not exist, a brace in an ERE opening an interval and invalidating
+the whole pattern, and `grep -o` discarding the prefix a follow-on `grep -v`
+was meant to filter on. Six distinct mechanisms, one shared symptom: **the
+wrong number always looked like the good news.** A zero is the most suspicious
+result available, not the most reassuring — it is indistinguishable from
+"already done", and every one of the six was caught only by asking a second
+method the same question.
