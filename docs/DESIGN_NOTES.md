@@ -50578,3 +50578,86 @@ shape this entry's own separator had to match, and then a name-only census was
 run anyway, by the same hand. Knowing the rule and holding it are different
 states. Treat any name-level count here as a lower bound on the truth and an
 upper bound on the finding — including the ones in this entry.
+<!-- entry #1397-deferred7 -->
+
+---
+
+## 2026-08-19 — #1397: the seven #1544 deferred, the eighth it missed, and a blocker that expired
+
+#1544 collapsed 62 inline 001 handlers onto `IRCServer.welcome_handler/2` and
+left seven behind. This entry records closing them, the one it had not counted,
+and the two rules the closing turned up.
+
+### A declared blocker is a measurement with an expiry date
+
+The deferral had a precise reason, and #1544 wrote it down rather than gesturing
+at "conflicts": the tail of those seven handlers (`end / end / blank`) was
+literally the context of #1535's hunks, so rewriting them would have collided in
+whichever order the branches landed. That was TRUE when written. #1535 has since
+landed, and re-measuring finds nothing in the way.
+
+🥇 The general form, worth more than this instance: **a blocker recorded in an
+issue is a measurement of a moment, not a property of the code.** It is
+re-measured before it is honoured. The failure mode it guards against is the
+opposite of the usual one — not acting on a stale green, but declining to act on
+a stale red, which is invisible because nothing breaks when you obey it.
+
+### No artifact lists the seven, so they were reconstructed — twice
+
+The issue gives a count, never a list, and its own line numbers had moved. Two
+independent methods were run and agree exactly:
+
+  * hashing each candidate BODY with the name masked leaves them as clusters of
+    five and two, byte-identical within each;
+  * replaying #1535's hunks against its own base (`e179e35c`) puts each of the
+    seven exactly four lines above a hunk, with its tail inside the context —
+    and puts nothing else in those files near one.
+
+Agreement of two methods is what makes this "identified" rather than "likely".
+The anchor was validated too: at #1544's own base it counts 62, which is the
+number #1544 published, so it is that census and not a different one.
+
+### The eighth, and the arithmetic it corrects
+
+#1544 reports 62 = 55 migrated + 7 deferred. The same anchor counts 54 + 7 + 1.
+The extra one is the handler in "RPL_WELCOME echoes welcomed nick": no hunk of
+#1535 was near it, so the deferral criterion never covered it, and it groups
+alone only because a three-line comment sits inside its `if`. A name-based
+search cannot see it either — it is bound to `welcomed_nick_handler`.
+
+It migrated, and the rule that decided so is the one the wrapper cluster already
+used, read in the other direction. The comment explains why THIS TEST wants a
+nick it did not request (a caller's reason), not a behaviour the shared helper
+lacks — so it moves to the call site and nothing is hidden. `welcome_handler/2`
+takes the nick as an argument, so the bytes are unchanged. Had the comment
+described an observable the helper does not have, folding it in would have
+buried it, and it would have stayed inline. **A wrapper may hide a no-op; it may
+not hide an observable** — and a comment is subject to the same test.
+
+### The mutant, and the fifty tests that cannot see it
+
+No characterization commit precedes the migration: the inline gesture IS the
+consolidated expression, so a lock would have been a green that cannot fail.
+What the slice needs instead is evidence the call sites now READ the helper, and
+that is a mutant — `welcome_handler/2` stops replying to `USER` — run on both
+sides of the change over the same 64 tests:
+
+| tree | result |
+|---|---|
+| branch, no mutant | 64 tests, 0 failures |
+| branch, mutant | 64 tests, **10 failures** |
+| base (`2d61b51d`), mutant | 64 tests, **0 failures** |
+
+The base row is the one that attributes the kills: before the migration those
+sites carried their own bodies and were immune, so the ten deaths are the
+migration and nothing else.
+
+🥇 The row worth keeping is the asymmetry INSIDE the ten. The kills come from
+three of the eight sites; the other five — the setups of five `server_test`
+describes, 50 of the 64 tests — go on passing with the shared 001 handler
+answering nothing at all. Those describes assert on the bytes their verbs put
+on the wire, never on having registered. So for five of the eight sites the
+migration is behaviour-preserving by CONSTRUCTION (same arguments, same emitted
+string) and unwitnessed by any assertion in the suite. That is worth knowing
+before someone reads a green suite as coverage of this helper: for most of its
+call sites, it is not.
