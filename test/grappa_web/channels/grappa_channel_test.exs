@@ -131,10 +131,6 @@ defmodule GrappaWeb.GrappaChannelTest do
 
   # Shared IRC-fake helpers for after-join snapshot tests.
 
-  defp start_irc_server do
-    IRCServer.start_server(IRCServer.passthrough_handler())
-  end
-
   defp setup_user_and_network_with_session(port, extra_cred_attrs \\ %{}) do
     user_name = "ch-snap-#{System.unique_integer([:positive])}"
     user = user_fixture(name: user_name)
@@ -278,7 +274,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
 
     test "after-join snapshot: pushes cached topic_changed if session has topic cached" do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
 
       welcome_session_on_channel(irc_server, "#snap")
@@ -300,7 +296,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
 
     test "after-join snapshot: pushes cached channel_modes_changed if session has modes cached" do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
 
       welcome_session_on_channel(irc_server, "#snap")
@@ -326,7 +322,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     # per-channel snapshot: a client in ten channels got ten byte-identical
     # copies, and a client in none got zero. This is the fan-out half.
     test "after-join snapshot: does NOT push ISUPPORT on a channel topic (#1255)" do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
 
       welcome_session_on_channel(irc_server, "#snap")
@@ -384,7 +380,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # landed → without snapshot push, cic's members pane stays empty.
       # The snapshot push closes the race by re-emitting the seeded list
       # on the cold subscribe.
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
 
       welcome_session_on_channel(irc_server, "#snap")
@@ -425,7 +421,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # may have fired before WS subscribe; the snapshot push must
       # re-emit it so cic transitions the window from :pending to
       # :joined on reconnect without polling.
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
 
       # welcome_session_on_channel feeds the self-JOIN echo, which sets
@@ -450,7 +446,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # Snapshot payload must be byte-identical to the event-time
       # broadcast — including by + reason — so cic's renderer doesn't
       # branch on origin. Validates the window_kicked_meta mirror map.
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
 
       welcome_session_on_channel(irc_server, "#snap")
@@ -486,7 +482,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # stayed empty. The user-class equivalent of this test
       # ("CP15 B3") already covered the user path; this is the visitor
       # parity case.
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = setup_visitor_and_network_with_session(port)
 
       welcome_visitor_on_channel(
@@ -532,7 +528,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # carries `numeric` as a stable cross-language key for a future
       # cic-side i18n layer (server-provided reasons are
       # upstream-language-locked; numerics are RFC).
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
 
       :ok = IRCServer.await_handshake(irc_server, 1_000)
@@ -832,7 +828,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
 
     test "user-topic join pushes presence_snapshot for a live non-empty map (#364 web S4)" do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
 
       # Seed the watch list BEFORE end-of-MOTD so arm_presence reads it.
@@ -960,7 +956,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     # client on the user topic, and it reaches a client that is in NO
     # channel at all — which the per-channel snapshot could never serve.
     test "after-join snapshot: pushes the network's ISUPPORT on the user topic (#216/#1255)" do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
 
       welcome_session_on_channel(irc_server, "#snap")
@@ -1011,7 +1007,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # and which cic wires to the ordinary channel handler, so the old
       # replay did arrive — through a window unrelated to the fact it
       # carried. What this pins is the door, not a rescue.
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
 
       # Registration WITHOUT joining any channel — the deliberate difference
@@ -1052,7 +1048,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # the replay back inside `push_channel_snapshot/4` this receives THREE
       # byte-identical copies and the refutation below fails; the payload
       # describes the network, so one is the only defensible number.
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
 
       welcome_session_on_channel(irc_server, "#snap")
@@ -1095,7 +1091,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # the umode snapshot rides the USER-topic after_join. cic reconnects
       # its WS long after the 221 RPL_UMODEIS fired, so without this the
       # /mode <nick> modal would stay blank until a mid-session change.
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
 
       welcome_session_on_channel(irc_server, "#snap")
@@ -1132,7 +1128,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # field, the banner would come back nameless after every reload. This
       # is the assertion that makes that storage load-bearing rather than
       # incidental.
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
 
       welcome_session_on_channel(irc_server, "#snap")
@@ -1370,7 +1366,7 @@ defmodule GrappaWeb.GrappaChannelTest do
 
   describe "S5.3 — ops verbs: inbound channel events" do
     setup do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
       welcome_session_on_channel(irc_server, "#snap")
       topic = Topic.user(user.name)
@@ -1695,7 +1691,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     # Pre-#153 this replied `visitor_not_allowed` via the removed
     # `dispatch_ops_verb`/`check_not_visitor` gate.
     test "op: visitor socket ships MODE upstream (issue #153 — no visitor gate)" do
-      {server, port} = start_irc_server()
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
@@ -1799,7 +1795,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     # runs BEFORE identity resolution — a malformed channel from a
     # visitor is still rejected with `invalid_channel`, not dispatched.
     test "topic_set: visitor socket ships TOPIC upstream (issue #153)" do
-      {server, port} = start_irc_server()
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
@@ -1865,7 +1861,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     # generalized this to EVERY verb — see the sibling "op:/topic_set:/raw:
     # visitor socket ships … upstream" tests.
     test "oper: visitor socket ships OPER upstream (issue #148 — not visitor_not_allowed)" do
-      {server, port} = start_irc_server()
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
@@ -1990,7 +1986,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     # "raw: rejects embedded CRLF" test, which still holds for visitors
     # since validate_args runs before identity resolution).
     test "raw: visitor socket ships the line verbatim upstream (issue #153)" do
-      {server, port} = start_irc_server()
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = IRCServer.await_handshake(server, 1_000)
       IRCServer.feed(server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
@@ -2400,7 +2396,7 @@ defmodule GrappaWeb.GrappaChannelTest do
   # asymmetry.
   describe "C3 — visitor WHOIS dispatch carve-out" do
     test "visitor socket: whois with live session sends WHOIS upstream" do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
@@ -2429,7 +2425,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     # emits `WHOIS <server> <nick>` upstream so the query is answered by that
     # server; single-arg behaviour is byte-identical when "server" is absent.
     test "visitor socket: whois with server emits WHOIS <server> <nick> upstream (#198)" do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
@@ -2487,7 +2483,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # gate at the channel inbound boundary. Pin that visitors hit the
       # same rejection users do (defense in depth — gate fires BEFORE
       # `Session.send_whois/4` is called).
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
@@ -2517,7 +2513,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     # An absent/unknown token normalizes to :user (covered by the tests
     # above, which never send "source").
     test "whois with source: rail marks the broadcast bundle source: :rail" do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
@@ -2560,7 +2556,7 @@ defmodule GrappaWeb.GrappaChannelTest do
   # the same `Session.set_explicit_away/unset_explicit_away` path users do.
   describe "S3.4 — /away explicit away dispatch (user + visitor, issue #62)" do
     test "user socket: away set sends AWAY :reason upstream and returns :ok" do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
       welcome_session_on_channel(irc_server, "#snap")
       topic = Topic.user(user.name)
@@ -2582,7 +2578,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
 
     test "visitor socket: away set with live session sends AWAY :reason upstream" do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
@@ -2608,7 +2604,7 @@ defmodule GrappaWeb.GrappaChannelTest do
     end
 
     test "visitor socket: away unset after set issues bare AWAY upstream" do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
@@ -2682,7 +2678,7 @@ defmodule GrappaWeb.GrappaChannelTest do
   # `Session.send_invite/4` path users do.
   describe "issue #31 — visitor /invite dispatch carve-out" do
     test "visitor socket: invite with live session sends INVITE nick #chan upstream" do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
@@ -2737,7 +2733,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       # Defense in depth — the inbound `Identifier.valid_nick?` gate fires
       # BEFORE `Session.send_invite/4`, so visitors hit the same rejection
       # users do (mirror of the C3 WHOIS malformed-nick test).
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = setup_visitor_and_network_with_session(port)
       :ok = IRCServer.await_handshake(irc_server, 1_000)
       IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
@@ -2780,7 +2776,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       @wire_prefix wire_prefix
 
       test "visitor socket: #{@verb} with live session sends upstream line" do
-        {irc_server, port} = start_irc_server()
+        {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
         {visitor, network} = setup_visitor_and_network_with_session(port)
         :ok = IRCServer.await_handshake(irc_server, 1_000)
         IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
@@ -2837,7 +2833,7 @@ defmodule GrappaWeb.GrappaChannelTest do
       end
 
       test "visitor socket: #{@verb} with malformed channel returns a validation error" do
-        {irc_server, port} = start_irc_server()
+        {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
         {visitor, network} = setup_visitor_and_network_with_session(port)
         :ok = IRCServer.await_handshake(irc_server, 1_000)
         IRCServer.feed(irc_server, ":irc.test.org 001 #{visitor_nick(visitor)} :Welcome\r\n")
@@ -2893,7 +2889,7 @@ defmodule GrappaWeb.GrappaChannelTest do
   # which drives two browser contexts on one account.
   describe "#1088 — addressed informational replies" do
     setup do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
       welcome_session_on_channel(irc_server, "#snap")
 
@@ -3330,7 +3326,7 @@ defmodule GrappaWeb.GrappaChannelTest do
   # `AuthFSM.new/1` boundary at the IRC core.
   describe "bucket E web/S7 — Channel inbound IRC-shape validation" do
     setup do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
       welcome_session_on_channel(irc_server, "#snap")
       topic = Topic.user(user.name)
@@ -3563,7 +3559,7 @@ defmodule GrappaWeb.GrappaChannelTest do
   # rejects it loudly (mirroring the sibling "visibility" handler).
   describe "#364 web/S2 — away rejects a malformed origin_window" do
     setup do
-      {irc_server, port} = start_irc_server()
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network} = setup_user_and_network_with_session(port)
       welcome_session_on_channel(irc_server, "#snap")
 

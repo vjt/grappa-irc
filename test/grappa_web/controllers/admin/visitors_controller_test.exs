@@ -29,7 +29,7 @@ defmodule GrappaWeb.Admin.VisitorsControllerTest do
   import ExUnit.CaptureIO
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, AdminEvents, AdmissionStateHelpers, Repo, Session}
+  alias Grappa.{Accounts, AdminEvents, AdmissionStateHelpers, IRCServer, Repo, Session}
   alias Grappa.Visitors.Visitor
   alias GrappaWeb.ShareToken
 
@@ -41,10 +41,6 @@ defmodule GrappaWeb.Admin.VisitorsControllerTest do
     # status-code assertion alone cannot see.
     AdmissionStateHelpers.reset_admin_events()
     :ok
-  end
-
-  defp start_irc_server do
-    Grappa.IRCServer.start_server(Grappa.IRCServer.passthrough_handler())
   end
 
   describe "DELETE /admin/visitors/:id — auth gate" do
@@ -78,7 +74,7 @@ defmodule GrappaWeb.Admin.VisitorsControllerTest do
 
   describe "DELETE /admin/visitors/:id — admin user" do
     test "204 + DB row gone + live registry slot freed", %{conn: conn} do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       ref = Process.monitor(pid)
@@ -147,7 +143,7 @@ defmodule GrappaWeb.Admin.VisitorsControllerTest do
 
   describe "GET /admin/visitors — admin user (M-4)" do
     test "200 + body has visitors array including live visitor with live_state.alive", %{conn: conn} do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)

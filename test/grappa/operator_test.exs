@@ -17,7 +17,7 @@ defmodule Grappa.OperatorTest do
   import Grappa.AuthFixtures
 
   alias Grappa.Accounts.User
-  alias Grappa.{AdmissionStateHelpers, DbLatency, Operator, Session}
+  alias Grappa.{AdmissionStateHelpers, DbLatency, IRCServer, Operator, Session}
   alias Grappa.Networks.Credential
   alias Grappa.Visitors.Visitor
 
@@ -28,13 +28,9 @@ defmodule Grappa.OperatorTest do
     :ok
   end
 
-  defp start_irc_server do
-    Grappa.IRCServer.start_server(Grappa.IRCServer.passthrough_handler())
-  end
-
   describe "delete_visitor!/1" do
     test "synchronously terminates the visitor's Session.Server and deletes the row" do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       ref = Process.monitor(pid)
@@ -74,7 +70,7 @@ defmodule Grappa.OperatorTest do
 
   describe "delete_user/2 (admin user teardown, S7)" do
     test "stops the user's live Session.Server(s) and deletes the row" do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
       {network, _} = network_with_server(port: port)
       _ = credential_fixture(vjt, network, %{nick: "vjt"})
@@ -99,7 +95,7 @@ defmodule Grappa.OperatorTest do
     end
 
     test "refuses :last_admin and tears down NOTHING (row + live session survive)" do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       raw_admin = user_fixture(name: "sole-#{System.unique_integer([:positive])}")
       {:ok, admin} = Grappa.Accounts.update_admin_flags(raw_admin, %{is_admin: true})
       {network, _} = network_with_server(port: port)
@@ -220,7 +216,7 @@ defmodule Grappa.OperatorTest do
 
   describe "list_credentials_text!/0" do
     test "prints header + one row per bound credential, including parked + failed states" do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
       slug = "cred-#{System.unique_integer([:positive])}"
       {network, _} = network_with_server(port: port, slug: slug)
@@ -252,7 +248,7 @@ defmodule Grappa.OperatorTest do
 
   describe "list_sessions_text!/0" do
     test "prints header + one row per live Session.Server with introspection" do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
 
@@ -352,7 +348,7 @@ defmodule Grappa.OperatorTest do
 
   describe "terminate_session/3 (M-9a)" do
     test "stops the visitor pid and leaves the visitor row" do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       ref = Process.monitor(pid)
@@ -365,7 +361,7 @@ defmodule Grappa.OperatorTest do
     end
 
     test "stops the user pid and leaves the credential row (state still :connected)" do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
       {network, _} = network_with_server(port: port)
       _ = credential_fixture(vjt, network, %{nick: "vjt"})
@@ -408,7 +404,7 @@ defmodule Grappa.OperatorTest do
 
   describe "disconnect_session/3 (M-9a)" do
     test "user :connected → :parked + pid gone" do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
       {network, _} = network_with_server(port: port)
       _ = credential_fixture(vjt, network, %{nick: "vjt"})
@@ -465,7 +461,7 @@ defmodule Grappa.OperatorTest do
     end
 
     test "visitor collapses to terminate (pid gone, row preserved)" do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       ref = Process.monitor(pid)
@@ -482,7 +478,7 @@ defmodule Grappa.OperatorTest do
       # fire — otherwise the function correctly returns :not_found
       # before reaching the self-protect branch (so 422 vs 404 doesn't
       # leak "this network has a row" to an unauthorized caller).
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
       {network, _} = network_with_server(port: port)
       _ = credential_fixture(vjt, network, %{nick: "vjt"})
@@ -505,7 +501,7 @@ defmodule Grappa.OperatorTest do
 
   describe "reconnect_session/2 (#269)" do
     test "visitor with a downed session → :ok + pid back up" do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       ref = Process.monitor(pid)
@@ -524,7 +520,7 @@ defmodule Grappa.OperatorTest do
     end
 
     test "idempotent when a live session already exists (:already_started → :ok)" do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
@@ -535,7 +531,7 @@ defmodule Grappa.OperatorTest do
     end
 
     test "visitor with no credential on the target network → {:error, :resolve_failed}" do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, _} = visitor_with_network(port)
       # A DIFFERENT network the visitor holds no credential on.
       {network_b, _} = network_with_server(port: 1)
@@ -552,7 +548,7 @@ defmodule Grappa.OperatorTest do
     end
 
     test "unknown network id → {:error, :not_found}" do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, _} = visitor_with_network(port)
 
       assert {:error, :not_found} =

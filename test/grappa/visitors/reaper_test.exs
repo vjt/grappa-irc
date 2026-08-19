@@ -16,17 +16,13 @@ defmodule Grappa.Visitors.ReaperTest do
   import ExUnit.CaptureLog
   import Grappa.AuthFixtures, only: [network_fixture: 1, start_visitor_session_for: 2, visitor_with_network: 2]
 
-  alias Grappa.{AdmissionStateHelpers, Push, QueryWindows, ReadCursor, Session, UserSettings, Visitors}
+  alias Grappa.{AdmissionStateHelpers, IRCServer, Push, QueryWindows, ReadCursor, Session, UserSettings, Visitors}
   alias Grappa.Repo.BusyRetry
   alias Grappa.Visitors.{Reaper, Visitor}
 
   setup do
     AdmissionStateHelpers.reset_all()
     :ok
-  end
-
-  defp start_irc_server do
-    Grappa.IRCServer.start_server(Grappa.IRCServer.passthrough_handler())
   end
 
   defp expire(visitor) do
@@ -77,7 +73,7 @@ defmodule Grappa.Visitors.ReaperTest do
     end
 
     test "terminates live Session.Server before deleting expired visitor row" do
-      {server, port} = start_irc_server()
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port, [])
       pid = start_visitor_session_for(visitor, network)
       ref = Process.monitor(pid)
@@ -93,7 +89,7 @@ defmodule Grappa.Visitors.ReaperTest do
       refute Repo.reload(visitor)
 
       assert {:ok, _} =
-               Grappa.IRCServer.wait_for_line(
+               IRCServer.wait_for_line(
                  server,
                  &(&1 == "QUIT :visitor session expired\r\n"),
                  1_000

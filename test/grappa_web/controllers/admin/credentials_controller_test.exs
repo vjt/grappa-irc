@@ -624,7 +624,7 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
 
   describe "POST /admin/credentials — session spawn (#1163)" do
     test "201 + the bound session dials out with no restart", %{conn: conn} do
-      {server, port} = start_irc_server()
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {network, _} = network_with_server(port: port, slug: "bind-spawn-#{uniq()}")
       target_user = user_fixture(name: "bind-spawn-#{uniq()}")
       stop_session_on_exit(target_user, network)
@@ -671,7 +671,7 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
   # admission passes the first test and fails the second.
   describe "POST /admin/credentials — bind door and boot door are one path (#1163)" do
     test "circuit closed: both doors bring a session up", %{conn: conn} do
-      {server, port} = start_irc_server()
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {network, _} = network_with_server(port: port, slug: "bind-agree-ok-#{uniq()}")
 
       boot_user = boot_bound_user(network, "booted")
@@ -687,7 +687,7 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
     end
 
     test "circuit open: neither door brings a session up", %{conn: conn} do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {network, _} = network_with_server(port: port, slug: "bind-agree-open-#{uniq()}")
       :ok = AdmissionStateHelpers.open_circuit!(network.id)
 
@@ -705,10 +705,6 @@ defmodule GrappaWeb.Admin.CredentialsControllerTest do
   end
 
   defp uniq, do: System.unique_integer([:positive])
-
-  defp start_irc_server do
-    IRCServer.start_server(IRCServer.passthrough_handler())
-  end
 
   defp stop_session_on_exit(user, network) do
     on_exit(fn -> Session.stop_session({:user, user.id}, network.id, "test teardown") end)

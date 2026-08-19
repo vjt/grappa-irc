@@ -35,17 +35,13 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, AdmissionStateHelpers, Repo, Session}
+  alias Grappa.{Accounts, AdmissionStateHelpers, IRCServer, Repo, Session}
   alias Grappa.Networks.Credential
   alias Grappa.Visitors.Visitor
 
   setup do
     AdmissionStateHelpers.reset_all()
     :ok
-  end
-
-  defp start_irc_server do
-    Grappa.IRCServer.start_server(Grappa.IRCServer.passthrough_handler())
   end
 
   describe "GET /admin/sessions — auth gate" do
@@ -91,7 +87,7 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
     end
 
     test "200 + entry per live Session.Server with subject_kind and live_state", %{conn: conn} do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
@@ -130,12 +126,12 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
       # 127.0.0.1:<port>. USER is sent right after the Client pushes
       # {:irc_peer, _}, so waiting for it guarantees the peer is captured
       # before the admin scan reads it.
-      {server, port} = start_irc_server()
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       _ = start_visitor_session_for(visitor, network)
       on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
 
-      :ok = Grappa.IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       session = admin_session()
 
@@ -165,7 +161,7 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
       # state). The controller's batched DB lookup returns no row →
       # `subject_label: nil` surfaces on the wire so the operator can
       # see "orphan pid, no DB row" without remsh-ing into the BEAM.
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
@@ -207,7 +203,7 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
       # MAX across all the subject's cookie sessions: multi-device users
       # collapse to "most recent device touch". Visitors typically have
       # exactly one (the anon flow provisions a single cookie).
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
@@ -250,7 +246,7 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
       # surface honestly reports `last_seen_at: null` instead of
       # fabricating a "session start time" stand-in. The U-0 honesty
       # rule applied to a new dimension.
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
@@ -348,7 +344,7 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
 
   describe "DELETE /admin/sessions/:id — admin user" do
     test "204 + pid gone + DB visitor row preserved", %{conn: conn} do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       ref = Process.monitor(pid)
@@ -386,7 +382,7 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
     end
 
     test "422 cannot_disconnect_self when admin deletes own user session", %{conn: conn} do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, admin_sess} = user_and_session()
       {:ok, _} = Accounts.update_admin_flags(user, %{is_admin: true})
 
@@ -441,7 +437,7 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
 
   describe "POST /admin/sessions/:id/disconnect — admin user" do
     test "204 on user :connected — credential row transitions to :parked, pid gone", %{conn: conn} do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, _} = user_and_session()
       {admin, admin_sess} = user_and_session()
       {:ok, _} = Accounts.update_admin_flags(admin, %{is_admin: true})
@@ -505,7 +501,7 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
     end
 
     test "204 on visitor — collapses to terminate (pid gone, row preserved)", %{conn: conn} do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       ref = Process.monitor(pid)
@@ -528,7 +524,7 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
     end
 
     test "422 cannot_disconnect_self when admin disconnects own user session", %{conn: conn} do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, admin_sess} = user_and_session()
       {:ok, _} = Accounts.update_admin_flags(user, %{is_admin: true})
 
@@ -624,7 +620,7 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
 
   describe "POST /admin/sessions/:id/reconnect — admin user" do
     test "204 on a downed visitor session — pid comes back up", %{conn: conn} do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       ref = Process.monitor(pid)
@@ -648,7 +644,7 @@ defmodule GrappaWeb.Admin.SessionsControllerTest do
     end
 
     test "204 (idempotent) when the visitor session is already live", %{conn: conn} do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)

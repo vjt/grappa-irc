@@ -17,16 +17,12 @@ defmodule Grappa.LiveIntrospectionTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{AdmissionStateHelpers, LiveIntrospection, Session}
+  alias Grappa.{AdmissionStateHelpers, IRCServer, LiveIntrospection, Session}
   alias Grappa.LiveIntrospection.SessionEntry
 
   setup do
     AdmissionStateHelpers.reset_all()
     :ok
-  end
-
-  defp start_irc_server do
-    Grappa.IRCServer.start_server(Grappa.IRCServer.passthrough_handler())
   end
 
   describe "list_sessions/0" do
@@ -35,7 +31,7 @@ defmodule Grappa.LiveIntrospectionTest do
     end
 
     test "returns one entry per live Session.Server with introspection fields" do
-      {server, port} = start_irc_server()
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
@@ -54,7 +50,7 @@ defmodule Grappa.LiveIntrospectionTest do
       # {:irc_peer, _}, so waiting for it guarantees the peer is captured before
       # the scan — the same deterministic barrier the #550 peer-capture test
       # below uses. NOT an assertion weakening: it makes `== []` honest.
-      :ok = Grappa.IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       entries = LiveIntrospection.list_sessions()
 
@@ -76,7 +72,7 @@ defmodule Grappa.LiveIntrospectionTest do
     end
 
     test "returns the SessionEntry for a registered subject" do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       pid = start_visitor_session_for(visitor, network)
       on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
@@ -99,12 +95,12 @@ defmodule Grappa.LiveIntrospectionTest do
       # 127.0.0.1:<port>; USER is sent right after the Client pushes
       # {:irc_peer, _}, so waiting for it guarantees the peer is captured
       # before the registry scan reads it.
-      {server, port} = start_irc_server()
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)
       _ = start_visitor_session_for(visitor, network)
       on_exit(fn -> Session.stop_session({:visitor, visitor.id}, network.id) end)
 
-      :ok = Grappa.IRCServer.await_handshake(server, 1_000)
+      :ok = IRCServer.await_handshake(server, 1_000)
 
       entry = LiveIntrospection.lookup_session({:visitor, visitor.id}, network.id)
 

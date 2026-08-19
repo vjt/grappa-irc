@@ -21,7 +21,7 @@ defmodule Grappa.AccountDeletionTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{AccountDeletion, Accounts, AdmissionStateHelpers, Scrollback, Session}
+  alias Grappa.{AccountDeletion, Accounts, AdmissionStateHelpers, IRCServer, Scrollback, Session}
   alias Grappa.Accounts.User
   alias Grappa.Networks.Credentials
   alias Grappa.Scrollback.Message
@@ -31,10 +31,6 @@ defmodule Grappa.AccountDeletionTest do
   setup do
     AdmissionStateHelpers.reset_all()
     :ok
-  end
-
-  defp start_irc_server do
-    Grappa.IRCServer.start_server(Grappa.IRCServer.passthrough_handler())
   end
 
   # A registered visitor = identified on some network. #211 phase 7 —
@@ -66,8 +62,8 @@ defmodule Grappa.AccountDeletionTest do
 
   describe "delete_account/1 — user" do
     test "non-admin user: stops every live session, deletes the row + cascade deps" do
-      {server1, port1} = start_irc_server()
-      {server2, port2} = start_irc_server()
+      {server1, port1} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {server2, port2} = IRCServer.start_server(IRCServer.passthrough_handler())
 
       user = user_fixture(is_admin: false)
       {network1, _} = network_with_server(port: port1)
@@ -77,8 +73,8 @@ defmodule Grappa.AccountDeletionTest do
 
       pid1 = start_session_for(user, network1)
       pid2 = start_session_for(user, network2)
-      :ok = Grappa.IRCServer.await_handshake(server1, 5_000)
-      :ok = Grappa.IRCServer.await_handshake(server2, 5_000)
+      :ok = IRCServer.await_handshake(server1, 5_000)
+      :ok = IRCServer.await_handshake(server2, 5_000)
       ref1 = Process.monitor(pid1)
       ref2 = Process.monitor(pid2)
 
@@ -110,11 +106,11 @@ defmodule Grappa.AccountDeletionTest do
 
   describe "delete_account/1 — visitor" do
     test "registered visitor: stops the session, deletes the row + cascade deps" do
-      {server, port} = start_irc_server()
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = registered_visitor(port)
 
       pid = start_visitor_session_for(visitor, network)
-      :ok = Grappa.IRCServer.await_handshake(server, 5_000)
+      :ok = IRCServer.await_handshake(server, 5_000)
       ref = Process.monitor(pid)
 
       session = visitor_session_fixture(visitor)
@@ -143,7 +139,7 @@ defmodule Grappa.AccountDeletionTest do
 
   describe "the #126 boundary — quit preserves, delete wipes" do
     test "a registered visitor's row SURVIVES detach (quit) but is WIPED by delete_account" do
-      {_, port} = start_irc_server()
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
 
       # Detach (the quit composite's web-revoke leg) no-ops purge_if_anon
       # for a registered identity — the row survives.
