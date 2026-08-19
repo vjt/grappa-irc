@@ -51,13 +51,7 @@ defmodule Grappa.Push.BadgeCountLiveNickTest do
   # while the session still holds `@configured_nick` — the whole point there
   # is history that predates the rename.
   defp start_session_at_configured_nick do
-    rfc_handler = fn state, line ->
-      if String.starts_with?(line, "USER ") do
-        {:reply, ":server 001 #{@configured_nick} :Welcome\r\n", state}
-      else
-        {:reply, nil, state}
-      end
-    end
+    rfc_handler = IRCServer.welcome_handler(":server", @configured_nick)
 
     {server, port} = IRCServer.start_server(rfc_handler)
 

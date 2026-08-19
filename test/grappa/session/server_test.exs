@@ -4093,16 +4093,10 @@ defmodule Grappa.Session.ServerTest do
     # rows are forever (immutable historical record).
 
     test "RPL_WELCOME echoes welcomed nick: subsequent PRIVMSG persists with welcomed nick" do
-      welcomed_nick_handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          # Server registers the operator under a different nick than
-          # the one requested (rare but possible — Azzurra used to do
-          # this with case-fold normalization).
-          {:reply, ":server 001 grappa-actual :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      # Server registers the operator under a different nick than the one
+      # requested (rare but possible — Azzurra used to do this with
+      # case-fold normalization).
+      welcomed_nick_handler = IRCServer.welcome_handler(":server", "grappa-actual")
 
       {server, port} = IRCServer.start_server(welcomed_nick_handler)
       {user, network, _} = setup_user_and_network(port)
@@ -10807,13 +10801,7 @@ defmodule Grappa.Session.ServerTest do
 
     setup do
       # Feed 001 so the session autojoins; wait for the JOIN; echo JOIN-self back.
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":server", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#test"]})
@@ -11051,13 +11039,7 @@ defmodule Grappa.Session.ServerTest do
 
   describe "C2 — /whois bundle aggregation + Topic.user/1 broadcast" do
     setup do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":server", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
@@ -11745,13 +11727,7 @@ defmodule Grappa.Session.ServerTest do
 
   describe "#140 — /names roster bundle (ephemeral names_reply, not persisted)" do
     setup do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":server", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
@@ -11867,13 +11843,7 @@ defmodule Grappa.Session.ServerTest do
 
   describe "#169 — /who roster bundle (ephemeral who_reply, not persisted)" do
     setup do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":server", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port, %{autojoin_channels: []})
@@ -12506,13 +12476,7 @@ defmodule Grappa.Session.ServerTest do
     # "send_quit/2 returns {:error, _} when socket is nil" coverage.
 
     setup do
-      handler = fn state, line ->
-        if String.starts_with?(line, "USER ") do
-          {:reply, ":server 001 grappa-test :Welcome\r\n", state}
-        else
-          {:reply, nil, state}
-        end
-      end
+      handler = IRCServer.welcome_handler(":server", "grappa-test")
 
       {server, port} = IRCServer.start_server(handler)
       {user, network, _} = setup_user_and_network(port, %{autojoin_channels: ["#test"]})

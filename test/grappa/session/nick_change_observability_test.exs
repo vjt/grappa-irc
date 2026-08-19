@@ -63,13 +63,7 @@ defmodule Grappa.Session.NickChangeObservabilityTest do
   # PING/PONG round-trip flushes the cross-process NICK pipeline (TCP buffer
   # → Client → Session mailbox) so the rename has landed before assertions.
   defp start_renamed_session do
-    rfc_handler = fn state, line ->
-      if String.starts_with?(line, "USER ") do
-        {:reply, ":server 001 #{@configured_nick} :Welcome\r\n", state}
-      else
-        {:reply, nil, state}
-      end
-    end
+    rfc_handler = IRCServer.welcome_handler(":server", @configured_nick)
 
     {server, port} = IRCServer.start_server(rfc_handler)
 
