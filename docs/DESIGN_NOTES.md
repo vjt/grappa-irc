@@ -53049,3 +53049,141 @@ gates.
 The two historical mentions of these names elsewhere in this file
 (`AdminLiveState`, `AdminVisitorLiveState`) are left untouched: the log
 records what was true when it was written.
+<!-- entry #1421 -->
+
+---
+
+## 2026-08-20 — #1421: a budget that cannot bound the fault it is pointed at
+
+#1420 named this and left it: *"the retry budget cannot fire on the fault it
+exists for"*. This closes the half that can be closed without touching what
+#1420 calls the contested axis. A + B of the option table below shipped;
+C/D/E/H did not, and are vjt's call.
+
+### The mechanism, stated exactly
+
+`BusyRetry`'s budget is a deadline consulted BETWEEN attempts. It cannot
+preempt an attempt already running, because the engine does not own the wait —
+SQLite does. So the reach depends on the FAULT'S OWN latency, and the live
+topologies do not share a regime:
+
+| topology | who owns the wait | latency before the raise | inside the 1500ms budget? |
+|---|---|---|---|
+| pool `queue_timeout` | DBConnection | ~100ms (target 50ms, doubled once, then dropped) | yes |
+| write-lock `busy_locked` | SQLite's busy handler | up to `busy_timeout` = 30_000ms | **no — 20x over** |
+| deferred read->write upgrade | nobody, raises at once | ~0ms | yes, but gated out |
+
+The third row is not live: `Repo.transaction(` appears **0 times** in `lib/`,
+enforced by `Grappa.Repo.TransactionModeGateTest` (#1374). Both live write
+paths are therefore slow-fault paths — the 122 bare `Repo.insert/update/…`
+sites take the write lock in autocommit, and every write transaction goes
+through `immediate_transaction/1`.
+
+So the accurate claim is narrower than "the retry branch is unreachable": it
+is unreachable for the LOCK topology, and stays reachable for the POOL
+topology it was dimensioned for. `config/config.exs` sizes the budget against
+*"the ~1s pool-saturation window the #336 incident measured"* — one number
+dimensioned for one topology, later reused for another. Not a wiring slip.
+
+Chronology, because it explains the order of events and exonerates #524: the
+budget landed 2026-07-19 (`6e99d1c9`, #340); `BEGIN IMMEDIATE` landed nine
+days later (`13edb5f3`, #524), replacing a deferred upgrade that
+`repo.ex:166-170` records as raising *at once*. #524 is correct; it is simply
+the commit after which the write-transaction fault waits `busy_timeout`.
+
+### Why the engine's own suite could not see it
+
+Every pre-existing retry test raises a hand-built `%Exqlite.Error{}` from a
+zero-cost closure. The fault is FREE, so the budget is the only thing bounding
+the loop — the one regime in which the budget appears to work. The new bench
+`Grappa.Repo.BusyRetryBudgetReachTest` provokes a REAL driver `SQLITE_BUSY`
+against a held write lock and varies only `busy_timeout`: above the budget the
+loop collapses to exactly one attempt, below it the loop runs many. Same
+engine, same budget; only the ratio changes, and production's ratio is 20.
+
+The same shape sits in `config/test.exs`: `queue_target: 5_000` (a ~10_000ms
+drop) against `budget_ms: 300`. The test environment reproduces the identical
+incoherence in the OTHER topology, 33x over, and nothing notices — because no
+test pays for its faults.
+
+### What shipped: the line reports the wait it OBSERVED
+
+The terminal warning read `for the full 1500ms retry budget (1 attempts)`
+after waiting 30 067ms. That is CLAUDE.md's log-honesty rule broken by the
+same line #1420 had just corrected for the same reason, so it is a bugfix and
+not a behaviour change: it now reads `for 30067ms across 1 attempts (1500ms
+retry budget)`. The elapsed is the only figure the engine can vouch for; the
+budget stays as context, never as the bound.
+
+Zero behaviour moved. `run/2` carries `started` instead of a precomputed
+deadline and `elapsed_ms < @budget_ms` replaces `monotonic_time < deadline` —
+the same arm at the same boundary, rearranged so one subtraction feeds the
+line. Same retry, same `{:error, :db_unavailable}`, same `fault:` metadata,
+0 of the 71 `BusyRetry.run`/`with_pool_retry` call sites touched.
+
+### The census moved in LOCKSTEP, and its anchor changed on purpose
+
+`scripts/log-gap-scan.awk` counted `saturated` on `/saturated for the full/` —
+the numeric tail this commit rewrites. Left alone it would have reported zero,
+and zero is what a clean run looks like: the #1429 census is the attribution
+instrument for red e2e runs, so blinding it costs the next reader a
+measurement they believe they took.
+
+Both terminal counters are now anchored on the `observed_state/1` phrase
+ALONE (`SQLite pool saturated` / `write lock held by another writer`), which
+is the half that names the topology and the half that does not carry numbers.
+The two known-answer samples in the scanner and the two verbatim pins in
+`test/scripts/log_gap_scan_test.bats` moved in the same commit, plus a new
+bats case that feeds both lines with a DIFFERENT numeric tail — so the
+decoupling is asserted rather than asserted-about.
+
+### What was measured, and what the measurement does NOT license
+
+`log-gap-census` over 50 integration runs (window 2026-08-18T17:02Z ->
+2026-08-20T12:26Z, 600 SUMMARY lines, 1.13-1.17M log lines per run for
+`grappa-test`): `db30`, `idle30`, `dropped`, `saturated` present on 600/600
+and ALL ZERO. The three lock counters are present on **12/600 lines — one run
+of fifty**, since they shipped on 2026-08-20 with #1420-instrument. That is a
+declared non-measure on 49 runs, not a zero.
+
+Positive control, because an all-zero census accuses its own instrument first:
+the single red run's 262MB `grappa-test.log` carries 1 158 475 lines and
+**502 660 `QUERY OK` rows with a `db=` timing**, max 194.2ms, six samples in
+100-1500ms, none above. Half a million timed queries are in the stream, so the
+zeros above are measured rather than an absent logging path.
+
+The regime did fire in a DIFFERENT window (`lock_watch.ex:19-21`, #1420's
+census: `db30=4`, `dropped=2`, `saturated=2`, every gap exactly 30.1s), and
+there the 30s wait bought nothing — four waiters all reached the full timeout
+and two scrollback rows were dropped anyway. That argues FOR lowering
+`busy_timeout`, and it is recorded here even though it favours an option not
+taken. Its weight is six signature hits in one window: not enough to reset a
+global timeout.
+
+Not claimed: that a 30s wait ever SUCCEEDED (the `QUERY OK … db=30064.1ms`
+line in the scanner is a registered known-answer SAMPLE, not an observed line,
+and zero `db=3xxxx` rows appear in the one log materialised — this is the
+single fact that would decide the contested axis, and it is unmeasured); the
+production `queue_timeout` drop latency (read from `db_connection`'s own
+"Queue config", never measured here); the distribution of lock HOLD times
+(both windows are CI, neither is m42); and that lowering `busy_timeout` would
+have saved those two rows (mechanically it cannot — a lock held past 30s
+outlasts every budget under discussion; it would only move the drop earlier).
+
+### Named, not cured — deliberately
+
+Re-dimensioning either number changes retry behaviour under contention, which
+is #1420's contested axis. The options were priced and posted to #1421 for
+vjt: lower `busy_timeout` (turns every lock held between the budget and 30s
+from a slow SUCCESS into a fast drop/503, and re-arms the measured e2e flake
+the 30_000 exists for — `runtime.exs:193-196`); raise `budget_ms` (a 90s HTTP
+hang before the 503, worse for the caller #518 exists to protect); swap the
+roles (~250 / ~30_000: same total wall-clock, ~100 slices, the engine owns the
+wait); or a compile-time coherence gate, which is NOT a middle path — it
+refuses the documented-limitation outcome and forces one of the other three
+without saying so.
+
+The question left open, in one line: **is a 30-second HTTP hang before a 503
+the behaviour we want?** If yes, #1421 closes as a documented limitation and
+the module's contract now says so. If no, the answer is one of the above and
+it is a ruling, not a fix.

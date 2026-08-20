@@ -4751,7 +4751,13 @@ WAL/lock corroboration (mechanism 2, out-of-band): grep prod logs for the
 `db write unavailable` warning — it names WHICH of the two it observed since
 #1420 (`SQLite pool saturated` for a pool `queue_timeout`, `SQLite write lock
 held by another writer` for a `busy_locked`; before that it said "pool" for
-both while its own `fault=` metadata said otherwise) — and busy/locked
+both while its own `fault=` metadata said otherwise). Since **#1421** it also
+names the wall-clock it actually WAITED — `for 30067ms across 1 attempts
+(1500ms retry budget)`. Read the two numbers together: an elapsed far past the
+budget with `1 attempts` is the lock topology, where SQLite's 30 s
+`busy_timeout` sits inside the first attempt and the budget cannot bound
+anything; an elapsed just past the budget with many attempts is the pool
+topology the budget was actually dimensioned for. Also grep busy/locked
 `%Exqlite.Error{}` lines during
 the burst; watch WAL checkpoint pressure via the `runtime/*.db-wal` file size
 (a large, slow-shrinking `-wal` = checkpoints falling behind the write rate).
