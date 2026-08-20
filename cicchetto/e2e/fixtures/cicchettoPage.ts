@@ -70,8 +70,11 @@ import {
 import type { SeededUser } from "./grappaApi";
 import { type ScrollGestureResult, scrollByGesture, waitForScrollRest } from "./scrollGesture";
 import type { TraceEvent } from "./scrollTrace";
+import { describeUserTopicTimeout, watchPageConsole } from "./userTopicDiagnostics";
 
 const SHELL_READY_TIMEOUT_MS = 10_000;
+// #1579 — see `waitForUserTopicReady` for why this number does not move.
+const USER_TOPIC_BARRIER_MS = 5_000;
 const MOBILE_BREAKPOINT_PX = 768;
 
 // Mirror of cicchetto/src/lib/theme.ts isMobile() — viewport width
@@ -111,6 +114,11 @@ export async function expectShellReady(page: Page): Promise<void> {
 // and `getSubject()` reads the subject; doing this via `page.evaluate`
 // AFTER goto would race the SPA's first read.
 async function seedAuthLocalStorage(page: Page, token: string, subjectJson: string): Promise<void> {
+  // #1579 — start recording the page console before the first navigation, so
+  // a later `waitForUserTopicReady` timeout can quote the phoenix-level join
+  // errors instead of leaving them in a container log nobody reads. Costs one
+  // listener; the page is not modified.
+  watchPageConsole(page);
   await page.addInitScript(
     ([t, s]) => {
       localStorage.setItem("grappa-token", t);
@@ -676,16 +684,30 @@ export async function waitForScrollbackRefreshed(
 // Wired into loginAs() universally rather than per-spec because the race
 // affects ANY spec that compose-sends `/join` (or any compose verb that
 // produces a server-side user-topic broadcast) shortly after page-load.
+//
+// #1579 — the budget is deliberately UNCHANGED. Measured over a full 759-test
+// run, 597 satisfied barriers have a median of 18 ms and a maximum of 848 ms,
+// so 5 s is not a tight budget; the three misses in that run sat at 11.1 s,
+// 31.6 s and >65 s, and every one of them was the server failing to complete
+// the WebSocket upgrade at all. A larger number would not have converted them
+// into passes, it would only have moved the red to the next assertion — which
+// is exactly what the same stall did to `loginAs`'s own shell-ready gate in
+// that run. What the barrier lacked was not slack but a voice, so it now
+// reports the state it observed instead of a bare TimeoutError.
 export async function waitForUserTopicReady(page: Page, userName: string): Promise<void> {
-  await page.waitForFunction(
-    (name) => {
-      const set = (window as unknown as { __cic_userTopicReady?: Set<string> })
-        .__cic_userTopicReady;
-      return set?.has(name) === true;
-    },
-    userName,
-    { timeout: 5_000 },
-  );
+  try {
+    await page.waitForFunction(
+      (name) => {
+        const set = (window as unknown as { __cic_userTopicReady?: Set<string> })
+          .__cic_userTopicReady;
+        return set?.has(name) === true;
+      },
+      userName,
+      { timeout: USER_TOPIC_BARRIER_MS },
+    );
+  } catch {
+    throw new Error(await describeUserTopicTimeout(page, userName, USER_TOPIC_BARRIER_MS));
+  }
 }
 
 // #485 — gate on the REAL service worker before a spec mutates any
