@@ -1907,12 +1907,17 @@ const SettingsDrawer: Component<Props> = (props) => {
                       // can still surface the original for debugging /
                       // device disambiguation across same-browser instances.
                       const parsed = parseUserAgent(d.user_agent);
-                      // #964 — hover is the ONLY disambiguator today and it does
-                      // not exist on touch, which is where the drawer lives. The
-                      // activity instant + the this-device marker are the two
-                      // always-visible ones. Stamped at render, not on a ticking
-                      // clock: the list is refetched on drawer mount, so a live
-                      // "3m ago → 4m ago" would out-freshen its own data.
+                      // #964 — the always-visible disambiguators, in the order
+                      // they take precedence: the user's own label, the derived
+                      // ordinal on unnamed twins (both from `deviceRows`), the
+                      // activity instant, and the this-device marker. Hover on
+                      // the full UA is a fifth, and the only one that does not
+                      // exist on touch — which is where the drawer lives, and
+                      // why it was never enough on its own.
+                      //
+                      // The activity instant is stamped at render, not on a
+                      // ticking clock: the list is refetched on drawer mount, so
+                      // a live "3m ago → 4m ago" would out-freshen its own data.
                       const activity = formatDeviceActivity(d, Date.now());
                       const isCurrent = () => currentDeviceId() === d.id;
                       const editing = () => renamingId() === d.id;
