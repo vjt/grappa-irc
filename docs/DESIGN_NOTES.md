@@ -53049,3 +53049,104 @@ gates.
 The two historical mentions of these names elsewhere in this file
 (`AdminLiveState`, `AdminVisitorLiveState`) are left untouched: the log
 records what was true when it was written.
+<!-- entry #1601 -->
+
+---
+
+## 2026-08-20 — #1601: the Docker hot deploy declared a landing it never compiled
+
+`POST /admin/reload` LOADS beams; it does not make them.
+`Grappa.HotReload.reload_modified/0` md5-walks the app's ebin and reloads what
+changed on disk. On the Docker substrate nothing on the hot path wrote that
+ebin: `substrate_build` opened with `[ "$MODE" = cold ] || return 0` and the
+comment *"the pulled commit is already in the bind-mounted source tree"* —
+true of the SOURCES, silent about the BEAMS. So the reload found the previous
+commit's modules unchanged, answered `reloaded: []` **honestly**, and the
+deploy declared success over code that was never loaded. Measured on staging:
+a manual reload immediately after the ✓ banner found two modules, and the two
+idempotent reloads after that found none — the control that proves the
+deploy's own reload had not loaded them.
+
+### Every step was individually honest; the sum was not
+
+| step | declares | observes |
+|---|---|---|
+| `substrate_build` | "no build needed" | nothing |
+| `substrate_reload` | proceeds on `"failed":[]` | only `failed`; `reloaded` is in the response, logged and never read |
+| `substrate_healthcheck` | "healthy" | a 200 on `/healthz` that the OLD code returns identically |
+| `substrate_write_marker` | "this sha is deployed" | nothing; it writes `NEW_SHA` unconditionally |
+| `done_banner` | "✓ hot-deploy complete" | the sum of the above |
+
+Not one of those lines is a lie on its own. Together they declare "the new
+commit is live" while observing "the old process is up and nothing failed to
+load". That gap is the `Log honesty` rule at deploy scale: **a gate that
+never ran the step cannot report on it, and reporting green anyway is the
+defect** — vjt's "a documented limitation is an acceptable outcome" does not
+extend to a gate that declares a verdict it did not measure.
+
+### The cure ends an exception rather than adding a mechanism
+
+`infra/freebsd/deploy.sh` and `infra/linux/deploy.sh` already build on BOTH
+paths and state the reason: the build *"writes the fresh .beam into the
+daemon's code path that the hot reload POST then loads"*. Docker was the only
+substrate out of line, so the fix is a hot arm in its `substrate_build`, not a
+new step in the shared algorithm.
+
+Placement costs nothing: `deploy_common.sh` calls `substrate_build` **before**
+the hot/cold branch, so a compile there precedes `substrate_reload` by
+construction. Three consequences worth pinning:
+
+- **No `deps.get` beside it.** `mix.lock`/`mix.exs` are COLD triggers
+  (`Preflight.mix_deps?/1`), so a hot deploy cannot bring deps the box has not
+  already fetched. A `deps.get` here would be dead weight on every hot deploy.
+- **`--warnings-as-errors`, matching both release substrates.** Under the
+  consumers' `set -euo pipefail` a failed compile aborts *before* the reload.
+  That is the point of the step: reloading over a tree that would not compile
+  is the same defect with extra ceremony.
+- **Classification is untouched.** `Preflight.classify/5` still decides WHEN a
+  change is hot. This changes what the hot path DOES, never what counts as hot.
+
+### Rejected: re-run the reload after the seed
+
+The issue offered a second shape. `mix grappa.seed_themes` is the one hot-path
+step that compiles today — by accident, as a side effect of being a mix task —
+and `_deploy_hot` runs it AFTER the reload for a documented reason (post-#41
+the reload applies expand migrations, so an earlier seed would meet the
+pre-migration schema). Reloading a second time after it would promote that
+accident into the build step and pay two reloads where one suffices. The
+ordering comment stays correct; what was missing was a compile ahead of it.
+
+### What the test pins, and what it deliberately does not
+
+`test/scripts/deploy_reload_verify_test.bats` already drives `deploy.sh
+--force-hot` against a throwaway clone with `docker` stubbed on PATH, logging
+every argv. The new case asserts a `mix compile` exists in that log **and that
+its line precedes `admin/reload`** — ordering, not presence, because a compile
+after the reload is exactly what the seed already did.
+
+It does NOT assert a non-empty `reloaded` list. A doc-only hot deploy
+legitimately reloads nothing, and pinning that would encode a coincidence; the
+first case in the file already pins the `reloaded: []` shape as valid.
+
+Two mutants, one assertion each, both measured: reinstating `return 0` on the
+hot arm fails the presence assert; moving the compile into `substrate_seed`
+(present, but after the reload) fails the ordering assert and nothing else.
+The second mutant is not optional — the first red never reaches the ordering
+line, so without it that assertion would have shipped unexercised.
+
+### Read from the code, not reproduced
+
+`_deploy_nothing_to_do` exits 0 when `PREV_SHA == NEW_SHA` and `LAST_DEPLOYED
+== NEW_SHA` in auto mode. The marker carries the new sha whether or not
+anything loaded, so an operator who re-runs the deploy to remedy the stale box
+is told "nothing to do". The issue's "self-healing by accident, converges one
+commit later" therefore holds only when a NEW commit arrives — not by
+retrying. Stated as read from `deploy_common.sh`, not reproduced on a box.
+
+### Spun off, not folded in
+
+The same deploy session surfaced a second `Log honesty` fault: the pull's
+`die` reports "the branch diverged" for a refusal it never observed (a
+`branch.<name>.rebase` config turns `git pull --ff-only` into a rebase pull,
+which refuses on any unstaged change with no divergence in sight). Different
+fault, different cure, so it is **#1603** rather than scope creep here.
