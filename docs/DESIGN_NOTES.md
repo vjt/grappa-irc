@@ -53699,3 +53699,109 @@ The `EventRouter` per-kind shape table still read `required text` for `:notice`,
 already falsified. Both that cell and `:topic`'s now read `text or ""`, with the reason beneath
 the table — leaving one right and one wrong in the same table is how the next reader picks the
 wrong one.
+<!-- entry #1580 -->
+
+---
+
+## 2026-08-20 — #1580: one subject-XOR predicate, and why counting it by name would have lied
+
+`defp validate_subject_xor/1` lived twelve times under `lib/`, once in every
+schema carrying the `user_id` XOR `visitor_id` FK pair. It is now
+`Grappa.Subject.validate_xor/1`, called twelve times.
+
+### Counted by BODY, because a name count is not a duplication count
+
+The issue's "twelve" came from grepping the function NAME. That measures
+declarations, not duplication: a copy that was inlined, renamed, or pasted
+into an anonymous position is invisible to it — measured elsewhere in this
+repo, nineteen named definitions were retired while the same body survived
+INLINE fourteen times across ten files.
+
+So the census re-anchored on the decision body, `case {user_id, visitor_id}
+do … end`, and treated the enclosing function name as a DERIVED column. The
+number held at twelve, and the axes closed on each other: twelve
+`belongs_to :visitor` schemas, twelve decision bodies, twelve
+`<table>_subject_xor` CHECK constraints in migrations, zero schemas with a
+visitor FK and no body, zero `add_error(changeset, :subject, …)` anywhere
+outside those twelve blocks. The wider net — every file naming both columns —
+left ten files, and reading them found no thirteenth XOR in a different
+shape. The nearest miss, `Scrollback.persist_subject/2`, is a telemetry
+labeller that prefers `:user` when both are set: correct for a label, and not
+a validator.
+
+The census script carried its known-answer controls INSIDE it and printed no
+numbers unless all six passed — corpus size, a hand-counted calibration file,
+a real file that must yield zero, a decoy `defp` taking a changeset that must
+NOT be classified as one, a check that the decoy is actually present so the
+control is not vacuous, and an arithmetic cross-check that every subject
+`add_error` in `lib/` falls inside a counted block.
+
+### The mask is what licensed the flattening
+
+Hashing the twelve bodies with the string literals MASKED collapsed them to
+ONE control-flow class. That measurement, not a reading of the code, is what
+makes this a mechanical change: no copy carried behaviour the consolidation
+silently drops. The entire divergence in the family was one message string.
+`uploads/upload.ex` said `"one of user_id or visitor_id is required"`; the
+other eleven said `"must set user_id or visitor_id"`. Nothing pinned the
+variant, and its only production caller cannot reach the arm that emits it —
+`Uploads.create/3` routes the subject through `Subject.put_subject_id/2`,
+whose two clauses both guard `is_binary`, so a subject-less insert raises
+before the changeset runs. A typo the copies let live, not a requirement.
+
+### The comments could not have caught it, by construction
+
+Each copy carried a "Mirror of X" pointer. `accounts/session.ex` →
+`scrollback/message.ex` → `accounts/session.ex` is a cycle, so the graph has
+no root and no copy was the designated original. Every mirror claim was
+therefore unfalsifiable, which is precisely why the drifted copy could keep
+asserting a mirror it no longer was. Copies are not kept honest by comments.
+
+The same class of error appears in the issue's own pointer table, which
+records `networks/credential.ex` as having no pointer at all: it has one,
+spelled `Byte-mirror of`. An anchor that matches one phrasing of a word
+misses the others — the consolidation script hit the identical trap and
+refused the file rather than guessing at it.
+
+### Home, and boundaries
+
+`Grappa.Subject` rather than a new module: it already owns the subject
+discriminator, its moduledoc already states the XOR invariant, and
+`validate_xor/1` is the write-side twin of `put_subject_id/2` — one puts the
+column, the other proves the pair. Ten of the twelve schemas sit inside
+context boundaries that already declared `Grappa.Subject`; only
+`Accounts.Session` and `Networks.Credential` own their boundaries and needed
+the edge. No cycle: `Grappa.Subject` depends on `Accounts.User` and
+`Visitors.Visitor`, neither of which reaches back.
+
+### The pin, and what it is worth
+
+Three of the twelve pinned the missing-subject text; nine did not. A suite
+that guards a quarter of a family and is silent on the copy that is already
+wrong is how the drift shipped. `test/grappa/subject_xor_test.exs` now pins
+all twelve on both error arms and both valid shapes, and guards its own
+coverage: a thirteenth schema declaring `belongs_to :visitor` without a row
+in the table fails the population test.
+
+Written before the consolidation, that table was red exactly once, on
+`Uploads.Upload` — the drift made executable.
+
+### Spun off, not folded in
+
+`check_constraint(:subject, …)` is present in ten of the twelve.
+`accounts/session.ex` and `scrollback/message.ex` lack it although
+`sessions_subject_xor` and `messages_subject_xor` both exist in the DB, so on
+those two tables a violation that reached `Repo` would raise
+`Ecto.ConstraintError` rather than return a changeset error. Reachability is
+thin — the changeset predicate is byte-identical to the CHECK, so nothing
+that passes one fails the other short of a raw write — which is why it is
+recorded here and left to a call rather than folded into a duplication fix.
+
+### Not claimed
+
+That the `{nil, nil}` arm is unreachable in the other eleven: that was traced
+for `uploads` only. That the divergent message was ever user-visible: no
+client trace was run, and the unreachability above makes it moot for the one
+caller that exists. That the twelve were the total subject-XOR enforcement
+surface: the DB CHECK constraints are a second layer and were counted, not
+consolidated.
