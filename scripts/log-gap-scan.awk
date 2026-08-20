@@ -93,7 +93,12 @@ function count_signatures(line) {
     if (line ~ /db=3[0-9][0-9][0-9][0-9]\./) CNT["db30"]++
     if (line ~ /idle=3[0-9][0-9][0-9][0-9]\./) CNT["idle30"]++
     if (line ~ /scrollback row dropped/) CNT["dropped"]++
-    if (line ~ /saturated for the full/) CNT["saturated"]++
+    # #1421 — anchored on the `observed_state/1` phrase ALONE, no longer on
+    # the numeric tail it used to share with `for the full 1500ms retry
+    # budget`. That tail now carries the OBSERVED elapsed and will move again;
+    # the phrase that names the topology is the stable half, and it is the
+    # half this counter is about.
+    if (line ~ /SQLite pool saturated/) CNT["saturated"]++
 
     # `index` before the three regexes: every lock signature carries the
     # literal "lock", and the stream is ~10^6 lines. The known-answer
@@ -198,11 +203,11 @@ BEGIN {
     sig("idle30", "client #PID<0.700.0> checked out, idle=30062.4ms")
     sig("dropped", "scrollback row dropped for #bofh: :persist_unavailable")
     sig("saturated", \
-        "db write unavailable: SQLite pool saturated for the full 1500ms retry budget" \
-        " (3 attempts) — returning :db_unavailable")
+        "db write unavailable: SQLite pool saturated for 1512ms across 14 attempts" \
+        " (1500ms retry budget) — returning :db_unavailable")
     sig("lockheld", \
-        "db write unavailable: SQLite write lock held by another writer for the full" \
-        " 1500ms retry budget (1 attempts) — returning :db_unavailable")
+        "db write unavailable: SQLite write lock held by another writer for 30067ms" \
+        " across 1 attempts (1500ms retry budget) — returning :db_unavailable")
     sig("lockstall", \
         "db lock stall: holder #PID<0.512.0> has held RESERVED for 30123ms with 2" \
         " waiter(s) queued — holder at :gen_server.loop/7, stack: …")

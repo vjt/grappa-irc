@@ -27,8 +27,8 @@ setup() {
     #   busy_retry.ex — the two terminal arms, one per fault kind
     LOCKSTALL_LINE='db lock stall: holder #PID<0.512.0> has held RESERVED for 30123ms with 2 waiter(s) queued — holder at :gen_server.loop/7, stack: a <- b'
     LOCKRESOLVED_LINE='db lock stall RESOLVED: holder #PID<0.512.0> released RESERVED after 30456ms'
-    LOCKHELD_LINE='db write unavailable: SQLite write lock held by another writer for the full 1500ms retry budget (1 attempts) — returning :db_unavailable'
-    SATURATED_LINE='db write unavailable: SQLite pool saturated for the full 1500ms retry budget (3 attempts) — returning :db_unavailable'
+    LOCKHELD_LINE='db write unavailable: SQLite write lock held by another writer for 30067ms across 1 attempts (1500ms retry budget) — returning :db_unavailable'
+    SATURATED_LINE='db write unavailable: SQLite pool saturated for 1512ms across 14 attempts (1500ms retry budget) — returning :db_unavailable'
 }
 
 # The scanner as integration.sh invokes it: a service label and a
@@ -89,7 +89,7 @@ stamp() {
         stamp '12:00:00.' 'db=30064.1ms query returned'
         stamp '12:00:01.' 'conn idle=30062.4ms checked out'
         stamp '12:00:02.' 'scrollback row dropped for #bofh'
-        stamp '12:00:03.' 'pool saturated for the full 30s'
+        stamp '12:00:03.' "$SATURATED_LINE"
         stamp '12:00:04.' "$LOCKHELD_LINE"
         stamp '12:00:05.' "$LOCKSTALL_LINE"
         stamp '12:00:06.' "$LOCKRESOLVED_LINE"
@@ -158,6 +158,22 @@ stamp() {
     out="$( stamp '12:00:00.' "$SATURATED_LINE" | scan 10 )"
     grep -q 'saturated=1' <<<"$out"
     grep -q 'lockheld=0' <<<"$out"
+}
+
+@test "both terminal counters survive a change to the line's numeric tail" {
+    # #1421 moved that tail: it used to read "for the full 1500ms retry
+    # budget" and now carries the OBSERVED elapsed, which varies per event.
+    # The anchors are the `observed_state/1` phrases alone precisely so the
+    # next number that moves does not blind the census — a pattern that
+    # stopped matching reports zero, and zero is what a clean run looks like.
+    local out
+    out="$( {
+        stamp '12:00:00.' 'db write unavailable: SQLite pool saturated for 9ms across 2 attempts (7ms retry budget) — returning :db_unavailable'
+        stamp '12:00:01.' 'db write unavailable: SQLite write lock held by another writer for 123456ms across 3 attempts (7ms retry budget) — returning :db_unavailable'
+    } | scan 10 )"
+
+    grep -q 'saturated=1' <<<"$out"
+    grep -q 'lockheld=1' <<<"$out"
 }
 
 # --- the scanner's own controls -------------------------------------------

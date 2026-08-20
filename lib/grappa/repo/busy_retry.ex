@@ -38,6 +38,39 @@ defmodule Grappa.Repo.BusyRetry do
   The retry loop runs over a wall-clock BUDGET, sleeping a linear backoff
   capped per attempt, so a normal write caught behind a burst is ridden
   out; only sustained saturation degrades.
+
+  ## How far the budget REACHES (#1421)
+
+  The budget is a deadline consulted BETWEEN attempts. It cannot preempt an
+  attempt that is already running, because this engine does not own the wait —
+  so its reach depends on the FAULT'S OWN latency, and the two live topologies
+  do not share a regime:
+
+    * a pool `queue_timeout` is dropped by DBConnection near `queue_target`
+      (50ms, doubled once, then dropped — see its "Queue config"), well inside
+      the budget. This is the topology the budget was dimensioned for:
+      `config/config.exs` sizes it against "the ~1s pool-saturation window the
+      #336 incident measured".
+    * a write-lock `busy_locked` fault raises only once SQLite's
+      `busy_timeout` has expired — 30_000ms in every env, 20x the budget. The
+      first attempt has therefore already overshot the deadline by the time it
+      returns, so the loop makes EXACTLY ONE attempt and the linear backoff
+      below never runs.
+
+  A third topology WOULD fall inside the budget — a deferred read->write
+  upgrade raises an immediate `SQLITE_BUSY` that `busy_timeout` does not cover
+  — but it cannot occur here: every write transaction goes through
+  `Grappa.Repo.immediate_transaction/1`, statically enforced by
+  `Grappa.Repo.TransactionModeGateTest` (#1374).
+
+  The second regime is a DOCUMENTED LIMITATION rather than a wiring slip: one
+  number was dimensioned for one topology and later reused for another.
+  Re-dimensioning it changes retry behaviour under contention — #1420's
+  contested axis, and not this module's decision to take. What IS this
+  module's to take is to stop describing a bound it does not have, which is
+  why the terminal line below reports the wait it OBSERVED and never the
+  budget it was handed. Measured in
+  `Grappa.Repo.BusyRetryBudgetReachTest`; the options are priced in #1421.
   """
 
   require Logger
@@ -75,42 +108,43 @@ defmodule Grappa.Repo.BusyRetry do
           {:ok, result} | {:error, error | :db_unavailable}
         when result: var, error: var
   def run(op, opts) when is_function(op, 0) and is_list(opts) do
-    deadline = System.monotonic_time(:millisecond) + @budget_ms
-    loop(op, opts, deadline, 1)
+    # `started` rather than a precomputed deadline: the terminal line has to
+    # report the wall-clock it OBSERVED, and a deadline cannot say how far
+    # past itself the run went (#1421).
+    loop(op, opts, System.monotonic_time(:millisecond), 1)
   end
 
   @spec loop((-> {:ok, result} | {:error, error}), keyword(), integer(), pos_integer()) ::
           {:ok, result} | {:error, error | :db_unavailable}
         when result: var, error: var
-  defp loop(op, opts, deadline, attempt) do
+  defp loop(op, opts, started, attempt) do
     maybe_inject_fault()
     op.()
   rescue
     error in [DBConnection.ConnectionError, Exqlite.Error] ->
+      elapsed_ms = System.monotonic_time(:millisecond) - started
+
       cond do
         not transient_fault?(error) ->
           # Syntax / corruption — retrying spins pointlessly. Re-raise with
           # the original stacktrace so it surfaces as a loud 500, not a 503.
           reraise error, __STACKTRACE__
 
-        System.monotonic_time(:millisecond) < deadline ->
+        # Identical to the pre-#1421 `monotonic_time < started + @budget_ms`,
+        # rearranged so the same subtraction feeds the terminal line. Same
+        # arm, same boundary, no timing change.
+        elapsed_ms < @budget_ms ->
           on_contention(opts, fault_kind(error), attempt, false)
           # The backoff sleep runs after the failed checkout was already
           # released, so it holds no connection — bounded backpressure on the
           # flooding caller, not a held-conn leak (#340).
           Process.sleep(min(@backoff_ms * attempt, @backoff_cap_ms))
-          loop(op, opts, deadline, attempt + 1)
+          loop(op, opts, started, attempt + 1)
 
         true ->
           kind = fault_kind(error)
           on_contention(opts, kind, attempt, true)
-
-          Logger.warning(
-            "db write unavailable: #{observed_state(kind)} for the full " <>
-              "#{@budget_ms}ms retry budget (#{attempt} attempts) — returning :db_unavailable",
-            fault: kind
-          )
-
+          Logger.warning(terminal_message(kind, elapsed_ms, attempt), fault: kind)
           {:error, :db_unavailable}
       end
   end
@@ -129,6 +163,26 @@ defmodule Grappa.Repo.BusyRetry do
   @spec observed_state(fault_kind()) :: String.t()
   defp observed_state(:queue_timeout), do: "SQLite pool saturated"
   defp observed_state(:busy_locked), do: "SQLite write lock held by another writer"
+
+  # The same rule, applied to the NUMBER on that line (#1421). It used to read
+  # "for the full #{@budget_ms}ms retry budget", which is false in the regime
+  # that actually occurs: a `busy_locked` fault waits out SQLite's 30_000ms
+  # `busy_timeout` inside its FIRST attempt, so the line announced a 1500ms
+  # bound for a 30-second wait. The elapsed is the only figure the engine can
+  # vouch for; the budget stays on the line as context, not as the bound.
+  #
+  # 🔴 The #1429 census anchors on this prose, and its bats pins copy it
+  # VERBATIM. Both are anchored on the `observed_state/1` phrase ALONE, so this
+  # numeric tail can move again without blinding the counters — but a change to
+  # the two phrases above still has to move `scripts/log-gap-scan.awk` and
+  # `test/scripts/log_gap_scan_test.bats` in the SAME commit. A census whose
+  # pattern stopped matching reports zero, and zero is what a clean run looks
+  # like.
+  @spec terminal_message(fault_kind(), non_neg_integer(), pos_integer()) :: String.t()
+  defp terminal_message(kind, elapsed_ms, attempt) do
+    "db write unavailable: #{observed_state(kind)} for #{elapsed_ms}ms across " <>
+      "#{attempt} attempts (#{@budget_ms}ms retry budget) — returning :db_unavailable"
+  end
 
   # Invoke the caller's contention observer if one was supplied. Its return is
   # discarded — it is a side-channel (telemetry), not part of the retry result.
