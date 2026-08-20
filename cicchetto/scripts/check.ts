@@ -34,6 +34,14 @@
 type Stage = { readonly name: string; readonly argv: readonly string[] };
 
 const STAGES: readonly Stage[] = [
+  // First, and cheap: it says whether the three stages below are attributable
+  // at all. #1571 measured a `node_modules` whose biome was three minor
+  // versions off `bun.lock`, and nothing in the tree compared the two — the
+  // only freshness test any script applied was `scripts/bun.sh`'s
+  // `needs_install`, which asks whether the directory is EMPTY. It does not
+  // short-circuit the rest: a stale toolchain and a real type error are
+  // separate facts and #1469's whole point is reporting the union.
+  { name: "lock drift (node_modules vs bun.lock)", argv: ["bun", "scripts/lock-drift.ts"] },
   { name: "biome (src + e2e)", argv: ["biome", "check", "--max-diagnostics=none"] },
   { name: "tsc (src)", argv: ["tsc", "--noEmit"] },
   { name: "tsc (e2e)", argv: ["tsc", "--noEmit", "-p", "e2e/tsconfig.json"] },
