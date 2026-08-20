@@ -53699,3 +53699,65 @@ The `EventRouter` per-kind shape table still read `required text` for `:notice`,
 already falsified. Both that cell and `:topic`'s now read `text or ""`, with the reason beneath
 the table — leaving one right and one wrong in the same table is how the next reader picks the
 wrong one.
+<!-- entry #1518 -->
+
+---
+
+## 2026-08-20 — #1518: the services-modal ordering invariant, measured and bought
+
+#290's `service-modal` arm is two statements, and its comment declares the
+order between them: `openServiceModal` captures the mirror high-water mark
+FIRST, `help` goes out SECOND, so the reply notices count as while-open
+arrivals. #1518 measured that nothing enforced it — swap the two lines and the
+suite stays green.
+
+Reproduced before touching anything, on `origin/main` = 425426f2: the whole cic
+vitest suite is 294 files / 5688 cases, and it passes 5688/5688 both with the
+arm as written and with the two statements swapped. Identical totals, `rc=0`
+both times. `compose.test.ts` covers this arm with an `it.each` that asserts
+`openServiceModal` was called and `sendMessage` was called; neither assertion
+can see which ran first.
+
+### The order is real, and the gap is the arm's own `await`
+
+`sendBodyLines` suspends on the POST. The WS handler ingests a NOTICE by
+calling `appendToScrollback` — the same store `openServiceModal` reduces to a
+high-water mark — and it runs on that same event loop. So a service notice that
+lands while the POST is in flight is exactly the arrival the modal exists to
+show, and it is above the mark only if the mark was taken before the await.
+Capture it after and the notice is at or below `sinceId`, which is the one
+predicate `ServiceModal.tsx` filters on: the help wall gets filtered out of the
+view that was opened for it.
+
+That is a race window, not a certainty, which is why it was never observed. The
+ircd's reply usually comes back after the 202 does. The browser e2e
+(`issue290-services-modal.spec.ts`) is blind to it for the same reason: it waits
+for lines to appear with no bound on when they were captured, so it stays green
+under either order.
+
+### What buys it now
+
+`serviceModalCommand.test.ts` drives the real handler with only `lib/api`'s
+`sendMessage` stubbed — the await under test is production's own, through the
+real `sendBodyLines` and the real `scrollback.sendMessage` — and delivers a
+notice through the real ingest verb from inside the in-flight POST. Its
+load-bearing assertion is that `sinceId` is the PRE-send high-water.
+
+Two mutants, one per assertion, each killing exactly one:
+
+* swap the arm's two statements → only the `sinceId` assertion fails
+  (`expected 11 to be 10`); the control passes.
+* drop the mid-send delivery from the fixture → only the control fails
+  (`expected [10] to deeply equal [10, 11]`).
+
+The control is not decoration: without it the invariant assertion holds
+vacuously for a send that never fired at all — `sinceId` would read 10 because
+nothing ever arrived, and the test would be green while measuring nothing.
+
+### What this does not buy
+
+The same order has a second consequence — the modal appears before the send
+rather than after it, so a paced (#666 429-retry) or failing send would leave
+the operator with no modal at all under the swap. The #290 comment does not
+claim it and no test here asserts it. And no e2e was run for this slice: the
+spec above was read, not executed.
