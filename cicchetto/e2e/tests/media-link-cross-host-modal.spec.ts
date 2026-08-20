@@ -43,6 +43,7 @@ import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { composeSend, loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
+import { closeMediaViewer, openMediaViewer } from "../fixtures/mediaViewer";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
@@ -126,9 +127,7 @@ test("cross-host https image link opens the media viewer, href unchanged, bytes 
   await expect(link).toHaveAttribute("href", IMAGE_URL);
 
   const cicUrl = page.url();
-  await link.click();
-  const viewer = page.getByRole("dialog", { name: "Media viewer" });
-  await expect(viewer).toBeVisible({ timeout: 5_000 });
+  const viewer = await openMediaViewer(page, link);
   // No navigation — the modal opened in place.
   expect(page.url()).toBe(cicUrl);
 
@@ -141,8 +140,7 @@ test("cross-host https image link opens the media viewer, href unchanged, bytes 
   const naturalWidth = await img.evaluate((el) => (el as HTMLImageElement).naturalWidth);
   expect(naturalWidth, "cross-host image must decode under the prod CSP").toBeGreaterThan(0);
 
-  await viewer.getByRole("button", { name: "Close media viewer" }).click();
-  await expect(viewer).toBeHidden({ timeout: 5_000 });
+  await closeMediaViewer(viewer);
 
   // Negative: same host, same extension, http → plain anchor.
   const insecure = await foreignLink(page, INSECURE_IMAGE_URL);
@@ -161,9 +159,7 @@ test("cross-host https video link opens the media viewer, href unchanged, metada
   await expect(link).toHaveAttribute("href", VIDEO_URL);
 
   const cicUrl = page.url();
-  await link.click();
-  const viewer = page.getByRole("dialog", { name: "Media viewer" });
-  await expect(viewer).toBeVisible({ timeout: 5_000 });
+  const viewer = await openMediaViewer(page, link);
   expect(page.url()).toBe(cicUrl);
 
   const video = viewer.locator("video.media-viewer-media");

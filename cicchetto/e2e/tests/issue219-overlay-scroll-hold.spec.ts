@@ -32,11 +32,14 @@
 // stays there on close. GREEN post-fix: the position is HELD across the resize
 // and the close.
 
-import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import {
+  closeMediaViewer,
+  openMediaViewerInPlace,
+  uploadImageAndGetLink,
+} from "../fixtures/mediaViewer";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
-import { mediaScrollbackRow, uploadViaPicker } from "../fixtures/uploadJourney";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
@@ -51,13 +54,7 @@ test("#219 — a resize while the image viewer is open must NOT snap the list to
 
   // Upload an image so the scrollback carries a clickable media link. #spec-wN is
   // seeded with 200 lines → the pane is genuinely tall and scrollable.
-  const { slug } = await uploadViaPicker(
-    page,
-    { name: "x219.png", mimeType: "image/png", buffer: Buffer.from(TINY_PNG_HEX, "hex") },
-    { postTimeout: 10_000 },
-  );
-  const { link } = await mediaScrollbackRow(page, "📸", slug);
-  await expect(link).toHaveClass(/scrollback-media-link/);
+  const { link } = await uploadImageAndGetLink(page, "x219.png");
 
   const sc = page.getByTestId("scrollback");
   // Scroll to a deterministic MIDDLE position (away from both top and bottom).
@@ -72,9 +69,7 @@ test("#219 — a resize while the image viewer is open must NOT snap the list to
   expect(before.top).toBeLessThan(before.max - 5);
 
   // Open the preview via the anchor's OWN click (no Playwright scroll-into-view).
-  await link.evaluate((el) => (el as HTMLElement).click());
-  const viewer = page.getByRole("dialog", { name: "Media viewer" });
-  await expect(viewer).toBeVisible({ timeout: 5_000 });
+  const viewer = await openMediaViewerInPlace(page, link);
 
   // #196 covers the open EDGE — position is preserved right after open.
   const afterOpen = await sc.evaluate((el) => el.scrollTop);
@@ -98,8 +93,7 @@ test("#219 — a resize while the image viewer is open must NOT snap the list to
   expect(Math.abs(during - before.top)).toBeLessThanOrEqual(10);
 
   // Close — the position must STILL be where the reader left it.
-  await viewer.getByRole("button", { name: "Close media viewer" }).click();
-  await expect(viewer).toBeHidden({ timeout: 5_000 });
+  await closeMediaViewer(viewer);
   await page.waitForTimeout(300);
   const after = await sc.evaluate((el) => el.scrollTop);
   expect(Math.abs(after - before.top)).toBeLessThanOrEqual(10);

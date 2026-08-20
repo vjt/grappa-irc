@@ -31,12 +31,11 @@
 // Desktop project only (untagged → chromium), like its #196 twin: desktop Chrome
 // reproduces desktop scroll physics (feedback_playwright_webkit_not_ios_scroll).
 
-import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { IrcPeer } from "../fixtures/ircClient";
+import { closeMediaViewer, openMediaViewer, uploadImageAndGetLink } from "../fixtures/mediaViewer";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
-import { mediaScrollbackRow, uploadViaPicker } from "../fixtures/uploadJourney";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 const PEER_NICK = "arr1121-peer";
@@ -64,13 +63,7 @@ test.describe("#1121 — closing an overlay over a tail reader must not strand t
 
     // Upload an image → a clickable media link lands at the tail, where our
     // reader already is. No scroll-up here: being AT the tail IS the precondition.
-    const { slug } = await uploadViaPicker(
-      page,
-      { name: "arr1121.png", mimeType: "image/png", buffer: Buffer.from(TINY_PNG_HEX, "hex") },
-      { postTimeout: 10_000 },
-    );
-    const { link } = await mediaScrollbackRow(page, "📸", slug);
-    await expect(link).toHaveClass(/scrollback-media-link/);
+    const { link } = await uploadImageAndGetLink(page, "arr1121.png");
 
     const sc = page.getByTestId("scrollback");
     const scrollButton = page.locator('[data-testid="scroll-to-bottom"]');
@@ -109,9 +102,7 @@ test.describe("#1121 — closing an overlay over a tail reader must not strand t
       await expect(scrollButton).toBeHidden({ timeout: 5_000 });
 
       // Open the preview via a REAL click on the image at the tail.
-      await link.click();
-      const viewer = page.getByRole("dialog", { name: "Media viewer" });
-      await expect(viewer).toBeVisible({ timeout: 5_000 });
+      const viewer = await openMediaViewer(page, link);
 
       // Three lines land underneath the open overlay — the reporter's exact
       // gesture. They must NOT move the frozen pane (that is #196's contract,
@@ -128,8 +119,7 @@ test.describe("#1121 — closing an overlay over a tail reader must not strand t
       expect(Math.abs(during - before.top)).toBeLessThanOrEqual(5);
 
       // Close it. The reader is now genuinely parked above a tail that moved.
-      await viewer.getByRole("button", { name: "Close media viewer" }).click();
-      await expect(viewer).toBeHidden({ timeout: 5_000 });
+      await closeMediaViewer(viewer);
       await page.waitForTimeout(400);
 
       // OBSERVABLE 1 — the geometry was republished, so the pane admits there is

@@ -32,33 +32,32 @@
 // scale ratio) is covered by the pinchZoom.ts unit tests (jsdom); these e2es
 // guard the DOM wiring + the CSS contract, not the physics.
 
-import { TINY_PNG_HEX } from "../fixtures/bytes";
+import type { Page } from "@playwright/test";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import { openMediaViewerInPlace, uploadImageAndGetLink } from "../fixtures/mediaViewer";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
-import { mediaScrollbackRow, uploadViaPicker } from "../fixtures/uploadJourney";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
-// Upload a tiny image and open it in the media viewer. Returns the viewer
-// dialog + the zoomable <img> locator. Mirrors #219's harness: the anchor's OWN
-// click opens the overlay (no Playwright scroll-into-view).
-async function openImageViewer(page: import("@playwright/test").Page) {
+// Upload a tiny image and open it in the media viewer, then narrow to the
+// ZOOMABLE <img> — the element these three tests actually drive.
+//
+// The door itself (upload → anchor → in-place click → dialog visible) is
+// fixtures/mediaViewer.ts since #1441. The extra barrier below stays here: it
+// is image-and-zoom specific, and it is also the locator this spec returns.
+// `openMediaViewerInPlace` and not the plain opener because #219's harness
+// (which this mirrors) needs the anchor's OWN click, with no Playwright
+// scroll-into-view.
+async function openImageViewer(page: Page) {
   if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
   const vjt = specUser();
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 
-  const { slug } = await uploadViaPicker(
-    page,
-    { name: "x213.png", mimeType: "image/png", buffer: Buffer.from(TINY_PNG_HEX, "hex") },
-    { postTimeout: 10_000 },
-  );
-  const { link } = await mediaScrollbackRow(page, "📸", slug);
-  await link.evaluate((el) => (el as HTMLElement).click());
+  const { link } = await uploadImageAndGetLink(page, "x213.png");
+  const viewer = await openMediaViewerInPlace(page, link);
 
-  const viewer = page.getByRole("dialog", { name: "Media viewer" });
-  await expect(viewer).toBeVisible({ timeout: 5_000 });
   const img = viewer.locator(".media-viewer-media--zoomable");
   await expect(img).toBeVisible({ timeout: 5_000 });
   return { viewer, img };

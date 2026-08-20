@@ -31,6 +31,7 @@
 import type { Page } from "@playwright/test";
 import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { composeSend, loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
+import { closeMediaViewer, openMediaViewer } from "../fixtures/mediaViewer";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 import { mediaScrollbackRow, uploadViaPicker } from "../fixtures/uploadJourney";
@@ -72,9 +73,7 @@ async function aliasModalJourney(page: Page): Promise<void> {
   await expect(link).toHaveAttribute("href", aliasUrl);
 
   const cicUrl = page.url();
-  await link.click();
-  const viewer = page.getByRole("dialog", { name: "Media viewer" });
-  await expect(viewer).toBeVisible({ timeout: 5_000 });
+  const viewer = await openMediaViewer(page, link);
   // No navigation — the modal opened in place.
   expect(page.url()).toBe(cicUrl);
 
@@ -90,8 +89,7 @@ async function aliasModalJourney(page: Page): Promise<void> {
   const naturalWidth = await img.evaluate((el) => (el as HTMLImageElement).naturalWidth);
   expect(naturalWidth).toBeGreaterThan(0);
 
-  await viewer.getByRole("button", { name: "Close media viewer" }).click();
-  await expect(viewer).toBeHidden({ timeout: 5_000 });
+  await closeMediaViewer(viewer);
 
   // Negative: a genuinely third-party host (NOT in the alias set) with
   // the same emoji + EXTENSIONLESS uploads shape must still be rejected —

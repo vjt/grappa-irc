@@ -21,11 +21,14 @@
 // (off-screen), and this test is about OPENING the overlay not moving the list,
 // NOT about the click's own scroll-into-view.
 
-import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import {
+  closeMediaViewer,
+  openMediaViewerInPlace,
+  uploadImageAndGetLink,
+} from "../fixtures/mediaViewer";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
-import { mediaScrollbackRow, uploadViaPicker } from "../fixtures/uploadJourney";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
@@ -42,13 +45,7 @@ test("#196 — opening the image preview keeps the message-list scroll position 
   // seeded with 200 lines, so the pane is already tall enough to scroll — the
   // image lands at the tail (its exact position is irrelevant: it's opened via
   // el.click() below, not by scrolling to it).
-  const { slug } = await uploadViaPicker(
-    page,
-    { name: "x196.png", mimeType: "image/png", buffer: Buffer.from(TINY_PNG_HEX, "hex") },
-    { postTimeout: 10_000 },
-  );
-  const { link } = await mediaScrollbackRow(page, "📸", slug);
-  await expect(link).toHaveClass(/scrollback-media-link/);
+  const { link } = await uploadImageAndGetLink(page, "x196.png");
 
   const sc = page.getByTestId("scrollback");
   // Scroll to a deterministic MIDDLE position (away from both top and bottom).
@@ -65,18 +62,16 @@ test("#196 — opening the image preview keeps the message-list scroll position 
   expect(before.top).toBeLessThan(before.max - 5);
 
   // Open the preview via the anchor's OWN click — fires the onClick
-  // (preventDefault + openMediaViewer) with NO Playwright scroll-into-view.
-  await link.evaluate((el) => (el as HTMLElement).click());
-  const viewer = page.getByRole("dialog", { name: "Media viewer" });
-  await expect(viewer).toBeVisible({ timeout: 5_000 });
+  // (preventDefault + the app's src/lib/mediaViewer) with NO Playwright
+  // scroll-into-view, which would move the very position under test.
+  const viewer = await openMediaViewerInPlace(page, link);
 
   // The scroll position must NOT have moved when the overlay opened.
   const during = await sc.evaluate((el) => el.scrollTop);
   expect(Math.abs(during - before.top)).toBeLessThanOrEqual(3);
 
   // Close the overlay — the position must STILL be where the reader left it.
-  await viewer.getByRole("button", { name: "Close media viewer" }).click();
-  await expect(viewer).toBeHidden({ timeout: 5_000 });
+  await closeMediaViewer(viewer);
   const after = await sc.evaluate((el) => el.scrollTop);
   expect(Math.abs(after - before.top)).toBeLessThanOrEqual(3);
 });

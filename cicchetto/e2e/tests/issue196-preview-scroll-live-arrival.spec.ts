@@ -26,13 +26,12 @@
 // IrcPeer for the in-overlay arrival, deterministic scroll via evaluate, overlay
 // opened by the anchor's OWN real click on a VISIBLE mid-list image.
 
-import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { restoreReadCursorToTail } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
+import { closeMediaViewer, openMediaViewer, uploadImageAndGetLink } from "../fixtures/mediaViewer";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
-import { mediaScrollbackRow, uploadViaPicker } from "../fixtures/uploadJourney";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 const PEER_NICK = "arr196-peer";
@@ -65,13 +64,7 @@ test.describe("#196 — preview overlay holds scroll across a live message arriv
     await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 
     // Upload an image → a clickable media link lands at the tail.
-    const { slug } = await uploadViaPicker(
-      page,
-      { name: "arr196.png", mimeType: "image/png", buffer: Buffer.from(TINY_PNG_HEX, "hex") },
-      { postTimeout: 10_000 },
-    );
-    const { link } = await mediaScrollbackRow(page, "📸", slug);
-    await expect(link).toHaveClass(/scrollback-media-link/);
+    const { link } = await uploadImageAndGetLink(page, "arr196.png");
 
     const peer = await IrcPeer.connect({ nick: PEER_NICK });
     try {
@@ -110,9 +103,7 @@ test.describe("#196 — preview overlay holds scroll across a live message arriv
       expect(before.rowVisible).toBe(true);
 
       // Open the preview via a REAL click on the visible image.
-      await link.click();
-      const viewer = page.getByRole("dialog", { name: "Media viewer" });
-      await expect(viewer).toBeVisible({ timeout: 5_000 });
+      const viewer = await openMediaViewer(page, link);
 
       // Opening the overlay must not move the list.
       const onOpen = await sc.evaluate((el) => el.scrollTop);
@@ -132,8 +123,7 @@ test.describe("#196 — preview overlay holds scroll across a live message arriv
       expect(Math.abs(during - before.top)).toBeLessThanOrEqual(5);
 
       // Close the preview — the position must STILL be where the reader left it.
-      await viewer.getByRole("button", { name: "Close media viewer" }).click();
-      await expect(viewer).toBeHidden({ timeout: 5_000 });
+      await closeMediaViewer(viewer);
       await page.waitForTimeout(400);
       const after = await sc.evaluate((el) => el.scrollTop);
       expect(Math.abs(after - before.top)).toBeLessThanOrEqual(5);

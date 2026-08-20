@@ -29,52 +29,29 @@
 // anyway (feedback_playwright_webkit_not_ios_scroll, same class).
 // Unit tests pin the rewrite; device dogfood is the final word.
 
-import type { Locator, Page } from "@playwright/test";
-import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { composeSend, loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
+import {
+  closeMediaViewer,
+  mediaViewer,
+  openMediaViewer,
+  uploadImageAndGetLink,
+} from "../fixtures/mediaViewer";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 import { mediaScrollbackRow, uploadViaPicker } from "../fixtures/uploadJourney";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
-// UX-6-B embedded-upload journey (shared fixtures/uploadJourney.ts):
-// real PNG through the picker, real POST /api/uploads, real IRC echo.
-// Returns the scrollback media link ready to click.
-async function uploadPngAndGetLink(page: Page): Promise<{
-  slug: string;
-  url: string;
-  row: Locator;
-  link: Locator;
-}> {
-  const { slug, url } = await uploadViaPicker(
-    page,
-    {
-      name: "media-viewer.png",
-      mimeType: "image/png",
-      buffer: Buffer.from(TINY_PNG_HEX, "hex"),
-    },
-    { postTimeout: 10_000 },
-  );
-
-  // 📸 PRIVMSG echoes back; the anchor carries the media-link class.
-  const { row, link } = await mediaScrollbackRow(page, "📸", slug);
-  await expect(link).toHaveClass(/scrollback-media-link/);
-  return { slug, url, row, link };
-}
-
 test("📸 upload link click opens the in-app viewer instead of navigating", async ({ page }) => {
   const vjt = specUser();
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 
-  const { url, row, link } = await uploadPngAndGetLink(page);
+  const { url, row, link } = await uploadImageAndGetLink(page, "media-viewer.png");
 
   // Click → in-app viewer, NO navigation.
   const cicUrl = page.url();
-  await link.click();
-  const viewer = page.getByRole("dialog", { name: "Media viewer" });
-  await expect(viewer).toBeVisible({ timeout: 5_000 });
+  const viewer = await openMediaViewer(page, link);
   expect(page.url()).toBe(cicUrl);
 
   // The <img> actually loaded the bytes through nginx (naturalWidth 0
@@ -93,8 +70,7 @@ test("📸 upload link click opens the in-app viewer instead of navigating", asy
   await expect(external).toHaveAttribute("target", "_blank");
 
   // X closes; cic still on the channel, scrollback intact.
-  await viewer.getByRole("button", { name: "Close media viewer" }).click();
-  await expect(viewer).toBeHidden({ timeout: 5_000 });
+  await closeMediaViewer(viewer);
   await expect(row.first()).toBeVisible();
   expect(page.url()).toBe(cicUrl);
 });
@@ -132,7 +108,7 @@ test("🎵 upload link click opens the docked mini-player, NOT the modal (GH #11
   // The docked bar appears; the media viewer modal stays closed.
   const player = page.getByTestId("audio-mini-player");
   await expect(player).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByRole("dialog", { name: "Media viewer" })).toBeHidden();
+  await expect(mediaViewer(page)).toBeHidden();
   expect(page.url()).toBe(cicUrl);
 
   // The single <audio> element points at the served bytes (same-origin,
@@ -166,17 +142,14 @@ test("viewer load states: failure text on unfetchable media, spinner until bytes
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 
-  const { slug, link } = await uploadPngAndGetLink(page);
-  const viewer = page.getByRole("dialog", { name: "Media viewer" });
+  const { slug, link } = await uploadImageAndGetLink(page, "media-viewer.png");
 
   // Phase 1 — unfetchable media: failure text, no forever-spinner.
   await page.route(`**/uploads/${slug}*`, (route) => route.abort());
-  await link.click();
-  await expect(viewer).toBeVisible({ timeout: 5_000 });
+  const viewer = await openMediaViewer(page, link);
   await expect(viewer.getByText(/failed to load/i)).toBeVisible({ timeout: 5_000 });
   await expect(viewer.getByRole("status")).toBeHidden();
-  await viewer.getByRole("button", { name: "Close media viewer" }).click();
-  await expect(viewer).toBeHidden({ timeout: 5_000 });
+  await closeMediaViewer(viewer);
   await page.unroute(`**/uploads/${slug}*`);
 
   // Phase 2 — hold the media response open until the spinner has been
@@ -191,8 +164,7 @@ test("viewer load states: failure text on unfetchable media, spinner until bytes
     await route.continue();
   });
 
-  await link.click();
-  await expect(viewer).toBeVisible({ timeout: 5_000 });
+  await openMediaViewer(page, link);
   const spinner = viewer.getByRole("status", { name: /loading/i });
   await expect(spinner).toBeVisible();
 

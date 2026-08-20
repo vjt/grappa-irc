@@ -26,8 +26,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
-import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import { closeMediaViewer, openMediaViewer, uploadImageAndGetLink } from "../fixtures/mediaViewer";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 import { mediaScrollbackRow, uploadViaPicker } from "../fixtures/uploadJourney";
@@ -48,28 +48,20 @@ test("image: server mints /uploads/<slug>.png and the extensioned URL opens the 
 }) => {
   await openChannel(page);
 
-  const { slug, url } = await uploadViaPicker(
-    page,
-    { name: "issue418.png", mimeType: "image/png", buffer: Buffer.from(TINY_PNG_HEX, "hex") },
-    { postTimeout: 10_000 },
-  );
-
-  // #418 server half: the minted URL carries the faithful type extension.
-  expect(url).toMatch(new RegExp(`/uploads/${slug}\\.png$`));
-
   // Real IRC echo → the 📸 row. The link classifies by the EXTENSION now
   // (the URL is `/uploads/<slug>.png`, which no longer matches the
   // extensionless UPLOADS_PATH_RE → mediaLink rule 3), and the anchor
-  // href IS the extensioned URL — the type signal reached cic intact.
-  const { link } = await mediaScrollbackRow(page, "📸", slug);
-  await expect(link).toHaveClass(/scrollback-media-link/);
+  // href IS the extensioned URL — the type signal reached cic intact. The
+  // media-class assertion is inside `uploadImageAndGetLink` (#1441).
+  const { slug, url, link } = await uploadImageAndGetLink(page, "issue418.png");
+
+  // #418 server half: the minted URL carries the faithful type extension.
+  expect(url).toMatch(new RegExp(`/uploads/${slug}\\.png$`));
   await expect(link).toHaveAttribute("href", url);
 
   // Click → in-app image viewer opens, no navigation.
   const cicUrl = page.url();
-  await link.click();
-  const viewer = page.getByRole("dialog", { name: "Media viewer" });
-  await expect(viewer).toBeVisible({ timeout: 5_000 });
+  const viewer = await openMediaViewer(page, link);
   expect(page.url()).toBe(cicUrl);
 
   // The <img> fetched the bytes from the EXTENSIONED URL through nginx,
@@ -79,8 +71,7 @@ test("image: server mints /uploads/<slug>.png and the extensioned URL opens the 
   await expect(img).toHaveJSProperty("complete", true, { timeout: 10_000 });
   expect(await img.evaluate((el) => (el as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
 
-  await viewer.getByRole("button", { name: "Close media viewer" }).click();
-  await expect(viewer).toBeHidden({ timeout: 5_000 });
+  await closeMediaViewer(viewer);
   expect(page.url()).toBe(cicUrl);
 });
 

@@ -38,35 +38,27 @@
 // src/__tests__/mediaViewerGesture.test.ts. These are the end-to-end doors.
 
 import type { Locator, Page } from "@playwright/test";
-import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import { openMediaViewerInPlace, uploadImageAndGetLink } from "../fixtures/mediaViewer";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
-import { mediaScrollbackRow, uploadViaPicker } from "../fixtures/uploadJourney";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
 // Upload a tiny image and open it in the media viewer, mirroring #213's
 // harness: the anchor's OWN click opens the overlay (no Playwright
-// scroll-into-view). Every spec that opens this viewer carries its own copy of
-// these six lines — a pre-existing duplication across nine files, not one this
-// change introduces, and not one it is in scope to sweep.
+// scroll-into-view).
+//
+// The duplication this used to carry — "these six lines across nine files",
+// out of scope when #1438 landed — is now fixtures/mediaViewer.ts (#1441). What
+// is left here is the login + channel selection this spec's three tests share.
 async function openImageViewer(page: Page): Promise<{ viewer: Locator }> {
   if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
   await loginAs(page, specUser());
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 
-  const { slug } = await uploadViaPicker(
-    page,
-    { name: "x1438.png", mimeType: "image/png", buffer: Buffer.from(TINY_PNG_HEX, "hex") },
-    { postTimeout: 10_000 },
-  );
-  const { link } = await mediaScrollbackRow(page, "📸", slug);
-  await link.evaluate((el) => (el as HTMLElement).click());
-
-  const viewer = page.getByRole("dialog", { name: "Media viewer" });
-  await expect(viewer).toBeVisible({ timeout: 5_000 });
-  return { viewer };
+  const { link } = await uploadImageAndGetLink(page, "x1438.png");
+  return { viewer: await openMediaViewerInPlace(page, link) };
 }
 
 // One vertical drag on the modal, plus the browser's own reading of where the
