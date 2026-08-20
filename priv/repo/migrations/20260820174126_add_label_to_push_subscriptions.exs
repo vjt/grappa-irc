@@ -18,11 +18,22 @@ defmodule Grappa.Repo.Migrations.AddLabelToPushSubscriptions do
   subscriptions currently share a parsed name, so a stored copy goes stale
   the moment one of them is deleted — a lone `#2` with no `#1`.
 
-  ## Hot deploy
+  ## Hot deploy — HOT, and measured rather than assumed
 
-  COLD. `Grappa.Deploy.Preflight` classifies every `priv/repo/migrations/*`
-  path as `:migration`, substrate-independent, no exceptions for additive
-  nullable columns.
+  An earlier draft of this file asserted COLD "because `Preflight`
+  classifies every `priv/repo/migrations/*` path as `:migration`". That
+  stopped being true with GH #41: `GrappaWeb.AdminController.reload/2` now
+  runs `Ecto.Migrator` in-process BEFORE the module reload, so only a
+  CONTRACT migration still forces a restart, and `classify_migration/1`
+  decides which is which from the `change/0` AST. `add :label, :string` on
+  an existing table is an expand — nullable, literal type, no
+  `@disable_ddl_transaction` — so it reads `:hot`, and the whole changed
+  path set of #964 classifies `{:hot, []}` on `:jail`, `:docker` and
+  `:linux` alike.
+
+  This says nothing about the RELEASE bump that ships it: a `VERSION`
+  change is its own cold trigger (`:version`, #1287) on the two substrates
+  that boot a `mix release`, and it is not part of this diff.
   """
   use Ecto.Migration
 
