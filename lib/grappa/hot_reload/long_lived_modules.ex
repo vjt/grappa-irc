@@ -62,6 +62,28 @@ defmodule Grappa.HotReload.LongLivedModules do
   they are not directly supervised but their shape is part of the
   parent's hot-reload surface.
 
+  **That half is derived and gated too, since GH #1473.** The
+  membership test walks the `t` typespec of every `@modules` entry to
+  a fixpoint, keeps the reachable `:grappa` modules that define a
+  struct, and requires each one's SOURCE FILE to be in the checked
+  set. It was hand-maintained and nothing held it: three structs
+  carrying live `Session.Server` / `IRC.Client` state were absent
+  (`Deps` and `DirectoryIngest` from the #1390 decomposition, plus
+  `IRC.FakeLag`), and a `defstruct` field-add to any of them
+  classified HOT — measured through `Preflight.classify/5`, with
+  `WindowState` as the listed control returning COLD.
+
+  **The unit of coverage is the FILE, not the module**, because
+  `Preflight.extract_state_block/1` reads a source file rather than a
+  module. A struct nested inside another module's file
+  (`LinksAccum.Entry`, `ListModeAccum.Entry`, `WhowasAccum.Entry`,
+  `DirectoryIngest.Run`) is therefore covered by listing its PARENT —
+  measured: a field-add to the nested `Run` moves
+  `directory_ingest.ex`'s extracted block. Such a module must NOT get
+  its own entry: `Grappa.Session.DirectoryIngest.Run` implies
+  `lib/grappa/session/directory_ingest/run.ex`, which does not exist,
+  and an absent file reads equal at both revs — the silent HOT.
+
   A `GenServer` the extractor sees NOTHING in is out of scope, and the
   membership test also refuses a listing it cannot see a shape for — an
   entry that buys no check reads as coverage while providing none. When
@@ -128,8 +150,18 @@ defmodule Grappa.HotReload.LongLivedModules do
   # Helper struct modules whose defstruct is a *field* of one of the
   # `@modules` above. A `defstruct` change here is just as
   # hot-reload-unsafe as a change to the parent's own defstruct.
+  #
+  # Order mirrors `@modules`: the `Session.Server` helpers (alphabetical),
+  # then `IRC.Client`'s, because that is the order their parents appear in.
+  #
+  # #1473 added the last three. List only a module whose CONVENTIONAL PATH
+  # is the file carrying the struct — a struct nested inside another
+  # module's file is covered by listing its parent and must NOT get its own
+  # entry. See the "What goes here" note above.
   @state_helpers [
     Grappa.Session.AwayState,
+    Grappa.Session.Deps,
+    Grappa.Session.DirectoryIngest,
     Grappa.Session.GhostRecovery,
     Grappa.Session.LinksAccum,
     Grappa.Session.ListModeAccum,
@@ -137,7 +169,8 @@ defmodule Grappa.HotReload.LongLivedModules do
     Grappa.Session.RecoverIdentity,
     Grappa.Session.WhoisAccum,
     Grappa.Session.WhowasAccum,
-    Grappa.Session.WindowState
+    Grappa.Session.WindowState,
+    Grappa.IRC.FakeLag
   ]
 
   @typedoc """
@@ -172,6 +205,8 @@ defmodule Grappa.HotReload.LongLivedModules do
   """
   @type state_helper ::
           Grappa.Session.AwayState
+          | Grappa.Session.Deps
+          | Grappa.Session.DirectoryIngest
           | Grappa.Session.GhostRecovery
           | Grappa.Session.LinksAccum
           | Grappa.Session.ListModeAccum
@@ -180,6 +215,7 @@ defmodule Grappa.HotReload.LongLivedModules do
           | Grappa.Session.WhoisAccum
           | Grappa.Session.WhowasAccum
           | Grappa.Session.WindowState
+          | Grappa.IRC.FakeLag
 
   @doc """
   Returns the list of long-lived `GenServer` modules whose state
