@@ -54171,3 +54171,117 @@ three unknowns exactly when the comparison between them is the triage.
 - Whether any cross-file cascade actually changes verdict under the new
   grouping is **unknown until the first reds arrive**; the mechanism is
   argued above, the incidence is not.
+<!-- entry #1579 -->
+
+---
+
+## 2026-08-20 — #1579: the 5 s user-topic barrier was telling the truth
+
+`waitForUserTopicReady` is the last statement of the canonical `loginAs` that
+333 spec files go through, and a full run had gone red in it three times in
+three different specs. #1579 put three readings on the table and said, in as
+many words, that none of them had been discriminated: (1) the 5 s budget is
+simply too tight under a loaded 29-minute run, (2) the barrier is right and the
+subscribe genuinely never happens, so the reds are product signal, (3)
+run-scoped resource pressure that slows the WS join specifically.
+
+**Reading 2.** The barrier is honest, and the defect is not in the barrier.
+
+### What was measured
+
+One full `scripts/integration.sh` (759 tests, 32.8 min, darwin / Docker
+Desktop, `MIX_ENV=dev`), instrumented so every `waitForUserTopicReady` call
+recorded its satisfaction latency, and so a call that blew the budget kept
+WATCHING for a further 25 s without changing the budget it enforced — the
+enforced 5 s is what fails the test, the extra window only decides whether the
+failure can say "the stamp arrived at 11.2 s" or "it never arrived". 600 calls:
+597 satisfied, 3 missed.
+
+The satisfied population settles reading 1 on its own: median 18 ms, p95
+243 ms, p99 395 ms, max 848 ms. The budget is not tight, it is roughly six
+times the worst healthy case, and the profile is flat across the run (per-tenth
+medians 15–36 ms), which also refuses the monotonic-degradation shape of
+reading 3.
+
+The three misses share one signature, and it is not the one the barrier's own
+moduledoc describes. At the deadline the page reported
+`__cic_socketHealth` = `state: "connecting"`, `connectAttempts: 1`,
+`errorCount: 0` — the WebSocket transport had never opened, so no JOIN had
+been pushed at all, and phoenix.js's own 10 s join timeout had fired for all
+three topics. The stamp then arrived at 11 180 ms in one case and never inside
+30 s in the other two.
+
+### The same event from the server side
+
+The server named itself. On the 11 s case, the transport pid logs
+`ws connect authenticated` at 16:31:44.496, then a single
+`QUERY OK db=11136.6ms` with no source (the `BEGIN IMMEDIATE`), then three
+sub-millisecond `user_settings` statements, a commit, and
+`CONNECTED TO GrappaWeb.UserSocket in 11140ms`. The user-topic
+`JOINED grappa:user:...` that follows took **23 µs**. The client's 11 180 ms and
+the server's 11 140 ms are the same wait, measured from both ends, and none of
+it is the JOIN.
+
+The 31 s case spells out the mechanism in full:
+
+```
+16:28:45.423 ws connect authenticated
+16:29:16.996 QUERY ERROR db=31571.8ms
+16:29:16.999 db write unavailable: SQLite write lock held by another writer
+             for 31572ms across 1 attempts (1500ms retry budget)
+16:29:16.999 record_client_source: db unavailable persisting client prefix
+             for {:user, "270bdc2c-…"} — dropped (best-effort)
+16:29:16.999 CONNECTED TO GrappaWeb.UserSocket in 31575ms
+```
+
+`UserSocket.connect/3` calls `maybe_record_client_source/2` → `Vhosts`
+→ `UserSettings.put_last_client_prefix64/2` → `Repo.immediate_transaction/1`
+**before it returns**, and Phoenix holds the upgrade until it does. The write
+is explicitly best-effort — #523 made it drop on saturation precisely so it
+could never fail a connect — but dropping it costs the full `busy_timeout`
+first, so a sample nobody is allowed to depend on can delay every new
+WebSocket by up to 30 s. Across the run: 682 connects, 680 of them at 56 ms or
+below, two at 11 140 ms and 31 575 ms, and those two are the stalls.
+
+`Grappa.Repo.LockWatch` (#1420) caught three episodes — 11 144 ms, 32 950 ms,
+31 937 ms, each with a waiter queued — and named a `UserSettings.write_data!/2`
+transaction as the holder in two of the three. Twelve queries in the whole run
+exceeded 10 s and all twelve fall inside these episodes, during which the BEAM
+emitted nothing at all despite averaging ~560 log lines a second.
+
+### Why raising the number would be the wrong repair
+
+It cannot reach the numbers: 11.2 s, 31.6 s, and one page that sat through two
+consecutive ~32 s stalls for ~65 s. And it would not remove the reds, only
+relocate them — in the same run the 32.9 s stall took out `loginAs`'s OTHER
+gate, the 10 s `.sidebar-network-header` shell-ready wait in
+`issue591-ctcp-ping`, which is the same stall arriving at a different
+assertion. The barrier is not the thing that is wrong; it is the thing that
+noticed.
+
+So the barrier keeps its 5 s and gains a voice: on timeout it now reports the
+stamped names, the socket-health state, the joined topic keys,
+onLine/visibility, and the tail of the page console — captured through
+Playwright's listener, never by patching the page's `console`. That is the
+measurement #1579 asked for, made permanent. It recovers nothing.
+
+### What this does NOT establish
+
+Why a writer holds the SQLite write lock for 31–33 s. The holder's OWN
+statement is what takes that long (`QUERY OK source="user_settings"
+db=32952.5ms`), so it is not a process sitting idle inside a transaction, and
+one of the three LockWatch stack samples shows the holder blocked inside
+`logger_h_common:log/2` — the Logger's sync-mode back-pressure — rather than
+inside SQLite. Log back-pressure and genuine storage contention are both live,
+and this run cannot separate them: it ran on darwin under Docker Desktop with
+`MIX_ENV=dev` debug query logging (1 114 576 lines), and the same suite on the
+Linux CI runner has not been measured. The measurement that would separate them
+is the same run with the log volume cut, on both substrates.
+
+Also not established: the fifth red of the run
+(`slash-commands-bundle` `/q`, 6.0 s, a window that did not close) is not in
+this class and is not attributed here.
+
+The stall itself is filed separately — the WebSocket upgrade should not be on
+the critical path of a droppable telemetry write, and that is a production
+property, not an e2e one.
