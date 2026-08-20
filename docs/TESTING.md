@@ -34,7 +34,7 @@ scripts/test.sh --cover                  # coverage
 
 # cic (Solid / TS)
 scripts/bun.sh run test                  # vitest
-scripts/bun.sh run check                 # biome + tsc — src AND e2e (#484); all 3 stages, union of failures (#1469)
+scripts/bun.sh run check                 # lock drift + biome + tsc — src AND e2e (#484); all 4 stages, union of failures (#1469)
 
 # Full CI gate locally
 scripts/check.sh                         # mix ci.check + wireTypes drift gate + bats
@@ -125,8 +125,8 @@ caught.
 told you the FIRST stage failed and nothing about the rest — and formatting,
 the cheapest and most frequent failure, sat first. Measured three times in one
 day, a cosmetic complaint hid two, then three, genuine type errors for as long
-as it lasted. `cicchetto/scripts/check.ts` now runs all three and exits
-non-zero if ANY did, closing with `check summary — 3 stages ran, N failed`.
+as it lasted. `cicchetto/scripts/check.ts` now runs every stage and exits
+non-zero if ANY did, closing with `check summary — N stages ran, M failed`.
 Read that line: it is what tells you the red is complete. It also passes
 `--max-diagnostics=none`, because biome's default ceiling of 20 truncated the
 one real error behind this tree's 59 standing warnings — a red naming no file
@@ -187,6 +187,37 @@ signature above; the guard now tests for CONTENT, and absence and
 emptiness are one state. If you see the self-heal install on a tree that
 looks populated, check whether it holds anything.
 
+**A populated `node_modules` can still be the WRONG one, and `check`'s
+first stage is what says so (#1571).** The self-heal above asks whether the
+tree has content, never whether that content is what `bun.lock` pins — and
+#1571 measured a main checkout whose biome was three minor versions off the
+lock, silently cloned into every worktree by the documented `cp -Rc`
+procedure. A verdict from an unpinned toolchain is unattributable in both
+directions: a rule that only fires on the newer version passes here and
+fails in CI, and one that only fires on the older fails here against code
+CI would accept. The `lock drift (node_modules vs bun.lock)` stage compares
+the two and names every package that disagrees; the cure it prints is
+`scripts/bun.sh install --frozen-lockfile`. It exits **3** without printing
+any number when one of its own known-answer controls fails, so a zero from
+it is never the sound of an instrument that measured nothing.
+
+**Documented limitation: the stage does NOT judge binaries for another
+platform, and those CAN be stale.** biome and rolldown ship a JS wrapper
+plus one binary package per platform, and `bun install` only resolves the
+one matching the platform it runs on. Every gate here runs bun inside a
+LINUX container, so on a macOS host the `*-darwin-*` packages are whatever
+the last host-side install left — measured 2026-08-20:
+`@biomejs/cli-darwin-arm64` at 2.4.13 against a lock pinning 2.5.8, three
+months older than its linux siblings, while the container executed the
+pinned 2.5.8 from the same tree. No gate reaches them (`bun`, `bunx` and
+`biome` are not on the host PATH, and nothing outside the container invokes
+them), and no command the project documents can refresh them, so making the
+gate red on them would be a red nobody could clear. What CAN reach them is
+a direct `cicchetto/node_modules/.bin/<tool>` call or an editor
+integration: if you use one, read its version yourself
+(`./cicchetto/node_modules/.bin/biome --version`) and do not treat its
+verdict as the gate's.
+
 **`scripts/bun.sh run check` counts a biome FORMAT violation as an
 ERROR, and hides which file it came from.** `check` starts with `biome
 check`: a line biome would reflow (a long `foo({ a, b, c })`
@@ -216,7 +247,7 @@ The authoritative source is the comment block at the top of each
 
 * **`scripts/test.sh`** → `scripts/mix.sh --env=test test --warnings-as-errors "$@"`. Forces `MIX_ENV=test` (auto-detect would use the live container's env, usually dev/prod, breaking sandbox).
 * **`scripts/check.sh`** → `scripts/mix.sh --env=dev ci.check` + `mix grappa.gen_wire_types --check` (wireTypes drift gate) + `scripts/bats.sh`. The `ci.check` alias (in `mix.exs`) chains: compile (warnings as errors), format check, credo, deps.audit, hex.audit, sobelow, `cmd env MIX_ENV=test mix doctor`, `cmd env MIX_ENV=test mix test --warnings-as-errors`, dialyzer, docs. Doctor shells out to `:test` since #621: in `:dev` it counts a module's functions from the source AST but reads doc/spec presence from the beam, so every `Mix.env() == :test`-gated helper is scored as undocumented, and `elixirc_paths` omits `test/support` there. `:test` is a strict superset on both axes, and matches the workflow's single `mix doctor` step. The `ci` workflow runs the same gates — including the wireTypes drift check since #767 — but it re-lists them by hand in YAML rather than invoking this script, so the two lists mirror each other only for as long as someone keeps them in step. A gate added here is not in CI until it is added there too; #767 was one instance of that (the drift gate was local-only, and a stale `wireTypes.ts` survived a merge with CI green).
-* **`scripts/bun.sh`** → oneshot `oven/bun:1` against `cicchetto/`. `run test` = vitest. `run check` = biome + tsc over `src` AND `e2e`. `install`, `add`, etc. forward to bun.
+* **`scripts/bun.sh`** → oneshot `oven/bun:1` against `cicchetto/`. `run test` = vitest. `run check` = the lock-drift stage (#1571) + biome + tsc over `src` AND `e2e`. `install`, `add`, etc. forward to bun.
 * **`scripts/bats.sh`** → host-side bats v1.9.0 (submodule at `vendor/bats-core`) against `test/bin/`, `test/infra/` and `test/scripts/`. NOT containerised — bats tests host-side bash (`bin/grappa`, the deploy scripts, the cloud installer). There is no compose involvement in the runner: the container is reached only transitively, when a test exercises a verb that shells out to docker, and those tests stub `docker` on `PATH` rather than touching a real one. So this gate needs no stack up.
 * **`scripts/release-image.sh`** → the RELEASE image (`Dockerfile.release`), not the compose dev stack. `build` buildx-loads it locally; `fresh-boot` wipes the scratch volume and bare-runs it with nothing but `PHX_HOST` (the documented one-liner — the point is that everything else must come from the image and the volume); `warm-boot` does the same on the EXISTING volume; `oneshot <args…>` runs a throwaway container against that volume; `logs` / `down [--volume]` clean up. This is the reproduction for #862 and #867, both of which were found by hand-typing docker commands because no wrapper reached this artifact.
 * **`scripts/smoke-release-image.sh`** → brings a box up from `$GRAPPA_IMAGE` through the real `infra/docker/get.sh` → `deploy.sh` release path (`GRAPPA_RAW_BASE=file://<checkout>`, so get.sh's mirror list is under test too), then probes it over HTTP and tears everything down. Dedicated container/volume names (`grappa-smoke*`), so it cannot eat an operator box. Requires the image to be present locally — **an unavailable image fails the run, it never skips it**. See "The release-image smoke" below.

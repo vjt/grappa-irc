@@ -5,8 +5,9 @@
 #   scripts/bun.sh install
 #   scripts/bun.sh add phoenix
 #   scripts/bun.sh run build
-#   scripts/bun.sh run check                    # biome + tsc over src AND e2e (#484);
-#                                               # all 3 stages run, union of failures (#1469)
+#   scripts/bun.sh run check                    # lock drift (#1571) + biome + tsc over
+#                                               # src AND e2e (#484); every stage runs,
+#                                               # union of failures (#1469)
 #   scripts/bun.sh run test                     # vitest (cic unit tests in jsdom)
 #
 # Canonical "which test runner do I use?" docs: docs/TESTING.md.

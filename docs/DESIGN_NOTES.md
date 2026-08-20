@@ -53049,3 +53049,96 @@ gates.
 The two historical mentions of these names elsewhere in this file
 (`AdminLiveState`, `AdminVisitorLiveState`) are left untouched: the log
 records what was true when it was written.
+<!-- entry #1571 -->
+
+---
+
+## 2026-08-20 — #1571: the gate now says whether the toolchain is the one the lockfile pins
+
+A `bun run check` is only attributable if the tools that produced the verdict
+are the ones `bun.lock` names. #1571 found a main checkout whose biome was
+three minor versions behind the lock; the re-measurement asked whether that had
+receded, and the answer split in a way worth recording.
+
+**Declared and executed are different packages, and only one of them was ever
+read.** `@biomejs/biome` is a JS wrapper; the binary it runs lives in a
+per-platform optional dependency. Reading the wrapper's `package.json` reports
+the DECLARED version — that reading said 2.5.8, in lock, and was correct about
+what it measured. `biome --version` reports the EXECUTED one. Same tree, two
+answers: **2.5.8 through `scripts/bun.sh` (the container, where every gate
+runs) and 2.4.13 from `cicchetto/node_modules/.bin/biome` on the host.** The
+anchor was part of the instrument, and the wrong anchor closed the issue
+prematurely.
+
+**The mechanism, with evidence.** `bun install` only resolves the optional
+dependency matching the platform it runs on, and every gate here runs bun
+inside a linux container — so the `*-darwin-*` packages in a macOS tree cannot
+be refreshed by any path the project uses. Measured: both drifted packages were
+darwin binaries (`@biomejs/cli-darwin-arm64` 2.4.13 vs 2.5.8,
+`@rolldown/binding-darwin-arm64` 1.0.0-rc.17 vs 1.1.5/1.2.1), both directories
+dated three months before every linux sibling. 2 of 459 compared.
+
+**Closed by the last install, not by construction.** `scripts/bun.sh`'s only
+freshness test is `needs_install`, which asks whether `node_modules` is EMPTY;
+nothing anywhere compared installed versions to the lock; and the documented
+worktree procedure (`cp -Rc` the tree from the main checkout) copies whatever
+is there — reproduced the same day on an hour-old worktree, package for
+package. A future lock bump landing on an already-populated tree re-derives the
+original defect with nothing to say so.
+
+### The cure, and the shape of it
+
+`bun run check` gained a FIRST stage, `cicchetto/scripts/lock-drift.ts`, which
+compares `node_modules` against `bun.lock` and names every package that
+disagrees. It is a stage rather than a preflight in `scripts/bun.sh` because
+`check.ts` already owns the union-of-failures aggregation (#1469) and adding
+one there costs no extra container start; the cost of that choice is stated
+below.
+
+Three properties are deliberate:
+
+- **Scoped to the executing platform.** The question asked is "does what will
+  RUN HERE match the lock", not "is every file in the tree pinned". Judging
+  foreign-platform binaries would make the gate red on something no gate
+  executes and no documented command can fix.
+- **Known-answer controls inside the tool.** `runSelfTest()` runs before any
+  real number is produced and the gate exits **3 printing nothing** when a
+  control fails — a comparator nobody has calibrated produces a zero
+  indistinguishable from "nothing drifted". Measured by mutation: removing the
+  one line that records a drift makes three controls fire and zero numbers
+  print, and reddens the vitest suite at the same time.
+- **`compared === 0` is a failure**, not a clean tree. Measuring nothing is the
+  shape every silent zero in this repo's history has taken, so it gets its own
+  verdict rather than being folded into "no drift found".
+
+Two-sided kill test on the real tree, not on a fixture: putting
+`@biomejs/cli-linux-arm64` at 2.5.6 — the exact version #1571 found in the
+wild — turned `check` red with **one** stage failing and the package named;
+restoring it byte-identical turned all four stages green.
+
+### The darwin binaries are a documented limitation, not a gate that lies
+
+Named explicitly because it is the half that was NOT cured. The stale
+foreign-platform binaries are real and are not judged. What bounds them is
+measured, not assumed: `bun`, `bunx` and `biome` are absent from the host
+PATH, `scripts/check.sh` never invokes bun, no script or workflow runs biome
+outside the container, and the repo carries no editor config or git hook. So
+no documented gate can produce a verdict from them; a direct
+`node_modules/.bin/<tool>` call or an editor integration can, and
+`docs/TESTING.md` now says so and how to check by hand.
+
+### Not covered, deliberately
+
+- **Only `check` carries the stage.** `run test` and `run build` consume the
+  same tree and are not guarded. Guarding every verb means a drift check in
+  `scripts/bun.sh`, which costs one extra container start per invocation; the
+  gate whose attributability #1571 is about is `check`, and a drift surfaced
+  there is a drift the whole tree has.
+- **The missing direction is not checked.** A lock entry with nothing
+  installed is not reported, because the lock legitimately carries packages
+  this platform never installs and the false positives would teach people to
+  ignore the gate. The one completeness check made instead: every direct
+  dependency of `package.json` must have been reached, or the gate fails
+  naming it.
+- **Every number above is one host.** Nothing here says what another
+  developer's tree contains.
