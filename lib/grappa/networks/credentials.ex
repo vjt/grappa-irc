@@ -1172,7 +1172,7 @@ defmodule Grappa.Networks.Credentials do
   `:password` re-encrypts under the same Cloak vault (in-memory the
   loaded value is plaintext), the subject XOR + partial-unique guards
   fire, and `auth_method` validation runs. `:user_id` is never set —
-  the changeset's `validate_subject_xor/1` accepts the visitor-only
+  the changeset's `Grappa.Subject.validate_xor/1` accepts the visitor-only
   shape. Idempotent: identical attrs on an existing row are a no-op
   Repo.update; re-running never creates a duplicate (the
   `(visitor_id, network_id)` partial unique index + the get-or-insert

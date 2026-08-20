@@ -32,6 +32,7 @@ defmodule Grappa.Subject do
     top_level?: true,
     deps: [Grappa.Accounts.User, Grappa.Visitors.Visitor]
 
+  import Ecto.Changeset, only: [add_error: 3, get_field: 2]
   import Ecto.Query
 
   alias Grappa.Accounts.User
@@ -71,6 +72,42 @@ defmodule Grappa.Subject do
 
   def put_subject_id(attrs, {:visitor, vid}) when is_map(attrs) and is_binary(vid),
     do: Map.put(attrs, :visitor_id, vid)
+
+  @doc """
+  Enforces the subject XOR on a changeset: exactly one of `:user_id` /
+  `:visitor_id` must be set.
+
+  The write-side twin of `put_subject_id/2` — that one puts the column,
+  this one proves the pair. Errors attach to the synthetic `:subject` key
+  because neither column is individually "wrong"; the fault is in the
+  pair, and one key keeps client-side rendering uniform across both
+  violations and across every XOR-FK schema.
+
+  The DB-level `<table>_subject_xor` CHECK constraint is the substrate
+  twin: this turns a violation into a changeset error, the constraint
+  stops a write that never passed through a changeset at all.
+
+  **The single spelling of this predicate (#1580).** It used to be
+  hand-copied as a private `validate_subject_xor/1` into all twelve
+  XOR-FK schemas, each pointing at a sibling as the "mirror of" — a
+  pointer graph with a cycle in it and therefore no original. By the
+  twelfth copy one had drifted its missing-subject message, three lines
+  under a comment still claiming the mirror held, and nine of the twelve
+  had no test pinning the text. A thirteenth XOR-FK schema calls this;
+  it does not paste it.
+  """
+  @spec validate_xor(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  def validate_xor(%Ecto.Changeset{} = changeset) do
+    user_id = get_field(changeset, :user_id)
+    visitor_id = get_field(changeset, :visitor_id)
+
+    case {user_id, visitor_id} do
+      {nil, nil} -> add_error(changeset, :subject, "must set user_id or visitor_id")
+      {_, nil} -> changeset
+      {nil, _} -> changeset
+      {_, _} -> add_error(changeset, :subject, "user_id and visitor_id are mutually exclusive")
+    end
+  end
 
   @doc """
   Adds a `WHERE user_id = ?` clause (or its visitor mirror) to

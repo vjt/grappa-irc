@@ -8,7 +8,7 @@ defmodule Grappa.Themes.Theme do
 
   A theme belongs to EITHER a user OR a visitor — never both, never
   neither. Same shape as `user_settings` / `network_credentials`:
-  `user_id` XOR `visitor_id`, enforced at the changeset (`validate_subject_xor/1`)
+  `user_id` XOR `visitor_id`, enforced at the changeset (`Grappa.Subject.validate_xor/1`)
   AND at the DB (the `themes_subject_xor` CHECK). Built-in themes are
   user-owned by the reserved "system" user.
 
@@ -21,6 +21,7 @@ defmodule Grappa.Themes.Theme do
   import Ecto.Changeset
 
   alias Grappa.Accounts.User
+  alias Grappa.Subject
   alias Grappa.Themes.TokenModel
   alias Grappa.Visitors.Visitor
 
@@ -69,7 +70,7 @@ defmodule Grappa.Themes.Theme do
     theme
     |> cast(attrs, [:name, :user_id, :visitor_id, :payload, :published])
     |> validate_required([:name, :payload])
-    |> validate_subject_xor()
+    |> Subject.validate_xor()
     |> validate_length(:name, min: 1, max: 60)
     |> validate_payload()
     |> assoc_constraint(:user)
@@ -80,22 +81,6 @@ defmodule Grappa.Themes.Theme do
       name: :themes_subject_xor,
       message: "user_id and visitor_id are mutually exclusive"
     )
-  end
-
-  # Mirror of `Grappa.UserSettings.Settings.validate_subject_xor/1`: exactly
-  # one subject FK must be set (the DB CHECK is the substrate; this is the
-  # call-site guard).
-  @spec validate_subject_xor(Ecto.Changeset.t()) :: Ecto.Changeset.t()
-  defp validate_subject_xor(changeset) do
-    user_id = get_field(changeset, :user_id)
-    visitor_id = get_field(changeset, :visitor_id)
-
-    case {user_id, visitor_id} do
-      {nil, nil} -> add_error(changeset, :subject, "must set user_id or visitor_id")
-      {_, nil} -> changeset
-      {nil, _} -> changeset
-      {_, _} -> add_error(changeset, :subject, "user_id and visitor_id are mutually exclusive")
-    end
   end
 
   # Sanitize-in-place: the sanitized closed-token map replaces whatever the

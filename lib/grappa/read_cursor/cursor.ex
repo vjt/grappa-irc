@@ -14,7 +14,7 @@ defmodule Grappa.ReadCursor.Cursor do
   `:user_id` / `:visitor_id` is set. The XOR is enforced at three
   layers:
 
-    * Schema-level `validate_subject_xor/1` (errors attach to the
+    * Schema-level `Grappa.Subject.validate_xor/1` (errors attach to the
       synthetic `:subject` key for uniform client-side rendering).
     * DB CHECK constraint `read_cursors_subject_xor`.
     * Two partial unique indexes (one per subject branch) that
@@ -37,6 +37,7 @@ defmodule Grappa.ReadCursor.Cursor do
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
   alias Grappa.Scrollback.Message
+  alias Grappa.Subject
   alias Grappa.Visitors.Visitor
 
   @type t :: %__MODULE__{
@@ -69,7 +70,7 @@ defmodule Grappa.ReadCursor.Cursor do
   Builds an insert / update changeset.
 
   All five fields are required at cast time; subject XOR validation
-  (`validate_subject_xor/1`) attaches to the synthetic `:subject` key.
+  (`Grappa.Subject.validate_xor/1`) attaches to the synthetic `:subject` key.
   `assoc_constraint/2` on each FK converts a missing parent into a
   changeset error (mirrors `Scrollback.Message.changeset/2` +
   `QueryWindows.Window.changeset/2`).
@@ -81,7 +82,7 @@ defmodule Grappa.ReadCursor.Cursor do
     |> canonicalize_channel()
     |> validate_required([:network_id, :channel, :last_read_message_id])
     |> validate_length(:channel, min: 1)
-    |> validate_subject_xor()
+    |> Subject.validate_xor()
     |> assoc_constraint(:user)
     |> assoc_constraint(:visitor)
     |> assoc_constraint(:network)
@@ -109,20 +110,6 @@ defmodule Grappa.ReadCursor.Cursor do
 
       _ ->
         changeset
-    end
-  end
-
-  # Mirror of Scrollback.Message.validate_subject_xor/1.
-  @spec validate_subject_xor(Ecto.Changeset.t()) :: Ecto.Changeset.t()
-  defp validate_subject_xor(changeset) do
-    user_id = get_field(changeset, :user_id)
-    visitor_id = get_field(changeset, :visitor_id)
-
-    case {user_id, visitor_id} do
-      {nil, nil} -> add_error(changeset, :subject, "must set user_id or visitor_id")
-      {_, nil} -> changeset
-      {nil, _} -> changeset
-      {_, _} -> add_error(changeset, :subject, "user_id and visitor_id are mutually exclusive")
     end
   end
 end

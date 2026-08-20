@@ -40,7 +40,7 @@ defmodule Grappa.Push.Subscription do
   Mirrors `Grappa.Scrollback.Message` / `Grappa.ReadCursor.Cursor` /
   `Grappa.QueryWindows.Window`: exactly one of `:user_id` /
   `:visitor_id` is set. Enforced at three layers: schema-level
-  `validate_subject_xor/1` (errors attach to the synthetic
+  `Grappa.Subject.validate_xor/1` (errors attach to the synthetic
   `:subject` key), DB CHECK constraint
   `push_subscriptions_subject_xor`, and two partial unique indexes
   (one per subject branch) on `(<subject_id>, endpoint)`. The
@@ -72,6 +72,7 @@ defmodule Grappa.Push.Subscription do
   import Ecto.Changeset
 
   alias Grappa.Accounts.User
+  alias Grappa.Subject
   alias Grappa.Visitors.Visitor
 
   @providers [:webpush, :unifiedpush]
@@ -112,7 +113,7 @@ defmodule Grappa.Push.Subscription do
 
   @required ~w(endpoint p256dh_key auth_key)a
   # Subject FK columns (`:user_id` / `:visitor_id`) are NOT in
-  # `@required` — XOR enforcement runs through `validate_subject_xor/1`,
+  # `@required` — XOR enforcement runs through `Grappa.Subject.validate_xor/1`,
   # which errors on the synthetic `:subject` key instead of either
   # column individually.
   # `last_used_at` is intentionally NOT in the cast allowlist — it's
@@ -182,7 +183,7 @@ defmodule Grappa.Push.Subscription do
     |> validate_length(:p256dh_key, max: 256)
     |> validate_length(:auth_key, max: 64)
     |> validate_length(:user_agent, max: 512)
-    |> validate_subject_xor()
+    |> Subject.validate_xor()
     |> assoc_constraint(:user)
     |> assoc_constraint(:visitor)
     |> unique_constraint([:user_id, :endpoint], error_key: :endpoint)
@@ -191,19 +192,5 @@ defmodule Grappa.Push.Subscription do
       name: :push_subscriptions_subject_xor,
       message: "user_id and visitor_id are mutually exclusive"
     )
-  end
-
-  # Mirror of `Grappa.ReadCursor.Cursor.validate_subject_xor/1`.
-  @spec validate_subject_xor(Ecto.Changeset.t()) :: Ecto.Changeset.t()
-  defp validate_subject_xor(changeset) do
-    user_id = get_field(changeset, :user_id)
-    visitor_id = get_field(changeset, :visitor_id)
-
-    case {user_id, visitor_id} do
-      {nil, nil} -> add_error(changeset, :subject, "must set user_id or visitor_id")
-      {_, nil} -> changeset
-      {nil, _} -> changeset
-      {_, _} -> add_error(changeset, :subject, "user_id and visitor_id are mutually exclusive")
-    end
   end
 end

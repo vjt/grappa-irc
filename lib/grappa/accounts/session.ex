@@ -61,13 +61,19 @@ defmodule Grappa.Accounts.Session do
   listed back — `handle/1` is the public, one-way name a device list
   and an operator log line use instead.
   """
-  use Boundary, top_level?: true, deps: []
+  # `Grappa.Subject` is the one declared dep, and unlike the `belongs_to`
+  # metadata this module's other names arrive as, it is a real call the
+  # checker resolves: `changeset/2` pipes through `Subject.validate_xor/1`
+  # (#1580). No cycle — `Grappa.Subject` depends on `Accounts.User` and
+  # `Visitors.Visitor`, neither of which reaches back here.
+  use Boundary, top_level?: true, deps: [Grappa.Subject]
 
   use Ecto.Schema
 
   import Ecto.Changeset
 
   alias Grappa.Accounts.User
+  alias Grappa.Subject
   alias Grappa.Visitors.Visitor
 
   @typedoc """
@@ -132,7 +138,7 @@ defmodule Grappa.Accounts.Session do
   Validates that `created_at` and `last_seen_at` are present (the
   other fields — `ip`, `user_agent` — are optional; mix-task callers
   have neither). Exactly one of `user_id` / `visitor_id` must be set —
-  the XOR constraint is enforced by `validate_subject_xor/1` and at
+  the XOR constraint is enforced by `Grappa.Subject.validate_xor/1` and at
   the DB level (CHECK constraint `sessions_subject_xor`).
 
   `assoc_constraint(:user)` and `assoc_constraint(:visitor)` are
@@ -156,7 +162,7 @@ defmodule Grappa.Accounts.Session do
     session
     |> cast(attrs, @cast_fields)
     |> validate_required(@required_fields)
-    |> validate_subject_xor()
+    |> Subject.validate_xor()
     |> validate_label_matches_kind()
     |> assoc_constraint(:user)
     |> assoc_constraint(:visitor)
@@ -239,28 +245,6 @@ defmodule Grappa.Accounts.Session do
     case DateTime.compare(now, prev) do
       :lt -> add_error(cs, :last_seen_at, "must not move backward (system-clock skew?)")
       _ -> cs
-    end
-  end
-
-  # Mirror of Grappa.Scrollback.Message.validate_subject_xor/1.
-  # Run BEFORE per-field validators so the XOR error surfaces first.
-  #
-  # Errors attach to the synthetic `:subject` key (B5.4 M-pers-2): neither
-  # `user_id` nor `visitor_id` is unambiguously "wrong" in either failure
-  # mode (both-nil = absence-of-either; both-set = pair-conflict), so a
-  # single key keeps client-side error rendering uniform. Pre-B5.4 this
-  # always attached to `:user_id`, which masked which field was the
-  # unexpected addition.
-  @spec validate_subject_xor(Ecto.Changeset.t()) :: Ecto.Changeset.t()
-  defp validate_subject_xor(changeset) do
-    user_id = get_field(changeset, :user_id)
-    visitor_id = get_field(changeset, :visitor_id)
-
-    case {user_id, visitor_id} do
-      {nil, nil} -> add_error(changeset, :subject, "must set user_id or visitor_id")
-      {_, nil} -> changeset
-      {nil, _} -> changeset
-      {_, _} -> add_error(changeset, :subject, "user_id and visitor_id are mutually exclusive")
     end
   end
 end

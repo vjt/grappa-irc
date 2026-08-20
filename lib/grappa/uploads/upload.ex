@@ -46,6 +46,7 @@ defmodule Grappa.Uploads.Upload do
   import Ecto.Changeset
 
   alias Grappa.Accounts.User
+  alias Grappa.Subject
   alias Grappa.Uploads.ContentType
   alias Grappa.Visitors.Visitor
 
@@ -108,7 +109,7 @@ defmodule Grappa.Uploads.Upload do
     |> validate_required([:slug, :mime, :bytes])
     |> validate_number(:bytes, greater_than: 0)
     |> sanitize_original_filename()
-    |> validate_subject_xor()
+    |> Subject.validate_xor()
     |> assoc_constraint(:user)
     |> assoc_constraint(:visitor)
     |> unique_constraint(:slug)
@@ -127,21 +128,6 @@ defmodule Grappa.Uploads.Upload do
   @spec soft_delete_changeset(t(), DateTime.t()) :: Ecto.Changeset.t()
   def soft_delete_changeset(upload, %DateTime{} = now) do
     change(upload, deleted_at: now)
-  end
-
-  # Mirrors `Grappa.ReadCursor.Cursor.validate_subject_xor/1` —
-  # error attaches to the synthetic `:subject` key so the wire shape
-  # matches every other XOR-FK context.
-  defp validate_subject_xor(changeset) do
-    user_id = get_field(changeset, :user_id)
-    visitor_id = get_field(changeset, :visitor_id)
-
-    case {user_id, visitor_id} do
-      {nil, nil} -> add_error(changeset, :subject, "one of user_id or visitor_id is required")
-      {_, nil} -> changeset
-      {nil, _} -> changeset
-      {_, _} -> add_error(changeset, :subject, "user_id and visitor_id are mutually exclusive")
-    end
   end
 
   # Strip directory separators + leading dots from

@@ -15,7 +15,7 @@ defmodule Grappa.ChannelDirectory.Entry do
   Mirrors `Grappa.QueryWindows.Window`: exactly one of `:user_id` /
   `:visitor_id` is set. Enforced at three layers:
 
-    * Schema-level `validate_subject_xor/1` (errors attach to the
+    * Schema-level `Grappa.Subject.validate_xor/1` (errors attach to the
       synthetic `:subject` key for uniform client-side rendering).
     * DB CHECK constraint `channel_directory_subject_xor`.
     * `check_constraint/3` that converts DB violations into changeset
@@ -27,6 +27,7 @@ defmodule Grappa.ChannelDirectory.Entry do
 
   alias Grappa.Accounts.User
   alias Grappa.Networks.Network
+  alias Grappa.Subject
   alias Grappa.Visitors.Visitor
 
   @type t :: %__MODULE__{
@@ -61,7 +62,7 @@ defmodule Grappa.ChannelDirectory.Entry do
   @doc """
   Builds an insert/update changeset.
 
-  Subject XOR is required (`validate_subject_xor/1` attaches errors
+  Subject XOR is required (`Grappa.Subject.validate_xor/1` attaches errors
   to the synthetic `:subject` key). `network_id`, `name`, and
   `user_count` are required at cast time. The `assoc_constraint`s on
   `user`/`visitor`/`network` convert FK violations into changeset
@@ -75,7 +76,7 @@ defmodule Grappa.ChannelDirectory.Entry do
     |> cast(attrs, [:user_id, :visitor_id, :network_id, :name, :topic, :user_count, :captured_at])
     |> validate_required([:network_id, :name, :user_count])
     |> validate_length(:name, min: 1)
-    |> validate_subject_xor()
+    |> Subject.validate_xor()
     |> assoc_constraint(:user)
     |> assoc_constraint(:visitor)
     |> assoc_constraint(:network)
@@ -83,19 +84,5 @@ defmodule Grappa.ChannelDirectory.Entry do
       name: :channel_directory_subject_xor,
       message: "user_id and visitor_id are mutually exclusive"
     )
-  end
-
-  # Mirror of `Grappa.QueryWindows.Window.validate_subject_xor/1`.
-  @spec validate_subject_xor(Ecto.Changeset.t()) :: Ecto.Changeset.t()
-  defp validate_subject_xor(changeset) do
-    user_id = get_field(changeset, :user_id)
-    visitor_id = get_field(changeset, :visitor_id)
-
-    case {user_id, visitor_id} do
-      {nil, nil} -> add_error(changeset, :subject, "must set user_id or visitor_id")
-      {_, nil} -> changeset
-      {nil, _} -> changeset
-      {_, _} -> add_error(changeset, :subject, "user_id and visitor_id are mutually exclusive")
-    end
   end
 end

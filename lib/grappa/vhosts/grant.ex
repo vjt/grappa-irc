@@ -27,6 +27,7 @@ defmodule Grappa.Vhosts.Grant do
   import Ecto.Changeset
 
   alias Grappa.Accounts.User
+  alias Grappa.Subject
   alias Grappa.Vhosts.Vhost
   alias Grappa.Visitors.Visitor
 
@@ -63,7 +64,7 @@ defmodule Grappa.Vhosts.Grant do
     grant
     |> cast(attrs, [:vhost_id, :user_id, :visitor_id])
     |> validate_required([:vhost_id])
-    |> validate_subject_xor()
+    |> Subject.validate_xor()
     |> assoc_constraint(:vhost)
     |> assoc_constraint(:user)
     |> assoc_constraint(:visitor)
@@ -73,19 +74,5 @@ defmodule Grappa.Vhosts.Grant do
       name: :vhost_grants_subject_xor,
       message: "user_id and visitor_id are mutually exclusive"
     )
-  end
-
-  # Mirror of ReadCursor.Cursor.validate_subject_xor/1.
-  @spec validate_subject_xor(Ecto.Changeset.t()) :: Ecto.Changeset.t()
-  defp validate_subject_xor(changeset) do
-    user_id = get_field(changeset, :user_id)
-    visitor_id = get_field(changeset, :visitor_id)
-
-    case {user_id, visitor_id} do
-      {nil, nil} -> add_error(changeset, :subject, "must set user_id or visitor_id")
-      {_, nil} -> changeset
-      {nil, _} -> changeset
-      {_, _} -> add_error(changeset, :subject, "user_id and visitor_id are mutually exclusive")
-    end
   end
 end

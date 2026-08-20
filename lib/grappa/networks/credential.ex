@@ -28,7 +28,7 @@ defmodule Grappa.Networks.Credential do
   flag; Rule-6 is not triggered by XOR-FK). Enforced at three layers,
   mirroring `Grappa.ReadCursor.Cursor`:
 
-    * Schema-level `validate_subject_xor/1` (errors attach to the
+    * Schema-level `Grappa.Subject.validate_xor/1` (errors attach to the
       synthetic `:subject` key for uniform client-side rendering).
     * DB CHECK constraint `network_credentials_subject_xor`.
     * Two partial unique indexes — `(user_id, network_id)
@@ -52,19 +52,20 @@ defmodule Grappa.Networks.Credential do
   """
 
   # Its own boundary, like the other three Networks schemas (#1398). Of the
-  # five names this module aliases, only `Grappa.IRC` is declared: the
-  # changeset calls `Identity.sanitize_ident/1` and `Identifier`. `User`,
-  # `Visitor` and `EncryptedBinary` arrive only as `belongs_to` and `field`
-  # arguments, and `Network` only as a `belongs_to` and a typespec — none of
-  # them a reference the checker resolves, so declaring them would state a
+  # six names this module aliases, only `Grappa.IRC` and `Grappa.Subject` are
+  # declared: the changeset calls `Identity.sanitize_ident/1`, `Identifier`,
+  # and — since #1580 — `Subject.validate_xor/1`. `User`, `Visitor` and
+  # `EncryptedBinary` arrive only as `belongs_to` and `field` arguments, and
+  # `Network` only as a `belongs_to` and a typespec — none of them a
+  # reference the checker resolves, so declaring them would state a
   # dependency nothing can verify.
-  use Boundary, top_level?: true, deps: [Grappa.IRC]
+  use Boundary, top_level?: true, deps: [Grappa.IRC, Grappa.Subject]
 
   use Ecto.Schema
   import Ecto.Changeset
 
   alias Grappa.Accounts.User
-  alias Grappa.EncryptedBinary
+  alias Grappa.{EncryptedBinary, Subject}
   alias Grappa.IRC.{AuthFSM, Identifier, Identity}
   alias Grappa.Networks.Network
   alias Grappa.Visitors.Visitor
@@ -313,9 +314,10 @@ defmodule Grappa.Networks.Credential do
     |> validate_required([:network_id, :nick, :auth_method])
     # #211 — subject XOR: exactly one of user_id / visitor_id. Replaces
     # the pre-#211 `validate_required([:user_id])`, which is now
-    # XOR-gated (a visitor credential carries user_id IS NULL). Mirror
-    # of `Grappa.ReadCursor.Cursor.validate_subject_xor/1`.
-    |> validate_subject_xor()
+    # XOR-gated (a visitor credential carries user_id IS NULL). Since
+    # #1580 this is a call into the one shared predicate, not a
+    # hand-copy pointed at a sibling.
+    |> Subject.validate_xor()
     # A8: nick syntax + length is the same `Identifier.valid_nick?/1`
     # rule that `Grappa.Scrollback.Message.changeset/2` and the IRC
     # parser already use — single regex, single source. The local
@@ -400,7 +402,7 @@ defmodule Grappa.Networks.Credential do
     # #211 — DB-level XOR mirror. Maps the CHECK violation to a changeset
     # error on the synthetic `:subject` key (mirror of
     # `Grappa.ReadCursor.Cursor`) so a raw both-set / both-null insert
-    # slipping past `validate_subject_xor/1` still surfaces cleanly.
+    # slipping past `Grappa.Subject.validate_xor/1` still surfaces cleanly.
     |> check_constraint(:subject,
       name: :network_credentials_subject_xor,
       message: "user_id and visitor_id are mutually exclusive"
@@ -448,23 +450,6 @@ defmodule Grappa.Networks.Credential do
 
       _ ->
         put_change(changeset, :connection_state_changed_at, DateTime.truncate(DateTime.utc_now(), :second))
-    end
-  end
-
-  # #211 — subject XOR: exactly one of user_id / visitor_id must be set.
-  # Byte-mirror of `Grappa.ReadCursor.Cursor.validate_subject_xor/1`;
-  # errors attach to the synthetic `:subject` key so the client renders
-  # one uniform subject error regardless of which FK column is at fault.
-  @spec validate_subject_xor(Ecto.Changeset.t()) :: Ecto.Changeset.t()
-  defp validate_subject_xor(changeset) do
-    user_id = get_field(changeset, :user_id)
-    visitor_id = get_field(changeset, :visitor_id)
-
-    case {user_id, visitor_id} do
-      {nil, nil} -> add_error(changeset, :subject, "must set user_id or visitor_id")
-      {_, nil} -> changeset
-      {nil, _} -> changeset
-      {_, _} -> add_error(changeset, :subject, "user_id and visitor_id are mutually exclusive")
     end
   end
 

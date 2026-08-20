@@ -96,6 +96,7 @@ defmodule Grappa.Scrollback.Message do
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
   alias Grappa.Scrollback.Meta
+  alias Grappa.Subject
   alias Grappa.Visitors.Visitor
 
   @kinds [
@@ -335,7 +336,7 @@ defmodule Grappa.Scrollback.Message do
 
   Exactly one of `:user_id` / `:visitor_id` is required — never both,
   never neither. The XOR constraint is enforced both here (via
-  `validate_subject_xor/1`) and at the DB layer (CHECK constraint
+  `Grappa.Subject.validate_xor/1`) and at the DB layer (CHECK constraint
   `messages_subject_xor`). `:network_id`, `:channel`, `:server_time`,
   `:kind`, `:sender` are universally required.
 
@@ -374,7 +375,7 @@ defmodule Grappa.Scrollback.Message do
     |> cast(attrs, [:body], empty_values: [])
     |> canonicalize_channel()
     |> validate_required([:network_id, :channel, :server_time, :kind, :sender])
-    |> validate_subject_xor()
+    |> Subject.validate_xor()
     |> validate_identifier(:channel, &valid_target?/1)
     |> validate_identifier(:sender, &Identifier.valid_sender?/1)
     |> validate_body_for_kind()
@@ -407,27 +408,6 @@ defmodule Grappa.Scrollback.Message do
     case get_change(changeset, :channel) do
       ch when is_binary(ch) -> put_change(changeset, :channel, Identifier.canonical_target(ch))
       _ -> changeset
-    end
-  end
-
-  # Mirror of Grappa.Accounts.Session.validate_subject_xor/1.
-  #
-  # Errors attach to the synthetic `:subject` key (B5.4 M-pers-2): neither
-  # `user_id` nor `visitor_id` is unambiguously "wrong" in either failure
-  # mode (both-nil = absence-of-either; both-set = pair-conflict), so a
-  # single key keeps client-side error rendering uniform. Pre-B5.4 this
-  # always attached to `:user_id`, which masked which field was the
-  # unexpected addition.
-  @spec validate_subject_xor(Ecto.Changeset.t()) :: Ecto.Changeset.t()
-  defp validate_subject_xor(changeset) do
-    user_id = get_field(changeset, :user_id)
-    visitor_id = get_field(changeset, :visitor_id)
-
-    case {user_id, visitor_id} do
-      {nil, nil} -> add_error(changeset, :subject, "must set user_id or visitor_id")
-      {_, nil} -> changeset
-      {nil, _} -> changeset
-      {_, _} -> add_error(changeset, :subject, "user_id and visitor_id are mutually exclusive")
     end
   end
 
