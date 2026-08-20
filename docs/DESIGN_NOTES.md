@@ -48617,7 +48617,7 @@ that sentence false.
 
 Ten arms remain inline after this slice, and they are not one class:
 
-* `privmsg`, `me`, `msg`, `ame`, `amsg` — the STORE-coupled arms, held by the
+* `privmsg`, `me`, `msg`, ~~`ame`, `amsg`~~ — the STORE-coupled arms, held by the
   #1513 ruling. Moving them means publishing `claimDrafts`, `writeState` and
   `releaseDrafts` at module scope, and `writeState` is the door that BYPASSES
   the #737 drain lock (`setDraft` refuses a write while a drain owns the
@@ -48629,6 +48629,31 @@ Ten arms remain inline after this slice, and they are not one class:
   time), biome's recommended set has no cycle rule, and a probe that closed
   exactly the `compose.ts` ↔ `commands/*` cycle passed the full vitest suite,
   `tsc --noEmit` and a production `vite build`. The objection is the lock.
+
+  > ⚠️ **Corrected at the source by #1513 (2026-08-20), on two counts.**
+  >
+  > **`ame` and `amsg` are not store-coupled, and they left the switch eight
+  > hours after this entry landed** (`d72e085e`, "move the fan-out pair out of
+  > the switch, at zero new fields" — this entry is `5779c755`, 07:20; that
+  > commit, 15:38). `commands/fanout.ts` says why in its own moduledoc: what
+  > separates it from `privmsg`/`me`/`msg` is that "those close over the
+  > composer's draft store (`sendPacedBody`), this one never touches the
+  > buffer". Struck rather than deleted: the ruling this list belongs to is
+  > about `sendPacedBody`, and the two arms that never touched it were only
+  > ever here by proximity. The three that remain are the ruling, unchanged.
+  >
+  > **The cycle probe is no longer innocuous, because the rule is now ON.**
+  > Every word above stayed true — `noImportCycles` is indeed absent from
+  > biome's recommended set, and the probe did pass vitest, `tsc` and a
+  > `vite build`, none of which look at import graphs. What changed is the
+  > gate: `biome.json` enables `suspicious/noImportCycles` as of the entry at
+  > the end of this file, and re-running that same probe against the shipped
+  > config now emits **7 errors** naming `sendPipeline.ts`, `compose.ts` (×3),
+  > `commands/services.ts` and `commands/fanout.ts`. So an export that closed
+  > that cycle would fail the build today. **This does NOT reopen #737**: the
+  > objection to publishing `writeState` was never the cycle, and this entry
+  > says so in the sentence above — the lock is still the reason, and the
+  > three arms still stay inline.
 * `error` — structural: no red protects it. It returns the parser's own
   message, so a mutant that changes the arm changes nothing a test observes.
   Moving code that no test holds is moving it blind.
@@ -53699,3 +53724,87 @@ The `EventRouter` per-kind shape table still read `required text` for `:notice`,
 already falsified. Both that cell and `:topic`'s now read `text or ""`, with the reason beneath
 the table — leaving one right and one wrong in the same table is how the next reader picks the
 wrong one.
+<!-- entry #1513b -->
+
+---
+
+## 2026-08-20 — #1513: the cycle rule goes on, and the one cycle goes away
+
+`noImportCycles` had never been switched on and its cost had never been
+measured — the half of #1513 the issue itself called "cheaper, structural".
+This slice measures it, cuts what it finds, and turns the rule into a build
+error. What it does NOT do is reopen the store half: `privmsg`/`me`/`msg` stay
+inline for the #737 lock, exactly as ruled.
+
+### The number, and why it was believed
+
+`suspicious/noImportCycles` (biome 2.5.8 — not nursery, and off by default),
+enabled and run through the whole `check` chain, which already passes
+`--max-diagnostics=none` so nothing is truncated:
+
+    rule ON, defaults          1064 files    2 errors
+    rule ON, ignoreTypes:false 1064 files   11 errors
+
+The 2 are the two EDGES of ONE runtime cycle, `selection.ts:29` ↔
+`windowState.ts:4` — the same cycle the 2026-08-18 entry above measured at 597
+files, and the file counts differ only in scope (that run was `biome check src`;
+scoped to `src` today the tree is 615 files, against 1064 for `src` + `e2e` +
+root). The other nine belong to three type-only rings (`api` ↔ `wireNarrow`,
+`api` → `channelTopic` → `identityScopedStore` → `auth` → `api`, and `passkeys`
+inside that same ring); `ignoreTypes` defaults to TRUE because the compiler
+erases a type-only import, so it cuts no runtime edge.
+
+A 2 out of 1064 files is the kind of number that could be the tool being blind
+rather than the tree being clean, so it was made to earn belief: closing the
+exact cycle the issue names — a runtime `sendPipeline.ts → compose.ts` import —
+raised **7 new diagnostics** naming `sendPipeline.ts`, `compose.ts` (×3),
+`commands/services.ts` and `commands/fanout.ts`. Probe removed, baseline back to
+the same two edges, byte-identical. The rule polices precisely the class this
+bucket exists to remove.
+
+### Half of what the issue describes had already been built
+
+Measured on the code rather than read off the issue: the extraction landed with
+#1515 and it took the right cut. `sendPipeline.ts` carries `draftLines` and
+`wireBody` WITH the cluster, `compose.ts:82` imports all three back, and compose
+exports neither. Of the six arms the issue calls stuck, `service-modal`
+(#1517), `ame` and `amsg` (`d72e085e`) are already behind the seam; the three
+that remain are the ruled ones. With the rule on, ZERO diagnostics name
+`compose.ts`, `sendPipeline.ts` or `commands/*` — the block-1 cycle the issue
+predicted does not exist, and the probe above proves the rule would say so if it
+did.
+
+### The cut: an argument, not an import
+
+The whole `windowState → selection` edge was ONE function,
+`isActiveChannelJoined()`, five lines composing `selectedChannel()` with
+`windowIsJoined()`. It now takes the selection as a PARAMETER. The reverse edge
+(`selection` reading `windowIsPresent`) stays: the dependency runs one way, and
+`windowState` goes back to being a function of its own state instead of reading
+another store's.
+
+Two cheaper-looking options were rejected and one was ruled against. Moving the
+function into `selection.ts` would have re-homed it out from under four
+`vi.mock("../lib/windowState")` factories that supply it (`Shell.test.tsx`,
+`subscribe.test.ts` ×3) — mocks that would then stop mocking, silently. A
+`biome-ignore` pair would have cost two lines and left the cycle alive,
+permanently, with an issue to remember it by; the ruling (orchestrator,
+2026-08-20) was that eleven mechanical edits to never discuss it again is the
+better trade, and that a suppression is a cycle that stops making noise without
+going away.
+
+Cost against the estimate, since the estimate was made by grep and not by doing
+it: **11 call sites predicted (3 in `Shell.tsx`, 8 in `windowState.test.ts`),
+11 edited.** No mock factory needed a change — both styles are the untyped
+`vi.mock(path, factory)` form, so nothing type-checks against the signature and
+the extra argument is ignored by a zero-arg stub. Full suite 294 files / 5694
+tests green, `check` 4 stages 0 failed.
+
+### What the rule does not catch, stated rather than implied
+
+With the shipped config the count is 0, but `windowState.ts` still carries an
+`import type { SelectedChannel } from "./selection"`, and in `ignoreTypes:false`
+mode the tree still reports 11. The runtime edge is dead; the type edge is not,
+and the strict number did not move. That is the rule's documented default doing
+what it says, not an oversight — but a reader who turns `ignoreTypes` off will
+find the same 11 and should know why.
