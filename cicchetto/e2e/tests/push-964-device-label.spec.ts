@@ -40,10 +40,10 @@
 // No @webkit twin: every assertion is on rendered text, so nothing here is
 // engine-dependent.
 
-import { expect, test } from "../fixtures/test";
 import { loginAs, openSettingsSection } from "../fixtures/cicchettoPage";
 import { resetPushSubscriptions } from "../fixtures/push";
 import { getSeededVjt } from "../fixtures/seedData";
+import { expect, test } from "../fixtures/test";
 
 const GRAPPA = "http://grappa-test:4000";
 
