@@ -54280,3 +54280,114 @@ correct by construction, because the two spellings name two different rooms.
   channel move needs no sweep at all. Rewriting 289 sentences that way was
   judged a larger change than the issue asked for, and is left as the obvious
   follow-up if the channel shape ever moves again.
+<!-- entry #1441 -->
+
+---
+
+## 2026-08-20 — #1441: the media-viewer opener was thirteen sites, not ten copies, and never byte-identical
+
+The issue asked for one fixture-level opener for "ten specs", and was explicit
+that neither the byte-identity of the copies nor the completeness of the ten
+had been measured. Both were measured first, and both moved.
+
+### The census
+
+`cicchetto/e2e/fixtures/mediaViewer.ts` now owns the door. Before it, on
+`5ec44475`:
+
+| measured | value |
+|---|---|
+| spec FILES that open the viewer | **10** |
+| opening CALL SITES | **13** |
+| distinct glue bodies, raw bytes | **5** |
+| distinct glue bodies, indentation + comments normalised away | **3** |
+| `link.click()` (Playwright, scrolls into view) | 9 |
+| `link.evaluate((el) => el.click())` (in place) | 4 |
+| dialog-constructing files with no opening click | **0** |
+
+So the issue's ten is right at FILE granularity and low at call-site
+granularity — `media-link-modal-viewer.spec.ts` opened it three times and
+`media-link-cross-host-modal.spec.ts` twice. "Byte-identical" was never true:
+indentation alone splits the thirteen into five bodies, because two of them sit
+inside a `test.describe`.
+
+**The extractor lied first, and the scalar control did not catch it.** Version
+one pinned `media-link-modal-viewer.spec.ts == 3 open sites` and PASSED while
+finding the wrong three (75/175/176 instead of 75/174/194): a `toBeVisible`
+quoted inside a prose comment counted as a barrier, and a site whose dialog
+binding sat outside the lookback window was missed. Two errors of opposite sign
+summed to the expected total. The controls are pinned to LINE NUMBERS since —
+a count cannot see a compensating pair, and a hand-written parser gets exactly
+one chance to be calibrated against something a human read off the file. The
+negative control is `issue219-general-overlay-scroll-hold.spec.ts`, which says
+"media-viewer" three times in prose and opens the `/names` modal.
+
+### Two verbs, not one verb with a flag
+
+Nine sites clicked through Playwright, four dispatched the anchor's own click.
+That is not drift: #196-preserve, #219, #213 and #1438 MEASURE the scrollback's
+scroll position across the open, and Playwright's scroll-into-view would move
+the very thing under test. So the fixture exports `openMediaViewer` and
+`openMediaViewerInPlace` rather than one opener with `scroll: boolean`. A
+boolean at thirteen call sites is a coin flip a reviewer cannot check; the
+second name says in the call site what it is protecting.
+
+`closeMediaViewer` rides in for the same reason at the other edge (nine
+copies of the close click plus its `toBeHidden` barrier), and `mediaViewer`
+exports the locator so the one NEGATIVE use — the audio path must not open the
+modal — reads the same accessible name the positive ones do. The strings
+`"Media viewer"` and `"Close media viewer"` now appear once each in the tree.
+
+### Wait conditions: strictest, and then frozen
+
+All thirteen waited `toBeVisible({ timeout: 5_000 })`, so strictest and uniform
+coincide; 5_000 is kept, never raised. It is a module constant and NOT a
+per-call-site parameter — deliberately the opposite of `uploadJourney.ts`,
+where the image and video budgets genuinely differ 6×. Here every caller asks
+the same question, and a parameter would re-open the drift axis the lift exists
+to close.
+
+#213's extra wait on `.media-viewer-media--zoomable` stays in #213: it is
+image-and-zoom specific (the cross-host VIDEO case has no zoomable element at
+all) and it is the locator that spec goes on to drive. Strictest COMMON wait,
+not strictest anywhere.
+
+The media-class assertion moved INTO `uploadImageAndGetLink`, where six of the
+eight upload preambles already had it. #213 and #1438 gain it: without the
+class the anchor never opens the viewer, and the failure used to surface as a
+five-second timeout on the dialog instead of naming the classifier.
+
+### The +0, from Playwright's own collector
+
+`playwright test --list` on the base and on the branch: **759 tests in 411
+files** both sides, and the full 759-line title list diffs empty (line numbers
+stripped — those legitimately move). No spec disappeared, no title changed.
+
+Source `expect(` tokens fall 4189 → 4164, and that drop is what deduplication
+IS, so the arithmetic is reconciled exactly rather than waved at: 13
+`toBeVisible` + 9 `toBeHidden` + 6 `toHaveClass` removed from the specs = 28;
+3 added in the fixture. Executed assertions per path are unchanged at eleven of
+the thirteen sites and +1 at the two that gained the class check, so no path
+lost coverage.
+
+### Not established
+
+- **No e2e spec was RUN.** The stack lane was not requested for this change.
+  The gates are `bun run check` (all four stages green, including
+  `tsc -p e2e/tsconfig.json`) and `bun run test` (295 files, 5695 tests), plus
+  the `--list` equality above. That is a static argument and a collection
+  argument; it is not a green suite, and it does not rule out a runtime
+  difference the type system cannot see.
+- **No unit test covers the opener.** `whoisWait.ts` and `privmsgWait.ts` are
+  unit-testable because they carry a DECISION; these four functions are driver
+  calls around an imported `expect`, and the only way to fake that barrier is
+  to inject it — a seam invented for the test, over a verb the `tsc` and e2e
+  gates already cover.
+- **The population is "everything that names the dialog".** Two independent
+  shapes agree on the same ten files, and every file that constructs the dialog
+  has an opening click. A spec that opened the viewer and never asserted on it
+  would be invisible to both — and would also not be an opener worth sharing.
+- **`cicchetto/e2e` IS gated by `bun run check`**, correcting a briefing that
+  said otherwise: `cicchetto/scripts/check.ts` runs four stages and the fourth
+  is `tsc --noEmit -p e2e/tsconfig.json`, with `biome.json` including `e2e/**`
+  (#484, #1469).
