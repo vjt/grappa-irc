@@ -53800,11 +53800,23 @@ it: **11 call sites predicted (3 in `Shell.tsx`, 8 in `windowState.test.ts`),
 the extra argument is ignored by a zero-arg stub. Full suite 294 files / 5694
 tests green, `check` 4 stages 0 failed.
 
-### What the rule does not catch, stated rather than implied
+### What the rule does not catch, and why that is the decision
 
-With the shipped config the count is 0, but `windowState.ts` still carries an
-`import type { SelectedChannel } from "./selection"`, and in `ignoreTypes:false`
-mode the tree still reports 11. The runtime edge is dead; the type edge is not,
-and the strict number did not move. That is the rule's documented default doing
-what it says, not an oversight — but a reader who turns `ignoreTypes` off will
-find the same 11 and should know why.
+**The rule ships with `ignoreTypes` at its default of TRUE, and the eleven
+type-only diagnostics are deliberately out of scope** (ruling, 2026-08-20).
+
+With the shipped config the count is 0. `windowState.ts` still carries an
+`import type { SelectedChannel } from "./selection"`, and with `ignoreTypes`
+turned off the tree still reports the same 11 across the three rings above — the
+strict number did not move, because this slice converted one runtime edge into a
+type edge and left the other rings alone. The runtime edge is dead; the type
+edges are not.
+
+They stay because a type-only import is ERASED by the compiler: at runtime that
+cycle does not exist, so there is no evaluation-order hazard to guard against and
+nothing for a build error to protect. Chasing them would mean moving TYPES into
+leaf modules to satisfy a knob this repo does not ship — cost with no defect
+underneath it. Recorded here rather than filed as an issue, because "these are
+out of scope and here is why" is the outcome, not a backlog item: a reader who
+flips `ignoreTypes` to false will find exactly 11 and now knows what they are
+looking at.
