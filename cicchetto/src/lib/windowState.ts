@@ -1,7 +1,7 @@
 import { createSignal } from "solid-js";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { identityScopedStore } from "./identityScopedStore";
-import { selectedChannel } from "./selection";
+import type { SelectedChannel } from "./selection";
 import type { SessionWireWindowState } from "./wireTypes";
 
 // CP15 B5: cic mirror of the server-side per-(network, channel) window
@@ -276,8 +276,17 @@ export const invitedWindows = (): InvitedWindow[] => {
   return out;
 };
 
-export const isActiveChannelJoined = (): boolean => {
-  const sel = selectedChannel();
+// #1513 — the selection arrives as an ARGUMENT, and that is what lets
+// `noImportCycles` be switched on. This predicate is the only thing this module
+// ever wanted from `selection.ts`, and reading the store here closed the one
+// runtime import cycle cic carried (`selection.ts` reads `windowIsPresent`
+// back). Taking the selection as a parameter leaves the dependency running one
+// way — selection → windowState — and leaves this module a function of its OWN
+// state, which is the honest shape for a store: the caller already holds the
+// selection (Shell.tsx renders both), so nothing is re-derived to pay for it.
+// The residual `import type` is erased by the compiler and cuts no runtime
+// edge, which is exactly why biome's rule ignores type-only imports by default.
+export const isActiveChannelJoined = (sel: SelectedChannel): boolean => {
   if (sel === null) return false;
   if (sel.kind !== "channel") return false;
   return windowIsJoined(channelKey(sel.networkSlug, sel.channelName));

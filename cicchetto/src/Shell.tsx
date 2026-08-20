@@ -449,7 +449,7 @@ const Shell: Component = () => {
   // `.shell-members` drawer on mobile) a PERMANENT surface reachable from
   // EVERY window kind — the cog lives in it, so it MUST be openable on
   // non-channel windows (home/server/list/mentions/admin). Force-closing it
-  // whenever `isActiveChannelJoined()` is false directly contradicts that. On
+  // whenever `isActiveChannelJoined(...)` is false directly contradicts that. On
   // desktop the effect was already a visual no-op (the members pane is a grid
   // column; `membersOpen`/`.open` have no desktop CSS and the TopicBar
   // hamburger is CSS-hidden there, so membersOpen never toggled). The drawer
@@ -591,7 +591,10 @@ const Shell: Component = () => {
       when={isMobile()}
       fallback={
         // ── Desktop three-pane layout (unchanged from pre-C6) ─────────
-        <div class="shell" classList={{ "shell-no-members": !isActiveChannelJoined() }}>
+        <div
+          class="shell"
+          classList={{ "shell-no-members": !isActiveChannelJoined(selectedChannel()) }}
+        >
           <ErrorBanners />
           <Toasts />
           <PrivacyModal />
@@ -753,11 +756,11 @@ const Shell: Component = () => {
           <aside class="shell-members" classList={{ open: membersOpen() }}>
             {/* UX-5 bucket BS — drag handle on the inner edge of the
                 right (members) sidebar. Mounted unconditionally even
-                when isActiveChannelJoined() is false (the column
+                when isActiveChannelJoined(...) is false (the column
                 narrows via .shell-no-members in CSS); the handle is
                 inside the aside so it's hidden together. */}
             <ResizeHandle side="right" />
-            <Show when={isActiveChannelJoined() && selectedChannel()}>
+            <Show when={isActiveChannelJoined(selectedChannel()) && selectedChannel()}>
               {(sel) => (
                 <MembersPane networkSlug={sel().networkSlug} channelName={sel().channelName} />
               )}
@@ -1088,7 +1091,7 @@ const Shell: Component = () => {
             ONE bottom drawer. The mobile-only `.mobile-panel-actions` footer is
             gone — archive is now a first-class RailActions button. */}
         <aside class="shell-members" classList={{ open: membersOpen() }}>
-          <Show when={isActiveChannelJoined() && selectedChannel()}>
+          <Show when={isActiveChannelJoined(selectedChannel()) && selectedChannel()}>
             {(sel) => (
               <MembersPane
                 networkSlug={sel().networkSlug}

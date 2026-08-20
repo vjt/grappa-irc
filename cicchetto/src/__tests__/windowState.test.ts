@@ -395,7 +395,7 @@ describe("windowState.isActiveChannelJoined (composed: kind=channel AND joined)"
       kind: "channel",
     });
 
-    expect(ws.isActiveChannelJoined()).toBe(true);
+    expect(ws.isActiveChannelJoined(selection.selectedChannel())).toBe(true);
   });
 
   it("returns false when active selection is a channel in pending state", async () => {
@@ -410,7 +410,7 @@ describe("windowState.isActiveChannelJoined (composed: kind=channel AND joined)"
       kind: "channel",
     });
 
-    expect(ws.isActiveChannelJoined()).toBe(false);
+    expect(ws.isActiveChannelJoined(selection.selectedChannel())).toBe(false);
   });
 
   it("returns false when active selection is a channel in failed state", async () => {
@@ -425,7 +425,7 @@ describe("windowState.isActiveChannelJoined (composed: kind=channel AND joined)"
       kind: "channel",
     });
 
-    expect(ws.isActiveChannelJoined()).toBe(false);
+    expect(ws.isActiveChannelJoined(selection.selectedChannel())).toBe(false);
   });
 
   it("returns false when active selection is a channel in kicked state", async () => {
@@ -440,7 +440,7 @@ describe("windowState.isActiveChannelJoined (composed: kind=channel AND joined)"
       kind: "channel",
     });
 
-    expect(ws.isActiveChannelJoined()).toBe(false);
+    expect(ws.isActiveChannelJoined(selection.selectedChannel())).toBe(false);
   });
 
   it("returns false when active selection is a query (DM) — no member list possible", async () => {
@@ -452,7 +452,7 @@ describe("windowState.isActiveChannelJoined (composed: kind=channel AND joined)"
       kind: "query",
     });
 
-    expect(ws.isActiveChannelJoined()).toBe(false);
+    expect(ws.isActiveChannelJoined(selection.selectedChannel())).toBe(false);
   });
 
   it("returns false when active selection is the server window", async () => {
@@ -464,7 +464,7 @@ describe("windowState.isActiveChannelJoined (composed: kind=channel AND joined)"
       kind: "server",
     });
 
-    expect(ws.isActiveChannelJoined()).toBe(false);
+    expect(ws.isActiveChannelJoined(selection.selectedChannel())).toBe(false);
   });
 
   it("returns false when active selection is the mentions window", async () => {
@@ -476,7 +476,7 @@ describe("windowState.isActiveChannelJoined (composed: kind=channel AND joined)"
       kind: "mentions",
     });
 
-    expect(ws.isActiveChannelJoined()).toBe(false);
+    expect(ws.isActiveChannelJoined(selection.selectedChannel())).toBe(false);
   });
 
   it("returns false when no channel is selected", async () => {
@@ -484,7 +484,7 @@ describe("windowState.isActiveChannelJoined (composed: kind=channel AND joined)"
     const selection = await import("../lib/selection");
     selection.setSelectedChannel(null);
 
-    expect(ws.isActiveChannelJoined()).toBe(false);
+    expect(ws.isActiveChannelJoined(selection.selectedChannel())).toBe(false);
   });
 });
 
