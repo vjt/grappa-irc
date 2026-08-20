@@ -54171,3 +54171,169 @@ three unknowns exactly when the comparison between them is the triage.
 - Whether any cross-file cascade actually changes verdict under the new
   grouping is **unknown until the first reds arrive**; the mechanism is
   argued above, the incidence is not.
+<!-- entry #964 -->
+
+---
+
+## 2026-08-20 — #964: naming a push device, and the ordinal for the ones you have not named
+
+Hypnotize reported two rows in the settings drawer both reading `Firefox on
+Linux`, with nothing to tell them apart. `parseUserAgent` collapses a UA to
+`Browser on OS` on purpose, so two instances of the same browser on the same OS
+render byte-identical. The issue proposed three fixes; two of them —
+`formatDeviceActivity` and the `● this device` marker — landed earlier and are
+already in the tree. This entry records the third: a user-set **label**, and the
+**ordinal** that disambiguates the devices nobody has named yet.
+
+The branch that implements it was cut on 2026-08-07, dropped, and revived
+thirteen days later. Rebasing it rather than rewriting it is what surfaced the
+two failures recorded at the end, and both are worth more than the feature.
+
+### The label is the only disambiguator that earns a column
+
+Everything else the row could show is DERIVED from data the server already
+holds: the creation instant, the last-used instant, an ordinal, the PTR of the
+peer address. The label is the only genuinely new information — it is the one
+thing about a device that only its owner knows.
+
+The original ask was "default it to the host". That is not implementable: no web
+API exposes the client machine's hostname, deliberately, and the one historical
+leak (the `.local` name in ICE candidates) was closed in 2019 by mDNS candidate
+obfuscation. Deriving it server-side does not rescue it either — the only
+server-visible name-like thing is the PTR of the peer address, which on a
+residential or NAT'd line is the ISP pool name, identical for every device
+behind it. That reproduces exactly the collision the issue is about.
+
+### The ordinal is DERIVED at render, and is NOT a column
+
+Two independent reasons, either of which settles it:
+
+1. An ordinal is a function of how many rows CURRENTLY share a parsed name.
+   Stored, it goes stale the instant one of them is deleted — a `#2` with no
+   `#1` and nothing to realign it. Derived, the list self-heals on the next
+   render.
+2. The grouping key is the OUTPUT of `parseUserAgent`, which exists only in
+   cicchetto. Deriving server-side would mean a second UA parser in Elixir whose
+   classification could disagree with the client's, and then the ordinal would
+   number a grouping the user cannot see.
+
+`deviceRows/1` (`cicchetto/src/lib/push.ts`) pairs each device with the name its
+row prints. It preserves the server's ordering (newest first) but assigns
+ordinals **oldest-first**, with the id as a tiebreak so the ordering is TOTAL —
+two rows created in the same microsecond, or with an unparseable `created_at`,
+must still get a stable order or the numbers shuffle between renders.
+
+**Labelled rows leave the grouping entirely, not just the suffix.** Naming one of
+two twins already disambiguates the pair, so the survivor must drop its number;
+leaving it as a lone `#2` would be the stale-ordinal bug reintroduced by hand.
+A device alone in its group takes no suffix at all: a solitary `#1` is noise.
+
+### `label`: one storage representation for "cleared"
+
+`label` is nullable with no default and is the ONE user-writable field on a
+subscription. It travels on its own `Subscription.label_changeset/2`, kept off
+the create allowlist for two reasons: it is never knowable at registration time,
+and a separate changeset means a POST body cannot widen the create surface by
+accident.
+
+Blank folds to NULL so "cleared" has exactly ONE representation and the read
+side tests `is_nil/1` and never also `== ""`. That fold is `cast/3`'s own
+default `:empty_values`, which already maps `""` AND a whitespace-only string to
+`nil` — a hand-written blank arm was proven dead by removing it and watching the
+blank/whitespace tests stay green. The trim of a non-blank value is NOT
+something Ecto does, so it lives in the changeset; the 64-**grapheme** cap is
+applied AFTER the trim, so a value that exceeds the cap only by invisible
+padding is accepted rather than rejected on characters the user cannot see.
+
+`PATCH /push/subscriptions/:id` takes `{"label": <string|null>}`. The status
+ladder splits types from values: **400** when `label` is absent or not a
+string/null (a type error is the client's bug, not a value the 422 envelope
+should have to describe), **404** with the uniform body for cross-subject OR
+unknown IDs (the same probing protection `delete/2` has), **422** past the cap.
+`Push.update_label/2` takes the STRUCT, so the caller must already have loaded
+and scoped the row through `get_for_subject/2` — a path parameter cannot reach
+an UPDATE without passing the subject check.
+
+The PATCH renders the SAME `subscription_summary()` an `:index` row carries,
+rather than a bespoke `{id, label}` echo: the rename response IS a row, so the
+client splices it back into the list without a refetch, and there is one place
+to change when a device grows another field. `label` is a new field on an
+existing shape, so per the additive-only wire contract (#447) it costs no
+`protocol_version` bump.
+
+### 🔴 The hand-typed migration stamp was a LIVE collision, not a formality
+
+The branch carried `20260807120000_add_label_to_push_subscriptions.exs`. In the
+thirteen days it sat unproposed, `20260807120000_fold_nickserv_pass_onto_password.exs`
+landed on main — the **same integer version**, a different basename, which git
+fuses without a conflict marker and with nothing to review.
+
+This is the silent regime, and it is the one production hits. Ecto's pending
+filter keys on the integer VERSION, never the filename, and
+`ensure_no_duplication!` only ever sees the PENDING set. On a database that has
+ALREADY applied `20260807120000` — every deployed one — both files drop out of
+pending, `ensure_no_duplication!([])` answers `:ok`, the run reports SUCCESS,
+and NEITHER migration ever executes again. Not a crash, not a warning: a green
+deploy with a column that is not there.
+
+Regenerated with `mix ecto.gen.migration` → `20260820174126`, and checked
+against `origin/main`'s CURRENT latest (`20260816014915`) rather than against
+the August main the branch forked from. That second half is the part a rebase
+makes load-bearing: the correct number is past whatever landed while you were
+out.
+
+The rule was already in CLAUDE.md. What this adds is the demonstration: a
+thirteen-day-old branch was enough for a round stamp to become a real,
+already-applied duplicate.
+
+### 🔴 A clean rebase can reinstall a defect whose premise has evaporated
+
+The same rebase surfaced `validate_subject_xor/1` inside a conflict block in
+`Grappa.Push.Subscription`. #1580 had just collapsed twelve copies of that
+function onto `Grappa.Subject.validate_xor/1`; the #964 commit adds
+`label_changeset/2` immediately above it, so the deleted body came back as
+"context" the resolver is invited to keep.
+
+Nothing about the conflict says the function was deliberately removed. The
+resolution that looks tidy — keep both sides — silently reinstates one of the
+twelve copies #1580 exists to delete, and it would compile, pass and read fine.
+The general rule: on a long-lived branch, a conflict hunk containing code you did
+not write is a question about whether its PREMISE still holds, not a merge
+puzzle. Here it was dropped, and #1580's own `subject_xor_test.exs` runs green
+beside the new label tests.
+
+### Deploy class: HOT, measured, against a moduledoc that claimed COLD
+
+The migration's original moduledoc asserted COLD "because `Preflight` classifies
+every `priv/repo/migrations/*` path as `:migration`". GH #41 ended that:
+`GrappaWeb.AdminController.reload/2` now runs `Ecto.Migrator` in-process BEFORE
+the module reload, so only a CONTRACT migration forces a restart, and
+`classify_migration/1` decides from the `change/0` AST.
+
+Measured on this file rather than asserted: `alter table(:push_subscriptions) do
+add :label, :string end` is an expand — atom column, literal type, nullable, no
+`@disable_ddl_transaction` — so `classify_migration/1` answers `:hot`, and the
+whole changed path set classifies `{:hot, []}` on `:jail`, `:docker` and
+`:linux` alike.
+
+This means the "any migration ⇒ COLD" grep over-triggers exactly the way the
+`^infra/` arm does: it is a path heuristic, and the shipped classifier is the
+thing that actually gates the deploy. It says nothing about the RELEASE that
+ships the feature — a `VERSION` bump is its own cold trigger (`:version`,
+#1287) on the two `mix release` substrates, and is not part of this change.
+
+### Limitations, stated rather than forced
+
+* The ordinal groups on `parseUserAgent`'s output, so two devices the parser
+  cannot classify collapse into one `Unknown browser on Unknown OS` group and
+  are numbered within it. That is the honest answer — they genuinely are
+  indistinguishable to us — but it means an unparseable UA cannot be told apart
+  except by renaming it.
+* `label` is per-subscription, not per-device. A browser that drops and
+  re-registers its push subscription (the #181 supersede path) arrives as a new
+  row with no label. Carrying the label across a supersede would mean trusting
+  the endpoint swap to identify the same physical device, which is exactly the
+  identity claim `subscriptionIdForEndpoint` refuses to make elsewhere.
+* The rename, save and cancel buttons reuse the `.device-remove` class so they
+  inherit the 44 px tap floor #462 restored. Behaviourally right, but the class
+  name is now a misnomer for three buttons that remove nothing.
