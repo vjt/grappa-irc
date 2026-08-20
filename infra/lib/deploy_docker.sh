@@ -164,13 +164,47 @@ substrate_preflight() {
 }
 
 substrate_build() {
-	# Hot path needs no build — the pulled commit is already in the
-	# bind-mounted source tree (compose.yaml mounts ./:/app). Cold path
-	# rebuilds the toolchain image.
-	[ "$MODE" = cold ] || return 0
+	# BOTH paths must leave fresh .beam in the code path the app boots from
+	# — the same requirement infra/freebsd/deploy.sh and
+	# infra/linux/deploy.sh state for their releases: the build "writes the
+	# fresh .beam into the daemon's code path that the hot reload POST then
+	# loads". POST /admin/reload only LOADS: Grappa.HotReload.reload_modified/0
+	# md5-walks the app's ebin and compiles nothing.
+	#
+	# Nothing on THIS substrate's hot path used to write that ebin, so the
+	# reload honestly answered `reloaded: []` over the PREVIOUS commit's
+	# modules while the banner, the exit code and the completed-deploy marker
+	# all reported success, and the box converged one commit late (#1601).
+	# "The pulled commit is already in the bind-mounted source tree" — the
+	# claim that used to sit here behind a `[ "$MODE" = cold ] || return 0` —
+	# is true of the SOURCES and says nothing about the BEAMS.
+	if [ "$MODE" = cold ]; then
+		# The image is toolchain-only; the beams come from the recreated
+		# container's own `mix phx.server` boot compile, which is why the
+		# cold healthcheck loop is the patient one.
+		echo "Building grappa image..."
+		"${DOCKER_COMPOSE[@]}" --profile prod build grappa
+		return 0
+	fi
 
-	echo "Building grappa image..."
-	"${DOCKER_COMPOSE[@]}" --profile prod build grappa
+	# Hot: a oneshot compiles into the same bind-mounted
+	# `_build/$MIX_ENV/lib/grappa/ebin` the live container booted from, which
+	# is exactly the ebin the reload then walks. Not a new mechanism — `mix
+	# grappa.seed_themes` was already compiling that ebin as a side effect,
+	# one step too LATE (deploy_common.sh `_deploy_hot`: reload, THEN seed).
+	# Doing it here puts it before `substrate_reload`, which deploy_common.sh
+	# guarantees by calling substrate_build ahead of the mode branch.
+	#
+	# No deps.get beside it: `mix.lock`/`mix.exs` are COLD triggers
+	# (Grappa.Deploy.Preflight `mix_deps?/1`), so a hot deploy cannot bring
+	# deps the box has not already fetched. --warnings-as-errors matches both
+	# release substrates, and under the consumers' `set -euo pipefail` a
+	# failed compile aborts BEFORE the reload — which is the point of the
+	# step: reloading over a tree that would not compile is the same defect
+	# with extra steps.
+	echo "Compiling the pulled commit (the reload only LOADS beams)..."
+	"${DOCKER_COMPOSE[@]}" --profile prod run --rm --no-deps grappa \
+		mix compile --warnings-as-errors
 }
 
 substrate_reload() {

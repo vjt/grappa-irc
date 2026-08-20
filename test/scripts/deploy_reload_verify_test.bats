@@ -135,6 +135,33 @@ run_hot() {
     refute grep -q 'healthz' "$ARGV_LOG"
 }
 
+@test "the hot path COMPILES before it reloads, or the reload loads stale beams (#1601)" {
+    # The Docker hot path skipped the build entirely — "the pulled commit is
+    # already in the bind-mounted source tree" is true of the SOURCES and
+    # false of the BEAMS. POST /admin/reload only LOADS: it md5-walks the
+    # app's ebin. With nothing compiled, it honestly answers `reloaded: []`
+    # and the deploy declares success over the previous commit's modules.
+    #
+    # The freebsd and linux substrates already compile on BOTH paths, and
+    # say why: "it writes the fresh .beam into the daemon's code path that
+    # the hot reload POST then loads". This is that, for docker.
+    #
+    # Ordering, not mere presence: a compile AFTER the reload is what the
+    # seed step already does by accident, and it is what left the box one
+    # commit late.
+    export RELOAD_RESPONSE='{"reloaded":[],"failed":[]}'
+    export HEALTHZ_RC=0
+
+    run_hot
+    [ "$status" -eq 0 ]
+
+    grep -q 'mix compile' "$ARGV_LOG"
+
+    compile_line=$(grep -n 'mix compile' "$ARGV_LOG" | head -1 | cut -d: -f1)
+    reload_line=$(grep -n 'admin/reload' "$ARGV_LOG" | head -1 | cut -d: -f1)
+    [ "$compile_line" -lt "$reload_line" ]
+}
+
 @test "reload ok but healthcheck never returns 200 FAILS the deploy" {
     export RELOAD_RESPONSE='{"reloaded":[],"failed":[]}'
     export HEALTHZ_RC=1

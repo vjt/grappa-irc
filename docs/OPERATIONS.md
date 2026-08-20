@@ -637,7 +637,8 @@ on it.
 
 **`.env` and `MIX_ENV` are established for BOTH paths, in
 `establish_deploy_env` (#1377).** They used to live inside
-`substrate_build`, which returns early on hot — so a hot deploy reached
+`substrate_build`, which returned early on hot back then (#1601 has since
+given that hook a hot arm of its own) — so a hot deploy reached
 the theme seed with no `MIX_ENV` in the shell, compose fell back to
 `.env` for the interpolation, and `.env.example` ships `MIX_ENV=dev`:
 cold seeded `grappa_prod.db`, hot seeded `grappa_dev.db` on the same
@@ -647,9 +648,16 @@ flag still reads as a usage error) and before the first side effect.
 Consequence for operators: a box with no `.env` now fails the same way
 on hot as it always did on cold.
 
-**Hot deploys are the normal case.** `git pull` plus `POST
-/admin/reload` swaps modules in the live BEAM with no restart, and
-sessions (`Session.Server`, `IRC.Client`) keep their state. What cannot
+**Hot deploys are the normal case.** `git pull`, then `mix compile`,
+then `POST /admin/reload` swaps modules in the live BEAM with no
+restart, and sessions (`Session.Server`, `IRC.Client`) keep their state.
+**The compile is not optional and not an optimisation (#1601):** the
+reload endpoint only LOADS — it md5-walks the app's ebin — so with
+nothing compiled it answers `reloaded: []` truthfully and the deploy
+declares success over the previous commit's modules. The bind-mount
+puts the pulled SOURCES in the container; it does not put BEAMS in the
+ebin. The jail and systemd substrates have always built on both paths
+for the same reason. What cannot
 be hot-swapped is a change to module *shape* — `mix.lock`/`mix.exs`,
 the `application.ex` supervision tree, a long-lived GenServer's state
 shape — because the reload is accepted and the new code then crashes at
