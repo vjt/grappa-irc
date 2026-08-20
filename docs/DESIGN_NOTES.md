@@ -53049,3 +53049,108 @@ gates.
 The two historical mentions of these names elsewhere in this file
 (`AdminLiveState`, `AdminVisitorLiveState`) are left untouched: the log
 records what was true when it was written.
+<!-- entry #1473 -->
+
+---
+
+## 2026-08-20 — #1473: the hand-maintained half of the tracked set, derived
+
+`Grappa.Deploy.Preflight` state-shape-checks only the files behind
+`LongLivedModules.all/0`. That list has two halves. The `@modules` half —
+long-lived `GenServer`s — has been derived-and-gated since #1343. The
+`@state_helpers` half — structs held as FIELDS of one of those processes'
+state — was the half nothing derived; its own moduledoc asked only to "keep
+in sync", and it had drifted three ways.
+
+`Session.Deps` and `Session.DirectoryIngest` arrived with the #1390
+decomposition. `IRC.FakeLag`, a field of `IRC.Client`'s state, was never
+listed at all — it is not in the issue either, which had recorded "no audit
+of the other tracked GenServers' `@type t` blocks was done" as a known
+non-measure. The derivation found it on its first run. **Three, not two.**
+
+Measured through `Preflight.classify/5` on `:jail`, a scratch `defstruct`
+field-add to each classified `{:hot, []}`, while `WindowState` — listed —
+returned `{:cold, [state_shape: [...]]}` from the same harness. A HOT deploy
+carrying such a field-add swaps the beam under a live process still holding
+the old struct; the mismatch surfaces on whatever message next
+pattern-matches it.
+
+### The membership is derivable, and the derivation belongs in the gate
+
+Measured before choosing: walking the `t` typespec of every `@modules` entry
+to a fixpoint and keeping the reachable `:grappa` modules that define a
+struct reproduces **every one of the nine hand-listed helpers** — the
+`listed \ derived` difference is EMPTY. So the list holds nothing the
+derivation cannot reach, and enumerating it by hand buys nothing that
+deriving it does not.
+
+The list stays hand-written anyway, and the derivation became the gate. A
+runtime derivation would feed no Dialyzer union — `@type state_helper` is a
+literal union — and it would fail OPEN at deploy time: a module that fails
+to load simply leaves the set and the preflight silently checks less, which
+is the failure mode the preflight exists to prevent. A hand list with a
+derived gate fails red, in CI, before the deploy. It is also the shape the
+`@modules` half already has, so the two halves stay one pattern rather than
+two. *(The compile-time variant — deriving into the literal at compile time
+— was judged unworkable because `LongLivedModules` would have to read the
+typespecs of modules not yet compiled. That was reasoned, not prototyped.)*
+
+The typespec is read from the BEAM chunk rather than the source: module
+names arrive fully qualified, so there is no alias table to resolve and no
+second parser to keep in step with the compiler.
+
+### The unit of coverage is the FILE, not the module
+
+`extract_state_block/1` reads a source file, so a struct nested inside
+another module's file is covered by listing its PARENT. Measured: a
+field-add to the nested `DirectoryIngest.Run` moves `directory_ingest.ex`'s
+extracted block. Three such nested structs (`LinksAccum.Entry`,
+`ListModeAccum.Entry`, `WhowasAccum.Entry`) were already covered that way
+before this change, which is what makes the rule observed rather than
+assumed.
+
+Listing a nested module instead would be actively harmful:
+`Grappa.Session.DirectoryIngest.Run` implies
+`lib/grappa/session/directory_ingest/run.ex`, which does not exist, and an
+absent file is read as empty at BOTH revs — it compares equal and
+classifies HOT. That is the silent direction the sibling
+"source file sits where its name says" assertion already guards.
+
+So the gate keys on each struct's COMPILE SOURCE, not on module identity,
+and nesting needs no special case.
+
+### What the gate is worth, in both directions
+
+- Add a struct to a long-lived state without listing it: the pre-cure list
+  put `deps.ex`, `directory_ingest.ex` and `fake_lag.ex` in the red set,
+  grouped by file, with `DirectoryIngest.Run` collapsed onto its parent.
+- Remove a listed one: dropping `AwayState` reddens exactly one test,
+  naming `away_state.ex`.
+
+The end-to-end half was then measured through the real `cli/1` with two git
+revisions — the path the issue had recorded as *not established* for these
+modules: a scratch field-add to each of the three, and to the `WindowState`
+control, yields `state_shape: <that file>` and **exit 3**, while a
+comment-only change to a now-listed file yields **exit 0**, which is what
+proves the harness can produce both values rather than always answering 3.
+
+**A measurement trap paid for here.** The first run of that harness returned
+exit 0 for all four, control included. The container's `/app` is the MAIN
+checkout with the worktree's `lib/` bind-mounted over it, so `.git` is
+main's: `HEAD^..HEAD` inside the container resolved to main's last commit,
+not the worktree's scratch one, and every row classified a docs-only diff.
+The verdicts were uniform because the instrument was wrong, not because the
+code agreed. Passing explicit SHAs — the object store IS shared across
+worktrees — fixed it. **A preflight harness must name its revisions
+explicitly; a symbolic ref means the container's repo, not yours.**
+
+### Not established
+
+- **That the three are all of them.** The closure follows `Mod.t()`
+  references inside `t` typespecs. A struct held in a field typed `map()`,
+  `term()` or `any()` is invisible to it, and that gap was not measured.
+- **No production incident is claimed**, unchanged from the issue: what was
+  measured is the classifier's verdict, not the jail's deploy history.
+- **Only `:jail` was classified.** The state-shape stage is
+  substrate-independent in `classify/5`, but `:docker` and `:linux` were
+  read, not run.
