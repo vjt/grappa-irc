@@ -58676,3 +58676,30 @@ auto-rejoin fires the join-ok refresh for the same keys, which #1593's queue
 deliberately does not drop. So the shape is the same and the count is larger
 than a cold boot's. That is a static reading of an unambiguous loop, not a
 measurement, and it is recorded as such.
+<!-- entry #1683 -->
+
+---
+
+## 2026-08-23 — #1683: docker-exec account verbs re-enter the image entrypoint
+
+The release image's first boot generates its secrets onto `/data/grappa.env`
+and exports them into the release process. That export cannot change Docker's
+configured container environment, so a later documented
+`docker exec <ctr> bin/grappa create-user ...` started the packaged CLI with no
+`SECRET_KEY_BASE` and died in `runtime.exs` before it could create the first
+account.
+
+The packaged CLI does not grow a second env-file parser and does not source the
+file. For an account verb on the Docker substrate, if any required secret is
+missing, it execs the image entrypoint again with the original argv. That
+entrypoint remains the single owner of the fixed-key line parser, operator-env
+precedence, generation of blanks, and fail-loud checks. It then execs the CLI
+again; the now-complete environment makes the predicate false, so the normal
+argv-safe account dispatch proceeds without recursion.
+
+The shell test pins the re-entry decision and direct delegation when operators
+already supplied every secret. The release-image smoke test supplies only
+`PHX_HOST` to a fresh-volume boot, then runs the documented `docker exec`
+command with the password on stdin (never argv) and requires an admin account
+creation. That real image boundary is the regression: a same-process entrypoint
+test cannot model Docker discarding environment mutations for future execs.

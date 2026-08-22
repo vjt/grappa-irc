@@ -27,8 +27,10 @@ setup() {
     mkdir -p "$BIN"
 
     ARGV_LOG="$BATS_TEST_TMPDIR/argv.log"
-    export ARGV_LOG
+    ENTRYPOINT_LOG="$BATS_TEST_TMPDIR/entrypoint.log"
+    export ARGV_LOG ENTRYPOINT_LOG
     : >"$ARGV_LOG"
+    : >"$ENTRYPOINT_LOG"
 
     cp "$REPO_SRC/infra/release/grappa.sh" "$BIN/grappa"
     chmod 0755 "$BIN/grappa"
@@ -40,6 +42,20 @@ setup() {
 for arg in "$@"; do printf '[%s]\n' "$arg" >>"$ARGV_LOG"; done
 EOF
     chmod 0755 "$BIN/grappa-release"
+
+    # `/app/release-entrypoint.sh` in the published image. A docker-exec'd
+    # account verb starts outside that entrypoint, so the wrapper must re-enter
+    # it when Docker's configured env has none of the secrets generated into
+    # /data at first boot. Record argv here; the entrypoint's own suite pins
+    # the safe line parser + operator-precedence behaviour.
+    cat >"$BATS_TEST_TMPDIR/release-entrypoint.sh" <<'EOF'
+#!/bin/sh
+for arg in "$@"; do printf '[%s]\n' "$arg" >>"$ENTRYPOINT_LOG"; done
+EOF
+    chmod 0755 "$BATS_TEST_TMPDIR/release-entrypoint.sh"
+
+    unset GRAPPA_SUBSTRATE SECRET_KEY_BASE SECRET_SIGNING_SALT RELEASE_COOKIE \
+        GRAPPA_ENCRYPTION_KEY VAPID_PUBLIC_KEY VAPID_PRIVATE_KEY
 }
 
 argv() {
@@ -55,6 +71,33 @@ argv() {
 [create-user]
 [vjt]
 [--admin]" ]
+}
+
+@test "docker exec account verb re-enters the image entrypoint when first-boot secrets are absent" {
+    GRAPPA_SUBSTRATE=docker run "$BIN/grappa" create-user vjt --admin
+    [ "$status" -eq 0 ]
+
+    [ "$(cat "$ENTRYPOINT_LOG")" = "[create-user]
+[vjt]
+[--admin]" ]
+    # The release must not boot on the secret-less first pass. The real
+    # entrypoint loads /data/grappa.env, then execs this wrapper a second time.
+    [ ! -s "$ARGV_LOG" ]
+}
+
+@test "a fully configured docker environment delegates directly — operator env wins" {
+    export GRAPPA_SUBSTRATE=docker
+    for key in SECRET_KEY_BASE SECRET_SIGNING_SALT RELEASE_COOKIE \
+        GRAPPA_ENCRYPTION_KEY VAPID_PUBLIC_KEY VAPID_PRIVATE_KEY; do
+        export "$key=operator-$key"
+    done
+
+    run "$BIN/grappa" create-user vjt --admin
+    [ "$status" -eq 0 ]
+
+    [ ! -s "$ENTRYPOINT_LOG" ]
+    grep -qx '\[create-user\]' "$ARGV_LOG"
+    grep -qx '\[--admin\]' "$ARGV_LOG"
 }
 
 @test "add-network and remove-network route the same way" {

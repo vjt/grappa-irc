@@ -10,7 +10,8 @@
 # directory to the left. No script-level assertion can see it; one HTTP GET
 # can.
 #
-# This is that GET, plus three more probes, against a container that was
+# This is that GET, plus the discovery, secret-persistence and account-bootstrap
+# probes, against a container that was
 # brought up by the SAME infra/docker/get.sh -> deploy.sh path an operator
 # runs (GRAPPA_RAW_BASE points get.sh at this checkout instead of GitHub raw,
 # so the mirror step is exercised too — a file get.sh forgets to mirror is
@@ -193,5 +194,23 @@ after="$(docker exec "$BARE" sha256sum /data/grappa.env | cut -d' ' -f1)"
 [ "$before" = "$after" ] \
     || die "the restart ROTATED /data/grappa.env ($before -> $after) — every stored credential is now undecryptable"
 pass "/data/grappa.env survived the restart byte-for-byte ($before)"
+
+# ---- probe 4: docker exec can bootstrap the first account ------------------
+#
+# The bare image generated secrets inside its entrypoint process. Docker does
+# NOT add those exports to Config.Env, so a later `docker exec` starts without
+# them — exactly the documented first-account door. The packaged CLI must
+# re-enter the same safe, line-parsing entrypoint before runtime.exs loads.
+# Feed the password on stdin: putting it behind --password would make this test
+# teach operators to leak credentials through shell history + the process list.
+say "probe 4: docker exec creates the first admin from a fresh-volume boot"
+created="$(printf 'release-smoke-password\n' \
+    | docker exec -i "$BARE" bin/grappa create-user release-smoke-admin --admin)" \
+    || die "docker exec create-user failed after first-boot secrets were generated on /data"
+grep -Fq 'created user release-smoke-admin' <<<"$created" \
+    || die "docker exec create-user returned success without naming the created account: $created"
+grep -Fq '[admin]' <<<"$created" \
+    || die "docker exec create-user did not grant the requested admin flag: $created"
+pass "docker exec created release-smoke-admin [admin] without a password argument"
 
 say "release image $GRAPPA_IMAGE deployed and answered every probe 🎉"
