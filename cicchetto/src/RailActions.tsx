@@ -729,7 +729,7 @@ const RailActions: Component<Props> = (props) => {
               }}
             >
               <span class="rail-action-icon" aria-hidden="true">
-                {"\u{1F50C}"}
+                {"\u{1F6AA}"}
               </span>
               <span class="rail-action-label">detach</span>
             </button>
@@ -751,7 +751,7 @@ const RailActions: Component<Props> = (props) => {
             }}
           >
             <span class="rail-action-icon" aria-hidden="true">
-              {"\u{1F6AA}"}
+              {"\u{1F50C}"}
             </span>
             <span class="rail-action-label">quit</span>
           </button>

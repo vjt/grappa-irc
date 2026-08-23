@@ -606,6 +606,16 @@ describe("RailActions — detach + quit (#986)", () => {
     expect(screen.getByTestId("quit-irc-btn")).toHaveTextContent("quit");
   });
 
+  it("pairs the door with detach and the plug with the upstream-disconnecting quit (#1705)", () => {
+    mountWithSubject(USER);
+    expect(screen.getByTestId("detach-btn").querySelector(".rail-action-icon")).toHaveTextContent(
+      "\u{1F6AA}",
+    );
+    expect(screen.getByTestId("quit-irc-btn").querySelector(".rail-action-icon")).toHaveTextContent(
+      "\u{1F50C}",
+    );
+  });
+
   // THE assertion of this issue. Three subjects, three visibly different
   // sentences in the rendered modal — not three calls that happen to open a
   // modal carrying one shared string.
