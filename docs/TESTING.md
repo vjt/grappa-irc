@@ -707,6 +707,169 @@ the hard way on 2026-07-27.
    hand-write an absolute `gitdir:`. Escalate rather than improvise
    git-state surgery.
 
+## Three traps that fake a green: the real network twice, and a pipe (#1741)
+
+All three were paid for on 2026-08-24. The first two are one defect a
+storey apart — a test that believes it has silenced the network and is
+talking to it. The third is how a red suite gets *read* as green.
+
+### 1. e2e: `page.route` does not intercept a `fetch()` once the service worker has claimed the page
+
+cic ships a Workbox service worker (`VitePWA`, `strategies:
+"injectManifest"`, `registerType: "autoUpdate"` — see
+`cicchetto/vite.config.ts`), and Playwright does not intercept what
+passes through one. A `page.route` on a third-party origin can be
+installed, look right, and never fire.
+
+**Measured, not deduced.** `issue1702-media-session-metadata.spec.ts`
+with the SomaFM feed on `page.route` reached the real `api.somafm.com`,
+and the lock-screen metadata came back naming *"Kaya Project — Desert
+Phase (Hibernation Remix)"* — a track that was genuinely on the air —
+instead of the canned one the spec had seeded.
+
+🔴 **It is a RACE, not a constant, and that is why nobody had caught
+it.** The worker intercepts only once it has CLAIMED the page:
+`cicchetto/src/service-worker.ts` calls `skipWaiting()` on `install` and
+`clients.claim()` on `activate`, so a freshly-opened page starts
+*uncontrolled* and becomes controlled a moment later. A spec that
+touches a third party EARLY is intercepted fine —
+`issue1695-somafm-connect-src-perimeter.spec.ts` fetches straight after
+`page.goto("/login")` and stays honest. `issue1702` runs after a login,
+a channel select and a rail interaction, and does not. Same API, same
+origin, opposite answer, decided by position within the spec. **So a
+green here is not evidence the route fired**: a spec that grew a few
+steps at the front can start reaching the network without a single line
+of its interception changing.
+
+**The cure: stub `window.fetch` in `addInitScript`, above the worker.**
+An init script runs before any page script, and `window` is never
+collectible (unlike a patch written on a platform sub-object — see the
+`navigator.mediaSession` measurement in DESIGN_NOTES 2026-08-24), so the
+seam holds for the whole spec and the request never leaves the renderer.
+Pass everything you did not seed through to the saved real `fetch`, so
+cic's own API traffic is untouched:
+
+```ts
+await page.addInitScript((seed) => {
+  const realFetch = window.fetch.bind(window);
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (!url.startsWith(seed.prefix)) return realFetch(input, init);
+    return new Response(JSON.stringify(seed.body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+}, { prefix: SONGS_PREFIX, body: { /* … */ } });
+```
+
+⛔ **`serviceWorkers: "block"` was tried and REJECTED.** It does stop
+the escape, and it buys a worse test: cic then honestly raises *"Service
+worker registration failed — Offline mode and push notifications are
+unavailable"*, whose banner both intercepts the rail tap and means the
+spec is exercising a **degraded app**. Stubbing at the app's own
+boundary keeps the worker real and still spends nothing on the network.
+
+**Scope, stated rather than generalised.** What was measured is the
+`fetch()`. That same spec keeps the `<audio>` stream and the `<img>`
+logos on `page.route` and passes — consistent with a media load and an
+image being exempt, but **not establishing it**, because neither
+assertion reads those bytes (the artwork check reads the mime off the
+logo URL, not off the response). #682's stream intercept working is
+precisely what hid this for as long as it did. So the rule is not
+"abandon `page.route`", it is: **if an assertion reads the CONTENT of a
+third-party `fetch()`, stub `window.fetch`** — and if it reads the
+content of anything else third-party, prove the route fired rather than
+assuming it.
+
+### 2. vitest: the same defect one storey down (#1701)
+
+A unit test can reach the real network too, and the sandbox will hide
+it. `AudioMiniPlayer.test.tsx` was green locally — this sandbox has no
+network — and red in CI, where it does: expected the stubbed *"Trestal —
+A Land Unknown"*, received *"Alex Cortiz — Paluka days"*.
+
+**The call was not in the test that went red, and that is the general
+lesson.** `tunedStation()` is DERIVED, not declared — `radio.ts` matches
+`activeAudio()?.href` against the curated table — so two *transport*
+tests that call `playAudio(…groovesalad…)`, neither of them about the
+feed, tune Groove Salad as far as the rest of the app is concerned,
+`nowPlaying.ts`'s effect polls `api.somafm.com` immediately, and the
+answer is still in flight when the feed test runs. Grep your own test
+body for the URL and you will find nothing.
+
+**TWO defects, two fixes, each measured on its own** (unfixed → red;
+barrier fix ALONE → red 3/3; both → green, and green with a competing
+answer present):
+
+* an **offline `fetch`** installed in `beforeEach` for every test in the
+  file — `vi.stubGlobal("fetch", vi.fn().mockRejectedValue(…))`.
+  Rejecting rather than answering `ok: false`: both leave the state
+  null, and "there is no network here" is the honest model. A test that
+  WANTS a feed overrides it explicitly;
+* the **barrier keyed on the stubbed TEXT**, not on the element:
+  `toHaveTextContent(TRACK)` instead of `toBeInTheDocument()`. Any answer
+  at all mounts the span, so a presence barrier returns on whichever read
+  landed first and hands the caller a row whose provenance it never
+  checked.
+
+Silencing the network alone would have left a barrier that does not
+establish the state the test asks it for — the same class as the #753
+repair on `ws_presence_test`. **A barrier must wait for the value the
+test seeded, not for the shape that value happens to arrive in.**
+
+### 3. `| tail -N` on a gate script eats the verdict AND the exit code
+
+Two independent failures in one pipe, and both were paid for on
+`scripts/integration.sh … | tail -60`.
+
+**The exit code.** A pipeline's status is its LAST command's, and
+neither shell here sets `pipefail` by default. Measured:
+
+```
+zsh  -c 'false | tail -60 >/dev/null; echo $?'   → 0
+bash -c 'false | tail -60 >/dev/null; echo $?'   → 0
+zsh  -c 'false >/tmp/x 2>&1; echo $?'            → 1
+```
+
+So a failed suite read through that pipe reports `0`. The script is not
+the liar: `integration.sh` runs `set -euo pipefail` and propagates the
+status of its final `docker compose run --rm … playwright-runner`. The
+pipe is what throws it away, and this holds for **any** trailing pipe on
+a gate script — `| grep`, `| head`, `| tee` included.
+
+**The verdict.** `tail -N` keeps the last N lines, and in
+`integration.sh` those are the wrong ones: the `EXIT` trap tears the
+stack down **after** the suite, so docker's `Removing` / `Removed` lines
+print after Playwright's summary. Measured on two real full-suite logs
+from that day:
+
+| run | total lines | summary at | lines AFTER the summary |
+|---|---|---|---|
+| e2e full (#1702) | 4579 | 4463 | 116 |
+| integration (#1675) | 4916 | 4796 | 120 |
+
+A `tail -60` window therefore holds nothing but teardown. **Do not
+"fix" this by raising N** — the gap is however many networks and volumes
+docker happens to print, so there is no constant to tune against.
+
+**The rule: redirect to a FILE, read the file, and take the status from
+the script rather than from a pipe.** Same shape trap 3 above already
+asks for (detached + read the log), and the RC stamp survives it:
+
+```bash
+{ scripts/integration.sh; echo "RC=$?"; } >/tmp/w1-<issue>-integration.log 2>&1 &
+disown
+# later — grep the file, never a pipe on the run itself
+grep -nE '[0-9]+ (passed|failed|flaky)' /tmp/w1-<issue>-integration.log | tail -5
+```
+
+The stamped `RC=` answers "did the run FINISH" — a **missing** one means
+the process was reaped, which is infra death and not a red. It does not
+answer "did the suite pass": that is still the parsed summary line, per
+trap 3 above, which was measured exiting rc 0 with a red test.
+
 ## Writing a bats assertion: never a bare `!` (#745)
 
 Bash suppresses `errexit` for a command whose status is inverted with
