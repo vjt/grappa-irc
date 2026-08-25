@@ -206,4 +206,39 @@ defmodule Grappa.Repo do
       )
     end)
   end
+
+  @doc """
+  A READ-ONLY transaction — plain `BEGIN` (deferred), no write lock.
+
+  The sibling `Grappa.Repo.TransactionModeGateTest` names, and the reason
+  both modes are named VERBS rather than an option on `transaction/2`: the
+  raw verb's default is the #524 trap, so a call site that legitimately
+  wants deferred has to SAY so instead of getting it by omission. The gate
+  fails the build on a bare `Repo.transaction/1` anywhere else in `lib/`.
+
+  Use it when two or more READS must answer from ONE snapshot: the first
+  read takes the WAL read mark and the rest are served from it, so a
+  concurrent writer cannot make the halves of a single answer disagree.
+  Deferred is the correct mode there — it takes no write lock, so WAL read
+  concurrency is preserved and no writer ever waits on it. First caller:
+  `Scrollback.list_archive/3` (#1626), whose two statements are one
+  aggregate.
+
+  ⚠️ **It is a declaration, not an enforcement.** SQLite will happily let a
+  write inside this transaction try to upgrade the lock, and that upgrade
+  is exactly the immediate `SQLITE_BUSY` that `busy_timeout` does not
+  cover. If the body can write, it belongs in `immediate_transaction/1`.
+
+  Deliberately NOT wrapped in `LockWatch.observe/1`: that seam exists to
+  tell the holder of the WRITE lock apart from the processes queued behind
+  it (#1420), and a deferred reader is neither.
+
+  Not test-observable, stated rather than left to be rediscovered: under
+  `Ecto.Adapters.SQL.Sandbox` every test already runs inside a transaction,
+  so this one is issued as a SAVEPOINT and the `begin` vs `begin immediate`
+  distinction never reaches SQLite. What keeps call sites honest is the
+  gate, not a unit test.
+  """
+  @spec deferred_transaction(fun()) :: {:ok, any()} | {:error, any()}
+  def deferred_transaction(fun), do: transaction(fun)
 end
