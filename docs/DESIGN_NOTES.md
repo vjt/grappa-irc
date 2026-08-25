@@ -62737,3 +62737,112 @@ the verdict is dogfood's. Likewise the exact termination rule of the UA's
 `touch-action` ancestor intersection at a scroll container was not measured,
 which is why the re-opening is declared on the modal element rather than relied
 upon to stop at the pane.
+<!-- entry #1430 -->
+
+---
+
+## 2026-08-25 — #1430: a status-discriminated success union, audited and measured
+
+The report was explicit that it was **NOT observed**: a structural reading of
+three files, no trace, no log, no reproduction. `POST …/messages` has two
+success shapes discriminated by HTTP status (201 + the row, 202 + `{ok: true}`
+for a `*Serv` target or a `/notice` to a service); `res.ok` is true for both, so
+the ack was cast to a `ScrollbackMessage` and `scrollback.sendMessage` read
+`row.id` off it. What the issue deliberately left open was whether the chain
+fires, and whether the resulting `undefined` cursor write ever reached the
+server. Both are now measured, and the second answer is the interesting one.
+
+### Measured
+
+**The path fires, and it is a first-class flow rather than an exotic one.**
+`/msg <service> …` is the documented route to a services nick — cic's own
+`/query` refusal tells the operator so in as many words (`commands/window.ts`),
+the `/ns`, `/cs`, … shortcuts rewrite to `{kind: "msg"}`, and `compose.ts`
+routes a services target through `sendPacedBody` → `scrollback.sendMessage` →
+`POST …/messages` with the service nick as `channel_id`. Eleven nicks are in the
+closed allowlist (`Identifier.services_sender?/1`), and the server answers 202
+for every one of them.
+
+**The narrow cure had already landed, in `341d6b0c` (#1400).** Both halves:
+`sendMessage` returns `ScrollbackMessage | null` and reads `res.status === 202`,
+and `scrollback.sendMessage` gates the cursor advance on `row !== null`. The
+issue's line numbers were already stale when it was filed, which is why the
+sites were re-found by name.
+
+**The `undefined` never reached the server.** `setReadCursor`'s positive-int
+guard — `f22568dd`, 2026-06-09, issue #44 — refuses a non-integer id before both
+the POST and the optimistic local advance, and `Number.isInteger(undefined)` is
+false. So the pre-#1400 chain ran to completion and then died at a boundary
+written fourteen weeks earlier, for a different reason, guarding the *same*
+service-nick windows. The blast radius of the defect as reported was **zero
+observable effect**: a real type lie, absorbed by an accidental backstop. That
+is a #788-class arrangement — correct only by an invariant nobody wrote down —
+so the backstop is now pinned under its own name rather than left to #44's set,
+which is entirely wrong-but-present ids (0 / −1 / NaN / 1.5) and blind to the
+absent one.
+
+**The audit answers NO.** Every 2xx-producing terminal under `lib/grappa_web`
+was censused per action, resolving the private-helper indirection
+(`render_send_result/2`, `mint_user_session/1`, `render_theme/3`) by hand.
+Exactly three JSON doors answer two different success statuses with two
+different body shapes:
+
+| door | shapes | client |
+|---|---|---|
+| `POST …/channels/:c/messages` | 201 row / 202 ack | **was** the collapse; cured by #1400 |
+| `POST /auth/login` | 200 envelope / 202 challenge (×2) | genuine TS union `LoginResponse`, narrowed in `auth.ts` on `two_factor_required` |
+| `GET …/channels/:c/members` | 200 envelope / 204 empty | `listMembers` reads the status → `null` |
+
+`GET /uploads/:slug` is 200/206, but it is a byte stream with no `fetch` caller
+in cic and no JSON cast. Everything else is one success status per action —
+including `themes_controller`, where a shared `render_theme/3` takes the status
+as an argument and each action passes exactly one.
+
+So no other REST door collapses a status union. What the audit *did* find is
+that the members door — the second-largest case — shipped in #1680 with **no
+vitest at all**: its 204 branch was unpinned, and the verdict "this one is fine"
+rested on a line no test touched.
+
+### The bench
+
+Four mutants, each restored with `git checkout --`; the control column is the
+same mutant against the base test files at `e1c87d8f`.
+
+| mutant | site | with the new pins | base tests alone |
+|---|---|---|---|
+| M1 — drop `res.status === 202` | `api.sendMessage` | 1 dead | 1 dead (already pinned by #1400) |
+| M2 — drop `res.status === 204` | `api.listMembers` | 1 dead | **0 — fully green** |
+| M3 — drop the `isInteger` half of the guard | `setReadCursor` | 5 dead | 3 dead |
+| M4 — `messageId ?? 1` "totality" rewrite | `setReadCursor` | 3 dead | **0 — fully green** |
+
+M3 is *not* discriminating: #44's NaN and non-integer cases already kill it, so
+the new cases only add kills. M4 is the one that earns the pin — a defensive
+nullish default is exactly the edit that reinstates the hole, it leaves every
+#44 case caught, and the base suite passes it in silence. M3 also split the two
+new values: `null` **survived** M3 while `undefined` died, because `null <= 0`
+coerces to true. The two halves of the guard carry one value each, so the
+two-value set is not redundant.
+
+### Design
+
+No wire change, no field added, therefore **no `protocol_version` bump** — the
+discriminant the client was ignoring was already on the wire, as the status. The
+cure was client-only by construction.
+
+`ScrollbackMessage | null` is the closed-set encoding here, not a tagged union.
+The second member carries no payload, so `{kind: "ack"}` would add ceremony for
+zero information, and TypeScript's strict null checks already force the caller
+to narrow — which is what the `row !== null` gate is. It also now matches
+`listMembers`' `MemberEntry[] | null`: two doors, one house spelling for "the
+server said yes and there is no row".
+
+### Not established
+
+The production log was **not** read, so there is no field frequency for the 202
+arm — only the proof that the flow is reachable and documented. Nothing here
+measures how often an operator `/msg`es a service.
+
+Whether any REST door is a *body*-discriminated union that cic collapses is a
+different axis and was not audited; this census keyed on the HTTP status.
+`POST /auth/login`'s two 202 shapes are one such pair, and they are narrowed
+correctly, but that is one observation and not a sweep.
