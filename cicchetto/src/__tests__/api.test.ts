@@ -1218,6 +1218,43 @@ describe("sendMessage reads the STATUS, not just res.ok (#1430)", () => {
   });
 });
 
+// #1430 — the audit this issue asked for turned up exactly three REST doors
+// whose SUCCESS answer is a status-discriminated union, and this is the second
+// of them: `MembersController.index/2` answers 204 for `{:ok, :uninitialized}`
+// (joined but pre-NAMES, or not joined at all) and 200 with the envelope for
+// `{:ok, [member()]}`. `listMembers` reads the status and returns `null`, so it
+// does NOT collapse the union the way `sendMessage` used to — but that claim
+// rested on an UNTESTED line: #1680 shipped the door with no vitest at all, and
+// a mutant deleting `if (res.status === 204) return null;` went green, taking
+// `.json()` on an empty body to a throw the caller logs as a refetch failure.
+// The audit's conclusion for this door is only worth as much as its pin.
+//
+// (Door three is `POST /auth/login`, 200 envelope vs 202 challenge; that one is
+// typed as a genuine TS union — `LoginResponse` — and narrowed in `auth.ts` on
+// `two_factor_required`, with its own coverage in `auth.test.ts`.)
+describe("listMembers reads the STATUS, not just res.ok (#1430 audit, #1680 door)", () => {
+  it("returns null on the 204 instead of an empty list", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+    await expect(api.listMembers("t", "azzurra", "#italia")).resolves.toBeNull();
+  });
+
+  it("returns the narrowed members on 200", async () => {
+    stubFetch(200, { members: [{ nick: "vjt", modes: ["o"] }] });
+    await expect(api.listMembers("t", "azzurra", "#italia")).resolves.toEqual([
+      { nick: "vjt", modes: ["o"] },
+    ]);
+  });
+
+  it("distinguishes 204 from a genuinely empty channel", async () => {
+    // The distinction CP24 bucket E drew and #1680's caller depends on: an
+    // empty `members` array is a real answer (seed it), 204 is "not known yet"
+    // (leave the map alone). Collapsing 204 to `[]` would let a refetch BLANK a
+    // good member list while the session is still filling it.
+    stubFetch(200, { members: [] });
+    await expect(api.listMembers("t", "azzurra", "#italia")).resolves.toEqual([]);
+  });
+});
+
 describe("converted REST doors fail loud on a shape mismatch (#1400)", () => {
   it("rejects an admin vhost response that is missing a required field", async () => {
     // The deploy-window case: cic ahead of its server. Before #1400 this
