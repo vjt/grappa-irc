@@ -174,6 +174,53 @@ describe("readCursor", () => {
     });
   });
 
+  // #1430 — the ABSENT id, as opposed to #44's wrong-but-present ones. Before
+  // #1400 converted the door, `sendMessage` cast the server's 202 `{ok: true}`
+  // ack (a *Serv target, `/notice` to a service) to a `ScrollbackMessage`, and
+  // `scrollback.sendMessage` then read `row.id` off it — `undefined`. The
+  // anti-poison gate lets that through whenever the cursor is still null, so
+  // `setReadCursor` WAS called with an absent id.
+  //
+  // It never reached the server: `Number.isInteger(undefined)` is false, so
+  // #44's guard — written 2026-06-09 for a different reason, and for the SAME
+  // service-nick windows — refused the POST. That is the whole reason the
+  // #1430 chain was inert in production rather than writing junk cursors, and
+  // it was load-bearing by accident: nothing in #44's set names the absent
+  // case, so a mutant dropping `!Number.isInteger(messageId) ||` (leaving the
+  // `<= 0` half, which `undefined` does NOT satisfy) passed. Pin it, so the
+  // backstop cannot be removed as dead weight by someone who only reads #44.
+  //
+  // `as unknown as number` on purpose: TypeScript forbids this call, and the
+  // point is that the value came off the WIRE, where the compiler was not.
+  describe("absent id is refused too (#1430)", () => {
+    it.each([
+      ["undefined", undefined],
+      ["null", null],
+    ])("does NOT POST when messageId is %s", async (_label, absentId) => {
+      const { setReadCursor } = await import("../lib/readCursor");
+      const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      await setReadCursor("tok", "azzurra", "NickServ", absentId as unknown as number);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("does NOT advance the local cursor for an absent id", async () => {
+      const { setReadCursor, getReadCursor, applyJoinReply, clearReadCursors } = await import(
+        "../lib/readCursor"
+      );
+      clearReadCursors();
+      applyJoinReply("azzurra", "NickServ", 7);
+      const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      // As the NaN case above: `undefined <= 7` is false, so an absent id slips
+      // past the forward-only optimistic gate. Without the isInteger half the
+      // signal would take `undefined`.
+      await setReadCursor("tok", "azzurra", "NickServ", undefined as unknown as number);
+      expect(getReadCursor("azzurra", "NickServ")).toBe(7);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe("optimistic local advance (flicker + own-msg-unread fix)", () => {
     // Root cause of two bugs: the local cursor signal was round-trip-only
     // (advanced ONLY when the server's read_cursor_set WS event echoed
