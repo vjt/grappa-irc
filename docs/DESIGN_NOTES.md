@@ -63051,3 +63051,154 @@ Whether any REST door is a *body*-discriminated union that cic collapses is a
 different axis and was not audited; this census keyed on the HTTP status.
 `POST /auth/login`'s two 202 shapes are one such pair, and they are narrowed
 correctly, but that is one observation and not a sweep.
+<!-- entry #1626 -->
+
+---
+
+## 2026-08-25 — #1626: the archive listing seeks per target now, and the law is still partition-bound
+
+#1626 is the cure #1484 left on the shelf, with its number attached. It is
+taken here **in part, deliberately**: the listing now answers its target list
+from a loose index scan whose cost tracks the number of TARGETS, and its
+`row_count` from a second pass that still visits the partition. The constant
+falls ~10x. **The complexity class does not change, and this entry says so in
+the same breath as the speedup, because the two are easy to conflate and the
+issue asked for the class.**
+
+### The measurement is this host's, and it did NOT reproduce #1484's constant
+
+Same harness posture as #1484 — prod-shaped synthetic corpus (178 targets: 30
+channels on a heavy tail, 146 DM peers in the CP14 B3 shape, plus two peers
+spelled in both casings), through the app's own pool, OUTSIDE the sandbox,
+plans EXPLAINed off the SQL the production function EMITS (captured from
+`[:grappa, :repo, :query]`), median of 5 warm reps.
+
+The LAW reproduced; the SLOPE did not. Pre-#1626 shape, per 1 000 partition
+rows: **0.198 ms at 10k, 0.211 at 100k, 0.452 at 650k, 0.612 at 1.3M** —
+against #1484's 0.113 / 0.109 / 0.155 / 0.162. So this host is ~3x slower at
+prod's 650k anchor (293.98 ms vs 101–104 ms) and its curve bends upward
+harder (+209% across the sweep, against #1484's +43%). Both agree the cost is
+partition-bound and at least linear; neither constant transfers to the other's
+host, and **neither transfers to the m42 jail, which remains unmeasured**. The
+upward bend is consistent with the working set outgrowing the 64 MB page
+cache — that is an INFERENCE, not a measurement.
+
+### Displacement, both directions
+
+Correlation would have been the old query getting slower as the corpus grew.
+What was measured instead is that moving each axis moves a DIFFERENT shape:
+
+| axis moved | held still | pre-#1626 | loose scan |
+|---|---|---:|---:|
+| partition ×130 (10k → 1.3M) | 178 targets | **×402** (1.98 → 795.77 ms) | **×1.10** (0.49 → 0.54 ms) |
+| targets ×50 (20 → 1000) | 100k rows | ×1.62, no trend | **×16** (0.15 → 2.42 ms) |
+
+The old shape's ×1.62 on the target axis is not a law — 16.36 → 22.92 → 26.45
+does not track the target count, and reads as locality (fewer targets, denser
+pages). That is an inference too; what is measured is the absence of a trend.
+
+### What ships: two statements, one snapshot
+
+`Scrollback.list_archive/3` now emits a recursive-CTE loose index scan for
+`target` + `last_activity`, and a second grouped `count()` for `row_count`,
+both inside ONE deferred read transaction. The transaction is not decoration:
+without it a purge landing between the two statements drops a target from the
+counts that the scan already reported, and short of that an entry could pair
+one instant's `last_activity` with another's `row_count`. In WAL a reader
+takes no lock a writer waits on.
+
+The scan is RAW SQL in a context that otherwise builds every query with Ecto,
+for one reason worth writing down: every `COALESCE(dm_with, channel)` in it
+must match the expression indexed by `messages_archive_{user,visitor}_idx`
+character for character, or SQLite silently declines the expression index and
+the seek degrades into a scan — the property is lost and nothing fails. Same
+posture as a migration spelling its DDL literally. It is pinned by an
+`EXPLAIN QUERY PLAN` test taken off the emitted SQL.
+
+Plan, after:
+
+```
+CO-ROUTINE archive_target
+SETUP           SEARCH messages USING COVERING INDEX messages_archive_user_idx (user_id=? AND network_id=?)
+RECURSIVE STEP  SEARCH m USING COVERING INDEX messages_archive_user_idx (user_id=? AND network_id=? AND <expr>>?)
+                SEARCH m USING COVERING INDEX messages_archive_user_idx (user_id=? AND network_id=? AND <expr>=?)
+```
+
+### 🔴 The fork, with its four numbers — and the property is NOT reached
+
+An exact per-group count has to visit the group's rows; summed over the groups
+that is the partition again. There is no second query nobody pays for. So:
+
+| | 650k | 1.3M | price |
+|---|---:|---:|---|
+| pre-#1626 | 293.98 ms | 795.77 ms | — |
+| **shipped here** (`row_count` exact) | **30.95 ms** | **78.97 ms** | two statements. Zero wire change, zero migration, zero write-path cost. **Still partition-bound** — the count alone is 29.82 / 81.12 ms |
+| **not taken** (`row_count` not computed) | **0.52 ms** | **0.54 ms** | the class changes. But it stops emitting a field the wire already ships |
+
+**The property #1626 asked for — cost tracking the target count — is reached
+only by the second row, and the shipped change does NOT reach it.** What it
+buys is the constant: 9.5x at 650k, 10.1x at 1.3M. Extrapolated on this host's
+measured slope (an extrapolation, not an observation), 4M partition rows are
+~2.9 s before, ~250 ms now, and 0.5 ms if the count goes.
+
+Why the count was not dropped: `row_count` is already on the wire
+(`Grappa.Scrollback.Wire`), the contract is additive-only and does not remove
+or repurpose a field (#447), and cic does not merely tolerate it — it
+REQUIRES it (`wireSchema.ts:865`, and `api.test.ts` has a case named
+*"listArchive rejects an entry missing `row_count`"*). It is rendered
+nowhere: `ArchiveModal` draws `target` and `kind`. That is the #1393d shape
+exactly — a client that stopped tolerating a field and started requiring it —
+so removing it is a `protocol_version` decision, and the live question is
+whether a cached PWA bundle may be broken or whether the floor must move. That
+is not a query decision and it is not settled here.
+
+### #1484's item 2, reversed — do NOT drop the archive indexes
+
+#1484 measured that no plan used `messages_archive_user_idx` /
+`messages_archive_visitor_idx` (`20260522073826`), recorded that dropping both
+left plan and median where they were, and concluded the deferred cleanup was
+"worth doing for INSERT cost if at all". **They are the index this scan runs
+on — COVERING in all three of its seeks.** They were not stale and not dead:
+they were unused BY THE QUERY WE HAD, and their being UNFOLDED is not the
+staleness #372 seemed to make it, it is what lets the scan enumerate raw
+spellings and preserve display casing. Had that cleanup been taken, this cure
+would now need a migration to put them back. The plan test fails if they go.
+
+### Two smaller things the measurement settled
+
+**`count(*)` beats `count(id)` here.** The pre-#1626 query counted `m.id`;
+`id` is NOT NULL so the two are identical in meaning, but `count(*)` reads no
+column value at all. Whole listing at 650k: 37.77 → 30.95 ms, an 18% cut
+against a ~2% run-to-run spread.
+
+**The display-casing rule moved from SQLite into Elixir, and got stricter.**
+Of the spellings sharing a fold, the one on the row with `max(server_time)`
+wins. That used to be SQLite's documented bare-column rule; it is now
+`Enum.max_by/2`, which picks the same row and additionally FIXES the tie —
+equal `server_time` resolves to the lexicographically smallest spelling,
+because the scan yields spellings in ascending order. The pre-existing test
+calls the casing "incidental" and is left saying so; this is a narrowing of an
+unspecified case, not a new promise.
+
+### What this replaced, and why
+
+The REV-B/H18 test that guarded this index built the archive SQL BY HAND and
+EXPLAINed its own copy. From the moment production stopped emitting that
+shape it would have pinned a query nobody runs — the blindness #1372
+documented and removed elsewhere. It is deleted; the new test takes its plan
+off the emitted SQL and asserts the seek, so it fails both if the index goes
+and if the query stops seeking.
+
+### Not established
+
+- **Prod's row count and prod's per-call cost.** Everything here is a warm
+  macOS host in Docker. The jail is unmeasured, and so is the cold first call
+  after a boot — every rep is warm.
+- **The corpus distribution**, still chosen rather than observed, as in #1484.
+- **Whether the count half can be made covering.** Its plan reads
+  `SEARCH … USING INDEX`, not `USING COVERING INDEX`, and no attempt was made
+  to close that gap — a widened index would cost a migration and a write-path
+  measurement, which is the axis #1484 already priced.
+- **The trigger RATE.** Unchanged from #1484: the trigger SET is read off the
+  code, the rate is not observed, and `Grappa.DbLatency` still cannot separate
+  this read from the scrollback fetch.
