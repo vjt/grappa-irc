@@ -193,6 +193,42 @@ defmodule Grappa.ScrollbackTest do
     captured
   end
 
+  # The plural twin of `capture_one_query/1`, for a read that is allowed to
+  # be multi-statement. Same telemetry source and the same reason for it
+  # (#1372): the plan must come off the SQL production EMITS, never a local
+  # rebuild — but a shape that answers from two statements cannot be pinned
+  # by a helper that raises on the second one.
+  defp capture_queries(fun) do
+    ref = make_ref()
+    test_pid = self()
+
+    :telemetry.attach(
+      {__MODULE__, ref},
+      [:grappa, :repo, :query],
+      fn _, _, meta, _ -> send(test_pid, {ref, meta.query, meta.params}) end,
+      nil
+    )
+
+    try do
+      fun.()
+    after
+      :telemetry.detach({__MODULE__, ref})
+    end
+
+    drain_queries(ref, [])
+  end
+
+  # EXPLAIN QUERY PLAN for every statement `list_archive/3` emits, as one
+  # string per statement.
+  defp archive_plans(subject, net) do
+    fn -> Scrollback.list_archive(subject, net.id, MapSet.new()) end
+    |> capture_queries()
+    |> Enum.map(fn {sql, params} ->
+      {:ok, %{rows: rows}} = Repo.query("EXPLAIN QUERY PLAN " <> sql, params)
+      rows |> List.flatten() |> Enum.map_join("\n", &to_string/1)
+    end)
+  end
+
   defp drain_queries(ref, acc) do
     receive do
       {^ref, sql, params} -> drain_queries(ref, [{sql, params} | acc])
@@ -3418,56 +3454,55 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
-  # REV-B / H18 (2026-05-22 codebase review). Covering expression index
-  # on `(<subject>, network_id, COALESCE(dm_with, channel))` for
-  # `list_archive/3`'s GROUP BY shape. The migration is purely
-  # additive — the planner picks it up automatically once present. We
-  # assert via `EXPLAIN QUERY PLAN` that the planner consults
-  # `messages_archive_user_idx` (or `messages_archive_visitor_idx`)
-  # for the archive query shape.
+  # #1626 — the archive listing must answer its target list from a LOOSE
+  # INDEX SCAN: one seek per TARGET, boundary to boundary, instead of one
+  # visit per ROW of the `(subject, network)` partition.
   #
-  # SQLite is permitted to fall through to `SCAN messages` on very
-  # small tables (zero or one row) — the test seeds enough rows to
-  # nudge the planner past that heuristic.
-  describe "REV-B H18 — list_archive/3 covering index" do
-    test "EXPLAIN QUERY PLAN consults messages_archive_user_idx", %{user: user, network: net} do
-      # Seed a handful of rows so the planner has cardinality to
-      # reason about; bias toward heterogeneous COALESCE values so
-      # the index is materially useful.
-      for {ch, dm, st} <- [
-            {"#a", nil, 10},
-            {"#b", nil, 20},
-            {"peer", "peer", 30},
-            {"other", "other", 40}
-          ] do
-        {:ok, _} = Scrollback.persist_event(sample(user, net, st, %{channel: ch, dm_with: dm}))
+  # Measured on this branch (prod-shaped corpus, app pool, outside the
+  # sandbox, median of 5 warm reps): across a 130x growth of the partition
+  # at a CONSTANT 178 targets the pre-#1626 shape moves 1.98 → 795.77 ms
+  # while this scan moves 0.49 → 0.54. The displacement is two-sided:
+  # holding the partition at 100k and moving the TARGET count 20 → 1000
+  # moves the scan 0.15 → 2.42 ms and leaves the old shape without a
+  # trend. Cost tracks targets, not partition — which is the property,
+  # and the reason this is a PLAN test and not a timing test: a wall-clock
+  # assertion on a shared host measures the host.
+  #
+  # It also settles, in the opposite direction, what #1484 recorded about
+  # the two `messages_archive_*_idx` (`20260522073826`): it read them as
+  # dead weight worth dropping for INSERT cost, having measured that no
+  # plan used them. They are the index this scan RUNS on — COVERING, in
+  # every one of its seeks — so dropping them would cost a migration to
+  # put back. This test is that guard: it fails if the index goes, and it
+  # fails if the query stops seeking.
+  #
+  # It REPLACES the REV-B/H18 test that used to sit here. That one built
+  # the archive SQL by hand and EXPLAINed its own copy, so from the moment
+  # production stopped emitting that shape it pinned a query nobody ran —
+  # the exact blindness #1372 documented. The plan below comes off the SQL
+  # the production function EMITS, and `list_archive/3` is multi-statement
+  # now, so the assertion is over the SET of plans.
+  describe "#1626 — list_archive/3 seeks per target, not per row" do
+    test "the target read is a boundary-to-boundary seek on messages_archive_user_idx",
+         %{user: user, network: net} do
+      # Enough rows across enough targets that the planner has cardinality
+      # to reason about — SQLite may fall through to SCAN on a table of
+      # one or two rows (the H18 note above).
+      for i <- 1..30 do
+        target = "#chan#{rem(i, 6)}"
+        {:ok, _} = Scrollback.persist_event(sample(user, net, i * 10, %{channel: target}))
       end
 
-      sql = """
-      EXPLAIN QUERY PLAN
-        SELECT COALESCE(dm_with, channel) AS target,
-               MAX(server_time) AS last_activity,
-               COUNT(*) AS row_count
-          FROM messages
-         WHERE user_id = ? AND network_id = ?
-         GROUP BY COALESCE(dm_with, channel)
-      """
+      plans = archive_plans({:user, user.id}, net)
 
-      %Exqlite.Result{rows: rows} = Repo.query!(sql, [user.id, net.id])
-
-      plan = Enum.map_join(rows, "\n", fn [_, _, _, detail] -> detail end)
-
-      # The planner output for SQLite uses "SEARCH messages USING INDEX
-      # <name>" when the index is actually applied. We accept either
-      # the user-scoped index by name OR the broader assertion that
-      # SOME index is used (defensive against minor SQLite planner
-      # wording variance across versions); the index name is the
-      # canonical signal and what the migration guarantees exists.
-      assert plan =~ "messages_archive_user_idx",
+      assert Enum.any?(plans, &(&1 =~ "messages_archive_user_idx" and &1 =~ "<expr>>?")),
              """
-             Expected EXPLAIN QUERY PLAN to reference messages_archive_user_idx,
-             got:
-             #{plan}
+             Expected one of `list_archive/3`'s statements to hop group
+             boundary to group boundary — a `<expr>>?` seek on
+             messages_archive_user_idx — instead of visiting the partition.
+
+             Plans emitted:
+             #{Enum.join(plans, "\n---\n")}
              """
     end
   end

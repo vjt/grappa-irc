@@ -1045,12 +1045,17 @@ defmodule Grappa.Scrollback do
   instead of splitting. `dm_with` is stored case-PRESERVED (nick display
   rule, `message.ex`); the fold applies at the MATCH, exactly as the DM
   read (`channel_or_dm_where/3`) and delete (`delete_for_dm/3`) do. The
-  selected `target` is a bare `COALESCE` (not the folded key) so the
-  display casing is preserved; SQLite picks it from the row carrying the
-  single `max(server_time)` aggregate (documented bare-column rule), i.e.
-  the most-recent spelling. Channels fold idempotently (already canonical
-  at write) so this is a no-op for them; non-ASCII case variants stay
-  distinct (ASCII-only fold, matching the ircd).
+  returned `target` is a bare `COALESCE` (not the folded key) so the
+  display casing is preserved: of the spellings that share a fold, the
+  one carrying the group's `max(server_time)` wins — the most-recent
+  spelling. Pre-#1626 that choice was SQLite's documented bare-column
+  rule; it is now `Enum.max_by/2` here, which picks the same row and
+  additionally FIXES the tie: equal `server_time` resolves to the
+  lexicographically smallest spelling, because the scan below yields
+  spellings in ascending order and `max_by/2` keeps the first maximum.
+  Channels fold idempotently (already canonical at write) so this is a
+  no-op for them; non-ASCII case variants stay distinct (ASCII-only
+  fold, matching the ircd).
 
   `active_keyset` is a `MapSet` of currently-active target strings —
   joined channels (from `Grappa.Session.list_channels/2`) plus open
@@ -1067,27 +1072,169 @@ defmodule Grappa.Scrollback do
   across read paths.
 
   Result is sorted by `last_activity` DESC for stable client rendering.
+
+  ## Cost (#1626)
+
+  Two statements under ONE read snapshot, and they are asymmetric on
+  purpose:
+
+    * `target` + `last_activity` come from a LOOSE INDEX SCAN — one seek
+      per TARGET, group boundary to group boundary — so that half does
+      not grow with the partition. Measured on a prod-shaped corpus:
+      0.49 ms at 10k partition rows and 0.54 ms at 1.3M, a 130x growth
+      of the partition at a constant 178 targets.
+    * `row_count` cannot be answered that way. An exact per-group count
+      has to visit the group's rows, so it visits the partition: 29.82 ms
+      at 650k, 81.12 ms at 1.3M.
+
+  **So the LAW is still partition-bound.** #1626 asked for a listing whose
+  cost tracks the number of targets, and that property is NOT reached
+  while `row_count` stays exact — it is reached only by not computing it
+  (0.52 ms at 650k, measured), which removes a field the wire already
+  ships and cic's schema already REQUIRES, so it is a `protocol_version`
+  decision and not a query decision. What this shape buys is the
+  CONSTANT: 293.98 → 30.95 ms at 650k (9.5x) and 795.77 → 78.97 ms at
+  1.3M (10.1x), with no wire change, no migration and no write-path
+  cost. See DESIGN_NOTES 2026-08-25.
   """
   @spec list_archive(subject(), integer(), MapSet.t(String.t())) :: [archive_entry()]
   def list_archive(subject, network_id, %MapSet{} = active_keyset)
       when is_integer(network_id) do
     folded_active = MapSet.new(active_keyset, &Identifier.canonical_target/1)
 
+    # ONE snapshot for TWO statements. Without it the two halves of a
+    # single aggregate can be read from different points in time: a purge
+    # landing between them drops a target from the counts that the scan
+    # already reported (`Map.fetch!` below would raise), and short of that
+    # an entry could pair one instant's `last_activity` with another's
+    # `row_count`. `deferred_transaction/1` is the cheap fix and the honest
+    # one — this body only READS, so it takes no write lock and no writer
+    # waits on it. NOT `immediate_transaction/1`: that is the #1420 WRITE
+    # seam, and taking it here would serialize every archive listing behind
+    # the write lock.
+    {:ok, {spellings, counts}} =
+      Repo.deferred_transaction(fn ->
+        {archive_target_spellings(subject, network_id), archive_row_counts(subject, network_id)}
+      end)
+
+    spellings
+    |> Enum.group_by(fn {target, _} -> Identifier.canonical_target(target) end)
+    |> Enum.reject(fn {key, _} -> key == "$server" or MapSet.member?(folded_active, key) end)
+    |> Enum.map(fn {key, group} -> archive_entry(key, group, counts) end)
+    |> Enum.sort_by(& &1.last_activity, :desc)
+  end
+
+  # The display/key split, resolved: the KEY is the fold, the DISPLAY is
+  # the spelling on the most recent row of the fold group.
+  @spec archive_entry(String.t(), [{String.t(), integer()}], %{String.t() => non_neg_integer()}) ::
+          archive_entry()
+  defp archive_entry(key, group, counts) do
+    {target, last_activity} = Enum.max_by(group, fn {_, last_activity} -> last_activity end)
+
+    %{
+      target: target,
+      kind: target_kind(target),
+      last_activity: last_activity,
+      row_count: Map.fetch!(counts, key)
+    }
+  end
+
+  # #1626 — the loose index scan, one seek per target instead of one visit
+  # per row, written as literal SQL with one constant per subject column.
+  #
+  # WHY RAW SQL in a context that otherwise builds every query with Ecto:
+  # the shape is a recursive CTE whose recursive term carries a correlated
+  # scalar subquery over the CTE's own row, and — load-bearing — every
+  # `COALESCE(dm_with, channel)` here must match the expression indexed by
+  # `messages_archive_{user,visitor}_idx` (`20260522073826`) or SQLite
+  # silently declines the expression index and the seek degrades to a scan.
+  # A generated spelling that drifts by one character costs the whole
+  # property and nothing fails. Same reason the migrations spell their DDL
+  # literally; the shape is pinned by an `EXPLAIN QUERY PLAN` test taken
+  # off the SQL this function EMITS (#1372), never a local rebuild.
+  #
+  # WHY IT IS FAST: that index is
+  # `(<subject>, network_id, COALESCE(dm_with, channel), server_time)`.
+  # The anchor seeks the partition's first target; each recursive step
+  # seeks the first target strictly GREATER than the previous one; the
+  # per-target `max(server_time)` is one further seek because
+  # `server_time` is the very next column. All three are COVERING.
+  #
+  # ⚠️ #1484 read these two indexes as dead weight worth dropping for
+  # INSERT cost, having measured that no plan used them. They are the
+  # index this scan runs on: dropping them costs a migration to put back.
+  @archive_target_scan_sql """
+  WITH RECURSIVE archive_target(target) AS (
+    SELECT min(COALESCE(dm_with, channel))
+      FROM messages
+     WHERE <subject_column> = ?1 AND network_id = ?2
+    UNION ALL
+    SELECT (SELECT min(COALESCE(m.dm_with, m.channel))
+              FROM messages m
+             WHERE m.<subject_column> = ?1
+               AND m.network_id = ?2
+               AND COALESCE(m.dm_with, m.channel) > archive_target.target)
+      FROM archive_target
+     WHERE archive_target.target IS NOT NULL
+  )
+  SELECT archive_target.target,
+         (SELECT max(m.server_time)
+            FROM messages m
+           WHERE m.<subject_column> = ?1
+             AND m.network_id = ?2
+             AND COALESCE(m.dm_with, m.channel) = archive_target.target)
+    FROM archive_target
+   WHERE archive_target.target IS NOT NULL
+  """
+
+  @archive_target_scan_sql_user String.replace(@archive_target_scan_sql, "<subject_column>", "user_id")
+  @archive_target_scan_sql_visitor String.replace(@archive_target_scan_sql, "<subject_column>", "visitor_id")
+
+  # Every RAW spelling that has rows in the partition, with the newest
+  # `server_time` under that exact spelling. Folding + merging is the
+  # caller's job — the SQL stays unfolded on purpose, because the
+  # unfolded expression is what the archive index carries AND what
+  # preserves the display casing.
+  @spec archive_target_spellings(subject(), integer()) :: [{String.t(), integer()}]
+  defp archive_target_spellings(subject, network_id) do
+    {sql, subject_id} = archive_scan_binding(subject)
+    %{rows: rows} = Repo.query!(sql, [subject_id, network_id])
+
+    Enum.map(rows, fn [target, last_activity] -> {target, last_activity} end)
+  end
+
+  # Mirrors `Subject.subject_where/2`'s three-clause shape, fall-through
+  # included (#1392): an explicit ArgumentError naming the offending value
+  # beats a FunctionClauseError that hides both it and the function.
+  @spec archive_scan_binding(subject()) :: {String.t(), Ecto.UUID.t()}
+  defp archive_scan_binding({:user, user_id}) when is_binary(user_id),
+    do: {@archive_target_scan_sql_user, user_id}
+
+  defp archive_scan_binding({:visitor, visitor_id}) when is_binary(visitor_id),
+    do: {@archive_target_scan_sql_visitor, visitor_id}
+
+  defp archive_scan_binding(other),
+    do: raise(ArgumentError, "unknown subject: #{inspect(other)}")
+
+  # The half that cannot be a seek: an exact per-group count has to visit
+  # the group's rows. Keyed by the FOLD, the same key the caller groups
+  # the spellings under — `lower()` (`Identifier.nick_fold/1`) and the
+  # in-memory `canonical_target/1` are byte-identical by construction
+  # (#525 narrowed both to the plain ASCII fold).
+  @spec archive_row_counts(subject(), integer()) :: %{String.t() => non_neg_integer()}
+  defp archive_row_counts(subject, network_id) do
     Message
     |> Subject.subject_where(subject)
     |> where([m], m.network_id == ^network_id)
     |> group_by([m], Identifier.nick_fold(fragment("COALESCE(?, ?)", m.dm_with, m.channel)))
-    |> select([m], %{
-      target: fragment("COALESCE(?, ?)", m.dm_with, m.channel),
-      last_activity: max(m.server_time),
-      row_count: count(m.id)
-    })
+    # `count()` (i.e. `count(*)`), not the `count(m.id)` this query carried
+    # before #1626: the id is NOT NULL so the two are semantically
+    # identical, but `count(*)` needs no column value at all while
+    # `count(id)` reads one per row. Measured on the 650k corpus, whole
+    # listing: 37.77 → 30.95 ms, an 18% cut on a ~2% run-to-run spread.
+    |> select([m], {Identifier.nick_fold(fragment("COALESCE(?, ?)", m.dm_with, m.channel)), count()})
     |> Repo.all()
-    |> Enum.reject(fn %{target: t} ->
-      t == "$server" or MapSet.member?(folded_active, Identifier.canonical_target(t))
-    end)
-    |> Enum.map(fn entry -> Map.put(entry, :kind, target_kind(entry.target)) end)
-    |> Enum.sort_by(& &1.last_activity, :desc)
+    |> Map.new()
   end
 
   @doc """
