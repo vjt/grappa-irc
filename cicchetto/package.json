@@ -19,7 +19,7 @@
   "dependencies": {
     "@solidjs/router": "^1.0.0",
     "mediabunny": "^1.55.3",
-    "phoenix": "^1.8.11",
+    "phoenix": "^1.8.13",
     "solid-js": "^1.9.14",
     "uqr": "^0.1.3"
   },
