@@ -1,5 +1,6 @@
 import { createSignal } from "solid-js";
 import type { ChannelKey } from "./channelKey";
+import { type ConfirmAttachment, dismissConfirm, requestConfirm } from "./confirmDialog";
 import { formatBytes } from "./formatBytes";
 import { sendMessage } from "./scrollback";
 import { serverSettings } from "./serverSettings";
@@ -188,6 +189,9 @@ export function resetUploadTtlSecondsForTests(): void {
  *  buffer, privacy stage, visible entries, batch counters, modal).
  *  Production never calls this — the module state is process-lived. */
 export function resetUploadsForTests(): void {
+  // #1883 — a pending Send/Cancel confirm is upload state too: leaving one
+  // armed would let the next test's acceptConfirm fire the previous batch.
+  dismissConfirm();
   for (const { controller } of inflight.values()) controller.abort();
   inflight.clear();
   queue.clear();
@@ -600,10 +604,64 @@ async function prepareVideo(
   return file;
 }
 
-// #118 plural entry — every trigger surface (paste/drop/picker) collapses
-// to this. Normalizes (iOS .m4r → audio/mp4) + enqueues ALL files, bumps
-// the batch total, then pumps if nothing is active for this channel.
-// Sequential: one file uploads at a time; each settle pumps the next.
+// #1883 — the confirm every upload passes, and the door every surface uses.
+//
+// Picking a photo from the gallery used to reach the wire with no stop
+// anywhere. The only gate was the privacy modal, which is one-shot per host —
+// so for every operator who has ticked "remember", the sequence was tap
+// paperclip -> tap photo -> it is public, on a dense grid where a mis-tap has
+// no undo because the bytes are already on someone else's server and the link
+// is already in the channel.
+//
+// #1884 first put this guard in `pickerUpload.ts`, covering the PICKER only,
+// on the argument that a drag onto a visible target is a gesture the operator
+// aimed and Ctrl-V is one they typed. That reading was reversed (vjt's ruling,
+// 2026-08-31): the gate belongs at the ONE point every surface already passes
+// through. #351 collapsed picker, drop and paste onto this function, and the
+// OS share-target reaches it through `dropUpload` as well — so a guard here is
+// inherited by all four, and by a fifth added later, instead of each having to
+// remember it. A per-surface guard is an enumeration, and enumerations drift.
+//
+// The objection #1884 raised against this position is answered by the split
+// below, not waved away: "the orchestrator owns the queue, and a batch the
+// operator has not authorised has no business being in it." It never enters
+// it. `triggerUploads` only ASKS; nothing is queued, no batch counter moves
+// and no upload slot is taken until Send calls `enqueueUploads`.
+//
+// Normalisation (iOS .m4r -> audio/mp4) happens HERE, before the preview, so
+// the type the dialog shows is the type that will be sent. This is also why
+// the picker call site must NOT route through `dropUpload`: that helper
+// pre-filters on `categoryOf`, and iOS labels a .m4r `application/octet-stream`
+// — only `normalizeUploadFile` rescues it, and the filter would drop the file
+// before the rescue could run.
+//
+// There is no "don't ask again". A remembered opt-out is exactly the shape of
+// the privacy flag that produced this defect: a gate every returning operator
+// has already switched off is not a gate. The cost is one tap per BATCH, not
+// per file. If the friction proves too high the answer is fewer taps, not a
+// way to disarm it permanently.
+
+// Row identity. Filenames are not unique (a gallery multi-select routinely
+// yields two `IMG_0001.png`) and neither is the File object across two picks
+// of the same photo, so the id is minted here and never derived.
+let nextAttachmentId = 0;
+
+type StagedFile = { id: string; file: File };
+
+// A picture is the only preview worth showing: for every other category the
+// bytes say nothing a human can check at a glance, and the name is what
+// distinguishes `contract-final.pdf` from `contract-draft.pdf`. The blob is
+// handed over raw — ConfirmModal mints and revokes the object URL, because the
+// row's unmount is the only event that knows when it stops being needed.
+function toAttachment(staged: StagedFile): ConfirmAttachment {
+  return {
+    id: staged.id,
+    label: staged.file.name,
+    detail: formatBytes(staged.file.size),
+    thumbnail: categoryOf(staged.file.type) === "image" ? staged.file : null,
+  };
+}
+
 export function triggerUploads(
   key: ChannelKey,
   networkSlug: string,
@@ -611,8 +669,63 @@ export function triggerUploads(
   rawFiles: File[],
 ): void {
   if (rawFiles.length === 0) return;
-  const items: QueuedUpload[] = rawFiles.map((raw) => ({
-    file: normalizeUploadFile(raw),
+  // Normalised BEFORE staging so the preview, the removal set and the queue
+  // all describe the same files.
+  const [staged, setStaged] = createSignal<StagedFile[]>(
+    rawFiles.map((raw) => {
+      nextAttachmentId += 1;
+      return { id: `picked-${nextAttachmentId}`, file: normalizeUploadFile(raw) };
+    }),
+  );
+
+  requestConfirm({
+    // The destination goes in the TITLE, which is also the dialog's
+    // `aria-label` — the one string a screen reader announces on open, and the
+    // one fact a mis-tap most needs to see. Target-neutral "to X" rather than
+    // "in the channel": `channelName` is a nick on a query window.
+    title: `Send to ${channelName}?`,
+    // Count-free on purpose: the rows below ARE the count, and a number baked
+    // into this string would start lying the moment a row is removed (the
+    // request is not re-issued on removal — see ConfirmAttachments.items).
+    body: "Each file below is uploaded and its link is posted there. This cannot be taken back.",
+    confirmLabel: "Send",
+    onConfirm: () =>
+      enqueueUploads(
+        key,
+        networkSlug,
+        channelName,
+        staged().map((s) => s.file),
+      ),
+    // No third door: there is no other route to "post this file here". Cancel
+    // and Send are the whole question.
+    alternative: null,
+    attachments: {
+      items: (): ConfirmAttachment[] => staged().map(toAttachment),
+      onRemove: (id: string): void => {
+        const rest = staged().filter((s) => s.id !== id);
+        setStaged(rest);
+        // Removing the last row is the same answer as Cancel — an empty dialog
+        // asking "send these?" has nothing to affirm. Dismiss rather than
+        // leaving a Send button that would be a no-op.
+        if (rest.length === 0) dismissConfirm();
+      },
+    },
+  });
+}
+
+// #118 — the post-confirm half: enqueue ALL files, bump the batch total, then
+// pump if nothing is active for this channel. Sequential: one file uploads at
+// a time; each settle pumps the next. Private — the confirm above is the only
+// way in, and `files` are already normalised.
+function enqueueUploads(
+  key: ChannelKey,
+  networkSlug: string,
+  channelName: string,
+  files: File[],
+): void {
+  if (files.length === 0) return;
+  const items: QueuedUpload[] = files.map((file) => ({
+    file,
     networkSlug,
     channelName,
   }));

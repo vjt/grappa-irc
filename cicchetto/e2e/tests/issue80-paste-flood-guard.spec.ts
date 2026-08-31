@@ -36,6 +36,7 @@ import {
 } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
+import { sendPickedFiles } from "../fixtures/uploadJourney";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
@@ -178,6 +179,11 @@ test("#816 — a paste over the hard cap uploads as a file instead of flooding",
   await pasteText(page, block);
   await expect(confirmModal(page)).toBeVisible();
   await confirmModalYes(page);
+  // #1883 — taking the upload door hands off to the send-confirm, which
+  // renders through this SAME singleton. The dialog does not close here; it
+  // becomes "Send to #x?". Only after Send does the slot empty, which is why
+  // the count-0 assertion moved below rather than being dropped.
+  await sendPickedFiles(page);
   await expect(confirmModal(page)).toHaveCount(0);
   await expect(ta).toHaveValue("");
 
@@ -254,6 +260,9 @@ test("#816 — an under-cap paste offers the .txt upload beside Paste, and it wo
   await pasteText(page, block);
   await expect(confirmModal(page)).toBeVisible();
   await confirmModalAlternative(page).click();
+  // #1883 — same hand-off as the over-limit arm: the third door leads into
+  // the send-confirm, not straight to the POST.
+  await sendPickedFiles(page);
   await expect(confirmModal(page)).toHaveCount(0);
   await expect(ta).toHaveValue("");
 

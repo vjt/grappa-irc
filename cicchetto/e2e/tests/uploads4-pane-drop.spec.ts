@@ -25,6 +25,7 @@ import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
+import { sendPickedFiles } from "../fixtures/uploadJourney";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
@@ -82,6 +83,12 @@ test("uploads-4 #351 — a file dropped over the SCROLLBACK uploads (whole pane 
   // Dropping the file over the scrollback uploads it and clears the overlay.
   await fireFileDrag(scrollback, "drop");
   await expect(page.getByText("Drop to upload")).toHaveCount(0);
+
+  // #1883 — the drop path is gated too. #1884 left it open on the argument
+  // that a drag is aimed at a visible target; that was reversed (vjt's ruling,
+  // 2026-08-31) in favour of one door at `triggerUploads`. The overlay clears
+  // on drop either way, but nothing uploads until this is answered.
+  await sendPickedFiles(page);
 
   // The upload → auto-send → IRC echo lands a 📸 PRIVMSG carrying the
   // bytes-access URL. Reverting #351 (drop only on the compose box) reds

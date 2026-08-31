@@ -45513,3 +45513,79 @@ frozen at 0 makes a lookahead scheduler CORRECTLY decide there is nothing to
 arm — a stub that cannot advance is a different module under test.
 
 _Deploy: **HOT — `--cic` only.** No server change, no wire change._
+
+<!-- entry #1883c -->
+
+---
+
+## 2026-08-31 — #1883c: the upload guard moves to one door, reversing #1884
+
+#1884 shipped the gallery-pick confirm in `cicchetto/src/lib/pickerUpload.ts`,
+covering the PICKER only. This entry records the reversal (vjt's ruling,
+2026-08-31): the guard now lives in `uploadOrchestrator.triggerUploads`, and
+`pickerUpload.ts` is deleted.
+
+### What #1884 argued, and which half survives
+
+Its header made three claims. **Two were right and are kept verbatim in the
+orchestrator**: there must be no "don't ask again" (a remembered opt-out is
+the exact shape of the privacy flag that produced the defect — a gate every
+returning operator has already switched off is not a gate), and the picker
+must NOT route through `dropUpload`, because that helper pre-filters on
+`categoryOf` and iOS labels a `.m4r` `application/octet-stream`, which only
+`normalizeUploadFile` rescues.
+
+**The third — that a drop is "a gesture the operator aimed" and Ctrl-V "one
+they typed", so neither needs asking — is what fell.** A pasted image is the
+one case where the operator cannot see what they are sending at all: the
+clipboard is invisible until it is in the channel. And the OS share-target
+reaches `dropUpload` too, so "the operator aimed it" describes a gesture that
+happened in another app entirely.
+
+### Why the queue objection does not bite
+
+#1884's strongest argument against this position was mechanical, not
+aesthetic: *"the orchestrator owns the queue, and a batch the operator has not
+authorised has no business being in it"* — it would take the channel's single
+upload slot and show an `(i/N)` counter for files that may never be sent.
+
+That is answered by splitting the function rather than by moving the gate out
+of it. `triggerUploads` only ASKS; `enqueueUploads` (private) is the old body
+and is reached only from `onConfirm`. Nothing is queued, no batch counter
+moves and no slot is taken until Send. The property #1884 wanted is preserved
+exactly; only its location changed.
+
+### The rule this is an instance of
+
+A guard placed per-surface is an ENUMERATION, and enumerations drift. #351
+had already collapsed picker, drop and paste onto `triggerUploads` for this
+same reason, and the share-target joined them later without touching any of
+the three call sites — which is precisely how a fourth door arrives without
+anyone remembering the guard. One door means the next surface inherits it.
+
+### What this costs, stated rather than discovered
+
+The paste → "Upload as .txt" route (#80/#816) now shows TWO dialogs: the flood
+guard, then the send-confirm. That is the price, and it is not being paid off
+with a `confirmed: true` parameter threaded through `dropUpload` — a bypass
+door with a polite name, and the one thing that would make the enumeration
+argument above false again. If the friction reads as too much in the field,
+the fix is to soften the paste dialog.
+
+It also has a test consequence worth knowing before it bites: the flood guard
+and the send-confirm render through the SAME `confirmDialog` singleton and
+swap within one tick, so an e2e locator keyed on `confirm-modal` alone is
+already visible over the PASTE dialog and acts on the wrong one.
+`sendPickedFiles` therefore scopes by the dialog's heading (`/^Send to /`),
+which is also its `aria-label`.
+
+### Coverage moved, not dropped
+
+`pickerUpload.test.ts` mocked the whole orchestrator and asserted
+"`triggerUploads` was called". That boundary no longer exists, so its eleven
+cases were rewritten against the real pipeline in
+`uploadOrchestrator.test.ts`, where they now assert on the test HOST — nothing
+reaches `host.upload` before Send. That is a stronger claim than the one it
+replaces. The two `ComposeBox.test.tsx` cases that asserted dialog behaviour
+were reduced to wiring: that file mocks the orchestrator, so "no upload after
+Cancel" would pass there against a build with no gate at all.
