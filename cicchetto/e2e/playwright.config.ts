@@ -1,3 +1,20 @@
+// TEMPORARY NEGATIVE CONTROL - DO NOT MERGE, DO NOT KEEP.
+//
+// This comment block is the ENTIRE content of branch w1-ctrl-1796. It
+// exists only so that this path matches the `cicchetto/e2e/**` entry in
+// .github/workflows/integration.yml, which is what makes the integration
+// suite run at all. `integration.yml` carries no `workflow_dispatch`, so
+// a pull request is the only way to schedule that suite on demand.
+//
+// WHY. The red-versus-green comparison behind issue 1796 on PR 1886 is
+// three reruns of ONE run id against eight runs spread over other days
+// and other runner pools. That design cannot separate "the branch" from
+// "this pool, this hour". This branch supplies the missing negative
+// control: the origin/main tree, unmodified in behaviour, measured in
+// the same pool and the same hour as the arm it is compared against.
+//
+// Nothing below is touched. Remove this block and the branch with it.
+
 import { defineConfig, devices } from "@playwright/test";
 
 // Grappa e2e Playwright config.
