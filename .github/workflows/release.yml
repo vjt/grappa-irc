@@ -1290,7 +1290,7 @@ jobs:
           image: tonistiigi/binfmt:latest
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to ghcr.io
         # Both publishing paths (tag push, repair). A docker_validation dry-run
@@ -1440,7 +1440,7 @@ jobs:
         # PUBLISHES, so it takes the pull path above; re-exporting from cache
         # there would probe a local image instead of the pushed one.
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.docker_validation }}
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Re-export the amd64 image from the build cache (dry-run path)
         id: build
