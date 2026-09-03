@@ -67,7 +67,7 @@ RUN GRAPPA_VERSION="$(sh infra/packaging/version.sh)" \
 # ── Stage 2: mix release (self-contained ERTS + beams) ──────────────────────
 # Same toolchain tuple as the dev image and the .deb builder. exqlite bundles
 # its own sqlite amalgamation, so no sqlite-dev is needed here.
-FROM elixir:1.19-otp-28-alpine AS build
+FROM elixir:1.20.2-otp-29-alpine AS build
 RUN apk add --no-cache build-base git
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \

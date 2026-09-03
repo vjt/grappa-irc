@@ -7,7 +7,7 @@
 # role — see Dockerfile.release, and docs/OPERATIONS.md § "The two images:
 # Dockerfile (toolchain) vs Dockerfile.release" for why there are two.
 
-FROM elixir:1.19-otp-28-alpine
+FROM elixir:1.20.2-otp-29-alpine
 
 # build-base + git for hex deps; sqlite-dev for the ecto_sqlite3 NIF link;
 # curl for the in-container /healthz probe and the hot-deploy POST;
