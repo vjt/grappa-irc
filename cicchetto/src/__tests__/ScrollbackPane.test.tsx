@@ -332,6 +332,9 @@ import {
 // advances the read cursor without needing the button to render (jsdom's
 // zero-geometry keeps `atBottom` true, so the button never mounts).
 import { requestScrollToBottom } from "../lib/scrollToBottomCommand";
+// #1914 — the REAL `/topic` answer store, for the same reason: the pane is
+// its only reader, and what these tests assert IS that it reads it.
+import { appendTopicShow } from "../lib/topicShow";
 import { dismissWhoisCard, setWhoisBundle } from "../lib/whoisCard";
 import ScrollbackPane, {
   resetAutoFocusedJoinsForTest,
@@ -6781,5 +6784,119 @@ describe("ScrollbackPane", () => {
 
       expect(getDraft(KEY)).toBe("<alice> hello << ");
     });
+  });
+});
+
+// #1914 — `/topic` prints the topic INTO the window. The command handler drops
+// a frozen snapshot into `topicShow`; the pane's `rows()` memo turns it into a
+// presentational row at the moment it was asked. These pin the pane's half.
+//
+// Each test takes its OWN channel, because `topicShow` is a module singleton
+// with no reset seam: its only emptier is an identity rotation, and adding a
+// test-only door to production code to work around a shared fixture would be
+// the tail wagging the dog. Distinct keys make the isolation structural.
+describe("#1914 /topic answer row", () => {
+  const topic = { text: "beta — https://grappa.chat", set_by: "vjt", set_at: null };
+  let n = 0;
+
+  const msg = (chan: string, id: number, server_time: number): ScrollbackMessage => ({
+    id,
+    network: "freenode",
+    channel: chan,
+    server_time,
+    kind: "privmsg",
+    sender: "alice",
+    body: "hello",
+    meta: {},
+  });
+
+  // Returns the fresh channel name so the caller can seed + assert against it.
+  const freshChannel = (): string => {
+    n += 1;
+    return `#t1914-${n}`;
+  };
+  const keyFor = (chan: string) => `freenode ${chan}` as ChannelKey;
+  const mount = (chan: string) =>
+    render(() => <ScrollbackPane networkSlug="freenode" channelName={chan} kind="channel" />);
+
+  beforeEach(() => {
+    setUserNick("vjt");
+    mockMembersByChannel.mockReturnValue({});
+  });
+
+  it("renders the topic text and the setter meta", () => {
+    const chan = freshChannel();
+    appendTopicShow(keyFor(chan), chan, topic);
+    setScrollback({ [keyFor(chan)]: [msg(chan, 1, 1000)] });
+    mount(chan);
+
+    const row = screen.getByTestId("topic-show-line");
+    expect(row).toHaveTextContent(`Topic for ${chan}:`);
+    expect(row).toHaveTextContent("beta — https://grappa.chat");
+    expect(row).toHaveTextContent("set by vjt");
+  });
+
+  // The operator ASKED. Silence would read as a broken verb, so the empty
+  // topic gets an answer of its own rather than no row at all.
+  it("answers 'No topic set' rather than rendering nothing", () => {
+    const chan = freshChannel();
+    appendTopicShow(keyFor(chan), chan, { text: null, set_by: null, set_at: null });
+    setScrollback({ [keyFor(chan)]: [msg(chan, 1, 1000)] });
+    mount(chan);
+
+    expect(screen.getByTestId("topic-show-line")).toHaveTextContent(`No topic set for ${chan}`);
+  });
+
+  // An empty window is exactly where an operator types /topic first; the early
+  // "no rows" return in the memo must not swallow the answer.
+  it("renders in a window with no messages at all", () => {
+    const chan = freshChannel();
+    appendTopicShow(keyFor(chan), chan, topic);
+    setScrollback({ [keyFor(chan)]: [] });
+    mount(chan);
+
+    expect(screen.getByTestId("topic-show-line")).toBeInTheDocument();
+  });
+
+  // Asking twice prints twice — it is a log of what was asked, not a banner.
+  it("prints one row per invocation", () => {
+    const chan = freshChannel();
+    appendTopicShow(keyFor(chan), chan, topic);
+    appendTopicShow(keyFor(chan), chan, topic);
+    setScrollback({ [keyFor(chan)]: [msg(chan, 1, 1000)] });
+    mount(chan);
+
+    expect(screen.getAllByTestId("topic-show-line")).toHaveLength(2);
+  });
+
+  // Presentational, like the #237 join line: it must stay out of the row
+  // counts and the read-cursor walk, so it is not a `scrollback-line` and
+  // carries no `data-msg-id`.
+  it("is presentational — no scrollback-line testid, no message id", () => {
+    const chan = freshChannel();
+    appendTopicShow(keyFor(chan), chan, topic);
+    setScrollback({ [keyFor(chan)]: [msg(chan, 1, 1000)] });
+    mount(chan);
+
+    const row = screen.getByTestId("topic-show-line");
+    expect(row.dataset.msgId).toBeUndefined();
+    expect(screen.getAllByTestId("scrollback-line")).toHaveLength(1);
+  });
+
+  // Interleaved by wallclock, like an invite-ack: the answer belongs where it
+  // was asked, not pinned under whatever arrived afterwards.
+  it("sits before a message that arrived after the ask", () => {
+    const chan = freshChannel();
+    appendTopicShow(keyFor(chan), chan, topic);
+    const at = Date.now();
+    setScrollback({
+      [keyFor(chan)]: [msg(chan, 1, at - 10_000), msg(chan, 2, at + 10_000)],
+    });
+    mount(chan);
+
+    const rows = Array.from(
+      document.querySelectorAll("[data-testid='scrollback-line'],[data-testid='topic-show-line']"),
+    ).map((r) => r.getAttribute("data-testid"));
+    expect(rows).toEqual(["scrollback-line", "topic-show-line", "scrollback-line"]);
   });
 });

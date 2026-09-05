@@ -199,3 +199,40 @@ function formatTopicSetAt(setAt: string): string {
   if (Number.isNaN(parsed.getTime())) return setAt;
   return parsed.toLocaleString();
 }
+
+// #1914 — the `/topic` answer line. Sibling of `topicJoinLine` above, and the
+// difference between them is the whole reason it is a second function rather
+// than a flag: the JOIN line is UNSOLICITED, so it prints nothing when there
+// is nothing worth printing; this one answers a question the operator just
+// asked, so it must always say something true — including "no topic set",
+// which is an answer and not an absence.
+//
+// `text: null` carries that case. Both `hasNoTopic` shapes (331's `null` and
+// an operator's `TOPIC #chan :` empty string) collapse into it here, because
+// the operator asked what the topic IS and both mean "there isn't one"; the
+// distinction between them is a wire fact, not a fact about the channel.
+
+/** The renderable `/topic` answer: `text: null` means "no topic set". */
+export type TopicShowLine = {
+  channel: string;
+  /** Full topic text VERBATIM (mIRC control bytes preserved for MircBody),
+   * or `null` when the channel has no topic. */
+  text: string | null;
+  meta: string | null;
+};
+
+/**
+ * Maps a channel + its frozen topic entry to the `/topic` answer line. Never
+ * returns null — an answer is always printed, unlike `topicJoinLine`.
+ *
+ * A whitespace-only topic is a topic the wire carried (the `hasNoTopic`
+ * posture), so it renders as one rather than collapsing to "no topic set".
+ */
+export function topicShowLine(channel: string, entry: TopicEntry): TopicShowLine {
+  const text = entry.text ?? null;
+  return {
+    channel,
+    text: hasNoTopic(text) ? null : text,
+    meta: hasNoTopic(text) ? null : topicJoinMeta(entry),
+  };
+}

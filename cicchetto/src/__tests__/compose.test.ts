@@ -4648,14 +4648,65 @@ describe("compose submit — /topic branches", () => {
     expect(compose.getDraft(k)).toBe("/topic -delete");
   });
 
-  it("/topic bare returns inline error (C3 wires the inline render)", async () => {
+  // #1914 — this used to assert the `TODO(C3)` stub's own error string
+  // ("inline render wired in C3"), i.e. it PINNED the defect: the one verb an
+  // operator uses to READ the topic answered in red with a ticket name. The
+  // replacement asserts the behaviour instead — the topic lands in the window.
+  it("/topic bare appends the cached topic to the submitting window", async () => {
     localStorage.setItem("grappa-token", "tok");
+    const { seedTopic } = await import("../lib/channelTopic");
+    const { topicShowByWindow } = await import("../lib/topicShow");
     const compose = await import("../lib/compose");
     const k = channelKey("freenode", "#a");
+    seedTopic(channelKey("freenode", "#a"), {
+      text: "beta — https://grappa.chat",
+      set_by: "vjt",
+      set_at: "2026-09-05T09:11:40.000Z",
+    });
     compose.setDraft(k, "/topic");
     const result = await compose.submit(k, "freenode", "#a");
 
-    expect(result).toMatchObject({ error: expect.stringContaining("C3") });
+    expect(result).toEqual({ ok: true });
+    const entries = topicShowByWindow()[k] ?? [];
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      channel: "#a",
+      topic: { text: "beta — https://grappa.chat", set_by: "vjt" },
+    });
+  });
+
+  // The answer lands where the operator TYPED it, not in the target window —
+  // irssi's rule. Pinned because keying it on the target channel is the
+  // plausible-looking alternative that silently answers off-screen.
+  it("/topic #other answers in the submitting window, not the target", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const { seedTopic } = await import("../lib/channelTopic");
+    const { topicShowByWindow } = await import("../lib/topicShow");
+    const compose = await import("../lib/compose");
+    const here = channelKey("freenode", "#a");
+    const other = channelKey("freenode", "#other");
+    seedTopic(other, { text: "elsewhere", set_by: null, set_at: null });
+    compose.setDraft(here, "/topic #other");
+    const result = await compose.submit(here, "freenode", "#a");
+
+    expect(result).toEqual({ ok: true });
+    expect(topicShowByWindow()[here] ?? []).toHaveLength(1);
+    expect(topicShowByWindow()[other] ?? []).toHaveLength(0);
+  });
+
+  // No fabricated empty topic for a channel we hold no cache for (#975 drops
+  // the entry on own-PART): absence means "not in that channel", and saying
+  // "no topic set" there would be a confident lie.
+  it("/topic on an uncached channel errors instead of printing an empty topic", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const { topicShowByWindow } = await import("../lib/topicShow");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/topic #never-joined");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(result).toMatchObject({ error: expect.stringContaining("#never-joined") });
+    expect(topicShowByWindow()[k] ?? []).toHaveLength(0);
   });
 });
 
@@ -6358,7 +6409,7 @@ describe("#1396 — dispatch characterization over every arm", () => {
             "selection.selectedChannel()",
           ],
           "result": {
-            "error": "/topic #a (bare) — inline render wired in C3 (TopicBar)",
+            "error": "/topic #a — no topic known; join #a first",
           },
         },
         "umode": {

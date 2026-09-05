@@ -32,6 +32,7 @@ import {
   type TopicEntry,
   topicJoinLine,
   topicJoinMeta,
+  topicShowLine,
 } from "../lib/channelTopic";
 
 describe("channelTopic store", () => {
@@ -307,5 +308,45 @@ describe("topicJoinMeta", () => {
   it("falls back to the raw set-at string when it is unparseable", () => {
     const meta = topicJoinMeta(entry({ text: "hi", set_by: "vjt", set_at: "not-a-date" }));
     expect(meta).toBe("set by vjt at not-a-date");
+  });
+});
+
+// #1914 — the `/topic` answer line. The contrast with `topicJoinLine` above is
+// the point of every case here: the join line stays SILENT when there is
+// nothing worth printing, this one always answers, because the operator asked.
+describe("topicShowLine", () => {
+  it("carries the topic text verbatim, control bytes included", () => {
+    const raw = "bold 4red";
+    expect(topicShowLine("#chan", entry({ text: raw })).text).toBe(raw);
+  });
+
+  it("names the channel as spelled — it is a label, never a key", () => {
+    expect(topicShowLine("#Chan", entry({ text: "hi" })).channel).toBe("#Chan");
+  });
+
+  it("appends the setter/time meta when the 333 supplied it", () => {
+    const line = topicShowLine("#chan", entry({ text: "hi", set_by: "vjt" }));
+    expect(line.meta).toBe("set by vjt");
+  });
+
+  it("answers 'no topic' for 331's null — where topicJoinLine prints nothing", () => {
+    expect(topicShowLine("#chan", entry({ text: null })).text).toBeNull();
+    expect(topicJoinLine("#chan", entry({ text: null }))).toBeNull();
+  });
+
+  it("answers 'no topic' for the empty string an explicit TOPIC clear wrote", () => {
+    expect(topicShowLine("#chan", entry({ text: "" })).text).toBeNull();
+  });
+
+  it("drops a stale setter alongside a cleared topic (no orphan meta)", () => {
+    const line = topicShowLine("#chan", entry({ text: "", set_by: "vjt", set_at: null }));
+    expect(line.text).toBeNull();
+    expect(line.meta).toBeNull();
+  });
+
+  it("treats a whitespace-only topic as PRESENT — the wire carried it", () => {
+    // Deliberate divergence from topicJoinLine, which trims and stays silent.
+    expect(topicShowLine("#chan", entry({ text: "   " })).text).toBe("   ");
+    expect(topicJoinLine("#chan", entry({ text: "   " }))).toBeNull();
   });
 });

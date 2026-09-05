@@ -45340,3 +45340,73 @@ it fetches the OpenAPI schema from an API server, and there is none here. The
 Kanidm example the request asked for is absent and stays absent until the OIDC
 client exists (#1911): a Kanidm deployed next to a grappa with no OIDC client
 has nothing to talk to.
+<!-- entry #1914 -->
+
+---
+
+## 2026-09-05 — #1914: `/topic` answers in the window (cic, client-only)
+
+**Symptom.** Typing `/topic` (bare, or `/topic #chan`) printed a red inline
+error: `/topic #sbiffo (bare) — inline render wired in C3 (TopicBar)`. That is
+the `TODO(C3)` stub's OWN string — `topicShowCommand` had never been written,
+and `compose.test.ts` asserted the stub's message, so the suite PINNED the
+defect. A test that encodes a bug prevents anyone from finding the bug; it is
+why this survived from C3 to #1914.
+
+**The topic was never unavailable.** `channelTopic.topicByChannel` is seeded by
+the join-time `332`/`333` on every JOIN and by `topic_changed` on every change,
+and #237 already derives an on-JOIN inline line from it. What was missing was a
+door from the COMMAND side into scrollback.
+
+### The issue asked for something else, and it is not built
+
+#1914 as filed asks the SERVER to persist a typed JOIN-time topic row, and
+states cicchetto "is missing" the join-time line. That premise is not accurate:
+#237 (2026-07-15) ships that line — presentational, derived, anchored after the
+own-JOIN row — and that entry explicitly REJECTED the server-persisted variant
+("option b … a server change AND exactly the reconnect-spam the server
+avoids"). Reversing it needs vjt, not a slice. Two gaps therefore remain open
+under #1914 and neither is addressed here:
+
+* No persisted JOIN-time row, so scrolling back to an OLD join still shows no
+  topic-at-that-time.
+* #237's line still requires the operator's own-JOIN row to be inside the
+  loaded page. On a bouncer it usually is not, which is the likeliest reason
+  the topic reads as "topic-bar only" in daily use.
+
+### Three choices worth the ink
+
+**Not `{ ok: string }`.** The dispatcher renders a string `ok` as the
+auto-dismissing green `.compose-box-notice` (#356). The complaint that opened
+#1914 is a topic too long to read in the TopicBar — a transient strip cannot
+carry it either. It had to be a buffer row.
+
+**The snapshot is FROZEN at invocation.** `topicShow.ts` copies `text` /
+`set_by` / `set_at` out of the store rather than holding the channel key and
+re-reading at render. Re-deriving would let a later TOPIC change retroactively
+rewrite a line the operator already read — the same lie `meta.sender_prefix`
+freezes away at send time (#25), and precisely the caveat #237's live-derived
+line had to DOCUMENT rather than fix ("shows the CURRENT cached topic, not a
+frozen topic-at-join snapshot").
+
+**A second row variant, not a flag on `topic-join`.** Same look, disjoint
+lifecycle: unsolicited vs asked, at most one vs one per invocation, live vs
+frozen, anchored to the own-JOIN vs interleaved at the ask. One variant with a
+flag fuses four differences into a boolean. Reuse the verbs (the `inviteAck`
+interleave-by-wallclock mechanism, the `scrollback-topic-join` classes), not
+the nouns.
+
+### Boundaries, stated so they are not rediscovered as bugs
+
+An UNCACHED channel is an honest error (`no topic known; join #chan first`),
+never a fabricated "no topic set": #975 drops the entry on own-PART, so absence
+means "not in that channel", and asking upstream would need a server verb.
+An EMPTY topic does print `No topic set for #chan` — both `hasNoTopic` shapes
+(331's `null` and an operator's empty `TOPIC #chan :`) collapse there, because
+the operator asked what the topic IS and both mean there isn't one. That
+diverges from `topicJoinLine`, which stays silent on the same input, and the
+divergence is the point: an unsolicited line may say nothing, an ANSWER may
+not. Rows are ephemeral and identity-scoped — lost on refresh, like an
+invite-ack — and presentational, so they stay out of the unread/cursor math.
+
+_Deploy: **HOT — `--cic` only.** No server change, no wire change._

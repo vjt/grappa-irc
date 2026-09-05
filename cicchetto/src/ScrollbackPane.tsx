@@ -16,7 +16,14 @@ import { casemappingForSlug } from "./lib/casemapping";
 import { acceptInvite, confirmJoinChannel } from "./lib/channelJoin";
 import { channelKey, decodeChannelKey } from "./lib/channelKey";
 import { statusmsgDescription } from "./lib/channelModes";
-import { hasNoTopic, type TopicJoinLine, topicByChannel, topicJoinLine } from "./lib/channelTopic";
+import {
+  hasNoTopic,
+  type TopicJoinLine,
+  type TopicShowLine,
+  topicByChannel,
+  topicJoinLine,
+  topicShowLine,
+} from "./lib/channelTopic";
 import { isChannelName } from "./lib/chantypes";
 import { stripCtcpAction } from "./lib/ctcpAction";
 import { isDocumentVisible } from "./lib/documentVisibility";
@@ -69,6 +76,7 @@ import { setCursorIfAdvances, setSelectedChannel } from "./lib/selection";
 import type { Point } from "./lib/swipe";
 import { isMobile } from "./lib/theme";
 import { formatTimestamp } from "./lib/timeFormat";
+import { type TopicShowEntry, topicShowByWindow } from "./lib/topicShow";
 import { dismissWhoisCard, whoisCardBySlug } from "./lib/whoisCard";
 import { SERVER_WINDOW_NAME, type WindowKind } from "./lib/windowKinds";
 import MessageContextMenu from "./MessageContextMenu";
@@ -1124,7 +1132,14 @@ type InviteAckRow = { type: "invite-ack"; entry: InviteAckEntry; channel: string
 // from `ScrollbackMessage.kind === "topic"` (the persisted mid-session change
 // row) so the two never blur — distinct rows, distinct code paths.
 type TopicRow = { type: "topic-join"; line: TopicJoinLine; id: string };
-type Row = SeparatorRow | UnreadMarkerRow | MessageRow | InviteAckRow | TopicRow;
+// #1914: the `/topic` answer — a SECOND presentational topic row, and a
+// separate variant on purpose. `topic-join` is unsolicited, at most one per
+// window, anchored to the own-JOIN and derived LIVE from `topicByChannel`;
+// this one is operator-requested, may repeat, sits at the moment it was
+// asked, and carries a FROZEN snapshot. Same look, different lifecycle —
+// collapsing them into one variant with a flag would fuse those.
+type TopicShowRow = { type: "topic-show"; line: TopicShowLine; id: string };
+type Row = SeparatorRow | UnreadMarkerRow | MessageRow | InviteAckRow | TopicRow | TopicShowRow;
 
 const ScrollbackPane: Component<Props> = (props) => {
   let listRef!: HTMLDivElement;
@@ -1526,7 +1541,13 @@ const ScrollbackPane: Component<Props> = (props) => {
         }
       }
     }
-    if (msgs.length === 0 && inviteAckEntries.length === 0) return [];
+    // #1914 — the `/topic` answers for THIS window. Keyed by the submitting
+    // window (not the target channel), so a `/topic #other` answers where the
+    // operator typed it. Every window kind can carry one: `/topic #chan` is
+    // legal from a query or the $server window too.
+    const topicShowEntries: TopicShowEntry[] = topicShowByWindow()[key()] ?? [];
+    if (msgs.length === 0 && inviteAckEntries.length === 0 && topicShowEntries.length === 0)
+      return [];
     // Freeze contract: read the FROZEN snapshot, not live getReadCursor.
     const cursor = markerCursorId();
     const sessionTop = sessionTopId();
@@ -1712,6 +1733,27 @@ const ScrollbackPane: Component<Props> = (props) => {
           }
           result.splice(insertAt, 0, { type: "topic-join", line: tjl, id: "topic-join" });
         }
+      }
+    }
+    // #1914 — the `/topic` answers, interleaved by wallclock `at` exactly like
+    // invite-acks: an answer belongs at the moment it was asked, not pinned to
+    // the bottom where later arrivals would make it look like a reply to them.
+    // Sorted on a COPY — `topicShowEntries` is the store's own array.
+    if (topicShowEntries.length > 0) {
+      for (const entry of [...topicShowEntries].sort((a, b) => a.at - b.at || a.ts - b.ts)) {
+        let insertAt = result.length;
+        for (let i = 0; i < result.length; i += 1) {
+          const r = result[i];
+          if (r?.type === "message" && r.msg.server_time > entry.at) {
+            insertAt = i;
+            break;
+          }
+        }
+        result.splice(insertAt, 0, {
+          type: "topic-show",
+          line: topicShowLine(entry.channel, entry.topic),
+          id: `topic-show-${entry.ts}`,
+        });
       }
     }
     return result;
@@ -4073,6 +4115,39 @@ const ScrollbackPane: Component<Props> = (props) => {
                     </span>
                     <Show when={row.line.meta}>
                       <span class="scrollback-topic-join-meta"> — {row.line.meta}</span>
+                    </Show>
+                  </div>
+                );
+              }
+              if (row.type === "topic-show") {
+                // #1914 — the `/topic` answer. Wears the join line's classes on
+                // purpose: it is the same fact, and an operator who has seen one
+                // should not have to learn a second look for the other. Its own
+                // testid keeps the two separable in tests and, like the join
+                // line, keeps it out of the unread/cursor math and row counts.
+                // `text: null` is the "no topic set" answer — printed, because
+                // the operator ASKED and silence would read as a broken verb.
+                return (
+                  <div
+                    class="scrollback-topic-join"
+                    data-testid="topic-show-line"
+                    data-kind="topic-show"
+                  >
+                    <Show
+                      when={row.line.text !== null}
+                      fallback={
+                        <span class="scrollback-topic-join-label">
+                          No topic set for {row.line.channel}
+                        </span>
+                      }
+                    >
+                      <span class="scrollback-topic-join-label">Topic for {row.line.channel}:</span>{" "}
+                      <span class="scrollback-body">
+                        <MircBody body={row.line.text ?? ""} emphasis />
+                      </span>
+                      <Show when={row.line.meta}>
+                        <span class="scrollback-topic-join-meta"> — {row.line.meta}</span>
+                      </Show>
                     </Show>
                   </div>
                 );
