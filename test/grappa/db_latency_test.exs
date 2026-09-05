@@ -128,6 +128,64 @@ defmodule Grappa.DbLatencyTest do
       assert_in_delta row.mean_ms, 6.0, 0.5
     end
 
+    test "an outlier survives the fold into a bucket a mean would erase (#1901)" do
+      # The end-to-end half of `Grappa.DbLatency.DistributionTest`: the unit
+      # test buys the arithmetic, this buys that the arithmetic actually
+      # reaches `snapshot/0` through the real telemetry fold. Until #1901 the
+      # bucket kept `{n, total}` only, so this 31 s write left the table
+      # reading 0.1 ms slower and nothing else.
+      for _ <- 1..99 do
+        :telemetry.execute(
+          [:grappa, :repo, :query],
+          %{total_time: ms(1), queue_time: ms(0)},
+          %{source: "messages", query: ~s|INSERT INTO "messages" ("body") VALUES (?)|}
+        )
+      end
+
+      :telemetry.execute(
+        [:grappa, :repo, :query],
+        %{total_time: ms(31_000), queue_time: ms(0)},
+        %{source: "messages", query: ~s|INSERT INTO "messages" ("body") VALUES (?)|}
+      )
+
+      row = query_row(DbLatency.snapshot(), "messages", :insert)
+
+      assert row.n == 100
+
+      # The mean is the number that hides it: 100 samples, 99 of them 1 ms.
+      # At production scale (324 679 samples) this moves by 0.1 ms.
+      assert_in_delta row.mean_ms, 310.99, 5.0
+
+      # 🔴 And the two that do not. A mutant that keeps the histogram but
+      # takes `max` from the bucket BOUND reports 30 000 ms for a 31 000 ms
+      # write; one that drops the histogram entirely has no max at all.
+      assert_in_delta row.max_ms, 31_000.0, 50.0
+
+      # The tail says it was one accident rather than a shifted population —
+      # the second half of the reading, and the reason a bare `max_ms` was
+      # not enough on its own.
+      assert row.p95_ms <= 1.0
+    end
+
+    test "the span families carry the same shape, so neither axis is half-migrated" do
+      # `persist` and `send_privmsg` fold the same way and hide an outlier
+      # the same way, so they get the same accumulator. A mutant that gives
+      # the histogram to `queries` only leaves the two write-path spans —
+      # mechanisms 1 and 3 of #357 — reading a mean and nothing else.
+      :telemetry.execute([:grappa, :scrollback, :persist, :stop], %{duration: ms(1)}, %{outcome: :ok})
+      :telemetry.execute([:grappa, :scrollback, :persist, :stop], %{duration: ms(9_000)}, %{outcome: :ok})
+      :telemetry.execute([:grappa, :session, :send_privmsg, :stop], %{duration: ms(4_000)}, %{outcome: :ok})
+
+      snapshot = DbLatency.snapshot()
+
+      assert_in_delta snapshot.persist.max_ms, 9_000.0, 20.0
+      assert snapshot.persist.p99_ms >= 9_000.0
+      assert_in_delta snapshot.send_privmsg.max_ms, 4_000.0, 20.0
+
+      # The outcome tally is untouched by the change of accumulator.
+      assert snapshot.persist.outcomes[:ok] == 2
+    end
+
     test "queries are returned sorted by total_ms descending" do
       :telemetry.execute(
         [:grappa, :repo, :query],

@@ -997,7 +997,11 @@ defmodule Grappa.Operator do
             Integer.to_string(row.n),
             fmt_ms(row.total_ms),
             fmt_ms(row.queue_ms),
-            fmt_ms(row.mean_ms)
+            fmt_ms(row.mean_ms),
+            fmt_ms(row.max_ms),
+            fmt_ms(row.p50_ms),
+            fmt_ms(row.p95_ms),
+            fmt_ms(row.p99_ms)
           ],
           "\t"
         )
@@ -1019,6 +1023,7 @@ defmodule Grappa.Operator do
           Integer.to_string(c.n),
           Integer.to_string(c.queue_timeout),
           Integer.to_string(c.busy_locked),
+          Integer.to_string(c.interrupted),
           Integer.to_string(c.dropped)
         ],
         "\t"
@@ -1157,19 +1162,39 @@ defmodule Grappa.Operator do
       "memory_kb"
     ]
 
+  # #1901 — `max_ms` and the three quantiles sit AFTER `mean_ms` rather than
+  # replacing it: the mean is what mechanisms 1 and 3 of #357 are read from
+  # (`send_privmsg.mean_ms − persist.mean_ms`), and removing it to tidy the
+  # table would break a reading that is documented above and in OPERATIONS.
+  # The quantiles are bucket UPPER bounds — `Grappa.DbLatency.Distribution`
+  # says why they are not interpolated.
   defp query_latency_columns,
-    do: ["source", "op", "n", "total_ms", "queue_ms", "mean_ms"]
+    do: ["source", "op", "n", "total_ms", "queue_ms", "mean_ms", "max_ms", "p50_ms", "p95_ms", "p99_ms"]
 
   defp span_latency_columns,
-    do: ["span", "n", "total_ms", "mean_ms", "outcomes"]
+    do: ["span", "n", "total_ms", "mean_ms", "max_ms", "p50_ms", "p95_ms", "p99_ms", "outcomes"]
 
+  # #1657 shipped the `interrupted` counter and this header never learned
+  # about it, so `bin/grappa db-latency` has been printing four values under
+  # four names while the row carried five — a shipped signal that reached no
+  # operator. The row printer below gains it in the same place.
   defp contention_columns,
-    do: ["n", "queue_timeout", "busy_locked", "dropped"]
+    do: ["n", "queue_timeout", "busy_locked", "interrupted", "dropped"]
 
   @spec span_row_text(String.t(), Grappa.DbLatency.span_row()) :: String.t()
-  defp span_row_text(label, %{n: n, total_ms: total, mean_ms: mean, outcomes: outcomes}) do
+  defp span_row_text(label, row) do
     Enum.join(
-      [label, Integer.to_string(n), fmt_ms(total), fmt_ms(mean), fmt_outcomes(outcomes)],
+      [
+        label,
+        Integer.to_string(row.n),
+        fmt_ms(row.total_ms),
+        fmt_ms(row.mean_ms),
+        fmt_ms(row.max_ms),
+        fmt_ms(row.p50_ms),
+        fmt_ms(row.p95_ms),
+        fmt_ms(row.p99_ms),
+        fmt_outcomes(row.outcomes)
+      ],
       "\t"
     )
   end

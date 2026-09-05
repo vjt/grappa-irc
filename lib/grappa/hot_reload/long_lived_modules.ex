@@ -165,6 +165,11 @@ defmodule Grappa.HotReload.LongLivedModules do
   # module's file is covered by listing its parent and must NOT get its own
   # entry. See the "What goes here" note above.
   @state_helpers [
+    # #1901 — a field of `Grappa.DbLatency`'s per-family accumulators. Its
+    # `defstruct` gaining a field is exactly as hot-unsafe as the parent's,
+    # and the #1473 membership test walks the parent's `t` typespec to find
+    # it, so this entry is derived rather than a judgement call.
+    Grappa.DbLatency.Distribution,
     Grappa.Session.AwayState,
     Grappa.Session.Deps,
     Grappa.Session.DirectoryIngest,
@@ -212,7 +217,8 @@ defmodule Grappa.HotReload.LongLivedModules do
   `long_lived` module. Keep in sync with `@state_helpers`.
   """
   @type state_helper ::
-          Grappa.Session.AwayState
+          Grappa.DbLatency.Distribution
+          | Grappa.Session.AwayState
           | Grappa.Session.Deps
           | Grappa.Session.DirectoryIngest
           | Grappa.Session.GhostRecovery

@@ -99,6 +99,8 @@ defmodule Grappa.DbLatency do
 
   use GenServer
 
+  alias Grappa.DbLatency.Distribution
+
   @handler_id "grappa-db-latency"
   @events [
     [:grappa, :repo, :query],
@@ -119,19 +121,40 @@ defmodule Grappa.DbLatency do
 
   @type op :: :select | :insert | :update | :delete | :count | :other
 
+  @typedoc """
+  One `{source, op}` bucket. Everything but `queue_ms` comes from a
+  `t:Grappa.DbLatency.Distribution.reading/0`, so `max_ms` is exact and the
+  three quantiles are UPPER bounds — see that module for why an interpolated
+  quantile was refused.
+
+  🔴 `queue_ms` stays a plain cumulative sum, and that is a KNOWN GAP rather
+  than a judgement that the pool axis does not matter. #1687 measured a
+  victim's 62 s as ~31 s of DBConnection checkout PLUS ~31 s of
+  `busy_timeout`, so a queue-time outlier is exactly as invisible in a mean
+  as an execution-time one. #1901 asks for the execution axis; giving the
+  queue its own histogram is the same change again and has not been made.
+  """
   @type query_row :: %{
           source: String.t() | nil,
           op: op(),
           n: non_neg_integer(),
           total_ms: float(),
           queue_ms: float(),
-          mean_ms: float()
+          mean_ms: float(),
+          max_ms: float(),
+          p50_ms: float(),
+          p95_ms: float(),
+          p99_ms: float()
         }
 
   @type span_row :: %{
           n: non_neg_integer(),
           total_ms: float(),
           mean_ms: float(),
+          max_ms: float(),
+          p50_ms: float(),
+          p95_ms: float(),
+          p99_ms: float(),
           outcomes: %{atom() => non_neg_integer()}
         }
 
@@ -217,18 +240,20 @@ defmodule Grappa.DbLatency do
           lock_stalls: [lock_stall_row()]
         }
 
-  # Internal accumulators carry NATIVE time units (integer sums); the
-  # native → millisecond conversion happens once, at snapshot time.
+  # Internal accumulators carry NATIVE time units; the native → millisecond
+  # conversion happens once, at snapshot time. Since #1901 the duration half
+  # of every family is a `Distribution` rather than an `{n, total}` pair —
+  # same exactness for those two, plus the max and the tail a mean erases.
   defstruct queries: %{},
-            send_privmsg: %{n: 0, total: 0, outcomes: %{}},
-            persist: %{n: 0, total: 0, outcomes: %{}},
+            send_privmsg: %{dist: %Distribution{}, outcomes: %{}},
+            persist: %{dist: %Distribution{}, outcomes: %{}},
             contention: %{n: 0, queue_timeout: 0, busy_locked: 0, interrupted: 0, dropped: 0},
             lock_stalls: []
 
   @type t :: %__MODULE__{
-          queries: %{{String.t() | nil, op()} => %{n: non_neg_integer(), total: integer(), queue: integer()}},
-          send_privmsg: %{n: non_neg_integer(), total: integer(), outcomes: %{atom() => non_neg_integer()}},
-          persist: %{n: non_neg_integer(), total: integer(), outcomes: %{atom() => non_neg_integer()}},
+          queries: %{{String.t() | nil, op()} => %{dist: Distribution.t(), queue: integer()}},
+          send_privmsg: %{dist: Distribution.t(), outcomes: %{atom() => non_neg_integer()}},
+          persist: %{dist: Distribution.t(), outcomes: %{atom() => non_neg_integer()}},
           contention: contention_row(),
           lock_stalls: [lock_stall_row()]
         }
@@ -314,11 +339,10 @@ defmodule Grappa.DbLatency do
   @spec fold([atom()], map(), map(), t()) :: t()
   defp fold([:grappa, :repo, :query], measurements, metadata, state) do
     key = {Map.get(metadata, :source), classify_op(Map.get(metadata, :query))}
-    prev = Map.get(state.queries, key, %{n: 0, total: 0, queue: 0})
+    prev = Map.get(state.queries, key, %{dist: %Distribution{}, queue: 0})
 
     updated = %{
-      n: prev.n + 1,
-      total: prev.total + native(measurements, :total_time),
+      dist: Distribution.add(prev.dist, native(measurements, :total_time)),
       queue: prev.queue + native(measurements, :queue_time)
     }
 
@@ -416,7 +440,7 @@ defmodule Grappa.DbLatency do
   # `holder_pid` to fill the column would turn the one honest thing this row
   # says into a guess. `registered_holders` / `registered_waiters` are what
   # separate "the seam is blind here" from "the other two arms already spoke".
-  defp fold([:grappa, :repo, :lock_stall, :nif_census], measurements, metadata, state) do
+  defp fold([:grappa, :repo, :lock_stall, :nif_census], _measurements, metadata, state) do
     push_stall(state, %{
       phase: :nif_census,
       observed_at: metadata.observed_at,
@@ -445,8 +469,7 @@ defmodule Grappa.DbLatency do
   @spec add_span(map(), map(), map()) :: map()
   defp add_span(acc, measurements, metadata) do
     %{
-      n: acc.n + 1,
-      total: acc.total + native(measurements, :duration),
+      dist: Distribution.add(acc.dist, native(measurements, :duration)),
       outcomes: Map.update(acc.outcomes, Map.get(metadata, :outcome), 1, &(&1 + 1))
     }
   end
@@ -489,15 +512,10 @@ defmodule Grappa.DbLatency do
   defp to_snapshot(state) do
     queries =
       state.queries
-      |> Enum.map(fn {{source, op}, %{n: n, total: total, queue: queue}} ->
-        %{
-          source: source,
-          op: op,
-          n: n,
-          total_ms: to_ms(total),
-          queue_ms: to_ms(queue),
-          mean_ms: mean_ms(total, n)
-        }
+      |> Enum.map(fn {{source, op}, %{dist: dist, queue: queue}} ->
+        dist
+        |> Distribution.reading()
+        |> Map.merge(%{source: source, op: op, queue_ms: Distribution.to_ms(queue)})
       end)
       |> Enum.sort_by(& &1.total_ms, :desc)
 
@@ -511,14 +529,7 @@ defmodule Grappa.DbLatency do
   end
 
   @spec span_snapshot(map()) :: span_row()
-  defp span_snapshot(%{n: n, total: total, outcomes: outcomes}) do
-    %{n: n, total_ms: to_ms(total), mean_ms: mean_ms(total, n), outcomes: outcomes}
+  defp span_snapshot(%{dist: dist, outcomes: outcomes}) do
+    dist |> Distribution.reading() |> Map.put(:outcomes, outcomes)
   end
-
-  @spec to_ms(integer()) :: float()
-  defp to_ms(native), do: System.convert_time_unit(native, :native, :microsecond) / 1000.0
-
-  @spec mean_ms(integer(), non_neg_integer()) :: float()
-  defp mean_ms(_, 0), do: 0.0
-  defp mean_ms(total, n), do: to_ms(total) / n
 end

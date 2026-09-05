@@ -317,6 +317,20 @@ defmodule Grappa.OperatorTest do
       assert output =~ "messages\tinsert\t1"
       assert output =~ "# spans (D1 write-path)"
       assert output =~ "# contention"
+
+      # #1901 — the columns an operator reads an outlier off. `mean_ms` stays
+      # where it was rather than being replaced: mechanisms 1 and 3 of #357
+      # are read from it, and tidying it away would break a documented
+      # reading. A mutant that renames or reorders the header without
+      # touching the row printer puts the numbers under the wrong names.
+      assert output =~ "mean_ms\tmax_ms\tp50_ms\tp95_ms\tp99_ms"
+      assert output =~ "span\tn\ttotal_ms\tmean_ms\tmax_ms\tp50_ms\tp95_ms\tp99_ms\toutcomes"
+
+      # #1657 shipped this counter and the header never learned about it, so
+      # the CLI printed four values under four names while the row carried
+      # five. A header and a row printer that disagree silently mislabel
+      # every column after the gap.
+      assert output =~ "n\tqueue_timeout\tbusy_locked\tinterrupted\tdropped"
     end
 
     test "an unannounced closing bracket renders its instant, its verdict and its write path (#1888)" do
