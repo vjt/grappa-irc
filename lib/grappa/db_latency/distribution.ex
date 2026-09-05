@@ -45,6 +45,15 @@ defmodule Grappa.DbLatency.Distribution do
   sample count, against the unbounded list a reservoir or a keep-the-last-N
   would need. Nothing here allocates per sample.
 
+  ## Constructing one
+
+  `%Grappa.DbLatency.Distribution{}` — there is no `new/0`. Dialyzer flagged
+  the first cut of one as a `contract_supertype` (its success typing was the
+  literal zero struct), which is the type checker saying the function adds
+  nothing over the literal. `Grappa.DbLatency` builds its accumulators from
+  the literal in its own `defstruct` defaults, so a second constructor would
+  be a second thing to keep in step.
+
   ## Units
 
   `total` and `max` are kept in NATIVE units and converted once, at
@@ -102,9 +111,6 @@ defmodule Grappa.DbLatency.Distribution do
           p95_ms: float(),
           p99_ms: float()
         }
-
-  @spec new() :: t()
-  def new, do: %__MODULE__{}
 
   @doc """
   Fold one measurement, in NATIVE units.
@@ -167,7 +173,7 @@ defmodule Grappa.DbLatency.Distribution do
   defp quantile_ms(dist, q), do: walk(@bounds, dist, ceil(q * dist.n), 0)
 
   @spec walk([pos_integer()], t(), pos_integer(), non_neg_integer()) :: float()
-  defp walk([], dist, _rank, _seen), do: to_ms(dist.max)
+  defp walk([], dist, _, _), do: to_ms(dist.max)
 
   defp walk([bound | rest], dist, rank, seen) do
     seen = seen + Map.get(dist.buckets, bound, 0)

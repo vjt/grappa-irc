@@ -45629,13 +45629,22 @@ divergence. Separately, `bin/grappa db-latency` has been printing four
 contention values under four names since #1657 shipped a fifth
 (`interrupted`); the header now carries it.
 
-_Deploy: **COLD**, and NOT for the reason the file-path test gives — the diff
-touches no `config/`, no migration, no `mix.exs`, no `infra/`, no
-`application.ex`. Measured through `Grappa.Deploy.Preflight.classify_state_shape/2`
-against `origin/main` (349145af), with an added-field/identical pair as the
-positive and negative control: 3 of 34 tracked long-lived files changed
-state shape — `lock_watch.ex` (`defstruct` gains `:nif_watch`),
-`db_latency.ex` (the accumulators become `Distribution`s) and the new
-`db_latency/distribution.ex`. A hot reload would leave the running
-`DbLatency` holding `%{n:, total:, outcomes:}` while the new `add_span/3`
-expects `%{dist:, outcomes:}`._
+_Deploy: **COLD**, and the state-shape check is what establishes it — not the
+touched-paths heuristic. Measured through
+`Grappa.Deploy.Preflight.classify_state_shape/2` against `origin/main`
+(349145af), with an added-field/identical pair as the positive and negative
+control: **3 of 34** tracked long-lived files changed state shape —
+`lock_watch.ex` (`defstruct` gains `:nif_watch`), `db_latency.ex` (the
+accumulators become `Distribution`s) and the new `db_latency/distribution.ex`.
+A hot reload would leave the running `DbLatency` holding
+`%{n:, total:, outcomes:}` while the new `add_span/3` expects
+`%{dist:, outcomes:}`.
+
+🔴 Worth recording because it nearly went the other way: for the first four
+commits this diff touched NO `config/`, no migration, no `mix.exs`, no
+`infra/` and no `application.ex`, so a paths-only reading answered HOT while
+the state-shape check already answered COLD. `config/config.exs` entered only
+at the end, and for a reason unrelated to deploy safety — Credo requires a
+Logger metadata key to be declared in the allowlist, and the census emits two.
+A verdict that would have been right by accident is not the same as one that
+was measured._

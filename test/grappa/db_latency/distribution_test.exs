@@ -15,7 +15,7 @@ defmodule Grappa.DbLatency.DistributionTest do
   defp ms(n), do: System.convert_time_unit(n, :millisecond, :native)
 
   defp fold(durations_ms) do
-    Enum.reduce(durations_ms, Distribution.new(), &Distribution.add(&2, ms(&1)))
+    Enum.reduce(durations_ms, %Distribution{}, &Distribution.add(&2, ms(&1)))
   end
 
   # The exact quantile of a sample, by rank, computed independently of the
@@ -32,7 +32,7 @@ defmodule Grappa.DbLatency.DistributionTest do
       # A source nobody queried in this window is a real state, and the CLI
       # renders it beside the used ones. A mutant that divides by `n` for the
       # mean, or takes `hd/1` of an empty bucket list, dies here.
-      assert Distribution.reading(Distribution.new()) == %{
+      assert Distribution.reading(%Distribution{}) == %{
                n: 0,
                total_ms: 0.0,
                mean_ms: 0.0,
@@ -70,7 +70,7 @@ defmodule Grappa.DbLatency.DistributionTest do
       healthy = List.duplicate(1, 1_000)
 
       before = Distribution.reading(fold(healthy))
-      after_stall = Distribution.reading(fold(healthy ++ [31_000]))
+      after_stall = Distribution.reading(fold([31_000 | healthy]))
 
       # The mean moves — by ~31 ms at this scale, by 0.1 ms at production
       # scale — and in NEITHER case does it say a 31-second write happened.
@@ -95,7 +95,7 @@ defmodule Grappa.DbLatency.DistributionTest do
     test "a quantile is the smallest bucket bound covering that share, never an interpolation" do
       # 99 samples at 1 ms and 1 at 400 ms: the true p99 is 1 ms, and the
       # smallest bound covering 99 % is 1 ms. The p50 is the same bound.
-      reading = Distribution.reading(fold(List.duplicate(1, 99) ++ [400]))
+      reading = Distribution.reading(fold([400 | List.duplicate(1, 99)]))
 
       assert reading.p50_ms == 1.0
       assert reading.p99_ms == 1.0

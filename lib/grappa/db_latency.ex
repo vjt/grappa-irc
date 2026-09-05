@@ -282,7 +282,7 @@ defmodule Grappa.DbLatency do
   independent copy of the set as the oracle and asserts it equals this one, so
   the drift is a named failure rather than a missing row.
   """
-  @spec attached_events() :: [[atom()]]
+  @spec attached_events() :: nonempty_list(nonempty_list(atom()))
   def attached_events, do: @events
 
   ## ----- GenServer callbacks ------------------------------------------
@@ -440,7 +440,7 @@ defmodule Grappa.DbLatency do
   # `holder_pid` to fill the column would turn the one honest thing this row
   # says into a guess. `registered_holders` / `registered_waiters` are what
   # separate "the seam is blind here" from "the other two arms already spoke".
-  defp fold([:grappa, :repo, :lock_stall, :nif_census], _measurements, metadata, state) do
+  defp fold([:grappa, :repo, :lock_stall, :nif_census], _, metadata, state) do
     push_stall(state, %{
       phase: :nif_census,
       observed_at: metadata.observed_at,

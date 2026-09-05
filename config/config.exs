@@ -415,6 +415,14 @@ config :logger, :console,
     # was written to leave it out. An operator aggregating `held_ms` must not
     # find waits mixed into it.
     :longest_wait_ms,
+    # #1901 — the NIF census's own two, and neither reuses a key above for the
+    # same reason #1687 refused `:held_ms`. `:waiters` counts writers PROVABLY
+    # blocked; a census counted no queue, it photographed a cohort of which
+    # one member is the holder. `:longest_wait_ms` names a WAIT; the longest
+    # parked process may be the writer that was never waiting at all. An
+    # operator aggregating either key must not find census rows mixed in.
+    :parked,
+    :longest_parked_ms,
     :pid,
     :unexpected,
     # Bootstrap summary: how many credentials we enumerated and how
