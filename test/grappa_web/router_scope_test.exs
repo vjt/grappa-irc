@@ -95,6 +95,13 @@ defmodule GrappaWeb.RouterScopeTest do
     {"PUT", "/me/settings/notification-prefs"},
     {"GET", "/me/settings/upload-ttl-seconds"},
     {"PUT", "/me/settings/upload-ttl-seconds"},
+    # #1883 — the pre-upload confirm opt-in. Client-usable for the same
+    # reason its upload-retention sibling above is: it configures how this
+    # client SENDS, not who the account is, and a headless client that can
+    # upload has every business deciding whether it is asked first. It
+    # changes no credential and reveals nothing about the account.
+    {"GET", "/me/settings/upload-confirm-enabled"},
+    {"PUT", "/me/settings/upload-confirm-enabled"},
     {"GET", "/me/settings/auto-away-debounce-seconds"},
     {"PUT", "/me/settings/auto-away-debounce-seconds"},
     {"GET", "/me/settings/vhost"},
