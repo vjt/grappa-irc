@@ -102,13 +102,19 @@ const inflight = new Map<ChannelKey, ActiveUpload>();
 // transition (inflight is cleared on resolve/reject; this isn't) so
 // retryUpload has the file + slug + channel to re-dispatch with.
 const lastAttempt = new Map<ChannelKey, { file: File; networkSlug: string; channelName: string }>();
-// File staged behind the privacy modal (one at a time — modal is a
-// global singleton). Keyed by channel so dismiss/continue knows what
-// to retry.
-const pendingPrivacyGated = new Map<
-  ChannelKey,
-  { file: File; networkSlug: string; channelName: string }
->();
+// #1883 (ordering fix) — the batch waiting behind the privacy notice, as a
+// CONTINUATION rather than a staged file.
+//
+// The notice used to be gated in `startUpload`, i.e. after the operator had
+// already answered the Send confirm: they were told where the files go only
+// once they had committed to sending them. Terms first, decision second — so
+// the gate moved to the FRONT of `triggerUploads` and what waits here is "the
+// rest of the trigger", which may be a confirm or a straight enqueue depending
+// on the opt-in.
+//
+// One at a time, because the modal is a global singleton — the same reason the
+// old map was keyed by channel and held one entry per key.
+let pendingTrigger: (() => void) | null = null;
 
 // #118 — sequential per-channel upload queue. Files pasted/dropped/picked
 // in one batch wait here behind the active upload; each settle pumps the
@@ -234,7 +240,7 @@ export function resetUploadsForTests(): void {
   inflight.clear();
   queue.clear();
   lastAttempt.clear();
-  pendingPrivacyGated.clear();
+  pendingTrigger = null;
   setUploadStates({});
   setBatchByChannel({});
   setModalState({ open: false, host: null, key: null });
@@ -725,62 +731,86 @@ export function triggerUploads(
     return { id: `picked-${nextAttachmentId}`, file: normalizeUploadFile(raw) };
   });
 
-  // #1883 — the opt-in branch, and it sits HERE on purpose: after
-  // normalisation, never before it. `enqueueUploads` does NOT normalise, so
-  // the tempting spelling
-  //
-  //     if (!uploadConfirmEnabled()) return enqueueUploads(key, ..., rawFiles)
-  //
-  // would send the RAW files and re-break the iOS `.m4r` case this function
-  // exists to rescue (iOS labels it `application/octet-stream`; only
-  // `normalizeUploadFile` maps it to `audio/mp4`). Branch on policy, never on
-  // the un-normalised input.
-  if (!uploadConfirmEnabled()) {
-    enqueueUploads(
-      key,
-      networkSlug,
-      channelName,
-      normalised.map((s) => s.file),
-    );
-    return;
-  }
-
-  const [staged, setStaged] = createSignal<StagedFile[]>(normalised);
-
-  requestConfirm({
-    onDisplaced,
-    // The destination goes in the TITLE, which is also the dialog's
-    // `aria-label` — the one string a screen reader announces on open, and the
-    // one fact a mis-tap most needs to see. Target-neutral "to X" rather than
-    // "in the channel": `channelName` is a nick on a query window.
-    title: `Send to ${channelName}?`,
-    // Count-free on purpose: the rows below ARE the count, and a number baked
-    // into this string would start lying the moment a row is removed (the
-    // request is not re-issued on removal — see ConfirmAttachments.items).
-    body: "Each file below is uploaded and its link is posted there. This cannot be taken back.",
-    confirmLabel: "Send",
-    onConfirm: () =>
+  // Everything past the privacy notice. A closure because the notice may have
+  // to run first and resume this afterwards — see `pendingTrigger`.
+  const proceed = (): void => {
+    // #1883 — the opt-in branch, and it sits HERE on purpose: after
+    // normalisation, never before it. `enqueueUploads` does NOT normalise, so
+    // the tempting spelling
+    //
+    //     if (!uploadConfirmEnabled()) return enqueueUploads(key, ..., rawFiles)
+    //
+    // would send the RAW files and re-break the iOS `.m4r` case this function
+    // exists to rescue (iOS labels it `application/octet-stream`; only
+    // `normalizeUploadFile` maps it to `audio/mp4`). Branch on policy, never on
+    // the un-normalised input.
+    if (!uploadConfirmEnabled()) {
       enqueueUploads(
         key,
         networkSlug,
         channelName,
-        staged().map((s) => s.file),
-      ),
-    // No third door: there is no other route to "post this file here". Cancel
-    // and Send are the whole question.
-    alternative: null,
-    attachments: {
-      items: (): ConfirmAttachment[] => staged().map(toAttachment),
-      onRemove: (id: string): void => {
-        const rest = staged().filter((s) => s.id !== id);
-        setStaged(rest);
-        // Removing the last row is the same answer as Cancel — an empty dialog
-        // asking "send these?" has nothing to affirm. Dismiss rather than
-        // leaving a Send button that would be a no-op.
-        if (rest.length === 0) dismissConfirm();
+        normalised.map((s) => s.file),
+      );
+      return;
+    }
+
+    openSendConfirm();
+  };
+
+  // The privacy notice comes FIRST, before either door below. It states the
+  // terms — which host the bytes go to, and for how long — and a question about
+  // terms is worth nothing after the answer has been given. Per BATCH now,
+  // where the old placement in `startUpload` asked per FILE: an operator who
+  // declines "don't show this again" is asked once for the drop, not once per
+  // file in it, which matches the Send confirm's own granularity.
+  const host = activeHost();
+  const acked = localStorage.getItem(privacyKey(host));
+  if (acked === null || acked === "") {
+    pendingTrigger = proceed;
+    setModalState({ open: true, host, key });
+    return;
+  }
+
+  proceed();
+
+  function openSendConfirm(): void {
+    const [staged, setStaged] = createSignal<StagedFile[]>(normalised);
+
+    requestConfirm({
+      onDisplaced,
+      // The destination goes in the TITLE, which is also the dialog's
+      // `aria-label` — the one string a screen reader announces on open, and the
+      // one fact a mis-tap most needs to see. Target-neutral "to X" rather than
+      // "in the channel": `channelName` is a nick on a query window.
+      title: `Send to ${channelName}?`,
+      // Count-free on purpose: the rows below ARE the count, and a number baked
+      // into this string would start lying the moment a row is removed (the
+      // request is not re-issued on removal — see ConfirmAttachments.items).
+      body: "Each file below is uploaded and its link is posted there. This cannot be taken back.",
+      confirmLabel: "Send",
+      onConfirm: () =>
+        enqueueUploads(
+          key,
+          networkSlug,
+          channelName,
+          staged().map((s) => s.file),
+        ),
+      // No third door: there is no other route to "post this file here". Cancel
+      // and Send are the whole question.
+      alternative: null,
+      attachments: {
+        items: (): ConfirmAttachment[] => staged().map(toAttachment),
+        onRemove: (id: string): void => {
+          const rest = staged().filter((s) => s.id !== id);
+          setStaged(rest);
+          // Removing the last row is the same answer as Cancel — an empty dialog
+          // asking "send these?" has nothing to affirm. Dismiss rather than
+          // leaving a Send button that would be a no-op.
+          if (rest.length === 0) dismissConfirm();
+        },
       },
-    },
-  });
+    });
+  }
 }
 
 // #118 — the post-confirm half: enqueue ALL files, bump the batch total, then
@@ -852,32 +882,27 @@ function pumpQueue(key: ChannelKey): void {
   startUpload(key, next);
 }
 
-// Privacy gate (per file — honors a not-"remembered" user's ask-every-time
-// choice; the common acked case never re-prompts) then dispatch.
+// Dispatch. The privacy gate used to live HERE, per file — it now runs once at
+// the front of `triggerUploads`, before the operator is asked to Send, so
+// nothing reaches the queue un-acknowledged and asking again here would be a
+// second prompt for a question already answered.
 function startUpload(key: ChannelKey, item: QueuedUpload): void {
-  const host = activeHost();
-  const ackd = localStorage.getItem(privacyKey(host));
-  if (ackd === null || ackd === "") {
-    pendingPrivacyGated.set(key, item);
-    setModalState({ open: true, host, key });
-    return;
-  }
   void dispatchUpload(key, item.networkSlug, item.channelName, item.file);
 }
 
 export function acknowledgePrivacy(rememberChoice: boolean): void {
   const state = modalState();
   if (!state.open) return;
-  const host = state.host;
-  const pendingKey = state.key;
   if (rememberChoice) {
-    localStorage.setItem(privacyKey(host), "1");
+    localStorage.setItem(privacyKey(state.host), "1");
   }
   setModalState({ open: false, host: null, key: null });
-  const pending = pendingPrivacyGated.get(pendingKey);
-  if (pending === undefined) return;
-  pendingPrivacyGated.delete(pendingKey);
-  void dispatchUpload(pendingKey, pending.networkSlug, pending.channelName, pending.file);
+  // Resume the batch this notice interrupted: the Send confirm when the opt-in
+  // is on, a straight enqueue when it is off. Cleared FIRST so a resume that
+  // opens another modal cannot re-enter a stale continuation.
+  const resume = pendingTrigger;
+  pendingTrigger = null;
+  resume?.();
 }
 
 export function cancelUpload(key: ChannelKey): void {
@@ -901,7 +926,9 @@ export function dismissUpload(key: ChannelKey): void {
   const wasModal = modal.open && modal.key === key;
   if (wasModal) {
     setModalState({ open: false, host: null, key: null });
-    pendingPrivacyGated.delete(key);
+    // Declining the terms cancels the batch before anything is queued — the
+    // continuation is the only thing holding it, so dropping it IS the cancel.
+    pendingTrigger = null;
   }
   const entry = inflight.get(key);
   if (entry !== undefined) {

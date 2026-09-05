@@ -45654,3 +45654,54 @@ not to leave it for whoever turns the setting on.
 _Deploy: **COLD** — new server routes + context accessors. cic changes ride with
 it; no wire-shape change (settings endpoints are outside the generated wire
 schema, so no `protocol_version` bump)._
+<!-- entry #1883e -->
+
+---
+
+## 2026-09-05 — #1883e: the privacy notice runs before the send confirm
+
+**Reported in testing (Gabriele, 2026-09-05): the Send confirm opened FIRST and
+the "files go to <host>" notice second.** Not a preference — an ordering bug.
+The notice states the TERMS (which host receives the bytes, and for how long); a
+question about terms is worth nothing once the answer has been given. The
+operator was told where their file goes only after committing to send it.
+
+**Cause: the gate sat in `startUpload`, inside the queue pump.** That is
+downstream of the Send confirm by construction — `triggerUploads` asks,
+`enqueueUploads` queues, `pumpQueue` pumps, and only then did `startUpload`
+check `image-upload-privacy-acknowledged:<host.id>`. Before #1883d moved the
+confirm into `triggerUploads` there was no second modal to be out of order
+with, so the placement was invisible rather than wrong.
+
+**Fix: the gate moves to the FRONT of `triggerUploads`**, ahead of both doors:
+
+```
+privacy notice → send confirm → enqueue → upload      (opt-in ON)
+privacy notice → enqueue → upload                     (opt-in OFF)
+```
+
+What waits behind the notice is a **continuation** (`pendingTrigger`), not a
+staged file, because what comes next depends on the opt-in. `acknowledgePrivacy`
+clears it before invoking it, so a resume that opens another modal cannot
+re-enter a stale one; `dismissUpload` drops it, and since nothing is queued yet
+**dropping the continuation IS the cancel**.
+
+**The old gate was REMOVED, not left as a belt.** Two gates would ask an
+operator who declines "don't show this again" twice per batch — once at the
+trigger, once per file in the pump. With `enqueueUploads` private and reachable
+only through `triggerUploads`, nothing can arrive at the queue
+un-acknowledged, so the second check could only ever re-ask. `pendingPrivacyGated`
+went with it: dead state, and a parallel structure that would have drifted.
+
+**Accepted behaviour change, stated so it is not rediscovered as a bug.** An
+operator who never ticks "don't show this again" is now asked **once per BATCH**
+rather than once per FILE — dropping five files was five notices. That also
+matches the Send confirm's own granularity.
+
+**Known rough edge, NOT fixed here.** "Don't show this again" remains a one-way
+door: the only way back is deleting the localStorage key by hand. That is
+exactly the criticism #1883 levelled at this flag (per-browser, invisible, not
+revocable from the UI), and now that upload preferences have a home in settings
+the reset belongs next to the opt-in. Deliberately out of scope for this slice.
+
+_Deploy: **HOT — `--cic` only.** Client ordering; no server change._

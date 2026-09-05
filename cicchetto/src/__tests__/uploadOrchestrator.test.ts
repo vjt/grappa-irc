@@ -1274,12 +1274,14 @@ describe("the confirm gate (#1883)", () => {
   });
 
   it("the confirm lists every picked file by name and size", () => {
+    ackPrivacy();
     triggerUploads(key, slug, channel, [img("a.png"), img("b.png")]);
     expect(attachments().map((a) => a.label)).toEqual(["a.png", "b.png"]);
     expect(attachments().every((a) => a.detail !== "")).toBe(true);
   });
 
   it("an image carries a thumbnail source; a non-image carries none", () => {
+    ackPrivacy();
     triggerUploads(key, slug, channel, [img("a.png"), sampleNonImage()]);
     expect(attachments()[0]?.thumbnail).not.toBeNull();
     expect(attachments()[1]?.thumbnail).toBeNull();
@@ -1352,6 +1354,7 @@ describe("the confirm gate (#1883)", () => {
   });
 
   it("a second pick replaces the pending confirm rather than stacking one", () => {
+    ackPrivacy();
     triggerUpload(key, slug, channel, img("first.png"));
     triggerUpload(key, slug, channel, img("second.png"));
     expect(attachments().map((a) => a.label)).toEqual(["second.png"]);
@@ -1371,6 +1374,36 @@ describe("the confirm gate (#1883)", () => {
   // it is an opt-in setting now. What survives, and is the part worth keeping,
   // is that WHILE it is on there is no per-dialog "don't ask again" — turning
   // it off is a deliberate trip to settings, not a checkbox on the way past.
+  // #1883 ordering fix — the privacy notice states the terms (which host, for
+  // how long); asking it AFTER the operator has answered Send tells them where
+  // the files go once they have already agreed to send them. It now runs FIRST,
+  // and the Send confirm does not exist until the terms are accepted.
+  it("shows the privacy notice BEFORE the send confirm, not after it", () => {
+    // Deliberately un-acked: this is the first upload to this host.
+    triggerUploads(key, slug, channel, [img("a.png")]);
+
+    expect(privacyModalState().open).toBe(true);
+    expect(confirmRequest()).toBeNull();
+    expect(pendingResolvers.length).toBe(0);
+
+    acknowledgePrivacy(false);
+
+    expect(privacyModalState().open).toBe(false);
+    expect(confirmRequest()).not.toBeNull();
+    // Still nothing on the wire — the confirm is the second question.
+    expect(pendingResolvers.length).toBe(0);
+  });
+
+  it("declining the terms cancels the batch — no confirm, nothing uploaded", () => {
+    triggerUploads(key, slug, channel, [img("a.png")]);
+    expect(privacyModalState().open).toBe(true);
+
+    dismissUpload(key);
+
+    expect(confirmRequest()).toBeNull();
+    expect(pendingResolvers.length).toBe(0);
+  });
+
   // #1883 — the OS share target is the one door with no gesture left on screen,
   // so a confirm replaced before it is answered loses the files in silence.
   // `triggerUploads` carries the caller's displacement callback so that outcome
