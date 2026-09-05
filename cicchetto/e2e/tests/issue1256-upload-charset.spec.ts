@@ -72,6 +72,10 @@ test("#1256 — a pasted UTF-8 block uploads labelled and renders with its accen
   if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
 
   const vjt = specUser();
+  // #1883 — the send-confirm is an OPT-IN setting now, default OFF. This spec
+  // is ABOUT the confirm, so it turns it on rather than relying on a default
+  // that no longer holds. Server-side and per-user, so it survives the load.
+  await setUploadConfirmEnabled(vjt.token, true);
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 

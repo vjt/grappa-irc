@@ -69,10 +69,23 @@ export async function sendPickedFiles(page: Page): Promise<void> {
   await expect(confirm).toBeHidden({ timeout: 5_000 });
 }
 
-// Feed the hidden file input (no OS dialog under setInputFiles),
-// authorise the 1883 send-confirm, and wait for the privacy modal.
-// Fresh context per test → both modals fire every time. Returns the
-// PRIVACY modal locator for the caller to Continue or Cancel.
+// Feed the hidden file input (no OS dialog under setInputFiles) and wait for
+// the privacy notice. Returns the PRIVACY modal locator for the caller to
+// Continue or Cancel.
+//
+// #1883d/#1883e — this used to drive `sendPickedFiles` FIRST and then wait for
+// the privacy modal, which encoded two things that are no longer true:
+//
+//   * the send-confirm fired on every upload. It is now an OPT-IN setting,
+//     default OFF (`upload_confirm_enabled`), so the default journey this
+//     fixture describes has no confirm in it at all;
+//   * the confirm came BEFORE the notice. The order is now reversed — terms
+//     first, decision second — so even with the opt-in ON, waiting for the
+//     confirm before the notice deadlocks.
+//
+// This fixture deliberately follows the DEFAULT a real user gets. A spec whose
+// subject IS the confirm turns the opt-in on itself (see
+// `setUploadConfirmEnabled`) and drives `sendPickedFiles` after Continue.
 export async function pickFile(
   page: Page,
   file: PickerFile,
@@ -80,7 +93,6 @@ export async function pickFile(
 ): Promise<Locator> {
   const picker = page.locator("input[data-file-picker]");
   await picker.setInputFiles(file);
-  await sendPickedFiles(page);
 
   const modal = page.getByRole("dialog", { name: modalHeading });
   await expect(modal).toBeVisible({ timeout: 5_000 });

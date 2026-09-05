@@ -22,6 +22,7 @@
 import type { Page } from "@playwright/test";
 import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
+import { setUploadConfirmEnabled } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 import { EMBEDDED_MODAL_HEADING, sendPickedFiles } from "../fixtures/uploadJourney";
@@ -54,6 +55,10 @@ function countUploadPosts(page: Page): () => number {
 // pre-acking it puts the browser in the exact state of the returning operator
 // the issue describes — the one for whom nothing at all stood in the way.
 async function asReturningOperator(page: Page): Promise<void> {
+  // #1883 — the confirm is an OPT-IN setting now, default OFF. This whole
+  // spec is ABOUT the confirm, so the operator it describes has opted in;
+  // without this every case here would assert a dialog that never opens.
+  await setUploadConfirmEnabled(specUser().token, true);
   await loginAs(page, specUser());
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
   await page.evaluate(() =>
