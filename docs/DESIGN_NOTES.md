@@ -45410,3 +45410,106 @@ not. Rows are ephemeral and identity-scoped — lost on refresh, like an
 invite-ack — and presentational, so they stay out of the unread/cursor math.
 
 _Deploy: **HOT — `--cic` only.** No server change, no wire change._
+<!-- entry #1916 -->
+
+---
+
+## 2026-09-05 — #1916: the credits jingle becomes a phrase, and the loudness becomes a test
+
+`cicchetto/src/lib/creditsAudio.ts` — the credit roll's soundtrack, shipped in
+#1773 — was eight `triangle` notes over a static A2 sine, re-armed verbatim
+every 1.92 s. The field complaint ("it repeats too soon") was right in
+substance, and the fix is longer and more chiptune. What is worth recording is
+not the tune; it is the three things the work settled.
+
+### The arrangement is DATA, and the loop length is an assumption
+
+`BARS` is an array of bars walked in order (Am → F → C → G) and `creditsBar/1`
+expands one to typed `CreditsEvent`s; the scheduler renders those events and
+never reads the score. Going from four bars to eight is four more entries in
+that array — no code moves. That shape was chosen precisely because **the loop
+length was the issue's one open question and it was never ruled on**: four bars
+/ 7.68 s is the orchestrator's declared assumption, not vjt's call, and the
+array is what makes reversing it cheap.
+
+The chiptune register is three swaps the issue offered — `square` lead,
+`triangle` demoted to a bass line that MOVES with the chord (the drone is gone,
+not joined), one noise channel for percussion — and one it did not. **The snare
+TAKES the hat's slot rather than stacking on it.** That is how a
+two-pulse-plus-noise chip behaves, and it is also load-bearing for the budget
+below: hat and snare can never sound together, so only one of them is ever in
+the worst instant.
+
+### The loudness ceiling is measured off the shipped score, and the first measurement was wrong
+
+`PEAK_GAIN` is untouched at 0.06 and every voice declares its envelope peak
+RELATIVE to it, so the worst instant this mix can produce is `PEAK_GAIN × (the
+sum of the peaks of whatever is audible at once)`. The test expands two whole
+phrases (two, so the loop seam is inside the window), lays them on one timeline
+and takes that maximum: **1.41 against #1773's 1.4167 — 0.0846 absolute against
+0.085.**
+
+That measurement is why this is a note and not a comment. The hand arithmetic
+said 1.41; **the first run of the test said 2.61**, and the difference was not
+music. Summing over each note's SOURCE lifetime (`durS`) makes every note
+overlap its successor, because `bar*BAR_S + 7*STEP_S + STEP_S` and
+`(bar+1)*BAR_S` are the same instant computed two ways and therefore differ by
+one float ULP — so the bound counted two leads and two basses that were 10⁻¹⁵ s
+apart. The cure is in the DATA rather than in the test: `CreditsEvent.decayS`
+is the note's AUDIBLE span (its envelope reaches the floor there; the source
+runs on to `durS` to leave the articulating gap), it is what the scheduler
+already ramps against, and it is what a loudness sum has to use. **General
+rule: an overlap test over scheduled events must span the ENVELOPE, not the
+source — adjacent-and-touching is the common case, and float equality is not
+where you want it decided.**
+
+### What was NOT measured, stated so nobody reads more into the number
+
+The ceiling above is an **upper bound on the rendered waveform, not the
+waveform**: it sums envelope peaks, and |sine|, |square| and |triangle| are all
+≤ 1. Nothing renders audio anywhere in this repo's test suites — jsdom has no
+WebAudio and node has no `OfflineAudioContext` — so no true sample peak was
+taken, for either side. The bound is computed identically for both, which is
+what makes the comparison sound; it is not a claim about absolute headroom.
+
+Peak is also the wrong axis for "will this embarrass someone on a screen
+share", and swapping a triangle for a square at equal peak raises RMS by 4.8 dB
+on its own. So, computed analytically off the constants (**by hand, not by a
+test**): the old mix's mean square was 0.1031 and the new one's is 0.0502 — the
+new arrangement is **3.1 dB QUIETER in RMS** despite the brighter lead, because
+the continuous A2 drone was **84 %** of #1773's loudness and it is gone. If
+that ever needs to be a gate it needs the envelope integral, which means either
+duplicating the envelope shape in the test or rendering for real.
+
+### The lookahead scheduler, and the one way it can get loud
+
+Bars are now placed on a cursor (`nextBarAt`) advanced by exactly `BAR_S` on
+the audio clock, rather than re-based on `ctx.currentTime` at every re-arm, so
+timer jitter no longer smears the phrase. That swap brings a hazard the old
+shape did not have: **a backgrounded tab freezes `setTimeout` while the audio
+clock keeps running**, so the catch-up loop would arm every missed bar with a
+start time in the PAST — which WebAudio renders immediately, i.e. all of them
+simultaneously. Fifteen bars at once, and the gain budget above says nothing
+whatsoever about that instant. `pump` resyncs the cursor to `ctx.currentTime`
+before catching up; a test that sleeps the clock 30 s without running the
+timers proves it, and the unfixed version dies on it.
+
+### Declined, with the reason
+
+**No e2e.** The visible behaviour here is AUDIO, and Playwright cannot assert
+it: the only in-browser purchase available is monkeypatching `window.AudioContext`
+and inspecting the calls, which asserts the stub and duplicates the unit tests
+through a browser and an exclusive lane. An empty green would be worse than the
+gap. **No `createPeriodicWave` duty-cycle pulse** (12.5 % / 25 %, the NES
+register): `square` is most of the effect and the periodic wave is a third node
+class and a third stub method for the remainder. **No filter on the noise
+channel** — hat and snare are separated by envelope length, which is what the
+NES noise channel has too.
+
+The existing tests were not weakened: none of them pinned a frequency or a step
+length before and none does now, so the tune stays rewritable. The stub context
+gained a real clock (a getter over the faked `Date`) because a `currentTime`
+frozen at 0 makes a lookahead scheduler CORRECTLY decide there is nothing to
+arm — a stub that cannot advance is a different module under test.
+
+_Deploy: **HOT — `--cic` only.** No server change, no wire change._
