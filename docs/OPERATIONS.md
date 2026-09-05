@@ -5312,10 +5312,89 @@ a `DBConnection` checkout frame means a pool-topology deadlock; anything else
 is a third answer nobody has predicted yet. That distinction is the whole
 reason the instrument exists — before it, both looked identical from the logs.
 
+### The `nif_census` row (#1901) — the only one taken without the seam
+
+Both phases above read the watch table, and that table has ONE producer
+(`Repo.immediate_transaction/1`). Measured on the live node, `messages insert`
+— an autocommit single statement — is 324 679 writes while every source the
+seam covers is in the thousands, so the instrument was watching the rare tail
+of the write load. That is why all four episodes of #1888 produced zero lines:
+`grep -h "db lock stall" runtime/log/erlang.log.*` returned 0 while six
+victims timed out at ~31 s.
+
+The `nif_census` phase does not read the table. Every tick it walks
+`Process.list/0` and keeps whoever is inside `Exqlite.Sqlite3NIF`, timed from
+the first tick that saw them there. Its log line is
+`db lock stall NIF CENSUS:` and it is counted as `lockstall_nif` by
+`scripts/log-gap-scan.awk` — the ONLY lock counter that can be non-zero while
+`lockstall`, `lockstall_resolved` and `lockstall_unattributed` are all zero,
+which is the shape every #1888 episode had.
+
+🔴 **It names the cohort, never the holder, and the difference is the whole
+reading.** exqlite's busy handler sleeps INSIDE the same dirty-IO NIF the
+writer holding the lock is executing in, so the holder and its victims all
+read `Exqlite.Sqlite3NIF.step/2` with `status=:running` and nothing
+BEAM-visible separates them. So the row carries:
+
+| field | what it says |
+|-------|--------------|
+| `parked=N` | N processes were inside the SQLite NIF past the threshold |
+| `registered=Hh/Ww` | how many of those N the seam could already name |
+| the roster | every pid, its elapsed and its frame |
+| `holder=unattributed` | the instrument declines to pick one, deliberately |
+
+`registered=0h/0w` is the #1901 finding in one field: the writer holding the
+lock never touched the seam. `waiters=not counted` sits next to `parked=N` on
+purpose — a census counted no queue, and reading the roster length as a queue
+would assert N blocked writers where nobody measured one.
+
+**How to get the holder out of it anyway.** Cross the roster against the
+`fault=busy_locked` terminals in the same window: those name the VICTIMS, and
+whatever is in the roster and not among them is the short list. The frame
+helps too — `Exqlite.Sqlite3NIF.execute/2` under `handle_begin/2` is a writer
+blocked ACQUIRING a transaction, while `step/2` is one already executing a
+statement.
+
+**Two limits, so a later reader does not mistake them for bugs.** A
+transaction parked BETWEEN statements is not inside a NIF and this phase
+cannot see it (that case is the `detected` phase's, and only if the writer
+went through the seam); and `elapsed` is measured from the first TICK that
+saw the process, so it is a LOWER bound understated by up to one `tick_ms`.
+Readers park in the same NIF, so a slow `SELECT` appears in the roster too —
+deliberately: a long read transaction is a real participant in the
+contention.
+
+**Cost, measured** (dev image, warm, 20 passes per point): 0.7-2 us per
+process per pass, i.e. 1.55 ms at 2 000 processes — 0.16 % of one scheduler
+at `tick_ms: 1_000`. It is the one part of `LockWatch` paid when nothing is
+wrong, and it does NOT scale with write volume, which is the argument against
+instrumenting the 324 679 inserts instead.
+
 **Off-switch:** `config :grappa, :lock_watch, enabled: false`. Disabled, the
 write path pays one `:persistent_term` read per write transaction and does no
 ETS work. It is **off in `:test`** (under the Sandbox's `pool_size: 1` every
 write transaction is a holder).
+
+**Reading the latency columns (#1901).** Every duration family carries
+`n / total_ms / queue_ms / mean_ms / max_ms / p50_ms / p95_ms / p99_ms`.
+
+- `n`, `total_ms`, `mean_ms` and **`max_ms` are exact.**
+- 🔴 **The three quantiles are UPPER BOUNDS, not interpolations.** `p95_ms` is
+  the smallest histogram bucket bound covering at least 95 % of the samples,
+  so the true value is inside that bucket, at or below the number printed.
+  Read `p99_ms = 30000.00` as *"at most 1 % of writes were slower than 30 s"*.
+  A quantile that lands past the largest bound (30 s, i.e. `busy_timeout`)
+  reads the exact `max_ms` instead, because the overflow bucket has no
+  ceiling. Bounds and rationale: `Grappa.DbLatency.Distribution`.
+- **Read `max_ms` first during an incident.** The mean cannot show you a
+  stall: at the live node's 324 679 `messages insert` samples, a 31-second
+  write moves `mean_ms` by 0.1 ms — under the rounding this table prints.
+  That is why every #1888 episode was invisible here, and it is what the
+  `max_ms` / quantile columns were added for.
+- **`queue_ms` is still a cumulative sum only** — a known gap, not a
+  judgement. #1687 measured a victim's 62 s as ~31 s of DBConnection checkout
+  PLUS ~31 s of `busy_timeout`, so a queue-time outlier hides in a sum
+  exactly as an execution-time one hid in a mean.
 
 **Taking a 25s under-load sample:** `bin/grappa db-latency-reset` → wait 25s
 **under genuine daytime load** → `bin/grappa db-latency`. Counters are
@@ -5339,7 +5418,10 @@ baseline table, never a summary number**:
   `persist` `mean_ms`. A large gap = the sender's own `handle_call` queued
   behind a busy channel's synchronous inbound inserts.
 - **mechanism 2 (single-writer contention):** the `contention` row —
-  `queue_timeout` / `busy_locked` counts + `dropped`.
+  `queue_timeout` / `busy_locked` / `interrupted` counts + `dropped`. (The
+  `interrupted` column shipped with #1657 and the CLI header never learned
+  about it until #1901; a pre-#1901 `bin/grappa db-latency` printed four
+  values under four names while the row carried five.)
 - **mechanism 3 (pure insert / index write-amplification):** the `persist`
   row `mean_ms`, watched as the table grows.
 

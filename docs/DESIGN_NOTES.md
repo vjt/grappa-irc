@@ -45513,3 +45513,129 @@ frozen at 0 makes a lookahead scheduler CORRECTLY decide there is nothing to
 arm — a stub that cannot advance is a different module under test.
 
 _Deploy: **HOT — `--cic` only.** No server change, no wire change._
+<!-- entry #1901 -->
+
+---
+
+## 2026-09-05 — #1901: LockWatch reads the NIF, because the seam only sees the rare writes
+
+`Grappa.Repo.LockWatch` had two arms and both read the same ETS table, whose
+only producer is `Repo.immediate_transaction/1`. Measured on the live node
+via `Grappa.Operator.db_latency_text!/0`: `messages insert` —
+`Scrollback.persist_row/1`, an autocommit single statement — is **324 679**
+writes, while every source the seam covers (auth, settings, themes, push,
+reap) is in the thousands. The instrument was watching the rare tail of the
+write load. That is why four stalls with six victims (#1888) produced
+`grep -h "db lock stall" runtime/log/erlang.log.* -> 0`.
+
+### The third arm reads a physical property, not a cooperative one
+
+At each tick the census walks `Process.list/0` and keeps whoever is inside
+`Exqlite.Sqlite3NIF`, timed from the first tick that saw them there. Read in
+the dependency, not assumed: `execute/2` and `step/2` are registered
+`ERL_NIF_DIRTY_JOB_IO_BOUND` (`deps/exqlite/c_src/sqlite3_nif.c:2066,2077`)
+and exqlite installs its OWN busy handler which SLEEPS inside the NIF
+(`:332`) instead of returning to Elixir to retry — so a writer blocked on the
+file lock stays visible in `current_function` for the whole `busy_timeout`.
+No enumeration of write paths to maintain, and nothing added to the write
+path itself.
+
+The clock lives in the watchdog's state as `%{pid => {since, reported?}}` and
+is REBUILT from `Process.list/0` every pass, so a process that leaves the NIF
+drops out with no housekeeping. That is the design-discipline rule (1) —
+derive, do not maintain a parallel structure — applied to the one piece of
+state this arm genuinely needs.
+
+### 🔴 What it refuses to say, and why that is not a shortfall
+
+The issue's acceptance criterion asks for a line that NAMES the process
+holding `RESERVED`. The same physics that makes the cohort visible makes it
+INDIVISIBLE: the holder and every victim are inside the same dirty-IO NIF,
+all reading `status: :running`, and nothing BEAM-visible separates them. So
+the arm reports the ROSTER — every pid, elapsed and frame, with the full
+twelve-frame stack for the longest — and the count of how many of them the
+seam could already name. `registered=0h/0w` is the finding in one field.
+
+Naming the holder outright is exactly what axis 2 (registering the autocommit
+writes at `observe/1`) would buy, and it is deliberately not built. Asserting
+it from here would be the class of claim `BusyRetry.terminal_message/3` was
+twice rewritten to stop making (#1420, #1421).
+
+Two limits stated in the moduledoc so they are not rediscovered as bugs: a
+transaction parked BETWEEN statements is not in a NIF and only the first arm
+can see it; and `elapsed` runs from the first TICK, so it is a LOWER bound
+understated by up to one `tick_ms`.
+
+### The cost is the one paid when nothing is wrong, so it was measured
+
+Dev image, warm, 20 passes per point: 0.7-2 us per process, i.e. **1 550 us
+at 2 000 processes** and 5 237 us at 8 000. At `tick_ms: 1_000` that is
+0.16 % of one scheduler on a 2 000-process node. It does NOT scale with write
+volume, which is the argument against axis 2's three ETS operations on each
+of those 324 679 inserts.
+
+### The CI stack that prompted the design was measured, and it is not a block
+
+A red `LockWatchTest` in PR #1917's CI died at 60 s with the sample inside
+`LockWatch.format_frames/1` -> `Exception.format_stacktrace_entry/1` ->
+`:application_controller.get_application_module/2`, which reads as the census
+formatting stacks through a global gen_server. **Measured here, it is not
+one:** with `application_controller` SUSPENDED via `:erlang.suspend_process/1`,
+`:application.get_application/1` answers in **38 us** and the whole
+twelve-frame format door in **286 us** (against 242 us with it running).
+`get_application_module/2` is a pure list walk over the result of an
+`ets:match` on the public `ac_tab`; it never sends a message. This reproduces
+#1747's own reading (9 us, same conclusion) on different hardware, and it is
+why the census formats stacks from the tick without routing around anything.
+What the CI red shares with its siblings is a RATE, not a place — this
+branch's own baseline run showed the same file taking 135 s for ONE test
+under the full suite and **8.6 s for all 34** in isolation, with #1767's
+filmer reporting 1 of 539 turns taken.
+
+### Axis 3: a mean cannot represent the event the instrument exists to catch
+
+`Grappa.DbLatency` folded every family to `n / total_ms / mean_ms`. A 31 s
+write inside 324 679 samples moves the mean by **0.1 ms** — under the
+rounding the CLI prints. `Grappa.DbLatency.Distribution` keeps the same two
+exact numbers plus an exact `max` and a fixed-bucket histogram, applied to
+`queries`, `persist` AND `send_privmsg` (giving it to one would leave
+mechanisms 1 and 3 of #357 reading a mean and nothing else).
+
+Bounds run 0.5 ms to 30 s so that `busy_timeout` is a bucket EDGE: a writer
+that exhausted it lands in the last finite bucket, and the overflow then
+means "worse than the driver's own patience".
+
+**The quantiles are UPPER BOUNDS and the type says so.** Interpolating inside
+a bucket prints a decimal nobody measured, and a reader comparing two windows
+would read interpolation noise as movement. The property test holds only the
+direction that matters — never understates — against a sort-and-rank oracle
+that shares no code with the histogram. Its first cut also asserted
+`<= the observed max` and that was FALSE: one 2 ms sample reports
+`p50_ms == 2.5`, the ceiling of its bucket. The test was wrong, not the
+structure.
+
+`queue_ms` stays a bare cumulative sum, recorded as a KNOWN GAP rather than a
+judgement: #1687 measured a victim's 62 s as ~31 s of DBConnection checkout
+PLUS ~31 s of `busy_timeout`, so the pool axis hides an outlier exactly as
+the execution axis did.
+
+### Two drifts found while passing through
+
+`Grappa.DbLatencyTest` hand-copied the production `@events` list, so the new
+emitter reached a new `fold/4` clause with a GREEN suite and an empty ring.
+The copy stays — deriving it would make the boot-wiring test tautological —
+and `DbLatency.attached_events/0` plus one equality assertion now name the
+divergence. Separately, `bin/grappa db-latency` has been printing four
+contention values under four names since #1657 shipped a fifth
+(`interrupted`); the header now carries it.
+
+_Deploy: **COLD**, and NOT for the reason the file-path test gives — the diff
+touches no `config/`, no migration, no `mix.exs`, no `infra/`, no
+`application.ex`. Measured through `Grappa.Deploy.Preflight.classify_state_shape/2`
+against `origin/main` (349145af), with an added-field/identical pair as the
+positive and negative control: 3 of 34 tracked long-lived files changed
+state shape — `lock_watch.ex` (`defstruct` gains `:nif_watch`),
+`db_latency.ex` (the accumulators become `Distribution`s) and the new
+`db_latency/distribution.ex`. A hot reload would leave the running
+`DbLatency` holding `%{n:, total:, outcomes:}` while the new `add_span/3`
+expects `%{dist:, outcomes:}`._
