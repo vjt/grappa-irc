@@ -153,6 +153,41 @@ defmodule GrappaWeb.UserSettingsController do
   def update_show_peer_profiles(_, _), do: {:error, :bad_request}
 
   @doc """
+  `GET /me/settings/upload-confirm-enabled` — whether the subject has
+  opted in to the pre-upload confirm (#1883).
+
+  Default `false`, so a subject who has never touched the setting is
+  never asked before an upload leaves the device.
+  """
+  @spec show_upload_confirm_enabled(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def show_upload_confirm_enabled(conn, _) do
+    subject = Subject.from_assigns(conn.assigns)
+    enabled = UserSettings.get_upload_confirm_enabled(subject)
+    render(conn, :upload_confirm_enabled, enabled: enabled)
+  end
+
+  @doc """
+  `PUT /me/settings/upload-confirm-enabled` — persists the opt-in. Body:
+  `{"upload_confirm_enabled": true | false}`.
+
+  Read by the client at UPLOAD time, so a flip takes effect on the next
+  upload with no session involvement — unlike `show_peer_profiles`, which
+  waits for a respawn because the bouncer acts on it.
+  """
+  @spec update_upload_confirm_enabled(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :bad_request | Ecto.Changeset.t() | :db_unavailable}
+  def update_upload_confirm_enabled(conn, %{"upload_confirm_enabled" => enabled})
+      when is_boolean(enabled) do
+    subject = Subject.from_assigns(conn.assigns)
+
+    with {:ok, _} <- UserSettings.put_upload_confirm_enabled(subject, enabled) do
+      render(conn, :upload_confirm_enabled, enabled: UserSettings.get_upload_confirm_enabled(subject))
+    end
+  end
+
+  def update_upload_confirm_enabled(_, _), do: {:error, :bad_request}
+
+  @doc """
   `GET /me/settings/auto-away-debounce-seconds` — the subject's
   auto-away grace period (#348).
 

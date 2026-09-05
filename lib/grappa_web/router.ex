@@ -408,6 +408,16 @@ defmodule GrappaWeb.Router do
     get "/me/settings/show-peer-profiles", UserSettingsController, :show_show_peer_profiles
     put "/me/settings/show-peer-profiles", UserSettingsController, :update_show_peer_profiles
 
+    # #1883 — the pre-upload confirm opt-in. Sits beside the upload-TTL pair
+    # because the settings drawer renders both in the same "upload retention"
+    # section; unlike show-peer-profiles it needs no session involvement, the
+    # client reads it at upload time.
+    get "/me/settings/upload-confirm-enabled", UserSettingsController, :show_upload_confirm_enabled
+
+    put "/me/settings/upload-confirm-enabled",
+        UserSettingsController,
+        :update_upload_confirm_enabled
+
     # #348 — the WS-disconnect -> upstream AWAY grace period, per subject.
     # ONE scalar carries three states: `null` = no preference (the
     # server-wide default applies), `0` = OFF (no timer is ever armed),

@@ -45589,3 +45589,68 @@ reaches `host.upload` before Send. That is a stronger claim than the one it
 replaces. The two `ComposeBox.test.tsx` cases that asserted dialog behaviour
 were reduced to wiring: that file mocks the orchestrator, so "no upload after
 Cancel" would pass there against a build with no gate at all.
+<!-- entry #1883d -->
+
+---
+
+## 2026-09-05 — #1883d: the upload confirm becomes OPT-IN
+
+**Ruling (vjt via Gabriele, 2026-09-05): the pre-upload confirm is a setting,
+default OFF.** It lives beside upload retention in the settings drawer, backed
+by a new `user_settings.data` key `"upload_confirm_enabled"` — no migration, a
+JSON key in the existing column, `false` stored as ABSENCE (the
+`put_show_peer_profiles/2` rule: an explicit `false` row is a second spelling of
+the default).
+
+### This reverses this file's own earlier position, and the reversal is the entry
+
+The #1883 note and the `triggerUploads` header both argued there must be no
+"don't ask again": *a gate every returning operator has already switched off is
+not a gate*. That argument was aimed at the flag which PRODUCED the defect —
+`localStorage`, key `image-upload-privacy-acknowledged:<host.id>`, per-browser,
+invisible, not revocable from the UI. `upload_confirm_enabled` is a different
+object: per-user, server-side, visible, revocable. So the contradiction is
+rhetorical rather than mechanical.
+
+**The cost is real and is not hidden.** OFF by default means all five upload
+doors — picker, drop, pasted file, paste-as-`.txt`, OS share — are unguarded
+until someone opts in. Opt-in was chosen over default-on-with-opt-out knowing
+that; the measured difference is that the assertion
+`has no remember-me door — a second pick confirms again` is red under opt-in and
+green under opt-out. It was not deleted but **narrowed** to what survives: while
+the confirm is ON there is no per-dialog "don't ask again" — turning it off is a
+deliberate trip to settings, not a checkbox on the way past.
+
+### The policy branch sits AFTER normalisation, and that is load-bearing
+
+`enqueueUploads` does not normalise; `normalizeUploadFile` runs inside
+`triggerUploads`. So the obvious spelling
+
+```ts
+if (!uploadConfirmEnabled()) return enqueueUploads(key, ..., rawFiles)
+```
+
+sends the RAW files and re-breaks the iOS `.m4r` case the function exists to
+rescue (iOS labels it `application/octet-stream`; only the normaliser maps it to
+`audio/mp4`) — reopening exactly the hole #1883 closed. The branch therefore
+takes the NORMALISED list, and a test asserts the type that reaches the host on
+the confirm-OFF path, not merely that a call happened.
+
+### A displaced confirm is now reported instead of vanishing
+
+`consumeShare` → `dropUpload` → `triggerUploads` opens a confirm at BOOT, with
+no gesture on screen. `confirmDialog` is last-write-wins (a modal is a focus
+trap), so any other confirm replaced it and the shared files disappeared with no
+banner — an outcome that never reached `recordShareTargetBlock`. `ConfirmRequest`
+gains an optional `onDisplaced`, fired when a pending request is REPLACED (never
+when the operator answers it), and the share path passes one that records the
+new `confirm-displaced` block reason. The callback is optional and the asymmetry
+is deliberate: every other door is driven by a gesture still on screen, so "ask
+again" is the operator repeating it; the share target has nothing to repeat.
+
+Only reachable with the confirm opted IN — but that is a reason to fix it once,
+not to leave it for whoever turns the setting on.
+
+_Deploy: **COLD** — new server routes + context accessors. cic changes ride with
+it; no wire-shape change (settings endpoints are outside the generated wire
+schema, so no `protocol_version` bump)._

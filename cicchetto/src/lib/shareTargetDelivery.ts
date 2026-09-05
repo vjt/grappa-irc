@@ -162,7 +162,13 @@ async function consumeShare(userId: string): Promise<void> {
     console.warn("[shareTarget] share not delivered:", plan.reason);
     recordShareTargetBlock(plan.reason);
   } else {
-    dropUpload(plan.files, plan.destination.networkSlug, plan.destination.channelName);
+    // #1883 — the share is the ONE upload door with no gesture left on screen,
+    // so a confirm displaced before the operator answers it loses the files
+    // silently. Report it as a block like any other undelivered share; the
+    // banner is the only thing that can tell them to share again.
+    dropUpload(plan.files, plan.destination.networkSlug, plan.destination.channelName, () =>
+      recordShareTargetBlock("confirm-displaced"),
+    );
   }
   // Drop the flag either way: a reload must not re-run a share whose files
   // have already been consumed.

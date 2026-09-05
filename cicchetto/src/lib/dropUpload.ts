@@ -16,10 +16,24 @@ import { triggerUploads } from "./uploadOrchestrator";
 // payloads (random binaries) from opening the upload UI. Host accept-list
 // + per-category cap checks stay in the orchestrator (one gate, one error
 // surface).
-export function dropUpload(files: File[], networkSlug: string, channelName: string): void {
+export function dropUpload(
+  files: File[],
+  networkSlug: string,
+  channelName: string,
+  // #1883 — passed straight through to the confirm. Only the OS share target
+  // supplies it (see `shareTargetDelivery.consumeShare`); a drop or a paste is
+  // a gesture the operator can simply repeat.
+  onDisplaced?: () => void,
+): void {
   const uploadable = files.filter((f) => categoryOf(f.type) !== null);
   if (uploadable.length === 0) return;
-  triggerUploads(channelKey(networkSlug, channelName), networkSlug, channelName, uploadable);
+  triggerUploads(
+    channelKey(networkSlug, channelName),
+    networkSlug,
+    channelName,
+    uploadable,
+    onDisplaced,
+  );
 }
 
 // #351 — does this drag carry files (vs. selected text / an in-app

@@ -15,6 +15,8 @@ vi.mock("../lib/userSettings", async () => {
     ...actual,
     getUploadTtlSeconds: vi.fn(async () => null),
     putUploadTtlSeconds: vi.fn(async (_token: string, seconds: number | null) => seconds),
+    getUploadConfirmEnabled: vi.fn(async () => false),
+    putUploadConfirmEnabled: vi.fn(async (_token: string, enabled: boolean) => enabled),
   };
 });
 
@@ -90,8 +92,10 @@ import {
   acknowledgePrivacy,
   cancelUpload,
   dismissUpload,
+  loadUploadConfirmEnabled,
   loadUploadTtlSeconds,
   privacyModalState,
+  resetUploadConfirmEnabledForTests,
   resetUploadsForTests,
   resetUploadTtlSecondsForTests,
   retryUpload,
@@ -217,6 +221,8 @@ beforeEach(() => {
   // UX-4 bucket M — reset the server-pref cache so each test starts
   // from "no preference set" (host default).
   resetUploadTtlSecondsForTests();
+  resetUploadConfirmEnabledForTests();
+  vi.mocked(userSettings.getUploadConfirmEnabled).mockResolvedValue(false);
   vi.mocked(userSettings.getUploadTtlSeconds).mockResolvedValue(null);
   vi.mocked(userSettings.putUploadTtlSeconds).mockImplementation(async (_, s) => s);
 });
@@ -1236,6 +1242,14 @@ describe("sequential multi-file queue (#118)", () => {
 
 describe("the confirm gate (#1883)", () => {
   const ackPrivacy = () => localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+  // #1883 — the confirm is OPT-IN as of the settings round, so every case in
+  // this block has to switch it on first. The block asserts what the confirm
+  // DOES when asked for; the sibling block below asserts the default, where it
+  // is not asked for at all.
+  beforeEach(async () => {
+    vi.mocked(userSettings.getUploadConfirmEnabled).mockResolvedValue(true);
+    await loadUploadConfirmEnabled("tok");
+  });
   const img = (name: string): File =>
     new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], name, { type: "image/png" });
   const attachments = (): ConfirmAttachment[] => confirmRequest()?.attachments?.items() ?? [];
@@ -1352,12 +1366,96 @@ describe("the confirm gate (#1883)", () => {
     expect(confirmRequest()).not.toBeNull();
   });
 
-  it("has no remember-me door — a second pick confirms again", () => {
+  // Was "has no remember-me door — a second pick confirms again", asserting
+  // that the confirm could not be switched off at all. That is no longer true:
+  // it is an opt-in setting now. What survives, and is the part worth keeping,
+  // is that WHILE it is on there is no per-dialog "don't ask again" — turning
+  // it off is a deliberate trip to settings, not a checkbox on the way past.
+  // #1883 — the OS share target is the one door with no gesture left on screen,
+  // so a confirm replaced before it is answered loses the files in silence.
+  // `triggerUploads` carries the caller's displacement callback so that outcome
+  // can be reported instead of vanishing.
+  it("tells a displaced caller its question was replaced unanswered", () => {
+    ackPrivacy();
+    const displaced = vi.fn();
+    triggerUploads(key, slug, channel, [img("shared.png")], displaced);
+    expect(displaced).not.toHaveBeenCalled();
+
+    triggerUploads(key, slug, channel, [img("later.png")]);
+
+    expect(displaced).toHaveBeenCalledTimes(1);
+    // And nothing was uploaded for the displaced batch.
+    expect(pendingResolvers.length).toBe(0);
+  });
+
+  it("does NOT report displacement when the operator answers it themselves", () => {
+    ackPrivacy();
+    const displaced = vi.fn();
+    triggerUploads(key, slug, channel, [img("shared.png")], displaced);
+    acceptConfirm();
+    expect(displaced).not.toHaveBeenCalled();
+  });
+
+  it("has no in-dialog remember-me door — while ON, a second pick confirms again", () => {
     ackPrivacy();
     triggerUploads(key, slug, channel, [img("a.png")]);
     acceptConfirm();
     pendingResolvers[0]?.resolve("https://h/a");
     triggerUpload(key, slug, channel, img("b.png"));
     expect(confirmRequest()).not.toBeNull();
+  });
+});
+
+// #1883 — the DEFAULT, which is the opposite of the block above and is the
+// half a reader is most likely to assume rather than check.
+describe("the confirm gate is OPT-IN — default off", () => {
+  const ackPrivacy = () => localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+  const img = (name: string): File =>
+    new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], name, { type: "image/png" });
+
+  it("uploads with no dialog at all when the opt-in was never set", () => {
+    ackPrivacy();
+    triggerUploads(key, slug, channel, [img("a.png")]);
+    expect(confirmRequest()).toBeNull();
+    expect(pendingResolvers.length).toBe(1);
+  });
+
+  it("still asks once the opt-in is switched on", async () => {
+    ackPrivacy();
+    vi.mocked(userSettings.getUploadConfirmEnabled).mockResolvedValue(true);
+    await loadUploadConfirmEnabled("tok");
+    triggerUploads(key, slug, channel, [img("a.png")]);
+    expect(confirmRequest()).not.toBeNull();
+    expect(pendingResolvers.length).toBe(0);
+  });
+
+  // The trap vjt named before this round was written: `enqueueUploads` does
+  // NOT normalise, so an opt-out branching on the RAW files re-breaks the iOS
+  // .m4r rescue this function exists for. Asserted on the type that reaches
+  // the host, not on a call having happened.
+  it("normalises BEFORE the policy branch — an iOS .m4r still reaches the host as audio", () => {
+    ackPrivacy();
+    vi.mocked(activeHost).mockReturnValue(
+      makeTestHost({
+        acceptedMimeTypes: { image: [], video: [], document: [], audio: ["audio/mp4"] },
+      }),
+    );
+    const m4r = new File([new Uint8Array([1])], "ring.m4r", {
+      type: "application/octet-stream",
+    });
+    triggerUploads(key, slug, channel, [m4r]);
+    expect(confirmRequest()).toBeNull();
+    expect(pendingResolvers.length).toBe(1);
+    expect(pendingResolvers[0]?.file.type).toBe("audio/mp4");
+  });
+
+  // A saved preference must reach the FIRST upload, not only uploads made
+  // after the settings drawer has been opened — hence the Shell boot load.
+  it("a failed load leaves the default in place rather than guessing", async () => {
+    ackPrivacy();
+    vi.mocked(userSettings.getUploadConfirmEnabled).mockRejectedValue(new Error("offline"));
+    await loadUploadConfirmEnabled("tok");
+    triggerUploads(key, slug, channel, [img("a.png")]);
+    expect(confirmRequest()).toBeNull();
   });
 });

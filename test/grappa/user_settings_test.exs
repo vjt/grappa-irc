@@ -1240,6 +1240,67 @@ defmodule Grappa.UserSettingsTest do
   end
 
   # ---------------------------------------------------------------------------
+  # upload_confirm_enabled accessor (#1883 — the pre-upload confirm opt-in)
+  # ---------------------------------------------------------------------------
+
+  describe "get_upload_confirm_enabled/1" do
+    test "returns false when no settings row exists" do
+      assert UserSettings.get_upload_confirm_enabled({:user, Ecto.UUID.generate()}) == false
+    end
+
+    test "returns false when a row exists but carries no upload_confirm_enabled key" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.get_or_init({:user, user.id})
+      assert UserSettings.get_upload_confirm_enabled({:user, user.id}) == false
+    end
+
+    # The default is what makes this OPT-IN rather than opt-out, so a stored
+    # value that is merely truthy must NOT read as opted in — a subject whose
+    # row was written by an older or buggier client stays unasked.
+    test "returns false when the stored value is malformed (not the true atom)" do
+      user = user_fixture()
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
+
+      Repo.update!(Settings.changeset(settings, %{data: %{"upload_confirm_enabled" => "yes"}}))
+      assert UserSettings.get_upload_confirm_enabled({:user, user.id}) == false
+    end
+
+    test "returns true when opted in" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.put_upload_confirm_enabled({:user, user.id}, true)
+      assert UserSettings.get_upload_confirm_enabled({:user, user.id}) == true
+    end
+  end
+
+  describe "put_upload_confirm_enabled/2" do
+    test "persists true and reads back identically" do
+      user = user_fixture()
+      assert {:ok, %Settings{}} = UserSettings.put_upload_confirm_enabled({:user, user.id}, true)
+      assert UserSettings.get_upload_confirm_enabled({:user, user.id}) == true
+    end
+
+    test "persists false by DELETING the key, not by storing false" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.put_upload_confirm_enabled({:user, user.id}, true)
+      {:ok, settings} = UserSettings.put_upload_confirm_enabled({:user, user.id}, false)
+
+      assert UserSettings.get_upload_confirm_enabled({:user, user.id}) == false
+      refute Map.has_key?(settings.data, "upload_confirm_enabled")
+    end
+
+    # The whole point of a shared JSON data column: a new key must not be able
+    # to take a sibling setting down with it.
+    test "preserves other keys in data" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.put_upload_ttl_seconds({:user, user.id}, 3600)
+      {:ok, _} = UserSettings.put_upload_confirm_enabled({:user, user.id}, true)
+
+      assert UserSettings.get_upload_ttl_seconds({:user, user.id}) == 3600
+      assert UserSettings.get_upload_confirm_enabled({:user, user.id}) == true
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # show_peer_profiles accessor (M2)
   # ---------------------------------------------------------------------------
 

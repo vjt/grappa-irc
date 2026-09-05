@@ -12,7 +12,12 @@ import {
   type UploadCategory,
 } from "./uploadCategory";
 import { activeHost, type UploadError, type UploadHost, type UploadProgress } from "./uploadHost";
-import { getUploadTtlSeconds, putUploadTtlSeconds } from "./userSettings";
+import {
+  getUploadConfirmEnabled,
+  getUploadTtlSeconds,
+  putUploadConfirmEnabled,
+  putUploadTtlSeconds,
+} from "./userSettings";
 // Policy only — videoTranscode.ts (the sole mediabunny importer) is
 // loaded via dynamic import() inside prepareVideo so mediabunny's bulk
 // lands in a lazy chunk, off the cold-start main bundle (Task 6
@@ -154,6 +159,39 @@ const [uploadTtlSeconds, setUploadTtlSecondsSignal] = createSignal<number | null
 
 export function uploadTtlSecondsValue(): number | null {
   return uploadTtlSeconds();
+}
+
+// #1883 — the pre-upload confirm opt-in, cached the same way the TTL above is:
+// a cic-side mirror of the server value, loaded once at app start so the very
+// first upload honours it rather than only uploads made after the drawer has
+// been opened. Default `false` matches the server's own default, so a failed
+// or not-yet-finished load behaves exactly like a subject who never opted in.
+const [uploadConfirmEnabled, setUploadConfirmEnabledSignal] = createSignal<boolean>(false);
+
+export function uploadConfirmEnabledValue(): boolean {
+  return uploadConfirmEnabled();
+}
+
+/** Load the server-persisted confirm opt-in into the cic cache. Called from
+ *  `Shell.tsx`'s post-login bootstrap beside `loadUploadTtlSeconds`. Errors are
+ *  swallowed: the cache stays `false`, which is the server default too. */
+export async function loadUploadConfirmEnabled(token: string): Promise<void> {
+  try {
+    setUploadConfirmEnabledSignal(await getUploadConfirmEnabled(token));
+  } catch {
+    /* swallowed — stays at the server's own default (false) */
+  }
+}
+
+/** Persist a new confirm opt-in. Mirrors into the cic cache on success so the
+ *  NEXT upload honours it with no reload. Throws ApiError on 4xx/5xx. */
+export async function saveUploadConfirmEnabled(token: string, enabled: boolean): Promise<void> {
+  setUploadConfirmEnabledSignal(await putUploadConfirmEnabled(token, enabled));
+}
+
+/** Test seam — mirrors `resetUploadTtlSecondsForTests`. */
+export function resetUploadConfirmEnabledForTests(): void {
+  setUploadConfirmEnabledSignal(false);
 }
 
 /** Load the server-persisted upload-TTL into the cic cache. Called
@@ -635,11 +673,16 @@ async function prepareVideo(
 // — only `normalizeUploadFile` rescues it, and the filter would drop the file
 // before the rescue could run.
 //
-// There is no "don't ask again". A remembered opt-out is exactly the shape of
-// the privacy flag that produced this defect: a gate every returning operator
-// has already switched off is not a gate. The cost is one tap per BATCH, not
-// per file. If the friction proves too high the answer is fewer taps, not a
-// way to disarm it permanently.
+// #1883 — the confirm is OPT-IN, and this paragraph used to say the opposite
+// ("there is no don't ask again ... a gate every returning operator has already
+// switched off is not a gate"). That argument was aimed at the flag which
+// PRODUCED the defect: `localStorage`, per-browser, invisible, not revocable
+// from the UI. `upload_confirm_enabled` is a different object — per-user,
+// server-side, and visible beside the upload-retention control — so the
+// objection is rhetorical rather than mechanical. The cost is real and is
+// stated rather than hidden: OFF by default means all five doors are unguarded
+// until someone turns it on. Reversal ruled 2026-09-05; see the server
+// accessor `Grappa.UserSettings.get_upload_confirm_enabled/1`.
 
 // Row identity. Filenames are not unique (a gallery multi-select routinely
 // yields two `IMG_0001.png`) and neither is the File object across two picks
@@ -667,18 +710,45 @@ export function triggerUploads(
   networkSlug: string,
   channelName: string,
   rawFiles: File[],
+  // #1883 — what to do if this question is replaced before it is answered.
+  // Optional, and the asymmetry is the point: every other door is driven by a
+  // gesture still on screen, so "ask again" is the operator repeating it. The
+  // OS share target arrives at boot with nothing to repeat, so it is the one
+  // caller that must be told its files went nowhere.
+  onDisplaced?: () => void,
 ): void {
   if (rawFiles.length === 0) return;
   // Normalised BEFORE staging so the preview, the removal set and the queue
   // all describe the same files.
-  const [staged, setStaged] = createSignal<StagedFile[]>(
-    rawFiles.map((raw) => {
-      nextAttachmentId += 1;
-      return { id: `picked-${nextAttachmentId}`, file: normalizeUploadFile(raw) };
-    }),
-  );
+  const normalised: StagedFile[] = rawFiles.map((raw) => {
+    nextAttachmentId += 1;
+    return { id: `picked-${nextAttachmentId}`, file: normalizeUploadFile(raw) };
+  });
+
+  // #1883 — the opt-in branch, and it sits HERE on purpose: after
+  // normalisation, never before it. `enqueueUploads` does NOT normalise, so
+  // the tempting spelling
+  //
+  //     if (!uploadConfirmEnabled()) return enqueueUploads(key, ..., rawFiles)
+  //
+  // would send the RAW files and re-break the iOS `.m4r` case this function
+  // exists to rescue (iOS labels it `application/octet-stream`; only
+  // `normalizeUploadFile` maps it to `audio/mp4`). Branch on policy, never on
+  // the un-normalised input.
+  if (!uploadConfirmEnabled()) {
+    enqueueUploads(
+      key,
+      networkSlug,
+      channelName,
+      normalised.map((s) => s.file),
+    );
+    return;
+  }
+
+  const [staged, setStaged] = createSignal<StagedFile[]>(normalised);
 
   requestConfirm({
+    onDisplaced,
     // The destination goes in the TITLE, which is also the dialog's
     // `aria-label` — the one string a screen reader announces on open, and the
     // one fact a mis-tap most needs to see. Target-neutral "to X" rather than

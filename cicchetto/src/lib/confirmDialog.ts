@@ -75,6 +75,12 @@ export type ConfirmAttachments = {
 };
 
 export type ConfirmRequest = {
+  // #1883 — fired when THIS request is replaced by a later `requestConfirm`,
+  // i.e. the question disappeared without the operator answering it. Optional
+  // because almost every caller is driven by a gesture that is still on screen
+  // and can simply be repeated; the OS share target cannot, because it arrives
+  // at boot with nothing on screen to retry.
+  onDisplaced?: () => void;
   // Short dialog heading (e.g. "Leave channel").
   title: string;
   // Full question, with the channel/network name interpolated by the caller
@@ -97,8 +103,16 @@ const [confirmRequest, setConfirmRequest] = createSignal<ConfirmRequest | null>(
 
 export { confirmRequest };
 
+// #1883 — replacing a pending request now TELLS it, instead of dropping it in
+// silence. Last-write-wins is still the rule (a modal is a focus trap), but a
+// caller whose question vanished with no operator input has no other way to
+// learn that its files went nowhere. Only the displaced request is notified;
+// the operator's own Cancel is a deliberate answer and goes down the ordinary
+// dismiss path.
 export function requestConfirm(req: ConfirmRequest): void {
+  const displaced = confirmRequest();
   setConfirmRequest(req);
+  displaced?.onDisplaced?.();
 }
 
 // Cancel / backdrop / Esc — dismiss without firing the carried action.
