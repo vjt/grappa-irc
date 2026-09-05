@@ -30,14 +30,20 @@ describe("dropUpload", () => {
   it("filters to uploadable categories and enqueues with key + slug + channel", () => {
     const a = png();
     dropUpload([a], "freenode", "#a");
-    expect(triggerUploads).toHaveBeenCalledWith("freenode #a", "freenode", "#a", [a]);
+    // #1883 — the trailing `undefined` IS the contract: a drop supplies no
+    // displacement handler, because the gesture is still on screen and the
+    // operator can simply repeat it. Only the OS share target passes one.
+    expect(triggerUploads).toHaveBeenCalledWith("freenode #a", "freenode", "#a", [a], undefined);
   });
 
   it("uploads only the uploadable files from a mixed batch", () => {
     const a = png();
     const j = junk();
     dropUpload([a, j], "freenode", "#a");
-    expect(triggerUploads).toHaveBeenCalledWith("freenode #a", "freenode", "#a", [a]);
+    // #1883 — the trailing `undefined` IS the contract: a drop supplies no
+    // displacement handler, because the gesture is still on screen and the
+    // operator can simply repeat it. Only the OS share target passes one.
+    expect(triggerUploads).toHaveBeenCalledWith("freenode #a", "freenode", "#a", [a], undefined);
   });
 
   it("is a no-op when no file is uploadable (does NOT call the orchestrator)", () => {

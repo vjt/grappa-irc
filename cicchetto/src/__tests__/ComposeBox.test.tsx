@@ -1388,9 +1388,16 @@ describe("ComposeBox", () => {
       });
       ta.dispatchEvent(pasteEvent);
 
-      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
-        file,
-      ]);
+      expect(orch.triggerUploads).toHaveBeenCalledWith(
+        expect.any(String),
+        "freenode",
+        "#a",
+        [file],
+        // #1883 — dropUpload forwards the displacement slot; a paste
+        // supplies none (the gesture is repeatable). Only the OS share
+        // target passes a handler here.
+        undefined,
+      );
       // Textarea content stays untouched (paste event was prevented).
       expect(compose.setDraft).not.toHaveBeenCalled();
     });
@@ -1423,9 +1430,16 @@ describe("ComposeBox", () => {
       });
       ta.dispatchEvent(pasteEvent);
 
-      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
-        file,
-      ]);
+      expect(orch.triggerUploads).toHaveBeenCalledWith(
+        expect.any(String),
+        "freenode",
+        "#a",
+        [file],
+        // #1883 — dropUpload forwards the displacement slot; a paste
+        // supplies none (the gesture is repeatable). Only the OS share
+        // target passes a handler here.
+        undefined,
+      );
     });
 
     it("pasting a document file calls triggerUpload (Task 7 — paste accepts all categories)", async () => {
@@ -1441,9 +1455,16 @@ describe("ComposeBox", () => {
       });
       ta.dispatchEvent(pasteEvent);
 
-      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
-        file,
-      ]);
+      expect(orch.triggerUploads).toHaveBeenCalledWith(
+        expect.any(String),
+        "freenode",
+        "#a",
+        [file],
+        // #1883 — dropUpload forwards the displacement slot; a paste
+        // supplies none (the gesture is repeatable). Only the OS share
+        // target passes a handler here.
+        undefined,
+      );
     });
 
     it("pasting a category-less MIME file is ignored — triggerUpload NOT called", async () => {
@@ -1473,10 +1494,15 @@ describe("ComposeBox", () => {
         configurable: true,
       });
       ta.dispatchEvent(pasteEvent);
-      expect(orch.triggerUploads).toHaveBeenCalledWith(expect.any(String), "freenode", "#a", [
-        a,
-        b,
-      ]);
+      expect(orch.triggerUploads).toHaveBeenCalledWith(
+        expect.any(String),
+        "freenode",
+        "#a",
+        [a, b],
+        // #1883 — dropUpload forwards the displacement slot; a paste supplies
+        // none (the gesture is repeatable). Only the OS share target passes one.
+        undefined,
+      );
     });
 
     it("the picker input allows multiple selection — #118", () => {
