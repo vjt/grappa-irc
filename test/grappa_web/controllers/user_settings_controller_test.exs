@@ -387,14 +387,14 @@ defmodule GrappaWeb.UserSettingsControllerTest do
 
     test "defaults to false — the opt-IN default, never asked until switched on",
          %{conn: conn} do
-      {_user, session} = user_and_session()
+      {_, session} = user_and_session()
 
       conn = conn |> put_bearer(session.id) |> get("/me/settings/upload-confirm-enabled")
       assert json_response(conn, 200) == %{"upload_confirm_enabled" => false}
     end
 
     test "PUT true round-trips, and PUT false clears back to the default", %{conn: conn} do
-      {_user, session} = user_and_session()
+      {_, session} = user_and_session()
       conn = put_bearer(conn, session.id)
 
       on = put(conn, "/me/settings/upload-confirm-enabled", %{"upload_confirm_enabled" => true})
@@ -408,7 +408,7 @@ defmodule GrappaWeb.UserSettingsControllerTest do
     end
 
     test "400 on a non-boolean body", %{conn: conn} do
-      {_user, session} = user_and_session()
+      {_, session} = user_and_session()
 
       conn =
         conn
