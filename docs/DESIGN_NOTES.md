@@ -45513,3 +45513,195 @@ frozen at 0 makes a lookahead scheduler CORRECTLY decide there is nothing to
 arm — a stub that cannot advance is a different module under test.
 
 _Deploy: **HOT — `--cic` only.** No server change, no wire change._
+
+<!-- entry #1883c -->
+
+---
+
+## 2026-08-31 — #1883c: the upload guard moves to one door, reversing #1884
+
+#1884 shipped the gallery-pick confirm in `cicchetto/src/lib/pickerUpload.ts`,
+covering the PICKER only. This entry records the reversal (vjt's ruling,
+2026-08-31): the guard now lives in `uploadOrchestrator.triggerUploads`, and
+`pickerUpload.ts` is deleted.
+
+### What #1884 argued, and which half survives
+
+Its header made three claims. **Two were right and are kept verbatim in the
+orchestrator**: there must be no "don't ask again" (a remembered opt-out is
+the exact shape of the privacy flag that produced the defect — a gate every
+returning operator has already switched off is not a gate), and the picker
+must NOT route through `dropUpload`, because that helper pre-filters on
+`categoryOf` and iOS labels a `.m4r` `application/octet-stream`, which only
+`normalizeUploadFile` rescues.
+
+**The third — that a drop is "a gesture the operator aimed" and Ctrl-V "one
+they typed", so neither needs asking — is what fell.** A pasted image is the
+one case where the operator cannot see what they are sending at all: the
+clipboard is invisible until it is in the channel. And the OS share-target
+reaches `dropUpload` too, so "the operator aimed it" describes a gesture that
+happened in another app entirely.
+
+### Why the queue objection does not bite
+
+#1884's strongest argument against this position was mechanical, not
+aesthetic: *"the orchestrator owns the queue, and a batch the operator has not
+authorised has no business being in it"* — it would take the channel's single
+upload slot and show an `(i/N)` counter for files that may never be sent.
+
+That is answered by splitting the function rather than by moving the gate out
+of it. `triggerUploads` only ASKS; `enqueueUploads` (private) is the old body
+and is reached only from `onConfirm`. Nothing is queued, no batch counter
+moves and no slot is taken until Send. The property #1884 wanted is preserved
+exactly; only its location changed.
+
+### The rule this is an instance of
+
+A guard placed per-surface is an ENUMERATION, and enumerations drift. #351
+had already collapsed picker, drop and paste onto `triggerUploads` for this
+same reason, and the share-target joined them later without touching any of
+the three call sites — which is precisely how a fourth door arrives without
+anyone remembering the guard. One door means the next surface inherits it.
+
+### What this costs, stated rather than discovered
+
+The paste → "Upload as .txt" route (#80/#816) now shows TWO dialogs: the flood
+guard, then the send-confirm. That is the price, and it is not being paid off
+with a `confirmed: true` parameter threaded through `dropUpload` — a bypass
+door with a polite name, and the one thing that would make the enumeration
+argument above false again. If the friction reads as too much in the field,
+the fix is to soften the paste dialog.
+
+It also has a test consequence worth knowing before it bites: the flood guard
+and the send-confirm render through the SAME `confirmDialog` singleton and
+swap within one tick, so an e2e locator keyed on `confirm-modal` alone is
+already visible over the PASTE dialog and acts on the wrong one.
+`sendPickedFiles` therefore scopes by the dialog's heading (`/^Send to /`),
+which is also its `aria-label`.
+
+### Coverage moved, not dropped
+
+`pickerUpload.test.ts` mocked the whole orchestrator and asserted
+"`triggerUploads` was called". That boundary no longer exists, so its eleven
+cases were rewritten against the real pipeline in
+`uploadOrchestrator.test.ts`, where they now assert on the test HOST — nothing
+reaches `host.upload` before Send. That is a stronger claim than the one it
+replaces. The two `ComposeBox.test.tsx` cases that asserted dialog behaviour
+were reduced to wiring: that file mocks the orchestrator, so "no upload after
+Cancel" would pass there against a build with no gate at all.
+<!-- entry #1883d -->
+
+---
+
+## 2026-09-05 — #1883d: the upload confirm becomes OPT-IN
+
+**Ruling (vjt via Gabriele, 2026-09-05): the pre-upload confirm is a setting,
+default OFF.** It lives beside upload retention in the settings drawer, backed
+by a new `user_settings.data` key `"upload_confirm_enabled"` — no migration, a
+JSON key in the existing column, `false` stored as ABSENCE (the
+`put_show_peer_profiles/2` rule: an explicit `false` row is a second spelling of
+the default).
+
+### This reverses this file's own earlier position, and the reversal is the entry
+
+The #1883 note and the `triggerUploads` header both argued there must be no
+"don't ask again": *a gate every returning operator has already switched off is
+not a gate*. That argument was aimed at the flag which PRODUCED the defect —
+`localStorage`, key `image-upload-privacy-acknowledged:<host.id>`, per-browser,
+invisible, not revocable from the UI. `upload_confirm_enabled` is a different
+object: per-user, server-side, visible, revocable. So the contradiction is
+rhetorical rather than mechanical.
+
+**The cost is real and is not hidden.** OFF by default means all five upload
+doors — picker, drop, pasted file, paste-as-`.txt`, OS share — are unguarded
+until someone opts in. Opt-in was chosen over default-on-with-opt-out knowing
+that; the measured difference is that the assertion
+`has no remember-me door — a second pick confirms again` is red under opt-in and
+green under opt-out. It was not deleted but **narrowed** to what survives: while
+the confirm is ON there is no per-dialog "don't ask again" — turning it off is a
+deliberate trip to settings, not a checkbox on the way past.
+
+### The policy branch sits AFTER normalisation, and that is load-bearing
+
+`enqueueUploads` does not normalise; `normalizeUploadFile` runs inside
+`triggerUploads`. So the obvious spelling
+
+```ts
+if (!uploadConfirmEnabled()) return enqueueUploads(key, ..., rawFiles)
+```
+
+sends the RAW files and re-breaks the iOS `.m4r` case the function exists to
+rescue (iOS labels it `application/octet-stream`; only the normaliser maps it to
+`audio/mp4`) — reopening exactly the hole #1883 closed. The branch therefore
+takes the NORMALISED list, and a test asserts the type that reaches the host on
+the confirm-OFF path, not merely that a call happened.
+
+### A displaced confirm is now reported instead of vanishing
+
+`consumeShare` → `dropUpload` → `triggerUploads` opens a confirm at BOOT, with
+no gesture on screen. `confirmDialog` is last-write-wins (a modal is a focus
+trap), so any other confirm replaced it and the shared files disappeared with no
+banner — an outcome that never reached `recordShareTargetBlock`. `ConfirmRequest`
+gains an optional `onDisplaced`, fired when a pending request is REPLACED (never
+when the operator answers it), and the share path passes one that records the
+new `confirm-displaced` block reason. The callback is optional and the asymmetry
+is deliberate: every other door is driven by a gesture still on screen, so "ask
+again" is the operator repeating it; the share target has nothing to repeat.
+
+Only reachable with the confirm opted IN — but that is a reason to fix it once,
+not to leave it for whoever turns the setting on.
+
+_Deploy: **COLD** — new server routes + context accessors. cic changes ride with
+it; no wire-shape change (settings endpoints are outside the generated wire
+schema, so no `protocol_version` bump)._
+<!-- entry #1883e -->
+
+---
+
+## 2026-09-05 — #1883e: the privacy notice runs before the send confirm
+
+**Reported in testing (Gabriele, 2026-09-05): the Send confirm opened FIRST and
+the "files go to <host>" notice second.** Not a preference — an ordering bug.
+The notice states the TERMS (which host receives the bytes, and for how long); a
+question about terms is worth nothing once the answer has been given. The
+operator was told where their file goes only after committing to send it.
+
+**Cause: the gate sat in `startUpload`, inside the queue pump.** That is
+downstream of the Send confirm by construction — `triggerUploads` asks,
+`enqueueUploads` queues, `pumpQueue` pumps, and only then did `startUpload`
+check `image-upload-privacy-acknowledged:<host.id>`. Before #1883d moved the
+confirm into `triggerUploads` there was no second modal to be out of order
+with, so the placement was invisible rather than wrong.
+
+**Fix: the gate moves to the FRONT of `triggerUploads`**, ahead of both doors:
+
+```
+privacy notice → send confirm → enqueue → upload      (opt-in ON)
+privacy notice → enqueue → upload                     (opt-in OFF)
+```
+
+What waits behind the notice is a **continuation** (`pendingTrigger`), not a
+staged file, because what comes next depends on the opt-in. `acknowledgePrivacy`
+clears it before invoking it, so a resume that opens another modal cannot
+re-enter a stale one; `dismissUpload` drops it, and since nothing is queued yet
+**dropping the continuation IS the cancel**.
+
+**The old gate was REMOVED, not left as a belt.** Two gates would ask an
+operator who declines "don't show this again" twice per batch — once at the
+trigger, once per file in the pump. With `enqueueUploads` private and reachable
+only through `triggerUploads`, nothing can arrive at the queue
+un-acknowledged, so the second check could only ever re-ask. `pendingPrivacyGated`
+went with it: dead state, and a parallel structure that would have drifted.
+
+**Accepted behaviour change, stated so it is not rediscovered as a bug.** An
+operator who never ticks "don't show this again" is now asked **once per BATCH**
+rather than once per FILE — dropping five files was five notices. That also
+matches the Send confirm's own granularity.
+
+**Known rough edge, NOT fixed here.** "Don't show this again" remains a one-way
+door: the only way back is deleting the localStorage key by hand. That is
+exactly the criticism #1883 levelled at this flag (per-browser, invisible, not
+revocable from the UI), and now that upload preferences have a home in settings
+the reset belongs next to the opt-in. Deliberately out of scope for this slice.
+
+_Deploy: **HOT — `--cic` only.** Client ordering; no server change._

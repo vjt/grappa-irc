@@ -19,6 +19,7 @@
 
 import { TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
+import { setUploadConfirmEnabled } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 import { sendPickedFiles } from "../fixtures/uploadJourney";
@@ -29,6 +30,10 @@ test("uploads-3 #118 — multi-file picker uploads ALL files sequentially → tw
   page,
 }) => {
   const vjt = specUser();
+  // #1883 — the send-confirm is an OPT-IN setting now, default OFF. This spec
+  // is ABOUT the confirm, so it turns it on rather than relying on a default
+  // that no longer holds. Server-side and per-user, so it survives the load.
+  await setUploadConfirmEnabled(vjt.token, true);
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 

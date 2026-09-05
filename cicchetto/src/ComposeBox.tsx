@@ -30,7 +30,6 @@ import { frameBudgetBaseForNetwork } from "./lib/isupport";
 import { createNetworkReconnect } from "./lib/networkReconnect";
 import { networkBySlug } from "./lib/networks";
 import { routeClipboardPaste, routePastedInput } from "./lib/pasteRoute";
-import { pickerUpload } from "./lib/pickerUpload";
 import {
   claimAxis,
   type DragAxis,
@@ -43,6 +42,7 @@ import {
   cancelUpload,
   dismissUpload,
   retryUpload,
+  triggerUploads,
   uploadBatch,
   uploadState,
 } from "./lib/uploadOrchestrator";
@@ -530,15 +530,16 @@ const ComposeBox: Component<Props> = (props) => {
     const input = e.currentTarget as HTMLInputElement;
     // Picker path does NOT pre-filter by category: normalizeUploadFile in
     // the orchestrator relabels iOS .m4r ringtones (octet-stream → audio)
-    // that categoryOf would otherwise drop. `pickerUpload` preserves that —
-    // it is deliberately NOT `dropUpload`, which does filter.
+    // that categoryOf would otherwise drop. This is why the picker calls
+    // `triggerUploads` and deliberately NOT `dropUpload`, which does filter.
     const files = input.files ? Array.from(input.files) : [];
-    // 1883 — the picker asks first. A gallery tap used to reach the wire with
-    // nothing in between, so a mis-tap on a dense thumbnail grid published the
-    // wrong photo with no undo. `pickerUpload` opens the confirm and reaches
-    // the orchestrator only on Send; drop and paste keep going straight
-    // through (a drag has a visible target, a paste is typed).
-    pickerUpload(files, props.networkSlug, props.channelName);
+    // #1883 — the confirm lives in `triggerUploads`, so it is inherited here
+    // rather than wired here. #1884's picker-only `pickerUpload` was reversed
+    // (vjt's ruling, 2026-08-31) so drop, paste and the OS share-target are
+    // guarded by the same door instead of each remembering to ask.
+    if (files.length > 0) {
+      triggerUploads(key(), props.networkSlug, props.channelName, files);
+    }
     // Reset so picking the same file twice still fires `change`.
     input.value = "";
   };

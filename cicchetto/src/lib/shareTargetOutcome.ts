@@ -20,8 +20,12 @@ import { createSignal } from "solid-js";
  * `nothing-uploadable` — the share carried no file the upload path accepts.
  * That covers an empty share too: from the operator's side "nothing came
  * through" is the same sentence either way.
+ * `confirm-displaced` — #1883: the share opened a confirm at boot and another
+ * confirm replaced it before the operator answered, so the files were dropped
+ * with no input. Only reachable with the upload confirm opted IN; without this
+ * the share vanished with no banner at all.
  */
-export type ShareTargetBlock = "no-destination" | "nothing-uploadable";
+export type ShareTargetBlock = "no-destination" | "nothing-uploadable" | "confirm-displaced";
 
 const [blocked, setBlocked] = createSignal<ShareTargetBlock | null>(null);
 
@@ -45,6 +49,8 @@ export function shareTargetBannerMessage(): string {
       return "Shared file had nowhere to go — open a channel or a query, then share again.";
     case "nothing-uploadable":
       return "Nothing in that share could be uploaded.";
+    case "confirm-displaced":
+      return "Shared file was dropped when another dialog took over — share it again.";
     default:
       // Unreachable while the banner is gated on `shouldShowShareTargetBanner`.
       // Empty rather than a placeholder: a banner with filler text in it is

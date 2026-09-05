@@ -52,7 +52,7 @@ import { settingsOpenTick } from "./lib/settingsNav";
 import { getShowBottomBar } from "./lib/showBottomBar";
 import { isMobile } from "./lib/theme";
 import { bindEdgeGesture } from "./lib/touchGesture";
-import { loadUploadTtlSeconds } from "./lib/uploadOrchestrator";
+import { loadUploadConfirmEnabled, loadUploadTtlSeconds } from "./lib/uploadOrchestrator";
 import { HOME_WINDOW_NAME, HOME_WINDOW_SLUG, kindHasScrollback } from "./lib/windowKinds";
 import { isActiveChannelJoined } from "./lib/windowState";
 import MediaViewerModal from "./MediaViewerModal";
@@ -467,6 +467,10 @@ const Shell: Component = () => {
     if (t === null || !m) return;
     uploadTtlBootstrapped = true;
     void loadUploadTtlSeconds(t);
+    // #1883 — beside the TTL, and for the same reason: the very FIRST upload
+    // must honour the saved preference, not only uploads made after the
+    // settings drawer has been opened once.
+    void loadUploadConfirmEnabled(t);
   });
 
   // #71 INC-2 — the "auto-close the members drawer on a non-joined-channel

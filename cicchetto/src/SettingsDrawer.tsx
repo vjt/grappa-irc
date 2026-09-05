@@ -70,8 +70,11 @@ import { getShowBottomBar } from "./lib/showBottomBar";
 import { getTimeFormat, type TimeFormatKey } from "./lib/timeFormat";
 import { activeHost } from "./lib/uploadHost";
 import {
+  loadUploadConfirmEnabled,
   loadUploadTtlSeconds,
+  saveUploadConfirmEnabled,
   saveUploadTtlSeconds,
+  uploadConfirmEnabledValue,
   uploadTtlSecondsValue,
 } from "./lib/uploadOrchestrator";
 import { deviceClassIcon, deviceDisplayName, parseUserAgent } from "./lib/userAgent";
@@ -158,6 +161,7 @@ const SettingsDrawer: Component<Props> = (props) => {
   // cache on drawer mount, saveUploadTtlSeconds round-trips on
   // change. `null` = "use the active host's defaultTtl".
   const [uploadTtlSavingError, setUploadTtlSavingError] = createSignal<string | null>(null);
+  const [uploadConfirmSavingError, setUploadConfirmSavingError] = createSignal<string | null>(null);
   // #348 — auto-away debounce. The server owns the behaviour AND the
   // accepted range; these three only drive the control. `customMode`
   // is a MODE the user can enter without having written anything yet,
@@ -563,6 +567,7 @@ const SettingsDrawer: Component<Props> = (props) => {
       // fieldset's `<select>` reflects the server value before the
       // first user interaction.
       void loadUploadTtlSeconds(t);
+      void loadUploadConfirmEnabled(t);
       // #348 — same reason: the auto-away control must show what the
       // server stored, not a client-side guess.
       void loadAutoAwayDebounce(t);
@@ -939,6 +944,22 @@ const SettingsDrawer: Component<Props> = (props) => {
     } catch (err) {
       const code = err instanceof Error ? err.message : "save_failed";
       setUploadTtlSavingError(code);
+    }
+  };
+
+  // #1883 — the pre-upload confirm opt-in. Write-through like the TTL above:
+  // the checkbox reflects the cached mirror, and the PUT updates it so the very
+  // next upload honours the change with no reload.
+  const onUploadConfirmChange = async (e: Event) => {
+    const t = token();
+    if (t === null) return;
+    const next = (e.currentTarget as HTMLInputElement).checked;
+    setUploadConfirmSavingError(null);
+    try {
+      await saveUploadConfirmEnabled(t, next);
+    } catch (err) {
+      const code = err instanceof Error ? err.message : "save_failed";
+      setUploadConfirmSavingError(code);
     }
   };
 
@@ -1787,6 +1808,38 @@ const SettingsDrawer: Component<Props> = (props) => {
                 <Show when={uploadTtlSavingError() !== null}>
                   <p class="upload-ttl-error" role="alert" data-testid="upload-ttl-error">
                     {uploadTtlSavingError()}
+                  </p>
+                </Show>
+                {/* #1883 — the pre-upload confirm opt-in, in this fieldset
+                    because it is the other thing an operator decides ABOUT an
+                    upload before making one, and they are looked for together.
+                    NOT host-gated on ttlOptions in its own right — the confirm
+                    is a cic dialog and applies to any host — but it inherits
+                    this fieldset's gate, which is a real limitation: a host
+                    without a TTL ladder would hide the toggle too. Acceptable
+                    while litterbox is the only host; if a second one lands,
+                    this pair splits into its own fieldset. */}
+                <label class="upload-confirm-row">
+                  <input
+                    type="checkbox"
+                    data-testid="upload-confirm-toggle"
+                    checked={uploadConfirmEnabledValue()}
+                    onChange={(e) => {
+                      void onUploadConfirmChange(e);
+                    }}
+                  />
+                  Ask before sending a file
+                </label>
+                {/* Says what it costs as well as what it buys: the whole reason
+                    this is a setting is that the confirm was friction for the
+                    operators who did not want it. */}
+                <p class="settings-section-blurb" data-testid="upload-confirm-hint">
+                  Off by default. When on, every file you pick, drop, paste or share to Grappa shows
+                  a preview and waits for you to confirm before it is uploaded and its link posted.
+                </p>
+                <Show when={uploadConfirmSavingError() !== null}>
+                  <p class="upload-ttl-error" role="alert" data-testid="upload-confirm-error">
+                    {uploadConfirmSavingError()}
                   </p>
                 </Show>
               </fieldset>

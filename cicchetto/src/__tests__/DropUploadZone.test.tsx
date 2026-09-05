@@ -112,7 +112,9 @@ describe("DropUploadZone", () => {
     const file = png();
     fireEvent.drop(el, { dataTransfer: fileDt([file]) });
 
-    expect(triggerUploads).toHaveBeenCalledWith("freenode #a", "freenode", "#a", [file]);
+    // #1883 — trailing `undefined`: a drop supplies no displacement handler
+    // (see dropUpload.test.ts); only the OS share target does.
+    expect(triggerUploads).toHaveBeenCalledWith("freenode #a", "freenode", "#a", [file], undefined);
     expect(screen.queryByText(/drop to upload/i)).toBeNull();
   });
 

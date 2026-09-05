@@ -32,8 +32,10 @@ import {
   loginAs,
   selectChannel,
 } from "../fixtures/cicchettoPage";
+import { setUploadConfirmEnabled } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
+import { sendPickedFiles } from "../fixtures/uploadJourney";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
@@ -71,6 +73,10 @@ test("#1256 — a pasted UTF-8 block uploads labelled and renders with its accen
   if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
 
   const vjt = specUser();
+  // #1883 — the send-confirm is an OPT-IN setting now, default OFF. This spec
+  // is ABOUT the confirm, so it turns it on rather than relying on a default
+  // that no longer holds. Server-side and per-user, so it survives the load.
+  await setUploadConfirmEnabled(vjt.token, true);
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 
@@ -91,13 +97,16 @@ test("#1256 — a pasted UTF-8 block uploads labelled and renders with its accen
 
   // Over the cap the upload IS the affirmative. Race the click against
   // the POST so the 201 is pinned before we chase the served bytes.
-  const [uploadRes] = await Promise.all([
-    page.waitForResponse(
-      (r) => r.url().includes("/api/uploads") && r.request().method() === "POST",
-      { timeout: 20_000 },
-    ),
-    confirmModalYes(page),
-  ]);
+  // #1883 — the POST can no longer be raced against the paste affirmative:
+  // that door now opens the send-confirm, and nothing dispatches until Send.
+  // Arm the waiter first, then walk both dialogs.
+  const uploadPost = page.waitForResponse(
+    (r) => r.url().includes("/api/uploads") && r.request().method() === "POST",
+    { timeout: 20_000 },
+  );
+  await confirmModalYes(page);
+  await sendPickedFiles(page);
+  const uploadRes = await uploadPost;
 
   // Pre-fix this is a 415: the labelled File was refused at the door.
   expect(uploadRes.status()).toBe(201);

@@ -15,6 +15,8 @@ vi.mock("../lib/userSettings", async () => {
     ...actual,
     getUploadTtlSeconds: vi.fn(async () => null),
     putUploadTtlSeconds: vi.fn(async (_token: string, seconds: number | null) => seconds),
+    getUploadConfirmEnabled: vi.fn(async () => false),
+    putUploadConfirmEnabled: vi.fn(async (_token: string, enabled: boolean) => enabled),
   };
 });
 
@@ -76,7 +78,13 @@ vi.mock("../lib/videoTranscode", () => ({
   ),
 }));
 
-import { channelKey } from "../lib/channelKey";
+import { type ChannelKey, channelKey } from "../lib/channelKey";
+import {
+  acceptConfirm,
+  type ConfirmAttachment,
+  confirmRequest,
+  dismissConfirm,
+} from "../lib/confirmDialog";
 import { sendMessage } from "../lib/scrollback";
 import { setServerSettings } from "../lib/serverSettings";
 import { activeHost, type UploadHost } from "../lib/uploadHost";
@@ -84,8 +92,10 @@ import {
   acknowledgePrivacy,
   cancelUpload,
   dismissUpload,
+  loadUploadConfirmEnabled,
   loadUploadTtlSeconds,
   privacyModalState,
+  resetUploadConfirmEnabledForTests,
   resetUploadsForTests,
   resetUploadTtlSecondsForTests,
   retryUpload,
@@ -106,6 +116,31 @@ const sampleImage = (): File =>
   new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "screenshot.png", { type: "image/png" });
 
 const sampleNonImage = (): File => new File(["hello"], "notes.txt", { type: "text/plain" });
+
+// #1883 — every trigger surface now opens a Send/Cancel confirm before the
+// batch is queued. The tests below pin what happens AFTER the operator says
+// Send, so they go through the REAL door and accept inline rather than
+// calling a private un-gated entry point: a regression in the gate itself
+// then shows up here as well as in the "confirm gate" block at the end.
+const triggerUploadConfirmed = (
+  k: ChannelKey,
+  networkSlug: string,
+  channelName: string,
+  file: File,
+): void => {
+  triggerUpload(k, networkSlug, channelName, file);
+  acceptConfirm();
+};
+
+const triggerUploadsConfirmed = (
+  k: ChannelKey,
+  networkSlug: string,
+  channelName: string,
+  files: File[],
+): void => {
+  triggerUploads(k, networkSlug, channelName, files);
+  acceptConfirm();
+};
 
 // The orchestrator pulls videoTranscode in via dynamic import() (lazy
 // mediabunny chunk) — the transcode mock registers a microtask after
@@ -186,6 +221,8 @@ beforeEach(() => {
   // UX-4 bucket M — reset the server-pref cache so each test starts
   // from "no preference set" (host default).
   resetUploadTtlSecondsForTests();
+  resetUploadConfirmEnabledForTests();
+  vi.mocked(userSettings.getUploadConfirmEnabled).mockResolvedValue(false);
   vi.mocked(userSettings.getUploadTtlSeconds).mockResolvedValue(null);
   vi.mocked(userSettings.putUploadTtlSeconds).mockImplementation(async (_, s) => s);
 });
@@ -200,7 +237,7 @@ afterEach(() => {
 
 describe("privacy modal gating", () => {
   it("first upload (no localStorage flag) opens the privacy modal + does NOT trigger XHR", () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
 
     const modal = privacyModalState();
     expect(modal.open).toBe(true);
@@ -209,7 +246,7 @@ describe("privacy modal gating", () => {
   });
 
   it("acknowledgePrivacy(true) writes the per-host localStorage flag + triggers the upload", () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     acknowledgePrivacy(true);
 
     expect(localStorage.getItem("image-upload-privacy-acknowledged:test-host")).toBe("1");
@@ -218,7 +255,7 @@ describe("privacy modal gating", () => {
   });
 
   it("acknowledgePrivacy(false) triggers the upload but does NOT persist", () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     acknowledgePrivacy(false);
 
     expect(localStorage.getItem("image-upload-privacy-acknowledged:test-host")).toBeNull();
@@ -228,7 +265,7 @@ describe("privacy modal gating", () => {
   it("subsequent upload with flag set bypasses the modal", () => {
     localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
 
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
 
     expect(privacyModalState().open).toBe(false);
     expect(pendingResolvers.length).toBe(1);
@@ -240,13 +277,13 @@ describe("privacy modal gating", () => {
     // Now switch to a different host id.
     vi.mocked(activeHost).mockReturnValue(makeTestHost({ id: "other-host" }));
 
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
 
     expect(privacyModalState().open).toBe(true);
   });
 
   it("cancel from privacy modal closes modal and does NOT trigger upload", () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     dismissUpload(key);
 
     expect(privacyModalState().open).toBe(false);
@@ -267,7 +304,7 @@ describe("MIME + size pre-checks", () => {
     // text/plain is a document-category MIME, but the default test host
     // accepts no documents — generalized unsupported-type message lists
     // the extensions the host DOES take.
-    triggerUpload(key, slug, channel, sampleNonImage());
+    triggerUploadConfirmed(key, slug, channel, sampleNonImage());
 
     const st = uploadState(key);
     expect(st?.error).toBeTruthy();
@@ -278,7 +315,7 @@ describe("MIME + size pre-checks", () => {
 
   it("oversize file → state has error, no upload", () => {
     const big = new File([new Uint8Array(2 * 1024 * 1024)], "big.png", { type: "image/png" });
-    triggerUpload(key, slug, channel, big);
+    triggerUploadConfirmed(key, slug, channel, big);
 
     const st = uploadState(key);
     expect(st?.error).toBeTruthy();
@@ -297,7 +334,7 @@ describe("upload lifecycle", () => {
   });
 
   it("triggers host.upload with the file + chosen TTL", () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
 
     expect(pendingResolvers.length).toBe(1);
     expect(uploadState(key)?.filename).toBe("screenshot.png");
@@ -308,7 +345,7 @@ describe("upload lifecycle", () => {
   });
 
   it("progress events update uploadState's loaded/total", () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
 
     const r = pendingResolvers[0];
     if (!r) throw new Error("expected resolver");
@@ -319,7 +356,7 @@ describe("upload lifecycle", () => {
   });
 
   it("on resolve, sends PRIVMSG with photocamera-prefixed URL body + clears state", async () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     const r = pendingResolvers[0];
     if (!r) throw new Error("expected resolver");
 
@@ -333,7 +370,7 @@ describe("upload lifecycle", () => {
   });
 
   it("on reject (network), state has error string + does NOT auto-send", async () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     const r = pendingResolvers[0];
     if (!r) throw new Error("expected resolver");
 
@@ -355,7 +392,7 @@ describe("upload lifecycle", () => {
   // cut surfaced as a bare "network error" after megabytes had flowed;
   // the copy must distinguish dropped-mid-upload from never-connected.
   it("on reject (network) after progress, error says how much was sent", async () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     const r = pendingResolvers[0];
     if (!r) throw new Error("expected resolver");
 
@@ -369,7 +406,7 @@ describe("upload lifecycle", () => {
   });
 
   it("on reject (network) with zero bytes sent, error suggests unreachable", async () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     const r = pendingResolvers[0];
     if (!r) throw new Error("expected resolver");
 
@@ -383,7 +420,7 @@ describe("upload lifecycle", () => {
   });
 
   it("network-error progress context resets between attempts", async () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     const first = pendingResolvers[0];
     if (!first) throw new Error("expected resolver");
 
@@ -412,7 +449,7 @@ describe("upload lifecycle", () => {
   });
 
   it("on reject (http 413), error message is friendly + mentions size or rejection", async () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     const r = pendingResolvers[0];
     if (!r) throw new Error("expected resolver");
 
@@ -424,7 +461,7 @@ describe("upload lifecycle", () => {
   });
 
   it("on reject (http 5xx), error message mentions service / unavailable", async () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     const r = pendingResolvers[0];
     if (!r) throw new Error("expected resolver");
 
@@ -436,7 +473,7 @@ describe("upload lifecycle", () => {
   });
 
   it("on reject (abort), state is cleared silently — no error UI", async () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     const r = pendingResolvers[0];
     if (!r) throw new Error("expected resolver");
 
@@ -464,7 +501,7 @@ describe("embedded-host token error copy (#364 S4)", () => {
   });
 
   const rejectWith = async (body: string, status: number): Promise<void> => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     const r = pendingResolvers[0];
     if (!r) throw new Error("expected resolver");
     r.reject({ kind: "http", status, body });
@@ -527,7 +564,7 @@ describe("cancel + dismiss + retry", () => {
   });
 
   it("cancelUpload aborts the host's signal + clears state", () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     const r = pendingResolvers[0];
     if (!r) throw new Error("expected resolver");
 
@@ -538,7 +575,7 @@ describe("cancel + dismiss + retry", () => {
   });
 
   it("dismissUpload clears an error state without triggering anything", async () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     const r = pendingResolvers[0];
     if (!r) throw new Error("expected resolver");
     r.reject({ kind: "network" });
@@ -552,7 +589,7 @@ describe("cancel + dismiss + retry", () => {
   });
 
   it("retryUpload re-triggers with the original file after an error", async () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     const r = pendingResolvers[0];
     if (!r) throw new Error("expected resolver");
     r.reject({ kind: "network" });
@@ -582,7 +619,7 @@ describe("category dispatch", () => {
 
   it("document upload → host.upload called + 📄-prefixed PRIVMSG", async () => {
     const pdf = new File(["%PDF-1.4"], "notes.pdf", { type: "application/pdf" });
-    triggerUpload(key, slug, channel, pdf);
+    triggerUploadConfirmed(key, slug, channel, pdf);
 
     expect(pendingResolvers.length).toBe(1);
     pendingResolvers[0]?.resolve("https://litter.catbox.moe/abc.pdf");
@@ -594,7 +631,7 @@ describe("category dispatch", () => {
   });
 
   it("image upload → 📸-prefixed PRIVMSG (via the emoji map)", async () => {
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
 
     expect(pendingResolvers.length).toBe(1);
     pendingResolvers[0]?.resolve("https://litter.catbox.moe/abc.png");
@@ -606,7 +643,7 @@ describe("category dispatch", () => {
 
   it("audio upload → host.upload called + 🎵-prefixed PRIVMSG", async () => {
     const mp3 = new File([new Uint8Array([0x49, 0x44, 0x33])], "voice.mp3", { type: "audio/mpeg" });
-    triggerUpload(key, slug, channel, mp3);
+    triggerUploadConfirmed(key, slug, channel, mp3);
 
     expect(pendingResolvers.length).toBe(1);
     pendingResolvers[0]?.resolve("https://litter.catbox.moe/abc.mp3");
@@ -631,7 +668,7 @@ describe("category dispatch", () => {
     const m4r = new File([new Uint8Array([0, 0, 0, 0])], "ring.m4r", {
       type: "application/octet-stream",
     });
-    triggerUpload(key, slug, channel, m4r);
+    triggerUploadConfirmed(key, slug, channel, m4r);
 
     expect(pendingResolvers.length).toBe(1);
     expect(pendingResolvers[0]?.file.type).toBe("audio/mp4");
@@ -648,7 +685,7 @@ describe("category dispatch", () => {
 
   it("video upload → routed through the transcode → 🎬-prefixed PRIVMSG", async () => {
     const clip = new File([new Uint8Array(16)], "clip.mp4", { type: "video/mp4" });
-    triggerUpload(key, slug, channel, clip);
+    triggerUploadConfirmed(key, slug, channel, clip);
 
     // Task 6: the transform hook is the transcode now — the host POST
     // only fires once the transcode resolves.
@@ -672,7 +709,7 @@ describe("category dispatch", () => {
     const exe = new File([new Uint8Array(4)], "setup.exe", {
       type: "application/x-msdownload",
     });
-    triggerUpload(key, slug, channel, exe);
+    triggerUploadConfirmed(key, slug, channel, exe);
 
     const st = uploadState(key);
     expect(st?.error).toMatch(/png/);
@@ -686,7 +723,7 @@ describe("category dispatch", () => {
     // 1MB pdf vs the categoryHost's 512KB document cap (image cap is
     // 1MB — a flat cap would let this through).
     const big = new File([new Uint8Array(1024 * 1024)], "big.pdf", { type: "application/pdf" });
-    triggerUpload(key, slug, channel, big);
+    triggerUploadConfirmed(key, slug, channel, big);
 
     const st = uploadState(key);
     expect(st?.error).toMatch(/too large/i);
@@ -738,14 +775,14 @@ describe("video transcode branch", () => {
 
   it("#201: the live server ceiling is what reaches transcodeVideo", async () => {
     settingsWithVideoDuration(45);
-    triggerUpload(key, slug, channel, videoClip());
+    triggerUploadConfirmed(key, slug, channel, videoClip());
 
     await awaitTranscodeStart(1);
     expect(vt.transcodes[0]?.maxDurationSeconds).toBe(45);
   });
 
   it("#201: with no settings snapshot yet, the 120s fallback reaches transcodeVideo", async () => {
-    triggerUpload(key, slug, channel, videoClip());
+    triggerUploadConfirmed(key, slug, channel, videoClip());
 
     await awaitTranscodeStart(1);
     expect(vt.transcodes[0]?.maxDurationSeconds).toBe(120);
@@ -753,7 +790,7 @@ describe("video transcode branch", () => {
 
   it("#201: the too-long copy names the LIVE ceiling, not the constant", async () => {
     settingsWithVideoDuration(45);
-    triggerUpload(key, slug, channel, videoClip());
+    triggerUploadConfirmed(key, slug, channel, videoClip());
 
     await awaitTranscodeStart(1);
     vt.transcodes[0]?.resolve({ error: { kind: "too_long", durationSeconds: 90 } });
@@ -765,7 +802,7 @@ describe("video transcode branch", () => {
 
   it("#201: a whole-minute ceiling still reads in minutes", async () => {
     settingsWithVideoDuration(60);
-    triggerUpload(key, slug, channel, videoClip());
+    triggerUploadConfirmed(key, slug, channel, videoClip());
 
     await awaitTranscodeStart(1);
     vt.transcodes[0]?.resolve({ error: { kind: "too_long", durationSeconds: 90 } });
@@ -777,7 +814,7 @@ describe("video transcode branch", () => {
     // 90s is under the 120s fallback constant, so only the admin-set
     // 60s ceiling can reject it on the fallback path.
     settingsWithVideoDuration(60);
-    triggerUpload(key, slug, channel, videoClip());
+    triggerUploadConfirmed(key, slug, channel, videoClip());
 
     vt.probeDuration.mockResolvedValue(90);
     await awaitTranscodeStart(1);
@@ -789,7 +826,7 @@ describe("video transcode branch", () => {
 
   it("happy path: transcoding phase first, host receives the TRANSCODED file, 🎬 PRIVMSG", async () => {
     const clip = videoClip();
-    triggerUpload(key, slug, channel, clip);
+    triggerUploadConfirmed(key, slug, channel, clip);
 
     // Transcoding entry is visible before any upload starts.
     expect(uploadState(key)?.phase).toBe("transcoding");
@@ -825,7 +862,7 @@ describe("video transcode branch", () => {
   });
 
   it("too_long is POLICY: hard reject, no fallback, host.upload never called", async () => {
-    triggerUpload(key, slug, channel, videoClip());
+    triggerUploadConfirmed(key, slug, channel, videoClip());
 
     await awaitTranscodeStart(1);
     vt.transcodes[0]?.resolve({ error: { kind: "too_long", durationSeconds: 300 } });
@@ -838,7 +875,7 @@ describe("video transcode branch", () => {
 
   it("unsupported + small original → ORIGINAL uploads, reason console.warn'd", async () => {
     const clip = videoClip();
-    triggerUpload(key, slug, channel, clip);
+    triggerUploadConfirmed(key, slug, channel, clip);
 
     vt.probeDuration.mockResolvedValue(30);
     await awaitTranscodeStart(1);
@@ -858,7 +895,7 @@ describe("video transcode branch", () => {
     // 6MB original vs the categoryHost 5MB video cap. iOS Safari has
     // no console — the transcode-failure reason must ride the error UI
     // alongside the cap rejection (2026-06-10 dogfood).
-    triggerUpload(key, slug, channel, videoClip(6 * 1024 * 1024));
+    triggerUploadConfirmed(key, slug, channel, videoClip(6 * 1024 * 1024));
 
     await awaitTranscodeStart(1);
     vt.transcodes[0]?.resolve({
@@ -874,7 +911,7 @@ describe("video transcode branch", () => {
   });
 
   it("failed + oversize original → COMBINED error carries the failure message", async () => {
-    triggerUpload(key, slug, channel, videoClip(6 * 1024 * 1024));
+    triggerUploadConfirmed(key, slug, channel, videoClip(6 * 1024 * 1024));
 
     await awaitTranscodeStart(1);
     vt.transcodes[0]?.resolve({ error: { kind: "failed", message: "encoder blew up" } });
@@ -885,7 +922,7 @@ describe("video transcode branch", () => {
   });
 
   it("failed + original over the 2-minute ceiling → too-long error, no fallback upload", async () => {
-    triggerUpload(key, slug, channel, videoClip());
+    triggerUploadConfirmed(key, slug, channel, videoClip());
 
     vt.probeDuration.mockResolvedValue(200);
     await awaitTranscodeStart(1);
@@ -897,7 +934,7 @@ describe("video transcode branch", () => {
   });
 
   it("cancel during transcode → state cleared, transcode signal aborted, no fallback", async () => {
-    triggerUpload(key, slug, channel, videoClip());
+    triggerUploadConfirmed(key, slug, channel, videoClip());
     expect(uploadState(key)?.phase).toBe("transcoding");
     await awaitTranscodeStart(1);
 
@@ -919,14 +956,14 @@ describe("video transcode branch", () => {
   });
 
   it("re-trigger during an in-flight transcode queues behind it (#118 — no abort, no orphaned encode)", async () => {
-    triggerUpload(key, slug, channel, videoClip());
+    triggerUploadConfirmed(key, slug, channel, videoClip());
     await awaitTranscodeStart(1);
     expect(vt.transcodes[0]?.signal.aborted).toBe(false);
 
     // Second selection on the same channel while the first transcode is
     // still running: #118 queues it behind the first instead of aborting —
     // the first upload is never lost, and only ONE transcode runs at a time.
-    triggerUpload(key, slug, channel, videoClip());
+    triggerUploadConfirmed(key, slug, channel, videoClip());
     await Promise.resolve();
     await Promise.resolve();
     expect(vt.transcodes.length).toBe(1);
@@ -960,7 +997,7 @@ describe("#49 — stale retry buffer", () => {
   it("retry after a pre-check rejection retries the REJECTED file, not a prior one", async () => {
     // 1) Successful small upload — pre-fix this poisons lastAttempt.
     const small = new File([new Uint8Array(4)], "small.png", { type: "image/png" });
-    triggerUpload(key, slug, channel, small);
+    triggerUploadConfirmed(key, slug, channel, small);
     expect(pendingResolvers.length).toBe(1);
     pendingResolvers[0]?.resolve("https://litter.catbox.moe/small.png");
     await Promise.resolve();
@@ -968,7 +1005,7 @@ describe("#49 — stale retry buffer", () => {
 
     // 2) Oversized file → pre-check rejection (host cap is 1MB).
     const big = new File([new Uint8Array(2 * 1024 * 1024)], "big.png", { type: "image/png" });
-    triggerUpload(key, slug, channel, big);
+    triggerUploadConfirmed(key, slug, channel, big);
     expect(uploadState(key)?.error).toMatch(/too large/i);
 
     // 3) Retry must re-attempt big.png — which fails the pre-check
@@ -982,7 +1019,7 @@ describe("#49 — stale retry buffer", () => {
 
   it("a new selection after a failed POST replaces the retry payload", async () => {
     const a = new File([new Uint8Array(4)], "a.png", { type: "image/png" });
-    triggerUpload(key, slug, channel, a);
+    triggerUploadConfirmed(key, slug, channel, a);
     expect(pendingResolvers.length).toBe(1);
     pendingResolvers[0]?.reject({ kind: "http", status: 413, body: "Payload Too Large" });
     await Promise.resolve();
@@ -990,7 +1027,7 @@ describe("#49 — stale retry buffer", () => {
     expect(uploadState(key)?.error).toBeTruthy();
 
     const b = new File([new Uint8Array(4)], "b.png", { type: "image/png" });
-    triggerUpload(key, slug, channel, b);
+    triggerUploadConfirmed(key, slug, channel, b);
     expect(pendingResolvers.length).toBe(2);
     expect(pendingResolvers[1]?.file.name).toBe("b.png");
     pendingResolvers[1]?.resolve("https://litter.catbox.moe/b.png");
@@ -1045,7 +1082,7 @@ describe("TTL persistence", () => {
       }),
     );
 
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     expect(capturedTtl).toBe("1h");
   });
 
@@ -1063,7 +1100,7 @@ describe("TTL persistence", () => {
       }),
     );
 
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     expect(capturedTtl).toBe("24h");
   });
 
@@ -1083,7 +1120,7 @@ describe("TTL persistence", () => {
       }),
     );
 
-    triggerUpload(key, slug, channel, sampleImage());
+    triggerUploadConfirmed(key, slug, channel, sampleImage());
     expect(capturedTtl).toBe("24h");
   });
 
@@ -1105,7 +1142,7 @@ describe("sequential multi-file queue (#118)", () => {
 
   it("uploads queued files one at a time, auto-sending each in order", async () => {
     ackPrivacy();
-    triggerUploads(key, slug, channel, [img("a.png"), img("b.png"), img("c.png")]);
+    triggerUploadsConfirmed(key, slug, channel, [img("a.png"), img("b.png"), img("c.png")]);
 
     // Only the first file is in flight.
     expect(pendingResolvers.length).toBe(1);
@@ -1130,7 +1167,7 @@ describe("sequential multi-file queue (#118)", () => {
 
   it("reports (index/total) and clears the counter when drained", async () => {
     ackPrivacy();
-    triggerUploads(key, slug, channel, [img("a.png"), img("b.png")]);
+    triggerUploadsConfirmed(key, slug, channel, [img("a.png"), img("b.png")]);
     expect(uploadBatch(key)).toEqual({ index: 1, total: 2 });
 
     pendingResolvers[0]?.resolve("https://h/a");
@@ -1142,7 +1179,7 @@ describe("sequential multi-file queue (#118)", () => {
 
   it("a failed file pauses the batch; dismiss continues with the rest", async () => {
     ackPrivacy();
-    triggerUploads(key, slug, channel, [img("a.png"), img("b.png")]);
+    triggerUploadsConfirmed(key, slug, channel, [img("a.png"), img("b.png")]);
     expect(pendingResolvers.length).toBe(1);
 
     pendingResolvers[0]?.reject({ kind: "network" });
@@ -1160,7 +1197,7 @@ describe("sequential multi-file queue (#118)", () => {
 
   it("cancel stops the whole batch — no further dispatch", async () => {
     ackPrivacy();
-    triggerUploads(key, slug, channel, [img("a.png"), img("b.png"), img("c.png")]);
+    triggerUploadsConfirmed(key, slug, channel, [img("a.png"), img("b.png"), img("c.png")]);
     expect(pendingResolvers.length).toBe(1);
     const sig = pendingResolvers[0]?.signal;
 
@@ -1175,7 +1212,7 @@ describe("sequential multi-file queue (#118)", () => {
 
   it("retry re-runs the failed file, then continues the queue", async () => {
     ackPrivacy();
-    triggerUploads(key, slug, channel, [img("a.png"), img("b.png")]);
+    triggerUploadsConfirmed(key, slug, channel, [img("a.png"), img("b.png")]);
     pendingResolvers[0]?.reject({ kind: "network" });
     await vi.waitFor(() => expect(uploadState(key)?.error).toBeTruthy());
 
@@ -1189,5 +1226,269 @@ describe("sequential multi-file queue (#118)", () => {
 
     pendingResolvers[2]?.resolve("https://h/b");
     await vi.waitFor(() => expect(vi.mocked(sendMessage).mock.calls.length).toBe(2));
+  });
+});
+
+// --------------------------------------------------------------------
+// The confirm gate (#1883)
+// --------------------------------------------------------------------
+//
+// Inherited from #1884's `pickerUpload.test.ts`, which mocked the whole
+// orchestrator and asserted "triggerUploads was called". That boundary no
+// longer exists: the gate IS `triggerUploads`, so these run against the real
+// pipeline and assert on the HOST — nothing may reach `host.upload` until
+// Send. That is a stronger claim than the one they replace, and the only one
+// that still means anything once the two modules are one.
+
+describe("the confirm gate (#1883)", () => {
+  const ackPrivacy = () => localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+  // #1883 — the confirm is OPT-IN as of the settings round, so every case in
+  // this block has to switch it on first. The block asserts what the confirm
+  // DOES when asked for; the sibling block below asserts the default, where it
+  // is not asked for at all.
+  beforeEach(async () => {
+    vi.mocked(userSettings.getUploadConfirmEnabled).mockResolvedValue(true);
+    await loadUploadConfirmEnabled("tok");
+  });
+  const img = (name: string): File =>
+    new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], name, { type: "image/png" });
+  const attachments = (): ConfirmAttachment[] => confirmRequest()?.attachments?.items() ?? [];
+
+  it("an empty pick opens no dialog and uploads nothing", () => {
+    triggerUploads(key, slug, channel, []);
+    expect(confirmRequest()).toBeNull();
+    expect(pendingResolvers.length).toBe(0);
+  });
+
+  it("a pick opens a confirm and uploads NOTHING until it is answered", () => {
+    ackPrivacy();
+    triggerUpload(key, slug, channel, sampleImage());
+    // The destination is on screen — the whole point of the step. It lives in
+    // the title, which is also the dialog's aria-label.
+    expect(confirmRequest()?.title).toContain(channel);
+    // The privacy ack is no longer enough to put bytes on the wire.
+    expect(pendingResolvers.length).toBe(0);
+    // …and nothing took the channel's upload slot either: the queue is the
+    // thing #1884 argued an unauthorised batch must stay out of.
+    expect(uploadBatch(key)).toBeNull();
+  });
+
+  it("the confirm lists every picked file by name and size", () => {
+    ackPrivacy();
+    triggerUploads(key, slug, channel, [img("a.png"), img("b.png")]);
+    expect(attachments().map((a) => a.label)).toEqual(["a.png", "b.png"]);
+    expect(attachments().every((a) => a.detail !== "")).toBe(true);
+  });
+
+  it("an image carries a thumbnail source; a non-image carries none", () => {
+    ackPrivacy();
+    triggerUploads(key, slug, channel, [img("a.png"), sampleNonImage()]);
+    expect(attachments()[0]?.thumbnail).not.toBeNull();
+    expect(attachments()[1]?.thumbnail).toBeNull();
+  });
+
+  it("Send uploads exactly the picked files to the picked window", () => {
+    ackPrivacy();
+    triggerUploads(key, slug, channel, [img("a.png"), img("b.png")]);
+    acceptConfirm();
+    expect(pendingResolvers[0]?.file.name).toBe("a.png");
+    expect(uploadBatch(key)).toEqual({ index: 1, total: 2 });
+  });
+
+  it("Cancel / Esc / backdrop upload NOTHING", async () => {
+    ackPrivacy();
+    triggerUploads(key, slug, channel, [img("a.png"), img("b.png")]);
+    dismissConfirm();
+    expect(pendingResolvers.length).toBe(0);
+    expect(uploadBatch(key)).toBeNull();
+    // And it stays dropped — no deferred pump resurrects it.
+    await Promise.resolve();
+    expect(pendingResolvers.length).toBe(0);
+    expect(vi.mocked(sendMessage).mock.calls.length).toBe(0);
+  });
+
+  it("removing one file drops it from the batch — Send posts only the rest", () => {
+    ackPrivacy();
+    triggerUploads(key, slug, channel, [img("a.png"), img("b.png")]);
+    const doomed = attachments()[0]?.id as string;
+    confirmRequest()?.attachments?.onRemove(doomed);
+    expect(attachments().map((a) => a.label)).toEqual(["b.png"]);
+    acceptConfirm();
+    expect(pendingResolvers.length).toBe(1);
+    expect(pendingResolvers[0]?.file.name).toBe("b.png");
+    expect(uploadBatch(key)).toEqual({ index: 1, total: 1 });
+  });
+
+  it("removing the LAST file closes the dialog and uploads nothing", () => {
+    ackPrivacy();
+    triggerUpload(key, slug, channel, img("only.png"));
+    confirmRequest()?.attachments?.onRemove(attachments()[0]?.id as string);
+    expect(confirmRequest()).toBeNull();
+    expect(pendingResolvers.length).toBe(0);
+  });
+
+  it("two picks with the same filename stay separately removable", () => {
+    ackPrivacy();
+    triggerUploads(key, slug, channel, [img("IMG_0001.png"), img("IMG_0001.png")]);
+    const ids = attachments().map((a) => a.id);
+    expect(new Set(ids).size).toBe(2);
+    confirmRequest()?.attachments?.onRemove(ids[0] as string);
+    expect(attachments().length).toBe(1);
+  });
+
+  it("does NOT pre-filter by category — an iOS .m4r still reaches the host", () => {
+    ackPrivacy();
+    vi.mocked(activeHost).mockReturnValue(
+      makeTestHost({
+        acceptedMimeTypes: { image: [], video: [], document: [], audio: ["audio/mp4"] },
+      }),
+    );
+    const m4r = new File([new Uint8Array([0, 0, 0, 0])], "ring.m4r", {
+      type: "application/octet-stream",
+    });
+    triggerUpload(key, slug, channel, m4r);
+    acceptConfirm();
+    // normalizeUploadFile runs BEFORE the preview, so the dialog and the wire
+    // agree on the type — this is why the picker must not route via dropUpload.
+    expect(pendingResolvers[0]?.file.type).toBe("audio/mp4");
+  });
+
+  it("a second pick replaces the pending confirm rather than stacking one", () => {
+    ackPrivacy();
+    triggerUpload(key, slug, channel, img("first.png"));
+    triggerUpload(key, slug, channel, img("second.png"));
+    expect(attachments().map((a) => a.label)).toEqual(["second.png"]);
+  });
+
+  it("gates the drop/paste path too — the door #1884 left open", () => {
+    ackPrivacy();
+    // dropUpload/pasteRoute/share-target all land on triggerUploads (#351), so
+    // asserting the plural entry asserts every one of them.
+    triggerUploads(key, slug, channel, [img("dropped.png")]);
+    expect(pendingResolvers.length).toBe(0);
+    expect(confirmRequest()).not.toBeNull();
+  });
+
+  // Was "has no remember-me door — a second pick confirms again", asserting
+  // that the confirm could not be switched off at all. That is no longer true:
+  // it is an opt-in setting now. What survives, and is the part worth keeping,
+  // is that WHILE it is on there is no per-dialog "don't ask again" — turning
+  // it off is a deliberate trip to settings, not a checkbox on the way past.
+  // #1883 ordering fix — the privacy notice states the terms (which host, for
+  // how long); asking it AFTER the operator has answered Send tells them where
+  // the files go once they have already agreed to send them. It now runs FIRST,
+  // and the Send confirm does not exist until the terms are accepted.
+  it("shows the privacy notice BEFORE the send confirm, not after it", () => {
+    // Deliberately un-acked: this is the first upload to this host.
+    triggerUploads(key, slug, channel, [img("a.png")]);
+
+    expect(privacyModalState().open).toBe(true);
+    expect(confirmRequest()).toBeNull();
+    expect(pendingResolvers.length).toBe(0);
+
+    acknowledgePrivacy(false);
+
+    expect(privacyModalState().open).toBe(false);
+    expect(confirmRequest()).not.toBeNull();
+    // Still nothing on the wire — the confirm is the second question.
+    expect(pendingResolvers.length).toBe(0);
+  });
+
+  it("declining the terms cancels the batch — no confirm, nothing uploaded", () => {
+    triggerUploads(key, slug, channel, [img("a.png")]);
+    expect(privacyModalState().open).toBe(true);
+
+    dismissUpload(key);
+
+    expect(confirmRequest()).toBeNull();
+    expect(pendingResolvers.length).toBe(0);
+  });
+
+  // #1883 — the OS share target is the one door with no gesture left on screen,
+  // so a confirm replaced before it is answered loses the files in silence.
+  // `triggerUploads` carries the caller's displacement callback so that outcome
+  // can be reported instead of vanishing.
+  it("tells a displaced caller its question was replaced unanswered", () => {
+    ackPrivacy();
+    const displaced = vi.fn();
+    triggerUploads(key, slug, channel, [img("shared.png")], displaced);
+    expect(displaced).not.toHaveBeenCalled();
+
+    triggerUploads(key, slug, channel, [img("later.png")]);
+
+    expect(displaced).toHaveBeenCalledTimes(1);
+    // And nothing was uploaded for the displaced batch.
+    expect(pendingResolvers.length).toBe(0);
+  });
+
+  it("does NOT report displacement when the operator answers it themselves", () => {
+    ackPrivacy();
+    const displaced = vi.fn();
+    triggerUploads(key, slug, channel, [img("shared.png")], displaced);
+    acceptConfirm();
+    expect(displaced).not.toHaveBeenCalled();
+  });
+
+  it("has no in-dialog remember-me door — while ON, a second pick confirms again", () => {
+    ackPrivacy();
+    triggerUploads(key, slug, channel, [img("a.png")]);
+    acceptConfirm();
+    pendingResolvers[0]?.resolve("https://h/a");
+    triggerUpload(key, slug, channel, img("b.png"));
+    expect(confirmRequest()).not.toBeNull();
+  });
+});
+
+// #1883 — the DEFAULT, which is the opposite of the block above and is the
+// half a reader is most likely to assume rather than check.
+describe("the confirm gate is OPT-IN — default off", () => {
+  const ackPrivacy = () => localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+  const img = (name: string): File =>
+    new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], name, { type: "image/png" });
+
+  it("uploads with no dialog at all when the opt-in was never set", () => {
+    ackPrivacy();
+    triggerUploads(key, slug, channel, [img("a.png")]);
+    expect(confirmRequest()).toBeNull();
+    expect(pendingResolvers.length).toBe(1);
+  });
+
+  it("still asks once the opt-in is switched on", async () => {
+    ackPrivacy();
+    vi.mocked(userSettings.getUploadConfirmEnabled).mockResolvedValue(true);
+    await loadUploadConfirmEnabled("tok");
+    triggerUploads(key, slug, channel, [img("a.png")]);
+    expect(confirmRequest()).not.toBeNull();
+    expect(pendingResolvers.length).toBe(0);
+  });
+
+  // The trap vjt named before this round was written: `enqueueUploads` does
+  // NOT normalise, so an opt-out branching on the RAW files re-breaks the iOS
+  // .m4r rescue this function exists for. Asserted on the type that reaches
+  // the host, not on a call having happened.
+  it("normalises BEFORE the policy branch — an iOS .m4r still reaches the host as audio", () => {
+    ackPrivacy();
+    vi.mocked(activeHost).mockReturnValue(
+      makeTestHost({
+        acceptedMimeTypes: { image: [], video: [], document: [], audio: ["audio/mp4"] },
+      }),
+    );
+    const m4r = new File([new Uint8Array([1])], "ring.m4r", {
+      type: "application/octet-stream",
+    });
+    triggerUploads(key, slug, channel, [m4r]);
+    expect(confirmRequest()).toBeNull();
+    expect(pendingResolvers.length).toBe(1);
+    expect(pendingResolvers[0]?.file.type).toBe("audio/mp4");
+  });
+
+  // A saved preference must reach the FIRST upload, not only uploads made
+  // after the settings drawer has been opened — hence the Shell boot load.
+  it("a failed load leaves the default in place rather than guessing", async () => {
+    ackPrivacy();
+    vi.mocked(userSettings.getUploadConfirmEnabled).mockRejectedValue(new Error("offline"));
+    await loadUploadConfirmEnabled("tok");
+    triggerUploads(key, slug, channel, [img("a.png")]);
+    expect(confirmRequest()).toBeNull();
   });
 });

@@ -1,5 +1,6 @@
 import { createSignal } from "solid-js";
 import type { ChannelKey } from "./channelKey";
+import { type ConfirmAttachment, dismissConfirm, requestConfirm } from "./confirmDialog";
 import { formatBytes } from "./formatBytes";
 import { sendMessage } from "./scrollback";
 import { serverSettings } from "./serverSettings";
@@ -11,7 +12,12 @@ import {
   type UploadCategory,
 } from "./uploadCategory";
 import { activeHost, type UploadError, type UploadHost, type UploadProgress } from "./uploadHost";
-import { getUploadTtlSeconds, putUploadTtlSeconds } from "./userSettings";
+import {
+  getUploadConfirmEnabled,
+  getUploadTtlSeconds,
+  putUploadConfirmEnabled,
+  putUploadTtlSeconds,
+} from "./userSettings";
 // Policy only — videoTranscode.ts (the sole mediabunny importer) is
 // loaded via dynamic import() inside prepareVideo so mediabunny's bulk
 // lands in a lazy chunk, off the cold-start main bundle (Task 6
@@ -96,13 +102,19 @@ const inflight = new Map<ChannelKey, ActiveUpload>();
 // transition (inflight is cleared on resolve/reject; this isn't) so
 // retryUpload has the file + slug + channel to re-dispatch with.
 const lastAttempt = new Map<ChannelKey, { file: File; networkSlug: string; channelName: string }>();
-// File staged behind the privacy modal (one at a time — modal is a
-// global singleton). Keyed by channel so dismiss/continue knows what
-// to retry.
-const pendingPrivacyGated = new Map<
-  ChannelKey,
-  { file: File; networkSlug: string; channelName: string }
->();
+// #1883 (ordering fix) — the batch waiting behind the privacy notice, as a
+// CONTINUATION rather than a staged file.
+//
+// The notice used to be gated in `startUpload`, i.e. after the operator had
+// already answered the Send confirm: they were told where the files go only
+// once they had committed to sending them. Terms first, decision second — so
+// the gate moved to the FRONT of `triggerUploads` and what waits here is "the
+// rest of the trigger", which may be a confirm or a straight enqueue depending
+// on the opt-in.
+//
+// One at a time, because the modal is a global singleton — the same reason the
+// old map was keyed by channel and held one entry per key.
+let pendingTrigger: (() => void) | null = null;
 
 // #118 — sequential per-channel upload queue. Files pasted/dropped/picked
 // in one batch wait here behind the active upload; each settle pumps the
@@ -155,6 +167,39 @@ export function uploadTtlSecondsValue(): number | null {
   return uploadTtlSeconds();
 }
 
+// #1883 — the pre-upload confirm opt-in, cached the same way the TTL above is:
+// a cic-side mirror of the server value, loaded once at app start so the very
+// first upload honours it rather than only uploads made after the drawer has
+// been opened. Default `false` matches the server's own default, so a failed
+// or not-yet-finished load behaves exactly like a subject who never opted in.
+const [uploadConfirmEnabled, setUploadConfirmEnabledSignal] = createSignal<boolean>(false);
+
+export function uploadConfirmEnabledValue(): boolean {
+  return uploadConfirmEnabled();
+}
+
+/** Load the server-persisted confirm opt-in into the cic cache. Called from
+ *  `Shell.tsx`'s post-login bootstrap beside `loadUploadTtlSeconds`. Errors are
+ *  swallowed: the cache stays `false`, which is the server default too. */
+export async function loadUploadConfirmEnabled(token: string): Promise<void> {
+  try {
+    setUploadConfirmEnabledSignal(await getUploadConfirmEnabled(token));
+  } catch {
+    /* swallowed — stays at the server's own default (false) */
+  }
+}
+
+/** Persist a new confirm opt-in. Mirrors into the cic cache on success so the
+ *  NEXT upload honours it with no reload. Throws ApiError on 4xx/5xx. */
+export async function saveUploadConfirmEnabled(token: string, enabled: boolean): Promise<void> {
+  setUploadConfirmEnabledSignal(await putUploadConfirmEnabled(token, enabled));
+}
+
+/** Test seam — mirrors `resetUploadTtlSecondsForTests`. */
+export function resetUploadConfirmEnabledForTests(): void {
+  setUploadConfirmEnabledSignal(false);
+}
+
 /** Load the server-persisted upload-TTL into the cic cache. Called
  *  once per app start from `Shell.tsx`'s post-login bootstrap effect
  *  (gated on token + /me both resolving) so the operator's saved
@@ -188,11 +233,14 @@ export function resetUploadTtlSecondsForTests(): void {
  *  buffer, privacy stage, visible entries, batch counters, modal).
  *  Production never calls this — the module state is process-lived. */
 export function resetUploadsForTests(): void {
+  // #1883 — a pending Send/Cancel confirm is upload state too: leaving one
+  // armed would let the next test's acceptConfirm fire the previous batch.
+  dismissConfirm();
   for (const { controller } of inflight.values()) controller.abort();
   inflight.clear();
   queue.clear();
   lastAttempt.clear();
-  pendingPrivacyGated.clear();
+  pendingTrigger = null;
   setUploadStates({});
   setBatchByChannel({});
   setModalState({ open: false, host: null, key: null });
@@ -600,19 +648,184 @@ async function prepareVideo(
   return file;
 }
 
-// #118 plural entry — every trigger surface (paste/drop/picker) collapses
-// to this. Normalizes (iOS .m4r → audio/mp4) + enqueues ALL files, bumps
-// the batch total, then pumps if nothing is active for this channel.
-// Sequential: one file uploads at a time; each settle pumps the next.
+// #1883 — the confirm every upload passes, and the door every surface uses.
+//
+// Picking a photo from the gallery used to reach the wire with no stop
+// anywhere. The only gate was the privacy modal, which is one-shot per host —
+// so for every operator who has ticked "remember", the sequence was tap
+// paperclip -> tap photo -> it is public, on a dense grid where a mis-tap has
+// no undo because the bytes are already on someone else's server and the link
+// is already in the channel.
+//
+// #1884 first put this guard in `pickerUpload.ts`, covering the PICKER only,
+// on the argument that a drag onto a visible target is a gesture the operator
+// aimed and Ctrl-V is one they typed. That reading was reversed (vjt's ruling,
+// 2026-08-31): the gate belongs at the ONE point every surface already passes
+// through. #351 collapsed picker, drop and paste onto this function, and the
+// OS share-target reaches it through `dropUpload` as well — so a guard here is
+// inherited by all four, and by a fifth added later, instead of each having to
+// remember it. A per-surface guard is an enumeration, and enumerations drift.
+//
+// The objection #1884 raised against this position is answered by the split
+// below, not waved away: "the orchestrator owns the queue, and a batch the
+// operator has not authorised has no business being in it." It never enters
+// it. `triggerUploads` only ASKS; nothing is queued, no batch counter moves
+// and no upload slot is taken until Send calls `enqueueUploads`.
+//
+// Normalisation (iOS .m4r -> audio/mp4) happens HERE, before the preview, so
+// the type the dialog shows is the type that will be sent. This is also why
+// the picker call site must NOT route through `dropUpload`: that helper
+// pre-filters on `categoryOf`, and iOS labels a .m4r `application/octet-stream`
+// — only `normalizeUploadFile` rescues it, and the filter would drop the file
+// before the rescue could run.
+//
+// #1883 — the confirm is OPT-IN, and this paragraph used to say the opposite
+// ("there is no don't ask again ... a gate every returning operator has already
+// switched off is not a gate"). That argument was aimed at the flag which
+// PRODUCED the defect: `localStorage`, per-browser, invisible, not revocable
+// from the UI. `upload_confirm_enabled` is a different object — per-user,
+// server-side, and visible beside the upload-retention control — so the
+// objection is rhetorical rather than mechanical. The cost is real and is
+// stated rather than hidden: OFF by default means all five doors are unguarded
+// until someone turns it on. Reversal ruled 2026-09-05; see the server
+// accessor `Grappa.UserSettings.get_upload_confirm_enabled/1`.
+
+// Row identity. Filenames are not unique (a gallery multi-select routinely
+// yields two `IMG_0001.png`) and neither is the File object across two picks
+// of the same photo, so the id is minted here and never derived.
+let nextAttachmentId = 0;
+
+type StagedFile = { id: string; file: File };
+
+// A picture is the only preview worth showing: for every other category the
+// bytes say nothing a human can check at a glance, and the name is what
+// distinguishes `contract-final.pdf` from `contract-draft.pdf`. The blob is
+// handed over raw — ConfirmModal mints and revokes the object URL, because the
+// row's unmount is the only event that knows when it stops being needed.
+function toAttachment(staged: StagedFile): ConfirmAttachment {
+  return {
+    id: staged.id,
+    label: staged.file.name,
+    detail: formatBytes(staged.file.size),
+    thumbnail: categoryOf(staged.file.type) === "image" ? staged.file : null,
+  };
+}
+
 export function triggerUploads(
   key: ChannelKey,
   networkSlug: string,
   channelName: string,
   rawFiles: File[],
+  // #1883 — what to do if this question is replaced before it is answered.
+  // Optional, and the asymmetry is the point: every other door is driven by a
+  // gesture still on screen, so "ask again" is the operator repeating it. The
+  // OS share target arrives at boot with nothing to repeat, so it is the one
+  // caller that must be told its files went nowhere.
+  onDisplaced?: () => void,
 ): void {
   if (rawFiles.length === 0) return;
-  const items: QueuedUpload[] = rawFiles.map((raw) => ({
-    file: normalizeUploadFile(raw),
+  // Normalised BEFORE staging so the preview, the removal set and the queue
+  // all describe the same files.
+  const normalised: StagedFile[] = rawFiles.map((raw) => {
+    nextAttachmentId += 1;
+    return { id: `picked-${nextAttachmentId}`, file: normalizeUploadFile(raw) };
+  });
+
+  // Everything past the privacy notice. A closure because the notice may have
+  // to run first and resume this afterwards — see `pendingTrigger`.
+  const proceed = (): void => {
+    // #1883 — the opt-in branch, and it sits HERE on purpose: after
+    // normalisation, never before it. `enqueueUploads` does NOT normalise, so
+    // the tempting spelling
+    //
+    //     if (!uploadConfirmEnabled()) return enqueueUploads(key, ..., rawFiles)
+    //
+    // would send the RAW files and re-break the iOS `.m4r` case this function
+    // exists to rescue (iOS labels it `application/octet-stream`; only
+    // `normalizeUploadFile` maps it to `audio/mp4`). Branch on policy, never on
+    // the un-normalised input.
+    if (!uploadConfirmEnabled()) {
+      enqueueUploads(
+        key,
+        networkSlug,
+        channelName,
+        normalised.map((s) => s.file),
+      );
+      return;
+    }
+
+    openSendConfirm();
+  };
+
+  // The privacy notice comes FIRST, before either door below. It states the
+  // terms — which host the bytes go to, and for how long — and a question about
+  // terms is worth nothing after the answer has been given. Per BATCH now,
+  // where the old placement in `startUpload` asked per FILE: an operator who
+  // declines "don't show this again" is asked once for the drop, not once per
+  // file in it, which matches the Send confirm's own granularity.
+  const host = activeHost();
+  const acked = localStorage.getItem(privacyKey(host));
+  if (acked === null || acked === "") {
+    pendingTrigger = proceed;
+    setModalState({ open: true, host, key });
+    return;
+  }
+
+  proceed();
+
+  function openSendConfirm(): void {
+    const [staged, setStaged] = createSignal<StagedFile[]>(normalised);
+
+    requestConfirm({
+      onDisplaced,
+      // The destination goes in the TITLE, which is also the dialog's
+      // `aria-label` — the one string a screen reader announces on open, and the
+      // one fact a mis-tap most needs to see. Target-neutral "to X" rather than
+      // "in the channel": `channelName` is a nick on a query window.
+      title: `Send to ${channelName}?`,
+      // Count-free on purpose: the rows below ARE the count, and a number baked
+      // into this string would start lying the moment a row is removed (the
+      // request is not re-issued on removal — see ConfirmAttachments.items).
+      body: "Each file below is uploaded and its link is posted there. This cannot be taken back.",
+      confirmLabel: "Send",
+      onConfirm: () =>
+        enqueueUploads(
+          key,
+          networkSlug,
+          channelName,
+          staged().map((s) => s.file),
+        ),
+      // No third door: there is no other route to "post this file here". Cancel
+      // and Send are the whole question.
+      alternative: null,
+      attachments: {
+        items: (): ConfirmAttachment[] => staged().map(toAttachment),
+        onRemove: (id: string): void => {
+          const rest = staged().filter((s) => s.id !== id);
+          setStaged(rest);
+          // Removing the last row is the same answer as Cancel — an empty dialog
+          // asking "send these?" has nothing to affirm. Dismiss rather than
+          // leaving a Send button that would be a no-op.
+          if (rest.length === 0) dismissConfirm();
+        },
+      },
+    });
+  }
+}
+
+// #118 — the post-confirm half: enqueue ALL files, bump the batch total, then
+// pump if nothing is active for this channel. Sequential: one file uploads at
+// a time; each settle pumps the next. Private — the confirm above is the only
+// way in, and `files` are already normalised.
+function enqueueUploads(
+  key: ChannelKey,
+  networkSlug: string,
+  channelName: string,
+  files: File[],
+): void {
+  if (files.length === 0) return;
+  const items: QueuedUpload[] = files.map((file) => ({
+    file,
     networkSlug,
     channelName,
   }));
@@ -669,32 +882,27 @@ function pumpQueue(key: ChannelKey): void {
   startUpload(key, next);
 }
 
-// Privacy gate (per file — honors a not-"remembered" user's ask-every-time
-// choice; the common acked case never re-prompts) then dispatch.
+// Dispatch. The privacy gate used to live HERE, per file — it now runs once at
+// the front of `triggerUploads`, before the operator is asked to Send, so
+// nothing reaches the queue un-acknowledged and asking again here would be a
+// second prompt for a question already answered.
 function startUpload(key: ChannelKey, item: QueuedUpload): void {
-  const host = activeHost();
-  const ackd = localStorage.getItem(privacyKey(host));
-  if (ackd === null || ackd === "") {
-    pendingPrivacyGated.set(key, item);
-    setModalState({ open: true, host, key });
-    return;
-  }
   void dispatchUpload(key, item.networkSlug, item.channelName, item.file);
 }
 
 export function acknowledgePrivacy(rememberChoice: boolean): void {
   const state = modalState();
   if (!state.open) return;
-  const host = state.host;
-  const pendingKey = state.key;
   if (rememberChoice) {
-    localStorage.setItem(privacyKey(host), "1");
+    localStorage.setItem(privacyKey(state.host), "1");
   }
   setModalState({ open: false, host: null, key: null });
-  const pending = pendingPrivacyGated.get(pendingKey);
-  if (pending === undefined) return;
-  pendingPrivacyGated.delete(pendingKey);
-  void dispatchUpload(pendingKey, pending.networkSlug, pending.channelName, pending.file);
+  // Resume the batch this notice interrupted: the Send confirm when the opt-in
+  // is on, a straight enqueue when it is off. Cleared FIRST so a resume that
+  // opens another modal cannot re-enter a stale continuation.
+  const resume = pendingTrigger;
+  pendingTrigger = null;
+  resume?.();
 }
 
 export function cancelUpload(key: ChannelKey): void {
@@ -718,7 +926,9 @@ export function dismissUpload(key: ChannelKey): void {
   const wasModal = modal.open && modal.key === key;
   if (wasModal) {
     setModalState({ open: false, host: null, key: null });
-    pendingPrivacyGated.delete(key);
+    // Declining the terms cancels the batch before anything is queued — the
+    // continuation is the only thing holding it, so dropping it IS the cancel.
+    pendingTrigger = null;
   }
   const entry = inflight.get(key);
   if (entry !== undefined) {

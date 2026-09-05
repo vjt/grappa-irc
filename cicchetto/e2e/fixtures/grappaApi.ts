@@ -1261,3 +1261,30 @@ export async function setCredentialAutojoin(
     throw new Error(`setCredentialAutojoin(${userId}/${networkId}) → ${res.status} ${text}`);
   }
 }
+
+/**
+ * #1883 — turn the pre-upload confirm opt-in on (or off) for this subject.
+ *
+ * The confirm is OFF by default, which is what `uploadJourney.pickFile`
+ * describes. A spec whose SUBJECT is the confirm calls this after login and
+ * then drives `sendPickedFiles` after the privacy notice's Continue — the
+ * order being privacy first, confirm second (#1883e).
+ *
+ * Server-side and per-user, so it survives the page load the spec is about to
+ * do; nothing in localStorage carries it.
+ */
+export async function setUploadConfirmEnabled(token: string, enabled: boolean): Promise<void> {
+  const response = await fetch(`${GRAPPA_BASE_URL}/me/settings/upload-confirm-enabled`, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ upload_confirm_enabled: enabled }),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `setUploadConfirmEnabled(${enabled}) failed: ${response.status} ${await response.text()}`,
+    );
+  }
+}

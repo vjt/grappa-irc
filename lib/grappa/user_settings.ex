@@ -68,6 +68,9 @@ defmodule Grappa.UserSettings do
   |                        |                        | `default_notification_prefs/0`  |
   | `"upload_ttl_seconds"` | `pos_integer() \\| nil`| `get_upload_ttl_seconds/1`,     |
   |                        |                        | `put_upload_ttl_seconds/2`      |
+  | `"upload_confirm_enabled"` | `boolean()`        | `get_upload_confirm_enabled/1`, |
+  |                        |                        | `put_upload_confirm_enabled/2`  |
+  |                        |                        | (#1883)                         |
   | `"vhost_selection"`    | `list(String.t())`     | `get_vhost_selection/1`,        |
   |                        |                        | `put_vhost_selection/2`         |
   | `"active_theme_id"`    | `pos_integer() \\| nil`| `get_active_theme_id/1`,        |
@@ -919,6 +922,59 @@ defmodule Grappa.UserSettings do
     # reads `false`, so an explicit `false` row would be a second spelling of
     # the default. `put_or_delete/3` deletes on `nil`, hence the mapping.
     update_data(subject, &put_or_delete(&1, @show_peer_profiles_key, value || nil))
+  end
+
+  # ---------------------------------------------------------------------------
+  # upload_confirm_enabled accessor (#1883 — the pre-upload confirm opt-in)
+  # ---------------------------------------------------------------------------
+
+  @upload_confirm_enabled_key "upload_confirm_enabled"
+
+  @doc """
+  Whether `subject` has opted IN to being asked before an upload leaves
+  the device — the confirm `uploadOrchestrator.triggerUploads` shows for
+  every upload door (picker, drop, pasted file, paste-as-`.txt`, OS
+  share).
+
+  Default `false`: unset, malformed, or any non-`true` stored value all
+  read back as `false`, so an operator who never opens settings is never
+  asked. **That default is the product decision, and it is a reversal** —
+  #1883's own note argued the confirm must not be switchable at all,
+  because a gate every returning operator has already turned off is not a
+  gate. What was measured since: the flag behind #1883 was `localStorage`,
+  per-browser, invisible, not revocable from the UI; this is per-user,
+  server-side, and visible beside the upload-retention control. Different
+  object, so that objection is rhetorical rather than mechanical — but the
+  cost is real and belongs here rather than hidden: with the confirm off by
+  default, all five upload doors are unguarded until someone turns it on.
+
+  Read by the CLIENT at upload time, not at session boot: the confirm is a
+  cic-side dialog and the server only stores the preference. Nothing on the
+  IRC wire depends on it, so there is no live-retune bridge and none is
+  needed.
+  """
+  @spec get_upload_confirm_enabled(Subject.t()) :: boolean()
+  def get_upload_confirm_enabled({_, _} = subject) do
+    case fetch_existing_or_nil(subject) do
+      nil -> false
+      %Settings{data: data} -> data[@upload_confirm_enabled_key] == true
+    end
+  end
+
+  @doc """
+  Sets the pre-upload confirm opt-in for `subject`. `true` to be asked
+  before every upload; `false` (the default) to send without asking.
+
+  Preserves other keys in `data` (merge semantics, mirror of
+  `put_show_peer_profiles/2`).
+  """
+  @spec put_upload_confirm_enabled(Subject.t(), boolean()) ::
+          {:ok, Settings.t()} | {:error, Ecto.Changeset.t() | :db_unavailable}
+  def put_upload_confirm_enabled({_, _} = subject, value) when is_boolean(value) do
+    # `false` DELETES the key — a fresh subject already reads `false`, so an
+    # explicit `false` row would be a second spelling of the default. Same
+    # rule as `put_show_peer_profiles/2`.
+    update_data(subject, &put_or_delete(&1, @upload_confirm_enabled_key, value || nil))
   end
 
   # ---------------------------------------------------------------------------

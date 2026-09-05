@@ -249,6 +249,12 @@ vi.mock("../lib/userSettings", async () => {
 // we mock the public surface so the drawer test stays focused on
 // drawer rendering + event wiring.
 const uploadTtlHolder = vi.hoisted(() => ({ current: null as number | null }));
+// #1883 — the confirm opt-in rides the same holder pattern as the TTL above.
+// This mock lists its exports EXPLICITLY (no `importOriginal` spread), so a new
+// export on `uploadOrchestrator` that the drawer calls must be added here too
+// or every test in this file dies at mount with "No <name> export is defined on
+// the mock" — which is how the opt-in landed 134 failures on its first run.
+const uploadConfirmHolder = vi.hoisted(() => ({ current: false }));
 vi.mock("../lib/uploadOrchestrator", () => ({
   loadUploadTtlSeconds: vi.fn(async () => {
     /* no-op; SettingsDrawer test asserts on the call only */
@@ -257,6 +263,13 @@ vi.mock("../lib/uploadOrchestrator", () => ({
     uploadTtlHolder.current = seconds;
   }),
   uploadTtlSecondsValue: () => uploadTtlHolder.current,
+  loadUploadConfirmEnabled: vi.fn(async () => {
+    /* no-op; the drawer only has to call it */
+  }),
+  saveUploadConfirmEnabled: vi.fn(async (_t: string, enabled: boolean) => {
+    uploadConfirmHolder.current = enabled;
+  }),
+  uploadConfirmEnabledValue: () => uploadConfirmHolder.current,
 }));
 
 // #392 — the share surface is now a MODAL mounted in Shell (not in the

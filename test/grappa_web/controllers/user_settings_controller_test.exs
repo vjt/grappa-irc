@@ -370,6 +370,55 @@ defmodule GrappaWeb.UserSettingsControllerTest do
     end
   end
 
+  describe "/me/settings/upload-confirm-enabled (#1883)" do
+    test "401 without bearer", %{conn: conn} do
+      assert json_response(get(conn, "/me/settings/upload-confirm-enabled"), 401) ==
+               %{"error" => "unauthorized"}
+    end
+
+    # Visitor parity: the confirm is a cic dialog and applies to any subject,
+    # so a visitor gets the same door and the same default as a user.
+    test "200 + false for an unset visitor", %{conn: conn} do
+      {_, session} = visitor_and_session()
+
+      conn = conn |> put_bearer(session.id) |> get("/me/settings/upload-confirm-enabled")
+      assert json_response(conn, 200) == %{"upload_confirm_enabled" => false}
+    end
+
+    test "defaults to false — the opt-IN default, never asked until switched on",
+         %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn = conn |> put_bearer(session.id) |> get("/me/settings/upload-confirm-enabled")
+      assert json_response(conn, 200) == %{"upload_confirm_enabled" => false}
+    end
+
+    test "PUT true round-trips, and PUT false clears back to the default", %{conn: conn} do
+      {_, session} = user_and_session()
+      conn = put_bearer(conn, session.id)
+
+      on = put(conn, "/me/settings/upload-confirm-enabled", %{"upload_confirm_enabled" => true})
+      assert json_response(on, 200) == %{"upload_confirm_enabled" => true}
+
+      assert json_response(get(conn, "/me/settings/upload-confirm-enabled"), 200) ==
+               %{"upload_confirm_enabled" => true}
+
+      off = put(conn, "/me/settings/upload-confirm-enabled", %{"upload_confirm_enabled" => false})
+      assert json_response(off, 200) == %{"upload_confirm_enabled" => false}
+    end
+
+    test "400 on a non-boolean body", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/me/settings/upload-confirm-enabled", %{"upload_confirm_enabled" => "yes"})
+
+      assert json_response(conn, 400) == %{"error" => "bad_request"}
+    end
+  end
+
   describe "GET /me/settings/show-peer-profiles — auth gating" do
     test "401 without bearer", %{conn: conn} do
       conn = get(conn, "/me/settings/show-peer-profiles")

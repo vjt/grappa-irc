@@ -178,6 +178,11 @@ test("#816 — a paste over the hard cap uploads as a file instead of flooding",
   await pasteText(page, block);
   await expect(confirmModal(page)).toBeVisible();
   await confirmModalYes(page);
+  // #1883d — taking the upload door used to hand off to the send-confirm,
+  // which renders through this SAME singleton, so the slot only emptied after
+  // Send. The confirm is an OPT-IN setting now, default OFF, and this spec's
+  // subject is the flood guard rather than the confirm — so it runs the
+  // default journey, where the dialog empties on the hand-off itself.
   await expect(confirmModal(page)).toHaveCount(0);
   await expect(ta).toHaveValue("");
 
@@ -254,6 +259,9 @@ test("#816 — an under-cap paste offers the .txt upload beside Paste, and it wo
   await pasteText(page, block);
   await expect(confirmModal(page)).toBeVisible();
   await confirmModalAlternative(page).click();
+  // #1883d — same hand-off as the over-limit arm, and the same reason it no
+  // longer waits on a second dialog: with the confirm opt-in OFF by default,
+  // the third door leads straight to the POST.
   await expect(confirmModal(page)).toHaveCount(0);
   await expect(ta).toHaveValue("");
 
