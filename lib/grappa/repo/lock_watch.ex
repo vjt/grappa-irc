@@ -134,6 +134,54 @@ defmodule Grappa.Repo.LockWatch do
   unattributed episode gets no closing bracket — there was no hold to total,
   and inventing one is the claim this arm exists to avoid.
 
+  ### The NIF census (#1901)
+
+  🔴 **Both arms above read the watch TABLE, and the table has one producer,
+  so between them they observe the RARE tail of this system's write load.**
+  Measured on the live node (`Grappa.Operator.db_latency_text!/0`, cumulative
+  since boot): `messages insert` — `Grappa.Scrollback.persist_row/1`, an
+  autocommit single statement — is **324 679** writes, while every source the
+  seam does cover (auth, settings, themes, push, reap) is in the thousands.
+  The dominant writer of this system has never owned a row here.
+
+  So the third arm does not read the table at all. At each tick it walks
+  `Process.list/0` and keeps the processes whose `current_function` is inside
+  `Exqlite.Sqlite3NIF`, timing them from the first tick that saw them there.
+  That reaches any writer, registered or not, because the property it reads is
+  physical: `execute/2` and `step/2` are declared
+  `ERL_NIF_DIRTY_JOB_IO_BOUND` (`deps/exqlite/c_src/sqlite3_nif.c:2066,2077`)
+  and exqlite's own busy handler SLEEPS INSIDE the NIF rather than returning
+  to Elixir to retry (`:332`), so a writer blocked on the file lock stays
+  visible in `current_function` for the whole `busy_timeout`.
+
+  🔴 **What it cannot do, and the line says so rather than guessing.** The
+  same physics that makes the cohort visible makes it INDIVISIBLE: the writer
+  holding the lock and the writers blocked behind it are all inside
+  `Exqlite.Sqlite3NIF`, all reading `status: :running`, and nothing
+  BEAM-visible separates them. This arm therefore reports the COHORT — every
+  parked process, its elapsed, its `current_function` and the longest one's
+  stack — plus how many of them the seam already knows as holders and as
+  waiters. Naming the holder outright is what registering the autocommit
+  writes (#1901 axis 2, deliberately deferred) would buy, and asserting it
+  from here is the class of claim `terminal_message/3` in
+  `Grappa.Repo.BusyRetry` was twice rewritten to stop making.
+
+  Two further limits, stated so a later reader does not have to rediscover
+  them:
+
+    * a transaction parked BETWEEN statements is not inside a NIF, so this
+      arm cannot see it. That case is the FIRST arm's, and it is covered
+      exactly when the writer went through the seam;
+    * `elapsed` is measured from the first TICK that saw the process there,
+      never from its real entry into the NIF, so it is a LOWER bound
+      understated by up to one `tick_ms`. A census that wanted the true
+      instant would have to instrument the write path, which is the cost this
+      arm exists to avoid.
+
+  Readers park in the same NIF, so a slow `SELECT` is in the cohort too. That
+  is deliberate: the arm reports what it observed, and a reader holding a long
+  read transaction is a real participant in the contention.
+
   ## Deriving the holder's identity instead of storing it
 
   No caller label is stored, and `immediate_transaction/1` grows no label
@@ -170,6 +218,23 @@ defmodule Grappa.Repo.LockWatch do
   suspends its target) runs ONLY once a stall has already been detected,
   on a process that is by definition already stopped.
 
+  🔴 #1901's census breaks that last sentence and it is the one cost in this
+  module that is paid when nothing is wrong: one `Process.list/0` plus one
+  `Process.info(pid, :current_function)` per process, per tick, unconditionally.
+  Measured on this repo's dev image, warm, 20 passes per point:
+
+      500 procs   1 057us/pass      2 000 procs   1 550us/pass
+      1 000 procs 1 036us/pass      4 000 procs   3 042us/pass
+                                    8 000 procs   5 237us/pass
+
+  i.e. ~0.7-2us per process, so at `tick_ms: 1_000` a 2 000-process node
+  spends **0.16 % of one scheduler** on it. Nothing about that scales with
+  write VOLUME, which is the property that makes it cheaper than the
+  alternative it replaces: axis 2 of #1901 would put three ETS operations on
+  every one of those 324 679 inserts. Sampling only the crossed processes
+  keeps the expensive half — `sample/2` and its twelve formatted frames —
+  behind the threshold, exactly as the other two arms do.
+
   #1888 adds ONE more `:persistent_term` read per write-transaction RELEASE
   (the threshold the bracket compares against). It is a read and not a write
   on purpose: a `persistent_term` WRITE is the thing that blocks on a
@@ -192,6 +257,14 @@ defmodule Grappa.Repo.LockWatch do
   @threshold_key {__MODULE__, :stall_threshold_ms}
   @depth_key {__MODULE__, :depth}
   @stack_frames 12
+
+  # #1901 — the module every SQLite call in this system passes through, and
+  # the census's whole discriminator. A literal and not a config knob: it is
+  # not an operator choice, it is which driver `Grappa.Repo` is built on, and
+  # a wrong value here fails silently (an empty census reads exactly like a
+  # healthy node). It is referenced only as an atom in a pattern, so it adds
+  # no call edge for the Boundary checker to see.
+  @nif_module Exqlite.Sqlite3NIF
 
   @typedoc "Role of a row in the watch table."
   @type role :: :waiting | :holding
@@ -265,7 +338,43 @@ defmodule Grappa.Repo.LockWatch do
           holders_registered: non_neg_integer()
         }
 
-  defstruct [:stall_threshold_ms, :tick_ms, :enabled]
+  @typedoc """
+  A census of the processes parked INSIDE `Exqlite.Sqlite3NIF` past the
+  threshold (#1901) — the arm that reaches the autocommit writers the seam
+  cannot see.
+
+  🔴 There is deliberately no `holder` key, and the reason is stronger than
+  the one `t:unattributed/0` gives for its own absence. There, no holder was
+  observed. Here one certainly IS in `parked`, and the instrument cannot say
+  WHICH: exqlite's busy handler sleeps inside the same dirty-IO NIF the writer
+  holding the lock is executing in, so the holder and its victims are one
+  indistinguishable cohort from the BEAM's side. `registered_holders` and
+  `registered_waiters` are the honesty fields — how many of these the seam
+  could already name — and the remainder is the population #1901 is about.
+  """
+  @type nif_census :: %{
+          observed_at: String.t(),
+          parked: [sample()],
+          registered_holders: non_neg_integer(),
+          registered_waiters: non_neg_integer()
+        }
+
+  @typedoc """
+  The census's carry-forward clock: for each process currently inside
+  `Exqlite.Sqlite3NIF`, the instant a tick FIRST saw it there and whether this
+  episode has already been reported.
+
+  Rebuilt from `Process.list/0` on every pass rather than maintained, so a
+  process that leaves the NIF drops out with no housekeeping and no reaper —
+  the parallel-structure-that-drifts this design is required to avoid. It
+  lives in the watchdog's own state and NOT in the ETS table: the table is
+  written by every caller's own process at the seam, and a per-tick observer's
+  scratch space has no business being public, nor of being read by a
+  `released/0` running in somebody else's process.
+  """
+  @type nif_watch :: %{pid() => {integer(), boolean()}}
+
+  defstruct [:stall_threshold_ms, :tick_ms, :enabled, :nif_watch]
 
   @type t :: %__MODULE__{
           # non_neg, not pos: a threshold of 0 means "report every contended
@@ -274,7 +383,8 @@ defmodule Grappa.Repo.LockWatch do
           # clock. `tick_ms` stays pos: a zero tick is a busy loop.
           stall_threshold_ms: non_neg_integer(),
           tick_ms: pos_integer(),
-          enabled: boolean()
+          enabled: boolean(),
+          nif_watch: nif_watch()
         }
 
   ## ----- Write-path seam ----------------------------------------------
@@ -313,6 +423,40 @@ defmodule Grappa.Repo.LockWatch do
   @spec scan(non_neg_integer()) :: :ok
   def scan(stall_threshold_ms) when is_integer(stall_threshold_ms) and stall_threshold_ms >= 0 do
     detect(now_ms(), stall_threshold_ms)
+  end
+
+  @doc """
+  One NIF-census pass (#1901): report the processes that have been inside
+  `Exqlite.Sqlite3NIF` for at least `stall_threshold_ms`, and return the clock
+  to hand the NEXT pass.
+
+  Public for the same reason `scan/1` is — an operator, or a test, can take
+  the reading on demand instead of waiting for a tick — but unlike `scan/1` it
+  is not idempotent in its argument: the returned map IS the elapsed
+  measurement. Calling it with a fresh `%{}` every time restarts every clock
+  at zero, so nothing can ever cross a non-zero threshold. The watchdog
+  threads it through `handle_info/2`; a caller driving it by hand must thread
+  it too.
+  """
+  @spec census(nif_watch(), non_neg_integer()) :: nif_watch()
+  def census(seen, stall_threshold_ms)
+      when is_map(seen) and is_integer(stall_threshold_ms) and stall_threshold_ms >= 0 do
+    now = now_ms()
+
+    # `Map.get(seen, pid, {now, false})` is the whole state machine: a pid
+    # already being watched keeps its original instant AND its reported flag,
+    # a new one starts its clock now, and a pid that has left the NIF is
+    # simply absent from the rebuilt map. No deletion path, so none to leak.
+    carried = Map.new(parked_in_nif(), &{&1, Map.get(seen, &1, {now, false})})
+
+    due =
+      for {pid, {since, false}} <- carried, now - since >= stall_threshold_ms, do: {pid, now - since}
+
+    report_nif_census(due)
+
+    Enum.reduce(due, carried, fn {pid, _}, acc ->
+      Map.update!(acc, pid, fn {since, _} -> {since, true} end)
+    end)
   end
 
   # Entering `BEGIN IMMEDIATE`. The caller is a WAITER until `acquired/0`.
@@ -535,7 +679,11 @@ defmodule Grappa.Repo.LockWatch do
     state = %__MODULE__{
       stall_threshold_ms: Keyword.fetch!(opts, :stall_threshold_ms),
       tick_ms: Keyword.fetch!(opts, :tick_ms),
-      enabled: Keyword.fetch!(opts, :enabled)
+      enabled: Keyword.fetch!(opts, :enabled),
+      # #1901 — empty, never seeded from a first pass here: a boot-time
+      # census would time every process from BEFORE the Repo exists and
+      # report the pool's first statements as a stall.
+      nif_watch: %{}
     }
 
     # Before anything else: buy this module's Logger cache key while no
@@ -559,11 +707,17 @@ defmodule Grappa.Repo.LockWatch do
     {:ok, state}
   end
 
+  # `scan/1` FIRST, and the order is not cosmetic: it is the arm that can NAME
+  # a holder, and a pid it reports in this tick is one the census then counts
+  # as already-registered rather than as a writer nobody can see. Running the
+  # census first would report the same episode as unattributable one tick
+  # before the instrument attributed it.
   @impl GenServer
   def handle_info(:tick, state) do
     scan(state.stall_threshold_ms)
+    nif_watch = census(state.nif_watch, state.stall_threshold_ms)
     Process.send_after(self(), :tick, state.tick_ms)
-    {:noreply, state}
+    {:noreply, %{state | nif_watch: nif_watch}}
   end
 
   @impl GenServer
@@ -755,6 +909,104 @@ defmodule Grappa.Repo.LockWatch do
   @spec holder_clause(non_neg_integer()) :: String.t()
   defp holder_clause(0), do: "no holder registered"
   defp holder_clause(n), do: "#{n} holder(s) registered, none past the threshold"
+
+  ## ----- The NIF census (#1901) -----------------------------------------
+
+  # Every process currently executing inside the SQLite driver's NIF. The
+  # discriminator is `current_function` and NOT `:status` or
+  # `:current_stacktrace` (#1888): a dirty NIF reads `:running` whether it is
+  # doing work or sleeping out a busy handler, and a stacktrace costs the
+  # twelve-frame format this pass runs over EVERY process on the node.
+  #
+  # `Process.info/2` does not block on a process parked in a dirty NIF —
+  # measured at 2-78us across four topologies in `lock_watch_test.exs`
+  # (#1767) — which is what makes an unconditional per-tick sweep affordable
+  # at all. `nil` for a pid that died between `Process.list/0` and here is a
+  # real outcome and simply fails the match.
+  @spec parked_in_nif() :: [pid()]
+  defp parked_in_nif do
+    for pid <- Process.list(),
+        match?({:current_function, {@nif_module, _, _}}, Process.info(pid, :current_function)),
+        do: pid
+  end
+
+  # Same two doors and the same SHAPE of line as the other two arms, so an
+  # operator scanning `erlang.log` reads three verdicts from one instrument
+  # rather than three tools. The prefix is `db lock stall NIF CENSUS:` and it
+  # is LOAD-BEARING for the same reason theirs are: `scripts/log-gap-scan.awk`
+  # counts the #1429 census off these literals and
+  # `test/scripts/log_gap_scan_test.bats` pins them verbatim.
+  #
+  # 🔴 The ROSTER is why this line is longer than its siblings, and it is the
+  # deliverable rather than verbosity. #1901's acceptance test is that the log
+  # NAMES the process holding the lock; this arm cannot label which of the
+  # cohort that is, so it names every one of them — pid, elapsed and frame —
+  # and pays the full twelve-frame stack only for the longest. An operator who
+  # has the roster can cross it against the `fault=busy_locked` terminals the
+  # victims emit and read the holder off the difference; an operator with one
+  # sample cannot.
+  @spec report_nif_census([{pid(), non_neg_integer()}]) :: :ok
+  defp report_nif_census([]), do: :ok
+
+  defp report_nif_census(due) do
+    samples =
+      due |> Enum.map(fn {pid, elapsed} -> sample(pid, elapsed) end) |> Enum.sort_by(& &1.elapsed_ms, :desc)
+
+    longest = hd(samples)
+    %{holders: holders, waiters: waiters} = lock_roles()
+    due_pids = MapSet.new(due, &elem(&1, 0))
+    registered_holders = Enum.count(holders, &MapSet.member?(due_pids, &1))
+    registered_waiters = Enum.count(waiters, &MapSet.member?(due_pids, &1))
+
+    report = %{
+      observed_at: now_iso8601(),
+      parked: samples,
+      registered_holders: registered_holders,
+      registered_waiters: registered_waiters
+    }
+
+    Logger.warning(
+      "db lock stall NIF CENSUS: #{length(samples)} process(es) parked inside " <>
+        "#{inspect(@nif_module)} past the threshold, longest #{longest.elapsed_ms}ms — " <>
+        "#{seam_clause(registered_holders, registered_waiters, length(samples))}; " <>
+        "roster: #{roster(samples)}; longest #{longest.pid} status=#{inspect(longest.status)} " <>
+        "at #{longest.current_function}, stack: #{Enum.join(longest.stacktrace, " <- ")}",
+      parked: length(samples),
+      longest_parked_ms: longest.elapsed_ms
+    )
+
+    :telemetry.execute(
+      [:grappa, :repo, :lock_stall, :nif_census],
+      %{parked_count: length(samples), longest_parked_ms: longest.elapsed_ms},
+      report
+    )
+  end
+
+  # The two sub-cases, named apart because they call for different next moves
+  # — the same split `holder_clause/1` makes one arm up. All-zero is the #1901
+  # finding in one phrase: this system's dominant writer holds the file lock
+  # without ever touching the seam, so widening coverage (axis 2) is the only
+  # thing that would name it. A positive count says the seam DID see some of
+  # them, and the remainder is what it missed.
+  @spec seam_clause(non_neg_integer(), non_neg_integer(), pos_integer()) :: String.t()
+  defp seam_clause(0, 0, total) do
+    "none of them registered at the BEGIN IMMEDIATE seam, so all #{total} are writers it cannot name"
+  end
+
+  defp seam_clause(holders, waiters, total) do
+    "#{holders} holder(s) and #{waiters} waiter(s) of them registered at the BEGIN IMMEDIATE " <>
+      "seam, #{total - holders - waiters} not"
+  end
+
+  # Pid, elapsed and frame for every parked process — no stacks, which ride
+  # the telemetry door in full. The frame is in because it is the one field
+  # that separates a writer blocked acquiring a transaction
+  # (`Exqlite.Sqlite3NIF.execute/2`, under `handle_begin/2`) from one already
+  # executing a statement (`step/2`), and that reading costs nothing here.
+  @spec roster([sample()]) :: String.t()
+  defp roster(samples) do
+    Enum.map_join(samples, ", ", &"#{&1.pid} #{&1.elapsed_ms}ms #{&1.current_function}")
+  end
 
   ## ----- Sampling -------------------------------------------------------
 

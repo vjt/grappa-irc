@@ -42,6 +42,7 @@ defmodule Grappa.Repo.LockWatchTest do
   @detected [:grappa, :repo, :lock_stall, :detected]
   @unattributed [:grappa, :repo, :lock_stall, :unattributed]
   @resolved [:grappa, :repo, :lock_stall, :resolved]
+  @nif_census [:grappa, :repo, :lock_stall, :nif_census]
 
   # 🔴 TWO CLOCKS BOUND EVERY TEST HERE, AND THEY HAVE TO BE ORDERED.
   #
@@ -143,15 +144,19 @@ defmodule Grappa.Repo.LockWatchTest do
     # (and vice versa). Two separate handlers would let a mutant that emits
     # both pass every assertion in the file. #1888 adds the closing bracket
     # for the same reason — a test that asserts an episode brackets must be
-    # able to refute that it brackets when it should not.
+    # able to refute that it brackets when it should not. #1901 adds the NIF
+    # census on the same reasoning: it is a THIRD verdict about the same lock,
+    # and a mutant routing a seam-attributable stall through it (or the other
+    # way round) has to die on a refutation somewhere.
     :ok =
       :telemetry.attach_many(
         handler,
-        [@detected, @unattributed, @resolved],
+        [@detected, @unattributed, @resolved, @nif_census],
         fn
           @detected, measurements, metadata, _ -> send(test_pid, {:stall, measurements, metadata})
           @unattributed, measurements, metadata, _ -> send(test_pid, {:unattributed, measurements, metadata})
           @resolved, measurements, metadata, _ -> send(test_pid, {:resolved, measurements, metadata})
+          @nif_census, measurements, metadata, _ -> send(test_pid, {:nif_census, measurements, metadata})
         end,
         nil
       )
@@ -393,6 +398,205 @@ defmodule Grappa.Repo.LockWatchTest do
       send(writer, :release)
       assert_receive {:DOWN, ^writer_ref, :process, ^writer, :normal}, 5_000
       assert_receive {:DOWN, ^queued_ref, :process, ^queued, :normal}, 10_000
+
+      Supervisor.stop(repo)
+    end
+  end
+
+  # 🔴 THE TOPOLOGY THESE FOUR TESTS BUY, AND WHY IT IS NOT THE ONE ABOVE.
+  #
+  # Every test up to here drives the watch TABLE: a writer is a holder or a
+  # waiter because `observe/1` said so. #1901 is about the writers that never
+  # reach `observe/1` at all — `Scrollback.persist_row/1` and its ~120
+  # autocommit peers, which the issue measures at 324 679 inserts against
+  # thousands for the whole seam. The census reads `Process.list/0` instead,
+  # so what it needs from a fixture is a process genuinely parked INSIDE
+  # `Exqlite.Sqlite3NIF`, with no row anywhere.
+  #
+  # `start_unobserved_writer/1` gives exactly that when a holder already owns
+  # the file lock: its `BEGIN IMMEDIATE TRANSACTION` reaches
+  # `Exqlite.Sqlite3NIF.execute/2` (`deps/exqlite/lib/exqlite/connection.ex:307`
+  # -> `sqlite3.ex:175`), which is registered `ERL_NIF_DIRTY_JOB_IO_BOUND`
+  # (`c_src/sqlite3_nif.c:2066`), and exqlite's own busy handler sleeps INSIDE
+  # that NIF (`c_src/sqlite3_nif.c:332`) rather than returning to Elixir to
+  # retry. So the writer sits in the NIF for the whole `busy_timeout` and
+  # `current_function` names it for as long as it does.
+  #
+  # 🔴 The parked HOLDER is the negative control and it is load-bearing: it is
+  # parked in `park_until_released/0`, a plain `receive`, so it is NOT inside
+  # the NIF and MUST NOT appear. That is the honest limit of this arm stated
+  # as an assertion — it sees a writer inside a NIF call, not a transaction
+  # parked between statements.
+  describe "the NIF census — the writers the seam cannot see (#1901)" do
+    test "names a writer parked inside the SQLite NIF that owns no row at the seam" do
+      repo = start_tmp_repo()
+
+      {blind, blind_ref} = start_unobserved_writer(1)
+      assert_receive {:holding, ^blind}, 5_000
+
+      {unseen, unseen_ref} = start_unobserved_writer(2)
+      await_parked_in_nif(unseen)
+
+      # The LOG is the door that was dark through all four #1888 episodes:
+      # `grep -h "db lock stall" runtime/log/erlang.log.*` returned 0 while
+      # six victims timed out at ~31 s. Pinning the telemetry alone would
+      # leave exactly the door that failed, failing.
+      log = capture_log(fn -> LockWatch.census(%{}, 0) end)
+
+      assert log =~ "db lock stall NIF CENSUS"
+      assert log =~ "none of them registered at the BEGIN IMMEDIATE seam"
+
+      assert_receive {:nif_census, measurements, report}, 1_000
+
+      # N1 — the whole deliverable. A mutant that reads the watch table (as
+      # both older arms do) finds nothing here: this writer registered
+      # nowhere. Only a reading taken from `Process.list/0` can name it.
+      assert inspect(unseen) in pids(report.parked)
+
+      # N2 — the negative control. A mutant that reports every process, or
+      # every process with an open transaction, drags the parked holder in.
+      # It holds RESERVED and is NOT in a NIF, and this arm must not pretend
+      # otherwise.
+      refute inspect(blind) in pids(report.parked)
+      refute inspect(self()) in pids(report.parked)
+
+      # N3 — the honesty fields. `0` says the seam saw none of these
+      # processes at all, which is the #1901 finding in one number. A mutant
+      # that synthesises a holder (the shape the acceptance criterion
+      # invites) has to put a pid somewhere, and there is no field for one.
+      assert report.registered_holders == 0
+      assert report.registered_waiters == 0
+      refute Map.has_key?(report, :holder)
+
+      # N4 — a mutant sampling `self()` instead of the parked pid still
+      # produces a well-formed record; only the CONTENT of the stack tells
+      # them apart, and this frame is the reason the writer is stuck.
+      assert [sample] = Enum.filter(report.parked, &(&1.pid == inspect(unseen)))
+      assert sample.current_function =~ "Exqlite.Sqlite3NIF"
+      assert Enum.any?(sample.stacktrace, &(&1 =~ "Exqlite"))
+
+      assert measurements.parked_count == length(report.parked)
+      assert is_integer(measurements.longest_parked_ms)
+
+      # N5 — the three arms are distinct verdicts. A mutant that also routes
+      # this through either older door would double-report the same episode
+      # under two different claims about attribution.
+      refute_receive {:stall, _, _}, 100
+      refute_receive {:unattributed, _, _}, 100
+
+      # BOTH, and `unseen` before it is even unblocked: the moment `blind`
+      # lets go, `unseen` takes RESERVED and parks in `park_until_released/0`
+      # exactly as its fixture is written to. A `:release` sent early simply
+      # waits in its mailbox, while one sent late never arrives — measured,
+      # first cut of these tests: three reds, all of them this.
+      send(blind, :release)
+      send(unseen, :release)
+      assert_receive {:DOWN, ^blind_ref, :process, ^blind, :normal}, 5_000
+      assert_receive {:DOWN, ^unseen_ref, :process, ^unseen, :normal}, 10_000
+
+      Supervisor.stop(repo)
+    end
+
+    test "a writer the seam DOES know is counted as such, not as an unseen one" do
+      repo = start_tmp_repo()
+
+      {blind, blind_ref} = start_unobserved_writer(1)
+      assert_receive {:holding, ^blind}, 5_000
+
+      # This one goes through `observe/1`, so it owns a `:waiting` row while
+      # it blocks in the very same NIF call.
+      {waiter, waiter_ref} = start_writer(2, :straight_through)
+      await_roles(nil, [waiter])
+      await_parked_in_nif(waiter)
+
+      log = capture_log(fn -> LockWatch.census(%{}, 0) end)
+
+      assert_receive {:nif_census, _, report}, 1_000
+
+      # N6 — the counts are the difference between "widen coverage" and
+      # "the seam already told you". A mutant that hard-codes them to zero
+      # (the shape the first test alone would let live) reports a registered
+      # waiter as a writer nobody can see, and an operator reading it would
+      # go looking for an instrument that is already there.
+      assert inspect(waiter) in pids(report.parked)
+      assert report.registered_waiters == 1
+      assert report.registered_holders == 0
+      assert log =~ "registered at the BEGIN IMMEDIATE seam"
+      refute log =~ "none of them registered"
+
+      send(blind, :release)
+      assert_receive {:DOWN, ^blind_ref, :process, ^blind, :normal}, 5_000
+      assert_receive {:DOWN, ^waiter_ref, :process, ^waiter, :normal}, 10_000
+
+      Supervisor.stop(repo)
+    end
+
+    test "a process that has not been in the NIF long enough is not reported" do
+      repo = start_tmp_repo()
+
+      {blind, blind_ref} = start_unobserved_writer(1)
+      assert_receive {:holding, ^blind}, 5_000
+
+      {unseen, unseen_ref} = start_unobserved_writer(2)
+      await_parked_in_nif(unseen)
+
+      # N7 — the mirror of M5/M9 on the third arm. The first pass can only
+      # ever see a pid at elapsed 0, so a mutant that drops the threshold
+      # comparison turns every millisecond-long insert on the system into a
+      # warning at every tick: a log flood, which reads the same as silence.
+      seen = LockWatch.census(%{}, 10_000)
+
+      refute_receive {:nif_census, _, _}, 300
+
+      # N8 — and the clock it started has to SURVIVE, or the threshold can
+      # never be crossed on any later pass. A mutant that returns a fresh map
+      # (or the one it was handed) re-clocks the pid at every tick and the
+      # arm is permanently silent — the exact failure #1901 reports, rebuilt
+      # inside its own cure.
+      assert {since, false} = Map.fetch!(seen, unseen)
+      assert is_integer(since)
+
+      # BOTH, and `unseen` before it is even unblocked: the moment `blind`
+      # lets go, `unseen` takes RESERVED and parks in `park_until_released/0`
+      # exactly as its fixture is written to. A `:release` sent early simply
+      # waits in its mailbox, while one sent late never arrives — measured,
+      # first cut of these tests: three reds, all of them this.
+      send(blind, :release)
+      send(unseen, :release)
+      assert_receive {:DOWN, ^blind_ref, :process, ^blind, :normal}, 5_000
+      assert_receive {:DOWN, ^unseen_ref, :process, ^unseen, :normal}, 10_000
+
+      Supervisor.stop(repo)
+    end
+
+    test "one line per cohort, not one per watchdog tick" do
+      repo = start_tmp_repo()
+
+      {blind, blind_ref} = start_unobserved_writer(1)
+      assert_receive {:holding, ^blind}, 5_000
+
+      {unseen, unseen_ref} = start_unobserved_writer(2)
+      await_parked_in_nif(unseen)
+
+      {seen, _} = with_log(fn -> LockWatch.census(%{}, 0) end)
+      assert_receive {:nif_census, _, _}, 1_000
+
+      # N9 — the #1888 episodes ran ~31 s at `tick_ms: 1_000` and the #1687
+      # one ~170 s. A mutant that forgets to carry the reported flag prints
+      # one identical warning per tick for the whole freeze, which is how the
+      # other two arms would have drowned their own signal.
+      LockWatch.census(seen, 0)
+      refute_receive {:nif_census, _, _}, 300
+
+      # BOTH, and `unseen` before it is even unblocked: the moment `blind`
+      # lets go, `unseen` takes RESERVED and parks in `park_until_released/0`
+      # exactly as its fixture is written to. A `:release` sent early simply
+      # waits in its mailbox, while one sent late never arrives — measured,
+      # first cut of these tests: three reds, all of them this.
+      send(blind, :release)
+      send(unseen, :release)
+      assert_receive {:DOWN, ^blind_ref, :process, ^blind, :normal}, 5_000
+      assert_receive {:DOWN, ^unseen_ref, :process, ^unseen, :normal}, 10_000
 
       Supervisor.stop(repo)
     end
@@ -1560,6 +1764,32 @@ defmodule Grappa.Repo.LockWatchTest do
 
   defp expected_holders(nil), do: []
   defp expected_holders(holder), do: [holder]
+
+  # #1901 — the census barrier. A writer reaches `Exqlite.Sqlite3NIF` a
+  # scheduling moment AFTER it is spawned, and `start_unobserved_writer/1`
+  # cannot send a "now blocked" message: the whole point of that fixture is
+  # that it is stuck before its first statement runs. So the condition is
+  # polled on the ONE fact the census itself reads, and on the same wall-clock
+  # budget as `await_roles/2` — see `@barrier_budget_ms` for why an attempt
+  # count is not a budget.
+  #
+  # The `flunk` names the function it DID find, because the two ways this can
+  # fail read identically from the outside: a runner too slow to schedule the
+  # writer at all, and a writer that reached SQLite by some path that does not
+  # park in the NIF. Only the observed frame separates them.
+  # The one-line `match?` is a FIXTURE PRECONDITION, not a copy of the logic
+  # under test: it asserts this writer reached the state the census exists to
+  # find. The census's own predicate runs over `Process.list/0` and is what the
+  # assertions in the body buy.
+  defp await_parked_in_nif(pid) do
+    await_until(
+      fn -> match?({:current_function, {Exqlite.Sqlite3NIF, _, _}}, Process.info(pid, :current_function)) end,
+      @barrier_budget_ms
+    )
+  rescue
+    error in ExUnit.AssertionError ->
+      flunk("#{error.message} — #{inspect(pid)} is at #{inspect(Process.info(pid, :current_function))}")
+  end
 
   defp pids(samples), do: Enum.map(samples, & &1.pid)
 
