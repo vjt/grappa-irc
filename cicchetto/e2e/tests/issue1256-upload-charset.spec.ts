@@ -32,6 +32,7 @@ import {
   loginAs,
   selectChannel,
 } from "../fixtures/cicchettoPage";
+import { setUploadConfirmEnabled } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 import { sendPickedFiles } from "../fixtures/uploadJourney";
