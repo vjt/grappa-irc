@@ -18,6 +18,14 @@ defmodule Grappa.DbLatencyTest do
   alias Grappa.DbLatency
 
   @handler_id "grappa-db-latency"
+
+  # 🔴 An INDEPENDENT copy of the production set, on purpose, and the
+  # `attached_events/0` equality assertion below is what keeps it from
+  # rotting. Deriving it from `DbLatency.attached_events/0` would make the
+  # boot-wiring test tautological; leaving it underived and UNCHECKED is what
+  # broke while #1901 was being built — a new emitter reached a new `fold/4`
+  # clause, the suite stayed green, and the ring was silently empty because
+  # this list never learned about the event.
   @events [
     [:grappa, :repo, :query],
     [:grappa, :scrollback, :persist, :stop],
@@ -25,7 +33,8 @@ defmodule Grappa.DbLatencyTest do
     [:grappa, :scrollback, :persist, :contention],
     [:grappa, :repo, :lock_stall, :detected],
     [:grappa, :repo, :lock_stall, :resolved],
-    [:grappa, :repo, :lock_stall, :unattributed]
+    [:grappa, :repo, :lock_stall, :unattributed],
+    [:grappa, :repo, :lock_stall, :nif_census]
   ]
 
   # Native-unit duration for a whole number of milliseconds, via the
@@ -290,6 +299,59 @@ defmodule Grappa.DbLatencyTest do
       assert hd(row.waiters).stacktrace == ["Exqlite.Sqlite3NIF.step/2"]
     end
 
+    test "[:grappa, :repo, :lock_stall, :nif_census] folds the roster, and names nobody as the holder" do
+      :telemetry.execute(
+        [:grappa, :repo, :lock_stall, :nif_census],
+        %{parked_count: 2, longest_parked_ms: 31_402},
+        %{
+          observed_at: "2026-09-01T10:07:28.554000Z",
+          registered_holders: 0,
+          registered_waiters: 1,
+          parked: [
+            %{
+              pid: "#PID<0.222.0>",
+              elapsed_ms: 31_402,
+              current_function: "Exqlite.Sqlite3NIF.step/2",
+              stacktrace: ["Grappa.Scrollback.persist_row/1"]
+            },
+            %{pid: "#PID<0.333.0>", elapsed_ms: 30_011, current_function: "Exqlite.Sqlite3NIF.execute/2"}
+          ]
+        }
+      )
+
+      assert [row] = DbLatency.snapshot().lock_stalls
+
+      assert row.phase == :nif_census
+      assert row.observed_at == "2026-09-01T10:07:28.554000Z"
+
+      # 🔴 `holder_pid: nil` is a STRONGER statement here than on the
+      # `:unattributed` row, and a mutant that fills it in — say with the
+      # longest-parked pid, which is the plausible guess — dies here. On this
+      # phase a holder is certainly among `parked`; the instrument simply
+      # cannot say which, because exqlite's busy handler sleeps inside the
+      # same dirty-IO NIF the lock holder is executing in.
+      assert row.holder_pid == nil
+      assert row.held_ms == nil
+      assert row.holder == nil
+      assert row.caller == nil
+      assert row.announced == nil
+
+      # A census counts no QUEUE. `parked_count` is a different measurement
+      # and rides the measurements map, exactly as #1687 refused to reuse
+      # `held_ms` for a longest WAIT. A mutant that copies `parked_count` in
+      # here reports two blocked writers where nobody measured one.
+      assert row.waiter_count == nil
+      assert row.waiters == []
+
+      # The roster IS the payload, and the counts are what tell an operator
+      # whether to widen coverage or to scroll up to a line the other two
+      # arms already printed.
+      assert length(row.parked) == 2
+      assert hd(row.parked).stacktrace == ["Grappa.Scrollback.persist_row/1"]
+      assert row.registered_holders == 0
+      assert row.registered_waiters == 1
+    end
+
     test "the lock-stall ring is bounded, keeping the newest episodes" do
       for n <- 1..25 do
         :telemetry.execute(
@@ -333,6 +395,16 @@ defmodule Grappa.DbLatencyTest do
       :telemetry.detach(@handler_id)
       on_exit(fn -> :telemetry.detach(@handler_id) end)
       :ok
+    end
+
+    test "the production event set and this file's expectation of it have not drifted" do
+      # The two failures this catches are asymmetric and BOTH are quiet.
+      # A production event with no clause in this file's `@events` never
+      # reaches an assertion, so a fold bug ships green; an entry here with no
+      # production event makes every test in the aggregation describe fold
+      # nothing, which reads as "the emitter is broken" and sends the reader
+      # to the wrong module. Naming the difference costs one assertion.
+      assert Enum.sort(DbLatency.attached_events()) == Enum.sort(@events)
     end
 
     test "attach_telemetry: true attaches the handler to every measured event" do

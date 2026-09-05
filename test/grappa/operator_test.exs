@@ -287,7 +287,11 @@ defmodule Grappa.OperatorTest do
       :ok =
         :telemetry.attach_many(
           @db_latency_handler_id,
-          [[:grappa, :repo, :query], [:grappa, :repo, :lock_stall, :resolved]],
+          [
+            [:grappa, :repo, :query],
+            [:grappa, :repo, :lock_stall, :resolved],
+            [:grappa, :repo, :lock_stall, :nif_census]
+          ],
           &DbLatency.handle_telemetry/4,
           nil
         )
@@ -354,6 +358,50 @@ defmodule Grappa.OperatorTest do
       # and names the caller instead.
       assert output =~ "write path #PID<0.512.0> (Grappa.Session.Server.init/1)"
       assert output =~ "    Grappa.Scrollback.persist/1"
+      refute output =~ "holder at"
+    end
+
+    test "a NIF census renders its roster and refuses to name a holder (#1901)" do
+      # The CLI is the door an operator reaches for mid-incident, and this
+      # phase carries nil in every seam-derived column. Until it is rendered
+      # once in a test, the first `bin/grappa db-latency` of a real freeze is
+      # where a nil would surface — as a crash, during the exact incident the
+      # arm was added to diagnose. That is the #1888 lesson applied one phase
+      # later rather than relearned.
+      :telemetry.execute(
+        [:grappa, :repo, :lock_stall, :nif_census],
+        %{parked_count: 2, longest_parked_ms: 31_402},
+        %{
+          observed_at: "2026-09-01T10:07:28.554000Z",
+          registered_holders: 0,
+          registered_waiters: 1,
+          parked: [
+            %{pid: "#PID<0.222.0>", elapsed_ms: 31_402, current_function: "Exqlite.Sqlite3NIF.step/2"},
+            %{pid: "#PID<0.333.0>", elapsed_ms: 30_011, current_function: "Exqlite.Sqlite3NIF.execute/2"}
+          ]
+        }
+      )
+
+      # Drain the cast before rendering.
+      _ = DbLatency.snapshot()
+
+      output = capture_io(fn -> assert :ok = Operator.db_latency_text!() end)
+
+      assert output =~ "nif_census\tat=2026-09-01T10:07:28.554000Z\tholder=unattributed"
+
+      # `parked=` and `waiters=` are two different questions and the row has
+      # to keep them apart: two processes were in the NIF, and NOBODY counted
+      # a queue. A mutant rendering the roster length as `waiters=` reads as
+      # two blocked writers, which is a claim this phase never made.
+      assert output =~ "waiters=not counted"
+      assert output =~ "parked=2"
+      assert output =~ "registered=0h/1w"
+
+      # The roster itself, under its own wording — "parked ... in the NIF",
+      # never the DETECTED block's "holder at", which names a pause site the
+      # instrument attributed to one process.
+      assert output =~ "parked #PID<0.222.0> in the NIF 31402ms at Exqlite.Sqlite3NIF.step/2"
+      assert output =~ "parked #PID<0.333.0> in the NIF 30011ms at Exqlite.Sqlite3NIF.execute/2"
       refute output =~ "holder at"
     end
   end

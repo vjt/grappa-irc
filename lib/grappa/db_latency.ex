@@ -60,8 +60,12 @@ defmodule Grappa.DbLatency do
       `:unattributed` is the same ring for the episodes that seam CANNOT
       name — an autocommit writer holds the same file lock and never
       registers — and it carries the queue's stacks with explicit nils
-      where the holder would be. Filing it elsewhere would mean an operator
-      asking what the write lock did has to already know that a third,
+      where the holder would be. `:nif_census` (#1901) is the fourth phase
+      and the only one taken WITHOUT reading the seam at all: the roster of
+      processes sitting inside `Exqlite.Sqlite3NIF`, which is how the
+      autocommit writers that dominate this system's write volume become
+      visible to any door. Filing any of them elsewhere would mean an
+      operator asking what the write lock did has to already know that a
       differently-shaped answer exists somewhere else.
 
   ## Reading a window
@@ -103,7 +107,8 @@ defmodule Grappa.DbLatency do
     [:grappa, :scrollback, :persist, :contention],
     [:grappa, :repo, :lock_stall, :detected],
     [:grappa, :repo, :lock_stall, :resolved],
-    [:grappa, :repo, :lock_stall, :unattributed]
+    [:grappa, :repo, :lock_stall, :unattributed],
+    [:grappa, :repo, :lock_stall, :nif_census]
   ]
 
   # #1420 — the lock-stall ring is bounded: these rows carry sampled
@@ -175,9 +180,22 @@ defmodule Grappa.DbLatency do
 
   `waiter_count` is nilable for the same reason: a closing bracket counts no
   queue, and the `0` it used to carry asserted an empty one was measured.
+
+  #1901 adds the fourth phase, `:nif_census`, and with it `parked` plus two
+  counts. It is the arm that does not read the seam at all — it reports every
+  process sitting inside `Exqlite.Sqlite3NIF` past the threshold — so on that
+  row EVERY seam-derived field is nil, including `holder_pid`, and that is a
+  stronger statement than `:unattributed`'s: a holder is certainly IN
+  `parked`, and nothing BEAM-visible says which entry it is.
+  `registered_holders` / `registered_waiters` count how many of the parked
+  processes the seam could already name, so an operator can tell "widen
+  coverage" from "the other two arms already told you". `parked` follows
+  `waiters` in being a plain list defaulting to `[]` rather than a nilable:
+  an empty roster and no roster are the same fact here, since a census with
+  nobody in it emits nothing at all.
   """
   @type lock_stall_row :: %{
-          phase: :detected | :resolved | :unattributed,
+          phase: :detected | :resolved | :unattributed | :nif_census,
           observed_at: String.t(),
           holder_pid: String.t() | nil,
           held_ms: non_neg_integer() | nil,
@@ -185,7 +203,10 @@ defmodule Grappa.DbLatency do
           holder: map() | nil,
           caller: map() | nil,
           announced: boolean() | nil,
-          waiters: [map()]
+          waiters: [map()],
+          parked: [map()],
+          registered_holders: non_neg_integer() | nil,
+          registered_waiters: non_neg_integer() | nil
         }
 
   @type snapshot :: %{
@@ -224,6 +245,20 @@ defmodule Grappa.DbLatency do
   @doc "Zero every counter — call before opening a fresh sample window."
   @spec reset() :: :ok
   def reset, do: GenServer.call(__MODULE__, :reset)
+
+  @doc """
+  The telemetry events this handler binds at `init/1`.
+
+  Exposed because `fold/4` has NO catch-all clause: an event added to
+  `@events` without a matching clause crashes the singleton, and a clause
+  added without the event folds nothing — and the second failure is silent,
+  which is how it presented while #1901 was being built (a new emitter, a
+  green suite, and an empty ring). `Grappa.DbLatencyTest` keeps its own
+  independent copy of the set as the oracle and asserts it equals this one, so
+  the drift is a named failure rather than a missing row.
+  """
+  @spec attached_events() :: [[atom()]]
+  def attached_events, do: @events
 
   ## ----- GenServer callbacks ------------------------------------------
 
@@ -320,7 +355,10 @@ defmodule Grappa.DbLatency do
       holder: metadata.holder,
       caller: nil,
       announced: nil,
-      waiters: metadata.waiters
+      waiters: metadata.waiters,
+      parked: [],
+      registered_holders: nil,
+      registered_waiters: nil
     })
   end
 
@@ -339,7 +377,10 @@ defmodule Grappa.DbLatency do
       holder: nil,
       caller: nil,
       announced: nil,
-      waiters: metadata.waiters
+      waiters: metadata.waiters,
+      parked: [],
+      registered_holders: nil,
+      registered_waiters: nil
     })
   end
 
@@ -360,7 +401,38 @@ defmodule Grappa.DbLatency do
       holder: nil,
       caller: metadata.caller,
       announced: metadata.announced,
-      waiters: []
+      waiters: [],
+      parked: [],
+      registered_holders: nil,
+      registered_waiters: nil
+    })
+  end
+
+  # #1901 — the arm that reads `Process.list/0` rather than the seam, so it is
+  # the one phase where `holder_pid` being nil is not a gap the instrument
+  # might have closed: a holder IS among `parked`, and exqlite's busy handler
+  # sleeping inside the same dirty-IO NIF as the writer that holds the lock
+  # makes the cohort indivisible from the BEAM's side. Synthesising a
+  # `holder_pid` to fill the column would turn the one honest thing this row
+  # says into a guess. `registered_holders` / `registered_waiters` are what
+  # separate "the seam is blind here" from "the other two arms already spoke".
+  defp fold([:grappa, :repo, :lock_stall, :nif_census], measurements, metadata, state) do
+    push_stall(state, %{
+      phase: :nif_census,
+      observed_at: metadata.observed_at,
+      holder_pid: nil,
+      held_ms: nil,
+      # nil, not `parked_count`: nothing here observed a QUEUE. The count of
+      # parked processes is a different measurement and rides its own field,
+      # exactly as #1687 refused to reuse `held_ms` for a longest WAIT.
+      waiter_count: nil,
+      holder: nil,
+      caller: nil,
+      announced: nil,
+      waiters: [],
+      parked: metadata.parked,
+      registered_holders: metadata.registered_holders,
+      registered_waiters: metadata.registered_waiters
     })
   end
 

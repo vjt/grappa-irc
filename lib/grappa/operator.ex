@@ -1034,7 +1034,8 @@ defmodule Grappa.Operator do
       IO.puts(
         "#{stall.phase}\tat=#{stall.observed_at}\tholder=#{lock_stall_field(stall.holder_pid)}" <>
           "\theld_ms=#{lock_stall_field(stall.held_ms)}" <>
-          "\twaiters=#{waiters_column(stall.waiter_count)}#{announced_column(stall.announced)}"
+          "\twaiters=#{waiters_column(stall.waiter_count)}" <>
+          "#{announced_column(stall.announced)}#{parked_column(stall)}"
       )
 
       Enum.each(lock_stall_detail_lines(stall), &IO.puts/1)
@@ -1078,10 +1079,26 @@ defmodule Grappa.Operator do
   # they are what separates "blocked on the lock" from "queued for a
   # connection".
   @spec lock_stall_detail_lines(DbLatency.lock_stall_row()) :: [String.t()]
-  defp lock_stall_detail_lines(%{holder: holder, caller: caller, waiters: waiters}) do
+  defp lock_stall_detail_lines(%{holder: holder, caller: caller, waiters: waiters, parked: parked}) do
     holder_lines(holder) ++
       caller_lines(caller) ++
-      Enum.map(waiters, &"  waiter #{&1.pid} waiting #{&1.elapsed_ms}ms at #{&1.current_function}")
+      Enum.map(waiters, &"  waiter #{&1.pid} waiting #{&1.elapsed_ms}ms at #{&1.current_function}") ++
+      Enum.map(parked, &"  parked #{&1.pid} in the NIF #{&1.elapsed_ms}ms at #{&1.current_function}")
+  end
+
+  # #1901 — the census counts a ROSTER, not a queue, and the two must not be
+  # read off the same column: `waiters=` says how many writers were provably
+  # blocked, while this says how many processes were inside the SQLite NIF,
+  # one of which IS the holder and none of which can be singled out.
+  # Conditional for the same reason `announced_column/1` is — printing
+  # `parked=0` on the three phases that never took a census would invite the
+  # reader to interpret it as "the NIF was empty".
+  @spec parked_column(DbLatency.lock_stall_row()) :: String.t()
+  defp parked_column(%{parked: []}), do: ""
+
+  defp parked_column(%{parked: parked} = stall) do
+    "\tparked=#{length(parked)}" <>
+      "\tregistered=#{stall.registered_holders}h/#{stall.registered_waiters}w"
   end
 
   # #1888 — the write path a `:resolved` row names. Labelled "write path" and
