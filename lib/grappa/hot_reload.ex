@@ -284,7 +284,7 @@ defmodule Grappa.HotReload do
     end
   end
 
-  defp compare_vsn(_lib_dir, vsn, vsn), do: :ok
+  defp compare_vsn(_, vsn, vsn), do: :ok
 
   defp compare_vsn(lib_dir, booted, built),
     do: {:error, {:stale_code_path, %{booted: booted, built: built, lib_dir: lib_dir}}}
@@ -314,7 +314,7 @@ defmodule Grappa.HotReload do
     release_root = lib_dir |> Path.dirname() |> Path.dirname()
 
     with {:ok, contents} <- File.read(Path.join([release_root, "releases", "start_erl.data"])),
-         [_erts_vsn, vsn] <- contents |> String.trim() |> String.split(" ", trim: true) do
+         [_, vsn] <- contents |> String.trim() |> String.split(" ", trim: true) do
       vsn
     else
       _ -> nil
