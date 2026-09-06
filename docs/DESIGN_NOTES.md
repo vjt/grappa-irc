@@ -47141,3 +47141,146 @@ source rather than run: the slice touches `infra/**`, `test/**`, `docs/**`
 and `cicchetto/.gitignore`, and no `compose.*` path and no `VERSION`, which
 are the two literals that force COLD. Treat it as unverified until the
 oneshot is run._
+<!-- entry #1850 -->
+
+---
+
+## 2026-09-06 — #1850: the reload that answers "nothing to do" when it means "I read the wrong tree"
+
+A `VERSION`-only bump is COLD on the two `mix release` substrates because the
+code path carries the vsn: `lib/grappa-<vsn>/ebin`, and `:code.lib_dir/1`
+resolves to the **boot** directory forever. `Grappa.Deploy.Preflight.version?/1`
+already PREVENTS that (#1287). What nothing did was **detect** it, and the issue
+text said so outright: *"That miss cannot be reported, only prevented."*
+
+**That claim is false, and this entry is the mechanism.** The live node knows
+the vsn in its own code path, and the release on disk names the vsn it last
+assembled. Comparing the two is exact, needs no heuristic, and is observable
+from precisely one place — inside the running BEAM, which is where
+`Grappa.HotReload.audit_code_path/1` now sits.
+
+### Why detection is not redundant with prevention
+
+Preflight classifies a DIFF, on the deploying host, before the POST. Three
+things escape it, and they are the same three that escape the pending-migration
+verdict (`migrate_and_reload/2`'s moduledoc already argues this for migrations —
+the argument transfers whole):
+
+* `--force-hot` skips preflight entirely.
+* A diff range that does not contain the bump has nothing to classify.
+* Prevention leaves no trace when it is bypassed; the reload's own
+  `{"reloaded":[],"failed":[]}` is indistinguishable from "nothing to do".
+
+Production served the old BEAM under the new git history for ~6.5 hours on
+2026-08-13 through that third shape, and the deploy printed success.
+
+### The measurement that killed the first design
+
+The obvious oracle is "is there more than one `lib/grappa-*` sibling?". It is
+wrong, and a real `mix release --overwrite` says so. Measured 2026-09-06 in an
+isolated build cache (`GRAPPA_CACHE_ID`), two consecutive assembles of this
+tree:
+
+    VERSION=1.5.1   lib/grappa-1.5.1                     start_erl.data: 16.4.0.4 1.5.1
+    VERSION=9.9.9   lib/grappa-1.5.1 + lib/grappa-9.9.9  start_erl.data: 16.4.0.4 9.9.9
+
+`--overwrite` **does not prune**: the boot dir survives with its mtime
+untouched (22:26:03 vs the new dir's 22:26:10), and `releases/` keeps both
+version subdirectories. Stale lib dirs therefore accumulate for the life of the
+install, so sibling-counting would refuse **every** hot deploy on a jail that
+has ever been bumped — a permanent false COLD, which is exactly the
+session-dropping class this whole area exists to avoid.
+
+What DOES move is `<rel>/releases/start_erl.data`. That is the oracle. (There
+is no `RELEASES` file at all: `mix release` does not write one, only
+`release_handler` does — worth knowing before anyone reaches for it.)
+
+### Shape
+
+`audit_code_path/1` is pure-ish and total, three arms:
+
+* basename carries no `grappa-<vsn>` → `:ok`. This is Docker and every source
+  checkout (`_build/<env>/lib/grappa`), where the fresh beams always land where
+  the node already looks. **Inert by construction, not by a substrate flag** —
+  the same posture `Preflight` takes when it excludes `:docker` from
+  `version?/1` by measurement rather than omission.
+* vsn matches `start_erl.data` → `:ok`, leftovers or not.
+* anything else → `{:error, {:stale_code_path, %{booted:, built:, lib_dir:}}}`.
+
+Unreadable or malformed metadata under a versioned path refuses rather than
+passing. A versioned path asserts "this is a mix release", so the metadata is
+expected; reading `:ok` out of its absence would restore the silence the audit
+exists to break. Same bias as `Preflight`'s "in doubt, COLD", and it costs
+nothing real: every shipped layout writes the file.
+
+It runs BEFORE the migration audit in `migrate_and_reload/2`. If the beams are
+in the wrong tree the deploy is going cold anyway, so committing DDL first buys
+nothing and muddies the "nothing ran" all three refusals now promise.
+`POST /admin/reload` answers 409 `stale_code_path` with both numbers, and
+`infra/lib/deploy_common.sh` names it as cause 3 — `curl -f` discards the body,
+so the script has to enumerate rather than guess.
+
+### The bug the test caught, kept because it generalises
+
+`built_vsn/1` first read `Path.join([lib_dir, "..", "..", "releases", …])`. The
+vanished-boot-dir case went red: `..` is resolved by the OS at open time and is
+ENOENT when a component is missing — and a missing component is exactly the
+case under test. The refusal still fired, but `built` came back `nil`, losing
+the one fact the operator most needs. `Path.dirname/1` twice is lexical and
+correct. **General rule: when a path is being computed ABOUT a directory that
+may not exist, `..` is the wrong operator.**
+
+### Wire
+
+`GrappaWeb.ErrorTokens` is a generated-artefact source, so the new token lands
+in `REST_ERROR_TOKENS` / `wireSchema.ts` and moves the digest —
+`mix grappa.wire_pin` demanded protocol **13**, it was not a judgement call.
+v12's measured client break does NOT reproduce: the endpoint is loopback-gated,
+so no bundle will ever be handed this token. The number moves because the shape
+moved and the floor must stay TOTAL. `min_protocol_version` stays 1.
+
+### What this is NOT
+
+**It is reportability, not the cure.** #1850 asks for a direction among
+appup/relup (A), freezing the OTP app vsn (B), and compiling the hot branch into
+the live vsn's ebin (C). This entry picks none of them: a release cut still
+cold-restarts prod. It converts a silent 6.5-hour class into a refusal the
+operator sees, which every one of A/B/C wants anyway.
+
+One thing measured in passing, because it cheapens C: the issue worries that C
+leaves "the node reporting the old number while running new code". For
+`Grappa.Version.base/0` that does not happen — it is a compile-time constant
+inside `Version.beam` (`version.ex:156`), so a reload that loads that beam
+reports the NEW number, which is the code actually running. What stays old
+under C is the directory name and `Application.spec(:grappa, :vsn)`, and
+`version.ex:37-39` records that nothing else in the tree reads the latter.
+
+### What was not measured, and what is not asserted
+
+* **Neither release substrate was exercised.** No jail, no systemd host. The
+  release LAYOUT was measured on a real `mix release --overwrite`, which is a
+  property of Mix and not of FreeBSD; the *deploy* on those substrates was not.
+* The 2026-08-13 production incident is quoted from the record, not re-measured.
+* The wiring `migrate_and_reload/2 → audit_code_path/1` is a one-liner
+  composition and is **not** covered by a test that makes it FIRE: forcing drift
+  needs a versioned `:code.lib_dir(:grappa)`, which a source-checkout test run
+  does not have, and a seam for it would be a seam over a gated verb. Its
+  INERTNESS is gated — the migration suites drive `migrate_and_reload/2` and
+  would go red if the audit refused wrongly. This is the same posture already
+  declared for `reload_modified/0` in `hot_reload_test.exs`.
+* Not asserted: that this prevents any restart (it does not); that
+  `start_erl.data` is written by substrates other than `mix release`; that a
+  package install (`cp -a` of the release root) behaves identically — it should,
+  it was not run.
+
+_Deploy: **HOT** on every substrate, and measured rather than reasoned.
+`Preflight.classify_paths/3` over this slice's 11 changed paths returns
+`{:hot, []}` for `:docker`, `:jail` and `:linux` alike, and the verdict was
+gated on its controls before being emitted: `config/config.exs` COLD on all
+three, `VERSION` COLD on `:jail`/`:linux` and HOT on `:docker`, `compose.yaml`
+COLD on `:docker` only, an unreadable migration COLD on all three; and
+`docs/compose.notes.md` plus `infra/lib/deploy_common.sh` HOT everywhere. The
+state-shape axis was measured too, not assumed: `long_lived_module_files/0` has
+34 members and the intersection with this slice is empty. **`VERSION` still
+classifies COLD on the release substrates — this slice moves no
+classification.**_
