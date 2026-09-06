@@ -273,7 +273,23 @@ defmodule Grappa.Protocol do
   # @min_protocol_version stays at 1: an old client drops presence_changed
   # frames it cannot read and keeps every other pane, so it is degraded rather
   # than unserviceable — and only on the one network that needs ISON at all.
-  @protocol_version 12
+  # v13 (#1850) — `POST /admin/reload` gains a third refusal token,
+  # `stale_code_path`: the beams a hot deploy just built are in a lib
+  # directory the running node never reads.
+  #
+  # ⚠️ Same mechanism as v12 and NOT the same consequence, and the difference
+  # is worth stating rather than inheriting. `GrappaWeb.ErrorTokens` is a
+  # generated-artefact source, so a token lands in `REST_ERROR_TOKENS` /
+  # `wireSchema.ts` and MOVES THE DIGEST — `mix grappa.wire_pin --check` demands
+  # the bump, it is not a judgement call. But v12's measured break does NOT
+  # reproduce here: the endpoint is loopback-gated, so no browser can reach it
+  # and no bundle, old or new, will ever be handed this token. The number moves
+  # because the shape moved and the floor must stay TOTAL — a client reading
+  # `server >= N` as "has everything N had" is entitled to that, and one
+  # un-bumped addition makes the reading false forever after.
+  #
+  # @min_protocol_version stays at 1: nothing a client can reach changed.
+  @protocol_version 13
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -284,7 +300,7 @@ defmodule Grappa.Protocol do
   # alongside `@protocol_version`; the spec doubles as the bump tripwire,
   # and now that the bump is routine the tripwire is what keeps it from
   # being done half-way.
-  @spec version() :: 12
+  @spec version() :: 13
   def version, do: @protocol_version
 
   @doc """

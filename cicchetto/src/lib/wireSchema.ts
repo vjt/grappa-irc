@@ -1684,6 +1684,7 @@ export const S_ErrorTokensRestErrorToken = {
     { l: "session_plan_resolve_failed" },
     { l: "contract_migrations_pending" },
     { l: "duplicate_migration_versions" },
+    { l: "stale_code_path" },
     { l: "invalid_message" },
     { l: "anon_collision" },
     { l: "nick_in_use" },

@@ -1704,6 +1704,7 @@ export const ERROR_TOKENS_REST_ERROR_TOKEN = [
   "session_plan_resolve_failed",
   "contract_migrations_pending",
   "duplicate_migration_versions",
+  "stale_code_path",
   "invalid_message",
   "anon_collision",
   "nick_in_use",

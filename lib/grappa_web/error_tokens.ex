@@ -142,6 +142,12 @@ defmodule GrappaWeb.ErrorTokens do
           # OPPOSITE next move (#1348): two files claim one migration
           # version, and a cold deploy migrates through the same defect.
           | :duplicate_migration_versions
+          # Operator-facing, same endpoint, same "nothing ran", and back to
+          # the cold deploy as the fix (#1850) — but for a reason that has
+          # nothing to do with the repo: the build wrote its beams into
+          # `lib/grappa-<new>/ebin` while the node still reads the boot
+          # directory, so the reload could only have loaded stale code.
+          | :stale_code_path
           | :invalid_message
           | :anon_collision
           | :nick_in_use

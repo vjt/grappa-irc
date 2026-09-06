@@ -378,6 +378,13 @@ _deploy_hot() {
 		printf '[deploy]   HTTP 409, cause 1: a pending migration is CONTRACT → run a cold deploy\n' >&2
 		printf '[deploy]   HTTP 409, cause 2: two files claim one migration version — a\n' >&2
 		printf '[deploy]   cold deploy will not help, the duplicate must be resolved in the repo\n' >&2
+		# Since #1850 a third cause, and it is the one that used to be
+		# SILENT: on a release substrate the beams just built are in
+		# lib/grappa-<new>/ebin while the daemon still reads its boot
+		# directory, so the reload would have loaded nothing and said so
+		# in a shape indistinguishable from "nothing to do".
+		printf '[deploy]   HTTP 409, cause 3: the daemon reads lib/grappa-<booted>/ebin and this\n' >&2
+		printf '[deploy]   build wrote lib/grappa-<new>/ebin (a VERSION bump) → run a cold deploy\n' >&2
 		exit 1
 	fi
 

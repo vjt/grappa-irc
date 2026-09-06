@@ -463,6 +463,14 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       // copy: a restart is what the other token asks for and the wrong
       // move for this one, which needs the duplicate resolved in the repo.
       return "Two migration files claim the same version; nothing was applied.";
+    case "stale_code_path":
+      // #1850 — 409 from the same loopback-gated POST /admin/reload, so
+      // likewise unreachable from a browser; the arm exists because the
+      // union is exhaustive. Copy matches the contract-migration arm's
+      // ASK (a full restart) without borrowing its REASON: nothing is
+      // wrong with the database here, the new code simply is not on the
+      // path the running node reads.
+      return "The server needs a full restart to pick up the new code.";
     case "client_token_scope":
       // #1196 — 403 for a per-client token on a credential-management
       // route. cic authenticates with a browser session, so this arm is

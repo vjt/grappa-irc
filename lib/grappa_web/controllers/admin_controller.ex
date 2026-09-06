@@ -22,6 +22,15 @@ defmodule GrappaWeb.AdminController do
       two files claim one version (#1348); nothing ran. Same status, but
       the OPPOSITE next move: a cold deploy migrates through the same
       defect, so the repo has to be fixed first.
+    * `409` `%{"error" => "stale_code_path", "booted" => vsn, "built" =>
+      vsn | null, "code_path" => dir}` — the fresh beams landed in a lib
+      directory this node does not read (#1850); nothing ran. A cold
+      deploy is the fix, as with the contract arm. This one is checked
+      BEFORE the migration audit, and it is a DETECTION rather than a
+      prevention: `Grappa.Deploy.Preflight` already classifies a `VERSION`
+      diff COLD, but `--force-hot` skips preflight and a reload that walks
+      the stale tree answers `{"reloaded":[],"failed":[]}` — the silence
+      that served old code for ~6.5h on 2026-08-13.
     * a raising migration is NOT rescued: it 5xxes, the transaction
       rolls back, and no module is reloaded.
 
@@ -154,6 +163,24 @@ defmodule GrappaWeb.AdminController do
         conn
         |> put_status(:conflict)
         |> json(%{error: "duplicate_migration_versions", duplicates: duplicates})
+
+      {:error, {:stale_code_path, drift}} ->
+        # 409 a third time, nothing ran again — and nothing in the repo is
+        # wrong (#1850). The build wrote its beams into a lib directory
+        # this node does not read, so a reload could only ever have loaded
+        # stale code and reported `{"reloaded":[],"failed":[]}` doing it.
+        # A cold deploy IS the fix (it boots the new vsn), same as the
+        # contract-migration arm and unlike the duplicate-version one —
+        # the body names both numbers so the operator can see which tree
+        # the node is on and which one the build produced.
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          error: "stale_code_path",
+          booted: drift.booted,
+          built: drift.built,
+          code_path: drift.lib_dir
+        })
     end
   end
 
