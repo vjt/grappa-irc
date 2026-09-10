@@ -52503,14 +52503,23 @@ needed three RPCs into a running node.
 `config/prod.exs` pins `:info` and `config/runtime.exs` defaults `LOG_LEVEL`
 to the same — so a `debug` line answers the operator's question exactly as
 badly as the silence did for anyone who has not already reconfigured their
-logger, which is everyone at the moment they need it. The counter-argument
-is volume, and it does not survive contact with the trigger conditions: a
-delivery happens only when a message passes `should_notify?/5` AND no device
-of that subject has the PWA on-screen, so `push.send delivered` is one line
-per notification per registered device, not one per IRC message. A
-suppression is bounded the same way from the other side. The sibling
+logger, which is everyone at the moment they need it. The sibling
 `push.send subscription gone — deleted` has sat at `info` since B2 for the
 same class of event, so `info` is also what the module already does.
+
+The counter-argument is volume, and the first draft of this entry answered
+it wrongly. It claimed the lines are "one per notification, not one per IRC
+message", which holds only for the DEFAULT prefs. `channel_messages_all` is
+a real pref and `channel_match?/4` returns `true` unconditionally when it is
+set, so an operator who turns it on has asked for a notification per channel
+message and gets a log line per channel message to match — `push.send
+delivered` while their devices are backgrounded, `push.trigger suppressed`
+while the PWA is on-screen. The honest statement is that the PREFS set the
+rate: the defaults (`channel_messages_all: false`, `channel_mentions: true`,
+`private_messages_all: true`) need a DM or a mention and are rare,
+`channel_messages_all` needs nothing and is not, and `LOG_LEVEL` is the knob
+for anyone who does not want the consequence of their own pref. Stated
+rather than bounded away, because the level decision above rests on it.
 
 ### What was NOT added, and why
 
@@ -52522,12 +52531,36 @@ rate belongs. A per-subscription success counter would restate a number the
 aggregate already has, which is design-discipline (1): derive, do not
 duplicate. Only the LOG half of that half of the issue was missing.
 
-No new Logger metadata key. `:reason`, `:subject_kind`, `:user_id`,
-`:visitor_id` and `:endpoint` are all already in the `config/config.exs`
-`:metadata` allowlist, so this slice edits no config file at all. That
-matters twice: an undeclared key is dropped at FORMAT time (the call site
-compiles, the line fires, the operator reads it bare), and any touch of
-`config/*.exs` turns a hot deploy cold. Reusing declared keys buys both.
+No new Logger metadata key. `:reason`, `:network`, `:subject_kind`,
+`:user_id`, `:visitor_id` and `:endpoint` are all already in the
+`config/config.exs` `:metadata` allowlist, so this slice edits no config file
+at all. That matters twice: an undeclared key is dropped at FORMAT time (the
+call site compiles, the line fires, the operator reads it bare), and any
+touch of `config/*.exs` turns a hot deploy cold. Reusing declared keys buys
+both — and it is also what decided the two shapes below.
+
+`:network` on the suppression line but not `:channel`, though `:channel` is
+allowlisted too and the message path knows it. One reporter serves both
+doors and the presence door has no channel, so taking it would either split
+the reporter in two or print an empty field half the time. The network is
+the context both doors carry, and on a multi-network bouncer it is what
+turns "something was withheld" into "something was withheld on azzurra".
+
+`endpoint:` stays the full vendor URL on the delivered line, and that is a
+call worth naming rather than leaving to be discovered. A Web Push endpoint
+is a CAPABILITY — holding it lets anyone POST to that device — and while it
+already rode all of this function's failure arms, the frequency now goes
+from broken subscriptions only to every successful delivery, into a stdout
+that persists across restarts and ships out with any log forwarder. The
+alternatives are what settled it. `Push.VendorLog` logs the host alone
+(#1321, "a path segment can itself be a credential") and can afford to
+precisely because its own moduledoc names THIS line as the correlation
+anchor; host-only here would leave nothing to anchor to and could not
+separate two iPhones on `web.push.apple.com`, which is the multi-device case
+the line exists for. A subscription row id would be the clean answer and
+costs a new metadata key, hence a cold deploy. If the exposure is judged to
+outweigh the correlation, the cure is `:vendor` here too plus that id, the
+next time something else is already paying for a cold deploy.
 
 ### One reporter, two doors, and the ordering that carries the meaning
 
@@ -52579,6 +52612,19 @@ root cause of a socket stuck at `visible` is untouched and remains open.
 rather than a bare `:foreground_visible` literal because it is published on
 the telemetry metadata; no second reason is anticipated, and none is
 invented here to justify the shape.
+
+`[:grappa, :push, :suppressed]` counts withheld TRIGGER DISPATCHES, not
+undelivered pushes, and the difference is a real population: a subject with
+the PWA open and NO registered device is counted, though
+`Sender.send_to_subject/2` would have hit its empty-list arm and sent
+nothing either way. Deliberate, on a layering argument — this module decides
+whether to dispatch, `Push.Sender` owns what a dispatch reaches — and on
+cost: separating them means a `push_subscriptions` read on EVERY
+suppression, which under `channel_messages_all` is per channel message, to
+answer a question the device-list UI already answers directly. Anyone
+reading the counter as "pushes the user did not get" is reading it wrong,
+which is why the moduledoc says what it measures instead of posing the
+looser question the first draft posed.
 
 The rendered-output tests lower the global Logger level and therefore live
 in their own `async: false` file (`push/observability_log_test.exs`),

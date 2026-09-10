@@ -126,17 +126,46 @@ defmodule Grappa.Push.Sender do
   so it would leave the operator's question ("did you try to send it or
   not?") answered exactly as badly as before for anyone who has not
   already reconfigured the logger — which is nobody, at the moment they
-  need it. The volume it buys is bounded by construction: a delivery
-  happens only when a message passes `Push.Triggers.should_notify?/5`
-  AND no device of that subject has the PWA on-screen, so the line is
-  one per notification per registered device, not one per IRC message.
-  The sibling `push.send subscription gone — deleted` already sits at
-  `info` for the same class of event.
+  need it. The sibling `push.send subscription gone — deleted` already
+  sits at `info` for the same class of event.
+
+  The volume is set by the subject's PREFS, and it is worth stating
+  honestly rather than waving at. A delivery needs a message that passes
+  `Push.Triggers.should_notify?/5` AND no device with the PWA
+  on-screen. Under the defaults (`channel_messages_all: false`,
+  `channel_mentions: true`, `private_messages_all: true`) that means a
+  DM or a mention, so the line is rare. An operator who turns
+  `channel_messages_all` ON has asked for a notification per channel
+  message, and gets one line per message per registered device to
+  match — the pref sets the rate, and `LOG_LEVEL` is the knob if the
+  consequence is unwanted.
 
   Success TELEMETRY is deliberately NOT added: the fan-out's
   `[:grappa, :push, :send, :stop]` already carries `success:` (see
   "Telemetry shape"), and a per-subscription success counter would
   restate a number the aggregate already has.
+
+  ### The endpoint on the line, at this frequency
+
+  `endpoint:` is the full vendor URL, which is a CAPABILITY: holding it
+  lets anyone POST to that device (they cannot decrypt without the
+  subscription's keys, but they can burn its quota). It already rode all
+  four failure arms of this function; what changes here is FREQUENCY —
+  from broken subscriptions only to every successful delivery — and
+  stdout persists across restarts and ships out with any log forwarder.
+
+  Taken deliberately, and the alternatives were the reason. `Push.VendorLog`
+  logs the HOST alone under `:vendor` (#1321, "a path segment can itself
+  be a credential") and can afford to, because its own moduledoc points
+  at THIS module's line as the correlation anchor; host-only here would
+  leave nothing to anchor to, and could not tell two iPhones on
+  `web.push.apple.com` apart, which is exactly the multi-device case the
+  line exists for. A non-capability handle — the subscription row id —
+  would need a new Logger metadata key, and any `config/*.exs` edit
+  turns a hot deploy cold. So: named, not hidden. If the exposure is
+  judged to outweigh the correlation, the cure is `:vendor` here too and
+  a subscription id once some other change is already paying for a cold
+  deploy.
 
   ## Failure handling — no silent drops
 
