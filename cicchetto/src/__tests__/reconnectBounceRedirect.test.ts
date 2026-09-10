@@ -59,6 +59,34 @@ const NET_SLUG = "azzurra";
 const OTHER_SLUG = "freenode";
 const CHANNEL = "#italia";
 
+// `vi.hoisted` because the `vi.mock` factory below is hoisted above every
+// plain const, and `beforeEach` re-seeds the same value after resetting the
+// queued `once` implementations.
+const defaultNetworks = vi.hoisted(() => [
+  {
+    kind: "user",
+    id: 1,
+    slug: "azzurra",
+    nick: "vjt",
+    connection_state: "connected",
+    connection_state_reason: null,
+    connection_state_changed_at: null,
+    inserted_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  },
+  {
+    kind: "user",
+    id: 2,
+    slug: "freenode",
+    nick: "vjt",
+    connection_state: "connected",
+    connection_state_reason: null,
+    connection_state_changed_at: null,
+    inserted_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  },
+]);
+
 // Pass-through override rather than a full factory: the graph under test
 // pulls in `tagNetwork` / `ownNickForNetwork` / the kind predicates, and a
 // hand-written twin of those would be a second implementation to keep in
@@ -78,30 +106,7 @@ vi.mock(import("../lib/api"), async (importOriginal) => {
     // without ever reaching the test it means to exercise — measured, on the
     // first cut of this file: the mutation that deletes the slug test left
     // the arm green.
-    listNetworks: vi.fn().mockResolvedValue([
-      {
-        kind: "user",
-        id: 1,
-        slug: NET_SLUG,
-        nick: "vjt",
-        connection_state: "connected",
-        connection_state_reason: null,
-        connection_state_changed_at: null,
-        inserted_at: "2026-01-01T00:00:00Z",
-        updated_at: "2026-01-01T00:00:00Z",
-      },
-      {
-        kind: "user",
-        id: 2,
-        slug: OTHER_SLUG,
-        nick: "vjt",
-        connection_state: "connected",
-        connection_state_reason: null,
-        connection_state_changed_at: null,
-        inserted_at: "2026-01-01T00:00:00Z",
-        updated_at: "2026-01-01T00:00:00Z",
-      },
-    ]),
+    listNetworks: vi.fn().mockResolvedValue(defaultNetworks),
     listChannels: vi.fn().mockResolvedValue([]),
     listMessages: vi.fn().mockResolvedValue([]),
     sendMessage: vi.fn(),
@@ -147,12 +152,21 @@ const connectionStateChanged = (from: Conn, to: Conn, slug: string = NET_SLUG) =
 // #781 — warm the graph outside the per-test budget. See helpers/warmGraph.ts.
 beforeAll(() => warmGraph(() => import("../lib/userTopic")));
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.resetModules();
   localStorage.clear();
   vi.clearAllMocks();
   channelMock.reset();
   channelMock.on.mockClear();
+  // `clearAllMocks` wipes call history but NOT queued `once` implementations.
+  // Measured: the back-to-back arm below leaves its second
+  // `mockResolvedValueOnce` UNCONSUMED (that is the defect it pins), and
+  // without this reset the next test received that one-network list and
+  // failed on `expect(1).toBe(2)` — a red belonging to the previous arm,
+  // landing on an innocent one.
+  const api = await import("../lib/api");
+  vi.mocked(api.listNetworks).mockReset();
+  vi.mocked(api.listNetworks).mockResolvedValue(defaultNetworks);
 });
 
 const seedIdentity = (token: string) => {
@@ -234,33 +248,44 @@ describe("issue 2059 — /reconnect bounce keeps the home redirect", () => {
   // could still leave that spec red. This arm exists to find out whether the
   // collapse is real, stated as an outcome (does the store end on the truth?)
   // rather than as a call count.
-  it("ends on the LAST state when park and unpark refetch back to back", async () => {
+  it("ends on the SECOND answer when two refetches are issued back to back", async () => {
+    // THREE distinct states on purpose. An earlier cut of this arm ran
+    // connected → (parked, connected) and asserted `connected`, which the
+    // store already read at mount: `waitFor` returned on its first tick
+    // without any GET having answered, and the arm stayed GREEN even when
+    // the swallow was fabricated. An assertion that holds BEFORE the action
+    // measures nothing.
+    //
+    // Here the terminal state (`failing`) is one the store has never held,
+    // so it can only be reached by the SECOND answer landing. If that
+    // refetch is swallowed the row stays `parked` and the arm fails.
+    //
+    // Driven on the OTHER network so the park does not also trip the home
+    // redirect — this arm is about the store, not about selection.
     const api = await import("../lib/api");
-    const parked = {
+    const row = (state: Conn) => ({
       kind: "user" as const,
-      id: 1,
-      slug: NET_SLUG,
+      id: 2,
+      slug: OTHER_SLUG,
       nick: "vjt",
-      connection_state: "parked" as const,
-      connection_state_reason: "rolling a fresh vhost",
+      connection_state: state,
+      connection_state_reason: state === "connected" ? null : "rolling a fresh vhost",
       connection_state_changed_at: null,
       inserted_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
-    };
+    });
     const { networks } = await mountLookingAtChannel("tok2059-collapse");
 
-    // Park answers first, unpark second — the ordering `/reconnect`
-    // produces when the GETs are NOT outrun. If the second refetch is
-    // swallowed, the store keeps the parked row and the sidebar stays grey.
-    vi.mocked(api.listNetworks).mockResolvedValueOnce([parked]);
+    vi.mocked(api.listNetworks).mockResolvedValueOnce([row("parked")]);
+    vi.mocked(api.listNetworks).mockResolvedValueOnce([row("failing")]);
     const netModule = await import("../lib/networks");
     netModule.refetchNetworks();
     netModule.refetchNetworks();
 
     await vi.waitFor(() => {
-      const n = networks.networks()?.find((x) => x.slug === NET_SLUG);
+      const n = networks.networks()?.find((x) => x.slug === OTHER_SLUG);
       expect(n?.kind).toBe("user");
-      if (n?.kind === "user") expect(n.connection_state).toBe("connected");
+      if (n?.kind === "user") expect(n.connection_state).toBe("failing");
     });
   });
 

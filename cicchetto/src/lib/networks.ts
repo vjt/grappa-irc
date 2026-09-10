@@ -195,8 +195,49 @@ const exports = identityScopedStore((onIdentityChange) => {
   // `userTopic.ts` can pull the updated `Credential.connection_state`
   // / reason / changed_at fields without duplicating wire shape into
   // the client.
+  //
+  // issue 2059 — QUEUE A TRAILING REFETCH INSTEAD OF DROPPING IT.
+  //
+  // Measured, not assumed: with two calls issued back to back, the SECOND
+  // GET never leaves. The bench answers the first call `parked` and the
+  // second `failing`; the store ends on `parked` and the second stubbed
+  // answer is still queued, unconsumed. `createResource.refetch()` does not
+  // start a second fetch while one is in flight, so the caller's second
+  // request is simply lost.
+  //
+  // That is not a cosmetic loss. `/reconnect` emits two
+  // `connection_state_changed` events in quick succession and each triggers
+  // a refetch: lose the unpark one and the store keeps the parked row —
+  // the sidebar section stays greyed and the Home parked card stays up,
+  // with nothing further scheduled to correct it. It is the second half of
+  // what `issue1796-reconnect-bounces-network.spec.ts` asserts, and it is a
+  // DIFFERENT defect from the lost home redirect, with a different cure.
+  //
+  // Trailing-coalesce rather than a full chain: any number of calls arriving
+  // during a flight collapse into exactly ONE follow-up, which starts after
+  // that flight ends. The invariant that matters is "a refetch requested
+  // after the last state change is answered after it", and one trailing run
+  // gives that without turning a burst of N events into N round-trips.
+  let refetchInFlight = false;
+  let refetchPending = false;
+  const runNetworksRefetch = async (): Promise<void> => {
+    refetchInFlight = true;
+    try {
+      await refetchNetworksResource();
+    } finally {
+      refetchInFlight = false;
+      if (refetchPending) {
+        refetchPending = false;
+        void runNetworksRefetch();
+      }
+    }
+  };
   const refetchNetworks = (): void => {
-    void refetchNetworksResource();
+    if (refetchInFlight) {
+      refetchPending = true;
+      return;
+    }
+    void runNetworksRefetch();
   };
 
   // #126 — re-fetch GET /me after a visitor disconnect/reconnect so the
