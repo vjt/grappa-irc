@@ -726,6 +726,113 @@ defmodule Grappa.Push.TriggersTest do
 
       Process.exit(device, :kill)
     end
+
+    # issue 2067 — the suppression used to be silent on BOTH doors, which
+    # made a withheld push indistinguishable from one that never triggered.
+    # This is the counter half; the rendered log line is pinned in
+    # `Grappa.Push.ObservabilityLogTest`.
+    test "a withheld fan-out emits [:grappa, :push, :suppressed] naming subject + reason", %{
+      bypass: bypass,
+      endpoint: endpoint
+    } do
+      attach_telemetry([[:grappa, :push, :suppressed], [:grappa, :push, :send, :start]])
+      Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 500, "should-not-happen") end)
+
+      user = user_fixture()
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
+
+      device = spawn(fn -> Process.sleep(:infinity) end)
+      :ok = WSPresence.register(user.name, device)
+      :ok = WSPresence.set_visibility(user.name, device, true)
+
+      m = msg(channel: "#sniffo", sender: "alice", body: "vjt: ping")
+
+      assert :ok =
+               Triggers.evaluate_and_dispatch(m, %{
+                 subject: subject,
+                 subject_label: user.name,
+                 network_slug: "libera",
+                 own_nick: "vjt"
+               })
+
+      assert_receive {:telemetry, [:grappa, :push, :suppressed], %{count: 1},
+                      %{subject: ^subject, reason: :foreground_visible}},
+                     2_000
+
+      refute_receive {:telemetry, [:grappa, :push, :send, :start], _, _}, 300
+
+      Process.exit(device, :kill)
+    end
+
+    # issue 2067's load-bearing distinction, and the reason the gate is the
+    # SECOND conjunct: a message the prefs never matched must not be counted
+    # as suppressed, or the new event answers the operator's question with
+    # the same lie the silence did. Visible device AND a non-matching body —
+    # if the `and` were ever reordered, this goes red.
+    test "a message that never triggered emits NO suppression event", %{
+      bypass: bypass,
+      endpoint: endpoint
+    } do
+      attach_telemetry([[:grappa, :push, :suppressed], [:grappa, :push, :send, :start]])
+      Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 500, "should-not-happen") end)
+
+      user = user_fixture()
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
+
+      device = spawn(fn -> Process.sleep(:infinity) end)
+      :ok = WSPresence.register(user.name, device)
+      :ok = WSPresence.set_visibility(user.name, device, true)
+
+      # No mention, no whitelist, channel _all off by default → the pure
+      # predicate says no and the gate is never consulted.
+      m = msg(channel: "#sniffo", sender: "alice", body: "no mention here")
+
+      assert :ok =
+               Triggers.evaluate_and_dispatch(m, %{
+                 subject: subject,
+                 subject_label: user.name,
+                 network_slug: "libera",
+                 own_nick: "vjt"
+               })
+
+      refute_receive {:telemetry, [:grappa, :push, :suppressed], _, _}, 300
+      refute_receive {:telemetry, [:grappa, :push, :send, :start], _, _}, 300
+
+      Process.exit(device, :kill)
+    end
+
+    # The delivering answer stays quiet on this door: a push that went out
+    # is reported by the Sender's own start/stop pair, and counting it here
+    # too would double-count every delivery as a near-miss.
+    test "a delivered fan-out emits NO suppression event", %{bypass: bypass, endpoint: endpoint} do
+      attach_telemetry([[:grappa, :push, :suppressed], [:grappa, :push, :send, :stop]])
+      Bypass.expect(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
+
+      user = user_fixture()
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
+
+      device = spawn(fn -> Process.sleep(:infinity) end)
+      :ok = WSPresence.register(user.name, device)
+      refute WSPresence.any_visible?(user.name)
+
+      m = msg(channel: "#sniffo", sender: "alice", body: "vjt: ping")
+
+      assert :ok =
+               Triggers.evaluate_and_dispatch(m, %{
+                 subject: subject,
+                 subject_label: user.name,
+                 network_slug: "libera",
+                 own_nick: "vjt"
+               })
+
+      assert_receive {:telemetry, [:grappa, :push, :send, :stop], _, %{subject: ^subject}}, 2_000
+      refute_receive {:telemetry, [:grappa, :push, :suppressed], _, _}, 300
+
+      Process.exit(device, :kill)
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -885,6 +992,74 @@ defmodule Grappa.Push.TriggersTest do
                )
 
       refute_receive {:telemetry, [:grappa, :push, :send, :start], _, _}, 300
+
+      Process.exit(device, :kill)
+    end
+
+    # issue 2067 — the presence door reports the withholding on the same
+    # event as the message door. Two call sites, ONE reporter: a second
+    # event name here would make an operator aggregate two counters to
+    # answer one question.
+    test "a withheld presence push emits [:grappa, :push, :suppressed] too", %{
+      bypass: bypass,
+      endpoint: endpoint
+    } do
+      attach_telemetry([[:grappa, :push, :suppressed], [:grappa, :push, :send, :start]])
+      Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 500, "should-not-happen") end)
+
+      user = user_fixture()
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
+      :ok = with_presence_prefs(subject, presence_online: true)
+
+      device = spawn(fn -> Process.sleep(:infinity) end)
+      :ok = WSPresence.register(user.name, device)
+      :ok = WSPresence.set_visibility(user.name, device, true)
+
+      assert :ok =
+               Triggers.dispatch_presence(
+                 "alice",
+                 :online,
+                 :transition,
+                 presence_ctx(subject, user.name)
+               )
+
+      assert_receive {:telemetry, [:grappa, :push, :suppressed], %{count: 1},
+                      %{subject: ^subject, reason: :foreground_visible}},
+                     2_000
+
+      refute_receive {:telemetry, [:grappa, :push, :send, :start], _, _}, 300
+
+      Process.exit(device, :kill)
+    end
+
+    # The pref half of the same distinction: `presence_online: false` is a
+    # push that never triggered, not one that was held back.
+    test "a presence transition the pref never armed emits NO suppression event", %{
+      bypass: bypass,
+      endpoint: endpoint
+    } do
+      attach_telemetry([[:grappa, :push, :suppressed]])
+      Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 500, "should-not-happen") end)
+
+      user = user_fixture()
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
+      :ok = with_presence_prefs(subject, presence_online: false)
+
+      device = spawn(fn -> Process.sleep(:infinity) end)
+      :ok = WSPresence.register(user.name, device)
+      :ok = WSPresence.set_visibility(user.name, device, true)
+
+      assert :ok =
+               Triggers.dispatch_presence(
+                 "alice",
+                 :online,
+                 :transition,
+                 presence_ctx(subject, user.name)
+               )
+
+      refute_receive {:telemetry, [:grappa, :push, :suppressed], _, _}, 300
 
       Process.exit(device, :kill)
     end
