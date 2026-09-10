@@ -757,7 +757,7 @@ defmodule Grappa.Push.TriggersTest do
                })
 
       assert_receive {:telemetry, [:grappa, :push, :suppressed], %{count: 1},
-                      %{subject: ^subject, reason: :foreground_visible}},
+                      %{subject: ^subject, network_slug: "libera", reason: :foreground_visible}},
                      2_000
 
       refute_receive {:telemetry, [:grappa, :push, :send, :start], _, _}, 300
@@ -1025,7 +1025,7 @@ defmodule Grappa.Push.TriggersTest do
                )
 
       assert_receive {:telemetry, [:grappa, :push, :suppressed], %{count: 1},
-                      %{subject: ^subject, reason: :foreground_visible}},
+                      %{subject: ^subject, network_slug: "azzurra", reason: :foreground_visible}},
                      2_000
 
       refute_receive {:telemetry, [:grappa, :push, :send, :start], _, _}, 300

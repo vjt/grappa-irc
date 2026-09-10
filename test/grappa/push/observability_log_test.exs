@@ -150,6 +150,7 @@ defmodule Grappa.Push.ObservabilityLogTest do
 
       assert log =~ "push.trigger suppressed"
       assert log =~ "reason=foreground_visible"
+      assert log =~ "network=libera"
       assert log =~ "subject_kind=user"
       assert log =~ "user_id=#{user.id}"
 
@@ -184,6 +185,7 @@ defmodule Grappa.Push.ObservabilityLogTest do
 
       assert log =~ "push.trigger suppressed"
       assert log =~ "reason=foreground_visible"
+      assert log =~ "network=azzurra"
       assert log =~ "subject_kind=visitor"
       assert log =~ "visitor_id=#{visitor.id}"
 

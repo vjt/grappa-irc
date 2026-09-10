@@ -120,19 +120,43 @@ defmodule Grappa.Push.Triggers do
   reporter (`report_suppressed/2`):
 
     * `[:grappa, :push, :suppressed]` — measurements `%{count: 1}`,
-      metadata `%{subject: Grappa.Subject.t(), reason:
-      t:suppression_reason/0}`. Emitted from the message path and the
-      presence path alike; one event, because an operator asking "how
-      often is push being held back?" must not have to add up two
-      counters.
-    * a `Logger.info` `push.trigger suppressed` line carrying `reason:`
-      plus the subject, which is the half that a 2am grep actually
-      reads.
+      metadata `%{subject: Grappa.Subject.t(), network_slug:
+      String.t(), reason: t:suppression_reason/0}`. Emitted from the
+      message path and the presence path alike; ONE event, because two
+      spellings of the same withholding would have to be added together
+      before they answered anything.
+    * a `Logger.info` `push.trigger suppressed` line carrying `reason:`,
+      `network:` and the subject, which is the half that a 2am grep
+      actually reads.
 
   The DELIVERING answer stays quiet here: `Push.Sender` already emits
   `[:grappa, :push, :send, :start | :stop]` around the fan-out, and a
   second event for the same delivery would be a number to reconcile
   rather than a fact to read.
+
+  ### What the counter measures, exactly
+
+  Withheld TRIGGER dispatches, at this layer — not undelivered pushes.
+  The gate runs before the fan-out and deliberately pays no subscription
+  query, so a subject with the PWA open and NO registered device is
+  counted here even though `Sender.send_to_subject/2` would have hit its
+  empty-list arm and sent nothing either way. That is a boundary, not an
+  oversight: this module decides whether to dispatch, `Push.Sender` owns
+  what a dispatch reaches, and buying the distinction would mean a
+  `push_subscriptions` read on every suppression to answer a question
+  the device-list UI already answers directly.
+
+  ### Volume
+
+  Bounded by the PREFS, and the bound is not the same for everyone. Under
+  the defaults (`channel_messages_all: false`, `channel_mentions: true`,
+  `private_messages_all: true`) a suppression needs a DM or a mention, so
+  the line is rare. An operator who turns `channel_messages_all` ON has
+  asked to be notified for every channel message, and while their PWA is
+  on-screen that is one `:info` line and one event PER received channel
+  message per joined channel. `LOG_LEVEL` is the knob if that is not
+  wanted; the pref is what sets the rate, and it is worth knowing which
+  one you have set before reading the volume.
 
   The gate is the SECOND conjunct of the `and` at both call sites and
   must stay there. Short-circuiting means a message the prefs never
@@ -265,7 +289,7 @@ defmodule Grappa.Push.Triggers do
         # second conjunct so a message the prefs never matched short-circuits
         # away before reaching it and cannot be miscounted as suppressed.
         if should_notify?(message, network_slug, own_nick, prefs, patterns) and
-             not foreground_visible?(subject, subject_label) do
+             not foreground_visible?(subject, subject_label, network_slug) do
           payload = build_payload(message, network_slug, own_nick, subject)
           Push.Sender.send_to_subject(subject, payload)
         end
@@ -311,7 +335,7 @@ defmodule Grappa.Push.Triggers do
         # since issue 2067 it says so, through the SAME reporter as the
         # message path rather than a second event of its own.
         if should_notify_presence?(presence, prefs) and
-             not foreground_visible?(subject, subject_label) do
+             not foreground_visible?(subject, subject_label, network_slug) do
           Push.Sender.send_to_subject(subject, Payload.build_presence(nick, presence, network_slug))
         end
       end)
@@ -413,10 +437,10 @@ defmodule Grappa.Push.Triggers do
   # the reading at the `if` is unchanged and the gate keeps its position as
   # the second conjunct (see the moduledoc: that ordering is what separates
   # "withheld" from "never triggered").
-  @spec foreground_visible?(Subject.t(), String.t()) :: boolean()
-  defp foreground_visible?(subject, subject_label) do
+  @spec foreground_visible?(Subject.t(), String.t(), String.t()) :: boolean()
+  defp foreground_visible?(subject, subject_label, network_slug) do
     if WSPresence.any_visible?(subject_label) do
-      report_suppressed(subject, :foreground_visible)
+      report_suppressed(subject, network_slug, :foreground_visible)
       true
     else
       false
@@ -433,19 +457,30 @@ defmodule Grappa.Push.Triggers do
   # the handlers, so the two halves of a single withholding can be
   # correlated without a sleep.
   #
-  # `:reason`, `:subject_kind`, `:user_id` and `:visitor_id` are ALREADY in
-  # the `config/config.exs` Logger `:metadata` allowlist. That is why this
-  # slice touches no config file: an undeclared key is dropped at FORMAT
-  # time, so a new one would compile, fire, and still print bare — and
-  # editing `config/*.exs` would additionally turn a hot deploy cold.
-  @spec report_suppressed(Subject.t(), suppression_reason()) :: :ok
-  defp report_suppressed(subject, reason) do
-    Logger.info("push.trigger suppressed", [reason: reason] ++ subject_metadata(subject))
+  # `:reason`, `:network`, `:subject_kind`, `:user_id` and `:visitor_id` are
+  # ALREADY in the `config/config.exs` Logger `:metadata` allowlist. That is
+  # why this slice touches no config file: an undeclared key is dropped at
+  # FORMAT time, so a new one would compile, fire, and still print bare —
+  # and editing `config/*.exs` would additionally turn a hot deploy cold.
+  #
+  # `:network` and not `:channel`, even though the message path knows the
+  # channel and the key is allowlisted too: this reporter serves BOTH doors
+  # and the presence one has no channel, so taking it would either split the
+  # reporter in two or make it print an empty field half the time. The
+  # network is the one context both doors carry, and on a multi-network
+  # bouncer it is what turns "something was withheld" into "something was
+  # withheld on azzurra".
+  @spec report_suppressed(Subject.t(), String.t(), suppression_reason()) :: :ok
+  defp report_suppressed(subject, network_slug, reason) do
+    Logger.info(
+      "push.trigger suppressed",
+      [reason: reason, network: network_slug] ++ subject_metadata(subject)
+    )
 
     :telemetry.execute(
       [:grappa, :push, :suppressed],
       %{count: 1},
-      %{subject: subject, reason: reason}
+      %{subject: subject, network_slug: network_slug, reason: reason}
     )
   end
 
