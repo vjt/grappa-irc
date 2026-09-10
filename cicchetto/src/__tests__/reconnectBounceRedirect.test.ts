@@ -56,6 +56,7 @@ vi.mock("../lib/socket", () => ({
 }));
 
 const NET_SLUG = "azzurra";
+const OTHER_SLUG = "freenode";
 const CHANNEL = "#italia";
 
 // Pass-through override rather than a full factory: the graph under test
@@ -68,11 +69,31 @@ vi.mock(import("../lib/api"), async (importOriginal) => {
     ...actual,
     // ALWAYS connected — see "THE RACE" above. The park is never visible to
     // a refetch, which is the whole point of the bench.
+    //
+    // BOTH networks are listed, and the second one is load-bearing rather
+    // than scenery: the observer ignores the FIRST state it ever sees for a
+    // slug (an operator opening the app on a parked network chose that
+    // window). A bench that fired the other-network arm at a slug absent
+    // from this list would be stopped by that first-sighting guard and pass
+    // without ever reaching the test it means to exercise — measured, on the
+    // first cut of this file: the mutation that deletes the slug test left
+    // the arm green.
     listNetworks: vi.fn().mockResolvedValue([
       {
         kind: "user",
         id: 1,
         slug: NET_SLUG,
+        nick: "vjt",
+        connection_state: "connected",
+        connection_state_reason: null,
+        connection_state_changed_at: null,
+        inserted_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      },
+      {
+        kind: "user",
+        id: 2,
+        slug: OTHER_SLUG,
         nick: "vjt",
         connection_state: "connected",
         connection_state_reason: null,
@@ -100,17 +121,21 @@ vi.mock(import("../lib/api"), async (importOriginal) => {
 });
 
 // Same shape the server emits and `userTopic.test.ts` already pins.
-const connectionStateChanged = (from: string, to: "connected" | "parked" | "failed") => ({
+// `failing` is in the closed set too (#1675: [connected, failing, parked,
+// failed]) and the arms below need it — it is the one transition that is
+// genuinely a CHANGE while not being a park.
+type Conn = "connected" | "failing" | "parked" | "failed";
+const connectionStateChanged = (from: Conn, to: Conn, slug: string = NET_SLUG) => ({
   kind: "connection_state_changed",
   user_id: "u1",
-  network_id: 1,
-  network_slug: NET_SLUG,
+  network_id: slug === NET_SLUG ? 1 : 2,
+  network_slug: slug,
   from,
   to,
   reason: to === "connected" ? null : "rolling a fresh vhost",
   at: "2026-09-10T00:00:00Z",
   network: {
-    slug: NET_SLUG,
+    slug,
     nick: "vjt",
     connection_state: to,
     connection_state_reason: to === "connected" ? null : "rolling a fresh vhost",
@@ -146,12 +171,16 @@ const mountLookingAtChannel = async (token: string) => {
   await import("../lib/userTopic");
   auth.setToken(token);
 
+  // Wait for BOTH slugs to be seen once. The observer ignores a slug's first
+  // state, so an arm that fired before this settled would be testing the
+  // first-sighting guard instead of what it claims to test.
   await vi.waitFor(() => {
     const nets = networks.networks();
-    expect(nets?.length).toBe(1);
-    const n = nets?.[0];
-    expect(n?.kind).toBe("user");
-    if (n?.kind === "user") expect(n.connection_state).toBe("connected");
+    expect(nets?.length).toBe(2);
+    for (const n of nets ?? []) {
+      expect(n.kind).toBe("user");
+      if (n.kind === "user") expect(n.connection_state).toBe("connected");
+    }
   });
   // The dispatcher has to be listening, or an arm would fire events into
   // nothing and pass for the wrong reason.
@@ -181,32 +210,32 @@ describe("issue 2059 — /reconnect bounce keeps the home redirect", () => {
     });
   });
 
-  it("does NOT redirect when the parking network is not the selected one", async () => {
-    // Negative control for the arm above: without it, a cure that redirects
-    // on ANY park event would pass the first arm while breaking every
-    // operator watching a second network.
+  it("does NOT redirect when a DIFFERENT network parks", async () => {
+    // Negative control: a cure that redirects on any park event passes the
+    // arm above while bouncing every operator who is watching a second
+    // network. `freenode` is in the network list and has been seen
+    // `connected` once, so this is a real transition reaching a real
+    // observer — not a first sighting being dropped on the floor.
     const { sel } = await mountLookingAtChannel("tok2059-other");
 
-    channelMock.fireEvent({
-      ...connectionStateChanged("connected", "parked"),
-      network_slug: "freenode",
-      network: { ...connectionStateChanged("connected", "parked").network, slug: "freenode" },
-    });
+    channelMock.fireEvent(connectionStateChanged("connected", "parked", OTHER_SLUG));
 
-    await vi.waitFor(() => expect(channelMock.handlers.length).toBeGreaterThan(0));
     expect(sel.selectedChannel()?.networkSlug).toBe(NET_SLUG);
     expect(sel.selectedChannel()?.channelName).toBe(CHANNEL);
   });
 
-  it("does NOT redirect on a connected → connected event", async () => {
+  it("does NOT redirect on a connected → failing transition of the selected network", async () => {
     // The second negative control, and the one that pins the cure's shape:
     // reading the EVENT must not degrade into "any state change redirects".
-    // Only a transition INTO parked/failed may move the operator.
-    const { sel } = await mountLookingAtChannel("tok2059-noop");
+    // `failing` (#1675) is the discriminating case — a genuine transition of
+    // the SELECTED network that is nonetheless not a park, so nothing but
+    // the parked/failed test can stop it. `connected` → `connected` would
+    // not do: the same-value test stops that one first, and the arm would
+    // pass whether or not the cure kept the park gate at all.
+    const { sel } = await mountLookingAtChannel("tok2059-failing");
 
-    channelMock.fireEvent(connectionStateChanged("connected", "connected"));
+    channelMock.fireEvent(connectionStateChanged("connected", "failing"));
 
-    await vi.waitFor(() => expect(channelMock.handlers.length).toBeGreaterThan(0));
     expect(sel.selectedChannel()?.networkSlug).toBe(NET_SLUG);
     expect(sel.selectedChannel()?.channelName).toBe(CHANNEL);
   });
