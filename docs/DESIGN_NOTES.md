@@ -52475,3 +52475,110 @@ nothing, and a control nobody has mutated is a control nobody has tested.**
   looked at.
 
 _cic only. No wire change, no protocol bump, no migration — cic bundle deploy._
+<!-- entry #2067 -->
+
+---
+
+## 2026-09-10 — issue 2067: the delivered push and the withheld one both said nothing
+
+Two paths through the push stack produced no output of any kind, and the
+absence of output was read — correctly, given what the code offered — as
+absence of work. `Push.Sender.send_to_subscription/2`'s vendor-2xx arm
+returned without a `Logger` line while all four of its siblings logged, and
+the `#182` foreground gate in `Push.Triggers` skipped an entire fan-out
+inside a bare `if`, with neither a line nor a counter. So an operator with
+no notification on their phone and an empty `journalctl -u grappa | grep
+push` could not distinguish three quite different situations: the trigger
+never fired, the trigger fired and the gate held the push back, or the push
+was delivered and the phone dropped it. The issue was filed off a live
+debugging session where the answer turned out to be the second — a
+client socket stuck reporting the foreground — and reaching that answer
+needed three RPCs into a running node.
+
+### The level is the decision, not a detail
+
+`info`, for both lines. `debug` is below the default bar on every substrate
+we ship, so a `debug` line answers the operator's question exactly as badly
+as the silence did for anyone who has not already reconfigured their
+logger — which is everyone, at the moment they need it. The counter-argument
+is volume, and it does not survive contact with the trigger conditions: a
+delivery happens only when a message passes `should_notify?/5` AND no device
+of that subject has the PWA on-screen, so `push.send delivered` is one line
+per notification per registered device, not one per IRC message. A
+suppression is bounded the same way from the other side. The sibling
+`push.send subscription gone — deleted` has sat at `info` since B2 for the
+same class of event, so `info` is also what the module already does.
+
+### What was NOT added, and why
+
+No success telemetry. The issue's text reads the existing events as
+error-only (`"Telemetry fires on the error paths (:222, :246, :304)"`), but
+`[:grappa, :push, :send, :stop]` carries `%{success: x, gone: y, error: z}`
+— the success axis is already exported, at the fan-out aggregate where a
+rate belongs. A per-subscription success counter would restate a number the
+aggregate already has, which is design-discipline (1): derive, do not
+duplicate. Only the LOG half of that half of the issue was missing.
+
+No new Logger metadata key. `:reason`, `:subject_kind`, `:user_id`,
+`:visitor_id` and `:endpoint` are all already in the `config/config.exs`
+`:metadata` allowlist, so this slice edits no config file at all. That
+matters twice: an undeclared key is dropped at FORMAT time (the call site
+compiles, the line fires, the operator reads it bare), and any touch of
+`config/*.exs` turns a hot deploy cold. Reusing declared keys buys both.
+
+### One reporter, two doors, and the ordering that carries the meaning
+
+`Triggers` has two dispatch paths — the message one and the `/notify`
+presence one — and both end at the same gate. They report through a single
+`report_suppressed/2` emitting a single `[:grappa, :push, :suppressed]`
+event, rather than one event per path: an operator asking "how often is
+push being held back?" must not have to add two counters, and two call sites
+maintaining two spellings of the same event is exactly how they drift.
+
+The gate stays the SECOND conjunct of the `and` at both call sites, and that
+placement is now load-bearing rather than incidental. Short-circuit
+evaluation means a message the prefs never matched never reaches the gate
+and therefore cannot be counted as suppressed. Reversing the conjuncts would
+leave the code delivering identically while making the new event report
+every non-notify-worthy PRIVMSG as a withheld push — the old lie, in a
+louder voice. Three tests pin it from both sides: a visible device with a
+matching message emits the event, a visible device with a NON-matching
+message emits nothing, and a delivered fan-out emits nothing either.
+
+Inside the reporter, the `Logger` call precedes `:telemetry.execute/3`, also
+deliberately. Anything observing the counter is then guaranteed the message
+is already on its way to the handlers, so the two halves of one withholding
+can be correlated without a sleep — which is what lets the test capture the
+rendered line out of a detached Task deterministically.
+
+### Why the delivered line sits above `touch_last_used/1`
+
+The fact being reported is the vendor 2xx, and it has already happened by
+the time the row-bump runs. Logging inside the `{:ok, _}` sub-arm would mean
+a failed `touch_last_used/1` erases the record of a delivery that did occur,
+leaving the bump's own warning as the only trace of a SUCCESSFUL send — a
+smaller version of the bug being fixed.
+
+### What is not claimed
+
+Nothing here changes what is delivered; every branch returns exactly what it
+returned before, and the boolean the gate produces is unchanged. This is an
+observability slice and it fixes no delivery defect.
+
+The reported incident is not reproduced. The self-hoster's always-visible
+socket (instance `h-irc`, 1.5.5) is described in the issue and taken as
+given; nothing was measured against that instance or any production node
+from here, and whether these two lines would in fact have shortened that
+evening is an inference from what they now print, not an observation. The
+root cause of a socket stuck at `visible` is untouched and remains open.
+
+`suppression_reason()` has one member. It is a closed type with one atom
+rather than a bare `:foreground_visible` literal because it is published on
+the telemetry metadata; no second reason is anticipated, and none is
+invented here to justify the shape.
+
+The rendered-output tests lower the global Logger level and therefore live
+in their own `async: false` file (`push/observability_log_test.exs`),
+following `client_tls_posture_log_test.exs`. They assert the FORMATTED line,
+which is the only thing that can catch an allowlist drop; the behaviour they
+sit next to — that the gate suppresses at all — stays pinned where it was.
