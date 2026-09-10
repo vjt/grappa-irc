@@ -767,8 +767,72 @@ const exports = identityScopedStore((onIdentityChange) => {
   // Home and visitor windows have no network credential so
   // `networkBySlug` returns undefined → no entry in the map → no
   // redirect (correct: home is the redirect TARGET, never the source).
+  // issue 2059 — TWO FEEDS, ONE OBSERVER, ONE MEMORY.
+  //
+  // The Map below is the only record of "what state was this network in last
+  // time we heard". Both feeds write it through `observeConnectionState`, so
+  // there is no second structure to keep in step (CLAUDE.md: don't duplicate
+  // state — derive it).
+  //
+  //   FEED 1, the `networks()` sample (below). Load-bearing and NOT
+  //   removable: Phoenix PubSub does not replay, so after a WS gap the
+  //   refetch is the ONLY evidence that a park happened while we were
+  //   deaf.
+  //
+  //   FEED 2, the `connection_state_changed` event (`noteConnectionState`,
+  //   called from userTopic.ts). Load-bearing for the opposite reason: a
+  //   sample cannot see a transition shorter than the interval between
+  //   samples. `/reconnect` parks and reconnects immediately, and a GET
+  //   issued at the park leg can be answered after the credential already
+  //   reads `connected` again — so the sampled sequence is
+  //   ["connected", "connected"], `curr === prev`, and the redirect is
+  //   silently lost. That is issue 2059, and it is why
+  //   `issue1796-reconnect-bounces-network.spec.ts` went red 17 times and
+  //   was mistaken for a flake: the spec is honest, the product loses the
+  //   park.
+  //
+  // The event carries `to` directly, so it cannot be outrun by its own
+  // refetch. This is the same move `userTopic.ts` already makes three lines
+  // above that refetch — `patchHomeNetwork(payload.network)`, added by REV-J
+  // M15 to close "the temporal window where Sidebar saw the new state but
+  // HomePane hadn't yet". Bucket D was the last consumer still sampling.
   const lastConnectionState = new Map<string, string>();
   onIdentityChange(() => lastConnectionState.clear());
+
+  // The single transition test. `prev === undefined` (first sighting of a
+  // slug) is deliberately NOT a transition: the operator may open the app
+  // with a network already parked, and bouncing them off a window they chose
+  // to look at is not a redirect, it is a hijack.
+  const observeConnectionState = (slug: string, curr: string): void => {
+    const prev = lastConnectionState.get(slug);
+    lastConnectionState.set(slug, curr);
+    if (prev === undefined) return;
+    if (curr === prev) return;
+    if (curr !== "parked" && curr !== "failed") return;
+    untrack(() => {
+      const sel = selectedChannel();
+      if (!sel) return;
+      if (sel.networkSlug !== slug) return;
+      setSelectedChannel({
+        networkSlug: HOME_WINDOW_SLUG,
+        channelName: HOME_WINDOW_NAME,
+        kind: "home",
+      });
+    });
+  };
+
+  /**
+   * FEED 2 — a `connection_state_changed` event, straight from the wire.
+   *
+   * Called by `userTopic.ts` with `payload.network_slug` / `payload.to`
+   * BEFORE the refetch it also triggers, so a park shorter than one
+   * round-trip is still observed. Writes the same Map the sample does, so
+   * the sample that lands afterwards sees `curr === prev` and does not
+   * redirect a second time.
+   */
+  const noteConnectionState = (slug: string, to: string): void => {
+    observeConnectionState(slug, to);
+  };
 
   createEffect(() => {
     const nets = networks();
@@ -782,22 +846,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     }
     for (const net of nets) {
       if (net.kind !== "user") continue;
-      const prev = lastConnectionState.get(net.slug);
-      const curr = net.connection_state;
-      lastConnectionState.set(net.slug, curr);
-      if (prev === undefined) continue;
-      if (curr === prev) continue;
-      if (curr !== "parked" && curr !== "failed") continue;
-      untrack(() => {
-        const sel = selectedChannel();
-        if (!sel) return;
-        if (sel.networkSlug !== net.slug) return;
-        setSelectedChannel({
-          networkSlug: HOME_WINDOW_SLUG,
-          channelName: HOME_WINDOW_NAME,
-          kind: "home",
-        });
-      });
+      observeConnectionState(net.slug, net.connection_state);
     }
   });
 
@@ -973,6 +1022,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     applySeedEnvelope,
     setCursorIfAdvances,
     followQueryNick,
+    noteConnectionState,
   };
 });
 
@@ -989,3 +1039,4 @@ export const setServerSeedCount = exports.setServerSeedCount;
 export const applySeedEnvelope = exports.applySeedEnvelope;
 export const setCursorIfAdvances = exports.setCursorIfAdvances;
 export const followQueryNick = exports.followQueryNick;
+export const noteConnectionState = exports.noteConnectionState;

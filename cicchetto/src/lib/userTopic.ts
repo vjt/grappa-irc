@@ -39,7 +39,7 @@ import { clearSeen } from "./reconnectBackfill";
 import { setReconnecting } from "./reconnectingStatus";
 import { applyRecoverProgress, applyRecoverResult } from "./recoverProgress";
 import { purgeScrollback } from "./scrollback";
-import { selectedChannel, setSelectedChannel } from "./selection";
+import { noteConnectionState, selectedChannel, setSelectedChannel } from "./selection";
 import { setServerReply } from "./serverReplyModal";
 import { applyServerSettings } from "./serverSettings";
 import { joinUser } from "./socket";
@@ -994,6 +994,16 @@ moduleRoot(() => {
           // its row from the same event, eliminating the temporal window
           // where Sidebar saw the new state but HomePane hadn't yet.
           patchHomeNetwork(payload.network);
+          // issue 2059 — hand selection.ts the transition from the EVENT,
+          // before the refetch below. Bucket D used to derive the transition
+          // by sampling `networks()`, i.e. the answer to that refetch, and a
+          // sample cannot see a park shorter than one round-trip: on
+          // `/reconnect` the GET issued here can be answered after the
+          // credential already reads `connected` again, so the sampled
+          // sequence is ["connected", "connected"] and the home redirect is
+          // silently lost. Same move as `patchHomeNetwork` on the line above,
+          // for the same reason and against the same window.
+          noteConnectionState(payload.network_slug, payload.to);
           refetchNetworks();
           // #100 — clear a stuck "reconnecting…" badge on a SETTLED state.
           // The badge is set on connection_progress "connecting" and cleared
