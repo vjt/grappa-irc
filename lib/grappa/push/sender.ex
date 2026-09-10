@@ -110,6 +110,33 @@ defmodule Grappa.Push.Sender do
       Emitted from `send_to_subscription/2` whenever a 404/410
       response triggers `Push.delete_dead/1`.
 
+  ## What the operator reads (issue 2067)
+
+  Every terminal of `send_to_subscription/2` says something, the
+  DELIVERED one included. It did not until issue 2067: the vendor-2xx
+  arm returned without a line while all four of its siblings logged, so
+  an empty `journalctl -u grappa | grep push` was equally consistent
+  with "delivered fine" and "the sender was never called". That
+  ambiguity cost an evening of live debugging with a self-hoster whose
+  pushes were in fact being delivered — the silence was the whole bug.
+
+  `info`, not `debug`, and the level is the decision rather than a
+  detail. `debug` is below the default bar on every substrate we ship,
+  so it would leave the operator's question ("did you try to send it or
+  not?") answered exactly as badly as before for anyone who has not
+  already reconfigured the logger — which is nobody, at the moment they
+  need it. The volume it buys is bounded by construction: a delivery
+  happens only when a message passes `Push.Triggers.should_notify?/5`
+  AND no device of that subject has the PWA on-screen, so the line is
+  one per notification per registered device, not one per IRC message.
+  The sibling `push.send subscription gone — deleted` already sits at
+  `info` for the same class of event.
+
+  Success TELEMETRY is deliberately NOT added: the fan-out's
+  `[:grappa, :push, :send, :stop]` already carries `success:` (see
+  "Telemetry shape"), and a per-subscription success counter would
+  restate a number the aggregate already has.
+
   ## Failure handling — no silent drops
 
   Per `feedback_no_silent_drops_*`: every per-sub failure path emits
@@ -279,6 +306,14 @@ defmodule Grappa.Push.Sender do
 
     case deliver(ex_nudge_subscription, message) do
       :ok ->
+        # issue 2067 — the one terminal that used to say nothing. Logged
+        # BEFORE `touch_last_used/1` because the fact being reported is the
+        # vendor 2xx, which has already happened: putting it in the `{:ok,
+        # _}` sub-arm would make a failed row-bump erase the record of a
+        # delivery that did occur, and the warning below would then be the
+        # only trace of a SUCCESSFUL send.
+        Logger.info("push.send delivered", endpoint: sub.endpoint)
+
         case Push.touch_last_used(sub) do
           {:ok, _} ->
             :ok

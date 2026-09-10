@@ -106,6 +106,41 @@ defmodule Grappa.Push.Triggers do
   rather than re-deriving from the subject's display name, dodging
   the CP15 H3 account-name-vs-IRC-nick hazard cic-side.
 
+  ## Withholding is an event, not an absence (issue 2067)
+
+  Both dispatch paths end in the same `#182` foreground gate, and until
+  issue 2067 that gate skipped the fan-out in silence. A WITHHELD push
+  and a push that never triggered therefore looked identical from
+  outside — an operator with no notification on their phone and an empty
+  `journalctl … | grep push` had no way to tell "your own client was in
+  the foreground" from "the trigger never fired", which is precisely the
+  pair a live debugging session has to separate first.
+
+  So the suppressing answer reports, on both doors and through ONE
+  reporter (`report_suppressed/2`):
+
+    * `[:grappa, :push, :suppressed]` — measurements `%{count: 1}`,
+      metadata `%{subject: Grappa.Subject.t(), reason:
+      t:suppression_reason/0}`. Emitted from the message path and the
+      presence path alike; one event, because an operator asking "how
+      often is push being held back?" must not have to add up two
+      counters.
+    * a `Logger.info` `push.trigger suppressed` line carrying `reason:`
+      plus the subject, which is the half that a 2am grep actually
+      reads.
+
+  The DELIVERING answer stays quiet here: `Push.Sender` already emits
+  `[:grappa, :push, :send, :start | :stop]` around the fan-out, and a
+  second event for the same delivery would be a number to reconcile
+  rather than a fact to read.
+
+  The gate is the SECOND conjunct of the `and` at both call sites and
+  must stay there. Short-circuiting means a message the prefs never
+  matched never reaches the gate and so can never be counted as
+  suppressed — that ordering IS the distinction this section exists to
+  make, and reversing it would make the new event repeat the old lie in
+  a louder voice.
+
   ## No silent drops
 
   `evaluate_and_dispatch/2` always returns `:ok`. Any failure inside
@@ -118,6 +153,8 @@ defmodule Grappa.Push.Triggers do
   alias Grappa.{Mentions, Push, Subject, UserSettings, WSPresence}
   alias Grappa.Push.Payload
   alias Grappa.Scrollback.Message
+
+  require Logger
 
   # #395 — the notify-worthy kind gate. Reads the shared SSOT subset
   # (`Message.notify_kinds/0` ⊆ `Message.content_kinds/0`) instead of a
@@ -160,6 +197,18 @@ defmodule Grappa.Push.Triggers do
   Boundary cycle. Two atoms are cheaper than either alternative.
   """
   @type presence_kind :: :initial | :transition
+
+  @typedoc """
+  Why a TRIGGERED push was withheld (issue 2067). A closed set with one
+  member today — `:foreground_visible`, the `#182` gate seeing at least
+  one of the subject's devices report the PWA on-screen.
+
+  An atom and not a free string because it is published: it rides the
+  `[:grappa, :push, :suppressed]` telemetry metadata and the `reason:`
+  Logger key, so a second withholding reason must be added HERE and be
+  legible to an aggregator, not invented at a call site.
+  """
+  @type suppression_reason :: :foreground_visible
 
   # ---------------------------------------------------------------------------
   # Public — call from Session.Server
@@ -211,8 +260,12 @@ defmodule Grappa.Push.Triggers do
         # right after you background still delivers. Deliver-leaning: an
         # unreported/backgrounded device reads `:hidden`, so this never
         # suppresses to a device that hasn't claimed the foreground.
+        #
+        # issue 2067 — the gate now REPORTS when it withholds. It stays the
+        # second conjunct so a message the prefs never matched short-circuits
+        # away before reaching it and cannot be miscounted as suppressed.
         if should_notify?(message, network_slug, own_nick, prefs, patterns) and
-             not WSPresence.any_visible?(subject_label) do
+             not foreground_visible?(subject, subject_label) do
           payload = build_payload(message, network_slug, own_nick, subject)
           Push.Sender.send_to_subject(subject, payload)
         end
@@ -254,9 +307,11 @@ defmodule Grappa.Push.Triggers do
         # #182 — the same foreground-suppression gate as the message path,
         # and for the same reason it is a SEPARATE step: the pure predicate
         # stays free of IO. If ANY device has the PWA on-screen, the in-app
-        # presence toast IS the notification and the push is skipped.
+        # presence toast IS the notification and the push is skipped — and
+        # since issue 2067 it says so, through the SAME reporter as the
+        # message path rather than a second event of its own.
         if should_notify_presence?(presence, prefs) and
-             not WSPresence.any_visible?(subject_label) do
+             not foreground_visible?(subject, subject_label) do
           Push.Sender.send_to_subject(subject, Payload.build_presence(nick, presence, network_slug))
         end
       end)
@@ -344,6 +399,65 @@ defmodule Grappa.Push.Triggers do
   # ---------------------------------------------------------------------------
   # Private
   # ---------------------------------------------------------------------------
+
+  # The #182 gate, plus the report issue 2067 was filed for. Reads exactly
+  # what it used to (`WSPresence.any_visible?/1`, RAW, no debounce) and
+  # returns the same boolean; the only new thing is that the SUPPRESSING
+  # answer is no longer silent.
+  #
+  # Only that answer speaks. A `false` means the fan-out proceeds, and from
+  # there `Push.Sender`'s own start/stop telemetry is the record — reporting
+  # here as well would count every delivery twice, once as a near-miss.
+  #
+  # Both call sites reach this through the same `not …` they always had, so
+  # the reading at the `if` is unchanged and the gate keeps its position as
+  # the second conjunct (see the moduledoc: that ordering is what separates
+  # "withheld" from "never triggered").
+  @spec foreground_visible?(Subject.t(), String.t()) :: boolean()
+  defp foreground_visible?(subject, subject_label) do
+    if WSPresence.any_visible?(subject_label) do
+      report_suppressed(subject, :foreground_visible)
+      true
+    else
+      false
+    end
+  end
+
+  # Both doors on one withholding: the counter an exporter aggregates, and
+  # the line an operator greps. ONE function so the message path and the
+  # presence path can never drift into two spellings of the same event.
+  #
+  # Logger FIRST, counter second, and that order is load-bearing rather than
+  # stylistic: anything that observes the counter — the test that pins this
+  # line included — is then guaranteed the message is already on its way to
+  # the handlers, so the two halves of a single withholding can be
+  # correlated without a sleep.
+  #
+  # `:reason`, `:subject_kind`, `:user_id` and `:visitor_id` are ALREADY in
+  # the `config/config.exs` Logger `:metadata` allowlist. That is why this
+  # slice touches no config file: an undeclared key is dropped at FORMAT
+  # time, so a new one would compile, fire, and still print bare — and
+  # editing `config/*.exs` would additionally turn a hot deploy cold.
+  @spec report_suppressed(Subject.t(), suppression_reason()) :: :ok
+  defp report_suppressed(subject, reason) do
+    Logger.info("push.trigger suppressed", [reason: reason] ++ subject_metadata(subject))
+
+    :telemetry.execute(
+      [:grappa, :push, :suppressed],
+      %{count: 1},
+      %{subject: subject, reason: reason}
+    )
+  end
+
+  # There is deliberately NO catch-all: `Grappa.Subject.t/0` is a closed
+  # pair, so a third shape must crash the detached Task (a supervisor
+  # report) rather than print a suppression the operator cannot attribute
+  # to anyone. Same posture `dispatch_presence/4` takes on `change_kind()`.
+  @spec subject_metadata(Subject.t()) :: keyword()
+  defp subject_metadata({:user, id}) when is_binary(id), do: [subject_kind: :user, user_id: id]
+
+  defp subject_metadata({:visitor, id}) when is_binary(id),
+    do: [subject_kind: :visitor, visitor_id: id]
 
   # Door #1: build the push payload, stamping the current badge count when
   # the `BadgeSource` seam is configured. The triggering message is already
