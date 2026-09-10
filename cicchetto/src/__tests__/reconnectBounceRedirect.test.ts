@@ -64,22 +64,22 @@ const CHANNEL = "#italia";
 // queued `once` implementations.
 const defaultNetworks = vi.hoisted(() => [
   {
-    kind: "user",
+    kind: "user" as const,
     id: 1,
     slug: "azzurra",
     nick: "vjt",
-    connection_state: "connected",
+    connection_state: "connected" as const,
     connection_state_reason: null,
     connection_state_changed_at: null,
     inserted_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   },
   {
-    kind: "user",
+    kind: "user" as const,
     id: 2,
     slug: "freenode",
     nick: "vjt",
-    connection_state: "connected",
+    connection_state: "connected" as const,
     connection_state_reason: null,
     connection_state_changed_at: null,
     inserted_at: "2026-01-01T00:00:00Z",

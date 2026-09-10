@@ -81,6 +81,12 @@ vi.mock("../lib/selection", () => ({
   selectedChannel: vi.fn(() => null),
   setSelectedChannel: vi.fn(),
   applySeedEnvelope: vi.fn(),
+  // issue 2059 — bucket D is fed from the event now, not only from the
+  // `networks()` sample. This file mocks selection wholesale, so a port
+  // missing here is a TypeError inside the dispatch arm rather than a
+  // missing assertion: the three `setReconnecting` arms below went red on
+  // it, two statements before the line they were testing.
+  noteConnectionState: vi.fn(),
 }));
 
 vi.mock("../lib/bundleHash", () => ({
@@ -1123,6 +1129,31 @@ describe("userTopic", () => {
       const rs = await import("../lib/reconnectingStatus");
       channelMock.fireEvent(connectionStateChanged("bahamut-test", "connected"));
       expect(rs.setReconnecting).not.toHaveBeenCalled();
+    });
+
+    // issue 2059 — the wiring half of the park-redirect cure. The behaviour
+    // half is measured over the real stores in
+    // `reconnectBounceRedirect.test.ts`; what can only be checked HERE, where
+    // selection is a mock, is that the dispatcher actually hands the
+    // transition over — and hands over the EVENT's `to`, not something
+    // re-read from a store that may not have caught up yet. Without this the
+    // cure could be silently unplugged and only an e2e run would notice.
+    it("hands connection_state_changed to selection with the event's own slug and target state", async () => {
+      const sel = await import("../lib/selection");
+      channelMock.fireEvent(connectionStateChanged("bahamut-test", "parked"));
+      expect(sel.noteConnectionState).toHaveBeenCalledWith("bahamut-test", "parked");
+    });
+
+    it("hands over the unpark leg too, so a bounce is two transitions and not one", async () => {
+      // The park leg alone would satisfy the arm above while still losing
+      // half of `/reconnect`: the observer needs the return to `connected`
+      // recorded, or the NEXT park of the same network reads `curr === prev`
+      // and is dropped.
+      const sel = await import("../lib/selection");
+      channelMock.fireEvent(connectionStateChanged("bahamut-test", "parked"));
+      channelMock.fireEvent(connectionStateChanged("bahamut-test", "connected"));
+      expect(sel.noteConnectionState).toHaveBeenNthCalledWith(1, "bahamut-test", "parked");
+      expect(sel.noteConnectionState).toHaveBeenNthCalledWith(2, "bahamut-test", "connected");
     });
 
     // #410 LOCK — an off-contract connection_state drops the whole
