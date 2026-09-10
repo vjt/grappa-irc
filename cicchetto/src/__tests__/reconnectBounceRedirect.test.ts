@@ -224,6 +224,46 @@ describe("issue 2059 — /reconnect bounce keeps the home redirect", () => {
     expect(sel.selectedChannel()?.channelName).toBe(CHANNEL);
   });
 
+  // ── the sibling defect, measured rather than inherited ──────────────────
+  //
+  // issue 2059 names a second failure on this path: two refetches issued in
+  // the same microtask collapse into a single GET, the second swallowed,
+  // leaving the UI stuck on `parked`. That is a DIFFERENT symptom from the
+  // lost redirect — and it reaches the SAME e2e spec, which also asserts the
+  // network section loses its greyed class. So a cure for the redirect alone
+  // could still leave that spec red. This arm exists to find out whether the
+  // collapse is real, stated as an outcome (does the store end on the truth?)
+  // rather than as a call count.
+  it("ends on the LAST state when park and unpark refetch back to back", async () => {
+    const api = await import("../lib/api");
+    const parked = {
+      kind: "user" as const,
+      id: 1,
+      slug: NET_SLUG,
+      nick: "vjt",
+      connection_state: "parked" as const,
+      connection_state_reason: "rolling a fresh vhost",
+      connection_state_changed_at: null,
+      inserted_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    };
+    const { networks } = await mountLookingAtChannel("tok2059-collapse");
+
+    // Park answers first, unpark second — the ordering `/reconnect`
+    // produces when the GETs are NOT outrun. If the second refetch is
+    // swallowed, the store keeps the parked row and the sidebar stays grey.
+    vi.mocked(api.listNetworks).mockResolvedValueOnce([parked]);
+    const netModule = await import("../lib/networks");
+    netModule.refetchNetworks();
+    netModule.refetchNetworks();
+
+    await vi.waitFor(() => {
+      const n = networks.networks()?.find((x) => x.slug === NET_SLUG);
+      expect(n?.kind).toBe("user");
+      if (n?.kind === "user") expect(n.connection_state).toBe("connected");
+    });
+  });
+
   it("does NOT redirect on a connected → failing transition of the selected network", async () => {
     // The second negative control, and the one that pins the cure's shape:
     // reading the EVENT must not degrade into "any state change redirects".
