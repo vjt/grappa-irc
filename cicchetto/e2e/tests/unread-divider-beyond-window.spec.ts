@@ -32,12 +32,17 @@ import { expect, specNick, specUser, test } from "../fixtures/test";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 
-// Own-presence kinds excluded from the unread-marker count — mirrors the
-// single source of truth `src/lib/ownPresenceEvent.ts` (`PRESENCE_KINDS`).
-// Used only to DERIVE the expected count from server data (the operator's
-// own auto-JOIN line on #spec-wN is the one such row after an early cursor);
-// it is not the behaviour under test.
-const OWN_PRESENCE_KINDS = new Set(["join", "part", "quit", "nick_change", "mode", "kick"]);
+// Presence kinds — NOT counted toward the unread-marker, whoever sent them.
+// Used only to DERIVE the expected count from server data; it is not the
+// behaviour under test.
+//
+// issue 2069 widened this from OWN presence to ALL presence. The marker's
+// label says "messages" and now counts messages, so a PEER join/part in the
+// run is excluded too; before, this derivation happened to agree only because
+// the seeded run is contiguous privmsgs plus the operator's own auto-JOIN, and
+// it would have started lying the first time another spec's peer touched the
+// channel ahead of this one.
+const PRESENCE_KINDS = new Set(["join", "part", "quit", "nick_change", "mode", "kick"]);
 
 test.describe("#156 unread divider with unread beyond the fetch window", () => {
   test("anchors the divider between last-read and first-unread with context above", async ({
@@ -70,13 +75,15 @@ test.describe("#156 unread divider with unread beyond the fetch window", () => {
       throw new Error("#156 spec: seeded #spec-wN rows missing expected indices");
     }
 
-    // True unread = rows after the cursor MINUS the operator's own
-    // presence rows (the auto-JOIN line), mirroring the in-pane marker's
-    // exclusion. Operator-action echoes don't occur in the pure seed.
+    // True unread = MESSAGE rows after the cursor, mirroring the in-pane
+    // marker's own predicate: presence rows are excluded whoever sent them
+    // (issue 2069), and so are the operator's own messages (#576). Operator-
+    // action echoes don't occur in the pure seed.
     const expectedUnread = rows.filter(
       (r) =>
         r.id > lastReadRow.id &&
-        !(OWN_PRESENCE_KINDS.has(r.kind) && r.sender.toLowerCase() === specNick().toLowerCase()),
+        !PRESENCE_KINDS.has(r.kind) &&
+        r.sender.toLowerCase() !== specNick().toLowerCase(),
     ).length;
     // Guard the chosen window: exact count requires staying under the cap.
     expect(expectedUnread).toBeGreaterThan(60);
