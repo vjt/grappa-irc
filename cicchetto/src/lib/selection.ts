@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, on, untrack } from "solid-js";
-import { isContentKind, ownNickForNetwork } from "./api";
+import { ownNickForNetwork } from "./api";
 import { token } from "./auth";
 import { casemappingForSlug } from "./casemapping";
 import { type ChannelKey, canonicalChannel, channelKey, decodeChannelKey } from "./channelKey";
@@ -17,10 +17,12 @@ import { readingAtTailKey } from "./readingAtTail";
 import {
   farBehindByChannel,
   loadInitialScrollback,
+  measuredUnreadByChannel,
   refreshScrollback,
   scrollbackByChannel,
   wasLoaded,
 } from "./scrollback";
+import { countsAsUnreadEvent, type UnreadRowContext, unreadMessagesAfter } from "./unreadCount";
 import {
   HOME_WINDOW_NAME,
   HOME_WINDOW_SLUG,
@@ -441,6 +443,12 @@ const exports = identityScopedStore((onIdentityChange) => {
     }
 
     const farBehind = farBehindByChannel();
+    // issue 2069 — the server's own answer for a window whose loaded unread
+    // region is truncated (#947). Until now only the in-pane divider spent it,
+    // so the pill fell back to counting the rows the store holds — one page
+    // out of thousands after a jump, and then ZERO as the operator read
+    // through that page. Same record, same unit, now both surfaces.
+    const measured = measuredUnreadByChannel();
 
     // #2037 — a far-behind window reads its counts from the far-behind entry,
     // not from the seed. Both are `count_after_split/6` at the read cursor, so
@@ -488,32 +496,32 @@ const exports = identityScopedStore((onIdentityChange) => {
       // so it is NOT excluded there (#396). Mirrors the server self-window
       // carve-out in `Scrollback.exclude_own_authored/3`.
       const casemapping = casemappingForNetwork(net?.id ?? null);
-      const isSelfWindow = nickEquals(decoded.name, ownNick, casemapping);
-
-      let msgs = 0;
+      const ctx: UnreadRowContext = {
+        ownNick,
+        casemapping,
+        isSelfWindow: nickEquals(decoded.name, ownNick, casemapping),
+      };
+      // #239 — skip rows the presence filter hides for this channel: the pane
+      // never renders them, so counting them would leave a badge the operator
+      // can never clear by reading. Same predicate the pane's `rows()` filter
+      // uses (reconcile-to-one, not a forked filter) — which is also why the
+      // filter is applied HERE and not inside `unreadCount`: it is per-channel
+      // UI state, and the shared module must not reach for it.
+      const visible = rows.filter((row) => presenceRowVisible(key, memberCount, row.kind));
+      // issue 2069 — the MESSAGES bucket is `unreadMessagesAfter`, the one
+      // function the in-pane divider also calls. No upper bound: the pill is
+      // the LIVE answer, so an arrival past the frozen session top still
+      // counts (the divider, which must not renumber under a reader, passes
+      // its frozen top instead). The measurement is what stops the count
+      // collapsing to the fetch page after a #693 jump.
+      const msgs = unreadMessagesAfter(visible, cursor, null, measured[key], ctx);
+      // The presence sibling, same operator-owned rule. Own JOIN/PART rows
+      // used to land here — `subscribe.ts` drops them at its own gate, but
+      // that gate has not reached the badge since the count became derived,
+      // so a `/part → /join` cycle bumped the faint pill by two.
       let evts = 0;
-      for (const row of rows) {
-        if (row.id <= cursor) continue;
-        // #239 — skip rows the presence filter hides for this channel: the
-        // pane never renders them, so counting them would leave a badge the
-        // operator can never clear by reading. Same predicate the pane's
-        // `rows()` filter uses (reconcile-to-one, not a forked filter).
-        if (!presenceRowVisible(key, memberCount, row.kind)) continue;
-        if (isContentKind(row.kind)) {
-          // #576 — a content row the operator authored is read BY DEFINITION;
-          // outside the self-window it must not inflate the badge (the
-          // content-row twin of the #532 A own-presence exclusion, mirrored
-          // server-side in `Scrollback.exclude_own_authored/3`). `sender` is
-          // compared via the network's nick fold (#372/#1861 `nickEquals`) —
-          // display stays raw, the MATCH folds. Belt-and-braces over the optimistic
-          // send-time cursor advance (scrollback.ts), which has gaps (the #50
-          // empty-pane gate; a cross-device / out-of-order cursor landing
-          // below your own line).
-          if (!isSelfWindow && nickEquals(row.sender, ownNick, casemapping)) continue;
-          msgs++;
-        } else {
-          evts++;
-        }
+      for (const row of visible) {
+        if (row.id > cursor && countsAsUnreadEvent(row, ctx)) evts++;
       }
       result[key] = { messages: msgs, events: evts };
     }

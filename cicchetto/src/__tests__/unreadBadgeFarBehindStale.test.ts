@@ -293,19 +293,28 @@ describe("issue 2050 — a far-behind badge the cursor has already retired", () 
     // this arm is the measurement it was accepted WITHOUT.
     //
     // Three rows land live while the operator is still away from the tail —
-    // the channel does not stop talking because someone is scrolling. They
-    // are also what makes the badge's two candidate readings separable: the
-    // seed is a join-time snapshot and cannot move (5000), local truth is
-    // 5003. Safe under the #1229 ceiling: the pane holds one tail page, so the
-    // unread it HOLDS is ~50, an order of magnitude under the cap that would
-    // collapse the window.
+    // the channel does not stop talking because someone is scrolling. Safe
+    // under the #1229 ceiling: the pane holds one tail page, so the unread it
+    // HOLDS is ~50, an order of magnitude under the cap that would collapse
+    // the window.
     for (let id = 6001; id <= 6003; id++) {
       server.tip = id;
       scrollback.appendToScrollback(KEY, row(id, "bob"));
     }
-    // Still the frozen seed, and now demonstrably frozen: 5003 rows are unread
-    // and the badge says 5000.
-    expect(selection.messagesUnread()[KEY]).toBe(5000);
+    // 🔴 issue 2069 — these two lines expected 5000, and the comment called
+    // that "demonstrably frozen: 5003 rows are unread and the badge says
+    // 5000". It was demonstrating the DRIFT: the far-behind count grew by what
+    // the ring cap EVICTED rather than by what arrived, so below the retention
+    // cap three arrivals moved it by nothing. It is 5003 because three rows
+    // arrived, and it says so at once instead of waiting for the next full
+    // `?after=` page to fire the gap probe and correct it in one visible step.
+    //
+    // The arm loses a discriminator it used to lean on — the frozen number and
+    // local truth are now the same number, so they cannot be told apart by
+    // VALUE. That is what `farBehindByChannel()[KEY]` is asserted for directly
+    // below, and a state assertion was always the better witness of "the
+    // record still stands".
+    expect(selection.messagesUnread()[KEY]).toBe(5003);
 
     // One page up is not enough and must not be — the pane still starts
     // thousands of rows above the read position, so the region is still
@@ -313,7 +322,7 @@ describe("issue 2050 — a far-behind badge the cursor has already retired", () 
     // closes" from "retires as soon as you scroll".
     await scrollback.loadMore(SLUG, CHANNEL, noSeam);
     expect(scrollback.farBehindByChannel()[KEY]).toBeDefined();
-    expect(selection.messagesUnread()[KEY]).toBe(5000);
+    expect(selection.messagesUnread()[KEY]).toBe(5003);
 
     // Keep scrolling until the record lets go. The loop asserts no arithmetic
     // — the exit is the record's own state — so it holds for any bound that
@@ -333,12 +342,14 @@ describe("issue 2050 — a far-behind badge the cursor has already retired", () 
     expect(getReadCursor(SLUG, CHANNEL)).toBe(CAUGHT_UP_AT);
     expect(server.cursor).toBe(CAUGHT_UP_AT);
 
-    // And local truth is the WHOLE region, not a slice of it. 5003 says two
-    // things at once: the badge is no longer the seed (5000) and no longer
-    // frozen, AND the record held until every unread row was back in the pane.
-    // A bound that fired early would leave the pane holed, local truth would
-    // be short, and the badge would UNDER-report — which is the destructive
-    // unfreeze the far-behind apparatus exists to refuse.
+    // And local truth is the WHOLE region, not a slice of it: the record held
+    // until every unread row was back in the pane. A bound that fired early
+    // would leave the pane holed, local truth would be short, and the badge
+    // would UNDER-report — which is the destructive unfreeze the far-behind
+    // apparatus exists to refuse. (Pre-2069 this line ALSO said "no longer the
+    // frozen seed", by being a different number from it. It cannot say that
+    // any more — the two agree now — so the loop's exit condition above is
+    // what carries "the record retired".)
     expect(selection.messagesUnread()[KEY]).toBe(5003);
   });
 

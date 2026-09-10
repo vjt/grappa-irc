@@ -15,6 +15,7 @@ import { identityMoved } from "./identityMoved";
 import { identityScopedStore } from "./identityScopedStore";
 import { getReadCursor, setReadCursor } from "./readCursor";
 import { getResumeCursor, recordSeen } from "./reconnectBackfill";
+import type { UnreadMeasurement } from "./unreadCount";
 
 // Per-channel scrollback store: the source of truth for messages
 // rendered in `ScrollbackPane`. Module-singleton signal store mirroring
@@ -214,16 +215,20 @@ type CappedRing = {
   // Unread rows (id > cursor) held BEFORE the drop — the banner's count the
   // first time the bound bites. Afterwards the caller accumulates.
   unreadHeld: number;
-  // #2037 — the same two figures restricted to `@content_kinds`. The banner's
-  // number is the MESSAGES bucket now, so accumulating raw row counts into it
-  // would mix units: 200 evicted JOINs would inflate a figure the sidebar's
-  // bold pill reports without them.
+  // #2037 — the same figure restricted to `@content_kinds`. The banner's
+  // number is the MESSAGES bucket, so accounting in raw row counts would mix
+  // units: 200 evicted JOINs would move a figure the sidebar's bold pill
+  // reports without them.
   //
   // The ARMING condition stays on the raw `unreadDropped`, deliberately. What
   // arms far-behind is "a row at/after the cursor left the store", which is
   // true of a JOIN too — the divider can no longer be placed either way. Only
   // the DISPLAYED quantity is content-only.
-  contentDropped: number;
+  //
+  // issue 2069 deleted the `contentDropped` sibling this pair used to carry.
+  // The far-behind count is maintained from ARRIVALS now, not from evictions —
+  // see `appendPageToScrollback`. These two are still what ARMS the state and
+  // what it opens at.
   contentHeld: number;
   cursor: number | null;
 };
@@ -308,7 +313,6 @@ export const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): C
       rows: rows.slice(rows.length - UNREAD_RETENTION_CAP),
       unreadDropped: overflowUnread,
       unreadHeld: unreadCount,
-      contentDropped: contentCount - keptContentCount(rows, UNREAD_RETENTION_CAP),
       contentHeld: contentCount,
       cursor,
     };
@@ -325,17 +329,10 @@ export const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): C
     rows: dropCount > 0 ? rows.slice(dropCount) : rows,
     unreadDropped: 0,
     unreadHeld: unreadCount,
-    contentDropped: 0,
     contentHeld: contentCount,
     cursor,
   };
 };
-
-// #2037 — content rows surviving inside the kept tail slice. Subtracting this
-// from the held count gives what the bite actually took, in the same unit the
-// banner reports.
-const keptContentCount = (rows: ScrollbackMessage[], keep: number): number =>
-  rows.slice(Math.max(0, rows.length - keep)).filter((m) => isContentKind(m.kind)).length;
 
 // #788 — how THE identity rule applies to this module. The predicate itself,
 // and why a continuation that outlived its identity must do nothing further
@@ -501,6 +498,17 @@ const exports = identityScopedStore((onIdentityChange) => {
   // fetch cap leaking into a user-visible number, one notch after the case
   // #693 suppressed.
   //
+  //   * `through` — the newest id the pane can ACCOUNT for out of that
+  //     measurement: the top of the contiguous run the jump loaded, extended
+  //     by `loadNewer` as the pane pages forward into the region. issue 2069
+  //     added it, and it is what lets the record survive a cursor that moves:
+  //     `unreadMessagesAfter` subtracts the rows the cursor passed, which is
+  //     only sound while the pane HELD them. A cursor that leaves the run —
+  //     an own send lands at the tip, a peer device reads ahead — is past
+  //     `through`, and the record stands down instead of answering with a
+  //     number it cannot support. Without it the badge collapsed to the fetch
+  //     page and then to ZERO on a window with thousands unread (measured on
+  //     `b7989f4ba`: 3750 → 150 → 0 against a server answer of 3600).
   //   * `count` — the same server measurement the jump affordance advertised
   //     (`far.missed`). Deliberately the SAME number and not a second one:
   //     the alternative is showing the operator a third figure for one
@@ -516,7 +524,7 @@ const exports = identityScopedStore((onIdentityChange) => {
   //     sweep: once the freeze re-latches, the answer stops applying on its
   //     own and the pane falls back to counting rows.
   const [measuredUnreadByChannel, setMeasuredUnreadByChannel] = createSignal<
-    Record<ChannelKey, { at: number; count: number }>
+    Record<ChannelKey, UnreadMeasurement>
   >({});
 
   const clearMeasuredUnread = (key: ChannelKey): void => {
@@ -655,9 +663,14 @@ const exports = identityScopedStore((onIdentityChange) => {
     // no longer place.
     let unreadDropped = 0;
     let unreadHeld = 0;
-    let contentDropped = 0;
     let contentHeld = 0;
     let prunedCursor = 0;
+    // issue 2069 — what ARRIVED: fresh rows newer than everything the pane
+    // already held. This is the quantity a far-behind window's count grows by,
+    // and it is deliberately measured BEFORE the ring cap runs, because the cap
+    // is why the pane cannot answer the question afterwards.
+    let arrivedContent = 0;
+    let arrivedEvents = 0;
     // #1229 — the rows and the far-behind flag are ONE state transition and must
     // reach consumers in ONE flush. Published as two writes, Solid runs every
     // effect of the rows change FIRST, in a world where the window has already
@@ -688,11 +701,20 @@ const exports = identityScopedStore((onIdentityChange) => {
           isCanonicallyOrdered(fresh)
             ? [...existing, ...fresh]
             : [...existing, ...fresh].sort(byServerTimeThenId);
+        // issue 2069 — an ARRIVAL is a fresh row above the pane's previous
+        // newest. Rows at or below it are backfill: already inside whatever
+        // measurement the far-behind record carries, so counting them would
+        // report the same message twice.
+        const previousNewest = tail?.id ?? 0;
+        for (const m of fresh) {
+          if (m.id <= previousNewest) continue;
+          if (isContentKind(m.kind)) arrivedContent++;
+          else arrivedEvents++;
+        }
         const capped = capScrollbackRing(key, next);
         evicted = capped.rows.length < next.length;
         unreadDropped = capped.unreadDropped;
         unreadHeld = capped.unreadHeld;
-        contentDropped = capped.contentDropped;
         contentHeld = capped.contentHeld;
         prunedCursor = capped.cursor ?? 0;
         return { ...prev, [key]: capped.rows };
@@ -703,26 +725,58 @@ const exports = identityScopedStore((onIdentityChange) => {
       if (evicted) loadMoreExhausted.delete(key);
       // #1229 — the pruned window joins the #693 far-behind state: divider
       // suppressed, "N unread — jump back" banner up, `jumpToUnread` rebuilding
-      // the region from the server around this same `resumeFrom`. `missed`
+      // the region from the server around this same `resumeFrom`. The count
       // ACCUMULATES once the state is up: after the first bite the store only
       // ever holds one page, so a recount would report 200 forever while the
       // operator is thousands behind.
-      if (unreadDropped > 0) {
+      //
+      // 🔴 issue 2069 — it accumulates by what ARRIVED, not by what was
+      // EVICTED, and the difference is the whole of symptom A. Counting
+      // evictions is wrong twice over: below the retention cap nothing is
+      // evicted, so an entire page of arrivals is invisible; above it the
+      // increment carries the KIND OF THE ROW THAT LEFT, which on a mixed log
+      // is not the kind of the row that came in. Measured on `b7989f4ba` with
+      // a 3:1 message:JOIN log, 500 arrivals moved the count to 4012 against a
+      // server answer of 4125 — and the drift was invisible until the next
+      // FULL `?after=` page fired the gap probe and `anchorAtTail` overwrote
+      // the number with a fresh measurement. That correction is what the
+      // report saw as "the badge changed on a re-select": no scroll, no read,
+      // +113 in one step. Arrivals are exact, independent of the cap, and
+      // leave the probe nothing to correct.
+      if (unreadDropped > 0 || arrivedContent + arrivedEvents > 0) {
         setFarBehindByChannel((prev) => {
           const current = prev[key];
+          // Arrivals alone never ARM the state — that stays keyed on the raw
+          // `unreadDropped` (a JOIN leaving the store unplaces the divider
+          // exactly as a message does). An ordinary live append to an ordinary
+          // window returns `prev` unchanged and Solid skips the write.
+          if (current === undefined) {
+            if (unreadDropped === 0) return prev;
+            return {
+              ...prev,
+              [key]: {
+                // #2037 — opens in the CONTENT unit, the same one the probe
+                // writes and the pill reads. The rows that arrived in THIS
+                // batch are already inside `contentHeld`, so they are not
+                // added again.
+                missed: contentHeld,
+                events: unreadHeld - contentHeld,
+                resumeFrom: prunedCursor,
+              },
+            };
+          }
+          if (arrivedContent + arrivedEvents === 0) return prev;
           return {
             ...prev,
             [key]: {
-              // #2037 — accumulates in the CONTENT unit, the same one the
-              // probe writes and the pill reads. Arming still keys on the raw
-              // `unreadDropped` above: a JOIN leaving the store unplaces the
-              // divider exactly as a message does.
-              missed: current === undefined ? contentHeld : current.missed + contentDropped,
-              events:
-                current === undefined
-                  ? unreadHeld - contentHeld
-                  : current.events + (unreadDropped - contentDropped),
-              resumeFrom: prunedCursor,
+              missed: current.missed + arrivedContent,
+              events: current.events + arrivedEvents,
+              // The anchor tracks the frozen cursor exactly as it did before.
+              // The `> 0` guard is new because the arrivals-only path can now
+              // reach this line with no read cursor at all, where `?? 0` would
+              // overwrite a real anchor with zero; the eviction-only path could
+              // not, since a cap bite at/after the cursor implies one exists.
+              resumeFrom: prunedCursor > 0 ? prunedCursor : current.resumeFrom,
             },
           };
         });
@@ -1051,7 +1105,15 @@ const exports = identityScopedStore((onIdentityChange) => {
       if (afterPage.length === PAGE_LIMIT) {
         setMeasuredUnreadByChannel((prev) => ({
           ...prev,
-          [key]: { at: far.resumeFrom, count: far.missed },
+          [key]: {
+            at: far.resumeFrom,
+            count: far.missed,
+            // issue 2069 — the top of the run this jump can account for. The
+            // page is contiguous from `at` by construction (`after(at)` ASC,
+            // no cap in play at one page), so every row between the two is in
+            // the pane and a cursor moving through them is subtractable.
+            through: afterPage[afterPage.length - 1]?.id ?? far.resumeFrom,
+          },
         }));
       } else {
         clearMeasuredUnread(key);
@@ -1369,6 +1431,18 @@ const exports = identityScopedStore((onIdentityChange) => {
         loadNewerExhausted.add(key);
       } else {
         mergeIntoScrollback(key, page);
+        // issue 2069 — paging forward EXTENDS the run a carried measurement
+        // can account for. The fetch is `after(<newest loaded>)`, so the page
+        // abuts what the pane already holds and the union stays contiguous;
+        // without this the record stands down the moment the operator reads
+        // past the page the jump landed them on, which is the one gesture the
+        // record exists to survive.
+        const top = page.reduce((max, m) => (m.id > max ? m.id : max), newest.id);
+        setMeasuredUnreadByChannel((prev) => {
+          const current = prev[key];
+          if (current === undefined || top <= current.through) return prev;
+          return { ...prev, [key]: { ...current, through: top } };
+        });
       }
     } catch {
       // Transient error — do NOT latch. The user can retry by scrolling;

@@ -107,8 +107,11 @@ const [farBehind, setFarBehind] = createSignal<
 // region is truncated (set by a jump that could only carry one page back).
 // Stamped with the cursor it was measured `at`, so the pane spends it only
 // while its frozen divider is still anchored to that same cursor.
+// issue 2069 — `through` is the top of the run the pane can account for out
+// of that measurement, so the record survives a cursor that moves through the
+// rows the pane holds. Without it the record is not spendable at all.
 const [measuredUnread, setMeasuredUnread] = createSignal<
-  Record<string, { at: number; count: number }>
+  Record<string, { at: number; count: number; through: number }>
 >({});
 // #1094 — "an older page is on the wire for this key", the state the loading
 // affordance renders from. Keyed the same way the store keys it.
@@ -3154,7 +3157,7 @@ describe("ScrollbackPane", () => {
       it("labels the divider with the server's count, not the loaded rows", () => {
         seedReadCursor("freenode", "#grappa", 1);
         setScrollback({ "freenode #grappa": fixture });
-        setMeasuredUnread({ "freenode #grappa": { at: 1, count: 3000 } });
+        setMeasuredUnread({ "freenode #grappa": { at: 1, count: 3000, through: 3 } });
         render(() => (
           <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
         ));
@@ -3168,7 +3171,7 @@ describe("ScrollbackPane", () => {
         // that is.
         seedReadCursor("freenode", "#grappa", 1);
         setScrollback({ "freenode #grappa": fixture });
-        setMeasuredUnread({ "freenode #grappa": { at: 1, count: 3000 } });
+        setMeasuredUnread({ "freenode #grappa": { at: 1, count: 3000, through: 3 } });
         render(() => (
           <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
         ));
@@ -3183,14 +3186,36 @@ describe("ScrollbackPane", () => {
         expect(flow[markerAt + 1]?.getAttribute("data-msg-id")).toBe(String(fixture[1]?.id));
       });
 
-      it("ignores a measurement taken at a DIFFERENT cursor", () => {
-        // Self-invalidating by construction: the count answers "how many rows
-        // are after id 1", so it is meaningless once the divider re-freezes
-        // somewhere else. Falling back to the loaded rows understates; reusing
-        // a stale 3000 would be a confident wrong number that never expires.
+      it("ignores a measurement anchored ABOVE this cursor", () => {
+        // The count answers "how many rows follow id 999", which says nothing
+        // about a divider frozen at 1 — the region it describes starts above
+        // the reader. Spending it would UNDER-report by everything in between.
+        //
+        // issue 2069 narrowed this arm. It used to read "a DIFFERENT cursor",
+        // and the opposite case — a cursor that has advanced INTO the measured
+        // region — is no longer discarded but subtracted, which is the whole
+        // of symptom B: discarding it dropped the badge to the fetch page and
+        // then to zero. Only the anchored-above direction is unspendable, and
+        // it is unspendable because the client has no way to reach it.
         seedReadCursor("freenode", "#grappa", 1);
         setScrollback({ "freenode #grappa": fixture });
-        setMeasuredUnread({ "freenode #grappa": { at: 999, count: 3000 } });
+        setMeasuredUnread({ "freenode #grappa": { at: 999, count: 3000, through: 1200 } });
+        render(() => (
+          <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
+        ));
+        expect(screen.getByTestId("unread-marker")).toHaveTextContent("2 unread messages");
+      });
+
+      it("stands the measurement down once the cursor leaves the accountable run", () => {
+        // issue 2069 — `through` is the top of the contiguous run the jump
+        // loaded (and `loadNewer` extends). Past it the pane cannot say how
+        // much of the measured region the cursor consumed, so the record must
+        // stop answering rather than subtract only what it happens to hold:
+        // an own send lands the cursor at the tip with nothing unread, and a
+        // measurement that kept spending would report thousands.
+        seedReadCursor("freenode", "#grappa", 1);
+        setScrollback({ "freenode #grappa": fixture });
+        setMeasuredUnread({ "freenode #grappa": { at: 0, count: 3000, through: 0 } });
         render(() => (
           <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
         ));
@@ -3200,7 +3225,7 @@ describe("ScrollbackPane", () => {
       it("does not leak another window's measurement into this pane", () => {
         seedReadCursor("freenode", "#grappa", 1);
         setScrollback({ "freenode #grappa": fixture });
-        setMeasuredUnread({ "freenode #other": { at: 1, count: 3000 } });
+        setMeasuredUnread({ "freenode #other": { at: 1, count: 3000, through: 3 } });
         render(() => (
           <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />
         ));
@@ -3814,10 +3839,20 @@ describe("ScrollbackPane", () => {
       expect(screen.queryByTestId("unread-marker")).toBeNull();
     });
 
-    // Symmetry check: a peer JOIN IS a real event the operator hasn't seen
-    // and MUST still produce the marker — guards against over-broad
-    // suppression that would silence legitimate channel activity.
-    it("DOES count peer JOIN row toward the unread marker", () => {
+    // 🔴 issue 2069 — this arm used to be "DOES count peer JOIN row toward the
+    // unread marker" and asserted `"1 unread"`, i.e. this pane rendering
+    // "1 unread message" for a JOIN. It was asserting the defect: over the
+    // same fixture the sidebar pill reported nothing at all, because the pill
+    // splits on `isContentKind` and this line did not. Measured on
+    // `b7989f4ba`, 150 rows past the cursor: pill 113, divider 150.
+    //
+    // The arm's INTENT was right and is kept — peer activity must not be
+    // silently swallowed by an over-broad suppression. What changes is where
+    // the activity is answered: the row still RENDERS, and the count it feeds
+    // is the events bucket (`countsAsUnreadEvent`, pinned in
+    // `unreadCount.test.ts` and at the store level in
+    // `unreadOneVariable.test.ts`), not a label that says "messages".
+    it("does not label a peer JOIN as an unread MESSAGE, and still renders it", () => {
       setUserNick("vjt");
       const peerJoinFixture: ScrollbackMessage[] = [
         {
@@ -3844,8 +3879,68 @@ describe("ScrollbackPane", () => {
       seedReadCursor("freenode", "#grappa", 50);
       setScrollback({ "freenode #grappa": peerJoinFixture });
       render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
-      const marker = screen.getByTestId("unread-marker");
-      expect(marker).toHaveTextContent("1 unread");
+      // No message is unread, so there is no messages divider to draw.
+      expect(screen.queryByTestId("unread-marker")).toBeNull();
+      // ...and the JOIN is still on screen. This is the half that guards
+      // against curing the label by dropping the row.
+      expect(
+        screen.getByTestId("scrollback").querySelector('.scrollback-line[data-msg-id="51"]'),
+      ).not.toBeNull();
+    });
+
+    // The other side of the same predicate: a peer MESSAGE after the cursor
+    // still draws the line, and the JOIN sitting between them does not inflate
+    // its number. Without this arm the one above is satisfied by a divider
+    // that never appears.
+    it("counts only the MESSAGES when a peer JOIN sits in the unread run", () => {
+      setUserNick("vjt");
+      const mixedFixture: ScrollbackMessage[] = [
+        {
+          id: 60,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_000_000,
+          kind: "privmsg",
+          sender: "alice",
+          body: "earlier",
+          meta: {},
+        },
+        {
+          id: 61,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_001_000,
+          kind: "join",
+          sender: "carol",
+          body: null,
+          meta: {},
+        },
+        {
+          id: 62,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_002_000,
+          kind: "privmsg",
+          sender: "carol",
+          body: "ciao",
+          meta: {},
+        },
+      ];
+      seedReadCursor("freenode", "#grappa", 60);
+      setScrollback({ "freenode #grappa": mixedFixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      expect(screen.getByTestId("unread-marker")).toHaveTextContent("1 unread message");
+      // PLACEMENT is deliberately broader than the count: the line marks where
+      // the operator left off, so it goes above the JOIN — which arrived after
+      // them — rather than below it, where the JOIN would read as already seen.
+      const flow = Array.from(
+        screen
+          .getByTestId("scrollback")
+          .querySelectorAll('[data-testid="unread-marker"], .scrollback-line[data-msg-id]'),
+      );
+      const markerAt = flow.findIndex((n) => n.getAttribute("data-testid") === "unread-marker");
+      expect(flow[markerAt - 1]?.getAttribute("data-msg-id")).toBe("60");
+      expect(flow[markerAt + 1]?.getAttribute("data-msg-id")).toBe("61");
     });
 
     // Mixed-row variant: own JOIN sandwiched between a read msg and an

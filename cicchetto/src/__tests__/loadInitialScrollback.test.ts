@@ -312,7 +312,11 @@ describe("#693 far-behind resume", () => {
     listMessagesSpy.mockResolvedValue([row(100)]);
     await jumpToUnread("net", "#truncated");
 
-    expect(measuredUnreadByChannel()[key]).toEqual({ at: 100, count: 3000 });
+    // issue 2069 added `through`: the top of the run the jump can account for
+    // (`101 + 199`). It is what lets the record survive a cursor that moves —
+    // the count is spent minus the rows the pane HELD and the cursor passed,
+    // and that subtraction is only sound inside this run.
+    expect(measuredUnreadByChannel()[key]).toEqual({ at: 100, count: 3000, through: 300 });
   });
 
   it("a jump that drained the whole region records nothing — the rows ARE the count", async () => {

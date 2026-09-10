@@ -47,9 +47,7 @@ import { closeMessageMenu, messageMenu, openMessageMenu } from "./lib/messageMen
 import { networkIdBySlug, networks, user } from "./lib/networks";
 import { snapshotSenderPrefix } from "./lib/nickColor";
 import { nickEquals } from "./lib/nickEquals";
-import { isOperatorActionEcho } from "./lib/operatorActionEcho";
 import { overlayCount } from "./lib/overlayScrollLock";
-import { isOwnPresenceEvent } from "./lib/ownPresenceEvent";
 import {
   channelPresenceVisible,
   presenceRowVisible,
@@ -80,6 +78,7 @@ import type { Point } from "./lib/swipe";
 import { isMobile } from "./lib/theme";
 import { formatTimestamp } from "./lib/timeFormat";
 import { type TopicShowEntry, topicShowByWindow } from "./lib/topicShow";
+import { isOperatorOwnedRow, type UnreadRowContext, unreadMessagesAfter } from "./lib/unreadCount";
 import { dismissWhoisCard, whoisCardBySlug } from "./lib/whoisCard";
 import { SERVER_WINDOW_NAME, type WindowKind } from "./lib/windowKinds";
 import MessageContextMenu from "./MessageContextMenu";
@@ -1729,15 +1728,23 @@ const ScrollbackPane: Component<Props> = (props) => {
     // of the network, not of a row, and the two predicates below plus the
     // own-JOIN anchor scan all have to agree on it.
     const casemapping = casemappingForSlug(props.networkSlug);
+    // issue 2069 — the row predicate is SHARED with the sidebar pill now
+    // (`lib/unreadCount.ts`). It used to be spelled out here, and the spelling
+    // had drifted three ways from the pill's: this line counted peer JOINs
+    // under a label that says "messages" (150 against a pill reading 113 over
+    // the same 150 rows), counted the operator's OWN messages (10 against 5),
+    // and excluded numeric-derived NOTICEs the pill counted (no marker at all
+    // against 5). All four measured on `b7989f4ba`.
+    const unreadCtx: UnreadRowContext = {
+      ownNick,
+      casemapping,
+      isSelfWindow: nickEquals(props.channelName, ownNick, casemapping),
+    };
+    // The LOCAL count — what this pane can see. It gates the marker: there has
+    // to be a row in the buffer to put the line in front of.
     const unreadCount =
       cursor !== null && sessionTop !== null
-        ? msgs.filter(
-            (m) =>
-              m.id > cursor &&
-              m.id <= sessionTop &&
-              !isOperatorActionEcho(m) &&
-              !isOwnPresenceEvent(m, ownNick, casemapping),
-          ).length
+        ? unreadMessagesAfter(msgs, cursor, sessionTop, undefined, unreadCtx)
         : 0;
     // #947 — the LABEL, which is not always the count above. `unreadCount`
     // can only see rows the pane holds, and a pane resumed by a #693 jump
@@ -1752,9 +1759,19 @@ const ScrollbackPane: Component<Props> = (props) => {
     // PLACEMENT stays with `unreadCount` and the loop below: the divider has
     // to sit between the last read row and the first unread row actually in
     // the pane, and no server count knows where that is.
-    const measured = measuredUnreadByChannel()[key()];
+    //
+    // issue 2069 — the same function, handed the measurement. The second pass
+    // over `msgs` is deliberate: the label and the placement gate are two
+    // different questions ("how many are there" vs "is there one HERE"), and
+    // deriving one from the other is what let them answer in different units
+    // in the first place. `measured.at === cursor` is gone as an explicit
+    // test — `unreadMessagesAfter` subtracts what the cursor consumed instead
+    // of discarding the answer, so a re-latched freeze no longer drops the
+    // label back to the fetch page.
     const unreadLabel =
-      measured !== undefined && measured.at === cursor ? measured.count : unreadCount;
+      cursor !== null && sessionTop !== null
+        ? unreadMessagesAfter(msgs, cursor, sessionTop, measuredUnreadByChannel()[key()], unreadCtx)
+        : 0;
     // Only inject the marker if there are unread messages AND some read messages
     // to show as context above it. When all messages are unread, put the marker
     // at the very top (before index 0). When none are unread, skip the marker.
@@ -1779,9 +1796,15 @@ const ScrollbackPane: Component<Props> = (props) => {
       // AND <= sessionTopId. Messages above sessionTopId never get a
       // marker — they're live-read arrivals during the focus session.
       // CP29 R-6: skip own-presence + operator-action-echo rows here so
-      // the marker doesn't land above a row that isn't counted in
-      // `unreadCount` — the predicate set MUST stay in lock-step with
-      // the count filter above.
+      // the marker doesn't land above a row the operator caused themselves.
+      //
+      // issue 2069 — the predicate is `isOperatorOwnedRow`, the same one the
+      // count is built on, and it is BROADER than the count: the line marks
+      // where the operator left off, so it goes above the first row somebody
+      // ELSE produced, message or presence. The label counts only the
+      // messages. That asymmetry is deliberate — narrowing placement to
+      // content would leave a run of peer JOINs sitting ABOVE the line,
+      // rendered as if they had been read.
       if (
         injectMarker &&
         !markerInjected &&
@@ -1789,8 +1812,7 @@ const ScrollbackPane: Component<Props> = (props) => {
         sessionTop !== null &&
         msg.id > cursor &&
         msg.id <= sessionTop &&
-        !isOperatorActionEcho(msg) &&
-        !isOwnPresenceEvent(msg, ownNick, casemapping)
+        !isOperatorOwnedRow(msg, unreadCtx)
       ) {
         result.push({ type: "unread-marker", count: unreadLabel, id: "unread-marker" });
         markerInjected = true;
