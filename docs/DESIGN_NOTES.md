@@ -52354,3 +52354,124 @@ module's subject rather than this issue's.
 
 `GrappaWeb.Admin.SubjectLabelsTest`, the fourth file, is untouched here — it is
 issue 2065.
+<!-- entry #2059 -->
+
+---
+
+## 2026-09-10 — #2059: the most frequent red in the repo was not a flake, and it was two defects
+
+`cicchetto/e2e/tests/issue1796-reconnect-bounces-network.spec.ts` had gone
+red **17 times since 2026-08**, on branches with nothing to do with it. It
+was rerun past, attributed to branches, and tracked as a flake sixteen
+times. It is not a flake. The spec is honest on both of its assertions, and
+the product fails each of them by a different mechanism.
+
+Sighting 17 (2026-09-10, run `34497776963`) was the first on clean `main`,
+which settles that no branch is NECESSARY to reproduce it; the next run on
+main was green, which settles that it is intermittent rather than healed. A
+green does not acquit the mechanism any more than a red convicts the branch
+that happens to host it — the race is sensitive to main-thread latency, so
+a branch can move its probability without being its cause. Several past
+attributions did not clear that bar.
+
+### Defect A — a sampled transition cannot see a park shorter than the sample
+
+UX-4 bucket D (`selection.ts`) redirects the operator to Home when the
+network they are looking at goes INTO `:parked`. It derived that transition
+by SAMPLING `networks()` — the answer to a GET — against a per-slug Map of
+the previous value:
+
+```ts
+if (curr === prev) continue;                       // ← the redirect died here
+if (curr !== "parked" && curr !== "failed") continue;
+```
+
+`/reconnect` parks and reconnects immediately. Both legs emit
+`connection_state_changed` and each triggers a `refetchNetworks()`, but a
+GET issued at the park leg is not guaranteed to OBSERVE the park: by the
+time the server answers, the credential can already read `connected`
+again. The sampled sequence is then `["connected", "connected"]`,
+`curr === prev`, and the redirect is lost in silence. The measured
+signature at sighting 16 was exactly that — the store never held `parked`.
+
+The cure reads the EVENT, which carries `to` and cannot be outrun by the
+refetch it triggers. That is not a new pattern: `userTopic.ts` already
+makes the same move three lines above that refetch, with
+`patchHomeNetwork(payload.network)`, added by REV-J M15 to close "the
+temporal window where Sidebar saw the new state but HomePane hadn't yet".
+Bucket D was the last consumer still sampling.
+
+**Two feeds, one observer, one memory.** The sample is NOT removed, and
+deleting it would have been the smaller change and the wrong one: Phoenix
+PubSub does not replay, so after a WS gap the refetch is the only evidence
+that a park happened while the client was deaf. Both feeds are load-bearing
+for opposite reasons — the sample survives a lost event, the event survives
+a park shorter than a round-trip. Rather than a second observer with its
+own state to keep in step, both call ONE `observeConnectionState`, which
+owns the only Map: the event writes it first, so the sample that lands
+afterwards sees `curr === prev` and does not fire a second redirect.
+
+### Defect B — a second refetch in flight is dropped, not queued
+
+Measured on the same bench, and NOT the same defect: with two
+`refetchNetworks()` issued back to back, the second GET never leaves.
+`createResource.refetch()` does not start a second fetch while one is in
+flight, so the caller's request is simply lost. Driving the bench with
+three distinct states (`connected` → GET1 `parked` → GET2 `failing`) leaves
+the store on `parked` with the second stubbed answer still queued,
+unconsumed.
+
+It reaches the SAME spec from the other side. That spec asserts the
+operator lands on Home AND that the network section loses its greyed class;
+losing the unpark refetch keeps the parked row in the store, so the section
+stays grey and the Home parked card stays up with nothing scheduled to
+correct it. Curing only A could therefore have left the spec red and looked
+like the cure had failed.
+
+The cure queues a TRAILING refetch: any number of calls arriving during a
+flight collapse into exactly one follow-up, started when that flight ends.
+The invariant worth holding is "a refetch requested after the last state
+change is answered after it" — one trailing run buys that without turning a
+burst of N events into N round-trips.
+
+**The independence is measured, not argued:** unwiring A alone leaves B's
+arm green (mutation M5).
+
+### What the bench had to be taught, three times
+
+Every negative control in the first cut of this bench passed for the wrong
+reason, and the mutation bench is what found all three. This is recorded
+because the failure mode is generic, not specific to this file.
+
+1. The other-network arm fired at a slug absent from the mocked network
+   list, so the first-sighting guard (`prev === undefined`) stopped it
+   before the slug test was ever consulted. Deleting the slug test left it
+   GREEN.
+2. The no-op arm used `connected` → `connected`, which the same-value test
+   stops before the parked/failed gate. Deleting that gate left it GREEN.
+   It now uses `connected` → `failing` (#1675 put `:failing` in the closed
+   set) — a genuine transition of the selected network that is not a park,
+   so only the gate can stop it.
+3. The sibling-defect arm asserted a value the store ALREADY HELD at mount,
+   so `waitFor` returned on its first tick without any GET having answered.
+   Fabricating the swallow left it GREEN. It now ends on a third state the
+   store has never held.
+
+The general rule: **an assertion that holds before the action measures
+nothing, and a control nobody has mutated is a control nobody has tested.**
+
+### Not established, and not to be rounded off
+
+* That the run at sighting 16 took defect A's mode is INFERRED, not
+  measured — the HAR leaves 19 ms of margin. What is measured is that the
+  store never held `parked`, and that the bench reproduces the collapse.
+* Whether either defect is what produced any GIVEN one of the 17 sightings.
+  They are reproduced here store-level; attributing a specific historical
+  red to a specific mechanism is not something this work did.
+* `refetchChannels` and `refetchUser` have the same shape as `refetchNetworks`
+  and are therefore open to defect B. They are NOT changed here: nobody has
+  measured a caller that issues two of them back to back, and serialising a
+  refetch nobody has measured changes timing for callers this slice never
+  looked at.
+
+_cic only. No wire change, no protocol bump, no migration — cic bundle deploy._
