@@ -52484,7 +52484,9 @@ _cic only. No wire change, no protocol bump, no migration — cic bundle deploy.
 Two paths through the push stack produced no output of any kind, and the
 absence of output was read — correctly, given what the code offered — as
 absence of work. `Push.Sender.send_to_subscription/2`'s vendor-2xx arm
-returned without a `Logger` line while all four of its siblings logged, and
+returned without a `Logger` line while every OTHER arm of the same `case`
+logged (five calls, not the four the issue enumerates — it misses the
+`delete_dead` `:db_unavailable` degradation), and
 the `#182` foreground gate in `Push.Triggers` skipped an entire fan-out
 inside a bare `if`, with neither a line nor a counter. So an operator with
 no notification on their phone and an empty `journalctl -u grappa | grep
@@ -52497,10 +52499,11 @@ needed three RPCs into a running node.
 
 ### The level is the decision, not a detail
 
-`info`, for both lines. `debug` is below the default bar on every substrate
-we ship, so a `debug` line answers the operator's question exactly as badly
-as the silence did for anyone who has not already reconfigured their
-logger — which is everyone, at the moment they need it. The counter-argument
+`info`, for both lines. `debug` is below the level this ships at —
+`config/prod.exs` pins `:info` and `config/runtime.exs` defaults `LOG_LEVEL`
+to the same — so a `debug` line answers the operator's question exactly as
+badly as the silence did for anyone who has not already reconfigured their
+logger, which is everyone at the moment they need it. The counter-argument
 is volume, and it does not survive contact with the trigger conditions: a
 delivery happens only when a message passes `should_notify?/5` AND no device
 of that subject has the PWA on-screen, so `push.send delivered` is one line

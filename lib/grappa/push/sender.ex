@@ -114,14 +114,15 @@ defmodule Grappa.Push.Sender do
 
   Every terminal of `send_to_subscription/2` says something, the
   DELIVERED one included. It did not until issue 2067: the vendor-2xx
-  arm returned without a line while all four of its siblings logged, so
-  an empty `journalctl -u grappa | grep push` was equally consistent
-  with "delivered fine" and "the sender was never called". That
-  ambiguity cost an evening of live debugging with a self-hoster whose
-  pushes were in fact being delivered — the silence was the whole bug.
+  arm returned without a line while every OTHER arm of the same `case`
+  logged, so an empty `journalctl -u grappa | grep push` was equally
+  consistent with "delivered fine" and "the sender was never called".
+  That ambiguity cost an evening of live debugging with a self-hoster
+  whose pushes were in fact being delivered — the silence was the bug.
 
   `info`, not `debug`, and the level is the decision rather than a
-  detail. `debug` is below the default bar on every substrate we ship,
+  detail. `debug` is below the level this ships at (`config/prod.exs`
+  pins `:info`; `config/runtime.exs` defaults `LOG_LEVEL` to the same),
   so it would leave the operator's question ("did you try to send it or
   not?") answered exactly as badly as before for anyone who has not
   already reconfigured the logger — which is nobody, at the moment they
