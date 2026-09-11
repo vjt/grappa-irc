@@ -218,6 +218,29 @@ const exports = identityScopedStore((onIdentityChange) => {
   // that flight ends. The invariant that matters is "a refetch requested
   // after the last state change is answered after it", and one trailing run
   // gives that without turning a burst of N events into N round-trips.
+  //
+  // THAT INVARIANT IS SCOPED TO THIS DOOR — it is NOT a property of
+  // `networks()` (issue 2055, measured 2026-09-11 against the real modules).
+  // The resource is keyed on `user`, so a `refetchUser()` resolving mid-flight
+  // moves the SOURCE and starts a second load the queue never sees; that load
+  // claims Solid's promise pointer and the in-flight answer is discarded, just
+  // as it was before this cure. Measured on the literal adjacent pair in
+  // `HomePane.tsx` (`refetchUser(); refetchNetworks();`): the store sequence
+  // observed for the slug collapses to ["connected", "connected"] and the
+  // park is gone.
+  //
+  // WHY THAT IS NOT AN OPEN DEFECT, and what would make it one. The SNAPSHOT
+  // survives — the source-driven request leaves AFTER the discarded one, so
+  // the winning answer is the fresher one; what is lost is a TRANSITION, and
+  // that only bites a consumer deriving one from this sample. Since 2059 the
+  // sole such consumer is selection.ts's bucket D on a WS gap, and that path
+  // never reaches this door: `resumeResync` and `subscribe.ts`'s socket-edge
+  // arm call `refetchNetworks` + `refetchChannels`, never `refetchUser`. The
+  // routes that DO reach it (HomePane's attach; the identity / profile /
+  // avatar / password doors in `lifecycle.ts`) all have the event feed
+  // carrying the transition instead. It takes BOTH conditions at once and no
+  // route holds them today — a new caller pairing `refetchUser()` with a
+  // refetch whose payload carries a state change would be the first.
   let refetchInFlight = false;
   let refetchPending = false;
   const runNetworksRefetch = async (): Promise<void> => {
