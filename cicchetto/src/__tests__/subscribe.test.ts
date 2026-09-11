@@ -3610,6 +3610,12 @@ describe("subscribe - not-joined pre-subscribe loop (CP15 B5 fix + #78)", () => 
 //
 // Negative cases mirror the existing mention-bump gates so a
 // regression in either path surfaces here first.
+//
+// #1480 — `playBeep` now takes the subject's preset. The call counts below are
+// unchanged on purpose: WHETHER to alert is still this path's decision, and
+// `none` (the default) is a no-op inside `playBeep`, not a missing call —
+// keeping the badge bump alongside it. The ARGUMENT is asserted separately, at
+// the end of this block.
 describe("subscribe — UX-6-L foreground beep wiring", () => {
   it("PRIVMSG mentioning own nick on non-selected channel calls playBeep", async () => {
     localStorage.setItem("grappa-token", "tok");
@@ -3912,6 +3918,64 @@ describe("subscribe — UX-6-L foreground beep wiring", () => {
     });
 
     expect(beep.playBeep).not.toHaveBeenCalled();
+  });
+
+  // #1480 — WHICH sound. The preset is the subject's server pref, passed as
+  // data so `beep.ts` reads no store and the settings preview reaches the same
+  // door. These two are the whole argument contract.
+  it("passes the subject's chosen preset to playBeep", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    setNotificationPrefsForTest({ ...DEFAULT_NOTIFICATION_PREFS, notification_sound: "icq" });
+    await seedStubs();
+    const beep = await import("../lib/beep");
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#cicchetto",
+      kind: "channel",
+    });
+
+    fireMessageEvent("#grappa", { id: 307, kind: "privmsg", body: "alice ping" });
+
+    expect(beep.playBeep).toHaveBeenCalledWith("icq");
+  });
+
+  it("falls back to the default preset when the BEAM predates the key", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    localStorage.setItem(
+      "grappa-subject",
+      JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+    );
+    // The field is optional on the wire (#618: cic ships independently of the
+    // BEAM), so the live path must have an answer for a prefs map that simply
+    // does not carry it — and that answer is silence, never `undefined`
+    // reaching the preset table as a key.
+    const { notification_sound: _dropped, ...withoutSound } = DEFAULT_NOTIFICATION_PREFS;
+    setNotificationPrefsForTest(withoutSound as typeof DEFAULT_NOTIFICATION_PREFS);
+    await seedStubs();
+    const beep = await import("../lib/beep");
+    const store = await loadStores();
+    await vi.waitFor(() => {
+      expect(mockChannel.on).toHaveBeenCalled();
+    });
+
+    store.setSelectedChannel({
+      networkSlug: "freenode",
+      channelName: "#cicchetto",
+      kind: "channel",
+    });
+
+    fireMessageEvent("#grappa", { id: 308, kind: "privmsg", body: "alice ping" });
+
+    expect(beep.playBeep).toHaveBeenCalledWith("none");
   });
 });
 

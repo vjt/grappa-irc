@@ -6,24 +6,34 @@ service worker can precache them and a chosen preset still plays offline.
 Everything about their origin that is known is recorded below; nothing is
 inferred.
 
-These files land *ahead of* the code that reads them: as of this commit
-`cicchetto/src/lib/beep.ts` still plays one hard-coded 440 Hz sine and nothing
-here is referenced yet. Per #1480 the default preset stays synthesised, so the
+All five are wired up as presets in `cicchetto/src/lib/notificationSound.ts`
+and precached by the service worker (`vite.config.ts`'s `globPatterns` carries
+`mp3` for exactly this reason), so a chosen preset still plays offline. Per
+#1480 the DEFAULT preset is silence and the opt-in one is synthesised, so the
 feature is designed to survive this directory being removed.
 
-| File | Bytes | Duration | Origin |
-|---|---|---|---|
-| `icq-uh-oh.mp3` | 12537 | 0.50 s | ICQ message sound, supplied by vjt from <https://sindro.me/t/icq-uh-oh.mp3> |
-| `xp-notify.mp3` | 11969 | 1.18 s | `Windows XP Notify` — the balloon-tip chime |
-| `xp-ding.mp3` | 5447 | 0.44 s | `Windows XP Ding` |
-| `xp-balloon.mp3` | 3335 | 0.21 s | `Windows XP Balloon` |
-| `xp-exclamation.mp3` | 10636 | 1.02 s | `Windows XP Exclamation` |
+| File | Bytes | Duration | Format | Origin |
+|---|---|---|---|---|
+| `icq-uh-oh.mp3` | 12537 | 0.50 s | 44100 Hz mono | ICQ message sound, supplied by vjt from <https://sindro.me/t/icq-uh-oh.mp3> |
+| `xp-notify.mp3` | 11969 | 1.18 s | 22050 Hz stereo | `Windows XP Notify` — the balloon-tip chime |
+| `xp-ding.mp3` | 5447 | 0.44 s | 22050 Hz stereo | `Windows XP Ding` |
+| `xp-balloon.mp3` | 3335 | 0.21 s | 22050 Hz stereo | `Windows XP Balloon` |
+| `xp-exclamation.mp3` | 10636 | 1.02 s | 22050 Hz stereo | `Windows XP Exclamation` |
 
 The four `xp-*` files come from the Internet Archive item
 [`windowsxpstartup_201910`](https://archive.org/details/windowsxpstartup_201910)
 ("ALL Windows XP Sounds"), renamed to lowercase-kebab and otherwise
-byte-identical to the item's own files. All five are 22050 Hz stereo MP3 and
-were verified with `ffprobe` before being committed.
+byte-identical to the item's own files.
+
+The per-file `Format` column corrects this table's first version, which said
+"all five are 22050 Hz stereo": the ICQ sound is **44100 Hz mono**, and it does
+not come from the Archive item, so there was never a reason for it to match.
+Re-measured independently on 2026-09-11 with `afinfo` (this host has no
+`ffprobe`) after re-downloading all three reachable originals — the bytes came
+back identical to what is committed here, so the correction is to the
+description, not to the files. The oracle was calibrated in both directions
+first: `afinfo` exits 1 on a text file and reports a duration for a known-good
+system AIFF.
 
 ## Licence status
 

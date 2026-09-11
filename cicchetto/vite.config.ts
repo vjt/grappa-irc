@@ -230,7 +230,16 @@ export default defineConfig({
         // architectural, not denylist-driven. The navigation fallback
         // (denylist for /auth, /me, /networks, /socket) is wired
         // explicitly in `service-worker.ts` via NavigationRoute.
-        globPatterns: ["**/*.{js,css,html,svg,png,webmanifest,ico}"],
+        //
+        // #1480 — `mp3` joined the list, and unlike the logos below these ARE
+        // shell: a notification sound that has to be fetched is silent exactly
+        // when the operator most needs it (offline, backgrounded, on the phone),
+        // and the whole `public/sounds/` set is 43 KB — the same order as one
+        // icon. Precaching the WHOLE set rather than the chosen preset is
+        // deliberate: the choice is a server pref that can change on another
+        // device, so "precache what they picked" would go stale silently, and
+        // the alternative to 43 KB is bookkeeping nobody can verify offline.
+        globPatterns: ["**/*.{js,css,html,svg,png,mp3,webmanifest,ico}"],
         // #1739 — the vendored station logos are NOT shell, and leaving them
         // to the pattern above would have precached them HALF: 7 `.png` plus
         // one `.svg` are matched by it and 14 `.jpg` are not, so the offline

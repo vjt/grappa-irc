@@ -15,6 +15,7 @@
 // inline.
 
 import { ApiError, readError } from "./api";
+import { DEFAULT_NOTIFICATION_SOUND, type NotificationSound } from "./notificationSound";
 import type { PresencePref } from "./presenceFilter";
 import type { TimeFormatKey } from "./timeFormat";
 
@@ -51,6 +52,12 @@ export type NotificationPrefs = {
   // rather than crash the predicate on every arriving message. Present in
   // DEFAULT_NOTIFICATION_PREFS, and every reader defaults it to `{}`.
   muted_targets?: MutedTargets;
+  // #1480 — the in-app beep preset. Optional for the same reason as
+  // `muted_targets` and it runs BOTH ways here: this bundle may be talking to
+  // a BEAM that predates the key, and the server treats an absent key on the
+  // PUT as "unchanged" rather than "reset to default", so neither side reads
+  // the other's silence as a choice.
+  notification_sound?: NotificationSound;
 };
 
 export type NotificationPrefsResponse = {
@@ -66,6 +73,7 @@ export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
   presence_online: false,
   presence_offline: false,
   muted_targets: {},
+  notification_sound: DEFAULT_NOTIFICATION_SOUND,
 };
 
 export async function getNotificationPrefs(token: string): Promise<NotificationPrefs> {

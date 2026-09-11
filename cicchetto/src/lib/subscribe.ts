@@ -24,6 +24,7 @@ import {
 } from "./networks";
 import { nickEquals } from "./nickEquals";
 import { notificationPrefs } from "./notificationPrefs";
+import { DEFAULT_NOTIFICATION_SOUND } from "./notificationSound";
 import { isOperatorActionEcho } from "./operatorActionEcho";
 import { isOwnPresenceEvent } from "./ownPresenceEvent";
 import { resolveCtcpReply, resolvePing } from "./pingCorrelation";
@@ -452,7 +453,12 @@ moduleRoot(() => {
       !effectivelyFocused(slug, displayName) &&
       shouldNotify(message, slug, ownNick, notificationPrefs(), highlightPatterns())
     ) {
-      playBeep();
+      // #1480 — WHETHER to alert is this predicate's call; WHICH sound is the
+      // subject's preset, and it is passed as data rather than read inside
+      // `beep.ts` so the same door serves the settings preview. `none` (the
+      // default for everyone) makes `playBeep` a no-op, so the badge still
+      // bumps for an opted-out subject: silence is not "no notification".
+      playBeep(notificationPrefs().notification_sound ?? DEFAULT_NOTIFICATION_SOUND);
       incrementBadge();
     }
   };

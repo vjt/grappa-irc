@@ -58,6 +58,12 @@ describe("DEFAULT_NOTIFICATION_PREFS", () => {
       // an un-hydrated client decides beeps with, so a divergence here means
       // the client is silently stricter (or looser) than the push it mirrors.
       muted_targets: {},
+      // #1480 — SILENCE, and the same byte-identity requirement applies: an
+      // un-hydrated client must not beep at a subject the server considers
+      // opted out. Written as a literal rather than as
+      // DEFAULT_NOTIFICATION_SOUND, so this asserts the RULING (default off)
+      // and not merely that two constants agree with each other.
+      notification_sound: "none",
     });
   });
 });
