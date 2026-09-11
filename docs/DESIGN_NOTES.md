@@ -53325,3 +53325,74 @@ judgement call inside this slice.
 * **The issue's cost figure is not re-measured.** The 69-of-78 residual is
   taken from 2037's instrument as filed; this file measures reachability, not
   cost.
+<!-- entry #2052 -->
+
+---
+
+## 2026-09-11 — #2052: the join reply was a second door that moved the cursor backward, and the module had already said there was only one
+
+`readCursor.ts`'s `applyJoinReply/3` landed the per-channel join reply's
+cursor unconditionally. After a POST that failed — which is what a stretch
+offline produces — the next rejoin rewound this device's cursor to the
+server's stale value and every already-read row counted as unread again: the
+badge came back on every resume, then cleared the moment the operator read.
+
+### The fork the issue posed collapsed on a measurement, so nothing was ruled
+
+The issue offered forward-only (`max(local, reply)`) against last-write-wins
+and declined to choose, on the grounds that *"last-write-wins is also what
+makes a deliberate server-side cursor reset land at all."* **There is no
+deliberate server-side cursor reset.** `Grappa.ReadCursor`'s own moduledoc
+says it outright: `set/4` is monotonic, *"cic is already forward-only
+locally; the server is the single authoritative regressor"*, and
+**deliberate mark-as-unread "has no caller today — no cic surface, no REST
+verb … when the feature ships it gets its OWN explicit path"**. The one
+backward writer, `force_set/4`, has exactly one caller — `TestReadCursor
+Controller`, on a route `Mix.env() in [:dev, :test]` compile-gates out of the
+release — and it broadcasts, so it lands through `applyReadCursorSet`
+anyway. A reply BELOW what this device holds therefore cannot be a
+deliberate regression; it can only be a device that wrote and did not land.
+
+### This is drift repair, not a new policy
+
+The module had already declared the invariant in two places — *"the ONLY
+path that lands a peer's set (or a backward move)"* and *"only that
+authoritative WS path moves the cursor backward"* — while a third door
+quietly did it. The rule now has ONE name, `advanceOnly/3`, shared by the
+join-reply arm and `setReadCursor`'s optimistic advance, which had the same
+predicate written out. It returns `prev` UNCHANGED on a no-op: a
+rebuilt-but-equal object wakes every cursor consumer for nothing, the same
+reason `renameReadCursorChannel` bails early on a pure re-casing.
+
+A reply that is AHEAD still lands — that is what the rejoin refresh is FOR,
+and the paired test says so; "forward-only" degrading into "the join reply
+is ignored" is the mutant that test exists to kill.
+
+### What forward-only gives up, named rather than discovered later
+
+`networks.ts`'s #818 note describes a cross-identity `/me` seeding a HIGHER
+cursor on a window; this door can no longer correct that downward. That path
+is guarded by `identityMoved/1` and readCursor's `on(token)` purge, and
+trading it for the resume flicker is the deliberate call.
+
+### `applyMeEnvelope` is the same SHAPE and deliberately not cured
+
+It replaces the whole map, so it can also land a server value over a local
+optimistic one. It is not the same defect and not left alone by omission:
+**it is not on the resume path.** Measured — `refetchUser()`'s callers are
+`HomePane` (connect-a-network), `BootErrorBoundary` (retry) and five
+read-after-write settings mutations in `lifecycle.ts`; the socket reconnect
+triggers none of them, and `reconnectBackfill.ts` only READS the cursor. An
+alarm was raised here that five `refetchUser()` calls sat on resume, and the
+measurement killed it. Its full-replace is also load-bearing — a stale entry
+from a prior session would mask a cleared cursor — so a forward-only merge
+there would break the contract it exists to hold. The reload-after-a-failed-
+write case remains what `readCursor.ts` already documents and accepts:
+already-read rows re-surface as unread once.
+
+### Not measured
+
+Whether this fires in production (the issue simulated the offline POST; no
+real client was observed), the frequency, and the browser: the arms are
+store-level, in jsdom, so nothing here says the number reaches a rendered
+badge. That is the e2e's job and it has not run.
