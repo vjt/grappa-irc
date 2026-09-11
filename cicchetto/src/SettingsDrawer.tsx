@@ -18,6 +18,7 @@ import { ApiError, displayNick, type Network, visitorNetworkNick } from "./lib/a
 import { getSubject, token } from "./lib/auth";
 import { autoAwayDebounceValue, loadAutoAwayDebounce, saveAutoAwayDebounce } from "./lib/autoAway";
 import { createBackdropDismiss } from "./lib/backdropDismiss";
+import { playBeep } from "./lib/beep";
 import { type ChannelKey, decodeChannelKey } from "./lib/channelKey";
 import { getColoredNicklist } from "./lib/colorNicklist";
 import {
@@ -48,6 +49,12 @@ import {
 } from "./lib/lifecycle";
 import { networks, user } from "./lib/networks";
 import { mirrorNotificationPrefs, notificationPrefs } from "./lib/notificationPrefs";
+import {
+  DEFAULT_NOTIFICATION_SOUND,
+  NOTIFICATION_SOUND_PRESETS,
+  NOTIFICATION_SOUNDS,
+  type NotificationSound,
+} from "./lib/notificationSound";
 import { popOverlay, pushOverlay } from "./lib/overlayScrollLock";
 import {
   loadShowPeerProfiles,
@@ -752,6 +759,14 @@ const SettingsDrawer: Component<Props> = (props) => {
     const current = prefs();
     if (typeof current[key] !== "boolean") return;
     void savePrefs({ ...current, [key]: checked });
+  };
+
+  // #1480 — the drawer writes the sound through its OWN hydrated form, like
+  // every checkbox here. The `/beep` verb cannot: it holds no form, so it goes
+  // through `notificationPrefs.applyNotificationSound`, which re-GETs first.
+  // Same split as the mute picker (#950), same reason.
+  const setNotificationSound = (sound: NotificationSound) => {
+    void savePrefs({ ...prefs(), notification_sound: sound });
   };
 
   const commitChannelsOnly = () => {
@@ -2395,6 +2410,53 @@ const SettingsDrawer: Component<Props> = (props) => {
                   {pushBanner()}
                 </p>
               </Show>
+
+              <hr />
+
+              {/* #1480 — the in-app beep preset. FIRST in the section, above
+                  the trigger checkboxes, because "make it stop making that
+                  noise" is what sends people here and it is the one control
+                  that answers it; the checkboxes answer "when", which is the
+                  question you ask second. Default is `silent`, so for most
+                  subjects this select is the opt-IN. */}
+              <h3>sound</h3>
+              <p class="prefs-hint">
+                Played in the app when a conversation you are not looking at notifies you. Silent by
+                default — the browser notification is a separate switch above.
+              </p>
+              <label class="prefs-list">
+                notification sound:
+                <select
+                  value={prefs().notification_sound ?? DEFAULT_NOTIFICATION_SOUND}
+                  disabled={savingPrefs()}
+                  onChange={(e) =>
+                    setNotificationSound(
+                      (e.currentTarget as HTMLSelectElement).value as NotificationSound,
+                    )
+                  }
+                  data-testid="pref-notification-sound"
+                >
+                  <For each={NOTIFICATION_SOUNDS}>
+                    {(name) => (
+                      <option value={name}>{NOTIFICATION_SOUND_PRESETS[name].label}</option>
+                    )}
+                  </For>
+                </select>
+              </label>
+              {/* Not decoration. Browsers keep the AudioContext suspended until
+                  a user gesture, and the live notify path has no gesture of its
+                  own — it leans on "something was clicked earlier this session".
+                  A deliberate tap here IS that gesture, made on the very surface
+                  where the choice is being made, so the first real notification
+                  after choosing is audible instead of swallowed. */}
+              <button
+                type="button"
+                class="prefs-preview"
+                onClick={() => playBeep(prefs().notification_sound ?? DEFAULT_NOTIFICATION_SOUND)}
+                data-testid="pref-notification-sound-preview"
+              >
+                preview
+              </button>
 
               <hr />
 

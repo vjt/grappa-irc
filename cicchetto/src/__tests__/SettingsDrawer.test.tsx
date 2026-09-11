@@ -325,8 +325,16 @@ vi.mock("../DeleteAccountModal", async () => {
   };
 });
 
+// #1480 — jsdom has no Web Audio, so the real `playBeep` is a silent no-op
+// and the preview button would be untestable. Mocked so the preset it plays
+// becomes observable.
+vi.mock("../lib/beep", () => ({
+  playBeep: vi.fn(),
+}));
+
 import { channelKey } from "../lib/channelKey";
 import { deleteAccountBody } from "../lib/lifecycle";
+import { NOTIFICATION_SOUNDS } from "../lib/notificationSound";
 import { SHARE_SESSION_LABEL } from "../lib/shareModal";
 import SettingsDrawer from "../SettingsDrawer";
 
@@ -725,6 +733,78 @@ describe("SettingsDrawer notifications section", () => {
 // free-text line of channel names is bad UX") in favour of a picker over the
 // conversations you actually have, with each mute rendered as its own
 // removable row.
+// #1480 — the notification-sound picker. Two things are load-bearing here and
+// neither is the select existing: that saving the sound carries the WHOLE map
+// (the endpoint is a full replace, so a partial body would 422 or reset the
+// subject's other prefs), and that the preview reaches the same `playBeep`
+// door the live notify path uses.
+describe("SettingsDrawer notification sound — #1480", () => {
+  const openPush = async () => {
+    const userSettings = await import("../lib/userSettings");
+    wrap(true);
+    openSub("push-settings-entry");
+    await waitFor(() => {
+      expect(userSettings.getNotificationPrefs).toHaveBeenCalled();
+    });
+  };
+
+  it("offers every preset the closed set defines, defaulting to silence", async () => {
+    await openPush();
+
+    const select = screen.getByTestId("pref-notification-sound") as HTMLSelectElement;
+    // Read from the production table, not a literal list: a test that spelled
+    // the presets out would keep passing while the two lists diverged, which
+    // is exactly the drift that makes a picker offer a name the server 422s.
+    expect([...select.options].map((o) => o.value)).toEqual([...NOTIFICATION_SOUNDS]);
+    expect(select.value).toBe("none");
+  });
+
+  it("choosing a preset PUTs the whole prefs map with only the sound changed", async () => {
+    const userSettings = await import("../lib/userSettings");
+    await openPush();
+
+    fireEvent.change(screen.getByTestId("pref-notification-sound"), {
+      target: { value: "xp_notify" },
+    });
+
+    await waitFor(() => {
+      expect(userSettings.putNotificationPrefs).toHaveBeenCalled();
+    });
+
+    const body = (userSettings.putNotificationPrefs as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    // The trap #1480 names outright: this endpoint is a full replace, so a
+    // form that did not carry the new field would silently reset the sound
+    // every time any other notification pref was saved — and vice versa.
+    expect(body[1]).toEqual({
+      ...userSettings.DEFAULT_NOTIFICATION_PREFS,
+      notification_sound: "xp_notify",
+    });
+  });
+
+  it("the preview plays the SELECTED preset without waiting for a message", async () => {
+    const beep = await import("../lib/beep");
+    await openPush();
+
+    fireEvent.change(screen.getByTestId("pref-notification-sound"), {
+      target: { value: "chime" },
+    });
+    await waitFor(() => {
+      expect((screen.getByTestId("pref-notification-sound") as HTMLSelectElement).value).toBe(
+        "chime",
+      );
+    });
+    fireEvent.click(screen.getByTestId("pref-notification-sound-preview"));
+
+    // Not decoration: this click is the user gesture that un-suspends the
+    // AudioContext, on the surface where the choice is made. It must play what
+    // is selected NOW, not the value the drawer loaded with.
+    expect(beep.playBeep).toHaveBeenCalledWith("chime");
+  });
+});
+
 describe("SettingsDrawer muted conversations — #866", () => {
   // #1038 — the stored key is the composite ChannelKey. Built with the
   // production `channelKey` so these tests speak the app's grammar; the SHAPE
