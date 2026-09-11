@@ -53619,3 +53619,155 @@ socket over one broken pane, and the two ship together.
   before any capture has completed reads `loading`, because the stamp decides
   before the query does. That is the honest answer, and it is also the only
   arrangement of these two branches with no wrong case.
+<!-- entry #2082 -->
+
+---
+
+## 2026-09-11 — issue 2082: the 💤 badge is edge-only, and the reopen that "clears" it clears it unconditionally
+
+The report: on a self-hosted 1.5.5, the away indicator stays on after the
+operator is no longer away, on their OWN row, and closing and reopening
+cicchetto clears it. The reporter then added that the flag "might have been
+simply late" — in the same session their scrollback took ~20 s and they
+suspect their own network. So the order was: measure before touching code,
+and if the measurement absolves, the absolution is the result.
+
+It does not absolve. It absolves two of the three candidates the issue
+listed, leaves the third alive but pointing away from the reporter's
+evidence, and convicts a fourth thing the issue did not name — one that needs
+no repro at all.
+
+### What was measured
+
+A grep tool over the tree at `dad99f549`, with a negative control (a token
+that exists nowhere) and three positive controls chosen to RESEMBLE the real
+case: a sibling typed effect emitted from `EventRouter`, a
+per-`(subject, network)` fact that IS in the cold-subscribe bundle, and the
+same caller-scan applied to a facade verb known to have production callers.
+
+Two of the regexes died on the first run — one on `\{` in ERE ("invalid
+repetition count(s)"), one on `\(` in BRE ("parentheses not balanced") — and
+the second printed **`0` production call sites**, which is the answer the
+tool would also print if the count were genuinely zero. It IS genuinely zero,
+but nothing in the first run established that. Every grep now goes through a
+wrapper that captures stderr and aborts on any diagnostic, and the caller
+scan carries its own positive control printed beside its result.
+
+Results, all with controls green:
+
+- `away_confirmed` has exactly **two** emitters in `lib/`:
+  `event_router.ex:2011` (305 → `:present`) and `:2022` (306 → `:away`). Both
+  clauses match on `%Message{command: {:numeric, N}}` alone — neither reads a
+  tag.
+- cicchetto has exactly **one** production writer of the badge:
+  `userTopic.ts:936`, inside the `away_confirmed` arm.
+- `awayStatus.ts` contains **zero** clock references — no TTL, no poll, no
+  timestamp — and `identityScopedStore` (73 lines) touches no `localStorage`,
+  `sessionStorage` or `indexedDB`. The store is reset only on identity change.
+- The `:session_snapshot` cold-subscribe bundle carries seven keys — `umodes`,
+  `supported_umodes`, `identified`, `account`, `invited_windows`, `isupport`,
+  `linelen` — and **zero** occurrences of `away`.
+- `GrappaChannel.push_session_snapshot/2` pushes four `SessionWire` verbs;
+  `away_confirmed` is not among them.
+- `Session.set_auto_away/2` and `Session.unset_auto_away/2` have **zero**
+  production call sites (control: `Session.set_explicit_away` has two).
+- There is **no** read-side away accessor anywhere on the web edge.
+
+### Absolved
+
+**Candidate 2, the labeled-response path.** `NumericRouter.route/2` tests
+`@delegated_numerics` INSIDE the label-hit arm and returns `:delegated`
+before it can reach `window_ref_to_decision/1` — the #276 "delegation wins
+over the label override" precedence, which exists precisely because 305/306
+are the only labeled replies grappa ever receives. `:delegated` goes to
+`Server.delegate/2`, which calls `EventRouter.route/2` and then
+`apply_effects/2`; the 305 clause is tag-blind. A labeled 305 cannot be
+consumed by the correlation before the arm that emits the effect, because the
+correlation is not on that path. Already pinned by two existing tests
+(`numeric_router_test.exs:773`, `server_test.exs:2680`).
+
+**Candidate 3, the auto-away cancel.** The live cancel path does round-trip:
+`handle_info({:ws_visible, _})` → `unset_away_internal/2` →
+`Client.send_away_unset/1`. There is no auto path that clears `AwayState`
+without a wire write. The facade verbs the candidate names —
+`Session.unset_auto_away/2` and the `handle_call({:unset_auto_away})` arms —
+are not on any production path at all; production drives the FSM entirely
+through the `:ws_visible` / `:ws_all_hidden` `handle_info` clauses. Dead
+code with a test-only lifeline, recorded here and not pruned: it is outside
+this slice's boundary and pruning it deletes the tests that keep it alive.
+
+### Stands, but does not fit the reporter's evidence
+
+**Candidate 1, the fire-and-forget send.** Real and unchanged:
+`maybe_log_send_failure/2` swallows `{:error, _}` and the local `AwayState`
+clears anyway, so a dead socket means no `AWAY` out, no 305 back, badge stuck.
+But it needs the **grappa↔ircd** link to be dead, and the reporter
+self-hosts: the latency they describe is on the **browser↔grappa** link. Not
+excluded — just not where their evidence points.
+
+### Convicted: the badge is edge-only, in both directions
+
+The badge's entire state is one signal written by one push. Nothing snapshots
+it. Two consequences, both deterministic:
+
+- **Any `away_confirmed` emitted while the browser is between sockets is
+  gone.** Phoenix PubSub does not replay, and the user-topic after-join
+  snapshot does not carry away. The badge then stays lit until a reopen —
+  which is the reported shape, produced with no defect in the un-away path
+  whatsoever, by exactly the flaky link the reporter blames.
+- **The inverse needs no repro and no reporter: reopen while genuinely away
+  and the badge is OFF.** `awayByNetwork()` starts `{}` and nothing
+  re-asserts. So "closing and reopening clears it" is not evidence that the
+  un-away landed — a reopen clears it whether the operator is present or not,
+  and the same reopen is what hides the opposite lie.
+
+Away is the ONLY per-`(subject, network)` session fact left out of a bundle
+whose own comment states why the others are in it: *"#388 — the normalized
+identity verdict rides the SAME snapshot, so a client that reloads
+mid-session re-learns it without a second round-trip. Without it … the live
+`session_identity_changed` edge fired long before the browser subscribed, and
+nothing else on the user topic carries the verdict."* Word for word the away
+badge's situation, with `away_confirmed` in place of
+`session_identity_changed`. Four facts already ride that call for this
+reason; the fifth was never added.
+
+The cure that follows from the precedent is small — an `away` key on the
+`:session_snapshot` map (no extra round-trip, which is the #482 constraint on
+that call) and one `SessionWire.away_confirmed/2` push in
+`push_session_snapshot/2`, reusing the verb the live edge already emits so
+cic's dispatch never branches on snapshot-vs-event. It is not written here:
+it is a contract addition to a documented bundle, and it waits on a ruling.
+
+### The discriminator, handed back
+
+The one the issue proposes — *does the 💤 clear by itself after N seconds?* —
+does not discriminate what it was asked to. It separates "the 305 is still in
+flight" from "the 305 is gone"; it does not separate "grappa lost it" from
+"the operator's link lost it", because a WS gap makes a healthy grappa give
+the never-clears answer.
+
+A probe that does, runnable in the same session with the badge stuck and
+without a reopen: issue `/away test`, then `/away`.
+
+- lights, then clears ⇒ the un-away path and the socket are both fine; the
+  earlier 305 was lost in transit or in a WS gap — their link.
+- lights, then does NOT clear ⇒ the un-away path is broken with a live
+  socket. That is the defect the issue posits, and candidate 1 is the first
+  suspect.
+- does not even light ⇒ the WS is not delivering; nothing about away was
+  learned, and the run is void.
+
+The third arm is the positive control the `/whois`-from-another-client oracle
+in the issue body cannot supply: that oracle reads upstream state, so it
+cannot tell a missing event from a socket that is delivering nothing.
+
+### Not measured
+
+- **The reporter's own question.** It needs their session, and their exact
+  1.5.5 commit was never supplied. No commit was deduced.
+- **Any of this in a real browser.** No repro was built and no e2e opened —
+  there is no confirmed defect on the reported axis to pin, and the axis that
+  IS confirmed (reopen-while-away) has no cure to guard yet.
+- **The two absolving tests, re-run on this tree.** The COMPILE lane was
+  held elsewhere; candidate 2's absolution rests on the code path read plus
+  two existing tests read, not on a green run taken here.
