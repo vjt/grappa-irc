@@ -803,6 +803,67 @@ describe("SettingsDrawer notification sound — #1480", () => {
     // is selected NOW, not the value the drawer loaded with.
     expect(beep.playBeep).toHaveBeenCalledWith("chime");
   });
+
+  // The `/beep` verb is a SECOND writer of this key, exactly as the rail
+  // picker is a second writer of `muted_targets` (#950, and see the sibling
+  // test below). It holds no form, so it writes through
+  // `applyNotificationSound` and feeds the shared mirror the server's echo —
+  // the drawer never hears about it. A picker reading the drawer's own
+  // mount-time snapshot then shows `none` to someone who just typed
+  // `/beep chime`, which is the CI red this pair was written for.
+  it("shows a preset another surface wrote after the drawer had already loaded", async () => {
+    const { mirrorNotificationPrefs } = await import("../lib/notificationPrefs");
+    const userSettings = await import("../lib/userSettings");
+    await openPush();
+
+    // What `applyNotificationSound` does on its PUT's echo — no drawer
+    // re-open, no second GET, exactly as `/beep chime` leaves things.
+    mirrorNotificationPrefs({
+      ...userSettings.DEFAULT_NOTIFICATION_PREFS,
+      notification_sound: "chime",
+    });
+
+    await waitFor(() => {
+      expect((screen.getByTestId("pref-notification-sound") as HTMLSelectElement).value).toBe(
+        "chime",
+      );
+    });
+  });
+
+  // The half of the defect the picker does not show, and the worse half: this
+  // endpoint is a FULL replace, so a form that merges over its stale snapshot
+  // writes the stale sound back. Ticking an unrelated checkbox would then
+  // silently undo a `/beep` — a lost preference, not a display lag.
+  it("carries a preset another surface wrote into an unrelated pref save", async () => {
+    const { mirrorNotificationPrefs } = await import("../lib/notificationPrefs");
+    const userSettings = await import("../lib/userSettings");
+    await openPush();
+
+    mirrorNotificationPrefs({
+      ...userSettings.DEFAULT_NOTIFICATION_PREFS,
+      notification_sound: "chime",
+    });
+    await waitFor(() => {
+      expect((screen.getByTestId("pref-notification-sound") as HTMLSelectElement).value).toBe(
+        "chime",
+      );
+    });
+
+    fireEvent.click(screen.getByTestId("pref-channel-all"));
+    await waitFor(() => {
+      expect(userSettings.putNotificationPrefs).toHaveBeenCalled();
+    });
+
+    const body = (userSettings.putNotificationPrefs as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(body[1]).toEqual({
+      ...userSettings.DEFAULT_NOTIFICATION_PREFS,
+      notification_sound: "chime",
+      channel_messages_all: true,
+    });
+  });
 });
 
 describe("SettingsDrawer muted conversations — #866", () => {

@@ -54016,3 +54016,44 @@ trusts instead of the code.
 - **The samples playing offline.** The `globPatterns` extension is the
   mechanism, and it is argued from how workbox precaching works, not from a
   build inspected with the network down.
+
+### The CI red this shipped with, and the duplicate state under it
+
+The e2e above went red on the first CI run of the PR, on exactly the arm
+that reads the picker without a reload: `/beep chime`, then bare `/beep` to
+open the drawer, and the `<select>` sat at `none` through 14 polls in 10
+seconds. The sibling arm — same write, but a `page.reload()` before the
+read — was green. That pair is the whole diagnosis: the write LANDED (the
+reload proves the server has it), and the drawer could not see it.
+
+`SettingsDrawer` kept a private `prefs` signal, hydrated once at mount, and
+rendered the form from that. `/beep` writes through
+`applyNotificationSound`, which feeds the SHARED mirror the server's echo —
+a store the drawer was not reading for this key. So the picker rendered the
+value the drawer had loaded at login.
+
+This is the second instance of one defect, not a new one. #950 hit it when
+the rail picker became a second writer of `muted_targets`, and cured it by
+reading THAT ONE KEY off the mirror; the comment it left behind describes
+the mechanism accurately and predicted nothing about the next key. `/beep`
+was the next key. A third per-key patch would have bought the same deferral
+again, so the private snapshot is GONE: its only two writers were
+`refreshPrefs` and `savePrefs`, each of which already handed the identical
+value to the mirror one line later, so it was a pure duplicate of state
+that already existed — design discipline (1), and the parallel structure
+was the bug.
+
+The half the e2e did NOT catch is the worse half, and it is now pinned by
+its own unit test. `/api/user_settings/notification_prefs` is a FULL
+replace and every drawer control PUTs `{...prefs(), oneKey: value}`. With a
+stale snapshot as the base, ticking any unrelated checkbox after a `/beep`
+would have written `notification_sound: "none"` straight back over the
+choice — a lost preference rather than a late-rendering one. Deriving fixes
+both at once, which is why the cure is a deletion and not a third accessor.
+
+One behaviour changed on purpose: the form now re-renders when a user-topic
+rejoin refreshes the prefs mid-open. The controls it feeds are all
+write-on-change with no dirty state, and the two whitelist TEXT fields keep
+their own signals (seeded only by the drawer's own load), so nothing being
+typed can be clobbered — the drawer shows what the server says, which is
+the posture cic holds everywhere else.

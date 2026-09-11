@@ -93,7 +93,6 @@ import {
 } from "./lib/uploadOrchestrator";
 import { deviceClassIcon, deviceDisplayName, parseUserAgent } from "./lib/userAgent";
 import {
-  DEFAULT_NOTIFICATION_PREFS,
   getNotificationPrefs,
   getVhostSettings,
   type MutedTargets,
@@ -152,7 +151,6 @@ const SettingsDrawer: Component<Props> = (props) => {
   const [timeFmt, setTimeFmt] = createSignal<TimeFormatKey>(getTimeFormat());
   const [coloredNicklist, setColoredNicklistSig] = createSignal<boolean>(getColoredNicklist());
 
-  const [prefs, setPrefs] = createSignal<NotificationPrefs>(DEFAULT_NOTIFICATION_PREFS);
   const [devices, setDevices] = createSignal<PushDeviceSummary[]>([]);
   // #964 — the server row THIS browser registered, so its list entry can say
   // so. Proven by endpoint match (`subscriptionIdForEndpoint`), never guessed
@@ -625,10 +623,10 @@ const SettingsDrawer: Component<Props> = (props) => {
     if (t === null) return;
     try {
       const loaded = await getNotificationPrefs(t);
-      setPrefs(loaded);
       // #868 — feed the live notify path the same authoritative map the form
       // renders, so the beep obeys a pref the moment it is read, not on the
-      // next user-topic rejoin.
+      // next user-topic rejoin. Since issue 1480 the form renders THIS, and
+      // nothing else: see the note above `savePrefs`.
       mirrorNotificationPrefs(loaded);
       setChannelsOnlyText(loaded.channel_messages_only.join(", "));
       setNicksOnlyText(loaded.private_messages_only.join(", "));
@@ -736,6 +734,22 @@ const SettingsDrawer: Component<Props> = (props) => {
       .map((x) => x.trim())
       .filter((x) => x !== "");
 
+  // This form has NO private copy of the prefs, and that is the fix issue 1480
+  // owes its own CI red. It used to keep one, loaded once at mount, and #950
+  // had already patched the single key that grew a second writer
+  // (`muted_targets` ← the rail picker) by reading THAT key off the shared
+  // mirror. `/beep` made `notification_sound` the second such key and the
+  // patch did not generalise: the picker showed `none` to someone who had just
+  // typed `/beep chime`, and — worse, because it loses data rather than
+  // displaying it late — this endpoint is a FULL replace, so the next
+  // unrelated checkbox would have written that stale `none` straight back over
+  // the choice.
+  //
+  // The snapshot was never anything but a duplicate: its only two writers were
+  // the two lines below, each already handing the SAME value to the mirror.
+  // Deriving costs nothing and cannot drift, and it is what CLAUDE.md's design
+  // discipline asks for — the parallel structure WAS the bug, and a third
+  // per-key patch would only have deferred the next one.
   const savePrefs = async (next: NotificationPrefs) => {
     const t = token();
     if (t === null) return;
@@ -743,7 +757,6 @@ const SettingsDrawer: Component<Props> = (props) => {
     setPrefsError(null);
     try {
       const saved = await putNotificationPrefs(t, next);
-      setPrefs(saved);
       // #868 — mirror the server's NORMALIZED echo (not `next`): the whitelists
       // come back folded, which is the form the predicate compares against.
       mirrorNotificationPrefs(saved);
@@ -756,37 +769,34 @@ const SettingsDrawer: Component<Props> = (props) => {
   };
 
   const togglePref = (key: keyof NotificationPrefs, checked: boolean) => {
-    const current = prefs();
+    const current = notificationPrefs();
     if (typeof current[key] !== "boolean") return;
     void savePrefs({ ...current, [key]: checked });
   };
 
-  // #1480 — the drawer writes the sound through its OWN hydrated form, like
-  // every checkbox here. The `/beep` verb cannot: it holds no form, so it goes
-  // through `notificationPrefs.applyNotificationSound`, which re-GETs first.
-  // Same split as the mute picker (#950), same reason.
+  // issue 1480 — the drawer writes the sound the way it writes every checkbox
+  // here: merge one key over the mirrored map and PUT the whole thing. The
+  // `/beep` verb cannot reach that map — it runs with no drawer mounted at
+  // all — so it goes through `notificationPrefs.applyNotificationSound`, which
+  // GETs first. Same split as the mute picker (#950), same reason.
   const setNotificationSound = (sound: NotificationSound) => {
-    void savePrefs({ ...prefs(), notification_sound: sound });
+    void savePrefs({ ...notificationPrefs(), notification_sound: sound });
   };
 
   const commitChannelsOnly = () => {
-    const next = { ...prefs(), channel_messages_only: splitCsv(channelsOnlyText()) };
+    const next = { ...notificationPrefs(), channel_messages_only: splitCsv(channelsOnlyText()) };
     void savePrefs(next);
   };
 
   const commitNicksOnly = () => {
-    const next = { ...prefs(), private_messages_only: splitCsv(nicksOnlyText()) };
+    const next = { ...notificationPrefs(), private_messages_only: splitCsv(nicksOnlyText()) };
     void savePrefs(next);
   };
 
-  // #950 — the mute map comes from the SHARED mirror, not from this drawer's
-  // private `prefs()` snapshot. The drawer is mounted once and loads its form
-  // at mount (see the moduledoc): that was sound while it was the only writer
-  // of `muted_targets`, but the rail picker is a second one and it feeds the
-  // mirror the server's echo. Reading the snapshot here would show a global
-  // list missing the mute the operator just made — derive, don't duplicate.
-  // Every write still goes through `savePrefs`, whose echo lands in the same
-  // mirror, so this drawer's own picker is unchanged in behaviour.
+  // #950 — the one key that reached the mirror first, back when the rest of
+  // this form still read a private snapshot; issue 1480 moved every other read
+  // here too (see `savePrefs`). Kept as its own accessor for the `?? {}`: the
+  // key is optional on the wire and three call sites below want a map.
   const mutedTargets = (): MutedTargets => notificationPrefs().muted_targets ?? {};
 
   // #866 — the per-conversation mute list, sorted by the stored key so the
@@ -851,14 +861,14 @@ const SettingsDrawer: Component<Props> = (props) => {
   const muteConversation = (key: ChannelKey) => {
     if (key === "") return;
     void savePrefs({
-      ...prefs(),
+      ...notificationPrefs(),
       muted_targets: withConversationMute(mutedTargets(), key, null),
     });
   };
 
   const unmuteConversation = (key: ChannelKey) => {
     void savePrefs({
-      ...prefs(),
+      ...notificationPrefs(),
       muted_targets: withoutConversationMute(mutedTargets(), key),
     });
   };
@@ -2427,7 +2437,7 @@ const SettingsDrawer: Component<Props> = (props) => {
               <label class="prefs-list">
                 notification sound:
                 <select
-                  value={prefs().notification_sound ?? DEFAULT_NOTIFICATION_SOUND}
+                  value={notificationPrefs().notification_sound ?? DEFAULT_NOTIFICATION_SOUND}
                   disabled={savingPrefs()}
                   onChange={(e) =>
                     setNotificationSound(
@@ -2452,7 +2462,9 @@ const SettingsDrawer: Component<Props> = (props) => {
               <button
                 type="button"
                 class="prefs-preview"
-                onClick={() => playBeep(prefs().notification_sound ?? DEFAULT_NOTIFICATION_SOUND)}
+                onClick={() =>
+                  playBeep(notificationPrefs().notification_sound ?? DEFAULT_NOTIFICATION_SOUND)
+                }
                 data-testid="pref-notification-sound-preview"
               >
                 preview
@@ -2471,7 +2483,7 @@ const SettingsDrawer: Component<Props> = (props) => {
               <label>
                 <input
                   type="checkbox"
-                  checked={prefs().channel_messages_all}
+                  checked={notificationPrefs().channel_messages_all}
                   disabled={savingPrefs()}
                   onChange={(e) =>
                     togglePref(
@@ -2488,7 +2500,7 @@ const SettingsDrawer: Component<Props> = (props) => {
                 <input
                   type="text"
                   value={channelsOnlyText()}
-                  disabled={prefs().channel_messages_all || savingPrefs()}
+                  disabled={notificationPrefs().channel_messages_all || savingPrefs()}
                   placeholder="#sbiffo, #grappa"
                   onInput={(e) => setChannelsOnlyText((e.currentTarget as HTMLInputElement).value)}
                   onBlur={commitChannelsOnly}
@@ -2498,7 +2510,7 @@ const SettingsDrawer: Component<Props> = (props) => {
               <label>
                 <input
                   type="checkbox"
-                  checked={prefs().channel_mentions}
+                  checked={notificationPrefs().channel_mentions}
                   disabled={savingPrefs()}
                   onChange={(e) =>
                     togglePref("channel_mentions", (e.currentTarget as HTMLInputElement).checked)
@@ -2512,7 +2524,7 @@ const SettingsDrawer: Component<Props> = (props) => {
               <label>
                 <input
                   type="checkbox"
-                  checked={prefs().private_messages_all}
+                  checked={notificationPrefs().private_messages_all}
                   disabled={savingPrefs()}
                   onChange={(e) =>
                     togglePref(
@@ -2529,7 +2541,7 @@ const SettingsDrawer: Component<Props> = (props) => {
                 <input
                   type="text"
                   value={nicksOnlyText()}
-                  disabled={prefs().private_messages_all || savingPrefs()}
+                  disabled={notificationPrefs().private_messages_all || savingPrefs()}
                   placeholder="alice, bob"
                   onInput={(e) => setNicksOnlyText((e.currentTarget as HTMLInputElement).value)}
                   onBlur={commitNicksOnly}
@@ -2547,7 +2559,7 @@ const SettingsDrawer: Component<Props> = (props) => {
               <label>
                 <input
                   type="checkbox"
-                  checked={prefs().presence_online}
+                  checked={notificationPrefs().presence_online}
                   disabled={savingPrefs()}
                   onChange={(e) =>
                     togglePref("presence_online", (e.currentTarget as HTMLInputElement).checked)
@@ -2559,7 +2571,7 @@ const SettingsDrawer: Component<Props> = (props) => {
               <label>
                 <input
                   type="checkbox"
-                  checked={prefs().presence_offline}
+                  checked={notificationPrefs().presence_offline}
                   disabled={savingPrefs()}
                   onChange={(e) =>
                     togglePref("presence_offline", (e.currentTarget as HTMLInputElement).checked)

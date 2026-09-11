@@ -98,10 +98,10 @@ export const mirrorNotificationPrefs = exports_.mirrorNotificationPrefs;
 export const refreshNotificationPrefs = exports_.refreshNotificationPrefs;
 
 // #950 — the prefs WRITE verb for callers outside the settings drawer (the
-// rail mute picker; the `/beep` verb since #1480). The drawer holds its own
-// hydrated copy of the prefs form and PUTs that; a rail tap or a typed command
-// holds nothing, so this verb GETs the authoritative map first, merges the one
-// key, and PUTs the result.
+// rail mute picker; the `/beep` verb since #1480). An OPEN drawer has hydrated
+// this mirror from the server and merges its one key over it; a rail tap or a
+// typed command can run with no drawer ever opened, so this verb GETs the
+// authoritative map first, merges the one key, and PUTs the result.
 //
 // The GET is not belt-and-braces. `notificationPrefs()` is the DEFAULT map
 // until a user-topic (re)join hydrates it, and the endpoint is a FULL replace:
@@ -149,9 +149,9 @@ export function clearConversationMute(key: ChannelKey): Promise<void> {
 }
 
 /**
- * #1480 — select the in-app beep preset, for the `/beep` verb. The settings
- * drawer does NOT use this: it PUTs its own hydrated form, like every other
- * control on that page.
+ * issue 1480 — select the in-app beep preset, for the `/beep` verb. The
+ * settings drawer does NOT use this: it merges over the mirror it can see and
+ * PUTs that, like every other control on that page.
  *
  * Rejects on a failed round-trip; the caller turns that into the line the
  * operator reads.
