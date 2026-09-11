@@ -158,6 +158,23 @@ vi.mock("../lib/settingsNav", () => ({
   settingsOpenTick: vi.fn(() => 0),
 }));
 
+// #1480 — `/beep` writes a server pref and plays the preset it just chose.
+// Both seams are mocked: the write so the arm does not reach `fetch`, and the
+// player because jsdom has no Web Audio at all, so the real one would be a
+// silent no-op and the confirmation half of the arm would be untestable.
+vi.mock("../lib/notificationPrefs", () => ({
+  applyNotificationSound: vi.fn().mockResolvedValue(undefined),
+  applyConversationMute: vi.fn().mockResolvedValue(undefined),
+  clearConversationMute: vi.fn().mockResolvedValue(undefined),
+  notificationPrefs: vi.fn(() => ({})),
+  mirrorNotificationPrefs: vi.fn(),
+  refreshNotificationPrefs: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../lib/beep", () => ({
+  playBeep: vi.fn(),
+}));
+
 // #248 — compose marks a /lusers request solicited so the incoming
 // bundle surfaces the card (the connect-welcome auto-emit does not).
 vi.mock("../lib/lusersBundle", () => ({
@@ -5111,6 +5128,72 @@ describe("compose submit — /credits (#1958)", () => {
   });
 });
 
+// #1480 — `/beep` is the shortcut into the notification-sound preference. It
+// PERSISTS (server round-trip, converges across devices) rather than flipping
+// a local flag, and it plays what it selected: the confirmation is the sound,
+// and that tap is also the gesture that un-suspends the AudioContext.
+describe("compose submit — /beep (#1480)", () => {
+  it("/beep <preset> persists the preset, plays it, and confirms by name", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const prefs = await import("../lib/notificationPrefs");
+    const beep = await import("../lib/beep");
+    const sb = await import("../lib/scrollback");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/beep chime");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(prefs.applyNotificationSound).toHaveBeenCalledWith("chime");
+    expect(beep.playBeep).toHaveBeenCalledWith("chime");
+    expect(sb.sendMessage).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: "beep: chime" });
+  });
+
+  it("/beep off persists silence — and does not send anything to the network", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const prefs = await import("../lib/notificationPrefs");
+    const sb = await import("../lib/scrollback");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/beep off");
+    await compose.submit(k, "freenode", "#a");
+
+    expect(prefs.applyNotificationSound).toHaveBeenCalledWith("none");
+    expect(sb.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("bare /beep opens the settings sub-page and writes nothing", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const nav = await import("../lib/settingsNav");
+    const prefs = await import("../lib/notificationPrefs");
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/beep");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(nav.requestOpenSettings).toHaveBeenCalledWith("push");
+    expect(prefs.applyNotificationSound).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("a rejected write surfaces as an error instead of a confirmation", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const prefs = await import("../lib/notificationPrefs");
+    const beep = await import("../lib/beep");
+    vi.mocked(prefs.applyNotificationSound).mockRejectedValueOnce(new Error("save_failed"));
+    const compose = await import("../lib/compose");
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/beep icq");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    // No silent-swallow: a preference that did not land must not be confirmed,
+    // and the sound must not play either — it would be the one piece of
+    // feedback claiming the write worked.
+    expect(result).not.toEqual({ ok: 'beep: ICQ "uh-oh"' });
+    expect(beep.playBeep).not.toHaveBeenCalled();
+  });
+});
+
 // #356 — watch-family dispatch: keyword highlight (/hilight add, /dehilight
 // del, /highlight alias) + presence (/notify, /watch alias) as classic-IRC
 // irssi-direct verbs; a bare form opens the watch-lists settings section
@@ -5693,6 +5776,7 @@ const DISPATCH_CASE_LABELS = [
   "away",
   "ban",
   "banlist",
+  "beep",
   "connect",
   "ctcp",
   "cycle",
@@ -5845,6 +5929,10 @@ const DISPATCH_DRAFTS: ReadonlyArray<{ kind: SlashCommand["kind"]; draft: string
   { kind: "unalias", draft: "/unalias hi" },
   { kind: "open-settings", draft: "/watch" },
   { kind: "open-credits", draft: "/credits" },
+  // #1480 — a NAMED preset, not `on`/`off`: those two resolve in the parser,
+  // so a row using either would pin the same arm while leaving the alias
+  // resolution itself outside the net (that half lives in slashCommands.test).
+  { kind: "beep", draft: "/beep chime" },
   { kind: "service-modal", draft: "/ns" },
   { kind: "error", draft: "/nosuchverb" },
 ];
@@ -5856,12 +5944,14 @@ const MOCKED_SEAM_MODULES = [
   "../lib/aliasList",
   "../lib/api",
   "../lib/banlistModal",
+  "../lib/beep",
   "../lib/channelDirectory",
   "../lib/creditsModal",
   "../lib/members",
   "../lib/mentionsWindow",
   "../lib/modeModal",
   "../lib/networks",
+  "../lib/notificationPrefs",
   "../lib/queryWindows",
   "../lib/scrollback",
   "../lib/selection",
@@ -5941,12 +6031,12 @@ describe("#1396 — dispatch characterization over every arm", () => {
       misparsed,
     }).toMatchInlineSnapshot(`
       {
-        "arms": 64,
+        "arms": 65,
         "armsWithNoDraft": [],
         "draftsNamingNoArm": [],
         "duplicated": [],
         "misparsed": [],
-        "rows": 64,
+        "rows": 65,
       }
     `);
   });
@@ -6068,6 +6158,17 @@ describe("#1396 — dispatch characterization over every arm", () => {
           ],
           "result": {
             "ok": true,
+          },
+        },
+        "beep": {
+          "effects": [
+            "aliasList.aliases()",
+            "beep.playBeep("chime")",
+            "networks.networkIdBySlug("freenode")",
+            "notificationPrefs.applyNotificationSound("chime")",
+          ],
+          "result": {
+            "ok": "beep: chime",
           },
         },
         "connect": {
@@ -6759,7 +6860,7 @@ describe("#1396 — dispatch characterization over every arm", () => {
           "aliasList.aliases()",
           "networks.networkIdBySlug("freenode")",
         ],
-        "arms": 64,
+        "arms": 65,
         "indistinguishablePairs": [
           [
             "ame",

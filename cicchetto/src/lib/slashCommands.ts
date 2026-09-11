@@ -1,4 +1,11 @@
 import { DEFAULT_CHANTYPES, isChannelName } from "./chantypes";
+import {
+  DEFAULT_NOTIFICATION_SOUND,
+  isNotificationSound,
+  NOTIFICATION_SOUNDS,
+  type NotificationSound,
+  OPT_IN_NOTIFICATION_SOUND,
+} from "./notificationSound";
 
 // Pure slash-command parser for cicchetto's compose box.
 //
@@ -242,7 +249,12 @@ export type SlashCommand =
   // Opening the drawer IS the feedback. `section` widens as sub-pages gain
   // bare-verb deep-links; it must stay assignable to settingsNav's
   // SettingsSubPage.
-  | { kind: "open-settings"; section: "watchlists" | "aliases" | "ignores" }
+  | { kind: "open-settings"; section: "watchlists" | "aliases" | "ignores" | "push" }
+  // #1480 — `/beep <preset>` selects the in-app notification sound. Carries the
+  // NARROWED preset name, so the handler cannot be handed a string the server
+  // would 422: `on`/`off` are resolved to their preset here, in the parser,
+  // where every other alias-to-value mapping in this file lives.
+  | { kind: "beep"; sound: NotificationSound }
   // #1958 — a bare `/credits` opens the end titles: the same modal the
   // settings drawer's last entry opens, one verb deep instead of three taps.
   // It carries nothing — the modal is a module-singleton signal and the verb
@@ -322,6 +334,40 @@ function parseIgnore(_verb: string, rest: string): SlashCommand {
   const [mask] = tokens(rest);
   if (mask === undefined) return { kind: "open-settings", section: "ignores" };
   return { kind: "ignore", action: "add", mask };
+}
+
+// #1480 — `/beep`, the shortcut into the notification-sound preference. vjt's
+// shape, verbatim (2026-09-11): «/beep nudo ti apre i settinfs», «on è il beep
+// che abbiamo ora il default, off è none, e preset è il preset».
+//
+//   /beep            → the settings sub-page that holds the picker
+//   /beep on         → the 440 Hz tone cic shipped before this issue
+//   /beep off        → `none`
+//   /beep <preset>   → that preset by name
+//
+// `on` is NOT a synonym for "the default": the default is silence, and `on` is
+// what a subject types to opt in. Keeping them separate constants is what
+// stops a later change of default from silently redefining `/beep on`.
+//
+// A generic `/set <key> <value>` was proposed and killed by vjt on his own
+// call the same afternoon («/set è un puttanaio lasciamo perdere») — do not
+// grow this into one.
+function parseBeep(verb: string, rest: string): SlashCommand {
+  const [name] = tokens(rest);
+  if (name === undefined) return { kind: "open-settings", section: "push" };
+
+  const lowered = name.toLowerCase();
+  if (lowered === "on") return { kind: "beep", sound: OPT_IN_NOTIFICATION_SOUND };
+  if (lowered === "off") return { kind: "beep", sound: DEFAULT_NOTIFICATION_SOUND };
+  if (isNotificationSound(lowered)) return { kind: "beep", sound: lowered };
+
+  // Name the whole set rather than "unknown preset": the operator asked for a
+  // sound by name and the answer they need is which names exist.
+  return {
+    kind: "error",
+    verb,
+    message: `unknown sound: ${name} — try on, off, or one of: ${NOTIFICATION_SOUNDS.join(", ")}`,
+  };
 }
 
 function parseUnignore(verb: string, rest: string): SlashCommand {
@@ -953,6 +999,11 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
   unignore: (verb, rest) => parseUnignore(verb, rest),
   notify: (verb, rest) => parseNotify(verb, rest),
   watch: (verb, rest) => parseNotify(verb, rest),
+
+  // #1480 — the notification-sound shortcut. Registered as an ordinary
+  // builtin, so it inherits the `//beep` literal escape, #427 alias shadowing
+  // and the dispatch characterization net for free.
+  beep: (verb, rest) => parseBeep(verb, rest),
 
   // #356 — keyword highlight. /hilight is canonical (irssi spelling on the
   // host /usr/share/irssi/help/), /dehilight removes, /highlight kept as an

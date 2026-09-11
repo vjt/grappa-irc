@@ -3,6 +3,7 @@ import { setToken } from "../lib/auth";
 import { channelKey } from "../lib/channelKey";
 import {
   applyConversationMute,
+  applyNotificationSound,
   clearConversationMute,
   mirrorNotificationPrefs,
   notificationPrefs,
@@ -305,5 +306,62 @@ describe("conversation mute writer — #950", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 500 }));
 
     await expect(applyConversationMute(NOISY, 1_800_000_600)).rejects.toBeDefined();
+  });
+
+  // #1480 — the sound writer rides the SAME GET-merge-PUT verb, so it inherits
+  // the additivity above rather than restating it. What is asserted here is
+  // only what is new: the key it moves, and that it moves nothing else.
+  describe("notification sound writer — #1480", () => {
+    it("PUTs the chosen preset without disturbing the rest of the map", async () => {
+      const spy = mockGetThenPut();
+
+      await applyNotificationSound("xp_notify");
+
+      const body = putBody(spy);
+      expect(body.notification_sound).toBe("xp_notify");
+      // The additive property, on this verb: an opted-in subject typing
+      // `/beep icq` must not lose the mute or the whitelist they configured
+      // in the drawer.
+      expect(body.muted_targets).toMatchObject({ [ALREADY]: { until: null } });
+      expect(body.channel_messages_only).toEqual(["#italia"]);
+      expect(body.channel_mentions).toBe(false);
+    });
+
+    it("adopts the echo so the live beep path plays the new preset at once", async () => {
+      mockGetThenPut();
+
+      await applyNotificationSound("chime");
+
+      expect(notificationPrefs().notification_sound).toBe("chime");
+    });
+
+    it("propagates a failed write instead of reporting a preset that never landed", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("nope", { status: 500 }));
+
+      await expect(applyNotificationSound("chime")).rejects.toBeDefined();
+    });
+  });
+});
+
+// #1480 — the identity reset is what stops account B inheriting account A's
+// sound. It has the same shape as the rest of the store (one signal, reset to
+// the server defaults on identity change), but it is worth its own assertion:
+// the default is SILENCE, so a reset that missed this key would leave the new
+// account audibly notifying on a preference it never chose.
+describe("notification sound — identity scoping (#1480)", () => {
+  it("a logout returns the sound to silence, not to the previous account's pick", async () => {
+    vi.resetModules();
+    const fresh = await import("../lib/notificationPrefs");
+    const auth = await import("../lib/auth");
+
+    fresh.mirrorNotificationPrefs({
+      ...DEFAULT_NOTIFICATION_PREFS,
+      notification_sound: "xp_exclamation",
+    });
+    expect(fresh.notificationPrefs().notification_sound).toBe("xp_exclamation");
+
+    auth.setToken(null);
+
+    expect(fresh.notificationPrefs().notification_sound).toBe("none");
   });
 });

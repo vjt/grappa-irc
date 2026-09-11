@@ -1464,6 +1464,49 @@ describe("parseSlash — /notify + /watch presence (#356: irssi-direct, bare →
   });
 });
 
+// #1480 — `/beep`, vjt's shape: bare opens the settings, `on`/`off` are
+// shorthands for two presets, anything else is a preset name.
+describe("parseSlash — /beep (#1480)", () => {
+  it("bare /beep opens the settings sub-page that holds the picker", () => {
+    expect(parseSlash("/beep")).toEqual({ kind: "open-settings", section: "push" });
+  });
+
+  it("/beep on selects the 440 Hz tone, NOT the default", () => {
+    // The discriminating pair. `on` and the DEFAULT are different values since
+    // this issue: the shipped state is silence and `on` is the opt-in. A
+    // handler that resolved `on` to "the default preset" would make `/beep on`
+    // mean `/beep off`, and both tests below would still pass individually.
+    expect(parseSlash("/beep on")).toEqual({ kind: "beep", sound: "tone" });
+  });
+
+  it("/beep off selects silence", () => {
+    expect(parseSlash("/beep off")).toEqual({ kind: "beep", sound: "none" });
+  });
+
+  it("/beep <preset> selects that preset by name", () => {
+    expect(parseSlash("/beep icq")).toEqual({ kind: "beep", sound: "icq" });
+    expect(parseSlash("/beep xp_notify")).toEqual({ kind: "beep", sound: "xp_notify" });
+  });
+
+  it("the preset name is case-insensitive, like every other verb argument here", () => {
+    expect(parseSlash("/beep XP_Ding")).toEqual({ kind: "beep", sound: "xp_ding" });
+  });
+
+  it("an unknown name errors and names the set rather than just refusing", () => {
+    const result = parseSlash("/beep airhorn");
+    expect(result.kind).toBe("error");
+    if (result.kind !== "error") throw new Error("unreachable");
+    // The operator asked for a sound by name; "unknown preset" would send them
+    // to the settings drawer to find out what the names are.
+    expect(result.message).toContain("airhorn");
+    expect(result.message).toContain("xp_ding");
+  });
+
+  it("//beep is a literal message, not the verb (the #427 escape holds)", () => {
+    expect(parseSlash("//beep off")).toEqual({ kind: "privmsg", body: "/beep off" });
+  });
+});
+
 describe("#385 — expandAlias grammar", () => {
   it("positional $1 substitution (whois-with-idle motivating example)", () => {
     // /wii foo → whois foo foo. This also pins the NO-implicit-append half of

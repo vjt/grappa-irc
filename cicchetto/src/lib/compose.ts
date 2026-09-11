@@ -10,6 +10,7 @@ import { fanOutCommand } from "./commands/fanout";
 import { watchlistCommand } from "./commands/highlight";
 import {
   aliasDefineCommand,
+  beepCommand,
   errorCommand,
   openCreditsCommand,
   openSettingsCommand,
@@ -1152,6 +1153,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         }
         case "open-credits": {
           result = await openCreditsCommand(cmd, ctx);
+          break;
+        }
+        case "beep": {
+          result = await beepCommand(cmd, ctx);
           break;
         }
         case "quote": {

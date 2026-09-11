@@ -30,6 +30,7 @@ import { token } from "./auth";
 import type { ChannelKey } from "./channelKey";
 import { withConversationMute, withoutConversationMute } from "./conversationMute";
 import { identityScopedStore } from "./identityScopedStore";
+import type { NotificationSound } from "./notificationSound";
 import {
   DEFAULT_NOTIFICATION_PREFS,
   getNotificationPrefs,
@@ -96,10 +97,11 @@ export const notificationPrefs = exports_.notificationPrefs;
 export const mirrorNotificationPrefs = exports_.mirrorNotificationPrefs;
 export const refreshNotificationPrefs = exports_.refreshNotificationPrefs;
 
-// #950 — the mute WRITE verb for callers outside the settings drawer (the rail
-// picker). The drawer holds its own hydrated copy of the prefs form and PUTs
-// that; a rail tap holds nothing, so this verb GETs the authoritative map
-// first, merges the one key, and PUTs the result.
+// #950 — the prefs WRITE verb for callers outside the settings drawer (the
+// rail mute picker; the `/beep` verb since #1480). The drawer holds its own
+// hydrated copy of the prefs form and PUTs that; a rail tap or a typed command
+// holds nothing, so this verb GETs the authoritative map first, merges the one
+// key, and PUTs the result.
 //
 // The GET is not belt-and-braces. `notificationPrefs()` is the DEFAULT map
 // until a user-topic (re)join hydrates it, and the endpoint is a FULL replace:
@@ -108,19 +110,25 @@ export const refreshNotificationPrefs = exports_.refreshNotificationPrefs;
 // undoing their settings. One extra round-trip on a rare, deliberate action
 // buys a write that is additive by construction.
 //
-// Rejects rather than swallowing: the caller decides what to say about a mute
+// Rejects rather than swallowing: the caller decides what to say about a write
 // that did not land (CLAUDE.md — no silent-swallow at boundaries).
-async function writeMutedTargets(
-  mutate: (muted: MutedTargets | undefined) => MutedTargets,
+async function writeNotificationPrefs(
+  mutate: (current: NotificationPrefs) => NotificationPrefs,
 ): Promise<void> {
   const t = token();
   if (t === null) throw new Error("no session");
   const current = await getNotificationPrefs(t);
-  const saved = await putNotificationPrefs(t, {
+  const saved = await putNotificationPrefs(t, mutate(current));
+  mirrorNotificationPrefs(saved);
+}
+
+function writeMutedTargets(
+  mutate: (muted: MutedTargets | undefined) => MutedTargets,
+): Promise<void> {
+  return writeNotificationPrefs((current) => ({
     ...current,
     muted_targets: mutate(current.muted_targets),
-  });
-  mirrorNotificationPrefs(saved);
+  }));
 }
 
 /**
@@ -138,4 +146,16 @@ export function applyConversationMute(key: ChannelKey, until: number | null): Pr
 /** Unmute `key`, whatever its expiry was. */
 export function clearConversationMute(key: ChannelKey): Promise<void> {
   return writeMutedTargets((muted) => withoutConversationMute(muted, key));
+}
+
+/**
+ * #1480 — select the in-app beep preset, for the `/beep` verb. The settings
+ * drawer does NOT use this: it PUTs its own hydrated form, like every other
+ * control on that page.
+ *
+ * Rejects on a failed round-trip; the caller turns that into the line the
+ * operator reads.
+ */
+export function applyNotificationSound(sound: NotificationSound): Promise<void> {
+  return writeNotificationPrefs((current) => ({ ...current, notification_sound: sound }));
 }
