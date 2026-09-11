@@ -1,5 +1,4 @@
 import { createEffect, createMemo, createSignal, on, untrack } from "solid-js";
-import { ownNickForNetwork } from "./api";
 import { token } from "./auth";
 import { casemappingForSlug } from "./casemapping";
 import { type ChannelKey, canonicalChannel, channelKey, decodeChannelKey } from "./channelKey";
@@ -23,6 +22,7 @@ import {
   wasLoaded,
 } from "./scrollback";
 import { countsAsUnreadEvent, type UnreadRowContext, unreadMessagesAfter } from "./unreadCount";
+import { unreadRowContextFor } from "./unreadRowContext";
 import {
   HOME_WINDOW_NAME,
   HOME_WINDOW_SLUG,
@@ -427,7 +427,6 @@ const exports = identityScopedStore((onIdentityChange) => {
     // CONTENT from the count (see the content-row loop below). Read reactively
     // so a NICK change / login re-runs the count. Per-key resolution uses
     // `networkBySlug(slug)` inside the loop (a nick is per-network).
-    const me = user();
 
     const result: Record<ChannelKey, Computed> = {};
 
@@ -489,18 +488,14 @@ const exports = identityScopedStore((onIdentityChange) => {
       // #576 — the per-network own nick for this key's network. A nick is
       // per-network (`net.nick`), so resolve it per key; null when the
       // network isn't known yet (nickEquals is null-safe → no exclusion).
-      const net = networkBySlug(decoded.slug);
-      const ownNick = net ? ownNickForNetwork(net, me) : null;
-      // The own-nick SELF window (pane keyed to your own nick) is the ONE
-      // window where own content is legitimate payload — a note-to-self —
-      // so it is NOT excluded there (#396). Mirrors the server self-window
-      // carve-out in `Scrollback.exclude_own_authored/3`.
-      const casemapping = casemappingForNetwork(net?.id ?? null);
-      const ctx: UnreadRowContext = {
-        ownNick,
-        casemapping,
-        isSelfWindow: nickEquals(decoded.name, ownNick, casemapping),
-      };
+      // issue 2045 — built by the SHARED resolver, which is also what the
+      // far-behind maintenance in `scrollback.ts` now calls. It used to be
+      // assembled inline right here, and a second hand-built copy over there
+      // would have been the very drift that issue is about: two spellings of
+      // "who am I in this window" feeding two counts meant to be one number.
+      // The per-network nick, the per-network casemapping and the #396
+      // self-window carve-out all live in `unreadRowContextFor`.
+      const ctx: UnreadRowContext = unreadRowContextFor(decoded.slug, decoded.name);
       // #239 — skip rows the presence filter hides for this channel: the pane
       // never renders them, so counting them would leave a badge the operator
       // can never clear by reading. Same predicate the pane's `rows()` filter

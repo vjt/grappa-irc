@@ -17,7 +17,8 @@ import { membersByChannel } from "./members";
 import { presenceRowVisible } from "./presenceFilter";
 import { getReadCursor, setReadCursor } from "./readCursor";
 import { getResumeCursor, recordSeen } from "./reconnectBackfill";
-import type { UnreadMeasurement } from "./unreadCount";
+import { countsAsUnreadMessage, type UnreadMeasurement } from "./unreadCount";
+import { unreadRowContextFor } from "./unreadRowContext";
 
 // Per-channel scrollback store: the source of truth for messages
 // rendered in `ScrollbackPane`. Module-singleton signal store mirroring
@@ -279,7 +280,17 @@ export const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): C
   // #2037 — the content-only twins, over the SAME slice the raw counts use so
   // the two can never describe different regions.
   const unreadRows = firstUnread === -1 ? [] : rows.slice(firstUnread);
-  const contentCount = unreadRows.filter((m) => isContentKind(m.kind)).length;
+  // issue 2045 — the MESSAGES bucket asks `countsAsUnreadMessage`, not a bare
+  // `isContentKind`. This number opens the far-behind record when the PRUNE is
+  // what puts the window there, and the record's other producer — the server's
+  // `count_after_split/6` — has always excluded own-authored content
+  // (`exclude_own_authored/3`, #576/#532 A). Counting it here made the same
+  // window report a different figure depending on which door it came in by,
+  // and the two differ by little enough to look like one number.
+  const ctx = decoded
+    ? unreadRowContextFor(decoded.slug, decoded.name)
+    : { ownNick: null, casemapping: "ascii" as const, isSelfWindow: false };
+  const contentCount = unreadRows.filter((m) => countsAsUnreadMessage(m, ctx)).length;
   // issue 2071 — the EVENTS bucket, and it is NOT `unreadCount - contentCount`.
   // That subtraction is the raw remainder, and on a denoised window the raw
   // remainder is mostly rows the pane never renders. See `eventHeld`.
@@ -682,6 +693,9 @@ const exports = identityScopedStore((onIdentityChange) => {
   // keeps the newest CAP rows of the union and the loop could keep a late
   // arrival while having already dropped a newer row.
   const appendPageToScrollback = (key: ChannelKey, page: ScrollbackMessage[]): void => {
+    // issue 2045 — decoded once for the whole page: the operator's identity in
+    // this window does not change between two rows of one batch.
+    const decodedKey = decodeChannelKey(key);
     if (page.length === 0) return;
     // S20: track whether the ring cap evicted older rows so we can reset the
     // loadMore exhausted latch below. Computed inside the pure updater,
@@ -745,10 +759,21 @@ const exports = identityScopedStore((onIdentityChange) => {
         // `Grappa.PresenceFilter.Resolver`, so the population has to match on
         // both halves, and only one half can diverge.
         const memberCount = memberCountFor(key);
+        // issue 2045 — the CONTENT half asks the same predicate the seed above
+        // asks, for the same reason. Past the retention bound the record grows
+        // by what ARRIVED, so this is where a line the operator sent from
+        // ANOTHER DEVICE lands: echoed to every client, past this one's read
+        // cursor, and counted by a pane that has no idea it is its own. Fixing
+        // only the seed would have left the number right at arm-time and wrong
+        // three messages later, which is worse than being consistently wrong.
+        const arrivalCtx = decodedKey
+          ? unreadRowContextFor(decodedKey.slug, decodedKey.name)
+          : { ownNick: null, casemapping: "ascii" as const, isSelfWindow: false };
         for (const m of fresh) {
           if (m.id <= previousNewest) continue;
-          if (isContentKind(m.kind)) arrivedContent++;
-          else if (presenceRowVisible(key, memberCount, m.kind)) arrivedEvents++;
+          if (isContentKind(m.kind)) {
+            if (countsAsUnreadMessage(m, arrivalCtx)) arrivedContent++;
+          } else if (presenceRowVisible(key, memberCount, m.kind)) arrivedEvents++;
         }
         const capped = capScrollbackRing(key, next);
         evicted = capped.rows.length < next.length;
