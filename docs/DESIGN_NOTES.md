@@ -53010,3 +53010,87 @@ different term, not denoise-specific, and not measured. Reaching
 per-network own nick, which is `networks.ts`, which is the documented circular
 import pair with `selection.ts` — so it is a slice of its own, not a line to
 slip in here.
+<!-- entry #2041 -->
+
+---
+
+## 2026-09-11 — #2041: one IME guard for both commit surfaces, and what it does not claim
+
+`ComposeBox` (Enter sends, #974) and `TopicBar`'s modal editor (Enter sets the
+topic, issue 2035) both treat Enter as a commit key, and neither asked
+`KeyboardEvent.isComposing`. With a compose-based input method — Japanese,
+Chinese, Korean — the Enter that COMMITS THE CANDIDATE reaches the page as an
+ordinary `keydown` with `key: "Enter"`, so both surfaces fired their verb on a
+half-typed line. The `preventDefault` each one calls made it worse than a
+spurious send: it ate the keystroke the IME was waiting for, so the word was
+never finished either. `Shift+Enter` inherited the same fault on both surfaces,
+because the 2026-08-07 (#974) and 2026-09-10 (issue 2035) rulings made EVERY
+Enter a commit, modifier included.
+
+**One predicate, not two guards.** `cicchetto/src/lib/imeComposition.ts`
+exports `isComposingKeystroke/1` and both surfaces call it. The expression it
+wraps is one property read and buys nothing on its own — what the module hosts
+is the DECISION, with one home instead of three. That is the point of the
+issue rather than a tidiness preference: it was filed on both surfaces at once
+precisely because the Enter chord had already grown a second semantics on a
+second surface without the first one's guard travelling with it, and a cure
+applied to one of them would have reproduced that split one layer down.
+
+**Three sites, not two.** `lib/keybindings.ts` — the single global keydown
+listener — already consulted `e.isComposing` inline, on the irssi-shaped
+printable-key auto-focus redirect, since before either Enter ruling. It is
+routed through the shared predicate here with no behaviour change, so the
+surface that HAD the check cannot drift from the two that just got it. Its
+existing test ("IME composition keys do NOT dispatch insertIntoCompose") stays
+green and is the evidence the substitution is inert.
+
+**The guard sits ABOVE the chord table, not inside the Enter branch**, and the
+placement is deliberate on both surfaces. Every branch in `ComposeBox`'s
+handler is a verb that competes with the IME for the keystroke: Enter commits
+a candidate, and the arrows WALK THE CANDIDATE LIST while `ArrowUp`/`ArrowDown`
+there walk the send history. One guard at the top is simultaneously the
+smaller diff and the wider fix. On `TopicBar` the same placement is what keeps
+the two handlers one shape.
+
+### What is NOT claimed
+
+The issue was filed with its own "not claimed" section and this entry does not
+quietly upgrade it.
+
+- **No measurement against a real IME.** Nobody typed Japanese into either box
+  and watched what arrives. The cure is a read of the handlers and of the spec.
+- **The tests are SYNTHETIC.** They dispatch a `KeyboardEvent` carrying
+  `isComposing: true` under jsdom. That is not an input method: it asserts what
+  the handler does with the flag, never that a real IME on a real engine sets
+  it on the commit Enter. The negative control (a plain Enter with
+  `isComposing: false` still submits) is what keeps the guard from being a mute,
+  and the pre-existing `keybindings` test is the evidence the flag genuinely
+  propagates through jsdom and discriminates — but both live on the same
+  synthetic side of the line.
+- **No measurement on a real browser at all.** There is no e2e arm; Playwright
+  can synthesise a `CompositionEvent`, which would be the same simulation one
+  layer out.
+- **No claim this ever bit a user of this instance.**
+
+### `keyCode === 229` is deliberately absent, and that is a decision, not a finding
+
+The legacy fallback for engines that signalled a composition only through
+`keyCode` was NOT added. We did not measure whether any engine cic supports
+still needs it, and the absence is not evidence that none does. What IS on the
+record: the declared build target is `es2022` (`tsconfig.json`,
+`vite.config.ts`), the e2e matrix is chromium + webkit, `isComposing` alone is
+already shipped prior art in `keybindings.ts`, and `keyCode` is deprecated. If
+a real IME is ever observed committing with `isComposing` false, the fallback
+belongs in `imeComposition.ts` — added once, for all three surfaces, with the
+measurement written beside it. Adding it now by reflex would have put an
+unmeasured branch in the one module whose job is to hold the measured decision.
+
+### Named and not cured
+
+`keybindings.ts` handles Tab (nick-complete, compose-input-gated) and Escape
+(the #232 single overlay authority) ABOVE its composition check, so both still
+fire during a composition. Whether that is wrong is a real question — some IMEs
+spend Tab on candidate selection, and Escape cancels a composition — but it is
+a different surface with a different authority (#232 deleted every per-dialog
+Esc handler to get there, and gating the global one is not a line to slip into
+this slice). Unmeasured, named here so it is not rediscovered as new.
