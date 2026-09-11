@@ -121,11 +121,17 @@ defmodule Grappa.Session.DirectoryIngest do
   Build the idle ingest from `t:Grappa.Session.start_opts/0`, taking the
   struct's config defaults for anything the caller does not pin.
 
-  Same shape and same opt-key spelling as before the extraction, so a test
-  that pinned `:directory_ingest_batch` keeps working. Shaped after its
-  slice-1 sibling `Deps.from_opts/2`, but deliberately NOT strict like it:
-  these are numeric tuning knobs with real production defaults, not
-  injected capabilities whose absence is a silent no-op (#1398).
+  Same opt-key spelling as before the #1390 extraction for the two knobs
+  that remain. The third, `:directory_ingest_batch`, is GONE with the
+  mid-stream flush it sized (issue 2046) — and because this reader is
+  `Map.get`, a caller still passing it is silently IGNORED rather than
+  rejected. Stated because that is the cost of the non-strict shape below:
+  a stale plan does not crash, it just stops meaning anything.
+
+  Shaped after its slice-1 sibling `Deps.from_opts/2`, but deliberately NOT
+  strict like it: these are numeric tuning knobs with real production
+  defaults, not injected capabilities whose absence is a silent no-op
+  (#1398).
   """
   @spec from_opts(map()) :: t()
   def from_opts(opts) when is_map(opts) do

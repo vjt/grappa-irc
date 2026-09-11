@@ -227,8 +227,10 @@ defmodule Grappa.ChannelDirectory do
         total: fragment("count(*) over ()")
       })
 
+    paged = from(r in subquery(inner))
+
     rows =
-      from(r in subquery(inner))
+      paged
       |> order_for(sort)
       |> apply_cursor(sort, cursor)
       |> limit(^(limit + 1))
@@ -247,14 +249,26 @@ defmodule Grappa.ChannelDirectory do
   end
 
   @spec envelope([map()], Ecto.Query.t(), Ecto.Query.t()) :: {non_neg_integer(), DateTime.t() | nil}
-  defp envelope([%{total: total, captured_at: captured_at} | _], _inner, _base),
+  defp envelope([%{total: total, captured_at: captured_at} | _], _, _),
     do: {total, captured_at}
 
   defp envelope([], inner, base) do
-    case Repo.one(from(r in subquery(inner), limit: 1)) do
+    one_row = from(r in subquery(inner), limit: 1)
+
+    case Repo.one(one_row) do
       %{total: total, captured_at: captured_at} -> {total, captured_at}
-      nil -> {0, Repo.one(from(e in base, select: max(e.captured_at)))}
+      nil -> {0, snapshot_stamp(base)}
     end
+  end
+
+  # The partition's stamp, read WITHOUT the search: the one value the page
+  # cannot supply when it comes back empty, and the one that separates "your
+  # search found nothing in a real list" from "there is no list".
+  @spec snapshot_stamp(Ecto.Query.t()) :: DateTime.t() | nil
+  defp snapshot_stamp(base) do
+    base
+    |> select([e], max(e.captured_at))
+    |> Repo.one()
   end
 
   defp maybe_search(query, nil), do: query
@@ -306,11 +320,11 @@ defmodule Grappa.ChannelDirectory do
   # beside `total == 0` can only be a search that matched nothing — a `q`
   # parameter would be re-stating a fact these two already carry.
   @spec status_of(DateTime.t() | nil, non_neg_integer(), boolean(), integer()) :: status()
-  defp status_of(nil, _total, true, _ttl_ms), do: :loading
-  defp status_of(nil, _total, false, _ttl_ms), do: :unknown
-  defp status_of(%DateTime{}, 0, _refreshing?, _ttl_ms), do: :no_results
+  defp status_of(nil, _, true, _), do: :loading
+  defp status_of(nil, _, false, _), do: :unknown
+  defp status_of(%DateTime{}, 0, _, _), do: :no_results
 
-  defp status_of(%DateTime{} = captured_at, _total, _refreshing?, ttl_ms) do
+  defp status_of(%DateTime{} = captured_at, _, _, ttl_ms) do
     age_ms = DateTime.diff(DateTime.utc_now(), captured_at, :millisecond)
     if age_ms <= ttl_ms, do: :fresh, else: :stale
   end

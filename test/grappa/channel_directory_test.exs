@@ -107,16 +107,14 @@ defmodule Grappa.ChannelDirectoryTest do
     assert %{total: 501, captured_at: ca, status: :fresh} = read(s, nid, limit: 1)
     assert ca != nil
 
-    stamps =
-      Grappa.Repo.all(
-        from(e in Grappa.ChannelDirectory.Entry,
-          where: e.network_id == ^nid,
-          select: e.captured_at,
-          distinct: true
-        )
+    distinct_stamps =
+      from(e in Grappa.ChannelDirectory.Entry,
+        where: e.network_id == ^nid,
+        select: e.captured_at,
+        distinct: true
       )
 
-    assert stamps == [ca]
+    assert Grappa.Repo.all(distinct_stamps) == [ca]
   end
 
   test "no snapshot and no capture in flight -> :unknown", %{subject: s, network_id: nid} do
@@ -214,19 +212,38 @@ defmodule Grappa.ChannelDirectoryTest do
     assert %{total: 5, entries: [_, _]} = read(s, nid, limit: 2)
   end
 
-  # A cursor minted against a snapshot that has since shrunk pages past the
-  # end. The page is empty and `total` must still be the real count, or the
-  # pane would read `:no_results` at the bottom of a scroll it can see the
-  # rows of.
+  # A cursor minted against a snapshot that has since been replaced by one
+  # whose rows all sort ABOVE it. The page is empty and `total` must still be
+  # the real count, or the pane would read `:no_results` at the bottom of a
+  # scroll whose rows it can still see.
+  #
+  # The replacement is chosen, not shrunk: the `:users` cursor is
+  # `user_count < 2 or (== 2 and name > "#c2")`, so a snapshot merely SMALLER
+  # still matches its low-count rows and the page comes back non-empty — the
+  # first version of this test asserted `entries: []` and got `[#c1]`, which
+  # is the query being right. Only rows entirely above the cursor empty the
+  # page while leaving the filtered set non-empty, which is the branch under
+  # test.
   test "a cursor past the end keeps an exact total and a real status", %{
     subject: s,
     network_id: nid
   } do
     :ok = Dir.replace(s, nid, rows(5))
     %{next_cursor: cursor} = read(s, nid, limit: 4)
-    :ok = Dir.replace(s, nid, rows(2))
 
-    assert %{status: :fresh, total: 2, entries: []} = read(s, nid, cursor: cursor)
+    :ok =
+      Dir.replace(s, nid, [
+        %{name: "#c5", topic: "t5", user_count: 5},
+        %{name: "#c4", topic: "t4", user_count: 4},
+        %{name: "#c3", topic: "t3", user_count: 3}
+      ])
+
+    # `total: 3` is the discriminator: an envelope that answered 0 for every
+    # empty page would score `:no_results` here.
+    assert %{status: :fresh, total: 3, entries: [], captured_at: ca} =
+             read(s, nid, cursor: cursor)
+
+    refute ca == nil
   end
 
   describe "issue 2046 — one read, so total cannot contradict entries" do
