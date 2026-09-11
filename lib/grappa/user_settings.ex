@@ -2157,7 +2157,7 @@ defmodule Grappa.UserSettings do
   end
 
   defp keep_or_take(:unchanged, stored, key), do: Map.fetch!(stored, key)
-  defp keep_or_take(value, _stored, _key), do: value
+  defp keep_or_take(value, _, _), do: value
 
   defp normalize_muted_targets(map, subject) when map_size(map) > @muted_targets_max_count do
     {:error,
