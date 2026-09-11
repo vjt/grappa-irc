@@ -37,7 +37,7 @@ import {
   selectChannel,
   sidebarMessageBadge,
 } from "../fixtures/cicchettoPage";
-import { restoreReadCursorToTail } from "../fixtures/grappaApi";
+import { assertMessagePersisted, restoreReadCursorToTail } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
@@ -201,6 +201,32 @@ test.describe("unread-badges-from-cursor cluster (A → D + Z)", () => {
     try {
       await peer.join(CHANNEL);
       peer.privmsg(CHANNEL, peerBody);
+
+      // 🔴 issue 2069 — the precondition this test has always DEPENDED on and
+      // never ESTABLISHED: the peer MESSAGE must be pre-arrival, i.e. inside
+      // the first non-empty observation the pane latches `sessionTopId` from.
+      // Rows above that latch are live arrivals and draw no marker by design.
+      //
+      // It used to pass without this wait because the divider counted peer
+      // PRESENCE rows: the awaited `peer.join` above was reliably inside the
+      // latch, so the JOIN alone injected a marker reading "1 unread" — the
+      // very defect issue 2069 is about. With the count restricted to messages
+      // the JOIN no longer stands in, and the unguarded ordering surfaced as a
+      // flake: 1 red in 5 on the fix branch against 10 green in 10 on
+      // `b7989f4ba`. The mechanism is pinned deterministically in
+      // `ScrollbackPane.test.tsx` ("draws no marker when only a peer JOIN
+      // precedes the session top and the message lands live").
+      //
+      // The assertion below is UNCHANGED. What changes is that the state it
+      // describes is now actually reached: once the row is persisted, the
+      // window's opening fetch carries it, and with it the preceding JOIN.
+      await assertMessagePersisted({
+        token: vjt.token,
+        networkSlug: NETWORK_SLUG,
+        channel: CHANNEL,
+        sender: PEER_NICK,
+        body: peerBody,
+      });
 
       // Switch to #spec-wN — key-effect latches the snapshot at cursor <
       // peer-row id, rows memo injects the unread-marker. Wait for the

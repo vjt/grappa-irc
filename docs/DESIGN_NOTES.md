@@ -52803,3 +52803,48 @@ contains peer presence rows, and that those rows RENDER (`#spec-wN` is far
 under `LARGE_CHANNEL_THRESHOLD`), because a hidden presence row is excluded
 from the old count too, by a different rule, and the spec would be green on the
 broken build.
+
+### The e2e that was green for the defect's reason
+
+The full `scripts/integration.sh` over this branch turned one red inside the
+slice's own subject — `unread-cursor-cluster.spec.ts`, "focused send collapses
+the in-pane unread marker immediately" — and the honest reading of it is the
+opposite of the obvious one, so it goes on the record rather than into the diff.
+
+Attribution, measured on both refs rather than argued:
+
+| | this branch | base `b7989f4ba` |
+| --- | --- | --- |
+| `unread-cursor-cluster:184` | 1 red in 5 | 10 green in 10 |
+
+So the slice caused it. What it did NOT do is break the behaviour the spec
+describes. `sessionTopId` latches the tail of the FIRST non-empty observation
+the pane makes, and every row above that latch is a live arrival that draws no
+marker on purpose — the operator watched it land. The spec sends the peer's
+PRIVMSG and navigates immediately, so which side of the latch that row falls on
+was never established by its setup. The awaited `peer.join` before it reliably
+WAS inside the latch, and while the divider counted presence rows the JOIN alone
+injected `1 unread` — so the spec went green, in that ordering, on the strength
+of the exact defect this entry is about. Restrict the count to messages and the
+stand-in disappears; the unguarded ordering stops being masked and starts being
+a flake.
+
+That is a precondition the spec depended on and never established, not a
+weakened contract, so the cure is to establish it (`assertMessagePersisted`
+before the navigation) and the assertion is untouched. Measured after:
+**20 green in 20**, against a pre-fix rate of 1 in 5 — `0.8^20 ≈ 1.2%` if the
+ordering were still free.
+
+Both directions of the mechanism are now pinned in-process, so the browser is
+no longer the only witness: `b7989f4ba` renders `1 unread` for a lone peer JOIN
+(its own `DOES count peer JOIN row toward the unread marker`, re-run on the base
+to measure it rather than cite it), and this branch renders no marker for the
+same fixture plus a late-arriving message ("draws no marker when only a peer
+JOIN precedes the session top and the message lands live").
+
+The general rule this leaves behind: **when a slice narrows what counts, every
+green that was resting on the wider count becomes suspect, and a spec whose
+precondition was satisfied by the discarded rows will fail for the right
+reason.** Read such a red as an oracle before reading it as a regression — but
+prove which it is on both refs, because the two are indistinguishable from the
+red alone.

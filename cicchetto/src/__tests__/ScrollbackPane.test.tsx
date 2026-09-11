@@ -3943,6 +3943,83 @@ describe("ScrollbackPane", () => {
       expect(flow[markerAt + 1]?.getAttribute("data-msg-id")).toBe("61");
     });
 
+    // 🔴 issue 2069 — the ORDERING that made `unread-cursor-cluster.spec.ts`
+    // ("focused send collapses the in-pane unread marker immediately") flaky
+    // on this branch: 1 red in 5 here, against 10 green in 10 on the base
+    // `b7989f4ba`. This arm exists so the e2e is not the only witness to it.
+    //
+    // `sessionTopId` latches the tail of the FIRST non-empty observation, and
+    // anything above it is a live arrival that draws no marker on purpose —
+    // the operator watched it land. So when the peer's JOIN falls inside that
+    // first observation but their MESSAGE does not, the two regimes disagree:
+    //
+    //   * BEFORE this slice the divider counted presence rows, so the JOIN on
+    //     its own injected a marker reading "1 unread" — which is exactly the
+    //     defect this issue is about, and exactly why the e2e went green in
+    //     that ordering. The arm above (previously "DOES count peer JOIN row
+    //     toward the unread marker") asserted that number verbatim;
+    //   * NOW only messages count, the JOIN alone injects nothing, and the
+    //     late message is a live arrival — so NO marker is the right answer.
+    //
+    // The spec's precondition (the peer message is PRE-arrival) was never
+    // guaranteed by its own setup; the presence count was masking it. Its cure
+    // is to make the precondition true, not to weaken the assertion.
+    it("draws no marker when only a peer JOIN precedes the session top and the message lands live", async () => {
+      setUserNick("vjt");
+      const beforeFocus: ScrollbackMessage[] = [
+        {
+          id: 70,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_000_000,
+          kind: "privmsg",
+          sender: "alice",
+          body: "read up to here",
+          meta: {},
+        },
+        {
+          id: 71,
+          network: "freenode",
+          channel: "#grappa",
+          server_time: 1_700_000_001_000,
+          kind: "join",
+          sender: "carol",
+          body: null,
+          meta: {},
+        },
+      ];
+      seedReadCursor("freenode", "#grappa", 70);
+      setScrollback({ "freenode #grappa": beforeFocus });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      // sessionTopId latches 71, the JOIN — the only unread row, and not a
+      // message, so there is no messages divider to draw.
+      expect(screen.queryByTestId("unread-marker")).toBeNull();
+
+      // The peer's MESSAGE lands after the latch: above sessionTopId, watched
+      // by the operator, therefore live-read. Still no marker.
+      setScrollback({
+        "freenode #grappa": [
+          ...beforeFocus,
+          {
+            id: 72,
+            network: "freenode",
+            channel: "#grappa",
+            server_time: 1_700_000_002_000,
+            kind: "privmsg",
+            sender: "carol",
+            body: "ciao",
+            meta: {},
+          },
+        ],
+      });
+      await waitFor(() => {
+        expect(
+          screen.getByTestId("scrollback").querySelector('.scrollback-line[data-msg-id="72"]'),
+        ).not.toBeNull();
+      });
+      expect(screen.queryByTestId("unread-marker")).toBeNull();
+    });
+
     // Mixed-row variant: own JOIN sandwiched between a read msg and an
     // unread peer msg. Marker count should be 1 (the peer msg only) and
     // marker should land BEFORE the peer msg, not before the own JOIN.
