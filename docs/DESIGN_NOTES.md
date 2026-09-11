@@ -52861,33 +52861,46 @@ It reproduces, and hard: `--repeat-each 20` on the unfixed tree gives **9 reds
 in 20**, every one carrying that identical signature. So the argument never had
 to be settled on the code.
 
-**bahamut charges fake-lag per COMMAND**, and the spec fired JOIN + 3×PRIVMSG +
-PART back to back on one connection, making the PART the FIFTH command against a
-bank the four before it had filled. `IrcPeer.part` waits for its own echo on
-`PART_TIMEOUT_MS` = 5s, while the overshoot this file's own `whoisAway` comment
-documents is ~10s — the budget is under the known worst case, and only for
-callers that arrive late in a burst.
+What is MEASURED is that the cost tracks the command's POSITION in a burst
+rather than the clock. The spec fired JOIN + 3×PRIVMSG + PART back to back on
+one connection, making the PART the fifth command, and `IrcPeer.part` waits for
+its own echo on `PART_TIMEOUT_MS` = 5s. **`IrcPeer.join` carries the SAME 5s
+budget and timed out zero times across those 20 runs.** First command always
+fine, fifth command half the time not — which is why a spec can be green a
+hundred times on its first wait and still be a coin flip on its last.
 
-The discriminator against "the testnet is just slow" is in the same 20 runs and
-costs nothing to read: **`IrcPeer.join` carries the SAME 5s budget and timed out
-zero times.** First command always fine, fifth command half the time not. That
-is a per-command bank, not latency — and it is why a spec can be green a hundred
-times on its first wait and still be a coin flip on its last.
+What is INFERRED, and must be written as inference, is that this per-command
+cost IS bahamut's fake-lag bank. That name was READ — from the `whoisAway`
+comment in `fixtures/ircClient.ts` and from the ircd source — and **reading a
+mechanism tells you a path EXISTS, never what it costs**. #800/S7 exists
+precisely because two retractions in one cycle came from treating that reading
+as a measurement, and the instrument it built (`Grappa.IRC.FakeLag`) does not
+close the gap here: it accounts GRAPPA's own socket, while the peer in an e2e is
+a separate irc-framework connection that instrument never sees. Any
+per-connection serialisation would fit all three measurements equally well.
 
-Cured by draining the bank on an OBSERVABLE signal: poll until the three
+The cure is therefore built on the measured half and not on the name — which is
+also why it survives if the name turns out wrong.
+
+Cured by draining whatever the burst filled, on an OBSERVABLE signal: poll until the three
 messages are on the server (the endpoint the spec was already polling
 afterwards), THEN send the PART, so it goes out alone. **No timeout raised, no
 assertion touched.** Measured after: **20 green in 20** — `0.55^20 ≈ 6e-6` had
 the rate stayed where it was.
 
-Two things worth carrying forward. First, **the timeouts in `ircClient.ts` are
+Three things worth carrying forward. First, **the timeouts in `ircClient.ts` are
 not interchangeable**: `join`/`part`/`nick`/`mode`/`kick` sit at 5s while
-`topic`/`privmsg`/`whois` sit at 15s precisely because the latter were found
-behind the lag bank. A wait's budget is only sound for the POSITION its caller
-occupies in a burst, and nothing in the API says which position that is. Second,
-the general rule: **a burst of IRC commands on one connection is not a setup
-step, it is a queue** — barrier between the plants and the closer, or the closer
-inherits every penalty the plants earned.
+`topic`/`privmsg`/`whois` sit at 15s, and the 15s ones carry a comment saying
+why. A wait's budget is only sound for the POSITION its caller occupies in a
+burst, and nothing in the API says which position that is. Second: **a burst of
+IRC commands on one connection is not a setup step, it is a queue** — barrier
+between the plants and the closer, or the closer inherits every penalty the
+plants earned. Third, the epistemic one, because it is the trap this very entry
+walked into on its first draft: **name the mechanism only as far as you measured
+it.** "The fifth command costs what the first does not" is measured here and
+carries the cure on its own; "the fake-lag bank did it" is a reading, it names
+a path rather than a price, and it would have shipped as a fact if nobody had
+asked which of the two it was.
 
 Six other specs call `IrcPeer.part`; the closest, `issue2037`, fires four
 commands where this one fired five. They are not touched here — none has been

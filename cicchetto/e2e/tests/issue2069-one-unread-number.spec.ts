@@ -79,26 +79,32 @@ test.describe("issue 2069 — one number for one question", () => {
       // 🔴 This barrier is placed BEFORE the PART on purpose, and it is not
       // politeness — it is what makes the setup deterministic.
       //
-      // bahamut charges FAKE-LAG per command on a connection, so a burst is
-      // served with growing delay and the ~10s overshoot the `whoisAway` budget
-      // in `fixtures/ircClient.ts` already documents. `IrcPeer.part` waits for
-      // its own PART echo on a 5s budget (`PART_TIMEOUT_MS`), and this spec
-      // used to fire JOIN + 3×PRIVMSG + PART back to back — so the PART was the
-      // FIFTH command against a bank filled by the four before it.
+      // MEASURED, on this tree, `--repeat-each 20`:
       //
-      // Measured on this tree, `--repeat-each 20`: 9 reds in 20, every one of
-      // them the identical `IrcPeer: timeout waiting for part #spec-w0 (5000ms)`
-      // — the same signature CI turned on shard 2/4 of run 34553963487. The
-      // discriminator against "the testnet is just slow" is in the same logs:
-      // `IrcPeer.join` carries the SAME 5s budget and timed out ZERO times in
-      // those 20 runs. First command always fine, fifth command half the time
-      // not: that is a per-command bank, not latency.
+      //   * without this barrier, 9 reds in 20, every one of them the identical
+      //     `IrcPeer: timeout waiting for part #spec-w0 (5000ms)` — the same
+      //     signature CI turned on shard 2/4 of run 34553963487;
+      //   * the cost depends on the command's POSITION in the burst, not on the
+      //     clock: `IrcPeer.join` carries the SAME 5s budget (`JOIN_TIMEOUT_MS`
+      //     == `PART_TIMEOUT_MS`) and timed out ZERO times across those 20 runs.
+      //     First command always fine; fifth command — after JOIN + 3×PRIVMSG —
+      //     half the time not;
+      //   * with the barrier, 20 green in 20.
       //
-      // Draining it by waiting on an OBSERVABLE signal — the three messages
-      // being on the server — costs nothing the spec was not already paying
-      // (it polls this very endpoint below) and leaves the PART as a lone
-      // command against a bank that has had time to empty. No timeout is
-      // raised and no assertion is touched.
+      // INFERRED, and labelled as such: that the per-command cost IS bahamut's
+      // fake-lag bank. That name is READ, from the `whoisAway` comment in
+      // `fixtures/ircClient.ts` and from the ircd source — and reading a
+      // mechanism tells you a path EXISTS, never what it costs. This spec has
+      // not measured the bank: the instrument that can (`Grappa.IRC.FakeLag`,
+      // #800/S7) accounts GRAPPA's own socket, and the peer here is a separate
+      // irc-framework connection it never sees. Anything that serialises per
+      // connection would fit the same three measurements.
+      //
+      // The cure does not depend on the name. It rests on the measured half —
+      // position in the burst — so draining on an OBSERVABLE signal (the three
+      // messages being on the server, the very endpoint polled below) leaves
+      // the PART as a lone command. No timeout is raised and no assertion is
+      // touched.
       let after = before;
       const peerNick = PEER_NICK.toLowerCase();
       await expect
