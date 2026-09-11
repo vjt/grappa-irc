@@ -53199,3 +53199,129 @@ and not at compile, so the runtime leg is the one that mattered.
   client then read LOWER than the server, the opposite of the defect. The two
   control arms are what surfaced it. Authorship now lives in one map read by
   both sides, so the oracle cannot describe a log the client did not get.
+<!-- entry #2043 -->
+
+---
+
+## 2026-09-11 — #2043: the two presence doors, measured against a real session
+
+issue 2043 filed a divergence between the two `Grappa.PresenceFilter.Resolver`
+doors, measured what one disagreement costs (residual 69 rows of 78 at one
+anchor), and then said in as many words what it had NOT established:
+
+> A real `Session.Server` cannot answer the two calls asymmetrically within
+> one instant, and that is a READING, not a measurement.
+
+This entry is that measurement. `test/grappa/presence_2043_probe_test.exs`
+reads the SAME pair — `Resolver.hidden?/4` (the per-window bar) and
+`Resolver.hidden_channels/3` (the bulk `/me` seed) — through the production
+`Grappa.Session` facade against a REAL `Session.Server` driven by the
+in-process fake ircd. No cure is shipped with it, deliberately: see the last
+section.
+
+### The known-answer control runs first, and it must DIVERGE
+
+A file of symmetric readings proves nothing by itself, because an instrument
+that cannot see divergence reports "symmetric" for a divergent system just as
+cheerfully. So `CTRL DIVERGE` — the 2037-era stand-in answering the two doors
+independently — is asserted to come back `(SHOW, HIDE)` before any real arm is
+believed, and `CTRL SYM` is asserted symmetric beside it. Both hold. Every
+negative below is a negative taken with an instrument that was demonstrably
+looking.
+
+### Mechanism (2), a failure at ONE door: FALSIFIED on a real session
+
+The issue's second mechanism — a timeout, an `:uninitialized` window, or a
+session that died — does not produce a divergent pair, because both doors
+degrade TOGETHER:
+
+* `R3`, joined with NAMES not yet landed: the per-window door answers
+  `{:ok, :uninitialized}` and the bulk door OMITS the key. Both reach
+  `PresenceFilter.hidden?/2` as `nil`. Pair `(SHOW, SHOW)`.
+* `R4`, a channel never joined: same shape, same pair.
+* `R6`, both doors read after the session died: `{:error, :no_session}` at
+  one, an empty counts map at the other. Pair `(SHOW, SHOW)`.
+
+This is not luck. `handle_call({:list_members, ch}, …)` and
+`handle_call(:list_member_counts, …)` filter on the same `seeded_channels`
+MapSet over the same `members` map, so a state that hides the channel from
+one hides it from the other in the same breath. A timeout cannot be
+asymmetric either: two calls made at the same instant against a stalled
+process both time out, and making them at different instants is mechanism (1)
+wearing mechanism (2)'s coat.
+
+### Mechanism (1), two instants: holds, and is exactly what it looks like
+
+`R6` reads the pair before the session dies (`HIDE, HIDE`) and after
+(`SHOW, SHOW`). Neither row diverges. What diverges is the CROSS pair a
+production `/me`-then-probe actually makes — the seed taken at the first
+instant against the bar taken at the second — and the probe prints that pair
+as data rather than asserting it in prose: `seed@t1 HIDE` vs `bar@t2 SHOW`.
+
+That is real, and it is also just state moving between two honest readings.
+It is the reason the far-behind freeze hurts, not a defect in the pair.
+
+### The third mechanism, which the issue does not name
+
+`R5` diverges on a real session **within one instant**, and by a route
+neither of the issue's two describes:
+
+```
+R5  rfc1459 + bracket: members "#foo{1}" vs cursor "#foo[1]"   bar HIDE  seed SHOW
+```
+
+`Grappa.ReadCursor.set/4` folds the cursor key with the arity-1
+`Identifier.canonical_target/1` — plain ASCII, `[ ] \ ~` untouched, which is
+the documented channel-key posture (storage and query stay pure ASCII). The
+session's members map is keyed by `fold_key/2`, the network-aware fold, which
+on a `CASEMAPPING=rfc1459` network maps `[` to `{` FIRST. The two keys are
+then permanently different for that channel — not racing, just different.
+
+The per-window door survives it because it hands the raw channel to the
+server, which folds it correctly on arrival. The bulk door does not: it
+receives the counts map keyed the session's way and looks up
+`Map.get(slug_counts, channel)` with the CALLER's key, raw, with no fold at
+all. So `hidden_channels/3` is where an ASCII-keyed DB world meets an
+rfc1459-keyed memory world across an unfolded lookup.
+
+Two controls attribute it rather than leaving it as an observation:
+
+* `R5b` — same rfc1459 network, `#plain`, whose two keys coincide: symmetric.
+  So R5 is the key mismatch, not something about rfc1459 sessions at large.
+* `R5c` — the same `#foo[1]` on an `:ascii` network, where
+  `normalize_casemapping/2` is a no-op and the keys coincide again:
+  symmetric. So the whole of production, which is bahamut/`:ascii`, cannot
+  reach R5 today.
+
+Note the SIGN. The issue measured `bar SHOW, seed HIDE`; R5 is
+`bar HIDE, seed SHOW`, the mirror image. A cure aimed at the issue's sign
+would not have touched this.
+
+### Why no cure ships here
+
+The cure the issue reaches for — teach the count path to distinguish "I could
+not reach the session" from "I reached it and it is under threshold", instead
+of folding both to `nil` — is aimed at mechanism (2), and mechanism (2) is the
+one this measurement falsifies. Shipping it would harden a path that has not
+been shown to diverge, and an undiagnosed cure makes the NEXT sighting
+unreadable.
+
+R5's cure is a different change in a different place (fold the bulk door's
+lookup key, or key the counts map the way its caller keys it), it lands on the
+rfc1459 axis rather than the presence-filter axis, and whether it is a defect
+or another entry on the documented rfc1459 known-gap list is a ruling, not a
+judgement call inside this slice.
+
+### What is NOT claimed
+
+* **No production measurement.** Every reading here is a test-harness
+  session. Prod is `:ascii` throughout, where `R5c` says the divergence
+  cannot fire; whether an rfc1459 network in the wild is carrying it is
+  unmeasured.
+* **Mechanism (2) is falsified for the states this probe can reach**, which
+  are `:uninitialized`, never-joined and dead-session. A stalled process
+  answering one call and not the other within one instant remains
+  unconstructible rather than proven impossible.
+* **The issue's cost figure is not re-measured.** The 69-of-78 residual is
+  taken from 2037's instrument as filed; this file measures reachability, not
+  cost.
