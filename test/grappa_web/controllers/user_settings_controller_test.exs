@@ -36,7 +36,11 @@ defmodule GrappaWeb.UserSettingsControllerTest do
       "presence_offline" => false,
       # #866 — nothing muted by default; the wire carries the key so a client
       # can tell "no mutes" from "a server that predates the field".
-      "muted_targets" => %{}
+      "muted_targets" => %{},
+      # #1480 — the in-app beep preset, shipped SILENT. Same reasoning as the
+      # line above for why the key is on the wire at all, and the value is the
+      # ruling: an untouched subject makes no sound.
+      "notification_sound" => "none"
     }
   end
 
@@ -100,7 +104,13 @@ defmodule GrappaWeb.UserSettingsControllerTest do
                "private_messages_only" => ["alice"],
                "presence_online" => false,
                "presence_offline" => false,
-               "muted_targets" => %{}
+               "muted_targets" => %{},
+               # #1480 — the PUT above is a pre-#1480 body: it names every key
+               # the old client knew and NOT the sound. The endpoint is a full
+               # replace, so this asserts the one place absence must not mean
+               # "reset" — the reader still answers with the default rather
+               # than dropping the key.
+               "notification_sound" => "none"
              }
     end
   end
@@ -236,6 +246,28 @@ defmodule GrappaWeb.UserSettingsControllerTest do
       conn = put(conn, "/me/settings/notification-prefs", body)
 
       assert %{"error" => "validation_failed"} = json_response(conn, 422)
+    end
+
+    # #1480 — the closed set is enforced at THIS boundary, not only in the
+    # context: cic narrows the value to the union before it ever gets typed,
+    # so the only writer that can reach here with garbage is one that is not
+    # cic, which is exactly the writer a boundary exists for.
+    test "422 when notification_sound is outside the closed set", %{conn: conn} do
+      body = valid_prefs_wire(%{"notification_sound" => "airhorn"})
+      conn = put(conn, "/me/settings/notification-prefs", body)
+
+      assert %{"error" => "validation_failed"} = json_response(conn, 422)
+    end
+
+    test "200 for a member of the set, and the echo carries it back", %{conn: conn} do
+      body = valid_prefs_wire(%{"notification_sound" => "xp_ding"})
+      conn = put(conn, "/me/settings/notification-prefs", body)
+
+      # The echo is what the drawer and the `/beep` verb both adopt, so a
+      # server that persisted the value but answered with the old one would
+      # leave every client one round-trip behind its own write.
+      assert %{"notification_prefs" => %{"notification_sound" => "xp_ding"}} =
+               json_response(conn, 200)
     end
   end
 
