@@ -30,7 +30,9 @@ defmodule Grappa.WindowCounts do
       `sender` through the ASCII nick SSOT (#121/#525), and so are
       service- / server-originated rows (`Mentions.mentionable_sender?/1`,
       #1674 — a NickServ login confirmation is not a highlight). One
-      row-level rule, `mention_row?/3`, serves BOTH counting doors. Bounded by
+      row-level rule, `Mentions.mention_row?/3`, serves BOTH counting doors
+      here AND the away bundle (issue 1481 moved it next to the two
+      predicates it composes). Bounded by
       `@mention_scan_cap` — the same bounded-tail strategy
       `Grappa.Push.BadgeCount` uses (SQLite has no `REGEXP`, so the
       match runs in-memory over a capped content tail).
@@ -260,29 +262,6 @@ defmodule Grappa.WindowCounts do
     end
   end
 
-  # The ONE row-level mention rule (#1674). Both counting doors fold THIS —
-  # the per-window `count_mentions/6` and the bulk `count_tail_mentions/3` —
-  # so the badge cannot mean two different things depending on which one
-  # answered. It used to be two byte-identical closures, and #1674 is what a
-  # rule applied per-door instead of per-rule costs: the sender exclusion
-  # would have had to be remembered twice.
-  #
-  # Three conjuncts, each subtractive:
-  #   1. not own-sent — you cannot mention yourself (fold `sender` through
-  #      the ASCII nick SSOT, #121/#525; never a bare downcase);
-  #   2. a sender that CAN mention you — no service, no server (#1674);
-  #   3. the body match itself (`Mentions.matches?/2`, the shared matchers).
-  @spec mention_row?(
-          %{sender: String.t(), body: String.t() | nil},
-          String.t(),
-          Mentions.matchers()
-        ) :: boolean()
-  defp mention_row?(%{sender: sender, body: body}, own_folded, matchers) do
-    Identifier.canonical_target(sender) != own_folded and
-      Mentions.mentionable_sender?(sender) and
-      Mentions.matches?(body, matchers)
-  end
-
   # Mention count over a pre-fetched capped content tail (#396 bulk path).
   # `nil` own_nick → nothing to match, so no mentions.
   @spec count_tail_mentions(
@@ -295,7 +274,7 @@ defmodule Grappa.WindowCounts do
   defp count_tail_mentions(tail, own_nick, matchers) do
     own = Identifier.canonical_target(own_nick)
 
-    Enum.count(tail, &mention_row?(&1, own, matchers))
+    Enum.count(tail, &Mentions.mention_row?(&1, own, matchers))
   end
 
   # No configured nick on this network → `count_tail_mentions/3` answers 0
@@ -304,8 +283,8 @@ defmodule Grappa.WindowCounts do
   defp slug_matchers(nil, _), do: []
   defp slug_matchers(own_nick, patterns), do: Mentions.matchers(own_nick, patterns)
 
-  # Counts unread content rows that mention the subject, per `mention_row?/3`.
-  # Bounded by the scan cap.
+  # Counts unread content rows that mention the subject, per
+  # `Mentions.mention_row?/3`. Bounded by the scan cap.
   @spec count_mentions(
           Subject.t(),
           integer(),
@@ -323,7 +302,7 @@ defmodule Grappa.WindowCounts do
 
     subject
     |> Scrollback.unread_content_tail(network_id, channel, after_id, own_nick, @mention_scan_cap)
-    |> Enum.count(&mention_row?(&1, own, matchers))
+    |> Enum.count(&Mentions.mention_row?(&1, own, matchers))
   end
 
   # Severity ladder — mention > message > event > none.

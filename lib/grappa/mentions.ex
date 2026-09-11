@@ -95,11 +95,14 @@ defmodule Grappa.Mentions do
       that window over-counted identically (measured under #1674).
 
   Every server-side "is this row a mention" fold composes THIS with
-  `matches?/2`: `Grappa.WindowCounts.mention_row?/3` (the badge, both the
-  per-window and the bulk cold-load door), `aggregate_mentions/6` (the C8
-  mentions-while-away bundle) and `Grappa.Push.Triggers.mention_match?/4`
-  (the OS push). A new mention fold MUST go through it or the badge and
-  the notification start disagreeing again.
+  `matches?/2`, and two of the three do it through `mention_row?/3` below:
+  `Grappa.WindowCounts` (the badge, both the per-window and the bulk
+  cold-load door) and `aggregate_mentions/6` (the C8 mentions-while-away
+  bundle). `Grappa.Push.Triggers.mention_match?/4` composes the pair
+  directly, because its own-row step sits higher in its decision tree
+  (`own_row?/2` outranks the mute and both branches). A new mention fold
+  MUST go through `mention_row?/3` or the badge and the notification start
+  disagreeing again.
   """
 
   use Boundary,
@@ -129,10 +132,12 @@ defmodule Grappa.Mentions do
   Messages are returned in `server_time ASC` order (chronological).
 
   Non-content-bearing kinds (`:join`, `:part`, `:quit`, etc.) are
-  excluded — they never carry a body to match against. Service- and
-  server-originated rows are excluded too (`mentionable_sender?/1`,
-  #1674): a NickServ confirmation naming you is not a mention, and the
-  away bundle must agree with the badge that counted it.
+  excluded — they never carry a body to match against. Rows the subject
+  AUTHORED are excluded (issue 1481), and so are service- and
+  server-originated ones (#1674): a NickServ confirmation naming you is
+  not a mention, your own line naming yourself is not one either, and the
+  away bundle must agree with the badge that counted it. Both exclusions
+  arrive through the shared `mention_row?/3`.
 
   The DB query step uses the `messages_user_id_network_id_channel_server_time_index`
   composite index. The in-memory regex step filters the (typically small)
@@ -163,11 +168,13 @@ defmodule Grappa.Mentions do
       |> order_by([m], asc: m.server_time, asc: m.id)
       |> Repo.all()
 
-    # Step 2: in-memory word-boundary regex filter.
+    # Step 2: in-memory row-level filter through the shared `mention_row?/3`.
     # Compile all pattern regexes once before the loop — avoids
-    # re-compilation per row × per pattern.
+    # re-compilation per row × per pattern — and fold the own nick once for
+    # the same reason.
     compiled = build_matchers([own_nick | watchlist_patterns])
-    Enum.filter(rows, &(mentionable_sender?(&1.sender) and body_matches?(&1.body, compiled)))
+    own_folded = Identifier.canonical_target(own_nick)
+    Enum.filter(rows, &mention_row?(&1, own_folded, compiled))
   end
 
   # ---------------------------------------------------------------------------
@@ -213,6 +220,41 @@ defmodule Grappa.Mentions do
   @spec mentionable_sender?(sender :: term()) :: boolean()
   def mentionable_sender?(sender) do
     not (Identifier.services_sender?(sender) or Identifier.server_sender?(sender))
+  end
+
+  @doc """
+  The ROW-level mention rule — the ONE fold every server-side mention
+  counter composes, so the badge, the OS push and the away bundle cannot
+  mean three different things by "mention".
+
+  Three conjuncts, each subtractive:
+
+    1. **not own-sent** — you cannot mention yourself. Decided by sender
+       IDENTITY, folded through the ASCII nick SSOT (#121/#525), never by
+       window shape: an OUTBOUND DM carries `channel = peer`, so a shape
+       test misroutes it and the operator's own watchlist then runs over
+       the operator's own body (`Push.Triggers.own_row?/2`, #532 C).
+    2. **a sender that CAN mention you** — no service, no server
+       (`mentionable_sender?/1`, #1674).
+    3. **the body match itself** (`matches?/2`, the shared matchers).
+
+  `own_folded` is the own nick ALREADY folded via
+  `Identifier.canonical_target/1` — the callers hoist that fold out of
+  their loops, alongside the matcher compilation.
+
+  This used to be a private copy in `Grappa.WindowCounts`, which meant the
+  rule held for the badge and not for `aggregate_mentions/6`: an away
+  digest handed the operator their own lines back (issue 1481). It lives
+  here now because this module is the SSOT for both of the other two
+  conjuncts. A new mention fold MUST go through it.
+  """
+  @spec mention_row?(%{sender: String.t(), body: String.t() | nil}, String.t(), matchers()) ::
+          boolean()
+  def mention_row?(%{sender: sender, body: body}, own_folded, matchers)
+      when is_binary(own_folded) and is_list(matchers) do
+    Identifier.canonical_target(sender) != own_folded and
+      mentionable_sender?(sender) and
+      matches?(body, matchers)
   end
 
   @typedoc """

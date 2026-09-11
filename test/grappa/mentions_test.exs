@@ -318,6 +318,93 @@ defmodule Grappa.MentionsTest do
     end
   end
 
+  describe "aggregate_mentions/6 — own rows (issue 1481)" do
+    test "a row the subject authored naming their own nick is not aggregated", %{
+      user: u,
+      network: net
+    } do
+      insert!(
+        msg(u, net,
+          sender: "vjt",
+          body: "vjt: prova",
+          server_time: @away_start + 10
+        )
+      )
+
+      assert Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt") == []
+    end
+
+    test "the exclusion folds ASCII — an own row sent as VJT is still own", %{
+      user: u,
+      network: net
+    } do
+      insert!(
+        msg(u, net,
+          sender: "VJT",
+          body: "vjt reminder to self",
+          server_time: @away_start + 10
+        )
+      )
+
+      assert Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt") == []
+    end
+
+    test "an own row carrying a /hilight word is not aggregated either", %{user: u, network: net} do
+      # Keyed on the SENDER, so it covers the custom-pattern half of the
+      # watchlist and not just the own nick — same shape as the #1674 arm.
+      insert!(
+        msg(u, net,
+          sender: "vjt",
+          body: "the deploy is done",
+          server_time: @away_start + 10
+        )
+      )
+
+      assert Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, ["deploy"], "vjt") ==
+               []
+    end
+
+    test "a peer row spelling the same body IS still aggregated", %{user: u, network: net} do
+      # Positive control for the three above: identical body, different
+      # sender. If this went red the arms above would be passing vacuously.
+      m =
+        insert!(
+          msg(u, net,
+            sender: "alice",
+            body: "vjt: prova",
+            server_time: @away_start + 10
+          )
+        )
+
+      result = Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt")
+      assert Enum.map(result, & &1.id) == [m.id]
+    end
+  end
+
+  describe "mention_row?/3 — the promoted row-level rule (issue 1481)" do
+    # The three conjuncts, one arm each, over the pre-folded own nick the
+    # counting doors hoist out of their loops.
+    test "own row is not a mention" do
+      refute Mentions.mention_row?(%{sender: "VJT", body: "vjt ping"}, "vjt", Mentions.matchers("vjt", []))
+    end
+
+    test "a service naming you is not a mention" do
+      refute Mentions.mention_row?(
+               %{sender: "NickServ", body: "Password accepted for vjt."},
+               "vjt",
+               Mentions.matchers("vjt", [])
+             )
+    end
+
+    test "a peer naming you is" do
+      assert Mentions.mention_row?(%{sender: "alice", body: "vjt ping"}, "vjt", Mentions.matchers("vjt", []))
+    end
+
+    test "a peer NOT naming you is not" do
+      refute Mentions.mention_row?(%{sender: "alice", body: "hello world"}, "vjt", Mentions.matchers("vjt", []))
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Property test: in-memory regex gate matches Elixir Regex directly
   # ---------------------------------------------------------------------------
