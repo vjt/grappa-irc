@@ -53396,3 +53396,87 @@ Whether this fires in production (the issue simulated the offline POST; no
 real client was observed), the frequency, and the browser: the arms are
 store-level, in jsdom, so nothing here says the number reaches a rendered
 badge. That is the e2e's job and it has not run.
+<!-- entry #2053 -->
+
+---
+
+## 2026-09-11 — issue 2053: the badge was already right; the comment was the defect
+
+Reported: a window driven far behind by the #1229 ring cap shows NO badge at
+all while hundreds of rows are unread. `perChannelUnread` skips the local row
+count for a far-behind key, the only writers of the server seed are a join
+reply and `/me`, and for a window the operator was caught up on at join that
+seed is a truthful ZERO that nothing can raise.
+
+**It does not reproduce, and the negative is measured rather than argued.**
+
+### The measurement
+
+Bench: the real `scrollback` + `readCursor` + `selection` stores against the
+fake server the sibling suites use (`after`/`before`/`limit` honoured, the
+probe answered from the same log), on `95998369a`. The shape is the issue's
+own and not a near-miss of it — a join reply seeding `{messages: 0, events: 0}`
+at a cursor equal to the tip, then a live burst through `appendToScrollback`
+with no join, no `/me` and no reconnect anywhere near it. Mixed log, every
+fourth row a peer JOIN, so the two buckets cannot hide in each other.
+
+```
+after 400 live rows
+  far   {missed: 300, events: 100, resumeFrom: 1000}
+  seed  {messages: 0, events: 0}          <- still the truthful zero
+  rowsHeld 200
+  badge 300 / 100     server answer at the frozen cursor 300 / 100
+```
+
+Extended to 2000 rows in ten batches and then a re-select: the badge equals
+the server's own answer for the frozen cursor at every step (150, 300, 450,
+… 1500) and does not move on the re-select.
+
+**The control, on the same bench.** Delete `perChannelUnread`'s far-behind
+loop — the pre-#2037 shape, in which the seed does stand — and the same run
+reports `badge: 0` beside `far.missed: 300`. That is the issue's `{badge: 0}`
+to the digit, so the bench does discriminate and the issue did happen; it
+happened on a tree that no longer exists.
+
+### Why it stopped
+
+#2037 (`d49582c58`) merged to main at **2026-09-10 15:06:53Z**, in PR #2047.
+Issue 2053 was filed at **15:14:13Z** — seven minutes later, from a tree
+where that PR was still open, and it says so: *"a prediction from the values
+measured in my own tree, not a measurement of that branch"*. The prediction
+was right. This is that measurement, taken where it was asked for.
+
+### No new test, and the reason is a measurement too
+
+`farBehindOwnAuthored.test.ts`'s `openFarBehindByEviction` already drives the
+ring-cap route — the arm is called *"opens the record on the server's number
+when the PRUNE opens it"* — and its oracle is the server's answer, not a
+literal. Under the control above it goes RED, together with eight other arms
+across four files; the unmutated set is green. A second file asserting the
+same property on a seed of 0 instead of 50 would be a duplicate of a landed
+test, so there is none.
+
+### What shipped instead
+
+Ten comments, in eight files, still said in the present tense that a
+far-behind badge publishes the seed. One of them is the line the issue quotes
+and it ended *"the seed … is the honest number here, so leave it standing"* —
+follow it and you rebuild the reported defect exactly. `scrollback.ts`'s own
+docblock on the record already stated the truth, so the repair is to make the
+other ten agree with it rather than to invent a story.
+
+Left alone deliberately: the `issue1765` e2e header and the "Pre-2069 this
+line ALSO said" aside in `unreadBadgeFarBehindStale.test.ts` narrate a PAST
+state in the past tense and were accurate on their dates; the DESIGN_NOTES
+entries that record the old behaviour are history and are not rewritten.
+
+### Not measured
+
+- **The rendered pill on this route, in a real browser.** `issue1229`'s e2e
+  reaches the ring-cap arm and asserts the in-pane BAR; `issue2037`'s asserts
+  the sidebar pill but arms far-behind through the reload/probe route. The
+  crossing of the two — ring-cap arm, sidebar pill, real server — has no spec,
+  and this slice did not open one, there being no defect to pin.
+- **Whether the ring-cap route fires in production at all.** Unchanged from
+  the issue: it needs a live burst past the retention cap on a window with a
+  non-null cursor, and nobody has read that off a real instance.
