@@ -53857,3 +53857,153 @@ explicitly not measured** — they are not cited here as causes, and the cure
 does not depend on which, if any, is true. No repro was built in a real
 browser; the e2e lane was not held, and this defect is fully decidable at the
 unit layer on both ports.
+<!-- entry #1480 -->
+
+---
+
+## 2026-09-11 — #1480: the notification sound becomes a preset, and its default becomes silence
+
+alk reported that cic's notification sound is indistinguishable from the
+Windows Sticky Keys chime. deadbeef_ reported, separately and the same week,
+that cicchetto still beeps while macOS is in Do Not Disturb. One module
+answers both — `cicchetto/src/lib/beep.ts`, until now a single hard-coded
+440 Hz sine with no way to change it and no way to turn it off.
+
+### Why "respect Do Not Disturb" is not the cure
+
+A web page cannot read macOS Focus/DND. There is no browser API, so cic has
+no signal to gate on and no amount of server work creates one. The BANNER
+half already behaves — the OS suppresses its own notification, and deadbeef_
+confirmed none arrived. The SOUND half is a Web Audio `OscillatorNode`
+started by the page, which the OS never sees and therefore never gates. The
+implementable answer is a preset the user picks, including one that is
+silence.
+
+### The default is silence, and that is a deliberate break
+
+vjt ruled it on the day: «e mettiamo default off», «suono deve essere
+opt-in», «mi sta bene che sia disattivato per tutti», his framing being that
+an audible beep a user never asked for is a privacy invasion. The issue body
+said the opposite ("the current 440 Hz tone, so nobody's sound changes on
+upgrade") and is superseded. So `notification_sound` defaults to `"none"`
+for everyone, existing subjects included, and the sound arrives only after
+an explicit opt-in.
+
+That makes `on` and "the default" two different values, and they are two
+different constants (`OPT_IN_NOTIFICATION_SOUND` / `DEFAULT_NOTIFICATION_SOUND`)
+precisely so a later change of default cannot silently redefine `/beep on`.
+
+### The samples are committed, on a ruling, with the licence problem on the table
+
+Three options went to vjt: (a) commit the XP sounds into the public repo,
+(b) host them off-repo like the ICQ one, (c) synthesise homages and ship no
+bytes. Two answers landed within 30 seconds on two channels; asked which
+held, he answered «(a)», «non me ne frega niente (a)», and stated the risk
+himself — «mi manderanno il cease and desist» / «e li levo». That is his
+call on his repo, made with the problem named. The position is recorded in
+`cicchetto/public/sounds/PROVENANCE.md` rather than left to be re-derived
+from the files being present. He then extended it: «generane un po'» / «e
+metti anche quei due di icq e ms» — so the pack ships BOTH species
+populated, not one.
+
+### The shape
+
+`notificationSound.ts` owns the vocabulary and the recipes; `beep.ts` plays
+them. A preset is `silent`, `synth` (an oscillator recipe: wave, from/to Hz,
+offset, duration, gain) or `sample` (an mp3 decoded into the same
+`AudioContext`, buffer memoised per URL). The discriminated union is what
+makes adding a preset a table row — the player's switch is exhaustive, so a
+new `kind` is a compile error at every site that must learn about it rather
+than a silent fall-through to silence.
+
+Three details are load-bearing and none is obvious:
+
+- **The preset is an ARGUMENT, not a store read.** `playBeep(sound)` takes
+  it from the caller that already holds the prefs, so the settings preview
+  and the live notify path are the same door and the recipes are testable
+  without audio.
+- **`none` returns before the `window.__lastBeepAt` stamp** and before the
+  `AudioContext` is even constructed. `none` is the default, so a seam that
+  ticked for it would report "beeped" for everybody who never opted in —
+  which is everybody — and the e2e oracle would read green on silence.
+- **A rejected decode EVICTS its cache entry.** Memoising the promise is
+  what stops two beeps in a tick racing one fetch; keeping a rejected one
+  would poison that preset for the session, so a single bad response on a
+  flaky network would silence the operator until they reloaded.
+
+### Absence and garbage are different claims
+
+Server-side the key follows the `display_prefs.time_format` twin — the READ
+falls back to the default on an unrecognised value, the WRITE rejects one —
+with ONE deviation: an ABSENT key on the write means UNCHANGED, not "reset
+to default". That is `muted_targets`' own rule (#866) and its reason applies
+verbatim: `PUT /user_settings/notification_prefs` is a full replace and cic
+deploys independently of the BEAM, so a bundle that has never heard of the
+picker is saying nothing about the sound. Reading its silence as a choice
+would mute an opted-in subject the first time they ticked any other
+checkbox. An unrecognised VALUE still 422s — tolerating absence is not
+tolerating garbage.
+
+With a second `:unchanged` key, `resolve_muted/2` became the wrong shape and
+is gone: the client that omits either key omits both, so `resolve_unchanged/4`
+reads the stored prefs ONCE and fills whichever are missing.
+
+### `/beep`, and the `/set` interface that will not exist
+
+deadbeef_ asked for `/set beep on/off` because the drawer is «un sacco di
+click». vjt refused the generic form twice — «non voglio iniziare a fare la
+/set interface», then «/set è un puttanaio lasciamo perdere», which also
+kills the follow-up issue he had briefly allowed — and approved `/beep`
+instead: bare opens the settings page, `on` is the 440 Hz tone, `off` is
+`none`, anything else is a preset name. The aliases resolve in the PARSER,
+where every other argument mapping in that file lives, so the handler cannot
+be handed a name the server would reject.
+
+The verb is a shortcut into the preference, never a parallel store, so it
+reuses the rail picker's GET-merge-PUT writer — generalised from
+`writeMutedTargets` to `writeNotificationPrefs` so both inherit one
+additivity argument instead of two copies. Its confirmation PLAYS the preset
+it selected: the one case where the feedback can be the thing itself, and it
+doubles as the gesture that un-suspends the `AudioContext` — which matters
+most for `/beep`, since someone typing it is explicitly avoiding the drawer.
+
+### A comment that had been wrong since UX-6-L
+
+`beep.ts`'s header said the beep fires "when the cic page is foreground".
+The call site gates on `!effectivelyFocused(slug, displayName)` — per
+CONVERSATION, not per page — so it fires for a background TAB too, which is
+exactly the case deadbeef_ hit with cicchetto sitting behind a Focus
+session. Corrected here rather than left as the kind of line the next reader
+trusts instead of the code.
+
+### Measured
+
+- Every mp3 was re-downloaded independently and is byte-identical to what
+  `172df6037` committed (`cmp`, with a two-different-files negative control
+  at rc=1). Sizes match the issue's manifest exactly: 12537 / 11969 / 5447.
+- `afinfo` was calibrated in both directions before being believed — rc=1 on
+  a text file, a duration on a known-good system AIFF. It contradicts
+  `PROVENANCE.md`'s "all five are 22050 Hz stereo": the ICQ sound is 44100 Hz
+  MONO, and it never came from the Archive item, so it had no reason to
+  match. The table now carries a per-file format column.
+- Five mutants, five targeted kills: moving the silent-preset return past
+  the seam stamp; dropping the decode-cache eviction; resolving `/beep on`
+  to the default instead of the tone; passing a literal preset from
+  `subscribe.ts` instead of the pref; and playing the sound BEFORE the write
+  lands. The first exposed a test that asserted `resumes === 0` while
+  claiming to check that no `AudioContext` is built — zero either way. It
+  now counts constructions.
+- The dispatch characterization net moved by exactly the predicted three
+  hunks (64→65 arms, one `beep` row, no new indistinguishable pair) and
+  nothing else.
+
+### Not measured, and not claimed
+
+- **Whether any preset sounds good, or whether alk likes one.** This host
+  has no audio. The issue's acceptance bar ("at least one preset alk
+  actually likes") is not something a gate can answer, and the sample gain
+  (0.6, one shared constant) is a judgement, not a measurement — it is one
+  constant so a future ear can move it once.
+- **The samples playing offline.** The `globPatterns` extension is the
+  mechanism, and it is argued from how workbox precaching works, not from a
+  build inspected with the network down.
