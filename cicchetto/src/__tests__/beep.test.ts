@@ -25,6 +25,7 @@ type StartedOsc = {
 type FakeContext = {
   state: AudioContextState;
   currentTime: number;
+  constructed: number;
   resumes: number;
   oscillators: StartedOsc[];
   bufferSources: Array<{ buffer: AudioBuffer | null; started: boolean }>;
@@ -48,6 +49,7 @@ function installFakeAudio(): void {
   fake = {
     state: "running",
     currentTime: 0,
+    constructed: 0,
     resumes: 0,
     oscillators: [],
     bufferSources: [],
@@ -56,6 +58,9 @@ function installFakeAudio(): void {
   decodeFails = false;
 
   class FakeAudioContext {
+    constructor() {
+      fake.constructed += 1;
+    }
     get state() {
       return fake.state;
     }
@@ -182,12 +187,13 @@ describe("playBeep — the silent preset (#1480)", () => {
 
     playBeep("none");
 
-    // Negative control for the assertion above: the same call with a real
-    // preset DOES build one, so the zero is a property of `none` and not of
-    // the harness.
-    expect(fake.resumes).toBe(0);
+    expect(fake.constructed).toBe(0);
+
+    // Negative control: the same module instance DOES build one for a real
+    // preset, so the zero above is a property of `none` and not of a harness
+    // that never wires the constructor up.
     playBeep("tone");
-    expect(fake.oscillators).toHaveLength(1);
+    expect(fake.constructed).toBe(1);
   });
 });
 
