@@ -75,12 +75,49 @@ test.describe("issue 2069 — one number for one question", () => {
       peer.privmsg(CHANNEL, "issue 2069 one");
       peer.privmsg(CHANNEL, "issue 2069 two");
       peer.privmsg(CHANNEL, "issue 2069 three");
+
+      // 🔴 This barrier is placed BEFORE the PART on purpose, and it is not
+      // politeness — it is what makes the setup deterministic.
+      //
+      // bahamut charges FAKE-LAG per command on a connection, so a burst is
+      // served with growing delay and the ~10s overshoot the `whoisAway` budget
+      // in `fixtures/ircClient.ts` already documents. `IrcPeer.part` waits for
+      // its own PART echo on a 5s budget (`PART_TIMEOUT_MS`), and this spec
+      // used to fire JOIN + 3×PRIVMSG + PART back to back — so the PART was the
+      // FIFTH command against a bank filled by the four before it.
+      //
+      // Measured on this tree, `--repeat-each 20`: 9 reds in 20, every one of
+      // them the identical `IrcPeer: timeout waiting for part #spec-w0 (5000ms)`
+      // — the same signature CI turned on shard 2/4 of run 34553963487. The
+      // discriminator against "the testnet is just slow" is in the same logs:
+      // `IrcPeer.join` carries the SAME 5s budget and timed out ZERO times in
+      // those 20 runs. First command always fine, fifth command half the time
+      // not: that is a per-command bank, not latency.
+      //
+      // Draining it by waiting on an OBSERVABLE signal — the three messages
+      // being on the server — costs nothing the spec was not already paying
+      // (it polls this very endpoint below) and leaves the PART as a lone
+      // command against a bank that has had time to empty. No timeout is
+      // raised and no assertion is touched.
+      let after = before;
+      const peerNick = PEER_NICK.toLowerCase();
+      await expect
+        .poll(
+          async () => {
+            after = await fetchAllMessagesAsc(vjt.token, NETWORK_SLUG, CHANNEL);
+            return after.filter(
+              (r) => r.id > cursorId && r.kind === "privmsg" && r.sender.toLowerCase() === peerNick,
+            ).length;
+          },
+          { timeout: 15_000 },
+        )
+        .toBe(3);
+
       await peer.part(CHANNEL, "issue 2069 done");
 
       // Barrier on the SERVER's own store, not a timeout: the PART is the last
       // row the peer produces, so its arrival proves the three messages and the
       // JOIN are already persisted (one ordered IRC stream, one session).
-      let after = before;
       await expect
         .poll(
           async () => {

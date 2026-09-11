@@ -52848,3 +52848,49 @@ precondition was satisfied by the discarded rows will fail for the right
 reason.** Read such a red as an oracle before reading it as a regression — but
 prove which it is on both refs, because the two are indistinguishable from the
 red alone.
+
+### The fifth command, and why a green first command does not vouch for it
+
+CI turned this slice's own browser witness red on one shard —
+`issue2069-one-unread-number.spec.ts`, `IrcPeer: timeout waiting for part
+#spec-w0 (5000ms)` — while the full local suite had passed it twice. The frame
+was in `fixtures/ircClient.ts` rather than in an assertion, which is suggestive
+and proves nothing: a shared fixture can be the victim as easily as the culprit.
+
+It reproduces, and hard: `--repeat-each 20` on the unfixed tree gives **9 reds
+in 20**, every one carrying that identical signature. So the argument never had
+to be settled on the code.
+
+**bahamut charges fake-lag per COMMAND**, and the spec fired JOIN + 3×PRIVMSG +
+PART back to back on one connection, making the PART the FIFTH command against a
+bank the four before it had filled. `IrcPeer.part` waits for its own echo on
+`PART_TIMEOUT_MS` = 5s, while the overshoot this file's own `whoisAway` comment
+documents is ~10s — the budget is under the known worst case, and only for
+callers that arrive late in a burst.
+
+The discriminator against "the testnet is just slow" is in the same 20 runs and
+costs nothing to read: **`IrcPeer.join` carries the SAME 5s budget and timed out
+zero times.** First command always fine, fifth command half the time not. That
+is a per-command bank, not latency — and it is why a spec can be green a hundred
+times on its first wait and still be a coin flip on its last.
+
+Cured by draining the bank on an OBSERVABLE signal: poll until the three
+messages are on the server (the endpoint the spec was already polling
+afterwards), THEN send the PART, so it goes out alone. **No timeout raised, no
+assertion touched.** Measured after: **20 green in 20** — `0.55^20 ≈ 6e-6` had
+the rate stayed where it was.
+
+Two things worth carrying forward. First, **the timeouts in `ircClient.ts` are
+not interchangeable**: `join`/`part`/`nick`/`mode`/`kick` sit at 5s while
+`topic`/`privmsg`/`whois` sit at 15s precisely because the latter were found
+behind the lag bank. A wait's budget is only sound for the POSITION its caller
+occupies in a burst, and nothing in the API says which position that is. Second,
+the general rule: **a burst of IRC commands on one connection is not a setup
+step, it is a queue** — barrier between the plants and the closer, or the closer
+inherits every penalty the plants earned.
+
+Six other specs call `IrcPeer.part`; the closest, `issue2037`, fires four
+commands where this one fired five. They are not touched here — none has been
+seen red, and widening a cure past its measurement is how a fixture acquires
+ballast nobody can later justify. The mechanism is written down so the next
+sighting is diagnosed in one reading instead of re-derived.
