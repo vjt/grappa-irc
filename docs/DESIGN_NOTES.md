@@ -53480,3 +53480,142 @@ entries that record the old behaviour are history and are not rewritten.
 - **Whether the ring-cap route fires in production at all.** Unchanged from
   the issue: it needs a live burst past the retention cap on a window with a
   non-null cursor, and nobody has read that off a real instance.
+<!-- entry #2046 -->
+
+---
+
+## 2026-09-11 — #2046: the directory answers from one read, and says which kind of empty it is
+
+`ChannelDirectory.list/3` built one payload from three unsynchronised reads, so
+a capture landing between them produced `status: "empty", total: 0` beside five
+entries — measured off a production trace in the issue. vjt's ruling has three
+parts: defer the persistence to the end of the LIST, take the total and the
+page from the SAME read, and split the one `empty` into three named states.
+
+### The measurement the ruling asked for, and it went the other way from the hope
+
+The ruling flagged that part 1 might make part 2 **superfluous**: if nothing is
+written until the 323, a reader during a capture sees the previous snapshot
+whole, so where would the skew come from? Reported as a structural reading, not
+a measurement, with an explicit instruction to measure and report the direction
+found.
+
+**It does not.** The deferral moves the write, it does not make it atomic: the
+323 still performs a delete followed by inserts, and three reads still straddle
+it. `channel_directory_test.exs` carries the demonstration as a PAIR — a control
+that fires the same interleave BETWEEN two `list/3` calls and shows the two
+instants disagree (`total: 5` beside 3 rows, the shape the trace reported), and
+the subject test that fires it from inside a telemetry handler DURING the read
+and asserts `total == length(entries)`. The interleave is fired from Ecto's own
+`[:grappa, :repo, :query]` event, which is emitted synchronously in the calling
+process, so the write lands between one statement of the reader and the next
+with no production seam, no sleep and no second process. The subject test
+asserts the harness fired before it asserts the outcome: without that, a
+`total == length(entries)` that holds because nothing moved is a mirror.
+
+So part 2 was written. `total` is now a `count(*) over ()` on the page's own
+statement, and `captured_at` rides the page rows.
+
+### `:refreshing` was dead, and it is gone rather than commented
+
+`status_of(nil, _, _) -> :refreshing` meant "rows present, `captured_at` still
+NULL", which only existed because the ingest wrote mid-stream and stamped
+later. `replace/3` stamps at INSERT, so a row without a stamp cannot exist —
+the clause was unreachable, not deprecated. Deleted, with `replace_start/2`,
+`ingest/3`, `finalize/2`, the `{:ingest, rows}` action, `DirectoryIngest`'s
+batch field, `drain/1`, and the `ingest_batch` config key that sized a flush
+that no longer happens.
+
+### The deterministic defect: the incoherence is real, the consequence was not
+
+The issue records a second defect: a search matching nothing mid-refresh reads
+`:empty`, and `DirectoryController.index/2` arms a refresh on every `:empty`,
+so — the claim goes — a search miss KILLS the capture in flight. The first half
+is true and is cured here (a search miss is now `:no_results`, and only
+`:unknown` arms). **The second half is false, and was false before this
+slice.** `handle_call(:refresh_directory, …)` matches an in-flight run in an
+EARLIER clause than the one that sends LIST: a second request while a capture
+is streaming is a pure `{:error, :already_refreshing}` that touches neither the
+wire nor the tracker nor the buffer. `directory_test.exs` now asserts the
+buffer survives the rejected call, rather than the return value alone.
+
+What the auto-arm COULD do, before the deferral, was nuke an orphaned partition
+left by a watchdog abort — and after the deferral even that is gone, because
+the arm writes nothing until its own 323.
+
+### The two questions the ruling left open
+
+**1. The default for `total` / `captured_at` when the filtered set is empty.**
+A statement that returns no rows carries no window value, so the envelope is
+asked for separately in exactly that case: one row of the same subquery when a
+CURSOR ran past the end (exact total, real stamp), and `{0, max(captured_at)}`
+over the unfiltered partition when the search genuinely matched nothing. The
+second read is what keeps a search miss reporting WHEN the list it searched was
+captured. Its cost is stated rather than hidden: on that one path the two
+values come from two instants, and a capture landing between them can only ever
+flip an EMPTY page between `:no_results` and `:unknown` — there are no entries
+for the numbers to contradict.
+
+**2. Which scope owns the count in `status_of/3`.** The count stays
+SEARCH-scoped, as it always was, and the stamp stays SNAPSHOT-scoped. That
+combination is what makes the discriminant work: a non-nil stamp beside
+`total == 0` can only be a search that matched nothing.
+
+### The query is NOT an argument to `status_of/4`, and that is a deliberate refusal
+
+The ruling names the presence of the query as the discriminant between "no
+results" and "no list yet", and the brief for this slice read that as a
+signature change carrying `q` down to `status_of/3`. It is not needed. With the
+stamp snapshot-scoped and the count search-scoped, `%DateTime{} + total == 0`
+is REACHABLE ONLY with a query present — an absent `q` counts the whole
+partition, which is non-empty whenever a stamp exists. Passing `q` would
+re-state a fact the two arguments already carry, and it would be WEAKER: it
+would label a search typed before the first capture as `no_results` when the
+truth is `loading`. The signature that shipped is
+`status_of(captured_at, total, refreshing?, ttl_ms)`.
+
+### `:loading` needs a fact the table cannot hold
+
+With persistence deferred, a running capture leaves every row as it found it,
+so `:loading` and `:unknown` are the same rows. The in-flight fact lives in
+`Session.Server` and reaches the read as a required `:refreshing?` opt, via
+`Grappa.Session.directory_refreshing?/2` — the sibling of `casemapping/2`, same
+reason, same "no live session means the honest default" posture.
+
+**The ORDER of the controller's two reads is load-bearing and is the reason
+`replace/3` needs no transaction.** `directory_refreshing?/2` is a call into
+the session, so it queues behind the 323 handler that performs the write. A
+reader that asks FIRST therefore sees either the old snapshot whole (capture
+still streaming) or the new one (write committed) — never the delete-then-
+insert gap. Swapping the two lines hands the gap back, and the payload it
+produces is `:unknown`, the one status that arms a re-capture.
+
+### The wire bump is the first that is not additive
+
+`protocol_version` 16 → 17. `empty` and `refreshing` LEAVE the closed
+`status` union; `no_results`, `unknown` and `loading` enter it. This is not the
+#1626 field-removal carve-out — every key stays where it was — it is a closed
+set of VALUES changing, which the additive-only rule never spoke to. Measured
+consequence, both directions: cic's generated `wireSchema` rejects a `status`
+outside its enum, so a pre-17 bundle throws away every directory page a v17
+server sends, and this bundle cannot read a pre-17 server's either.
+`min_protocol_version` stays at 1 deliberately — raising it would 426 the whole
+socket over one broken pane, and the two ship together.
+
+### Not measured, not claimed
+
+* **No magnitude for the RAM the buffer costs.** The price was accepted by
+  ruling; a few thousand rows per session running a LIST is the shape, not a
+  measurement.
+* **No magnitude for the write burst.** `replace/3` is a delete plus
+  `ceil(n/500)` inserts on one connection; nothing here times it, and the chunk
+  size is a SQLite variable-limit constraint (32766 vars, 8 per row), not a
+  tuned number.
+* **Nothing about the original trace is re-explained.** The issue lists three
+  candidate readings for why `captured_at` stayed null for 15 s across 14
+  polls; this slice cures a defect visible in the payload and in the source,
+  and does not claim to have identified which reading produced that artefact.
+* **The `no_results`-vs-`loading` edge on a first visit.** A search typed
+  before any capture has completed reads `loading`, because the stamp decides
+  before the query does. That is the honest answer, and it is also the only
+  arrangement of these two branches with no wrong case.
