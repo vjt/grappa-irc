@@ -15,6 +15,19 @@
 //     and this spec asserts the production call-site is reached at
 //     the right moments through real WS + IRC.
 //
+// 🔴 #1480 — every test here now OPTS IN first, with `/beep on` through the
+// real compose box. The default preset became `none` (silence), so a mention
+// no longer stamps the seam for a subject who never chose a sound: without
+// the opt-in the two positive tests would be red, and — worse — the negative
+// one would be VACUOUSLY green, passing because nothing ever beeps rather
+// than because the mention gate held. The default's own behaviour is the
+// subject of `issue1480-notification-sound-preset.spec.ts`.
+//
+// The opt-in doubles as the barrier for its own write: `/beep on` awaits the
+// PUT and only then plays the preset it selected, so the first stamp IS the
+// proof the server pref landed. Each test therefore compares against the
+// stamp the opt-in left, not against null.
+//
 // We do NOT assert that the SW suppressed showNotification — same
 // reason `push-foreground-suppression.spec.ts` (#182) asserts the
 // SERVER-side gate via push-catcher instead: the integration harness
@@ -50,6 +63,19 @@ async function readLastBeepAt(page: import("@playwright/test").Page): Promise<nu
   );
 }
 
+// #1480 — opt in to the 440 Hz tone through the verb a user would type, and
+// return the stamp the confirmation left. `/beep on` persists the preference
+// server-side and plays it only after the PUT resolves, so a non-null read
+// here is evidence the write landed — no sleep, no separate probe.
+async function optInToTheBeep(page: import("@playwright/test").Page): Promise<number> {
+  await page.locator(".compose-box textarea").fill("/beep on");
+  await page.locator(".compose-box textarea").press("Enter");
+  await expect.poll(async () => await readLastBeepAt(page), { timeout: 5_000 }).not.toBeNull();
+  const stamp = await readLastBeepAt(page);
+  if (stamp === null) throw new Error("opt-in confirmation never stamped");
+  return stamp;
+}
+
 test("inbound DM fires in-app beep (__lastBeepAt advances) on a non-focused window", async ({
   page,
 }) => {
@@ -64,9 +90,9 @@ test("inbound DM fires in-app beep (__lastBeepAt advances) on a non-focused wind
   // gate).
   await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: specNick() });
 
-  // Sanity: no beep has fired pre-DM.
-  const baseline = await readLastBeepAt(page);
-  expect(baseline).toBeNull();
+  // Sanity: no beep has fired before anything was chosen — the shipped state.
+  expect(await readLastBeepAt(page)).toBeNull();
+  const baseline = await optInToTheBeep(page);
 
   // Wait for the DM-listener phx.join() ack BEFORE driving a peer DM —
   // see `waitForDmListenerReady` doc for the race shape. Suite saw
@@ -95,11 +121,15 @@ test("inbound DM fires in-app beep (__lastBeepAt advances) on a non-focused wind
       timeout: 5_000,
     });
 
-    // Step 3: __lastBeepAt should have advanced — the DM-listener
-    // call site fires playBeep BEFORE routeMessage (which is what
-    // appends to scrollback + opens the sidebar window). If sidebar
-    // is present, beep MUST have fired.
-    await expect.poll(async () => await readLastBeepAt(page), { timeout: 5_000 }).not.toBeNull();
+    // Step 3: __lastBeepAt should have ADVANCED past the opt-in's own stamp —
+    // the DM-listener call site fires playBeep BEFORE routeMessage (which is
+    // what appends to scrollback + opens the sidebar window). If sidebar is
+    // present, beep MUST have fired. Compared against the baseline rather than
+    // against null since #1480: the opt-in already stamped once, so `not null`
+    // would now be satisfied by the opt-in alone.
+    await expect
+      .poll(async () => await readLastBeepAt(page), { timeout: 5_000 })
+      .toBeGreaterThan(baseline);
   } finally {
     await peer.disconnect("ux6l DM done");
   }
@@ -110,8 +140,8 @@ test("channel mention fires in-app beep on a non-focused mention target", async 
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: specNick() });
 
-  const baseline = await readLastBeepAt(page);
-  expect(baseline).toBeNull();
+  expect(await readLastBeepAt(page)).toBeNull();
+  const baseline = await optInToTheBeep(page);
 
   const peer = await IrcPeer.connect({ nick: PEER_NICK_MENTION });
   try {
@@ -138,7 +168,9 @@ test("channel mention fires in-app beep on a non-focused mention target", async 
       body: mentionBody,
     });
 
-    await expect.poll(async () => await readLastBeepAt(page), { timeout: 5_000 }).not.toBeNull();
+    await expect
+      .poll(async () => await readLastBeepAt(page), { timeout: 5_000 })
+      .toBeGreaterThan(baseline);
   } finally {
     await peer.disconnect("ux6l mention done");
     await partChannel(vjt.token, NETWORK_SLUG, MENTION_CHANNEL).catch(() => {});
@@ -152,8 +184,11 @@ test("PRIVMSG without nick mention does NOT fire beep on a non-focused channel",
   await loginAs(page, vjt);
   await selectChannel(page, NETWORK_SLUG, AUTOJOIN_CHANNELS[0], { ownNick: specNick() });
 
-  const baseline = await readLastBeepAt(page);
-  expect(baseline).toBeNull();
+  expect(await readLastBeepAt(page)).toBeNull();
+  // #1480 — the opt-in is what keeps this negative honest. Left at the
+  // default the subject is silent anyway, so the test would pass without the
+  // mention gate existing at all.
+  const baseline = await optInToTheBeep(page);
 
   const peer = await IrcPeer.connect({ nick: PEER_NICK_MENTION });
   try {
@@ -174,18 +209,18 @@ test("PRIVMSG without nick mention does NOT fire beep on a non-focused channel",
 
     // Negative arm: wait long enough for cic WS round-trip + handler
     // to settle, but use a polled stable read instead of a hardcoded
-    // sleep (audit 2026-05-26). If a beep DOES fire it'll set
-    // __lastBeepAt to a number; we poll for "still null" + a single
-    // final check. assertMessagePersisted above already guarantees
-    // the message reached cic; the only thing we're waiting for is
-    // the (non-)dispatch of beep handler.
+    // sleep (audit 2026-05-26). If a beep DOES fire it'll MOVE
+    // __lastBeepAt past the opt-in's stamp; we poll for "still the
+    // opt-in's value" + a single final check. assertMessagePersisted
+    // above already guarantees the message reached cic; the only thing
+    // we're waiting for is the (non-)dispatch of beep handler.
     await expect
       .poll(async () => readLastBeepAt(page), {
         timeout: 1_500,
         intervals: [100, 200, 400, 800],
       })
-      .toBeNull();
-    expect(await readLastBeepAt(page)).toBeNull();
+      .toBe(baseline);
+    expect(await readLastBeepAt(page)).toBe(baseline);
   } finally {
     await peer.disconnect("ux6l no-mention done");
   }
