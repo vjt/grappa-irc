@@ -343,7 +343,13 @@ defmodule Grappa.UserSettingsTest do
                # byte-for-byte by cic's DEFAULT_NOTIFICATION_PREFS, so an
                # un-hydrated client behaves like a subject who configured
                # nothing rather than one who muted everything.
-               muted_targets: %{}
+               muted_targets: %{},
+               # #1480 — SILENCE, and deliberately so for existing subjects
+               # too (vjt: «suono deve essere opt-in»). Asserted as a literal
+               # rather than through the module attribute: the value IS the
+               # ruling, and a test that reads the constant it is guarding
+               # would go green on a default someone flipped.
+               notification_sound: "none"
              }
     end
   end
@@ -460,7 +466,8 @@ defmodule Grappa.UserSettingsTest do
         private_messages_only: ["alice"],
         presence_online: false,
         presence_offline: false,
-        muted_targets: %{"azzurra #noisy" => %{"until" => nil}}
+        muted_targets: %{"azzurra #noisy" => %{"until" => nil}},
+        notification_sound: "icq"
       }
 
       assert {:ok, %Settings{}} = UserSettings.put_notification_prefs({:user, user.id}, prefs)
@@ -701,6 +708,112 @@ defmodule Grappa.UserSettingsTest do
 
   defp read_muted(user),
     do: UserSettings.get_notification_prefs({:user, user.id}).muted_targets
+
+  # ---------------------------------------------------------------------------
+  # notification_sound — the in-app beep preset (#1480)
+  # ---------------------------------------------------------------------------
+
+  defp put_sound(user, prefs),
+    do:
+      UserSettings.put_notification_prefs(
+        {:user, user.id},
+        Map.merge(base_prefs(%{}), prefs)
+      )
+
+  defp read_sound(user),
+    do: UserSettings.get_notification_prefs({:user, user.id}).notification_sound
+
+  describe "notification_prefs notification_sound (#1480 — the closed-set twin)" do
+    test "round-trips a member of the closed set" do
+      user = user_fixture()
+
+      assert {:ok, _} = put_sound(user, %{notification_sound: "xp_notify"})
+      assert read_sound(user) == "xp_notify"
+    end
+
+    test "the WRITE rejects a value outside the closed set, naming the set" do
+      user = user_fixture()
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               put_sound(user, %{notification_sound: "airhorn"})
+
+      assert {"notification_sound must be one of " <> _, _} =
+               Keyword.fetch!(cs.errors, :notification_prefs)
+    end
+
+    test "a rejected write leaves the STORED value untouched" do
+      user = user_fixture()
+      assert {:ok, _} = put_sound(user, %{notification_sound: "chime"})
+
+      assert {:error, %Ecto.Changeset{}} = put_sound(user, %{notification_sound: "airhorn"})
+
+      # The 422 is only half the contract: a validator that errors AFTER
+      # writing would be indistinguishable at the changeset and would still
+      # have clobbered the subject's pick.
+      assert read_sound(user) == "chime"
+    end
+
+    test "the READ falls back to silence on a value the BEAM cannot name" do
+      user = user_fixture()
+
+      # Not reachable through the writer — that is the point. This is the row
+      # a NEWER cic bundle wrote (a preset added after this BEAM shipped), or
+      # one hand-edited in the DB. The reader must degrade to the default
+      # rather than hand the client a name it will not match either.
+      poison_stored_sound(user, "preset_from_the_future")
+
+      assert read_sound(user) == "none"
+    end
+
+    test "the READ falls back to silence when the key is absent entirely" do
+      user = user_fixture()
+      # The pre-#1480 row: prefs configured, no sound key at all.
+      assert {:ok, _} = put_muted(user, %{})
+      drop_stored_sound(user)
+
+      assert read_sound(user) == "none"
+    end
+
+    test "an OLD bundle's save preserves the pick instead of resetting it" do
+      user = user_fixture()
+      assert {:ok, _} = put_sound(user, %{notification_sound: "icq"})
+
+      # `base_prefs/1` is byte-for-byte the pre-#1480 PUT body: every key the
+      # old cic knows, and no `notification_sound`. The endpoint is a full
+      # replace, so absence has to mean "I am saying nothing about the sound"
+      # — reading it as "set it to the default" would silence an opted-in
+      # subject the first time they tick any other checkbox.
+      assert {:ok, _} = put_muted(user, %{})
+
+      assert read_sound(user) == "icq"
+    end
+
+    test "an explicit \"none\" is a real choice, not an absence" do
+      user = user_fixture()
+      assert {:ok, _} = put_sound(user, %{notification_sound: "chime"})
+
+      assert {:ok, _} = put_sound(user, %{notification_sound: "none"})
+
+      assert read_sound(user) == "none"
+    end
+  end
+
+  # Write a value straight into the stored blob, bypassing the validator. Used
+  # only to stage rows the writer cannot produce (a future preset name, or the
+  # pre-#1480 shape) — the reader's tolerance is the thing under test.
+  defp poison_stored_sound(user, value),
+    do: rewrite_stored_prefs(user, &Map.put(&1, "notification_sound", value))
+
+  defp drop_stored_sound(user),
+    do: rewrite_stored_prefs(user, &Map.delete(&1, "notification_sound"))
+
+  defp rewrite_stored_prefs(user, fun) do
+    settings = UserSettings.get_or_init({:user, user.id})
+    prefs = Map.get(settings.data, "notification_prefs", %{})
+    next = Map.put(settings.data, "notification_prefs", fun.(prefs))
+
+    Repo.update!(Settings.changeset(settings, %{data: next}))
+  end
 
   describe "notification_prefs muted_targets (#866, network-keyed since #1038)" do
     test "folds the TARGET and keeps the slug, so the stored key is the one a row matches" do

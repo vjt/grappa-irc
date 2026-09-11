@@ -170,11 +170,18 @@ defmodule Grappa.UserSettings do
   @typedoc """
   Per-subject notification preferences — push-notifications cluster B3.
 
-  Five booleans + two string-list whitelists + one mute map (#866).
+  Five booleans + two string-list whitelists + one mute map (#866) + one
+  closed-set sound key (#1480).
   Three of the booleans gate MESSAGE push; `presence_online` /
   `presence_offline` gate `/notify` presence push (#378) and are a
   SEPARATE trigger class — see `@prefs_trigger_keys` for why they are
   excluded from the at-least-one-trigger guard.
+
+  `notification_sound` names the IN-APP beep preset cic plays on the live
+  notify path (`cicchetto/src/lib/beep.ts`); it does NOT gate the OS push,
+  which is decided here by `Push.Triggers` and has no audio of ours. It is
+  a closed set (`@notification_sounds`) enforced at the write boundary, and
+  the DEFAULT IS SILENCE — see `default_notification_prefs/0`.
   Whitelist semantics: IF `channel_messages_all` is true the
   `channel_messages_only` list is ignored at trigger-eval time (UI greys
   it out, server still stores the value so toggling `_all` off restores
@@ -199,7 +206,8 @@ defmodule Grappa.UserSettings do
           private_messages_only: [String.t()],
           presence_online: boolean(),
           presence_offline: boolean(),
-          muted_targets: muted_targets()
+          muted_targets: muted_targets(),
+          notification_sound: String.t()
         }
 
   @typedoc """
@@ -242,6 +250,23 @@ defmodule Grappa.UserSettings do
         }
 
   @notification_prefs_key "notification_prefs"
+
+  # #1480 — the in-app beep preset, a closed set inside `notification_prefs`.
+  # Wire strings rather than atoms for the same reason `@display_time_formats`
+  # is (see the `display_prefs` typedoc): they cross a JSON boundary and
+  # `String.to_atom/1` on user input is banned. Two species share one list —
+  # oscillator recipes cic synthesises (`tone`, `chime`, `blip`, `pop`) and
+  # mp3 samples it decodes (`icq`, the four `xp_*`) — because the SERVER never
+  # needs to tell them apart: it stores a name and validates membership. The
+  # recipe/asset table is cic's (`cicchetto/src/lib/notificationSound.ts`), and
+  # THAT is the pair to keep in step when a preset is added.
+  #
+  # `none` is the DEFAULT for everybody (vjt, 2026-09-11: «suono deve essere
+  # opt-in», «mi sta bene che sia disattivato per tutti»), so an untouched
+  # subject is silent and the sound only ever arrives after an explicit pick.
+  @notification_sounds ~w(none tone chime blip pop icq xp_notify xp_ding xp_balloon xp_exclamation)
+  @default_notification_sound "none"
+
   @upload_ttl_seconds_key "upload_ttl_seconds"
   @vhost_selection_key "vhost_selection"
   @active_theme_id_key "active_theme_id"
@@ -532,6 +557,17 @@ defmodule Grappa.UserSettings do
   the opt-in and costs nothing: #247's Watched panel already tells users
   the feature exists.
 
+  `notification_sound` defaults to `"none"` — SILENCE — and that is a
+  deliberate behaviour change for existing subjects, not the usual
+  "nobody's setting moves on upgrade" (#1480). vjt ruled it on
+  2026-09-11: «suono deve essere opt-in», «mi sta bene che sia disattivato
+  per tutti», the framing being that an audible beep a user never asked
+  for is a privacy invasion. It is also the only implementable answer to
+  the report that triggered the issue — a page cannot read macOS Focus /
+  Do Not Disturb (no browser API exists), the OS suppresses the BANNER by
+  itself, and our beep is a Web Audio node the OS never sees. So the cure
+  is a preset the user can pick, not a DND gate we cannot build.
+
   The spec's return type is the wider `notification_prefs()` (not the
   Dialyzer-inferred singleton shape) so callers can pattern-match
   the result interchangeably with `get_notification_prefs/1` results.
@@ -547,7 +583,8 @@ defmodule Grappa.UserSettings do
       private_messages_only: [],
       presence_online: false,
       presence_offline: false,
-      muted_targets: %{}
+      muted_targets: %{},
+      notification_sound: @default_notification_sound
     }
   end
 
@@ -626,6 +663,11 @@ defmodule Grappa.UserSettings do
       operator's mutes the first time they tick any other checkbox. Keys
       are folded (`Identifier.canonical_target/1`) and `until` must be
       `null` or a positive unix timestamp in seconds.
+    * `notification_sound` (#1480) is the SECOND key with that absence
+      rule, for the identical reason: a bundle that has never heard of the
+      preset picker is not asserting the subject wants silence. An
+      unrecognised VALUE, on the other hand, is rejected — absence and
+      garbage are different claims, and only the first one is tolerable.
 
   Returns `{:ok, %Settings{}}` on persistence; `{:error, changeset}`
   with descriptive errors on either validation failure path.
@@ -1874,6 +1916,21 @@ defmodule Grappa.UserSettings do
     bools
     |> Map.merge(lists)
     |> Map.put(:muted_targets, read_muted_targets(stored))
+    |> Map.put(:notification_sound, read_notification_sound(stored))
+  end
+
+  # #1480 — closed-set read, the twin of `read_display_time_format/1`: an
+  # absent or unrecognised value reads as the default. That covers the row
+  # written before this key existed AND the row written by a bundle newer
+  # than this BEAM which picked a preset this BEAM cannot name — both behave
+  # like a subject who never chose, which is silence, never a crash and
+  # never a guess.
+  @spec read_notification_sound(map()) :: String.t()
+  defp read_notification_sound(stored) do
+    case Map.get(stored, :notification_sound, Map.get(stored, "notification_sound")) do
+      v when v in @notification_sounds -> v
+      _ -> @default_notification_sound
+    end
   end
 
   # #866 — defensive read of the mute map, the twin of `sanitize_aliases_read/1`.
@@ -1953,8 +2010,8 @@ defmodule Grappa.UserSettings do
     with {:ok, bools} <- cast_bools(prefs, subject),
          {:ok, lists} <- cast_lists(prefs, subject),
          {:ok, muted} <- cast_muted_targets(prefs, subject),
-         normalized =
-           bools |> Map.merge(lists) |> Map.put(:muted_targets, resolve_muted(muted, subject)),
+         {:ok, sound} <- cast_notification_sound(prefs, subject),
+         normalized = bools |> Map.merge(lists) |> resolve_unchanged(muted, sound, subject),
          :ok <- ensure_at_least_one_trigger(normalized, subject) do
       {:ok, normalized}
     end
@@ -2048,14 +2105,59 @@ defmodule Grappa.UserSettings do
     end
   end
 
-  # Resolving :unchanged costs one extra SELECT, and only on the absent path.
-  # It reads through `get_notification_prefs/1` ON PURPOSE rather than off the
-  # raw column: that reader is also where snoozes expire, so an old client's
-  # save prunes elapsed entries as a side effect instead of writing them back.
-  defp resolve_muted(:unchanged, subject),
-    do: Map.fetch!(get_notification_prefs(subject), :muted_targets)
+  # #1480 — closed-set write, and the axis this shares with the twin above is
+  # ABSENCE, not the value: `nil`/absent is `:unchanged` (the rollout-window
+  # argument in `cast_muted_targets/2`, verbatim — an old bundle omitting the
+  # key is not asking for silence), while an unrecognised value is REJECTED.
+  # That is the `fetch_display_time_format/1` half: the closed set is enforced
+  # at the boundary, so a stored row can only ever hold a name this BEAM knows.
+  @spec cast_notification_sound(map(), Subject.t()) ::
+          {:ok, String.t() | :unchanged} | {:error, Ecto.Changeset.t()}
+  defp cast_notification_sound(prefs, subject) do
+    case Map.get(prefs, :notification_sound, Map.get(prefs, "notification_sound")) do
+      nil ->
+        {:ok, :unchanged}
 
-  defp resolve_muted(muted, _) when is_map(muted), do: muted
+      v when v in @notification_sounds ->
+        {:ok, v}
+
+      _ ->
+        {:error,
+         prefs_changeset_error(
+           "notification_sound must be one of #{inspect(@notification_sounds)}",
+           subject
+         )}
+    end
+  end
+
+  # Fills whichever of the two `:unchanged`-capable keys the client omitted.
+  #
+  # ONE read serves both, deliberately: the client that omits either key is an
+  # old bundle, and an old bundle omits BOTH, so a per-key resolver would pay
+  # two SELECTs for one PUT and neither would be the interesting one. It reads
+  # through `get_notification_prefs/1` rather than off the raw column because
+  # that reader is also where snoozes expire — an old client's save prunes
+  # elapsed entries as a side effect instead of writing them back.
+  @spec resolve_unchanged(map(), muted_targets() | :unchanged, String.t() | :unchanged, Subject.t()) ::
+          map()
+  defp resolve_unchanged(base, muted, sound, subject) do
+    stored = unchanged_fallback(muted, sound, subject)
+
+    base
+    |> Map.put(:muted_targets, keep_or_take(muted, stored, :muted_targets))
+    |> Map.put(:notification_sound, keep_or_take(sound, stored, :notification_sound))
+  end
+
+  # `%{}` on the nothing-to-resolve arm rather than `nil`: it keeps the return
+  # a `map()` for every caller, and it is never indexed — `keep_or_take/3`
+  # touches it only on the `:unchanged` arm, which is exactly the arm that
+  # forced the read.
+  defp unchanged_fallback(muted, sound, subject) do
+    if :unchanged in [muted, sound], do: get_notification_prefs(subject), else: %{}
+  end
+
+  defp keep_or_take(:unchanged, stored, key), do: Map.fetch!(stored, key)
+  defp keep_or_take(value, _stored, _key), do: value
 
   defp normalize_muted_targets(map, subject) when map_size(map) > @muted_targets_max_count do
     {:error,
