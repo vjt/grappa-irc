@@ -808,7 +808,7 @@ defmodule Grappa.UserSettingsTest do
     do: rewrite_stored_prefs(user, &Map.delete(&1, "notification_sound"))
 
   defp rewrite_stored_prefs(user, fun) do
-    settings = UserSettings.get_or_init({:user, user.id})
+    {:ok, settings} = UserSettings.get_or_init({:user, user.id})
     prefs = Map.get(settings.data, "notification_prefs", %{})
     next = Map.put(settings.data, "notification_prefs", fun.(prefs))
 
