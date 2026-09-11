@@ -2078,9 +2078,11 @@ defmodule Grappa.Session.Server do
   #      timer; there's nothing to send `LIST` to.
   #   2. `run: nil` (client present) — the happy path. Put
   #      `LIST` on the wire FIRST (so a transport error short-circuits with
-  #      no DB churn), then nuke the prior snapshot, arm the watchdog, and
-  #      record the in-flight tracker. The streamed 321/322/323 capture is
-  #      Task C3; the watchdog handler is `:directory_refresh_timeout` below.
+  #      no DB churn), then arm the watchdog and record the in-flight
+  #      tracker. It touches NO row: issue 2046 deferred the whole write to
+  #      the 323, so the prior snapshot stays servable until the new one is
+  #      complete. The streamed 321/322/323 capture is Task C3; the watchdog
+  #      handler is `:directory_refresh_timeout` below.
   #   3. catch-all (`run` non-nil) — a refresh is already
   #      streaming. The run's presence IS the guard; reply
   #      `{:error, :already_refreshing}` and leave the in-flight run untouched.
@@ -2091,7 +2093,6 @@ defmodule Grappa.Session.Server do
   def handle_call(:refresh_directory, _, %{directory: %DirectoryIngest{run: nil} = ingest} = state) do
     case Client.send_line(state.client, "LIST\r\n") do
       :ok ->
-        ChannelDirectory.replace_start(state.subject, state.network_id)
         timer = Process.send_after(self(), :directory_refresh_timeout, ingest.timeout_ms)
         now = System.monotonic_time(:millisecond)
 
@@ -2104,6 +2105,20 @@ defmodule Grappa.Session.Server do
 
   def handle_call(:refresh_directory, _, state) do
     {:reply, {:error, :already_refreshing}, state}
+  end
+
+  # Issue 2046 — is a `LIST` capture streaming right now? The one fact
+  # `ChannelDirectory.list/3` cannot read off the table: with persistence
+  # deferred, a running capture leaves every row exactly as it found it, so
+  # "no snapshot AND a capture under way" (`:loading`) and "no snapshot and
+  # nobody looking" (`:unknown`) are the same rows and different answers.
+  #
+  # Answering it from the mailbox is what makes the 323 write invisible to a
+  # reader: this call queues BEHIND the handler that performs it, so a web
+  # request that asks first and reads second can never observe the partition
+  # mid-replace. `DirectoryController.index/2` owns that ordering.
+  def handle_call(:directory_refreshing?, _, state) do
+    {:reply, DirectoryIngest.in_flight?(state.directory), state}
   end
 
   # #581 — start the visitor "recover my identity" sequence (A3: ack
@@ -3501,7 +3516,10 @@ defmodule Grappa.Session.Server do
   #   * in-flight — the refresh genuinely stalled. Clear the tracker and
   #     broadcast a `directory_failed` ping so cic drops its loading
   #     affordance. The prior DB snapshot (if any) stays intact — only the
-  #     in-flight state is wiped. `network` is on the Logger allowlist and
+  #     in-flight state is wiped. That sentence was written here before it
+  #     was true: until issue 2046 the arm nuked the partition, so a stalled
+  #     refresh left the user with NO directory. Deferring the write is what
+  #     made the comment honest. `network` is on the Logger allowlist and
   #     already threaded by `Log.set_session_context/2`.
   def handle_info(:directory_refresh_timeout, %{directory: %DirectoryIngest{run: nil}} = state),
     do: {:noreply, state}
@@ -6982,11 +7000,11 @@ defmodule Grappa.Session.Server do
   #
   #   321 RPL_LISTSTART — header only, no data. No-op.
   #   322 RPL_LIST      — one channel row. Parse, accumulate into the
-  #                       in-flight buffer, flush on batch boundary, emit a
-  #                       throttled progress ping.
-  #   323 RPL_LISTEND   — flush the tail buffer, stamp `captured_at`, cancel
-  #                       the watchdog, emit `directory_complete`, clear the
-  #                       in-flight tracker.
+  #                       in-flight buffer, emit a throttled progress ping.
+  #                       Writes NOTHING (issue 2046).
+  #   323 RPL_LISTEND   — hand the WHOLE buffer to the table in one stamped
+  #                       replace, cancel the watchdog, emit
+  #                       `directory_complete`, clear the in-flight tracker.
   @spec handle_directory_numeric(321 | 322 | 323, Message.t(), t()) :: t()
   defp handle_directory_numeric(321, _, state), do: state
 
@@ -7004,47 +7022,40 @@ defmodule Grappa.Session.Server do
   end
 
   defp handle_directory_numeric(323, _, state) do
-    {ingest, tail, timer} = DirectoryIngest.finish(state.directory)
+    {ingest, rows, timer} = DirectoryIngest.finish(state.directory)
     finished = %{state | directory: ingest}
 
-    :ok = ingest_directory_rows(finished, tail)
-    :ok = ChannelDirectory.finalize(finished.subject, finished.network_id)
+    :ok = ChannelDirectory.replace(finished.subject, finished.network_id, rows)
     :ok = cancel_and_drain(timer, :directory_refresh_timeout)
 
-    # The total is re-read from the snapshot the ingest just wrote, NOT taken
-    # from the accumulator's running count: the two diverge the moment
-    # `ChannelDirectory.ingest/3` dedupes or upserts. Not a tidy-up target.
+    # The total is re-read from the snapshot just written, NOT taken from the
+    # accumulator's running count: the two diverge the moment
+    # `ChannelDirectory.replace/3` collapses duplicate names. Not a tidy-up
+    # target. `refreshing?: false` is a statement of fact, not a default —
+    # the run was cleared above, and this process is the only thing that
+    # could start another.
     broadcast_window_state(
       finished,
       SessionWire.directory_complete(
         finished.network_slug,
-        ChannelDirectory.list(finished.subject, finished.network_id, ttl_ms: 0).total
+        ChannelDirectory.list(finished.subject, finished.network_id,
+          ttl_ms: 0,
+          refreshing?: false
+        ).total
       )
     )
 
     finished
   end
 
-  # `DirectoryIngest` decides; the session performs. Order is the order the
-  # accumulator handed back — the batch write precedes the progress ping it
-  # reports, so a ping never names a count the DB has not been offered.
+  # `DirectoryIngest` decides; the session performs. One action survives the
+  # #2046 deferral — the throttled progress ping — and the split is kept for
+  # the reason it was built: the decision is testable without a process, the
+  # IO is not.
   @spec perform_directory_action(DirectoryIngest.action(), t()) :: t()
-  defp perform_directory_action({:ingest, rows}, state) do
-    :ok = ingest_directory_rows(state, rows)
-    state
-  end
-
   defp perform_directory_action({:progress, count}, state) do
     broadcast_window_state(state, SessionWire.directory_progress(state.network_slug, count))
     state
-  end
-
-  # Empty is a no-op — never round-trip an empty insert.
-  @spec ingest_directory_rows(t(), [ChannelDirectory.ingest_row()]) :: :ok
-  defp ingest_directory_rows(_, []), do: :ok
-
-  defp ingest_directory_rows(state, rows) do
-    :ok = ChannelDirectory.ingest(state.subject, state.network_id, rows)
   end
 
   # mIRC sort: highest advertised grade first, plain last. Within tier,

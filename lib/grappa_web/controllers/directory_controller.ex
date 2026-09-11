@@ -8,7 +8,7 @@ defmodule GrappaWeb.DirectoryController do
   by `GrappaWeb.Plugs.ResolveNetwork` before either action runs:
 
     * `GET /networks/:network_id/directory` — server-side
-      sort/search/keyset-page over the last finalized `LIST` snapshot
+      sort/search/keyset-page over the last completed `LIST` snapshot
       (`Grappa.ChannelDirectory.list/3`), rendered through
       `ChannelDirectory.Wire.index_payload/2` (each row carries a
       `featured` flag derived from the network's current
@@ -31,10 +31,26 @@ defmodule GrappaWeb.DirectoryController do
 
   @doc """
   `GET /networks/:network_id/directory?sort=&q=&cursor=&limit=` —
-  renders a keyset-paged page of the last finalized `LIST` snapshot.
-  Auto-arms the first refresh when the snapshot is `:empty` and a live
+  renders a keyset-paged page of the last completed `LIST` snapshot.
+  Auto-arms the first refresh when the snapshot is `:unknown` and a live
   session exists (result discarded — no session / already running are
   both fine here).
+
+  ## The two reads are ORDERED, and the order is the guarantee
+
+  `directory_refreshing?/2` runs BEFORE `list/3`, always. It is a call into
+  the session, so it queues behind whatever that process is doing —
+  including the 323 handler's `ChannelDirectory.replace/3`. A reader that
+  asks first therefore sees one of two coherent worlds: the capture is
+  still streaming and the table still holds the PREVIOUS snapshot whole, or
+  the capture has landed and the table holds the new one. The delete-then-
+  insert gap inside `replace/3` is never observable from here, which is why
+  that write needs no transaction (issue 2046).
+
+  Swapping the two lines would give the gap back — `list/3` could read the
+  emptied partition, `directory_refreshing?/2` would then answer `false`
+  (the write having completed), and the payload would say `:unknown`: the
+  one status that arms a re-capture.
   """
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, params) do
@@ -43,6 +59,7 @@ defmodule GrappaWeb.DirectoryController do
 
     opts = [
       ttl_ms: ChannelDirectory.ttl_ms(),
+      refreshing?: Session.directory_refreshing?(subject, network.id),
       sort: parse_sort(params["sort"]),
       q: string_param(params, "q"),
       cursor: string_param(params, "cursor"),
@@ -51,7 +68,12 @@ defmodule GrappaWeb.DirectoryController do
 
     page = ChannelDirectory.list(subject, network.id, opts)
 
-    if page.status == :empty, do: maybe_auto_refresh(subject, network.id)
+    # `:unknown` is the ONLY arming state, and that is the cure for the
+    # incoherence #2046 recorded alongside the skew: the old trigger was
+    # `:empty`, which a search matching nothing produced just as readily as
+    # a network nobody had ever LISTed. `:no_results` now says which of the
+    # two it is, and `:loading` says a capture is already on the way.
+    if page.status == :unknown, do: maybe_auto_refresh(subject, network.id)
 
     # #85 — re-derive the featured flag from CURRENT config on every
     # fetch (on-display freshness; operator edits show up next poll).

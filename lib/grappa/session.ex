@@ -428,10 +428,12 @@ defmodule Grappa.Session do
   Triggers an upstream `LIST` channel-directory refresh on the live
   session for `(subject, network_id)` (#84).
 
-  The Session.Server puts `LIST` on the wire, nukes the prior
-  `Grappa.ChannelDirectory` snapshot, and arms a watchdog timer; the
-  streamed 321/322/323 numerics repopulate the snapshot (captured by a
-  later task). Returns `:ok` once the refresh is in flight.
+  The Session.Server puts `LIST` on the wire and arms a watchdog timer;
+  the streamed 321/322/323 numerics buffer the capture in memory, and the
+  323 replaces the `Grappa.ChannelDirectory` snapshot in one write. Nothing
+  is nuked when the refresh starts (issue 2046) — the prior snapshot stays
+  servable for the whole capture, and a stalled one leaves it untouched.
+  Returns `:ok` once the refresh is in flight.
 
   Distinct from the `call_session/*` facades: a missing session pid maps
   to `{:error, :not_connected}` (not `:no_session`) — the directory
@@ -449,6 +451,29 @@ defmodule Grappa.Session do
       nil -> {:error, :not_connected}
       pid -> GenServer.call(pid, :refresh_directory)
     end
+  end
+
+  @doc """
+  Is a channel-directory `LIST` capture streaming for `(subject,
+  network_id)` right now? (issue 2046)
+
+  Sibling of `casemapping/2` and `statusmsg_sigils/2`, and there for the
+  same reason: a stateless read at the web edge needs a fact only the live
+  session holds. Since the #2046 deferral a running capture writes nothing,
+  so the table cannot distinguish "no snapshot, one is on the way" from "no
+  snapshot, nobody asked" — this is the distinction, and
+  `Grappa.ChannelDirectory.list/3` takes it as `:refreshing?`.
+
+  No live session means no capture: `false`, never an error. The same
+  answer covers a dead pid and a timed-out call, and it is the honest one —
+  a capture nobody is running is not in flight. The cost of being wrong is
+  bounded to a first-visit pane reading `unknown` instead of `loading`,
+  which arms a refresh; it is never a stale row.
+  """
+  @spec directory_refreshing?(subject(), integer()) :: boolean()
+  def directory_refreshing?(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    call_session(subject, network_id, :directory_refreshing?) == true
   end
 
   @doc """

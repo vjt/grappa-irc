@@ -17,17 +17,26 @@ defmodule Grappa.Session.DirectoryIngest do
   `run == nil` IS the "no refresh in flight" guard, exactly as
   `directory_refresh == nil` was.
 
+  ## The buffer is the whole capture (issue 2046)
+
+  It used to be a flush window: 200 rows in, 200 rows written, buffer
+  emptied, repeat. Persistence is now DEFERRED — nothing reaches the table
+  until 323 RPL_LISTEND — so the buffer accumulates the entire `LIST` and
+  `finish/1` is the only door out of it. The batch size went with the
+  mechanism: with no mid-stream write left to size, `absorb/3` appends and
+  throttles, and that is all it does. What the capture costs is now plainly
+  RAM, which is the price the ruling accepted.
+
   ## Why this one carries logic, unlike its `*Accum` siblings
 
   `WhoisAccum`, `LinksAccum` and friends are pure data drained by
-  `EventRouter`. This module also owns the batch boundary, the throttle
-  window and the row parse, because that is the whole point of the
-  extraction: before it, those decisions were reachable only by booting a
-  `Session.Server`, a fake ircd and the Repo (`directory_test.exs` is
-  `async: false` on `DataCase` for exactly that reason).
-  `directory_ingest_test.exs` drives them on plain `ExUnit.Case`,
-  `async: true`, with no process and no database — and it can only stay
-  that way while the decisions stay pure.
+  `EventRouter`. This module also owns the throttle window and the row
+  parse, because that is the whole point of the extraction: before it,
+  those decisions were reachable only by booting a `Session.Server`, a fake
+  ircd and the Repo (`directory_test.exs` is `async: false` on `DataCase`
+  for exactly that reason). `directory_ingest_test.exs` drives them on
+  plain `ExUnit.Case`, `async: true`, with no process and no database — and
+  it can only stay that way while the decisions stay pure.
 
   ## Struct, not a declared map type
 
@@ -45,11 +54,12 @@ defmodule Grappa.Session.DirectoryIngest do
 
     * the `directory_complete` total is re-read from the DB snapshot by
       `Session.Server`, NOT taken from `run.count` — the two can differ
-      the moment `ChannelDirectory.ingest/3` dedupes or upserts;
+      the moment `ChannelDirectory.replace/3` collapses duplicate names;
     * `abort/1` (the watchdog) DROPS the buffered rows and hands back
       nothing to write, so a truncated refresh never calls
-      `ChannelDirectory.finalize/2`. Flushing on timeout would change the
-      DB on every stalled refresh.
+      `ChannelDirectory.replace/3`. Under deferred persistence that is no
+      longer merely "the DB is left alone": it is what keeps the PREVIOUS
+      snapshot intact, since nothing was nuked when the run began.
   """
 
   alias Grappa.ChannelDirectory
@@ -57,7 +67,6 @@ defmodule Grappa.Session.DirectoryIngest do
   @cfg Application.compile_env(:grappa, Grappa.ChannelDirectory, [])
   @default_timeout_ms Keyword.get(@cfg, :refresh_timeout_ms, 60_000)
   @default_throttle_ms Keyword.get(@cfg, :progress_throttle_ms, 1_000)
-  @default_batch Keyword.get(@cfg, :ingest_batch, 200)
 
   defmodule Run do
     @moduledoc """
@@ -65,8 +74,9 @@ defmodule Grappa.Session.DirectoryIngest do
     `LIST` hits the wire until 323 RPL_LISTEND or the watchdog.
 
     `buffer` holds parsed rows newest-first for an O(1) prepend and is
-    reversed at flush so the ingest preserves wire order. `count` is the
-    running total across flushes, not the buffer depth. `last_emit_ms` is a
+    reversed at `finish/1` so the ingest preserves wire order. `count`
+    tracks the same rows the buffer holds and is kept separately only so a
+    progress ping costs no `length/1`. `last_emit_ms` is a
     `System.monotonic_time(:millisecond)` stamp seeded when the refresh is
     armed, and `timer` is the watchdog ref the caller must cancel on a
     clean finish.
@@ -85,15 +95,17 @@ defmodule Grappa.Session.DirectoryIngest do
   @typedoc """
   What `Session.Server` must perform, in the order handed back.
 
-  `{:ingest, rows}` is a bulk write of wire-ordered rows; `{:progress, n}`
-  is a throttled `directory_progress` ping carrying the running total.
+  One member since issue 2046 deferred the writes: `{:progress, n}`, a
+  throttled `directory_progress` ping carrying the running total. It stays
+  a list of a tagged tuple rather than collapsing to `n | nil`, because the
+  shape is what keeps the decision here and the IO at the call site — and
+  because a second action is exactly what a future ping would be.
   """
-  @type action :: {:ingest, [ChannelDirectory.ingest_row()]} | {:progress, non_neg_integer()}
+  @type action :: {:progress, non_neg_integer()}
 
   @type t :: %__MODULE__{
           timeout_ms: pos_integer(),
           throttle_ms: non_neg_integer(),
-          batch: pos_integer(),
           run: Run.t() | nil
         }
 
@@ -103,7 +115,6 @@ defmodule Grappa.Session.DirectoryIngest do
   # the #1390 slice-1 `Deps` bundle relies on.
   defstruct timeout_ms: @default_timeout_ms,
             throttle_ms: @default_throttle_ms,
-            batch: @default_batch,
             run: nil
 
   @doc """
@@ -122,8 +133,7 @@ defmodule Grappa.Session.DirectoryIngest do
 
     %__MODULE__{
       timeout_ms: Map.get(opts, :directory_refresh_timeout_ms, defaults.timeout_ms),
-      throttle_ms: Map.get(opts, :directory_progress_throttle_ms, defaults.throttle_ms),
-      batch: Map.get(opts, :directory_ingest_batch, defaults.batch)
+      throttle_ms: Map.get(opts, :directory_progress_throttle_ms, defaults.throttle_ms)
     }
   end
 
@@ -164,29 +174,23 @@ defmodule Grappa.Session.DirectoryIngest do
   @doc """
   Absorb one parsed row, returning the ingest and what to perform.
 
-  The batch flush is ordered BEFORE the progress ping, so a ping never
-  reports a count the DB has not been offered yet.
+  The row is buffered, never written: the whole capture goes to the table
+  in one `ChannelDirectory.replace/3` at `finish/1`. The count a ping
+  reports is therefore what has been RECEIVED, not what has been stored —
+  which is the honest reading of a `directory_progress` ping and the same
+  number it always carried.
   """
   @spec absorb(t(), ChannelDirectory.ingest_row(), integer()) :: {t(), [action()]}
   def absorb(%__MODULE__{run: %Run{} = run} = ingest, row, now_ms) do
     appended = %{run | buffer: [row | run.buffer], count: run.count + 1}
+    {emitted, actions} = throttle(appended, ingest.throttle_ms, now_ms)
 
-    {flushed, flush_actions} =
-      if length(appended.buffer) >= ingest.batch do
-        {rows, drained} = drain(appended)
-        {drained, [{:ingest, rows}]}
-      else
-        {appended, []}
-      end
-
-    {emitted, progress_actions} = throttle(flushed, ingest.throttle_ms, now_ms)
-
-    {%{ingest | run: emitted}, flush_actions ++ progress_actions}
+    {%{ingest | run: emitted}, actions}
   end
 
   @doc """
-  Finish a refresh: hand back the tail rows (wire order, empty when there
-  is nothing buffered) and the watchdog ref to cancel, and clear the run.
+  Finish a refresh: hand back the WHOLE capture in wire order (empty when
+  nothing was buffered) and the watchdog ref to cancel, and clear the run.
 
   Safe on an already-cleared ingest — `abort/1` leaves it in exactly that
   shape — where it yields no rows and no timer.
@@ -195,8 +199,8 @@ defmodule Grappa.Session.DirectoryIngest do
   def finish(%__MODULE__{run: nil} = ingest), do: {ingest, [], nil}
 
   def finish(%__MODULE__{run: %Run{} = run} = ingest) do
-    {rows, _} = drain(run)
-    {%{ingest | run: nil}, rows, run.timer}
+    # Buffer is newest-first; hand back wire order.
+    {%{ingest | run: nil}, Enum.reverse(run.buffer), run.timer}
   end
 
   @doc """
@@ -206,11 +210,6 @@ defmodule Grappa.Session.DirectoryIngest do
   """
   @spec abort(t()) :: t()
   def abort(%__MODULE__{} = ingest), do: %{ingest | run: nil}
-
-  # Buffer is newest-first; hand back wire order and leave the run empty.
-  @spec drain(Run.t()) :: {[ChannelDirectory.ingest_row()], Run.t()}
-  defp drain(%Run{buffer: []} = run), do: {[], run}
-  defp drain(%Run{buffer: buffer} = run), do: {Enum.reverse(buffer), %{run | buffer: []}}
 
   @spec throttle(Run.t(), non_neg_integer(), integer()) :: {Run.t(), [action()]}
   defp throttle(%Run{} = run, throttle_ms, now_ms) do

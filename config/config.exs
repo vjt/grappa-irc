@@ -304,12 +304,14 @@ config :grappa, :vhost_ptr_cache,
 # uses to label a snapshot :fresh vs :stale (48h, matching the sliding
 # scrollback horizon). refresh_timeout_ms bounds a single LIST refresh
 # before it's declared failed; progress_throttle_ms rate-limits the
-# directory_progress pings; ingest_batch is the streamed-322 flush size.
+# directory_progress pings. `ingest_batch` is GONE with the mid-stream
+# flush it sized (issue 2046): the capture is written once, at the 323, and
+# the only chunking left is the SQLite variable-limit one that lives with
+# the schema in `Grappa.ChannelDirectory`.
 config :grappa, Grappa.ChannelDirectory,
   ttl_ms: 48 * 60 * 60 * 1000,
   refresh_timeout_ms: 60_000,
-  progress_throttle_ms: 1_000,
-  ingest_batch: 200
+  progress_throttle_ms: 1_000
 
 # Themes (#75). `image_fetcher` is the fetch-by-URL implementation read ONCE at
 # boot into `:persistent_term` by `Grappa.Themes.boot/0` and resolved lock-free

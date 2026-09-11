@@ -359,7 +359,45 @@ defmodule Grappa.Protocol do
   # to the old behaviour instead of breaking. cic's
   # `CLIENT_PROTOCOL_VERSION` moves 15 → 16 in lockstep because it says what
   # cic SPEAKS, not what it requires.
-  @protocol_version 16
+  #
+  # v17 (issue 2046) — the channel-directory `status` union is re-spelled:
+  # `empty` and `refreshing` OUT, `no_results`, `unknown` and `loading` IN.
+  #
+  # 🔴 This is the FIRST bump that is not purely additive, and it is NOT the
+  # #1626 field-removal carve-out either — that one is about taking a field
+  # off a payload, and every key here stays exactly where it was. What moved
+  # is the set of VALUES a closed union may carry, which the additive rule
+  # never covered: it speaks of frame kinds, event types and fields.
+  # `status` is a closed set by construction (`gen_wire_types` renders it as
+  # a TS literal union and `wireSchema` as a runtime enum), so a value can
+  # only ever be added by widening it and removed by narrowing it.
+  #
+  # The two that left could not be kept, and this is the measured half:
+  # `refreshing` MEANT "rows present, `captured_at` still NULL", a state that
+  # only existed because the ingest wrote mid-stream. With persistence
+  # deferred there is no such row — the stamp is written WITH the row — so
+  # the clause was not deprecated, it was unreachable, and it went out under
+  # the standing "less code" order rather than being left to lie. `empty`
+  # conflated three answers (search matched nothing / never captured /
+  # capture in flight) and the ruling names all three separately; keeping it
+  # as a synonym for one of them would have shipped two spellings of the
+  # same state, which is the half-migration this codebase forbids.
+  #
+  # What an OLD bundle does, stated rather than assumed: cic's generated
+  # `wireSchema` rejects a `status` outside its enum, so a pre-v17 bundle
+  # throws away every directory page a v17 server sends. That is a real
+  # break for exactly one pane, it is why the number moves, and it is why
+  # `min_protocol_version` is the axis to watch if we ever have to serve
+  # both — see below.
+  #
+  # @min_protocol_version STAYS at 1, deliberately, and the reasoning is
+  # the uncomfortable one. A client below v17 IS degraded — its directory
+  # pane breaks — but raising the floor would 426 it out of the WS
+  # handshake entirely, taking away every OTHER surface to protect one. A
+  # broken pane beats a refused socket. The bundle and the server ship
+  # together on this deploy, so the window in which a v16 bundle meets a
+  # v17 server is a cache miss away from closing.
+  @protocol_version 17
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -370,7 +408,7 @@ defmodule Grappa.Protocol do
   # alongside `@protocol_version`; the spec doubles as the bump tripwire,
   # and now that the bump is routine the tripwire is what keeps it from
   # being done half-way.
-  @spec version() :: 16
+  @spec version() :: 17
   def version, do: @protocol_version
 
   @doc """

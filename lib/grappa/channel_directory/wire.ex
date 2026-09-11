@@ -26,7 +26,8 @@ defmodule Grappa.ChannelDirectory.Wire do
 
   @doc """
   Render a `ChannelDirectory.page()` to the JSON wire envelope. The
-  `status` atom (`:fresh | :stale | :empty | :refreshing`) passes
+  `status` atom (`:fresh | :stale | :no_results | :unknown | :loading`)
+  passes
   through UNCHANGED — Jason stringifies it at the JSON edge (identical
   bytes to the former `Atom.to_string/1`), so the typed contract keeps
   the closed `ChannelDirectory.status()` union and
@@ -45,7 +46,7 @@ defmodule Grappa.ChannelDirectory.Wire do
   """
   @spec index_payload(ChannelDirectory.page(), MapSet.t(String.t())) :: index_payload()
   def index_payload(%{captured_at: ca, status: status} = page, featured_names)
-      when status in [:fresh, :stale, :empty, :refreshing] do
+      when status in [:fresh, :stale, :no_results, :unknown, :loading] do
     %{
       entries: Enum.map(page.entries, &mark_featured(&1, featured_names)),
       next_cursor: page.next_cursor,
