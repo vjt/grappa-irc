@@ -165,7 +165,16 @@ let _socket: Socket | null = null;
 // `{messages: count, events: 0}` when the pair is absent, which is exactly the
 // pre-#2037 number in the pre-#2037 place, so this bundle still serves an
 // older server.
-export const CLIENT_PROTOCOL_VERSION = 16;
+//
+// 17 (issue 2046) — the channel-directory `status` union is re-spelled:
+// `empty` and `refreshing` are gone, `no_results`, `unknown` and `loading`
+// take their place. Unlike every bump before it this one is NOT additive, so
+// the direction of the break is worth naming: this bundle cannot read a
+// pre-17 server's directory page either — `wireSchema` rejects `empty` just
+// as an old bundle rejects `loading`. `MIN_SERVER_PROTOCOL_VERSION` still
+// stays at 9, deliberately: raising it would refuse the whole socket over one
+// broken pane, and the two ship together anyway.
+export const CLIENT_PROTOCOL_VERSION = 17;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

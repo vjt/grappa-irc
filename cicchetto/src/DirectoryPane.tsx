@@ -523,7 +523,14 @@ const DirectoryPane: Component<{ networkSlug: string }> = (props) => {
   // a page GET, and the store's latch only spans the gap before that GET
   // lands. Read by all three affordances below so they cannot disagree about
   // whether the pane is busy.
-  const busy = () => status() === "refreshing" || isRefreshPending(props.networkSlug);
+  //
+  // Issue 2046 — the server half is `loading`, which replaced `refreshing`
+  // and is NARROWER by construction: it means a capture is running AND there
+  // is nothing earlier to show. A re-capture over an existing snapshot no
+  // longer reports busy through `status` at all, because the server keeps
+  // serving the old list; that gap is exactly what the store's latch spans,
+  // so the OR below is what still makes the button honest during a refresh.
+  const busy = () => status() === "loading" || isRefreshPending(props.networkSlug);
 
   const onSearchInput = (e: Event) => {
     const val = (e.currentTarget as HTMLInputElement).value;
@@ -547,8 +554,33 @@ const DirectoryPane: Component<{ networkSlug: string }> = (props) => {
   const capturedAt = () => {
     const p = page();
     if (!p) return null;
-    if (p.captured_at === null) return p.status === "refreshing" ? "refreshing…" : "never";
+    if (p.captured_at === null) return p.status === "loading" ? "loading…" : "never";
     return timeAgo(p.captured_at);
+  };
+
+  // Issue 2046 — the copy for an empty list, and WHICH empty it is. The three
+  // states the server now separates were one `empty` before, so the pane had
+  // nothing to say and said nothing: a search matching no channel rendered as
+  // a blank box under "0 channels / never", indistinguishable from a network
+  // that had never been LISTed.
+  //
+  // `fresh` / `stale` deliberately fall through to null: an empty page under
+  // a real snapshot is a cursor that has run past the end of a list the user
+  // can still see above it, and a "no channels" line under visible rows would
+  // be the new lie.
+  const emptyCopy = (): string | null => {
+    const p = page();
+    if (!p || p.entries.length > 0) return null;
+    switch (p.status) {
+      case "loading":
+        return "Fetching the channel list…";
+      case "unknown":
+        return "No channel list yet.";
+      case "no_results":
+        return "No channels match your search.";
+      default:
+        return null;
+    }
   };
 
   return (
@@ -670,6 +702,13 @@ const DirectoryPane: Component<{ networkSlug: string }> = (props) => {
                     exhausted. */}
                 <Show when={p().next_cursor !== null}>
                   <div class="directory-sentinel" aria-hidden="true" ref={attachSentinel} />
+                </Show>
+                <Show when={emptyCopy()}>
+                  {(copy) => (
+                    <div class="directory-empty muted" role="status">
+                      {copy()}
+                    </div>
+                  )}
                 </Show>
                 <Show when={isLoadingMore(props.networkSlug)}>
                   <div class="directory-loading-more muted" role="status">

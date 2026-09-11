@@ -15,7 +15,13 @@ export const ADMISSION_FLOW = [
 ] as const;
 export type AdmissionFlow = (typeof ADMISSION_FLOW)[number];
 
-export const CHANNEL_DIRECTORY_STATUS = ["fresh", "stale", "empty", "refreshing"] as const;
+export const CHANNEL_DIRECTORY_STATUS = [
+  "fresh",
+  "stale",
+  "no_results",
+  "unknown",
+  "loading",
+] as const;
 export type ChannelDirectoryStatus = (typeof CHANNEL_DIRECTORY_STATUS)[number];
 
 export const IRCAUTH_FSMAUTH_METHOD = [

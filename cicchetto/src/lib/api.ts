@@ -616,7 +616,10 @@ export type ChannelEntry = NetworksWireChannelJson;
 
 // Mirror of `GrappaWeb.DirectoryController.index/2` wire shape.
 // `status` indicates the staleness of the captured list; `captured_at` is
-// null when no list has been captured yet (status "empty"). `next_cursor`
+// null exactly when no capture has COMPLETED — statuses "unknown" (nothing
+// captured, nothing on the way) and "loading" (a capture is streaming and
+// there is no earlier list to show). A search that matches nothing inside a
+// real snapshot is "no_results" and DOES carry the stamp. `next_cursor`
 // is null on the final page.
 // `featured` (#85) is true when the channel is in its network's
 // enabled `network_featured_channels` set — re-derived server-side on

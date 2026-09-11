@@ -132,9 +132,11 @@ const exports_ = identityScopedStore((onIdentityChange) => {
 
   // #1445 — the latch stands down on the first page write for this slug after
   // the POST, whatever that page says: from that moment the store holds
-  // fresher information than the latch does. A `refreshing` status hands the
+  // fresher information than the latch does. A `loading` status hands the
   // signal over to `status` itself; a terminal one means the capture already
-  // finished. Deliberately NO timer backstop — the only case one would guard
+  // finished — or, since issue 2046, that a previous snapshot is being served
+  // while the new capture runs, which is a page like any other.
+  // Deliberately NO timer backstop — the only case one would guard
   // is a 202 followed by no ping at all, not even `directory_failed`, and a
   // stale timer releasing the NEXT latch early costs more than that case is
   // worth. The bound is stated instead: a pane close (resetDirectory) or an
@@ -202,8 +204,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   const isLoadingMore = (slug: string): boolean => loadingMore()[slug] ?? false;
 
   // #1445 — true across the POST→first-page-write gap. The pane ORs it with
-  // `status === "refreshing"` to get one honest "busy": neither half covers
-  // the whole re-capture on its own.
+  // `status === "loading"` to get one honest "busy": neither half covers the
+  // whole re-capture on its own, and since issue 2046 the server half only
+  // fires when there is no earlier snapshot to serve — so on a re-capture
+  // this latch is the ONLY thing that reports busy.
   const isRefreshPending = (slug: string): boolean => refreshPending()[slug] ?? false;
 
   // #677 — fetch the NEXT keyset page and APPEND. No-op when: no token, no

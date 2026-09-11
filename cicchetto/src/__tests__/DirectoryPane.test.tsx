@@ -152,9 +152,28 @@ const STALE_PAGE: DirectoryPage = {
   status: "stale",
 };
 
-const REFRESHING_PAGE: DirectoryPage = {
+// Issue 2046 — `loading` is what `refreshing` became, and it is narrower:
+// the server only sends it when a capture is running AND there is no earlier
+// snapshot to serve. So the fixture drops the entries and the stamp with the
+// status; a `loading` page carrying rows is a shape the server cannot emit.
+const LOADING_PAGE: DirectoryPage = {
   ...FRESH_PAGE,
-  status: "refreshing",
+  entries: [],
+  total: 0,
+  captured_at: null,
+  status: "loading",
+};
+
+const UNKNOWN_PAGE: DirectoryPage = {
+  ...LOADING_PAGE,
+  status: "unknown",
+};
+
+const NO_RESULTS_PAGE: DirectoryPage = {
+  ...FRESH_PAGE,
+  entries: [],
+  total: 0,
+  status: "no_results",
 };
 
 import DirectoryPane, { PULL_MAX_OFFSET_PX, pulledOffset, timeAgo } from "../DirectoryPane";
@@ -541,12 +560,24 @@ describe("DirectoryPane", () => {
       });
     });
 
-    it("is disabled and relabeled when status is 'refreshing'", () => {
-      directoryPageMock.mockReturnValue(REFRESHING_PAGE);
+    it("is disabled and relabeled when status is 'loading'", () => {
+      directoryPageMock.mockReturnValue(LOADING_PAGE);
       render(() => <DirectoryPane networkSlug={SLUG} />);
 
       const btn = screen.getByRole("button", { name: /refreshing/i });
       expect(btn).toBeDisabled();
+    });
+
+    // The other side of the narrowing, and the reason the latch still
+    // matters: a re-capture over an existing snapshot keeps serving `fresh`,
+    // so `status` alone would leave the button enabled through the whole
+    // thing. Asserted here so a later "simplification" that drops the latch
+    // in favour of the server field reds.
+    it("is NOT disabled by a status a re-capture over a live snapshot produces", () => {
+      directoryPageMock.mockReturnValue(FRESH_PAGE);
+      render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      expect(screen.getByRole("button", { name: /^refresh$/i })).toBeEnabled();
     });
 
     // #1445 — the gap the server field cannot cover. `status` only changes
@@ -680,6 +711,52 @@ describe("DirectoryPane", () => {
 
       const staleEl = container.querySelector(".directory-stale");
       expect(staleEl).toBeNull();
+    });
+  });
+
+  // Issue 2046 — the three states that used to be one `empty`, and the copy
+  // that tells them apart. Before this the pane rendered NOTHING for an empty
+  // list, so "your search matched no channel" and "this network has never
+  // been LISTed" looked identical: a blank box under "0 channels / never".
+  describe("empty-list copy per status (issue 2046)", () => {
+    it("says the search found nothing, and keeps the snapshot's stamp", () => {
+      directoryPageMock.mockReturnValue(NO_RESULTS_PAGE);
+      const { container } = render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      expect(container.querySelector(".directory-empty")?.textContent).toMatch(
+        /no channels match/i,
+      );
+      // The stamp survives a search miss — the list it searched was real.
+      expect(container.querySelector(".directory-captured-at")?.textContent).not.toMatch(/never/i);
+    });
+
+    it("says a capture is on the way when there is nothing earlier to show", () => {
+      directoryPageMock.mockReturnValue(LOADING_PAGE);
+      const { container } = render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      expect(container.querySelector(".directory-empty")?.textContent).toMatch(/fetching/i);
+      expect(container.querySelector(".directory-captured-at")?.textContent).toMatch(/loading/i);
+    });
+
+    it("says there is no list yet when nobody is capturing one", () => {
+      directoryPageMock.mockReturnValue(UNKNOWN_PAGE);
+      const { container } = render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      expect(container.querySelector(".directory-empty")?.textContent).toMatch(
+        /no channel list yet/i,
+      );
+      expect(container.querySelector(".directory-captured-at")?.textContent).toMatch(/never/i);
+    });
+
+    // The negative control, and it is the case the copy must NOT claim: a
+    // page with rows is not empty, whatever else it says. Without it every
+    // assertion above would also pass on a pane that printed the line
+    // unconditionally.
+    it("prints no empty-list line when the page has rows", () => {
+      directoryPageMock.mockReturnValue(FRESH_PAGE);
+      const { container } = render(() => <DirectoryPane networkSlug={SLUG} />);
+
+      expect(container.querySelector(".directory-empty")).toBeNull();
     });
   });
 

@@ -8,7 +8,9 @@
 //   3. Selecting the $list window fires NO GET /messages request
 //      (grappa-irc#81: kindHasScrollback("list") === false).
 //   4. Typing in the search box filters results to matching channels
-//      (server-side query re-GET; server returns only matching entries).
+//      (server-side query re-GET; server returns only matching entries), and
+//      a term matching NOTHING renders the issue-2046 `no_results` line with
+//      the snapshot's capture time still on screen.
 //   5. Clicking a channel's join control adds it to the sidebar AND
 //      foregrounds its window (#244 — a user-initiated directory tap now
 //      JOINs and selects the new window, amending #125's no-auto-open).
@@ -152,9 +154,30 @@ test("channel-directory — browse, no /messages fetch (#81 guard), search filte
     await expect(peerRow).toBeVisible({ timeout: 5_000 });
     await expect(bofhRow).toBeHidden({ timeout: 5_000 });
 
+    // (4b) issue 2046 — a search that matches NOTHING is its own state on
+    // the wire (`no_results`), and the pane must say so. Before this the
+    // server answered `empty` — the same value it used for "this network was
+    // never LISTed" — and the pane rendered a blank box. Asserted here
+    // against the real bahamut snapshot rather than a fixture, because the
+    // half that matters is the second one: the capture time must SURVIVE the
+    // miss. A `never` here would mean the envelope forgot the snapshot the
+    // search just ran against, which is the same class of lie as the skew
+    // this issue is about.
+    await page.locator(".directory-search").fill("zzz-no-such-channel-2046");
+    const emptyLine = page.locator(".directory-empty");
+    await expect(emptyLine).toHaveText(/no channels match/i, { timeout: 5_000 });
+    await expect(peerRow).toBeHidden({ timeout: 5_000 });
+    await expect(page.locator(".directory-captured-at")).not.toHaveText(/never/i, {
+      timeout: 5_000,
+    });
+
     // Clear the filter so all rows are back before the join step.
     await page.locator(".directory-search").fill("");
     await expect(bofhRow).toBeVisible({ timeout: 5_000 });
+    // The empty line is not a fixture of the pane: with rows back it is gone.
+    // Without this the assertion above would also pass on a pane that printed
+    // it unconditionally.
+    await expect(emptyLine).toHaveCount(0);
 
     // (5) One-click join: assert PEER_CHANNEL is not yet in the sidebar,
     // click its join control, then assert the sidebar gains an entry

@@ -84,7 +84,7 @@ describe("channelDirectory store", () => {
       next_cursor: null,
       total: 7,
       captured_at: null,
-      status: "refreshing",
+      status: "loading",
     });
     await loadDirectory("libera");
     spy.mockClear();
@@ -109,12 +109,12 @@ describe("channelDirectory store", () => {
   test("onDirectoryFailed re-GETs the current view", async () => {
     const spy = vi
       .spyOn(api, "listDirectory")
-      .mockResolvedValue(makePage({ total: 0, status: "empty" }));
+      .mockResolvedValue(makePage({ total: 0, status: "unknown" }));
     await loadDirectory("freenode");
     spy.mockClear();
     await onDirectoryFailed("freenode");
     expect(spy).toHaveBeenCalledOnce();
-    expect(directoryPage("freenode")?.status).toBe("empty");
+    expect(directoryPage("freenode")?.status).toBe("unknown");
   });
 
   test("setQuery threads q into the api call", async () => {
@@ -210,7 +210,7 @@ describe("channelDirectory store", () => {
 
   test("isRefreshPending spans exactly the gap — false, true after the POST, false once a page lands", async () => {
     vi.spyOn(api, "refreshDirectory").mockResolvedValue(undefined);
-    vi.spyOn(api, "listDirectory").mockResolvedValue(makePage({ status: "refreshing" }));
+    vi.spyOn(api, "listDirectory").mockResolvedValue(makePage({ status: "loading" }));
 
     // The pre-state, asserted rather than assumed: without it a latch that
     // was ALWAYS true would read the same at the second assertion.

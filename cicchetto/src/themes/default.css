@@ -13236,6 +13236,15 @@ button.home-pane-network-title:hover .home-pane-network-slug {
   text-align: center;
 }
 
+/* issue 2046 — the empty-list line: which KIND of empty the server reported
+   (no search hits / no list yet / a capture on the way). Same metrics as the
+   load-more line above; it occupies the same place in the same box. */
+.directory-empty {
+  padding: 0.5rem 1rem;
+  font-size: 0.85em;
+  text-align: center;
+}
+
 .directory-row {
   margin: 0;
   padding: 0;
