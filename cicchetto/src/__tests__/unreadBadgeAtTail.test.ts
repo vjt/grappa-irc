@@ -150,10 +150,10 @@ describe("#981 unread badge on the window being read at the tail", () => {
 
   // #693 — a far-behind window's cursor is FROZEN on purpose and its loaded
   // rows are the tail, deliberately disjoint from the unread region. The
-  // server-measured seed is the honest number and the operator being at the
-  // bottom of those few rows does not mean they have read the thousands
-  // above. Suppressing here would zero the one badge that cannot come back
-  // on its own.
+  // far-behind record's own server-measured count is the honest number
+  // (#2037; the seed before it) and the operator being at the bottom of those
+  // few rows does not mean they have read the thousands above. Suppressing
+  // here would zero the one badge that cannot come back on its own.
   it("keeps a FAR-BEHIND window's badge even while the pane reads its tail", async () => {
     const api = await import("../lib/api");
     vi.mocked(api.countMessagesAfter).mockResolvedValue({ gap: 3000, messages: 3000, events: 0 });

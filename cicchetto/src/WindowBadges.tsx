@@ -100,10 +100,12 @@ const WindowBadges: Component<Props> = (props) => {
   const muted = () => isConversationMuted(notificationPrefs().muted_targets, props.channelKey);
 
   // BOTH unread badges take the treatment, not just the message one: the
-  // far-behind branch of `perChannelUnread` skips local counting wholesale
-  // and serves the frozen server seed for BOTH kinds, so both are equally
-  // stuck. The mention badge is left alone — it is server-authoritative and
-  // counted a different way (#267), so the cursor freeze does not pin it.
+  // far-behind branch of `perChannelUnread` skips local counting wholesale and
+  // serves the far-behind record's own `missed`/`events` for BOTH kinds
+  // (#2037; it displaced the server seed there), so both are equally stuck
+  // behind a frozen cursor. The mention badge is left alone — it is
+  // server-authoritative and counted a different way (#267), so the cursor
+  // freeze does not pin it.
   //
   // `role="img"` + `aria-label` on both unread badges, unconditionally. The
   // label carries the whole meaning, so the far-behind state is spoken

@@ -127,7 +127,8 @@ describe("stepActiveWindow — the resolved target is the window you are already
 //
 // Why the exit is dead, in two halves that are each correct on their own:
 //   * selection.ts's `perChannelUnread` SKIPS a far-behind window's
-//     local-derived branch, so the frozen server seed stands as its count and
+//     local-derived branch, so the far-behind record's own frozen `missed`
+//     stands as its count (#2037; the server seed before it) and
 //     `messagesUnread[key] > 0` holds wherever the pane is scrolled — which is
 //     also why the read-at-the-tail suppression is explicitly not applied to
 //     it. The window therefore never leaves `orderUnreadWindows`.
@@ -147,7 +148,7 @@ describe("stepActiveWindow — the resolved target is the window you are already
 describe("stepActiveWindow — that window is ALSO far behind (#1765)", () => {
   const arrangeCrossedState = () => {
     h.channels = [{ name: "#grappa" }];
-    // The frozen seed, not a local-row count — that IS the #693 posture.
+    // The frozen far-behind count, not a local-row count — the #693 posture.
     h.unread = { [channelKey("net", "#grappa")]: 3000 };
     h.farBehind = { [channelKey("net", "#grappa")]: { missed: 3000, resumeFrom: 100 } };
     h.selected = chan("#grappa");

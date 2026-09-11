@@ -1103,7 +1103,8 @@ const exports = identityScopedStore((onIdentityChange) => {
   // rows and LOWERS the oldest loaded id, so scrolling up far enough
   // satisfies this bound. That is correct, and the reason is that clearing
   // here THAWS — it does not mark anything read. The badge stops publishing
-  // the frozen seed and goes back to LOCAL truth, which is still N if N rows
+  // this record's own frozen `missed` (#2037; NOT the seed, which it
+  // displaced) and goes back to LOCAL truth, which is still N if N rows
   // follow the cursor; the difference is that it is now a live number the
   // operator retires by reading. Re-paging the region back into the pane IS
   // closing the hole, so the far-behind apparatus has nothing left to do.
@@ -1113,8 +1114,11 @@ const exports = identityScopedStore((onIdentityChange) => {
   // That was an ARGUMENT when this shipped and is now a measurement: the last
   // arm of `unreadBadgeFarBehindStale.test.ts` scrolls the window down to a
   // cursor that never moves and pins the badge to local truth (5003) rather
-  // than to zero, to the frozen seed, or to a short count. A bound that
-  // retired one page into the scroll passed every other arm in that file.
+  // than to zero or to a short count. It can no longer say "rather than to the
+  // frozen number": since #2069 that number and local truth AGREE there, so
+  // what carries "the record retired" is the loop's own exit condition. A
+  // bound that retired one page into the scroll passed every other arm in
+  // that file.
   //
   // `measuredUnreadByChannel` (#947) is deliberately NOT cleared alongside:
   // the pane spends it only while `measured.at === cursor`, so a cursor that

@@ -478,9 +478,16 @@ const exports = identityScopedStore((onIdentityChange) => {
       // WORSE truth. Its rows are the tail, deliberately disjoint from the
       // unread region, so counting them reports ~50 for a window that is
       // thousands behind — and the operator would see a small, ignorable
-      // badge for the very state the change exists to surface. The seed
-      // (server-side, cursor-anchored, and the cursor is frozen while far
-      // behind) is the honest number here, so leave it standing.
+      // badge for the very state the change exists to surface. What stands in
+      // its place is the far-behind entry written fifteen lines above, NOT the
+      // seed — this `continue` protects that write, and keeps the
+      // filter-and-count below off the largest windows in the store.
+      //
+      // 🔴 issue 2053 — this used to end "the seed is the honest number here,
+      // so leave it standing", which #2037 had already made false. A window
+      // caught up on at join carries a truthful ZERO seed and the ring cap can
+      // arm far-behind from a purely local burst, so on that sentence the
+      // badge says nothing at all — more certainly the more unread piles up.
       if (farBehind[key]) continue;
       const cursorMapKey = `${decoded.slug} ${decoded.name}`;
       const cursor = cursors[cursorMapKey] ?? 0;

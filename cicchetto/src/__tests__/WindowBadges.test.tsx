@@ -78,9 +78,10 @@ describe("#888 far-behind badge treatment", () => {
 
     const msg = container.querySelector(".sidebar-msg-unread");
     const events = container.querySelector(".sidebar-events-unread");
-    // Both counts come from the frozen server seed while far behind (the
-    // memo's far-behind branch skips local counting wholesale), so both are
-    // equally stuck and both must say so.
+    // Both counts come from the frozen far-behind record while far behind
+    // (#2037; the memo's far-behind branch skips local counting wholesale and
+    // reads `missed`/`events` straight off it — the fixture above IS that
+    // record), so both are equally stuck and both must say so.
     expect(msg?.classList.contains(FAR_BEHIND_CLASS)).toBe(true);
     expect(events?.classList.contains(FAR_BEHIND_CLASS)).toBe(true);
     // The number itself is untouched — this is a treatment, not a rewrite.

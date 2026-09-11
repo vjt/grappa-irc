@@ -336,9 +336,11 @@ describe("issue 2050 — a far-behind badge the cursor has already retired", () 
 
     // Nothing was read: the cursor sits where the absence left it, on both
     // sides. Retiring the record THAWS — it stops the badge publishing the
-    // frozen seed and hands the count back to local truth — it does not mark
-    // anything read, and an implementation that "cleared the unread" by moving
-    // the cursor would fail here rather than in some later session.
+    // record's own frozen `missed` and hands the count back to local truth
+    // (the header above: since #2037 that is the frozen number, not the seed)
+    // — it does not mark anything read, and an implementation that "cleared
+    // the unread" by moving the cursor would fail here rather than in some
+    // later session.
     expect(getReadCursor(SLUG, CHANNEL)).toBe(CAUGHT_UP_AT);
     expect(server.cursor).toBe(CAUGHT_UP_AT);
 

@@ -293,7 +293,8 @@ function stepActiveWindow(dir: 1 | -1): void {
   // a far-behind window (#693's freeze, #1019's invariant). So on a window
   // that IS far behind, #1178's exit is as dead as the `jumpToUnread` it
   // rejected — two correct cures cancelling — and the tap moves nothing at
-  // all: the seed count cannot fall, so the button cannot hide.
+  // all: the far-behind count cannot fall (the record's own `missed` since
+  // #2037, the seed before it), so the button cannot hide.
   //
   // The two verbs partition the state exactly along `farBehindByChannel`,
   // and the comment above already says why each is dead on the other's
