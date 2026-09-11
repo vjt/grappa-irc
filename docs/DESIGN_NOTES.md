@@ -52631,3 +52631,175 @@ in their own `async: false` file (`push/observability_log_test.exs`),
 following `client_tls_posture_log_test.exs`. They assert the FORMATTED line,
 which is the only thing that can catch an allowlist drop; the behaviour they
 sit next to — that the gate suppresses at all — stays pinned where it was.
+<!-- entry #2069 -->
+
+---
+
+## 2026-09-11 — #2069: one question, one function, two anchors
+
+vjt on staging: three ways of saying "how many rows are behind my cursor in
+this window", disagreeing with each other and moving without anyone reading
+anything. (A) open a channel with hundreds unread, read nothing, look away and
+back — 500 becomes 800. (B) take the "2900 unread — jump back" affordance,
+change channel, come back — 200, which is the fetch page. (C) the in-pane
+divider counts join/part/quit/nick as unread "messages"; the sidebar pill does
+not.
+
+The issue proposed mechanisms for A and B and said outright that neither was
+reproduced. Both proposals were wrong in an instructive way, and finding that
+out cost less than curing them would have.
+
+### What was measured, on `b7989f4ba`, before anything was changed
+
+Against the real `scrollback` + `readCursor` + `selection` stores and a fake
+server that honours `after`/`before`/`limit` and answers its probe out of the
+same log it serves — with a MIXED log, every fourth row a peer JOIN, because a
+uniform log cannot see any of the three defects.
+
+**C is three divergences, not one, and they run in both directions.** Over one
+fixture of 150 rows past the cursor (113 peer messages, 37 peer JOINs):
+
+| rows past the cursor | sidebar pill | in-pane divider |
+| --- | --- | --- |
+| 113 peer messages + 37 peer JOINs | 113 | `150 unread messages` |
+| 5 peer + 5 own messages | 5 | `10 unread messages` |
+| 5 numeric-derived NOTICEs | 5 | no marker at all |
+| 50 peer JOINs | 0 | `50 unread messages` |
+
+The label says "messages". Two of those rows say the pill was right; the third
+says the DIVIDER was, because `notice` is a content kind and the derived pill
+counted a 401 the operator's own `/msg <ghost>` produced.
+
+The reason all three exist is one stale sentence, and it is in the source.
+`operatorActionEcho.ts` and `ownPresenceEvent.ts` each claim to be the "single
+source of truth" shared by "subscribe.ts (the sidebar badge gate)" and the
+in-pane marker. That was true while the badge was BUMPED per row. `subscribe.ts`
+still calls both predicates — the early return is right there — but since the
+2026-06-01 bucket-B2 change the badge is DERIVED from `(scrollbackByChannel,
+readCursors, serverSeedCounts)`, and the derivation never saw them. The gate
+kept guarding the mention beep and stopped guarding the thing its own comment
+names. Nothing broke loudly; two surfaces drifted apart one row class at a
+time, and the comment stayed.
+
+**A does not reproduce as reported, and the mechanism the issue named is not
+the cause.** A bare re-select with no traffic moves nothing — measured across
+two re-selects on a far-behind window, on a not-far-behind window (gap 150) and
+on a just-far-behind one (gap 250): stable in all three. What moves is the
+far-behind count while the operator is AWAY. `appendPageToScrollback`
+accumulated it by the content-ness of the row the ring cap EVICTED rather than
+of the row that ARRIVED, and added nothing at all while the store sat under
+`UNREAD_RETENTION_CAP`. Measured: 500 arrivals took it to 4012 against a server
+answer of 4125, and the per-step error was neither constant nor signed
+(-75, -113, -113). Then the re-select's `?after=<high-water>` page came back
+FULL, which fires the gap probe, which re-anchored and OVERWROTE the drifted
+number with a fresh measurement: 4012 → 4125 in one step, no scroll, no read.
+
+So the discriminator the issue asked for — "does a re-select re-probe
+`/messages/count`?" — has the answer YES, conditionally, and the re-probe is
+the CORRECTION rather than the cause. Curing the visible step would have left
+the drift, which is the number the operator actually reads for as long as they
+stay away.
+
+**B reproduces, and it is worse than reported.** It does not stop at the page
+size. The jump retires the far-behind record, the pill falls back to counting
+held rows, and as the operator reads through the one page the jump loaded the
+count reaches ZERO on a window with thousands unread: 3750 → 150 → 0, cursor at
+1200, server answer 3600. The measurement that answers every one of those was
+already on file — `measuredUnreadByChannel` (#947), written by that same jump —
+and only the divider ever spent it.
+
+### The shape
+
+`lib/unreadCount.ts` publishes one row predicate and one region count. Both
+surfaces call them and neither re-derives.
+
+The issue asked for "one variable … it must not change while the cursor does
+not move". That is right for the DIVIDER and wrong for the PILL, so what ships
+is one FUNCTION at two anchors rather than one value read twice. The divider
+passes the frozen cursor and the frozen session top (the freeze contract: the
+line must not renumber under a reader). The pill passes the live cursor and no
+bound, because a pill that ignored arrivals while the cursor sat still would
+stop saying the window is receiving traffic, which is the pill's whole job.
+Same population, same unit, same source-selection; different anchors, on
+purpose.
+
+PLACEMENT is deliberately BROADER than the count. The line marks where the
+operator left off, so it goes above the first row somebody ELSE produced,
+message or presence, while the label counts only messages. Narrowing placement
+to content would leave a run of peer JOINs sitting above the line, rendered as
+if they had been read.
+
+A is cured at the accumulator: count ARRIVALS (fresh rows above the pane's
+previous newest), not evictions. Exact, independent of the cap, and it leaves
+the probe nothing to correct — which is what removes the visible step. The
+eviction-side bookkeeping (`contentDropped`, `keptContentCount`) is deleted
+rather than kept beside it.
+
+B is cured by letting the pill spend the same #947 record, minus what the
+cursor consumed, so the number falls by what was READ instead of by what was
+FETCHED. The record gains `through`: the top of the contiguous run the pane can
+account for, written by the jump and extended by `loadNewer` as the pane pages
+forward. The subtraction is only sound while every row the cursor passed is one
+the pane HELD, so past that run the record stands down rather than answering
+with a number it cannot support — an own send lands the cursor at the tip with
+nothing unread, and a record that kept spending would report thousands. The
+count is a FLOOR (`max(local, count - consumed)`), not a replacement, so local
+truth overtakes it as the region comes back and nobody has to remember to
+retire it.
+
+### What this does NOT fix, stated rather than discovered later
+
+* **The server's population and the client's differ by numeric-derived
+  NOTICEs.** `Scrollback.count_after_split/6` excludes own-authored rows but
+  knows nothing about `meta.numeric`, which is a client concept. So
+  `count - consumed` can run high by the number of such rows the operator read
+  inside the measured region. Bounded, rare (they land in `$server` and ghost
+  query windows, not busy channels), and NOT cured with a second predicate for
+  the subtraction — a second predicate is the fork this entry exists to remove.
+* **The arrivals accumulator counts own-authored content**, exactly as the
+  eviction one did. It has no `ownNick` to fold against without an import cycle
+  into `networks`, and the far-behind cursor is frozen, so an own send adds one
+  either way. No regression, no cure.
+* **A cross-device read-ahead still under-reports.** The peer device moves the
+  cursor past rows this pane never held; the record stands down and the pill
+  answers from local rows. That is what it did before, and inventing a number
+  there would be worse than a low one.
+* **The SHORT-page arm of `jumpToUnread` is very nearly unreachable.** A
+  far-behind window has >200 unread by definition and `resumeFrom` does not
+  move, so `after(resumeFrom, 200)` is always full. Its `clearMeasuredUnread`
+  branch is near-dead. Named, not deleted: it is the correct answer if the
+  region ever shrinks under it (an archive purge), and the test that tried to
+  construct it is the one arm of this slice that had to be replaced by a
+  property that IS reachable.
+
+### The bigger answer, not taken here
+
+The server already pushes per-window `messages`/`events` on `window_counts`,
+on every message and on every cursor advance, and cic throws them away
+(`selection.ts` says so in as many words, citing #239 — that the presence
+filter is a client concern, which is true of the EVENTS bucket and not of the
+MESSAGES one). Adopting that field would collapse `serverSeedCounts`,
+`farBehindByChannel.missed` and `measuredUnreadByChannel` into one
+authoritative number and delete every accumulator in this entry. It is a
+redesign of the client's unread model, not a bug fix, and it is a decision for
+vjt rather than one to take inside a slice that was asked to stop three numbers
+lying.
+
+### Evidence
+
+Six mutants, one per mechanism, each killed by named arms with the unmutated
+tree green at 7026 (control run first, tree restored by `git checkout` after
+each): dropping the operator-echo clause (3 deaths, one of them a
+PRE-EXISTING pane test, which is what proves the pane is wired to the shared
+predicate), dropping the local floor (2), dropping the `through` guard (3),
+dropping the content split (21), disabling the arrival count (4, one of them
+the pre-existing #1229 arming test), and making the pill ignore the
+measurement (4).
+
+The browser witness is `issue2069-one-unread-number.spec.ts`, and it is the
+only place the two numbers are visible AT ONCE — which is how vjt noticed. It
+asserts both premises rather than assuming them: that the unread run really
+contains peer presence rows, and that those rows RENDER (`#spec-wN` is far
+under `LARGE_CHANNEL_THRESHOLD`), because a hidden presence row is excluded
+from the old count too, by a different rule, and the spec would be green on the
+broken build.
