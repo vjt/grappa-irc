@@ -53771,3 +53771,89 @@ cannot tell a missing event from a socket that is delivering nothing.
 - **The two absolving tests, re-run on this tree.** The COMPILE lane was
   held elsewhere; candidate 2's absolution rests on the code path read plus
   two existing tests read, not on a green run taken here.
+<!-- entry #1481 -->
+
+---
+
+## 2026-09-11 — #1481: one question, two ports, and the sender half the render port never had
+
+Type your own nick into your own message and cicchetto highlighted your own
+line back at you. Reported on IRC by alk (*"perche' deve hilightarmi il
+messaggio se scrivo io stesso il mio nick"*), then again by Mezmerize on a
+self-hosted 1.5.5 who read it as a regression, live-repro included.
+
+### What the two ports actually disagreed about
+
+The NOTIFY port has excluded own rows since #532 C, on both sides:
+`Push.Triggers.should_notify?/5` asks `own_row?/2` as step 0, and
+`pushTriggers.ts` mirrors it. The RENDER port asked
+`matchesWatchlist(body, ownNick, patterns)` — **a BODY predicate, which cannot
+answer a SENDER question** — from three places and never looked at who sent
+the row: `ScrollbackPane`'s `isMention` and `isHighlight`, and
+`MentionsWindow`. Server-side the same hole sat in
+`Mentions.aggregate_mentions/6`, so the away digest handed the operator their
+own lines back.
+
+Three open-coded halves of one rule is not bad luck, it is the mechanism.
+`WindowCounts` already carried a private `mention_row?/3` whose FIRST conjunct
+is exactly the missing step; the rule simply had to be remembered in four
+places and was remembered in two. #370's own header had written the stronger
+claim — that ONE predicate made divergence impossible — and it was too strong
+for exactly this reason.
+
+### The shape of the cure: one predicate per port, not a fourth copy
+
+Server: `mention_row?/3` is **promoted out of `Grappa.WindowCounts` into
+`Grappa.Mentions`**, which already owns both conjuncts it composes
+(`mentionable_sender?/1`, `matches?/2`) and whose moduledoc already claimed to
+be where every server-side mention fold goes. The private copy goes away in
+the same commit; the two counting doors and `aggregate_mentions/6` now fold the
+one rule, so the badge, the away bundle and the OS push cannot mean three
+different things by "mention". The pre-folded `own_folded` parameter is kept
+verbatim from the copy that moved — the counting doors hoist the fold out of
+their loops over a capped tail, and `aggregate_mentions/6` folds once before
+its filter for the same reason.
+
+Client: `isMentionRow` in `mentionMatch.ts`, built on `isOwnRow`, which
+`pushTriggers.ts` now folds too. That leaves ONE client spelling of "is this
+row mine", and the `"ascii"` pin (#1861) travelled with it — one place to
+change when the server's mention folds become network-aware.
+
+**`Push.Triggers.own_row?/2` and its cic twin deliberately keep their
+POSITION.** Over there the question gates the WHOLE notification: it outranks
+the per-conversation mute and both branches. Here it is one conjunct of the
+mention rule. Same question, two positions in two decision trees — merging
+them would have moved the step, which is a behaviour change nobody asked for.
+
+### The below-the-fold badge needed no guard, and that is asserted
+
+`readMentionGeom` reads `.scrollback-mention` straight off the DOM and
+`mentionsBelowViewport` counts it, so the badge inherits any change to the
+class. Reading the class rather than re-deciding is what buys that. The
+ScrollbackPane arms assert the CLASS itself, with a peer row carrying the SAME
+body as the positive control — so the inheritance is measured, not assumed.
+
+### What is still divergent, named rather than quietly widened
+
+After this the render set and the server's count agree on the body match and
+on own rows. They are still **not identical**: the server's `mention_row?/3`
+also subtracts service- and server-originated rows (#1674), an axis the render
+port has never had. `mentions.ts` used to assert the two sets were the same;
+that sentence was false before this change and would be false after it, so it
+is replaced by one that names the remaining gap. Closing that axis is a
+separate call — #1674 scoped it to the badge and the push on purpose, and
+widening it here would change what a NickServ line looks like in scrollback
+without anyone deciding to.
+
+### The "new in 1.5.5" reading, and what was NOT measured
+
+The regression reading is not supported by the code: `isMention` and
+`isHighlight` carried no sender conjunct in either 1.5.4 or the tip this was
+built on, and the last change to that block predates the first tag. Three
+candidate explanations for why it may nonetheless look new to a reporter
+(the `mircPlainText` projection, `termAnchors`, or simply having started to
+quote lines carrying his own nick) were **deduced by the issue's author and
+explicitly not measured** — they are not cited here as causes, and the cure
+does not depend on which, if any, is true. No repro was built in a real
+browser; the e2e lane was not held, and this defect is fully decidable at the
+unit layer on both ports.
