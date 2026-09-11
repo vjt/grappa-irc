@@ -27,19 +27,32 @@ defmodule Grappa.ChannelDirectory.WireTest do
   end
 
   test "nil captured_at stays nil; empty featured set marks nothing" do
-    page = %{entries: [], next_cursor: nil, total: 0, captured_at: nil, status: :empty}
-    assert %{captured_at: nil, status: :empty} = Wire.index_payload(page, MapSet.new())
+    page = %{entries: [], next_cursor: nil, total: 0, captured_at: nil, status: :unknown}
+    assert %{captured_at: nil, status: :unknown} = Wire.index_payload(page, MapSet.new())
   end
 
-  # S14: the `:fresh | :stale | :empty | :refreshing` status atom is carried
-  # in the term (the typed closed union codegen pins as a literal TS union);
-  # Jason stringifies it to identical wire bytes at the JSON edge.
-  test "status atom passes through in the term; Jason encodes it to the string on the wire" do
-    page = %{entries: [], next_cursor: nil, total: 0, captured_at: nil, status: :refreshing}
-    wire = Wire.index_payload(page, MapSet.new())
+  # S14: the `:fresh | :stale | :no_results | :unknown | :loading` status atom
+  # is carried in the term (the typed closed union codegen pins as a literal
+  # TS union); Jason stringifies it to identical wire bytes at the JSON edge.
+  # Every member is walked, not one sample: the union is what issue 2046
+  # re-spelled, and a member the guard forgot is a 500 on a live payload.
+  test "every status atom passes through in the term and encodes to its own string" do
+    for status <- [:fresh, :stale, :no_results, :unknown, :loading] do
+      page = %{entries: [], next_cursor: nil, total: 0, captured_at: nil, status: status}
+      wire = Wire.index_payload(page, MapSet.new())
 
-    assert wire.status == :refreshing
-    assert Jason.decode!(Jason.encode!(wire))["status"] == "refreshing"
+      assert wire.status == status
+      assert Jason.decode!(Jason.encode!(wire))["status"] == Atom.to_string(status)
+    end
+  end
+
+  # The negative half: the guard is a CLOSED set, so a status the union does
+  # not carry must not render at all. Without this the `when status in [...]`
+  # clause could be widened to a catch-all and nothing would notice.
+  test "a status outside the union does not render" do
+    page = %{entries: [], next_cursor: nil, total: 0, captured_at: nil, status: :refreshing}
+
+    assert_raise FunctionClauseError, fn -> Wire.index_payload(page, MapSet.new()) end
   end
 
   test "featured match folds ASCII case, not brackets (#525)" do

@@ -6,8 +6,12 @@ defmodule Grappa.Session.DirectoryTest do
   against the `Grappa.IRCServer` in-process TCP fake (CLAUDE.md "Mock at
   boundaries, real dependencies inside"): the LIST send, the in-flight
   guard, and the watchdog-timeout → `directory_failed` broadcast (the
-  merged C4 leg), and the streamed 321/322/323 capture → batched ingest +
+  merged C4 leg), and the streamed 321/322/323 capture → buffered ingest +
   `directory_progress` / `directory_complete` pings (C3).
+
+  Since issue 2046 it also pins the DEFERRAL, which is a claim only a live
+  session can make: a capture in flight writes nothing, so the previous
+  snapshot stays servable until the 323 replaces it in one go.
 
   `async: false` for the same reason as `Grappa.Session.ServerTest`:
   `SessionRegistry` / `SessionSupervisor` / `PubSub` are singletons.
@@ -42,17 +46,42 @@ defmodule Grappa.Session.DirectoryTest do
              IRCServer.wait_for_line(server, &String.starts_with?(&1, "LIST"), 1_000)
   end
 
-  test "a second refresh while one is in-flight returns {:error, :already_refreshing}" do
+  # The second half of this test refutes a claim issue 2046 carries: that a
+  # controller arming a refresh mid-capture "kills the capture in flight".
+  # It cannot, and it never could — the in-flight run is matched by an
+  # EARLIER clause than the one that sends LIST, so a second request is a
+  # pure rejection that touches neither the wire, the tracker, nor the
+  # buffer. The rows absorbed before it are still there afterwards, and this
+  # asserts exactly that rather than the return value alone.
+  test "a second refresh while one is in-flight is rejected AND leaves the capture intact" do
     {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
     {user, network, _} = setup_user_and_network(port)
 
-    _ = start_session_for(user, network)
+    credential = Credentials.get_credential!(user, network)
+    {:ok, base_plan} = SessionPlan.resolve(credential)
+    plan = Map.put(base_plan, :directory_progress_throttle_ms, 0)
+    {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
+
+    on_exit(fn ->
+      _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
+    end)
+
     :ok = IRCServer.await_handshake(server, 1_000)
+    :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
 
     assert :ok = Session.refresh_directory({:user, user.id}, network.id)
+    IRCServer.feed(server, ":irc.test 322 nick #elixir 1200 :The Elixir channel\r\n")
+    assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :directory_progress, count: 1}}, 1_000
 
     assert {:error, :already_refreshing} =
              Session.refresh_directory({:user, user.id}, network.id)
+
+    # `:sys.get_state` serializes after the rejected call, so the buffer read
+    # here is the state that survived it.
+    run = :sys.get_state(pid).directory.run
+    assert run != nil
+    assert Enum.map(run.buffer, & &1.name) == ["#elixir"]
+    assert run.count == 1
   end
 
   test "a refresh that never sees 323 times out, clears state, emits directory_failed" do
@@ -175,12 +204,73 @@ defmodule Grappa.Session.DirectoryTest do
     # and a ~1s window would make `:fresh` depend on where the stamp fell in
     # the wall-clock second — doubly so here, where the `assert_receive` above
     # can burn most of that second before the read (#713).
-    page = ChannelDirectory.list({:user, user.id}, network.id, ttl_ms: 60_000)
+    page =
+      ChannelDirectory.list({:user, user.id}, network.id, ttl_ms: 60_000, refreshing?: false)
+
     assert page.status == :fresh
     assert page.total == 2
     # Default sort is user_count DESC (1200 > 800), so #elixir precedes #ruby.
     # NB: list/3 always re-sorts — this asserts the sort, not insertion order.
     assert Enum.map(page.entries, & &1.name) == ["#elixir", "#ruby"]
+  end
+
+  # Issue 2046 — the deferral, asserted where it is observable: a capture
+  # that has received rows but not its 323 must have changed NOTHING. Before
+  # the deferral this same sequence left the reader with an empty partition
+  # (the arm nuked it) plus whatever had been flushed, stamped by nobody —
+  # the `:refreshing` state that no longer exists.
+  test "a capture in flight leaves the previous snapshot whole and servable" do
+    {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+    {user, network, _} = setup_user_and_network(port)
+
+    # 0ms throttle so the first 322 emits a ping — that ping is the barrier
+    # proving the row was absorbed before the assertions below read the DB.
+    credential = Credentials.get_credential!(user, network)
+    {:ok, base_plan} = SessionPlan.resolve(credential)
+    plan = Map.put(base_plan, :directory_progress_throttle_ms, 0)
+    {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
+
+    on_exit(fn ->
+      _ = DynamicSupervisor.terminate_child(Grappa.SessionSupervisor, pid)
+    end)
+
+    :ok = IRCServer.await_handshake(server, 1_000)
+    :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+    # A first, complete capture: this is the snapshot that must survive.
+    assert :ok = Session.refresh_directory({:user, user.id}, network.id)
+    IRCServer.feed(server, ":irc.test 322 nick #elixir 1200 :The Elixir channel\r\n")
+    IRCServer.feed(server, ":irc.test 322 nick #ruby 800 :Ruby\r\n")
+    IRCServer.feed(server, ":irc.test 323 nick :End of /LIST\r\n")
+    assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :directory_complete}}, 1_000
+
+    # A second capture, deliberately left in flight after one row.
+    assert :ok = Session.refresh_directory({:user, user.id}, network.id)
+    IRCServer.feed(server, ":irc.test 322 nick #onlynew 5 :Only in the new capture\r\n")
+    assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :directory_progress, count: 1}}, 1_000
+
+    assert Session.directory_refreshing?({:user, user.id}, network.id)
+
+    mid = read_page(user, network, true)
+    assert mid.status == :fresh
+    assert Enum.map(mid.entries, & &1.name) == ["#elixir", "#ruby"]
+    assert mid.total == 2
+
+    IRCServer.feed(server, ":irc.test 323 nick :End of /LIST\r\n")
+    assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :directory_complete, total: 1}}, 1_000
+
+    refute Session.directory_refreshing?({:user, user.id}, network.id)
+
+    after_323 = read_page(user, network, false)
+    assert Enum.map(after_323.entries, & &1.name) == ["#onlynew"]
+    assert after_323.total == 1
+  end
+
+  defp read_page(user, network, refreshing?) do
+    ChannelDirectory.list({:user, user.id}, network.id,
+      ttl_ms: 60_000,
+      refreshing?: refreshing?
+    )
   end
 
   test "emits at least one directory_progress before completing" do

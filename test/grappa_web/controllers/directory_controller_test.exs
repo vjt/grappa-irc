@@ -12,35 +12,53 @@ defmodule GrappaWeb.DirectoryControllerTest do
     {:ok, conn: put_bearer(conn, session_fixture(user).id), user: user, network: network}
   end
 
-  test "GET returns empty/refreshing with no snapshot + no live session", %{
+  test "GET with no snapshot and no live session reports unknown", %{
     conn: conn,
     network: network
   } do
     resp = conn |> get("/networks/#{network.slug}/directory") |> json_response(200)
-    assert resp["status"] in ["empty", "refreshing"]
+    assert resp["status"] == "unknown"
     assert resp["entries"] == []
     assert resp["total"] == 0
+    assert resp["captured_at"] == nil
   end
 
-  test "GET serves a finalized snapshot sorted by users", %{
+  test "GET serves a snapshot sorted by users", %{
     conn: conn,
     user: user,
     network: network
   } do
     s = {:user, user.id}
-    :ok = Dir.replace_start(s, network.id)
 
     :ok =
-      Dir.ingest(s, network.id, [
+      Dir.replace(s, network.id, [
         %{name: "#big", topic: "t", user_count: 99},
         %{name: "#small", topic: "", user_count: 1}
       ])
 
-    :ok = Dir.finalize(s, network.id)
-
     resp = conn |> get("/networks/#{network.slug}/directory") |> json_response(200)
     assert resp["status"] == "fresh"
     assert Enum.map(resp["entries"], & &1["name"]) == ["#big", "#small"]
+  end
+
+  # Issue 2046 — the wire half of the state that used to read `empty`, and
+  # the one the controller must NOT arm a re-capture on. `captured_at` comes
+  # back non-null on purpose: the search ran against a real snapshot, and
+  # rendering "never" over one is the same class of lie as the skew.
+  test "GET with a search that matches nothing reports no_results, stamp included", %{
+    conn: conn,
+    user: user,
+    network: network
+  } do
+    :ok = Dir.replace({:user, user.id}, network.id, [%{name: "#big", topic: "t", user_count: 9}])
+
+    resp =
+      conn |> get("/networks/#{network.slug}/directory?q=zzz-no-such-channel") |> json_response(200)
+
+    assert resp["status"] == "no_results"
+    assert resp["total"] == 0
+    assert resp["entries"] == []
+    assert resp["captured_at"] != nil
   end
 
   test "#85 — rows carry featured: true for channels in the network's featured set", %{
@@ -49,15 +67,13 @@ defmodule GrappaWeb.DirectoryControllerTest do
     network: network
   } do
     s = {:user, user.id}
-    :ok = Dir.replace_start(s, network.id)
 
     :ok =
-      Dir.ingest(s, network.id, [
+      Dir.replace(s, network.id, [
         %{name: "#feat", topic: "t", user_count: 9},
         %{name: "#plain", topic: "", user_count: 1}
       ])
 
-    :ok = Dir.finalize(s, network.id)
     # Operator curates "#Feat" (mixed case) — must match the "#feat" row.
     {:ok, _} = Grappa.Networks.FeaturedChannels.add_channel(network, %{name: "#Feat"})
 

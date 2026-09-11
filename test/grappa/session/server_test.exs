@@ -255,11 +255,14 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
-  # #1390 slice 2 — the channel-directory ETL left the session, so its three
-  # config tunables and its in-flight tracker left the top level of state with
-  # it. Same two-pin split as the `Deps` bundle above, for the same reason:
-  # forgetting to ADD the struct and forgetting to REMOVE the four loose keys
-  # are different mistakes.
+  # #1390 slice 2 — the channel-directory ETL left the session, so its config
+  # tunables and its in-flight tracker left the top level of state with it.
+  # Same two-pin split as the `Deps` bundle above, for the same reason:
+  # forgetting to ADD the struct and forgetting to REMOVE the loose keys are
+  # different mistakes. `directory_ingest_batch` stays in this list although
+  # issue 2046 deleted the knob entirely: the pin asserts the key is ABSENT
+  # from session state, and that is no less true of a tunable that no longer
+  # exists than of one that moved into the struct.
   @directory_keys ~w[directory_refresh_timeout_ms directory_progress_throttle_ms
                      directory_ingest_batch directory_refresh]a
 

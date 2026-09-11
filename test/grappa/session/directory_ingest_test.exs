@@ -6,7 +6,7 @@ defmodule Grappa.Session.DirectoryIngestTest do
   on plain `ExUnit.Case`: no `DataCase`, no Repo, no `Session.Server`, no
   fake ircd. Its sibling `directory_test.exs` needs all four (228 lines,
   `async: false`, 23 lines naming `start_server`/`IRCServer`) because
-  before this extraction the parse / batch / throttle decisions were only
+  before this extraction the parse / buffer / throttle decisions were only
   reachable by booting a GenServer.
 
   If a later change re-entangles those decisions with the session process,
@@ -24,13 +24,12 @@ defmodule Grappa.Session.DirectoryIngestTest do
   alias Grappa.Session.DirectoryIngest
 
   # Tunables pinned per-test rather than taken from config: the point is the
-  # decision boundary, and a config-derived batch size would make the
+  # decision boundary, and a config-derived throttle window would make the
   # assertions read as coincidence.
   defp ingest(opts) do
     DirectoryIngest.from_opts(%{
       directory_refresh_timeout_ms: Keyword.get(opts, :timeout_ms, 60_000),
-      directory_progress_throttle_ms: Keyword.get(opts, :throttle_ms, 1_000),
-      directory_ingest_batch: Keyword.get(opts, :batch, 200)
+      directory_progress_throttle_ms: Keyword.get(opts, :throttle_ms, 1_000)
     })
   end
 
@@ -68,30 +67,38 @@ defmodule Grappa.Session.DirectoryIngestTest do
     end
   end
 
-  describe "absorb/3 — the batch boundary" do
-    test "rows below the batch size buffer without an ingest action" do
-      r0 = armed([batch: 3], 0)
+  describe "absorb/3 — nothing is written mid-stream (issue 2046)" do
+    # The pin that replaces the batch-boundary block, and it is the same
+    # claim from the other side: absorbing rows produces NO write instruction
+    # at any depth. The old shape emitted `{:ingest, rows}` every 200 rows;
+    # if one ever comes back, the deferral has been undone and the previous
+    # snapshot is being nuked mid-capture again.
+    test "no depth of buffering produces a write action" do
+      r0 = armed([throttle_ms: 1_000], 0)
 
-      {r1, first} = DirectoryIngest.absorb(r0, row("#a"), 0)
-      assert first == []
+      {_, actions} =
+        Enum.reduce(1..250, {r0, []}, fn i, {run, seen} ->
+          {next, emitted} = DirectoryIngest.absorb(run, row("#c#{i}"), 0)
+          {next, seen ++ emitted}
+        end)
 
-      {_, second} = DirectoryIngest.absorb(r1, row("#b"), 0)
-      assert second == []
+      assert Enum.all?(actions, &match?({:progress, _}, &1)),
+             "absorb/3 handed back a non-progress action: #{inspect(actions)}"
     end
 
-    test "reaching the batch size emits ONE ingest action carrying wire order" do
-      r0 = armed([batch: 3], 0)
+    test "the whole capture comes out of finish/1, in wire order" do
+      r0 = armed([], 0)
 
       {r1, []} = DirectoryIngest.absorb(r0, row("#a"), 0)
       {r2, []} = DirectoryIngest.absorb(r1, row("#b"), 0)
-      {_, third} = DirectoryIngest.absorb(r2, row("#c"), 0)
+      {r3, []} = DirectoryIngest.absorb(r2, row("#c"), 0)
 
-      assert [{:ingest, rows}] = third
+      assert {_, rows, _} = DirectoryIngest.finish(r3)
       assert Enum.map(rows, & &1.name) == ["#a", "#b", "#c"]
     end
 
-    test "the running tally survives a flush — count is total, not buffer depth" do
-      r0 = armed([batch: 2, throttle_ms: 0], 0)
+    test "count tracks rows received, and the ping reports it" do
+      r0 = armed([throttle_ms: 0], 0)
 
       {r1, _} = DirectoryIngest.absorb(r0, row("#a"), 0)
       {r2, _} = DirectoryIngest.absorb(r1, row("#b"), 0)
@@ -122,19 +129,19 @@ defmodule Grappa.Session.DirectoryIngestTest do
       assert {:progress, 3} in at_2000
     end
 
-    test "the flush is ordered BEFORE the progress ping it reports" do
-      r0 = armed([batch: 1, throttle_ms: 0], 0)
+    test "a ping is the ONLY thing an absorb can ask for" do
+      r0 = armed([throttle_ms: 0], 0)
 
       {_, actions} = DirectoryIngest.absorb(r0, row("#a"), 0)
 
-      assert [{:ingest, _}, {:progress, 1}] = actions
+      assert [{:progress, 1}] = actions
     end
   end
 
   describe "finish/1" do
-    test "flushes the tail in wire order, hands back the watchdog ref, and clears the run" do
+    test "hands back the capture in wire order and the watchdog ref, and clears the run" do
       timer = make_ref()
-      r0 = DirectoryIngest.start(ingest(batch: 100), 0, timer)
+      r0 = DirectoryIngest.start(ingest([]), 0, timer)
 
       {r1, []} = DirectoryIngest.absorb(r0, row("#a"), 0)
       {r2, []} = DirectoryIngest.absorb(r1, row("#b"), 0)
@@ -144,7 +151,7 @@ defmodule Grappa.Session.DirectoryIngestTest do
       refute DirectoryIngest.in_flight?(cleared)
     end
 
-    test "an empty buffer flushes nothing — never round-trip an empty insert" do
+    test "an empty buffer hands back an empty capture" do
       assert {cleared, [], _} = DirectoryIngest.finish(armed([], 0))
       refute DirectoryIngest.in_flight?(cleared)
     end
@@ -153,11 +160,13 @@ defmodule Grappa.Session.DirectoryIngestTest do
   describe "abort/1 — the watchdog" do
     test "DROPS the buffered rows and hands back nothing to write" do
       # Behaviour pin, not tidiness. `handle_info(:directory_refresh_timeout,
-      # ...)` wipes the tracker without flushing, so rows buffered since the
-      # last batch are lost and `ChannelDirectory.finalize/2` never runs for
-      # that refresh. A version that flushed on timeout would change the DB
-      # on every truncated refresh. #1390 slice 2 preserves it deliberately.
-      r0 = armed([batch: 100], 0)
+      # ...)` wipes the tracker without flushing, so the whole capture is
+      # lost and `ChannelDirectory.replace/3` never runs for that refresh.
+      # Since issue 2046 that is also what SAVES the previous snapshot: the
+      # arm nukes nothing, so a stalled refresh leaves the last good list in
+      # place. A version that flushed on timeout would write a truncated
+      # capture over it.
+      r0 = armed([], 0)
 
       {r1, []} = DirectoryIngest.absorb(r0, row("#a"), 0)
       {r2, []} = DirectoryIngest.absorb(r1, row("#b"), 0)
