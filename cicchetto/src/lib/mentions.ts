@@ -29,10 +29,15 @@ import { selectedChannel } from "./selection";
 // its count so a returning operator sees the activity.
 //
 // Note: the per-row `.scrollback-mention` highlight (ScrollbackPane) is a
-// client-side render decision (`matchesWatchlist` = own nick ∪ /hilight
-// patterns, #370) — deterministic per-row, not a count, with no
-// cross-tab/reconnect consistency problem. It matches the SAME set the
-// server counts as a mention. Only the COUNT moved server-side.
+// client-side render decision (`isMentionRow` = own nick ∪ /hilight patterns,
+// minus own rows) — deterministic per-row, not a count, with no
+// cross-tab/reconnect consistency problem. Only the COUNT moved server-side.
+//
+// It used to claim the render set was the SAME set the server counts. That
+// was false — issue 1481 measured it — and it is still not identical after
+// the fix: the server's `mention_row?/3` also subtracts service- and
+// server-originated rows (#1674), which the render port has never done. The
+// two agree on the body match and on own rows; the services axis is open.
 //
 // Identity-scoped via identityScopedStore reset (dup-A3 close).
 

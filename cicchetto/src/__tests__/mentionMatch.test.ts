@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isMentionableSender, matchesWatchlist } from "../lib/mentionMatch";
+import { isMentionableSender, isMentionRow, isOwnRow, matchesWatchlist } from "../lib/mentionMatch";
 
 // #370 — `matchesWatchlist` is the SINGLE client-side match predicate for
 // the in-message visual highlight (ScrollbackPane `.scrollback-mention` /
@@ -213,5 +213,62 @@ describe("isMentionableSender — a robot cannot mention you (#1674)", () => {
 
   it("only ever subtracts — an unclassifiable sender stays mentionable", () => {
     expect(isMentionableSender("")).toBe(true);
+  });
+});
+
+// issue 1481 — the OWN-ROW half, and the row-level rule the three RENDER
+// sites fold. The notify port has had this step since #532 C / #868; the
+// render port decided from the body alone, so your own line naming your own
+// nick highlighted itself back at you.
+describe("isOwnRow — sender identity, ASCII fold (issue 1481)", () => {
+  it("is true for the operator's own sender, whatever the case", () => {
+    expect(isOwnRow("vjt", "vjt")).toBe(true);
+    expect(isOwnRow("VJT", "vjt")).toBe(true);
+    expect(isOwnRow("vjt", "VJT")).toBe(true);
+  });
+
+  it("is false for anybody else", () => {
+    expect(isOwnRow("alice", "vjt")).toBe(false);
+  });
+
+  it("folds A-Z only — a bracket twin is a DIFFERENT person on bahamut", () => {
+    expect(isOwnRow("foo[1]", "foo{1}")).toBe(false);
+  });
+
+  it("is false when the own nick is not resolved yet", () => {
+    expect(isOwnRow("vjt", null)).toBe(false);
+  });
+});
+
+describe("isMentionRow — sender conjunct AND body match (issue 1481)", () => {
+  it("a peer naming you is a mention", () => {
+    expect(isMentionRow({ sender: "alice", body: "hey vjt" }, "vjt", [])).toBe(true);
+  });
+
+  it("your OWN line naming your own nick is not", () => {
+    expect(isMentionRow({ sender: "vjt", body: "vjt: prova" }, "vjt", [])).toBe(false);
+  });
+
+  it("your own line carrying a /hilight word is not either", () => {
+    expect(isMentionRow({ sender: "vjt", body: "the deploy is done" }, "vjt", ["deploy"])).toBe(
+      false,
+    );
+  });
+
+  it("the sender fold is ASCII — an own line sent as VJT is still yours", () => {
+    expect(isMentionRow({ sender: "VJT", body: "note to self, vjt" }, "vjt", [])).toBe(false);
+  });
+
+  it("a peer line that names nobody is still not a mention", () => {
+    expect(isMentionRow({ sender: "alice", body: "hello world" }, "vjt", [])).toBe(false);
+  });
+
+  it("an unresolved own nick leaves the patterns deciding", () => {
+    // `ownNick` null → no row can be "own", and `matchesWatchlist` skips the
+    // falsy term, so a /hilight word still fires. Same posture as
+    // `matchesWatchlist`'s own null-nick arm above.
+    expect(isMentionRow({ sender: "alice", body: "the deploy is done" }, null, ["deploy"])).toBe(
+      true,
+    );
   });
 });

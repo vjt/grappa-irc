@@ -35,7 +35,7 @@ import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
 import { chantypesForNetwork, prefixForNetwork } from "./lib/isupport";
 import { jumpToUnreadRequest } from "./lib/jumpToUnreadCommand";
 import { membersByChannel } from "./lib/members";
-import { matchesWatchlist } from "./lib/mentionMatch";
+import { isMentionRow } from "./lib/mentionMatch";
 import {
   mentionJumpTargetId,
   mentionsBelowViewport,
@@ -103,11 +103,12 @@ import WhowasCard from "./WhowasCard";
 // `ComposeBox.tsx`. This pane is now compose-free; the parent layout
 // composes ScrollbackPane + ComposeBox vertically.
 //
-// Mention highlight (P4-1, extended #370): privmsg lines whose `body`
-// word-boundary case-insensitive-matches the operator's own nick OR a custom
-// /hilight pattern get the .scrollback-mention class. The matcher reads
-// `networks.user()` for the nick and `highlightList.highlightPatterns()` for
-// the keyword list — the SAME `matchesWatchlist` source the notify path uses.
+// Mention highlight (P4-1, extended #370, issue 1481): privmsg lines from
+// SOMEBODY ELSE whose `body` word-boundary case-insensitive-matches the
+// operator's own nick OR a custom /hilight pattern get the
+// .scrollback-mention class. The matcher reads `networks.user()` for the nick
+// and `highlightList.highlightPatterns()` for the keyword list — the SAME
+// `isMentionRow` source the notify path folds.
 //
 // C5.0 (UX-5 BJ rewrite — 2026-05-19): own-nick JOIN auto-focus.
 // When the operator's own nick has a JOIN row in scrollback for this
@@ -158,10 +159,10 @@ import WhowasCard from "./WhowasCard";
 // for the logged-in nick so op-gated items are correctly enabled/disabled.
 //
 // C7.7 / #370: Watchlist highlight rendering — PRIVMSG / NOTICE / ACTION
-// lines where `matchesWatchlist(body, ownNick, highlightPatterns())` is true
-// get .scrollback-highlight class. The watchlist is own nick ∪ the custom
+// lines where `isMentionRow(msg, ownNick, highlightPatterns())` is true get
+// .scrollback-highlight class. The watchlist is own nick ∪ the custom
 // /hilight keyword list (highlightList.ts), mirroring the server SSOT
-// `Grappa.Mentions.mentioned?/3`.
+// `Grappa.Mentions.mention_row?/3`; issue 1481 added the own-row conjunct.
 
 export type Props = {
   networkSlug: string;
@@ -1168,22 +1169,22 @@ const ScrollbackLine: Component<{
   onNickContextMenu: (nick: string, e: MouseEvent) => void;
   onJoinChannel: (channel: string) => void;
 }> = (props) => {
-  // #370 — a mention is now own nick ∪ custom highlight patterns (the same
-  // set the server counts as a mention, and the same `matchesWatchlist`
-  // predicate the notify path uses). A privmsg matching a /hilight word gets
-  // the exact `.scrollback-mention` treatment an own-nick mention gets.
+  // #370 — a mention is own nick ∪ custom highlight patterns; a privmsg
+  // matching a /hilight word gets the exact `.scrollback-mention` treatment
+  // an own-nick mention gets. issue 1481 — and never a row this operator
+  // AUTHORED: `isMentionRow` carries the own-row conjunct the notify port has
+  // had since #532 C, so the two ports agree on the sender axis too.
   const isMention = () =>
-    props.msg.kind === "privmsg" &&
-    matchesWatchlist(props.msg.body, props.userNick, highlightPatterns());
+    props.msg.kind === "privmsg" && isMentionRow(props.msg, props.userNick, highlightPatterns());
 
   // C7.2: muted — presence/event kinds are visually de-emphasized.
   const isMuted = () => PRESENCE_KINDS.has(props.msg.kind);
 
-  // C7.7 / #370: highlight — content kinds where body matches the watchlist
-  // (own nick ∪ custom highlight patterns).
+  // C7.7 / #370: highlight — content kinds where the row mentions the
+  // operator (own nick ∪ custom highlight patterns, own rows excluded).
   const isHighlight = () =>
     !PRESENCE_KINDS.has(props.msg.kind) &&
-    matchesWatchlist(props.msg.body, props.userNick, highlightPatterns());
+    isMentionRow(props.msg, props.userNick, highlightPatterns());
 
   const handlers: NickHandlers = {
     onNickClick: props.onNickClick,

@@ -4148,6 +4148,64 @@ describe("ScrollbackPane", () => {
     });
   });
 
+  // issue 1481 — the own-row step the notify port has had since #532 C.
+  // BOTH classes are asserted here, because both `isMention` and
+  // `isHighlight` decided from the body alone; and `.scrollback-mention` is
+  // what the below-the-fold mention badge reads off the DOM
+  // (`readMentionGeom` → `mentionsBelowViewport`), so it inherits this and
+  // does not need a guard of its own.
+  describe("own rows never self-highlight (issue 1481)", () => {
+    const ownRow = (body: string, sender: string) => ({
+      id: 1,
+      network: "freenode",
+      channel: "#grappa",
+      server_time: 1_700_000_000_000,
+      kind: "privmsg" as const,
+      sender,
+      body,
+      meta: {},
+    });
+
+    it("own PRIVMSG naming own nick gets NEITHER class", () => {
+      setUserNick("vjt");
+      setScrollback({ "freenode #grappa": [ownRow("vjt: prova", "vjt")] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.classList.contains("scrollback-mention")).toBe(false);
+      expect(line.classList.contains("scrollback-highlight")).toBe(false);
+    });
+
+    it("own PRIVMSG carrying a /hilight word gets neither either", () => {
+      setUserNick("vjt");
+      setHighlightPatternsForTest(["deploy"]);
+      setScrollback({ "freenode #grappa": [ownRow("the deploy is done", "vjt")] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.classList.contains("scrollback-mention")).toBe(false);
+      expect(line.classList.contains("scrollback-highlight")).toBe(false);
+    });
+
+    it("the sender fold is ASCII — a row sent as VJT is still own", () => {
+      setUserNick("vjt");
+      setScrollback({ "freenode #grappa": [ownRow("note to self, vjt", "VJT")] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.classList.contains("scrollback-mention")).toBe(false);
+      expect(line.classList.contains("scrollback-highlight")).toBe(false);
+    });
+
+    it("a PEER row with the SAME body still gets both classes", () => {
+      // Positive control for the three arms above: identical body, different
+      // sender. Without it they could pass on a broken render path.
+      setUserNick("vjt");
+      setScrollback({ "freenode #grappa": [ownRow("vjt: prova", "alice")] });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.classList.contains("scrollback-mention")).toBe(true);
+      expect(line.classList.contains("scrollback-highlight")).toBe(true);
+    });
+  });
+
   // CP13 — :notice rows with meta.severity === "error" (server-routed
   // failure-class numerics) get the .scrollback-notice-error class so
   // they render red. Non-error severity (or missing meta) → no class,

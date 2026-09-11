@@ -230,6 +230,29 @@ describe("MentionsWindow", () => {
     expect(rows[0]?.classList.contains("scrollback-highlight")).toBe(true);
   });
 
+  // issue 1481 — the render port's third site. The bundle itself no longer
+  // carries own rows (the server-side `mention_row?/3` drops them), but the
+  // class is decided here, so the guard has to hold on the row it is handed.
+  it("does not highlight a row the operator authored", () => {
+    const bundle = makeBundle({ messages: [{ ...MSG0, sender: "vjt", body: "vjt: prova" }] });
+    render(() => (
+      <MentionsWindow bundle={bundle} ownNick="vjt" onMentionClicked={vi.fn()} onClose={vi.fn()} />
+    ));
+
+    const rows = screen.getAllByTestId("mentions-row");
+    expect(rows[0]?.classList.contains("scrollback-highlight")).toBe(false);
+  });
+
+  it("still highlights the SAME body from a peer (issue 1481 control)", () => {
+    const bundle = makeBundle({ messages: [{ ...MSG0, sender: "alice", body: "vjt: prova" }] });
+    render(() => (
+      <MentionsWindow bundle={bundle} ownNick="vjt" onMentionClicked={vi.fn()} onClose={vi.fn()} />
+    ));
+
+    const rows = screen.getAllByTestId("mentions-row");
+    expect(rows[0]?.classList.contains("scrollback-highlight")).toBe(true);
+  });
+
   it("does not highlight when ownNick is null", () => {
     render(() => (
       <MentionsWindow

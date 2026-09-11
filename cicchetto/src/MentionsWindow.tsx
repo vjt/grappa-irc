@@ -1,6 +1,6 @@
 import { type Component, createMemo, For, Show } from "solid-js";
 import { highlightPatterns } from "./lib/highlightList";
-import { matchesWatchlist } from "./lib/mentionMatch";
+import { isMentionRow } from "./lib/mentionMatch";
 import { formatTimestamp } from "./lib/timeFormat";
 import { MircBody } from "./MircText";
 import NickText from "./NickText";
@@ -154,8 +154,9 @@ const MentionsWindow: Component<Props> = (props) => {
               <For each={group.rows}>
                 {(row) => {
                   // #370 — own nick ∪ custom /hilight patterns (shared source).
-                  const isHighlight = () =>
-                    matchesWatchlist(row.body, props.ownNick, highlightPatterns());
+                  // issue 1481 — via the row-level rule, so a row the operator
+                  // authored is not highlighted back at them here either.
+                  const isHighlight = () => isMentionRow(row, props.ownNick, highlightPatterns());
 
                   return (
                     <button

@@ -25,8 +25,8 @@
 import { type MessageKind, NOTIFY_KINDS } from "./api";
 import { type ChannelKey, canonicalChannel } from "./channelKey";
 import { conversationMuteKey, isConversationMuted } from "./conversationMute";
-import { isMentionableSender, matchesWatchlist } from "./mentionMatch";
-import { asciiFold, nickEquals } from "./nickEquals";
+import { isMentionableSender, isOwnRow, matchesWatchlist } from "./mentionMatch";
+import { asciiFold } from "./nickEquals";
 import type { NotificationPrefs } from "./userSettings";
 
 // Minimal structural shape the predicate needs — a subset of the wire
@@ -73,23 +73,22 @@ export function shouldNotify(
   // convention as `wireNarrow.ts`.
   if (!NOTIFY_KINDS.has(message.kind as MessageKind)) return false;
 
-  // #532 C, #868 — "is this row mine?" decided by sender IDENTITY, and asked
-  // BEFORE the window-shape test below. An OUTBOUND DM is persisted with
-  // `channel = peer` (only an INBOUND one carries `channel = own_nick`), so
-  // the shape test misroutes it to the channel branch, where the operator's
-  // own highlight patterns run over the operator's own body — self-notifying
-  // on every outgoing message that happens to contain their nick. The server
-  // has had this step since #532 C (`triggers.ex` `own_row?/2`); this port
-  // did not, and the shared fixture had no row that could see the gap.
+  // #532 C, #868 — "is this row mine?" asked BEFORE the window-shape test
+  // below, because an OUTBOUND DM is persisted with `channel = peer` (only an
+  // INBOUND one carries `channel = own_nick`): the shape test misroutes it to
+  // the channel branch, where the operator's own highlight patterns run over
+  // the operator's own body. The server has had this step since #532 C
+  // (`triggers.ex` `own_row?/2`); this port did not, and the shared fixture
+  // had no row that could see the gap.
   //
-  // #1861 — pinned to `"ascii"`, deliberately. This whole predicate is a
-  // faithful transcription of the SERVER's `Push.Triggers`, and every fold
-  // over there is the arity-1 `Identifier.canonical_target/1` (`own_row?/2`,
-  // `dm?/2`, the two allow-lists). Folding harder here than the server folds
-  // would make cic's in-app notification decision disagree with the push the
-  // server actually sends on an rfc1459 network. When the server's triggers
-  // become network-aware, this moves WITH them, not before.
-  if (nickEquals(message.sender, ownNick, "ascii")) return false;
+  // issue 1481 — the predicate itself now lives in `mentionMatch.isOwnRow`,
+  // shared with the RENDER port, which was missing the same step. The
+  // POSITION stays local to this file: here it gates the whole notification
+  // (it outranks the mute and both branches), whereas over there it is one
+  // conjunct of the mention rule. Same question, two places to ask it — one
+  // spelling, so they cannot answer differently. The `"ascii"` pin and its
+  // rationale (#1861) travelled with it.
+  if (isOwnRow(message.sender, ownNick)) return false;
 
   // Fold BOTH sides, mirroring the server's `dm?/2`. The `channel` KEY is
   // folded at the persist boundary (`Message.canonicalize_channel/1`, #537)

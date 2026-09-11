@@ -7,21 +7,25 @@
 // falls back to the plain snap-to-bottom gesture.
 //
 // ScrollbackPane owns the DOM read (offsetTop per `.scrollback-line`, the
-// `.scrollback-mention` class = a mention per `matchesWatchlist` = own nick ∪
-// /hilight keywords, #370 — same set the server counts as a mention); this
+// `.scrollback-mention` class = a mention per `isMentionRow` = a row somebody
+// ELSE sent matching own nick ∪ /hilight keywords, #370 + issue 1481); this
 // module owns the below-the-fold DECISION so it can be unit-tested without a
 // real layout (jsdom reports 0 for every geometry). Scope is the
 // `.scrollback-mention` class (privmsg lines matching the watchlist); the
 // broader `.scrollback-highlight` class (the same match set across all content
 // kinds) is not what the badge tracks.
+//
+// Reading the CLASS rather than re-deciding is what makes the badge inherit
+// every change to the rule for free — issue 1481's own-row conjunct landed
+// here without a line of code in this file.
 
 export type ScrollbackLineGeom = {
   // Server message id (data-msg-id) — the jump target key.
   id: number;
   // offsetTop within the scroll container, in px.
   top: number;
-  // true when the line carries `.scrollback-mention` (watchlist match:
-  // own nick ∪ /hilight keywords, #370).
+  // true when the line carries `.scrollback-mention` (watchlist match from
+  // another sender: own nick ∪ /hilight keywords, #370 + issue 1481).
   isMention: boolean;
 };
 
