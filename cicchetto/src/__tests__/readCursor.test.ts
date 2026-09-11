@@ -280,6 +280,62 @@ describe("readCursor", () => {
       expect(getReadCursor("freenode", "#grappa")).toBe(42);
       await p;
     });
+
+    // issue 2052 — the optimistic advance is deliberately NOT reverted on a
+    // failed POST (see the long comment above it: a naive revert clobbers a
+    // concurrent forward advance). That leaves the local cursor legitimately
+    // AHEAD of the server, which is the state a stretch offline produces. The
+    // module's stated invariant is that only the authoritative
+    // `applyReadCursorSet` WS echo moves the cursor backward — but the
+    // join-reply door landed the server's value unconditionally, so the next
+    // rejoin rewound the cursor to the stale server number and every row the
+    // operator had already read counted as unread again.
+    //
+    // Driven through the real transport (a failing `fetch`), not by mutating
+    // the signal: the divergence has to be PRODUCED by the documented no-revert
+    // rule, or the test pins an arrangement the code cannot reach.
+    it("a rejoin does not rewind the optimistic advance left ahead by a failed POST", async () => {
+      const { setReadCursor, getReadCursor, applyJoinReply, clearReadCursors } = await import(
+        "../lib/readCursor"
+      );
+      clearReadCursors();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      // The server's cursor, hydrated by the first join. It does not move
+      // below: the POST fails.
+      const serverCursor = 1000;
+      applyJoinReply("freenode", "#grappa", serverCursor);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 503 })));
+
+      // The operator reads to the tail while offline. Local advances; the
+      // server keeps 1000 because nothing landed.
+      await setReadCursor("tok", "freenode", "#grappa", 1010);
+      expect(getReadCursor("freenode", "#grappa")).toBe(1010);
+
+      // Resume: `subscribe.ts` rejoins the per-channel topic and hands us the
+      // reply's cursor — still the stale 1000.
+      applyJoinReply("freenode", "#grappa", serverCursor);
+      expect(getReadCursor("freenode", "#grappa")).toBe(1010);
+    });
+
+    // The discriminating half. "Forward-only" must not degrade into "the join
+    // reply is ignored": a reply carrying a HIGHER id — a peer device settled
+    // further ahead while this tab was away — is exactly what the rejoin
+    // refresh exists to deliver, and it still has to land.
+    it("a rejoin still adopts a join reply that is AHEAD of the local cursor", async () => {
+      const { setReadCursor, getReadCursor, applyJoinReply, clearReadCursors } = await import(
+        "../lib/readCursor"
+      );
+      clearReadCursors();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      applyJoinReply("freenode", "#grappa", 1000);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 503 })));
+      await setReadCursor("tok", "freenode", "#grappa", 1010);
+
+      applyJoinReply("freenode", "#grappa", 1200);
+      expect(getReadCursor("freenode", "#grappa")).toBe(1200);
+    });
   });
 
   it("clearReadCursors removes every entry from the signal map", async () => {

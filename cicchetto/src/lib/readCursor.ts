@@ -8,7 +8,9 @@
 //      login via `applyMeEnvelope/1` — cold-load bulk hydration.
 //   2. Phoenix Channel join reply (`%{read_cursor: <id_or_nil>}`) per
 //      per-channel topic via `applyJoinReply/3` — refresh on every
-//      reconnect/rejoin.
+//      reconnect/rejoin, FORWARD-ONLY since issue 2052 (it used to land
+//      the reply unconditionally, which made a resume after a failed POST
+//      rewind this device's cursor to the server's stale value).
 //   3. `read_cursor_set` typed WS event on the per-channel topic via
 //      `applyReadCursorSet/3` — cross-device live sync (device A
 //      settles, device B reflects).
@@ -70,6 +72,25 @@ const cacheKey = (networkSlug: string, channel: string): string =>
 
 const [cursors, setCursors] = moduleRoot(() => createSignal<Record<string, number>>({}));
 
+// The forward-only rule, in one place because two doors owe it: the
+// optimistic advance in `setReadCursor` and the join-reply refresh in
+// `applyJoinReply`. Both mean the same thing — "adopt this id only if it is
+// ahead of what we hold" — and the module's contract above names exactly ONE
+// path that may move a cursor backward (`applyReadCursorSet`, the
+// authoritative WS echo). Returning `prev` UNCHANGED on a no-op is
+// load-bearing, not tidiness: a rebuilt-but-equal object wakes every cursor
+// consumer for nothing (the same reason `renameReadCursorChannel` bails early
+// on a pure re-casing).
+const advanceOnly = (
+  prev: Record<string, number>,
+  key: string,
+  next: number,
+): Record<string, number> => {
+  const cur = prev[key];
+  if (cur !== undefined && next <= cur) return prev;
+  return { ...prev, [key]: next };
+};
+
 /**
  * Returns the stored read-cursor `last_read_message_id` for
  * `(networkSlug, channel)`, or `null` if none is known. Tracked by
@@ -129,6 +150,31 @@ export const applyMeEnvelope = (envelope: Record<string, Record<string, number>>
  * server's "no cursor for this (subject, network, channel)" answer
  * never overwrites a hydrated value. Called from `subscribe.ts` on
  * every successful per-channel join (initial + post-reconnect).
+ *
+ * **Forward-only** (issue 2052). It used to land the reply's id
+ * unconditionally, which made this a second door that moves a cursor
+ * BACKWARD — contradicting this module's own contract, which names
+ * `applyReadCursorSet` as the only one. The visible cost was a badge that
+ * came back after every resume: `setReadCursor` leaves the local cursor
+ * optimistically ahead when its POST fails (deliberately — see the
+ * no-revert argument at that call site), which is exactly what a stretch
+ * offline produces, and the next rejoin then rewound to the server's stale
+ * value and re-counted every already-read row as unread.
+ *
+ * A reply that is AHEAD still lands: that is what the rejoin refresh is
+ * FOR (a peer device settled further while this tab was away), and the
+ * server's own write is monotonic, so a reply below what we hold cannot be
+ * a deliberate regression. `Grappa.ReadCursor`'s moduledoc says so
+ * outright — `set/4` clamps backward moves, and deliberate mark-as-unread
+ * "has no caller today … when the feature ships it gets its OWN explicit
+ * path". When it does, it arrives with a broadcast and lands here through
+ * `applyReadCursorSet`, which is where a backward move belongs.
+ *
+ * Known and accepted: a cross-identity `/me` that seeded a HIGHER cursor
+ * for a window can no longer be corrected downward by this door
+ * (`networks.ts`'s #818 note). That path is guarded by `identityMoved/1`
+ * and the `on(token)` purge; trading it for the resume flicker is the
+ * deliberate call, not an oversight.
  */
 export const applyJoinReply = (
   networkSlug: string,
@@ -136,7 +182,7 @@ export const applyJoinReply = (
   cursor: number | null,
 ): void => {
   if (cursor === null) return;
-  setCursors((prev) => ({ ...prev, [cacheKey(networkSlug, channel)]: cursor }));
+  setCursors((prev) => advanceOnly(prev, cacheKey(networkSlug, channel), cursor));
 };
 
 /**
@@ -244,11 +290,7 @@ export const setReadCursor = async (
   // now be an optimistic one during the narrow cold-load-before-hydration
   // window; pre-existing race shape, see that effect's comment.
   const optimisticKey = cacheKey(networkSlug, channel);
-  setCursors((prev) => {
-    const cur = prev[optimisticKey];
-    if (cur !== undefined && messageId <= cur) return prev;
-    return { ...prev, [optimisticKey]: messageId };
-  });
+  setCursors((prev) => advanceOnly(prev, optimisticKey, messageId));
   const url = `/networks/${encodeURIComponent(networkSlug)}/channels/${encodeURIComponent(channel)}/read-cursor`;
   const res = await fetch(url, {
     method: "POST",
