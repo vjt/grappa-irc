@@ -532,6 +532,52 @@ describe("TopicBar", () => {
         expect(postTopicMock).toHaveBeenCalledWith("tok-test", "freenode", "#italia", "shifted");
       });
 
+      // issue 2041 — an IME (Japanese, Chinese, Korean, and every other
+      // compose-based input) delivers the Enter that COMMITS THE CANDIDATE to
+      // the page as an ordinary keydown with `key: "Enter"`. `isComposing` is
+      // the only thing separating it from a real commit. Two things go wrong
+      // without the check, and the second is the worse one: the half-typed
+      // line becomes the topic, AND `preventDefault` eats the keystroke the
+      // IME was waiting for, so the word is never finished either.
+      //
+      // The SAME guard sits on ComposeBox, from the SAME predicate
+      // (`lib/imeComposition`). The issue was filed on both surfaces at once
+      // for exactly that reason: this chord must not grow a second semantics
+      // on the second surface.
+      it("issue 2041 — the Enter that commits an IME candidate does NOT set the topic", () => {
+        withTopic("Old topic");
+        render(() => <TopicBar {...baseProps()} />);
+        enterEdit();
+        const editor = screen.getByTestId("topic-modal-editor") as HTMLTextAreaElement;
+        fireEvent.input(editor, { target: { value: "にほんご" } });
+        // NOT cancelled — the keystroke belongs to the IME. `fireEvent`
+        // returns false on a cancelled event, so `true` IS the assertion that
+        // we let it through.
+        expect(fireEvent.keyDown(editor, { key: "Enter", isComposing: true })).toBe(true);
+        expect(postTopicMock).not.toHaveBeenCalled();
+        expect(clearTopicMock).not.toHaveBeenCalled();
+        // Still editing, modal still open, draft intact.
+        expect((screen.getByTestId("topic-modal-editor") as HTMLTextAreaElement).value).toBe(
+          "にほんご",
+        );
+        expect(screen.getByRole("dialog")).toBeInTheDocument();
+      });
+
+      it("issue 2041 — Shift+Enter during a composition does not set it either", () => {
+        // The #974/2026-09-10 ruling made EVERY Enter a commit key on this
+        // surface, modifier included — which is precisely why the IME guard
+        // has to be above the chord and not inside one arm of it.
+        withTopic("Old topic");
+        render(() => <TopicBar {...baseProps()} />);
+        enterEdit();
+        const editor = screen.getByTestId("topic-modal-editor") as HTMLTextAreaElement;
+        fireEvent.input(editor, { target: { value: "にほんご" } });
+        expect(fireEvent.keyDown(editor, { key: "Enter", shiftKey: true, isComposing: true })).toBe(
+          true,
+        );
+        expect(postTopicMock).not.toHaveBeenCalled();
+      });
+
       // #232 guardrail — the new element-level keydown may exist, but it must
       // NOT become a second ESC authority. The isolation is that `keybindings`
       // (the ONE global keydown listener, which drives the shared overlay

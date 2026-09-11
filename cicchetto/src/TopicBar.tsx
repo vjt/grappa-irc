@@ -11,6 +11,7 @@ import {
   topicByChannel,
 } from "./lib/channelTopic";
 import { friendlyError } from "./lib/friendlyError";
+import { isComposingKeystroke } from "./lib/imeComposition";
 import { mircPlainText } from "./lib/mircFormat";
 import { openModeModal } from "./lib/modeModal";
 import { networkIdBySlug } from "./lib/networks";
@@ -274,7 +275,17 @@ const TopicBar: Component<Props> = (props) => {
   //
   // `preventDefault` is what stops the textarea inserting its own break; the
   // flatten STAYS regardless, because a PASTE still carries newlines in.
+  //
+  // issue 2041 — the IME guard comes FIRST, above the chord. With a
+  // compose-based input (Japanese, Chinese, Korean) the Enter that COMMITS
+  // the candidate arrives as a plain `key: "Enter"`; without the check it
+  // sets the topic to a half-typed line AND the `preventDefault` below eats
+  // the keystroke the IME needed, so the word never finishes either. Above
+  // the chord and not inside it, because the 2026-09-10 ruling made EVERY
+  // Enter a commit here, modifier included. Same shape, same predicate, on
+  // ComposeBox — one chord, one semantics, on both surfaces.
   const onEditorKeyDown = (e: KeyboardEvent): void => {
+    if (isComposingKeystroke(e)) return;
     if (e.key !== "Enter") return;
     e.preventDefault();
     void submitEdit();

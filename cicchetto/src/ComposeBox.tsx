@@ -26,6 +26,7 @@ import { placeCaretAtEndInView, placeCaretInView } from "./lib/composeCaret";
 import { composePlaceholder } from "./lib/composePlaceholder";
 import { diagPush } from "./lib/diagLog";
 import { frameBudgetForTarget } from "./lib/frameBudget";
+import { isComposingKeystroke } from "./lib/imeComposition";
 import { frameBudgetBaseForNetwork } from "./lib/isupport";
 import { createNetworkReconnect } from "./lib/networkReconnect";
 import { networkBySlug } from "./lib/networks";
@@ -619,6 +620,18 @@ const ComposeBox: Component<Props> = (props) => {
   };
 
   const onKeyDown = (e: KeyboardEvent) => {
+    // issue 2041 — an IME composition owns the keystroke, not us. The Enter
+    // that COMMITS a candidate arrives as a plain `key: "Enter"`, and the
+    // arrows walk the candidate list; acting on either sends a half-typed
+    // line and — via `preventDefault` below — eats the keystroke the IME was
+    // waiting for, so the word never finishes either.
+    //
+    // Placed above the whole chord table on purpose: every branch here is a
+    // verb that competes with the IME for the key, so one guard is the
+    // smaller diff AND the wider fix. Same predicate on TopicBar (the sibling
+    // commit surface) — see `lib/imeComposition` for why it is a module and
+    // what it deliberately does not consult.
+    if (isComposingKeystroke(e)) return;
     if (e.key === "Enter") {
       // #974 — EVERY Enter sends, modifier or not. vjt's ruling (2026-08-07)
       // reverses his 2026-08-06 one: a Shift+Enter that refuses also EATS the

@@ -590,6 +590,84 @@ describe("ComposeBox", () => {
     expect(compose.setDraft).not.toHaveBeenCalled();
   });
 
+  // issue 2041 — an IME (Japanese, Chinese, Korean, and every other
+  // compose-based input) delivers the Enter that COMMITS THE CANDIDATE to the
+  // page as an ordinary keydown with `key: "Enter"`. `isComposing` is the only
+  // thing separating it from a real send. Two things go wrong without the
+  // check, and the second is the worse one: the half-typed line is sent, AND
+  // `preventDefault` eats the keystroke the IME was waiting for, so the word
+  // is never finished either.
+  //
+  // The SAME guard sits on TopicBar, from the SAME predicate
+  // (`lib/imeComposition`) — the issue was filed on both surfaces at once so
+  // this chord could not grow a second semantics on the second one.
+  //
+  // The guard is at the TOP of the handler rather than inside the Enter
+  // branch, and the arrow case below is why: EVERY branch here is a verb that
+  // competes with the IME for the keystroke (Enter commits a candidate, the
+  // arrows walk the candidate list). One guard is both the smaller diff and
+  // the wider fix. Only the Enter half is what issue 2041 claims; the arrow
+  // half comes out of the placement and is asserted so it stays.
+  describe("issue 2041 — a keystroke inside an IME composition is not ours", () => {
+    it("the Enter that commits an IME candidate does NOT submit", async () => {
+      const compose = await import("../lib/compose");
+      vi.mocked(compose.submit).mockResolvedValue({ ok: true });
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i);
+      const ev = new KeyboardEvent("keydown", {
+        key: "Enter",
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      ta.dispatchEvent(ev);
+      expect(compose.submit).not.toHaveBeenCalled();
+      // NOT cancelled: eating the keystroke is the second half of the bug —
+      // the IME needs this Enter to commit the candidate.
+      expect(ev.defaultPrevented).toBe(false);
+    });
+
+    it("Shift+Enter inside a composition does not submit either", async () => {
+      // #974 made EVERY Enter a send key, modifier included — which is exactly
+      // why the IME guard has to sit above the chord, not inside one arm.
+      const compose = await import("../lib/compose");
+      vi.mocked(compose.submit).mockResolvedValue({ ok: true });
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i);
+      const ev = new KeyboardEvent("keydown", {
+        key: "Enter",
+        shiftKey: true,
+        isComposing: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      ta.dispatchEvent(ev);
+      expect(compose.submit).not.toHaveBeenCalled();
+      expect(ev.defaultPrevented).toBe(false);
+    });
+
+    it("the arrows walk the IME candidate list, not the send history", async () => {
+      const compose = await import("../lib/compose");
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i);
+      fireEvent.keyDown(ta, { key: "ArrowUp", isComposing: true });
+      fireEvent.keyDown(ta, { key: "ArrowDown", isComposing: true });
+      expect(compose.recallPrev).not.toHaveBeenCalled();
+      expect(compose.recallNext).not.toHaveBeenCalled();
+    });
+
+    it("a plain Enter with no composition still submits — the guard is not a mute", async () => {
+      // The negative control. A guard that refused everything would pass the
+      // three tests above and break the product.
+      const compose = await import("../lib/compose");
+      vi.mocked(compose.submit).mockResolvedValue({ ok: true });
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      const ta = screen.getByPlaceholderText(/message #a/i);
+      fireEvent.keyDown(ta, { key: "Enter", isComposing: false });
+      expect(compose.submit).toHaveBeenCalledWith(expect.anything(), "freenode", "#a");
+    });
+  });
+
   it("Up arrow on first-line cursor calls recallPrev", async () => {
     const compose = await import("../lib/compose");
     render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);

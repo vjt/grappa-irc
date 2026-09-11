@@ -19,6 +19,7 @@
 // closing an open drawer. One listener, ordered topmost-first — never a
 // second global keydown listener racing this one.
 
+import { isComposingKeystroke } from "./imeComposition";
 import { runTopmostOverlayEscape } from "./overlayScrollLock";
 
 export type KeybindingHandlers = {
@@ -128,7 +129,11 @@ function onKeydown(e: KeyboardEvent): void {
     !e.ctrlKey &&
     !e.metaKey &&
     !e.altKey &&
-    !e.isComposing &&
+    // issue 2041 — this check is the oldest of the three; it is routed
+    // through the shared predicate so the surface that had it cannot drift
+    // from the two that just got it (ComposeBox, TopicBar). Behaviour is
+    // unchanged: `isComposingKeystroke` is `e.isComposing`.
+    !isComposingKeystroke(e) &&
     e.key.length === 1 &&
     !isTypingTarget(e.target)
   ) {
