@@ -174,7 +174,18 @@ let _socket: Socket | null = null;
 // as an old bundle rejects `loading`. `MIN_SERVER_PROTOCOL_VERSION` still
 // stays at 9, deliberately: raising it would refuse the whole socket over one
 // broken pane, and the two ship together anyway.
-export const CLIENT_PROTOCOL_VERSION = 17;
+//
+// 18 (issue 1480) — `notification_prefs` grows `notification_sound`, the
+// in-app beep preset. Additive, and the FOURTH bump `wire_pin --check` cannot
+// see: this one rides `UserSettingsJSON`, whose spec names the prefs type
+// remotely, so growing the type moves no digest byte.
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9: this bundle falls back to `none`
+// when the server does not send the key, which is the pre-#1480 behaviour in
+// the pre-#1480 place — silence, since the default is silence — so it still
+// serves an older server. The direction that would hurt is the other one, and
+// the server closes it: it treats an ABSENT key on the PUT as unchanged, so an
+// old bundle saving any other pref cannot mute a subject who opted in.
+export const CLIENT_PROTOCOL_VERSION = 18;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

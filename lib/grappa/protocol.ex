@@ -397,7 +397,39 @@ defmodule Grappa.Protocol do
   # broken pane beats a refused socket. The bundle and the server ship
   # together on this deploy, so the window in which a v16 bundle meets a
   # v17 server is a cache miss away from closing.
-  @protocol_version 17
+  # v18 (issue 1480) — `notification_prefs` grows `notification_sound`, the
+  # name of the in-app beep preset. Purely additive, and additive still
+  # bumps (#1393d).
+  #
+  # 🔴 `mix grappa.wire_pin --check` is blind to it, for the FOURTH time and
+  # for the reason v15 generalised: the digest spans the codegen artefacts
+  # plus the `@spec`s the hand-written `GrappaWeb.*JSON` views export, and
+  # `UserSettingsJSON.notification_prefs/1`'s spec names the REMOTE type
+  # `UserSettings.notification_prefs()`, which is digested as the reference
+  # TEXT. Growing the type behind that name moves no byte the gate can see —
+  # measured before the bump, not assumed: `notification` appears 0 times in
+  # either generated artefact (positive control: `server_time`, 2 hits).
+  # Bumped by hand, and the gate will then read `:pin_stale` rather than the
+  # violation, so `--update` is the correct next step.
+  #
+  # This is the SECOND time `UserSettingsJSON` has been the silent carrier
+  # (v16's `show_event_badge` was the first), which is worth naming: a key
+  # added inside `notification_prefs()` or `display_prefs()` will ALWAYS be
+  # invisible here, because both are remote types behind a view spec.
+  #
+  # 🔴 The behaviour change rides ALONGSIDE the wire one and is not what the
+  # number describes: the default is `"none"`, i.e. SILENCE, for every
+  # existing subject (vjt's ruling — «suono deve essere opt-in»). No client
+  # can detect that from the version; it is a product change, and the entry
+  # in DESIGN_NOTES is where it lives.
+  #
+  # @min_protocol_version stays at 1. The field is additive and BOTH sides
+  # are absent-tolerant on purpose — cic falls back to `none` when the
+  # server does not send it, and the server treats an absent key on the PUT
+  # as UNCHANGED rather than as a reset — so a new bundle against an older
+  # server is silent instead of broken, and an old bundle cannot mute a
+  # subject who opted in.
+  @protocol_version 18
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -408,7 +440,7 @@ defmodule Grappa.Protocol do
   # alongside `@protocol_version`; the spec doubles as the bump tripwire,
   # and now that the bump is routine the tripwire is what keeps it from
   # being done half-way.
-  @spec version() :: 17
+  @spec version() :: 18
   def version, do: @protocol_version
 
   @doc """
