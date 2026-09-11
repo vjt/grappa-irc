@@ -53094,3 +53094,108 @@ spend Tab on candidate selection, and Escape cancels a composition — but it is
 a different surface with a different authority (#232 deleted every per-dialog
 Esc handler to get there, and gating the global one is not a line to slip into
 this slice). Unmeasured, named here so it is not rediscovered as new.
+<!-- entry #2045 -->
+
+---
+
+## 2026-09-11 — #2045: one definition of "unread", reached from four places
+
+`far.missed` — the number the far-behind bar renders and, since #2037 A, the
+number the sidebar's bold pill reads — had two producers that disagreed on one
+term. The server's `Scrollback.count_after_split/6` counts content kinds with
+own-authored EXCLUDED (`exclude_own_authored/3`); cic's far-behind maintenance
+counted them IN.
+
+The server's answer is the right one and it is not a #2037 preference: it is
+the definition the project already holds. A line the operator typed is read BY
+DEFINITION (#576 content), and a self-PART or a KICK they issued is an action
+they performed rather than something to catch up on (#532 A presence).
+
+**Why it surfaced now.** Before #2037 A the client path accumulated RAW row
+counts while the probe returned a split — two obviously different quantities,
+and whichever producer armed the window supplied the number. A narrowed the
+client to the content unit, so the two now agree on everything except this
+term. That is worse in one specific way, and it is the point of the issue:
+two numbers that differ by a lot are visibly two numbers, and two numbers that
+differ by three are indistinguishable from one number until somebody counts.
+
+### FOUR sites, where the issue named one
+
+The issue names `capScrollbackRing`'s `contentCount`. That line is the SEED —
+what opens the record when LOCAL EVICTION is the door into the far-behind
+state. But past the retention bound the record GROWS by what arrived, and
+`appendPageToScrollback`'s `arrivedContent` carried the same bare
+`isContentKind`. Both write `far.missed`.
+
+Fixing only the named line would have been worse than leaving it: the number
+would read correctly at arm-time and drift on the next own message —
+intermittent wrongness in place of consistent wrongness, and harder to
+diagnose. It is also the site the issue's own motivating case runs through.
+The multi-device scenario the issue calls out — lines sent from the phone
+sitting past the laptop's cursor — arrives on the laptop as a live WS append,
+which is the ACCUMULATE producer and not the seed.
+
+The remaining two sites are the events-bucket twins of the first two, and they
+are a deliberate widening past the issue's text, taken on a measurement rather
+than on symmetry: `exclude_own_authored/3` is applied to the query BEFORE the
+content/event `group_by`, so it narrows BOTH buckets. In a peer or channel
+window the server strips own content and own presence alike; in the self
+window (#396) own content survives and own PRESENCE is still stripped. So
+`far.events` had the identical divergence one line below. It also could not be
+left: with only the content half cured, `capScrollbackRing` would read
+`countsAsUnreadMessage(m, ctx)` on one line and a hand-rolled
+`!isContentKind(m.kind)` on the next, with the published sibling
+`countsAsUnreadEvent` unused beside it — a half-migration created by the fix
+rather than found by it. It is a SEPARATE commit so it can be dropped whole.
+
+### The context is shared, and that is the actual design decision
+
+The predicates were not new. `unreadCount.ts` (issue 2069) already publishes
+`countsAsUnreadMessage` / `countsAsUnreadEvent` and its moduledoc already says
+it mirrors `count_after_split/6`; the far-behind path was simply the one place
+that never asked. What is new is `lib/unreadRowContext.ts`.
+
+Those predicates take "who is the operator, in this window?" as a PARAMETER,
+so the module stays pure and reaches for no store. Until now exactly one
+caller built that parameter — `selection.ts`, inline, mid-loop. A second
+hand-built copy in `scrollback.ts` would have been this very defect one level
+down: two spellings of one identity feeding two counts that are supposed to be
+one number. So the builder was extracted first and `selection.ts` routed
+through it, and the second caller was added to the shared one. Each field is
+load-bearing: the nick is PER-NETWORK (`net.nick`, never the account name —
+see the `ownNickForNetwork` warning and the 2026-05-08 cic H3 DM-misrouting
+root cause), the casemapping is per-network (#537 axis 2), and `isSelfWindow`
+is the #396 carve-out.
+
+### The arming did not move
+
+What puts a window far behind is still "a row at/after the cursor left the
+store" (#2037 A), as true of a row the operator typed as of anyone else's.
+Only the DISPLAYED quantity narrows. Nothing in this change touches
+`unreadDropped`, `unreadHeld` or the bound they are compared against.
+
+### The import cycle was MEASURED, not read
+
+The issue reported `scrollback.ts → networks.ts` as cycle-free and said so
+honestly: "a static read of the imports, not a build". It was verified with a
+build before any of the cure was written — `tsc --noEmit && vite build` green
+with the edge present, `grep -ci circular` on the build log returning 0 against
+a positive control returning 1, and the eleven co-initialising suites (503
+tests) green with no TDZ `ReferenceError`. An ESM cycle bites at module-init
+and not at compile, so the runtime leg is the one that mattered.
+
+### What this does not claim
+
+- **No production measurement.** The size of the effect is bounded by the
+  operator's own content sitting past their own read cursor. Nobody has read
+  that off a real instance; "small in the common case, unbounded in principle"
+  is the issue's estimate and it stays an estimate.
+- **No e2e.** The evidence is unit-level, against a fake server whose
+  `countMessagesAfter` implements `exclude_own_authored/3` including the #396
+  carve-out — a model of the query, not the query.
+- **The fixture caught itself once, and that is worth recording.** A first
+  version chose arrival authorship by SKIPPING ids whose author did not match,
+  which left the fake server counting rows the client was never handed: the
+  client then read LOWER than the server, the opposite of the defect. The two
+  control arms are what surfaced it. Authorship now lives in one map read by
+  both sides, so the oracle cannot describe a log the client did not get.
