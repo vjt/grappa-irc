@@ -53978,6 +53978,15 @@ trusts instead of the code.
 
 ### Measured
 
+- **This slice adds no audio bytes.** The five mp3s landed on main on
+  2026-08-18 in `172df6037` ("assets(#1480): notification sound presets,
+  ahead of the code that reads them"), an ancestor of the base — measured,
+  because the briefing for this work carried the opposite constraint
+  ("synthesised only, nothing third-party in the repo until vjt rules") and
+  the ruling it was waiting for had already been given three and a half
+  weeks earlier. `origin/main..HEAD` contains 0 `.mp3` paths (positive
+  control: 5 exist on the base). What this slice adds is the code that reads
+  them.
 - Every mp3 was re-downloaded independently and is byte-identical to what
   `172df6037` committed (`cmp`, with a two-different-files negative control
   at rc=1). Sizes match the issue's manifest exactly: 12537 / 11969 / 5447.
