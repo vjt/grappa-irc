@@ -17,7 +17,7 @@ import { membersByChannel } from "./members";
 import { presenceRowVisible } from "./presenceFilter";
 import { getReadCursor, setReadCursor } from "./readCursor";
 import { getResumeCursor, recordSeen } from "./reconnectBackfill";
-import { countsAsUnreadMessage, type UnreadMeasurement } from "./unreadCount";
+import { countsAsUnreadEvent, countsAsUnreadMessage, type UnreadMeasurement } from "./unreadCount";
 import { unreadRowContextFor } from "./unreadRowContext";
 
 // Per-channel scrollback store: the source of truth for messages
@@ -294,8 +294,15 @@ export const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): C
   // issue 2071 — the EVENTS bucket, and it is NOT `unreadCount - contentCount`.
   // That subtraction is the raw remainder, and on a denoised window the raw
   // remainder is mostly rows the pane never renders. See `eventHeld`.
+  // issue 2045 — and the EVENTS bucket carries the same own-authored term as
+  // the content one above. `exclude_own_authored/3` is applied BEFORE the
+  // content/event grouping in `count_after_split/6`, so the server's `events`
+  // has never counted a JOIN or PART the operator caused. The two predicates
+  // compose: `countsAsUnreadEvent` is the population, `presenceRowVisible` is
+  // the per-channel UI filter (issue 2071) that the shared module must not
+  // reach for itself.
   const eventCount = unreadRows.filter(
-    (m) => !isContentKind(m.kind) && presenceRowVisible(key, memberCountFor(key), m.kind),
+    (m) => countsAsUnreadEvent(m, ctx) && presenceRowVisible(key, memberCountFor(key), m.kind),
   ).length;
 
   // #1229 — the protected region has a ceiling of its own, applied BEFORE the
@@ -773,7 +780,12 @@ const exports = identityScopedStore((onIdentityChange) => {
           if (m.id <= previousNewest) continue;
           if (isContentKind(m.kind)) {
             if (countsAsUnreadMessage(m, arrivalCtx)) arrivedContent++;
-          } else if (presenceRowVisible(key, memberCount, m.kind)) arrivedEvents++;
+          } else if (
+            countsAsUnreadEvent(m, arrivalCtx) &&
+            presenceRowVisible(key, memberCount, m.kind)
+          ) {
+            arrivedEvents++;
+          }
         }
         const capped = capScrollbackRing(key, next);
         evicted = capped.rows.length < next.length;

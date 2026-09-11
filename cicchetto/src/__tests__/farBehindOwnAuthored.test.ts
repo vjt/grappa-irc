@@ -106,19 +106,24 @@ const senderOf = (id: number): string => senders.get(id) ?? PEER_NICK;
 /** Seed the backlog: one row in three is the operator's own. */
 const seedBacklog = (tip: number): void => {
   senders.clear();
+  kinds.clear();
   for (let i = 1; i <= tip; i++) senders.set(i, i % 3 === 0 ? OWN_NICK : PEER_NICK);
 };
 
-// All CONTENT: presence is shown in every arm, so the events axis is collapsed
-// and this fixture measures the own-authored term alone.
-const KIND: MessageKind = "privmsg";
+// The kinds law, same shape and same discipline as the senders one: written
+// once, read by the fake server AND by the rows it hands the client. Content
+// unless an arm says otherwise — presence is SHOWN throughout, so a `join` here
+// is a visible event row and not a filtered one.
+const kinds = new Map<number, MessageKind>();
+const kindOf = (id: number): MessageKind => kinds.get(id) ?? "privmsg";
+const isContent = (id: number): boolean => kindOf(id) === "privmsg";
 
 const row = (id: number, channel: string): ScrollbackMessage => ({
   id,
   network: SLUG,
   channel,
   server_time: id,
-  kind: KIND,
+  kind: kindOf(id),
   sender: senderOf(id),
   body: `m${id}`,
   meta: {},
@@ -141,9 +146,19 @@ class FakeServer {
     return this.channel === OWN_NICK;
   }
 
-  private counts(id: number): boolean {
-    if (this.selfWindow) return true; // #396 — own content is payload here
-    return senderOf(id) !== OWN_NICK; // #576 — own content read by definition
+  /**
+   * `exclude_own_authored/3`, in the order the real query applies it: the row
+   * is dropped from the result set BEFORE the content/event grouping, so the
+   * exclusion narrows BOTH buckets rather than just the content one.
+   *
+   *   * peer / channel window — own CONTENT (#576) and own PRESENCE (#532 A)
+   *     are both excluded.
+   *   * self window (#396) — own content is a legitimate note-to-self and
+   *     survives; own PRESENCE is still stripped.
+   */
+  private excluded(id: number): boolean {
+    if (senderOf(id) !== OWN_NICK) return false;
+    return this.selfWindow ? !isContent(id) : true;
   }
 
   listMessages(before?: number): ScrollbackMessage[] {
@@ -164,11 +179,14 @@ class FakeServer {
   countMessagesAfter(after: number): GapProbe {
     let gap = 0;
     let messages = 0;
+    let events = 0;
     for (let i = after + 1; i <= this.tip; i++) {
+      if (this.excluded(i)) continue;
       gap++;
-      if (this.counts(i)) messages++;
+      if (isContent(i)) messages++;
+      else events++;
     }
-    return { gap, messages, events: gap - messages };
+    return { gap, messages, events };
   }
 }
 
@@ -263,8 +281,36 @@ const messagesPill = async (): Promise<number> => {
   return selection.messagesUnread()[keyFor()] ?? 0;
 };
 
+/** Its faint sibling — the EVENTS pill for the same window. */
+const eventsPill = async (): Promise<number> => {
+  const selection = await import("../lib/selection");
+  return selection.eventsUnread()[keyFor()] ?? 0;
+};
+
 /** What the server would answer for the cursor the store currently holds. */
 const truth = async (): Promise<number> => server.countMessagesAfter(await cursorNow()).messages;
+
+/** The same, for the events bucket. */
+const eventsTruth = async (): Promise<number> =>
+  server.countMessagesAfter(await cursorNow()).events;
+
+/**
+ * Presence rows landing live, authored by the operator or by a peer. A `part`
+ * the operator issued from another client is the events-bucket twin of the
+ * multi-device message case: an action they performed, echoed here.
+ */
+const presenceTraffic = async (n: number, who: "own" | "peer"): Promise<void> => {
+  const { appendToScrollback } = await import("../lib/scrollback");
+  const { recordSeen } = await import("../lib/reconnectBackfill");
+  for (let i = 0; i < n; i++) {
+    server.tip += 1;
+    senders.set(server.tip, who === "own" ? OWN_NICK : PEER_NICK);
+    kinds.set(server.tip, "join");
+    const m = row(server.tip, server.channel);
+    appendToScrollback(keyFor(), m);
+    recordSeen(keyFor(), m);
+  }
+};
 
 /** Proof the window really is in the far-behind state these arms are about. */
 const isFarBehind = async (): Promise<boolean> => {
@@ -406,6 +452,77 @@ describe("issue 2045 — far.missed counts own-authored content the server exclu
     expect(settled).toBe(await truth());
     await reSelect();
     expect(await messagesPill()).toBe(settled);
+    expect(await cursorNow()).toBe(pinned);
+  });
+});
+
+// issue 2045, the sibling bucket. NOT named by the issue, which scopes itself
+// to `far.missed` — recorded here and in DESIGN_NOTES as a deliberate widening,
+// on one measurement: the server applies `exclude_own_authored/3` BEFORE the
+// content/event grouping in `count_after_split/6`, so the exclusion narrows
+// BOTH buckets. `far.events` therefore had the identical divergence, one line
+// below the one the issue names and from the same term.
+//
+// Fixing only the content half would have left `countsAsUnreadMessage(...)` on
+// one line and a hand-rolled `!isContentKind(...)` on the next — the module's
+// own published sibling ignored right beside it, which is the half-migration
+// CLAUDE.md warns propagates.
+describe("issue 2045 — the EVENTS bucket carries the same term", () => {
+  const openFarBehindByProbe = async (): Promise<void> => {
+    seedBacklog(1800);
+    server = new FakeServer(1800, 1000, CHANNEL);
+    await wireServer();
+    await joinChannelTopic();
+    await firstSelect();
+    await traffic(30, "peer");
+    expect(await isFarBehind()).toBe(true);
+  };
+
+  it("does not grow by presence the operator caused from another device", async () => {
+    // A JOIN or PART the operator issued elsewhere is an action they performed
+    // (#532 A), not something to catch up on — and the server has never
+    // counted it.
+    await openFarBehindByProbe();
+    const pinned = await cursorNow();
+    for (let batch = 0; batch < 3; batch++) {
+      await presenceTraffic(10, "own");
+      expect(await eventsPill()).toBe(await eventsTruth());
+      expect(await cursorNow()).toBe(pinned);
+    }
+  });
+
+  it("still counts a PEER's presence — the exclusion is not a mute here either", async () => {
+    // The negative control for this bucket. Passes on both sides of the fix.
+    await openFarBehindByProbe();
+    const before = await eventsPill();
+    await presenceTraffic(12, "peer");
+    const after = await eventsPill();
+    expect(after).toBe(await eventsTruth());
+    expect(after).toBeGreaterThan(before);
+  });
+
+  it("strips own presence even in the SELF window, where own CONTENT counts", async () => {
+    // The asymmetry the #396 carve-out actually draws, and the sharpest test of
+    // whether the real predicate is being used: in the self window own content
+    // is payload and own PRESENCE is still stripped. A cure that passed
+    // `isSelfWindow` through to both buckets uniformly fails here.
+    seedBacklog(1800);
+    server = new FakeServer(1800, 1000, OWN_NICK);
+    await wireServer();
+    await joinChannelTopic();
+    await firstSelect();
+    await traffic(30, "peer");
+    expect(await isFarBehind()).toBe(true);
+
+    const pinned = await cursorNow();
+    const messagesBefore = await messagesPill();
+    await traffic(10, "own");
+    await presenceTraffic(10, "own");
+    // Own content STILL counts here…
+    expect(await messagesPill()).toBe(await truth());
+    expect(await messagesPill()).toBeGreaterThan(messagesBefore);
+    // …and own presence still does not.
+    expect(await eventsPill()).toBe(await eventsTruth());
     expect(await cursorNow()).toBe(pinned);
   });
 });
