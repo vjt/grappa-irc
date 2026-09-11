@@ -13,6 +13,8 @@ import { token } from "./auth";
 import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
 import { identityMoved } from "./identityMoved";
 import { identityScopedStore } from "./identityScopedStore";
+import { membersByChannel } from "./members";
+import { presenceRowVisible } from "./presenceFilter";
 import { getReadCursor, setReadCursor } from "./readCursor";
 import { getResumeCursor, recordSeen } from "./reconnectBackfill";
 import type { UnreadMeasurement } from "./unreadCount";
@@ -212,8 +214,13 @@ const isCanonicallyOrdered = (rows: ScrollbackMessage[]): boolean => {
 type CappedRing = {
   rows: ScrollbackMessage[];
   unreadDropped: number;
-  // Unread rows (id > cursor) held BEFORE the drop — the banner's count the
-  // first time the bound bites. Afterwards the caller accumulates.
+  // Unread rows (id > cursor) held BEFORE the drop — the RAW region size the
+  // ceiling above was measured against. issue 2071 took its last production
+  // consumer away (the events bucket used to be `unreadHeld - contentHeld`);
+  // it stays because it is what the cap OBSERVED, which is the thing
+  // `scrollback.test.ts`'s contiguity invariant has to be able to address, and
+  // it is the one number here that must NOT be filtered — the cap is about
+  // store size, not about what the operator can see.
   unreadHeld: number;
   // #2037 — the same figure restricted to `@content_kinds`. The banner's
   // number is the MESSAGES bucket, so accounting in raw row counts would mix
@@ -230,8 +237,24 @@ type CappedRing = {
   // see `appendPageToScrollback`. These two are still what ARMS the state and
   // what it opens at.
   contentHeld: number;
+  // issue 2071 — the EVENTS bucket, the sibling of `contentHeld` and the
+  // second half of the pair `count_after_split/6` returns. It is a COUNT of
+  // its own and not `unreadHeld - contentHeld`, because that subtraction
+  // answers in the RAW population while the seed it opens beside was taken
+  // behind `Grappa.PresenceFilter.Resolver`. On a denoised window the two
+  // differ by every join/part/quit/nick_change/mode in the region — rows the
+  // pane does not render, so the operator cannot read the difference away.
+  eventHeld: number;
   cursor: number | null;
 };
+
+// issue 2071 — the live member count for a channel, the second input the
+// presence tri-state needs (`resolvePresenceVisible`: an explicit pin wins,
+// unset follows the count against `LARGE_CHANNEL_THRESHOLD`). Read here rather
+// than threaded through `capScrollbackRing`'s signature so the two far-behind
+// maintenance sites below cannot be given different answers — the divergence
+// that IS this issue.
+const memberCountFor = (key: ChannelKey): number => (membersByChannel()[key] ?? []).length;
 
 // #1538 — exported for its structural contiguity test, and for nothing else:
 // no production caller outside this module. Same reason
@@ -257,6 +280,12 @@ export const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): C
   // the two can never describe different regions.
   const unreadRows = firstUnread === -1 ? [] : rows.slice(firstUnread);
   const contentCount = unreadRows.filter((m) => isContentKind(m.kind)).length;
+  // issue 2071 — the EVENTS bucket, and it is NOT `unreadCount - contentCount`.
+  // That subtraction is the raw remainder, and on a denoised window the raw
+  // remainder is mostly rows the pane never renders. See `eventHeld`.
+  const eventCount = unreadRows.filter(
+    (m) => !isContentKind(m.kind) && presenceRowVisible(key, memberCountFor(key), m.kind),
+  ).length;
 
   // #1229 — the protected region has a ceiling of its own, applied BEFORE the
   // ring cap because it can bite while the total is still under it (900 unread
@@ -314,6 +343,7 @@ export const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): C
       unreadDropped: overflowUnread,
       unreadHeld: unreadCount,
       contentHeld: contentCount,
+      eventHeld: eventCount,
       cursor,
     };
   }
@@ -330,6 +360,7 @@ export const capScrollbackRing = (key: ChannelKey, rows: ScrollbackMessage[]): C
     unreadDropped: 0,
     unreadHeld: unreadCount,
     contentHeld: contentCount,
+    eventHeld: eventCount,
     cursor,
   };
 };
@@ -662,8 +693,8 @@ const exports = identityScopedStore((onIdentityChange) => {
     // far behind and the pane must say so instead of drawing a divider it can
     // no longer place.
     let unreadDropped = 0;
-    let unreadHeld = 0;
     let contentHeld = 0;
+    let eventHeld = 0;
     let prunedCursor = 0;
     // issue 2069 — what ARRIVED: fresh rows newer than everything the pane
     // already held. This is the quantity a far-behind window's count grows by,
@@ -706,16 +737,24 @@ const exports = identityScopedStore((onIdentityChange) => {
         // measurement the far-behind record carries, so counting them would
         // report the same message twice.
         const previousNewest = tail?.id ?? 0;
+        // issue 2071 — the EVENTS half asks the presence filter; the CONTENT
+        // half does not have to, because no content kind is in
+        // `SUPPRESSED_PRESENCE_KINDS` and the filter can never take one away.
+        // The asymmetry is real, not an oversight: these two buckets accumulate
+        // a record SEEDED by `count_after_split/6` behind
+        // `Grappa.PresenceFilter.Resolver`, so the population has to match on
+        // both halves, and only one half can diverge.
+        const memberCount = memberCountFor(key);
         for (const m of fresh) {
           if (m.id <= previousNewest) continue;
           if (isContentKind(m.kind)) arrivedContent++;
-          else arrivedEvents++;
+          else if (presenceRowVisible(key, memberCount, m.kind)) arrivedEvents++;
         }
         const capped = capScrollbackRing(key, next);
         evicted = capped.rows.length < next.length;
         unreadDropped = capped.unreadDropped;
-        unreadHeld = capped.unreadHeld;
         contentHeld = capped.contentHeld;
+        eventHeld = capped.eventHeld;
         prunedCursor = capped.cursor ?? 0;
         return { ...prev, [key]: capped.rows };
       });
@@ -759,8 +798,15 @@ const exports = identityScopedStore((onIdentityChange) => {
                 // writes and the pill reads. The rows that arrived in THIS
                 // batch are already inside `contentHeld`, so they are not
                 // added again.
+                //
+                // issue 2071 — and the EVENTS bucket opens in the VISIBLE unit
+                // for the same reason, which is why this is `eventHeld` and no
+                // longer `unreadHeld - contentHeld`. That subtraction opened
+                // the record in the raw population, so a denoised window armed
+                // holding every hidden join/part in the region — a faint pill
+                // the pane cannot render and the operator cannot clear.
                 missed: contentHeld,
-                events: unreadHeld - contentHeld,
+                events: eventHeld,
                 resumeFrom: prunedCursor,
               },
             };

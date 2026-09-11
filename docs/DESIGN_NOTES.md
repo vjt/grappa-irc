@@ -52907,3 +52907,106 @@ commands where this one fired five. They are not touched here — none has been
 seen red, and widening a cure past its measurement is how a fixture acquires
 ballast nobody can later justify. The mechanism is written down so the next
 sighting is diagnosed in one reading instead of re-derived.
+<!-- entry #2071 -->
+
+---
+
+## 2026-09-11 — #2071: the far-behind record's events bucket, counted in a population the pane does not share
+
+vjt on staging (`1.5.5-4a33c6747`): an unread counter that keeps climbing on a
+window already looked at, cursor standing still, **only on a DENOISED channel**.
+The issue filed three candidates and said so — *"a candidate list, not a
+diagnosis"*. It is none of the three. All three are killed below with numbers,
+because reading a mechanism tells you a path EXISTS and never that it is the
+one that fired.
+
+### What actually moves
+
+The far-behind record (#693) carries the pair `count_after_split/6` returns — a
+MESSAGES bucket and an EVENTS bucket — and it is SEEDED from exactly that call,
+taken behind `Grappa.PresenceFilter.Resolver`. It is then MAINTAINED
+client-side, and both maintenance sites counted RAW kinds:
+
+* `capScrollbackRing` opened it at `events: unreadHeld - contentHeld` — the raw
+  remainder of the unread region;
+* `appendPageToScrollback` accumulated arrivals at `else arrivedEvents++`.
+
+Neither asked `presenceRowVisible`. So the record is seeded in the FILTERED
+population and grown in the RAW one. On a channel showing presence those
+coincide and nothing is visible; on a denoised one they differ by the channel's
+whole presence volume, and the difference is rows the pane never renders — so
+the operator cannot read it away, and it only ever goes up.
+
+Measured on `4a33c6747`, 3:1 join:message log, 30 arrivals per batch, cursor
+pinned throughout, oracle = the server's own answer for that cursor:
+
+```
+denoised   pill 0 -> 22 -> 45 -> 67 -> 90     server answer 0 at every step
+shown      pill 600 -> 622 -> 645 -> 667 -> 690   == server answer, exactly
+```
+
+One bit of fixture differs between those two lines. The cure is therefore the
+FILTER and not the bucket: `eventHeld` is a count of its own (visible,
+non-content, unread) rather than a subtraction, and the arrivals loop gates its
+events half on `presenceRowVisible`. Its content half does NOT, and that
+asymmetry is deliberate — no content kind is in `SUPPRESSED_PRESENCE_KINDS`, so
+the filter cannot take one away. The presence-SHOWN arm of
+`unreadDenoisedFarBehind.test.ts` passes on BOTH sides of the change, which is
+what makes it evidence rather than decoration.
+
+### The three candidates, each killed by a number
+
+1. **The measurement floor vs. the client-only filter.** It cannot reach the
+   MESSAGES bucket at all: `countsAsUnreadMessage` requires `isContentKind`,
+   and no content kind is presence-suppressed, so the client filter can never
+   remove a row the server's measurement counted. Measured: `msgs` tracks the
+   server answer exactly (200/208/215/223/230) on BOTH postures. The floor has
+   exactly one discontinuity and it is elsewhere — see the hazard below.
+2. **#2043, the two resolver doors.** Flip the server's presence posture
+   mid-session and re-seed the window: the pills move by **0** (msgs 40→40→40,
+   evts 0→0→0) while the server's own event answer goes 0 → 120. The
+   resolver's answer reaches the badge only through the SEED, and the seed
+   loses to local truth on any window the operator has opened. #2043 is real
+   and stays open on its own merits; it is **not** this issue's face, and this
+   issue should not be closed into it.
+3. **`trailingHiddenAdvanceTarget`.** Built a window where the advance really
+   fires: the cursor moves 10 → 14 across the hidden run, and both buckets are
+   unchanged (msgs 4→4, evts 0→0). Moving the cursor over rows nobody counts
+   changes nothing anybody counts.
+
+### A hazard found while killing candidate 1, NOT fixed here
+
+`unreadMessagesAfter`'s `spendable` gate is a step function at `measured.at`:
+with a record `{at: 100, count: 3600}` over a pane holding 200 content rows, a
+cursor at **99 answers 200** and a cursor at **100 answers 3600**. One id of
+forward movement, a 3400 jump. It is unreachable through
+`setCursorIfAdvances` (forward-only, and the record is written with
+`at === cursor`), but `applyReadCursorSet` — the cross-device echo — is
+unconditional and admits backward moves, so a peer device reading backwards
+below `at` and this one moving forward again would step through it. Named
+rather than cured: nothing measured says it fires, and a cure for a step
+nobody has stood on is a cure with no oracle.
+
+### What is NOT established
+
+**The reproduction's UI state is not the report's.** Every arm in which the
+counter grows has the far-behind record ARMED, and `injectMarker` suppresses
+the in-pane divider whenever it is — so the pane shows the "N unread — jump
+back" bar, while the report says the marker was up and moving. Two readings
+survive and the measurement does not separate them: either the reporter's
+window was in the far-behind state and "marker" names the bar, or there is a
+second, marker-preserving path to a growing count that this fixture does not
+build. The literal gesture the issue asks for — select → leave → re-select, a
+denoised window with a LIVE marker, cursor pinned — **passes on
+`4a33c6747`** (48 → 48 → 48). It is kept as the first arm of the new suite
+anyway: it is the property the issue names, and nothing here may break it.
+
+Also unestablished, and adjacent: the far-behind MESSAGES bucket counts the
+operator's OWN content (`isContentKind` alone) where the server's split
+excludes it via `own_nick`. Same class as the defect cured here — a bucket
+maintained in a different population from the one it was seeded in — but a
+different term, not denoise-specific, and not measured. Reaching
+`countsAsUnreadEvent`/`isOperatorOwnedRow` from `scrollback.ts` needs the
+per-network own nick, which is `networks.ts`, which is the documented circular
+import pair with `selection.ts` — so it is a slice of its own, not a line to
+slip in here.
