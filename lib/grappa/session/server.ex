@@ -593,8 +593,15 @@ defmodule Grappa.Session.Server do
           auto_away_debounce_ms: non_neg_integer() | :disabled,
           # S4.2: IRCv3 caps confirmed active by upstream CAP ACK. Keys are
           # lowercase cap names (e.g. "labeled-response"). Empty until the
-          # upstream ACKs at least one cap. Caps added on ACK; never removed
-          # (a registered-phase CAP DEL is not handled — out of S4 scope).
+          # upstream ACKs at least one cap. Added on ACK and retired on a
+          # registered-phase CAP DEL (2097): until then this set only ever
+          # grew, so an upstream that withdrew a capability mid-session left
+          # us acting on a bit that had stopped being true. Every reader
+          # derives from the set at call time (the `labeled-response` gate in
+          # `prepare_label/2`, `IdentityState`'s account axis), so retiring
+          # the name IS the teardown for both. A CAP NEW does NOT add: it
+          # advertises that a cap became AVAILABLE, and enabling one still
+          # takes a CAP REQ and its ACK.
           caps_active: MapSet.t(String.t()),
           # S4.2: in-flight label → origin_window correlations for the
           # `labeled-response` cap. Entries are removed on the labeled numeric
@@ -717,6 +724,20 @@ defmodule Grappa.Session.Server do
           # ever connected, process uptime when we died pre-connect.
           started_at: DateTime.t(),
           connected_at: DateTime.t() | nil,
+          # issue 2097 — stamped on 001 RPL_WELCOME, nil until then. NOT a
+          # third liveness axis: the ONLY reader is the CAP NEW re-REQ, which
+          # must never fire while `AuthFSM` still has a CAP REQ outstanding.
+          # An ACK we elicit during negotiation is indistinguishable, to the
+          # FSM, from the ACK of ITS request: `auth_fsm.ex` matches ACK in the
+          # three `:awaiting_cap_ack*` phases, finds no "sasl" in our blob and
+          # calls `cap_unavailable/1` — which CRASHES the session on
+          # `auth_method: :sasl` and silently drops SASL on `:auto`. The FSM
+          # phase lives in the Client process, so this stamp is the cheapest
+          # thing Session.Server can read to know that window has closed.
+          # Read with `Map.get` (never `state.registered_at`): a hot-reloaded
+          # pre-2097 process has no such key, and nil degrades to "skip the
+          # re-REQ", which is the safe direction.
+          registered_at: DateTime.t() | nil,
           # #1088 — EVERY accumulator below that is primed by a `:send_*`
           # request also carries a `:reply_to` key: the `socket_ref` of the
           # WebSocket that asked, or `nil`. It is routing metadata, not
@@ -1285,6 +1306,8 @@ defmodule Grappa.Session.Server do
       # #215 — spawn stamp; `connected_at` fills on `:irc_connected`.
       started_at: DateTime.utc_now(),
       connected_at: nil,
+      # issue 2097 — fills on 001; gates the CAP NEW re-REQ. See the typedoc.
+      registered_at: nil,
       # #543 INC-6 — the derived `::cb` alias this session manages (nil for a
       # non-derived source). Acquired in `do_start_client`, released in
       # `terminate/2`. Pre-resolved by the plan (`Vhosts.derived_source?/2`).
@@ -3370,7 +3393,13 @@ defmodule Grappa.Session.Server do
     # nick we actually registered as (may differ from the configured one).
     SessionLog.emit(:registered, %{state | nick: welcomed_nick}, [])
 
-    delegate(msg, %{state | connection_stable_timer: stable_timer})
+    # issue 2097 — stamp "the CAP negotiation window is closed" for the CAP
+    # NEW re-REQ gate. `Map.put`, never `%{state | registered_at: ...}`: a
+    # live pre-2097 process hot-reloaded mid-session has no such key and the
+    # map-update form would KeyError on its next 001 (the #216 contract).
+    next_state = %{state | connection_stable_timer: stable_timer}
+
+    delegate(msg, Map.put(next_state, :registered_at, DateTime.utc_now()))
   end
 
   # #100 — the connection survived `connection_stable_ms` past 001 without
@@ -3660,13 +3689,111 @@ defmodule Grappa.Session.Server do
       when is_binary(caps_blob) do
     caps_active =
       caps_blob
-      |> String.split(" ", trim: true)
-      |> Enum.map(&String.trim/1)
+      |> AuthFSM.parse_cap_list()
       |> MapSet.new()
       |> MapSet.intersection(@tracked_caps)
       |> MapSet.union(state.caps_active)
 
     {:noreply, %{state | caps_active: caps_active}}
+  end
+
+  # 2097 — CAP DEL: the upstream retiring a capability mid-session. Seen in
+  # the field on Solanum/Libera, an oper module being reloaded:
+  #
+  #   :osmium.libera.chat CAP * DEL ?oper_realhost solanum.chat/realhost
+  #
+  # Note the target: `*`, not our nick. Like the ACK clause above this one
+  # matches the target as `_`, so BOTH advertised forms are claimed by
+  # construction rather than by a second handler — a clause keyed on the
+  # session nick would have missed the very line that filed this.
+  #
+  # `MapSet.difference` needs no intersection with `@tracked_caps`: removing
+  # a name we never tracked is already a no-op, and a cap we never negotiated
+  # being DELed must change nothing AND say nothing.
+  #
+  # Retiring the name IS the whole teardown, for both tracked caps, because
+  # both readers derive at call time:
+  #   * `labeled-response` — `prepare_label/2` stops minting labels the ircd
+  #     no longer honours. `labels_pending` is deliberately NOT cleared: the
+  #     commands already on the wire were labelled while the cap was live and
+  #     the ircd still answers THOSE labelled, so dropping the map would
+  #     misroute precisely the replies we can still correlate. It cannot grow
+  #     after this point (its only writer is gated on the cap), so the
+  #     residue is bounded by what was in flight — at the cost, stated
+  #     plainly, that the S10 lazy TTL sweep only runs on the next prime,
+  #     which never comes once the cap is gone.
+  #   * `account-notify` — `IdentityState.account_identified?/1` counts an
+  #     account only "where the ircd promised to retract it", and this line
+  #     IS that promise being withdrawn, so the identity verdict falls back
+  #     to the umode axis on the very next read. `state.account` stays: it is
+  #     an observed fact, not a claim of identity.
+  #
+  # Claiming the line also stops it reaching the persisting catch-all in
+  # `EventRouter` via `delegate/2`, which is how it was rendering verbatim in
+  # the cic status window. Malformed shape note: like the ACK clause, this
+  # one requires the cap list; a `CAP * DEL` naming nothing is not a thing an
+  # ircd sends and is left to the same fate as a malformed ACK.
+  def handle_info(
+        {:irc, %Message{command: :cap, params: [_, "DEL", caps_blob | _]}},
+        state
+      )
+      when is_binary(caps_blob) do
+    retired = MapSet.new(AuthFSM.parse_cap_list(caps_blob))
+
+    {:noreply, %{state | caps_active: MapSet.difference(state.caps_active, retired)}}
+  end
+
+  # 2097 — CAP NEW: the other half of the cycle observed in the field (the
+  # same cap came back ten minutes after the DEL).
+  #
+  # It adds NOTHING to `caps_active`, and that is the correct handling rather
+  # than an omission: per IRCv3 cap-notify, NEW advertises that a capability
+  # has become AVAILABLE — enabling it still takes a `CAP REQ` and its ACK.
+  # Unioning the NEW blob into the set "for symmetry" would declare active a
+  # cap the server never granted us, which is this issue's bug wearing the
+  # other face. The cap re-enters the set only through the ACK clause above.
+  #
+  # What we DO is ask again (vjt's ruling, issue 2097): without a re-REQ a
+  # cycled cap stays retired for the rest of the session, so the DEL/NEW
+  # round trip would land honest-but-degraded instead of whole.
+  #
+  # The request is intersected with `@tracked_caps` and NOT with AuthFSM's
+  # `@opportunistic_caps`, which today holds the same two names. That is the
+  # semantically load-bearing choice: `@tracked_caps` is exactly "caps whose
+  # ACK this process records", so the intersection makes it impossible to
+  # request something whose grant we would then drop on the floor. Caps
+  # already active are subtracted — a re-advertisement of something we hold
+  # is not news.
+  #
+  # 🔴 GATED ON `registered_at`, and the gate is load-bearing, not hygiene.
+  # `AuthFSM` matches a CAP ACK in all three `:awaiting_cap_ack*` phases and
+  # reads it as the answer to ITS request: an ACK elicited by us mid-
+  # negotiation carries no "sasl", so the FSM would call `cap_unavailable/1`
+  # — which CRASHES the session on `auth_method: :sasl` and silently loses
+  # SASL on `:auto`. A server that sends CAP NEW during negotiation is
+  # unusual and entirely permitted, so the unguarded version trades a rare
+  # upstream behaviour for a failed login. Before 001 we consume the line and
+  # ask nothing.
+  def handle_info(
+        {:irc, %Message{command: :cap, params: [_, "NEW", caps_blob | _]}},
+        state
+      )
+      when is_binary(caps_blob) do
+    wanted =
+      caps_blob
+      |> AuthFSM.parse_cap_list()
+      |> MapSet.new()
+      |> MapSet.intersection(@tracked_caps)
+      |> MapSet.difference(state.caps_active)
+
+    maybe_re_req_caps(state, Map.get(state, :registered_at), Enum.sort(wanted))
+
+    {:noreply, state}
+  end
+
+  # A NEW naming no caps advertises nothing; claim the line and stop.
+  def handle_info({:irc, %Message{command: :cap, params: [_, "NEW" | _]}}, state) do
+    {:noreply, state}
   end
 
   # S5.1 / #216 — 005 RPL_ISUPPORT: fold the advertised tokens into the
@@ -5060,6 +5187,27 @@ defmodule Grappa.Session.Server do
   # sufficient uniqueness for in-flight correlation (bounded, short-lived map).
   @spec generate_label() :: String.t()
   defp generate_label, do: Ecto.UUID.generate()
+
+  # issue 2097 — the CAP NEW re-REQ, lifted out of the clause so each refusal
+  # reads at a clause head instead of inside a nested condition.
+  #
+  # Returns `:ok` and never a state: asking does not make a cap active. The
+  # cap re-enters `caps_active` only when the upstream ACKs, through the same
+  # seam that granted it the first time — so a NAK, a silent drop or a
+  # hostile reply all leave us exactly where the DEL left us.
+  #
+  # First clause is the phase gate (nil `registered_at` = CAP negotiation may
+  # still be open; see the CAP NEW handler for why asking there can kill the
+  # session). Second is the empty ask — a NEW that re-advertises only caps we
+  # do not track, or already hold, sends nothing at all rather than an empty
+  # `CAP REQ :`.
+  @spec maybe_re_req_caps(t(), DateTime.t() | nil, [String.t()]) :: :ok
+  defp maybe_re_req_caps(_, nil, _), do: :ok
+  defp maybe_re_req_caps(_, _, []), do: :ok
+
+  defp maybe_re_req_caps(state, _, caps) do
+    maybe_log_send_failure("cap_re_req", Client.send_line(state.client, AuthFSM.cap_req(caps)))
+  end
 
   # ---------------------------------------------------------------------------
   # S10 — pending-accumulator lazy TTL sweep

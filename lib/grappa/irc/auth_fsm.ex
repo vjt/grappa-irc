@@ -826,8 +826,16 @@ defmodule Grappa.IRC.AuthFSM do
     end
   end
 
+  @doc """
+  Builds a `CAP REQ` line (CRLF included) asking for `caps`.
+
+  Public for the same reason as `parse_cap_list/1` (issue 2097): the CAP
+  NEW seam in `Grappa.Session.Server` re-requests an opportunistic cap the
+  upstream re-advertises, and the shape of a CAP line belongs to the module
+  that speaks CAP — not re-spelled at the second call site.
+  """
   @spec cap_req([String.t()]) :: String.t()
-  defp cap_req(caps), do: "CAP REQ :#{Enum.join(caps, " ")}\r\n"
+  def cap_req(caps) when is_list(caps), do: "CAP REQ :#{Enum.join(caps, " ")}\r\n"
 
   # SASL not on offer (or NAK'd). Mandatory SASL (`:sasl`) crashes;
   # `:auto` falls back to the PASS-handoff path (PASS already sent at
@@ -952,10 +960,21 @@ defmodule Grappa.IRC.AuthFSM do
     %{state | sasl_fields: fields}
   end
 
-  # Parse a CAP LS / CAP ACK cap-list blob: space-separated cap tokens,
-  # each optionally suffixed with `=<value>` (we drop the value, keeping
-  # only the cap name) — IRCv3.2 cap negotiation only inspects names.
-  #
+  @doc """
+  Parses a CAP cap-list blob into bare capability names.
+
+  The blob is the space-separated token list carried by every cap-bearing
+  subcommand — `CAP LS`, `CAP ACK`, `CAP NEW`, `CAP DEL` — where IRCv3.2
+  allows each token an optional `=<value>` suffix (`sasl=PLAIN,EXTERNAL`).
+  Negotiation only ever inspects names, so the value is dropped.
+
+  Public because the ACK and DEL seams in `Grappa.Session.Server` read the
+  same blob (issue 2097). This module owns CAP negotiation, so the ONE
+  parse of a cap list lives here rather than being re-spelled per reader:
+  before 2097 `Session.Server` carried its own weaker copy that split on
+  whitespace and kept the `=<value>` suffix attached, so a valued token
+  missed the tracked-cap compare there while matching here.
+  """
   # M-irc-3: explicit @spec + nil-reject. `String.split(_, "=", parts: 2)`
   # never returns an empty list for the `trim: true` output, so
   # `List.first/1` never returns nil today — but the type contract
@@ -964,10 +983,10 @@ defmodule Grappa.IRC.AuthFSM do
   # Reject defensively so the cap-name list is `[String.t()]` by
   # construction.
   @spec parse_cap_list(String.t()) :: [String.t()]
-  defp parse_cap_list(blob) do
+  def parse_cap_list(blob) when is_binary(blob) do
     blob
     |> String.split(" ", trim: true)
-    |> Enum.map(fn cap -> cap |> String.split("=", parts: 2) |> List.first() end)
+    |> Enum.map(fn cap -> cap |> String.trim() |> String.split("=", parts: 2) |> List.first() end)
     |> Enum.reject(&is_nil/1)
   end
 end

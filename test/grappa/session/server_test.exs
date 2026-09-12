@@ -2586,6 +2586,329 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  # 2097 — `caps_active` grows and never shrinks: the ACK seam above is its
+  # only writer, and the sole `:cap` clause in the tree lives in `AuthFSM`,
+  # i.e. the REGISTRATION phase. A cap withdrawn mid-session therefore stays
+  # "active" for the life of the process. The field instance is a Solanum
+  # oper module cycling (`CAP * DEL` then, ten minutes later, `CAP * NEW`)
+  # on the `*` target — not on our nick.
+  #
+  # These assert the CONSEQUENCES of the stale bit on the wire and through
+  # the public snapshot, never the MapSet itself: the set is the mechanism,
+  # the label and the identity verdict are what a user actually gets wrong.
+  #
+  # Synchronisation: `IRCServer.feed/2` is asynchronous with respect to a
+  # GenServer call from the test process, so after every fed CAP line we feed
+  # a PING and wait for its PONG. The socket → Client → Session mailbox is
+  # strictly ordered, so observing the PONG proves the CAP line ahead of it
+  # is fully processed — the #210 barrier.
+  describe "registered-phase CAP DEL/NEW (2097)" do
+    test "after CAP * DEL :labeled-response the outbound AWAY carries no @label" do
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
+
+      {server, port} = IRCServer.start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      own_nick = SessionStateHelpers.nick(SessionStateHelpers.fetch(pid))
+      origin = %{kind: :channel, target: "#chan"}
+
+      IRCServer.feed(server, ":irc CAP #{own_nick} ACK :labeled-response\r\n")
+      IRCServer.feed(server, "PING :sync-ack\r\n")
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &(&1 == "PONG :sync-ack\r\n"), 1_000)
+
+      # Baseline: the cap is live, so the command IS labelled. Without this
+      # the test could pass on a session that never labelled anything.
+      :ok = Session.set_explicit_away({:user, user.id}, network.id, "brb", origin)
+
+      assert {:ok, labelled} =
+               IRCServer.wait_for_line(server, &String.contains?(&1, "AWAY :brb"), 1_000)
+
+      assert String.starts_with?(labelled, "@label=")
+
+      # The field line's shape, verbatim: the target is `*`, not the nick.
+      IRCServer.feed(server, ":irc CAP * DEL :labeled-response\r\n")
+      IRCServer.feed(server, "PING :sync-del\r\n")
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &(&1 == "PONG :sync-del\r\n"), 1_000)
+
+      :ok = Session.set_explicit_away({:user, user.id}, network.id, "back later", origin)
+
+      assert {:ok, after_del} =
+               IRCServer.wait_for_line(server, &String.contains?(&1, "AWAY :back later"), 1_000)
+
+      assert after_del == "AWAY :back later\r\n"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # The other advertised target. The clause matches it as `_`, exactly as
+    # the ACK seam already did, so both forms travel one code path — this
+    # pins that they keep doing so. vjt's field note is explicit that a
+    # handler keyed on the session nick would have missed the `*` line that
+    # filed the issue; the inverse mistake (keying on `*`) is just as
+    # available to a future refactor, and costs the nick form.
+    test "a CAP DEL addressed to the session nick retires the cap too (2097)" do
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
+
+      {server, port} = IRCServer.start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      own_nick = SessionStateHelpers.nick(SessionStateHelpers.fetch(pid))
+      origin = %{kind: :channel, target: "#chan"}
+
+      IRCServer.feed(server, ":irc CAP #{own_nick} ACK :labeled-response\r\n")
+      IRCServer.feed(server, "PING :sync-nick-ack\r\n")
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &(&1 == "PONG :sync-nick-ack\r\n"), 1_000)
+
+      # Baseline, and not a formality: without it a DEL that never reached
+      # the clause would still read green off an ACK that never landed —
+      # green for the wrong reason.
+      :ok = Session.set_explicit_away({:user, user.id}, network.id, "brb", origin)
+
+      assert {:ok, labelled} =
+               IRCServer.wait_for_line(server, &String.contains?(&1, "AWAY :brb"), 1_000)
+
+      assert String.starts_with?(labelled, "@label=")
+
+      IRCServer.feed(server, ":irc CAP #{own_nick} DEL :labeled-response\r\n")
+      IRCServer.feed(server, "PING :sync-nick-del\r\n")
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &(&1 == "PONG :sync-nick-del\r\n"), 1_000)
+
+      :ok = Session.set_explicit_away({:user, user.id}, network.id, "back later", origin)
+
+      assert {:ok, after_del} =
+               IRCServer.wait_for_line(server, &String.contains?(&1, "AWAY :back later"), 1_000)
+
+      assert after_del == "AWAY :back later\r\n"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "after CAP * DEL :account-notify the account stops counting as identity" do
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
+
+      {server, port} = IRCServer.start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      own_nick = SessionStateHelpers.nick(SessionStateHelpers.fetch(pid))
+
+      IRCServer.feed(server, ":irc CAP #{own_nick} ACK :account-notify\r\n")
+      IRCServer.feed(server, ":#{own_nick}!u@h ACCOUNT vjtaccount\r\n")
+
+      # Baseline + barrier: the acquisition edge proves the ACK landed and the
+      # account axis is granted (#388).
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :session_identity_changed, identified: true}
+                     },
+                     1_000
+
+      IRCServer.feed(server, ":irc CAP * DEL :account-notify\r\n")
+      IRCServer.feed(server, "PING :sync-del\r\n")
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &(&1 == "PONG :sync-del\r\n"), 1_000)
+
+      # `IdentityState.account_identified?/1` derives from `caps_active` at
+      # call time — "an account counts only where the ircd promised to retract
+      # it". A DEL is that promise being withdrawn, so the verdict the public
+      # snapshot publishes (the same field cic reloads on) must fall back to
+      # the umode axis, which this session has never set.
+      # `identified:` is this snapshot's spelling of the verdict — the
+      # `{:connection_info}` payload calls the same `IdentityState.identified?/1`
+      # value `registered:`, which is a naming split that predates this slice
+      # and is a WIRE field in both, so it is left alone here.
+      assert {:ok, %{identified: false}} =
+               Session.session_snapshot({:user, user.id}, network.id)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a registered-phase CAP DEL/NEW persists NO $server row (2097)" do
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
+
+      {server, port} = IRCServer.start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      IRCServer.feed(
+        server,
+        ":osmium.libera.chat CAP * DEL :?oper_realhost solanum.chat/realhost\r\n"
+      )
+
+      IRCServer.feed(
+        server,
+        ":osmium.libera.chat CAP * NEW :?oper_realhost solanum.chat/realhost\r\n"
+      )
+
+      IRCServer.feed(server, "PING :sync-noise\r\n")
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &(&1 == "PONG :sync-noise\r\n"), 1_000)
+
+      # The user-visible absence is the real guard: pre-fix both lines render
+      # in the cic status window through `renderRawEvent`'s default arm.
+      assert [] = Scrollback.fetch({:user, user.id}, network.id, "$server", nil, 10, nil, false)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # PIN: `CAP NEW` advertises that a capability has become AVAILABLE, it
+    # does not enable it — enabling still takes a `CAP REQ` and its ACK
+    # (IRCv3 cap-notify). This holds the line against a handler that
+    # "symmetrically" unions the NEW blob into `caps_active` and starts
+    # stamping labels the ircd never granted.
+    #
+    # The re-REQ does go out here (this session is registered), and this fake
+    # ircd answers nothing — which is precisely the case the pin cares about:
+    # asked-but-not-granted must read exactly like never-asked.
+    test "CAP * NEW does NOT activate a capability that was never ACKed (2097)" do
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
+
+      {server, port} = IRCServer.start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      origin = %{kind: :channel, target: "#chan"}
+
+      IRCServer.feed(server, ":irc CAP * NEW :labeled-response\r\n")
+      IRCServer.feed(server, "PING :sync-new\r\n")
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &(&1 == "PONG :sync-new\r\n"), 1_000)
+
+      :ok = Session.set_explicit_away({:user, user.id}, network.id, "brb", origin)
+
+      assert {:ok, line} =
+               IRCServer.wait_for_line(server, &String.contains?(&1, "AWAY :brb"), 1_000)
+
+      assert line == "AWAY :brb\r\n"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # vjt's ruling on the fork (issue 2097): a cap the upstream re-advertises
+    # after retiring it gets asked for again, so the DEL/NEW round trip lands
+    # whole instead of honest-but-degraded. The cap does NOT come back here —
+    # it comes back on the ACK, through the seam that granted it originally.
+    #
+    # Unambiguous by construction, and measured rather than assumed: this
+    # fixture's credential negotiates no caps, so the whole client handshake
+    # on this wire is `NICK` + `USER` and the AuthFSM never issues a REQ of
+    # its own. Any `CAP REQ` here is the re-REQ.
+    test "a CAP NEW re-requests a tracked cap that a DEL retired (2097)" do
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
+
+      {server, port} = IRCServer.start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      own_nick = SessionStateHelpers.nick(SessionStateHelpers.fetch(pid))
+
+      IRCServer.feed(server, ":irc CAP #{own_nick} ACK :labeled-response\r\n")
+      IRCServer.feed(server, ":irc CAP * DEL :labeled-response\r\n")
+      IRCServer.feed(server, ":irc CAP * NEW :labeled-response\r\n")
+
+      assert {:ok, "CAP REQ :labeled-response\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "CAP REQ :labeled-response\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # 🔴 The gate, and it guards a session kill rather than a tidiness rule.
+    # `AuthFSM` reads a CAP ACK in its three `:awaiting_cap_ack*` phases as
+    # the answer to ITS request; an ACK we elicit mid-negotiation carries no
+    # "sasl", so the FSM would call `cap_unavailable/1` — crashing the session
+    # on `auth_method: :sasl`, silently losing SASL on `:auto`. This fake ircd
+    # never sends 001, so the session never registers and the re-REQ must stay
+    # in its holster.
+    test "a CAP NEW before 001 asks nothing — the re-REQ phase gate (2097)" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      # Same three lines as the registered case; only the phase differs.
+      IRCServer.feed(server, ":irc CAP * ACK :labeled-response\r\n")
+      IRCServer.feed(server, ":irc CAP * DEL :labeled-response\r\n")
+      IRCServer.feed(server, ":irc CAP * NEW :labeled-response\r\n")
+      IRCServer.feed(server, "PING :sync-gate\r\n")
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &(&1 == "PONG :sync-gate\r\n"), 1_000)
+
+      lines = IRCServer.sent_lines(server)
+
+      # Positive control, and it has to be a line sent AFTER the CAP NEW: an
+      # absence proves nothing unless the sample is known to COVER the window
+      # where the thing would have appeared. The PONG is the barrier reply, so
+      # its presence says the accessor saw past the fed NEW.
+      # (The first version of this control asserted a `CAP LS ` line and went
+      # red: this fixture's credential negotiates no caps at all, so the only
+      # handshake traffic is NICK + USER. The control caught itself.)
+      assert "PONG :sync-gate\r\n" in lines
+      refute Enum.any?(lines, &String.starts_with?(&1, "CAP REQ"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # The cap from the actual field report is one we do not track. The
+    # intersection with `@tracked_caps` is what keeps us from requesting
+    # something whose ACK this process would then drop on the floor.
+    test "a CAP NEW for an untracked cap asks nothing (2097)" do
+      handler = IRCServer.welcome_handler(":irc", "grappa-test")
+
+      {server, port} = IRCServer.start_server(handler)
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      IRCServer.feed(
+        server,
+        ":osmium.libera.chat CAP * NEW :?oper_realhost solanum.chat/realhost\r\n"
+      )
+
+      IRCServer.feed(server, "PING :sync-untracked\r\n")
+
+      assert {:ok, _} =
+               IRCServer.wait_for_line(server, &(&1 == "PONG :sync-untracked\r\n"), 1_000)
+
+      lines = IRCServer.sent_lines(server)
+
+      # Same control as the phase-gate test above: a line sent after the NEW.
+      assert "PONG :sync-untracked\r\n" in lines
+      refute Enum.any?(lines, &String.starts_with?(&1, "CAP REQ"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
   describe "PING/PONG" do
     test "responds to server PING with matching PONG" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
