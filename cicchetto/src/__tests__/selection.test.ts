@@ -112,6 +112,34 @@ describe("selection store", () => {
     expect(selection.serverSeedCounts()).toBe(first);
   });
 
+  // issue 2096 — the destructive archive delete has to take the count with the
+  // rows. Asserted on the derived memos, not just on the backing map: the
+  // badge reads the memos.
+  it("clearServerSeedCount drops the key from the seed AND from the memos", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const selection = await import("../lib/selection");
+    const key = channelKey("freenode", "#purged");
+    selection.setServerSeedCount(key, { messages: 4, events: 2 });
+    expect(selection.messagesUnread()[key]).toBe(4);
+
+    selection.clearServerSeedCount(key);
+
+    expect(selection.serverSeedCounts()[key]).toBeUndefined();
+    expect(selection.messagesUnread()[key]).toBeUndefined();
+    expect(selection.eventsUnread()[key]).toBeUndefined();
+  });
+
+  it("clearServerSeedCount is a no-op for a key that was never seeded", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const selection = await import("../lib/selection");
+    selection.setServerSeedCount(channelKey("freenode", "#kept"), { messages: 1, events: 0 });
+    const before = selection.serverSeedCounts();
+
+    selection.clearServerSeedCount(channelKey("freenode", "#never"));
+
+    expect(selection.serverSeedCounts()).toBe(before);
+  });
+
   it("selecting a channel fires loadInitialScrollback exactly once across re-selections", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");

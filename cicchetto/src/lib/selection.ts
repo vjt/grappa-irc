@@ -358,6 +358,32 @@ const exports = identityScopedStore((onIdentityChange) => {
   };
 
   /**
+   * Drop the seed for one window — the rows it counted are GONE.
+   *
+   * issue 2096. The seed is written by `/me` and by the join reply and by
+   * nothing else, so a destructive
+   * `DELETE /networks/:slug/archive/:target` left its count standing until the
+   * next cold load. That was invisible while nothing rendered it: the archive
+   * row disappears with the listing refresh, the sidebar draws no row for an
+   * archived window, and `windowCandidates()` never enumerates one. The
+   * launcher's rollup badge (`lib/archiveRollup.ts`) is the first surface that
+   * sums seed keys with no window behind them, so the stale entry became a
+   * number the operator could neither clear nor chase.
+   *
+   * Deliberately narrower than `readCursor`'s posture in the same handler,
+   * which does NOT clear (see `userTopic.ts`): a cursor is cross-device state
+   * the server owns, while this map is a local projection of counts whose rows
+   * the server just deleted. Dropping it loses nothing another device needs.
+   */
+  const clearServerSeedCount = (key: ChannelKey): void => {
+    setServerSeedCountsRaw((prev) => {
+      if (!(key in prev)) return prev;
+      const { [key]: _dropped, ...rest } = prev;
+      return rest;
+    });
+  };
+
+  /**
    * Bulk-hydrate the seed map from the `/me` envelope's
    * `unread_counts` nested map (`%{slug => %{chan => {messages,
    * events}}}`). Replaces the entire map — same cold-load semantic as
@@ -1029,6 +1055,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     closeToPreviousWindow,
     selectStatusWindow,
     setServerSeedCount,
+    clearServerSeedCount,
     applySeedEnvelope,
     setCursorIfAdvances,
     followQueryNick,
@@ -1046,6 +1073,7 @@ export const isActiveSelection = exports.isActiveSelection;
 export const closeToPreviousWindow = exports.closeToPreviousWindow;
 export const selectStatusWindow = exports.selectStatusWindow;
 export const setServerSeedCount = exports.setServerSeedCount;
+export const clearServerSeedCount = exports.clearServerSeedCount;
 export const applySeedEnvelope = exports.applySeedEnvelope;
 export const setCursorIfAdvances = exports.setCursorIfAdvances;
 export const followQueryNick = exports.followQueryNick;

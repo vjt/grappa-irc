@@ -87,6 +87,11 @@ vi.mock("../lib/selection", () => ({
   // missing assertion: the three `setReconnecting` arms below went red on
   // it, two statements before the line they were testing.
   noteConnectionState: vi.fn(),
+  // issue 2096 — the archive_purged arm now drops the server seed for the
+  // purged key as well. Same reason as `noteConnectionState` above: this file
+  // mocks selection wholesale, so an absent port is a TypeError two statements
+  // before the assertion, not a missing assertion.
+  clearServerSeedCount: vi.fn(),
 }));
 
 vi.mock("../lib/bundleHash", () => ({
@@ -1987,6 +1992,37 @@ describe("userTopic", () => {
       expect(sb.purgeScrollback).toHaveBeenCalledWith(key);
       expect(rb.clearSeen).toHaveBeenCalledWith(key);
       expect(archive.loadArchive).toHaveBeenCalledWith("bahamut-test");
+    });
+
+    it("issue 2096 — also drops the server unread SEED for the purged key", async () => {
+      // The seed is written by `/me` and by the join reply and by nothing
+      // else, so without this the deleted window's count stands until the
+      // next cold load. Harmless while no surface summed seed keys with no
+      // window behind them; the archive launcher's rollup badge is that
+      // surface, and a count nothing can clear is worse than no count.
+      const selection = await import("../lib/selection");
+      const { channelKey } = await import("../lib/channelKey");
+
+      channelMock.fireEvent({
+        kind: "archive_purged",
+        network_slug: "bahamut-test",
+        target: "#bofh",
+      });
+
+      expect(selection.clearServerSeedCount).toHaveBeenCalledWith(
+        channelKey("bahamut-test", "#bofh"),
+      );
+    });
+
+    it("issue 2096 — the refresh-only sibling does NOT drop the seed", async () => {
+      // `archive_changed` (a PART) moves a window into the archive with its
+      // rows and its unread INTACT — that unread is precisely what the badge
+      // exists to surface. Only the DESTRUCTIVE delete clears.
+      const selection = await import("../lib/selection");
+
+      channelMock.fireEvent({ kind: "archive_changed", network_slug: "bahamut-test" });
+
+      expect(selection.clearServerSeedCount).not.toHaveBeenCalled();
     });
 
     it("works for query-shaped targets too (peer-nick DM purge)", async () => {
