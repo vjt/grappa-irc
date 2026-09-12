@@ -25,11 +25,18 @@ defmodule Grappa.IRC do
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.OutboundV6Pool],
+    # `Net.IpLiteral` (a `deps: []` leaf) is the tree's single STRICT
+    # IP-literal parser. `IRC.DCC` decodes a peer's `DCC SEND` address
+    # field with it rather than hand-rolling a second one — the
+    # strictness is what keeps `017700000001` from decoding to loopback
+    # (issue 2089).
+    deps: [Grappa.OutboundV6Pool, Grappa.Net.IpLiteral],
     exports: [
       AuthFSM,
       Client,
       CTCP,
+      DCC,
+      DCC.Offer,
       Identifier,
       Identity,
       JoinFailure,
