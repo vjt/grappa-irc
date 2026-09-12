@@ -150,6 +150,15 @@ vi.mock("../lib/archiveContext", () => ({
   archiveSlugForSelection: () => roomsSlugHolder.value,
 }));
 
+// issue 2096 — the archive launcher's rollup badge. Only the MEMO is stubbed
+// (the reactive read); the `> 0` render gate under test stays the component's
+// own, so a regression that drops the gate still fails here. The derivation
+// behind the memo is covered as a pure fn in `archiveRollup.test.ts`.
+const archiveRollupHolder = vi.hoisted(() => ({ value: { messages: 0, events: 0 } }));
+vi.mock("../lib/archiveRollup", () => ({
+  archivedUnread: () => archiveRollupHolder.value,
+}));
+
 const openHomePanel = vi.fn();
 const openListPanel = vi.fn();
 const openThemesPanel = vi.fn();
@@ -198,6 +207,7 @@ beforeEach(() => {
   mutedHolder.value = {};
   refreshHolder.value = null;
   inCardHeadHolder.value = false;
+  archiveRollupHolder.value = { messages: 0, events: 0 };
   dismissConfirm();
 });
 
@@ -311,6 +321,52 @@ describe("RailActions (#473)", () => {
     openMenu();
     fireEvent.click(screen.getByTestId("mobile-panel-archive"));
     expect(openArchivePanel).toHaveBeenCalledWith(setters);
+  });
+
+  // issue 2096 — Fairy's report: an archived window holding unread had no
+  // surface until the modal was open AND the right group expanded. The
+  // launcher now carries the rollup.
+  describe("archive unread rollup badge (issue 2096)", () => {
+    it("renders NO badge when the archive holds nothing unread", () => {
+      render(() => <RailActions setters={setters} />);
+      openMenu();
+      expect(screen.getByTestId("mobile-panel-archive")).toBeInTheDocument();
+      expect(screen.queryByTestId("rail-archive-unread")).toBeNull();
+    });
+
+    it("renders the message count on the archive button when the archive has unread", () => {
+      archiveRollupHolder.value = { messages: 3, events: 0 };
+      render(() => <RailActions setters={setters} />);
+      openMenu();
+      const badge = screen.getByTestId("rail-archive-unread");
+      expect(badge).toHaveTextContent("3");
+      // On the archive button itself, not loose in the drawer — the badge has
+      // to name which door it belongs to.
+      expect(screen.getByTestId("mobile-panel-archive")).toContainElement(badge);
+    });
+
+    it("keeps messages and events as two DISTINCT badges", () => {
+      // #532's rule carried up: presence churn is its own tier and must not
+      // collapse into the message dot. The two sidebar pill classes are the
+      // shared visual language, so assert the classes and not just the text.
+      archiveRollupHolder.value = { messages: 2, events: 7 };
+      const { container } = render(() => <RailActions setters={setters} />);
+      openMenu();
+      const msg = container.querySelector(".rail-action-unread .sidebar-msg-unread");
+      const events = container.querySelector(".rail-action-unread .sidebar-events-unread");
+      expect(msg).toHaveTextContent("2");
+      expect(events).toHaveTextContent("7");
+    });
+
+    it("renders the events badge ALONE when the archive holds only presence churn", () => {
+      // The gate is the SUM, not the message count: a window whose entire
+      // unread is join/part noise still has to be findable.
+      archiveRollupHolder.value = { messages: 0, events: 4 };
+      const { container } = render(() => <RailActions setters={setters} />);
+      openMenu();
+      expect(screen.getByTestId("rail-archive-unread")).toHaveTextContent("4");
+      expect(container.querySelector(".rail-action-unread .sidebar-msg-unread")).toBeNull();
+    });
   });
 
   it("gates rooms on a network context (archiveSlugForSelection null ⇒ hidden)", () => {
