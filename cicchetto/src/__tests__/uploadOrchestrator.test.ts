@@ -1535,3 +1535,158 @@ describe("the confirm gate is OPT-IN — default off", () => {
     expect(confirmRequest()).toBeNull();
   });
 });
+
+// --------------------------------------------------------------------
+// The per-batch TTL choice — #2094
+//
+// The ladder was reachable only from the settings drawer, so retention was
+// decided once for every future file; the confirm is where the operator can
+// see WHAT this batch is, and now where they can say how long it lives. The
+// choice overrides the stored preference for this batch ONLY and is never
+// written back to it.
+// --------------------------------------------------------------------
+
+describe("the per-batch TTL choice (#2094)", () => {
+  const ackPrivacy = () => localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+
+  beforeEach(async () => {
+    vi.mocked(userSettings.getUploadConfirmEnabled).mockResolvedValue(true);
+    await loadUploadConfirmEnabled("tok");
+    ackPrivacy();
+  });
+
+  // Records what the host was ASKED for while still behaving like the shared
+  // fixture — the resolver is what a retry test needs to fail an attempt.
+  const capturingHost = (): { ttls: Array<string | undefined> } => {
+    const seen: Array<string | undefined> = [];
+    const base = makeTestHost();
+    vi.mocked(activeHost).mockReturnValue(
+      makeTestHost({
+        upload: (file, options, onProgress, signal) => {
+          seen.push(options.ttl);
+          return base.upload(file, options, onProgress, signal);
+        },
+      }),
+    );
+    return { ttls: seen };
+  };
+
+  it("offers the active host's ladder, seeded from the stored preference", async () => {
+    await saveUploadTtlSeconds("tok", 3600);
+    triggerUpload(key, slug, channel, sampleImage());
+
+    const choice = confirmRequest()?.choice;
+    expect(choice?.options.map((o) => o.label)).toEqual(["1 hour", "24 hours"]);
+    // Seconds, not the host token: the preference and the server both speak
+    // seconds, and the token belongs to whichever host is active at dispatch.
+    expect(choice?.options.map((o) => o.value)).toEqual(["3600", "86400"]);
+    expect(choice?.value()).toBe("3600");
+  });
+
+  it("seeds from the host default when no preference is set", () => {
+    triggerUpload(key, slug, channel, sampleImage());
+    expect(confirmRequest()?.choice?.value()).toBe("86400");
+  });
+
+  // A dropdown showing a selection it does not offer is the failure this
+  // guards: `upload_ttl_seconds` is a bare integer with no host attached.
+  it("seeds from the host default when the preference is not on this host's ladder", async () => {
+    await saveUploadTtlSeconds("tok", 9999);
+    triggerUpload(key, slug, channel, sampleImage());
+    expect(confirmRequest()?.choice?.value()).toBe("86400");
+  });
+
+  it("asks nothing when the host has no ladder to offer", () => {
+    vi.mocked(activeHost).mockReturnValue(makeTestHost({ ttlOptions: [], defaultTtl: null }));
+    triggerUpload(key, slug, channel, sampleImage());
+    expect(confirmRequest()).not.toBeNull();
+    expect(confirmRequest()?.choice).toBeNull();
+  });
+
+  it("sends what the dropdown was showing when it is left alone", async () => {
+    await saveUploadTtlSeconds("tok", 3600);
+    const host = capturingHost();
+
+    triggerUpload(key, slug, channel, sampleImage());
+    acceptConfirm();
+
+    expect(host.ttls).toEqual(["1h"]);
+  });
+
+  it("sends the CHOSEN duration, overriding the stored preference", async () => {
+    await saveUploadTtlSeconds("tok", 3600);
+    const host = capturingHost();
+
+    triggerUpload(key, slug, channel, sampleImage());
+    confirmRequest()?.choice?.onSelect("86400");
+    acceptConfirm();
+
+    expect(host.ttls).toEqual(["24h"]);
+  });
+
+  // A one-off stays one-off. The drawer is where a durable preference is
+  // changed; a dialog opened to LOOK at the files is not.
+  it("does not write the choice back to the stored preference", async () => {
+    await saveUploadTtlSeconds("tok", 3600);
+    vi.mocked(userSettings.putUploadTtlSeconds).mockClear();
+
+    triggerUpload(key, slug, channel, sampleImage());
+    confirmRequest()?.choice?.onSelect("86400");
+    acceptConfirm();
+
+    expect(userSettings.putUploadTtlSeconds).not.toHaveBeenCalled();
+    expect(uploadTtlSecondsValue()).toBe(3600);
+  });
+
+  it("applies the choice to every file in the batch", async () => {
+    const host = capturingHost();
+    const img = (name: string): File =>
+      new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], name, { type: "image/png" });
+
+    triggerUploads(key, slug, channel, [img("a.png"), img("b.png")]);
+    confirmRequest()?.choice?.onSelect("3600");
+    acceptConfirm();
+
+    // Sequential queue: the second file starts when the first settles, and it
+    // is the SECOND one that proves the answer rode the queue rather than
+    // being read once at dispatch.
+    pendingResolvers[0]?.resolve("https://h/a");
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(2));
+
+    expect(host.ttls).toEqual(["1h", "1h"]);
+  });
+
+  // A retry re-sends the file the operator already answered for, so it must
+  // re-send it on the terms they chose — re-reading the preference here would
+  // silently change them.
+  it("a retry keeps the terms the operator chose", async () => {
+    const host = capturingHost();
+
+    triggerUpload(key, slug, channel, sampleImage());
+    confirmRequest()?.choice?.onSelect("3600");
+    acceptConfirm();
+
+    pendingResolvers[0]?.reject({ kind: "network" });
+    await vi.waitFor(() => expect(uploadState(key)?.error).toBeTruthy());
+
+    retryUpload(key);
+
+    expect(host.ttls).toEqual(["1h", "1h"]);
+  });
+
+  // The dialog's answer belongs to the batch it was asked about. A cancelled
+  // question must not leave its choice behind for the next drop.
+  it("a cancelled batch takes its choice with it", async () => {
+    const host = capturingHost();
+
+    triggerUpload(key, slug, channel, sampleImage());
+    confirmRequest()?.choice?.onSelect("3600");
+    dismissConfirm();
+
+    triggerUpload(key, slug, channel, sampleImage());
+    expect(confirmRequest()?.choice?.value()).toBe("86400");
+    acceptConfirm();
+
+    expect(host.ttls).toEqual(["24h"]);
+  });
+});

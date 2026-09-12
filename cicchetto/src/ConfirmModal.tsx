@@ -34,6 +34,12 @@ import { createOverlayLock } from "./lib/overlayScrollLock";
 // consistent. The rows arrive pre-formatted (see ConfirmAttachment) — this
 // component decides layout, object-URL lifetime and how each preview kind is
 // rendered, nothing else.
+//
+// #2094 — an OPTIONAL single-choice control sits between that list and the
+// buttons, on the same terms: pre-formatted options in, a value out, and this
+// component knows nothing about what is being chosen. Its one caller today is
+// the upload confirm's TTL, which is a per-batch answer precisely because the
+// dialog is where the operator can see what the batch IS.
 
 // One attachment row. Its OWN component so the object URL can be minted and
 // revoked by the row's lifecycle: `onCleanup` here fires when the row leaves —
@@ -258,6 +264,31 @@ const ConfirmModal: Component = () => {
                     )}
                   </For>
                 </ul>
+              )}
+            </Show>
+            {/* #2094 — the optional single choice, BELOW the files and ABOVE
+                the buttons. That order is the sentence the dialog is making:
+                this happens, to these, on these terms — answer. Above the
+                files it would be a setting the operator reads before knowing
+                what it applies to; below the buttons it would sit past the
+                answer. It is inside the modal's own column, not the scrolling
+                attachment list, so a twelve-file batch cannot scroll the terms
+                out of sight. */}
+            <Show when={req().choice}>
+              {(ch) => (
+                <label class="confirm-modal-choice" data-testid="confirm-modal-choice">
+                  <span class="confirm-modal-choice-label">{ch().label}</span>
+                  <select
+                    class="confirm-modal-choice-select"
+                    data-testid="confirm-modal-choice-select"
+                    value={ch().value()}
+                    onChange={(e) => ch().onSelect(e.currentTarget.value)}
+                  >
+                    <For each={ch().options}>
+                      {(opt) => <option value={opt.value}>{opt.label}</option>}
+                    </For>
+                  </select>
+                </label>
               )}
             </Show>
             <div class="confirm-modal-actions">

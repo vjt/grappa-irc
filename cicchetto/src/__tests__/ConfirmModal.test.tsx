@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ConfirmModal from "../ConfirmModal";
 import { type ConfirmAttachment, dismissConfirm, requestConfirm } from "../lib/confirmDialog";
@@ -32,6 +33,7 @@ describe("ConfirmModal (#195)", () => {
       confirmLabel: "Yes",
       onConfirm: vi.fn(),
       alternative: null,
+      choice: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -52,6 +54,7 @@ describe("ConfirmModal (#195)", () => {
       confirmLabel: "Yes",
       onConfirm,
       alternative: null,
+      choice: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -69,6 +72,7 @@ describe("ConfirmModal (#195)", () => {
       confirmLabel: "Yes",
       onConfirm,
       alternative: null,
+      choice: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -86,6 +90,7 @@ describe("ConfirmModal (#195)", () => {
       confirmLabel: "Yes",
       onConfirm,
       alternative: null,
+      choice: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -106,6 +111,7 @@ describe("ConfirmModal (#195)", () => {
       confirmLabel: "Yes",
       onConfirm,
       alternative: null,
+      choice: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -129,6 +135,7 @@ describe("ConfirmModal (#195)", () => {
         confirmLabel: "Yes",
         onConfirm: vi.fn(),
         alternative: null,
+        choice: null,
         attachments: null,
         defaultButton: "cancel",
       });
@@ -145,6 +152,7 @@ describe("ConfirmModal (#195)", () => {
         confirmLabel: "Paste",
         onConfirm,
         alternative: { label: "Upload as .txt", onSelect },
+        choice: null,
         attachments: null,
         defaultButton: "cancel",
       });
@@ -177,6 +185,7 @@ describe("ConfirmModal (#195)", () => {
         confirmLabel: "Send",
         onConfirm: vi.fn(),
         alternative: null,
+        choice: null,
         attachments: { items: () => items, onRemove },
         defaultButton: "confirm",
       });
@@ -190,6 +199,7 @@ describe("ConfirmModal (#195)", () => {
         confirmLabel: "Yes",
         onConfirm: vi.fn(),
         alternative: null,
+        choice: null,
         attachments: null,
         defaultButton: "cancel",
       });
@@ -382,6 +392,7 @@ describe("ConfirmModal (#195)", () => {
         confirmLabel: "Send",
         onConfirm,
         alternative: null,
+        choice: null,
         attachments: null,
         defaultButton,
       });
@@ -427,6 +438,7 @@ describe("ConfirmModal (#195)", () => {
         confirmLabel: "Send",
         onConfirm: vi.fn(),
         alternative: null,
+        choice: null,
         attachments: {
           items: () => items,
           onRemove: (id: string): void => {
@@ -462,6 +474,99 @@ describe("ConfirmModal (#195)", () => {
       await waitFor(() =>
         expect(document.activeElement).toBe(screen.getByTestId("confirm-modal-confirm")),
       );
+    });
+  });
+  // #2094 — the optional single choice. The store carries a pre-formatted
+  // control; this component only has to show it, name it, and report back.
+  describe("the single choice (#2094)", () => {
+    const openWithChoice = (value: () => string, onSelect: (v: string) => void): void =>
+      requestConfirm({
+        title: "Send to #a?",
+        body: "b",
+        confirmLabel: "Send",
+        onConfirm: vi.fn(),
+        alternative: null,
+        choice: {
+          label: "Delete after",
+          options: [
+            { value: "3600", label: "1 hour" },
+            { value: "86400", label: "24 hours" },
+          ],
+          value,
+          onSelect,
+        },
+        attachments: null,
+        defaultButton: "confirm",
+      });
+
+    it("renders nothing when the request carries no choice", () => {
+      render(() => <ConfirmModal />);
+      requestConfirm({
+        title: "t",
+        body: "b",
+        confirmLabel: "Yes",
+        onConfirm: vi.fn(),
+        alternative: null,
+        choice: null,
+        attachments: null,
+        defaultButton: "cancel",
+      });
+      expect(screen.queryByTestId("confirm-modal-choice")).toBeNull();
+    });
+
+    it("shows the options and the current selection", () => {
+      render(() => <ConfirmModal />);
+      openWithChoice(() => "86400", vi.fn());
+
+      const select = screen.getByTestId("confirm-modal-choice-select") as HTMLSelectElement;
+      expect([...select.options].map((o) => o.textContent)).toEqual(["1 hour", "24 hours"]);
+      expect(select.value).toBe("86400");
+    });
+
+    // A bare dropdown reading "24 hours" says nothing about what happens then,
+    // which is why this one carries a visible label — and the label IS the
+    // accessible name, so there is exactly one.
+    it("names the control visibly, and only once", () => {
+      render(() => <ConfirmModal />);
+      openWithChoice(() => "3600", vi.fn());
+
+      expect(screen.getByTestId("confirm-modal-choice").textContent).toContain("Delete after");
+      expect(screen.getByLabelText("Delete after")).toBe(
+        screen.getByTestId("confirm-modal-choice-select"),
+      );
+    });
+
+    it("reports a pick back to the caller, which owns the value", () => {
+      const onSelect = vi.fn();
+      render(() => <ConfirmModal />);
+      openWithChoice(() => "86400", onSelect);
+
+      fireEvent.change(screen.getByTestId("confirm-modal-choice-select"), {
+        target: { value: "3600" },
+      });
+
+      expect(onSelect).toHaveBeenCalledWith("3600");
+    });
+
+    // Reactive, like the attachment list: the caller's signal changing must
+    // re-render the selection WITHOUT the request being replaced, which would
+    // re-run the open transition and steal focus back to the default button.
+    it("follows the caller's value without the request being replaced", async () => {
+      const [value, setValue] = createSignal("86400");
+      render(() => <ConfirmModal />);
+      openWithChoice(value, setValue);
+
+      fireEvent.change(screen.getByTestId("confirm-modal-choice-select"), {
+        target: { value: "3600" },
+      });
+
+      await waitFor(() =>
+        expect((screen.getByTestId("confirm-modal-choice-select") as HTMLSelectElement).value).toBe(
+          "3600",
+        ),
+      );
+      // Still the same dialog, still answering with Enter on Send.
+      expect(document.activeElement).toBe(screen.getByTestId("confirm-modal-confirm"));
     });
   });
 });

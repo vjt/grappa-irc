@@ -5621,6 +5621,39 @@ button.topic-bar-windows-opener {
   gap: 0.5rem;
 }
 
+/* #2094 — the optional single choice (today: the upload TTL), between the file
+   list and the buttons. A row, wrapping on narrow screens for the same reason
+   .confirm-modal-actions does: the label and a four-option ladder do not both
+   fit 24rem at large font sizes, and a select squeezed to its ellipsis is the
+   #1227 defect again. */
+.confirm-modal-choice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.confirm-modal-choice-label {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* The select carries the modal's own chrome rather than the browser's: the
+   dialog is monospaced and bordered, and a default-styled control in it reads
+   as something the page did not draw. Mirrors .confirm-modal-cancel's outline
+   — this is a neutral choice, not an action. */
+.confirm-modal-choice-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 0.375rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
 .confirm-modal-cancel {
   background: transparent;
   color: var(--fg);

@@ -102,7 +102,13 @@ const inflight = new Map<ChannelKey, ActiveUpload>();
 // Last-attempted upload context per channel. Survives the error
 // transition (inflight is cleared on resolve/reject; this isn't) so
 // retryUpload has the file + slug + channel to re-dispatch with.
-const lastAttempt = new Map<ChannelKey, { file: File; networkSlug: string; channelName: string }>();
+// Carries the batch's `ttlSeconds` too (#2094): a retry re-sends the file the
+// operator already answered for, so it must re-send it on the terms they
+// chose — re-reading the preference here would silently change them.
+const lastAttempt = new Map<
+  ChannelKey,
+  { file: File; networkSlug: string; channelName: string; ttlSeconds: number | null }
+>();
 // #1883 (ordering fix) — the batch waiting behind the privacy notice, as a
 // CONTINUATION rather than a staged file.
 //
@@ -121,7 +127,18 @@ let pendingTrigger: (() => void) | null = null;
 // in one batch wait here behind the active upload; each settle pumps the
 // next. Plain Map — not reactive; the queue itself drives no UI. Keeps the
 // single-slot dispatchUpload pipeline (one inflight per channel) untouched.
-type QueuedUpload = { file: File; networkSlug: string; channelName: string };
+// #2094 — `ttlSeconds` is the BATCH's answer, carried per item because the
+// queue is what survives between the dialog and the dispatch. `null` means "no
+// per-batch answer was given" — the no-confirm path, which falls back to the
+// stored preference at dispatch exactly as it did before this field existed.
+// Resolving it here rather than at dispatch would freeze a host token chosen
+// against whichever host was active when the operator dropped the file.
+type QueuedUpload = {
+  file: File;
+  networkSlug: string;
+  channelName: string;
+  ttlSeconds: number | null;
+};
 const queue = new Map<ChannelKey, QueuedUpload[]>();
 
 // Reactive (index,total) for the "(i/N)" batch counter — the only reactive
@@ -254,6 +271,23 @@ function pickHostTokenFromSeconds(host: UploadHost, seconds: number | null): str
   if (seconds === null) return null;
   const match = host.ttlOptions.find((opt) => opt.seconds === seconds);
   return match?.value ?? null;
+}
+
+// #2094 — what the next upload WOULD expire after with nobody choosing
+// anything: the stored preference when this host offers it, the host's own
+// default otherwise. `null` only when the host has no TTL ladder at all, and
+// that is the case where there is nothing to ask.
+//
+// The preference is checked against THIS host's ladder rather than taken at
+// face value: `upload_ttl_seconds` is a plain integer with no host attached,
+// and a value the active host cannot serve would seed the dropdown with an
+// option that is not in it — a control showing a selection it does not have.
+function effectiveTtlSeconds(host: UploadHost): number | null {
+  const preferred = uploadTtlSeconds();
+  if (preferred !== null && host.ttlOptions.some((opt) => opt.seconds === preferred)) {
+    return preferred;
+  }
+  return host.ttlOptions.find((opt) => opt.value === host.defaultTtl)?.seconds ?? null;
 }
 
 function setEntry(key: ChannelKey, entry: UploadStateEntry | null): void {
@@ -406,13 +440,14 @@ async function dispatchUpload(
   networkSlug: string,
   channelName: string,
   file: File,
+  ttlSeconds: number | null,
 ): Promise<void> {
   const host = activeHost();
 
   // #49 root fix: lastAttempt is the user's LATEST selection, recorded
   // before any gate can reject — retry always retries what the error
   // box shows, and a new selection always replaces a rejected one.
-  lastAttempt.set(key, { file, networkSlug, channelName });
+  lastAttempt.set(key, { file, networkSlug, channelName, ttlSeconds });
 
   // #1256: gate on the TYPE. `file.type` may carry a charset the paste
   // path declares truthfully, and the host accept-lists are bare types.
@@ -475,7 +510,14 @@ async function dispatchUpload(
     phase: "uploading",
   });
 
-  const ttl = pickHostTokenFromSeconds(host, uploadTtlSeconds()) ?? host.defaultTtl ?? undefined;
+  // #2094 — the batch's own answer first, the stored preference behind it, the
+  // host default last. Three layers and not two: an operator who never opens
+  // the confirm still gets their preference, and one who opens it and leaves
+  // the dropdown alone gets the same value the dropdown was showing them.
+  const ttl =
+    pickHostTokenFromSeconds(host, ttlSeconds ?? uploadTtlSeconds()) ??
+    host.defaultTtl ??
+    undefined;
 
   // Per-attempt closure — a retry gets a fresh null, so a stale
   // bytes-sent figure can never leak into the next attempt's error.
@@ -770,11 +812,17 @@ export function triggerUploads(
     // `normalizeUploadFile` maps it to `audio/mp4`). Branch on policy, never on
     // the un-normalised input.
     if (!uploadConfirmEnabled()) {
+      // `null`, not `effectiveTtlSeconds()`: with no dialog there was no
+      // answer, and the dispatch-time fallback to the stored preference is the
+      // whole of the pre-#2094 behaviour. Resolving it here would be the same
+      // value by a longer road, and a wrong one the moment the active host
+      // changes between the drop and the POST.
       enqueueUploads(
         key,
         networkSlug,
         channelName,
         normalised.map((s) => s.file),
+        null,
       );
       return;
     }
@@ -800,6 +848,21 @@ export function triggerUploads(
 
   function openSendConfirm(): void {
     const [staged, setStaged] = createSignal<StagedFile[]>(normalised);
+    // #2094 — the TTL for THIS batch. Seeded from the effective default (the
+    // stored preference, or the active host's own default when there is no
+    // preference), so the dropdown opens showing what would have happened
+    // anyway and a choice is an override rather than a required answer.
+    //
+    // Per REQUEST, not module-level: the answer belongs to the batch the
+    // dialog is asking about, so a displaced or cancelled request takes it
+    // with it and the next drop starts from the preference again. It is
+    // deliberately NOT written back to `upload_ttl_seconds` — a one-off stays
+    // one-off, and a dialog the operator opened to look at their files is not
+    // where a durable preference should be changed by accident.
+    const confirmHost = activeHost();
+    const [batchTtlSeconds, setBatchTtlSeconds] = createSignal<number | null>(
+      effectiveTtlSeconds(confirmHost),
+    );
 
     requestConfirm({
       onDisplaced,
@@ -819,6 +882,7 @@ export function triggerUploads(
           networkSlug,
           channelName,
           staged().map((s) => s.file),
+          batchTtlSeconds(),
         ),
       // No third door: there is no other route to "post this file here". Cancel
       // and Send are the whole question.
@@ -828,6 +892,23 @@ export function triggerUploads(
       // opt-in: it exists to be READ, and the key you press after reading was
       // discarding the batch. See `ConfirmRequest.defaultButton`.
       defaultButton: "confirm",
+      // #2094 — the TTL ladder, or nothing when the host has none to offer
+      // (`effectiveTtlSeconds` is null exactly then). Seconds are the currency
+      // on the wire of this control because seconds are what the preference
+      // and the server both speak; the host token is picked at dispatch, from
+      // whichever host is active by then.
+      choice:
+        batchTtlSeconds() === null
+          ? null
+          : {
+              label: "Delete after",
+              options: confirmHost.ttlOptions.map((opt) => ({
+                value: String(opt.seconds),
+                label: opt.label,
+              })),
+              value: () => String(batchTtlSeconds()),
+              onSelect: (value) => setBatchTtlSeconds(Number(value)),
+            },
       attachments: {
         items: (): ConfirmAttachment[] => staged().map((s) => s.attachment),
         onRemove: (id: string): void => {
@@ -852,12 +933,14 @@ function enqueueUploads(
   networkSlug: string,
   channelName: string,
   files: File[],
+  ttlSeconds: number | null,
 ): void {
   if (files.length === 0) return;
   const items: QueuedUpload[] = files.map((file) => ({
     file,
     networkSlug,
     channelName,
+    ttlSeconds,
   }));
   const q = queue.get(key) ?? [];
   // A batch is "ongoing" only while something is genuinely processing — an
@@ -917,7 +1000,7 @@ function pumpQueue(key: ChannelKey): void {
 // nothing reaches the queue un-acknowledged and asking again here would be a
 // second prompt for a question already answered.
 function startUpload(key: ChannelKey, item: QueuedUpload): void {
-  void dispatchUpload(key, item.networkSlug, item.channelName, item.file);
+  void dispatchUpload(key, item.networkSlug, item.channelName, item.file, item.ttlSeconds);
 }
 
 export function acknowledgePrivacy(rememberChoice: boolean): void {
@@ -980,7 +1063,12 @@ export function retryUpload(key: ChannelKey): void {
   setEntry(key, null);
   // #118: re-run the failed file FIRST, then continue any queued files.
   const q = queue.get(key) ?? [];
-  q.unshift({ file: ctx.file, networkSlug: ctx.networkSlug, channelName: ctx.channelName });
+  q.unshift({
+    file: ctx.file,
+    networkSlug: ctx.networkSlug,
+    channelName: ctx.channelName,
+    ttlSeconds: ctx.ttlSeconds,
+  });
   queue.set(key, q);
   pumpQueue(key);
 }

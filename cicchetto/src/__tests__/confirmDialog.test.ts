@@ -23,6 +23,7 @@ describe("confirmDialog store (#195)", () => {
       confirmLabel: "Yes",
       onConfirm,
       alternative: null,
+      choice: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -38,6 +39,7 @@ describe("confirmDialog store (#195)", () => {
       confirmLabel: "Yes",
       onConfirm,
       alternative: null,
+      choice: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -54,6 +56,7 @@ describe("confirmDialog store (#195)", () => {
       confirmLabel: "Yes",
       onConfirm,
       alternative: null,
+      choice: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -76,6 +79,7 @@ describe("confirmDialog store (#195)", () => {
       confirmLabel: "Yes",
       onConfirm: first,
       alternative: null,
+      choice: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -85,6 +89,7 @@ describe("confirmDialog store (#195)", () => {
       confirmLabel: "Yes",
       onConfirm: second,
       alternative: null,
+      choice: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -112,6 +117,7 @@ describe("confirmDialog store (#195)", () => {
         confirmLabel: "Yes",
         onConfirm,
         alternative: alt(onSelect),
+        choice: null,
         attachments: null,
         defaultButton: "cancel",
       });
@@ -131,6 +137,7 @@ describe("confirmDialog store (#195)", () => {
         confirmLabel: "Yes",
         onConfirm,
         alternative: alt(onSelect),
+        choice: null,
         attachments: null,
         defaultButton: "cancel",
       });
@@ -148,6 +155,7 @@ describe("confirmDialog store (#195)", () => {
         confirmLabel: "Yes",
         onConfirm,
         alternative: alt(onSelect),
+        choice: null,
         attachments: null,
         defaultButton: "cancel",
       });
@@ -165,6 +173,7 @@ describe("confirmDialog store (#195)", () => {
         confirmLabel: "Yes",
         onConfirm,
         alternative: null,
+        choice: null,
         attachments: null,
         defaultButton: "cancel",
       });

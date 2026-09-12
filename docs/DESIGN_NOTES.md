@@ -54337,3 +54337,136 @@ asserted a precondition (`scrollTop <= 200` after a human wheel) that is
 UNREACHABLE while the backfill pager is armed, since every page it pulls is
 prepended and `applyPrependPreserve` pushes scrollTop back down by a page.
 Neither would have announced itself; both reported green.
+<!-- entry #2094 -->
+
+---
+
+## 2026-09-12 — #2094: the upload TTL is chosen where the files are shown
+
+The per-request `expire` has been on the wire since the embedded host landed
+— `UploadsController.parse_ttl/1` takes it from a closed ladder
+(`@allowed_ttl_seconds [3600, 43_200, 86_400, 259_200]`) and 400s anything
+else. Nothing in cic could reach it. The only way to say how long an upload
+lives was `upload_ttl_seconds`, a per-user preference set once in the settings
+drawer, translated to a host token at dispatch
+(`pickHostTokenFromSeconds/2`). So retention was decided in advance, for every
+future file, by an operator who at that moment had no file in front of them.
+
+**The knob moved to the pre-send confirm (#1964), and that is the whole
+change.** vjt's ruling on the three options in the issue was option 1: the TTL
+picker lives inside the confirm modal and nowhere else. The known cost is
+stated rather than worked around — the confirm is OPT-IN (#1883,
+`upload_confirm_enabled`, default `false`), so an operator who never switched
+it on cannot choose per upload and keeps exactly the behaviour they have
+today. That is a real limitation, and it is the same shape as the one #1883
+already accepted when it put the confirm toggle inside the TTL fieldset.
+
+### The store learned a CHOICE, not a TTL
+
+`ConfirmRequest` gains `choice: ConfirmChoice | null` beside `alternative` and
+`attachments`, on identical terms: a pre-formatted label, pre-formatted
+options, a reactive `value()` and an `onSelect` closure. `confirmDialog.ts`
+does not know what is being chosen, and the modal only decides where the
+control sits. Ten call sites spell `choice: null` explicitly — the same
+explicit-`null` contract the two neighbours carry, so a reader sees at the
+call site that a dialog asks nothing beyond yes/no.
+
+Deliberately ONE choice and not a list of them. A confirm asks one question; a
+second control on it would be a form wearing a modal's chrome.
+
+Placement is below the file list and above the buttons, and that order is the
+sentence the dialog makes: *this happens, to these, on these terms — answer*.
+Above the list it would be a setting read before knowing what it applies to;
+inside the list it would scroll out of sight on a twelve-file batch (the list
+is capped at `40vh`).
+
+Unlike the SettingsDrawer ladder, the control carries a VISIBLE label. #1227
+removed the visible label there because a `<legend>` already named the group
+and the second name ate the width; in a dialog there is no legend, and a bare
+dropdown reading "24 hours" says nothing about what happens then. The `<label>`
+wraps the `<select>`, so the visible name IS the accessible name — one name,
+not two.
+
+### The answer rides the QUEUE, not a module-level signal
+
+`QueuedUpload` and `lastAttempt` both gain `ttlSeconds: number | null`. The
+selection is a signal created PER REQUEST inside `openSendConfirm`, so a
+displaced or cancelled dialog takes its half-made choice with it and the next
+drop starts from the preference again.
+
+Three layers at dispatch, and each one is load-bearing: the batch's own answer
+first, the stored preference behind it, the host default last. An operator who
+never opens the confirm still gets their preference (the opt-out path enqueues
+`null`, which is the whole of the pre-#2094 behaviour); one who opens it and
+leaves the dropdown alone gets the value the dropdown was showing them.
+
+The seconds are resolved to a host token at DISPATCH, never in the dialog. A
+token picked when the operator dropped the file would be a token for whichever
+host was active then, and `activeHost()` is a reactive read of an admin
+setting.
+
+A RETRY re-sends on the terms that were chosen, which is why `lastAttempt`
+carries the field: re-reading the preference there would silently change the
+answer the operator gave, in the one path where they never see the dialog
+again.
+
+The seed is checked against the ACTIVE host's ladder rather than taken at face
+value. `upload_ttl_seconds` is a bare integer with no host attached, so a
+preference the current host cannot serve would seed the dropdown with an
+option that is not in it — a control showing a selection it does not have.
+
+### What was deliberately NOT built
+
+The choice is not written back to `upload_ttl_seconds`. A one-off stays
+one-off, and a dialog opened to LOOK at the files is not where a durable
+preference should change by accident. No "remember this" checkbox: that is a
+third control on a dialog that already gained one.
+
+No server change. The ladder cic offers for the embedded host IS
+`@allowed_ttl_seconds` spelled in seconds, and the wire shape is unmoved — no
+`protocol_version` implication.
+
+### Playwright cannot read an upload request's body — measured, and it decided the oracle
+
+The e2e for this went red twice on the same line, and the second red is the
+interesting one. The spec asserted on the multipart body of the real
+`POST /api/uploads`, read off the intercepted request. It came back EMPTY.
+
+The first cure was wrong in an instructive way. `postData()` returns the body
+decoded as UTF-8 and answers `null` when that fails, which a body carrying PNG
+bytes guarantees — a correct mechanism, correctly described, and **not the one
+operating**. Swapping in `postDataBuffer()?.toString("latin1")` did not move
+the symptom: empty before, empty after. The displacement test came back
+negative, which is what retracts a diagnosis.
+
+**What is actually true** (vjt's lead, measured here rather than left as a
+guess — standalone Playwright 1.59.1 driving Chrome 152 on Windows via
+`executablePath`, three POSTs through ONE collector):
+
+| body | `postData()` | `postDataBuffer()` |
+|---|---|---|
+| multipart **with a `File`** | `null` | `null` |
+| multipart, text parts only | `string(244)` | `buffer(244)` |
+| plain `expire=3600` | `string(11)` | `buffer(11)` |
+
+The two controls read fine through the same listener, so the collector works
+and the `File` is the variable. Chromium hands a body assembled from a file to
+the network stack as a data pipe and never gives the bytes to the Network
+domain, so there is nothing to decode and **no amount of decoding is a cure**.
+Declared limit: this is the host's Chrome and not CI's bundled Chromium build,
+and one Playwright version — but the mechanism is the browser's, and CI's two
+reds are the same symptom.
+
+**So the oracle moved from the request to the CONSEQUENCE**, which is the
+better one anyway: the 201's `expires_at` is what the SERVER decided, so the
+spec now asserts the file really will be deleted an hour from now rather than
+that cic spelled a form field correctly. It is a window (30 min .. 2 h), not
+an equality, because the timestamp carries the server's clock and is read
+against the runner's; the thing it must be distinguished from is the 24-hour
+default, which is nowhere near either edge.
+
+**General rule for a new e2e: an upload request body is not observable — assert
+on the response, or on server state.** And the reason the second red could be
+read at all is that the stages had been split one commit earlier (vjt's
+review): one collapsed assertion had reported "no upload happened", "the answer
+could not be read" and "the answer was wrong" with the same empty string.

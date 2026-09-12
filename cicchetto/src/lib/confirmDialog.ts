@@ -87,6 +87,48 @@ export type ConfirmAttachment = {
   preview: ConfirmPreview | null;
 };
 
+// #2094 — one option of the request's optional single-choice control.
+export type ConfirmChoiceOption = {
+  // What `value()` compares against and `onSelect` receives. A string because
+  // that is what a `<select>` deals in; a caller whose domain value is a
+  // number spells it and reads it back at its own boundary, the same way the
+  // attachment rows arrive pre-formatted.
+  value: string;
+  // What the operator reads (e.g. "24 hours").
+  label: string;
+};
+
+// #2094 — an OPTIONAL single choice, asked alongside the question rather than
+// after it. Same terms as `alternative` and `attachments`: the store carries a
+// pre-formatted control and knows nothing about what is being chosen.
+//
+// Why the confirm and not a settings pane: a dialog that already shows WHICH
+// files are going out is the one place the operator knows what this batch is
+// worth, and a preference set once in a drawer cannot be told that. The
+// upload TTL is its first caller (vjt's ruling on #2094, option 1); the store
+// does not know that, and a second caller asking a different one-of-N
+// question needs nothing here.
+//
+// Deliberately ONE choice and not a list of them: a confirm dialog asks one
+// question, and a second control on it would be a form wearing a modal's
+// chrome. A caller that needs two is a caller that needs a form.
+export type ConfirmChoice = {
+  // VISIBLE label, and the accessible name with it — the modal wraps the
+  // control in a `<label>` so there is exactly one. Unlike the SettingsDrawer
+  // ladder, which sits under a `<legend>` naming the group (#1227 removed the
+  // second name there), a dropdown alone in a dialog says only "24 hours" and
+  // nothing about what happens then.
+  label: string;
+  options: ReadonlyArray<ConfirmChoiceOption>;
+  // Reactive, like `attachments.items`: the modal re-renders the selection
+  // without the request being replaced (which would re-run the open
+  // transition and steal focus back to the default button).
+  value: () => string;
+  // The caller owns the selection. The store does not hold it, so a request
+  // that is displaced takes its half-made choice with it.
+  onSelect: (value: string) => void;
+};
+
 export type ConfirmAttachments = {
   // Reactive on purpose: a removal must re-render the list WITHOUT replacing
   // the request (which would re-run the modal's open transition and steal
@@ -120,6 +162,9 @@ export type ConfirmRequest = {
   // Same explicit-`null` contract as `alternative`, and for the same reason:
   // a text-only dialog says so in its own call site.
   attachments: ConfirmAttachments | null;
+  // #2094 — same explicit-`null` contract again: a dialog that asks nothing
+  // beyond yes/no says so where it is written, not by opening the modal.
+  choice: ConfirmChoice | null;
   // #1964 — which button takes focus on open, i.e. what a bare Enter answers.
   // Explicit on every call site, like the two fields above: which key sends
   // and which key discards must be readable at the call site, not by opening

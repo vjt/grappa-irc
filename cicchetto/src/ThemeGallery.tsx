@@ -229,6 +229,7 @@ const ThemeGallery: Component<Props> = (props) => {
       onConfirm: () => void remove(theme),
       alternative: null,
       attachments: null,
+      choice: null,
       defaultButton: "cancel",
     });
 

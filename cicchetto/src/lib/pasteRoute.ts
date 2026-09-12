@@ -235,6 +235,7 @@ function routeGuardedText(
           onSelect: () => uploadPastedText(text, networkSlug, channelName),
         },
         attachments: null,
+        choice: null,
         defaultButton: "cancel",
       });
       return;
@@ -251,6 +252,7 @@ function routeGuardedText(
         // uploading IS the affirmative and there is nothing else to offer.
         alternative: null,
         attachments: null,
+        choice: null,
         defaultButton: "cancel",
       });
       return;

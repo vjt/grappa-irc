@@ -159,6 +159,7 @@ export function confirmDetach(onDone: () => void): void {
     onConfirm: () => void detach().then(onDone),
     alternative: null,
     attachments: null,
+    choice: null,
     defaultButton: "cancel",
   });
 }
@@ -176,6 +177,7 @@ export function confirmQuit(onDone: () => void): void {
     onConfirm: () => void quit().then(onDone),
     alternative: null,
     attachments: null,
+    choice: null,
     defaultButton: "cancel",
   });
 }

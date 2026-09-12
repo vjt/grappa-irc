@@ -146,6 +146,7 @@ const leaveChannelRequest = (onConfirm: () => void): ConfirmRequest => ({
   confirmLabel: "Yes",
   onConfirm,
   alternative: null,
+  choice: null,
   attachments: null,
   defaultButton: "cancel",
 });

@@ -71,6 +71,7 @@ export const fanOutCommand: CommandHandler<"ame" | "amsg"> = async (cmd, ctx) =>
       },
       alternative: null,
       attachments: null,
+      choice: null,
       defaultButton: "cancel",
     });
     return { ok: `/${cmd.kind}: ${targets.length} channels — confirm to send` };
