@@ -1,6 +1,12 @@
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 import solid from "vite-plugin-solid";
+// issue 2098 — the precache-revision salt that makes the notification samples
+// change identity at every cut. Lives in `src/lib/` for the same reason the
+// icon set below does: it is shared build-time logic, and there it is
+// unit-testable by the cic vitest run (`__tests__/precacheSalt.test.ts`). It
+// imports nothing, so it drags no SolidJS graph into this config.
+import { saltPrecacheRevisions } from "./src/lib/precacheSalt";
 // S18: the manifest icon set is the single source of truth shared with the
 // service-worker's Web Push notification icon (`src/lib/pwaIcons.ts`), so a
 // rename can't silently drift the SW into a 404 path.
@@ -254,6 +260,18 @@ export default defineConfig({
         // case. They are ordinary same-origin assets with the endpoint's
         // default caching; the browser keeps them across a session either way.
         globIgnores: ["radio-logos/**"],
+        // issue 2098 — Workbox refetches a precache entry only when its
+        // url+revision pair moves, and the samples have neither a hashed url
+        // nor a moving revision, so an install that cached the SPA shell under
+        // `sounds/*.mp3` during the #2088 window stays silent through every
+        // subsequent deploy. Salting their revision with the build version
+        // gives them a new identity at each cut, so the poisoned body is
+        // refetched on the first load after the deploy with no user gesture.
+        // The full argument, the measured scope and the two loud guards are in
+        // `src/lib/precacheSalt.ts`; vjt's ruling is on the issue.
+        manifestTransforms: [
+          (entries) => ({ manifest: saltPrecacheRevisions(entries, CIC_VERSION) }),
+        ],
       },
     }),
   ],
