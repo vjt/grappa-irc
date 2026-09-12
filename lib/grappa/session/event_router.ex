@@ -2833,7 +2833,23 @@ defmodule Grappa.Session.EventRouter do
   # ~1/min — continuous protocol noise. `pong` closes that; `ping` is
   # belt-and-braces for a malformed param-less `PING\r\n` that misses the
   # Server clause's `[token | _]` guard and would otherwise fall through.
-  @no_persist_verbs ~w(authenticate pass oper ping pong)a
+  # issue 2097 — `cap` joins the list on vjt's ruling ("core +
+  # generalizzazione"). `Session.Server` claims ACK, DEL and NEW with
+  # dedicated clauses, so what reaches here is LS, NAK, LIST and whatever
+  # subcommand IRCv3 adds next — all of which used to persist a
+  # `:server_event` and render verbatim in the cic status window through
+  # `renderRawEvent`'s default arm. Deny-listing the VERB rather than the
+  # subcommands is the point: CAP is negotiation chatter in every phase, and
+  # the list already exists to say exactly that ("verbs with no user-facing
+  # content that must never touch scrollback", #210).
+  #
+  # Accepted price, ruled on explicitly rather than discovered: the
+  # registration-phase `CAP * LS :multi-prefix sasl …` blob has been landing
+  # in `$server` on EVERY connect since the catch-all existed — `IRC.Client`
+  # forwards every parsed line to the Session before the FSM step, and no
+  # phase gate stands between here and the persist. That row stops being
+  # written. Rows already in scrollback are untouched.
+  @no_persist_verbs ~w(authenticate cap pass oper ping pong)a
 
   defp do_route(%Message{command: command} = _, state)
        when command in @no_persist_verbs,
