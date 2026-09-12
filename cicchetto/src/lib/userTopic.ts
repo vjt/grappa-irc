@@ -39,7 +39,12 @@ import { clearSeen } from "./reconnectBackfill";
 import { setReconnecting } from "./reconnectingStatus";
 import { applyRecoverProgress, applyRecoverResult } from "./recoverProgress";
 import { purgeScrollback } from "./scrollback";
-import { noteConnectionState, selectedChannel, setSelectedChannel } from "./selection";
+import {
+  clearServerSeedCount,
+  noteConnectionState,
+  selectedChannel,
+  setSelectedChannel,
+} from "./selection";
 import { setServerReply } from "./serverReplyModal";
 import { applyServerSettings } from "./serverSettings";
 import { joinUser } from "./socket";
@@ -1300,6 +1305,14 @@ moduleRoot(() => {
             const key = channelKey(payload.network_slug, payload.target);
             purgeScrollback(key);
             clearSeen(key);
+            // issue 2096 — and the server `unread_counts` SEED for the key
+            // too, whose rows were just deleted. It is written by `/me` and
+            // the join reply and by nothing else, so without this it stands
+            // until the next cold load. Invisible until the archive launcher
+            // grew a rollup badge that sums seed keys with no window behind
+            // them; then it is a number with nothing left to read. Distinct
+            // from the read cursor immediately below, which stays ON PURPOSE.
+            clearServerSeedCount(key);
             void loadArchive(payload.network_slug);
           }
           return;
