@@ -54137,3 +54137,97 @@ quote precisely because it is one. Colour only: muted, never hidden.
 - Out of scope, as the issue says: turning the reply into a structured field
   with its own wire representation. This is a colour on a region that was
   already identified.
+<!-- entry #2089 -->
+
+---
+
+## 2026-09-12 — #2089: the DCC wire parser, and the two measurements that must outlive the ruling
+
+vjt reopened DCC on #sbiffo. #167 is closed not-planned, `README.md:289`
+lists DCC under **Out of scope** and `NON-GOALS.md:22` repeats it as **No
+DCC** — so the reversal is an ACT, it needs vjt's word, **it has not been
+made, and neither of those two files is touched here.** What landed is the
+one piece no product decision can move (the wire shape) and the two
+measurements a later reader would otherwise get wrong in both directions.
+
+### #1280's stated reason forbids the INBOUND leg — and receiving is OUTBOUND
+
+Entry #1280 says *"DCC is out of scope, permanently"*, and the reason it
+gives is: *"accepting **inbound** P2P connections from arbitrary IRC nicks
+has no place in that architecture"*. In `DCC SEND` the OFFERER listens and
+the RECEIVER dials out. So the two halves are not symmetric under that
+sentence: **grappa receiving a file is an outbound connect and is outside
+the recorded rationale; grappa sending one requires a listener and is
+squarely inside it.** Receive-only is therefore not a reversal of #1280 —
+it is work the recorded reason never reached. That asymmetry is the whole
+argument for shipping the receive half first, and it is not visible from
+the issue, which does not cite #1280 at all.
+
+Two riders. #1280 also says the question *"was never seriously
+considered"*, so the `permanently` is broader than the analysis behind it.
+And **passive/reverse DCC inverts the roles**: on `DCC SEND <name> <addr> 0
+<size> <token>` it is the RECEIVER that must listen, so "receive-only" does
+not imply "no listener" unless passive offers are refused outright.
+
+### The existing upload store cannot be the destination, and this is measured
+
+The issue's shape says the bytes *"land in the existing upload store as if
+the user had uploaded it"*. Three measurements say otherwise:
+
+- `UploadsController`'s `@mime_categories` is a **closed** MIME allowlist
+  (image / video / document / audio; unknown → 415). A `DCC SEND` carries
+  **no MIME at all** — a name and a size. Either everything outside the
+  allowlist is refused, which makes DCC useless for the archives that are
+  most of real DCC traffic, or the allowlist gets a hole, which weakens the
+  upload surface that already exists for everybody.
+- `GET /uploads/:slug` is **public and unauthenticated** by design —
+  `Uploads.get_by_slug/2` collapses four states into `:not_found` precisely
+  so the route offers no oracle. Committing a stranger's pushed bytes there
+  makes grappa an anonymous public file host.
+- #1280's own last paragraph already rules on this: the route stays
+  *"reserved for content the operator's own users chose to publish — never
+  a proxy for arbitrary third-party URLs."*
+
+`Grappa.Avatars` is the precedent and it went the other way for the same
+reason: a stranger-declared resource we fetch gets its OWN context, own
+storage root, own cap (200 MiB global / 2 MiB per fetch, deliberately
+independent of the uploads budget), own TTL and reaper. A shared data model
+with a type flag across two trust domains is the boundary violation
+CLAUDE.md names, not reuse. **The HTTP read path in the issue survives; the
+STORE does not.**
+
+### What shipped: `Grappa.IRC.DCC`, wire shape only, no call site
+
+`parse/1` takes the argument remainder `Grappa.IRC.CTCP.verb_args/1`
+already returns, so there stays exactly one CTCP framing parser. The
+address decodes to an `:inet.ip_address()` tuple because that is what
+`Grappa.Net.Ssrf.safe_public_ip?/1` takes — a peer-supplied address is
+textbook SSRF input, and the eventual dial site must reuse the #75 guard
+rather than grow a second one.
+
+Three refusals, each a safety property and not a shortcut. **The sizeless
+historical form** is refused because without a declared size a receiver
+cannot check a byte cap BEFORE dialling — the cap stops being a
+precondition — and because the right-to-left split that recovers an
+unquoted spaced filename stops being decidable. **Port 0 with no token** is
+refused because such an offer can be neither dialled nor answered.
+**Address literals** go through `:inet.parse_strict_address/1` only,
+matching Ssrf: a short or octal form must never be quietly decoded into
+loopback. The filename comes back **verbatim**, traversal shapes included,
+because nothing downstream may use it as a path — `Uploads.storage_path/2`
+derives every on-disk name from a base32 slug and raises otherwise, and a
+second weaker guard beside the real one is worse than none.
+
+`CHAT`, `RESUME` and `ACCEPT` return `{:unsupported_verb, verb}` rather
+than `:malformed`: whether grappa answers a resume is one of the open
+product questions, and a parser is the wrong place to settle it.
+
+**There is no call site, deliberately.** Consent, caps, address family and
+malware surface are all unresolved, and every one of them changes the shape
+of the code that would call this. If the ruling goes the other way, this
+entry and one module plus its test are what gets reverted — which is why it
+is one module and not a subsystem.
+
+**Not claimed:** no real DCC frame from a real client was ever observed for
+this work; the interop reading (notably that a classic sender BLOCKS until
+it sees the 4-byte cumulative ack) is protocol knowledge, not measurement.
