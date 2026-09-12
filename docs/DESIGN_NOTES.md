@@ -54470,3 +54470,115 @@ on the response, or on server state.** And the reason the second red could be
 read at all is that the stages had been split one commit earlier (vjt's
 review): one collapsed assertion had reported "no upload happened", "the answer
 could not be read" and "the answer was wrong" with the same empty string.
+<!-- entry #2096 -->
+
+---
+
+## 2026-09-12 — #2096: the archive rollup was already on the wire
+
+Fairy reported an archived window holding unread being invisible until you
+opened `ArchiveModal` AND expanded the right network group. The issue framed
+two ways to put a rollup on the launcher: eager-load every network's archive
+list on the client, or ship a server-side aggregate beside `/me`'s
+`unread_counts` seed. vjt ruled for the second; both premises were wrong in the
+same place, and the third option is what shipped.
+
+### The seed already carries archived windows, measured on the artefact
+
+`ReadCursor.bulk_unread_split/3` is driven purely from `read_cursors ⋈
+networks ⋈ messages`. There is no active-window filter anywhere in it, so the
+envelope carries EVERY window with a non-nil cursor — archived ones included.
+#532 B has been rendering the modal's per-row badges off exactly that seed
+since June, which is the same fact shipped.
+
+That was a code read, so it was taken to the far end of the tube before
+anything was built. A throwaway ConnCase test with a LIVE session against the
+fake ircd (the only shape in which `build_active_keyset` is not degenerate:
+without a session it falls on `{:error, :no_session}`, the keyset is empty and
+every target reads as archived) read two decoded HTTP bodies in one run —
+`GET /networks/:slug/archive` as the ORACLE for "is this archived", `GET /me`
+as the subject. Result:
+
+    oracle  GET /archive      : ["#m2096-archived", "#m2096-nocursor"]
+    subject GET /me unread_counts: {"#m2096-archived": 1, "m2096-peer": 1}
+
+Three controls, all asserted before any number was printed. POSITIVE: the DM
+`m2096-peer` is ACTIVE (open query window + live session), the oracle agrees,
+and it IS in the envelope — so the reader is pointed at the right place.
+NEGATIVE A: `#m2096-nocursor` has rows but no cursor, the oracle calls it
+ARCHIVED, and it is NOT in the envelope — so the envelope is not a mirror of
+the listing. NEGATIVE B: an invented key appears in neither. Neither set is a
+subset of the other, which is the strongest form the non-degeneracy can take.
+
+### Why that changes the ruling rather than just the cost
+
+vjt re-ruled on the measurement: derive client-side, no wire change, no
+`protocol_version` bump, and `loadArchive` stays lazy per group. Three things
+carried it.
+
+The missing half was never the counts — it was MEMBERSHIP, and membership is
+`seed − what the nav already draws`, which cic also already holds
+(`channelsBySlug` fans out to every network at boot; `query_windows_list` is
+pushed whole at user-topic join). Deriving beats duplicating (design
+discipline 1).
+
+A server aggregate at `/me` would have put a synchronous `GenServer.call` per
+network back on the cold-load path — `Session.list_channels/2` is
+`call_session` — which is precisely the work #498 took off it.
+
+And it would have been a BOOT-TIME SNAPSHOT. Nothing re-emits it when the
+operator opens the archived window, so the badge could not fall without a
+second push. The derivation is live for free: open the window, it becomes
+active, it leaves the set.
+
+### Shape
+
+`lib/archiveRollup.ts` — pure `rollupArchivedUnread(input)` plus a thin memo,
+the same split as `orderUnreadWindows` / `activeWindows`. The subtraction verb
+came OUT of `visibleArchiveForNetwork` into `archiveSuppressionForNetwork` +
+`archiveTargetSuppressed` (`lib/archive.ts`) rather than being restated: the
+archive now has two consumers asking the same question of different inputs
+(the fetched list vs the seed's keys), and two statements of it would drift the
+first time a window shape is added — at which point the badge counts a window
+the modal does not list, a number the operator cannot chase.
+
+`$server` is skipped (`list_archive/3` excludes it unconditionally) and so is a
+slug cic renders no group for (GH #105 unbound-but-retained networks still seed
+the envelope). With those two exceptions the rollup cannot over-count by
+construction: a key with unread has rows, and every non-active target with rows
+is in the listing.
+
+### One real bug the badge exposed
+
+`serverSeedCounts` is written by `/me` and the join reply and by nothing else,
+so a destructive `DELETE /networks/:slug/archive/:target` left its count
+standing until the next cold load. Invisible while nothing summed seed keys
+with no window behind them — the modal row goes with the listing refresh, the
+sidebar draws no archived window, `windowCandidates()` never enumerates one.
+The rollup is the first surface that does, so `archive_purged` now also calls
+`clearServerSeedCount(key)`. The read cursor in the same handler still does
+NOT clear, for the reasons already written there: a cursor is cross-device
+state the server owns; this map is a local projection of counts whose rows the
+server just deleted.
+
+### Mute, and three limits stated rather than discovered later
+
+The mute is untouched on purpose. "The mute always wins" is the rule for the
+on-screen AFFORDANCE and it leaves the COUNTS intact — the sidebar badges and
+the modal's own rows render a muted window's numbers. A count badge inherits
+that by doing nothing; subtracting mutes here would be a SECOND rule that no
+other badge obeys. The badge is also NOT dimmed when every contributor is
+muted (#1077's per-window treatment): "all of them are muted" is a different
+predicate from "this one is", and inventing it is the same second rule.
+
+Mentions are NOT a third pill. The issue and the rollup name messages and
+events; a mention is always also a content row, so `mentions > 0` implies
+`messages > 0` and omitting the pill can never hide the existence of unread —
+it loses a severity signal, nothing more.
+
+And the badge sits INSIDE the collapsed drawer: `RailActions` renders its menu
+under `<Show when={expanded() || open()}>`, and `expanded()` is true only on
+home (#1040). So on every other window the rollup is visible one tap in, not
+zero. That is one layer better than "open the modal and expand the group" and
+it is what the issue asked for; a dot on `rail-actions-launcher` itself is a
+separate decision, deliberately not taken here.
