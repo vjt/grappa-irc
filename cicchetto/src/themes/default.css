@@ -2583,6 +2583,18 @@ html.resize-dragging * {
   color: inherit;
 }
 
+/* issue 2096 — unread rollup cluster on a rail action (today: the archive
+   launcher). Same shape as `.archive-modal-unread`, which clusters the SAME
+   sidebar pills (.sidebar-msg-unread / -events-unread) at a row's trailing
+   edge — the rollup and the per-row badges behind the door have to read as
+   one thing. `margin-left: auto` against the row's `justify-content:
+   flex-start`, exactly like the launcher's ▸ caret. */
+.rail-action-unread {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+}
+
 /* #682 — the rail's radio surface, mounted directly above `.rail-actions` in
    BOTH Shell rail branches. Static position on purpose: the picker below is
    absolute against `.shell-members` (already `position: relative` for the

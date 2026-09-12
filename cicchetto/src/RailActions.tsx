@@ -2,6 +2,7 @@ import { useNavigate } from "@solidjs/router";
 import { type Component, createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import { refreshInCardHead, refreshSlot } from "./admin/refreshSlot";
 import { archiveSlugForSelection } from "./lib/archiveContext";
+import { archivedUnread } from "./lib/archiveRollup";
 import { activeAudio, playerHidden, showPlayer } from "./lib/audioPlayer";
 import { type ChannelKey, channelKey } from "./lib/channelKey";
 import { conversationMuteKey, isConversationMuted } from "./lib/conversationMute";
@@ -538,6 +539,22 @@ const RailActions: Component<Props> = (props) => {
               {"\u{1F4C2}"}
             </span>
             <span class="rail-action-label">archive</span>
+            {/* issue 2096 — the rollup of what is unread BEHIND this door.
+                Same two badge classes the sidebar and the modal's own rows
+                use, so messages and events stay distinguishable instead of
+                collapsing into one dot. Derived from the `/me` seed cic
+                already holds (lib/archiveRollup.ts) — no fetch, and no
+                eager archive load: `loadArchive` stays lazy per group. */}
+            <Show when={archivedUnread().messages > 0 || archivedUnread().events > 0}>
+              <span class="rail-action-unread" data-testid="rail-archive-unread">
+                <Show when={archivedUnread().messages > 0}>
+                  <span class="sidebar-msg-unread">{archivedUnread().messages}</span>
+                </Show>
+                <Show when={archivedUnread().events > 0}>
+                  <span class="sidebar-events-unread">{archivedUnread().events}</span>
+                </Show>
+              </span>
+            </Show>
           </button>
 
           {/* #71 INC-2 — settings cog. ALWAYS rendered; the cluster-wide
