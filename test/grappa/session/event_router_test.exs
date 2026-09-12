@@ -496,6 +496,73 @@ defmodule Grappa.Session.EventRouterTest do
       assert {:cont, ^state, []} = EventRouter.route(m, state)
     end
 
+    # 2097 — CAP is negotiation chatter and carries no user-facing content,
+    # but only ONE of its subcommands (ACK) has a dedicated Server clause:
+    # LS, NAK, NEW, DEL and LIST all reach this router through the catch-all
+    # delegate and persist a `:server_event` on $server. The field instance
+    # is a Solanum withdrawing an oper cap mid-session, rendered verbatim in
+    # the status window by `renderRawEvent`'s default arm:
+    #
+    #   *** osmium.libera.chat CAP * DEL ?oper_realhost solanum.chat/realhost
+    #
+    # Same disease, same cure and same reason as #210's `ping pong`: a verb
+    # with no user-facing content must never touch scrollback. The deny-list
+    # keys on the VERB, not the subcommand, which is also what answers "a cap
+    # we never negotiated is DELed — drop the line quietly".
+    #
+    # The positive controls for these four live in this same describe: WALLOPS
+    # and KILL still persist, so a deny-list that swallowed everything would
+    # turn those red rather than pass unnoticed.
+    test "CAP DEL deny-list: zero effects (2097, the `*` target seen in the field)" do
+      state = base_state()
+
+      m =
+        msg(
+          :cap,
+          ["*", "DEL", "?oper_realhost solanum.chat/realhost"],
+          {:server, "osmium.libera.chat"}
+        )
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+
+    # The target is the other axis the field line settles: a handler keyed on
+    # the session nick would miss `*`, and one keyed on `*` would miss the
+    # nick. Both forms are claimed.
+    test "CAP DEL deny-list: zero effects on the session-nick target too (2097)" do
+      state = base_state()
+      m = msg(:cap, ["vjt", "DEL", "labeled-response"], {:server, "osmium.libera.chat"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+
+    # The other half of the DEL/NEW cycle (an oper module reloaded upstream
+    # re-advertises the cap ten minutes later). It leaks through exactly the
+    # same hole.
+    test "CAP NEW deny-list: zero effects (2097, the other half of the cycle)" do
+      state = base_state()
+
+      m =
+        msg(
+          :cap,
+          ["*", "NEW", "?oper_realhost solanum.chat/realhost"],
+          {:server, "osmium.libera.chat"}
+        )
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+
+    # Not in the issue, same hole: `IRC.Client.process_line/2` forwards EVERY
+    # parsed line to Session.Server before running the FSM step, so the
+    # registration-phase LS blob reaches this catch-all on every single
+    # connect. Deny-listing the verb closes the older leak with the new one.
+    test "CAP LS deny-list: zero effects (2097, the registration-phase blob)" do
+      state = base_state()
+      m = msg(:cap, ["*", "LS", "multi-prefix sasl labeled-response"], {:server, "irc.example.org"})
+
+      assert {:cont, ^state, []} = EventRouter.route(m, state)
+    end
+
     test "{:numeric, _} without dedicated clause returns NO effects (Server owns numeric persist)" do
       # Critical: numerics also flow through EventRouter via Server's
       # numeric handler (server.ex:1555 calls EventRouter.route after
