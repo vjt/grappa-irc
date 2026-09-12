@@ -54582,3 +54582,75 @@ home (#1040). So on every other window the rollup is visible one tap in, not
 zero. That is one layer better than "open the modal and expand the group" and
 it is what the issue asked for; a dot on `rail-actions-launcher` itself is a
 separate decision, deliberately not taken here.
+<!-- entry #2098 -->
+
+---
+
+## 2026-09-12 — #2098: the sample precache entry never changed identity
+
+A PWA install that cached the SPA shell under `sounds/*.mp3` stayed silent
+through every later deploy, and the only field cure was deleting and
+reinstalling the app. Two facts combine: until #2088/#2092 `sounds` was missing
+from `@cic_static_only`, so those urls answered 200 `text/html`; and Workbox
+keys a precache entry by url+revision, where the samples' url is stable and
+their revision is the md5 of a file unchanged since #1480. The server fix
+cannot reach such an install, because the client never asks again.
+
+Measured here rather than reasoned, on a real build of 055c8362. The precache
+manifest is injected into `dist/service-worker.js` as one array: 28 entries,
+19 distinct urls. The five samples' revisions are exactly the md5 of the files
+in `public/sounds/`, and `dist/index.html` is 2467 bytes — the size vjt saw
+served for an mp3, so the poisoned body is the shell. Building twice across a
+simulated cut (VERSION 1.5.5 → 1.5.6) moves exactly ONE manifest entry,
+`index.html`; all five mp3 entries are byte-identical. That is the defect, and
+the positive control is in the same diff: something did change, so the harness
+is not blind.
+
+vjt ruled to salt the revision, and the ruling's own acceptance test is the
+sharp edge: the entry must change identity AT EVERY CUT, not only when the
+file's bytes change. It names two admissible routes, and one of them does not
+satisfy that test — moving the samples behind hashed urls makes identity track
+CONTENT, so it would repair the poisoned installs once and then never move
+again. The salt was chosen on that ground, not on cost; the hashed-url route is
+in fact cheaper (zero recurring bytes).
+
+Cost, measured against the estimate: the five samples are 43924 bytes
+(42.9 KiB), re-fetched once per cut, which is what "43 KB" in the issue refers
+to. The salt is the build VERSION and not a timestamp, so two builds of one
+release still agree and a rebuild does not churn the precache.
+
+Scope is the samples, and that is a measurement too. The icons, `favicon.ico`
+and `manifest.webmanifest` are equally stable-urled and equally unable to move,
+but they have always been in `@cic_static_only` — verified entry by entry
+against `cicchetto/public/`, all 12 present — so no install can hold a poisoned
+copy of them, and `spa_serving_test.exs` now walks that directory so none can
+silently leave the list again. Salting them too would re-download 22.4 KiB per
+cut against a hypothetical. Widening is one constant, deliberately left narrow.
+
+### The guard was mute, and that is why it prints
+
+Both refusals (`refuse/1`) write to stderr before they throw. With the prefix
+deliberately perturbed to `suoni/`, the build died at the right place — the
+stack names `saltPrecacheRevisions` inside workbox's `transformManifest` — but
+the message did NOT appear: zero occurrences of its text in the whole build
+log, against a positive control that found the frame. Rollup reports a throw
+from a plugin hook as the stack alone. A guard whose reason never reaches the
+operator makes them open the file to learn what a bare `Error` meant, so the
+reason is printed explicitly; re-measured after the change, it appears.
+
+### What is NOT asserted
+
+No browser ran. The repair itself — a poisoned install refetching on the first
+load after a deploy — is INFERRED from Workbox's url+revision key, not
+observed: there is no e2e lane on this slice, and a precache identity cannot be
+watched by installing a PWA headlessly anyway. The field half (an iOS PWA still
+silent against a correctly serving origin) is vjt's measurement, reproduced
+here only as far as the artefact. The e2e spec written alongside asserts the
+salt on the SERVED service worker and has never been executed on this host; its
+verdict is CI's.
+
+One observation recorded and not acted on: nine of the 28 manifest entries are
+duplicate urls carrying identical revisions (the icons and the webmanifest,
+listed both by `includeAssets` and by the glob). Workbox dedupes an identical
+url+revision pair, so this costs nothing today; it is noted so the next reader
+of that array does not mistake it for a symptom of this bug.
