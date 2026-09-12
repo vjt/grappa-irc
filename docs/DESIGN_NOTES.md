@@ -54654,3 +54654,153 @@ duplicate urls carrying identical revisions (the icons and the webmanifest,
 listed both by `includeAssets` and by the glob). Workbox dedupes an identical
 url+revision pair, so this costs nothing today; it is noted so the next reader
 of that array does not mistake it for a symptom of this bug.
+<!-- entry #2097 -->
+
+---
+
+## 2026-09-12 — #2097: a withdrawn capability, and what a CAP line is allowed to be
+
+**The defect.** `caps_active` had one writer — the CAP ACK seam — and no
+removal site, so a registered-phase `CAP DEL` left the session acting on a bit
+that had stopped being true. Two readers consume that bit and both were being
+lied to: `prepare_label/2` kept stamping `@label=` on outbound commands the
+ircd no longer correlates, and `IdentityState.account_identified?/1` kept
+counting an account the ircd had stopped promising to retract. Field instance,
+Solanum/Libera, an oper module reloading:
+`:osmium.libera.chat CAP * DEL ?oper_realhost solanum.chat/realhost`, and the
+same cap back ten minutes later as `CAP * NEW`.
+
+**The target is `*`, not the nick, and the fix inherits the right shape rather
+than inventing one.** The ACK clause already matched the target as `_`, so the
+DEL and NEW clauses do the same and both advertised forms travel one code
+path. A handler keyed on the session nick would have missed the very line that
+filed this; a handler keyed on `*` would miss the other. One clause, no
+branch.
+
+### The surfacing path: the issue declared it unmeasured, and this is the measure
+
+The issue asserted the missing handler (measured) but explicitly NOT where the
+raw line lands — *"measure the actual rendering path before assuming the status
+window is where it lands"*. It does land there, and the chain is now read end
+to end: no Session.Server clause matched, so `delegate/2` handed the line to
+`EventRouter`'s catch-all, which persisted a `:server_event` on `$server` with
+`raw_verb: "CAP"`; `ScrollbackPane.tsx` routes any row carrying `meta.raw_verb`
+to `renderRawEvent`, which has no CAP arm and falls to its default,
+`*** {sender} {verb} {params.join(" ")}`. Substituting the parsed params
+reproduces the reported line character for character. Honest limit: this is a
+derivation that COINCIDES with the field string, not an executed render.
+
+### Retiring the name IS the teardown — per cap, decided, not assumed
+
+* `account-notify` — nothing else to unwind.
+  `IdentityState.account_identified?/1` derives from `caps_active` at call
+  time, on the stated rule that "an account counts only where the ircd promised
+  to retract it". A DEL **is** that promise being withdrawn, so the verdict
+  falls back to the umode axis on the next read. `state.account` stays: it is
+  an observed fact, not a claim of identity.
+* `labeled-response` — outbound labelling stops for free (the gate is on the
+  set), and `labels_pending` is deliberately **not** cleared. Commands already
+  on the wire were labelled while the cap was live and the ircd still answers
+  THOSE labelled, so dropping the map would misroute precisely the replies that
+  are still correlatable. The map cannot grow afterwards, its only writer being
+  gated on the same cap. **Stated cost:** the lazy TTL sweep runs only on the
+  next prime, which never comes once the cap is gone, so a bounded residue
+  lives until the process dies. A one-shot `sweep_stale/3` inside the DEL
+  clause is the tidier alternative and was left on the table rather than taken:
+  it trades a still-valid correlation for a neater map.
+
+### CAP NEW does not activate anything — and the cycle is closed by asking
+
+Per IRCv3 cap-notify, `NEW` advertises that a capability became AVAILABLE;
+enabling one still takes a `CAP REQ` and its ACK. Unioning the NEW blob into
+`caps_active` "for symmetry" would declare active a cap the server never
+granted — this issue's bug wearing the other face. So NEW adds nothing, and
+the cap re-enters the set only through the ACK clause that granted it
+originally.
+
+That leaves a real degradation, recorded here because it was argued and then
+fixed rather than discovered later: with DEL removing and NEW adding nothing,
+a cycled cap would stay retired for the rest of the session even though the
+upstream re-offers it. Better than the stale bit, still worse than whole. The
+ruling took the fork: we re-request. The ask is intersected with
+`@tracked_caps` and **not** with AuthFSM's `@opportunistic_caps` — the two hold
+the same two names today, but `@tracked_caps` means "caps whose ACK this
+process records", so the intersection makes it impossible to request something
+whose grant we would then drop on the floor. The lists are deliberately NOT
+unified: same contents, different meanings, and fusing them would be a shared
+data model between two readings that may legitimately diverge.
+
+### 🔴 The re-REQ is gated on `registered_at`, and the gate guards a session kill
+
+`AuthFSM` matches a CAP ACK in all three `:awaiting_cap_ack*` phases and reads
+it as the answer to ITS request. An ACK elicited by our re-REQ mid-negotiation
+carries no `"sasl"`, so the FSM takes the else branch into
+`cap_unavailable/1` — which **crashes the session** on `auth_method: :sasl`
+(`:sasl_unavailable`) and **silently loses SASL** on `:auto`. A server sending
+`CAP NEW` during negotiation is unusual and entirely permitted, so an ungated
+re-REQ trades a rare upstream behaviour for a failed login.
+
+The FSM phase lives in the Client process, and `Session.Server` had **no**
+registration marker at all: `connected_at` stamps the TCP/TLS connect
+(`:irc_connected`), not 001, and the 001 clause wrote only
+`connection_stable_timer`. Hence one new field, `registered_at`, stamped on
+001, whose only reader is this gate — not a third liveness axis. It is read
+with `Map.get` and written with `Map.put`: a hot-reloaded pre-#2097 process has
+no such key, nil degrades to "skip the re-REQ" (the safe direction), and the
+map-update form would have raised `KeyError` on its next 001. Residual cost: an
+already-registered process that survives a hot reload never re-requests
+anything again. This field is the one piece beyond the ruling's own estimate,
+and the crash above is the whole reason for it.
+
+### One cap-list parser
+
+Two existed with different semantics — `AuthFSM.parse_cap_list/1` dropped the
+IRCv3.2 `=<value>` suffix, the ACK seam's inline copy kept it attached — and
+the DEL clause would have been a third. `parse_cap_list/1` is public now and
+both seams use it; `cap_req/1` followed for the same reason, the shape of a CAP
+line belonging to the module that speaks CAP. `Parser` could not host it (not
+exported from the `Grappa.IRC` boundary) and a new `Grappa.IRC.Cap` would have
+cost a module and an export to buy a name. **Side effect on an existing path:**
+the ACK seam starts tolerating a valued token. **Near-regression avoided:** the
+inline copy also trimmed each token, which the FSM's did not, so the merged
+parser gained the trim — unifying dry would have quietly cost the ACK path its
+tab tolerance.
+
+### The generalisation, and the price that was ruled on
+
+With the three subcommands claimed, what still reached the catch-all was LS,
+NAK, LIST and whatever IRCv3 adds next. `@no_persist_verbs` gains `cap`: the
+list exists to name "verbs with no user-facing content that must never touch
+scrollback", which is the wording the ping/pong entry (issue 210, 2026-07-11)
+put there for the identical disease — same catch-all, same one-line cure.
+Deny-listing the VERB rather than the subcommands is also what answers the
+issue's own "a cap we never negotiated is DELed → drop the line quietly".
+
+**Accepted price, ruled on explicitly rather than discovered:** the
+registration-phase `CAP * LS` blob has been landing in `$server` on every
+connect since the catch-all existed — `IRC.Client` forwards every parsed line
+to the Session before running the FSM step, and no phase gate stands between
+there and the persist. That row stops being written; rows already in scrollback
+are untouched. It rides in its own commit so the generalisation can be reverted
+without disturbing the capability-state fix.
+
+### What the tests establish, and what they do not
+
+The reds were RUN before being claimed, not predicted: with the cure stashed,
+eleven fail; with it, zero. All eleven were the new ones — no collateral. The
+identity test is the sharpest reading, because the same snapshot field reads
+`identified: true` on the parent commit and `false` here.
+
+Two of the new tests were written with a defective positive control (asserting
+a `CAP LS ` line that this fixture's credential never sends, since it
+negotiates no caps at all) and went red for that reason — the control caught
+itself. They now assert that the PONG barrier line is present in the sample,
+which is the stronger control anyway: it proves the observation window COVERS
+the point where a re-REQ would have appeared, which is exactly what an
+assertion of absence needs and a handshake line from before the feed does not
+give.
+
+Not established: nothing was measured against production (m42 is unreachable
+from the agent), and the `CAP LS` leak on every connect is read from the code
+path rather than observed in the field — no user ever reported it. The unit
+test is what makes that claim falsifiable.
