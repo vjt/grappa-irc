@@ -107,6 +107,19 @@ export const loadArchive = exports_.loadArchive;
 export const clearArchive = exports_.clearArchive;
 export const setArchiveModalOpen = exports_.setArchiveModalOpen;
 
+/**
+ * The folded names an archive surface must NOT show for one network, split by
+ * the set that owns each: channels the operator is in, query windows that are
+ * open, and the pseudo-rows this form factor's nav draws.
+ *
+ * Built by `archiveSuppressionForNetwork`; spent by `archiveTargetSuppressed`.
+ */
+export type ArchiveSuppression = {
+  channels: Set<string>;
+  queries: Set<string>;
+  pseudo: Set<string>;
+};
+
 // UX-2 — shared archive-visibility filter. Pre-UX-2 lived inline in
 // `Sidebar.tsx` as `visibleArchiveForNetwork/2`; UX-2 lifted it here so
 // the (then-two) archive surfaces could share one verb. #473 collapsed
@@ -153,6 +166,32 @@ export const setArchiveModalOpen = exports_.setArchiveModalOpen;
 export function visibleArchiveForNetwork(slug: string, networkId: number): ArchiveEntry[] {
   const entries = archivedBySlug()[slug] ?? [];
   if (entries.length === 0) return entries;
+  const suppressed = archiveSuppressionForNetwork(slug, networkId);
+  if (suppressed === null) return entries;
+  const casemapping = casemappingForNetwork(networkId);
+  return entries.filter(
+    (entry) =>
+      !archiveTargetSuppressed(suppressed, normalizeNick(entry.target, casemapping), entry.kind),
+  );
+}
+
+/**
+ * The three folded name sets an archive surface subtracts for one network —
+ * or `null` when the nav of this form factor draws NO row for the network at
+ * all, in which case the correct subtraction is the empty set.
+ *
+ * issue 2096 — extracted from `visibleArchiveForNetwork` because the archive
+ * grew a SECOND consumer: the launcher's rollup badge (`lib/archiveRollup.ts`)
+ * answers the same "does the nav already draw this window?" question over the
+ * unread SEED's keys instead of over the fetched archive list. Two statements
+ * of the subtraction would drift the first time a window shape is added, and
+ * the badge would then count a window the modal does not list — a number the
+ * operator cannot chase. One verb, two consumers.
+ */
+export function archiveSuppressionForNetwork(
+  slug: string,
+  networkId: number,
+): ArchiveSuppression | null {
   // issue 1985 — the premise stated above, applied whole: subtract what the
   // nav draws. A parked network is dropped at the ONE `<For>` in the desktop
   // Sidebar, so the nav draws NONE of its rows and the correct subtraction is
@@ -169,7 +208,7 @@ export function visibleArchiveForNetwork(slug: string, networkId: number): Archi
   // The predicate is `navDrawsNetwork` and not a local `isNetworkParked`
   // call: the form-factor half (mobile still draws these rows) belongs with
   // the rest of the nav reconciliation, not copied in here.
-  if (!navDrawsNetwork(slug)) return entries;
+  if (!navDrawsNetwork(slug)) return null;
   // #372: fold every comparison key with `normalizeNick` — the single client
   // mirror of the server fold. A service that replied as `DebugServ` archives
   // under that casing while the open window is `debugserv`; a raw `Set.has`
@@ -182,30 +221,49 @@ export function visibleArchiveForNetwork(slug: string, networkId: number): Archi
   // state, so both sides of each compare move together; on `:ascii` (all of
   // production) the behaviour is byte-for-byte what #372 shipped.
   const casemapping = casemappingForNetwork(networkId);
-  const liveChannels = new Set(
-    (channelsBySlug()?.[slug] ?? []).map((c) => normalizeNick(c.name, casemapping)),
-  );
-  const liveQueries = new Set(
-    (queryWindowsByNetwork()[networkId] ?? []).map((qw) =>
-      normalizeNick(qw.targetNick, casemapping),
+  return {
+    channels: new Set(
+      (channelsBySlug()?.[slug] ?? []).map((c) => normalizeNick(c.name, casemapping)),
     ),
-  );
-  // Reuse the ONE shared pseudo-row projection — folding its names
-  // (#372/#525/#1861) for the archive's own compare. See the block comment
-  // above for why this MUST NOT re-derive from raw windowState.
-  //
-  // #402: subtract what the nav of THIS form factor actually draws, not the
-  // whole projection. On mobile there is no Sidebar and the BottomBar draws
-  // only `:invited`, so subtracting `pending`/`failed`/`kicked`/`parked`
-  // there left the window with no surface at all. `navPseudoChannelsForNetwork`
-  // owns that narrowing for the navs too, so the two cannot drift.
-  const pseudoNames = new Set(
-    navPseudoChannelsForNetwork(slug, networkId).map((row) => normalizeNick(row.name, casemapping)),
-  );
-  return entries.filter((entry) => {
-    const folded = normalizeNick(entry.target, casemapping);
-    if (pseudoNames.has(folded)) return false;
-    if (entry.kind === "channel") return !liveChannels.has(folded);
-    return !liveQueries.has(folded);
-  });
+    queries: new Set(
+      (queryWindowsByNetwork()[networkId] ?? []).map((qw) =>
+        normalizeNick(qw.targetNick, casemapping),
+      ),
+    ),
+    // Reuse the ONE shared pseudo-row projection — folding its names
+    // (#372/#525/#1861) for the archive's own compare. See the block comment
+    // above `visibleArchiveForNetwork` for why this MUST NOT re-derive from
+    // raw windowState.
+    //
+    // #402: subtract what the nav of THIS form factor actually draws, not the
+    // whole projection. On mobile there is no Sidebar and the BottomBar draws
+    // only `:invited`, so subtracting `pending`/`failed`/`kicked`/`parked`
+    // there left the window with no surface at all.
+    // `navPseudoChannelsForNetwork` owns that narrowing for the navs too, so
+    // the two cannot drift.
+    pseudo: new Set(
+      navPseudoChannelsForNetwork(slug, networkId).map((row) =>
+        normalizeNick(row.name, casemapping),
+      ),
+    ),
+  };
+}
+
+/**
+ * Does the nav already draw a surface for this (already folded) target?
+ *
+ * `kind` is load-bearing and the two sets are NOT interchangeable: a nick
+ * that happens to spell a live channel must not silence the DM of the same
+ * spelling. Collapsing them into one union would be a bare union pretending
+ * to be kind-aware.
+ */
+export function archiveTargetSuppressed(
+  suppressed: ArchiveSuppression,
+  foldedTarget: string,
+  kind: ArchiveEntry["kind"],
+): boolean {
+  if (suppressed.pseudo.has(foldedTarget)) return true;
+  return kind === "channel"
+    ? suppressed.channels.has(foldedTarget)
+    : suppressed.queries.has(foldedTarget);
 }
