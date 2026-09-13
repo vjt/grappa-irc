@@ -31,6 +31,11 @@ defmodule GrappaWeb do
         Grappa.Cic.Wire,
         Grappa.ClientId,
         Grappa.DbLatency,
+        # issue 2089 — `DccFilesController.show/2` serves an accepted DCC
+        # file'"'"'s bytes. Same posture as the peer-avatar dep above: a
+        # stranger'"'"'s bytes are a separate trust domain from `Grappa.Uploads`,
+        # so they get their own context and their own authenticated route.
+        Grappa.Dcc,
         Grappa.Health,
         Grappa.HotReload,
         Grappa.IRC,
