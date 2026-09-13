@@ -55301,3 +55301,71 @@ string.
 Not established, unchanged from #2089 and #2089a: `scripts/integration.sh`
 has still not been run, nothing was measured against a real DCC peer, and
 nothing was measured on m42.
+<!-- entry #2089d -->
+
+---
+
+## 2026-09-13 — #2089d: why the DCC spool is not the upload store, written down late
+
+The code has held this decision since the slice shipped: DCC bytes go to
+`Grappa.Dcc`'s own spool, its own root, its own cap, its own reaper and
+its own authenticated route. What was never written down is WHY, and the
+reason it matters is that the issue body asked for the opposite — the
+bytes were to "land in the existing upload store as if the user had
+uploaded it". A decision that reversed the spec and left no argument
+behind is one rewrite away from being reversed back by someone reading
+the issue and not the code. **The defect recorded here is the missing
+reason, not the behaviour.**
+
+Salvaged from the superseded first iteration of this slice (branch
+`w1-2089`, never merged), whose entry carried the argument and was
+rewritten out.
+
+### Two measurements against reusing the upload store
+
+**The MIME allowlist is CLOSED, and a `DCC SEND` carries no MIME at
+all.** `UploadsController`'s `@mime_categories` is commented in the
+source as exactly that — *"Closed allowlist: unknown MIME → 415"* — over
+image / video / document / audio. A DCC offer carries a filename, an
+address, a port and a size; there is no content type anywhere in the
+wire shape. So reuse forces a choice between refusing everything outside
+the allowlist, which rejects the archives that are most of real DCC
+traffic, and punching a hole in the allowlist, which weakens the upload
+surface that already exists for everybody. Neither is a trade this slice
+is entitled to make on the uploads context's behalf.
+
+**`GET /uploads/:slug` is public and unauthenticated by design.** The
+router says so in as many words (*"NO `:authn`"*), and it is safe there
+because the 26-char base32 slug is a capability: `Uploads.get_by_slug/2`
+collapses FOUR distinct rejections into one `{:error, :not_found}` so
+the route offers no existence oracle. That posture is right for content
+a user chose to publish and wrong for bytes a stranger pushed at them —
+committing those there makes grappa an anonymous public file host, with
+the host's own users carrying the consequences.
+
+### The third argument was already on main, and I nearly missed it
+
+Entry #1280's closing paragraph already reserves the *"public,
+unauthenticated `GET /uploads/:slug` route ... for content the
+operator's own users chose to publish — never a proxy for arbitrary
+third-party URLs"*, and its 2089 amendment says the ruling REINFORCES
+that rather than bending it. So it is cited here, not restated.
+
+⚠️ Worth recording as method: the grep that went looking for that
+sentence came back EMPTY, and the sentence is right there. It is wrapped
+across a line break, so no line contains the phrase being searched for.
+The only thing that stopped a false "not documented anywhere" was a
+positive control confirming entry #1280 existed at all, which made the
+empty result implausible enough to look again by hand. **A grep over
+prose is a grep over LINES; an absence verdict on wrapped text needs a
+control that proves the search could have succeeded.**
+
+### The rejected alternative, and the precedent that settles it
+
+`Grappa.Avatars` faced the same question — a stranger-declared resource
+that grappa fetches — and answered it the same way: its own context, own
+storage root, own caps deliberately independent of the uploads budget,
+own TTL, own reaper. A shared data model with a type flag across two
+trust domains is the boundary violation CLAUDE.md names, not the reuse
+it encourages. The HTTP READ path from the issue survives intact; only
+the STORE was refused.
