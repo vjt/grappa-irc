@@ -2696,6 +2696,49 @@ export async function deleteInvite(
   if (!res.ok) throw await readError(res);
 }
 
+// issue 2089 — the two answers to a held DCC offer. Sibling doors to the
+// invite pair above, and for the same reason the invite's are two: accepting
+// and refusing are different verbs on the same noun, so they are a POST on a
+// sub-resource and a DELETE of the offer, not one URL whose meaning depends
+// on server-side state.
+//
+// **202, not 200**, and that is the shape of the feature: the transfer runs
+// detached and its outcome arrives as a scrollback row, never as this
+// response's body. `res.ok` covers it — nothing here reads the status.
+//
+// NEITHER door removes the offer client-side. The effect comes back as
+// `dcc_offer_resolved` on the user topic, on every device; see `dccConsent`
+// for why an optimistic drop would be wrong rather than merely eager.
+export async function postDccOfferAccept(
+  token: string,
+  networkSlug: string,
+  offerId: string,
+): Promise<void> {
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/dcc_offers/${encodeURIComponent(offerId)}/accept`,
+    {
+      method: "POST",
+      headers: buildHeaders(token),
+    },
+  );
+  if (!res.ok) throw await readError(res);
+}
+
+export async function deleteDccOffer(
+  token: string,
+  networkSlug: string,
+  offerId: string,
+): Promise<void> {
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/dcc_offers/${encodeURIComponent(offerId)}`,
+    {
+      method: "DELETE",
+      headers: buildHeaders(token),
+    },
+  );
+  if (!res.ok) throw await readError(res);
+}
+
 // Mirror of `GrappaWeb.ArchiveJSON.index/1` (CP15 B4) — wire shape:
 //   { "archive": [{"target", "kind", "last_activity"}] }
 // `row_count` was removed by #1626 (protocol v8): an exact per-target count
