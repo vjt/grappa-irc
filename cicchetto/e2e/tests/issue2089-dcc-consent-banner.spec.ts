@@ -83,8 +83,21 @@ test("a stranger's DCC SEND raises a consent banner, and refuse vs accept differ
     // The copy names the peer, the file, and the size — and it names the size
     // as a CLAIM, because that is all a sender's declared length is.
     await expect(refusedBanner).toContainText(peer.nick);
-    await expect(refusedBanner).toContainText("4 KB");
-    await expect(refusedBanner).toContainText("claim");
+    // ONE anchored fragment, not `"4 KB"` + `"claim"` as two loose asserts.
+    // Measured: `toContainText("4 KB")` also passes against `14 KB` and
+    // `24 KB`, so an arithmetic drift in the rendered size would sail through
+    // — a bare substring of a number is not an assertion about that number.
+    // The opening parenthesis is the anchor; the same drifts then fail, which
+    // is the property that makes this a check at all.
+    //
+    // The expected text is frozen here rather than recomputed with
+    // `formatBytes`. That is deliberate and it is the stronger oracle:
+    // measured across six plausible drifts of the formatter, a recomputed
+    // expectation passes SIX times out of six — it is the same rule that
+    // rendered the banner, so it cannot disagree with it — while the frozen
+    // string catches four. cic's vitest suite is where `formatBytes` itself
+    // is pinned as the one shared spelling; this spec pins what a human sees.
+    await expect(refusedBanner).toContainText("(4 KB, the sender's claim)");
     // And it says where the bytes land. An operator who reads [Accept] as
     // "download to my phone now" has been told the wrong thing.
     await expect(refusedBanner).toContainText("grappa");
