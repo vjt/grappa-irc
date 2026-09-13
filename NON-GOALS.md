@@ -19,13 +19,17 @@ belongs elsewhere — in a bot on the network, or behind a plain link.
 - **No inline image display** — #315. Image URLs stay URLs; the client renders
   text. Uploading and sharing a link is fine — embedding and rendering media in
   the scrollback is not.
-- **No DCC** — #167. No IRC-native peer-to-peer file transfer or chat (DCC
-  SEND, DCC CHAT). Sharing a file means uploading it to grappa and posting the
-  link, which is already how images, video and documents work; DCC instead
-  needs a direct connection between two clients, and the always-on bouncer
-  sitting between them is the wrong thing to broker it. This has been in
-  `README.md`'s out-of-scope list since `3c7a0357` — it is written here so the
-  answer is in one place.
+- **No DCC SEND from grappa, and no DCC CHAT** — #167, narrowed by issue 2089
+  (vjt, 2026-09-13). grappa does not OFFER files over DCC: the upload store
+  already hands out an HTTPS URL, so re-offering the same bytes over a second
+  transport buys nothing, and offering means LISTENING — accepting inbound P2P
+  connections from arbitrary IRC nicks, which is the thing an always-on
+  multi-user bouncer must not do. DCC CHAT is out for the same reason.
+  **Receiving is no longer a non-goal.** A peer's `DCC SEND` has grappa
+  connect OUT, which the listening objection never covered; the bytes land in
+  an authenticated DCC inbox rather than the public upload route, and passive
+  (reverse) DCC — where the roles invert and the RECEIVER listens — is refused
+  exactly so the objection keeps holding. See `DESIGN_NOTES` entry #2089.
 
 ## Why keep a list of things we won't build
 

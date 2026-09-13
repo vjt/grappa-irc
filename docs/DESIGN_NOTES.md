@@ -43718,6 +43718,19 @@ CTCP AVATAR reply grappa sends is **URL-only** — always an absolute
 `Grappa.Uploads.public_url/2` HTTP(S) URL, never a bare filename, so
 there is no DCC branch to trigger on either end.
 
+> ⚠️ **Amended 2026-09-13 (issue 2089) — only the sentence above that
+> asserts the present.** "Permanently" did not hold: the RECEIVE half is
+> now in scope. The reason RECORDED here is narrower than the ban it was
+> used to justify, and that is what let it be reversed without
+> contradiction — it condemns accepting **inbound** P2P connections, and
+> in `DCC SEND` the offerer listens while the receiver connects **out**.
+> Measured on this entry's own text: `inbound` appears once, `outbound`
+> and `connect out` zero times. The rest of this entry stands as written,
+> including the closing paragraph's reservation of the public
+> `GET /uploads/:slug` route for the operator's own users — the 2089
+> ruling REINFORCES it, sending stranger-pushed bytes to a separate
+> authenticated inbox instead. See entry #2089.
+
 **The avatar renders in the WHOIS card, not the member list and not
 scrollback.** This was a mid-plan correction: the first pass at this
 feature assumed a small icon next to the nick in the member list (like
@@ -54804,3 +54817,137 @@ Not established: nothing was measured against production (m42 is unreachable
 from the agent), and the `CAP LS` leak on every connect is read from the code
 path rather than observed in the field — no user ever reported it. The unit
 test is what makes that claim falsifiable.
+<!-- entry #2089 -->
+
+---
+
+## 2026-09-13 — #2089: the half of DCC the old ruling never condemned
+
+**The reversal, and why it is not a contradiction.** #167 was closed *not
+planned*; `README.md` has listed DCC under out-of-scope since `3c7a0357`;
+`NON-GOALS.md` repeated it; and entry #1280 wrote **"DCC is out of scope,
+permanently."** vjt reopened it on 2026-09-13 narrowed to RECEIVE only. The
+reversal costs nothing in consistency because **the reason #1280 recorded is
+narrower than the ban it was used to justify**: it condemns *"accepting
+**inbound** P2P connections from arbitrary IRC nicks"*, and in `DCC SEND` the
+OFFERER listens while the RECEIVER connects **out**. Measured on that entry's
+own text — `inbound` appears once, `outbound` and `connect out` zero times.
+So receive-only was never inside the recorded objection; **send is, in full,
+and stays out.** Send is also dead on its own merits (vjt, 2026-09-12): the
+upload store already hands out an HTTPS URL, so re-offering the same bytes
+over a second transport buys nothing.
+
+**A rule this leaves standing: a documented reason outlives the conclusion
+drawn from it.** The ban was broader than its own justification, and nobody
+noticed for a month because the conclusion is what gets quoted. When a
+standing ruling blocks a slice, read the REASON recorded with it before
+arguing against the ruling — the reason may already permit what you want, and
+if it does, that is a cheaper and more honest argument than asking for an
+exception.
+
+### Passive DCC is refused, and that is what keeps the above true
+
+In passive (reverse) DCC the sender advertises port `0` plus a token and the
+**receiver** listens. Accepting it would reinstate exactly the inbound posture
+#1280 condemned, which would make the paragraph above false. So it is refused
+— and refused as its OWN reason (`:passive_unsupported`), distinct from
+`:malformed`: a passive offer is well-formed and declined on policy, and the
+user reading the status line deserves that difference. `RESUME`/`ACCEPT` are
+an honest not-implemented, refused BY NAME (`{:unsupported_subcommand, verb}`)
+so the report can say which verb it declined rather than going quiet.
+
+### The address field is the sharp edge, and strictness is the guard
+
+The historical DCC address is a 32-bit unsigned integer (IPv4 only); an IPv6
+literal is the de-facto extension. Both decode to an `:inet` tuple in
+`Grappa.IRC.DCC`, and the literal path reuses `Grappa.Net.IpLiteral.to_tuple/1`
+— the tree's single STRICT literal parser — rather than a second hand-rolled
+one. **The strictness is load-bearing, not tidiness:** `017700000001` and
+`010.0.0.1` are refused rather than decoded to loopback, and a hostname is
+refused outright so a peer gets no DNS-rebind lever over a connection grappa
+makes on the user's behalf. Both are pinned by tests. Whether a decoded
+address may be DIALLED is a separate question with a separate owner
+(`Grappa.Net.Ssrf.safe_public_ip?/1`), applied with the other pre-connect
+policy rather than inside the parser.
+
+### The declared size is a claim, load-bearing before the dial and untrusted after
+
+`size` is what the sender says it will send. The per-transfer cap is checked
+against it BEFORE connecting, so an oversized offer costs no socket. The drain
+then stops at exactly that many bytes regardless of how many arrive: **without
+truncation, declaring low would be a general bypass of every size policy
+upstream of the transport.** The opposite lie is not forgiven — closing early
+is `{:short_transfer, received, declared}`, never a quiet success.
+
+### Nothing stranger-pushed persists un-reaped — including on the abort path
+
+Every failure arm of `Grappa.Dcc.Transfer` removes the partial spool before
+returning. This one **cannot be delegated to a sweeper**, and that is the
+general rule worth keeping: *an orphan no row points at is exactly what no
+sweeper can find.* A reaper enumerates rows; bytes written before any row
+existed are invisible to it by construction, so the code that created them
+owns their removal.
+
+Same ordering logic one step earlier: the spool file is opened BEFORE the
+socket, pinned by a test that breaks both and asserts the filesystem reason.
+**We do not dial a stranger we could not have stored the bytes for.**
+
+### Attribution splits, because a failure is not the peer speaking
+
+A DELIVERED file is the peer: they initiated the transfer, so the row carries
+their nick raw-cased as a `:privmsg` — which also pushes and counts unread,
+what a user wants when a file lands. A FAILURE is grappa's sentence. Hanging
+*"the connection was refused"* on a stranger's nick manufactures peer speech
+inside the user's own scrollback, so those rows take
+`Grappa.IRC.Message.anonymous_sender/0` and `:server_event` — the same pair,
+for the same stated reason, as the `$server` link-failure row: nobody said
+this, and it did not come off the wire. `:server_event` does not push, so a
+failure informs without buzzing a phone. This deliberately narrows a brief
+that said the synthesised message is attributed to the peer's nick: true of
+the delivered half, followed there, wrong for the other.
+
+### 📥 is chosen for what it is NOT
+
+cic keys inline media rendering off a CLOSED emoji map — 📸 image, 🎬 video,
+🎵 audio (`cicchetto/src/lib/mediaLink.ts`). DCC bytes are arbitrary and
+stranger-pushed, served `application/octet-stream` + `Content-Disposition:
+attachment` + `nosniff`, and this slice forbids any content sniff that
+PROMOTES a type. Picking one of those three **would have made the renderer the
+sniffer.** The test asserts the exclusion, not the decoration.
+
+### The filename: verbatim in the parser, neutralised at the display boundary
+
+`Grappa.IRC.DCC` keeps the peer's filename byte-for-byte, traversal shapes and
+all, because it is evidence of what was actually sent and the on-disk name is
+a minted slug anyway (the `Grappa.Avatars` precedent — the filename never
+reaches the filesystem). `Grappa.Dcc.Report` is where it is made safe to
+render: control bytes stripped (a `\x01` or a mIRC `\x03` run must not reach a
+rendered row; a CRLF must not forge a second line), length capped, non-ASCII
+untouched. No attempt is made to defeat a name that merely LOOKS like a URL —
+a peer who can offer a file can already send a PRIVMSG saying anything, so
+that is not a capability this path adds.
+
+### v1 is body text, so there is no wire change
+
+The surface is the synthesised message alone; a richer cic interface for
+offers and transfers is explicitly deferred. So no new `Scrollback.Meta`
+variant ships here, which means no wire-shape change and **no
+`protocol_version` bump**. The Meta docs for the link-failure row set the
+pattern to follow if that changes: body for the human now, a structured copy
+when a client wants to style it — additive, at the cost of the bump.
+
+### What this entry does NOT settle
+
+Three questions were open with vjt while the above was built, and nothing here
+assumes an answer: the TTL floor for committed inbox bytes when a user's
+`upload_ttl_seconds` is `nil` (which in the uploads model means *never
+expires*, colliding head-on with the criterion sentence); how a user ACCEPTS a
+held offer when v1 ships no UI and the tree has no server-side slash-command
+dispatcher; and the per-transfer cap VALUE, for which
+`ServerSettings.get_upload_per_file_cap_bytes/1` is no help because it is keyed
+by MIME category and a `DCC SEND` carries no MIME.
+
+Not established: nothing was measured against a real DCC peer. The transport
+is tested against a fake sender written for the purpose, over real loopback
+sockets; coinciding with the protocol on paper is not the same as having
+spoken it. Nothing was measured on m42.
