@@ -150,6 +150,7 @@ defmodule Grappa.HotReload.LongLivedModules do
     Grappa.Visitors.Reaper,
     Grappa.Uploads.Reaper,
     Grappa.Avatars.Reaper,
+    Grappa.Dcc.Reaper,
     Grappa.Accounts.Reaper
   ]
 
@@ -214,6 +215,7 @@ defmodule Grappa.HotReload.LongLivedModules do
           | Grappa.Visitors.Reaper
           | Grappa.Uploads.Reaper
           | Grappa.Avatars.Reaper
+          | Grappa.Dcc.Reaper
           | Grappa.Accounts.Reaper
 
   @typedoc """

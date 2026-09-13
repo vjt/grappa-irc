@@ -22,7 +22,13 @@ defmodule Grappa.ApplicationAmbientReapersTest do
   # No `mix test` run comes near an hour; production stays at 60s.
   @suite_ceiling_ms :timer.minutes(60)
 
-  @known [Grappa.Visitors.Reaper, Grappa.Uploads.Reaper, Grappa.Accounts.Reaper, Grappa.Avatars.Reaper]
+  @known [
+    Grappa.Visitors.Reaper,
+    Grappa.Uploads.Reaper,
+    Grappa.Accounts.Reaper,
+    Grappa.Avatars.Reaper,
+    Grappa.Dcc.Reaper
+  ]
 
   test "no application-supervised reaper is scheduled to tick during a suite run" do
     reapers = running_reapers()
