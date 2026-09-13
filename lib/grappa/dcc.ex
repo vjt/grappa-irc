@@ -102,6 +102,35 @@ defmodule Grappa.Dcc do
   # `31_536_000` (a year), so a subject who set a year is clamped here.
   @max_retention_seconds 3 * 24 * 60 * 60
 
+  # How long to wait dialling the address the sender published.
+  #
+  # NOT ours to invent: the house already answers this exact question.
+  # `Grappa.Net.ImageFetcher.Req`'s `@connect_timeout_ms` is the budget for
+  # dialling an address a stranger published, on the operator's behalf,
+  # off the CTCP AVATAR path — the same question with a different
+  # transport. Reusing its number is the answer; picking a second one
+  # would be inventing a disagreement.
+  @connect_timeout_ms 5_000
+
+  # How long the sender may go SILENT mid-file before the transfer is
+  # called dead. A different axis from the connect budget and from the
+  # image fetcher's `@receive_timeout_ms`, which is a TOTAL for a small
+  # body: `Grappa.Dcc.Transfer` clamps at the DECLARED size instead, so
+  # what is left to bound here is a stall, not a length.
+  #
+  # 30s is longer than a congested link's plausible pause and short enough
+  # that a sender who vanished is reported while the operator still
+  # remembers clicking accept.
+  #
+  # ⚠️ Known gap, deliberately not cured here: this bounds silence, NOT
+  # duration. A sender dripping one byte every 29 seconds holds a socket,
+  # a file handle and a task for as long as it likes, and only a TOTAL
+  # budget would stop it — which `Transfer.run/3`'s opts do not carry. The
+  # exposure is bounded by `Grappa.Dcc.Policy`'s daily accept quota and by
+  # the fact that every one of those accepts cost a human a deliberate
+  # click on a stranger's file.
+  @idle_timeout_ms 30_000
+
   @doc """
   Boot-time injection of the spool's storage root — mirrors
   `Grappa.Uploads.boot/1` and `Grappa.Avatars.boot/1`. Read ONCE here into
@@ -130,6 +159,20 @@ defmodule Grappa.Dcc do
   @doc "The whole spool's disk budget in bytes."
   @spec global_cap_bytes() :: unquote(@global_cap_bytes)
   def global_cap_bytes, do: @global_cap_bytes
+
+  @doc """
+  The `Grappa.Dcc.Transfer.run/3` opts for a production transfer.
+
+  ONE keyword list rather than two accessors, because `run/3` `fetch!`es
+  both and a caller that assembled them by hand could satisfy the
+  `fetch!` while disagreeing with the house on one of them. `Transfer`
+  itself deliberately holds no defaults — that is what makes it testable
+  at millisecond budgets — so the production numbers have to live
+  somewhere, and this is the context that owns every other DCC number.
+  """
+  @spec transfer_opts() :: [connect_timeout_ms: pos_integer(), idle_timeout_ms: pos_integer()]
+  def transfer_opts,
+    do: [connect_timeout_ms: @connect_timeout_ms, idle_timeout_ms: @idle_timeout_ms]
 
   @doc "The hard retention ceiling in seconds — see the moduledoc."
   @spec max_retention_seconds() :: unquote(@max_retention_seconds)
