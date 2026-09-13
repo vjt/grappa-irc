@@ -54804,3 +54804,180 @@ Not established: nothing was measured against production (m42 is unreachable
 from the agent), and the `CAP LS` leak on every connect is read from the code
 path rather than observed in the field — no user ever reported it. The unit
 test is what makes that claim falsifiable.
+<!-- entry #1911 -->
+
+---
+
+## 2026-09-11 — issue 1911: OIDC login for grappa/cicchetto, and the one wire shape it did register
+
+The door is `GET /auth/oidc/authorize` + `GET /auth/oidc/callback`, generic
+OIDC discovery + authorization code + PKCE (S256), against ONE
+operator-configured provider: `GRAPPA_OIDC_{ISSUER,CLIENT_ID,CLIENT_SECRET,REDIRECT_URI,SCOPES}`
+→ `runtime.exs` → `:grappa, :oidc` → `Grappa.Auth.Oidc.Config.boot/0` →
+`:persistent_term`, the `Grappa.Admission.Config` seam. An unset `:issuer` is
+the OFF state and every route answers a bare 404 — which is also how cic
+discovers the door: `fetch(…, {redirect: "manual"})` and a `opaqueredirect`/302
+means present. A browser cannot read a `Location` across a redirect, so the
+probe reads status and response type and nothing else; that is also why
+`beginOidcLogin` does `window.location.assign("/auth/oidc/authorize")` instead
+of fetching the route.
+
+Endpoints are never operator-named. The discovery document is read from
+`<issuer>/.well-known/openid-configuration` (`Grappa.Auth.Oidc.Discovery`,
+HTTPS only, issuer compared against the URL it was fetched from) and the token
+endpoint is taken from it, so a config typo cannot point the client secret at a
+look-alike host.
+
+### Identity is the `id_token`, and only the `id_token`
+
+`Grappa.Auth.Oidc.IdToken` verifies it against the provider's JWKS keyed by the
+header `kid`, under `JOSE.JWT.verify_strict/3` with an asymmetric-only
+algorithm allowlist — no `HS*` at all, because the client secret is a
+token-endpoint credential and admitting a shared-secret algorithm is the
+algorithm-confusion forgery `verify_strict` exists to close. Then the OIDC Core
+§3.1.3.7 claim set: `iss` against the CONFIGURED issuer, `aud`/`azp` against
+this client, `exp`/`nbf` at 60 s leeway, `nonce` by `Plug.Crypto.secure_compare`,
+`sub` non-empty. The access token that travels beside it is discarded unread and
+there is no userinfo fetch: an identifier taken from userinfo would need
+exactly these checks to be trustworthy, so the round trip buys nothing and owes
+a second request.
+
+### No auto-provisioning
+
+An `(issuer, subject)` nobody linked is refused `not_linked`, not provisioned.
+Linking happens only through `POST /me/oidc/link` from a live full session, and
+that action mints the round trip with the `user_id` already inside the
+transaction — the callback has no way to be re-pointed at another account. The
+reason is the whole point of the feature: the operator's account list stays the
+authority and the provider becomes a second way to authenticate an EXISTING
+account, not a way to create one. A JIT door would hand registration to whoever
+the provider vouches for.
+
+The provider's assertion does not waive the account's local second factor
+either. `Grappa.Accounts.Login.second_factor/1` — the same ladder
+`POST /auth/login` descends — sits between a verified token and a minted
+session: TOTP hand-cuffs into a `kind: "totp"` landing via
+`AuthController.second_factor_challenge/2` (reused, not copied), and an
+account whose only factor is a passkey is refused
+`second_factor_unsupported` rather than silently logged in.
+
+### `state`, and why the verifier never rides in it
+
+#1395's `Phoenix.Token` binding, one field wider: `{ip, client_id, txn_id}`.
+The id names a server-side one-shot store (`Grappa.Auth.Oidc.Transaction`,
+modelled on `Accounts.WebAuthnChallengeStore` — same TTL, same sweep, same
+take-consumes-it) holding the PKCE verifier. `Phoenix.Token` is a SIGNATURE,
+not an envelope, and `state` lands in the provider's access log — a verifier
+inside it would be handed to the party PKCE exists to defeat. The single-use
+take also closes the replay the signature cannot: a captured `state` cannot be
+spent twice.
+
+### The wire: one shape registered, the rest recorded as debt
+
+`:oidc_login` joined `Grappa.AdminEvents.Wire.login_throttle_door()` and the
+protocol moved 18 → 19 (the branch forked at 16; #2046 and #1480 took 17 and
+18 while it was out). This is the first time the #1393d additivity ruling
+fired on an ENUM MEMBER, and it is worth recording why the bump is right: the
+union is closed on the cic side (`ADMIN_EVENTS_WIRE_LOGIN_THROTTLE_DOOR` is
+generated), so the member is a real shape change even though the server
+emission is additive; and the door would have been MUTE without it — the house
+rule is that a credential door charges through `GrappaWeb.LoginThrottle.charge/4`,
+which is what turns the window-crossing charge into `login_throttled` for the
+operator's Events tab. A door charged by a bare `FailureWindow.record_failure/3`
+shuts in silence.
+
+The debt is the landing. Every outcome of the callback reaches cic as
+`/login#oidc=` + base64url JSON (`session` / `totp` / `linked` / `error`),
+built with an inline `Jason.encode!` and a redirect — there is no
+`GrappaWeb.*JSON` view, so `mix grappa.wire_pin` digests nothing and these
+shapes could drift with the gate green. They are deliberately NOT registered in
+this slice: producer and consumer ship together in this repo, and #1911's
+browser flow has exactly one client. The moment a third party can be handed
+these fragments the registration becomes load-bearing. Until then the only
+guard on the shape is cic's codec (`cicchetto/src/lib/oidc.ts`), which narrows
+every arm and refuses a malformed or unknown one — pinned by
+`__tests__/oidc.test.ts`.
+
+### What was not done
+
+No RP-initiated logout (the session is a local bearer; killing it is
+`DELETE /auth/logout`'s job and the provider session is the provider's), no
+multi-provider list, no token storage of any kind, and no live Kanidm
+acceptance run — no provider was reachable from the dev container, so the
+conformance claim rests on the spec-mandated checks above plus the Bypass-driven
+round trip in `test/grappa_web/controllers/oidc_controller_test.exs`. The
+acceptance pass against a real Kanidm is owed before this ships to a deploy
+that turns the door on.
+<!-- entry #1911b -->
+
+---
+
+## 2026-09-12 — issue 1911b: the acceptance pass owed above — a real Kanidm in CI
+
+`infra/oidc-e2e/` + `scripts/oidc-e2e.sh` boot the stack the dev container
+could not reach: a real Kanidm (server pinned by digest in the compose file,
+its CLI tools twin pinned to the same release) beside a `MIX_ENV=prod`
+grappa built from the repo-root Dockerfile, both host-networked, and BOTH
+legs of the authorization-code round trip driven by curl — link
+(bearer → login wizard → consent → `{"kind":"linked"}`) and login
+(provider-minted bearer answering `/me/oidc`). It runs as its own
+`oidc-acceptance` job in integration.yml, deliberately NOT a Playwright
+spec: the flow needs no browser, a Kanidm container in all four shards'
+stacks would be pure overhead, and a failure should read as "the OIDC door
+broke", not as one red spec in a 759-spec shard — the same reasoning as the
+shottino/cicchetto jobs in ci.yml.
+
+Everything is generated per run — CA + leaf for DNS localhost, admin
+recovery, person + TOTP, the OAuth2 client, grappa's prod secrets — and a
+rerun starts from scratch (`compose down -v`), so green means first-boot
+shape, not a warmed stack. Two lessons the rehearsal loop paid for. (1) The
+grappa container's CA trust is a MERGED bundle — the image's own CA store
+plus the run's CA, mounted over `/etc/ssl/certs/ca-certificates.crt` —
+because mounting the run CA alone deletes the system roots the image's own
+fetches still need. (2) A hand-rolled secret list in the harness forgot the
+VAPID pair and grappa refused to boot: a hand-maintained list is a bug farm
+the moment runtime.exs grows its next required secret, so the script is now
+the FOURTH consumer of `infra/packaging/gen-secrets.sh` (after postinstall,
+release-entrypoint and deploy.sh) — it writes the wiring and the client
+secret, the ONE generator owns the full secret set.
+
+Kanidm's own policy drove the driver's shape: 1.11 requires MFA on person
+credentials by default, so the person carries a TOTP and the wizard leg
+treats the 30s step boundary (never reuse a code — the enrollment verify
+may have consumed this step's); and OAuth2 resource servers are IDM
+entries, so the client is created as `-D idm_admin`, not admin — the
+domain admin gets a bare 403 AccessDenied on create (measured, 1.11.1).
+
+<!-- entry #1911c -->
+---
+
+## 2026-09-12 — issue 1911c: group gates, passwordless provisioning, and the NULL that had to travel with them
+
+The gate legs (`grappa_users` admits, `grappa_admins` elevates, everyone
+else earns `not_linked`) provision an account whose only credential is
+the provider's `sub` — `User.provisioned_changeset/2` inserts with NO
+password, and `Accounts.verify_password/2` answers
+`{:error, :invalid_credentials}` on a nil hash via `Argon2.no_user_verify/0`
+rather than crashing on a NULL. But `users.password_hash` was born NOT
+NULL (`CreateUsers`), and SQLite cannot drop a NOT NULL in place — the
+first provision died as `Exqlite.Error NOT NULL constraint failed:
+users.password_hash`, a 500 at the exact moment the gate was supposed to
+open. The rebuild migration (`AllowNullPasswordHashOnUsers`) first
+followed the `XorFkUserSettings` rename dance under
+`legacy_alter_table=ON`, and that is where it died NEXT: MEASURED on the
+bundled SQLite 3.53.3, the pragma reads back 1 yet the RENAME still
+rewrites every child's REFERENCES onto the throwaway name while
+`PRAGMA foreign_keys=ON`, in or out of a transaction — only
+`foreign_keys=OFF` keeps the children put, and that pragma is a no-op
+mid-migration-transaction. Both e2e runs therefore shipped a schema
+whose ten CASCADE children pointed at the dropped `users_old`, and the
+first `INSERT INTO sessions` answered `no such table: main.users_old`.
+The cure is the V7 precedent (`VisitorsExpiresAtNullable`): the
+sqlite-documented `PRAGMA writable_schema` REPLACE of the column text in
+`sqlite_master` — no child touched, no row moved, no FK-off window —
+plus ONE addition V7 never needed: an explicit `PRAGMA schema_version`
+bump, because a direct `sqlite_master` write does not move the schema
+cookie and `HotReload` runs the Migrator on the app's own serving pool,
+where the editing connection would keep enforcing the old NOT NULL from
+its cached schema. Pre/post-shape asserts + `foreign_key_check` +
+`integrity_check` close.

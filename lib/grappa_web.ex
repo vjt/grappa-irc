@@ -21,6 +21,12 @@ defmodule GrappaWeb do
         Grappa.AdminEvents,
         Grappa.AdminOverview,
         Grappa.Auth.IdentifierClassifier,
+        # #1911 — the OIDC provider conversation: discovery, authorize URL,
+        # token exchange, `id_token` verification and the identity link
+        # table, behind `Grappa.Auth.Oidc` alone (`client_secret` stays
+        # inside that boundary; `config/0` hands the web layer an opaque
+        # struct).
+        Grappa.Auth.Oidc,
         # M3b — `NetworksController.peer_avatar/2` serves a cached peer
         # avatar; `Grappa.Uploads.MimeExt`-shaped serving lives on
         # `Grappa.Avatars` directly (a separate trust domain from

@@ -185,7 +185,13 @@ let _socket: Socket | null = null;
 // serves an older server. The direction that would hurt is the other one, and
 // the server closes it: it treats an ABSENT key on the PUT as unchanged, so an
 // old bundle saving any other pref cannot mute a subject who opted in.
-export const CLIENT_PROTOCOL_VERSION = 18;
+//
+// 19 (#1911) — `login_throttle_door` gains `oidc_login`, so the Events
+// tab can name the door that tripped. A closed union on the cic side is
+// exactly why a purely additive server-side member still needs the number:
+// against this constant's predecessor the new event would have failed
+// narrowing and been dropped, hiding an attack on the login door.
+export const CLIENT_PROTOCOL_VERSION = 19;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

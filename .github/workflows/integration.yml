@@ -75,8 +75,11 @@ name: integration
 # only.
 
 on:
+  # oidc: temporary lane trigger (fork-only, drop before the upstream PR)
+  # so the acceptance job can be exercised by pushing the branch itself.
+  workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, oidc]
     paths:
       - "lib/**"
       - "cicchetto/src/**"
@@ -95,6 +98,9 @@ on:
       - "compose.yaml"
       - "VERSION"
       - "infra/packaging/version.sh"
+      - "infra/oidc-e2e/**"
+      - "scripts/oidc/**"
+      - "scripts/oidc-e2e.sh"
       - ".github/workflows/integration.yml"
   pull_request:
     branches: [main]
@@ -116,6 +122,9 @@ on:
       - "compose.yaml"
       - "VERSION"
       - "infra/packaging/version.sh"
+      - "infra/oidc-e2e/**"
+      - "scripts/oidc/**"
+      - "scripts/oidc-e2e.sh"
       - ".github/workflows/integration.yml"
 
 # Avoid duplicate runs on PRs from same-repo branches; cancel an
@@ -423,6 +432,50 @@ jobs:
           path: cicchetto/e2e/container-logs/gap-scan.tsv
           retention-days: 14
           if-no-files-found: ignore
+
+  # OIDC acceptance (#1911): a real Kanidm beside a MIX_ENV=prod grappa,
+  # both host-networked in docker, and BOTH legs of the authorization-code
+  # round trip driven by curl — link (self-service /me/oidc/link) and login
+  # (the provider-minted session bearer answering /me/oidc) — plus the
+  # #1911c gate legs (group-gated provisioning, admin flip and de-flip,
+  # outsider refusal, the passwordless account refused by the password
+  # door), a RAW leg where the script itself is the relying party on a
+  # second client (discovery shape, hand-built PKCE S256, ES256 id_token
+  # verified against the published JWKS with openssl, nonce/groups claims,
+  # userinfo sub, one-shot codes, wrong-secret and unregistered-redirect
+  # refusals), and the grappa-door hardening legs (bogus/replayed callback
+  # state, garbage bearer, link idempotence). This is the
+  # acceptance pass the #1911 commit owed: the unit suite proves grappa's
+  # half over Bypass with a hand-built ES256 keypair; only a real provider
+  # proves discovery parsing, PKCE S256, the id_token signature and the
+  # consent page against something grappa does not control.
+  #
+  # Deliberately its own job and NOT a Playwright spec in the e2e shards:
+  # the flow needs no browser (curl drives the UI wizard's form POSTs), a
+  # Kanidm container in all four shards' stacks would be pure overhead, and
+  # a failure should read as "the OIDC door broke", not as one red spec in
+  # a 759-spec shard. Same reasoning as the shottino/cicchetto jobs in
+  # ci.yml: separate toolchain, separate job, own verdict.
+  #
+  # Runs under the same path filter as the shards (the OIDC source lives
+  # under lib/**, the harness under infra/oidc-e2e/** + scripts/oidc-e2e.sh,
+  # all listed above). No submodules: the stack builds the repo-root
+  # Dockerfile (toolchain-only) and nothing else.
+  oidc-acceptance:
+    name: oidc acceptance (kanidm <-> grappa, MIX_ENV=prod)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run OIDC acceptance suite
+        # Everything is generated inside the script (CA, Kanidm recovery,
+        # person + TOTP, OAuth2 client, grappa prod secrets) — nothing
+        # secret comes from the workflow. Cold run compiles deps + app
+        # into the bind-mounted tree: several minutes, once.
+        run: scripts/oidc-e2e.sh
 
   # The one check name that cannot silently miss a shard (#1519).
   #

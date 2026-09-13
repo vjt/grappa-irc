@@ -1620,6 +1620,48 @@ export async function getTotpStatus(token: string): Promise<{ enabled: boolean }
   return (await res.json()) as { enabled: boolean };
 }
 
+// ─── #1911 — the OIDC account link ────────────────────────────────────────
+// A provider identity is never trusted to BE an account: grappa refuses to
+// auto-provision, so an account links itself here, once, while holding a
+// full session. Until it does, that provider cannot log in as anybody.
+
+// The URL the SPA is meant to navigate the BROWSER at (the round trip's
+// first hop is a navigation, not a fetch — see `lib/oidc.ts`).
+export type OidcLinkStart = { authorize_url: string };
+
+export type OidcIdentity = {
+  label: string | null;
+  linked_at: string;
+};
+
+export async function getOidcIdentity(token: string): Promise<OidcIdentity | null> {
+  const res = await fetch("/me/oidc", { headers: buildHeaders(token) });
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as { identity: OidcIdentity | null };
+  return body.identity;
+}
+
+// `readError(res, false)`, the same call `startTotpEnrollment` and the
+// passkey requests make: this is a full-session door, so a 401 here is a
+// dead bearer rather than a field the user mistyped — the 401 handler
+// owns it.
+export async function startOidcLink(token: string): Promise<OidcLinkStart> {
+  const res = await fetch("/me/oidc/link", {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) throw await readError(res, false);
+  return (await res.json()) as OidcLinkStart;
+}
+
+export async function unlinkOidc(token: string): Promise<void> {
+  const res = await fetch("/me/oidc", { method: "DELETE", headers: buildHeaders(token) });
+  // 404 is the "there was nothing linked" answer the settings page shows
+  // as such (grappa refuses to nod along), not a dead session.
+  if (!res.ok) throw await readError(res);
+}
+
 // #1283 — the account password is REQUIRED: the door re-authenticates,
 // because confirming the enrolment it opens revokes the account's other
 // browser sessions and hands out the recovery codes. Per-client tokens

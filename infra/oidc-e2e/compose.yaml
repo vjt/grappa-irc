@@ -1,0 +1,137 @@
+# OIDC acceptance stack (#1911): a real Kanidm next to a MIX_ENV=prod
+# grappa, both on the HOST network, plus nothing else. Driven end to end
+# by scripts/oidc-e2e.sh — never `docker compose` this file by hand
+# (CLAUDE.md: scripts are the only door to compose).
+#
+# HOST networking is load-bearing, not convenience: the Kanidm TLS cert
+# is issued for DNS "localhost" by the harness CA, so the issuer URL must
+# stay https://localhost:<port> end to end and the grappa container must
+# resolve `localhost:8443` to the KANIDM port — a bridge network gives
+# each container its own localhost and the certificate hostname check
+# fails from inside grappa no matter which names the certs carry. Same
+# reason the CA is mounted OVER Alpine's CA bundle: :public_key's
+# cacerts_get/0 reads that file, which is how grappa verifies both the
+# discovery document and the token endpoint.
+#
+# Both ports come from the invoking shell (scripts/oidc-e2e.sh exports
+# them), so a second instance can rehearse beside a stack that already
+# owns 8443/4000 — CI runs on the defaults, a busy dev host does not.
+#
+# No grappa healthcheck here: the service command chain ends in
+# `exec bin/start.sh`, and the image's own HEALTHCHECK (curl
+# /healthz, Dockerfile) already covers it — the harness waits on the
+# same endpoint from the host side.
+name: grappa-oidc-e2e
+
+services:
+  kanidm:
+    # Kanidm 1.11.1 pinned by digest (supply-chain, same posture as the
+    # bun pin in ci.yml). Refresh deliberately:
+    #   docker buildx imagetools inspect kanidm/server:latest --format '{{.Manifest.Digest}}'
+    # The CLI twin (kanidm/tools, same release) is pinned in
+    # scripts/oidc-e2e.sh and MUST move with this one.
+    image: kanidm/server@sha256:7c3d7ed868e91f78c24a7fb9c548876563b375a4203021b730d58369b97ad154
+    container_name: grappa-oidc-kanidm
+    network_mode: host
+    # Server runs unprivileged — as the INVOKING uid, not a hardcoded one:
+    # `openssl genrsa` leaves key.pem 0600 owned by whoever runs the script,
+    # and on a GitHub runner that is uid 1001, so a container pinned to
+    # 1000:100 dies reading its own TLS key ("Failed to configure TLS
+    # acceptor ... PermissionDenied" — the never-came-up CI run of
+    # 2026-09-12). Same variable the grappa service below already uses; a
+    # fresh named volume still needs the one chown scripts/oidc-e2e.sh
+    # does before the first healthy start, now with the same ids.
+    user: "${CONTAINER_UID:-1000}:${CONTAINER_GID:-100}"
+    volumes:
+      - kanidm-data:/data
+      - ./runtime/server.toml:/etc/kanidm/server.toml:ro
+      - ./runtime/chain.pem:/certs/chain.pem:ro
+      - ./runtime/key.pem:/certs/key.pem:ro
+    command: ["/sbin/kanidmd", "server", "-c", "/etc/kanidm/server.toml"]
+    healthcheck:
+      # Image default omits -c so it never sees the config; pass it.
+      test: ["CMD", "/sbin/kanidmd", "scripting", "healthcheck", "-c", "/etc/kanidm/server.toml"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+
+  grappa:
+    # Toolchain-only image (same Dockerfile the dev stack builds); deps/
+    # and _build/ are installed into the bind-mounted repo tree by the
+    # command chain below, exactly like the e2e seeder. MIX_ENV=prod is
+    # the point: runtime.exs reads GRAPPA_OIDC_* in every env, but prod
+    # is the deployment shape the acceptance pass exists to prove, and
+    # it forces the full generated-secrets path a dev boot skips.
+    build:
+      context: ../..
+    image: grappa:oidc-e2e
+    pull_policy: never
+    container_name: grappa-oidc-grappa
+    network_mode: host
+    # Unique node NAME, not just a unique hostname: epmd keys a
+    # registration on the NAME part alone, so on a host network shared
+    # with the dev stack's node a second `-sname grappa` dies at boot
+    # with "name seems to be in use" whatever UTS hostname the container
+    # carries (measured 2026-09-12: the hostname-only trick never fixed
+    # the collision - earlier green runs simply had no other node up).
+    # GRAPPA_SNAME (bin/start.sh) renames THIS stack's node; the hostname
+    # stays for readable logs. CI needs it never, a busy dev host needs
+    # it every time.
+    hostname: grappa-oidc-e2e
+    user: "${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
+    working_dir: /app
+    volumes:
+      - ../..:/app
+      # Named volume, NOT a bind mount: /app/runtime holds the sqlite DB,
+      # and a checkout on a 9p share (the dev VM) fails SQLite WAL mmap
+      # with "disk I/O error" — the same hazard compose.override.yaml
+      # documents for the local lab.
+      - grappa-runtime:/app/runtime
+      # The MERGED bundle (image's public CAs + this run's acceptance CA,
+      # built by scripts/oidc-e2e.sh), not the bare CA: the boot chain's
+      # mix local.hex/deps.get reads the same file over httpc, so a
+      # bundle without the public CAs kills the first cold run with a
+      # TLS "unknown CA" — on the CI runner exactly as on a dev host
+      # (same shape as ../../cicchetto/e2e/oidc-certs/gen-certs.sh).
+      - ./runtime/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    # Generated per run by scripts/oidc-e2e.sh: PORT, PHX_HOST, the
+    # GRAPPA_OIDC_* quartet with this run's ports and the fresh client
+    # secret, plus the FULL prod secret set (SECRET_KEY_BASE, salts,
+    # RELEASE_COOKIE, encryption key, VAPID pair) filled into the same
+    # file by the ONE generator, infra/packaging/gen-secrets.sh.
+    # Nothing secret is committed.
+    env_file:
+      - ./runtime/grappa.env
+    environment:
+      MIX_ENV: prod
+      DATABASE_PATH: /app/runtime/grappa_prod.db
+      ELIXIR_ERL_OPTIONS: "+fnu"
+      # See the hostname comment above: the NAME part must differ from
+      # any other Erlang node on the shared host network.
+      GRAPPA_SNAME: grappa-e2e
+    command:
+      - "sh"
+      - "-c"
+      - |
+        set -e
+        # `.mix/`, `.hex/`, `deps/`, `_build/` live in the bind-mounted
+        # tree; the image bakes none of them (#364 docker S1). Cold run
+        # compiles from scratch, re-runs reuse the tree.
+        mix local.hex --force
+        mix local.rebar --force
+        mix deps.get
+        mix ecto.create
+        mix ecto.migrate
+        # No VAPID step here: the pair is in grappa.env from the ONE
+        # generator (infra/packaging/gen-secrets.sh, run host-side by
+        # scripts/oidc-e2e.sh). The chain used to mint its own pair with
+        # `mix grappa.gen_vapid` AFTER ecto.create — but runtime.exs
+        # raises on a missing VAPID at EVERY mix invocation that reads
+        # config, ecto.create included, so the chain never reached its
+        # own generator (that was rehearsal run 8's boot refusal).
+        exec bin/start.sh
+
+volumes:
+  kanidm-data:
+  grappa-runtime:

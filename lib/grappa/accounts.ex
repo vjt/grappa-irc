@@ -131,6 +131,56 @@ defmodule Grappa.Accounts do
   end
 
   @doc """
+  Creates a passwordless account for an OIDC-provisioned identity
+  (#1911c). Validation lives in `User.provisioned_changeset/2`; the two
+  refusals an operator can act on are named ATOMS, not changesets,
+  because the caller renders them to a human standing at the login
+  screen:
+
+    * `:name_taken` — an account with that name already exists. The
+      provider identity is NOT silently attached to it: if that account
+      is the same human, they link it themselves from settings
+      (`POST /me/oidc/link`); if it is not, the collision is the
+      operator's to resolve (rename one side).
+    * `:invalid_name` — the `preferred_username`'s local part does not
+      fit grappa's account-name format. The provider is the only source,
+      so this is a refusal, not a rewrite.
+
+  The changeset is fully validated before insert, so the only insert-time
+  failure is the uniqueness race a concurrent first login can lose.
+  """
+  @spec provision_user(%{required(:name) => String.t(), required(:is_admin) => boolean()}) ::
+          {:ok, User.t()} | {:error, :name_taken | :invalid_name}
+  def provision_user(%{name: name, is_admin: is_admin} = attrs)
+      when is_binary(name) and is_boolean(is_admin) do
+    changeset = %User{} |> User.provisioned_changeset(attrs)
+
+    if changeset.valid? do
+      case Repo.insert(changeset) do
+        {:ok, user} ->
+          {:ok, user}
+
+        {:error, %Ecto.Changeset{errors: errors}} ->
+          if constraint_kind?(errors, :unique), do: {:error, :name_taken}, else: {:error, :invalid_name}
+      end
+    else
+      {:error, :invalid_name}
+    end
+  end
+
+  # A changeset error entry is `{:field, {message, opts}}` and `opts`
+  # carries `constraint:` after the kind — read with `Keyword.get`, not
+  # matched: a keyword-list PATTERN is positional and refuses the
+  # two-entry list Ecto actually produces.
+  @spec constraint_kind?([tuple()], atom()) :: boolean()
+  defp constraint_kind?(errors, kind) do
+    Enum.any?(errors, fn
+      {_field, {_message, opts}} when is_list(opts) -> Keyword.get(opts, :constraint) == kind
+      _ -> false
+    end)
+  end
+
+  @doc """
   Verifies `name` + plaintext `password` against a stored Argon2 hash.
 
   Returns `{:ok, %User{}}` on a match, `{:error, :invalid_credentials}`
@@ -1015,9 +1065,18 @@ defmodule Grappa.Accounts do
   """
   @spec verify_password(User.t(), String.t()) :: :ok | {:error, :invalid_credentials}
   def verify_password(%User{} = user, password) when is_binary(password) do
-    if Argon2.verify_pass(password, user.password_hash),
-      do: :ok,
-      else: {:error, :invalid_credentials}
+    case user.password_hash do
+      # An OIDC-provisioned account (#1911c) has no password hash: the
+      # provider's `sub` is its only credential, so this door refuses —
+      # with the same timing shape as "no such user", because Argon2 on a
+      # nil hash would RAISE and turn the refusal into a 500.
+      nil ->
+        Argon2.no_user_verify()
+        {:error, :invalid_credentials}
+
+      hash ->
+        if Argon2.verify_pass(password, hash), do: :ok, else: {:error, :invalid_credentials}
+    end
   end
 
   @doc "Atomically disables TOTP and revokes every other bearer session."

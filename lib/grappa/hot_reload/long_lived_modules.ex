@@ -136,6 +136,12 @@ defmodule Grappa.HotReload.LongLivedModules do
     Grappa.ShareTokens,
     Grappa.RateLimit.DailyQuota,
     Grappa.RateLimit.FailureWindow,
+    # #1911 — the one-shot OIDC round trip (verifier + nonce + intent).
+    # Supervised sibling of the WebAuthn challenge store: `init/1` returns
+    # the bare `{:ok, %{}}` literal, so it is listed for the same reason
+    # the Coalescer below is — the day the pending round trip gains a
+    # field, that field-add is the hot-unsafe change.
+    Grappa.Auth.Oidc.Transaction,
     Grappa.RateLimit.TokenBucket,
     Grappa.Net.PtrCache,
     # #1768 — its `init/1` returns the bare `{:ok, %{}}` literal, which is
@@ -204,6 +210,7 @@ defmodule Grappa.HotReload.LongLivedModules do
           | Grappa.ShareTokens
           | Grappa.RateLimit.DailyQuota
           | Grappa.RateLimit.FailureWindow
+          | Grappa.Auth.Oidc.Transaction
           | Grappa.RateLimit.TokenBucket
           | Grappa.Net.PtrCache
           | Grappa.WindowCounts.Pusher.Coalescer

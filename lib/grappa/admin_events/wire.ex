@@ -418,6 +418,11 @@ defmodule Grappa.AdminEvents.Wire do
           | :passkey_recovery
           | :passkey_login_options
           | :share_token_consume
+          # #1911 — the OIDC round-trip door. A forged/replayed `state` is
+          # the failure it records, and it is a CREDENTIAL door like the
+          # others, so it charges through `GrappaWeb.LoginThrottle` and
+          # could not be added mute.
+          | :oidc_login
 
   @login_throttle_doors [
     :mode1_login,
@@ -425,7 +430,8 @@ defmodule Grappa.AdminEvents.Wire do
     :totp_login,
     :passkey_recovery,
     :passkey_login_options,
-    :share_token_consume
+    :share_token_consume,
+    :oidc_login
   ]
 
   @typedoc """
