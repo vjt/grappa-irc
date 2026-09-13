@@ -62,6 +62,25 @@ config :grappa, :uploads_storage_root, Path.expand("../runtime/uploads_dev", __D
 # M3b — cached peer CTCP AVATAR images. Sibling dir, same runtime/ bind-mount.
 config :grappa, :peer_avatars_storage_root, Path.expand("../runtime/peer_avatars_dev", __DIR__)
 
+# issue 2089 — the DCC RECEIVE spool. Third sibling of the two above, same
+# runtime/ bind-mount, and it exists for the same reason they do:
+# `config/runtime.exs` derives this root INSIDE `if config_env() == :prod`,
+# so under :dev nothing sets it and `Application.fetch_env!/2` in
+# `Grappa.Application.start/2` raises before a single child starts. That
+# kills the e2e harness (grappa-test runs MIX_ENV=dev) and the local docker
+# stack alike.
+#
+# Deliberately NOT the `:cic_dist_root` cure, which was hoisted OUT of the
+# prod block instead. That one is CODE: the built SPA is mounted at a path
+# only the container knows, so the READ of `CIC_DIST_ROOT` has to happen in
+# dev, and `config/config.exs` already supplies an absolute default for the
+# hoist's no-clobber arm to leave standing. This is DATA grappa creates
+# itself — an empty spool it owns — so there is nothing to discover from
+# the environment and no default to preserve; the env var stays prod-only
+# exactly as `UPLOADS_STORAGE_ROOT` and the avatar root already are, and
+# the two lines above are the pattern this one restores.
+config :grappa, :dcc_storage_root, Path.expand("../runtime/dcc_dev", __DIR__)
+
 config :grappa, GrappaWeb.Endpoint,
   http: [ip: {0, 0, 0, 0}, port: 4000],
   check_origin: false,
