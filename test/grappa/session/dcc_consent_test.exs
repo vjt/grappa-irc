@@ -99,6 +99,38 @@ defmodule Grappa.Session.DccConsentTest do
     end
   end
 
+  describe "the cold-subscribe snapshot" do
+    # Without this the banner evaporates on reload and the offer lapses
+    # unanswered — #482 in a second costume. It rides the SAME snapshot
+    # call as `invited_windows` rather than a sibling one, because #482
+    # measured what a second serial blocking call per network does to the
+    # login hot path.
+    test "carries the held offers, in the same payload the live event used" do
+      ctx = held_offer()
+
+      assert {:ok, snapshot} = Session.session_snapshot(ctx.subject, ctx.network.id)
+
+      assert snapshot.held_dcc_offers == [ctx.live_payload]
+    end
+
+    test "carries nothing when nothing is held" do
+      ctx = connected_session()
+
+      assert {:ok, snapshot} = Session.session_snapshot(ctx.subject, ctx.network.id)
+
+      assert snapshot.held_dcc_offers == []
+    end
+
+    test "stops carrying an offer the moment it is resolved" do
+      ctx = held_offer()
+      :ok = Session.refuse_dcc_offer(ctx.subject, ctx.network.id, ctx.offer_id)
+
+      assert {:ok, snapshot} = Session.session_snapshot(ctx.subject, ctx.network.id)
+
+      assert snapshot.held_dcc_offers == []
+    end
+  end
+
   describe "accept — the operator consents" do
     test "resolves the offer as accepted and stops holding it" do
       ctx = held_offer()

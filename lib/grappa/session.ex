@@ -1798,8 +1798,9 @@ defmodule Grappa.Session do
   Returns the per-session cold-WS-subscribe bundle for the user-topic
   after-join snapshot — the umode set (#229), the server-advertised
   supported umodes (#249), the `window_invited` payloads for EVERY
-  `:invited` window (#482), and the ISUPPORT table + LINELEN (#1255) — in
-  ONE round-trip.
+  `:invited` window (#482), the `dcc_offer` payloads for every HELD DCC
+  offer (issue 2089), and the ISUPPORT table + LINELEN (#1255) — in ONE
+  round-trip.
 
   Folded into a single call so `GrappaWeb.GrappaChannel.push_user_snapshot`
   makes ONE per-network `Session.Server` round-trip on the login hot path

@@ -2774,6 +2774,16 @@ defmodule Grappa.Session.Server do
         identified: IdentityState.identified?(state),
         account: Map.get(state, :account),
         invited_windows: WindowState.invited_windows(state.window_state, state.network_slug),
+        # issue 2089 — the DCC twin of `invited_windows`, riding the SAME
+        # call for the SAME measured reason: #482 established what a second
+        # serial blocking round-trip per network costs the login hot path.
+        #
+        # It is the whole reason a cold subscribe can be trusted. The
+        # `dcc_offer` banner is broadcast once and PubSub does not replay,
+        # so without this a reload leaves a file being held for the operator
+        # that nothing on screen mentions — and it lapses unanswered. #482's
+        # symptom exactly, on a store with a clock attached.
+        held_dcc_offers: DccOffers.held_offers(state.dcc_offers, state.network_slug),
         # #1255 — the ISUPPORT table + LINELEN ride this snapshot because the
         # fact is per (subject, network), like everything else here. The cold
         # replay used to hang off the PER-CHANNEL snapshot, which sent the
