@@ -2947,7 +2947,7 @@ defmodule Grappa.Session.Server do
     case DccOffers.drop(state.dcc_offers, offer_id) do
       {:ok, %{channel: channel}, offers} ->
         state = %{state | dcc_offers: offers}
-        :ok = broadcast_dcc_resolved(state, channel, offer_id, :refused)
+        broadcast_dcc_resolved(state, channel, offer_id, :refused)
         {:reply, :ok, state}
 
       {:error, :not_held} = err ->
@@ -7324,7 +7324,7 @@ defmodule Grappa.Session.Server do
     case DccOffers.drop(state.dcc_offers, offer_id) do
       {:ok, %{offer: offer, from: from, channel: channel}, offers} ->
         state = %{state | dcc_offers: offers}
-        :ok = broadcast_dcc_resolved(state, channel, offer_id, :expired)
+        broadcast_dcc_resolved(state, channel, offer_id, :expired)
         persist_dcc_report(state, channel, Report.render({:expired, offer.filename}, from))
 
       {:error, :not_held} ->
@@ -7343,10 +7343,11 @@ defmodule Grappa.Session.Server do
   # has ever subscribed to.
   @spec broadcast_dcc_resolved(t(), String.t(), String.t(), :accepted | :refused | :expired) :: :ok
   defp broadcast_dcc_resolved(state, channel, offer_id, resolution) do
-    Broadcaster.to_user(
-      state,
-      SessionWire.dcc_offer_resolved(state.network_slug, channel, offer_id, resolution)
-    )
+    :ok =
+      Broadcaster.to_user(
+        state,
+        SessionWire.dcc_offer_resolved(state.network_slug, channel, offer_id, resolution)
+      )
   end
 
   # The accept's second half: spend the quota, then either dispatch the
@@ -7356,12 +7357,12 @@ defmodule Grappa.Session.Server do
   defp admit_dcc_accept(state, offer_id, %{offer: offer, from: from, channel: channel}) do
     case Policy.admit_accept(state.subject) do
       :ok ->
-        :ok = broadcast_dcc_resolved(state, channel, offer_id, :accepted)
+        broadcast_dcc_resolved(state, channel, offer_id, :accepted)
         :ok = start_dcc_transfer(offer, from, channel)
         {:reply, :ok, state}
 
       {:error, refusal} = err ->
-        :ok = broadcast_dcc_resolved(state, channel, offer_id, :refused)
+        broadcast_dcc_resolved(state, channel, offer_id, :refused)
         state = persist_dcc_report(state, channel, Report.render({:refused, refusal}, from))
         {:reply, err, state}
     end

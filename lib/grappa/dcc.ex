@@ -170,7 +170,15 @@ defmodule Grappa.Dcc do
   at millisecond budgets — so the production numbers have to live
   somewhere, and this is the context that owns every other DCC number.
   """
-  @spec transfer_opts() :: [connect_timeout_ms: pos_integer(), idle_timeout_ms: pos_integer()]
+  # Same `unquote/1` pinning as the scalar accessors above, and for the same
+  # reason: `pos_integer()` is a `:underspecs` supertype of a list whose two
+  # values Dialyzer knows exactly. The non-empty `, ...` is part of the
+  # success typing too — the list is a literal, so it can never be empty.
+  @spec transfer_opts() :: [
+          {:connect_timeout_ms, unquote(@connect_timeout_ms)}
+          | {:idle_timeout_ms, unquote(@idle_timeout_ms)},
+          ...
+        ]
   def transfer_opts,
     do: [connect_timeout_ms: @connect_timeout_ms, idle_timeout_ms: @idle_timeout_ms]
 
