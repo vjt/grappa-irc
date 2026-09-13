@@ -31,6 +31,7 @@ defmodule Grappa.SubjectXorTest do
 
   alias Grappa.Accounts.Session
   alias Grappa.ChannelDirectory.Entry, as: DirectoryEntry
+  alias Grappa.Dcc.SpoolFile
   alias Grappa.Networks.Credential
   alias Grappa.Notify.Entry, as: NotifyEntry
   alias Grappa.Push.Subscription
@@ -50,7 +51,9 @@ defmodule Grappa.SubjectXorTest do
 
   # {schema, its subject-bearing changeset}. Eleven spell it `changeset/2`;
   # `Uploads.Upload` splits insert from soft-delete and only the former
-  # casts the subject FKs.
+  # casts the subject FKs, and `Dcc.SpoolFile` (issue 2089) has only an
+  # insert — a spooled file is written once and hard-deleted, never
+  # updated.
   @xor_schemas [
     {Session, :changeset},
     {Message, :changeset},
@@ -63,7 +66,8 @@ defmodule Grappa.SubjectXorTest do
     {Grant, :changeset},
     {Theme, :changeset},
     {Credential, :changeset},
-    {Upload, :insert_changeset}
+    {Upload, :insert_changeset},
+    {SpoolFile, :insert_changeset}
   ]
 
   describe "the XOR-FK population itself" do

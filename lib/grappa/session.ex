@@ -78,6 +78,15 @@ defmodule Grappa.Session do
       # `Avatars.get/2` to seed `whois_bundle`'s `avatar_url` synchronously.
       Grappa.Avatars,
       Grappa.ChannelDirectory,
+      # issue 2089 — `Session.DccOffers` mints its in-memory offer handles
+      # with `Dcc.mint_slug/0`, and `Session.Server` spools the drained
+      # bytes. `Grappa.Dcc.Report` is a SEPARATE top-level boundary (every
+      # `Grappa.Dcc.*` submodule is one), so naming the context does not
+      # reach it — the display-name projection needs its own edge.
+      Grappa.Dcc,
+      Grappa.Dcc.Policy,
+      Grappa.Dcc.Report,
+      Grappa.Dcc.Transfer,
       Grappa.IRC,
       Grappa.Log,
       Grappa.Mentions,
@@ -120,7 +129,7 @@ defmodule Grappa.Session do
     exports: [NSInterceptor, Server, Wire]
 
   alias Grappa.IRC.{AuthFSM, CTCP, Identifier}
-  alias Grappa.Session.{Deps, FloodAllowance, ISupport, Server}
+  alias Grappa.Session.{Deps, FloodAllowance, ISupport, Server, Wire}
   alias Grappa.UserSettings
 
   require Logger
@@ -1045,6 +1054,79 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Accepts the held DCC offer `offer_id` (issue 2089) — spends the
+  subject's daily accept slot and starts the transfer DETACHED.
+
+  `:ok` means ADMITTED and started, never that the file arrived: the
+  outcome lands as a scrollback row from `Grappa.Dcc.Report`, which is why
+  the REST door answers 202 and not 200.
+
+  The offer leaves the held set on EVERY path out of this call, refusals
+  included, and the drop fans out on the user topic — a device still
+  showing the banner would re-offer a file nothing will ever deliver.
+
+  Call (not cast): `{:error, :not_held}` must reach the caller as a 404,
+  the quota refusal must reach it as a 429, and the fan-out must precede
+  the reply so the acting device cannot race its own banner.
+
+  `offer_id` is an opaque handle this session minted. It is NOT validated
+  here beyond being a binary — an unknown one is `{:error, :not_held}`,
+  which is the same answer a well-formed handle for somebody else's offer
+  gets, and deliberately so: the held set is per-session, so there is no
+  cross-subject lookup to leak from.
+  """
+  @spec accept_dcc_offer(subject(), integer(), String.t()) ::
+          :ok
+          | {:error, :no_session | :timeout | :not_held | :rate_limited | :insufficient_storage}
+  def accept_dcc_offer(subject, network_id, offer_id)
+      when is_subject(subject) and is_integer(network_id) and is_binary(offer_id) do
+    call_session(subject, network_id, {:accept_dcc_offer, offer_id})
+  end
+
+  @doc """
+  Refuses the held DCC offer `offer_id` (issue 2089) — drops it and fans
+  the drop out on the user topic so every device loses the banner.
+
+  Sends NOTHING upstream, and unlike `decline_invite/3` that is a CHOICE
+  rather than a limitation: IRC does have a `DCC REJECT`. Emitting one
+  would confirm to an unsolicited stranger both that this nick is online
+  and that a human read their offer inside the hold window — a free
+  presence-and-attention probe. Silence is indistinguishable from away,
+  offline, or a client that does no DCC, and the sender's own listening
+  socket times itself out.
+
+  `{:error, :not_held}` for an unknown or already-resolved handle: this is
+  a REST-reachable door and a handle that names nothing is a 404, not a
+  success (CLAUDE.md: no silent-swallow at boundaries).
+  """
+  @spec refuse_dcc_offer(subject(), integer(), String.t()) ::
+          :ok | {:error, :no_session | :timeout | :not_held}
+  def refuse_dcc_offer(subject, network_id, offer_id)
+      when is_subject(subject) and is_integer(network_id) and is_binary(offer_id) do
+    call_session(subject, network_id, {:refuse_dcc_offer, offer_id})
+  end
+
+  @doc """
+  Every DCC offer this session is holding (issue 2089), in the wire shape
+  the live `dcc_offer` event carried.
+
+  Serves BOTH doors that need it — the cold-subscribe backfill and
+  `GET /dcc_offers` — off one projection, so a banner rebuilt after a
+  reload cannot disagree with the one the event drew.
+
+  `{:error, :no_session}` rather than an empty list when no session is
+  live: "holding nothing" and "nothing is holding" are different facts,
+  and collapsing them would let a client render a confident empty state
+  for a network that is simply down.
+  """
+  @spec list_dcc_offers(subject(), integer()) ::
+          {:ok, [Wire.dcc_offer_payload()]} | {:error, :no_session | :timeout}
+  def list_dcc_offers(subject, network_id)
+      when is_subject(subject) and is_integer(network_id) do
+    call_session(subject, network_id, {:list_dcc_offers})
+  end
+
+  @doc """
   Sets the topic on `channel` for the session's `(subject, network_id)`.
   Writes `TOPIC <chan> :<body>` upstream; the upstream server echoes the
   TOPIC back and `EventRouter` persists the canonical `:topic` scrollback
@@ -1716,8 +1798,9 @@ defmodule Grappa.Session do
   Returns the per-session cold-WS-subscribe bundle for the user-topic
   after-join snapshot — the umode set (#229), the server-advertised
   supported umodes (#249), the `window_invited` payloads for EVERY
-  `:invited` window (#482), and the ISUPPORT table + LINELEN (#1255) — in
-  ONE round-trip.
+  `:invited` window (#482), the `dcc_offer` payloads for every HELD DCC
+  offer (issue 2089), and the ISUPPORT table + LINELEN (#1255) — in ONE
+  round-trip.
 
   Folded into a single call so `GrappaWeb.GrappaChannel.push_user_snapshot`
   makes ONE per-network `Session.Server` round-trip on the login hot path

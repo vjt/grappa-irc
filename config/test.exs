@@ -153,6 +153,14 @@ config :grappa,
          __DIR__
        )
 
+# issue 2089 — the DCC spool, mirroring the two storage configs above.
+config :grappa,
+       :dcc_storage_root,
+       Path.expand(
+         "../runtime/dcc_test#{System.get_env("MIX_TEST_PARTITION")}",
+         __DIR__
+       )
+
 # #399 — point the embedded-frontend serving at a committed fixture
 # bundle (a Vite-shaped index.html + assets/ + backgrounds/ +
 # service-worker.js + manifest) so the SPA-serving + Bundle live-read

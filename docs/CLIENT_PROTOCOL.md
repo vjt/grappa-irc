@@ -399,6 +399,85 @@ resume and backfill messages from your last known id.
 Check `protocol_version >= 7` before relying on it. An older server will
 accept the join and quietly send you everything.
 
+### 4b. A peer offered the operator a file (issue 2089)
+
+grappa RECEIVES `DCC SEND`. It never listens, and it never dials until a
+human says so — so an inbound offer reaches you as a **consent prompt**,
+on the USER topic, and waits.
+
+```json
+{"kind": "dcc_offer", "network": "azzurra", "channel": "$server",
+ "offer_id": "n4xk…", "from": "alice",
+ "filename": "holiday.jpg", "size": 12345}
+```
+
+```json
+{"kind": "dcc_offer_resolved", "network": "azzurra", "channel": "$server",
+ "offer_id": "n4xk…", "resolution": "accepted"}
+```
+
+Four things you cannot derive from those payloads, and one of them will
+cost you a bug if you guess:
+
+**🔴 An offer is NOT window state, and there is deliberately no `state`
+field.** An offer sits IN a window; it is not one. If you mirror it into
+whatever store drives your sidebar, you will draw a pseudo-window for a
+file nobody has accepted. `channel` says where to RENDER the prompt and
+nothing more — and it is very often `$server`, because a CTCP from a
+stranger mints no window (the same rule a VERSION probe obeys). Render the
+banner in the window named; do not create one.
+
+**It expires on its own.** The server holds an offer for a bounded window
+and then resolves it with `"expired"`, whether or not anyone was looking.
+Do not treat a banner as durable UI, and do not keep one on screen after
+`dcc_offer_resolved` — that event is your only signal on every device, and
+a decision taken on a phone has to take the laptop's banner down.
+`resolution` is closed at three (`accepted` / `refused` / `expired`); a
+client that understands the kind and ignores the reason still behaves
+correctly, which is why it is one event and not three.
+
+**`accepted` means ADMITTED and started, never ARRIVED.** The transfer runs
+detached. The outcome lands as an ordinary scrollback row — a `privmsg`
+from the peer carrying a 📥 link when the bytes arrive, a `server_event`
+from grappa when they do not. Do not render progress you are not being
+sent.
+
+**The cold path is real and you need it.** The offer event is broadcast
+once and PubSub does not replay, so a reload loses the banner while the
+hold keeps running. Two doors serve the same fact: the user-topic
+after-join snapshot re-pushes every held offer as the SAME `dcc_offer`
+payload (no second code path), and `GET /networks/:network_id/dcc_offers`
+returns `{"offers": [...]}` of the same shape for a client not yet on the
+socket.
+
+Acting on one:
+
+| route | answer |
+|---|---|
+| `POST /networks/:network_id/dcc_offers/:offer_id/accept` | **202** `{"ok": true}` — admitted, not arrived |
+| `DELETE /networks/:network_id/dcc_offers/:offer_id` | 200 `{"ok": true}` |
+| `GET /networks/:network_id/dcc_files/:slug` | the bytes |
+
+404 `{"error": "not_held"}` on either write door means the handle names
+nothing — resolved on another device, or the hold elapsed. 429 and 507 on
+the accept are the daily allowance and the spool budget respectively.
+
+**🔴 Refusing sends NOTHING to the peer, and your copy must not imply
+otherwise.** IRC does have a `DCC REJECT`; grappa deliberately does not
+emit one, because it would confirm to an unsolicited stranger both that the
+nick is online and that a human read their offer. Label the × with what it
+does — "ignore this offer" — never "tell them no".
+
+The file route always answers `application/octet-stream` +
+`Content-Disposition: attachment` + `nosniff`, for any file. These bytes
+came off a stranger's socket and the sender declared no MIME type at all,
+so **do not sniff, preview, inline or auto-open them** — hand the download
+to the browser.
+
+Check `protocol_version >= 20` before relying on any of this. The two event
+kinds landed at 19 and the `not_held` token at 20, so 20 is the floor for
+the surface as a whole.
+
 ---
 
 ## 5. Wire format

@@ -1681,6 +1681,21 @@ defmodule GrappaWeb.GrappaChannel do
 
           Enum.each(snapshot.invited_windows, &push(socket, "event", &1))
 
+          # issue 2089 — the DCC consent banners, same treatment and same
+          # reason as the invited windows above: the live `dcc_offer` is
+          # broadcast once, PubSub does not replay, and a reload would
+          # otherwise leave a file being held for the operator that nothing
+          # on screen mentions.
+          #
+          # The payloads come from the SAME `Session.Wire.dcc_offer/6`
+          # expression the live event used, so a banner drawn from this
+          # snapshot cannot differ from the one the event drew. Pushed per
+          # payload rather than as one list frame, because a client that
+          # already handles the live kind needs no second code path —
+          # `GET /networks/:network_id/dcc_offers` is the REST twin of this
+          # fact for a client that is not on the socket yet.
+          Enum.each(snapshot.held_dcc_offers, &push(socket, "event", &1))
+
           # #1255 — the per-network ISUPPORT capability set + frame budget.
           # Lives HERE, not on the per-channel snapshot where #216 first put
           # it: the payload is keyed by `network_id` and describes the

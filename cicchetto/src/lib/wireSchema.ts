@@ -1723,6 +1723,7 @@ export const S_ErrorTokensRestErrorToken = {
     { l: "share_token_expired" },
     { l: "share_token_consumed" },
     { l: "not_invited" },
+    { l: "not_held" },
     { l: "validation_failed" },
   ],
 } as const;

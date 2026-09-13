@@ -554,6 +554,17 @@ defmodule GrappaWeb.Router do
     # any peer avatar cached for it).
     get "/peer_avatar/:slug", NetworksController, :peer_avatar
 
+    # issue 2089 — the DCC consent surface. TWO nouns on purpose: an OFFER
+    # is per-session memory whose hold runs out in minutes, a FILE is bytes
+    # on disk with a retention the reaper enforces. Same ResolveNetwork
+    # pipeline (ownership) as every route above, and the file door is
+    # deliberately NOT the public `/uploads/:slug` shape — a stranger's
+    # bytes are not something the operator's user chose to publish.
+    get "/dcc_offers", DccOffersController, :index
+    post "/dcc_offers/:offer_id/accept", DccOffersController, :accept
+    delete "/dcc_offers/:offer_id", DccOffersController, :delete
+    get "/dcc_files/:slug", DccFilesController, :show
+
     # #189 — on-connect perform list editor (raw IRC lines run SERVER-side
     # at 001, before the built-in identify + autojoin). Rides the same
     # ResolveNetwork pipeline (ownership) + the `networks` nginx allowlist

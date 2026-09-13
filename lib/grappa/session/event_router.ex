@@ -95,7 +95,8 @@ defmodule Grappa.Session.EventRouter do
   in `Session.Server.handle_info` — out of this router's scope.
   """
 
-  alias Grappa.IRC.{CTCP, Identifier, JoinFailure, Mask, Message}
+  alias Grappa.IRC.{CTCP, DCC, Identifier, JoinFailure, Mask, Message}
+  alias Grappa.IRC.DCC.Offer
   alias Grappa.{Mentions, Scrollback, Session}
   alias Grappa.RateLimit.TokenBucket
 
@@ -303,6 +304,19 @@ defmodule Grappa.Session.EventRouter do
           | {:invite_ack, channel :: String.t(), peer :: String.t()}
           | {:rejoin_invited, channel :: String.t()}
           | {:invited, channel :: String.t(), inviter :: String.t()}
+          # issue 2089 — an inbound `DCC SEND`, classified and nothing more.
+          # TWO effects rather than one carrying an ok/error tuple, because
+          # they are two different things that happened: one is an offer this
+          # bouncer could take, the other is an offer it already knows it
+          # cannot. `channel` is where the report or the banner renders —
+          # `ctcp_query_channel/3`, so a stranger's offer mints no window.
+          #
+          # The POLICY gate is deliberately not run here. This module is a
+          # pure classifier, and `Grappa.Dcc.Policy`'s two phases belong
+          # together at the doors that own them: `admit_offer/1` where the
+          # offer lands, `admit_accept/1` where the operator consents.
+          | {:dcc_offered, channel :: String.t(), from :: String.t(), Offer.t()}
+          | {:dcc_refused, channel :: String.t(), from :: String.t(), DCC.refusal()}
           | {:lusers_bundle, LusersAccum.t()}
           | {:whowas_bundle, target :: String.t(), WhowasAccum.t(), Grappa.Session.reply_to()}
           | {:list_mode_bundle, channel :: String.t(), mode :: ListModes.mode(), ListModeAccum.t(),
@@ -623,12 +637,23 @@ defmodule Grappa.Session.EventRouter do
         ctcp_userinfo_reply(msg, target, state)
 
       {"AVATAR", _} ->
-        # M3a — the KVIrc-era CTCP AVATAR convention, URL-only (never
-        # DCC — see `docs/DESIGN_NOTES.md`). Own function for the same
+        # M3a — the KVIrc-era CTCP AVATAR convention, URL-only (the
+        # bare-filename shape meant to be fetched over DCC is refused —
+        # see `docs/DESIGN_NOTES.md`). Own function for the same
         # reason USERINFO/PING are; also the one CTCP reply arm that
         # may choose NOT to reply (unset avatar has no useful answer —
         # see the function doc).
         ctcp_avatar_reply(msg, target, state)
+
+      {"DCC", args} ->
+        # issue 2089 — the ONE inbound CTCP arm that answers nothing. The
+        # four above it are queries with replies; a DCC SEND is an offer,
+        # and the whole ruling is that a stranger's file needs the
+        # operator's consent before anything is dialled. So this arm
+        # classifies and stops: no NOTICE goes back (see the PR body on
+        # why not even a `DCC REJECT`), no socket is opened, nothing is
+        # written. Own function for the same reason PING and USERINFO are.
+        ctcp_dcc_offer(msg, target, args, state)
 
       _ ->
         # Non-VERSION, non-PING CTCP (ACTION handled below; TIME /
@@ -3255,6 +3280,37 @@ defmodule Grappa.Session.EventRouter do
   # CTCP-framed REPLIES to `$server` unconditionally, open window or not,
   # because a reply is protocol we asked for. This is the QUERY direction,
   # and an open conversation still claims it.
+  # issue 2089 — an inbound `DCC <args>`, decoded and handed on. Emits
+  # exactly one effect and never a `:reply`: this is the only inbound CTCP
+  # arm that answers nothing.
+  #
+  # It calls `ctcp_query_channel/3` rather than restating where a CTCP
+  # from a stranger lands, for the reason that function's own comment
+  # gives: a second copy of the #546 rule is how the rule came to live in
+  # one branch while the traffic arrived on another. An offer therefore
+  # renders in `$server` unless there is already an open query with the
+  # sender — it mints no more of a window than a VERSION probe does.
+  #
+  # The parser's three refusals are carried through BY NAME rather than
+  # collapsed. `Grappa.Dcc.Report` owns the sentence for each, and an
+  # operator who is told "passive DCC asks this bouncer to listen" can act
+  # on it (ask the sender for an active offer) where "malformed" would
+  # leave them guessing.
+  @spec ctcp_dcc_offer(Message.t(), String.t(), String.t(), state()) ::
+          {:cont, state(), [effect()]}
+  defp ctcp_dcc_offer(msg, target, args, state) do
+    sender = Message.sender_nick(msg)
+    channel = ctcp_query_channel(target, sender, state)
+
+    effect =
+      case DCC.parse(args) do
+        {:ok, %Offer{} = offer} -> {:dcc_offered, channel, sender, offer}
+        {:error, refusal} -> {:dcc_refused, channel, sender, refusal}
+      end
+
+    {:cont, state, [effect]}
+  end
+
   @spec ctcp_query_channel(String.t(), String.t(), state()) :: String.t()
   defp ctcp_query_channel(target, sender, state) do
     if nick_eq?(target, state.nick),
@@ -3660,8 +3716,9 @@ defmodule Grappa.Session.EventRouter do
   # `http(s)://` URL dispatches a detached, SSRF-hardened fetch
   # (`Grappa.Avatars.fetch_and_cache/3`, off `Grappa.TaskSupervisor` —
   # never inline, it's a blocking HTTP round-trip); anything else (no
-  # URL, a bare filename — the legacy DCC offer this codebase never
-  # implements) is silently dropped. Marks `avatar_slug: :pending`
+  # URL, a bare filename — the legacy DCC-fetched avatar, which is not
+  # what issue 2089's DCC SEND receive implements) is silently dropped.
+  # Marks `avatar_slug: :pending`
   # BEFORE the fetch completes so a second reply (channel + private, or
   # a repeat) doesn't dispatch a second fetch for the same nick.
   #
@@ -3707,10 +3764,18 @@ defmodule Grappa.Session.EventRouter do
 
   # An `http://`/`https://` absolute URL only — the CTCP AVATAR
   # convention's OTHER reply shape (a bare local filename, meant to be
-  # fetched via DCC) is refused outright: grappa never implements DCC
-  # (see `docs/DESIGN_NOTES.md` #1280 — an always-on multi-user bouncer
-  # has no business accepting inbound P2P connections from arbitrary IRC
-  # nicks). `args` is the CTCP reply's whole remainder — KVIrc's own
+  # fetched via DCC) is refused outright.
+  #
+  # #1280's reason still holds and is narrower than it used to read here:
+  # an always-on multi-user bouncer has no business ACCEPTING INBOUND P2P
+  # connections from arbitrary IRC nicks. issue 2089 added DCC SEND
+  # RECEIVE, which never listens — it dials OUT to an address the sender
+  # published, and refuses passive (reverse) DCC by name for exactly the
+  # reason #1280 gives. This arm is unaffected either way: there is no
+  # DCC GET here, and an avatar fetched over a peer-to-peer socket would
+  # be a second transport for something HTTP already carries.
+  #
+  # `args` is the CTCP reply's whole remainder — KVIrc's own
   # `AVATAR <file> [<size>]` shape means a trailing size may follow the
   # URL; only the first token is the URL.
   @spec extract_avatar_url(String.t()) :: String.t() | nil

@@ -81,6 +81,7 @@ defmodule Grappa.Session.Server do
 
   alias Grappa.{
     ChannelDirectory,
+    Dcc,
     Log,
     Mentions,
     NickMigration,
@@ -91,7 +92,9 @@ defmodule Grappa.Session.Server do
     UserSettings
   }
 
+  alias Grappa.Dcc.{Policy, Report, Transfer}
   alias Grappa.IRC.{AuthFSM, Client, CTCP, Identifier, LineSplit, Mask, Message}
+  alias Grappa.IRC.DCC.Offer
   alias Grappa.Net.SourceAliasManager
   alias Grappa.PubSub.Topic
   alias Grappa.Push.Triggers, as: PushTriggers
@@ -102,6 +105,7 @@ defmodule Grappa.Session.Server do
     AwayState,
     Backoff,
     Broadcaster,
+    DccOffers,
     Deps,
     DirectoryIngest,
     EventRouter,
@@ -511,6 +515,15 @@ defmodule Grappa.Session.Server do
           # externally by cic from the archive surface, B4). See
           # `Grappa.Session.WindowState` for the full state machine.
           window_state: WindowState.t(),
+          # issue 2089: DCC SEND offers held awaiting the operator's
+          # consent, keyed by minted handle. Memory only and deliberately
+          # so — an offer names a live TCP endpoint of the peer's and is
+          # worth nothing once this process dies, so a crash reaps it for
+          # free. See `Grappa.Session.DccOffers`, whose `defstruct` is on
+          # `HotReload.LongLivedModules` `@state_helpers` for that reason:
+          # a field-add here is a state-shape change for every live
+          # session and must earn a COLD deploy.
+          dcc_offers: DccOffers.t(),
           # CP15 B2: in-flight JOINs awaiting upstream confirmation
           # (self-JOIN echo) or failure numeric (471/473/474/475/403/405).
           # Keyed by lowercase channel so the failure-numeric correlation
@@ -1134,6 +1147,7 @@ defmodule Grappa.Session.Server do
       peer_profile_cache: %{},
       show_peer_profiles: Map.get(opts, :show_peer_profiles, false),
       window_state: WindowState.new(),
+      dcc_offers: DccOffers.new(),
       in_flight_joins: %{},
       awaiting_invite: MapSet.new(),
       # UX-4 bucket A — canonicalise the autojoin list at boot so the
@@ -2760,6 +2774,16 @@ defmodule Grappa.Session.Server do
         identified: IdentityState.identified?(state),
         account: Map.get(state, :account),
         invited_windows: WindowState.invited_windows(state.window_state, state.network_slug),
+        # issue 2089 — the DCC twin of `invited_windows`, riding the SAME
+        # call for the SAME measured reason: #482 established what a second
+        # serial blocking round-trip per network costs the login hot path.
+        #
+        # It is the whole reason a cold subscribe can be trusted. The
+        # `dcc_offer` banner is broadcast once and PubSub does not replay,
+        # so without this a reload leaves a file being held for the operator
+        # that nothing on screen mentions — and it lapses unanswered. #482's
+        # symptom exactly, on a store with a clock attached.
+        held_dcc_offers: DccOffers.held_offers(state.dcc_offers, state.network_slug),
         # #1255 — the ISUPPORT table + LINELEN ride this snapshot because the
         # fact is per (subject, network), like everything else here. The cold
         # replay used to hang off the PER-CHANNEL snapshot, which sent the
@@ -2900,6 +2924,63 @@ defmodule Grappa.Session.Server do
       {:error, :not_invited} = err ->
         {:reply, err, state}
     end
+  end
+
+  # issue 2089 — the operator DECLINED a held DCC offer. Purely local for
+  # the same reason `{:decline_invite, _}` above is, plus one this door
+  # has that the invite door does not: IRC HAS a `DCC REJECT` verb, and we
+  # still send nothing.
+  #
+  # A REJECT would tell an unsolicited stranger two things at once — that
+  # this nick is online, and that a human read their offer within the hold
+  # window. That turns an ignored CTCP into a free presence-and-attention
+  # probe. Sending nothing is indistinguishable from being away, offline,
+  # or running a client that does no DCC, and the sender's own listening
+  # socket times out on its own: that cost is bounded and theirs, the
+  # oracle would not be.
+  #
+  # A `call` for the invite door's two reasons: `{:error, :not_held}` must
+  # reach the controller as a 404, and the fan-out must precede the HTTP
+  # response so the acting device cannot race its own banner.
+  @impl GenServer
+  def handle_call({:refuse_dcc_offer, offer_id}, _, state) when is_binary(offer_id) do
+    case DccOffers.drop(state.dcc_offers, offer_id) do
+      {:ok, %{channel: channel}, offers} ->
+        state = %{state | dcc_offers: offers}
+        broadcast_dcc_resolved(state, channel, offer_id, :refused)
+        {:reply, :ok, state}
+
+      {:error, :not_held} = err ->
+        {:reply, err, state}
+    end
+  end
+
+  # issue 2089 — the operator CONSENTED. Drop first, then spend the quota,
+  # then dispatch: the offer leaves the held set on every path out of this
+  # clause, including the refusals, because a device still showing the
+  # banner would re-offer a file nothing will ever deliver.
+  #
+  # `Policy.admit_accept/1` is called EXACTLY here and exactly once. It is
+  # check-and-record in one atomic call, so asking speculatively — at the
+  # REST door, say, to render a nicer error — would spend the answer.
+  @impl GenServer
+  def handle_call({:accept_dcc_offer, offer_id}, _, state) when is_binary(offer_id) do
+    case DccOffers.drop(state.dcc_offers, offer_id) do
+      {:ok, held, offers} ->
+        admit_dcc_accept(%{state | dcc_offers: offers}, offer_id, held)
+
+      {:error, :not_held} = err ->
+        {:reply, err, state}
+    end
+  end
+
+  # issue 2089 — every held offer, in the wire shape the live event used.
+  # Serves BOTH doors that need it: the cold-subscribe backfill and
+  # `GET /dcc_offers`. One projection, so a banner rebuilt after a reload
+  # cannot disagree with the one the event drew.
+  @impl GenServer
+  def handle_call({:list_dcc_offers}, _, state) do
+    {:reply, {:ok, DccOffers.held_offers(state.dcc_offers, state.network_slug)}, state}
   end
 
   @impl GenServer
@@ -3516,6 +3597,28 @@ defmodule Grappa.Session.Server do
   end
 
   def handle_info(:ghost_timeout, state), do: {:noreply, state}
+
+  # issue 2089 — one of these is armed per held DCC offer and nothing
+  # cancels it, so a message naming an offer that has already been
+  # accepted or refused is EXPECTED and is a no-op inside
+  # `expire_dcc_offer/2`. There is no armed-guard clause here for that
+  # reason: the guard would be on the map this function is about to look
+  # in anyway.
+  def handle_info({:dcc_offer_expired, offer_id}, state) do
+    {:noreply, expire_dcc_offer(state, offer_id)}
+  end
+
+  # issue 2089 — the detached transfer task reporting back. The ONLY thing
+  # it is contracted to do, and the reason the session and not the task
+  # writes the row: the report is scrollback, and scrollback goes through
+  # `apply_effects/2`, which is session state.
+  def handle_info({:dcc_transfer_done, slug, from, channel, filename, {:ok, bytes}}, state) do
+    {:noreply, store_dcc_delivery(state, slug, from, channel, filename, bytes)}
+  end
+
+  def handle_info({:dcc_transfer_done, _, from, channel, filename, {:error, failure}}, state) do
+    {:noreply, persist_dcc_report(state, channel, Report.render({:failed, filename, failure}, from))}
+  end
 
   # #581 — recover overall deadline: fail the sequence (never hang the
   # modal). Armed-guard clause; a late/duplicate tick after the FSM
@@ -6166,6 +6269,21 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, apply_invited(state, channel, inviter))
   end
 
+  # issue 2089 — an inbound DCC SEND the parser could read. Nothing has
+  # been dialled and nothing stored; `admit_dcc_offer/4` decides whether
+  # it is held for the operator or turned away with a reason.
+  defp apply_effects([{:dcc_offered, channel, from, offer} | rest], state) do
+    apply_effects(rest, admit_dcc_offer(state, channel, from, offer))
+  end
+
+  # issue 2089 — an offer the parser already refused (passive DCC, a
+  # subcommand we do not implement, a line we could not read). It is
+  # REPORTED rather than dropped: the operator watched a transfer not
+  # happen, and silence would leave them to conclude grappa is broken.
+  defp apply_effects([{:dcc_refused, channel, from, refusal} | rest], state) do
+    apply_effects(rest, persist_dcc_report(state, channel, Report.render({:refused, refusal}, from)))
+  end
+
   # CP15 B3 + cluster #6: own-target KICK → window transitions to
   # :kicked. Two concerns, one arm:
   #   1. State — `WindowState.set_kicked/4` records :kicked + by +
@@ -7141,6 +7259,225 @@ defmodule Grappa.Session.Server do
       )
 
     apply_effects([{:persist, :server_event, attrs}], state)
+  end
+
+  # issue 2089 — the second half of the intake: the policy gate, then the
+  # ceiling, then the hold.
+  #
+  # The two gates run HERE and not in the router because this is the side
+  # that owns what they bound. `Policy.admit_offer/1` is pure and could
+  # have run in the classifier; it does not, so that the policy's two
+  # phases stay together at the doors that own them (`admit_accept/1`
+  # cannot move — it reads the quota and the disk). The ceiling could not
+  # move: what it bounds is the held set, which lives on this struct.
+  #
+  # Every refusal — parser, policy, or ceiling — converges on ONE report
+  # row. The operator's question is "why did that file not arrive", and
+  # three vocabularies answering it in three places is how the answer
+  # comes to disagree with itself.
+  @spec admit_dcc_offer(t(), String.t(), String.t(), Offer.t()) :: t()
+  defp admit_dcc_offer(state, channel, from, offer) do
+    with :ok <- Policy.admit_offer(offer),
+         {:ok, offer_id, offers} <- DccOffers.hold(state.dcc_offers, offer, from, channel) do
+      hold_dcc_offer(%{state | dcc_offers: offers}, offer_id)
+    else
+      {:error, refusal} ->
+        persist_dcc_report(state, channel, Report.render({:refused, refusal}, from))
+    end
+  end
+
+  # Arms the expiry and announces the banner, in that order: the timer is
+  # what guarantees the offer cannot outlive its own socket, and a client
+  # that has the banner before the session has the timer would be looking
+  # at a prompt nothing will ever take down.
+  #
+  # The payload comes from `DccOffers.to_wire/3` rather than being built
+  # here, so the live event and the cold-subscribe backfill
+  # (`held_offers/2`) are the same expression — the CP15 B7 property
+  # `WindowState` holds for `:invited`. `Map.fetch!/1`-grade certainty:
+  # the handle was minted by the `hold/4` one line up.
+  #
+  # Nothing keeps the timer reference. See `DccOffers`' moduledoc — a
+  # resolved offer's timer fires into a `drop/2` that answers
+  # `{:error, :not_held}`, which is cheaper than a ref field whose
+  # housekeeping has to stay in step with the map it decorates.
+  @spec hold_dcc_offer(t(), String.t()) :: t()
+  defp hold_dcc_offer(state, offer_id) do
+    _ = Process.send_after(self(), {:dcc_offer_expired, offer_id}, DccOffers.hold_ms())
+
+    {:ok, payload} = DccOffers.to_wire(state.dcc_offers, state.network_slug, offer_id)
+    :ok = Broadcaster.to_user(state, payload)
+
+    state
+  end
+
+  # The hold ran out with the banner still on screen. Drop it, take the
+  # banner down on every device, and leave the one row that records the
+  # offer ever existed — a held offer lives in memory alone, so without
+  # this the whole episode is invisible in hindsight.
+  #
+  # `{:error, :not_held}` is the ORDINARY case, not an anomaly: an offer
+  # accepted or refused before its hold elapsed leaves a timer nothing
+  # cancelled. It is not logged for that reason.
+  @spec expire_dcc_offer(t(), String.t()) :: t()
+  defp expire_dcc_offer(state, offer_id) do
+    case DccOffers.drop(state.dcc_offers, offer_id) do
+      {:ok, %{offer: offer, from: from, channel: channel}, offers} ->
+        state = %{state | dcc_offers: offers}
+        broadcast_dcc_resolved(state, channel, offer_id, :expired)
+        persist_dcc_report(state, channel, Report.render({:expired, offer.filename}, from))
+
+      {:error, :not_held} ->
+        state
+    end
+  end
+
+  # The ONE way an offer leaves the held set visibly. All three exits go
+  # through it — accept, refuse, expiry — because the banner must come
+  # down on every device whichever one happened, and a device that missed
+  # the drop re-offers a file that is already resolved.
+  #
+  # The USER topic, like the offer itself: the held set is per-SESSION, so
+  # an accept taken on the phone has to reach the laptop, and the window
+  # the offer routes to (`$server`, for a stranger) may be one no client
+  # has ever subscribed to.
+  @spec broadcast_dcc_resolved(t(), String.t(), String.t(), :accepted | :refused | :expired) :: :ok
+  defp broadcast_dcc_resolved(state, channel, offer_id, resolution) do
+    :ok =
+      Broadcaster.to_user(
+        state,
+        SessionWire.dcc_offer_resolved(state.network_slug, channel, offer_id, resolution)
+      )
+  end
+
+  # The accept's second half: spend the quota, then either dispatch the
+  # transfer or report why not. The offer has ALREADY left the held set by
+  # the time this runs, on both branches — see the caller.
+  @spec admit_dcc_accept(t(), String.t(), DccOffers.held()) :: {:reply, term(), t()}
+  defp admit_dcc_accept(state, offer_id, %{offer: offer, from: from, channel: channel}) do
+    case Policy.admit_accept(state.subject) do
+      :ok ->
+        broadcast_dcc_resolved(state, channel, offer_id, :accepted)
+        :ok = start_dcc_transfer(offer, from, channel)
+        {:reply, :ok, state}
+
+      {:error, refusal} = err ->
+        broadcast_dcc_resolved(state, channel, offer_id, :refused)
+        state = persist_dcc_report(state, channel, Report.render({:refused, refusal}, from))
+        {:reply, err, state}
+    end
+  end
+
+  # The transfer runs DETACHED, which is why the REST door answers 202 and
+  # not 200: the bytes take as long as they take, and the outcome arrives
+  # as a scrollback row rather than as an HTTP body.
+  #
+  # Off `Grappa.TaskSupervisor` and NOT linked to the session — the same
+  # call `EventRouter.maybe_query_avatar/2` makes for the peer-avatar
+  # fetch, and for the same reason: a peer's socket dying must not widen
+  # into the session's crash boundary. The task's whole contract is to
+  # send ONE message back, and a task that dies without sending it costs a
+  # missing report row, never a dropped session.
+  #
+  # The slug is minted BEFORE the dial so the bytes have a home the moment
+  # the first packet lands; `Transfer.run/3` opens the file before the
+  # socket and unlinks it on every failure branch.
+  @spec start_dcc_transfer(Offer.t(), String.t(), String.t()) :: :ok
+  defp start_dcc_transfer(%Offer{} = offer, from, channel) do
+    slug = Dcc.mint_slug()
+    path = Dcc.storage_path(slug)
+    opts = Dcc.transfer_opts()
+    session = self()
+
+    {:ok, _} =
+      Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
+        result = Transfer.run(offer, path, opts)
+        send(session, {:dcc_transfer_done, slug, from, channel, offer.filename, result})
+      end)
+
+    :ok
+  end
+
+  # The bytes arrived. File first, THEN the row — the ordering both
+  # sibling contexts use, so a racing read sees a live row and ENOENT
+  # rather than a dangling reference. `Transfer.run/3` already did the
+  # file half.
+  #
+  # The retention is the subject's own upload TTL, clamped by
+  # `Dcc.retention_seconds/1`. A stranger's bytes may not outlive the
+  # longest retention this deployment offers a user for their OWN content,
+  # and `nil` — the DEFAULT of that setting — means the ceiling here, not
+  # "never expires" as it does for uploads.
+  @spec store_dcc_delivery(t(), String.t(), String.t(), String.t(), String.t(), non_neg_integer()) ::
+          t()
+  defp store_dcc_delivery(state, slug, from, channel, filename, bytes) do
+    display = Report.display_filename(filename)
+
+    meta = %{
+      peer_nick: from,
+      filename: display,
+      bytes: bytes,
+      retention_seconds: Dcc.retention_seconds(UserSettings.get_upload_ttl_seconds(state.subject))
+    }
+
+    case Dcc.store(state.subject, state.network_id, slug, meta) do
+      {:ok, row} ->
+        persist_dcc_report(
+          state,
+          channel,
+          Report.render({:delivered, filename, dcc_file_route(state, row.slug)}, from)
+        )
+
+      {:error, changeset} ->
+        # Our own attrs, all of them: a minted slug, a neutralised name, an
+        # integer count, a derived retention. A rejection here is a bug in
+        # this function, not a runtime condition — so it is LOUD, the
+        # orphaned bytes are removed rather than left for a reaper that
+        # only ever sees rows, and the operator still gets a row saying
+        # their file did not survive storage.
+        # The errors are folded INTO the message, not passed as metadata:
+        # the Logger metadata allowlist (`config/config.exs`) is closed and
+        # deliberate, and `errors` is not on it.
+        Logger.error(
+          "dcc: spool row rejected, transferred bytes discarded - #{inspect(changeset.errors)}",
+          network: state.network_slug
+        )
+
+        _ = File.rm(Dcc.storage_path(slug))
+        persist_dcc_report(state, channel, Report.render({:failed, filename, {:fs, :rejected}}, from))
+    end
+  end
+
+  # The authenticated serving route for a spooled file. Same shape and
+  # same gate as `peer_avatar_route/2` — a stranger's bytes are not
+  # something the operator's user chose to publish, so they never get the
+  # public `/uploads/:slug` URL.
+  @spec dcc_file_route(t(), String.t()) :: String.t()
+  defp dcc_file_route(state, slug), do: "/networks/#{state.network_id}/dcc_files/#{slug}"
+
+  # One report row, wherever the offer died. Same shape and same reasoning
+  # as `persist_link_failure/2` above — `Grappa.Dcc.Report` has already
+  # decided the kind and the sender, and the split it encodes is the whole
+  # attribution ruling: a DELIVERED file is the peer speaking (`:privmsg`,
+  # their raw nick), everything else is grappa speaking (`:server_event`,
+  # the anonymous sentinel), because appending our sentence to a
+  # stranger's nick fabricates words they never said.
+  @spec persist_dcc_report(t(), String.t(), Report.t()) :: t()
+  defp persist_dcc_report(state, channel, %Report{kind: kind, sender: sender, body: body}) do
+    attrs =
+      Session.put_subject_id(
+        %{
+          network_id: state.network_id,
+          channel: channel,
+          server_time: System.system_time(:millisecond),
+          sender: sender,
+          body: body,
+          meta: %{}
+        },
+        state.subject
+      )
+
+    apply_effects([{:persist, kind, attrs}], state)
   end
 
   # Channel directory (#84) C3 — per-numeric handling of an in-flight LIST

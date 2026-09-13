@@ -1747,6 +1747,7 @@ export const ERROR_TOKENS_REST_ERROR_TOKEN = [
   "share_token_expired",
   "share_token_consumed",
   "not_invited",
+  "not_held",
   "validation_failed",
 ] as const;
 export type ErrorTokensRestErrorToken = (typeof ERROR_TOKENS_REST_ERROR_TOKEN)[number];

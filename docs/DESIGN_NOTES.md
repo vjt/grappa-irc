@@ -54929,6 +54929,13 @@ that is not a capability this path adds.
 
 ### v1 is body text, so there is no wire change
 
+🔴 **Overtaken by the consent ruling the same day — see entry #2089a.** The
+paragraph below was true of the slice as SPECIFIED and is false of the slice
+as SHIPPED: consent needs a surface a scrollback row cannot carry, so two
+event kinds ship and `@protocol_version` goes 18 → 19. It is kept rather
+than rewritten because the reasoning it records is still the pattern to
+follow — what changed is the premise, not the rule.
+
 The surface is the synthesised message alone; a richer cic interface for
 offers and transfers is explicitly deferred. So no new `Scrollback.Meta`
 variant ships here, which means no wire-shape change and **no
@@ -54937,6 +54944,11 @@ pattern to follow if that changes: body for the human now, a structured copy
 when a client wants to style it — additive, at the cost of the bump.
 
 ### What this entry does NOT settle
+
+🔴 **All three were ruled the same day — see entry #2089a** for what each
+answer was and what it cost. Kept as written because it records what was
+genuinely unknown while the code below it was built, which is the thing a
+later reader needs in order to judge it.
 
 Three questions were open with vjt while the above was built, and nothing here
 assumes an answer: the TTL floor for committed inbox bytes when a user's
@@ -55044,3 +55056,248 @@ the pinned contract note is NOT the client path: every cic door under
 `/networks/:network_id/*` is mounted without it (`deleteInvite`,
 `postJoin`, `postPart`), so these two follow suit; if the server half
 mounts them elsewhere, these two lines move.
+<!-- entry #2089a -->
+
+---
+
+## 2026-09-13 — #2089a: consent, and the price of answering a stranger
+
+Entry #2089 built the RECEIVE half and closed with three questions open.
+All three were ruled, and the shape of the answers changed enough of that
+entry that two of its claims are corrected there in place rather than left
+to be quoted. This entry records what the rulings decided, what they cost,
+and the decisions taken underneath them that nobody ruled on.
+
+### The correction that matters most: there IS a wire change
+
+#2089 said *"v1 is body text, so there is no wire change … no
+`protocol_version` bump."* That was true of the slice as specified and is
+false of the slice as ruled. Consent needs a surface: an offer has to be
+shown to a human before anything is dialled, and a scrollback row cannot
+carry a button. So two event kinds ship — `dcc_offer` and
+`dcc_offer_resolved` — and `@protocol_version` goes 18 → 19.
+
+That is an ADDITIVE change and it still bumps, per the 2026-08-21 ruling
+(#1393d): the number is only worth comparing against if it is total.
+
+**The banner also widens the surface the issue body asked for**, which
+said "only the synthesised message". A banner is interface. It is here
+because the ruling asked for it, not because the slice grew on its own —
+recorded as a deliberate extension rather than smuggled.
+
+### An offer has no `state` field, and that is a boundary
+
+`dcc_offer` carries no window state, deliberately. An offer sits IN a
+window; it is not one. With a `state` field cic would mirror it into
+`windowStateByChannel` and draw a pseudo-window for a file nobody has
+accepted yet. The channel it carries says where to RENDER, and for a
+stranger that is `$server` — `EventRouter.ctcp_query_channel/3`, the #546
+rule, CALLED rather than restated, so a DCC offer mints no more of a
+window than a VERSION probe does.
+
+### A `DCC REJECT` is not sent, and this is the decision to remember
+
+`decline_invite/3` sends nothing upstream because IRC has no DECLINE verb.
+DCC *does* have `REJECT`, and the refuse door still sends nothing.
+
+A REJECT confirms two things at once to a stranger whose CTCP was
+unsolicited: that this nick is online, and that a **human read their offer
+inside the hold window**. That turns an ignored message into a free
+presence-and-attention probe, repeatable at whatever rate the upstream
+allows. Sending nothing is indistinguishable from being away, offline, or
+running a client that does no DCC — the sender cannot tell which, and that
+indistinguishability is the property being bought.
+
+What it costs the peer is bounded and theirs: their own listening socket
+times out on its own schedule. **The general rule: before answering an
+unsolicited stranger, ask what the ANSWER tells them that silence does
+not.** The client copy must therefore say what the × does, never what it
+spares the sender.
+
+### The held set is memory, and a crash is the correct reaper
+
+An offer is a live TCP endpoint of the peer's. It is worth nothing once
+the session process dies, and a row that outlived it would invite an
+operator to accept a file from an address the offer no longer describes.
+`Grappa.Session.DccOffers` is therefore a pure struct inside
+`Session.Server`'s state, copied almost line for line from
+`Session.WindowState`'s `:invited` — the precedent vjt named. The BYTES
+are the opposite case and keep their table: they exist, they cost disk,
+and somebody has to collect them.
+
+Three departures from that precedent, each measured rather than inherited.
+
+**The ceiling is enforced inside `hold/4`, not by a sibling predicate.**
+`invite_admissible?/2` is separate because re-affirming an invite on a
+channel already `:invited` writes a key that exists and so cannot grow the
+store — a subtlety the caller must be able to ask about. No such case
+exists here: every hold mints a fresh handle, so every hold grows the set,
+and one door that cannot be bypassed beats two that agree by convention.
+
+**No timer reference is kept and nothing cancels an expiry.** One
+`Process.send_after/3` per held offer; a resolved offer leaves a timer
+that fires into a `drop/2` answering `{:error, :not_held}`, which is
+ignored. Keeping the ref would buy the cancellation of a message that is
+already a no-op, and cost a field whose housekeeping must stay exactly in
+step with the map it decorates — plus the cancel-and-drain race at all
+three exits. Handles are 16 random bytes, so a stale one cannot expire a
+fresh offer.
+
+**`drop/2` is ONE verb for accept, refuse and expiry.** They differ only
+in what the caller does next and in the resolution atom on the wire. A
+second copy of the removal under a second name would be the shared data
+model with a type flag rather than the shared verb.
+
+### The numbers are OURS, and they are argued where they live
+
+vjt ruled the SHAPE twice and never a value. Each constant is derived from
+something the house already answers, and each derivation is in the source
+next to the number:
+
+| constant | value | derived from |
+|---|---|---|
+| `Dcc.@max_transfer_bytes` | 10 MiB | the `:document` category default — the answer already given to "a file we cannot classify" |
+| `Dcc.@global_cap_bytes` | 1 GiB | 100 full transfers, a tenth of the uploads budget |
+| `Dcc.@max_retention_seconds` | 259 200 | the longest rung of the upload TTL ladder — stranger-pushed bytes may not outlive the longest retention offered for a user's OWN content |
+| `Dcc.@connect_timeout_ms` | 5 000 | NOT ours: `Net.ImageFetcher.Req` already answers "how long to dial an address a stranger published" for the CTCP AVATAR path |
+| `Dcc.@idle_timeout_ms` | 30 000 | ours — see the gap below |
+| `Policy.@daily_accepts` | 10 | every accept costs a human a click |
+| `DccOffers.@held_cap` | 16 | smaller than `@invited_cap`'s 64: an invite never expires and had to fit a real backlog, an offer expires on its own and each entry is a banner competing for one screen |
+| `DccOffers.@hold_seconds` | 300 | ours — how long a banner may claim a stranger's socket is still there before the claim is likelier false than true |
+
+They are **module attributes, not operator settings**, against the word
+"manopola" in the ruling. The argument is `Grappa.Avatars`': a store that
+grows from OTHER people's content is not a preference the holder should be
+able to raise. An operator setting here is a knob whose only use is to
+make the ceiling higher for the one party who did not choose to be
+offered the file.
+
+### Retention: `nil` is the default state, not an opt-out
+
+`dcc_files.expires_at` is `NOT NULL`. The nullable shape, which in
+`uploads` means *never expires*, is unrepresentable — that is the whole
+first ruling. `Dcc.retention_seconds/1` supplies the ceiling when the
+subject's TTL is `nil` and CLAMPS it when it is larger, closing the
+contradiction #2089 flagged: `UserSettings.get_upload_ttl_seconds/1`
+returns `nil` by default and `Uploads.list_expired/1` enumerates only rows
+with a non-null `expires_at`, so a null here would have meant *never
+collected*.
+
+### Known gap, named rather than cured: the idle timeout bounds SILENCE
+
+`@idle_timeout_ms` is per-`recv`, not a total. A sender dripping one byte
+every 29 seconds holds a socket, a file descriptor and a task for as long
+as it likes; only a TOTAL budget stops that, and `Transfer.run/3`'s opts
+do not carry one. The contract was fixed before this was noticed and is
+not widened here. The exposure is bounded by the daily accept quota and by
+the fact that every one of those accepts cost a human a deliberate click
+on a stranger's file — but it IS unbounded in duration, and that is stated
+rather than left for someone to find.
+
+### The happy accept path is not end-to-end constructible, by construction
+
+`Policy.admit_offer/1` refuses a loopback address. That is the SSRF
+property and it is absolute, so an offer that reaches the held set can
+never point at a fake sender a test could run — **the security property
+and the testability are the same fact seen twice.** It is not worked
+around, and no seam was added to plant a held offer: the transport is
+covered against a real fake sender over real loopback sockets in
+`Grappa.Dcc.TransferTest`, and the session's half is driven with the exact
+`{:dcc_transfer_done, …}` message the detached task sends. The one seam
+left untested is the three-line closure between them, and it is named
+here rather than implied by a green suite.
+
+Not established, unchanged from #2089: nothing was measured against a real
+DCC peer, and nothing was measured on m42.
+<!-- entry #2089b -->
+
+---
+
+## 2026-09-13 — #2089b: a gate behind a red gate has not passed, it has not run
+
+The RECEIVE slice closed with `scripts/check.sh` red on exactly one
+thing: `Mix.Tasks.Grappa.WirePinTest`, *"The wire shape changed and the
+protocol version did not"*. The diagnosis was correct and the fix was one
+number. What the fix uncovered is the part worth recording.
+
+### The bump: a REST error token is wire shape
+
+The last commit of the slice enrolled `:not_held` in
+`GrappaWeb.ErrorTokens.rest_error_token/0` — the 404 the four DCC consent
+doors answer when an offer id names nothing in the session's held set.
+That is a member added to a CLOSED SET the wire codegen renders into both
+client artefacts, so the shape moved.
+
+Measured, not deduced: with that token removed and nothing else touched,
+`mix grappa.wire_pin --check` returns rc=0 «agree». The digest moves for
+it alone. And after `--update`, the pinned digest is byte-identical to
+the `now` the check had been reporting — confirming the version is pinned
+NEXT TO the shape rather than mixed into it, which is what lets the gate
+distinguish "shape moved, number still" from "both moved".
+
+`@protocol_version` 19 → 20, `min_protocol_version` unchanged at 1.
+
+The argument against bumping — «no client reads `not_held` today» — is
+the one this project has already measured as wrong. It is what kept the
+number at `1` from #447 through five additive fields that cic later came
+to REQUIRE. Additivity describes what the SERVER emits and says nothing
+about what a CLIENT requires; the break the number exists to catch runs
+new-client → old-server. `:not_invited`, the token on the twin consent
+door, took its own bump on the same grounds, so the precedent is not
+merely general but adjacent.
+
+### The finding: two gates had never run, and nobody could tell
+
+`ci.check` shells every step through `mix cmd` so the chain HALTS on the
+first non-zero. `mix dialyzer` and `mix docs` sit BEHIND `mix test`.
+While the wire-pin test was red, neither had ever executed against this
+slice — and the run's output is indistinguishable, at a glance, from one
+where they ran and passed: there is no "skipped" line, the alias simply
+stops.
+
+Closing the red let them run for the first time. Both had something, and
+all four findings are the same shape — a declaration wider than the thing
+it describes:
+
+- `Dcc.transfer_opts/0` specced `pos_integer()` for two values Dialyzer
+  knows exactly, and a possibly-empty list for a literal that cannot be
+  empty.
+- `Session.Server.broadcast_dcc_resolved/4` specced `:ok` while returning
+  `Broadcaster.to_user/2` raw, which is `:ok | {:error, term()}`. The
+  three sibling helpers (`broadcast_channels_changed/1`,
+  `broadcast_archive_changed/1`, `broadcast_window_state/2`) all put the
+  `:ok =` assertion INSIDE the helper — that placement is what makes
+  their `:: :ok` true rather than optimistic. This one had it at the four
+  call sites, so the spec was a claim nothing enforced.
+- Both `refusal/0` references in the `Report` moduledoc are `@type`s
+  spelled as functions. The house writes `t:Mod.type/0`, in 77 places.
+
+None is a behaviour defect. That is the point: **the cost of a halting
+alias is not the steps you know are red, it is the steps you believe are
+green.** A report that says "check.sh: 1 failure, and it is the wire pin"
+is true and still misleading, because it invites the reader to price the
+remaining gates at zero when their real value is unknown. Say instead
+which gates DID NOT RUN.
+
+### The fourth home of a new error token
+
+CLAUDE.md already records that a new `FallbackController` arm touches
+THREE places — the clause, the `@spec` union, and `ErrorTokens` — and
+that only the third is discoverable by grepping the atom. The bump found
+a fourth, on the client: `friendlyApiError.ts` narrows the generated
+token union to `never` in its default arm, so a token with no `case` arm
+is a tsc compile error. It fired the moment the artefacts were
+regenerated.
+
+That guard is working exactly as designed and should be read as the
+client half of the same closed set, not as an obstacle: a token the
+server can emit and no client can phrase is a 404 the user reads as a
+blank. The copy chosen is deliberately its twin's shape — `not_invited`
+reads *"That invite is already gone."* — because every reachable case is
+benign and self-correcting, and it names no file, since the caller held a
+handle and `Dcc.Report.display_filename/1` is the one speller of that
+string.
+
+Not established, unchanged from #2089 and #2089a: `scripts/integration.sh`
+has still not been run, nothing was measured against a real DCC peer, and
+nothing was measured on m42.

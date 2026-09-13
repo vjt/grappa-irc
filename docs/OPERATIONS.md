@@ -5321,6 +5321,36 @@ it.
   On the Linux/systemd substrate, `bin/grappa
   start` runs in the foreground (no `run_erl`), so logs go to
   `journalctl -u grappa` instead — no `runtime/log/` file story there.
+- **DCC spool (issue 2089)** — the FOURTH data root, `DCC_STORAGE_ROOT`.
+  Holds files a peer pushed over `DCC SEND` and the operator accepted.
+  Defaults to `Path.dirname(DATABASE_PATH) + /dcc` (so `/data/dcc` on the
+  image, which also bakes it explicitly) — derived the same way as
+  `UPLOADS_STORAGE_ROOT` and `PEER_AVATARS_STORAGE_ROOT`, so it inherits
+  the #1945 cure by construction rather than being the next root nobody
+  set and nobody noticed losing on a container recreate.
+
+  **It is a separate root for a reason an operator may want to act on:** a
+  subject's own upload and a stranger's pushed file are different trust
+  domains. Point `DCC_STORAGE_ROOT` at its own filesystem if you want the
+  stranger spool quota'd, `noexec`, or simply disposable. Set it ABSOLUTE
+  — a relative value is read against the BEAM's working directory, which
+  the init system chooses.
+
+  **Nothing here is permanent and nothing is unbounded.** Every row
+  carries a NOT NULL `expires_at`: the accepting subject's own upload TTL,
+  or a hard 72-hour ceiling when they have set none, and CLAMPED to that
+  ceiling when theirs is longer. Stranger-pushed bytes may not outlive the
+  longest retention this deployment offers a user for their own content.
+  Three further ceilings bound the disk: 10 MiB per transfer, a 1 GiB
+  total spool budget, and 10 accepts per subject per day. They are module
+  attributes in `Grappa.Dcc` / `Grappa.Dcc.Policy`, **deliberately not
+  operator settings** — a store that fills with other people's content is
+  not a preference the holder should be able to raise.
+
+  Files are served ONLY through the authenticated
+  `GET /networks/:network_id/dcc_files/:slug`, never the public upload
+  route, always as `application/octet-stream` + `Content-Disposition:
+  attachment` + `nosniff`.
 - **Config**: DB-driven (Phase 2 sub-task 2j replaced the TOML loader).
   Operator binds users + networks via mix tasks: `mix grappa.create_user`
   creates a `User` row, `mix grappa.bind_network --auth ...` writes a
@@ -5374,6 +5404,20 @@ it.
   `reap-visitors`, session GC has nothing operator-actionable). Visitor
   sessions are NOT swept here — they CASCADE from the visitor row via
   `Visitors.Reaper`.
+- **DCC spool GC (issue 2089)**: `Grappa.Dcc.Reaper` is the FIFTH ambient
+  reaper and sweeps expired `dcc_files` rows, unlinking the bytes and then
+  deleting the row. No operator verb, like session GC — the sweep is
+  autonomous and there is nothing operator-actionable in it.
+
+  **What it CANNOT collect, and why that is by design rather than a hole:**
+  a partial spool from a transfer that failed mid-flight. A reaper
+  enumerates ROWS, and those bytes were written before any row existed, so
+  they are invisible to it by construction. Every failure arm of
+  `Grappa.Dcc.Transfer` therefore removes its own partial file before
+  returning — the code that created an orphan owns its removal. If you
+  ever find stray files under `DCC_STORAGE_ROOT` with no matching row,
+  that is a REAL defect in that module and worth a bug report, not
+  something a sweep was supposed to clean up later.
 
 ### Write-latency diagnostics (#357 — SQLite write-latency telemetry)
 

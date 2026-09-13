@@ -46,6 +46,7 @@ defmodule GrappaWeb.FallbackController do
            | :not_found
            | :no_session
            | :not_invited
+           | :not_held
            | :not_connected
            | :invalid_credentials
            | :invalid_two_factor
@@ -436,6 +437,23 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:not_found)
     |> json(%{error: "not_invited"})
+  end
+
+  # issue 2089 — the DCC sibling of `:not_invited`, and `not_found` for the
+  # same reason: the client's accept/refuse is driven by a banner derived
+  # from server state, so a handle naming nothing is a real divergence
+  # (resolved on another device, or the hold elapsed) and the operator log
+  # wants to say which.
+  #
+  # No oracle concern, and one fewer than the invite has: reaching this
+  # clause already required an owned network AND a live session, and the
+  # held set is per-session, so a handle minted for somebody else is
+  # indistinguishable from one that never existed — by construction rather
+  # than by a check.
+  def call(conn, {:error, :not_held}) do
+    conn
+    |> put_status(:not_found)
+    |> json(%{error: "not_held"})
   end
 
   # Login failure — uniform shape regardless of which credential

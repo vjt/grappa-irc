@@ -1,7 +1,8 @@
 defmodule Grappa.Dcc.ReportTest do
   use ExUnit.Case, async: true
 
-  alias Grappa.Dcc.Report
+  alias Grappa.Dcc
+  alias Grappa.Dcc.{Policy, Report}
   alias Grappa.IRC.Message
 
   @peer "Vjt"
@@ -170,6 +171,116 @@ defmodule Grappa.Dcc.ReportTest do
 
       refute report.body =~ "\x03"
       refute report.body =~ "\n"
+    end
+  end
+
+  describe "render/2 — a POLICY refusal names the axis, not just the verdict" do
+    # Three independent axes (address class, size, rate) plus the disk
+    # budget and the held-set ceiling. They stayed separate atoms so the
+    # sentence tells the operator what to DO: ask for a smaller file, stop
+    # talking to this peer, or come back tomorrow. A single "refused"
+    # would say none of that.
+    test "an unroutable address says the bouncer will not dial it" do
+      report = Report.render({:refused, :ssrf_blocked}, @peer)
+
+      assert report.kind == :server_event
+      assert report.body =~ "not one this bouncer will dial"
+    end
+
+    test "an oversized offer quotes the actual ceiling, not a restated number" do
+      report = Report.render({:refused, :too_large}, @peer)
+
+      # Read off production, so a change to the cap moves the sentence and
+      # a hardcoded expectation here cannot rot into a lie.
+      assert report.body =~ "#{div(Dcc.max_transfer_bytes(), 1024 * 1024)} MB"
+    end
+
+    test "a spent daily allowance quotes the actual allowance" do
+      report = Report.render({:refused, :rate_limited}, @peer)
+
+      assert report.body =~ "#{Policy.daily_accepts()}"
+      assert report.body =~ "today"
+    end
+
+    test "a full spool blames the spool, not the operator" do
+      report = Report.render({:refused, :insufficient_storage}, @peer)
+
+      assert report.body =~ "no room"
+    end
+
+    test "a flooded held set is reported too — a silent drop is the one forbidden outcome" do
+      report = Report.render({:refused, :too_many_offers}, @peer)
+
+      assert report.body =~ "waiting for an answer"
+    end
+
+    test "every policy refusal is GRAPPA speaking, never the peer" do
+      # The attribution split holds across the whole vocabulary: none of
+      # these sentences was uttered by the sender, so none of them may
+      # carry their nick.
+      for reason <- [:ssrf_blocked, :too_large, :rate_limited, :insufficient_storage, :too_many_offers] do
+        report = Report.render({:refused, reason}, @peer)
+
+        assert report.kind == :server_event, "#{reason} was attributed to the peer"
+        assert report.sender == Message.anonymous_sender()
+      end
+    end
+
+    test "every refusal in the closed set renders a distinct, non-empty sentence" do
+      # A reason that fell through to a generic string would be a silent
+      # loss of exactly the information the axes were split to preserve.
+      reasons = [
+        :passive_unsupported,
+        {:unsupported_subcommand, "CHAT"},
+        :malformed,
+        :ssrf_blocked,
+        :too_large,
+        :rate_limited,
+        :insufficient_storage,
+        :too_many_offers
+      ]
+
+      bodies = Enum.map(reasons, &Report.render({:refused, &1}, @peer).body)
+
+      assert Enum.uniq(bodies) == bodies
+      refute Enum.any?(bodies, &(String.trim(&1) == ""))
+    end
+  end
+
+  describe "render/2 — an offer that lapsed leaves the only trace there is" do
+    # A held offer lives in memory alone. If its expiry wrote nothing, a
+    # stranger could offer a file, the banner could come and go while
+    # nobody was looking, and the scrollback would carry no evidence any
+    # of it happened. Every offer leaves exactly ONE terminal row — this
+    # is the arm for the one nobody answered.
+    test "is GRAPPA speaking, never the peer" do
+      report = Report.render({:expired, "archive.zip"}, @peer)
+
+      assert report.kind == :server_event
+      assert report.sender == Message.anonymous_sender()
+    end
+
+    test "names the peer, the file, and the fact that nobody answered" do
+      report = Report.render({:expired, "archive.zip"}, @peer)
+
+      assert report.body =~ @peer
+      assert report.body =~ "archive.zip"
+      assert report.body =~ "expired"
+    end
+
+    test "does not read as a refusal — nobody declined it" do
+      expired = Report.render({:expired, "archive.zip"}, @peer)
+      refused = Report.render({:refused, :too_many_offers}, @peer)
+
+      refute expired.body =~ "declined"
+      refute expired.body == refused.body
+    end
+
+    test "neutralises the peer-supplied filename like every other arm" do
+      report = Report.render({:expired, "ev\x03il\r\n.zip"}, @peer)
+
+      assert report.body =~ Report.display_filename("ev\x03il\r\n.zip")
+      refute report.body =~ "\x03"
     end
   end
 
