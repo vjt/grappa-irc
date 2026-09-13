@@ -169,6 +169,13 @@ defmodule GrappaWeb.ErrorTokens do
           # names a real divergence (already joined, or declined on another
           # device) rather than a bad URL.
           | :not_invited
+          # issue 2089 — the DCC sibling of `not_invited`, on
+          # `POST /dcc_offers/:id/accept` and `DELETE /dcc_offers/:id`. A
+          # handle that names nothing: resolved on another device, or the
+          # hold elapsed. Distinct from `not_found` for the same reason —
+          # the client's banner is derived from server state, so this is a
+          # real divergence rather than a bad URL.
+          | :not_held
           | :validation_failed
 
   @typedoc """

@@ -46,6 +46,7 @@ defmodule GrappaWeb.FallbackController do
            | :not_found
            | :no_session
            | :not_invited
+           | :not_held
            | :not_connected
            | :invalid_credentials
            | :invalid_two_factor
