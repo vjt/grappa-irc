@@ -129,3 +129,12 @@ frontends/shottino/call/*.o
 # Python bytecode (tools/)
 __pycache__/
 *.py[co]
+
+# OIDC acceptance harness state (scripts/oidc-e2e.sh): TLS material,
+# server.toml, CLI token cache, TOTP secrets, generated grappa.env
+/infra/oidc-e2e/runtime/
+
+# Local OIDC lab state (scripts/oidc): CA keys, client secret, TOTP
+# seeds, token cache — never leaves the machine that minted them
+scripts/oidc/data/
+scripts/oidc/client/.cache/

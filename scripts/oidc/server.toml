@@ -1,0 +1,14 @@
+# scripts/oidc/server.toml — Kanidm config for the #1911 acceptance lab.
+# See https://kanidm.com/docs/server_configuration.html
+#
+# The domain is "localhost" because the TLS leaf is issued for that name
+# and grappa's issuer URL is https://localhost:8443 end to end: a different
+# domain would fail the certificate hostname check, and inventing a DNS
+# name would need resolver plumbing the flow does not otherwise need.
+
+bindaddress = "0.0.0.0:8443"
+db_path = "/data/kanidm.db"
+tls_chain = "/certs/chain.pem"
+tls_key = "/certs/key.pem"
+domain = "localhost"
+origin = "https://localhost:8443"

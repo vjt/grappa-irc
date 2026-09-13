@@ -697,6 +697,73 @@ if config_env() == :prod do
     end
   end
 
+  # #1911 — OIDC login against one operator-configured provider. All four
+  # vars REQUIRED together, ABSENT together: unset issuer = the door does
+  # not exist on this deployment (`Grappa.Auth.Oidc.Config.boot/0` stores
+  # nil and every `/auth/oidc/*` route answers 404), which is the normal
+  # state of a deploy that has not opted in. Read once at boot by
+  # `Grappa.Auth.Oidc.Config.boot/0` via Application.get_env (the
+  # documented exception). Kanidm is the reference provider; anything
+  # speaking discovery + authorization code + PKCE works.
+  #
+  # GRAPPA_OIDC_ISSUER       e.g. https://idm.example.com — the discovery
+  #                          document and every endpoint come from it
+  # GRAPPA_OIDC_CLIENT_ID    the OAuth2 client registered at the provider
+  # GRAPPA_OIDC_CLIENT_SECRET
+  # GRAPPA_OIDC_REDIRECT_URI the EXACT URL registered at the provider,
+  #                          e.g. https://grappa.example.com/auth/oidc/callback
+  #                          (never derived from the request — a derived
+  #                          redirect lets a Host header choose where the
+  #                          code is delivered)
+  # GRAPPA_OIDC_SCOPES       optional, default "openid profile email";
+  #                          add `groups` when the two gates below are
+  #                          used (Kanidm grants the claim via the scope)
+  # GRAPPA_OIDC_USERS_GROUP  optional, default off (#1911c): name of the
+  #                          provider group whose members may log in; a
+  #                          member's first login provisions the account
+  #                          (Kanidm: grappa_users, matched bare or as
+  #                          the spn grappa_users@realm)
+  # GRAPPA_OIDC_ADMINS_GROUP optional, default off (#1911c): provider
+  #                          group mapped to is_admin on every login
+  #                          (Kanidm: grappa_admins)
+  # Full setup walkthrough: docs/oidc-kanidm.md.
+  oidc_issuer = System.get_env("GRAPPA_OIDC_ISSUER")
+
+  if oidc_issuer not in [nil, ""] do
+    require Logger
+
+    oidc_client_id = System.get_env("GRAPPA_OIDC_CLIENT_ID")
+    oidc_client_secret = System.get_env("GRAPPA_OIDC_CLIENT_SECRET")
+    oidc_redirect_uri = System.get_env("GRAPPA_OIDC_REDIRECT_URI")
+    oidc_scopes = System.get_env("GRAPPA_OIDC_SCOPES")
+    oidc_users_group = System.get_env("GRAPPA_OIDC_USERS_GROUP")
+    oidc_admins_group = System.get_env("GRAPPA_OIDC_ADMINS_GROUP")
+
+    config :grappa, :oidc,
+      issuer: oidc_issuer,
+      client_id: oidc_client_id,
+      client_secret: oidc_client_secret,
+      redirect_uri: oidc_redirect_uri,
+      scopes: oidc_scopes,
+      users_group: oidc_users_group,
+      admins_group: oidc_admins_group
+
+    # Belt-and-braces, same posture as the captcha block above:
+    # Config.boot/0 raises on the missing half, but naming the specific
+    # var here means the operator tailing the boot sees which one.
+    for {var, value} <- [
+          {"GRAPPA_OIDC_CLIENT_ID", oidc_client_id},
+          {"GRAPPA_OIDC_CLIENT_SECRET", oidc_client_secret},
+          {"GRAPPA_OIDC_REDIRECT_URI", oidc_redirect_uri}
+        ] do
+      if is_nil(value) or value == "" do
+        Logger.warning(
+          "#{var} is missing/blank while GRAPPA_OIDC_ISSUER is set — Grappa.Auth.Oidc.Config.boot/0 will refuse to start"
+        )
+      end
+    end
+  end
+
   # #543 INC-5 — source-alias platform substrate. Selects the outbound
   # source-binding adapter (`:jail` FreeBSD wrapper / `:linux` AnyIP no-op /
   # `:docker` Disabled). Explicit env, NOT `:os.type` autodetect (a Docker

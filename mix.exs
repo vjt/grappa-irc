@@ -374,6 +374,13 @@ defmodule Grappa.MixProject do
       # Browser ceremony remains in cicchetto; this dependency verifies
       # registration attestations and authentication assertions server-side.
       {:wax_, "~> 0.7.0"},
+      # JWS/JWT verification for the OIDC `id_token` (#1911). Already in
+      # the lock as a runtime dep of `ex_nudge`, so this PROMOTES an
+      # existing pin to a direct one — the honest dep cost of the OIDC
+      # flow is zero new packages and zero new transitive closures, and
+      # #1290's "second HTTP stack" objection does not apply: we call
+      # `jose`'s crypto directly and add no HTTP client.
+      {:jose, "~> 1.11"},
 
       # ── Tooling (compile-time / dev-only)
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

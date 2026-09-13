@@ -523,7 +523,13 @@ defmodule GrappaWeb.AuthController do
   # always spent a recovery code as readily as a TOTP one, and cic's form
   # has always been labelled "Authenticator or recovery code". Only the
   # condition under which the token is minted widens.
-  defp second_factor_challenge(user, conn) do
+  # PUBLIC, `@doc false` (#1911): the OIDC callback owes the same question —
+  # does this account have a local code to spend before a session is minted —
+  # and the answer must stay one function, or the two credential doors drift.
+  # `nil` means no redeemable factor, which the OIDC door reads as a refusal.
+  @doc false
+  @spec second_factor_challenge(Accounts.User.t(), Plug.Conn.t()) :: String.t() | nil
+  def second_factor_challenge(user, conn) do
     if TOTP.enabled?(user) or Accounts.recovery_codes_armed?(user) do
       sign_challenge(user, conn)
     end

@@ -11,6 +11,7 @@ import { token } from "./lib/auth";
 import { copyText } from "./lib/clipboard";
 import { errorMessage } from "./lib/friendlyApiError";
 import { qrSvgWithLabel } from "./lib/qr";
+import OidcSettings from "./OidcSettings";
 import PasskeySettings from "./PasskeySettings";
 
 type Props = { onBack: () => void };
@@ -197,6 +198,9 @@ const TotpSettings: Component<Props> = (props) => {
         <Show when={error()}>{(message) => <p role="alert">{message()}</p>}</Show>
       </div>
       <PasskeySettings />
+      {/* #1911 — the provider link: this account's second credential, so it
+          lives beside the other two, not in a profile pane of its own. */}
+      <OidcSettings />
     </section>
   );
 };

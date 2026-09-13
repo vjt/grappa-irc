@@ -44,6 +44,10 @@ defmodule Grappa.Application do
       # the SUPERVISOR, not on Session: the DI seam exists so `Session`
       # carries no static edge onto the impl, and it still does not.
       Grappa.WindowCounts.Pusher,
+      # #1911 — start/2 calls Grappa.Auth.Oidc.boot/0 (the provider-config
+      # DI-seam, same shape as the Vhosts/Themes seams above) and
+      # supervises Grappa.Auth.Oidc.Transaction (the round-trip store).
+      Grappa.Auth.Oidc,
       Grappa.Themes,
       Grappa.WSPresence,
       GrappaWeb
@@ -178,6 +182,15 @@ defmodule Grappa.Application do
     # compile-time 600_000 default; the integration env (config/dev.exs)
     # sets it short. Mirrors `Grappa.Uploads.boot/1`.
     :ok = Grappa.Session.Server.boot()
+
+    # #1911 — the OIDC provider config (issuer, client credentials,
+    # redirect URI) into `:persistent_term`. Unset is the NORMAL state:
+    # `nil` means the door does not exist on this deployment and every
+    # `/auth/oidc/*` route answers 404. Boot-time read of
+    # `Application.get_env(:grappa, :oidc)` is the CLAUDE.md-designated
+    # boundary (mirrors `Grappa.Admission.Config.boot/0`); the operator's
+    # client secret is therefore read exactly once and never again.
+    :ok = Grappa.Auth.Oidc.boot()
 
     # Child order is load-bearing — see CLAUDE.md "Don't touch supervision
     # tree ordering casually." Each comment below documents the WHY so a
@@ -348,6 +361,12 @@ defmodule Grappa.Application do
         # #442 — one-shot WebAuthn ceremonies. Ephemeral by design: a
         # restart invalidates pending challenges but never credentials.
         Grappa.Accounts.WebAuthnChallengeStore,
+        # #1911 — one-shot OIDC authorization round trips (the PKCE
+        # verifier + nonce, server-side). Same shape as the WebAuthn store
+        # above and the same reasoning: a restart abandons the pending
+        # round trip, never a credential. Must exist before Endpoint so
+        # `/auth/oidc/authorize` never races a dead GenServer.
+        Grappa.Auth.Oidc.Transaction,
         # #340 — per-(subject, network) inbound message-send token bucket.
         # ETS-backed singleton, sibling of DailyQuota / FailureWindow: must
         # exist before Endpoint so MessagesController.create's send throttle
