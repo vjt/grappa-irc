@@ -78,6 +78,13 @@ defmodule Grappa.Session do
       # `Avatars.get/2` to seed `whois_bundle`'s `avatar_url` synchronously.
       Grappa.Avatars,
       Grappa.ChannelDirectory,
+      # issue 2089 — `Session.DccOffers` mints its in-memory offer handles
+      # with `Dcc.mint_slug/0`, and `Session.Server` spools the drained
+      # bytes. `Grappa.Dcc.Report` is a SEPARATE top-level boundary (every
+      # `Grappa.Dcc.*` submodule is one), so naming the context does not
+      # reach it — the display-name projection needs its own edge.
+      Grappa.Dcc,
+      Grappa.Dcc.Report,
       Grappa.IRC,
       Grappa.Log,
       Grappa.Mentions,
