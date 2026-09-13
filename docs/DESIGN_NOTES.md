@@ -55301,3 +55301,114 @@ string.
 Not established, unchanged from #2089 and #2089a: `scripts/integration.sh`
 has still not been run, nothing was measured against a real DCC peer, and
 nothing was measured on m42.
+<!-- entry #2089c -->
+
+---
+
+## 2026-09-13 — #2089c: the e2e the previous entry said could not exist, and the two mutants that killed it
+
+Three facts about the DCC consent banner that the `#2089 (cic half)` entry
+could not carry, because all three happened after it was written and inside
+the same pull request.
+
+### The "No e2e" item is retracted, by the condition it named itself
+
+That entry's `### What is NOT established` opens with **"No e2e, and it is
+not an omission that can be closed from here"**, and the reasoning was right
+for the base it named (`2e176355d`): `Wire.dcc_offer/6` had no production
+caller, `event_router.ex` named DCC in four comments only, and the router
+carried no `dcc` route — so no peer action, real ircd included, could make a
+`dcc_offer` reach cic, and both doors would have 404ed.
+
+It also stated the condition that would retire it — *"the spec becomes
+buildable at the union with the server half"* — **and that condition was met
+inside the same PR**, which merged as `87c0ec398` carrying both halves.
+`cicchetto/e2e/tests/issue2089-dcc-consent-banner.spec.ts` is on main, and
+it passes against a real bahamut.
+
+**The old sentence is left standing on purpose.** A dated entry is evidence,
+not documentation: that one argues *from* a base on which the spec really was
+not constructible, and a find-and-replace would destroy the record that the
+condition was ever unmet while leaving behind an argument with no premise. A
+claim that has expired is retracted by a later entry; it is never edited out
+of the earlier one. The general rule this instance serves: **an item under
+"what is NOT established" is a dated measurement, so it can expire without
+anyone lying — and the entry that resolves it owes the retraction.**
+
+⚠️ This retracts that ONE item and nothing else in the section. Nothing was
+measured against a real DCC peer, nothing was measured on m42, and
+`scripts/integration.sh` has still not been run.
+
+### Why the spec needed a discriminator that is not the banner
+
+Both answers make the banner go away, so "the banner disappeared" tells the
+two apart not at all — it is the single most tempting assertion here and it
+is worth zero. The discriminator is the **scrollback**, and it comes out of
+the server's own design: a refusal says nothing and must leave no row ever,
+while an accept starts a transfer whose outcome lands as a row whichever way
+it goes. So the asserted pair is one filename with exactly one row and one
+filename with none.
+
+### The two mutants, and the one that was thrown away before them
+
+These verdicts lived only in the pull request body until now. A PR body is
+not the permanent record; this file is.
+
+**The discarded one comes first, because it is the instructive one.** The
+initial attempt deleted the derivation outright. That does not produce a
+mutant, it produces a build failure: two bindings fell unused, `tsc --noEmit`
+raised TS6133, and `bun run build` is `tsc --noEmit && vite build`, so vite
+never ran. The dist was left **empty** — and an empty dist differs from the
+green digest for entirely the wrong reason, so the arrival oracle read it as
+CHANGED and would have credited a behaviour change that never shipped. Two
+things came out of throwing it away: **a mutant must break the BEHAVIOUR, not
+the build**, and every mutant is now built locally before a stack round is
+spent on it; and the oracle grew a **cardinality check**, so an empty dist can
+no longer masquerade as a changed one.
+
+The two that replaced it both compile, and both died:
+
+| mutant | what it changes | how it died |
+|---|---|---|
+| **M-A** | the `dcc-offer` derivation neutralised (still type-checks) | the FIRST `toBeVisible`: `locator('.error-banner[data-source="dcc-offer"]').filter({ hasText: 'refused-holiday.tar.gz' })`, `Expected: visible`, `element(s) not found`, 15000 ms |
+| **M-B** | the accept and refuse verbs swapped | every earlier assertion GREEN, then the accepted file's row count: `locator('[data-testid="scrollback-line"]').filter({ hasText: 'accepted-notes.bin' })`, `Expected: 1  Received: 0`, `28 × locator resolved to 0 elements`, 25000 ms |
+
+**M-B is the load-bearing one, and M-A alone would have been a comfortable
+lie.** M-A kills the first assertion in the file, so it proves only that the
+banner appears at all and leaves the discriminator — the entire reason the
+spec exists — unfalsified. M-B reaches all the way to the row count with
+every assertion above it green, and *that* is the finding: it is direct
+evidence that the banner appears and disappears **identically** under the two
+answers, so nothing above the scrollback can tell them apart. A suite whose
+only mutant is M-A would report the same green while silently accepting a
+product that refuses when told to accept.
+
+### A substring of a number is not an assertion about that number
+
+The spec first asserted `toContainText("4 KB")`. **Measured, not suspected:
+that also passes against `14 KB` and against `24 KB`** — so an arithmetic
+drift in the rendered size would have sailed straight through the assertion
+written to catch it. This is a false green in the shipped spec, caught before
+merge and cured in its own commit: two loose asserts (`"4 KB"` plus
+`"claim"`) collapse into one anchored fragment, `(4 KB, the sender's claim)`,
+and the opening parenthesis is what makes those same drifts fail.
+
+The expectation is **frozen** rather than recomputed with `formatBytes`, and
+that is the stronger oracle here rather than the lazier one. Measured across
+six plausible drifts of the formatter, a recomputed expectation passes **six
+out of six** — it is the same rule that rendered the banner, so it cannot
+disagree with it — while the frozen string catches four. The two it misses
+(base-1000, and round instead of floor) render 4096 as `4 KB` either way and
+would escape any oracle built on that value.
+
+This is not a licence to hardcode, and the split is the point: cic's vitest
+suite calls the real `formatBytes`, because its job is to pin that the banner
+goes through the one shared spelling; this spec pins what a human sees. Two
+oracles, two contracts. **The general rule: `toContainText` on a bare number
+is a substring match, so it asserts a prefix and not a value — anchor it on a
+neighbouring character or assert nothing.**
+
+Not established here: both mutants were run before the anchoring commit, so
+their line numbers have moved. The verdicts carry across it — the anchor was
+inserted *above* the discriminator and does not touch the row count M-B dies
+on — but no mutant was re-run afterwards.
