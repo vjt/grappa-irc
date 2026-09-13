@@ -185,7 +185,21 @@ let _socket: Socket | null = null;
 // serves an older server. The direction that would hurt is the other one, and
 // the server closes it: it treats an ABSENT key on the PUT as unchanged, so an
 // old bundle saving any other pref cannot mute a subject who opted in.
-export const CLIENT_PROTOCOL_VERSION = 18;
+//
+// 19 (issue 2089) — two new user-topic event kinds for DCC RECEIVE:
+// `dcc_offer` (a peer offered a file and the bouncer is HOLDING it, awaiting
+// explicit consent) and `dcc_offer_resolved` (it left the held set —
+// accepted, refused or expired). Additive, and unlike 18 this one IS visible
+// to `wire_pin --check`: both are named payload types on
+// `Grappa.Session.Wire`, so the codegen renders them and the digest moves.
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9: a pre-19 server simply never
+// sends these kinds, and a bundle that never receives a `dcc_offer` shows no
+// banner — which is the pre-#2089 behaviour in the pre-#2089 place, so this
+// bundle still serves an older server. The other direction is closed too: an
+// old bundle ignores both kinds (unknown-is-never-fatal) and never accepts an
+// offer, so the server holds it until it expires rather than acting on a
+// consent nobody gave.
+export const CLIENT_PROTOCOL_VERSION = 19;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

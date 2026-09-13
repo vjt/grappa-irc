@@ -992,6 +992,8 @@ export const SESSION_WIRE_WIRE_EVENT_KIND = [
   "window_pending",
   "window_invited",
   "window_invite_declined",
+  "dcc_offer",
+  "dcc_offer_resolved",
   "join_failed",
   "kicked",
   "away_confirmed",
@@ -1199,6 +1201,24 @@ export type SessionWireWindowInviteDeclinedPayload = {
   kind: "window_invite_declined";
   network: string;
   channel: string;
+};
+
+export type SessionWireDccOfferPayload = {
+  kind: "dcc_offer";
+  network: string;
+  channel: string;
+  offer_id: string;
+  from: string;
+  filename: string;
+  size: number;
+};
+
+export type SessionWireDccOfferResolvedPayload = {
+  kind: "dcc_offer_resolved";
+  network: string;
+  channel: string;
+  offer_id: string;
+  resolution: "accepted" | "refused" | "expired";
 };
 
 export type SessionWireJoinFailedPayload = {
@@ -1443,6 +1463,8 @@ export type WireSessionEvent =
   | SessionWireWindowPendingPayload
   | SessionWireWindowInvitedPayload
   | SessionWireWindowInviteDeclinedPayload
+  | SessionWireDccOfferPayload
+  | SessionWireDccOfferResolvedPayload
   | SessionWireJoinFailedPayload
   | SessionWireKickedPayload
   | SessionWireAwayConfirmedPayload

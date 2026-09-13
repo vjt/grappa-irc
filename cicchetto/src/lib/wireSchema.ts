@@ -996,6 +996,30 @@ export const S_SessionWireConnectionProgressPayload = {
   },
 } as const;
 
+// Grappa.Session.Wire.dcc_offer_payload/0
+export const S_SessionWireDccOfferPayload = {
+  o: {
+    kind: { l: "dcc_offer" },
+    network: "s",
+    channel: "s",
+    offer_id: "s",
+    from: "s",
+    filename: "s",
+    size: "i",
+  },
+} as const;
+
+// Grappa.Session.Wire.dcc_offer_resolved_payload/0
+export const S_SessionWireDccOfferResolvedPayload = {
+  o: {
+    kind: { l: "dcc_offer_resolved" },
+    network: "s",
+    channel: "s",
+    offer_id: "s",
+    resolution: { e: ["accepted", "refused", "expired"] },
+  },
+} as const;
+
 // Grappa.Session.Wire.directory_complete_payload/0
 export const S_SessionWireDirectoryCompletePayload = {
   o: { kind: { l: "directory_complete" }, network: "s", total: "i" },

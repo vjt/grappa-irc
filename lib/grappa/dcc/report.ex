@@ -139,20 +139,46 @@ defmodule Grappa.Dcc.Report do
   defp refusal_reason({:unsupported_subcommand, verb}), do: "DCC #{verb} is not supported"
   defp refusal_reason(:malformed), do: "the offer could not be understood"
 
-  # Control bytes out, length capped, and a name that was ENTIRELY
-  # control bytes still yields something to print rather than an empty
-  # pair of quotes.
-  defp display(filename) do
-    cleaned =
-      filename
-      |> String.replace(~r/\p{C}/u, "")
-      |> String.trim()
-      |> truncate()
+  @doc """
+  The peer's filename made safe to RENDER — control bytes stripped, length
+  capped, and a name that was entirely control bytes collapsed to
+  `#{@unnamed}` rather than to nothing.
 
-    case cleaned do
+  Public because the consent banner needs the same string the scrollback
+  row uses (`Grappa.Session.Wire.dcc_offer/6` takes it). Two
+  neutralisations would be one drift away from a banner and a row naming
+  the same file differently, which is the one place a reader compares
+  them.
+
+  Bare — no quotes. Quoting is this module's own sentence-level framing
+  (`display/1`), not part of the name, and a wire field carrying literal
+  quotes would have them rendered.
+  """
+  @spec display_filename(String.t()) :: String.t()
+  def display_filename(filename) when is_binary(filename) do
+    case clean(filename) do
+      "" -> @unnamed
+      name -> name
+    end
+  end
+
+  # The quoted, in-sentence form. The `#{@unnamed}` sentinel is deliberately
+  # NOT quoted — it is this module speaking, not a name the peer chose. The
+  # branch is on the CLEANED input rather than on `display_filename/1`'s
+  # output, so a peer who literally names a file `#{@unnamed}` still gets
+  # quotes and is not silently reported as nameless.
+  defp display(filename) do
+    case clean(filename) do
       "" -> @unnamed
       name -> ~s{"#{name}"}
     end
+  end
+
+  defp clean(filename) do
+    filename
+    |> String.replace(~r/\p{C}/u, "")
+    |> String.trim()
+    |> truncate()
   end
 
   defp truncate(name) when byte_size(name) <= @filename_max_bytes, do: name

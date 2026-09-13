@@ -95,6 +95,8 @@ defmodule Grappa.Session.Wire do
           | :window_pending
           | :window_invited
           | :window_invite_declined
+          | :dcc_offer
+          | :dcc_offer_resolved
           | :join_failed
           | :kicked
           | :away_confirmed
@@ -496,6 +498,37 @@ defmodule Grappa.Session.Wire do
           kind: :window_invite_declined,
           network: String.t(),
           channel: String.t()
+        }
+
+  # issue 2089 — deliberately carries NO `state` field, for the reason the
+  # sibling above spells out one layer down. `window_invited` names a window
+  # state because cic mirrors it into `windowStateByChannel`; a DCC offer is
+  # not a window at all, it is an offer PLACED in one. A `state: :offered`
+  # here would be faithfully mirrored into that map and mint a seventh
+  # pseudo-window the operator never opened — the exact failure
+  # `window_invite_declined_payload` refuses `state: :declined` to avoid.
+  # `channel` is where to RENDER it, not what it is.
+  @type dcc_offer_payload :: %{
+          kind: :dcc_offer,
+          network: String.t(),
+          channel: String.t(),
+          offer_id: String.t(),
+          from: String.t(),
+          filename: String.t(),
+          size: non_neg_integer()
+        }
+
+  # issue 2089 — the offer left the held set. One kind with a closed
+  # `resolution` rather than three kinds: every client reaction is the same
+  # (drop the banner), and splitting it would make "banner gone" three
+  # separate things a client has to remember to handle, with a forgotten one
+  # leaving a banner that outlives its offer.
+  @type dcc_offer_resolved_payload :: %{
+          kind: :dcc_offer_resolved,
+          network: String.t(),
+          channel: String.t(),
+          offer_id: String.t(),
+          resolution: :accepted | :refused | :expired
         }
 
   @type join_failed_payload :: %{
@@ -1426,6 +1459,80 @@ defmodule Grappa.Session.Wire do
   def window_invite_declined(network_slug, channel)
       when is_binary(network_slug) and is_binary(channel) do
     %{kind: :window_invite_declined, network: network_slug, channel: channel}
+  end
+
+  @doc """
+  issue 2089 — a peer offered a file over `DCC SEND` and the bouncer is
+  HOLDING it, awaiting the operator's consent. Nothing was dialled and
+  nothing was stored; this event IS the consent prompt.
+
+  Broadcast on `Topic.user(...)`, like `window_invited/3` and for the same
+  two reasons. The chicken-and-egg one: `channel` may be a window cic has
+  never subscribed to (a stranger's offer routes to `$server` — see
+  `EventRouter.ctcp_query_channel/3`, the one rule every inbound CTCP
+  query shares, so a DCC offer mints no more of a window than a VERSION
+  probe does). And the fan-out one, which is the stronger: the held set is
+  per-SESSION, so an accept taken on the phone must reach the laptop.
+
+  `channel` says where to RENDER the banner, not what the offer is — see
+  `dcc_offer_payload` on the deliberately absent `state` field.
+
+  `filename` is the NEUTRALISED display name, not the peer's bytes: the
+  caller passes `Grappa.Dcc.Report.display_filename/1` so this event and
+  the scrollback row that follows it name the file identically. `size` is
+  the peer's CLAIM, forwarded as such — the operator is being asked to
+  consent to a stated size, and the transfer truncates at it.
+
+  `offer_id` is the opaque handle the accept + refuse doors take. It is
+  minted per offer and is not derivable from anything the peer sent.
+  """
+  @spec dcc_offer(String.t(), String.t(), String.t(), String.t(), String.t(), non_neg_integer()) ::
+          dcc_offer_payload()
+  def dcc_offer(network_slug, channel, offer_id, from, filename, size)
+      when is_binary(network_slug) and is_binary(channel) and is_binary(offer_id) and
+             is_binary(from) and is_binary(filename) and is_integer(size) and size >= 0 do
+    %{
+      kind: :dcc_offer,
+      network: network_slug,
+      channel: channel,
+      offer_id: offer_id,
+      from: from,
+      filename: filename,
+      size: size
+    }
+  end
+
+  @doc """
+  issue 2089 — the held offer is gone, and every device must drop its
+  banner. Same carrier and same fan-out argument as
+  `window_invite_declined/2`: a decision taken on one device that did not
+  reach the others leaves them re-offering a file that is already
+  accepted, refused or dead.
+
+  `resolution` is closed at three, and the three are exhaustive by
+  construction — an offer leaves the held set by being accepted, by being
+  refused, or by running out its hold. A client that only understands the
+  kind and ignores the reason still behaves correctly (the banner goes),
+  which is why this is one event and not three.
+
+  `:accepted` means the transfer was ADMITTED and started, never that it
+  arrived: the outcome lands as a scrollback row from
+  `Grappa.Dcc.Report`. A pre-connect refusal (SSRF class, cap, quota)
+  never reaches this verb at all — it is reported without the offer ever
+  having been held.
+  """
+  @spec dcc_offer_resolved(String.t(), String.t(), String.t(), :accepted | :refused | :expired) ::
+          dcc_offer_resolved_payload()
+  def dcc_offer_resolved(network_slug, channel, offer_id, resolution)
+      when is_binary(network_slug) and is_binary(channel) and is_binary(offer_id) and
+             resolution in [:accepted, :refused, :expired] do
+    %{
+      kind: :dcc_offer_resolved,
+      network: network_slug,
+      channel: channel,
+      offer_id: offer_id,
+      resolution: resolution
+    }
   end
 
   @doc """

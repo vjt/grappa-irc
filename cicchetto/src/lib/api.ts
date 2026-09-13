@@ -1173,6 +1173,46 @@ export type WireUserEvent =
       channel: string;
     }
   | {
+      // issue 2089 — a peer offered a file over `DCC SEND` and the bouncer
+      // is HOLDING it, awaiting explicit consent. Nothing was dialled and
+      // nothing was stored; this event IS the consent prompt. Rides
+      // `Topic.user/1` for both the reasons `window_invited` does — the
+      // `channel` may be one cic never subscribed to, and the held set is
+      // per-session so an accept on the phone must clear the laptop.
+      // userTopic.ts dispatches into `holdDccOffer(...)`.
+      //
+      // No `state` field, and the absence is the contract: an offer is
+      // PLACED in a window, it is not one. `channel` says where to render —
+      // frequently `$server`, since an offer from someone with no open
+      // conversation routes there (the #546 rule; a stranger's CTCP mints no
+      // window). `filename` is the server-neutralised display name, never
+      // the peer's raw bytes; `size` is the peer's CLAIM, which the transfer
+      // truncates at.
+      kind: "dcc_offer";
+      network: string;
+      channel: string;
+      offer_id: string;
+      from: string;
+      filename: string;
+      size: number;
+    }
+  | {
+      // issue 2089 — the held offer is gone and every device must drop its
+      // banner. ONE kind with a closed `resolution` rather than three: the
+      // client reaction is identical in all three cases, and splitting it
+      // would make "banner gone" three things a client has to remember,
+      // with a forgotten one leaving a banner outliving its offer.
+      // userTopic.ts dispatches into `resolveDccOffer(offer_id)`.
+      //
+      // `accepted` means the transfer was ADMITTED and started, never that
+      // it arrived — the outcome lands as a scrollback row.
+      kind: "dcc_offer_resolved";
+      network: string;
+      channel: string;
+      offer_id: string;
+      resolution: "accepted" | "refused" | "expired";
+    }
+  | {
       kind: "connection_state_changed";
       // #211 phase 6 — nullable: a VISITOR credential's transition
       // carries user_id: null (visitor_id set instead — the XOR FK).

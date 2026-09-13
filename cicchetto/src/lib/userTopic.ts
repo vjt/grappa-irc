@@ -11,6 +11,7 @@ import { setServerBundleHash, setServerBundleVersion } from "./bundleHash";
 import { casemappingForSlug } from "./casemapping";
 import { onDirectoryComplete, onDirectoryFailed, onDirectoryProgress } from "./channelDirectory";
 import { channelKey } from "./channelKey";
+import { holdDccOffer, resolveDccOffer } from "./dccOffers";
 import { diagPush } from "./diagLog";
 import { setSeveredForFlood } from "./floodSever";
 import { refreshHighlights } from "./highlightList";
@@ -87,6 +88,8 @@ import {
   S_SessionWireBanlistBundlePayload,
   S_SessionWireChannelsChangedPayload,
   S_SessionWireConnectionProgressPayload,
+  S_SessionWireDccOfferPayload,
+  S_SessionWireDccOfferResolvedPayload,
   S_SessionWireDirectoryCompletePayload,
   S_SessionWireDirectoryFailedPayload,
   S_SessionWireDirectoryProgressPayload,
@@ -335,6 +338,21 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       // `window_invite_declined_payload`). Network + channel are the whole
       // contract; a payload missing either names no window and is dropped.
       return validate(S_SessionWireWindowInviteDeclinedPayload, r);
+    case "dcc_offer":
+      // issue 2089 — the arm IS its schema; nothing here is hand-narrowed.
+      // `filename` is already neutralised server-side (control bytes out,
+      // length capped, `(unnamed)` for a name that was entirely control
+      // bytes), so a `""` cannot reach a renderer and there is no tolerance
+      // to re-add — the same reason `window_invited`'s hand narrowing was
+      // withdrawn in #1393d, reached from the other direction.
+      return validate(S_SessionWireDccOfferPayload, r);
+    case "dcc_offer_resolved":
+      // The schema pins `resolution` to the closed triple, so a fourth exit
+      // invented by a newer server is DROPPED here rather than reaching the
+      // store as an unrenderable value. Dropping is the right failure: the
+      // banner survives until the cold-subscribe backfill stops re-emitting
+      // the offer, which is a stale prompt rather than a wrong action.
+      return validate(S_SessionWireDccOfferResolvedPayload, r);
     case "connection_state_changed":
       // REV-J M15: pre-fix this arm carried only the wider transition
       // fields and HomePane patched its row from a separate
@@ -1071,6 +1089,35 @@ moduleRoot(() => {
           // state it names. The server refuses to decline anything that is
           // not `:invited`, so this event never arrives for a live window.
           forceParted(channelKey(payload.network, payload.channel));
+          return;
+
+        case "dcc_offer":
+          // issue 2089 — a peer offered a file and the server is HOLDING it,
+          // awaiting explicit consent. Nothing was dialled and nothing was
+          // stored; mirroring it is the whole client-side job, and the
+          // consent surface derives off this store ("derive, don't
+          // duplicate" — the #902 posture for the invite banner).
+          //
+          // Deliberately NOT routed into `windowStateByChannel`: an offer is
+          // placed in a window, it is not one. `payload.channel` is where to
+          // render it and is frequently `$server`.
+          holdDccOffer({
+            network: payload.network,
+            channel: payload.channel,
+            offer_id: payload.offer_id,
+            from: payload.from,
+            filename: payload.filename,
+            size: payload.size,
+          });
+          return;
+
+        case "dcc_offer_resolved":
+          // The offer left the server's held set — this device's click,
+          // another device's, or the hold running out. A pure drop either
+          // way: the server has already applied it, and the cold-subscribe
+          // backfill has nothing left to re-emit. `resolution` is copy, not
+          // control flow, which is why one event covers all three.
+          resolveDccOffer(payload.offer_id);
           return;
 
         case "whois_bundle": {

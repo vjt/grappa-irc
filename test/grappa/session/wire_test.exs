@@ -639,6 +639,73 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
+  describe "dcc_offer/6 (issue 2089)" do
+    test "carries the offer handle, the peer, the neutralised name and the claimed size" do
+      # Whole-map equality: the accept + refuse doors take `offer_id`, and a
+      # silent drop of it would leave a banner with no way to answer.
+      assert Wire.dcc_offer("azzurra", "vjt", "abc123", "vjt", "holiday.tar.gz", 4096) == %{
+               kind: :dcc_offer,
+               network: "azzurra",
+               channel: "vjt",
+               offer_id: "abc123",
+               from: "vjt",
+               filename: "holiday.tar.gz",
+               size: 4096
+             }
+    end
+
+    test "carries NO state field — an offer is placed in a window, it is not one" do
+      # The teeth of the #976 lesson, applied one issue later. `channel` is
+      # WHERE to render; a `state` key here would be mirrored into
+      # `windowStateByChannel` and mint a pseudo-window for a file nobody
+      # has accepted yet.
+      refute Map.has_key?(Wire.dcc_offer("azzurra", "$server", "abc123", "stranger", "x.bin", 1), :state)
+    end
+
+    test "channel may be the $server window — a stranger's offer mints nothing" do
+      # `EventRouter.ctcp_query_channel/3` routes an inbound CTCP query from
+      # someone with no open conversation to `$server` (#546 / issue 2024).
+      # A DCC offer is such a query, so the banner has to be renderable
+      # there; a payload that assumed a DM window would strand every offer
+      # from a stranger, which is most of them.
+      assert %{channel: "$server"} =
+               Wire.dcc_offer("azzurra", "$server", "abc123", "stranger", "x.bin", 1)
+    end
+
+    test "a zero-byte claim is a legal offer, not a malformed one" do
+      # `IRC.DCC.parse/1` admits `size == 0` deliberately (an empty file is
+      # a file). The guard here must agree, or a legal offer crashes the
+      # router instead of reaching the operator.
+      assert %{size: 0} = Wire.dcc_offer("azzurra", "vjt", "abc123", "vjt", "empty", 0)
+    end
+  end
+
+  describe "dcc_offer_resolved/4 (issue 2089)" do
+    test "carries the handle and the reason the offer left the held set" do
+      assert Wire.dcc_offer_resolved("azzurra", "vjt", "abc123", :accepted) == %{
+               kind: :dcc_offer_resolved,
+               network: "azzurra",
+               channel: "vjt",
+               offer_id: "abc123",
+               resolution: :accepted
+             }
+    end
+
+    test "the resolution set is closed at the three ways an offer can end" do
+      for resolution <- [:accepted, :refused, :expired] do
+        assert %{resolution: ^resolution} =
+                 Wire.dcc_offer_resolved("azzurra", "vjt", "abc123", resolution)
+      end
+
+      # Not an open string field: a fourth exit has to be added here, to the
+      # typespec and to the client's union together, rather than appearing
+      # on the wire as a value nobody can render.
+      assert_raise FunctionClauseError, fn ->
+        Wire.dcc_offer_resolved("azzurra", "vjt", "abc123", :cancelled)
+      end
+    end
+  end
+
   describe "join_failed/4" do
     test "carries the failure reason + numeric" do
       assert Wire.join_failed("azzurra", "#grappa", "Cannot join (+i)", 473) == %{
@@ -1211,7 +1278,9 @@ defmodule Grappa.Session.WireTest do
         Wire.banlist_bundle("net", "#c", "b", %ListModeAccum{channel_display: "#c"}),
         Wire.links_bundle("net", %LinksAccum{}),
         Wire.connection_progress("net", :connecting),
-        Wire.connection_progress("net", :connected)
+        Wire.connection_progress("net", :connected),
+        Wire.dcc_offer("net", "vjt", "abc123", "vjt", "f.bin", 1),
+        Wire.dcc_offer_resolved("net", "vjt", "abc123", :refused)
       ]
 
       for p <- payloads do
@@ -1219,5 +1288,58 @@ defmodule Grappa.Session.WireTest do
                "expected atom literal kind, got #{inspect(p.kind)} in #{inspect(p)}"
       end
     end
+
+    test "every payload type's kind literal is a member of wire_event_kind" do
+      # `wire_event_kind` is generated into `SESSION_WIRE_WIRE_EVENT_KIND`
+      # and, through it, into `S_SessionWireWireEventKind` — cic's RUNTIME
+      # validator. It is hand-kept beside ~39 payload typespecs, and until
+      # this test nothing married the two: adding a payload and forgetting
+      # the union cost nothing and said nothing, which is the fail-OPEN
+      # shape `mix grappa.wire_pin`'s own moduledoc records being bitten by
+      # twice (`@extra_modules`, #1679 then #2037). The digest gate does not
+      # catch it either — both artefacts move, so the bump is demanded and
+      # paid, and the omission rides in green.
+      #
+      # Read from BEAM chunks rather than the source text: a typespec split
+      # across lines by the formatter must not change the verdict.
+      {:ok, types} = Code.Typespec.fetch_types(Wire)
+
+      rendered =
+        Map.new(types, fn {_, {name, form, args}} ->
+          {name, Macro.to_string(Code.Typespec.type_to_quoted({name, form, args}))}
+        end)
+
+      union = kind_atoms(Map.fetch!(rendered, :wire_event_kind))
+
+      declared =
+        rendered
+        |> Map.delete(:wire_event_kind)
+        |> Enum.flat_map(fn {_, text} ->
+          ~r/kind:\s*:([a-z_]+)/
+          |> Regex.scan(text, capture: :all_but_first)
+          |> List.flatten()
+          |> Enum.map(&String.to_existing_atom/1)
+        end)
+        |> MapSet.new()
+
+      # Positive control: a regex that stopped matching would make the
+      # subset assertion below vacuously true, which is the failure mode
+      # this whole test exists to remove one layer up.
+      assert MapSet.size(declared) > 30,
+             "expected the payload scan to find the ~39 kinds, found #{MapSet.size(declared)} — the scan is broken, not the union"
+
+      missing = MapSet.difference(declared, MapSet.new(union))
+
+      assert MapSet.equal?(missing, MapSet.new()),
+             "payload kinds absent from wire_event_kind: #{inspect(MapSet.to_list(missing))} — " <>
+               "cic's generated runtime validator would reject the event"
+    end
+  end
+
+  defp kind_atoms(text) do
+    ~r/:([a-z_]+)/
+    |> Regex.scan(text, capture: :all_but_first)
+    |> List.flatten()
+    |> Enum.map(&String.to_existing_atom/1)
   end
 end

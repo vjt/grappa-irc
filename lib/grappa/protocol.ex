@@ -429,7 +429,29 @@ defmodule Grappa.Protocol do
   # as UNCHANGED rather than as a reset — so a new bundle against an older
   # server is silent instead of broken, and an old bundle cannot mute a
   # subject who opted in.
-  @protocol_version 18
+  # v19 (issue 2089) — two new user-topic event kinds for DCC RECEIVE:
+  # `dcc_offer` (a peer offered a file; the bouncer is HOLDING it, awaiting
+  # consent) and `dcc_offer_resolved` (it left the held set — accepted,
+  # refused or expired). Purely additive, and additive still bumps (#1393d).
+  #
+  # Unlike v18, this one IS visible to `mix grappa.wire_pin --check`: both
+  # payloads are named `@type`s on `Grappa.Session.Wire`, which the codegen
+  # renders into both artefacts, so the digest moves. The gate should read
+  # `:pin_stale` after this edit — the rule held, the file has not caught
+  # up — and `--update` is the correct next step.
+  #
+  # ⚠️ This bump also RECORDS a scope extension that is not a wire fact: the
+  # issue body says v1's surface is the synthesised message alone and defers
+  # "a richer interface". A consent banner IS interface. It was extended on
+  # vjt's ruling, knowingly — see DESIGN_NOTES and the PR body — because
+  # holding an offer for explicit consent, which the same ruling requires,
+  # has no door to say yes through without one.
+  #
+  # @min_protocol_version stays at 1. A client that does not know these
+  # kinds ignores them (unknown-is-never-fatal) and simply never accepts a
+  # DCC offer — which is the pre-2089 behaviour, so an old bundle is
+  # unchanged rather than broken.
+  @protocol_version 19
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -440,7 +462,7 @@ defmodule Grappa.Protocol do
   # alongside `@protocol_version`; the spec doubles as the bump tripwire,
   # and now that the bump is routine the tripwire is what keeps it from
   # being done half-way.
-  @spec version() :: 18
+  @spec version() :: 19
   def version, do: @protocol_version
 
   @doc """

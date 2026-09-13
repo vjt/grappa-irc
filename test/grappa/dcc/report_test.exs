@@ -172,4 +172,41 @@ defmodule Grappa.Dcc.ReportTest do
       refute report.body =~ "\n"
     end
   end
+
+  describe "display_filename/1 — the banner and the row name the file identically" do
+    # Public so `Session.Wire.dcc_offer/6` can carry the SAME string the
+    # scrollback row will. Two neutralisations would be one drift away from
+    # a consent banner and its outcome row disagreeing about what was sent,
+    # which is the one place a reader compares them.
+    test "it is the row's name without the row's quotes" do
+      # Not a restatement of the expected string: the row is asked what it
+      # printed, so a change to either side that does not move the other
+      # fails here.
+      report = Report.render({:delivered, "holiday.tar.gz", "https://example.test/x"}, @peer)
+
+      assert Report.display_filename("holiday.tar.gz") == "holiday.tar.gz"
+      assert report.body =~ ~s{"#{Report.display_filename("holiday.tar.gz")}"}
+    end
+
+    test "it neutralises exactly what the row neutralises" do
+      assert Report.display_filename("ev\x03il\r\n.zip") == "evil.zip"
+      assert byte_size(Report.display_filename(String.duplicate("a", 4_000))) < 1_000
+    end
+
+    test "a nameless offer collapses to a printable sentinel, not to an empty field" do
+      # An empty `filename` on the wire would render as a banner offering
+      # nothing, with no way to tell it from a missing key.
+      assert Report.display_filename("\x01\x02\x03") == "(unnamed)"
+      assert Report.display_filename("   ") == "(unnamed)"
+    end
+
+    test "a peer who literally names a file (unnamed) is still quoted in the row" do
+      # The sentinel is this module speaking and goes unquoted; a name the
+      # peer chose is quoted even when it collides with the sentinel, so the
+      # row never silently reports a named file as nameless.
+      report = Report.render({:delivered, "(unnamed)", "https://example.test/x"}, @peer)
+
+      assert report.body =~ ~s{"(unnamed)"}
+    end
+  end
 end
