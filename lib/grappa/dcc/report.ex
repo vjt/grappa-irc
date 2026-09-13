@@ -70,12 +70,13 @@ defmodule Grappa.Dcc.Report do
   bump. Adding one later is additive, at the cost of that bump.
   """
 
-  use Boundary, top_level?: true, deps: [Grappa.IRC]
+  use Boundary, top_level?: true, deps: [Grappa.Dcc, Grappa.Dcc.Policy, Grappa.IRC]
 
   # `Transfer` is named only in a typespec, which is metadata rather
   # than an xref edge — hence no `Grappa.Dcc.Transfer` in `deps:` above,
   # and the forced compile agrees.
-  alias Grappa.Dcc.Transfer
+  alias Grappa.Dcc
+  alias Grappa.Dcc.{Policy, Transfer}
   alias Grappa.IRC.{DCC, Message}
 
   @prefix "📥"
@@ -94,11 +95,24 @@ defmodule Grappa.Dcc.Report do
   @typedoc """
   What happened to an offer. `:refused` carries no filename because a
   malformed offer may not have yielded one.
+
+  Its reason spans TWO vocabularies and deliberately so: the parser's
+  (`Grappa.IRC.DCC.refusal/0` — this is not a DCC offer we implement) and
+  the policy gate's (`Grappa.Dcc.Policy.refusal/0` — it is, and we decline
+  it). A reader of the row does not care which layer said no; they care
+  what to do next, and this module owns that wording for all of them
+  rather than letting a second taxonomy grow beside it.
+
+  `:too_many_offers` belongs to neither: it is the session's held-set
+  ceiling, and it is named here because the operator must still be told
+  why an offer they can see coming never appeared.
   """
+  @type refusal :: DCC.refusal() | Policy.refusal() | :too_many_offers
+
   @type outcome ::
           {:delivered, String.t(), String.t()}
           | {:failed, String.t(), Transfer.failure()}
-          | {:refused, DCC.refusal()}
+          | {:refused, refusal()}
 
   @doc """
   Renders `outcome` into the row to persist, for an offer from
@@ -138,6 +152,30 @@ defmodule Grappa.Dcc.Report do
 
   defp refusal_reason({:unsupported_subcommand, verb}), do: "DCC #{verb} is not supported"
   defp refusal_reason(:malformed), do: "the offer could not be understood"
+
+  # The policy gate's four. Each says what the operator can DO about it,
+  # which is why the axes were kept separate rather than collapsed into
+  # one "refused" — see `Grappa.Dcc.Policy`.
+  defp refusal_reason(:ssrf_blocked),
+    do: "the offered address is not one this bouncer will dial"
+
+  defp refusal_reason(:too_large),
+    do: "it is larger than the #{megabytes(Dcc.max_transfer_bytes())} MB limit for a DCC transfer"
+
+  defp refusal_reason(:rate_limited),
+    do: "you have already accepted #{Policy.daily_accepts()} DCC transfers today"
+
+  defp refusal_reason(:insufficient_storage),
+    do: "there is no room left in the DCC spool"
+
+  defp refusal_reason(:too_many_offers),
+    do: "too many DCC offers are already waiting for an answer"
+
+  # Whole MB, because a byte count in a sentence a human reads is noise.
+  # `div/2`, not a float: the cap is a power-of-two multiple of a MiB
+  # today, and a rounded decimal would invite someone to "fix" the
+  # rounding rather than the cap.
+  defp megabytes(bytes), do: div(bytes, 1024 * 1024)
 
   @doc """
   The peer's filename made safe to RENDER — control bytes stripped, length
