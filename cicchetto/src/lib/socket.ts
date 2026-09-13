@@ -199,7 +199,18 @@ let _socket: Socket | null = null;
 // old bundle ignores both kinds (unknown-is-never-fatal) and never accepts an
 // offer, so the server holds it until it expires rather than acting on a
 // consent nobody gave.
-export const CLIENT_PROTOCOL_VERSION = 19;
+//
+// 20 (issue 2089, same slice as 19) — one new REST error token, `not_held`,
+// answered 404 by the four DCC consent doors when the offer id names nothing
+// in the session's held set: it expired, it was already answered, or it was
+// never ours. A member added to a CLOSED SET the codegen renders, so the wire
+// shape moved and the number bumps even though nothing was taken away —
+// additive still bumps (#1393d), because additivity describes what the SERVER
+// emits and says nothing about what a CLIENT requires.
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9: a pre-20 server never answers
+// `not_held`, and this bundle treats an unfamiliar token the way it always
+// has, so it still serves an older server.
+export const CLIENT_PROTOCOL_VERSION = 20;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

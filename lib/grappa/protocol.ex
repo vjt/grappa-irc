@@ -451,7 +451,34 @@ defmodule Grappa.Protocol do
   # kinds ignores them (unknown-is-never-fatal) and simply never accepts a
   # DCC offer — which is the pre-2089 behaviour, so an old bundle is
   # unchanged rather than broken.
-  @protocol_version 19
+  #
+  # v20 (issue 2089, same slice as v19) — ONE new REST error token,
+  # `not_held`, enrolled in `GrappaWeb.ErrorTokens.rest_error_token/0`: the
+  # four DCC consent doors answer it (404) when the offer id names nothing
+  # in the session's held set, because it expired, was already answered, or
+  # was never ours. It is a member added to a CLOSED SET the codegen renders
+  # into the client artefacts, so the wire shape moved and the number owes a
+  # bump even though nothing was taken away.
+  #
+  # Measured, not deduced: with `:not_held` removed and NOTHING else
+  # touched, `mix grappa.wire_pin --check` returns rc=0 «agree» — the digest
+  # moves for this token alone.
+  #
+  # 🔴 Additive is not a reason to hold the number still (#1393d). «No
+  # client reads it today» is the exact argument that kept
+  # `@protocol_version` at `1` through five additive fields that cic later
+  # came to REQUIRE — the failure CLAUDE.md cites as measured. Additivity
+  # describes what the SERVER emits and says nothing about what a CLIENT
+  # requires; the break this number exists to catch runs new-client →
+  # old-server, and a floor that skipped one addition is a floor that lies.
+  # The sibling token `:not_invited`, on the twin consent door, took its own
+  # bump on the same grounds.
+  #
+  # @min_protocol_version stays at 1. A client that has never heard of
+  # `not_held` reads a 404 with an unfamiliar token and falls back to its
+  # generic error path — the same thing it already does for every token
+  # added since v1 — so an old bundle is degraded in wording, not broken.
+  @protocol_version 20
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -462,7 +489,7 @@ defmodule Grappa.Protocol do
   # alongside `@protocol_version`; the spec doubles as the bump tripwire,
   # and now that the bump is routine the tripwire is what keeps it from
   # being done half-way.
-  @spec version() :: 19
+  @spec version() :: 20
   def version, do: @protocol_version
 
   @doc """

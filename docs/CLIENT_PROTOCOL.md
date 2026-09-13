@@ -474,7 +474,9 @@ came off a stranger's socket and the sender declared no MIME type at all,
 so **do not sniff, preview, inline or auto-open them** — hand the download
 to the browser.
 
-Check `protocol_version >= 19` before relying on any of this.
+Check `protocol_version >= 20` before relying on any of this. The two event
+kinds landed at 19 and the `not_held` token at 20, so 20 is the floor for
+the surface as a whole.
 
 ---
 
