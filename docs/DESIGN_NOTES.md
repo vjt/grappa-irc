@@ -54951,3 +54951,96 @@ Not established: nothing was measured against a real DCC peer. The transport
 is tested against a fake sender written for the purpose, over real loopback
 sockets; coinciding with the protocol on paper is not the same as having
 spoken it. Nothing was measured on m42.
+<!-- entry #2089-banner -->
+
+---
+
+## 2026-09-13 — #2089 (cic half): the DCC consent banner, and what it refuses to claim
+
+The client half of the DCC consent surface: a peer offered a file, the
+bouncer is HOLDING it, and a human has to answer. vjt's ruling was "banner,
+same pattern as the invite", and the form to copy was #902's `:invited`
+entry. The interesting part of this slice is almost entirely what it did
+NOT have to build, and three things it declines to say.
+
+### The seam was already the whole feature
+
+`errorBanners.ts` (#119, extended by #120, #459, #902, #976, #1103, #1393d)
+derives typed entries off source signals and hands the owner data, not
+branches. Adding a source is one `BANNER_SOURCES` member plus one loop in
+`activeBanners()`. `ErrorBanners.tsx` and `BannerSlot.tsx` are UNCHANGED —
+the accept button rides `actionHint` and the × rides `dismiss`, both of
+which #976 turned into data precisely so the owner would stop learning
+which source is special. Three files touched in production: the registry,
+one new verb module, two new `api.ts` doors.
+
+### Placed above the invite, on a criterion rather than a preference
+
+Both entries are person-originated offers, both sit below every fault and
+the update prompt, both above push-optin. Between them the tie-break is
+measurable: **a DCC offer EXPIRES** — `dcc_offer_resolved` carries
+`expired` as one of its three resolutions, and the server reaches it on its
+own — where an invite is not lost by waiting. Nothing drops an `:invited`
+window except answering it, and the server re-announces it on every cold
+subscribe; that re-announcement is what #976 was filed about. The entry a
+delay can destroy goes first.
+
+### Three things the copy is careful NOT to say
+
+*The size is not a fact.* The peer declares the length in the CTCP and the
+transfer truncates at it. The banner says "the sender's claim" out loud,
+because a flat number would have grappa vouching for a stranger's. Rendered
+through the shared `formatBytes` (#411), so a size reads the same here as
+in every other cap surface in cic.
+
+*The file does not land on this device.* The accept door answers **202**:
+the transfer runs detached and the bytes are fetched later over the file
+door. "Accept" read as "download to my phone now" is the wrong model to
+leave someone with, so the copy names grappa as the destination.
+
+*The placement is absent from the text.* `channel` is frequently `$server`
+(the #546 rule: a stranger's CTCP mints no window), and "in $server" names
+an implementation detail as if it were a room. The store keeps the
+placement because the server chose it; the banner does not recite it.
+
+### The refusal is NOT described as local, and that is deliberate
+
+#976's invite copy ends "nothing is sent to the IRC server", because IRC
+has no DECLINE verb and an operator who suspects otherwise ignores the
+banner. The DCC equivalent would be a claim about what the refuse door does
+upstream — whether it emits a `DCC REJECT` — and that door is not built
+yet. Rather than guess, the × says what it does (`Refuse the file X from
+Y`) and claims nothing about the peer. When the server half lands, whoever
+knows the answer should add the sentence; the copy is one string.
+
+### Neither control drops the banner, and that is the load-bearing part
+
+`dccConsent.ts` imports no store at all. The mirror (`dccOffers.ts`) drops
+an offer when the server says `dcc_offer_resolved`, never when a button is
+pressed. Wrong twice otherwise: the 202 means the transfer can still fail
+after the click, so hiding the banner reports a success that has not
+happened; and the resolution fans out to every device, so a drop here and
+nowhere else leaves the phone showing a file the laptop thinks is gone —
+#976's shape with a file attached. Three mutants confirm the tests see it:
+moving the loop below the invite, adding an optimistic `resolveDccOffer` to
+the accept verb, and making the × also hide locally each kill exactly one
+assertion and no other.
+
+### What is NOT established
+
+**No e2e, and it is not an omission that can be closed from here.**
+Measured on this base (`2e176355d`): `Grappa.Session.Wire.dcc_offer/6` has
+**no production caller** — `grep -rn dcc_offer lib/` returns the builder,
+one comment in `protocol.ex` and one in `report.ex` — and `event_router.ex`
+names DCC only in four comments. The router carries no `dcc` route. So no
+peer action, real ircd included, can make a `dcc_offer` reach cic on this
+branch, and the accept/refuse doors would 404. The spec becomes buildable
+at the union with the server half; writing one now would ship a red.
+
+Nothing was measured against a real DCC peer, and nothing on m42. The two
+REST paths are written against shapes that were DECIDED but not yet
+compiled — an integration point, not a verified one. The `/api` prefix in
+the pinned contract note is NOT the client path: every cic door under
+`/networks/:network_id/*` is mounted without it (`deleteInvite`,
+`postJoin`, `postPart`), so these two follow suit; if the server half
+mounts them elsewhere, these two lines move.
