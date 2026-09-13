@@ -1,5 +1,6 @@
 defmodule Grappa.IRC.DCCTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias Grappa.IRC.DCC
   alias Grappa.IRC.DCC.Offer
@@ -156,6 +157,46 @@ defmodule Grappa.IRC.DCCTest do
 
     test "an unterminated quoted filename is malformed" do
       assert {:error, :malformed} = DCC.parse(~s{SEND "unterminated #{@v4_int} 5000 12345})
+    end
+  end
+
+  # Salvaged from the superseded first iteration of this slice (branch
+  # `w1-2089`, never merged), where they were written and then lost when
+  # the parser was rewritten. Two of that branch's three properties are
+  # here; the third asserted that an unquoted spaced filename is recovered
+  # by a right-to-left split, and the parser this file tests REFUSES that
+  # input deliberately — see "an unquoted filename containing spaces is
+  # refused rather than guessed" above. Porting it would assert a
+  # behaviour the code rejects on purpose, which is asserting a bug.
+  describe "parse/1 — properties over generated input" do
+    property "any four octets round-trip through the 32-bit integer field" do
+      # The example-based tests pin ONE address (1.2.3.4). Byte order is
+      # the kind of thing a single example cannot police: a little-endian
+      # decode of 16909060 answers {4, 3, 2, 1}, which is also a valid
+      # tuple, so only the whole space distinguishes them.
+      check all(
+              a <- integer(0..255),
+              b <- integer(0..255),
+              c <- integer(0..255),
+              d <- integer(0..255)
+            ) do
+        n = a * 16_777_216 + b * 65_536 + c * 256 + d
+
+        assert {:ok, %Offer{ip: {^a, ^b, ^c, ^d}}} = DCC.parse("SEND f #{n} 5000 1")
+      end
+    end
+
+    property "never raises on arbitrary argument bytes" do
+      # The argument string comes off a stranger's socket, and `parse/1`
+      # is called from `EventRouter`, inside the session process. A raise
+      # here is not a malformed offer — it is a killed session on a line
+      # any nick on the network can send (the #1988 failure mode). Total
+      # over its input type is therefore a property of the process tree,
+      # not a tidiness of the parser.
+      check all(args <- string(:printable, max_length: 40)) do
+        assert match?({:ok, %Offer{}}, DCC.parse(args)) or
+                 match?({:error, _}, DCC.parse(args))
+      end
     end
   end
 end
