@@ -65,13 +65,18 @@ defmodule Grappa.Config.StorageRootsConfigTest do
     "VAPID_PRIVATE_KEY" => String.duplicate("q", 43)
   }
 
-  @root_vars ["UPLOADS_STORAGE_ROOT", "PEER_AVATARS_STORAGE_ROOT", "CIC_DIST_ROOT"]
+  @root_vars ["UPLOADS_STORAGE_ROOT", "PEER_AVATARS_STORAGE_ROOT", "DCC_STORAGE_ROOT", "CIC_DIST_ROOT"]
 
   # An absolute DATABASE_PATH in the packaged-install shape. Nothing writes
   # here — `Config.Reader` only builds the keyword list.
   @database_path "/var/lib/grappa/grappa.db"
 
-  @root_keys [:uploads_storage_root, :peer_avatars_storage_root, :cic_dist_root]
+  @root_keys [
+    :uploads_storage_root,
+    :peer_avatars_storage_root,
+    :dcc_storage_root,
+    :cic_dist_root
+  ]
 
   # Run `fun` with EXACTLY `overrides` on top of the mandatory secrets: every
   # root var absent from `overrides` is DELETED, never inherited. The test
@@ -142,7 +147,7 @@ defmodule Grappa.Config.StorageRootsConfigTest do
       end
     end
 
-    test "the two DATA roots default to siblings of the sqlite database" do
+    test "the three DATA roots default to siblings of the sqlite database" do
       # Not a new convention: `runtime/uploads` was already DOCUMENTED as
       # "the sibling of the sqlite DB". This computes what that sentence
       # says instead of borrowing the CWD to approximate it.
@@ -150,6 +155,9 @@ defmodule Grappa.Config.StorageRootsConfigTest do
 
       assert Keyword.fetch!(grappa, :uploads_storage_root) == "/var/lib/grappa/uploads"
       assert Keyword.fetch!(grappa, :peer_avatars_storage_root) == "/var/lib/grappa/peer_avatars"
+      # issue 2089 — the DCC spool joined the class rather than being the
+      # next root nobody set, which is how #1945 happened to the one above.
+      assert Keyword.fetch!(grappa, :dcc_storage_root) == "/var/lib/grappa/dcc"
     end
 
     test "an unset CIC_DIST_ROOT leaves config.exs's absolute build anchor untouched" do
@@ -179,11 +187,13 @@ defmodule Grappa.Config.StorageRootsConfigTest do
           "DATABASE_PATH" => @database_path,
           "UPLOADS_STORAGE_ROOT" => "",
           "PEER_AVATARS_STORAGE_ROOT" => "",
+          "DCC_STORAGE_ROOT" => "",
           "CIC_DIST_ROOT" => ""
         })
 
       assert Keyword.fetch!(grappa, :uploads_storage_root) == "/var/lib/grappa/uploads"
       assert Keyword.fetch!(grappa, :peer_avatars_storage_root) == "/var/lib/grappa/peer_avatars"
+      assert Keyword.fetch!(grappa, :dcc_storage_root) == "/var/lib/grappa/dcc"
       assert Keyword.fetch!(grappa, :cic_dist_root) == baked_cic_dist_root()
     end
   end
@@ -244,6 +254,7 @@ defmodule Grappa.Config.StorageRootsConfigTest do
       database_path = capture(~r/ENV DATABASE_PATH=(\S+)/, dockerfile)
       uploads = capture(~r/UPLOADS_STORAGE_ROOT=(\S+)/, dockerfile)
       avatars = capture(~r/PEER_AVATARS_STORAGE_ROOT=(\S+)/, dockerfile)
+      dcc = capture(~r/DCC_STORAGE_ROOT=(\S+)/, dockerfile)
 
       # Positive control on the extraction itself.
       assert database_path, "Dockerfile.release no longer bakes ENV DATABASE_PATH"
@@ -254,9 +265,14 @@ defmodule Grappa.Config.StorageRootsConfigTest do
       # it. The image must name it, next to the other two.
       assert avatars, "Dockerfile.release does not bake PEER_AVATARS_STORAGE_ROOT"
 
+      # issue 2089 — the DCC spool is the third data root, named here
+      # BEFORE an incident rather than after one.
+      assert dcc, "Dockerfile.release does not bake DCC_STORAGE_ROOT"
+
       data_root = Path.dirname(database_path)
       assert Path.join(data_root, "uploads") == uploads
       assert Path.join(data_root, "peer_avatars") == avatars
+      assert Path.join(data_root, "dcc") == dcc
     end
 
     test "the dev compose stack: each fallback is what the derivation computes" do
@@ -265,15 +281,18 @@ defmodule Grappa.Config.StorageRootsConfigTest do
       database_path = capture(~r/DATABASE_PATH: (\S+)/, compose)
       uploads = capture(~r/UPLOADS_STORAGE_ROOT:-([^}]+)\}/, compose)
       avatars = capture(~r/PEER_AVATARS_STORAGE_ROOT:-([^}]+)\}/, compose)
+      dcc = capture(~r/DCC_STORAGE_ROOT:-([^}]+)\}/, compose)
 
       assert database_path, "compose.yaml no longer sets DATABASE_PATH"
       assert uploads, "compose.yaml no longer defaults UPLOADS_STORAGE_ROOT"
       assert avatars, "compose.yaml no longer defaults PEER_AVATARS_STORAGE_ROOT"
+      assert dcc, "compose.yaml no longer defaults DCC_STORAGE_ROOT"
 
       # `${MIX_ENV:-dev}` sits in the BASENAME, so the data root is literal.
       data_root = Path.dirname(database_path)
       assert Path.join(data_root, "uploads") == uploads
       assert Path.join(data_root, "peer_avatars") == avatars
+      assert Path.join(data_root, "dcc") == dcc
     end
   end
 end

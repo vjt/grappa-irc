@@ -30,6 +30,8 @@ defmodule Grappa.Application do
       # Uploads.boot/1 above) and supervises Avatars.Reaper.
       Grappa.Avatars,
       Grappa.Avatars.Reaper,
+      Grappa.Dcc,
+      Grappa.Dcc.Reaper,
       Grappa.Vault,
       # #1404 — start/2 calls Vhosts.boot/1 to seed the deployment's
       # source-mapping key, the same boot-time DI-seam shape as the
@@ -70,6 +72,13 @@ defmodule Grappa.Application do
     # cache's storage root (a separate directory/context from uploads —
     # see `Grappa.Avatars` moduledoc).
     :ok = Grappa.Avatars.boot(peer_avatars_storage_root())
+
+    # issue 2089 — the same seeding for the DCC RECEIVE spool's storage
+    # root. A THIRD data directory and context: a subject-owned upload, a
+    # cached peer avatar and a file a stranger pushed at one of our users
+    # are three trust domains, and CLAUDE.md rejects one data model with a
+    # type flag across them.
+    :ok = Grappa.Dcc.boot(dcc_storage_root())
 
     # H16 (REV-D 2026-05-22): pin the VAPID public key in
     # `:persistent_term` so PushVapidController reads lock-free per
@@ -452,6 +461,22 @@ defmodule Grappa.Application do
           # must be reachable before sweeps start removing rows/files).
           {Grappa.Avatars.Reaper, storage_root: peer_avatars_storage_root(), interval_ms: reaper_interval_ms()},
 
+          # issue 2089 — the FIFTH reaper, sweeping the DCC spool. Same
+          # "why after Endpoint" rationale as the two above: the
+          # authenticated serving route must be reachable before sweeps
+          # start removing rows and files out from under it.
+          #
+          # A fifth sweeper rather than a branch inside an existing one,
+          # per CLAUDE.md rule 6 — reuse the VERB, not the noun. It is
+          # also only ONE of this feature's three reaping axes, and the
+          # other two are deliberately not here: a HELD offer is reaped by
+          # the session process that owns it (it is a peer's live TCP
+          # endpoint, worthless once that process is gone), and a PARTIAL
+          # file from an aborted transfer is removed inline by
+          # `Grappa.Dcc.Transfer`, because no row is ever written for it
+          # and a sweep has nothing to enumerate.
+          {Grappa.Dcc.Reaper, storage_root: dcc_storage_root(), interval_ms: reaper_interval_ms()},
+
           # #223: auth-session housekeeping GC. Sibling of Visitors.Reaper
           # / Uploads.Reaper — a THIRD domain (Accounts) gets its OWN
           # periodic sweep rather than folding into an unrelated reaper
@@ -676,6 +701,11 @@ defmodule Grappa.Application do
   # M3b — mirrors `uploads_storage_root/0` for the peer-avatar cache.
   defp peer_avatars_storage_root do
     Application.fetch_env!(:grappa, :peer_avatars_storage_root)
+  end
+
+  # issue 2089 — mirrors both of the above for the DCC RECEIVE spool.
+  defp dcc_storage_root do
+    Application.fetch_env!(:grappa, :dcc_storage_root)
   end
 
   # #893: the shared tick cadence of the three ambient sweepers

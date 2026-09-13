@@ -215,9 +215,16 @@ RUN chmod 0755 /app/release-entrypoint.sh /app/gen-secrets.sh
 # braces; it is here because an operator reading `docker image inspect`
 # should see where the third root goes, next to the other two, rather than
 # having to know the derivation.
+#
+# DCC_STORAGE_ROOT (issue 2089) is the FOURTH root and the third DATA one,
+# named here for the same reason and pre-emptively rather than after an
+# incident: a spool of files strangers pushed at our users is the last
+# thing that should quietly live in a container layer and vanish on the
+# next `pull`.
 ENV DATABASE_PATH=/data/grappa.db \
     UPLOADS_STORAGE_ROOT=/data/uploads \
     PEER_AVATARS_STORAGE_ROOT=/data/peer_avatars \
+    DCC_STORAGE_ROOT=/data/dcc \
     CIC_DIST_ROOT=/app/cicchetto-dist \
     GRAPPA_SUBSTRATE=docker \
     PORT=4000

@@ -78,6 +78,8 @@ services:
       UPLOADS_STORAGE_ROOT: ${UPLOADS_STORAGE_ROOT:-/app/runtime/uploads}
       # M3b — sibling of UPLOADS_STORAGE_ROOT, see .env.example.
       PEER_AVATARS_STORAGE_ROOT: ${PEER_AVATARS_STORAGE_ROOT:-/app/runtime/peer_avatars}
+      # issue 2089 — the DCC RECEIVE spool, third data root. See .env.example.
+      DCC_STORAGE_ROOT: ${DCC_STORAGE_ROOT:-/app/runtime/dcc}
       # The built SPA dist the BEAM self-serves (Plug.Static + history
       # fallback). Same dir the cicchetto-build service writes (#399).
       #

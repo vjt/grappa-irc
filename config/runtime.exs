@@ -293,6 +293,24 @@ if config_env() == :prod do
 
   config :grappa, :peer_avatars_storage_root, peer_avatars_storage_root
 
+  # issue 2089 — the DCC RECEIVE spool: bytes a PEER pushed at a subject
+  # who accepted the offer. Read at boot, stashed in :persistent_term via
+  # `Grappa.Dcc.boot/1`. A THIRD data root rather than a subdirectory of
+  # the uploads one, for the reason there is a third context: a
+  # subject-owned upload and a stranger's pushed file are different trust
+  # domains, and an operator who wants the stranger spool on its own
+  # filesystem — quota'd, `noexec`, or simply disposable — needs a root to
+  # point at. Derived like the other two, so it inherits the #1945 cure by
+  # construction instead of being the next root nobody set.
+  dcc_storage_root =
+    storage_root.(
+      "DCC_STORAGE_ROOT",
+      System.get_env("DCC_STORAGE_ROOT"),
+      Path.join(data_root, "dcc")
+    )
+
+  config :grappa, :dcc_storage_root, dcc_storage_root
+
   # NB: `:cic_dist_root` is derived ABOVE, hoisted out of this prod block
   # (all envs except :test) since #485 — see the comment there, which
   # folds in the #526 jail-CWD knowledge that used to live here.
