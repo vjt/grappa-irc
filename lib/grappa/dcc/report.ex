@@ -109,10 +109,26 @@ defmodule Grappa.Dcc.Report do
   """
   @type refusal :: DCC.refusal() | Policy.refusal() | :too_many_offers
 
+  @typedoc """
+  What happened to an offer.
+
+  The set is TOTAL on purpose: every offer leaves exactly one row here,
+  and the reason is that a held offer lives in memory alone. Delivered
+  bytes get the peer's own `:privmsg`; a transfer that broke gets
+  `:failed`; an offer turned away before any socket existed gets
+  `:refused`; and one that nobody answered gets `:expired`. Drop any arm
+  and a stranger can offer a file whose entire existence leaves no trace
+  in the scrollback.
+
+  `:refused` carries no filename because a malformed offer may not have
+  yielded one. `:expired` always does — the offer parsed and was held, so
+  the name is in hand.
+  """
   @type outcome ::
           {:delivered, String.t(), String.t()}
           | {:failed, String.t(), Transfer.failure()}
           | {:refused, refusal()}
+          | {:expired, String.t()}
 
   @doc """
   Renders `outcome` into the row to persist, for an offer from
@@ -133,6 +149,13 @@ defmodule Grappa.Dcc.Report do
 
   def render({:refused, refusal}, peer_nick) do
     event("DCC offer from #{peer_nick} declined: #{refusal_reason(refusal)}")
+  end
+
+  # Deliberately NOT worded as a refusal. Nobody declined this one — the
+  # hold ran out with the banner still on screen — and "declined" would
+  # tell the operator they made a decision they did not make.
+  def render({:expired, filename}, peer_nick) do
+    event("#{peer_nick}'s offer of #{display(filename)} expired unanswered")
   end
 
   defp event(body), do: %__MODULE__{kind: :server_event, sender: Message.anonymous_sender(), body: body}

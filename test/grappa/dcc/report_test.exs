@@ -247,6 +247,43 @@ defmodule Grappa.Dcc.ReportTest do
     end
   end
 
+  describe "render/2 — an offer that lapsed leaves the only trace there is" do
+    # A held offer lives in memory alone. If its expiry wrote nothing, a
+    # stranger could offer a file, the banner could come and go while
+    # nobody was looking, and the scrollback would carry no evidence any
+    # of it happened. Every offer leaves exactly ONE terminal row — this
+    # is the arm for the one nobody answered.
+    test "is GRAPPA speaking, never the peer" do
+      report = Report.render({:expired, "archive.zip"}, @peer)
+
+      assert report.kind == :server_event
+      assert report.sender == Message.anonymous_sender()
+    end
+
+    test "names the peer, the file, and the fact that nobody answered" do
+      report = Report.render({:expired, "archive.zip"}, @peer)
+
+      assert report.body =~ @peer
+      assert report.body =~ "archive.zip"
+      assert report.body =~ "expired"
+    end
+
+    test "does not read as a refusal — nobody declined it" do
+      expired = Report.render({:expired, "archive.zip"}, @peer)
+      refused = Report.render({:refused, :too_many_offers}, @peer)
+
+      refute expired.body =~ "declined"
+      refute expired.body == refused.body
+    end
+
+    test "neutralises the peer-supplied filename like every other arm" do
+      report = Report.render({:expired, "ev\x03il\r\n.zip"}, @peer)
+
+      assert report.body =~ Report.display_filename("ev\x03il\r\n.zip")
+      refute report.body =~ "\x03"
+    end
+  end
+
   describe "display_filename/1 — the banner and the row name the file identically" do
     # Public so `Session.Wire.dcc_offer/6` can carry the SAME string the
     # scrollback row will. Two neutralisations would be one drift away from
