@@ -97,8 +97,8 @@ defmodule Grappa.Dcc.Report do
   malformed offer may not have yielded one.
 
   Its reason spans TWO vocabularies and deliberately so: the parser's
-  (`Grappa.IRC.DCC.refusal/0` — this is not a DCC offer we implement) and
-  the policy gate's (`Grappa.Dcc.Policy.refusal/0` — it is, and we decline
+  (`t:Grappa.IRC.DCC.refusal/0` — this is not a DCC offer we implement) and
+  the policy gate's (`t:Grappa.Dcc.Policy.refusal/0` — it is, and we decline
   it). A reader of the row does not care which layer said no; they care
   what to do next, and this module owns that wording for all of them
   rather than letting a second taxonomy grow beside it.
