@@ -84,6 +84,7 @@ defmodule Grappa.Session do
       # `Grappa.Dcc.*` submodule is one), so naming the context does not
       # reach it — the display-name projection needs its own edge.
       Grappa.Dcc,
+      Grappa.Dcc.Policy,
       Grappa.Dcc.Report,
       Grappa.IRC,
       Grappa.Log,

@@ -172,6 +172,7 @@ defmodule Grappa.HotReload.LongLivedModules do
     # it, so this entry is derived rather than a judgement call.
     Grappa.DbLatency.Distribution,
     Grappa.Session.AwayState,
+    Grappa.Session.DccOffers,
     Grappa.Session.Deps,
     Grappa.Session.DirectoryIngest,
     Grappa.Session.GhostRecovery,
@@ -225,6 +226,7 @@ defmodule Grappa.HotReload.LongLivedModules do
   @type state_helper ::
           Grappa.DbLatency.Distribution
           | Grappa.Session.AwayState
+          | Grappa.Session.DccOffers
           | Grappa.Session.Deps
           | Grappa.Session.DirectoryIngest
           | Grappa.Session.GhostRecovery
