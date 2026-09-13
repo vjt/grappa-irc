@@ -34,6 +34,15 @@
 #          round trip answers already_linked), and leaving grappa_admins
 #          closes the admin door again on the next login (the sync leg
 #          runs in both directions — docs/oidc-kanidm.md §3)
+#   db     the store itself, read raw through the exqlite NIF (the same
+#          bundled SQLite the app runs, but no Repo/Ecto/grappa code in
+#          the path): users.password_hash nullable from a COLD
+#          connection, no throwaway *_old tables, the exact accounts +
+#          flags the retention leg ends on, both linked identities
+#          resolving, foreign_key_check + integrity_check — the 1911c
+#          migration answered green on both e2e runs while the schema
+#          was poisoned, and nothing looked at the DB until the first
+#          INSERT died
 #
 # This is the acceptance pass the #1911 commit owed ("verified against the
 # shape, not against a live provider"): the Bypass-driven controller tests
@@ -876,5 +885,54 @@ RCODE=$(curl -s -o /dev/null -w '%{http_code}' \
 $COMPOSE logs grappa 2>&1 | grep -q "$NEWUSER left $AGROUP but is the last admin" \
     || die "retention: no last-admin warning for $NEWUSER in grappa's logs — the retention was silent"
 
+# ---------------------------------------------------------------------------
+step "database: what the legs leave behind (#1911c)"
+# Every verdict above came back through HTTP, which means grappa code read
+# the store. The 1911c incident is why that is not enough: the
+# nullable-password migration reported SUCCESS on both e2e runs while the
+# rename dance stranded the CASCADE children on a dropped users_old, and
+# nothing looked at the database itself until the first post-migration
+# INSERT died. The migration now asserts its own shape, but on the
+# EDITING connection — the schema_version bump exists precisely because a
+# COLD connection can keep enforcing the old schema from its cache. So
+# the suite opens the live DB through the raw exqlite NIF — same bundled
+# SQLite engine the app runs, zero grappa code in the path, DATABASE_PATH
+# straight from the container env — and pins both the shape and the rows.
+# `mix run --no-start`: the probe must not boot a second app tree against
+# a DB the running one owns; the NIF needs no app started.
+# All SQL literals ride bind parameters (q.(..., ["table", ...])): the
+# probe lives inside a single-quoted bash -e string, and Elixir charlists
+# would break out of it.
+DBPROBE=$($COMPOSE exec -T grappa mix run --no-start -e '
+check = fn label, got, want ->
+  if got == want do
+    IO.puts("db: " <> label)
+  else
+    raise "FAILED — " <> label <> ": got " <> inspect(got) <> " want " <> inspect(want)
+  end
+end
+{:ok, db} = Exqlite.Sqlite3.open(System.get_env("DATABASE_PATH"))
+q = fn sql, params ->
+  {:ok, st} = Exqlite.Sqlite3.prepare(db, sql)
+  :ok = Exqlite.Sqlite3.bind(st, params)
+  {:ok, rows} = Exqlite.Sqlite3.fetch_all(db, st)
+  rows
+end
+check.("foreign_key_check clean", q.("PRAGMA foreign_key_check", []), [])
+check.("integrity_check ok", q.("PRAGMA integrity_check", []), [["ok"]])
+check.("no throwaway *_old tables",
+       q.("SELECT name FROM sqlite_master WHERE type = ? AND substr(name, -4) = ?", ["table", "_old"]), [])
+check.("users.password_hash nullable on a cold connection",
+       q.("SELECT notnull FROM pragma_table_info(?) WHERE name = ?", ["users", "password_hash"]), [[0]])
+check.("accounts + flags exactly as the retention leg leaves them",
+       q.("SELECT name, password_hash IS NULL, is_admin FROM users ORDER BY name", []),
+       [["oidc-ci", 0, 0], ["oidc-newcomer", 1, 1]])
+check.("two linked identities", q.("SELECT count(*) FROM oidc_identities", []), [[2]])
+check.("every identity resolves to an account",
+       q.("SELECT count(*) FROM oidc_identities LEFT JOIN users ON users.id = oidc_identities.user_id WHERE users.id IS NULL", []),
+       [[0]])
+') || die "db leg: $DBPROBE"
+echo "$DBPROBE"
+
 echo
-echo "oidc-e2e: GREEN — link + login + gate + raw + hardening legs against Kanidm $KPORT, grappa :$GPORT"
+echo "oidc-e2e: GREEN — link + login + gate + raw + hardening + db legs against Kanidm $KPORT, grappa :$GPORT"
