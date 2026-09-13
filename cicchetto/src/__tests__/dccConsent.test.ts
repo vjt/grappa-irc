@@ -89,7 +89,7 @@ describe("acceptDccOffer (#2089)", () => {
 
   it("logs a failed accept instead of throwing into an unhandled rejection", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    acceptMock.mockRejectedValue(new Error("offer_not_found"));
+    acceptMock.mockRejectedValue(new Error("not_held"));
     const { acceptDccOffer } = await import("../lib/dccConsent");
     acceptDccOffer(SLUG, OFFER_ID);
     await settle();
@@ -129,7 +129,7 @@ describe("refuseDccOffer (#2089)", () => {
 
   it("logs a failed refuse instead of throwing into an unhandled rejection", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    refuseMock.mockRejectedValue(new Error("offer_not_found"));
+    refuseMock.mockRejectedValue(new Error("not_held"));
     const { refuseDccOffer } = await import("../lib/dccConsent");
     refuseDccOffer(SLUG, OFFER_ID);
     await settle();

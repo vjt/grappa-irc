@@ -30,10 +30,17 @@ import { token } from "./auth";
 // ## Fire-and-forget, like its invite twins
 //
 // No dedicated error surface: a failure is logged, not thrown. The realistic
-// failure is `offer_not_found` — the offer expired, or was answered on
-// another device — and in that case `dcc_offer_resolved` has already been
-// broadcast or is about to be, so the banner is on its way out regardless.
-// A modal for a race the server is already resolving would be noise.
+// failure is `not_held` — BOTH doors answer it, because both ask the same
+// question (is this offer still in the held set?) and both lose the same
+// race: the hold ran out, or the offer was already answered on another
+// device. In that case `dcc_offer_resolved` has already been broadcast or is
+// about to be, so the banner is on its way out regardless, and a modal for a
+// race the server is resolving would be noise.
+//
+// The token is the DECIDED REST vocabulary, not something observed from
+// here — nothing on this branch serves either door yet. Nothing reads it,
+// either: it is logged whole and never matched on, so a different spelling
+// costs a log line's accuracy and no behaviour.
 
 export function acceptDccOffer(networkSlug: string, offerId: string): void {
   const t = token();
