@@ -4,6 +4,8 @@ import { BUNDLE_REFRESH_NOTICE_KEY } from "../lib/bundleRefreshNotice";
 import { acceptInvite, declineInvite } from "../lib/channelJoin";
 import { channelKey } from "../lib/channelKey";
 import { __setConnectivityForTests } from "../lib/connectivity";
+import { acceptDccOffer, refuseDccOffer } from "../lib/dccConsent";
+import { type DccOffer, dccOffersById, holdDccOffer, resolveDccOffer } from "../lib/dccOffers";
 import {
   __resetDismissedForTests,
   activeBanners,
@@ -18,6 +20,7 @@ import {
   sanitizeBanners,
   visibleBanners,
 } from "../lib/errorBanners";
+import { formatBytes } from "../lib/formatBytes";
 import { acceptPushOptin, shouldShowPushOptinBanner } from "../lib/pushOptin";
 import {
   __resetServerProtocolForTests,
@@ -79,6 +82,15 @@ vi.mock("../lib/channelJoin", () => ({
   acceptInvite: vi.fn(),
   declineInvite: vi.fn(),
   confirmJoinChannel: vi.fn(),
+}));
+
+// issue 2089 — the DCC consent verbs, mocked for the same reason as the two
+// above: the registry's job is to project the held set and wire the verbs;
+// the calls themselves (token guard, the door, the no-local-drop posture)
+// belong to dccConsent and are tested there.
+vi.mock("../lib/dccConsent", () => ({
+  acceptDccOffer: vi.fn(),
+  refuseDccOffer: vi.fn(),
 }));
 
 const mockShouldShowRefresh = vi.mocked(shouldShowRefreshBanner);
@@ -618,5 +630,157 @@ describe("errorBanners invite (#902)", () => {
     setInvited(KEY_ONE, "alice");
     dismissBanner(entryId(activeBanners().find((e) => e.source === "invite") as BannerEntry));
     expect(visibleBanners().some((e) => e.source === "ws")).toBe(true);
+  });
+});
+
+// issue 2089 — the DCC offer source. It is the invite's FORM (vjt's ruling
+// 2: "banner, same pattern as the invite") over a different noun, and the
+// three things worth pinning are exactly the three where the nouns differ:
+// the placement is frequently `$server` so the copy must not read as a
+// window, neither control drops the entry locally, and the copy must not
+// promise the operator's device receives the file.
+describe("errorBanners dcc-offer (#2089)", () => {
+  const OFFER_ID = "aaaabbbbccccddddeeeeffffgg";
+  const OTHER_ID = "zzzzyyyyxxxxwwwwvvvvuuuutt";
+
+  const offer = (over: Partial<DccOffer> = {}): DccOffer => ({
+    network: "azzurra",
+    channel: "$server",
+    offer_id: OFFER_ID,
+    from: "stranger",
+    filename: "holiday.tar.gz",
+    size: 4096,
+    ...over,
+  });
+
+  beforeEach(() => {
+    __resetSocketHealthForTests();
+    __setConnectivityForTests(true);
+    __resetSwRegistrationForTests();
+    __resetDismissedForTests();
+    mockShouldShowRefresh.mockReturnValue(false);
+    mockShouldShowPushOptin.mockReturnValue(false);
+    // The offer store is REAL here (the registry must derive off the true
+    // mirror, not a stub of it), so it survives between tests.
+    for (const id of Object.keys(dccOffersById())) resolveDccOffer(id);
+  });
+
+  it("emits no entry when nothing is held", () => {
+    expect(activeBanners().some((e) => e.source === "dcc-offer")).toBe(false);
+  });
+
+  it("emits an info entry naming the peer, the file and its size", () => {
+    holdDccOffer(offer());
+    const entry = activeBanners().find((e) => e.source === "dcc-offer");
+
+    expect(entry?.severity).toBe("info");
+    expect(entry?.message).toContain("stranger");
+    expect(entry?.message).toContain("holiday.tar.gz");
+    // Rendered through the SHARED formatter (#411), not a second spelling —
+    // 4096 bytes is "4 KB" everywhere in cic or nowhere.
+    expect(entry?.message).toContain(formatBytes(4096));
+  });
+
+  it("calls the size the sender's claim, because that is all it is", () => {
+    // The peer declares the length in the CTCP; the transfer truncates at it.
+    // Copy that states it as a fact would make grappa vouch for a stranger.
+    holdDccOffer(offer());
+    const entry = activeBanners().find((e) => e.source === "dcc-offer");
+
+    expect(entry?.message).toContain("claim");
+  });
+
+  it("says the file lands on the bouncer, not on this device", () => {
+    // The accept door answers 202 and the transfer runs detached; the bytes
+    // are fetched later over `/dcc_files/:slug`. An operator who reads
+    // "Accept" as "download to my phone now" has been told the wrong thing.
+    holdDccOffer(offer());
+    const entry = activeBanners().find((e) => e.source === "dcc-offer");
+
+    expect(entry?.message).toContain("grappa");
+    expect(entry?.message).not.toContain("$server");
+  });
+
+  it("emits ONE entry per held offer, not one aggregate", () => {
+    holdDccOffer(offer());
+    holdDccOffer(offer({ offer_id: OTHER_ID, from: "alice", filename: "notes.txt" }));
+
+    expect(activeBanners().filter((e) => e.source === "dcc-offer")).toHaveLength(2);
+  });
+
+  it("gives each entry a distinct id, network-qualified like the invite's", () => {
+    holdDccOffer(offer());
+    holdDccOffer(offer({ offer_id: OTHER_ID }));
+    const ids = activeBanners()
+      .filter((e) => e.source === "dcc-offer")
+      .map((e) => e.id);
+
+    expect(new Set(ids).size).toBe(2);
+    expect(ids[0]).toContain("azzurra");
+  });
+
+  it("wires [Accept] to the consent verb with (network, offer_id)", () => {
+    holdDccOffer(offer());
+    const entry = activeBanners().find((e) => e.source === "dcc-offer");
+
+    expect(entry?.actionHint?.label).toBe("Accept");
+    entry?.actionHint?.onAction();
+
+    expect(vi.mocked(acceptDccOffer)).toHaveBeenCalledWith("azzurra", OFFER_ID);
+  });
+
+  it("wires the × to the REFUSE verb, and neither control hides the entry", () => {
+    holdDccOffer(offer());
+    const entry = activeBanners().find((e) => e.source === "dcc-offer");
+
+    expect(entry?.dismiss?.label).toContain("Refuse");
+    expect(entry?.dismiss?.label).toContain("holiday.tar.gz");
+    entry?.dismiss?.onAction();
+
+    expect(vi.mocked(refuseDccOffer)).toHaveBeenCalledWith("azzurra", OFFER_ID);
+    // Still active AND still visible: the entry leaves when the server's
+    // `dcc_offer_resolved` drops it from the mirror, on every device. A
+    // client-side hide would show a refused file as still pending on the
+    // phone — and an accepted one as gone here while it is still held.
+    expect(visibleBanners().some((e) => e.source === "dcc-offer")).toBe(true);
+  });
+
+  it("stops emitting an entry once the server resolves the offer", () => {
+    holdDccOffer(offer());
+    expect(activeBanners().some((e) => e.source === "dcc-offer")).toBe(true);
+
+    resolveDccOffer(OFFER_ID);
+    expect(activeBanners().some((e) => e.source === "dcc-offer")).toBe(false);
+  });
+
+  it("sits below every fault + the update prompt, above the invite and push-optin", () => {
+    // Below the faults for the invite's reason: an offer never outranks "you
+    // are disconnected". ABOVE the invite because this offer EXPIRES — the
+    // server resolves it `expired` on its own — where an invite is re-emitted
+    // on every cold subscribe until it is answered. The entry that is lost by
+    // waiting goes first.
+    __setConnectivityForTests(false);
+    recordSwRegError({ name: "SecurityError", message: "denied" });
+    mockShouldShowRefresh.mockReturnValue(true);
+    mockShouldShowPushOptin.mockReturnValue(true);
+    setInvited(channelKey("azzurra", "#one"), "alice");
+    holdDccOffer(offer());
+    const sources = activeBanners().map((e) => e.source);
+
+    expect(sources.indexOf("dcc-offer")).toBeGreaterThan(sources.indexOf("bundle-refresh"));
+    expect(sources.indexOf("dcc-offer")).toBeLessThan(sources.indexOf("invite"));
+    expect(sources.indexOf("dcc-offer")).toBeLessThan(sources.indexOf("push-optin"));
+    forceParted(channelKey("azzurra", "#one"));
+  });
+
+  it("renders a name the server already neutralised, without re-sanitising it", () => {
+    // `Grappa.Dcc.Report.display_filename/1` strips control bytes, caps the
+    // length and collapses an all-control name to `(unnamed)`; the scrollback
+    // row uses the SAME string. A second neutralisation here would be one
+    // drift away from a banner and a row naming the same file differently.
+    holdDccOffer(offer({ filename: "(unnamed)" }));
+    const entry = activeBanners().find((e) => e.source === "dcc-offer");
+
+    expect(entry?.message).toContain("(unnamed)");
   });
 });

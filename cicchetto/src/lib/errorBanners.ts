@@ -3,6 +3,9 @@ import { refreshBannerMessage, shouldShowRefreshBanner } from "./bundleHash";
 import { requestBundleRefreshNow } from "./bundleRefreshNotice";
 import { acceptInvite, declineInvite } from "./channelJoin";
 import { isOffline } from "./connectivity";
+import { acceptDccOffer, refuseDccOffer } from "./dccConsent";
+import { type DccOffer, dccOffersById } from "./dccOffers";
+import { formatBytes } from "./formatBytes";
 import { acceptPushOptin, declinePushOptin, shouldShowPushOptinBanner } from "./pushOptin";
 import { serverOutdatedMessage, shouldShowServerOutdatedBanner } from "./serverProtocol";
 import {
@@ -65,6 +68,11 @@ export const BANNER_SOURCES = [
   "push-optin",
   "invite",
   "share-target",
+  // issue 2089 — a peer offered a file and the bouncer is HOLDING it. One
+  // more member, one more derivation: the same seam #120 and #902 used, and
+  // the reason vjt's ruling says "banner, same pattern as the invite" —
+  // there was nothing structural left to build.
+  "dcc-offer",
 ] as const;
 export type BannerSource = (typeof BANNER_SOURCES)[number];
 
@@ -316,6 +324,25 @@ export function activeBanners(): BannerEntry[] {
   // The decline is still LOCAL — IRC has no DECLINE verb, so nothing reaches
   // the peer or the server upstream. The copy says so out loud rather than
   // leaving the operator to guess whether refusing is a snub.
+  // issue 2089 — held DCC offers, ABOVE the invites and for a reason that is
+  // measurable rather than a matter of taste: this offer EXPIRES. The server
+  // resolves it `expired` on its own, so ignoring it is a way to lose it. An
+  // invite is not lost by waiting — nothing drops an `:invited` window except
+  // answering it, and the server re-announces it on every cold subscribe
+  // (that is exactly what #976 was filed about). The entry that a delay can
+  // destroy goes first.
+  //
+  // Still BELOW every fault and the update prompt, like the invite: an offer
+  // never outranks "you are disconnected".
+  //
+  // Derived, never stored — `dccOffersById()` is the mirror of the set the
+  // server is holding, and the registry keeps nothing of its own. When the
+  // server resolves an offer the entry simply stops being derived, here and
+  // on every other device.
+  for (const offer of Object.values(dccOffersById())) {
+    entries.push(dccOfferEntry(offer));
+  }
+
   for (const invite of invitedWindows()) {
     entries.push(inviteEntry(invite));
   }
@@ -370,6 +397,48 @@ function inviteEntry(invite: InvitedWindow): BannerEntry {
     dismiss: {
       label: `Decline the invite to ${invite.channelName} — nothing is sent to the IRC server`,
       onAction: () => declineInvite(invite.networkSlug, invite.channelName),
+    },
+  };
+}
+
+// One held offer → one entry. Three things the copy has to get right, each
+// one a way the operator could be misled:
+//
+//   * the SIZE is the sender's CLAIM, not a fact — they declare it in the
+//     CTCP and the transfer truncates at it. Stating it flat would have
+//     grappa vouching for a stranger's number. Rendered through the shared
+//     `formatBytes` (#411) so a size reads the same here as in every other
+//     cap/size surface in cic.
+//   * ACCEPTING lands the file on the BOUNCER, not on this device: the door
+//     answers 202, the transfer runs detached, and the bytes are fetched
+//     later over the file door. "Accept" read as "download to my phone now"
+//     is the wrong mental model to leave someone with.
+//   * the PLACEMENT (`offer.channel`) is deliberately NOT in the copy. It is
+//     frequently `$server` — an offer from someone with no open conversation
+//     routes there (the #546 rule: a stranger's CTCP mints no window) — and
+//     "in $server" names an implementation detail as if it were a room.
+//
+// The id is network-qualified like the invite's. `offer_id` is already
+// server-minted and opaque, but two networks mint independently, and the
+// qualification costs nothing while a collision would silently merge two
+// strangers' files into one banner.
+function dccOfferEntry(offer: DccOffer): BannerEntry {
+  return {
+    source: "dcc-offer",
+    id: `dcc-offer:${offer.network}:${offer.offer_id}`,
+    severity: "info",
+    message: `${offer.from} is offering you a file: ${offer.filename} (${formatBytes(offer.size)}, the sender's claim). Accepting downloads it to grappa, not to this device.`,
+    actionHint: {
+      label: "Accept",
+      onAction: () => acceptDccOffer(offer.network, offer.offer_id),
+    },
+    // The × is the REFUSAL, as on the invite — not the episode-scoped hide.
+    // Labelled with the file, because several offers can be stacked and a
+    // screen reader announcing "dismiss notification" would not say which
+    // one is about to be thrown away.
+    dismiss: {
+      label: `Refuse the file ${offer.filename} from ${offer.from}`,
+      onAction: () => refuseDccOffer(offer.network, offer.offer_id),
     },
   };
 }
