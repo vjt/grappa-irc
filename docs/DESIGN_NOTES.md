@@ -55116,3 +55116,95 @@ here rather than implied by a green suite.
 
 Not established, unchanged from #2089: nothing was measured against a real
 DCC peer, and nothing was measured on m42.
+<!-- entry #2089b -->
+
+---
+
+## 2026-09-13 — #2089b: a gate behind a red gate has not passed, it has not run
+
+The RECEIVE slice closed with `scripts/check.sh` red on exactly one
+thing: `Mix.Tasks.Grappa.WirePinTest`, *"The wire shape changed and the
+protocol version did not"*. The diagnosis was correct and the fix was one
+number. What the fix uncovered is the part worth recording.
+
+### The bump: a REST error token is wire shape
+
+The last commit of the slice enrolled `:not_held` in
+`GrappaWeb.ErrorTokens.rest_error_token/0` — the 404 the four DCC consent
+doors answer when an offer id names nothing in the session's held set.
+That is a member added to a CLOSED SET the wire codegen renders into both
+client artefacts, so the shape moved.
+
+Measured, not deduced: with that token removed and nothing else touched,
+`mix grappa.wire_pin --check` returns rc=0 «agree». The digest moves for
+it alone. And after `--update`, the pinned digest is byte-identical to
+the `now` the check had been reporting — confirming the version is pinned
+NEXT TO the shape rather than mixed into it, which is what lets the gate
+distinguish "shape moved, number still" from "both moved".
+
+`@protocol_version` 19 → 20, `min_protocol_version` unchanged at 1.
+
+The argument against bumping — «no client reads `not_held` today» — is
+the one this project has already measured as wrong. It is what kept the
+number at `1` from #447 through five additive fields that cic later came
+to REQUIRE. Additivity describes what the SERVER emits and says nothing
+about what a CLIENT requires; the break the number exists to catch runs
+new-client → old-server. `:not_invited`, the token on the twin consent
+door, took its own bump on the same grounds, so the precedent is not
+merely general but adjacent.
+
+### The finding: two gates had never run, and nobody could tell
+
+`ci.check` shells every step through `mix cmd` so the chain HALTS on the
+first non-zero. `mix dialyzer` and `mix docs` sit BEHIND `mix test`.
+While the wire-pin test was red, neither had ever executed against this
+slice — and the run's output is indistinguishable, at a glance, from one
+where they ran and passed: there is no "skipped" line, the alias simply
+stops.
+
+Closing the red let them run for the first time. Both had something, and
+all four findings are the same shape — a declaration wider than the thing
+it describes:
+
+- `Dcc.transfer_opts/0` specced `pos_integer()` for two values Dialyzer
+  knows exactly, and a possibly-empty list for a literal that cannot be
+  empty.
+- `Session.Server.broadcast_dcc_resolved/4` specced `:ok` while returning
+  `Broadcaster.to_user/2` raw, which is `:ok | {:error, term()}`. The
+  three sibling helpers (`broadcast_channels_changed/1`,
+  `broadcast_archive_changed/1`, `broadcast_window_state/2`) all put the
+  `:ok =` assertion INSIDE the helper — that placement is what makes
+  their `:: :ok` true rather than optimistic. This one had it at the four
+  call sites, so the spec was a claim nothing enforced.
+- Both `refusal/0` references in the `Report` moduledoc are `@type`s
+  spelled as functions. The house writes `t:Mod.type/0`, in 77 places.
+
+None is a behaviour defect. That is the point: **the cost of a halting
+alias is not the steps you know are red, it is the steps you believe are
+green.** A report that says "check.sh: 1 failure, and it is the wire pin"
+is true and still misleading, because it invites the reader to price the
+remaining gates at zero when their real value is unknown. Say instead
+which gates DID NOT RUN.
+
+### The fourth home of a new error token
+
+CLAUDE.md already records that a new `FallbackController` arm touches
+THREE places — the clause, the `@spec` union, and `ErrorTokens` — and
+that only the third is discoverable by grepping the atom. The bump found
+a fourth, on the client: `friendlyApiError.ts` narrows the generated
+token union to `never` in its default arm, so a token with no `case` arm
+is a tsc compile error. It fired the moment the artefacts were
+regenerated.
+
+That guard is working exactly as designed and should be read as the
+client half of the same closed set, not as an obstacle: a token the
+server can emit and no client can phrase is a 404 the user reads as a
+blank. The copy chosen is deliberately its twin's shape — `not_invited`
+reads *"That invite is already gone."* — because every reachable case is
+benign and self-correcting, and it names no file, since the caller held a
+handle and `Dcc.Report.display_filename/1` is the one speller of that
+string.
+
+Not established, unchanged from #2089 and #2089a: `scripts/integration.sh`
+has still not been run, nothing was measured against a real DCC peer, and
+nothing was measured on m42.
