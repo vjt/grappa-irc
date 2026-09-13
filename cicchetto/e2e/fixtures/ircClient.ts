@@ -387,6 +387,26 @@ export class IrcPeer {
     this.client.raw(["INVITE", targetNick, channel]);
   }
 
+  // issue 2089 — offer a file over the classic active `DCC SEND`, as a raw
+  // CTCP query. `PRIVMSG <nick> :<0x01>DCC SEND <name> <ip> <port> <size><0x01>`,
+  // where `ip` is the historical 32-bit unsigned IPv4 integer.
+  //
+  // Raw, not through any irc-framework DCC helper: the library's own DCC
+  // support would frame this its way, and what the server parses
+  // (`Grappa.IRC.DCC.parse/1`) is the wire text, so the wire text is what
+  // the spec must control. Fire-and-forget — grappa answers the operator's
+  // socket, never the sender's, so there is nothing here to await.
+  //
+  // The caller picks the address, and it matters: an offer is admitted or
+  // refused BEFORE it is held (`Grappa.Dcc.Policy.admit_offer/1` runs
+  // `Ssrf.safe_public_ip?/1`), so a private docker address would be
+  // dropped and no banner would ever appear. See the spec for the
+  // documentation-range address it uses instead.
+  dccSend(targetNick: string, filename: string, ipU32: number, port: number, size: number): void {
+    const ctcp = `\u0001DCC SEND ${filename} ${ipU32} ${port} ${size}\u0001`;
+    this.client.raw(["PRIVMSG", targetNick, ctcp]);
+  }
+
   // Set channel modes. Resolves once upstream echoes the MODE event for
   // the target channel matching the requested raw_modes string.
   // Examples: `mode("#chan", "+i")`, `mode("#chan", "+o", "nick")`,

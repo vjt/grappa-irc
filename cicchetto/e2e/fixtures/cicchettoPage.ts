@@ -1593,6 +1593,31 @@ export function inviteBannerDismiss(page: Page, networkSlug: string, channelName
   return inviteBanner(page, networkSlug, channelName).locator(".error-banner-dismiss");
 }
 
+// issue 2089 — the DCC consent banner, located by SOURCE plus the filename it
+// names.
+//
+// Deliberately NOT by `data-banner-id` the way the invite's locator is. That
+// id ends in the `offer_id`, an opaque handle minted server-side per offer
+// (`Grappa.Dcc.mint_slug/0`) and derivable from nothing the spec controls, so
+// a spec cannot name it. The filename IS spec-controlled and unique per
+// offer, so filtering on it keeps each stacked banner individually
+// addressable, which is the property the invite's per-entry id was buying.
+export function dccOfferBanner(page: Page, filename: string) {
+  return page.locator('.error-banner[data-source="dcc-offer"]').filter({ hasText: filename });
+}
+
+// [Accept] — the consent verb. POSTs to the accept door; the banner leaves
+// only when the server's `dcc_offer_resolved` says so.
+export function dccOfferBannerAccept(page: Page, filename: string) {
+  return dccOfferBanner(page, filename).locator(".error-banner-action");
+}
+
+// × — the REFUSAL, not an episode-scoped hide (same posture as #976's invite
+// ×). It DELETEs the offer; nothing is sent to the peer.
+export function dccOfferBannerRefuse(page: Page, filename: string) {
+  return dccOfferBanner(page, filename).locator(".error-banner-dismiss");
+}
+
 // ---------------------------------------------------------------------------
 // Computed colours (#1078)
 //
