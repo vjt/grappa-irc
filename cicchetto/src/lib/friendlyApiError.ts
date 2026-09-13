@@ -490,6 +490,17 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       // client tokens. A bounded list, so the remedy is to make room
       // rather than to wait.
       return "You already have the maximum number of client tokens. Revoke one first.";
+    case "not_held":
+      // #2089 — 404 from the DCC consent doors: the offer id names nothing
+      // in the session's held set. Benign and self-correcting in every
+      // reachable case (it expired, or it was accepted/refused on another
+      // device and `dcc_offer_resolved` is already taking this banner
+      // down), so the copy states the outcome rather than raising an
+      // alarm — the same posture, and deliberately the same shape, as its
+      // twin `not_invited` above. It names no file: the handle is all the
+      // caller had, and inventing a name here would diverge from
+      // `Dcc.Report.display_filename/1`, the one speller of that string.
+      return "That file offer is already gone.";
 
     default:
       // Cic M2 reviewer fix: exhaustiveness assertion. Adding a token
