@@ -685,6 +685,19 @@ defmodule GrappaWeb.Router do
     get "/ignores", IgnoresController, :index
     post "/ignores", IgnoresController, :create
     delete "/ignores/:mask", IgnoresController, :remove
+
+    # issue 2143 — the per-network DCC auto-accept opt-in. Same scope as
+    # /ignores for the same two reasons: the setting is per-(subject,
+    # network), and `:resolve_network` is what turns an unknown or
+    # someone-else's slug into a 404 before the action can write.
+    #
+    # `enabled: true` here means "auto-accept from peers I already have a
+    # query window with on this network" — the opt-in is half the gate and
+    # `Grappa.Session.Server` owns the other half. A door that could arm
+    # auto-accept for ANY peer is the wide variant this slice did not
+    # build, and there is deliberately no parameter for it.
+    get "/dcc-auto-accept", DccAutoAcceptController, :show
+    put "/dcc-auto-accept", DccAutoAcceptController, :update
   end
 
   # Test-only FORCE read-cursor surface. Compile-gated to dev/test Mix
