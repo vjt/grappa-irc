@@ -54,7 +54,7 @@ defmodule GrappaWeb.DccAutoAcceptController do
     subject = session_subject(conn)
     network = conn.assigns.network
 
-    with {:ok, _settings} <- UserSettings.put_dcc_auto_accept(subject, network.slug, enabled) do
+    with {:ok, _} <- UserSettings.put_dcc_auto_accept(subject, network.slug, enabled) do
       json(conn, %{enabled: enabled})
     end
   end

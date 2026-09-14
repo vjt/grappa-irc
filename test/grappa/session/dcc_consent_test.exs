@@ -353,7 +353,7 @@ defmodule Grappa.Session.DccConsentTest do
       feed_dcc_send(ctx)
 
       assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :dcc_offer}}, @wire_timeout
-      assert {:ok, [_held]} = Session.list_dcc_offers(ctx.subject, ctx.network.id)
+      assert {:ok, [_]} = Session.list_dcc_offers(ctx.subject, ctx.network.id)
       assert accepts_recorded(ctx.subject) == 0
     end
 
@@ -433,7 +433,7 @@ defmodule Grappa.Session.DccConsentTest do
   # `AdmissionStateHelpers` already does for the network circuit.
   defp accepts_recorded(subject) do
     case :ets.lookup(DailyQuota.table_name(), {Policy.quota_bucket(), subject}) do
-      [{_key, _date, count}] -> count
+      [{_, _, count}] -> count
       _ -> 0
     end
   end

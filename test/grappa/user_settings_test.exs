@@ -1575,8 +1575,8 @@ defmodule Grappa.UserSettingsTest do
       assert settings.data["dcc_auto_accept"] == %{"ircnet" => true}
 
       {:ok, _} = UserSettings.put_dcc_auto_accept({:user, user.id}, "ircnet", false)
-      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
-      refute Map.has_key?(settings.data, "dcc_auto_accept")
+      {:ok, emptied} = UserSettings.get_or_init({:user, user.id})
+      refute Map.has_key?(emptied.data, "dcc_auto_accept")
     end
 
     test "preserves other data keys" do
