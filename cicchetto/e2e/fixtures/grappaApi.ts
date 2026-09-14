@@ -1402,3 +1402,49 @@ export async function setShowEventBadge(token: string, on: boolean): Promise<voi
     );
   }
 }
+
+/**
+ * Arms (or disarms) the per-network DCC auto-accept opt-in for `token`'s
+ * subject — issue 2143.
+ *
+ * The opt-in is HALF the gate. The server also requires an open query window
+ * with the offering peer, so calling this with `true` does not make a
+ * stranger's file arrive, and a spec that assumed it did would be asserting
+ * the wide variant that was deliberately not built.
+ *
+ * Reads the value back and throws on disagreement. The write is the thing a
+ * spec then builds a negative assertion on ("no banner appeared"), and a
+ * silently-dropped PUT would make that negative pass for the wrong reason —
+ * which is the failure mode a spec can least afford.
+ */
+export async function setDccAutoAccept(
+  token: string,
+  networkSlug: string,
+  enabled: boolean,
+): Promise<void> {
+  const url = `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/dcc-auto-accept`;
+  const headers = {
+    authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+  };
+
+  const written = await fetch(url, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({ enabled }),
+  });
+  if (!written.ok) {
+    throw new Error(
+      `setDccAutoAccept(${enabled}): PUT → ${written.status} ${await written.text()}`,
+    );
+  }
+
+  const read = await fetch(url, { headers });
+  if (!read.ok) {
+    throw new Error(`setDccAutoAccept(${enabled}): GET → ${read.status} ${await read.text()}`);
+  }
+  const body = (await read.json()) as { enabled?: boolean };
+  if (body.enabled !== enabled) {
+    throw new Error(`setDccAutoAccept(${enabled}): read back ${JSON.stringify(body)}`);
+  }
+}
