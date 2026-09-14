@@ -215,8 +215,7 @@ const AdminNetworksTab: Component = () => {
   const [serverForm, setServerForm] = createStore<
     // #266 — `source` is the optional per-network outbound source bind (empty
     // string = unset).
-    Record<number, { host: string; port: string; tls: boolean; source: string }>
-  >({});
+    Record<number, { host: string; port: string; tls: boolean; source: string }>>({});
   const [serverConfirmKey, setServerConfirmKey] = createSignal<string | null>(null);
 
   // #85 — Featured-channels disclosure, sibling to servers. Same
