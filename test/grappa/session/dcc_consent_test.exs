@@ -379,12 +379,19 @@ defmodule Grappa.Session.DccConsentTest do
 
       feed_dcc_send(ctx)
 
-      # A policy-gate refusal has no accept behind it, so it stays where the
-      # offer would have rendered (issue 2127) — `$server`. Byte-identical to
-      # the hand-accepted refusal asserted in the accept describe above:
-      # skipping the human must not change what the human is told.
-      assert [refusal] = eventually_rows(ctx, "$server")
+      # The refusal renders in the PEER's query window, and the conjunct
+      # FORCES that rather than this test choosing it: `ctcp_query_channel/3`
+      # routes an inbound CTCP to `$server` only when there is NO open query
+      # with the sender (#546), and the auto-accept arm requires exactly such
+      # a window. So an auto-accept refusal can never land in `$server` —
+      # which is why the sibling `:passive_unsupported` test above asserts
+      # that window and this one cannot: its peer is a STRANGER.
+      #
+      # What stays identical is the only thing the funnel promises — the
+      # BODY. Skipping the human must not change what the human is told.
+      assert [refusal] = eventually_rows(ctx, @peer)
       assert refusal.body == Report.render({:refused, :rate_limited}, @peer).body
+      assert rows_in(ctx, "$server") == []
       refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :dcc_offer}}, 200
     end
 

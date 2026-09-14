@@ -13652,3 +13652,20 @@ There is no cic control for the switch in this cut. It is settable over
 REST and nothing else, so the feature is invisible to the operator who
 asked for it until a client renders it; whether that control ships is a
 product ruling that was escalated rather than decided here.
+
+### The refusal cannot land in `$server`, and the conjunct is why
+
+The first version of the quota-refusal test asserted the refusal row in
+`$server`, copied from the `:passive_unsupported` test twenty lines above
+it. It failed, and the failure was the test's: `ctcp_query_channel/3`
+routes an inbound CTCP to `$server` only when there is NO open query with
+the sender (#546), and the auto-accept arm requires exactly such a window
+to fire at all. So the two tests can never assert the same window — the
+sibling's peer is a STRANGER, and that is the entire difference the
+conjunct encodes. The row was always written; it was written where an
+offer from a known peer renders.
+
+Worth stating because the funnel's promise is easy to over-read: what
+`admit_dcc_offer/4` makes byte-identical between a hand-accept and an
+auto-accept is the BODY, not the window. The window follows the
+relationship, which is the thing 2143 is about.
