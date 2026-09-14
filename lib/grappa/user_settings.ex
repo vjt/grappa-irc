@@ -1177,6 +1177,86 @@ defmodule Grappa.UserSettings do
   end
 
   # ---------------------------------------------------------------------------
+  # dcc_auto_accept accessors (issue 2143 — per-network DCC auto-accept opt-in)
+  # ---------------------------------------------------------------------------
+
+  @dcc_auto_accept_key "dcc_auto_accept"
+
+  @typedoc """
+  The per-network DCC auto-accept opt-in (issue 2143): `network_slug => true`.
+
+  Only ENABLED networks appear. `false` is stored as absence — the
+  `put_or_delete/3` rule `put_upload_confirm_enabled/2` and the ignore list
+  already follow, so there is one spelling of "off" rather than two.
+
+  Network-keyed for the #1038 reason the ignore list is: the same nick on two
+  networks is two people, and trusting one of them says nothing about the
+  other.
+  """
+  @type dcc_auto_accept :: %{String.t() => true}
+
+  @doc """
+  Whether `subject` has turned DCC auto-accept ON for `network_slug`.
+
+  Default `false`, and EVERY failure reaches it: absent row, absent key, a
+  value that is not the map we wrote, or a per-network value that is not the
+  literal `true`.
+
+  ⚠️ **The lenient read fails CLOSED here, the opposite of `get_ignores/2`
+  twenty lines up, and the inversion is deliberate.** An unreadable ignore
+  list must fail open (messages delivered) because failing closed would
+  silently ignore everyone; an unreadable auto-accept must fail closed (the
+  banner stays) because failing open hands a peer the spool with no human in
+  the loop. The two are lenient in opposite directions because their failure
+  modes are not comparable — one costs noise, the other costs consent.
+
+  This is only HALF the gate, and on its own it is the unsafe half: the
+  offer must ALSO come from a peer the subject already has an open query
+  window with. `Grappa.Session.Server` composes both — see
+  `auto_accept_dcc?/2` there.
+  """
+  @spec get_dcc_auto_accept(Subject.t(), String.t()) :: boolean()
+  def get_dcc_auto_accept({_, _} = subject, network_slug) when is_binary(network_slug) do
+    case fetch_existing_or_nil(subject) do
+      nil -> false
+      %Settings{data: data} -> auto_accept_for(data[@dcc_auto_accept_key], network_slug)
+    end
+  end
+
+  # Two clauses, one shape each, mirroring `masks_for/2`: anything that is not
+  # the map we wrote reads as "not enabled", and inside it only the literal
+  # `true` counts — a stored `1` or `"yes"` is malformed, not truthy.
+  defp auto_accept_for(%{} = by_network, slug), do: Map.get(by_network, slug) == true
+  defp auto_accept_for(_, _), do: false
+
+  @doc """
+  Turns DCC auto-accept on or off for `subject` on `network_slug`.
+
+  Preserves other keys in `data` (merge semantics). `false` DELETES the
+  network's entry and an emptied map deletes the key, so the stored shape
+  carries only the networks that are ON.
+  """
+  @spec put_dcc_auto_accept(Subject.t(), String.t(), boolean()) ::
+          {:ok, Settings.t()} | {:error, Ecto.Changeset.t() | :db_unavailable}
+  def put_dcc_auto_accept({_, _} = subject, network_slug, value)
+      when is_binary(network_slug) and is_boolean(value) do
+    update_data(subject, fn data ->
+      by_network =
+        case data[@dcc_auto_accept_key] do
+          %{} = m -> m
+          _ -> %{}
+        end
+
+      next =
+        if value,
+          do: Map.put(by_network, network_slug, true),
+          else: Map.delete(by_network, network_slug)
+
+      put_or_delete(data, @dcc_auto_accept_key, if(next == %{}, do: nil, else: next))
+    end)
+  end
+
+  # ---------------------------------------------------------------------------
   # auto_away_debounce_seconds accessors (#348)
   # ---------------------------------------------------------------------------
 

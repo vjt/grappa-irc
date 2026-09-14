@@ -1514,6 +1514,84 @@ defmodule Grappa.UserSettingsTest do
   end
 
   # ---------------------------------------------------------------------------
+  # dcc_auto_accept accessors (issue 2143 — per-network DCC auto-accept opt-in)
+  # ---------------------------------------------------------------------------
+
+  describe "get_dcc_auto_accept/2" do
+    # The posture is the INVERSE of get_ignores/2 above, and that inversion is
+    # the point of this test. An unreadable ignore list must fail OPEN
+    # (messages delivered); an unreadable auto-accept must fail CLOSED (the
+    # banner stays), because the failure mode of reading garbage as `true` is
+    # a stranger's file on the spool with no human in the loop.
+    test "reads false when no row, no key, or a malformed value" do
+      assert UserSettings.get_dcc_auto_accept({:user, Ecto.UUID.generate()}, "azzurra") == false
+
+      user = user_fixture()
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
+      assert UserSettings.get_dcc_auto_accept({:user, user.id}, "azzurra") == false
+
+      Repo.update!(Settings.changeset(settings, %{data: %{"dcc_auto_accept" => "garbage"}}))
+      assert UserSettings.get_dcc_auto_accept({:user, user.id}, "azzurra") == false
+
+      Repo.update!(
+        Settings.changeset(settings, %{data: %{"dcc_auto_accept" => %{"azzurra" => "yes"}}})
+      )
+
+      assert UserSettings.get_dcc_auto_accept({:user, user.id}, "azzurra") == false
+
+      # Only the literal boolean true enables. A truthy-looking 1 does not.
+      Repo.update!(Settings.changeset(settings, %{data: %{"dcc_auto_accept" => %{"azzurra" => 1}}}))
+      assert UserSettings.get_dcc_auto_accept({:user, user.id}, "azzurra") == false
+    end
+
+    test "is keyed by network — enabling one network does not enable another" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.put_dcc_auto_accept({:user, user.id}, "azzurra", true)
+
+      assert UserSettings.get_dcc_auto_accept({:user, user.id}, "azzurra") == true
+      assert UserSettings.get_dcc_auto_accept({:user, user.id}, "ircnet") == false
+    end
+  end
+
+  describe "put_dcc_auto_accept/3" do
+    test "round-trips true and back to false" do
+      user = user_fixture()
+
+      {:ok, _} = UserSettings.put_dcc_auto_accept({:user, user.id}, "azzurra", true)
+      assert UserSettings.get_dcc_auto_accept({:user, user.id}, "azzurra") == true
+
+      {:ok, _} = UserSettings.put_dcc_auto_accept({:user, user.id}, "azzurra", false)
+      assert UserSettings.get_dcc_auto_accept({:user, user.id}, "azzurra") == false
+    end
+
+    # The put_or_delete rule, twice: false is ABSENCE (a fresh subject already
+    # reads false, so a stored false would be a second spelling of the
+    # default), and an emptied map drops the top key entirely.
+    test "false drops its network key, and an emptied map drops the dcc_auto_accept key" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.put_dcc_auto_accept({:user, user.id}, "azzurra", true)
+      {:ok, _} = UserSettings.put_dcc_auto_accept({:user, user.id}, "ircnet", true)
+      {:ok, _} = UserSettings.put_dcc_auto_accept({:user, user.id}, "azzurra", false)
+
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
+      assert settings.data["dcc_auto_accept"] == %{"ircnet" => true}
+
+      {:ok, _} = UserSettings.put_dcc_auto_accept({:user, user.id}, "ircnet", false)
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
+      refute Map.has_key?(settings.data, "dcc_auto_accept")
+    end
+
+    test "preserves other data keys" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.put_upload_confirm_enabled({:user, user.id}, true)
+      {:ok, _} = UserSettings.put_dcc_auto_accept({:user, user.id}, "azzurra", true)
+
+      assert UserSettings.get_upload_confirm_enabled({:user, user.id}) == true
+      assert UserSettings.get_dcc_auto_accept({:user, user.id}, "azzurra") == true
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # show_peer_profiles accessor (M2)
   # ---------------------------------------------------------------------------
 
