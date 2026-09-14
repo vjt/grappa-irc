@@ -148,14 +148,53 @@ permissions:
 
 jobs:
   deb:
-    name: build + prove .deb (amd64)
+    name: build + prove .deb (${{ matrix.arch }})
     # Runs on a tag push, on a repair dispatch, and — since #1714 — on a
     # deb-validation dispatch, which needs no change here: that path sets
     # docker_validation=false, so the condition already admits it. Skipped ONLY
     # on a docker-image dry-run dispatch (docker_validation=true), which
     # validates the release-image job alone and must publish nothing.
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.docker_validation) }}
-    runs-on: ubuntu-latest
+    # ── TWO ARCHITECTURES, BUILT NATIVELY (issue 2129) ───────────────────────
+    #
+    # `ghcr.io/<owner>/grappa` has shipped linux/amd64 AND linux/arm64 since the
+    # docker job learned to, but the only native packages published were x86:
+    # an operator on a Pi, an Ampere VPS or an Apple-silicon VM could pull the
+    # container and could not `apt install grappa`. v1.5.7 is the proof — it
+    # carries `grappa_1.5.7_amd64.deb` and nothing else.
+    #
+    # Nothing in the BUILD needed teaching. infra/packaging/build.sh derives
+    # GRAPPA_PKG_ARCH from `dpkg --print-architecture` (with an `aarch64|arm64`
+    # arm of the uname fallback), already maps arm64 to the right pinned nfpm
+    # download, and nfpm.yaml templates the one `arch:` value. What was missing
+    # was a runner, and `ubuntu-24.04-arm` is a free GitHub-hosted runner on a
+    # public repository — already in use by `smoke`, whose matrix this mirrors.
+    # Native beats the QEMU emulation the docker job needs.
+    #
+    # `fail-fast: false` is LOAD-BEARING, exactly as it is in `smoke`: without
+    # it an amd64 failure CANCELS the arm64 leg, and a cancelled leg uploads
+    # nothing — which is the reading worth having AND, worse, would leave the
+    # audit downstream unable to tell "arm64 broke" from "arm64 never ran".
+    #
+    # BOTH legs run on a deb-validation dispatch too, unlike `smoke`'s one-leg
+    # dry-run. Smoke's asymmetry buys away a SECOND buildx gha cache; there is
+    # no cache here, both legs are the same native build, and a validation
+    # dispatch that proved only half of what a tag will run is the shape #1714
+    # exists to prevent.
+    #
+    # Note for whoever wires branch protection: the amd64 check-run keeps its
+    # EXACT name, `build + prove .deb (amd64)`, because `name:` is spelled with
+    # the matrix value rather than left to the default suffix. The new leg is
+    # `build + prove .deb (arm64)`.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     env:
       # The release tag, resolved from whichever trigger fired: the input on a
       # manual repair dispatch, else the pushed tag. Every tag reference in this
@@ -518,17 +557,22 @@ jobs:
       # by NAME (infra/packaging/release_assets.sh), and its expected-kind
       # table requires BOTH — a client package that failed to build fails the
       # release loudly instead of vanishing from it.
+      #
+      # The arch is in the artifact NAME, not left to a suffix (issue 2129):
+      # two matrix legs uploading under one name COLLIDE. The expected-kind
+      # table requires all four of these too, so a dead runner is a named gap
+      # rather than a file the other leg quietly stands in for.
       - name: Upload .deb artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: grappa-deb
+          name: grappa-deb-${{ matrix.arch }}
           path: dist/*.deb
           if-no-files-found: error
 
       - name: Upload the client .deb artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: shottino-deb
+          name: shottino-deb-${{ matrix.arch }}
           path: dist-shottino/*.deb
           if-no-files-found: error
 
@@ -755,11 +799,34 @@ jobs:
           if-no-files-found: error
 
   rpm:
-    name: build + prove .rpm (x86_64)
+    name: build + prove .rpm (${{ matrix.arch }})
     # See the deb job: skipped on either dry-run dispatch — the docker-image one
     # and, since #1714, the deb one.
     if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.docker_validation && !inputs.deb_validation) }}
-    runs-on: ubuntu-latest
+    # Two legs, same reasoning as the deb job — see its block for why the
+    # runner was the only thing missing and why `fail-fast: false` is
+    # load-bearing (issue 2129).
+    #
+    # THE MATRIX VALUE IS SPELLED IN RPM'S OWN VOCABULARY, and that is not
+    # cosmetic. nfpm translates the single `arch:` value per format, so the
+    # same machine is `arm64` to dpkg and `aarch64` to rpm: the artifacts this
+    # leg produces really are named `grappa-<ver>-1.aarch64.rpm`, and the
+    # expected-kind table matches on that spelling. Using `amd64`/`arm64` here
+    # would put a name on the check-run and the artifact that no file in either
+    # ever carries — and it would RENAME the existing amd64 check-run, which
+    # spelling it `x86_64` preserves byte-for-byte.
+    #
+    # For branch protection: `build + prove .rpm (x86_64)` is unchanged; the
+    # new leg is `build + prove .rpm (aarch64)`.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     # Pinned Fedora MAJOR (not :latest): a release artifact's glibc floor must
     # not move under us (#438 open-q2). The rule: the OLDEST still-supported
     # Fedora that carries Elixir 1.19 — glibc is backward-compatible, so
@@ -955,18 +1022,19 @@ jobs:
           [ "$got" = "$want" ] || {
             echo "::error::client package is stamped '$got', expected '$want'"; exit 1; }
 
-      # One upload step per artifact — see the sibling note in the `deb` job.
+      # One upload step per artifact, arch in the NAME — see the sibling note
+      # in the `deb` job for both halves.
       - name: Upload .rpm artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: grappa-rpm
+          name: grappa-rpm-${{ matrix.arch }}
           path: dist/*.rpm
           if-no-files-found: error
 
       - name: Upload the client .rpm artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: shottino-rpm
+          name: shottino-rpm-${{ matrix.arch }}
           path: dist-shottino/*.rpm
           if-no-files-found: error
 

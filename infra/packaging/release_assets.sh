@@ -41,15 +41,39 @@ set -euo pipefail
 # down — a package that silently ships without a binary it advertises is worse
 # than one that refuses to build.
 #
+# …and by ARCHITECTURE, for exactly the same reason one axis over (issue 2129).
+# `deb` and `rpm` are matrixed over two runners, so `grappa_*.deb` is satisfied
+# by the arm64 file just as well as by the amd64 one. A run where amd64 FAILS
+# and arm64 SUCCEEDS would then report every expected kind as present, and
+# #1591's refuse-to-create-a-partial-release gate would return 0 on half a
+# release — turning a loud red leg into a silent publication that cannot be
+# retracted. Measured before the split, on the tree this suite seeds:
+# `publishable <arm64-only> absent` exited 0 and `notice` printed nothing.
+#
 # The names come from the builders, not from taste: nfpm writes
 # `<name>_<ver>_<arch>.deb` and `<name>-<ver>-1.<arch>.rpm`, makepkg writes
-# `<name>-<ver>-1-<arch>.pkg.tar.zst`.
+# `<name>-<ver>-1-<arch>.pkg.tar.zst`. nfpm translates the ONE `arch:` value
+# per format, so the two formats spell the same machine differently — measured
+# against the pinned nfpm 2.43.0 rather than assumed: `arch: amd64` writes
+# `_amd64.deb` and `.x86_64.rpm`, `arch: arm64` writes `_arm64.deb` and
+# `.aarch64.rpm`. Get that spelling wrong and the kind can never match, so the
+# audit reports "missing" on every release forever.
+#
+# `arch` (the distro) stays SINGLE-LEG and its six kinds carry no arch axis:
+# Arch Linux has no official ARM port, makepkg runs on a real x86_64 Arch
+# container and the pacman repository stays x86_64. A deliberate non-goal, not
+# an oversight — adding an aarch64 Arch kind here would mark every release
+# partial forever.
 expected_kinds() {
 	printf '%s\n' \
-		'grappa_*.deb	Debian package, bouncer (.deb)' \
-		'shottino_*.deb	Debian package, client (.deb)' \
-		'grappa-*.rpm	RPM package, bouncer (.rpm)' \
-		'shottino-*.rpm	RPM package, client (.rpm)' \
+		'grappa_*_amd64.deb	Debian package, bouncer, amd64 (.deb)' \
+		'grappa_*_arm64.deb	Debian package, bouncer, arm64 (.deb)' \
+		'shottino_*_amd64.deb	Debian package, client, amd64 (.deb)' \
+		'shottino_*_arm64.deb	Debian package, client, arm64 (.deb)' \
+		'grappa-*.x86_64.rpm	RPM package, bouncer, x86_64 (.rpm)' \
+		'grappa-*.aarch64.rpm	RPM package, bouncer, aarch64 (.rpm)' \
+		'shottino-*.x86_64.rpm	RPM package, client, x86_64 (.rpm)' \
+		'shottino-*.aarch64.rpm	RPM package, client, aarch64 (.rpm)' \
 		'grappa-*.pkg.tar.zst	Arch package, bouncer (.pkg.tar.zst)' \
 		'shottino-*.pkg.tar.zst	Arch package, client (.pkg.tar.zst)' \
 		'PKGBUILD	Arch PKGBUILD recipe, bouncer' \

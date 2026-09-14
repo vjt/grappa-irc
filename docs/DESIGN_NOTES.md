@@ -56408,3 +56408,108 @@ a separate question from whether the 401 is gone. The three response headers
 are unconditional by ruling, so the served bytes are `application/octet-stream`
 under `nosniff`; whether a browser will paint an `<img>`/`<video>` pointed at
 that is a real-browser measurement, not a spec reading.
+<!-- entry #2129 -->
+
+---
+
+## 2026-09-14 — issue 2129: a second leg for deb and rpm, and the audit that could not see which one died
+
+`deb` and `rpm` now build on two runners — `ubuntu-latest` and
+`ubuntu-24.04-arm` — the same two-leg matrix `smoke` took in #2018. The build
+side needed nothing: `build.sh` already derives `GRAPPA_PKG_ARCH` from `dpkg
+--print-architecture` with an `aarch64|arm64` arm of the uname fallback,
+already maps `arm64` to the right pinned-nfpm download, and both `nfpm.yaml`
+files template that one value. The missing piece was a runner, and it was free.
+
+### The part that was not optional, and the reason it rode in the same commit
+
+`release_assets.sh`'s expected-kind table matched `grappa_*.deb` and
+`grappa-*.rpm`. Those globs are ARCH-BLIND, so the moment a second leg exists
+the arm64 file satisfies them on its own — and #1591's refuse-to-create gate,
+which is the only thing standing between a red leg and an irreversible
+publication, reads that as a complete set.
+
+Measured on a seeded asset tree rather than argued, with the pre-change script
+taken from `git show`, not hand-edited:
+
+| patterns | asset set | verdict |
+|---|---|---|
+| old (arch-blind) | arm64 present, amd64 **missing** | **COMPLETE** |
+| new (arch-aware) | arm64 present, amd64 **missing** | **PARTIAL** — `publishable` exits 1, naming 4 kinds |
+| new (arch-aware) | amd64 restored | COMPLETE |
+
+The first row is the bug: a run whose amd64 leg died would have CREATED a
+public release carrying no x86 package, on the architecture essentially every
+operator is on, and deleting the tag afterwards does not retract it. A loud
+red becomes a silent partial release. That is #1447's absorption trap one axis
+over, and the file's own header already documented the grappa-vs-shottino
+version of it.
+
+**Four patterns split, not two.** The issue names only the two `grappa*` ones.
+Curing those and leaving `shottino_*.deb` / `shottino-*.rpm` alone would have
+left the client package with the identical hole — the same package whose own
+absorption trap is why the table became name-scoped in the first place. Ten
+kinds became fourteen; the six Arch kinds are untouched.
+
+### The arch spellings are measured, not assumed
+
+nfpm translates the single `arch:` value per format, so the same machine has
+two names. Run against the pinned nfpm **2.43.0** itself (`GitVersion: 2.43.0`),
+with the amd64 half as a positive control — it reproduces byte-for-byte the
+four filenames this repo's fixtures have carried since #1447:
+
+```
+arch: amd64  ->  grappa_0.8.0_amd64.deb     grappa-0.8.0-1.x86_64.rpm
+arch: arm64  ->  grappa_0.8.0_arm64.deb     grappa-0.8.0-1.aarch64.rpm
+```
+
+So the rpm leg's artifacts land as `aarch64`, never `arm64`. A pattern written
+on the wrong guess would never match, and the audit would report that kind
+missing on every release forever — the inverse failure of the one being cured,
+and just as quiet from the workflow's side.
+
+That is also why **the rpm job's matrix value is spelled `x86_64`/`aarch64`
+while the deb job's is `amd64`/`arm64`**. Each job names architectures in the
+vocabulary its own artifacts use, which keeps the check-run name, the artifact
+name and the file name telling one story. It has a second effect worth stating:
+both existing check-runs keep their EXACT names — `build + prove .deb (amd64)`
+and `build + prove .rpm (x86_64)` — because `name:` is spelled with the matrix
+value rather than left to the default suffix, the same care #2018 took for
+`smoke`. The new ones are `build + prove .deb (arm64)` and `build + prove .rpm
+(aarch64)`. Branch protection is not configured on this repository today
+(`/branches/main/protection` answers 404), so nothing is broken by this; the
+names are pinned deliberately so that whoever wires it later inherits a stable
+set rather than a renamed one.
+
+### Two non-goals, stated so nobody completes them later
+
+**`arch` stays single-leg.** Arch Linux has no official ARM port, `makepkg`
+runs in a real x86_64 Arch container, and the pacman repository stays x86_64.
+A test now asserts that the Arch kinds carry no arch axis: adding an
+`*-aarch64.pkg.tar.zst` kind would mark every release partial forever.
+
+**Both legs run on a `deb_validation` dispatch**, unlike `smoke`, which keeps
+one leg on its dry-run. Smoke's asymmetry buys away a second buildx gha cache;
+there is no cache here and both legs are the same native build, so a validation
+dispatch proving half of what a tag will run is exactly the shape #1714 exists
+to prevent.
+
+`fail-fast: false` on both matrices is load-bearing for a reason beyond
+#2018's: a cancelled leg uploads nothing, and the audit downstream cannot
+distinguish "arm64 broke" from "arm64 never ran".
+
+### What could not be measured here
+
+No release tag was cut, so **nothing in this change demonstrates that a real
+run produces arm64 assets** — only that the audit tells the truth about
+whichever set arrives, and that every prerequisite the arm64 leg depends on
+exists. Those prerequisites were checked off-CI rather than assumed:
+`nfpm_2.43.0_Linux_arm64.tar.gz` is a published asset of the pinned release
+(build.sh's URL shape resolves), `OTP-28.5` — the `.tool-versions` pin — has a
+prebuilt `arm64/ubuntu-24.04` tarball on builds.hex.pm, bun ships
+`bun-linux-aarch64.zip`, and `fedora:43` publishes an `arm64` image for the rpm
+job's container. Still unmeasured from here: that Fedora's `elixir`/`erlang`
+packages install on aarch64, and the runner-side behaviour of
+`dpkg --print-architecture` on `ubuntu-24.04-arm`. The first tag to run this is
+the first real evidence, and the audit is now honest about a half set if it
+comes back with one.

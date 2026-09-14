@@ -19,6 +19,18 @@
 # `*.deb` would be satisfied by EITHER package: a release that built the
 # bouncer and lost the client would look complete and say nothing. That is the
 # same failure #573 was filed for, one package later.
+#
+# issue 2129 — the SAME trap on a second axis. `deb` and `rpm` are now matrixed
+# over two architectures, so `grappa_*.deb` is satisfied by the arm64 file just
+# as well as by the amd64 one: a run where amd64 died and arm64 built would
+# report every kind present and #1591's refuse-to-create gate would pass on
+# half a release. The kinds are therefore scoped by NAME **and ARCH**, and
+# "complete" below means BOTH legs of both matrixed jobs arrived.
+#
+# The arch spellings are not a choice: they are what the pinned nfpm 2.43.0
+# actually writes, measured (deb keeps `amd64`/`arm64`; rpm translates to
+# `x86_64`/`aarch64`). `arch` stays single-leg — Arch Linux has no official ARM
+# port — so its four recipe kinds and two packages carry no arch axis.
 
 load ../bats_helpers
 
@@ -27,23 +39,25 @@ setup() {
     SCRIPT="$REPO_SRC/infra/packaging/release_assets.sh"
 
     # A downloaded-artifacts tree, nested per-artifact subdir (the layout
-    # download-artifact usually produces).
+    # download-artifact usually produces). One subdir per upload-artifact
+    # NAME, and since issue 2129 the matrixed jobs spell their arch into that
+    # name — two legs uploading under one name collide.
     ASSETS="$BATS_TEST_TMPDIR/assets"
-    mkdir -p "$ASSETS/grappa-deb" "$ASSETS/grappa-rpm" "$ASSETS/grappa-arch"
+    mkdir -p \
+        "$ASSETS/grappa-deb-amd64" "$ASSETS/grappa-deb-arm64" \
+        "$ASSETS/grappa-rpm-x86_64" "$ASSETS/grappa-rpm-aarch64" \
+        "$ASSETS/grappa-arch"
 }
 
 # Populate a COMPLETE, realistic asset tree (every expected kind present).
 seed_complete() {
-    : > "$ASSETS/grappa-deb/grappa_0.8.0_amd64.deb"
-    : > "$ASSETS/grappa-rpm/grappa-0.8.0-1.x86_64.rpm"
+    seed_deb_amd64
+    seed_rpm_x86_64
+    seed_deb_arm64
+    seed_rpm_aarch64
     : > "$ASSETS/grappa-arch/grappa-0.8.0-1-x86_64.pkg.tar.zst"
     : > "$ASSETS/grappa-arch/PKGBUILD"
     : > "$ASSETS/grappa-arch/.SRCINFO"
-    # The client package, on its own version line (#1447). Named as the real
-    # builders name it: nfpm writes `<name>_<ver>_<arch>.deb` and
-    # `<name>-<ver>-1.<arch>.rpm`, makepkg writes `<name>-<ver>-1-<arch>.pkg.tar.zst`.
-    : > "$ASSETS/grappa-deb/shottino_0.3.0_amd64.deb"
-    : > "$ASSETS/grappa-rpm/shottino-0.3.0-1.x86_64.rpm"
     : > "$ASSETS/grappa-arch/shottino-0.3.0-1-x86_64.pkg.tar.zst"
     # The client's AUR recipe, staged under a distinct BASENAME: a release
     # asset is keyed by basename, so a second file called PKGBUILD would
@@ -52,21 +66,53 @@ seed_complete() {
     : > "$ASSETS/grappa-arch/shottino.SRCINFO"
 }
 
+# One helper per MATRIX LEG, so a test can kill exactly one leg and the
+# fixture cannot drift from what that leg really uploads. The client package
+# rides its own version line (#1447) but the same leg produces both — a dead
+# runner loses the pair, which is why they are seeded together.
+#
+# Named as the real builders name them, measured against the pinned nfpm
+# 2.43.0: `<name>_<ver>_<arch>.deb` and `<name>-<ver>-1.<arch>.rpm` (makepkg
+# writes `<name>-<ver>-1-<arch>.pkg.tar.zst`).
+seed_deb_amd64() {
+    : > "$ASSETS/grappa-deb-amd64/grappa_0.8.0_amd64.deb"
+    : > "$ASSETS/grappa-deb-amd64/shottino_0.3.0_amd64.deb"
+}
+
+seed_deb_arm64() {
+    : > "$ASSETS/grappa-deb-arm64/grappa_0.8.0_arm64.deb"
+    : > "$ASSETS/grappa-deb-arm64/shottino_0.3.0_arm64.deb"
+}
+
+seed_rpm_x86_64() {
+    : > "$ASSETS/grappa-rpm-x86_64/grappa-0.8.0-1.x86_64.rpm"
+    : > "$ASSETS/grappa-rpm-x86_64/shottino-0.3.0-1.x86_64.rpm"
+}
+
+seed_rpm_aarch64() {
+    : > "$ASSETS/grappa-rpm-aarch64/grappa-0.8.0-1.aarch64.rpm"
+    : > "$ASSETS/grappa-rpm-aarch64/shottino-0.3.0-1.aarch64.rpm"
+}
+
 @test "found: a complete nested tree lists every expected asset file" {
     seed_complete
     run "$SCRIPT" found "$ASSETS"
     [ "$status" -eq 0 ]
     echo "$output" | grep -q 'grappa_0.8.0_amd64.deb'
+    echo "$output" | grep -q 'grappa_0.8.0_arm64.deb'
     echo "$output" | grep -q 'grappa-0.8.0-1.x86_64.rpm'
+    echo "$output" | grep -q 'grappa-0.8.0-1.aarch64.rpm'
     echo "$output" | grep -q 'grappa-0.8.0-1-x86_64.pkg.tar.zst'
     echo "$output" | grep -q '/PKGBUILD$'
     echo "$output" | grep -q '/.SRCINFO$'
     echo "$output" | grep -q 'shottino_0.3.0_amd64.deb'
+    echo "$output" | grep -q 'shottino_0.3.0_arm64.deb'
     echo "$output" | grep -q 'shottino-0.3.0-1.x86_64.rpm'
+    echo "$output" | grep -q 'shottino-0.3.0-1.aarch64.rpm'
     echo "$output" | grep -q 'shottino-0.3.0-1-x86_64.pkg.tar.zst'
     echo "$output" | grep -q '/shottino.PKGBUILD$'
     echo "$output" | grep -q '/shottino.SRCINFO$'
-    [ "$(echo "$output" | wc -l | tr -d ' ')" -eq 10 ]
+    [ "$(echo "$output" | wc -l | tr -d ' ')" -eq 14 ]
 }
 
 @test "found: matches by NAME at any depth, not by a path-coupled glob (flat layout)" {
@@ -88,10 +134,10 @@ seed_complete() {
 
 @test "missing: a dropped .rpm is named (the #573 instance)" {
     seed_complete
-    rm "$ASSETS/grappa-rpm/grappa-0.8.0-1.x86_64.rpm"
+    rm "$ASSETS/grappa-rpm-x86_64/grappa-0.8.0-1.x86_64.rpm"
     run "$SCRIPT" missing "$ASSETS"
     [ "$status" -eq 0 ]
-    [ "$output" = "RPM package, bouncer (.rpm)" ]
+    [ "$output" = "RPM package, bouncer, x86_64 (.rpm)" ]
 }
 
 @test "missing: a client package that did not build is named, not absorbed (#1447)" {
@@ -100,23 +146,80 @@ seed_complete() {
     # satisfied, and publish a release with no client — silently. A release
     # that loses an artifact it advertises must FAIL LOUDLY.
     seed_complete
-    rm "$ASSETS/grappa-deb/shottino_0.3.0_amd64.deb"
+    rm "$ASSETS/grappa-deb-amd64/shottino_0.3.0_amd64.deb"
     run "$SCRIPT" missing "$ASSETS"
     [ "$status" -eq 0 ]
-    [ "$output" = "Debian package, client (.deb)" ]
+    [ "$output" = "Debian package, client, amd64 (.deb)" ]
 }
 
-@test "missing: losing the client's whole leg names all three of its packages (#1447)" {
+@test "missing: losing the client's whole leg names every one of its packages (#1447)" {
     seed_complete
-    rm "$ASSETS/grappa-deb/shottino_0.3.0_amd64.deb"
-    rm "$ASSETS/grappa-rpm/shottino-0.3.0-1.x86_64.rpm"
+    rm "$ASSETS/grappa-deb-amd64/shottino_0.3.0_amd64.deb"
+    rm "$ASSETS/grappa-deb-arm64/shottino_0.3.0_arm64.deb"
+    rm "$ASSETS/grappa-rpm-x86_64/shottino-0.3.0-1.x86_64.rpm"
+    rm "$ASSETS/grappa-rpm-aarch64/shottino-0.3.0-1.aarch64.rpm"
     rm "$ASSETS/grappa-arch/shottino-0.3.0-1-x86_64.pkg.tar.zst"
     run "$SCRIPT" missing "$ASSETS"
     [ "$status" -eq 0 ]
-    echo "$output" | grep -q 'Debian package, client (.deb)'
-    echo "$output" | grep -q 'RPM package, client (.rpm)'
+    echo "$output" | grep -q 'Debian package, client, amd64 (.deb)'
+    echo "$output" | grep -q 'Debian package, client, arm64 (.deb)'
+    echo "$output" | grep -q 'RPM package, client, x86_64 (.rpm)'
+    echo "$output" | grep -q 'RPM package, client, aarch64 (.rpm)'
     echo "$output" | grep -q 'Arch package, client (.pkg.tar.zst)'
-    [ "$(echo "$output" | wc -l | tr -d ' ')" -eq 3 ]
+    [ "$(echo "$output" | wc -l | tr -d ' ')" -eq 5 ]
+}
+
+@test "missing: a dead amd64 leg is named while arm64 built (issue 2129)" {
+    # THE half-set this axis exists for, and the one #1591 must refuse. The
+    # arm64 files are right there, so an arch-blind `grappa_*.deb` /
+    # `grappa-*.rpm` finds them, calls both kinds satisfied, and publishes a
+    # release carrying no x86 package at all — silently, on the architecture
+    # essentially every operator is on. Exactly #1447's absorption one axis
+    # over.
+    seed_complete
+    rm "$ASSETS/grappa-deb-amd64"/*
+    rm "$ASSETS/grappa-rpm-x86_64"/*
+    run "$SCRIPT" missing "$ASSETS"
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q 'Debian package, bouncer, amd64 (.deb)'
+    echo "$output" | grep -q 'Debian package, client, amd64 (.deb)'
+    echo "$output" | grep -q 'RPM package, bouncer, x86_64 (.rpm)'
+    echo "$output" | grep -q 'RPM package, client, x86_64 (.rpm)'
+    [ "$(echo "$output" | wc -l | tr -d ' ')" -eq 4 ]
+}
+
+@test "missing: a dead arm64 leg is named while amd64 built (issue 2129)" {
+    # The converse, and NOT a mirror of the test above: the pre-2129 patterns
+    # were spelled against the amd64 names, so this direction is the one an
+    # arch-blind table happens to get right for the wrong reason. Both
+    # directions are asserted because the table is symmetric by construction
+    # and a half-applied edit would leave exactly one of them blind.
+    seed_complete
+    rm "$ASSETS/grappa-deb-arm64"/*
+    rm "$ASSETS/grappa-rpm-aarch64"/*
+    run "$SCRIPT" missing "$ASSETS"
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q 'Debian package, bouncer, arm64 (.deb)'
+    echo "$output" | grep -q 'Debian package, client, arm64 (.deb)'
+    echo "$output" | grep -q 'RPM package, bouncer, aarch64 (.rpm)'
+    echo "$output" | grep -q 'RPM package, client, aarch64 (.rpm)'
+    [ "$(echo "$output" | wc -l | tr -d ' ')" -eq 4 ]
+}
+
+@test "missing: the Arch leg carries no arch axis — it is single-leg (issue 2129)" {
+    # The deliberate non-goal, asserted so nobody "completes" the split later.
+    # Arch Linux has no official ARM port, makepkg runs on a real x86_64 Arch
+    # container and the pacman repository stays x86_64 — so a complete release
+    # has ONE Arch package per program, and a table that grew an
+    # `*-aarch64.pkg.tar.zst` kind would mark every release partial forever.
+    seed_complete
+    run "$SCRIPT" missing "$ASSETS"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+
+    run "$SCRIPT" found "$ASSETS"
+    [ "$status" -eq 0 ]
+    [ "$(echo "$output" | grep -c 'pkg.tar.zst')" -eq 2 ]
 }
 
 @test "missing: a dead Arch leg names all three of its outputs" {
@@ -137,7 +240,7 @@ seed_complete() {
 @test "missing: an empty assets tree names every expected kind" {
     run "$SCRIPT" missing "$ASSETS"
     [ "$status" -eq 0 ]
-    [ "$(echo "$output" | wc -l | tr -d ' ')" -eq 10 ]
+    [ "$(echo "$output" | wc -l | tr -d ' ')" -eq 14 ]
 }
 
 @test "missing: the client's recipe is its own kind, not the bouncer's (#1447)" {
@@ -164,17 +267,17 @@ seed_complete() {
 
 @test "notice: a partial set emits a sentinel-delimited block naming the gap" {
     seed_complete
-    rm "$ASSETS/grappa-rpm/grappa-0.8.0-1.x86_64.rpm"
+    rm "$ASSETS/grappa-rpm-x86_64/grappa-0.8.0-1.x86_64.rpm"
     run "$SCRIPT" notice "$ASSETS"
     [ "$status" -eq 0 ]
     echo "$output" | grep -q '<!-- grappa:partial-release:start -->'
     echo "$output" | grep -q '<!-- grappa:partial-release:end -->'
-    echo "$output" | grep -q 'RPM package, bouncer (.rpm)'
+    echo "$output" | grep -q 'RPM package, bouncer, x86_64 (.rpm)'
 }
 
 @test "apply-body: a partial set prepends the block, and is idempotent" {
     seed_complete
-    rm "$ASSETS/grappa-rpm/grappa-0.8.0-1.x86_64.rpm"
+    rm "$ASSETS/grappa-rpm-x86_64/grappa-0.8.0-1.x86_64.rpm"
     printf '## What'\''s Changed\n\n- a real changelog line\n' > "$BATS_TEST_TMPDIR/body.md"
 
     run bash -c "'$SCRIPT' apply-body '$ASSETS' < '$BATS_TEST_TMPDIR/body.md'"
@@ -183,7 +286,7 @@ seed_complete() {
     # block present exactly once, changelog preserved
     [ "$(grep -c 'grappa:partial-release:start' "$BATS_TEST_TMPDIR/body2.md")" -eq 1 ]
     grep -q 'a real changelog line' "$BATS_TEST_TMPDIR/body2.md"
-    grep -q 'RPM package, bouncer (.rpm)' "$BATS_TEST_TMPDIR/body2.md"
+    grep -q 'RPM package, bouncer, x86_64 (.rpm)' "$BATS_TEST_TMPDIR/body2.md"
 
     # Feeding the already-marked body back in must NOT double the block.
     run bash -c "'$SCRIPT' apply-body '$ASSETS' < '$BATS_TEST_TMPDIR/body2.md'"
@@ -251,6 +354,23 @@ seed_complete() {
     # It must name the gap, not just refuse: the operator's next move is to
     # fix that leg and re-run, and a bare refusal makes them go find out which.
     grep -q 'Arch package, bouncer' <<<"$output"
+}
+
+@test "publishable: an arm64-only set must NOT create a new release (issue 2129)" {
+    # The reason the arch axis had to land in the SAME commit as the matrix.
+    # Before it, this exact tree — a green arm64 leg beside a red amd64 one —
+    # satisfied every expected kind, so #1591's gate returned 0 and a release
+    # carrying no x86 package got CREATED. Publication cannot be retracted, so
+    # the loud red of a failed leg would have become a silent partial release.
+    seed_complete
+    rm "$ASSETS/grappa-deb-amd64"/*
+    rm "$ASSETS/grappa-rpm-x86_64"/*
+    run "$SCRIPT" publishable "$ASSETS" absent
+    [ "$status" -ne 0 ]
+    # Name the gap by ARCH, not just by format: "the .deb is missing" sends the
+    # operator to a job that is green.
+    grep -q 'Debian package, bouncer, amd64' <<<"$output"
+    grep -q 'RPM package, bouncer, x86_64' <<<"$output"
 }
 
 @test "publishable: a PARTIAL set MAY still top up an existing release (#504/#573 preserved)" {
