@@ -13548,3 +13548,107 @@ cure is exercised at the router and FSM level only: no `Session.Server`
 integration test drives a real 353 burst, and cic was read (`modeApply.ts`
 keeps `modes` an array, `memberSigil.ts` picks by the advertised rank) but
 not re-run against a multi-sigil member.
+<!-- entry #2143 -->
+
+---
+
+## 2026-09-14 — issue 2143: auto-accept skips the human, never the gate
+
+Lucy asked for a per-network DCC auto-accept so that receiving files from
+the same people stops costing a banner every time. What shipped is that
+request with one conjunct added, and the conjunct is the entry.
+
+### The opt-in alone is not a feature, it is a hole
+
+`Grappa.Dcc.Policy.admit_accept/1` charges the `:dcc_receive` daily quota
+on the ACCEPT and deliberately never on the offer, so that a flood of
+unanswered offers cannot exhaust a subject's allowance. That design makes
+the consent click the thing that spends the allowance — which means a
+per-network switch with no peer restriction does not remove one click. It
+removes the only thing between a stranger and ten files a day on the
+operator's spool, and promotes the quota from backstop to primary guard,
+while handing whoever sends first an unsolicited window and a
+notification.
+
+So the gate is a conjunction, and both halves are required:
+
+    UserSettings.get_dcc_auto_accept(subject, network_slug)
+      and QueryWindows.open?(subject, network_id, from)
+
+An open query window is a relationship the SUBJECT made. A stranger keeps
+the #546 banner, always. The wide variant — any peer, quota-only — is a
+deliberate relaxation of the consent ruling and is **not built here**; it
+is vjt's call, not this issue's. `QueryWindows.open?/3` already existed
+and already folds the raw nick (#121/#537), so `Alice` and `alice` are one
+relationship rather than two.
+
+### The lenient read fails CLOSED, and its neighbour fails OPEN
+
+`UserSettings.get_dcc_auto_accept/2` sits twenty lines from
+`get_ignores/2` and they are lenient in OPPOSITE directions, which is
+worth stating before someone harmonises them. An unreadable ignore list
+must deliver messages, because failing closed would silently ignore
+everyone. An unreadable auto-accept must keep the banner, because failing
+open hands a peer the spool with no human in the loop. One costs noise,
+the other costs consent; they are not the same quantity and a shared rule
+would be wrong for one of them. Only the literal `true` enables — a
+stored `1` or `"yes"` is malformed, not truthy.
+
+### The fork lives inside the refusal funnel
+
+`admit_dcc_offer/4` already funnelled every refusal — parser, policy,
+ceiling — into ONE `Report.render({:refused, _}, from)` row, because the
+operator's question is "why did that file not arrive" and three
+vocabularies answering it is how the answer starts disagreeing with
+itself. The auto-accept arm is therefore a branch of `take_dcc_offer/4`
+INSIDE that `with`, not a sibling clause beside it: a quota refusal on an
+auto-accepted offer produces the byte-identical row a hand-accepted one
+does. Skipping the human must not change what the human is told.
+
+What the auto arm does not do is mint a handle, hold, arm an expiry or
+raise a banner — so there is no `dcc_offer_resolved` to fan out either,
+because that event exists to retract a prompt and there was none.
+
+`@held_cap` is not consulted on that arm and **nothing is lost by it**:
+the ceiling bounds the BANNER queue, which this arm never joins. The rate
+guard on accepts was always the daily quota and still is.
+
+### No live-session sync, deliberately
+
+The sibling `/ignores` door pushes every mutation into the running
+session because `state.ignores` is a cache. This one pushes nothing:
+`Session.Server` reads the opt-in at the moment an offer arrives. Offers
+come at human pace — one per decision on the far side — so there is no
+hot path to protect, and a cache here would be duplicated state bought
+for nothing.
+
+### The test needed a non-destructive read of the quota
+
+An auto-accept raises no banner and mints no handle, so the only
+synchronous evidence that an offer reached `admit_accept/1` is the spent
+quota slot. Polling THROUGH `Policy.admit_accept/1` cannot measure that:
+it is check-and-record, so the poll would take the very slot under
+assertion and the test would go green because IT spent the allowance.
+The counter is read straight out of the public ETS table instead — the
+same thing `AdmissionStateHelpers` does for the network circuit — and
+`Policy.quota_bucket/0` was exposed for the reason `daily_accepts/0`
+already is: so a caller reads the atom rather than restating it where a
+rename would not reach.
+
+Without that positive oracle the two refutations ("no banner", "nothing
+held") would both pass on an offer silently DROPPED, which is precisely
+the outcome 2089 forbids.
+
+### What is not covered
+
+The e2e never receives BYTES. An offer has to survive the SSRF gate to be
+admitted, so its address is TEST-NET-3, which answers nothing — the same
+constraint `issue2089-dcc-consent-banner.spec.ts` documents. "The file
+arrived" is measured as the server dialling on its own and reporting the
+outcome into the peer's query, which is the whole observable difference
+between an auto-accept and a dropped offer, but it is not the bytes.
+
+There is no cic control for the switch in this cut. It is settable over
+REST and nothing else, so the feature is invisible to the operator who
+asked for it until a client renders it; whether that control ships is a
+product ruling that was escalated rather than decided here.
