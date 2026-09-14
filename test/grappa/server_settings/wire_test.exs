@@ -15,6 +15,8 @@ defmodule Grappa.ServerSettings.WireTest do
         document_per_file_cap_bytes: 10_485_760,
         audio_per_file_cap_bytes: 26_214_400,
         global_cap_bytes: 10_737_418_240,
+        per_user_cap_bytes: 1_073_741_824,
+        per_visitor_cap_bytes: 104_857_600,
         video_max_duration_seconds: 120
       },
       http_host_aliases: aliases
@@ -82,6 +84,8 @@ defmodule Grappa.ServerSettings.WireTest do
                document_per_file_cap_bytes: 10_485_760,
                audio_per_file_cap_bytes: 26_214_400,
                global_cap_bytes: 10_737_418_240,
+               per_user_cap_bytes: 1_073_741_824,
+               per_visitor_cap_bytes: 104_857_600,
                video_max_duration_seconds: 120
              } =
                Wire.upload_view(%{
@@ -91,6 +95,8 @@ defmodule Grappa.ServerSettings.WireTest do
                  document_per_file_cap_bytes: 10_485_760,
                  audio_per_file_cap_bytes: 26_214_400,
                  global_cap_bytes: 10_737_418_240,
+                 per_user_cap_bytes: 1_073_741_824,
+                 per_visitor_cap_bytes: 104_857_600,
                  video_max_duration_seconds: 120
                })
     end
@@ -104,6 +110,8 @@ defmodule Grappa.ServerSettings.WireTest do
                  document_per_file_cap_bytes: 3,
                  audio_per_file_cap_bytes: 5,
                  global_cap_bytes: 4,
+                 per_user_cap_bytes: 7,
+                 per_visitor_cap_bytes: 8,
                  video_max_duration_seconds: 6
                })
     end

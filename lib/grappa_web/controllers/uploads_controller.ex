@@ -38,8 +38,13 @@ defmodule GrappaWeb.UploadsController do
        from `Grappa.ServerSettings.get_upload_per_file_cap_bytes/1`
        for the derived category (image 10MiB / video 50MiB /
        document 10MiB / audio 25MiB defaults). Else 413 file_too_large.
-    4. Global cap — `live_bytes_sum + byte_size <= global_cap_bytes`.
-       Else 507 insufficient_storage.
+    4. Storage caps (`Grappa.Uploads.check_caps/3`) — the GLOBAL disk
+       budget (`live_bytes_sum + byte_size <= global_cap_bytes`) AND
+       the uploader's own per-subject quota (issue 2175:
+       `upload.per_user_cap_bytes` / `upload.per_visitor_cap_bytes`,
+       picked off the subject). Either → 507 insufficient_storage;
+       the two share one error deliberately, since neither is
+       self-serviceable today.
     5. Slug minted, file written, row inserted via
        `Grappa.Uploads.create/3`.
 
@@ -176,8 +181,7 @@ defmodule GrappaWeb.UploadsController do
          {:ok, mime, charset, category} <- validate_mime(upload),
          :ok <- check_per_file_cap(upload, category),
          {:ok, bytes} <- read_file(upload),
-         :ok <-
-           Uploads.check_global_cap(byte_size(bytes), ServerSettings.get_upload_global_cap_bytes()),
+         :ok <- Uploads.check_caps(subject, byte_size(bytes), ServerSettings.upload_caps()),
          {:ok, row} <-
            Uploads.create(bytes, build_attrs(subject, {mime, charset}, upload, ttl_seconds),
              storage_root: storage_root()

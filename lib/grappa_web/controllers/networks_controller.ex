@@ -264,8 +264,10 @@ defmodule GrappaWeb.NetworksController do
 
   200 with the updated credential (carrying the new `avatar_url`); 400
   on a missing/unreadable file; 415 on a non-image MIME; 413 over the
-  per-file cap; 507 over the global cap; 404 if the credential
-  vanished; 401 without a Bearer.
+  per-file cap; 507 over the global cap OR the uploader's own
+  per-subject quota (issue 2175 — an avatar is an `uploads` row owned
+  by the subject, so it spends the same budget as any other upload);
+  404 if the credential vanished; 401 without a Bearer.
   """
   @spec avatar(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
@@ -278,7 +280,12 @@ defmodule GrappaWeb.NetworksController do
          {:ok, mime} <- validate_avatar_mime(upload),
          :ok <- check_avatar_per_file_cap(upload),
          {:ok, bytes} <- read_avatar_file(upload),
-         :ok <- Uploads.check_global_cap(byte_size(bytes), ServerSettings.get_upload_global_cap_bytes()),
+         :ok <-
+           Uploads.check_caps(
+             Subject.to_session(subject),
+             byte_size(bytes),
+             ServerSettings.upload_caps()
+           ),
          {:ok, credential} <- fetch_credential(subject, network),
          {:ok, updated_cred} <- Credentials.set_avatar(credential, bytes, mime) do
       render(conn, :update, credential: updated_cred)

@@ -5,8 +5,7 @@ defmodule Grappa.Themes.BackgroundImageTest do
   import Grappa.AuthFixtures, only: [user_fixture: 0]
   import Grappa.UploadFixtures, only: [bytes: 1]
 
-  alias Grappa.Themes.BackgroundImage
-  alias Grappa.Uploads
+  alias Grappa.{ServerSettings, Themes.BackgroundImage, Uploads}
 
   @png_magic <<137, 80, 78, 71, 13, 10, 26, 10>>
 
@@ -34,6 +33,37 @@ defmodule Grappa.Themes.BackgroundImageTest do
 
     assert slug =~ ~r/\A[a-z2-7]{26}\z/
     assert <<@png_magic, _::binary>> = stored_bytes(slug)
+  end
+
+  describe "per-subject upload quota (issue 2175)" do
+    # Door 3 of 3, and the one the issue did not name. A theme
+    # background is a subject-attributed `uploads` row written with
+    # `expires_at: nil` — it never expires, so the quota it spends is
+    # never given back. A quota skipping this door would be bypassable
+    # permanently, not just until the next reaper sweep.
+    test "refuses when the subject is over their per-user cap", ctx do
+      :ok = ServerSettings.put_upload_global_cap_bytes(1_000_000_000)
+      :ok = ServerSettings.put_upload_per_user_cap_bytes(2)
+
+      assert {:error, :insufficient_storage} =
+               BackgroundImage.process_and_store(
+                 ctx.subject,
+                 {:upload, upload(ctx.png, "image/png")}
+               )
+    end
+
+    test "stores when the subject is UNDER their per-user cap (negative control)", ctx do
+      :ok = ServerSettings.put_upload_global_cap_bytes(1_000_000_000)
+      :ok = ServerSettings.put_upload_per_user_cap_bytes(1_000_000)
+
+      assert {:ok, slug} =
+               BackgroundImage.process_and_store(
+                 ctx.subject,
+                 {:upload, upload(ctx.png, "image/png")}
+               )
+
+      assert slug =~ ~r/\A[a-z2-7]{26}\z/
+    end
   end
 
   test "upload path normalises a content-type with parameters", ctx do

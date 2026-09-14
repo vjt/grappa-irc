@@ -19,6 +19,8 @@ defmodule Grappa.ServerSettings do
   | `"upload.document_per_file_cap_bytes"`  | `pos_integer()`            | 10_485_760 (10MB)| UX-6-B |
   | `"upload.audio_per_file_cap_bytes"`     | `pos_integer()`            | 26_214_400 (25MB)| audio-uploads |
   | `"upload.global_cap_bytes"`             | `pos_integer()`            | 10_737_418_240 (10GB) | UX-6-B |
+  | `"upload.per_user_cap_bytes"`           | `pos_integer()`            | 1_073_741_824 (1GB) | issue 2175 |
+  | `"upload.per_visitor_cap_bytes"`        | `pos_integer()`            | 104_857_600 (100MB) | issue 2175 |
   | `"upload.video_max_duration_seconds"`   | `pos_integer()`            | 120              | #201 |
   | `"addressing.mode"`                     | `:pool_with_reservations \\| :static_mapping_with_reservations` | `:pool_with_reservations` | #543 |
   | `"addressing.static_mapping_prefix"`    | `String.t()` (v6 CIDR) \\| `nil` | `nil`       | #543 |
@@ -33,7 +35,8 @@ defmodule Grappa.ServerSettings do
 
   Returns the operator-visible subset for `GET /api/server-settings`:
   the upload block (active_host + the per-category per-file caps +
-  global_cap_bytes + the #201 video duration ceiling) plus `http_host_aliases` — the deployment's HTTP
+  global_cap_bytes + the issue-2175 per-subject ceilings + the #201
+  video duration ceiling) plus `http_host_aliases` — the deployment's HTTP
   host aliases (#324, from `Grappa.HttpHosts`, config-derived not
   DB-backed) that cic's media-link classifier admits. Admin-only
   settings (when added) stay out of this view.
@@ -90,6 +93,8 @@ defmodule Grappa.ServerSettings do
   @key_upload_document_per_file_cap_bytes "upload.document_per_file_cap_bytes"
   @key_upload_audio_per_file_cap_bytes "upload.audio_per_file_cap_bytes"
   @key_upload_global_cap_bytes "upload.global_cap_bytes"
+  @key_upload_per_user_cap_bytes "upload.per_user_cap_bytes"
+  @key_upload_per_visitor_cap_bytes "upload.per_visitor_cap_bytes"
   @key_upload_video_max_duration_seconds "upload.video_max_duration_seconds"
 
   # Defaults
@@ -103,6 +108,18 @@ defmodule Grappa.ServerSettings do
   # 20260609204800_rename_per_file_cap_setting_to_image.exs).
   @default_upload_audio_per_file_cap_bytes 25 * 1024 * 1024
   @default_upload_global_cap_bytes 10 * 1024 * 1024 * 1024
+  # issue 2175 — the per-subject ceilings. TWO keys, deliberately: a
+  # visitor is disposable and reaped, a user is not, so one shared
+  # number would either starve the account or over-trust the throwaway
+  # (vjt's ruling, 2026-09-14). Binary units, matching every other cap
+  # in this file (the registry table above spells 1 GiB "1GB" the same
+  # way it spells the 10 GiB global cap "10GB").
+  #
+  # These are CODE defaults, not the production values: the prod
+  # ceilings are a runtime `ServerSettings` change the operator makes
+  # once the feature is deployed, no second release.
+  @default_upload_per_user_cap_bytes 1024 * 1024 * 1024
+  @default_upload_per_visitor_cap_bytes 100 * 1024 * 1024
   # #201 — the client-side video duration ceiling, formerly cic's
   # compile-time `MAX_DURATION_SECONDS`. Same 2 minutes it always was;
   # what changes is that an operator can now move it without a rebuild.
@@ -178,6 +195,8 @@ defmodule Grappa.ServerSettings do
             document_per_file_cap_bytes: pos_integer(),
             audio_per_file_cap_bytes: pos_integer(),
             global_cap_bytes: pos_integer(),
+            per_user_cap_bytes: pos_integer(),
+            per_visitor_cap_bytes: pos_integer(),
             video_max_duration_seconds: pos_integer()
           },
           http_host_aliases: [String.t()]
@@ -267,6 +286,62 @@ defmodule Grappa.ServerSettings do
   end
 
   def put_upload_global_cap_bytes(_), do: {:error, :invalid_value}
+
+  # ---- upload.per_{user,visitor}_cap_bytes (issue 2175) ------------
+  #
+  # The global cap above is the instance's disk budget; these are what
+  # stops ONE subject eating it alone. Two keys, never one: see the
+  # defaults for the ruling.
+
+  @doc "Returns the per-USER total live-bytes ceiling (default 1 GiB)."
+  @spec get_upload_per_user_cap_bytes() :: pos_integer()
+  def get_upload_per_user_cap_bytes,
+    do: read_cap(@key_upload_per_user_cap_bytes, @default_upload_per_user_cap_bytes)
+
+  @doc "Pins the per-USER live-bytes ceiling. Must be a positive integer."
+  @spec put_upload_per_user_cap_bytes(pos_integer()) ::
+          :ok | {:error, :invalid_value | :db_unavailable}
+  def put_upload_per_user_cap_bytes(n) when is_integer(n) and n > 0 do
+    put_raw(@key_upload_per_user_cap_bytes, Integer.to_string(n))
+  end
+
+  def put_upload_per_user_cap_bytes(_), do: {:error, :invalid_value}
+
+  @doc "Returns the per-VISITOR total live-bytes ceiling (default 100 MiB)."
+  @spec get_upload_per_visitor_cap_bytes() :: pos_integer()
+  def get_upload_per_visitor_cap_bytes,
+    do: read_cap(@key_upload_per_visitor_cap_bytes, @default_upload_per_visitor_cap_bytes)
+
+  @doc "Pins the per-VISITOR live-bytes ceiling. Must be a positive integer."
+  @spec put_upload_per_visitor_cap_bytes(pos_integer()) ::
+          :ok | {:error, :invalid_value | :db_unavailable}
+  def put_upload_per_visitor_cap_bytes(n) when is_integer(n) and n > 0 do
+    put_raw(@key_upload_per_visitor_cap_bytes, Integer.to_string(n))
+  end
+
+  def put_upload_per_visitor_cap_bytes(_), do: {:error, :invalid_value}
+
+  @doc """
+  The ceilings `Grappa.Uploads.check_caps/3` needs, read in one place.
+
+  Exists so a write door spells ONE call instead of three settings
+  reads it could get half-right — the same reason `check_caps/3` is one
+  function and not two siblings.
+
+  Typed as `Grappa.Uploads.caps/0` rather than a local twin: the shape
+  IS that function's input, and a second structurally-identical type
+  here is a parallel structure that would drift. A remote type in a
+  `@spec` is module-atom metadata, so this adds no Boundary edge (see
+  CLAUDE.md, "a reference that carries no edge").
+  """
+  @spec upload_caps() :: Grappa.Uploads.caps()
+  def upload_caps do
+    %{
+      global: get_upload_global_cap_bytes(),
+      user: get_upload_per_user_cap_bytes(),
+      visitor: get_upload_per_visitor_cap_bytes()
+    }
+  end
 
   # ---- upload.video_max_duration_seconds (#201) --------------------
 
@@ -435,6 +510,8 @@ defmodule Grappa.ServerSettings do
         document_per_file_cap_bytes: get_upload_per_file_cap_bytes(:document),
         audio_per_file_cap_bytes: get_upload_per_file_cap_bytes(:audio),
         global_cap_bytes: get_upload_global_cap_bytes(),
+        per_user_cap_bytes: get_upload_per_user_cap_bytes(),
+        per_visitor_cap_bytes: get_upload_per_visitor_cap_bytes(),
         video_max_duration_seconds: get_upload_video_max_duration_seconds()
       },
       # #324 — deployment HTTP host aliases (config, not DB): boot-derived

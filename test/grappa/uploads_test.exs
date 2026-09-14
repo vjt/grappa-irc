@@ -345,39 +345,128 @@ defmodule Grappa.UploadsTest do
     end
   end
 
-  describe "check_global_cap/2" do
+  describe "check_caps/3 — the global ceiling" do
+    # These two are the rewritten `check_global_cap/2` pair (issue 2175
+    # folded that function into `check_caps/3`). The global ceiling is
+    # unchanged behaviour and stays asserted: the per-subject cap is an
+    # ADDITIONAL floor to clear, never a replacement.
     test "returns :ok when incoming + live_sum fits", %{root: root} do
       user = user_fixture([])
+      store(root, {:user, user.id}, 4)
 
-      {:ok, _} =
-        Uploads.create(
-          "aaaa",
-          %{
-            subject: {:user, user.id},
-            mime: "text/plain",
-            expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
-          },
-          storage_root: root
-        )
-
-      assert Uploads.check_global_cap(10, 100) == :ok
+      assert Uploads.check_caps({:user, user.id}, 10, caps(global: 100)) == :ok
     end
 
     test "returns :insufficient_storage when exceeded", %{root: root} do
       user = user_fixture([])
+      store(root, {:user, user.id}, 50)
 
-      {:ok, _} =
-        Uploads.create(
-          String.duplicate("a", 50),
-          %{
-            subject: {:user, user.id},
-            mime: "text/plain",
-            expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
-          },
-          storage_root: root
-        )
+      assert Uploads.check_caps({:user, user.id}, 60, caps(global: 100)) ==
+               {:error, :insufficient_storage}
+    end
 
-      assert Uploads.check_global_cap(60, 100) == {:error, :insufficient_storage}
+    test "the global ceiling counts EVERY subject's bytes, not just the caller's",
+         %{root: root} do
+      hog = user_fixture([])
+      me = user_fixture([])
+      store(root, {:user, hog.id}, 90)
+
+      # My own per-user room is untouched (0 of 1000 used), but the
+      # instance budget is gone. Global must still refuse.
+      assert Uploads.check_caps({:user, me.id}, 20, caps(global: 100, user: 1000)) ==
+               {:error, :insufficient_storage}
+    end
+  end
+
+  describe "check_caps/3 — the per-subject ceiling (issue 2175)" do
+    test "refuses a user over their own cap while the global budget is wide open",
+         %{root: root} do
+      user = user_fixture([])
+      store(root, {:user, user.id}, 50)
+
+      assert Uploads.check_caps({:user, user.id}, 60, caps(global: 1_000_000, user: 100)) ==
+               {:error, :insufficient_storage}
+    end
+
+    test "admits a user UNDER their own cap (negative control)", %{root: root} do
+      user = user_fixture([])
+      store(root, {:user, user.id}, 50)
+
+      assert Uploads.check_caps({:user, user.id}, 10, caps(global: 1_000_000, user: 100)) == :ok
+    end
+
+    test "refuses a visitor over their own cap", %{root: root} do
+      visitor = visitor_fixture([])
+      store(root, {:visitor, visitor.id}, 50)
+
+      assert Uploads.check_caps({:visitor, visitor.id}, 60, caps(global: 1_000_000, visitor: 100)) ==
+               {:error, :insufficient_storage}
+    end
+
+    test "admits a visitor UNDER their own cap (negative control)", %{root: root} do
+      visitor = visitor_fixture([])
+      store(root, {:visitor, visitor.id}, 50)
+
+      assert Uploads.check_caps({:visitor, visitor.id}, 10, caps(global: 1_000_000, visitor: 100)) ==
+               :ok
+    end
+
+    test "another subject's bytes do NOT count against mine", %{root: root} do
+      hog = user_fixture([])
+      me = user_fixture([])
+      store(root, {:user, hog.id}, 90)
+
+      # 90 bytes exist, but none of them are mine: with a 100-byte
+      # per-user cap I still have 100 to spend. This is the whole point
+      # of the quota being per-subject rather than shared.
+      assert Uploads.check_caps({:user, me.id}, 90, caps(global: 1_000_000, user: 100)) == :ok
+    end
+
+    test "a user is measured against the USER cap, not the visitor one", %{root: root} do
+      user = user_fixture([])
+      store(root, {:user, user.id}, 50)
+
+      # Discriminating control: 60 incoming busts the 100-byte VISITOR
+      # ceiling but fits the 1000-byte USER one. Reading the wrong key
+      # off the subject flips this assert.
+      assert Uploads.check_caps({:user, user.id}, 60, caps(global: 1_000_000, user: 1000, visitor: 100)) ==
+               :ok
+    end
+
+    test "a visitor is measured against the VISITOR cap, not the user one", %{root: root} do
+      visitor = visitor_fixture([])
+      store(root, {:visitor, visitor.id}, 50)
+
+      assert Uploads.check_caps(
+               {:visitor, visitor.id},
+               60,
+               caps(global: 1_000_000, user: 1000, visitor: 100)
+             ) == {:error, :insufficient_storage}
+    end
+
+    test "soft-deleted rows stop counting — the quota frees itself when the reaper collects",
+         %{root: root} do
+      user = user_fixture([])
+      row = store(root, {:user, user.id}, 90)
+
+      assert Uploads.check_caps({:user, user.id}, 50, caps(global: 1_000_000, user: 100)) ==
+               {:error, :insufficient_storage}
+
+      {:ok, _} = Uploads.soft_delete(row, DateTime.utc_now())
+
+      # No parallel accounting to keep in sync: the sum is computed live
+      # off `deleted_at IS NULL`, so reaping is what returns the room.
+      assert Uploads.check_caps({:user, user.id}, 50, caps(global: 1_000_000, user: 100)) == :ok
+    end
+
+    test "the boundary is EXCLUSIVE: landing exactly ON the cap is admitted", %{root: root} do
+      user = user_fixture([])
+      store(root, {:user, user.id}, 40)
+
+      assert Uploads.check_caps({:user, user.id}, 60, caps(global: 1_000_000, user: 100)) == :ok
+
+      assert Uploads.check_caps({:user, user.id}, 61, caps(global: 1_000_000, user: 100)) ==
+               {:error, :insufficient_storage}
     end
   end
 
@@ -582,5 +671,43 @@ defmodule Grappa.UploadsTest do
              #{plan}
              """
     end
+  end
+
+  # ------------------------------------------------------------------
+  # Helpers — issue 2175
+  # ------------------------------------------------------------------
+
+  # A ceiling no test deliberately bumps into. Every `caps/1` key the
+  # caller does NOT name is set here, so exactly ONE ceiling can be the
+  # reason a given assert refuses: a test that names `user:` and fails
+  # has failed on the user cap, never on a global default that happened
+  # to be tighter.
+  @unreachable_cap 1_000_000_000
+
+  defp caps(overrides) do
+    Enum.into(overrides, %{
+      global: @unreachable_cap,
+      user: @unreachable_cap,
+      visitor: @unreachable_cap
+    })
+  end
+
+  # Stores `byte_count` live bytes owned by `subject` and returns the row.
+  # `text/plain` passes `MetadataStrip` through untouched, so the stored
+  # size is exactly the requested one and the cap arithmetic in the
+  # asserts is readable.
+  defp store(root, subject, byte_count) do
+    {:ok, row} =
+      Uploads.create(
+        String.duplicate("a", byte_count),
+        %{
+          subject: subject,
+          mime: "text/plain",
+          expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
+        },
+        storage_root: root
+      )
+
+    row
   end
 end

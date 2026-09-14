@@ -964,6 +964,8 @@ export type ServerSettingsWireUploadView = {
   document_per_file_cap_bytes: number;
   audio_per_file_cap_bytes: number;
   global_cap_bytes: number;
+  per_user_cap_bytes: number;
+  per_visitor_cap_bytes: number;
   video_max_duration_seconds: number;
 };
 

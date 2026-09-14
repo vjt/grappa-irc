@@ -15548,3 +15548,98 @@ column wants `NOT NULL` once the rows are cleaned, is parked as a separate
 question by the issue itself. The prod rows were deleted ahead of the code fix
 (30 of 870, backed up off-server), so this change is about the next message
 purge rather than the outage, which is already closed.
+<!-- entry #2175 -->
+
+---
+
+## 2026-09-15 — issue 2175: two upload ceilings, one refusal, three doors
+
+The upload store had exactly one ceiling — `upload.global_cap_bytes`, the
+instance's whole disk budget — so a single subject could fill it and every other
+subject's next upload would 507. This adds a per-subject quota. vjt ruled the
+shape on 2026-09-14, relayed through the ircbot rather than seen first-hand.
+
+### TWO keys, never one shared ceiling
+
+`upload.per_user_cap_bytes` (1 GiB) and `upload.per_visitor_cap_bytes`
+(100 MiB) are separate `ServerSettings` keys. A visitor is disposable and
+reaped; a user is not, and giving them one number would either starve the user
+or hand a throwaway subject a gigabyte. Both are `pos_integer()` with the usual
+get/put pair, an `apply_upload_key` clause and a registry row each.
+
+### ONE refusal, and it is the EXISTING one
+
+Both ceilings refuse with `:insufficient_storage` → **507**, the clause that
+already existed. No new `fallback_controller` arm and no new wire error. The
+argument is not that the two failures are the same thing — it is that **there is
+no self-service upload management**: no listing, no delete. The only actionable
+path out of a per-subject refusal is the same one the global cap already points
+at, the operator. A distinct error would name an affordance that does not exist.
+The day self-service lands, this is the first thing to revisit.
+
+### The quota frees itself
+
+`live_bytes_sum_for/1` counts rows with `deleted_at IS NULL`, so an expired
+upload returns its bytes to the subject's budget the moment the reaper collects
+it. No parallel accounting table, no migration, no backfill, nothing to drift —
+the design-discipline "derive, don't duplicate" rule applied to a counter. The
+cost is stated rather than hidden: a subject already over the ceiling is frozen
+out until their own uploads expire.
+
+### THREE doors, and the issue named two
+
+`check_caps/3` REPLACES `check_global_cap/2` rather than sitting beside it, and
+that is the load-bearing decision. Every door that writes to the store must
+clear both ceilings, and a door calling one helper while forgetting the other
+would LOOK wired. Folding the pair into a single call makes the half-wire
+unspellable.
+
+Measured, not hypothetical: the issue named two doors and a grep over `lib/`
+found **three**. The third is `Themes.BackgroundImage.process_and_store/2`, and
+it is the one that matters most — it writes a subject-attributed `uploads` row
+with `expires_at: nil`, so the quota it spends is **never reclaimed**. A quota
+that skipped that door would not be bypassable until the next sweep; it would be
+bypassable permanently.
+
+The three doors do not pass the same shape, and the asymmetry is correct rather
+than sloppy: `UploadsController` and `BackgroundImage` hold the bare-id
+`Grappa.Subject.t()`, while `NetworksController` holds the web-layer struct
+tuple and converts with `Subject.to_session/1`. `Subject.subject_where/2` raises
+`ArgumentError` on anything else, so a wrong shape fails loudly.
+
+### protocol 25 → 26, and the number was claimed twice
+
+Both keys land on `ServerSettings.Wire.upload_view/1`, a GENERATED shape shared
+by `GET /api/server-settings`, `GET /admin/settings` and the
+`server_settings_changed` push — so `wireTypes.ts` / `wireSchema.ts` move and
+the `priv/wire/shape.pin` digest spans both. The bump is demanded by the gate,
+not only by the #1393d rule.
+
+This branch was WRITTEN claiming 25 and REBASED onto a main that had already
+published 25 (issue 2176). Third occurrence of that collision in this file's
+narration, after 24/#2186 and the v22/v23 gap, and it is structural rather than
+bad luck: **a protocol number claimed at write time against a moving main is a
+reservation, not a fact**, and it has to be re-measured at rebase time. Resolved
+the same way as its predecessors — by ORDER, monotonic on main, the branch that
+landed first keeps the number.
+
+The three-sites warning in `protocol.ex` predicted the mechanics exactly: only
+`@protocol_version` conflicted; `@spec version() :: 25` and
+`CLIENT_PROTOCOL_VERSION` in `socket.ts` merged clean at main's number and had
+to be moved BY HAND. A conflict on one site of a duplicated constant is positive
+evidence that the other sites were decided for you.
+
+### What is deliberately NOT here
+
+**The cic "used / quota" indicator is out, and it is not a scope cut.** It is
+unbuildable UNDER THIS RULING: the 507 is shared, so the client cannot
+distinguish "the instance is full" from "you are at your own quota" — an
+indicator would have to guess which number it is showing. The keys are published
+for the ADMIN, who can read them beside the knob that sets them; keeping them
+off `public_view/0` and building an admin-only subtree inline was considered and
+refused, because it is a third pattern for exposing a setting and would leave
+the admin `upload` map diverging from its own generated type.
+
+Also absent: any migration or backfill (there is nothing to migrate — the
+quota is derived from rows that already exist), and any grandfathering for
+subjects already over the new ceiling.
