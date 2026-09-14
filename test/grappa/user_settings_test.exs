@@ -1533,9 +1533,7 @@ defmodule Grappa.UserSettingsTest do
       Repo.update!(Settings.changeset(settings, %{data: %{"dcc_auto_accept" => "garbage"}}))
       assert UserSettings.get_dcc_auto_accept({:user, user.id}, "azzurra") == false
 
-      Repo.update!(
-        Settings.changeset(settings, %{data: %{"dcc_auto_accept" => %{"azzurra" => "yes"}}})
-      )
+      Repo.update!(Settings.changeset(settings, %{data: %{"dcc_auto_accept" => %{"azzurra" => "yes"}}}))
 
       assert UserSettings.get_dcc_auto_accept({:user, user.id}, "azzurra") == false
 
