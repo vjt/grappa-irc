@@ -111,6 +111,19 @@ defmodule Grappa.Dcc.Policy do
   @spec daily_accepts() :: unquote(@daily_accepts)
   def daily_accepts, do: @daily_accepts
 
+  @doc """
+  The quota bucket accepts are counted in. Public for the same reason
+  `daily_accepts/0` is: a caller reading the counter reads THIS atom
+  rather than restating `:dcc_receive` where a rename would not reach it.
+
+  Added for issue 2143 — an auto-accepted transfer raises no banner and
+  mints no handle, so the counter is the only synchronous evidence that
+  an offer reached `admit_accept/1`, and a test that spelled the bucket
+  itself would go on measuring a bucket nothing writes.
+  """
+  @spec quota_bucket() :: unquote(@quota_bucket)
+  def quota_bucket, do: @quota_bucket
+
   # `Grappa.IRC.DCC.parse/1` already decoded the address into an `:inet`
   # tuple and refused a hostname outright, so there is no name to resolve
   # here and no DNS-rebind window to worry about — the tuple this judges

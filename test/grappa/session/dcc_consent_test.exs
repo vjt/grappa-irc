@@ -29,11 +29,12 @@ defmodule Grappa.Session.DccConsentTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Dcc, IRCServer, Scrollback, Session}
+  alias Grappa.{Dcc, IRCServer, Scrollback, Session, UserSettings}
   alias Grappa.Dcc.{Policy, Report}
   alias Grappa.Networks.{Credentials, SessionPlan}
   alias Grappa.PubSub.Topic
   alias Grappa.QueryWindows
+  alias Grappa.RateLimit.DailyQuota
 
   @nick "grappa-test"
   @wire_timeout 1_000
@@ -328,6 +329,75 @@ defmodule Grappa.Session.DccConsentTest do
     end
   end
 
+  describe "issue 2143 — per-network auto-accept, restricted to known peers" do
+    test "the opt-in is OFF by default — even a known peer raises a banner" do
+      ctx = auto_accept_ctx(known_peer: true)
+
+      feed_dcc_send(ctx)
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :dcc_offer}}, @wire_timeout
+      assert accepts_recorded(ctx.subject) == 0
+    end
+
+    test "a STRANGER keeps the banner with the opt-in ON — #546 is untouched" do
+      # The load-bearing test of this slice. The wide variant of 2143 —
+      # auto-accept for any peer, quota-only — is a relaxation of the
+      # consent ruling and was NOT built; if the query-window conjunct ever
+      # goes, this is what reddens.
+      ctx = auto_accept_ctx(enabled_slug: :self)
+
+      # A stranger BY CONSTRUCTION: the 2127 describe above measures that a
+      # stranger's offer mints no window, so there is nothing to undo here.
+      refute QueryWindows.open?(ctx.subject, ctx.network.id, @peer)
+
+      feed_dcc_send(ctx)
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :dcc_offer}}, @wire_timeout
+      assert {:ok, [_held]} = Session.list_dcc_offers(ctx.subject, ctx.network.id)
+      assert accepts_recorded(ctx.subject) == 0
+    end
+
+    test "opt-in plus an open query window skips the banner and SPENDS the accept" do
+      ctx = auto_accept_ctx(enabled_slug: :self, known_peer: true)
+
+      feed_dcc_send(ctx)
+
+      # The POSITIVE half first, and it is why this test is not just two
+      # refutations: an auto-accept mints no handle and raises no banner, so
+      # the spent quota slot is the only synchronous evidence the offer
+      # reached `Policy.admit_accept/1` at all. Without it, "no banner" would
+      # go green on an offer silently DROPPED — the one outcome 2089 forbids.
+      assert eventually_accepts_recorded(ctx.subject, 1)
+
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :dcc_offer}}, 200
+      assert {:ok, []} = Session.list_dcc_offers(ctx.subject, ctx.network.id)
+    end
+
+    test "an auto-accept the quota refuses still REPORTS — no silent outcome" do
+      ctx = auto_accept_ctx(enabled_slug: :self, known_peer: true)
+      exhaust_daily_quota(ctx.subject)
+
+      feed_dcc_send(ctx)
+
+      # A policy-gate refusal has no accept behind it, so it stays where the
+      # offer would have rendered (issue 2127) — `$server`. Byte-identical to
+      # the hand-accepted refusal asserted in the accept describe above:
+      # skipping the human must not change what the human is told.
+      assert [refusal] = eventually_rows(ctx, "$server")
+      assert refusal.body == Report.render({:refused, :rate_limited}, @peer).body
+      refute_receive %Phoenix.Socket.Broadcast{payload: %{kind: :dcc_offer}}, 200
+    end
+
+    test "the opt-in is per NETWORK — arming another network leaves this one asking" do
+      ctx = auto_accept_ctx(enabled_slug: "some-other-network", known_peer: true)
+
+      feed_dcc_send(ctx)
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :dcc_offer}}, @wire_timeout
+      assert accepts_recorded(ctx.subject) == 0
+    end
+  end
+
   # The exact message `Session.Server`'s detached task sends back. Spelled
   # here so a change to that tuple breaks these tests loudly rather than
   # leaving them green against a shape nothing emits.
@@ -346,21 +416,85 @@ defmodule Grappa.Session.DccConsentTest do
     for _ <- 1..Policy.daily_accepts(), do: :ok = Policy.admit_accept(subject)
   end
 
+  # Reads the quota counter WITHOUT spending it (issue 2143).
+  #
+  # `Policy.admit_accept/1` is check-and-record in one call, so polling the
+  # quota THROUGH it would take the very slot the assertion is about: the
+  # test would then go green because IT spent the allowance, while the
+  # auto-accept it was measuring got rate-limited. The ETS table is public
+  # and named, and reading a rate-limit table straight is what
+  # `AdmissionStateHelpers` already does for the network circuit.
+  defp accepts_recorded(subject) do
+    case :ets.lookup(DailyQuota.table_name(), {Policy.quota_bucket(), subject}) do
+      [{_key, _date, count}] -> count
+      _ -> 0
+    end
+  end
+
+  defp eventually_accepts_recorded(subject, want),
+    do: eventually_accepts_recorded(subject, want, 50)
+
+  defp eventually_accepts_recorded(subject, want, 0) do
+    flunk(
+      "quota recorded #{accepts_recorded(subject)} accept(s), wanted #{want} — " <>
+        "the auto-accept never reached Policy.admit_accept/1"
+    )
+  end
+
+  defp eventually_accepts_recorded(subject, want, tries) do
+    if accepts_recorded(subject) >= want do
+      true
+    else
+      Process.sleep(20)
+      eventually_accepts_recorded(subject, want, tries - 1)
+    end
+  end
+
+  # The wire half of `held_offer/0`, split out so the 2143 tests can feed a
+  # real offer and then REFUSE to receive a banner — `held_offer/0` asserts
+  # one arrives, which is the opposite of what an auto-accept must do.
+  defp feed_dcc_send(ctx) do
+    IRCServer.feed(
+      ctx.server,
+      ":#{@peer}!u@h PRIVMSG #{@nick} :\x01DCC SEND #{@filename} #{@public_ip} 5000 #{@size}\x01\r\n"
+    )
+  end
+
   # Feeds a real DCC SEND and returns the context plus the handle and the
   # payload the live event carried.
   defp held_offer do
     ctx = connected_session()
     :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(ctx.user.name))
 
-    IRCServer.feed(
-      ctx.server,
-      ":#{@peer}!u@h PRIVMSG #{@nick} :\x01DCC SEND #{@filename} #{@public_ip} 5000 #{@size}\x01\r\n"
-    )
+    feed_dcc_send(ctx)
 
     assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :dcc_offer} = payload},
                    @wire_timeout
 
     Map.merge(ctx, %{offer_id: payload.offer_id, live_payload: payload, channel: payload.channel})
+  end
+
+  # The 2143 staging: a connected session, subscribed, with the opt-in and
+  # the query window set exactly as the case under test wants them.
+  #
+  # `enabled_slug: :self` arms THIS session's network; a literal slug arms a
+  # different one, which is how the per-network test proves the key is not
+  # global. Absent, nothing is armed — the default-off case.
+  defp auto_accept_ctx(opts) do
+    ctx = connected_session()
+
+    case opts[:enabled_slug] do
+      nil -> :ok
+      :self -> {:ok, _} = UserSettings.put_dcc_auto_accept(ctx.subject, ctx.network.slug, true)
+      slug -> {:ok, _} = UserSettings.put_dcc_auto_accept(ctx.subject, slug, true)
+    end
+
+    if opts[:known_peer] do
+      {:ok, _} = QueryWindows.open(ctx.subject, ctx.network.id, @peer, ctx.user.name)
+    end
+
+    :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(ctx.user.name))
+    ctx
   end
 
   # Polls one window until it holds at least `want` rows. `want` is a

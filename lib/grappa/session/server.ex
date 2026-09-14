@@ -3008,9 +3008,13 @@ defmodule Grappa.Session.Server do
   # clause, including the refusals, because a device still showing the
   # banner would re-offer a file nothing will ever deliver.
   #
-  # `Policy.admit_accept/1` is called EXACTLY here and exactly once. It is
-  # check-and-record in one atomic call, so asking speculatively — at the
-  # REST door, say, to render a nicer error — would spend the answer.
+  # `Policy.admit_accept/1` is called ONCE PER ACCEPT, and this clause is
+  # one of exactly two places that call it — issue 2143's auto-accept in
+  # `take_dcc_offer/4` is the other, and the two are mutually exclusive
+  # per offer (an auto-accepted offer is never held, so no handle ever
+  # reaches this door). It is check-and-record in one atomic call, so
+  # asking speculatively — at the REST door, say, to render a nicer
+  # error — would spend the answer.
   @impl GenServer
   def handle_call({:accept_dcc_offer, offer_id}, _, state) when is_binary(offer_id) do
     case DccOffers.drop(state.dcc_offers, offer_id) do
@@ -7402,19 +7406,74 @@ defmodule Grappa.Session.Server do
   # cannot move — it reads the quota and the disk). The ceiling could not
   # move: what it bounds is the held set, which lives on this struct.
   #
-  # Every refusal — parser, policy, or ceiling — converges on ONE report
-  # row. The operator's question is "why did that file not arrive", and
-  # three vocabularies answering it in three places is how the answer
-  # comes to disagree with itself.
+  # Every refusal — parser, policy, ceiling, or (issue 2143) the quota an
+  # auto-accept spends — converges on ONE report row. The operator's
+  # question is "why did that file not arrive", and three vocabularies
+  # answering it in three places is how the answer comes to disagree with
+  # itself. That funnel is the `else` below, and it is why the 2143 fork
+  # lives INSIDE `take_dcc_offer/4` rather than beside this clause.
   @spec admit_dcc_offer(t(), String.t(), String.t(), Offer.t()) :: t()
   defp admit_dcc_offer(state, channel, from, offer) do
     with :ok <- Policy.admit_offer(offer),
-         {:ok, offer_id, offers} <- DccOffers.hold(state.dcc_offers, offer, from, channel) do
-      hold_dcc_offer(%{state | dcc_offers: offers}, offer_id)
+         {:ok, next} <- take_dcc_offer(state, channel, from, offer) do
+      next
     else
       {:error, refusal} ->
         persist_dcc_report(state, channel, Report.render({:refused, refusal}, from))
     end
+  end
+
+  # issue 2143 — the fork between the consent ceremony and the auto-accept.
+  #
+  # An auto-accept skips the CEREMONY, never the GATE: `admit_offer/1` has
+  # already run one frame up, and `admit_accept/1` runs here with the same
+  # quota and the same disk budget the operator's own accept pays. What it
+  # does not do is mint a handle, hold, arm an expiry or raise a banner —
+  # so there is nothing to take down afterwards and no
+  # `dcc_offer_resolved` to fan out. The scrollback row a refusal produces
+  # is byte-identical to the hand-accepted one, because it is rendered by
+  # the same funnel in the caller.
+  #
+  # The ceiling (`@held_cap`) is not consulted on the auto arm and nothing
+  # is lost by that: it bounds the BANNER queue, which this arm never
+  # joins. The rate guard on accepts was always the daily quota, and it
+  # still is.
+  @spec take_dcc_offer(t(), String.t(), String.t(), Offer.t()) ::
+          {:ok, t()} | {:error, Policy.refusal() | :too_many_offers}
+  defp take_dcc_offer(state, channel, from, offer) do
+    if auto_accept_dcc?(state, from) do
+      with :ok <- Policy.admit_accept(state.subject) do
+        :ok = start_dcc_transfer(offer, from)
+        {:ok, state}
+      end
+    else
+      with {:ok, offer_id, offers} <- DccOffers.hold(state.dcc_offers, offer, from, channel) do
+        {:ok, hold_dcc_offer(%{state | dcc_offers: offers}, offer_id)}
+      end
+    end
+  end
+
+  # issue 2143 — BOTH halves are required, and the second is the one that
+  # keeps #546 intact.
+  #
+  # The opt-in alone is the WIDE variant: auto-accept for any peer, with
+  # the quota as the only guard. That is a deliberate relaxation of the
+  # consent ruling and it was NOT built here — it would hand whoever sends
+  # first an unsolicited window, a notification and ten slots a day on the
+  # operator's spool, promoting a backstop into the primary guard. A peer
+  # the subject already has a query window with is a relationship the
+  # SUBJECT made, which is the thing consent was protecting.
+  #
+  # The setting is read first because it is off by default, so a session
+  # that never armed it short-circuits without touching `query_windows`.
+  #
+  # `QueryWindows.open?/3` folds the RAW nick off the wire (#121/#537), so
+  # `Alice` and `alice` are one relationship — the same fold every other
+  # nick KEY compare uses, never a bare downcase.
+  @spec auto_accept_dcc?(t(), String.t()) :: boolean()
+  defp auto_accept_dcc?(state, from) do
+    UserSettings.get_dcc_auto_accept(state.subject, state.network_slug) and
+      QueryWindows.open?(state.subject, state.network_id, from)
   end
 
   # Arms the expiry and announces the banner, in that order: the timer is
