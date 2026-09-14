@@ -523,7 +523,33 @@ defmodule Grappa.Protocol do
   # old path, and every one of them renders the new absolute URL as an
   # ordinary link. The break is real but it is new-client → old-server,
   # which is the axis this number carries and not the floor.
-  @protocol_version 21
+  #
+  # v22 (issue 2143) — the per-network DCC auto-accept opt-in gets its door:
+  # `GET`/`PUT /networks/:network_id/dcc-auto-accept`, carrying a single
+  # `enabled` boolean. Purely additive; no existing endpoint changed shape.
+  #
+  # ⚠️ Same shape as v10, v11 and v21, and MEASURED here rather than
+  # inherited from them. `mix grappa.wire_pin --check` was run on BOTH sides
+  # of this branch — on the merge base and on the finished tree — and
+  # answered `wire shape and protocol 21 agree.` at rc=0 both times. The
+  # digest genuinely does not move: the routes' shape lives in
+  # `GrappaWeb.DccAutoAcceptController`, which is no `*wire.ex`, is on no
+  # `@extra_modules` list, and exports no `GrappaWeb.*JSON` view for the
+  # third component to read. The two runs are a BEFORE and an AFTER rather
+  # than one green, so the silence is a live gate's and not a dead one's.
+  #
+  # So the number moves on the RULE. Reason (1) applies literally: a cic
+  # bundle that renders this switch CALLS these routes and gets a 404 from
+  # any server predating them, which is the new-client → old-server
+  # direction the number exists to express. That the switch has no client
+  # control in this cut does not weaken it — waiting for the client is
+  # exactly the argument that held `@protocol_version` at `1` through five
+  # additive fields cic later came to require.
+  #
+  # @min_protocol_version stays at 1: additive, and no bundle predating v22
+  # asks for a route it has never heard of, so every one of them is served
+  # unchanged.
+  @protocol_version 22
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -534,7 +560,7 @@ defmodule Grappa.Protocol do
   # alongside `@protocol_version`; the spec doubles as the bump tripwire,
   # and now that the bump is routine the tripwire is what keeps it from
   # being done half-way.
-  @spec version() :: 21
+  @spec version() :: 22
   def version, do: @protocol_version
 
   @doc """

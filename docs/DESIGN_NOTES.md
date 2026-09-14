@@ -13669,3 +13669,27 @@ Worth stating because the funnel's promise is easy to over-read: what
 `admit_dcc_offer/4` makes byte-identical between a hand-accept and an
 auto-accept is the BODY, not the window. The window follows the
 relationship, which is the thing 2143 is about.
+
+### Protocol v22, on the rule — and the gate's silence is measured
+
+Two new routes carrying one `enabled` boolean is a wire-shape change, so
+`@protocol_version` moves 21 → 22 under #1393d, and cic's
+`CLIENT_PROTOCOL_VERSION` moves with it (`protocol_test.exs` pins them
+EQUAL, so a half-done bump is red rather than discovered in a browser
+console months later).
+
+`mix grappa.wire_pin --check` does NOT force it, and that was measured on
+both sides rather than inherited from v10/v11/v21, which record the same
+shape: on the merge base and on the finished tree the gate answered
+`wire shape and protocol 21 agree.` at rc=0, and `--update` then rewrote
+the pin to protocol 22 with a **byte-identical digest**
+(`sha256:74cb9003…628fdb` before and after). The digest genuinely does
+not move — the routes' shape lives in a controller, which is no
+`*wire.ex`, is on no `@extra_modules` list, and exports no
+`GrappaWeb.*JSON` view for the third component to read.
+
+A BEFORE and an AFTER are what make that green worth quoting: one run
+cannot tell a live gate's silence from a dead gate's. What is NOT claimed
+is that the gate's coverage should widen here — that is a coverage change,
+which the pin deliberately cannot distinguish from a shape change, and it
+does not belong in a product slice.

@@ -228,7 +228,21 @@ let _socket: Socket | null = null;
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9: a pre-21 server mints the OLD
 // relative path, which this bundle renders as plain text exactly as it
 // always did, so an older server is still served.
-export const CLIENT_PROTOCOL_VERSION = 21;
+// 22 (issue 2143) — the per-network DCC auto-accept opt-in gets a REST door:
+// `GET`/`PUT /networks/:network_id/dcc-auto-accept`, carrying one `enabled`
+// boolean. Purely additive, and additive still bumps (#1393d).
+//
+// This bundle needs no code change for it, and in this cut has none: the
+// switch is settable over REST and nothing else, because whether a control
+// ships is a product ruling that was escalated rather than decided in the
+// slice. The number moves anyway — it says what cic SPEAKS, and the server
+// speaks v22, so an inequality here would mean the two artefacts came from
+// different commits, which is the one thing `noteServerProtocol` exists to
+// tell a tester.
+//
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9: this bundle requires nothing
+// from v22, so it still serves an older server.
+export const CLIENT_PROTOCOL_VERSION = 22;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //
