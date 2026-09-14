@@ -37,6 +37,7 @@ Grappa.Application
 ├── Grappa.RateLimit.DailyQuota        (#75 per-(bucket, subject, day) creation quota)
 ├── Grappa.RateLimit.FailureWindow     (S6 per-(bucket, key) login-throttle window)
 ├── Grappa.Accounts.WebAuthnChallengeStore (short-lived WebAuthn ceremony challenges)
+├── Grappa.Auth.Oidc.Transaction (#1911 one-shot OIDC round trips — verifier + nonce + intent; before Endpoint so /auth/oidc/authorize never races a dead GenServer)
 ├── Grappa.RateLimit.TokenBucket       (#340 per-(subject, network) send token bucket)
 ├── Grappa.Net.PtrCache                (#252 vhost reverse-DNS (PTR) name cache)
 ├── Task.Supervisor                    (name: Grappa.TaskSupervisor — detached tasks)

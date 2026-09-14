@@ -71,6 +71,16 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+      # #1911 — the OIDC login door. All five unset is the DISABLED state:
+      # runtime.exs then leaves the provider unconfigured and every
+      # /auth/oidc route answers 404. Set all five to enable (see
+      # .env.example); the redirect URI must be the URL the browser
+      # actually reaches, since the provider posts the code back to it.
+      GRAPPA_OIDC_ISSUER: ${GRAPPA_OIDC_ISSUER:-}
+      GRAPPA_OIDC_CLIENT_ID: ${GRAPPA_OIDC_CLIENT_ID:-}
+      GRAPPA_OIDC_CLIENT_SECRET: ${GRAPPA_OIDC_CLIENT_SECRET:-}
+      GRAPPA_OIDC_REDIRECT_URI: ${GRAPPA_OIDC_REDIRECT_URI:-}
+      GRAPPA_OIDC_SCOPES: ${GRAPPA_OIDC_SCOPES:-}
       # Erlang distribution cookie for `bin/grappa remote-shell` (T-2). The dev
       # default keeps `docker compose up` clone-and-go; runtime.exs raises in
       # prod when it is unset or still the sentinel. Threat model: .env.example.

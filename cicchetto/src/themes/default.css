@@ -1271,6 +1271,28 @@ html.overlay-open #root > div {
   z-index: 1;
 }
 
+/* #1911 — the note a completed provider-link round trip lands with. Same
+   card-width banner shape as the flood banner above (the callback's only
+   exit is /login, so the outcome has to be said out loud here), plus the
+   way back into the app for a holder that is already authenticated. */
+.login-oidc-note {
+  width: 100%;
+  max-width: 22rem;
+  margin: 0 auto 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--accent);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 0.9rem;
+  line-height: 1.4;
+  position: relative;
+  z-index: 1;
+}
+
+.login-oidc-note .login-quiet-button {
+  margin-top: 0.5rem;
+}
+
 /* #204 — connecting view (replaces the form in place). Spinner + rotating
    cosmetic reassurance copy. */
 .login-connecting {

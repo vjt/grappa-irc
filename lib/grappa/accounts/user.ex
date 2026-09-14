@@ -74,26 +74,60 @@ defmodule Grappa.Accounts.User do
     user
     |> cast(attrs, [:name, :password])
     |> validate_required([:name, :password])
+    |> validate_name()
+    |> validate_length(:password, min: 8, max: 256)
+    |> unique_name_constraints()
+    |> put_password_hash()
+  end
+
+  @doc """
+  Builds a create changeset for an OIDC-provisioned account (#1911c):
+  `:name` validated by the SAME rules as an operator-created one, plus
+  `:is_admin` from the group mapping — and NO password. The provider's
+  `sub` is the account's only credential: `password_hash` stays `nil`,
+  which `Grappa.Accounts.verify_password/2` reads as "this door does not
+  exist for this account", not as a crash. An operator can still give the
+  account a password later through the ordinary create path's siblings.
+  """
+  @spec provisioned_changeset(t(), %{required(:name) => String.t(), required(:is_admin) => boolean()}) ::
+          Ecto.Changeset.t()
+  def provisioned_changeset(user, attrs) do
+    user
+    |> cast(attrs, [:name, :is_admin])
+    |> validate_required([:name, :is_admin])
+    |> validate_name()
+    |> unique_name_constraints()
+  end
+
+  # The name rules, ONCE, shared by the password and passwordless create
+  # paths — two copies is how one of them drifts and lets a provisioned
+  # name in that `changeset/2` would refuse.
+  @spec validate_name(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  defp validate_name(changeset) do
+    changeset
     |> validate_length(:name, min: 1, max: 64)
     |> validate_format(:name, @name_format, message: "must start with a letter, then alphanumeric/_/-")
-    |> validate_length(:password, min: 8, max: 256)
-    # Measured #1353: removing this line reddens NO test, because SQLite
-    # names the folded index first when an exact duplicate violates both.
-    # It stays anyway — which index a conflict reports is index-resolution
-    # order, not a contract, so a later migration that recreates the two
-    # in another order would put the byte-exact violation back on this
-    # line, and without it that violation escapes as a raise instead of a
-    # changeset error. One declaration per index, not one per observed
-    # message.
+  end
+
+  # Both uniqueness declarations, shared for the same reason. Measured
+  # #1353: removing the first reddens NO test, because SQLite names the
+  # folded index first when an exact duplicate violates both. It stays
+  # anyway — which index a conflict reports is index-resolution order,
+  # not a contract, so a later migration that recreates the two in
+  # another order would put the byte-exact violation back on that line,
+  # and without it that violation escapes as a raise instead of a
+  # changeset error. One declaration per index, not one per observed
+  # message. The SECOND is the one that decides identity (#1353): it is
+  # what makes `vjt` and `VJT` one account rather than two. Named
+  # explicitly because ecto derives its default constraint name from the
+  # COLUMN, which reaches `users_name_index` only; without this the
+  # folded violation would surface as an `Ecto.ConstraintError` raise
+  # instead of a changeset error.
+  @spec unique_name_constraints(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  defp unique_name_constraints(changeset) do
+    changeset
     |> unique_constraint(:name)
-    # #1353 — the folded index is the one that decides identity: it is
-    # what makes `vjt` and `VJT` one account rather than two. Named
-    # explicitly because ecto derives its default constraint name from
-    # the COLUMN, which reaches `users_name_index` only; without this the
-    # folded violation would surface as an `Ecto.ConstraintError` raise
-    # instead of a changeset error.
     |> unique_constraint(:name, name: :users_folded_name_index)
-    |> put_password_hash()
   end
 
   @spec put_password_hash(Ecto.Changeset.t()) :: Ecto.Changeset.t()

@@ -7,6 +7,13 @@ import { CONNECTING_MESSAGES } from "./lib/connectingMessages";
 import { severedForFlood } from "./lib/floodSever";
 import { errorMessage, friendlyApiError } from "./lib/friendlyApiError";
 import { classifyLoginIdentifier } from "./lib/loginIdentifier";
+import {
+  beginOidcLogin,
+  clearOidcLanding,
+  type OidcLanding,
+  oidcLoginAvailable,
+  readOidcLanding,
+} from "./lib/oidc";
 
 // Bare credential form. The walking-skeleton login surface is one card,
 // no branding, no "remember me" — the bouncer is single-tenant per
@@ -39,6 +46,29 @@ type CaptchaChallenge = { provider: CaptchaProvider; siteKey: string };
 const INCOGNITO_LABEL = "Incognito — delete this session and its history when I close the browser";
 const INCOGNITO_HINT =
   "Closing the browser deletes this session and its message history. Some things aren't tied to that: files you upload follow their own expiry (1 hour by default here, adjustable up to 72 hours), themes you've published stay in the gallery, your nick stays in the admin audit log, and everyone you talk to keeps their own copy of the conversation.";
+
+// #1911 — the callback's `error` landings, one copy per code. Provider-
+// neutral by necessity: cic never learns the provider's name (grappa
+// publishes no such field), so the copy says "identity provider" rather
+// than guessing. `not_linked` is the honest one — grappa refuses to
+// create an account on first login, so a provider identity has to be
+// linked from settings first, and the copy must say so rather than leave
+// the user staring at a refusal.
+const OIDC_ERROR_COPY: Record<string, string> = {
+  invalid_state: "That sign-in attempt has expired or was already used. Start again.",
+  invalid_token: "The identity provider's answer didn't check out. Start again.",
+  invalid_code: "That sign-in code was already spent. Start again.",
+  expired_token: "The identity provider took too long to answer. Start again.",
+  provider_unavailable: "The identity provider isn't answering right now. Try again shortly.",
+  provider_refused: "The identity provider refused the sign-in request.",
+  not_linked:
+    "That provider account isn't linked to a grappa account yet. Log in normally, then link it under Security.",
+  unlinked_account: "The account that provider identity was linked to no longer exists.",
+  already_linked: "That provider account is already linked to a different grappa account.",
+  second_factor_unsupported:
+    "This account needs a second factor that sign-in door can't provide. Use your password or passkey.",
+  too_many_attempts: "Too many attempts. Wait a few minutes and try again.",
+};
 
 // Codebase audit cic M6 — sub-component captures the challenge prop
 // and runs mount inside `onMount` (after the ref-bound div is in the
@@ -156,6 +186,11 @@ const Login: Component = () => {
   const [totpCode, setTotpCode] = createSignal("");
   const [recoveryMode, setRecoveryMode] = createSignal(false);
   const [recoveryCode, setRecoveryCode] = createSignal("");
+  // #1911 — whether this deployment offers the provider door at all
+  // (probed once; a deployment with no provider hides the button), and
+  // the note a `linked` landing leaves behind.
+  const [oidcAvailable, setOidcAvailable] = createSignal(false);
+  const [oidcNote, setOidcNote] = createSignal<string | null>(null);
   const navigate = useNavigate();
 
   // Cosmetic reassurance rotation. There is no server progress stream to
@@ -377,7 +412,50 @@ const Login: Component = () => {
   onMount(() => {
     // Nick-first: focus the one field the minimal view shows.
     nickInput?.focus();
+
+    // #1911 — the callback lands the browser back HERE
+    // (`/login#oidc=…`), so this is where the round trip completes. The
+    // landing is read once and scrubbed from the address bar
+    // immediately: a `session` landing carries a live bearer, and
+    // leaving it in `location` puts that credential in the history and
+    // in anything the user copies out of the address bar next.
+    const landing = readOidcLanding(window.location.hash);
+    clearOidcLanding();
+    if (landing !== null) consumeOidcLanding(landing);
+
+    // Door probe, not a capability flag from `/api/config` — grappa
+    // publishes none (see lib/oidc.ts). A deployment without a provider
+    // answers 404 and the button never renders.
+    void oidcLoginAvailable().then(setOidcAvailable);
   });
+
+  // One arm per landing kind, mirroring the controller's four outcomes.
+  // `session` and `totp` continue the login; `linked` and `error` stay on
+  // the card and explain themselves.
+  const consumeOidcLanding = (landing: OidcLanding): void => {
+    switch (landing.kind) {
+      case "session":
+        // The same install the share-link route uses: a bearer + subject
+        // minted server-side, dropped onto the same two localStorage keys
+        // without re-running the credential dance.
+        auth.installSharedSession(landing.token, landing.subject);
+        navigate("/", { replace: true });
+        return;
+      case "totp":
+        setTotpChallenge(landing.challenge_token);
+        return;
+      case "linked":
+        setOidcNote(
+          landing.label === null
+            ? "Provider account linked."
+            : `Provider account “${landing.label}” linked.`,
+        );
+        return;
+      case "error":
+        setError(OIDC_ERROR_COPY[landing.code] ?? `Sign-in failed (${landing.code}).`);
+        return;
+    }
+  };
 
   const Brand = () => (
     <div class="login-brand">
@@ -410,6 +488,27 @@ const Login: Component = () => {
           <div class="login-flood-banner" role="alert" data-testid="login-flood-banner">
             You were disconnected for sending too fast. Please sign in again.
           </div>
+        </Show>
+        {/* #1911 — a provider-link round trip came home good. The callback's
+            only exit is this route, so the outcome is said out loud here;
+            an already-authenticated holder gets the way back into the app,
+            an expired one the ordinary card. */}
+        <Show when={oidcNote()}>
+          {(note) => (
+            <div class="login-oidc-note" role="status" data-testid="login-oidc-note">
+              {note()}
+              <Show when={auth.isAuthenticated()}>
+                <button
+                  type="button"
+                  class="login-quiet-button"
+                  data-testid="login-oidc-note-back"
+                  onClick={() => navigate("/", { replace: true })}
+                >
+                  Back to app
+                </button>
+              </Show>
+            </div>
+          )}
         </Show>
         <Show
           when={connecting()}
@@ -567,6 +666,23 @@ const Login: Component = () => {
                       >
                         Recovery code
                       </button>
+                      {/* #1911 — the provider door, offered only when the
+                      deployment has one (`oidcAvailable()` — a deployment
+                      without a provider answers 404 at the probe and the
+                      button never renders). A navigation, not a fetch: the
+                      browser must follow the 302 to the provider itself, see
+                      lib/oidc.ts. Third in the panel so the two local doors
+                      keep their #1322 order. */}
+                      <Show when={oidcAvailable()}>
+                        <button
+                          type="button"
+                          class="login-quiet-button login-alt-auth"
+                          data-testid="login-oidc"
+                          onClick={() => beginOidcLogin()}
+                        >
+                          Sign in with your identity provider
+                        </button>
+                      </Show>
                       {/* #724 — the field still renders inside the credential
                       form, so Enter here still reaches that form's implicit
                       submission and `onRecoveryKeyDown` must still swallow it.

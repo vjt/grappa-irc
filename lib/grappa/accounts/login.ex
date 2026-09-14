@@ -87,13 +87,22 @@ defmodule Grappa.Accounts.Login do
   # `passkey_mode` is a closed three-value enum, so all three are spelled out:
   # a fourth value added later must fail here loudly rather than inherit the
   # no-second-factor exit from a catch-all.
+  #
+  # PUBLIC, `@doc false` (#1911): the OIDC callback is a second credential
+  # door and must descend the SAME ladder — a provider's "this is them" is
+  # worth exactly as much as a password, no more, so an account whose local
+  # factor is still armed stops there too. Duplicating the three clauses one
+  # door over is how the two doors drift apart. Every clause is `def`, not
+  # only the first: Elixir refuses a `def`/`defp` mix across one head, so a
+  # half-public ladder would not compile.
+  @doc false
   @spec second_factor(User.t()) :: outcome()
-  defp second_factor(%User{passkey_mode: :passwordless}), do: {:error, :passwordless}
+  def second_factor(%User{passkey_mode: :passwordless}), do: {:error, :passwordless}
 
-  defp second_factor(%User{passkey_mode: :second_factor} = user),
+  def second_factor(%User{passkey_mode: :second_factor} = user),
     do: {:second_factor, :passkey, user}
 
-  defp second_factor(%User{passkey_mode: :disabled} = user) do
+  def second_factor(%User{passkey_mode: :disabled} = user) do
     if TOTP.enabled?(user), do: {:second_factor, :totp, user}, else: {:ok, user}
   end
 end

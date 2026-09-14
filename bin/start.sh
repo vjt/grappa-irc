@@ -53,10 +53,21 @@ fi
 # because anyone with `docker exec` privilege can `printenv` it.
 : "${RELEASE_COOKIE:?RELEASE_COOKIE is required (set in compose.yaml or host env)}"
 
+# The sname is OVERRIDABLE because epmd keys a registration on the NAME
+# part alone ("grappa"), never the host half: on a shared network
+# namespace - the OIDC e2e stack boots beside the dev stack, both on the
+# host network - a second `-sname grappa` dies at boot with "name seems
+# to be in use" whatever the container hostname says (measured
+# 2026-09-12: every e2e boot after the dev stack came up failed with
+# grappa@grappa-oidc-e2e "in use" while `epmd -names` listed exactly one
+# node, name grappa). The default keeps `bin/grappa remote-shell`'s
+# grappa@grappa working unchanged.
+: "${GRAPPA_SNAME:=grappa}"
+
 GRAPPA_MAX_PORTS=$((GRAPPA_MAX_USERS * 400))
 GRAPPA_MAX_PROCS=$((GRAPPA_MAX_USERS * 100))
 
-export ELIXIR_ERL_OPTIONS="+Q ${GRAPPA_MAX_PORTS} +P ${GRAPPA_MAX_PROCS} +SDcpu ${GRAPPA_DIRTY_SCHEDULERS} +SDio ${GRAPPA_DIRTY_SCHEDULERS} -sname grappa -setcookie ${RELEASE_COOKIE}"
+export ELIXIR_ERL_OPTIONS="+Q ${GRAPPA_MAX_PORTS} +P ${GRAPPA_MAX_PROCS} +SDcpu ${GRAPPA_DIRTY_SCHEDULERS} +SDio ${GRAPPA_DIRTY_SCHEDULERS} -sname ${GRAPPA_SNAME} -setcookie ${RELEASE_COOKIE}"
 
 # First-boot dep bootstrap (#364 docker S1 — toolchain image). The image
 # ships only the toolchain; hex/rebar + deps live in the bind-mounted tree

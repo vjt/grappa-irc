@@ -478,7 +478,22 @@ defmodule Grappa.Protocol do
   # `not_held` reads a 404 with an unfamiliar token and falls back to its
   # generic error path — the same thing it already does for every token
   # added since v1 — so an old bundle is degraded in wording, not broken.
-  @protocol_version 20
+  #
+  # v21 (issue 1911) — the OIDC login door joins the admin-events
+  # throttle-door enum: `login_throttle_door` gains `:oidc_login`, the atom
+  # that names BOTH the new `Grappa.RateLimit.FailureWindow` bucket and the
+  # `login_throttled` event a tripped window emits. One enum member, and
+  # additive in the strictest sense — no field, no event kind. It still
+  # needs the number, because cic's generated `wireSchema` narrows `door`
+  # to a CLOSED union and an old bundle served a new server would discard
+  # the very event that says a login door is under attack. That is the
+  # #1393d rule landing exactly where it was written for: the value is
+  # optional in the spec, and the break is real anyway.
+  #
+  # @min_protocol_version stays at 1 — an old client only ever loses a
+  # line it never rendered. `CLIENT_PROTOCOL_VERSION` moves 20 → 21 in
+  # lockstep (`cicchetto/src/lib/socket.ts`).
+  @protocol_version 21
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -489,7 +504,7 @@ defmodule Grappa.Protocol do
   # alongside `@protocol_version`; the spec doubles as the bump tripwire,
   # and now that the bump is routine the tripwire is what keeps it from
   # being done half-way.
-  @spec version() :: 20
+  @spec version() :: 21
   def version, do: @protocol_version
 
   @doc """

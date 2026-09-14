@@ -1,0 +1,39 @@
+# scripts/oidc/compose.yaml — the Kanidm half of the #1911 acceptance lab.
+#
+# One service, one named volume, loopback only: the flow drives
+# https://localhost:8443 and nothing else needs to reach the server. The
+# grappa half never runs here — CI boots it with `mix phx.server` on the
+# runner itself (bin/start.sh names that the canonical CI boot path), so
+# this file carries no build context and stays cold-start cheap.
+#
+# The image is digest-pinned on #103 terms: `kanidm/server:latest` floats,
+# and an acceptance pass must fail for the code under test, not for a
+# registry push. The tag stays for readability.
+#   Refresh: docker buildx imagetools inspect kanidm/server:1.11.1 \
+#     --format '{{.Manifest.Digest}}'
+services:
+  kanidm:
+    image: kanidm/server:1.11.1@sha256:7c3d7ed868e91f78c24a7fb9c548876563b375a4203021b730d58369b97ad154
+    container_name: kanidm-oidc-lab
+    restart: unless-stopped
+    # run as an unprivileged uid; setup.sh chowns the fresh volume to match
+    user: "1000:100"
+    ports:
+      - "127.0.0.1:8443:8443"
+    volumes:
+      - kanidm-data:/data
+      - ./server.toml:/etc/kanidm/server.toml:ro
+      - ./data/chain.pem:/certs/chain.pem:ro
+      - ./data/key.pem:/certs/key.pem:ro
+    command: ["/sbin/kanidmd", "server", "-c", "/etc/kanidm/server.toml"]
+    healthcheck:
+      # the image default omits `-c`, so it never sees the config and the
+      # check can never pass; name the config explicitly
+      test: ["CMD", "/sbin/kanidmd", "scripting", "healthcheck", "-c", "/etc/kanidm/server.toml"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  kanidm-data:

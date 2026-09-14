@@ -262,6 +262,18 @@ defmodule GrappaWeb.Router do
     # controller; failure modes collapse via FallbackController to
     # 400 / 401 / 404 / 410.
     post "/share/consume", ShareTokenController, :consume
+
+    # #1911 — OIDC login, both legs of one browser round trip.
+    # Unauthenticated by design: `authorize` is what MINTS the credential
+    # question and `callback` is the provider answering it, the same
+    # position `POST /auth/login` holds for the password. The callback
+    # ends in a 302 to `/login#oidc=…` (bearer in the fragment, #1404),
+    # never in a session cookie, so nothing here needs the `:authn`
+    # pipeline. Routes must appear in `RouterScopeTest`'s
+    # `@unauthenticated_routes` — they are GETs, so a missing entry is a
+    # 403 client_token_scope on a door that carries no token at all.
+    get "/oidc/authorize", OidcController, :authorize
+    get "/oidc/callback", OidcController, :callback
   end
 
   # VAPID public key — push notifications cluster B2 (2026-05-14).
@@ -344,6 +356,16 @@ defmodule GrappaWeb.Router do
     # boundary (`GrappaWeb.ShareToken.mint/2`) states the same rule
     # independently of where the route is declared.
     post "/me/share-token", ShareTokenController, :mint
+
+    # #1911 — the OIDC account link. Credential management by the same
+    # reasoning as the share-token mint directly above: it changes what
+    # this account can later sign in WITH, so it takes a full session, and
+    # a per-client token is refused by the scope rather than by this
+    # controller. `POST` returns the authorize URL rather than redirecting
+    # so the SPA drives its own navigation off an ordinary JSON body.
+    get "/me/oidc", OidcController, :show
+    post "/me/oidc/link", OidcController, :start_link
+    delete "/me/oidc", OidcController, :unlink
   end
 
   scope "/", GrappaWeb do
