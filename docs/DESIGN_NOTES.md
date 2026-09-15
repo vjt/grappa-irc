@@ -15635,11 +15635,55 @@ evidence that the other sites were decided for you.
 unbuildable UNDER THIS RULING: the 507 is shared, so the client cannot
 distinguish "the instance is full" from "you are at your own quota" — an
 indicator would have to guess which number it is showing. The keys are published
-for the ADMIN, who can read them beside the knob that sets them; keeping them
-off `public_view/0` and building an admin-only subtree inline was considered and
-refused, because it is a third pattern for exposing a setting and would leave
-the admin `upload` map diverging from its own generated type.
+for the ADMIN; keeping them off `public_view/0` and building an admin-only
+subtree inline was considered and refused, because it is a third pattern for
+exposing a setting and would leave the admin `upload` map diverging from its own
+generated type.
 
 Also absent: any migration or backfill (there is nothing to migrate — the
 quota is derived from rows that already exist), and any grandfathering for
 subjects already over the new ceiling.
+
+⚠️ **And absent by oversight rather than by design, named here so the next
+reader does not have to rediscover it: `AdminSettingsTab` has no CONTROL for
+either ceiling.** `apply_upload_key/2` accepts both and `adminGetSettings` reads
+both back, but cic's save builds its PUT body from the form signals and the form
+has neither, so the only write door an operator actually has is a hand-rolled
+`PUT /admin/settings` (there is no mix task — `put_upload_*` is reached from
+`Admin.SettingsController` and nowhere else). The defaults are therefore the
+shipped values. Adding the two rows is small, but it is not free: #201's
+duration knob shipped with a spec in `ux-6-b-admin-settings.spec.ts`, and the
+tab's PUT assertion is an exact-match on the whole `upload` subtree. Held for a
+slice that can run e2e.
+
+### The cic side: lenient narrowing, and why the strict cure was WRONG here
+
+`userTopic.ts` hand-narrows `server_settings_changed` field by field, so two
+required fields on the generated type are two more fields it must produce. The
+fork looked like "required or optional on the wire" and is neither: the type is
+GENERATED from `Wire.upload_view/0`, `read_cap/2` always answers, so the server
+can never omit them and `optional(...)` would be a false statement about the
+BEAM, blinding `wireSchema`'s runtime check as well.
+
+The real fork was inside the narrower — strict (reject the payload) or lenient
+(degrade). Post-#1393d the house posture leans strict, and `serverProtocol.ts`
+spells out the price: requiring a field introduced at protocol N obliges
+`MIN_SERVER_PROTOCOL_VERSION` up to N in the same change. Here that is 9 → 26,
+which banners every server from 9 to 25 as outdated — over two fields cic never
+reads. `applyServerSettings` maps the payload into `ServerSettingsView`, and
+neither ceiling is in it. So strictness buys nothing observable and costs a
+floor raise; the tolerance is declared in `wireUserBoundary.test.ts` rather than
+left to be rediscovered as drift.
+
+The fallback is `global_cap_bytes` and NOT a mirrored compile-time constant
+(#201's shape): before the per-subject split the global pool WAS the only
+ceiling one subject could reach, so a pre-2175 server's silence degrades to the
+number that server would itself have enforced, and there is no cic-side copy of
+1 GiB / 100 MiB to rot when the operator moves the setting. Measured: the
+pass-through also restores the arm's VALUE parity with its schema, which
+dropping the fields silently broke.
+
+⚠️ `scripts/check.sh` is Elixir-only. It does not typecheck cic, so a green one
+says nothing about `wireTypes.ts` consumers — after a `gen_wire_types` the cic
+gates have to be re-run, and on this branch they were not: 13 `tsc` errors and
+three red boundary-census snapshots survived a green `check.sh` into CI.

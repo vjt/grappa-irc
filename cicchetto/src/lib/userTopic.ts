@@ -564,6 +564,29 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       const videoMaxDurationSeconds = posInt(u.video_max_duration_seconds)
         ? u.video_max_duration_seconds
         : MAX_DURATION_SECONDS;
+      // issue 2175 — the two per-subject ceilings, lenient for the same
+      // reason as the duration cap above: a pre-2175 server omits both
+      // keys, and hard-narrowing them would drop the WHOLE settings push
+      // and strand active_host and every byte cap with it.
+      //
+      // The strict alternative is not free either. Requiring a field
+      // introduced at protocol 26 obliges `MIN_SERVER_PROTOCOL_VERSION`
+      // up to 26 (the OBLIGATION in serverProtocol.ts), which would
+      // banner every server from 9 to 25 as outdated over two fields
+      // this client never reads: the ceilings exist on the wire only so
+      // the admin GET reads back what the admin PUT, and
+      // `applyServerSettings` drops them on the floor.
+      //
+      // Absent or malformed → `global_cap_bytes`, which is not a value
+      // nobody sent: before the per-subject split the global pool WAS
+      // the only ceiling one subject could reach, so it is the true
+      // pre-2175 answer rather than a constant invented here.
+      const perUserCapBytes = posInt(u.per_user_cap_bytes)
+        ? u.per_user_cap_bytes
+        : u.global_cap_bytes;
+      const perVisitorCapBytes = posInt(u.per_visitor_cap_bytes)
+        ? u.per_visitor_cap_bytes
+        : u.global_cap_bytes;
       // #324 — deployment HTTP host aliases. Lenient: a malformed /
       // absent value degrades to [] (page origin only) rather than
       // dropping the whole settings push (which would strand the upload
@@ -581,6 +604,8 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
           document_per_file_cap_bytes: u.document_per_file_cap_bytes,
           audio_per_file_cap_bytes: u.audio_per_file_cap_bytes,
           global_cap_bytes: u.global_cap_bytes,
+          per_user_cap_bytes: perUserCapBytes,
+          per_visitor_cap_bytes: perVisitorCapBytes,
           video_max_duration_seconds: videoMaxDurationSeconds,
         },
         http_host_aliases: httpHostAliases,
