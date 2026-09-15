@@ -15548,3 +15548,55 @@ column wants `NOT NULL` once the rows are cleaned, is parked as a separate
 question by the issue itself. The prod rows were deleted ahead of the code fix
 (30 of 870, backed up off-server), so this change is about the next message
 purge rather than the outage, which is already closed.
+<!-- entry #2214 -->
+
+---
+
+## 2026-09-15 — #2214: the auto-clear watchdog read another pane's context
+
+`auto-clear-watch.sh status grappa-orch` reported `watching (ctx=7%)` while the
+pane it was bound to sat at 39% — one point under its own firing threshold. The
+binding was right, the capture was right, the number was somebody else's.
+
+`parse_ctx` took the FIRST `🧠 NN%` in the capture (`head -1`). The orchestrator
+samples its workers by capturing THEIR panes, so their status lines land in its
+own buffer as ordinary command output: eight of them in 200 lines, measured on
+2026-09-15. Scrollback sits ABOVE the live status block the UI pins to the
+bottom of the screen, so the first marker in a capture is the oldest foreign one
+and the pane's own is the last. The cure is `tail -1`.
+
+It is not a new convention either: the sibling that samples the WORKER panes,
+`wakeup-tick.sh`, already read the bottom-most marker, and so does the sampling
+recipe in `SKILL.md`. Censused across the lib — this parse was the single site
+still taking the first, which is why the class needs no wider change than the
+one line.
+
+The direction is what makes it expensive. Reading LOW means the watch never
+fires, and a watchdog that is alive, bound to the right pane and silent forever
+is indistinguishable from a calm session — the same family as the dead listener
+and the duplicated monitor. It also carries the pre-clear handoff flush, so an
+inert watch means the flush is never prompted and the handoff is lost at the
+first manual clear or crash. Last fire in the log: 11:12:33, then nothing.
+
+### Anchored by position, not by the glyphs around the block
+
+The block can also be found by its neighbours (the `📟` / `⏵⏵` lines). Declined:
+a glyph the parse REQUIRES and the pane does not render turns the watch
+permanently BLIND, and that trade buys only the case where the live block is
+missing from a capture while a foreign marker is not. Reading the bottom-most
+marker assumes nothing about what is drawn around it, only that a terminal is
+linear. The residual limit is named rather than covered: on a pane that is not,
+or is no longer, a Claude session but still holds foreign markers in its
+scrollback, the parse answers a foreign number — the `%5` misbinding family,
+which a glyph anchor would catch and this does not.
+
+### The control the case turns on
+
+A pane with a CLEAN scrollback does not measure any of this: it is exactly the
+case in which the broken parse is right by accident. So the fixture puts two
+foreign markers above the pane's own — one below the threshold (7%, the measured
+one) and one ABOVE it (90%), so no arm can be satisfied by a loop that merely
+stayed quiet. Both doors are covered, the loop and `status`, because `status` is
+the surface the defect was observed on. Mutant: restoring `head -1` reddens
+exactly those two cases, each on the assertion it defends, and leaves the other
+twelve green.

@@ -173,7 +173,21 @@ resolve_pane_once() {
   printf '%s title\n' "$matches"
 }
 
-parse_ctx() { printf '%s' "$1" | grep -oE '🧠 [0-9]+%' | grep -oE '[0-9]+' | head -1; }
+# The LAST marker in the capture, never the first (issue 2214). A pane's
+# own status block is the live bottom of the screen; anything else that
+# bears a marker is scrollback ABOVE it. The orchestrator pane samples its
+# workers by capturing THEIR panes, so their status lines sit in its buffer
+# as ordinary command output — and `head -1` took the oldest of them.
+# Measured 2026-09-15: `status` reported 7% while the pane itself read 39%,
+# one point under its own firing threshold. Reading LOW is the direction
+# that costs: the watch never fires, and a watchdog that is alive, bound
+# and silent is indistinguishable from a calm session.
+#
+# Anchored by POSITION and not by the glyphs around the block (📟 / ⏵⏵):
+# a glyph this parse requires and the pane does not render would turn the
+# watch permanently BLIND — a worse failure, bought to defend against a
+# capture in which the live block is missing while a foreign marker is not.
+parse_ctx() { printf '%s' "$1" | grep -oE '🧠 [0-9]+%' | grep -oE '[0-9]+' | tail -1; }
 is_busy()   { printf '%s' "$1" | tail -15 | grep -qE '… \('; }            # spinner shape
 input_pending() {
   printf '%s' "$1" | grep -E '^❯ ' | tail -1 | sed -E 's/^❯ +//' | grep -qE '[^[:space:]]'
