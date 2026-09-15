@@ -15548,3 +15548,76 @@ column wants `NOT NULL` once the rows are cleaned, is parked as a separate
 question by the issue itself. The prod rows were deleted ahead of the code fix
 (30 of 870, backed up off-server), so this change is about the next message
 purge rather than the outage, which is already closed.
+<!-- entry #cp15b6-vacuous-barrier -->
+
+---
+
+## 2026-09-15 — cp15-b6: a re-JOIN barrier a client-side optimistic row satisfies
+
+`cp15-b6-part-archive-rejoin` had been flaky at roughly one run in five on the
+chromium leg for five sightings. The verdict carried for four of them —
+"green in isolation, therefore an ordering dependency between specs" — was
+falsified before this change: the same red reproduces standalone, and green
+and red both occur at the identical suite position on a byte-identical tree.
+What was still missing was the mechanism, and it was sitting in the
+`trace.zip` Playwright had been writing at every failure.
+
+### What the artefacts said
+
+Two traces, one collected inside the suite and one from a standalone
+iso-rerun. Their `error-context.md` files are 1730 lines each and differ only
+in timestamps and the cloaked hostmask; their action timelines are 33 actions
+in the same order, failing on the same one. That pairing is the experiment:
+what agrees across two unrelated runs is the mechanism, what differs is
+context.
+
+    POST /networks/<slug>/channels     page-rel 0.523s / 0.623s   202
+    toHaveCount(1) on the sidebar row  passed in 3.1ms / 2.8ms
+    GET  /networks/<slug>/channels     page-rel 5.542s / 5.651s
+    POST -> channels_changed refetch   5.019s  / 5.028s
+    budget of the NEXT assertion       5002.5ms / 5002.3ms
+    deadline minus refetch             +23ms   / +32ms
+
+`.members-pane` is absent from the DOM across 53 consecutive frame snapshots
+and present again in the post-failure snapshot. The refetch actually beats the
+deadline in both failures; the test loses in the tail between the HTTP
+response and the MembersPane render.
+
+### The class, which is the part worth keeping
+
+**A barrier a client can satisfy on its own is not a barrier.** cic mounts an
+optimistic pending pseudo-row synchronously on `/join`, and that row carries
+the same `data-window-name` the real one does, so the spec's
+`toHaveCount(1)` cleared five seconds before the `channels_changed` its own
+comment named. Nothing was wrong with the assertion in isolation — it was
+being read as a wait for a server event it never touched, and the whole
+upstream round trip silently fell onto the next assertion's budget, which
+happened to be within tens of milliseconds of that round trip.
+
+So when a spec waits for something the SERVER must do, it must key on a seam
+only the server can move. Here that seam already existed and is documented as
+a test seam: `Sidebar.tsx` authors `data-window-state` on the pseudo-row and
+nothing else, and `pseudoChannelsForNetwork` drops any key already present in
+`channelsBySlug` — so the attribute disappearing IS "the echo landed and the
+refetch ran". Both assertions are kept, because count-0 on the intersection
+alone is equally satisfied by the row having vanished altogether.
+
+The mutant that proves it is one line: delete the `refetchChannels()` call
+`userTopic.ts` makes on `channels_changed`. Under it the OLD assertion still
+passes — the pseudo-row is right there — and the new one fails. A barrier that
+survives the removal of the event it claims to await was never awaiting it.
+
+### Deliberately not done
+
+The MembersPane assertion keeps its 5000ms and no assertion was weakened.
+Raising that timeout was the tempting move and it would have buried the
+vacuity instead of removing it: the waiting belongs where the wait is.
+
+Why the upstream JOIN echo costs seconds in the first place is a different
+axis and is #800's ground (`Grappa.IRC.FakeLag`), untouched here. One
+observation is worth recording against it: the same delay, agreeing to 9ms,
+appears both at suite position 54 and in a standalone rerun, which sits
+awkwardly with #800's open sub-claim that the cost bites only on a connection
+already near the ceiling after hundreds of preceding specs. That is a data
+point, not a refutation — nobody has instrumented the ircd, and these
+artefacts contain no server-side log.
