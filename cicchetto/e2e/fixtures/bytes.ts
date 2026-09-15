@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 
 // Shared tiny-file byte fixtures for upload specs.
@@ -75,6 +77,61 @@ function pngChunk(type: string, data: Buffer): Buffer {
   crc.writeUInt32BE(crc32(typed), 0);
   return Buffer.concat([length, typed, crc]);
 }
+
+// ── the two committed video fixtures, and the rule for choosing ────────────
+//
+// 🔴 THE RUNNER'S BROWSER IS NOT THE SAME PRODUCT ON EVERY HOST, AND ONLY ONE
+// OF THEM DECODES H.264 (issue 2026). Measured 2026-09-15 on both binaries,
+// same Playwright revision 1217, all controls green:
+//
+//                                                canPlayType('video/mp4; codecs="avc1.64000A"')
+//   linux-x64    Chrome for Testing, 147.0.7727.15          "probably"
+//   linux-arm64  Playwright's own Chromium, 147.0.7727.0    ""        ← and AAC likewise
+//
+// It is not an architecture compiled twice: `DOWNLOAD_PATHS` in
+// playwright-core's registry sends `ubuntu22.04-x64` to a `builds/cft/…`
+// archive (Chrome for Testing — a Chrome build, proprietary codecs included)
+// and `ubuntu22.04-arm64` to `builds/chromium/…`, with Playwright's own
+// `// non-cft build` comment sitting on that line. CI runs `ubuntu-latest`
+// (x64); an Apple-silicon worker's Docker resolves the same multi-arch base
+// tag to arm64. Nothing in this repo pins `platform:`.
+//
+// The consequence, and it is the whole reason these constants exist: an H.264
+// fixture handed to a REAL decoder is GREEN IN CI AND RED LOCALLY. That split
+// cost issue 2026 nine data points and several from-scratch investigations,
+// because the knowledge lived in a comment inside one spec instead of beside
+// the bytes every spec reaches for.
+//
+// WHICH ONE:
+//
+//   DECODABLE_VIDEO  the engine must DECODE the bytes — a <video> that has to
+//                    reach metadata, an `error?.code` oracle, `videoWidth`.
+//                    VP9-in-WebM, "probably" on BOTH builds (measured).
+//   OPAQUE_VIDEO     the bytes are only CARRIED — uploaded, linked, named, or
+//                    inspected server-side. Never handed to a decoder.
+//
+// 🔴 Do NOT re-encode tiny.mp4 in place to "fix" this: two specs depend on it
+// being an mp4 — uploads2-video-doc-upload posts it through the picker as
+// `video/mp4`, and ux-6-b-admin-settings pins its 1.000 s duration.
+//
+// Regenerate the webm (the grappa image carries ffmpeg with libvpx-vp9, like
+// test/support/fixtures/uploads/generate.sh):
+//   ffmpeg -y -f lavfi -i color=c=blue:s=128x72:d=1 \
+//     -c:v libvpx-vp9 -pix_fmt yuv420p tiny.webm
+const videoFixture = (name: string): Buffer =>
+  readFileSync(fileURLToPath(new URL(`./${name}`, import.meta.url)));
+
+export const DECODABLE_VIDEO = {
+  name: "clip.webm",
+  mimeType: "video/webm",
+  buffer: videoFixture("tiny.webm"),
+} as const;
+
+export const OPAQUE_VIDEO = {
+  name: "tiny.mp4",
+  mimeType: "video/mp4",
+  buffer: videoFixture("tiny.mp4"),
+} as const;
 
 export function pngOfSize(width: number, height: number): Buffer {
   const ihdr = Buffer.alloc(13);

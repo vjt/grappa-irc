@@ -25,19 +25,14 @@
 // local file, no subject in the question), so the seeded user suffices — the
 // same argument #1883 makes.
 
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
-import { TINY_PNG_HEX } from "../fixtures/bytes";
+import { DECODABLE_VIDEO, TINY_PNG_HEX } from "../fixtures/bytes";
 import { loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { setUploadConfirmEnabled } from "../fixtures/grappaApi";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
-
-const fixture = (name: string): Buffer =>
-  readFileSync(fileURLToPath(new URL(`../fixtures/${name}`, import.meta.url)));
 
 // Four lines, so the fifth is the witness for the cap: a preview that showed
 // the whole file would be a file viewer, and a 40 MB log pasted into IRC would
@@ -51,7 +46,13 @@ const pdf = {
   mimeType: "application/pdf",
   buffer: Buffer.from("%PDF-1.4\n", "utf8"),
 };
-const mp4 = { name: "clip.mp4", mimeType: "video/mp4", buffer: fixture("tiny.mp4") };
+// VP9-in-WebM, and the choice is load-bearing rather than incidental: this row
+// is the only one in the suite that asks a REAL engine to decode, and only one
+// of the two browser builds Playwright installs has H.264 — see
+// DECODABLE_VIDEO in ../fixtures/bytes (issue 2026). The spec is about the
+// dialog previewing a video as a video, not about the mp4 path, so the
+// container is a detail and the decodability is not.
+const webm = DECODABLE_VIDEO;
 
 // A 0.1 s silent 16-bit PCM mono WAV, built here rather than committed as a
 // binary: the header is 44 bytes of documented layout and the payload is
@@ -97,7 +98,7 @@ async function asConfirmingOperator(page: Page): Promise<void> {
 test("#1964 — each staged file previews as what it actually is", async ({ page }) => {
   await asConfirmingOperator(page);
 
-  await page.locator("input[data-file-picker]").setInputFiles([png, mp4, wav, txt, pdf]);
+  await page.locator("input[data-file-picker]").setInputFiles([png, webm, wav, txt, pdf]);
 
   const confirm = page.getByTestId("confirm-modal");
   await expect(confirm).toBeVisible({ timeout: 5_000 });
@@ -119,6 +120,14 @@ test("#1964 — each staged file previews as what it actually is", async ({ page
   // engine's own schedule (a hidden page defers it), but a `media-src` refusal
   // is immediate and lands as MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED — the
   // same signature `videoPolicy.ts` documents for a blocked blob:.
+  //
+  // 🔴 That signature is SHARED, and it is why the fixture above has to be one
+  // both browser builds can decode. A `media-src` refusal and "this engine has
+  // no decoder for these bytes" are the SAME code 4, so on an H.264 fixture
+  // this poll could not tell them apart — it read as a blocked blob on the one
+  // host where the decoder is missing, and issue 2026 spent nine data points
+  // finding that out. With a codec measured present on both builds, the only
+  // remaining way to reach 4 is the refusal this assertion is here for.
   await expect
     .poll(() => video.evaluate((el) => (el as HTMLVideoElement).error?.code ?? 0), {
       timeout: 5_000,

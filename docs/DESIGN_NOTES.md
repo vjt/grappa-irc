@@ -15548,3 +15548,89 @@ column wants `NOT NULL` once the rows are cleaned, is parked as a separate
 question by the issue itself. The prod rows were deleted ahead of the code fix
 (30 of 870, backed up off-server), so this change is about the next message
 purge rather than the outage, which is already closed.
+<!-- entry #2026 -->
+
+---
+
+## 2026-09-15 — #2026: the e2e runner is not one browser, and only one of the two decodes H.264
+
+`issue1964-upload-confirm-preview.spec.ts` asserted `HTMLVideoElement.error?.code
+=== 0` on a `blob:` built from the committed `tiny.mp4`. It was **green in CI and
+deterministically red (10/10) on an Apple-silicon worker**, on the same SHA, for a
+week — six sightings across six different trees, plus a control on a detached
+`origin/main`, before anyone knew why.
+
+### What it actually is
+
+Playwright does not ship one Chromium per release; it ships a different *product*
+per platform. `DOWNLOAD_PATHS` in `playwright-core`'s registry sends
+`ubuntu22.04-x64` to a `builds/cft/<browserVersion>/…` archive — **Chrome for
+Testing**, a Google Chrome build, proprietary codecs included — and
+`ubuntu22.04-arm64` to `builds/chromium/<rev>/…`, Playwright's own Chromium build,
+with Playwright's own `// non-cft build` comment sitting on that line in
+`EXECUTABLE_PATHS`. CI runs `ubuntu-latest` (x64). An Apple-silicon host's Docker
+resolves the same multi-arch base tag `mcr.microsoft.com/playwright:v1.59.1-jammy`
+to arm64, and nothing in this repo pins `platform:`.
+
+Measured on all four binaries (same revision 1217), every control green — VP9
+positive `"probably"` on all four, an invented MIME `""` exactly on all four, the
+page seeing exactly 3613 fixture bytes:
+
+| | arm64 (`147.0.7727.0`) | amd64 (`147.0.7727.15`) |
+|---|---|---|
+| `canPlayType('video/mp4; codecs="avc1.64000A"')` | `""` | `"probably"` |
+| `canPlayType('video/mp4; codecs="avc1.42E01E"')` | `""` | `"probably"` |
+| `canPlayType('audio/mp4; codecs="mp4a.40.2"')` | `""` | `"probably"` |
+| `VideoDecoder.isConfigSupported('avc1.42001f')` | `false` | `true` |
+| the real fixture as a `blob:` | `error`, code **4** | `loadedmetadata`, code **0** |
+
+MP3, Ogg Vorbis, WAV PCM, VP8 and VP9 are `"probably"` on **both** — the split is
+H.264 and AAC and nothing else, which is why no other media spec was affected.
+
+### Three traps this cost, worth not re-buying
+
+**The `MediaError` code is ambiguous by design.** A `media-src` CSP refusal and "no
+decoder for these bytes" are the *same* code 4. The spec's own comment read 4 as the
+CSP signature, which is why the first readings chased the CSP; the trace eventually
+excluded it by measuring the guard frames.
+
+**The user agent cannot tell the two sides apart, and looks like it can.**
+`devices["Desktop Chrome"].userAgent` is a hardcoded string (it even claims
+Windows) carrying `147.0.7727.15` on both hosts. The binaries report
+`147.0.7727.0` and `147.0.7727.15`. Comparing UAs to ask "same browser?" returns a
+guaranteed false yes.
+
+**`docker image inspect` reported `Architecture=arm64` for an image pulled with
+`--platform linux/amd64`** whose contents and ELF headers are x86-64. The ELF
+header is the reading to trust.
+
+### The cure, and why this one
+
+The failing assertion's stated purpose is a `media-src` witness for a `blob:` URL,
+which is codec-independent; the spec is about the dialog previewing a video as a
+video, not about the mp4 path. So the fixture is a detail and its decodability is
+not: the video row now stages VP9-in-WebM, which both builds decode. That makes the
+oracle able to fail only for the reason it was written for, rather than weakening
+it — the opposite of raising the timeout, which would only have bought a slower
+red (the value is 4 for the whole 5 s window and never settles).
+
+`platform: linux/amd64` on the runner service was the alternative — one browser
+everywhere, at an emulation cost across the whole suite that was not measured and
+so was not adopted. A capability-conditioned skip was rejected as strictly worse
+than a fixture that simply works on both.
+
+### The part that is not about codecs
+
+This exact measurement already existed in the repo. `5ad3e8812` (2026-08-13) put it
+in a comment inside `media-link-cross-host-modal.spec.ts`, with three
+`canPlayType` values byte-identical to the ones above, and applied the WebM
+workaround to that spec alone. A spec written 26 days later walked into the same
+wall in another file, and rediscovering it cost nine data points and several
+from-scratch investigations.
+
+So the fix that matters is not the fixture swap: it is that
+`DECODABLE_VIDEO` / `OPAQUE_VIDEO` now live in `cicchetto/e2e/fixtures/bytes.ts`,
+beside the bytes every upload spec already reaches for, carrying the measurement
+and the rule — **`DECODABLE_VIDEO` when an engine must decode, `OPAQUE_VIDEO` when
+the bytes are only carried.** A fact that only one file knows is a fact the next
+author will pay for again.
