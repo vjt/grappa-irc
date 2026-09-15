@@ -15548,3 +15548,83 @@ column wants `NOT NULL` once the rows are cleaned, is parked as a separate
 question by the issue itself. The prod rows were deleted ahead of the code fix
 (30 of 870, backed up off-server), so this change is about the next message
 purge rather than the outage, which is already closed.
+<!-- entry #2201 -->
+
+---
+
+## 2026-09-15 — #2201: the read cursor a closed DM window left behind
+
+`QueryWindows.close/4` deleted the `query_windows` row and nothing else. The
+`read_cursors` row keyed on the same `(subject, network_id, channel)` survived,
+and no other path on the DM route ever removed it — the only `read_cursors`
+deletes in the tree were account deletion and the #373 NICK follow. Measured on
+prod when the issue was written: 273 of 367 DM cursors were orphans, over 65
+subjects, oldest from May and still accruing that morning.
+
+It is not a disk problem. `ReadCursor.bulk_for_subject/1` drives `FROM
+read_cursors`, so every orphan is a phantom entry in the `/me` envelope and in
+the unread machinery built on it, while the sidebar is built `FROM
+query_windows`. The client shows no window for them: state the UI can neither
+reach nor clear.
+
+The ruling («si cancella», vjt, 2026-09-15) settled the open question in the
+issue: the orphans go, and a DM window that reopens on a new message comes back
+with no read position. That is a silent reset rather than a badge storm — with
+no cursor the unread machinery contributes nothing — and a read position for a
+window the operator explicitly closed is not worth keeping.
+
+### Two deletes, one transaction, and a lock that was already taken
+
+`close/4` now wraps both deletes in `Repo.BusyRetry.run(fn ->
+Repo.immediate_transaction(fn -> … end) end)` — `Grappa.NickMigration`'s
+composition: retry OUTSIDE, transaction INSIDE, broadcast NEITHER. The
+`query_windows_list` broadcast stays after both, so it remains a truthful
+"close fully applied" barrier; inside the transaction it could announce a close
+that then rolled back, and inside the retry it could fire twice.
+
+The #1378 objection to an unconditional `BEGIN IMMEDIATE` — that it takes
+SQLite's single write lock to do nothing — does not apply here: the window
+delete is a write on every call, so the lock was already being taken. The
+transaction adds no lock, only atomicity. Honest about what it buys today:
+both statements are `delete_all`, neither can fail in the middle, so no test
+can kill a mutant that removes `immediate_transaction/1`. It is here for the
+same prospective reason `NickMigration` documents — the sibling set grows, and
+the next member is under no obligation to be total.
+
+The cursor delete lives in `ReadCursor.delete_for_dm/3`, not inline: the
+`Cursor` schema is internal to that context, and the fold predicate belongs
+next to `rename_dm_peer/4`, which already matches a DM cursor the same way. It
+carries no `BusyRetry` of its own — a nested retry would sleep holding the open
+transaction's connection.
+
+### 🔴 `$server` is nick-shaped, and the ruling's predicate would have eaten it
+
+The ruling scoped the data migration as "DM cursors (channel not starting with
+`#&!+`) with no `query_windows` row". Taken literally that deletes the read
+position of every subject's SERVER window. `$server` is a Grappa-internal
+pseudo-channel, not an IRC target: `GrappaWeb.Validation.validate_target_name/1`
+admits it explicitly, `POST /read-cursor` therefore accepts it, and the session
+writes server NOTICEs and MOTD lines there. It sits outside the channel sigils,
+so the inverse-sigil guard classifies it as a DM; and nobody opens a query with
+it, so it can never have a `query_windows` row. Both halves of the orphan
+predicate match it, permanently.
+
+The migration excludes the `$` prefix rather than the literal name — `$` is
+outside the RFC 2812 nick charset, so no real DM key can begin with it and a
+future synthetic is covered by construction. This is a MEASURED objection, not
+a cautious one: dropping that clause turns the exclusion test red on its own
+and nothing else (mutant run, 2026-09-15), which is the evidence that the
+literal specification deletes live rows.
+
+The `close/4` path needed no such guard, and this was measured rather than
+assumed: its one door (`close_query_window`) validates through
+`Identifier.valid_nick?/1`, whose regex requires ``[A-Za-z\[\]\\`_^{|}]`` as
+the first byte, so `$server` cannot reach it. The migration has no such door, which
+is exactly why the two predicates differ.
+
+The window match FOLDS (`lower()` both sides) for the second way the delete
+could take a live row: `target_nick` is stored case-preserving (#121/#525), so
+a literal `=` reads `VJT` as "no window" for a cursor keyed `vjt`. The subject
+comparison uses the `COALESCE(col,'')` XOR shape of the sibling read_cursors
+migration, so another subject's window cannot rescue your cursor. Each of the
+three clauses is pinned by a test that fails when only that clause is removed.

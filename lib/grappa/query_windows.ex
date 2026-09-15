@@ -81,6 +81,8 @@ defmodule Grappa.QueryWindows do
   `Grappa.QueryWindows` is a standalone context. Its only deps are:
     * `Grappa.Repo` — persistence.
     * `Grappa.IRC` — `Identifier.nick_fold/1` (ASCII DM-target key).
+    * `Grappa.ReadCursor` — `delete_for_dm/3`, the window's sibling row
+      (issue 2201): a closed window must not leave a cursor behind.
     * `Grappa.Subject` — XOR FK helper.
     * `Grappa.Accounts` (via `User` association — FK reference only).
     * `Grappa.PubSub` — `Topic.user/1` for the `query_windows_list` broadcast.
@@ -103,7 +105,17 @@ defmodule Grappa.QueryWindows do
     # those shapes is a reference the checker resolves (#1399, #1398). The old
     # cycle the waiver avoided, `Session → QueryWindows → Networks → Session`,
     # cannot form through a leaf that depends only on `Grappa.IRC`.
-    deps: [Grappa.IRC, Grappa.PubSub, Grappa.Repo, Grappa.Subject, Grappa.Visitors.Visitor],
+    deps: [
+      Grappa.IRC,
+      Grappa.PubSub,
+      # issue 2201 — `close/4` deletes the window's sibling read cursor in the
+      # same transaction. A real edge, and an acyclic one: `Grappa.ReadCursor`
+      # deps `Repo`/`Scrollback`/`Subject` and never reaches back here.
+      Grappa.ReadCursor,
+      Grappa.Repo,
+      Grappa.Subject,
+      Grappa.Visitors.Visitor
+    ],
     exports: [Window, Wire]
 
   import Ecto.Query
@@ -115,6 +127,7 @@ defmodule Grappa.QueryWindows do
     PubSub.Topic,
     QueryWindows.Window,
     QueryWindows.Wire,
+    ReadCursor,
     Repo,
     Subject,
     Visitors.Visitor
@@ -203,9 +216,15 @@ defmodule Grappa.QueryWindows do
   Case-insensitive: `close(s, n, "FooBar", label)` deletes a "foobar"
   window. Returns `:ok` whether or not a row was deleted (idempotent).
 
-  After the DB delete, broadcasts the full current window list on
+  **Deletes the sibling `read_cursors` row too (issue 2201)**, in the same
+  transaction and on the same fold, so a closed window leaves nothing keyed
+  to it. Both deletes are idempotent, so closing a window that has no cursor
+  — or no window at all — is still `:ok`.
+
+  After BOTH deletes, broadcasts the full current window list on
   `Topic.user(subject_label)` so connected cicchetto clients can
-  update their state.
+  update their state. The broadcast stays outside the transaction: inside,
+  it could announce a close that then rolled back.
   """
   @spec close(Subject.t(), integer(), String.t(), String.t()) :: :ok | {:error, :db_unavailable}
   def close({_, _} = subject, network_id, target_nick, subject_label)
@@ -214,18 +233,28 @@ defmodule Grappa.QueryWindows do
 
     # #523 — ride out a transient SQLITE_BUSY on the window delete; sustained
     # saturation degrades to `{:error, :db_unavailable}` (a WS "close_failed"
-    # reply) rather than crashing the channel with a raised busy. Wrap the
-    # delete in an `{:ok, _}` so the op honours the `BusyRetry.run/1` contract.
+    # reply) rather than crashing the channel with a raised busy.
+    #
+    # issue 2201 — the read cursor is the window's SIBLING and goes with it.
+    # Composition is `Grappa.NickMigration`'s: retry OUTSIDE, transaction
+    # INSIDE, broadcast NEITHER. The transaction adds no lock this path did
+    # not already take (the window delete is a write either way), and it is
+    # what keeps a crash between the two deletes from leaving exactly the
+    # orphan this change exists to stop.
     result =
       Repo.BusyRetry.run(fn ->
-        {count, _} =
-          Window
-          |> Subject.subject_where(subject)
-          |> where([w], w.network_id == ^network_id)
-          |> where([w], Identifier.nick_fold(w.target_nick) == ^folded)
-          |> Repo.delete_all()
+        Repo.immediate_transaction(fn ->
+          {count, _} =
+            Window
+            |> Subject.subject_where(subject)
+            |> where([w], w.network_id == ^network_id)
+            |> where([w], Identifier.nick_fold(w.target_nick) == ^folded)
+            |> Repo.delete_all()
 
-        {:ok, count}
+          ReadCursor.delete_for_dm(subject, network_id, target_nick)
+
+          count
+        end)
       end)
 
     case result do
