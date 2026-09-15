@@ -24,6 +24,12 @@
 #      reported a remembered state would be one more thing that can go
 #      stale.
 #
+# ...and, since issue 2214, a fourth: the number it reads must be the
+# BOUND PANE'S OWN. A watch can be alive, bound to the right pane and
+# reading it fine, and still act on somebody else's percentage — which
+# is the same failure dressed differently, because it too ends in a live
+# pid that never fires.
+#
 # tmux is stubbed on PATH: the pane table lives in $PANES (TAB-separated
 # `%id<TAB>title`) and each pane's screen in $STATE/cap-<n>, so a case can
 # rename a pane, delete it, or change the rendered context percentage
@@ -140,6 +146,32 @@ kill_pane() {
 # qualifying, so the loop logs a progress line on every tick.
 render_idle_at() {
     printf 'some scrollback\n🧠 %s%% context left\n❯ \n' "$2" > "$STATE/cap-$(printf '%s' "$1" | tr -d '%')"
+}
+
+# The same, but with OTHER panes' status lines sitting in the scrollback
+# above it (issue 2214).
+#
+# This is the orchestrator pane's ordinary shape, not a contrived one: it
+# samples its workers by capturing THEIR panes, so their status lines land
+# in ITS buffer as ordinary command output. They are scrollback, so they
+# are ABOVE the live status block the UI keeps pinned at the bottom.
+# Measured on 2026-09-15: eight foreign markers in 200 lines of the
+# orchestrator pane, and the watch reported one of them (7%) while the
+# pane itself read 39% — one point under its own firing threshold.
+#
+# A pane with a CLEAN scrollback does not measure this: it is exactly the
+# case in which the broken parse is right by accident.
+render_idle_at_below_foreign() {
+    local capfile; capfile="$STATE/cap-$(printf '%s' "$1" | tr -d '%')"
+    {
+        printf '$ tmux capture-pane -t %%16 -p | tail -3\n'
+        printf '🧠 7%% context left\n'
+        printf '$ tmux capture-pane -t %%28 -p | tail -3\n'
+        printf '🧠 90%% context left\n'
+        printf 'some scrollback\n'
+        printf '🧠 %s%% context left\n' "$2"
+        printf '❯ \n'
+    } > "$capfile"
 }
 
 count_in_log() { grep -c "$1" "$LOGFILE" 2>/dev/null || true; }
@@ -281,6 +313,44 @@ wait_ticks() { sleep "$1"; }
     wait_ticks 3
 
     [ "$(count_in_log 'RECOVERED')" -eq 1 ]
+}
+
+# --- the defect: a FOREIGN status line in the scrollback (issue 2214) ---------
+
+@test "the loop reads the BOUND pane's own context, not a foreign one above it" {
+    add_pane '%3' "$TITLE — orchestrator"
+    render_idle_at_below_foreign '%3' 55
+
+    "$WATCH" start "$TITLE"
+    wait_ticks 3
+
+    # The defended assertion: the number the loop ACTS on is the pane's.
+    # Reading the first marker in the buffer picks 7%, which is under the
+    # threshold, so the loop goes quiet and logs nothing at all — a
+    # watchdog that never fires is indistinguishable from a calm session.
+    [ "$(count_in_log 'ctx=55%')" -ge 1 ]
+    # 90% is ABOVE the threshold, so these two arms cannot be satisfied by
+    # a loop that merely stayed silent: a parse that picked either foreign
+    # marker would have logged it.
+    [ "$(count_in_log 'ctx=90%')" -eq 0 ]
+    [ "$(count_in_log 'ctx=7%')" -eq 0 ]
+}
+
+@test "status reports the BOUND pane's own context, not a foreign one above it" {
+    add_pane '%3' "$TITLE — orchestrator"
+    render_idle_at_below_foreign '%3' 55
+
+    "$WATCH" start "$TITLE"
+
+    run "$WATCH" status "$TITLE"
+
+    [ "$status" -eq 0 ]
+    # `watching (ctx=NN%)` is printed by status ALONE — matching a bare
+    # `ctx=55%` would also be satisfied by the log tail status appends,
+    # which is the loop's observation and not this one.
+    [[ "$output" == *"watching (ctx=55%)"* ]]
+    refute grep -qF 'watching (ctx=7%)' <<<"$output"
+    refute grep -qF 'watching (ctx=90%)' <<<"$output"
 }
 
 # --- status ------------------------------------------------------------------
