@@ -744,6 +744,43 @@ defmodule Grappa.ReadCursor do
     end
   end
 
+  @doc """
+  issue 2201 — deletes the DM read cursor for `target_nick` on
+  `(subject, network_id)`, and returns how many rows went.
+
+  The sibling half of `QueryWindows.close/4`: closing a query window used to
+  delete the `query_windows` row and leave this one behind, and nothing else
+  on the DM path ever removed it. An orphan is not merely disk — every read
+  of `bulk_for_subject/1` drives `FROM read_cursors`, so a cursor with no
+  window is a phantom entry in the `/me` envelope and in the unread
+  machinery, for a window the sidebar (built `FROM query_windows`) cannot
+  show and the operator therefore cannot clear.
+
+  Matched fold-wise (`Identifier.nick_fold/1`) on the SAME predicate the
+  window delete uses, so a cursor stored at a different casing goes with its
+  window rather than outliving it. Nick-shaped input only — a channel key
+  folds to itself and would match, but no caller has one: the sole caller
+  closes a DM.
+
+  **No `BusyRetry.run/1` here, deliberately.** This runs INSIDE the caller's
+  `Repo.immediate_transaction/1`, and a nested retry would sleep holding the
+  open transaction's connection (the `Grappa.NickMigration` composition rule:
+  retry outside, transaction inside).
+  """
+  @spec delete_for_dm(subject(), integer(), String.t()) :: non_neg_integer()
+  def delete_for_dm(subject, network_id, target_nick)
+      when is_integer(network_id) and is_binary(target_nick) do
+    folded = Identifier.canonical_target(target_nick)
+
+    {count, _} =
+      Cursor
+      |> Subject.subject_where(subject)
+      |> where([c], c.network_id == ^network_id and Identifier.nick_fold(c.channel) == ^folded)
+      |> Repo.delete_all()
+
+    count
+  end
+
   @spec cursor_folds_to?(subject(), integer(), String.t()) :: boolean()
   defp cursor_folds_to?(subject, network_id, folded) do
     Cursor

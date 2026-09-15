@@ -15548,3 +15548,154 @@ column wants `NOT NULL` once the rows are cleaned, is parked as a separate
 question by the issue itself. The prod rows were deleted ahead of the code fix
 (30 of 870, backed up off-server), so this change is about the next message
 purge rather than the outage, which is already closed.
+<!-- entry #2201 -->
+
+---
+
+## 2026-09-15 — #2201: the read cursor a closed DM window left behind
+
+`QueryWindows.close/4` deleted the `query_windows` row and nothing else. The
+`read_cursors` row keyed on the same `(subject, network_id, channel)` survived,
+and no other path on the DM route ever removed it — the only `read_cursors`
+deletes in the tree were account deletion and the #373 NICK follow. Measured on
+prod when the issue was written: 273 of 367 DM cursors were orphans, over 65
+subjects, oldest from May and still accruing that morning.
+
+It is not a disk problem. `ReadCursor.bulk_for_subject/1` drives `FROM
+read_cursors`, so every orphan is a phantom entry in the `/me` envelope and in
+the unread machinery built on it, while the sidebar is built `FROM
+query_windows`. The client shows no window for them: state the UI can neither
+reach nor clear.
+
+The ruling («si cancella», vjt, 2026-09-15) settled the open question in the
+issue: the orphans go, and a DM window that reopens on a new message comes back
+with no read position. That is a silent reset rather than a badge storm — with
+no cursor the unread machinery contributes nothing — and a read position for a
+window the operator explicitly closed is not worth keeping.
+
+### Two deletes, one transaction, and a lock that was already taken
+
+`close/4` now wraps both deletes in `Repo.BusyRetry.run(fn ->
+Repo.immediate_transaction(fn -> … end) end)` — `Grappa.NickMigration`'s
+composition: retry OUTSIDE, transaction INSIDE, broadcast NEITHER. The
+`query_windows_list` broadcast stays after both, so it remains a truthful
+"close fully applied" barrier; inside the transaction it could announce a close
+that then rolled back, and inside the retry it could fire twice.
+
+The #1378 objection to an unconditional `BEGIN IMMEDIATE` — that it takes
+SQLite's single write lock to do nothing — does not apply here: the window
+delete is a write on every call, so the lock was already being taken. The
+transaction adds no lock, only atomicity. Honest about what it buys today:
+both statements are `delete_all`, neither can fail in the middle, so no test
+can kill a mutant that removes `immediate_transaction/1`. It is here for the
+same prospective reason `NickMigration` documents — the sibling set grows, and
+the next member is under no obligation to be total.
+
+The cursor delete lives in `ReadCursor.delete_for_dm/3`, not inline: the
+`Cursor` schema is internal to that context, and the fold predicate belongs
+next to `rename_dm_peer/4`, which already matches a DM cursor the same way. It
+carries no `BusyRetry` of its own — a nested retry would sleep holding the open
+transaction's connection.
+
+### 🔴 `$server` is nick-shaped, and the ruling's predicate would have eaten it
+
+The ruling scoped the data migration as "DM cursors (channel not starting with
+`#&!+`) with no `query_windows` row". Taken literally that deletes the read
+position of every subject's SERVER window. `$server` is a Grappa-internal
+pseudo-channel, not an IRC target: `GrappaWeb.Validation.validate_target_name/1`
+admits it explicitly, `POST /read-cursor` therefore accepts it, and the session
+writes server NOTICEs and MOTD lines there. It sits outside the channel sigils,
+so the inverse-sigil guard classifies it as a DM; and nobody opens a query with
+it, so it can never have a `query_windows` row. Both halves of the orphan
+predicate match it, permanently.
+
+The migration excludes the `$` prefix rather than the literal name — `$` is
+outside the RFC 2812 nick charset, so no real DM key can begin with it and a
+future synthetic is covered by construction. This is a MEASURED objection, not
+a cautious one: dropping that clause turns the exclusion test red on its own
+and nothing else (mutant run, 2026-09-15), which is the evidence that the
+literal specification deletes live rows.
+
+The `close/4` path needed no such guard, and this was measured rather than
+assumed: its one door (`close_query_window`) validates through
+`Identifier.valid_nick?/1`, whose regex requires ``[A-Za-z\[\]\\`_^{|}]`` as
+the first byte, so `$server` cannot reach it. The migration has no such door, which
+is exactly why the two predicates differ.
+
+The window match FOLDS (`lower()` both sides) for the second way the delete
+could take a live row: `target_nick` is stored case-preserving (#121/#525), so
+a literal `=` reads `VJT` as "no window" for a cursor keyed `vjt`. The subject
+comparison uses the `COALESCE(col,'')` XOR shape of the sibling read_cursors
+migration, so another subject's window cannot rescue your cursor. Each of the
+three clauses is pinned by a test that fails when only that clause is removed.
+<!-- entry #2201b -->
+
+---
+
+## 2026-09-15 — #2201b: reversing the #532 B expectation, on a ruling
+
+The entry above made `QueryWindows.close/4` delete the sibling `read_cursors`
+row. That turned the second test in
+`cicchetto/e2e/tests/issue532-stale-unread-badges.spec.ts` RED in PR #2206 —
+and the red was CORRECT, because the two statements it sat between cannot both
+be true.
+
+`#532 B` shipped asserting *"a closed DM window holding an unread message shows
+the message badge in Archive"*. But `ReadCursor.bulk_unread_split/3` builds its
+query `from(rc in Cursor, ...)` and joins `[rc, _, m]` off it: **the cursor row
+IS the row that produces a window in the unread split.** No cursor ⇒ no join ⇒
+no window ⇒ no badge. So "closing a DM deletes its cursor" and "a closed DM
+keeps its Archive unread badge" are the same row seen from two ends.
+
+**vjt ruled on 2026-09-15 — issue #2201, comment `5676783756` (07:58:02Z):
+option (a), the cursor delete STAYS and the TEST is the thing that changes.**
+Verbatim: *"closing a DM zeroes its unread. You closed the window; it does not
+get to pull itself back into the Archive with a badge."* The same comment fixes
+the two boundaries of the change: keep the delete inside `close/4`'s
+transaction, keep the `$server` exclusion #2206 measured, and do not widen the
+predicate.
+
+### 🔴 This is a REVERSAL, and the next reader is why it is written down
+
+An assertion that read `toHaveText("1")` now reads `toHaveCount(0)` on the same
+locator. That is exactly the shape of a "regression" someone cures by putting
+the old number back, so, plainly: **the old expectation was not a bug this
+change papers over — it was correct for the code that predated #2201 and is
+false for the code that follows it.** The spec header carries the same warning
+at the site and points here.
+
+### Not a weakened assert — the new behaviour is asserted POSITIVELY, twice
+
+The house rule is that no assert gets softened to turn a red green, so the
+replacement does not delete the old check or blur it into a generic
+`not.toBeVisible()`. It pins the new behaviour at two levels:
+
+- the CAUSE, server-side — `getReadCursor` (the authoritative `/me` envelope,
+  `ReadCursor.bulk_for_subject/1`) polls to `null` for the peer after the
+  close, in the same test that proved the cursor PRESENT
+  (`toBeGreaterThan(0)`) a few lines earlier;
+- the SURFACE, browser-side — `toHaveCount(0)` on the exact
+  `.sidebar-msg-unread` the sidebar draws, scoped to
+  `archive-unread-{slug}-{target}` for this peer, so the badge reappearing
+  with ANY number fails and not merely a "1". It is guarded by the
+  pre-existing `.archive-modal-row` count, so "no badge" cannot be satisfied
+  by an Archive that lost the peer altogether — #2201 deletes the cursor,
+  never the scrollback.
+
+### B's render path is still pinned — by a channel, not a DM
+
+Worth stating, because the obvious objection to the reversal is that it leaves
+`ArchiveModal`'s badge rendering untested. It does not. `close/4` is the only
+cursor delete on this route and it is DM-only, so an archived CHANNEL keeps its
+cursor: `issue2109-archive-group-unread-badge.spec.ts` step 4 expands the group
+and reads the very same `.sidebar-msg-unread` inside the very same
+`archive-unread-{slug}-{target}` testid, asserting it carries exactly the
+number the group header gained. The row badge is covered; what #532 B gives up
+is the DM as its vehicle.
+
+### The accepted cost, restated where it is now observable
+
+A DM window that reopens on a new message comes back with no read position.
+That is a silent reset rather than a badge storm — with no cursor the unread
+machinery contributes nothing — and the reversed test is now the thing that
+says so out loud, in a real browser, off the cold `/me` seed.

@@ -29,6 +29,25 @@ defmodule Grappa.QueryWindowsTest do
   alias Grappa.PubSub.Topic
   alias Grappa.QueryWindows
   alias Grappa.QueryWindows.Window
+  alias Grappa.{ReadCursor, ScrollbackHelpers}
+
+  # issue 2201 — a read cursor needs a real message to point at
+  # (`ReadCursor.set/4` validates `message_belongs?`), so the sibling-cursor
+  # tests seed one row in the window they then close.
+  defp insert_message(user_id, network_id, channel, server_time) do
+    {:ok, message} =
+      ScrollbackHelpers.insert(%{
+        user_id: user_id,
+        network_id: network_id,
+        channel: channel,
+        server_time: server_time,
+        kind: :privmsg,
+        sender: "peer",
+        body: "msg"
+      })
+
+    message
+  end
 
   # ---------------------------------------------------------------------------
   # open/4
@@ -284,6 +303,85 @@ defmodule Grappa.QueryWindowsTest do
                      1_000
 
       assert windows == %{}
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # close/4 — the sibling read cursor (issue 2201)
+  # ---------------------------------------------------------------------------
+
+  describe "close/4 sibling read cursor" do
+    test "deletes the read_cursors row keyed on the same DM target" do
+      user = user_fixture()
+      net = network_fixture()
+      msg = insert_message(user.id, net.id, "vjt", 1)
+
+      {:ok, _} = QueryWindows.open({:user, user.id}, net.id, "vjt", user.name)
+      {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "vjt", msg.id)
+      refute is_nil(ReadCursor.get({:user, user.id}, net.id, "vjt"))
+
+      assert :ok = QueryWindows.close({:user, user.id}, net.id, "vjt", user.name)
+
+      assert nil == ReadCursor.get({:user, user.id}, net.id, "vjt")
+    end
+
+    test "deletes a case-different cursor: closing 'FooBar' drops the 'foobar' cursor" do
+      user = user_fixture()
+      net = network_fixture()
+      msg = insert_message(user.id, net.id, "foobar", 1)
+
+      {:ok, _} = QueryWindows.open({:user, user.id}, net.id, "foobar", user.name)
+      {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "foobar", msg.id)
+
+      assert :ok = QueryWindows.close({:user, user.id}, net.id, "FooBar", user.name)
+
+      assert nil == ReadCursor.get({:user, user.id}, net.id, "foobar")
+    end
+
+    test "returns :ok when the closed window has no cursor (idempotent)" do
+      user = user_fixture()
+      net = network_fixture()
+
+      {:ok, _} = QueryWindows.open({:user, user.id}, net.id, "vjt", user.name)
+
+      assert :ok = QueryWindows.close({:user, user.id}, net.id, "vjt", user.name)
+      assert nil == ReadCursor.get({:user, user.id}, net.id, "vjt")
+    end
+
+    test "leaves a CHANNEL cursor untouched" do
+      user = user_fixture()
+      net = network_fixture()
+      chan_msg = insert_message(user.id, net.id, "#sniffo", 1)
+      dm_msg = insert_message(user.id, net.id, "vjt", 2)
+
+      {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "#sniffo", chan_msg.id)
+      {:ok, _} = QueryWindows.open({:user, user.id}, net.id, "vjt", user.name)
+      {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "vjt", dm_msg.id)
+
+      assert :ok = QueryWindows.close({:user, user.id}, net.id, "vjt", user.name)
+
+      # The DM cursor went; the channel cursor is not this path's business.
+      assert nil == ReadCursor.get({:user, user.id}, net.id, "vjt")
+      assert %{last_read_message_id: id} = ReadCursor.get({:user, user.id}, net.id, "#sniffo")
+      assert id == chan_msg.id
+    end
+
+    test "leaves another peer's DM cursor untouched" do
+      user = user_fixture()
+      net = network_fixture()
+      alice_msg = insert_message(user.id, net.id, "alice", 1)
+      bob_msg = insert_message(user.id, net.id, "bob", 2)
+
+      {:ok, _} = QueryWindows.open({:user, user.id}, net.id, "alice", user.name)
+      {:ok, _} = QueryWindows.open({:user, user.id}, net.id, "bob", user.name)
+      {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "alice", alice_msg.id)
+      {:ok, _} = ReadCursor.set({:user, user.id}, net.id, "bob", bob_msg.id)
+
+      assert :ok = QueryWindows.close({:user, user.id}, net.id, "alice", user.name)
+
+      assert nil == ReadCursor.get({:user, user.id}, net.id, "alice")
+      assert %{last_read_message_id: id} = ReadCursor.get({:user, user.id}, net.id, "bob")
+      assert id == bob_msg.id
     end
   end
 
