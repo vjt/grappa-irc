@@ -72,6 +72,8 @@ defmodule Grappa.ServerSettings.Wire do
           document_per_file_cap_bytes: pos_integer(),
           audio_per_file_cap_bytes: pos_integer(),
           global_cap_bytes: pos_integer(),
+          per_user_cap_bytes: pos_integer(),
+          per_visitor_cap_bytes: pos_integer(),
           video_max_duration_seconds: pos_integer()
         }
 
@@ -98,6 +100,8 @@ defmodule Grappa.ServerSettings.Wire do
           document_per_file_cap_bytes: pos_integer(),
           audio_per_file_cap_bytes: pos_integer(),
           global_cap_bytes: pos_integer(),
+          per_user_cap_bytes: pos_integer(),
+          per_visitor_cap_bytes: pos_integer(),
           video_max_duration_seconds: pos_integer()
         }) :: upload_view()
   def upload_view(%{} = upload) do
@@ -108,6 +112,12 @@ defmodule Grappa.ServerSettings.Wire do
       document_per_file_cap_bytes: upload.document_per_file_cap_bytes,
       audio_per_file_cap_bytes: upload.audio_per_file_cap_bytes,
       global_cap_bytes: upload.global_cap_bytes,
+      # issue 2175 — the per-subject ceilings. Two keys, never one
+      # shared number; the admin GET reads back exactly what the admin
+      # PUT, which is the only reason they are on the wire at all (cic
+      # cannot act on them: the refusal reuses the global cap's 507).
+      per_user_cap_bytes: upload.per_user_cap_bytes,
+      per_visitor_cap_bytes: upload.per_visitor_cap_bytes,
       # #201 — the video duration ceiling cic enforces client-side. A
       # duration, not a byte count: it rides the upload subtree because
       # that is where every other upload policy knob already lives.

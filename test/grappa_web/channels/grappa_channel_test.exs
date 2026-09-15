@@ -1233,6 +1233,8 @@ defmodule GrappaWeb.GrappaChannelTest do
           document_per_file_cap_bytes: document_cap,
           audio_per_file_cap_bytes: audio_cap,
           global_cap_bytes: global_cap_bytes,
+          per_user_cap_bytes: per_user_cap,
+          per_visitor_cap_bytes: per_visitor_cap,
           video_max_duration_seconds: video_max_duration
         }
       })
@@ -1243,6 +1245,9 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert is_integer(document_cap) and document_cap > 0
       assert is_integer(audio_cap) and audio_cap > 0
       assert is_integer(global_cap_bytes) and global_cap_bytes > 0
+      # issue 2175 — the per-subject ceilings ride the same snapshot.
+      assert is_integer(per_user_cap) and per_user_cap > 0
+      assert is_integer(per_visitor_cap) and per_visitor_cap > 0
       assert is_integer(video_max_duration) and video_max_duration > 0
     end
 

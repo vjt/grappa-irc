@@ -52,6 +52,8 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
       assert upload["document_per_file_cap_bytes"] == 10 * 1024 * 1024
       assert upload["audio_per_file_cap_bytes"] == 25 * 1024 * 1024
       assert upload["global_cap_bytes"] == 10 * 1024 * 1024 * 1024
+      assert upload["per_user_cap_bytes"] == 1024 * 1024 * 1024
+      assert upload["per_visitor_cap_bytes"] == 100 * 1024 * 1024
       assert upload["video_max_duration_seconds"] == 120
     end
   end
@@ -144,6 +146,43 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
                json_response(conn, 200)
     end
 
+    test "updates per_user_cap_bytes", %{conn: conn, session: session} do
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{"upload" => %{"per_user_cap_bytes" => 2 * 1024 * 1024 * 1024}})
+
+      assert %{"settings" => %{"upload" => %{"per_user_cap_bytes" => 2_147_483_648}}} =
+               json_response(conn, 200)
+
+      assert ServerSettings.get_upload_per_user_cap_bytes() == 2 * 1024 * 1024 * 1024
+    end
+
+    test "updates per_visitor_cap_bytes", %{conn: conn, session: session} do
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{"upload" => %{"per_visitor_cap_bytes" => 500 * 1024 * 1024}})
+
+      assert %{"settings" => %{"upload" => %{"per_visitor_cap_bytes" => 524_288_000}}} =
+               json_response(conn, 200)
+
+      assert ServerSettings.get_upload_per_visitor_cap_bytes() == 500 * 1024 * 1024
+    end
+
+    test "the two per-subject caps move INDEPENDENTLY", %{conn: conn, session: session} do
+      # vjt's ruling is two ceilings, not one shared number. Writing the
+      # user key must leave the visitor key where it was — this is the
+      # assert that fails if both clauses are ever pointed at one setting.
+      conn
+      |> put_bearer(session.id)
+      |> put("/admin/settings", %{"upload" => %{"per_user_cap_bytes" => 12_345}})
+      |> json_response(200)
+
+      assert ServerSettings.get_upload_per_user_cap_bytes() == 12_345
+      assert ServerSettings.get_upload_per_visitor_cap_bytes() == 100 * 1024 * 1024
+    end
+
     test "ignores empty body", %{conn: conn, session: session} do
       conn = conn |> put_bearer(session.id) |> put("/admin/settings", %{})
       assert %{"settings" => _} = json_response(conn, 200)
@@ -215,6 +254,36 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
       assert json_response(conn, 422) == %{
                "error" => "invalid_setting",
                "field" => "upload.image_per_file_cap_bytes"
+             }
+    end
+
+    test "422 invalid_setting for non-positive per_user_cap_bytes", %{
+      conn: conn,
+      session: session
+    } do
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{"upload" => %{"per_user_cap_bytes" => 0}})
+
+      assert json_response(conn, 422) == %{
+               "error" => "invalid_setting",
+               "field" => "upload.per_user_cap_bytes"
+             }
+    end
+
+    test "422 invalid_setting for a non-integer per_visitor_cap_bytes", %{
+      conn: conn,
+      session: session
+    } do
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{"upload" => %{"per_visitor_cap_bytes" => "100MB"}})
+
+      assert json_response(conn, 422) == %{
+               "error" => "invalid_setting",
+               "field" => "upload.per_visitor_cap_bytes"
              }
     end
 

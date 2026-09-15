@@ -143,6 +143,80 @@ defmodule Grappa.ServerSettingsTest do
     end
   end
 
+  describe "per-subject upload caps (issue 2175)" do
+    test "get_upload_per_user_cap_bytes/0 defaults to 1 GiB" do
+      assert ServerSettings.get_upload_per_user_cap_bytes() == 1024 * 1024 * 1024
+    end
+
+    test "get_upload_per_visitor_cap_bytes/0 defaults to 100 MiB" do
+      assert ServerSettings.get_upload_per_visitor_cap_bytes() == 100 * 1024 * 1024
+    end
+
+    test "the two caps are SEPARATE keys, not one shared ceiling" do
+      # vjt's ruling (2026-09-14): a user ceiling and a visitor ceiling,
+      # never a single per-subject number. Moving one must not move the
+      # other — this is the assert that fails if they ever collapse into
+      # one setting key.
+      assert :ok = ServerSettings.put_upload_per_user_cap_bytes(777)
+
+      assert ServerSettings.get_upload_per_user_cap_bytes() == 777
+      assert ServerSettings.get_upload_per_visitor_cap_bytes() == 100 * 1024 * 1024
+    end
+
+    test "put_upload_per_user_cap_bytes/1 accepts a positive integer" do
+      assert :ok = ServerSettings.put_upload_per_user_cap_bytes(2 * 1024 * 1024 * 1024)
+      assert ServerSettings.get_upload_per_user_cap_bytes() == 2 * 1024 * 1024 * 1024
+    end
+
+    test "put_upload_per_user_cap_bytes/1 rejects zero" do
+      assert {:error, :invalid_value} = ServerSettings.put_upload_per_user_cap_bytes(0)
+    end
+
+    test "put_upload_per_user_cap_bytes/1 rejects negative" do
+      assert {:error, :invalid_value} = ServerSettings.put_upload_per_user_cap_bytes(-1)
+    end
+
+    test "put_upload_per_user_cap_bytes/1 rejects a non-integer" do
+      assert {:error, :invalid_value} = ServerSettings.put_upload_per_user_cap_bytes("1024")
+    end
+
+    test "put_upload_per_visitor_cap_bytes/1 accepts a positive integer" do
+      assert :ok = ServerSettings.put_upload_per_visitor_cap_bytes(500 * 1024 * 1024)
+      assert ServerSettings.get_upload_per_visitor_cap_bytes() == 500 * 1024 * 1024
+    end
+
+    test "put_upload_per_visitor_cap_bytes/1 rejects zero" do
+      assert {:error, :invalid_value} = ServerSettings.put_upload_per_visitor_cap_bytes(0)
+    end
+
+    test "put_upload_per_visitor_cap_bytes/1 rejects negative" do
+      assert {:error, :invalid_value} = ServerSettings.put_upload_per_visitor_cap_bytes(-1)
+    end
+
+    test "put_upload_per_visitor_cap_bytes/1 rejects a non-integer" do
+      assert {:error, :invalid_value} = ServerSettings.put_upload_per_visitor_cap_bytes("1024")
+    end
+
+    test "a stored non-positive value falls back to the default" do
+      Repo.insert!(%Setting{key: "upload.per_user_cap_bytes", value: "0"})
+      assert ServerSettings.get_upload_per_user_cap_bytes() == 1024 * 1024 * 1024
+    end
+
+    test "upload_caps/0 collects the three ceilings the admission door needs" do
+      assert :ok = ServerSettings.put_upload_global_cap_bytes(300)
+      assert :ok = ServerSettings.put_upload_per_user_cap_bytes(200)
+      assert :ok = ServerSettings.put_upload_per_visitor_cap_bytes(100)
+
+      assert ServerSettings.upload_caps() == %{global: 300, user: 200, visitor: 100}
+    end
+
+    test "public_view/0 carries both caps so the admin GET can read back what it PUT" do
+      view = ServerSettings.public_view()
+      assert view.upload.per_user_cap_bytes == 1024 * 1024 * 1024
+      assert view.upload.per_visitor_cap_bytes == 100 * 1024 * 1024
+    end
+  end
+
   describe "put_upload_video_max_duration_seconds/1 (#201)" do
     test "accepts positive integer" do
       assert :ok = ServerSettings.put_upload_video_max_duration_seconds(45)

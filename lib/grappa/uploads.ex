@@ -27,8 +27,11 @@ defmodule Grappa.Uploads do
     * `get_by_slug/1` — slug → `{:ok, %Upload{}} | {:error, :not_found}`.
       Respects soft-delete + expiry: an expired or soft-deleted row
       reads as `:not_found` so the public GET surface has no oracle.
-    * `live_bytes_sum/0` — `SUM(bytes) WHERE deleted_at IS NULL`
-      for global-cap pre-check.
+    * `live_bytes_sum/0` — `SUM(bytes) WHERE deleted_at IS NULL`,
+      the instance-wide total the admin surface reports.
+    * `check_caps/3` — the admission check every write door calls:
+      the global disk budget AND the caller's own per-subject quota
+      (issue 2175), both refused as `:insufficient_storage`.
     * `list_expired/0` — Reaper enumeration: rows with
       `expires_at <= now()` AND `deleted_at IS NULL`.
     * `soft_delete/2` — flips `deleted_at`. The caller MUST `File.rm/1`
@@ -415,20 +418,80 @@ defmodule Grappa.Uploads do
     end
   end
 
-  @doc """
-  Helper for the controller boundary — checks whether accepting
-  `incoming_bytes` would exceed `global_cap_bytes`. Returns
-  `:ok` or `{:error, :insufficient_storage}`.
+  @typedoc """
+  The ceilings an upload write must clear, as
+  `Grappa.ServerSettings.upload_caps/0` assembles them.
+
+  `:user` and `:visitor` are SEPARATE ceilings (vjt's ruling, issue
+  2175) — never one shared per-subject number. A visitor is disposable
+  and reaped, so its ceiling is deliberately far under the user one.
   """
-  @spec check_global_cap(non_neg_integer(), pos_integer()) ::
+  @type caps :: %{global: pos_integer(), user: pos_integer(), visitor: pos_integer()}
+
+  @doc """
+  Admission check for the boundary: may `subject` add `incoming_bytes`
+  to the store? `:ok` or `{:error, :insufficient_storage}`.
+
+  TWO ceilings, both refused with the SAME error (vjt's ruling, issue
+  2175): there is no self-service upload management yet — no listing,
+  no delete — so the only actionable path out of a per-subject refusal
+  is the same one the global cap already points at, the admin. A
+  distinct error would name an affordance that does not exist. The day
+  self-service lands this should be revisited.
+
+  * **global** — the instance's whole disk budget, every subject's
+    bytes. Unchanged behaviour; this used to be `check_global_cap/2`.
+  * **per-subject** — the caller's OWN live bytes against the ceiling
+    for their subject kind. `live_bytes_sum_for/1` counts only rows
+    with `deleted_at IS NULL`, so the quota FREES ITSELF when the
+    reaper collects an expired upload: no parallel accounting, no
+    migration, no backfill. Anyone already over the ceiling is frozen
+    out until their uploads expire.
+
+  ## Why ONE function and not two siblings
+
+  Every door that writes to the store must clear BOTH ceilings, and a
+  door that called one helper and forgot the other would look wired.
+  Issue 2175 shipped with three such doors and its own filing named
+  only two, so this is measured rather than hypothetical. Folding the
+  pair into a single call makes the half-wire unspellable: the next
+  door (issue 2089 folds DCC into this pool) either checks or does not.
+  """
+  @spec check_caps(Subject.t(), non_neg_integer(), caps()) ::
           :ok | {:error, :insufficient_storage}
-  def check_global_cap(incoming_bytes, global_cap_bytes)
-      when is_integer(incoming_bytes) and is_integer(global_cap_bytes) do
-    if live_bytes_sum() + incoming_bytes > global_cap_bytes do
+  def check_caps(subject, incoming_bytes, %{global: global_cap} = caps)
+      when is_integer(incoming_bytes) and incoming_bytes >= 0 do
+    with :ok <- within(live_bytes_sum(), incoming_bytes, global_cap) do
+      within(live_bytes_sum_for(subject), incoming_bytes, subject_cap(caps, subject))
+    end
+  end
+
+  # The one `case` the subject kind costs: the row already carries the
+  # XOR FK, so the ceiling is picked off the subject rather than passed
+  # in pre-resolved by each door.
+  @spec subject_cap(caps(), Subject.t()) :: pos_integer()
+  defp subject_cap(%{user: cap}, {:user, _}), do: cap
+  defp subject_cap(%{visitor: cap}, {:visitor, _}), do: cap
+
+  @spec within(non_neg_integer(), non_neg_integer(), pos_integer()) ::
+          :ok | {:error, :insufficient_storage}
+  defp within(live_bytes, incoming_bytes, cap) do
+    if live_bytes + incoming_bytes > cap do
       {:error, :insufficient_storage}
     else
       :ok
     end
+  end
+
+  # `live_bytes_sum/0` narrowed to one subject — the same query plus a
+  # `WHERE` on the FK the row already carries.
+  @spec live_bytes_sum_for(Subject.t()) :: non_neg_integer()
+  defp live_bytes_sum_for(subject) do
+    Upload
+    |> Subject.subject_where(subject)
+    |> where([u], is_nil(u.deleted_at))
+    |> select([u], coalesce(sum(u.bytes), 0))
+    |> Repo.one()
   end
 
   @doc """

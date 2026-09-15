@@ -37,6 +37,11 @@ const DEFAULTS: AdminSettingsView = {
     document_per_file_cap_bytes: 10 * 1024 * 1024,
     audio_per_file_cap_bytes: 25 * 1024 * 1024,
     global_cap_bytes: 10 * 1024 * 1024 * 1024,
+    // issue 2175 — the server's own defaults. Read-back only in this
+    // tab today: the form has no control for either ceiling, so `onSave`
+    // omits both keys and the controller leaves them where they were.
+    per_user_cap_bytes: 1024 * 1024 * 1024,
+    per_visitor_cap_bytes: 100 * 1024 * 1024,
     video_max_duration_seconds: 90,
   },
 };
@@ -67,6 +72,8 @@ describe("AdminSettingsTab — initial render", () => {
         document_per_file_cap_bytes: 15 * 1024 * 1024,
         audio_per_file_cap_bytes: 30 * 1024 * 1024,
         global_cap_bytes: 20 * 1024 * 1024 * 1024,
+        per_user_cap_bytes: 2 * 1024 * 1024 * 1024,
+        per_visitor_cap_bytes: 200 * 1024 * 1024,
         video_max_duration_seconds: 90,
       },
     });

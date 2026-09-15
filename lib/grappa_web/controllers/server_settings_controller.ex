@@ -20,6 +20,11 @@ defmodule GrappaWeb.ServerSettingsController do
           document_per_file_cap_bytes: pos_integer(),
           audio_per_file_cap_bytes: pos_integer(),
           global_cap_bytes: pos_integer(),
+          # issue 2175 — the per-subject ceilings. Published because
+          # the admin GET shares this projection; cic cannot act on
+          # them (a per-subject refusal reuses the global cap's 507).
+          per_user_cap_bytes: pos_integer(),
+          per_visitor_cap_bytes: pos_integer(),
           # #201 — video duration ceiling cic enforces before upload.
           video_max_duration_seconds: pos_integer()
         },

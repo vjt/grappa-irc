@@ -22,6 +22,8 @@ defmodule GrappaWeb.Admin.SettingsController do
             document_per_file_cap_bytes: pos_integer(),
             audio_per_file_cap_bytes: pos_integer(),
             global_cap_bytes: pos_integer(),
+            per_user_cap_bytes: pos_integer(),
+            per_visitor_cap_bytes: pos_integer(),
             video_max_duration_seconds: pos_integer()
           },
           dcc: %{
@@ -47,6 +49,8 @@ defmodule GrappaWeb.Admin.SettingsController do
           "document_per_file_cap_bytes" => pos_integer(),
           "audio_per_file_cap_bytes" => pos_integer(),
           "global_cap_bytes" => pos_integer(),
+          "per_user_cap_bytes" => pos_integer(),
+          "per_visitor_cap_bytes" => pos_integer(),
           "video_max_duration_seconds" => pos_integer()
         },
         "dcc" => %{
@@ -111,7 +115,8 @@ defmodule GrappaWeb.Admin.SettingsController do
   # ships a latent 500 on the first request that uses it.
   @upload_keys ~w(active_host image_per_file_cap_bytes video_per_file_cap_bytes
                   document_per_file_cap_bytes audio_per_file_cap_bytes
-                  global_cap_bytes video_max_duration_seconds)
+                  global_cap_bytes per_user_cap_bytes per_visitor_cap_bytes
+                  video_max_duration_seconds)
 
   # issue 2185 — DCC's own closed set, disjoint from `@upload_keys` on
   # purpose: `global_cap_bytes` is a member of BOTH and means a different
@@ -267,6 +272,21 @@ defmodule GrappaWeb.Admin.SettingsController do
 
   defp apply_upload_key("global_cap_bytes", _),
     do: {:error, {:invalid_setting, "upload.global_cap_bytes"}}
+
+  # issue 2175 — TWO per-subject ceilings, never one shared knob: a
+  # single field would silently move the disposable visitor and the
+  # durable account together.
+  defp apply_upload_key("per_user_cap_bytes", n) when is_integer(n) and n > 0,
+    do: ServerSettings.put_upload_per_user_cap_bytes(n)
+
+  defp apply_upload_key("per_user_cap_bytes", _),
+    do: {:error, {:invalid_setting, "upload.per_user_cap_bytes"}}
+
+  defp apply_upload_key("per_visitor_cap_bytes", n) when is_integer(n) and n > 0,
+    do: ServerSettings.put_upload_per_visitor_cap_bytes(n)
+
+  defp apply_upload_key("per_visitor_cap_bytes", _),
+    do: {:error, {:invalid_setting, "upload.per_visitor_cap_bytes"}}
 
   defp apply_upload_key("video_max_duration_seconds", n) when is_integer(n) and n > 0,
     do: ServerSettings.put_upload_video_max_duration_seconds(n)

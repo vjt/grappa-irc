@@ -573,6 +573,27 @@ const DECLARED_TOLERANCES = {
       quote: "Absent / malformed →",
       why: "#201 — lenient unlike the byte caps beside it: hard-narrowing would drop the WHOLE settings push against a pre-#201 server and strand those caps too.",
     },
+    // issue 2175 — the two per-subject ceilings, one tolerance each and
+    // one reason for both. They are the first fields to be tolerated
+    // where the strict cure is not merely stricter but WRONG: requiring
+    // a protocol-26 field obliges `MIN_SERVER_PROTOCOL_VERSION` to 26
+    // (serverProtocol.ts's OBLIGATION), which banners every server from
+    // 9 to 25 — and cic reads neither field, so the banner would be the
+    // only observable effect of the strictness.
+    "upload.per_user_cap_bytes": {
+      ops: ["drop", "null", "wrong-type"],
+      covers: "any-unusable-value",
+      file: "userTopic",
+      quote: "Absent or malformed → `global_cap_bytes`",
+      why: "issue 2175 — as `upload.video_max_duration_seconds` beside it, and with a fallback that is not invented: the global pool WAS the per-subject ceiling before the split, so a pre-2175 server's silence degrades to the number that server would itself have enforced. Strictness here buys nothing cic can read and costs a floor raise to 26.",
+    },
+    "upload.per_visitor_cap_bytes": {
+      ops: ["drop", "null", "wrong-type"],
+      covers: "any-unusable-value",
+      file: "userTopic",
+      quote: "Absent or malformed → `global_cap_bytes`",
+      why: "issue 2175 — the visitor half of `upload.per_user_cap_bytes`, same guard, same fallback, same reason.",
+    },
     http_host_aliases: {
       ops: ["drop", "null", "wrong-type"],
       covers: "any-unusable-value",
@@ -761,8 +782,8 @@ describe("#1393 — user-topic boundary census", () => {
           },
           {
             "arm": "server_settings_changed",
-            "handAcceptsSchemaRejects": "upload.video_max_duration_seconds/drop, upload.video_max_duration_seconds/null, upload.video_max_duration_seconds/wrong-type, http_host_aliases/drop, http_host_aliases/null, http_host_aliases/wrong-type, http_host_aliases.0/null, http_host_aliases.0/wrong-type",
-            "mutations": 32,
+            "handAcceptsSchemaRejects": "upload.per_user_cap_bytes/drop, upload.per_user_cap_bytes/null, upload.per_user_cap_bytes/wrong-type, upload.per_visitor_cap_bytes/drop, upload.per_visitor_cap_bytes/null, upload.per_visitor_cap_bytes/wrong-type, upload.video_max_duration_seconds/drop, upload.video_max_duration_seconds/null, upload.video_max_duration_seconds/wrong-type, http_host_aliases/drop, http_host_aliases/null, http_host_aliases/wrong-type, http_host_aliases.0/null, http_host_aliases.0/wrong-type",
+            "mutations": 38,
             "schema": "S_ServerSettingsWireChangedPayload",
             "schemaAcceptsHandRejects": "-",
             "schemaRejectsValid": false,
@@ -2382,8 +2403,8 @@ describe("#1393 — user-topic boundary census", () => {
       stale: [...declared].filter((k) => !observed.has(k)).sort(),
     }).toMatchInlineSnapshot(`
       {
-        "declared": 60,
-        "measured": 60,
+        "declared": 66,
+        "measured": 66,
         "stale": [],
         "unexplained": [],
       }
@@ -2447,7 +2468,7 @@ describe("#1393 — user-topic boundary census", () => {
       noWrittenReason: entries.filter((e) => e.covers === "none").map((e) => `${e.arm} ${e.path}`),
     }).toMatchInlineSnapshot(`
       {
-        "deliberate": 27,
+        "deliberate": 29,
         "noWrittenReason": [],
         "widerThanItsWrittenReason": [],
       }

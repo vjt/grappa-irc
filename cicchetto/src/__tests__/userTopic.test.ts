@@ -1287,6 +1287,97 @@ describe("userTopic", () => {
     });
   });
 
+  // issue 2175 — the two per-subject ceilings ride the same settings
+  // push. Narrowed LENIENTLY like the duration cap above, but with a
+  // fallback taken from the payload (`global_cap_bytes`) rather than a
+  // compile-time constant, because that is what a pre-2175 server would
+  // itself have enforced. Asserted on `narrowUserEvent` directly: the
+  // store discards both fields (no cic consumer), so only the narrower's
+  // own output can show what it did with them.
+  describe("server_settings_changed arm — per-subject ceilings (issue 2175)", () => {
+    const uploadWire = (extra: Record<string, unknown>): Record<string, unknown> => ({
+      active_host: "embedded",
+      image_per_file_cap_bytes: 1,
+      video_per_file_cap_bytes: 2,
+      document_per_file_cap_bytes: 3,
+      audio_per_file_cap_bytes: 4,
+      global_cap_bytes: 5000,
+      video_max_duration_seconds: 90,
+      ...extra,
+    });
+
+    const narrowedUpload = async (
+      upload: Record<string, unknown>,
+    ): Promise<Record<string, unknown> | undefined> => {
+      const { narrowUserEvent } = await import("../lib/userTopic");
+      const out = narrowUserEvent({
+        kind: "server_settings_changed",
+        upload,
+        http_host_aliases: [],
+      }) as { upload?: Record<string, unknown> } | null;
+      return out?.upload;
+    };
+
+    afterEach(async () => {
+      const ss = await import("../lib/serverSettings");
+      ss.setServerSettings(null);
+    });
+
+    it("carries the server's two ceilings through untouched", async () => {
+      const up = await narrowedUpload(
+        uploadWire({ per_user_cap_bytes: 900, per_visitor_cap_bytes: 100 }),
+      );
+      expect(up?.per_user_cap_bytes).toBe(900);
+      expect(up?.per_visitor_cap_bytes).toBe(100);
+    });
+
+    it("degrades ABSENT ceilings to global_cap_bytes, the pre-2175 answer", async () => {
+      // A pre-2175 server omits both keys. Dropping the push here would
+      // strand active_host and every byte cap — the additive-only wire
+      // contract, and the alternative cure (requiring the field) would
+      // oblige MIN_SERVER_PROTOCOL_VERSION up to 26.
+      const up = await narrowedUpload(uploadWire({}));
+      expect(up?.per_user_cap_bytes).toBe(5000);
+      expect(up?.per_visitor_cap_bytes).toBe(5000);
+    });
+
+    it("still applies the rest of the push when both ceilings are absent", async () => {
+      const ss = await import("../lib/serverSettings");
+      channelMock.fireEvent({
+        kind: "server_settings_changed",
+        upload: uploadWire({}),
+        http_host_aliases: [],
+      });
+      const view = ss.serverSettings();
+      expect(view?.uploadPerFileCapBytes.video).toBe(2);
+      expect(view?.uploadGlobalCapBytes).toBe(5000);
+    });
+
+    it("degrades a malformed ceiling to global_cap_bytes, per field", async () => {
+      // Zero and negative are not ceilings, they are values that would
+      // refuse every upload. Per-field: one bad ceiling must not drag
+      // the other off the server's real number.
+      const up = await narrowedUpload(
+        uploadWire({ per_user_cap_bytes: 0, per_visitor_cap_bytes: 100 }),
+      );
+      expect(up?.per_user_cap_bytes).toBe(5000);
+      expect(up?.per_visitor_cap_bytes).toBe(100);
+
+      const up2 = await narrowedUpload(
+        uploadWire({ per_user_cap_bytes: 900, per_visitor_cap_bytes: "100" }),
+      );
+      expect(up2?.per_user_cap_bytes).toBe(900);
+      expect(up2?.per_visitor_cap_bytes).toBe(5000);
+    });
+
+    it("a malformed BYTE cap still drops the whole push, ceilings notwithstanding", async () => {
+      const up = await narrowedUpload(
+        uploadWire({ global_cap_bytes: 0, per_user_cap_bytes: 900, per_visitor_cap_bytes: 100 }),
+      );
+      expect(up).toBeUndefined();
+    });
+  });
+
   // P-0b — peer_away dispatch.
   describe("peer_away arm", () => {
     it("calls setPeerAway with (network, peer, message)", async () => {

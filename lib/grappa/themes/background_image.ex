@@ -205,21 +205,25 @@ defmodule Grappa.Themes.BackgroundImage do
     # `expires_at` omitted → NULL → the Uploads Reaper never sweeps theme
     # backgrounds, and that stays deliberate: a background is referenced by a
     # live theme payload, so an expiry would delete the image out from under
-    # a theme the subject is still using. The OTHER half is the global storage
-    # cap `UploadsController` consumes on every other write to the same store,
-    # and this path consumes it too: unswept and bounded is a design choice,
+    # a theme the subject is still using. The OTHER half is the storage caps
+    # `UploadsController` consumes on every other write to the same store,
+    # and this path consumes them too: unswept and bounded is a design choice,
     # unswept and unbounded is not.
+    #
+    # issue 2175 — the per-subject quota is checked HERE and not only at the
+    # two REST doors, because this door writes a subject-attributed `uploads`
+    # row like they do, and it is the one that never gives the bytes back: an
+    # upload with a TTL frees its quota when the reaper collects, a background
+    # with `expires_at: nil` never does, and there is no self-service delete.
+    # A quota that skipped this door would not be bypassable until the next
+    # sweep — it would be bypassable permanently.
     #
     # Checked here rather than in the context door because the byte count only
     # exists after the re-encode: what lands on disk is this PNG, not whatever
     # was fetched.
     attrs = %{subject: subject, mime: "image/png"}
 
-    with :ok <-
-           Uploads.check_global_cap(
-             byte_size(png),
-             ServerSettings.get_upload_global_cap_bytes()
-           ) do
+    with :ok <- Uploads.check_caps(subject, byte_size(png), ServerSettings.upload_caps()) do
       insert(attrs, png)
     end
   end

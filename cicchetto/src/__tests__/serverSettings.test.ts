@@ -5,7 +5,8 @@ import type { ServerSettingsWireUploadView } from "../lib/wireTypes";
 
 // UX-6-B2 (2026-05-21) tests for the operator-visible server-settings
 // reactive signal + REST initial-fetch helper. Wire shape carries the
-// three per-type cap fields since uploads cluster Task 2 (385129f).
+// three per-type cap fields since uploads cluster Task 2 (385129f), and
+// the two per-subject ceilings since issue 2175.
 
 // S15 — `active_host` is the generated closed set, not open `string`.
 const wireUpload = (active_host: ServerSettingsWireUploadView["active_host"]) => ({
@@ -15,6 +16,8 @@ const wireUpload = (active_host: ServerSettingsWireUploadView["active_host"]) =>
   document_per_file_cap_bytes: 3,
   audio_per_file_cap_bytes: 5,
   global_cap_bytes: 4,
+  per_user_cap_bytes: 6,
+  per_visitor_cap_bytes: 7,
   video_max_duration_seconds: 90,
 });
 
@@ -37,6 +40,8 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         document_per_file_cap_bytes: 10_485_760,
         audio_per_file_cap_bytes: 26_214_400,
         global_cap_bytes: 10_737_418_240,
+        per_user_cap_bytes: 1_073_741_824,
+        per_visitor_cap_bytes: 104_857_600,
         video_max_duration_seconds: 90,
       },
     });
@@ -65,6 +70,8 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         document_per_file_cap_bytes: 7_000_000,
         audio_per_file_cap_bytes: 8_000_000,
         global_cap_bytes: 999_999,
+        per_user_cap_bytes: 500_000,
+        per_visitor_cap_bytes: 100_000,
         video_max_duration_seconds: 90,
       },
     });
@@ -89,6 +96,8 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         document_per_file_cap_bytes: 1,
         audio_per_file_cap_bytes: 1,
         global_cap_bytes: 2,
+        per_user_cap_bytes: 2,
+        per_visitor_cap_bytes: 1,
         video_max_duration_seconds: 90,
       },
     });
@@ -100,6 +109,8 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         document_per_file_cap_bytes: 5,
         audio_per_file_cap_bytes: 7,
         global_cap_bytes: 6,
+        per_user_cap_bytes: 6,
+        per_visitor_cap_bytes: 3,
         video_max_duration_seconds: 90,
       },
     });
@@ -124,6 +135,8 @@ describe("applyServerSettings/1 — wire → store shape", () => {
         document_per_file_cap_bytes: 3,
         audio_per_file_cap_bytes: 5,
         global_cap_bytes: 4,
+        per_user_cap_bytes: 6,
+        per_visitor_cap_bytes: 7,
         video_max_duration_seconds: 90,
       },
       http_host_aliases: ["irc.sindro.me", "irc.sniffo.org"],
@@ -164,6 +177,8 @@ describe("loadServerSettings/0 — REST initial fetch", () => {
             document_per_file_cap_bytes: 9_999_999,
             audio_per_file_cap_bytes: 5_555_555,
             global_cap_bytes: 88_888_888,
+            per_user_cap_bytes: 44_444_444,
+            per_visitor_cap_bytes: 11_111_111,
             video_max_duration_seconds: 90,
           },
         }),

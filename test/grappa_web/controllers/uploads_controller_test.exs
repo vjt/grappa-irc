@@ -253,6 +253,51 @@ defmodule GrappaWeb.UploadsControllerTest do
 
       assert json_response(conn, 507) == %{"error" => "insufficient_storage"}
     end
+
+    test "507 insufficient_storage when the uploader's OWN per-user quota is exceeded",
+         %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      # The instance budget is wide open — only the per-subject ceiling
+      # can refuse this. Door 1 of 3 (issue 2175).
+      :ok = ServerSettings.put_upload_global_cap_bytes(1_000_000_000)
+      :ok = ServerSettings.put_upload_per_user_cap_bytes(2)
+
+      # A REAL png, not the `PNG-FAKE-BYTES` the refusal tests above can
+      # afford: this test and its negative control below must differ in
+      # exactly ONE variable, the ceiling. Fake bytes are fine when the cap
+      # refuses before the metadata strip runs, and fatal in the 201 arm,
+      # where exiftool reaches them and 422s — which is how the pair would
+      # come apart.
+      upload = upload_fixture("t.png", "image/png", Grappa.UploadFixtures.bytes(:gps_png))
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads", %{"file" => upload})
+
+      assert json_response(conn, 507) == %{"error" => "insufficient_storage"}
+    end
+
+    test "201 when the uploader is UNDER their per-user quota (negative control)",
+         %{conn: conn} do
+      {_, session} = user_and_session([])
+
+      # Same knobs as the test above, only the ceiling is generous.
+      # Without this pair the 507 test would also pass against a door
+      # that refused everything.
+      :ok = ServerSettings.put_upload_global_cap_bytes(1_000_000_000)
+      :ok = ServerSettings.put_upload_per_user_cap_bytes(1_000_000)
+
+      upload = upload_fixture("t.png", "image/png", Grappa.UploadFixtures.bytes(:gps_png))
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> post("/api/uploads", %{"file" => upload})
+
+      assert %{"slug" => _} = json_response(conn, 201)
+    end
   end
 
   describe "POST /api/uploads — per-category MIMEs + caps" do

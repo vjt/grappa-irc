@@ -31,6 +31,10 @@ const wireUpload = (
   document_per_file_cap_bytes: 10 * 1024 * 1024,
   audio_per_file_cap_bytes: 25 * 1024 * 1024,
   global_cap_bytes: 10 * 1024 * 1024 * 1024,
+  // issue 2175 — the per-subject ceilings. Required on the wire, so the
+  // base literal carries them; `overrides` is `Partial<…>` and cannot.
+  per_user_cap_bytes: 1024 * 1024 * 1024,
+  per_visitor_cap_bytes: 100 * 1024 * 1024,
   video_max_duration_seconds: 90,
   ...overrides,
 });

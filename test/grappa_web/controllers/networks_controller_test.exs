@@ -36,7 +36,7 @@ defmodule GrappaWeb.NetworksControllerTest do
   import Grappa.AuthFixtures
 
   alias Grappa.Admission.NetworkCircuit
-  alias Grappa.{AdmissionStateHelpers, IRCServer, Networks, Repo, Session}
+  alias Grappa.{AdmissionStateHelpers, IRCServer, Networks, Repo, ServerSettings, Session}
   alias Grappa.Networks.{Credential, Credentials}
 
   # U-0 — admission state must start known-empty between tests.
@@ -1071,6 +1071,44 @@ defmodule GrappaWeb.NetworksControllerTest do
       conn = conn |> put_bearer(session.id) |> put("/networks/#{slug}/avatar", %{"file" => upload})
 
       assert json_response(conn, 404)
+    end
+
+    test "507 when the uploader's OWN per-user quota is exceeded (issue 2175)", %{conn: conn} do
+      vjt = user_fixture(name: "vjt-avatarquota-#{u()}")
+      session = session_fixture(vjt)
+      slug = "net-avatarquota-#{u()}"
+      {network, _} = network_with_server(port: 9_999, slug: slug)
+      _ = credential_fixture(vjt, network, %{nick: "vjt-irc"})
+
+      # An avatar is an `uploads` row owned by the subject, so it spends
+      # the same per-subject budget. Global budget left wide open: only
+      # the per-subject ceiling can refuse here. Door 2 of 3.
+      :ok = ServerSettings.put_upload_global_cap_bytes(1_000_000_000)
+      :ok = ServerSettings.put_upload_per_user_cap_bytes(2)
+
+      upload = avatar_fixture("me.png", "image/png", Grappa.UploadFixtures.bytes(:gps_png))
+
+      conn = conn |> put_bearer(session.id) |> put("/networks/#{slug}/avatar", %{"file" => upload})
+
+      assert json_response(conn, 507) == %{"error" => "insufficient_storage"}
+    end
+
+    test "200 when the uploader is UNDER their per-user quota (negative control)", %{conn: conn} do
+      vjt = user_fixture(name: "vjt-avatarquotaok-#{u()}")
+      session = session_fixture(vjt)
+      slug = "net-avatarquotaok-#{u()}"
+      {network, _} = network_with_server(port: 9_999, slug: slug)
+      _ = credential_fixture(vjt, network, %{nick: "vjt-irc"})
+
+      :ok = ServerSettings.put_upload_global_cap_bytes(1_000_000_000)
+      :ok = ServerSettings.put_upload_per_user_cap_bytes(1_000_000)
+
+      upload = avatar_fixture("me.png", "image/png", Grappa.UploadFixtures.bytes(:gps_png))
+
+      conn = conn |> put_bearer(session.id) |> put("/networks/#{slug}/avatar", %{"file" => upload})
+
+      assert %{"avatar_url" => url} = json_response(conn, 200)
+      assert is_binary(url)
     end
   end
 

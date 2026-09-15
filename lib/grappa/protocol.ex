@@ -655,7 +655,50 @@ defmodule Grappa.Protocol do
   # CONSTRUCTION: a bundle that has never heard of `meta.structural` reads a
   # `:mode` row exactly as it did before, because the pre-2176 rule IS what
   # absence encodes. No client is left unable to talk to this server.
-  @protocol_version 25
+  #
+  # ---------------------------------------------------------------------------
+  # 26 — issue 2175: `per_user_cap_bytes` + `per_visitor_cap_bytes` on the
+  #      upload settings view
+  # ---------------------------------------------------------------------------
+  #
+  # ⚠️ This branch was WRITTEN claiming 25 and REBASED onto a main that had
+  # already published 25 (issue 2176, the block directly above). Same collision
+  # as the 24/#2186 one that block records, resolved the same way — by ORDER,
+  # not by argument: the published number stays MONOTONIC on main, the branch
+  # that landed first keeps the number, this one sits exactly above it. It is
+  # worth naming the shape, because it is now the third occurrence and it is
+  # structural: a number claimed at WRITE time against a main that moves is a
+  # reservation, not a fact, and it has to be re-measured at rebase time.
+  #
+  # Measured on `origin/main` at rebase time, all THREE sites read 25
+  # (`@protocol_version`, `@spec version()`, and `CLIENT_PROTOCOL_VERSION` in
+  # socket.ts) — the check the three-sites warning below demands. Only site 1
+  # conflicted; sites 2 and 3 merged clean at 25 and had to be moved BY HAND,
+  # which is exactly the failure that warning predicts.
+  #
+  # The per-subject upload quota adds two `ServerSettings` keys, and both land
+  # on `Grappa.ServerSettings.Wire.upload_view/1` — the projection shared by
+  # `GET /api/server-settings`, `GET /admin/settings` and the WS
+  # `server_settings_changed` push. Generated shape, so unlike #2167 this bump
+  # is demanded by the gate as well as by the rule: `upload_view` is a `*.Wire`
+  # typespec, `wireTypes.ts`/`wireSchema.ts` move with it, and the
+  # `priv/wire/shape.pin` digest spans both.
+  #
+  # ⚠️ They are on the wire for the ADMIN, not for cic. A client cannot act on
+  # them: vjt's 2026-09-14 ruling routes a per-subject refusal through the
+  # EXISTING `:insufficient_storage` → 507, so cic cannot even distinguish
+  # "the instance is full" from "you are at your quota". Publishing them is
+  # what makes the admin knob readable — an `apply_upload_key` clause whose
+  # value the operator can set and never verify is half a setting. Keeping
+  # them off `public_view/0` and building an admin-only subtree inline (the
+  # `addressing` shape) was considered and refused: it is a third pattern for
+  # exposing a setting and it would leave the admin `upload` map diverging
+  # from its own generated type.
+  #
+  # @min_protocol_version stays at 1. Two additive fields on a response body;
+  # a bundle predating v26 ignores them and keeps working, and this server
+  # keeps serving it.
+  @protocol_version 26
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -690,7 +733,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 25
+  @spec version() :: 26
   def version, do: @protocol_version
 
   @doc """
