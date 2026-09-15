@@ -15628,3 +15628,74 @@ a literal `=` reads `VJT` as "no window" for a cursor keyed `vjt`. The subject
 comparison uses the `COALESCE(col,'')` XOR shape of the sibling read_cursors
 migration, so another subject's window cannot rescue your cursor. Each of the
 three clauses is pinned by a test that fails when only that clause is removed.
+<!-- entry #2201b -->
+
+---
+
+## 2026-09-15 — #2201b: reversing the #532 B expectation, on a ruling
+
+The entry above made `QueryWindows.close/4` delete the sibling `read_cursors`
+row. That turned the second test in
+`cicchetto/e2e/tests/issue532-stale-unread-badges.spec.ts` RED in PR #2206 —
+and the red was CORRECT, because the two statements it sat between cannot both
+be true.
+
+`#532 B` shipped asserting *"a closed DM window holding an unread message shows
+the message badge in Archive"*. But `ReadCursor.bulk_unread_split/3` builds its
+query `from(rc in Cursor, ...)` and joins `[rc, _, m]` off it: **the cursor row
+IS the row that produces a window in the unread split.** No cursor ⇒ no join ⇒
+no window ⇒ no badge. So "closing a DM deletes its cursor" and "a closed DM
+keeps its Archive unread badge" are the same row seen from two ends.
+
+**vjt ruled on 2026-09-15 — issue #2201, comment `5676783756` (07:58:02Z):
+option (a), the cursor delete STAYS and the TEST is the thing that changes.**
+Verbatim: *"closing a DM zeroes its unread. You closed the window; it does not
+get to pull itself back into the Archive with a badge."* The same comment fixes
+the two boundaries of the change: keep the delete inside `close/4`'s
+transaction, keep the `$server` exclusion #2206 measured, and do not widen the
+predicate.
+
+### 🔴 This is a REVERSAL, and the next reader is why it is written down
+
+An assertion that read `toHaveText("1")` now reads `toHaveCount(0)` on the same
+locator. That is exactly the shape of a "regression" someone cures by putting
+the old number back, so, plainly: **the old expectation was not a bug this
+change papers over — it was correct for the code that predated #2201 and is
+false for the code that follows it.** The spec header carries the same warning
+at the site and points here.
+
+### Not a weakened assert — the new behaviour is asserted POSITIVELY, twice
+
+The house rule is that no assert gets softened to turn a red green, so the
+replacement does not delete the old check or blur it into a generic
+`not.toBeVisible()`. It pins the new behaviour at two levels:
+
+- the CAUSE, server-side — `getReadCursor` (the authoritative `/me` envelope,
+  `ReadCursor.bulk_for_subject/1`) polls to `null` for the peer after the
+  close, in the same test that proved the cursor PRESENT
+  (`toBeGreaterThan(0)`) a few lines earlier;
+- the SURFACE, browser-side — `toHaveCount(0)` on the exact
+  `.sidebar-msg-unread` the sidebar draws, scoped to
+  `archive-unread-{slug}-{target}` for this peer, so the badge reappearing
+  with ANY number fails and not merely a "1". It is guarded by the
+  pre-existing `.archive-modal-row` count, so "no badge" cannot be satisfied
+  by an Archive that lost the peer altogether — #2201 deletes the cursor,
+  never the scrollback.
+
+### B's render path is still pinned — by a channel, not a DM
+
+Worth stating, because the obvious objection to the reversal is that it leaves
+`ArchiveModal`'s badge rendering untested. It does not. `close/4` is the only
+cursor delete on this route and it is DM-only, so an archived CHANNEL keeps its
+cursor: `issue2109-archive-group-unread-badge.spec.ts` step 4 expands the group
+and reads the very same `.sidebar-msg-unread` inside the very same
+`archive-unread-{slug}-{target}` testid, asserting it carries exactly the
+number the group header gained. The row badge is covered; what #532 B gives up
+is the DM as its vehicle.
+
+### The accepted cost, restated where it is now observable
+
+A DM window that reopens on a new message comes back with no read position.
+That is a silent reset rather than a badge storm — with no cursor the unread
+machinery contributes nothing — and the reversed test is now the thing that
+says so out loud, in a real browser, off the cold `/me` seed.
