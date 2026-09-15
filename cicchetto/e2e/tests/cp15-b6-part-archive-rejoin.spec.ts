@@ -91,8 +91,48 @@ test("CP15 B6 — PART → archive → re-join: row moves from active to archive
   // channel returns to the active section AND the archive list's
   // render-time filter (visibleArchiveForNetwork) drops the entry
   // since it's now in channelsBySlug.
+  //
+  // 🔴 A bare `toHaveCount(1)` here is NOT that barrier, and reading it as
+  // one is what made this spec flaky at ~20% for five sightings. Measured
+  // off two `trace.zip` artifacts (one in-suite, one standalone, agreeing
+  // to 9ms): the POST lands at page-rel 0.523s, this assertion passed in
+  // 3.1ms, and the `channels_changed` refetch it claims to wait for did
+  // not arrive until 5.019s. The whole upstream round trip then fell on
+  // the NEXT assertion's 5_000ms — a budget within ~25ms of the round trip
+  // itself, i.e. a coin flip.
+  //
+  // It clears that fast because the server sends TWO events and this waited
+  // on the first. `window_pending` is the ACK: `record_in_flight_join/2`
+  // writes it the moment the JOIN is accepted, before anything reaches the
+  // ircd, and it arrives in ~30ms. `channels_changed` (and, in parallel,
+  // `window_state: "joined"`) is the COMPLETION. cic renders the ACK as a
+  // pseudo-row carrying the same `data-window-name` the real row does, and
+  // `sidebarWindow()` matches on that attribute alone — so the count is 1
+  // either way. NB the pseudo-row is server-driven, NOT a client-side
+  // optimistic write: `api.ts`'s `window_pending` doc records that cic did
+  // originate it from compose.ts pre-CP17 and that this was closed as an
+  // origination violation. `subscribe.ts`'s "setPending fires synchronously
+  // from compose.ts" comment predates that and is stale.
+  //
+  // The truthful barrier is the pseudo-row RETIRING. `Sidebar.tsx` authors
+  // `data-window-state` on the pseudo-row only — the `channelsBySlug` branch
+  // does not — and `pseudoChannelsForNetwork` retires that row on EITHER of
+  // two completion signals: the window state reaching "joined", or the key
+  // appearing in channelsBySlug after the refetch. Neither is reachable
+  // without the server, which is exactly the property the ACK lacked. Both
+  // assertions are needed: count-0 on the intersection alone is equally
+  // satisfied by the row having vanished entirely.
+  //
+  // ⚠️ Desktop-only, and that is load-bearing: this spec carries no
+  // `@touch`/`@webkit` tag, so the config's `grepInvert` runs it on
+  // `chromium` alone. `BottomBar.tsx` authors no `data-window-state`, so
+  // tagging this spec for a mobile project would make the second assertion
+  // trivially true again — the mobile branch needs the equivalent seam first.
   await composeSend(page, `/join ${CHANNEL}`);
-  await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).toHaveCount(1, { timeout: 5_000 });
+  await expect(sidebarWindow(page, NETWORK_SLUG, CHANNEL)).toHaveCount(1, { timeout: 15_000 });
+  await expect(
+    sidebarWindow(page, NETWORK_SLUG, CHANNEL).and(page.locator("[data-window-state]")),
+  ).toHaveCount(0, { timeout: 15_000 });
 
   // Final state sanity: members snapshot lands → MembersPane shows the
   // joined branch with vjt-grappa as @ founder. Asserted BEFORE re-opening
