@@ -38,10 +38,8 @@
 // Engine parity for the classifier wiring lives in the @webkit copy of
 // media-link-alias-modal.spec.ts.
 
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
-import { TINY_PNG_HEX } from "../fixtures/bytes";
+import { DECODABLE_VIDEO, TINY_PNG_HEX } from "../fixtures/bytes";
 import { composeSend, loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { closeMediaViewer, openMediaViewer } from "../fixtures/mediaViewer";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
@@ -59,22 +57,14 @@ const VIDEO_URL = `https://${FOREIGN_HOST}/uploads/cross-host.webm`;
 const INSECURE_IMAGE_URL = `http://${FOREIGN_HOST}/uploads/insecure.png`;
 
 const PNG_BYTES = Buffer.from(TINY_PNG_HEX, "hex");
-// VP9-in-WebM, NOT the H.264 `tiny.mp4` the upload specs use (#1292).
-// The runner's Chromium (Playwright's own build, runner/Dockerfile) has
-// no H.264 decoder — measured inside this stack, Chrome/147.0.7727.15:
-//   canPlayType('video/mp4; codecs="avc1.42E01E"')  → ""
-//   canPlayType("video/mp4")                        → "maybe"
-//   canPlayType('video/webm; codecs="vp9"')         → "probably"
-// With the mp4, videoWidth stayed 0 for the full 15s, and this oracle
-// cannot tell a missing decoder apart from bytes that never arrived.
-// Re-encoding tiny.mp4 in place would have reddened two specs that have
-// nothing to do with decoding: uploads2-video-doc-upload.spec.ts posts
-// it through the picker as `video/mp4`, and ux-6-b-admin-settings.spec.ts
-// pins its 1.000s duration. Regenerate (the grappa image carries ffmpeg
-// with libvpx-vp9, like test/support/fixtures/uploads/generate.sh):
-//   ffmpeg -y -f lavfi -i color=c=blue:s=128x72:d=1 \
-//     -c:v libvpx-vp9 -pix_fmt yuv420p tiny.webm
-const WEBM_BYTES = readFileSync(fileURLToPath(new URL("../fixtures/tiny.webm", import.meta.url)));
+// VP9-in-WebM, NOT the H.264 `tiny.mp4` the upload specs carry (#1292). The
+// measurement that forces the choice, and the rule that follows from it, moved
+// to `DECODABLE_VIDEO` in ../fixtures/bytes when issue 2026 turned out to be
+// the same defect reaching a second spec: this file had the answer for 26 days
+// and it was not where the next spec author would look. Here we need the bytes
+// only — the foreign host serves them — so `videoWidth` below is asked of a
+// codec both browser builds decode.
+const WEBM_BYTES = DECODABLE_VIDEO.buffer;
 
 // Stand in for the other deployment's /uploads store. Only reached when
 // the CSP admits the element — see the header note.

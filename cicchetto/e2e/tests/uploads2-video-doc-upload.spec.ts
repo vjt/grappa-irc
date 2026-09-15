@@ -27,6 +27,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
+import { OPAQUE_VIDEO } from "../fixtures/bytes";
 import { loginAs, scrollbackLine, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
@@ -84,7 +85,12 @@ test("uploads-2 — video (chromium): picker tiny.mp4 → transcode-or-fallback 
 
   const { slug } = await uploadViaPicker(
     page,
-    { name: "tiny.mp4", mimeType: "video/mp4", buffer: fixture("tiny.mp4") },
+    // OPAQUE_VIDEO, not DECODABLE_VIDEO, and named so on purpose: this journey
+    // CARRIES the bytes (picker → transcode-or-fallback → POST → 🎬 link) and
+    // never asks an engine to play them, so the mp4 is the right fixture here
+    // even though only one of the two browser builds could decode it. See
+    // ../fixtures/bytes (issue 2026) for the split and the rule.
+    OPAQUE_VIDEO,
     // lazy mediabunny chunk + transcode (or fallback probe) precede the POST
     { postTimeout: 60_000 },
   );
