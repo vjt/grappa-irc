@@ -15585,27 +15585,55 @@ response and the MembersPane render.
 
 ### The class, which is the part worth keeping
 
-**A barrier a client can satisfy on its own is not a barrier.** cic mounts an
-optimistic pending pseudo-row synchronously on `/join`, and that row carries
-the same `data-window-name` the real one does, so the spec's
-`toHaveCount(1)` cleared five seconds before the `channels_changed` its own
-comment named. Nothing was wrong with the assertion in isolation — it was
-being read as a wait for a server event it never touched, and the whole
-upstream round trip silently fell onto the next assertion's budget, which
-happened to be within tens of milliseconds of that round trip.
+**When a verb emits an ACK and a COMPLETION, a barrier on the ACK is not a
+barrier.** The server sends `window_pending` the moment
+`record_in_flight_join/2` accepts the JOIN — before anything reaches the ircd,
+~30ms — and sends `channels_changed` (plus `window_state: "joined"`) when the
+thing actually happened, 5s later. cic renders the ACK as a pseudo-row whose
+`data-window-name` is the same one the real row carries, so a count keyed on
+that attribute is 1 under both. The spec read the ACK as the completion, and
+the whole upstream round trip silently rolled onto the next assertion's
+budget, which happened to be within tens of milliseconds of that round trip.
 
-So when a spec waits for something the SERVER must do, it must key on a seam
-only the server can move. Here that seam already existed and is documented as
-a test seam: `Sidebar.tsx` authors `data-window-state` on the pseudo-row and
-nothing else, and `pseudoChannelsForNetwork` drops any key already present in
-`channelsBySlug` — so the attribute disappearing IS "the echo landed and the
-refetch ran". Both assertions are kept, because count-0 on the intersection
-alone is equally satisfied by the row having vanished altogether.
+The first draft of this entry, and of the commit that carried the fix, said
+the pseudo-row was an OPTIMISTIC client-side write. That was wrong and is
+corrected here. It leaned on `subscribe.ts`'s "setPending fires synchronously
+from compose.ts on `/join`" comment, which is STALE: `api.ts`'s
+`window_pending` doc records that cic did originate that state from
+compose.ts pre-CP17 and that it was closed as an origination violation, and
+the only surviving `setPending` call sits in the user-topic dispatcher. This
+file's own invariant says as much — cic never originates state. A stale
+comment was taken for the mechanism; the measurement was never in doubt, but
+the culprit was, and the corrected one is a better rule: the failure is not a
+client inventing state, it is two truthful server events being read as one.
 
-The mutant that proves it is one line: delete the `refetchChannels()` call
-`userTopic.ts` makes on `channels_changed`. Under it the OLD assertion still
-passes — the pseudo-row is right there — and the new one fails. A barrier that
-survives the removal of the event it claims to await was never awaiting it.
+So when a spec waits for something the SERVER must finish, it keys on a seam
+the ACK cannot move. That seam already existed and is documented as a test
+seam: `Sidebar.tsx` authors `data-window-state` on the pseudo-row and nothing
+else, and `pseudoChannelsForNetwork` retires that row on EITHER completion
+signal — the state reaching `joined`, or the key landing in `channelsBySlug`.
+Both assertions are kept, because count-0 on the intersection alone is
+equally satisfied by the row having vanished altogether.
+
+### Choosing the mutant, which took two tries
+
+The obvious mutant — delete the `refetchChannels()` call `userTopic.ts` makes
+on `channels_changed` — is too broad, and measured so: the suite dies at the
+PART assertion 60 lines earlier, because that leg needs the same refetch to
+see the channel leave. Three runs, all red at the wrong line. It proves the
+refetch matters and says nothing about this barrier.
+
+Two independent completion signals also mean no ONE-line client-side mutant
+can falsify the barrier: suppress either gate and the other still retires the
+row. That robustness is a feature, and it pushes the mutant upstream of both.
+
+What isolates it is suppressing the upstream JOIN while leaving the ACK
+intact: `IRC.Client.send_join/3` returns `:ok` without writing the frame, so
+`record_in_flight_join/2` still fires `window_pending` and the PART leg is
+untouched. Under it, three runs out of three reach the new assertion — that
+is, they PASS the old barrier, on a JOIN that never left the machine — and
+fail on the new one, `Expected 0 / Received 1`. Fifteen repeats on the
+unmutated tree are green.
 
 ### Deliberately not done
 
