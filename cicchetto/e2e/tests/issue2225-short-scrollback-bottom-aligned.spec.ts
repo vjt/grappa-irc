@@ -63,7 +63,8 @@ test("issue 2225 — the first row of a fresh DM sits at the bottom of the pane,
           return c.paneBottomPx - c.rowBottomPx;
         },
         {
-          message: "the only row of a fresh DM must end at the pane's bottom edge (minus its padding)",
+          message:
+            "the only row of a fresh DM must end at the pane's bottom edge (minus its padding)",
           timeout: 5_000,
         },
       )
@@ -71,7 +72,10 @@ test("issue 2225 — the first row of a fresh DM sits at the bottom of the pane,
 
     const c = await rowClearance(firstRow);
     // Not below the pane either: bottom-aligned, not overflowing.
-    expect(c.overflowBelowPx, `row must not overflow the pane: ${JSON.stringify(c)}`).toBeLessThanOrEqual(0);
+    expect(
+      c.overflowBelowPx,
+      `row must not overflow the pane: ${JSON.stringify(c)}`,
+    ).toBeLessThanOrEqual(0);
     // And nowhere near the top — the band the corner controls float over.
     // The pane is many rows tall on every project, so "not at the top" is a
     // clear margin, not a sub-pixel call.
