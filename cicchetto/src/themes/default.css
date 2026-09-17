@@ -3916,34 +3916,31 @@ button.topic-bar-windows-opener {
      above a few top-aligned rows shoved them down a viewport; growing
      upward out of the fold, nothing visible moves.
 
-     This is a flex column so the FIRST child can take `margin-top: auto`
-     (the rule below), which is the ONLY safe idiom here. NOT
-     `justify-content: flex-end`: a scrollback is the overflowing-child case
-     by definition, and end-justified flex clips the TOP of an overflowing
-     child — `.login-scroll` and `.login-form` each paid for that lesson
-     once. The auto margin absorbs the slack while the rows are short and
-     collapses to 0 the moment they overflow, so the top of a full buffer
+     This is a flex column so ONE zero-height first item (the `::before`
+     below) can take `margin-top: auto`, which is the ONLY safe idiom here.
+     NOT `justify-content: flex-end`: a scrollback is the overflowing-child
+     case by definition, and end-justified flex clips the TOP of an
+     overflowing child — `.login-scroll` and `.login-form` each paid for that
+     lesson once. The auto margin absorbs the slack while the rows are short
+     and collapses to 0 the moment they overflow, so the top of a full buffer
      stays reachable. `.rail-actions` floors its launcher the same way.
      Composes with the issue 2190 band clearance above rather than fighting
-     it: that padding scrolls away with the content, this margin does not. */
+     it: that padding scrolls away with the content, this margin does not.
+     Rows need no `flex-shrink` override: a column flex item's automatic
+     minimum is its content size, so text never shrinks below itself. */
   display: flex;
   flex-direction: column;
 }
 
-/* issue 2225 — the two halves of the auto-margin idiom. `:first-child`,
-   not a wrapper: `<For>` renders the rows as siblings, and the first one is
-   either the first row, the `no messages yet` fallback (which the ruling
-   asks to bottom-align too) or `PeerAwayBanner`, which mounts before the
-   rows precisely to stay on top even in an empty DM. A wrapper element
-   would need the tail-follow effects keyed on `rows().length` re-checked
-   (#196/#230); a selector does not. `flex-shrink: 0` on every row because
-   a flex item defaults to shrinkable, and a row that shrinks below its
-   content in an over-full column is a row you cannot read. */
-.scrollback > * {
-  flex-shrink: 0;
-}
-
-.scrollback > :first-child {
+/* issue 2225 — the slack-absorber. A pseudo-element rather than
+   `:first-child`, for two reasons. It is not in the DOM, so nothing
+   `ScrollbackPane` keys on `rows().length` or on children can see it
+   (#196/#230), and `<For>` keeps rendering rows as plain siblings. And it
+   leaves every real first child's own margin alone: `.peer-away-banner`
+   keeps its 0.25rem top gap in a full buffer, where an auto margin on the
+   banner itself would have resolved to 0 and taken the gap with it. */
+.scrollback::before {
+  content: "";
   margin-top: auto;
 }
 

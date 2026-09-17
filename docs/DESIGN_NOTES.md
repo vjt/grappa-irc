@@ -16185,24 +16185,28 @@ backlog landing above them has nowhere to go but through them. Ruling:
 «il testo deve iniziare dal basso».
 
 **The idiom, and why it is the only one.** `.scrollback` is now a flex
-column and its first child carries `margin-top: auto`. Under-full, the
-auto margin absorbs the slack and the rows sit on the composer; over-full,
-it collapses to 0 and the top of the buffer stays reachable. The obvious
-alternative, `justify-content: flex-end`, clips the TOP of an overflowing
-child — `.login-scroll` and `.login-form` each learned that once, and a
-scrollback is the overflowing child by definition — so
-`scrollbackBottomAlign.test.ts` forbids an end-justified `.scrollback`
+column and a zero-height `::before` item carries `margin-top: auto`.
+Under-full, the auto margin absorbs the slack and the rows sit on the
+composer; over-full, it collapses to 0 and the top of the buffer stays
+reachable. The obvious alternative, `justify-content: flex-end`, clips the
+TOP of an overflowing child — `.login-scroll` and `.login-form` each
+learned that once, and a scrollback is the overflowing child by definition
+— so `scrollbackBottomAlign.test.ts` forbids an end-justified `.scrollback`
 rule outright rather than trusting the next reader to remember.
 `.rail-actions` floors its launcher with the same auto margin.
 
-**Why a selector and not a wrapper.** `<For>` renders the rows as
-siblings; the first child is the first row, the `no messages yet`
-fallback (which the ruling names too) or `PeerAwayBanner`, which mounts
-before the rows precisely to stay on top in an empty DM. A wrapper element
-would have meant re-checking the tail-follow effects keyed on
-`rows().length` (#196/#230); `:first-child` costs nothing there. Every
-child gets `flex-shrink: 0` because a flex item is shrinkable by default
-and a row that shrinks in an over-full column is unreadable.
+**Why a pseudo-element and not `:first-child` or a wrapper.** The first
+draft put the auto margin on `.scrollback > :first-child`. The one scoped
+review finding worth fixing: that selector outranks `.peer-away-banner`'s
+own margin, so in a FULL DM buffer — where auto resolves to 0 — the #270
+banner lost its 0.25rem top gap. A `::before` absorbs the slack without
+touching any real child's margin, is not in the DOM (so nothing keyed on
+`rows().length` or on children sees it, #196/#230), and `<For>` keeps
+rendering rows as plain siblings. The draft also carried
+`.scrollback > * { flex-shrink: 0 }` with a wrong justification; a column
+flex item's automatic minimum is its content size, so text rows never
+shrink below themselves, and the rule went (less code, and a comment that
+would have taught the next reader a false mechanism).
 
 **What was checked and left alone.** Every scroll-preservation read in
 `ScrollbackPane` (`distanceToBottom`, the overlay snapshot, the resize
@@ -16211,9 +16215,8 @@ clientHeight` arithmetic. Under-full, `scrollHeight` equals `clientHeight`
 whether the slack is an auto margin or empty space below the rows, so no
 read changes value; over-full, the margin is 0 and nothing changed at all.
 The issue 2190 band clearance stays on the container and composes: that
-padding scrolls away with the content, this margin does not. The
-`.scrollback-empty { margin: 0 }` rule loses `margin-top` to the
-first-child rule on specificity, which is the intended order.
+padding scrolls away with the content, this margin does not. No real child's
+margin is overridden: the slack lives on the pseudo-element.
 
 **Not measured from here: iOS WebKit.** UX-6 D v2 records that turning
 this chain flexy already cost one bug (the `min-height: 0` on every

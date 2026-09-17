@@ -39,7 +39,11 @@ const CHANNEL = AUTOJOIN_CHANNELS[0];
 // within the same band of the pane's top edge — which is exactly the defect.
 const BOTTOM_PADDING_MAX_PX = 16;
 
-test("issue 2225 — the first row of a fresh DM sits at the bottom of the pane, not the top", async ({
+// `@webkit` on THIS test and not the other: the defect was reported from an
+// iPhone, and the flex/min-height quirks the `.scrollback` comments record
+// are WebKit's, so the first-row case runs on the webkit project while the
+// empty-state case stays on chromium — one geometry check per engine.
+test("issue 2225 @webkit — the first row of a fresh DM sits at the bottom of the pane, not the top", async ({
   page,
 }) => {
   await loginAs(page, specUser());
