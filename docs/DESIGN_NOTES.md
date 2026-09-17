@@ -16226,3 +16226,90 @@ Chromium and the Playwright geometry spec
 fresh DM, and the empty-state line, end at the pane's bottom edge and
 start nowhere near its top) are what this ships with; the iPhone that
 reported it is the device to confirm on.
+<!-- entry #2229 -->
+
+---
+
+## 2026-09-17 — issue 2229: a guard that read one byte and vouched for the whole list
+
+`/join #0,0` produced no parser error. The POST left with `#0,0`, the server
+refused it, and the operator read `The request was malformed.` — a sentence
+that names nothing. `/join dio,cane,mannaro`, the same defect class, produced a
+good error. The difference was one byte.
+
+The comma guard in `slashCommands.ts` was gated on
+`!isChannelName(raw, chantypes) && raw.includes(",")`, and `isChannelName`
+inspects `startsWith` — the FIRST byte of whatever it is handed. Handed the
+whole token, it answered a question about the head and was read as an answer
+about the list. A sigil on the head therefore vouched for every element behind
+it. The check now runs per element, after the split.
+
+### Why the client owes this error at all
+
+The server is not wrong and was not touched. `Validation.validate_channel_list/1`
+validates EVERY element and fails the whole row if one is bad (#382, deliberate:
+no partial JOIN). That is the right posture for a validator and the wrong one
+for a report — a whole-line refusal cannot say which element it tripped over,
+and by the time it reaches cic it is a generic 400. The specific diagnosis is
+only available where the elements are still separate, which is the parser. This
+is a REPORTING fix; the wire contract is unchanged.
+
+### The old guard is deleted, but its refusal is kept as its own clause
+
+Keeping the old guard would have left two checks disagreeing about the same
+string, so it went. It was strictly more aggressive than the per-element check
+on exactly one shape — a bare head with a sigilled tail, `/join a,#b`, whose
+auto-prepend yields the fully sigilled, perfectly well-formed `#a,#b`. So
+deleting it did not remove a duplicate: it **relaxed one input**, and the
+relaxation shipped in the first draft of this work.
+
+It was then reversed on a ruling, and the reasoning is the durable part. Issue
+2229 is a **reporting** slice: the operator was getting a generic
+`The request was malformed.` where a parser error belonged. Widening what
+*parses* is a different decision, it was not the one asked for, and it would
+have been **silent** — two channels joined on a spelling nobody approved. The
+message is also making a promise it would then break: it says "spell each
+channel out", so it cannot accept a list that is not. A bare head in a
+comma-list is an error.
+
+What carries beyond this arm: **a cure and a widening that happen to share a
+line are still two decisions**, and the one nobody asked for does not get to
+ride along on the one that was. The refusal therefore lives as its own clause
+after the per-element check, not folded into it — the folded version is three
+lines shorter and was rejected on exactly that ground, because folding makes
+the widening un-revertible without a restructure. As written, deleting the
+clause and its test restores the relaxation and nothing else depends on it.
+That reversibility is measured, not asserted: the clause was added last, and
+the test now pinning the refusal was first observed failing against the
+accepting parser.
+
+The prepend itself is unchanged and still reaches only the head — a
+convenience for ONE bare name, per #30, not a comma-list feature. Prepending
+to every element would make `/join a,b` join both, which is again a different
+decision about that posture and again was not made here.
+
+### Two smaller things the rewrite carried
+
+The suggestion in the message is now built from the split elements, so it
+sigils only what lacks a sigil. The old one re-prefixed blindly
+(`raw.split(",").join(",#")`) and proposed `#a,##b` for `/join a,#b` — a
+double sigil, in the text whose whole job was to show the correct spelling.
+An empty element (trailing comma) is refused like any other sigil-less
+element, and dropped from the suggestion rather than rendered as a lone `#`.
+
+`JOIN 0` — RFC 2812 3.2.1, "leave all channels" — was previously kept off the
+wire by accident: a solitary `0` becomes `#0` via the prepend, and the list
+form `#0,0` was stopped by the server's refusal rather than by anything cic
+knew. The per-element check keeps it out on purpose. Both halves are pinned by
+test, because a comment that claims a safety property and cannot be
+contradicted is the thing #2209 was about.
+
+### What was not established
+
+The slice is a pure function, and the gates run were the cic ones
+(`bun.sh run check`, 5 stages, and the full vitest suite). No e2e was run from
+here — the slice held no lane. The e2e that matters for it already exists and
+was not written by this change: `issue382-multichannel-join.spec.ts` drives
+`/join #a,#b` against the live ircd and asserts both windows resolve to
+`:joined`, which is precisely the regression a per-element check could cause.
+It is CI's to prove green, and it had better be, before this merges.
