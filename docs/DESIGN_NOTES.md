@@ -18786,3 +18786,107 @@ clean tree proves nothing about what it would catch. `LusersCard.tsx` is
 exempt (`Number.prototype.toLocaleString`, thousands separators, a different
 axis the issue left open), and the exemption is held honest by a second
 assertion that the file contains no `Date` at all.
+<!-- entry #2228b -->
+
+---
+
+## 2026-09-21 — #2228b: the #2176 structural tag becomes a column, and the count aggregates get their COVERING plan back
+
+Leg B of issue 2228. Legs A (the cursor/ORDER BY, merged as #2244) and C (the
+`/boot` wiring) are separate PRs on purpose: together they would make a rollback
+impossible.
+
+### The defect
+
+#2176 gave the presence filter a per-ROW exemption — a `:mode` row the server
+tagged structural at persist time (a ban, a key, a limit, never a `+o`) survives
+the fold — and spelled it `json_extract(meta, '$.structural') IS 1`. `meta` is
+in no index. So every door that hides presence went back to seeking the
+composite and then fetching the table row for EVERY candidate, which is exactly
+the shape #393 measured as that day's incident and exactly what #1372's
+moduledoc warns about in the sentence saying a PARTIAL widening does not restore
+COVERING. #2176 walked past that warning.
+
+### Measured, twice, on two corpora
+
+A synthetic 400k-row corpus (the committed harness `test/bench_2228b.exs`, which
+builds it from one recursive CTE so it is reproducible from the file alone) and
+an arbiter run on a FROZEN `.backup` of a 403,907-row copy of prod. The SQL was
+captured verbatim off `[:grappa, :repo, :query]` at both ends, never rebuilt; the
+controfactual is that statement with exactly one substring removed,
+programmatically, with the substitution reported so a drift in spelling shows up
+as a false rather than a silent non-edit.
+
+    corpus      form                          plan                    time
+    prod copy   A: with the disjunct          USING INDEX             266 / 260 / 306 ms
+    prod copy   B: disjunct removed           USING COVERING INDEX     95 / 104 /  93 ms
+    synthetic   A / B                         INDEX / COVERING INDEX   (plan only)
+
+~2.8x on the real corpus, identical counts on both sides (53,921), and the two
+orders were run BOTH ways so a warm cache cannot be the explanation. The issue
+itself reported 3.3x (53→174 ms) on another host: same shape, different
+absolutes.
+
+⚠️ The arbiter's first substrate was NOT frozen — it was staging's LIVE database,
+with a 9.9 MB WAL and a `beam.smp` holding write handles, and the tell was the
+row count moving between two reads (403905 → 403907). Every millisecond measured
+there would have been contaminated. The numbers above are from the `.backup`
+taken off a `mode=ro` handle, verified stable across three reads.
+
+### What decided the DESIGN, and it was not the ratio
+
+On that corpus the tag matches **ONE row in the whole database** and ZERO in the
+measured partition, while 310,176 rows carry a non-trivial `meta` — the positive
+control that says the extractor works. So the cost was never evaluating the
+predicate over many rows: it is that `meta` has to be READ, per row, and it lives
+only in the table. That is precisely what a column in the index removes, and it
+is why the cure is a column rather than a cleverer JSON reach or an index over
+the expression. vjt's ruling (relayed, not witnessed first-hand) was "either add
+it to the index via json or make a column + index, I'd lean to the column"; the
+measurement says the same thing for a reason the ruling did not have to state.
+
+That rarity is ONE subject and three networks of a staging restore. On a channel
+with an op war it may not hold — nothing here depends on it holding.
+
+### The shape
+
+`messages.structural`, `boolean NOT NULL DEFAULT false`, appended to all four
+covering families (the two channel ones and the two folded-DM-COALESCE ones) at
+the TAIL, so no seek prefix moves and no plan that works today can stop working.
+The column is DERIVED in `Message.changeset/2` and nowhere else: `meta` stays the
+writer's and cic's channel for the tag, no caller sets the column, so no caller
+can set it wrong and there is no dual-write to keep in step. It is set
+unconditionally, because dropping the tag has to clear the column or the
+exemption outlives it.
+
+EXPAND only — nothing is dropped in this slice, `meta.structural` stays exactly
+where it is, and the running old code that reads the JSON path is unaffected.
+
+`Message.structural_row?/1`, the shared macro, is GONE, and with it the test that
+pinned its JSON literal. That pin existed because the key lived twice, once as an
+atom and once inside a SQL string Ecto forces to be a literal; with a column the
+second spelling does not exist and the compiler checks the first. An invariant a
+type system enforces does not need a test, and keeping one would advertise a
+hazard that is no longer there.
+
+### Result, and the cost
+
+Both doors `/messages/count` calls — `count_after/6` and `count_after_split/6` —
+go from `SEARCH … USING INDEX` to `SEARCH … USING COVERING INDEX` on the
+synthetic corpus, with byte-identical results either side (319,024;
+`%{messages: 271906, events: 1543}`). The migration measured 4.58 s on 400k rows
+for the add, the backfill and four index rebuilds, and the backfill was verified
+by counting both spellings: 2000 = 2000.
+
+The `USE TEMP B-TREE FOR GROUP BY` on the split door is NOT this leg and does not
+move: it is present in both forms, before and after. Worth recording because the
+issue cites it — and because it DOES reproduce at 400k, where an earlier 13k
+bench had suggested it would not.
+
+### Not measured, deliberately
+
+That the ~2.8x becomes ~2.8x on m42: the arbiter ran on a Pi, on staging. That
+the COVERING restoration holds at prod's real row count: the plan is structural
+and should, but "should" is not a measurement. That this is the cause of any
+user-visible slowness: one of the four forms of the cold open was measured, not
+the path.
