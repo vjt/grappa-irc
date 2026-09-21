@@ -12,9 +12,21 @@ import { SETTLE_REREAD_DELAYS_MS } from "./lib/viewportHeight";
 //
 // This component renders position:fixed top-right so it stays visible
 // over BottomBar + compose + keyboard. Flag-gated via localStorage
-// `cic_diag === "1"` (toggled from SettingsDrawer); not rendered by
-// default. Read-only — no side effects on the layout under
-// investigation.
+// `cic_diag === "1"`; not rendered by default. Read-only — no side effects
+// on the layout under investigation.
+//
+// 🔴 The toggle is `AdminDebugTab.tsx` (`setDiagEnabled`, its only caller
+// outside this module and the tests) and NOT SettingsDrawer, whose own
+// comment records the move. Corrected here because the stale attribution
+// hid the constraint that matters: that tab is ADMIN-GATED, so every number
+// this panel prints is reachable only by an admin. On an installed iOS PWA
+// there is no console either, so "just set the localStorage key" needs a Mac
+// and Web Inspector. Issue 1791 is blocked on exactly that — the instrument
+// is available to whoever does NOT reproduce the defect — which is why the
+// foreground check that separates its two candidates was written to have a
+// half that needs no instrument at all: look at whether the iOS
+// form-accessory bar covers the bottom tab row. Anything that can only be
+// answered from this panel inherits the gate, `winH - vvH` included.
 
 export const DIAG_FLAG_KEY = "cic_diag";
 

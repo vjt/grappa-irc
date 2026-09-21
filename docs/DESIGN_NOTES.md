@@ -19097,3 +19097,134 @@ settled here is that one option is off the menu, for a measured reason.
   It says nothing about the display split, which is the half that costs.
 * Nothing client-side ships here. A server that answers `cap` while no caller
   sends it is half a feature on purpose — see the landing argument above.
+<!-- entry #1791b -->
+
+---
+
+## 2026-09-21 — #1791b: the tab row's bottom edge IS `--viewport-height`, and the reported signature has the wrong sign
+
+An iOS 27 installed-PWA field report on this surface, with a geometry none of
+the earlier ones had: returning from an app switch brings the keyboard **and
+the iOS form-accessory bar** back up, the shell **does** shrink, and the bar is
+drawn **over the bottom channel-tab row** rather than the buffer being pushed
+off-screen. Closing and reopening the app clears it.
+
+No cure for that is claimed here. What is established is the layout arithmetic
+that makes the report readable, one defect the investigation surfaced with a
+measured red, and the single on-device reading still owed.
+
+### The four-link chain: the tab row is decided by ONE number
+
+Nothing had written this down, and it is why "verify against the buffer" is a
+false green rather than a weaker check:
+
+```
+html.is-ios { position: fixed; inset: 0 }        → html = the layout viewport
+html.is-ios body { height: calc(var(--vh)*100) } → body = the written height
+#root { height: 100% }                           → no height of its own
+.shell-mobile { height: var(--viewport-height);
+                padding-bottom: 0 }              → border-box, flush bottom
+.bottom-bar                                      → last IN-FLOW child, no position
+```
+
+⇒ the tab row's bottom edge sits exactly `--viewport-height` px below the top
+of the layout viewport, and the row is fully visible **iff**
+`--viewport-height <= vv.offsetTop + vv.height`.
+
+The buffer is not the same measurement. `.scrollback` lives inside
+`.shell-main`, the `1fr` grid row, so it moves whenever anything redistributes
+space INSIDE the shell; the tab row moves only with the shell's outer edge. A
+change that restores the buffer while leaving the row governed by something
+else passes a buffer check and leaves the report standing.
+`cicchetto/src/__tests__/bottomTabRowEdge.test.ts` pins the chain — four
+mutations, four reds, one apiece, plus a no-op negative control that stays
+green.
+
+### The report's own signature cannot produce the report's own symptom
+
+Write `L` for the layout viewport, `K` for the keys, `B` for the accessory bar;
+overlap is `--viewport-height - (vv.offsetTop + vv.height)`, with `vv.offsetTop`
+taken as 0 (the report shows the top of the app visible; UX-6 D10 measured 324
+on this surface, so the assumption is stated rather than assumed away).
+
+| the var holds | overlap | what it looks like |
+|---|---|---|
+| `L - K - B` — the **keyboard-open** value | **0** | no defect at all |
+| `L` — the keyboard-closed value | `K + B` | row behind the KEYS: the earlier reports' shape |
+| `L - K` | **`B`** | **row under the accessory bar: this report's shape** |
+
+So "a stale `--viewport-height`/`--vh` left at the keyboard-open value" — the
+signature the report names — is the one value that produces NO misfit: on
+resume the keyboard is up, and that value is correct. A var stale at the full
+height produces the older, different shape. The only value that produces this
+geometry is `L - K`: **a height that counts the keys and not the accessory bar.**
+
+The step from the report's prose to "overlap ≈ `B`" is a reading of words, not
+a measurement, and it is the one place this entry could be wrong.
+
+### Two candidates, identical in one frame, opposite cures
+
+Both produce `--viewport-height = L - K`:
+
+1. **TIME** — the settle schedule reads while the bar is not yet in the number
+   and latches `L - K`. A later read would give `L - K - B`.
+2. **SOURCE** — `visualViewport.height` never subtracts the accessory bar on
+   this iOS. No read, at any instant, will ever give `L - K - B`.
+
+The vocabulary is this module's own, from the issue-2159 note it already
+carries: *"a stale height is a value from an earlier TIME and a later re-read
+cures it; those 9px are a value from a different SOURCE at the same instant,
+and no schedule closes a constant offset."* Same dichotomy, `B` in place of the
+9px. **If (2) holds, no schedule and no fifth trigger can help** — the cure
+would not be in the writer at all.
+
+They are indistinguishable in one frame and distinguishable in two reads. The
+reading that separates them is `--vh * 100` against `vvH` **on one `DiagFloat`
+line** (both are already printed, per line, since PR #1810): different ⇒ the
+var is stale ⇒ TIME; equal, while the bar covers the row ⇒ the var is current
+and the API is the problem ⇒ SOURCE. Note this is a different comparison from
+the one the issue already asks for — `--vh` beside the window scroll offset
+separates "vars stale" from "content scrolled", which is another axis.
+
+That reading has a cheaper form that needs no resume and no reproduction, and
+so is immune to the observer effect recorded on 2026-09-16 (enabling the panel
+made the bug stop): **in the FOREGROUND, tap the composer and look at the tab
+row.** If the accessory bar covers it there too, (2) is confirmed on the spot
+and the resume path is not the defect — it is merely the case where the user is
+looking at the tab row instead of at the composer.
+
+### The trigger issue 2159 named and did not move
+
+Measured, not argued. `installViewportHeightTracker` registered the
+`visualViewport` `resize` handler as a **one-shot** `writeViewport`, while the
+window `resize` trigger added by issue 2159 runs `writeAndSettle`. 2159's own
+reasoning was written **about the visualViewport handler** — its moduledoc says
+the event *"is handled one-shot, which latches the pre-settle height whenever
+WebKit settles the pane after announcing it"*, and its test says the one-shot
+shape *"is exactly the shape of the `visualViewport` resize handler this module
+already had"* — and then it cured the other trigger. The latching shape was
+fixed on the trigger it was discovered on and left on the trigger it was
+diagnosed on, which is also the ONE event that announces a keyboard geometry
+change.
+
+A test firing a `vv.resize` at `L - K` followed by a silent settle to
+`L - K - B` was RED on main (`expected '499px' to be '453px'`) and is green with
+the handler promoted to the same `writeAndSettle`. Still one writer, one settle
+mechanism, a fifth caller; the redundancy is the one the resume triggers already
+accept, since every re-read reads the LIVE height.
+
+**This is not claimed as #1791's cure.** It is the class-(1) cure and it is
+inert under class (2); which of the two is live is exactly what is unmeasured.
+It is landed on its own terms: a handler that cannot catch a late silent settle
+is a defect whether or not it is this one.
+
+### What stays owed, and why it cannot be earned here
+
+The device reading. This class does not reproduce on desktop (#654) and
+Playwright's iPhone emulation does not reproduce iOS keyboard physics, so no
+green suite closes it. Two further unknowns ride along: `vv.offsetTop` at the
+instant of the overlap (the arithmetic above assumes 0), and whether this
+WebKit honours `interactive-widget=resizes-content` — recorded in the August
+entry as *"not believed to support — not verified against a current WebKit
+here"*, and falsifiable for free by watching whether `winH` moves when the
+keyboard opens.

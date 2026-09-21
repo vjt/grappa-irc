@@ -27,7 +27,8 @@ import {
 // cannot fail for both: that the event reaches the writer at all, and that it
 // reaches it through the SETTLE schedule rather than as a one-shot. A
 // one-shot window-resize handler passes the first and fails the second, which
-// is precisely the shape the existing `visualViewport` resize handler has.
+// was precisely the shape the `visualViewport` resize handler still had —
+// until issue 1791 moved it too, under the test that names it below.
 
 function makeFakeVp(initialHeight: number): {
   vp: VisualViewportLike;
@@ -303,6 +304,47 @@ describe("viewportHeight module", () => {
     vi.advanceTimersByTime(2000);
     expect(document.documentElement.style.getPropertyValue("--viewport-height")).toBe("685px");
     expect(document.documentElement.style.getPropertyValue("--vh")).toBe("6.85px");
+  });
+
+  it("routes the visualViewport resize through the SETTLE schedule too, not a one-shot read (issue 1791)", () => {
+    // The trigger issue 2159 NAMED and did not move. Its own reasoning — "a
+    // handler that reads once at event time latches the pre-settle height and
+    // nothing corrects it" — was written about THIS handler ("exactly the shape
+    // of the `visualViewport` resize handler this module already had", the test
+    // above) and then applied to the window-resize trigger instead. So the
+    // latching shape was cured on the trigger it was discovered on and left on
+    // the trigger it was diagnosed on, which is also the ONE event that
+    // announces a keyboard geometry change.
+    //
+    // The heights are the iOS-27 report's geometry (issue 1791), not round
+    // numbers: a 844 CSS layout viewport, 345 of keys, 46 of form-accessory
+    // bar. iOS announces the keyboard at 844-345=499 and then adds the
+    // accessory bar to 844-391=453 with no second event. A one-shot handler
+    // latches 499, the shell stays 46px taller than the visible area, and the
+    // thing sitting at the shell's bottom edge — the BOTTOM TAB ROW, which is
+    // `.bottom-bar`, the last in-flow child of `.shell-mobile` — is drawn
+    // under the accessory bar. The buffer above it looks fine.
+    //
+    // NOT a claim that this is issue 1791's cause: that needs the device
+    // reading, and a second candidate (an accessory bar iOS never subtracts
+    // from `visualViewport.height` at all) produces the identical geometry and
+    // no schedule cures it. What IS established here is that the handler
+    // cannot catch a late silent settle, which is a defect on its own terms.
+    const { vp, fireResize, setHeight } = makeFakeVp(844);
+    const host = makeResumeHost();
+    installViewportHeightTracker(vp, host.win, host.doc);
+    vi.advanceTimersByTime(2000); // drain the boot settle so only this trigger can pass it
+
+    fireResize(499); // keyboard announced; the accessory bar is not in the number yet
+    expect(document.documentElement.style.getPropertyValue("--viewport-height")).toBe("499px");
+
+    vi.advanceTimersByTime(150); // the first re-read fires, still pre-settle
+    expect(document.documentElement.style.getPropertyValue("--viewport-height")).toBe("499px");
+
+    setHeight(453); // the accessory bar lands — late, and silently
+    vi.advanceTimersByTime(2000);
+    expect(document.documentElement.style.getPropertyValue("--viewport-height")).toBe("453px");
+    expect(document.documentElement.style.getPropertyValue("--vh")).toBe("4.53px");
   });
 
   it("writes the viewport's own height and nothing else — the 9px PWA gap is NOT this trigger's (issue 2159)", () => {
