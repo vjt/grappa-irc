@@ -318,12 +318,14 @@ describe("viewportHeight module", () => {
     //
     // The heights are the iOS-27 report's geometry (issue 1791), not round
     // numbers: a 844 CSS layout viewport, 345 of keys, 46 of form-accessory
-    // bar. iOS announces the keyboard at 844-345=499 and then adds the
-    // accessory bar to 844-391=453 with no second event. A one-shot handler
-    // latches 499, the shell stays 46px taller than the visible area, and the
-    // thing sitting at the shell's bottom edge — the BOTTOM TAB ROW, which is
-    // `.bottom-bar`, the last in-flow child of `.shell-mobile` — is drawn
-    // under the accessory bar. The buffer above it looks fine.
+    // bar. What the fake plays out is the TIME HYPOTHESIS, and it is written as
+    // one on purpose — nobody has observed that sequence on a device. IF iOS
+    // announced the keyboard at 844-345=499 and only then added the accessory
+    // bar to 844-391=453 with no second event, a one-shot handler would latch
+    // 499, the shell would stay 46px taller than the visible area, and the
+    // thing at its bottom edge — the BOTTOM TAB ROW, `.bottom-bar`, the last
+    // in-flow child of `.shell-mobile` — would be drawn under the bar while
+    // the buffer above it looked fine.
     //
     // NOT a claim that this is issue 1791's cause: that needs the device
     // reading, and a second candidate (an accessory bar iOS never subtracts
