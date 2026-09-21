@@ -91,6 +91,28 @@ defmodule Grappa.ScrollbackTest do
     end)
   end
 
+  # issue 2228 B — the SQL a PUBLIC door emits, captured off telemetry rather
+  # than rebuilt here. The predicate under test lives in a private function, so
+  # a locally restated query would pin the restatement and not the door.
+  defp capture_sql(fun) do
+    tab = :ets.new(:sql, [:public, :duplicate_bag])
+    handler = "scrollback-test-sql-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler,
+      [:grappa, :repo, :query],
+      fn _, _, meta, _ -> :ets.insert(tab, {:q, meta.query}) end,
+      nil
+    )
+
+    fun.()
+    :telemetry.detach(handler)
+    queries = tab |> :ets.lookup(:q) |> Enum.map(fn {:q, q} -> q end)
+    :ets.delete(tab)
+
+    Enum.find(queries, "", &String.contains?(&1, ~s(FROM "messages")))
+  end
+
   # #393 — EXPLAIN QUERY PLAN text for an Ecto query, rendered from the
   # PRODUCTION SQL (`Repo.to_sql`) so the plan reflects exactly what runs.
   defp explain_plan(query) do
@@ -1097,6 +1119,51 @@ defmodule Grappa.ScrollbackTest do
 
       assert Enum.map(page, & &1.id) == [ban.id],
              "the ban must render on a denoised channel; the +o must not"
+    end
+
+    # issue 2228 leg B — the SAME exemption, read off a COLUMN instead of a
+    # JSON reach into `meta`. `meta` is in no index, so touching it drops the
+    # `/messages/count` aggregates from a COVERING plan to an index seek plus a
+    # table fetch PER ROW. Measured on a 403,907-row copy of prod: `USING
+    # INDEX` 266/260/306 ms against `USING COVERING INDEX` 95/104/93 ms for the
+    # same statement with only this disjunct removed, ~2.8x, cache excluded by
+    # running the two orders both ways.
+    #
+    # This pins the EMITTED statement rather than the source, the same posture
+    # as the fragment pin it replaces: the behaviour test above would stay
+    # green if the predicate silently went back to reading `meta`, and the
+    # whole point of the change is WHICH column it reads.
+    test "issue 2228 B — the presence filter reads the structural COLUMN, never meta JSON",
+         %{user: user, network: net} do
+      sql = capture_sql(fn -> Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0, "vjt", true) end)
+
+      assert sql =~ ~s("structural"),
+             """
+             the hide-presence predicate no longer names the `structural`
+             column:
+
+               #{sql}
+             """
+
+      refute sql =~ "'$." <> Atom.to_string(Message.structural_meta_key()) <> "'",
+             """
+             the hide-presence predicate is STILL reaching into `meta` for the
+             tag. That is the leg-B defect: it costs the aggregate its COVERING
+             plan.
+
+               #{sql}
+             """
+    end
+
+    test "issue 2228 B — the column pin is not vacuous: hide_presence false emits neither",
+         %{user: user, network: net} do
+      # Positive control. With the filter off there is no exemption to express,
+      # so a pin that fires here would be matching something every statement
+      # carries rather than the predicate under test.
+      sql = capture_sql(fn -> Scrollback.count_after({:user, user.id}, net.id, "#sniffo", 0, "vjt", false) end)
+
+      refute sql =~ ~s("structural")
+      refute sql =~ "'$." <> Atom.to_string(Message.structural_meta_key()) <> "'"
     end
 
     test "hide_presence: true folds an UNTAGGED mode row — the pre-2176 rows, unchanged and not backfilled",

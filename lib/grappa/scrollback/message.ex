@@ -362,44 +362,15 @@ defmodule Grappa.Scrollback.Message do
   @spec structural_meta_key() :: :structural
   def structural_meta_key, do: @structural_meta_key
 
-  @doc """
-  The query-side twin of `structural_meta_key/0`: an Ecto fragment that is
-  TRUE for a row carrying the structural tag.
-
-  Same shape and same reason as `Grappa.IRC.Identifier.nick_fold/1` — a rule
-  that has to hold in SQL as well as in memory is expressed once, as a macro,
-  so the two SQL sites that must honour it (`Grappa.Scrollback`'s
-  `maybe_exclude_presence/2` for the history fetch, `Grappa.ReadCursor`'s
-  `exclude_hidden_presence/2` for the #505 unread aggregate) cannot drift
-  into two different JSON paths.
-
-  `IS 1` rather than `= 1`, and the honest reason is narrower than the one
-  this docstring first gave. SQLite's `json_extract/2` returns SQL NULL for an
-  absent path, and an untagged row is the COMMON case (every `:join`, every
-  `:part`, every `+o`), so under `=` the comparison is NULL and a caller that
-  negates it propagates NULL rather than the false it meant. That is true
-  about the SQL — **and MEASURED, it changes nothing at either of today's two
-  sites.** A mutant swapping `IS 1` for `= 1` left both suites green, because
-  a NULL predicate in a `WHERE` and in a LEFT JOIN's `ON` is "not true", which
-  is exactly the outcome an untagged row wants at both sites. So this is a
-  choice about COMPOSABILITY, not a bug fix: the fragment is a shared macro
-  whose next call site may want the NULL case to be INCLUDED, and there the
-  two spellings diverge. Stated as a preference because that is what it is.
-
-  The JSON path is the literal `'$.structural'` and it HAS to be — Ecto
-  requires `fragment/n`'s first argument to be a literal string, so a module
-  attribute cannot be interpolated there. The key therefore exists twice in
-  this module, once as the atom a writer uses and once inside a SQL string,
-  and the pin is a test that renders the REAL SQL (`Ecto.Adapters.SQL.to_sql`)
-  and looks for `structural_meta_key/0` in it — measuring the emitted
-  statement rather than re-asserting the source, the same posture as
-  `Identifier.nick_fold_sql/1`'s byte-pin against the folded-index migrations.
-  """
-  defmacro structural_row?(meta_column) do
-    quote do
-      fragment("json_extract(?, '$.structural') IS 1", unquote(meta_column))
-    end
-  end
+  # issue 2228 B — `structural_row?/1`, the shared `json_extract(meta,
+  # '$.structural') IS 1` macro, lived here and is GONE. The two SQL sites it
+  # kept in step (`Scrollback.maybe_exclude_presence/2`,
+  # `ReadCursor.exclude_hidden_presence/2`) now read the `structural` COLUMN
+  # directly, so there is no JSON path to drift and no macro needed to hold two
+  # spellings together: the field is on the schema and the compiler checks it.
+  # The pin test that guarded the literal went with it — an invariant a type
+  # system enforces does not need a test, and keeping one would suggest the
+  # hazard still exists.
 
   @type kind ::
           :privmsg
@@ -452,6 +423,15 @@ defmodule Grappa.Scrollback.Message do
     # rotation. See migration `20260507151920_add_dm_with_to_messages`.
     field :dm_with, :string
 
+    # issue 2228 B — the #2176 structural tag, DERIVED from `meta` by
+    # `put_structural/1` and never cast from the caller. It exists because
+    # `meta` is in no index: reading the tag out of the JSON blob costs every
+    # hide-presence door its COVERING plan (measured `USING INDEX` vs `USING
+    # COVERING INDEX`, ~2.8x on a 403,907-row copy of prod). `meta` remains the
+    # writer's and cic's channel for the tag — this is a read-path projection
+    # of it, not a second input.
+    field :structural, :boolean, default: false
+
     timestamps(type: :utc_datetime_usec, updated_at: false)
   end
 
@@ -498,6 +478,7 @@ defmodule Grappa.Scrollback.Message do
     # idiom as `Networks.Credential`, `Networks.Server` and `Vhosts.Vhost`.
     |> cast(attrs, [:body], empty_values: [])
     |> canonicalize_channel()
+    |> put_structural()
     |> validate_required([:network_id, :channel, :server_time, :kind, :sender])
     |> Subject.validate_xor()
     |> validate_identifier(:channel, &valid_target?/1)
@@ -533,6 +514,23 @@ defmodule Grappa.Scrollback.Message do
       ch when is_binary(ch) -> put_change(changeset, :channel, Identifier.canonical_target(ch))
       _ -> changeset
     end
+  end
+
+  # issue 2228 B — derive the `structural` COLUMN from the `meta` tag, here and
+  # nowhere else. This is the whole reason the column cannot drift from the
+  # JSON: no caller sets it, so no caller can set it wrong, and a writer that
+  # learns to tag a row gets the column for free. `get_field/2` rather than
+  # `get_change/2` so an update that leaves `meta` alone still re-derives from
+  # the value the row will actually carry, and it is set UNCONDITIONALLY —
+  # dropping the tag has to clear the column, or the exemption outlives it.
+  defp put_structural(changeset) do
+    tagged? =
+      case get_field(changeset, :meta) do
+        %{} = meta -> Map.get(meta, @structural_meta_key) == true
+        _ -> false
+      end
+
+    put_change(changeset, :structural, tagged?)
   end
 
   @spec validate_body_for_kind(Ecto.Changeset.t()) :: Ecto.Changeset.t()

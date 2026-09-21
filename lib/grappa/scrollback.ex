@@ -1439,20 +1439,29 @@ defmodule Grappa.Scrollback do
   #
   # issue 2176 — the second disjunct is the per-row exemption: a `:mode` row
   # the server tagged STRUCTURAL at persist time (a ban, a key, a limit, a
-  # flag — never a `+o`) survives the fold. `Message.structural_row?/1` is the
-  # shared fragment; `ReadCursor.exclude_hidden_presence/2` composes the same
-  # one, so the history page and the unread aggregate cannot disagree about a
-  # ban. Written as `kind NOT IN (…) OR structural` rather than the equivalent
-  # `NOT (kind IN (…) AND NOT structural)` because SQL short-circuits OR: on
-  # the overwhelming majority of rows — every `:privmsg` — the left disjunct
-  # is already true and `json_extract` is never called.
+  # flag — never a `+o`) survives the fold. `ReadCursor.exclude_hidden_presence/2`
+  # reads the same column, so the history page and the unread aggregate cannot
+  # disagree about a ban. Written as `kind NOT IN (…) OR structural` rather
+  # than the equivalent `NOT (kind IN (…) AND NOT structural)` because SQL
+  # short-circuits OR: on the overwhelming majority of rows — every
+  # `:privmsg` — the left disjunct is already true.
+  #
+  # issue 2228 B — this reads the `structural` COLUMN. It used to be
+  # `json_extract(meta, '$.structural')`, and `meta` is in no index, so the
+  # predicate pulled the whole table row for every row it examined and cost
+  # this query family its COVERING plan. Measured on a frozen 403,907-row copy
+  # of prod, same statement, only this disjunct differing: `USING INDEX`
+  # 266/260/306 ms against `USING COVERING INDEX` 95/104/93 ms, ~2.8x, orders
+  # reversed so a warm cache cannot explain it. On that corpus the tag matched
+  # ONE row in the entire database — the cost was never evaluating the
+  # predicate, it was reading `meta` to evaluate it.
   defp maybe_exclude_presence(query, false), do: query
 
   defp maybe_exclude_presence(query, true) do
     where(
       query,
       [m],
-      m.kind not in ^@suppressed_presence_kinds or Message.structural_row?(m.meta)
+      m.kind not in ^@suppressed_presence_kinds or m.structural
     )
   end
 

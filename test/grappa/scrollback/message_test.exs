@@ -1,8 +1,6 @@
 defmodule Grappa.Scrollback.MessageTest do
   use ExUnit.Case, async: true
 
-  import Ecto.Query
-
   alias Grappa.Scrollback.Message
 
   # issue 2176 — `Message.structural_row?/1` is a query macro (the shared Ecto
@@ -141,37 +139,52 @@ defmodule Grappa.Scrollback.MessageTest do
       assert Message.structural_meta_key() == :structural
     end
 
-    test "structural_row?/1 renders SQL that names structural_meta_key/0" do
-      # The macro's fragment string MUST be a literal (Ecto refuses a module
-      # attribute there), so the key lives twice in `Message`: once as the atom
-      # the writer uses, once inside `'$.structural'`. Nothing in the source
-      # holds those two together — this does, and it does it by reading the
-      # SQL the query actually emits rather than re-asserting the source text.
-      {sql, _} =
-        Ecto.Adapters.SQL.to_sql(:all, Grappa.Repo, from(m in Message, where: Message.structural_row?(m.meta)))
-
-      assert sql =~ "json_extract"
-
-      assert sql =~ "'$." <> Atom.to_string(Message.structural_meta_key()) <> "'",
-             """
-             `structural_row?/1` emits a JSON path that no longer names
-             `structural_meta_key/0`:
-
-               #{sql}
-
-             The writer tags `meta.#{Message.structural_meta_key()}`; this query
-             would then match nothing, and every structural MODE row would be
-             folded again on a denoised channel (issue 2176) with both suites
-             green.
-             """
+    test "issue 2228 B — the tag is ALSO a real column, derived from the meta key" do
+      # The read predicate moved off `json_extract(meta, '$.structural')` and
+      # onto this column, because a JSON reach into `meta` touches a value no
+      # index carries and costs the aggregate its COVERING plan (measured:
+      # `USING INDEX` vs `USING COVERING INDEX`, ~2.8x on a 403,907-row copy of
+      # prod). The column is DERIVED, never a second input: `meta` stays the
+      # writer's and cic's channel for the tag, and the changeset is the ONE
+      # place the two are tied together, so there is no dual-write for a caller
+      # to get wrong.
+      assert :structural in Message.__schema__(:fields)
+      assert Message.__schema__(:type, :structural) == :boolean
     end
 
-    test "the SQL pin is not vacuous — a query without the macro does NOT name the path" do
-      # Positive control for the pin above: `=~` against a path that appears in
-      # every query would pass no matter what the macro emitted.
-      {sql, _} = Ecto.Adapters.SQL.to_sql(:all, Grappa.Repo, from(m in Message, where: m.kind == :mode))
+    test "issue 2228 B — a tagged meta produces structural: true on the changeset" do
+      cs =
+        Message.changeset(%Message{}, %{
+          user_id: Ecto.UUID.generate(),
+          network_id: 1,
+          channel: "#c",
+          server_time: 1,
+          kind: :mode,
+          sender: "op",
+          body: nil,
+          meta: %{Message.structural_meta_key() => true, modes: "+b", args: ["troll!*@*"]}
+        })
 
-      refute sql =~ "'$." <> Atom.to_string(Message.structural_meta_key()) <> "'"
+      assert Ecto.Changeset.get_field(cs, :structural) == true
+    end
+
+    test "issue 2228 B — an untagged meta produces structural: false, never nil" do
+      # NOT NULL in the DB, so a nil here is a constraint error at insert; and
+      # a three-valued column would put `NULL` back into the predicate the
+      # column exists to make cheap.
+      cs =
+        Message.changeset(%Message{}, %{
+          user_id: Ecto.UUID.generate(),
+          network_id: 1,
+          channel: "#c",
+          server_time: 1,
+          kind: :mode,
+          sender: "op",
+          body: nil,
+          meta: %{modes: "+o", args: ["alice"]}
+        })
+
+      assert Ecto.Changeset.get_field(cs, :structural) == false
     end
 
     test "is an allowlisted meta key — otherwise the tagged row is REJECTED" do

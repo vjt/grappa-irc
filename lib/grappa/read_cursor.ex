@@ -540,18 +540,19 @@ defmodule Grappa.ReadCursor do
   # overwhelmingly common case, and it deserves the exact pre-#505 SQL rather
   # than a tautology the planner has to see through.
   #
-  # issue 2176 — the `not Message.structural_row?/1` conjunct is the per-row
-  # exemption, and it has to be HERE as well as in `Scrollback`'s
-  # `maybe_exclude_presence/2`: this aggregate is what SEEDS the unread badge,
-  # so if only the history fetch learned about structural mode rows the pane
-  # would render a ban the badge refused to count — the #239 "the count and
-  # the pane must agree on which rows count" invariant, one table out.
+  # issue 2176 — the `not m.structural` conjunct is the per-row exemption, and
+  # it has to be HERE as well as in `Scrollback`'s `maybe_exclude_presence/2`:
+  # this aggregate is what SEEDS the unread badge, so if only the history fetch
+  # learned about structural mode rows the pane would render a ban the badge
+  # refused to count — the #239 "the count and the pane must agree on which
+  # rows count" invariant, one table out.
   #
-  # The fragment answers exactly true or false (`IS 1`, never NULL) rather than
-  # relying on NULL behaving itself under this `not`. Measured, `= 1` would
-  # also pass here — a NULL `ON` is "not matched", which is what an untagged
-  # row wants anyway — so the spelling buys composability, not a fix. See
-  # `Message.structural_row?/1`.
+  # issue 2228 B — it reads the `structural` COLUMN, where it used to reach
+  # into `meta` with `json_extract`. `meta` is in no index, so the old spelling
+  # made this aggregate fetch the table row per candidate; the column is in the
+  # four covering families. The NULL question the old comment worried about is
+  # gone with the JSON: the column is `NOT NULL DEFAULT false`, so `not
+  # m.structural` is exactly true or false and needs no `IS 1` ceremony.
   @spec exclude_hidden_presence(Ecto.Query.dynamic_expr(), %{
           String.t() => MapSet.t(String.t())
         }) :: Ecto.Query.dynamic_expr()
@@ -574,7 +575,7 @@ defmodule Grappa.ReadCursor do
         dynamic(
           [_, _, m],
           ^join_on and
-            not (m.kind in ^suppressed and not Message.structural_row?(m.meta) and ^hidden)
+            not (m.kind in ^suppressed and not m.structural and ^hidden)
         )
     end
   end
