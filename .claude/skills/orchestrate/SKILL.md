@@ -716,6 +716,23 @@ If `STALE` or `FRESH`, fall through to Step 2.
 
 **USER-TYPED detector**: hashes the last `❯ <text>` line; if it changes vs prior tick (md5), emits `USER-TYPED` so orchestrator knows vjt typed in pane directly. Observe-only — don't intervene.
 
+🔴🔴 **BUT IT FIRES ON YOUR OWN `send-keys` TOO, AND ITS NAME SAYS OTHERWISE — measured 2026-09-22.**
+The detector diffs the last `❯` line and **has no way to know whose fingers produced it**: after I
+cleared w1, the event arrived as `USER-TYPED ctx=TBD%` and the thing it had "seen a user type" was
+**my own `/clear`** (the md5 moved from my long order to `/clear`). The label invites exactly the
+wrong reading — this file's own decision table says *"vjt typed in pane directly"*, i.e. **a human
+did something**, and on that reading you go looking for a message that does not exist, or worse
+treat it as input from your user.
+🥇 **Rule: `USER-TYPED` means THE LAST PROMPT LINE CHANGED, nothing more. Before reading it as a
+human, check it against what YOU just sent** — if you send-keys'd that pane in the last tick or two,
+it is almost certainly your own echo. The discriminators are the ones already in this file, and the
+capture gives both in one shot: the `-p -e` attribute (`^[[2m` ⇒ ghost; bright-on-highlight
+`^[[38;5;231m` on `^[[48;5;237m` ⇒ a real SUBMITTED turn) plus **the text itself**, which tells you
+whose order it was.
+🥇 *Third costume of the same family as the false IDLE: a detector that is factually right about a
+LOW-LEVEL change and whose NAME asserts a CAUSE it cannot observe. A field named for its suspected
+cause will be read as that cause — so read the change, not the label.*
+
 **ctx parse**: tries `🧠 NN%`, falls back to `TBD` (post-`/clear` empty). v1 emitted `ctx=%` (broken parse) when status line wrapped offscreen; v2 always returns a valid value.
 
 🔴🔴 **UN PANE CON IL RENDER ROTTO PRODUCE `IDLE` E `STALL state=idle` FALSI — misurato
