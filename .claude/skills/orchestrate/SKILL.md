@@ -1765,6 +1765,33 @@ said "ask vjt for the STACK lane", which is flatly wrong: lanes are MINE).
   **Cure: after arming a monitor on anything you are actually waiting for, prove it is live before you rely
   on it** (touch the file / check the task is running), and **keep polling until you have that proof** —
   never downgrade an active check to "the monitor has it" on the strength of the arming call alone.
+- 🔴🔴 **UN FILTRO `grep -v` SU UNO STREAM DI MONITOR CHE NON MATCHA NIENTE **SI ANNUNCIA ARMATO**, E
+  LA FIXTURE CHE LO APPROVA PUO' ESSERE SCRITTA A MANO — misurato 2026-09-22, rotto da me nello stesso
+  turno in cui l'ho scritto.** Per silenziare lo `STALL state=idle` di due worker in HOLD ho
+  "migliorato" il filtro della sessione precedente ancorandolo: da
+  `grep -vE 'grappa-worker-2 .*STALL state=idle'` a `grep -vE '^\[grappa-worker(-2)? %[0-9]+\] …'`.
+  **Droppava ZERO righe**, e l'ha smentito **il primo evento reale, tre minuti dopo l'arm**.
+  🔑 **Causa: il label NON e' `grappa-worker`, e' `✳ grappa-worker`.** `monitor-stream.sh` prende il
+  prefisso da `tmux display-message -p '#{pane_title}'`, e il titolo che Claude Code mette nel pane
+  comincia con **U+2733** (`M-bM-^\M-3` sotto `cat -v`) ⇒ la riga vera e' `[✳ grappa-worker-2 %28] …`
+  e `^\[grappa-worker` **non puo' matchare per costruzione**.
+  🪞 **E i controlli passavano tutti e due.** Avevo **digitato la fixture a mano** ricostruendo il
+  prefisso dalla mia idea del label invece di leggerlo dal sistema: pos ctrl 2/2, neg ctrl 1/1, verde
+  pieno — **su un input che non somiglia all'originale nel punto decisivo.** E' la stessa forma gia' a
+  verbale qui (*un meccanismo provato su un modello che manca della feature decisiva e' provato per
+  meta'*), vista dal lato del FILTRO.
+  🥇 **REGOLA: una fixture per un filtro si COSTRUISCE dai valori letti dal sistema** — qui
+  `L=$(tmux display-message -p -t %NN '#{pane_title}')` e poi `printf '[%s %%NN] …' "$L"` — **mai
+  digitati.** E il verdetto si prende confrontando **VECCHIO vs NUOVO sulla stessa fixture**: li'
+  `vecchio=0, nuovo=2` ha reso il difetto non discutibile.
+  ⚠️ **E la direzione del danno e' quella cattiva: un filtro inerte non e' rumore in piu', e' rumore
+  che TI CREDI di aver tolto** — al prossimo giro leggi lo `STALL idle` atteso come se il filtro fosse
+  stato revocato, o peggio ti abitui a scartarlo a occhio. **Un `grep -v` che droppa 0 righe va trattato
+  come uno strumento morto**, non come "nessuna riga da togliere": e lo si distingue **solo** contando
+  le righe droppate, perche' i due casi hanno lo stesso identico output.
+  🥇 *Ennesima faccia dello zero falso e plausibile, costume nuovo: non un check che guarda male, ma un
+  FILTRO che non toglie niente — e il suo zero non compare da nessuna parte, perche' nessuno stampa
+  quante righe un `grep -v` ha scartato.*
 - 🔴 **Never background a waiter with `&` inside a foreground Bash** — it detaches, advances the cursor and eats
   events. Arm ONLY via `run_in_background: true`, **one per assistant message** (two in one message = both
   `killed`, observed 3×). This is the legacy v2 path; prefer the Monitor above.
