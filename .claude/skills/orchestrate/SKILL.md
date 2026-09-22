@@ -2718,6 +2718,24 @@ nessuna riscrittura possibile. Misurala lo stesso se costa due comandi, ma dichi
   riarmata.** *Ennesima faccia dello zero falso e plausibile: non lo strumento rotto, non
   l'artefatto sbagliato, ma il PRIVILEGIO insufficiente — e l'unica cosa che lo rivela è un
   controllo a risposta IMPOSSIBILE da sbagliare.*
+- 🔴🔴 **UNA `str.replace` CHE NON MATCHA NON DICE NIENTE — E LA RIGA CHE NON AGGIORNA E' PROPRIO
+  QUELLA CHE NON PUOI PERDERE (orch, 2026-09-22, DUE volte nella stessa sessione, stesso campo).**
+  Aggiornando l'handoff col task id del listener nuovo ho scritto l'`old` come
+  ``"**pane `X` · board `Y`**"`` mentre nel file il `**` apre prima di `LISTENER` e sta **solo in
+  chiusura** ⇒ zero occorrenze, **rc=0, nessun avviso**, e il file e' rimasto a dichiarare VIVO un
+  listener che avevo appena fermato **senza nominare quello vero**. Riparato, **e rifatto identico
+  venti minuti dopo** copiando la forma sbagliata dal mio stesso turno precedente.
+  🔑 **Perche' e' la classe peggiore in cui inciampare su QUESTO file: `TaskList` non enumera i
+  Monitor**, quindi l'unico handle su un listener e' l'id scritto li'. Una replace muta non produce
+  un errore, produce **un orfano che nessuno puo' piu' uccidere** — e al resume successivo si
+  ri-arma sopra, e ogni evento arriva doppio.
+  🥇 **REGOLA: ogni `replace` su un file di STATO vuole `assert s.count(old) == 1` PRIMA della
+  scrittura, senza eccezioni** — e l'assert va sul SINGOLO pezzo, non solo sul blocco grosso accanto
+  (e' esattamente il pezzo che ho lasciato senza le due volte). Dopo la scrittura, **rileggi per
+  CHIAVE con un neg ctrl**: se l'id nuovo conta 0, non hai aggiornato niente.
+  🪞 *Ennesima faccia dello zero falso e plausibile, in casa: non uno strumento rotto e non
+  l'artefatto sbagliato, ma **un'operazione che riesce senza fare niente e lo segnala passando**.
+  Gemella esatta del `<verificatore> || echo "PULITO"`.*
 - 🔴🔴 **L'HANDOFF NON SI POTA CON UNA REGEX, E NON C'È GIT A SALVARTI: `.orchestrate/` È
   GITIGNORATO (orch, 2026-09-14, danno vero).** Per togliere UN blocco di ~18 righe ho scritto un
   `python3` con `re.search(r"> 🪦 .*?(?=\n> 🔒 \*\*`w1-2031`|\n> \*\*IGNOTE)", s, re.S)`: il
