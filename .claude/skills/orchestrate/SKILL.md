@@ -2114,6 +2114,26 @@ di comandi: prima di girarla, chiediti se il contributo APPENDE o MODIFICA.** Su
 e' la riga MANGIATA; su una modifica e' la riga **SOPRAVVISSUTA**. Sono difetti opposti e i check che
 li beccano non si sovrappongono. *Una worker che dichiara un mio check inapplicabile E ne porta tre
 che discriminano ha fatto piu' che obbedire: ha riparato il brief.*
+🔴🔴 **`git log -- <path>` E `git diff -- <path>` SULLO STESSO RANGE POSSONO DISSENTIRE, ED E'
+CORRETTO: RISPONDONO A DUE DOMANDE DIVERSE (orch, 2026-09-22, misurato deicidendo se la ricetta
+fosse vacua su #2286).** Stesso range `merge-base..origin/main`, stesso path:
+`git log --oneline -- docs/DESIGN_NOTES.md` ⇒ **DUE commit** (`083321e4f` ci mette una rationale,
+`c678ea5a1` la toglie); `git diff --numstat -- docs/DESIGN_NOTES.md` ⇒ **NIENTE**. **`log` chiede
+«qualche commit l'ha toccato?», `diff` chiede «il CONTENUTO e' diverso?»** — aggiunto-e-ritirato da'
+SI alla prima e NO alla seconda.
+🥇 **Conta perche' decide una RICETTA, e le due letture portano a ordini opposti:** letto col `log`
+concludi *"main ha toccato il file conteso ⇒ union-rebase, niente `--rebase` lato GitHub"*; letto col
+`diff` concludi *"contributo netto ZERO ⇒ nessun conflitto possibile, `--rebase` e' sicuro"*. **La
+domanda giusta per il rischio `merge=union` e' quella del `diff`**: il driver lavora sul CONTENUTO, e
+un testo aggiunto e poi ritirato **dopo il merge-base** non puo' essere resuscitato in un ramo che
+predata entrambi — non ce l'ha, e main nemmeno.
+⚠️ **E il `diff` vuoto NON si legge da solo: il suo neg ctrl e' vacuo per costruzione** — un path
+INESISTENTE stampa anche lui niente con rc=0 (misurato su `docs/NO_SUCH_FILE.md`), quindi *"output
+vuoto"* non distingue **nessuna modifica** da **path sbagliato**. **Il pos ctrl che lo salva e' lo
+STESSO comando sull'ALTRO lato**: `diff --numstat $B..<pr> -- docs/DESIGN_NOTES.md` ⇒ `131 0` ⇒ la
+grafia del path e' giusta e lo strumento su quel path parla. *Ennesima faccia dello zero falso e
+plausibile, e il controllo che lo rende misurato era a portata di mano nella stessa domanda.*
+
 🔴 **`_Deploy:` NON E' UN CHECK, e' INERTE** — non citarlo, o dichiaralo inerte.
 ⚠️ Il gate "forma al confine" e' **VACUO** quando il merge non tocca `DESIGN_NOTES`: **dichiaralo vacuo.**
 🥇 **Un FF PURO (`ahead=N behind=0`, ref PATCH-ato via `gh api`) rende la ricetta vacua PER COSTRUZIONE** —
