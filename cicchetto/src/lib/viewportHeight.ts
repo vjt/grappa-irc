@@ -66,8 +66,11 @@
 // failure once more with a third sign. An iPadOS Split View divider drag
 // resizes the pane while the app stays FOREGROUNDED and FOCUSED throughout, so
 // none of the three #649 triggers fires; and the one event that does reach
-// this module, `visualViewport` `resize`, is handled one-shot, which latches
+// this module, `visualViewport` `resize`, WAS handled one-shot, which latches
 // the pre-settle height whenever WebKit settles the pane after announcing it.
+// (Past tense since issue 1791 — that handler now runs the settle schedule
+// too. 2159 diagnosed the shape here and cured it on the window trigger; see
+// the issue-1791 paragraph below.)
 // Measured on the reporter's iPad (iPadOS 26.7, iPad Pro 11, installed PWA,
 // narrow pane): the probe reads the pane at 417x685 with `100dvh` = 685px and
 // all four safe-area insets at 0px, in the very configuration whose
@@ -100,6 +103,31 @@
 // different SOURCE at the same instant, and no schedule closes a constant
 // offset. They are also 9px of a ~292px deficit (685 pane against a ~393px
 // shell), so they cannot account for the report either.
+//
+// issue 1791 (2026-09-21) — the trigger 2159 NAMED and did not move. The
+// paragraph above diagnosed the one-shot latching shape on the `visualViewport`
+// resize handler and then cured the WINDOW resize trigger, so the shape stayed
+// on the one event that announces a keyboard geometry change. It is now a fifth
+// caller of the same `writeAndSettle`.
+//
+// The geometry that motivated it, from an iOS 27 installed-PWA field report:
+// returning from an app switch brings the keyboard AND the iOS form-accessory
+// bar back up, and the bar is drawn OVER the bottom channel-tab row. That row
+// is `.bottom-bar`, the last in-flow child of `.shell-mobile`, whose height is
+// `var(--viewport-height)` — so the tab row's bottom edge IS this var, and a
+// var one accessory bar too tall puts the row under the bar while the buffer
+// above it still looks right. A cure checked against buffer position alone
+// reads green through it.
+//
+// What that report CANNOT establish, and what this change therefore does not
+// claim: whether the var is stale (a value from an earlier TIME — this cures
+// it) or whether `visualViewport.height` never subtracts the accessory bar at
+// all (a value from a different SOURCE — no schedule closes a constant offset,
+// exactly as the 9px note below says). Both produce the identical geometry in
+// one frame. The device reading that separates them is `--vh * 100` against
+// `vvH` on one `DiagFloat` line: different ⇒ stale, equal while the bar covers
+// the row ⇒ the API. Unmeasured — this class does not reproduce off-device
+// (#654), and Playwright's iPhone emulation does not reproduce iOS physics.
 //
 // Mock surface for vitest: `installViewportHeightTracker` accepts an
 // optional viewport argument so unit tests can pass a fake
@@ -204,7 +232,15 @@ export function installViewportHeightTracker(
 ): void {
   if (!vp) return;
   writeAndSettle(vp);
-  vp.addEventListener("resize", () => writeViewport(vp));
+  // issue 1791 — `writeAndSettle`, not the one-shot `writeViewport` this used
+  // to call. Issue 2159 diagnosed the latching shape ON THIS HANDLER ("the one
+  // event that does reach this module, `visualViewport` `resize`, is handled
+  // one-shot, which latches the pre-settle height whenever WebKit settles the
+  // pane after announcing it") and then cured the WINDOW resize trigger
+  // instead, leaving the diagnosed one as it was. Same writer, same schedule,
+  // same argument; the redundancy is the one the resume triggers already
+  // accept, since every re-read reads the LIVE height.
+  vp.addEventListener("resize", () => writeAndSettle(vp));
   // #649 resume triggers. Three of them because no single one covers every
   // return path: an installed iOS PWA coming back from an app-switch reports
   // `visibilitychange`, a bfcache restore reports `pageshow`, and a
