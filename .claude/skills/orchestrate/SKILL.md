@@ -2942,6 +2942,31 @@ nessuna riscrittura possibile. Misurala lo stesso se costa due comandi, ma dichi
   `$server` spiegava **tutto** l'errore, l'allargamento del set di sigilli a `# & ! +` e' **giusto in
   principio e INERTE su quel dato** (ricontato: 6.340 identico). Dire "aveva ragione su tutto" avrebbe
   messo a verbale come causa una cosa che non aveva spostato un byte.
+- 🔴🔴 **E LO STESSO GREP MENTE ANCHE SUI *LETTORI*, NON SOLO SUI DUPLICATI — E IL BUCO LO FABBRICA
+  UN CONFINE DI BUILD (orch, 2026-09-25, misurato da w2 contro una misura MIA su issue 2295).**
+  Avevo dato alla worker, **come misura**, `git grep -c` del token sotto `cicchetto/e2e/` ⇒ **ZERO**,
+  con tanto di pos ctrl sano su un altro path. Il numero era **vero**; la conclusione che invitava —
+  *"gli e2e non leggono quel valore"* — era **falsa**: lo spec del compositor band lo **DUPLICA come
+  letterale** (`const CLEARANCE_PX = 16`) e ci asserisce sopra il `padding-top` **calcolato dal
+  vivo**. Lasciato a 16 sarebbe andato rosso **su una macchina vera, non su una stringa.**
+  🔑 **La causa non e' sciatteria di chi ha scritto lo spec: e' STRUTTURALE.** `cicchetto/e2e/`
+  compila contro il **proprio tsconfig** e non puo' importare da `src/` ⇒ **una costante che
+  attraversa quel confine e' duplicata PER PROGETTO**, e la copia non porta il nome dell'originale.
+  ⇒ **un grep sul nome del token non puo' trovarla, per costruzione.**
+  🥇 **REGOLA: prima di dichiarare che un valore ha N lettori, chiediti se esiste un CONFINE DI BUILD
+  che lo obbliga a essere ricopiato altrove** (tsconfig separato, package separato, uno specchio a
+  mano come `ADMIN_TABS`). Se c'e', si cerca il **VALORE** e la **FORMA dell'assert**, non
+  l'identificatore. *E' la gemella esatta di «un grep su un identificatore misura le OCCORRENZE DEL
+  TESTO, non gli USI» — li' il grep ACCUSAVA un commento, qui ASSOLVE un lettore vivo, e il verso che
+  assolve e' quello che costa.*
+  🪞 **La parte che riguarda me, ed e' la piu' importante: quello zero l'ho consegnato IO in un
+  brief, etichettato MISURATO.** Una worker eredita un numero dall'orchestratrice **senza il
+  ragionamento che ci sta dietro**, quindi non puo' sapere quale domanda quel numero NON ha posto.
+  ⇒ **un numero in un brief va accompagnato dalla DOMANDA a cui risponde** (*"zero occorrenze DEL
+  NOME sotto e2e/ — NON ho stabilito che non ci siano lettori"*), o diventa una premessa che nessuno
+  ricontrolla. 🥇 *E lei, dopo la craniata, si e' rifiutata di affermare pure l'inverso — «non
+  promuovo quello strumento a "non ce ne sono altri"». Chiedi quella posizione nei brief: chi e'
+  appena stato tradito da uno strumento non deve fidarsene nemmeno quando gli fa comodo.*
 - 🔴 **UN GREP SUL NOME NON MISURA LA DUPLICAZIONE:** ritirate 19 definizioni NOMINATE di
   `passthrough_handler`, lo stesso corpo sopravvive **INLINE 14 volte su 10 file**.
 - 🔴 **`git worktree remove … | tail; echo $?` STAMPA `fatal:` E POI rc=0 — `$?` E' DI `tail`** (w2,
