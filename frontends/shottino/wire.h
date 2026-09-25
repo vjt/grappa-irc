@@ -51,8 +51,29 @@
  * can ask the question a running client cannot: test_commands pins it
  * to lib/grappa/protocol.ex, and reddens when the server bumps, so the
  * bump is READ (what moved, does a terminal care) rather than slept
- * through — nine bumps went by unnoticed before the pin existed. */
-#define WIRE_PROTOCOL_VERSION 30
+ * through — nine bumps went by unnoticed before the pin existed.
+ *
+ * Last read, v30 -> v31 (issue 2294, the first bump this pin caught):
+ * an `/ignore` entry gained an OPTIONAL glob over the message TEXT
+ * beside its `nick!user@host` mask. What moved is the REST list at
+ * `/networks/:network_id/ignores` — an additive `entries` array beside
+ * the unchanged `masks`, a `text_pattern` beside `mask` on the two
+ * mutations, and one new 422 token `invalid_text_pattern`. No event
+ * `kind` changed and no existing field was repurposed.
+ *
+ * Nothing here is consumed by this client, and that is measured rather
+ * than assumed: `/ignores` appears in no source file under this
+ * directory, nor do `masks`, `text_pattern` or `invalid_mask`, while
+ * other `/networks/:slug/...` routes plainly do (dcc_offers,
+ * dcc-auto-accept). shottino's `/ignore` is an ALIAS for `/block`, a
+ * client-LOCAL nick mute compared with `irc_name_eq` and kept in the
+ * state directory — a different thing wearing the same word. So the
+ * bump is the whole repair: no parser is behind, and no terminal
+ * behaviour changes.
+ *
+ * Replace this note at the next bump rather than appending to it — the
+ * question the pin asks is about the CURRENT gap, not a changelog. */
+#define WIRE_PROTOCOL_VERSION 31
 
 #include <stdbool.h>
 #include <stddef.h>
