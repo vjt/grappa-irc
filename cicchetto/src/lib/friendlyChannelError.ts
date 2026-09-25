@@ -178,6 +178,14 @@ function friendlyKnown(code: ErrorTokensChannelErrorToken): string {
       // session — `{:error, :in_progress}`).
       return "Identity recovery is already in progress.";
 
+    case "invalid_text_pattern":
+      // issue 2294 — the optional text half of an `/ignore` entry. No
+      // CHANNEL verb can produce it, but the union this switch is
+      // exhaustive over is the shared error-token enum, so it needs an arm
+      // to keep the `assertNever` below meaningful. Same copy as the api
+      // surface's, deliberately: one token, one sentence.
+      return "That ignore text pattern is not valid. Use * and ? as wildcards.";
+
     case "rate_limited":
       // #630 — over the coarse per-subject request budget. Same "slow
       // down" meaning as the send door's 429; reuse its copy (SSOT above).

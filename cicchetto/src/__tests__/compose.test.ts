@@ -49,12 +49,24 @@ vi.mock("../lib/api", () => {
     patchNetwork: vi.fn(),
     // #356 — /notify + /watch presence add hits this REST helper.
     postNotifyAdd: vi.fn().mockResolvedValue(undefined),
-    // #162 — every ignore mutation answers with the resulting list.
-    getIgnores: vi.fn().mockResolvedValue(["spambot!*@*"]),
-    postIgnore: vi
-      .fn()
-      .mockResolvedValue({ masks: ["spambot!*@*"], mask: "spambot!*@*", outcome: "added" }),
-    deleteIgnore: vi.fn().mockResolvedValue({ masks: [], mask: "spambot!*@*", outcome: "removed" }),
+    // #162 — every ignore mutation answers with the resulting list; issue
+    // 2294 added the `entries` projection beside `masks` and `text_pattern`
+    // beside `mask`, and cic reads the entry half.
+    getIgnores: vi.fn().mockResolvedValue([{ mask: "spambot!*@*", text_pattern: null }]),
+    postIgnore: vi.fn().mockResolvedValue({
+      masks: ["spambot!*@*"],
+      entries: [{ mask: "spambot!*@*", text_pattern: null }],
+      mask: "spambot!*@*",
+      text_pattern: null,
+      outcome: "added",
+    }),
+    deleteIgnore: vi.fn().mockResolvedValue({
+      masks: [],
+      entries: [],
+      mask: "spambot!*@*",
+      text_pattern: null,
+      outcome: "removed",
+    }),
     // Required by networks.ts (transitively imported via compose.ts → networks.ts)
     listNetworks: vi.fn().mockResolvedValue([]),
     listChannels: vi.fn().mockResolvedValue([]),
@@ -5483,7 +5495,7 @@ describe("compose submit — watch-family verbs (#356)", () => {
     compose.setDraft(k, "/ignore spambot");
     const result = await compose.submit(k, "freenode", "#a");
 
-    expect(api.postIgnore).toHaveBeenCalledWith("tok", "freenode", "spambot");
+    expect(api.postIgnore).toHaveBeenCalledWith("tok", "freenode", "spambot", null);
     expect(result).toEqual({ ok: true });
     expect(await outputLines(k)).toEqual([["Ignore:", "added spambot!*@*", false]]);
   });
@@ -5494,7 +5506,9 @@ describe("compose submit — watch-family verbs (#356)", () => {
     const compose = await import("../lib/compose");
     vi.mocked(api.postIgnore).mockResolvedValueOnce({
       masks: ["spambot!*@*"],
+      entries: [{ mask: "spambot!*@*", text_pattern: null }],
       mask: "spambot!*@*",
+      text_pattern: null,
       outcome: "already_ignored",
     });
     const k = channelKey("freenode", "#a");
@@ -5505,6 +5519,31 @@ describe("compose submit — watch-family verbs (#356)", () => {
     expect(await outputLines(k)).toEqual([["Ignore:", "spambot!*@* is already ignored", false]]);
   });
 
+  // issue 2294 — the verb row names BOTH halves when the entry carries a
+  // pattern. The echo comes from the SERVER's answer, so a row can never
+  // claim a rule the server did not write.
+  it("/ignore <mask> <pattern> sends the pattern and names both halves", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const api = await import("../lib/api");
+    const compose = await import("../lib/compose");
+    vi.mocked(api.postIgnore).mockResolvedValueOnce({
+      masks: ["relay!*@*"],
+      entries: [{ mask: "relay!*@*", text_pattern: "<SomeNick>*" }],
+      mask: "relay!*@*",
+      text_pattern: "<SomeNick>*",
+      outcome: "added",
+    });
+    const k = channelKey("freenode", "#a");
+    compose.setDraft(k, "/ignore relay!*@* <SomeNick>*");
+    const result = await compose.submit(k, "freenode", "#a");
+
+    expect(api.postIgnore).toHaveBeenCalledWith("tok", "freenode", "relay!*@*", "<SomeNick>*");
+    expect(result).toEqual({ ok: true });
+    expect(await outputLines(k)).toEqual([
+      ["Ignore:", "added relay!*@* matching <SomeNick>*", false],
+    ]);
+  });
+
   it("/unignore <mask> prints the normalised mask it removed, and only that", async () => {
     localStorage.setItem("grappa-token", "tok");
     const api = await import("../lib/api");
@@ -5513,7 +5552,7 @@ describe("compose submit — watch-family verbs (#356)", () => {
     compose.setDraft(k, "/unignore spambot");
     const result = await compose.submit(k, "freenode", "#a");
 
-    expect(api.deleteIgnore).toHaveBeenCalledWith("tok", "freenode", "spambot");
+    expect(api.deleteIgnore).toHaveBeenCalledWith("tok", "freenode", "spambot", null);
     expect(result).toEqual({ ok: true });
     expect(await outputLines(k)).toEqual([["Unignore:", "removed spambot!*@*", false]]);
   });
@@ -5524,7 +5563,9 @@ describe("compose submit — watch-family verbs (#356)", () => {
     const compose = await import("../lib/compose");
     vi.mocked(api.deleteIgnore).mockResolvedValueOnce({
       masks: ["spambot!*@*"],
+      entries: [{ mask: "spambot!*@*", text_pattern: null }],
       mask: "nobody!*@*",
+      text_pattern: null,
       outcome: "not_ignored",
     });
     const k = channelKey("freenode", "#a");
@@ -6470,7 +6511,7 @@ describe("#1396 — dispatch characterization over every arm", () => {
         "ignore": {
           "effects": [
             "aliasList.aliases()",
-            "api.postIgnore("tok", "freenode", "spambot")",
+            "api.postIgnore("tok", "freenode", "spambot", null)",
             "networks.networkIdBySlug("freenode")",
             "networks.networkIdBySlug("freenode")",
           ],

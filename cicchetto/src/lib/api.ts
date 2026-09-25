@@ -2980,51 +2980,65 @@ export async function deleteNotifyNick(
 // and reconciles nothing; an idempotent re-add is indistinguishable from a
 // first add on the wire.
 
-export type IgnoresResponse = { masks: string[] };
+// issue 2294 — an entry is a PAIR: the mask and an OPTIONAL glob over the
+// message TEXT, which is what makes one author behind a relay bot ignorable
+// while the rest of the bridge keeps speaking. `text_pattern` is always
+// present and `null` when there is none; the snake_case is the wire's, not
+// a slip — every field on this wire is snake_case without exception.
+//
+// The server also still answers `masks` (v≤30's shape, same order) and this
+// client no longer reads it: `entries` is a strict superset, and keeping two
+// readers of one list is how they drift. It stays in the type because it is
+// what the server sends, and a type that lies about the body is worse than
+// a field nobody reads.
+export type IgnoreEntry = { mask: string; text_pattern: string | null };
+export type IgnoresResponse = { masks: string[]; entries: IgnoreEntry[] };
 // #162 — a mutation answers the resulting list (the session re-sync), the
-// NORMALISED mask it acted on (`/unignore spambot` removes `spambot!*@*`,
+// NORMALISED entry it acted on (`/unignore spambot` removes `spambot!*@*`,
 // which the operator never typed), and what it did. The verb prints the
-// outcome on that mask and nothing else.
-export type IgnoreAddResponse = {
-  masks: string[];
-  mask: string;
-  outcome: "added" | "already_ignored";
-};
-export type IgnoreRemoveResponse = {
-  masks: string[];
-  mask: string;
-  outcome: "removed" | "not_ignored";
-};
+// outcome on that entry and nothing else.
+export type IgnoreAddResponse = IgnoresResponse &
+  IgnoreEntry & { outcome: "added" | "already_ignored" };
+export type IgnoreRemoveResponse = IgnoresResponse &
+  IgnoreEntry & { outcome: "removed" | "not_ignored" };
 
-export async function getIgnores(token: string, networkSlug: string): Promise<string[]> {
+export async function getIgnores(token: string, networkSlug: string): Promise<IgnoreEntry[]> {
   const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/ignores`, {
     headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);
-  return ((await res.json()) as IgnoresResponse).masks;
+  return ((await res.json()) as IgnoresResponse).entries;
 }
 
 export async function postIgnore(
   token: string,
   networkSlug: string,
   mask: string,
+  textPattern: string | null,
 ): Promise<IgnoreAddResponse> {
   const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/ignores`, {
     method: "POST",
     headers: buildHeaders(token),
-    body: JSON.stringify({ mask }),
+    body: JSON.stringify({ mask, text_pattern: textPattern }),
   });
   if (!res.ok) throw await readError(res);
   return (await res.json()) as IgnoreAddResponse;
 }
 
+// The text pattern rides the QUERY STRING on DELETE: the mask already owns
+// the path segment, and a pattern carries spaces. Omitted (not sent empty)
+// when there is none — absent is what the server reads as "the entry with no
+// pattern", and an empty string would be a pattern it refuses.
 export async function deleteIgnore(
   token: string,
   networkSlug: string,
   mask: string,
+  textPattern: string | null,
 ): Promise<IgnoreRemoveResponse> {
+  const query = textPattern === null ? "" : `?text_pattern=${encodeURIComponent(textPattern)}`;
+
   const res = await fetch(
-    `/networks/${encodeURIComponent(networkSlug)}/ignores/${encodeURIComponent(mask)}`,
+    `/networks/${encodeURIComponent(networkSlug)}/ignores/${encodeURIComponent(mask)}${query}`,
     { method: "DELETE", headers: buildHeaders(token) },
   );
   if (!res.ok) throw await readError(res);
