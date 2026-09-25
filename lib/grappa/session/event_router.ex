@@ -95,7 +95,7 @@ defmodule Grappa.Session.EventRouter do
   in `Session.Server.handle_info` — out of this router's scope.
   """
 
-  alias Grappa.IRC.{CTCP, DCC, Identifier, JoinFailure, Mask, Message}
+  alias Grappa.IRC.{CTCP, DCC, Identifier, Ignore, JoinFailure, Message}
   alias Grappa.IRC.DCC.Offer
   alias Grappa.{Mentions, Scrollback, Session}
   alias Grappa.RateLimit.TokenBucket
@@ -413,6 +413,13 @@ defmodule Grappa.Session.EventRouter do
   #     and a mask like `*!*@*` must not eat it.
   #   * An origin with no nick (server prefix, prefix-less line) is never a
   #     candidate — `sender_origin/1` is nil there.
+  #
+  # issue 2294 — an entry may ALSO carry a glob over the message text, and
+  # then both halves must match. The body is the message's own trailing
+  # param: a line with no trailing (never a well-formed PRIVMSG/NOTICE, but
+  # the wire is not ours to trust) has no text to match, so a TARGETED entry
+  # cannot fire on it while a pattern-less one still can — the `""` fallback
+  # is what makes that true rather than an accident of `nil` reaching a regex.
   @spec ignored?(Message.t(), state()) :: boolean()
   defp ignored?(%Message{command: cmd} = msg, state) when cmd in [:privmsg, :notice] do
     case {Map.get(state, :ignores, []), Message.sender_origin(msg)} do
@@ -422,14 +429,23 @@ defmodule Grappa.Session.EventRouter do
       {_, nil} ->
         false
 
-      {masks, {nick, user, host}} ->
+      {entries, {nick, user, host}} ->
         not nick_eq?(nick, state.nick) and
           Mentions.mentionable_sender?(nick) and
-          Mask.any_match?(masks, nick, user, host, casemapping(state))
+          Ignore.any_match?(entries, nick, user, host, body_of(msg), casemapping(state))
     end
   end
 
   defp ignored?(_, _), do: false
+
+  # The text a PRIVMSG/NOTICE carries, or `""` when the line has none. The
+  # shape is `[target, body]` — the SAME destructuring the routing clauses
+  # use (`do_route/2`'s :privmsg head), never `List.last/1`, which on a
+  # one-param line would hand the TARGET to the text matcher as if it were
+  # what somebody said.
+  @spec body_of(Message.t()) :: String.t()
+  defp body_of(%Message{params: [_target, body | _]}) when is_binary(body), do: body
+  defp body_of(%Message{}), do: ""
 
   # Rewrites `msg.params` so every channel-shape param is canonicalised
   # to lowercase. The position of the channel param differs per command

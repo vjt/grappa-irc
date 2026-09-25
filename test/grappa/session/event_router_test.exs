@@ -11,7 +11,7 @@ defmodule Grappa.Session.EventRouterTest do
   """
   use ExUnit.Case, async: true
 
-  alias Grappa.IRC.{JoinFailure, Mask, Message, Parser}
+  alias Grappa.IRC.{Ignore, JoinFailure, Message, Parser}
 
   alias Grappa.Session.{
     Deps,
@@ -7855,9 +7855,26 @@ defmodule Grappa.Session.EventRouterTest do
   # The four exclusions are each pinned, because each is a way a mask could
   # silence something it must not.
   describe "/ignore delivery filter (#162)" do
-    # The state carries the masks COMPILED, as `Session.Server` hands them
-    # over — the router never sees a string.
-    defp ignoring(masks), do: base_state(%{ignores: Mask.compile_all(masks)})
+    # The state carries the entries COMPILED, as `Session.Server` hands them
+    # over — the router never sees a string. A spec is either a bare mask
+    # (the #162 entry) or a `{mask, text_pattern}` pair (issue 2294), and it
+    # goes through the PRODUCTION normaliser so a test can never pin a shape
+    # the storage door would not have written.
+    defp ignoring(specs), do: base_state(%{ignores: compile_ignores(specs)})
+
+    defp compile_ignores(specs) do
+      specs
+      |> Enum.map(fn
+        {mask, text} -> normalized(mask, text)
+        mask when is_binary(mask) -> normalized(mask, nil)
+      end)
+      |> Ignore.compile_all()
+    end
+
+    defp normalized(mask, text) do
+      {:ok, entry} = Ignore.normalize(mask, text, :ascii)
+      entry
+    end
 
     # #537 — the subject folds with the SESSION's casemapping. On rfc1459 the
     # mask `/ignore Foo[1]` was stored as `foo{1}!*@*` (the ingress fold), and
@@ -7869,7 +7886,7 @@ defmodule Grappa.Session.EventRouterTest do
       on_rfc =
         base_state(%{
           isupport: %{ISupport.default() | casemapping: :rfc1459},
-          ignores: Mask.compile_all(["foo{1}!*@*"])
+          ignores: compile_ignores(["foo{1}!*@*"])
         })
 
       on_ascii = ignoring(["foo{1}!*@*"])
@@ -7955,6 +7972,80 @@ defmodule Grappa.Session.EventRouterTest do
     test "a state without an :ignores key routes normally" do
       privmsg = msg(:privmsg, ["#chan", "hello"], {:nick, "spambot", "u", "h"})
       assert {:cont, _, [{:persist, :privmsg, _}]} = EventRouter.route(privmsg, base_state())
+    end
+
+    # -----------------------------------------------------------------------
+    # issue 2294 — the OPTIONAL text pattern. The reported case is a relay
+    # bot: one mask, many authors, the real one inside the body.
+    # -----------------------------------------------------------------------
+
+    test "a targeted entry drops ONE relayed author and leaves the bridge alone" do
+      state = ignoring([{"Gazzurbo!*@*", "<SomeNick>*"}])
+      relay = fn body -> msg(:privmsg, ["#sbiffo", body], {:nick, "Gazzurbo", "tg", "bridge.host"}) end
+
+      assert {:cont, _, []} = EventRouter.route(relay.("<SomeNick> ciao"), state)
+
+      assert {:cont, _, [{:persist, :privmsg, _}]} =
+               EventRouter.route(relay.("<Altro> ciao"), state)
+    end
+
+    test "a text pattern never widens the mask — another sender still routes" do
+      state = ignoring([{"Gazzurbo!*@*", "<SomeNick>*"}])
+      other = msg(:privmsg, ["#sbiffo", "<SomeNick> ciao"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, _, [{:persist, :privmsg, _}]} = EventRouter.route(other, state)
+    end
+
+    test "a pattern-less entry beside a targeted one still eats the whole mask" do
+      state = ignoring(["Gazzurbo!*@*", {"Gazzurbo!*@*", "<SomeNick>*"}])
+      relay = msg(:privmsg, ["#sbiffo", "<Altro> ciao"], {:nick, "Gazzurbo", "tg", "bridge.host"})
+
+      assert {:cont, _, []} = EventRouter.route(relay, state)
+    end
+
+    test "a NOTICE is filtered on its text the same way a PRIVMSG is" do
+      state = ignoring([{"Gazzurbo!*@*", "<SomeNick>*"}])
+      hit = msg(:notice, ["#sbiffo", "<SomeNick> ciao"], {:nick, "Gazzurbo", "tg", "bridge.host"})
+      miss = msg(:notice, ["#sbiffo", "<Altro> ciao"], {:nick, "Gazzurbo", "tg", "bridge.host"})
+
+      assert {:cont, _, []} = EventRouter.route(hit, state)
+      assert {:cont, _, [_ | _]} = EventRouter.route(miss, state)
+    end
+
+    # The CTCP ACTION ruling: the pattern is matched against what the operator
+    # SEES (`waves`), not the `\x01ACTION …\x01` framing they cannot type.
+    test "a relayed /me is matched on the UNWRAPPED action text" do
+      state = ignoring([{"Gazzurbo!*@*", "<SomeNick>*"}])
+
+      hit =
+        msg(
+          :privmsg,
+          ["#sbiffo", "\x01ACTION <SomeNick> saluta\x01"],
+          {:nick, "Gazzurbo", "tg", "bridge.host"}
+        )
+
+      miss =
+        msg(
+          :privmsg,
+          ["#sbiffo", "\x01ACTION <Altro> saluta\x01"],
+          {:nick, "Gazzurbo", "tg", "bridge.host"}
+        )
+
+      assert {:cont, _, []} = EventRouter.route(hit, state)
+      assert {:cont, _, [{:persist, :action, _}]} = EventRouter.route(miss, state)
+    end
+
+    # The exclusions are on the SENDER axis and outrank the text axis: a
+    # pattern that happens to match must not reopen a door #162 closed.
+    test "our own line and a services NOTICE stay exempt under a text pattern" do
+      state = ignoring([{"*!*@*", "*"}])
+      own = msg(:privmsg, ["#chan", "hi"], {:nick, "vjt", "u", "h"})
+
+      nickserv =
+        msg(:notice, ["vjt", "Password incorrect."], {:nick, "NickServ", "services", "azzurra.chat"})
+
+      assert {:cont, _, [{:persist, :privmsg, _}]} = EventRouter.route(own, state)
+      assert {:cont, _, [_ | _]} = EventRouter.route(nickserv, state)
     end
   end
 end
