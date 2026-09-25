@@ -71,8 +71,8 @@ defmodule Grappa.UserSettings do
   | `"upload_confirm_enabled"` | `boolean()`        | `get_upload_confirm_enabled/1`, |
   |                        |                        | `put_upload_confirm_enabled/2`  |
   |                        |                        | (#1883)                         |
-  | `"ignores"`            | `ignores()`            | `get_ignores/2`, `add_ignore/4`,|
-  |                        |                        | `remove_ignore/4` (#162)        |
+  | `"ignores"`            | `ignores()`            | `get_ignores/2`, `add_ignore/5`,|
+  |                        |                        | `remove_ignore/5` (#162, 2294)  |
   | `"vhost_selection"`    | `list(String.t())`     | `get_vhost_selection/1`,        |
   |                        |                        | `put_vhost_selection/2`         |
   | `"active_theme_id"`    | `pos_integer() \\| nil`| `get_active_theme_id/1`,        |
@@ -130,7 +130,15 @@ defmodule Grappa.UserSettings do
 
   alias Grappa.PubSub.Topic
 
-  alias Grappa.{Accounts.User, IRC.Identifier, Repo, Subject, UserSettings.Settings, Visitors.Visitor}
+  alias Grappa.{
+    Accounts.User,
+    IRC.Identifier,
+    IRC.Ignore,
+    Repo,
+    Subject,
+    UserSettings.Settings,
+    Visitors.Visitor
+  }
 
   alias Grappa.UserSettings.Wire
 
@@ -1052,8 +1060,15 @@ defmodule Grappa.UserSettings do
   @ignores_max_per_network 100
 
   @typedoc """
-  The `/ignore` list (#162): `network_slug => [mask]`, every mask a normalised
-  `nick!user@host` glob (`Grappa.IRC.Mask`).
+  The `/ignore` list (#162, issue 2294): `network_slug => [entry]`, every
+  entry a normalised `Grappa.IRC.Ignore` — a `nick!user@host` glob and an
+  OPTIONAL glob over the message text.
+
+  This is the DECODED shape. On disk each entry is the JSON map
+  `Grappa.IRC.Ignore.encode/1` writes, and a value left by a node predating
+  issue 2294 is a bare mask STRING, which `Ignore.decode/1` reads as an entry
+  with no text pattern (see there for why that door exists and is not a
+  second storage pattern).
 
   Its OWN key, deliberately NOT a field inside `notification_prefs` beside
   `muted_targets` — vjt's ruling on #162. The two look alike (both deny, both
@@ -1067,35 +1082,39 @@ defmodule Grappa.UserSettings do
   The network is in the key for the #1038 reason (the same nick on two
   networks is two people).
   """
-  @type ignores :: %{String.t() => [String.t()]}
+  @type ignores :: %{String.t() => [Ignore.t()]}
 
   @doc """
-  The ignore masks for `subject` on `network_slug`. Never fails: an absent
+  The ignore entries for `subject` on `network_slug`. Never fails: an absent
   row, absent key, or malformed value reads as `[]` — an unreadable ignore
   list must fail OPEN (messages delivered), never closed (a user silently
   ignoring everyone).
   """
-  @spec get_ignores(Subject.t(), String.t()) :: [String.t()]
+  @spec get_ignores(Subject.t(), String.t()) :: [Ignore.t()]
   def get_ignores({_, _} = subject, network_slug) when is_binary(network_slug) do
     case fetch_existing_or_nil(subject) do
       nil -> []
-      %Settings{data: data} -> masks_for(data[@ignores_key], network_slug)
+      %Settings{data: data} -> entries_for(data[@ignores_key], network_slug)
     end
   end
 
-  # Lenient readers, one shape each: a value that is not the map/list we wrote
-  # reads as "nothing ignored" rather than raising on the inbound hot path.
-  defp masks_for(%{} = by_network, slug), do: by_network |> Map.get(slug) |> only_binaries()
-  defp masks_for(_, _), do: []
-
-  defp only_binaries(masks) when is_list(masks), do: Enum.filter(masks, &is_binary/1)
-  defp only_binaries(_), do: []
+  # Lenient reader: a value that is not the map/list we wrote reads as
+  # "nothing ignored" rather than raising on the inbound hot path. The
+  # per-entry leniency (and the legacy bare-string encoding) lives in
+  # `Ignore.decode_all/1`, so there is ONE decoder and not one per caller.
+  defp entries_for(%{} = by_network, slug), do: by_network |> Map.get(slug) |> Ignore.decode_all()
+  defp entries_for(_, _), do: []
 
   @doc """
-  Adds one mask for `subject` on `network_slug`. Idempotent: an already
-  present (normalised, so `Spambot` and `spambot!*@*` are the same) mask is a
-  no-op success. Rejects an unparseable mask with `{:error, :invalid_mask}`
-  and a full list with `{:error, :list_full}`.
+  Adds one entry for `subject` on `network_slug`. Idempotent: an already
+  present (normalised, so `Spambot` and `spambot!*@*` are the same) ENTRY is
+  a no-op success. Rejects an unparseable mask with `{:error, :invalid_mask}`,
+  an unusable text pattern with `{:error, :invalid_text_pattern}`, and a full
+  list with `{:error, :list_full}`.
+
+  Identity is the WHOLE entry (issue 2294), not the mask: the same relay mask
+  carrying two different text patterns is two bridged authors and therefore
+  two entries. `text_pattern` is `nil` for the #162 entry.
 
   Returns the resulting list so the caller can sync a live session. Newest
   first — the list is small, order is not a contract, and a prepend is the
@@ -1110,51 +1129,69 @@ defmodule Grappa.UserSettings do
   """
   @type ignore_outcome :: :added | :already_ignored | :removed | :not_ignored
 
-  @spec add_ignore(Subject.t(), String.t(), String.t(), Identifier.casemapping()) ::
-          {:ok, :added | :already_ignored, String.t(), [String.t()]}
-          | {:error, :invalid_mask | :list_full | Ecto.Changeset.t() | :db_unavailable}
-  def add_ignore({_, _} = subject, network_slug, raw_mask, casemapping)
+  @spec add_ignore(
+          Subject.t(),
+          String.t(),
+          String.t(),
+          String.t() | nil,
+          Identifier.casemapping()
+        ) ::
+          {:ok, :added | :already_ignored, Ignore.t(), [Ignore.t()]}
+          | {:error, Ignore.error() | :list_full | Ecto.Changeset.t() | :db_unavailable}
+  def add_ignore({_, _} = subject, network_slug, raw_mask, raw_text, casemapping)
       when is_binary(network_slug) and is_binary(raw_mask) and is_atom(casemapping) do
-    with {:ok, mask} <- normalize_mask(raw_mask, casemapping) do
-      add_normalized(subject, network_slug, mask, get_ignores(subject, network_slug))
+    with {:ok, entry} <- Ignore.normalize(raw_mask, raw_text, casemapping) do
+      add_normalized(subject, network_slug, entry, get_ignores(subject, network_slug))
     end
   end
 
-  defp add_normalized(subject, slug, mask, current) do
+  defp add_normalized(subject, slug, entry, current) do
     cond do
-      mask in current ->
-        {:ok, :already_ignored, mask, current}
+      entry in current ->
+        {:ok, :already_ignored, entry, current}
 
       length(current) >= @ignores_max_per_network ->
         {:error, :list_full}
 
       true ->
-        with {:ok, next} <- persist_ignores(subject, slug, [mask | current]),
-             do: {:ok, :added, mask, next}
+        with {:ok, next} <- persist_ignores(subject, slug, [entry | current]),
+             do: {:ok, :added, entry, next}
     end
   end
 
   @doc """
-  Removes one mask (normalised before comparing, so `/unignore spambot`
-  removes `spambot!*@*`). Idempotent: removing an absent mask is
-  `{:ok, :not_ignored, mask, list}`.
+  Removes one entry (normalised before comparing, so `/unignore spambot`
+  removes `spambot!*@*`). Idempotent: removing an absent entry is
+  `{:ok, :not_ignored, entry, list}`.
+
+  The `text_pattern` is part of what is matched (issue 2294), so an
+  `/unignore` is the EXACT inverse of the `/ignore` that wrote the entry: a
+  removal naming no pattern removes the pattern-LESS entry and leaves a
+  targeted one standing. Anything looser would make one verb able to delete
+  a rule the operator never named.
   """
-  @spec remove_ignore(Subject.t(), String.t(), String.t(), Identifier.casemapping()) ::
-          {:ok, :removed | :not_ignored, String.t(), [String.t()]}
-          | {:error, :invalid_mask | Ecto.Changeset.t() | :db_unavailable}
-  def remove_ignore({_, _} = subject, network_slug, raw_mask, casemapping)
+  @spec remove_ignore(
+          Subject.t(),
+          String.t(),
+          String.t(),
+          String.t() | nil,
+          Identifier.casemapping()
+        ) ::
+          {:ok, :removed | :not_ignored, Ignore.t(), [Ignore.t()]}
+          | {:error, Ignore.error() | Ecto.Changeset.t() | :db_unavailable}
+  def remove_ignore({_, _} = subject, network_slug, raw_mask, raw_text, casemapping)
       when is_binary(network_slug) and is_binary(raw_mask) and is_atom(casemapping) do
-    with {:ok, mask} <- normalize_mask(raw_mask, casemapping) do
-      remove_normalized(subject, network_slug, mask, get_ignores(subject, network_slug))
+    with {:ok, entry} <- Ignore.normalize(raw_mask, raw_text, casemapping) do
+      remove_normalized(subject, network_slug, entry, get_ignores(subject, network_slug))
     end
   end
 
-  defp remove_normalized(subject, slug, mask, current) do
-    if mask in current do
-      with {:ok, next} <- persist_ignores(subject, slug, List.delete(current, mask)),
-           do: {:ok, :removed, mask, next}
+  defp remove_normalized(subject, slug, entry, current) do
+    if entry in current do
+      with {:ok, next} <- persist_ignores(subject, slug, List.delete(current, entry)),
+           do: {:ok, :removed, entry, next}
     else
-      {:ok, :not_ignored, mask, current}
+      {:ok, :not_ignored, entry, current}
     end
   end
 
@@ -1162,21 +1199,10 @@ defmodule Grappa.UserSettings do
     with {:ok, _} <- put_ignores(subject, slug, next), do: {:ok, next}
   end
 
-  # The #537 ingress fold: the caller names the network's casemapping (the
-  # web edge reads it off `Grappa.Session.casemapping/2`), so the stored mask
-  # already sits in that network's folded space and the delivery match only
-  # has to fold the subject.
-  defp normalize_mask(raw, casemapping) do
-    case Grappa.IRC.Mask.normalize(raw, casemapping) do
-      {:ok, mask} -> {:ok, mask}
-      :error -> {:error, :invalid_mask}
-    end
-  end
-
   # An empty per-network list deletes that network's key, and an empty map
   # deletes the whole key — a fresh subject already reads `[]`, so an explicit
   # empty would be a second spelling of the default (the put_or_delete rule).
-  defp put_ignores(subject, network_slug, masks) do
+  defp put_ignores(subject, network_slug, entries) do
     update_data(subject, fn data ->
       by_network =
         case data[@ignores_key] do
@@ -1185,9 +1211,9 @@ defmodule Grappa.UserSettings do
         end
 
       next =
-        case masks do
+        case entries do
           [] -> Map.delete(by_network, network_slug)
-          _ -> Map.put(by_network, network_slug, masks)
+          _ -> Map.put(by_network, network_slug, Enum.map(entries, &Ignore.encode/1))
         end
 
       put_or_delete(data, @ignores_key, if(next == %{}, do: nil, else: next))
