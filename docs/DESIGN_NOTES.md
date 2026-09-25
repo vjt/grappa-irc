@@ -19349,3 +19349,121 @@ rule must come after the tint; the test pins that order too.
 
 Not decided here: whether anyone relied on the always-visible × on desktop.
 That is a product call for vjt, and it is one CSS block to revert.
+<!-- entry #2294 -->
+
+---
+
+## 2026-09-26 — #2294: an /ignore entry is a PAIR, and the wire pin could not see it
+
+`/ignore` (#162) matched a sender's `nick!user@host` and nothing else. Every
+line a relay bot forwards wears the BRIDGE's prefix — the Telegram↔IRC bridge
+on `#sbiffo` is the reported case — with the real author inside the body as
+`<Nick> text`, so ignoring one bridged person meant ignoring the bridge. An
+entry now carries an OPTIONAL second glob over the message TEXT, and a
+PRIVMSG/NOTICE is dropped when BOTH halves match. With no pattern the entry is
+byte-for-byte #162.
+
+### The wire shape, and the one form that was refused
+
+`masks` stays exactly what it was — an array of mask strings, same order —
+and `entries` is a SECOND projection of the same list carrying
+`{mask, text_pattern}`. The obvious shape was to make `masks` a list of
+objects; that is a REPURPOSED field, which the additive-only contract (#447)
+forbids outright, and taking a field back needs a ruling (#1626) this slice
+neither has nor needs. `POST` grew an optional `text_pattern` beside `mask`;
+`DELETE` takes it as a QUERY parameter, because the mask already owns the
+path segment and a pattern legitimately carries spaces.
+
+**Identity is the PAIR, not the mask.** Two entries on one mask with
+different patterns are two bridged authors — that is the feature — so
+`masks` can carry the same string twice, an add of a second pattern is not an
+idempotent no-op, and `/unignore` is the EXACT inverse of the `/ignore` that
+wrote the entry: naming no pattern removes the pattern-LESS entry and leaves
+a targeted one standing. Anything looser lets one verb delete a rule the
+operator never named.
+
+### 🔴 The pin was BLIND to this payload, and the measurement changed the diff
+
+`mix grappa.wire_pin --check` is the #1393d gate. The first cut added
+`entries` to `IgnoresController`'s inline `json(conn, %{masks: …})` and the
+gate answered **`wire shape and protocol 30 agree.` at rc 0** — GREEN on a
+wire-shape change, which is the one thing it exists to stop.
+
+Not a broken harness, and the controls say so. On the same tree, in the same
+session: one word changed in a `GrappaWeb.UserSettingsJSON` `@spec` took it
+**RED** with the digest moving `sha256:e4ce7cff…6ba4db` →
+`sha256:6c795fc0…89be8`; reverting returned the digest byte-identical. The
+pin's third component digests what the hand-written `GrappaWeb.*JSON` views
+DECLARE (#2037), discovered from the beams — so a controller that renders
+inline is outside it by construction, and a view is not.
+
+So the rendering moved into `GrappaWeb.IgnoresJSON`, and the same gate then
+went RED by itself: `sha256:e4ce7cff…6ba4db` → `sha256:d009b819…40bd41`,
+protocol «30 (unchanged)». The bump to 31 is that gate's verdict, not a
+judgement call.
+
+### ⚠️ The coverage bought is SPEC-TEXT granular, and that is a limit, not a detail
+
+Measured after the move, on the new pin: adding a field to `IgnoresJSON`'s
+own `@type entry` — two levels below the `@spec`s, in the SAME module —
+left `--check` at **rc 0, `agree.`**, with the mutant confirmed compiled
+(`Compiling 1 file (.ex)` in the same run). The digest is the `@spec` TEXT,
+so a NEW exported spec moves it and a change INSIDE a named response type
+does not. `wire_pin`'s moduledoc already names this class for a REMOTE type;
+the LOCAL-type case is the same hole and is now measured.
+
+What that means for this slice: the pin caught THIS change because two new
+`@spec`s appeared. It will NOT catch a field added to `index_response()` /
+`mutation_response()` / `entry()` later. Inlining the shapes into the specs
+would close it and was declined — the twelve `*JSON` views all use named
+`*_response` types, and a thirteenth spelling is the half-migration CLAUDE.md
+warns about. Routing `IgnoresJSON` through `gen_wire_types`' `@extra_modules`
+would also close it and was declined for a sharper reason: it would put these
+shapes into `wireSchema.ts`, which is RUNTIME validation in cic, and a
+required `entries` key there means a bundle built on v31 THROWS AWAY an
+answer from a v30 server — the `row_count` failure mode of #1626, bought for
+a gate improvement. This belongs to the gate, not to the slice.
+
+### Matching rules, each a decision
+
+* **Glob** (`*`, `?`), not regex — the mask's own grammar, so one entry does
+  not speak two matching languages. `Mask.compile_glob/2` is now public and
+  compiles BOTH halves; a second copy is how they would learn different
+  metacharacters.
+* **Absolutely anchored**, like every mask part. `<SomeNick>*` matches a body
+  that STARTS with it; a bare `spam` matches only the body that IS `spam`;
+  "contains" is `*spam*`. Consistency with the other half of the same entry
+  beat convenience.
+* **ASCII-case-insensitive** — the `i` flag, deliberately WITHOUT `u`. A body
+  is CONTENT, never a key, so caselessness here is a matcher option and not
+  an identifier fold: nothing is stored folded, no key is derived, #537 is
+  untouched. `u` is off for two reasons that agree — it would fold past
+  `A-Z`, the over-fold #525 reversed everywhere else, and PCRE in unicode
+  mode refuses a subject that is not valid UTF-8, while a body off the wire
+  IS bytes. `CAFÉ` and `café` stay distinct, exactly as for a nick, and a
+  non-UTF-8 body is ANSWERED rather than raised on (pinned by a test).
+* **CTCP ACTION matches the UNWRAPPED argument.** `/me` arrives as
+  `\x01ACTION waves\x01` and cic renders `* nick waves`; the operator writes
+  patterns against what they SEE, and `\x01` is not a byte anybody can type.
+  Any OTHER CTCP frame is matched RAW — there the envelope IS the content.
+
+### Storage: a lenient decoder, and deliberately NO data migration
+
+`user_settings.data.ignores` stores each entry as `{"mask": …}` plus
+`"text_pattern"` only when there is one. A value written by an older node is
+a bare STRING, and `Ignore.decode/1` reads it as a pattern-less entry. That
+door is not tidiness: a hot reload (`/admin/reload`, the normal deploy here)
+runs NO migration, so a node carrying this code will read rows the previous
+one wrote — and a migration could not fix it anyway, because the previous
+beam can still write after the migration ran. One decoder, at one door; the
+domain type above it is single.
+
+### A briefing constraint refused with the measurement
+
+The brief said `scripts/client-protocol-gate.sh` (#2260) is CI-only and
+invisible locally. It is neither: `git grep` finds it in NO workflow under
+`.github/` and in exactly ONE caller,
+`test/scripts/client_protocol_gate_test.bats`, whose first case runs it
+against the COMMITTED document — and `scripts/bats.sh` is line 40 of
+`scripts/check.sh`. It is local, and it runs in CI only by being inside the
+bats suite. (It is inert for this slice regardless: no new event `kind`.)

@@ -919,7 +919,7 @@ Source: `GrappaWeb.AuthController`
 
 ---
 
-## 8. Two settings surfaces worth knowing about
+## 8. Settings surfaces worth knowing about
 
 ### 8a. `display_prefs` has EIGHT keys (issue 2270, v29)
 
@@ -978,6 +978,63 @@ without attributing the cause.
 They are published so the operator's own knob is readable in the admin
 surface; that is the whole reason, and it is recorded here so a client
 author does not read their presence as an invitation.
+
+### 8c. An `/ignore` entry is a PAIR, and `masks` no longer tells you all of it (issue 2294, v31)
+
+`/networks/:network_id/ignores` is the per-network ignore list
+(`GrappaWeb.IgnoresController`, rendered by `GrappaWeb.IgnoresJSON`). A
+message is DROPPED before it exists — no scrollback row, no badge, no push —
+when the sender matches an entry.
+
+Until v31 an entry was a `nick!user@host` glob and nothing else. It now
+carries an OPTIONAL second glob over the message TEXT, and a PRIVMSG/NOTICE
+is dropped when **both** match. That exists for relay bots: every line a
+Telegram↔IRC bridge relays wears the BRIDGE's prefix, with the real author
+inside the body as `<Nick> text`, so a mask-only rule could only silence the
+whole bridge.
+
+**The additive seam, and what an old client keeps getting.** Every response
+still carries `masks` — the same array of mask strings, same order. Beside
+it is `entries`, the same list as objects:
+
+| field | meaning |
+|---|---|
+| `mask` | the normalised `nick!user@host` glob |
+| `text_pattern` | the text glob, or `null` — the key is ALWAYS present |
+
+A client that only knows `masks` is unaffected and still sees every rule,
+including targeted ones (it sees the mask, not the narrowing). A client that
+wants the pattern reads `entries`. `masks` was NOT turned into a list of
+objects: that would be a repurposed field, which §2 forbids outright.
+
+**Two entries may share a mask.** That IS the bridged-author case
+(`relay!*@*` matching `<A>*` and `<B>*` are two rules), so `masks` can carry
+the same string twice and the identity of an entry is the PAIR. A client
+keying a map on `mask` alone WILL collapse two rules into one and delete the
+wrong one.
+
+**The two mutations:**
+
+* `POST` — body `{"mask": "...", "text_pattern": "..."}`. `text_pattern` may
+  be omitted or `null`; either is the pre-v31 entry. A blank-after-trim or
+  CR/LF-bearing pattern is **422 `invalid_text_pattern`**, a token distinct
+  from `invalid_mask` because the operator typed two things.
+* `DELETE /ignores/:mask?text_pattern=...` — the pattern rides the QUERY
+  string, since the mask already owns the path segment and a pattern carries
+  spaces. **Omitting it removes the entry with NO pattern**, not every entry
+  sharing the mask: a removal is the exact inverse of the add that wrote it.
+
+Both answer `{masks, entries, mask, text_pattern, outcome}` — the resulting
+list plus the NORMALISED entry acted on, so a client renders the list and
+reconciles nothing.
+
+**Matching rules, so a client can explain them to a user:** glob (`*`, `?`)
+like the mask; **absolutely anchored**, so `<SomeNick>*` matches a body that
+STARTS with that and a bare `spam` matches only the body that IS `spam` (a
+"contains" is `*spam*`); **ASCII-case-insensitive** (`CAFÉ` and `café` stay
+distinct, exactly as for a nick); and a CTCP **ACTION** is matched on the
+UNWRAPPED text (`waves`, not `\x01ACTION waves\x01`), while any other CTCP
+frame is matched raw.
 
 ## 9. Event kind inventory (issue 2260)
 
