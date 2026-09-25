@@ -206,7 +206,6 @@ defmodule GrappaWeb.ErrorTokens do
           | :save_failed
           | :invalid_reason
           | :invalid_mask
-          | :invalid_text_pattern
           | :upstream_unavailable
           | :persist_failed
           | :invalid_channel

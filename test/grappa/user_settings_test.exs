@@ -20,8 +20,8 @@ defmodule Grappa.UserSettingsTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.PubSub.Topic
   alias Grappa.IRC.Ignore
+  alias Grappa.PubSub.Topic
   alias Grappa.{Repo, UserSettings}
   alias Grappa.UserSettings.Settings
 

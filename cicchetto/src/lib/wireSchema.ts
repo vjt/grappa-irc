@@ -1664,7 +1664,6 @@ export const S_ErrorTokensChannelErrorToken = {
     { l: "save_failed" },
     { l: "invalid_reason" },
     { l: "invalid_mask" },
-    { l: "invalid_text_pattern" },
     { l: "upstream_unavailable" },
     { l: "persist_failed" },
     { l: "invalid_channel" },

@@ -243,7 +243,7 @@ defmodule Grappa.IRC.Ignore do
   end
 
   @spec text_matches?(Regex.t() | nil, String.t()) :: boolean()
-  defp text_matches?(nil, _body), do: true
+  defp text_matches?(nil, _), do: true
   defp text_matches?(re, body), do: Regex.match?(re, text_subject(body))
 
   # What the pattern is matched AGAINST — see the moduledoc's ACTION rule.

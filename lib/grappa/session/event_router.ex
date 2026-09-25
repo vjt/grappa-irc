@@ -444,7 +444,7 @@ defmodule Grappa.Session.EventRouter do
   # one-param line would hand the TARGET to the text matcher as if it were
   # what somebody said.
   @spec body_of(Message.t()) :: String.t()
-  defp body_of(%Message{params: [_target, body | _]}) when is_binary(body), do: body
+  defp body_of(%Message{params: [_, body | _]}) when is_binary(body), do: body
   defp body_of(%Message{}), do: ""
 
   # Rewrites `msg.params` so every channel-shape param is canonicalised
