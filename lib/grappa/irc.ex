@@ -43,6 +43,8 @@ defmodule Grappa.IRC do
       DCC.Offer,
       Identifier,
       Identity,
+      # issue 2294 — a /ignore entry: a Mask plus an optional text glob
+      Ignore,
       JoinFailure,
       LineSplit,
       # #162 — nick!user@host glob masks for /ignore

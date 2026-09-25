@@ -193,7 +193,7 @@ defmodule Grappa.IRC.Mask do
   defp ascii_down(s), do: for(<<c <- s>>, into: "", do: <<if(c in ?A..?Z, do: c + 32, else: c)>>)
 
   defp part("*"), do: :any
-  defp part(pattern), do: glob_to_regex(pattern)
+  defp part(pattern), do: compile_glob(pattern, "")
 
   # Glob a compiled part against a possibly-absent subject. `:any` alone
   # matches an absent part; see `matches?/5`.
@@ -202,7 +202,18 @@ defmodule Grappa.IRC.Mask do
   defp part?(_, nil), do: false
   defp part?(%Regex{} = re, subject), do: Regex.match?(re, subject)
 
-  defp glob_to_regex(pattern) do
+  @doc """
+  Compiles ONE glob (`*` = any run, `?` = exactly one) into an absolutely
+  anchored regex, with `opts` handed to `Regex.compile!/2`.
+
+  Public because it is the grammar, not a mask detail: `Grappa.IRC.Ignore`
+  compiles its optional message-text pattern with the SAME `*`/`?` language
+  (issue 2294), and a second copy of this function is how the two would
+  drift apart the first time one of them learned a new metacharacter.
+  Callers inside this module pass `""`; the text pattern passes `"i"`.
+  """
+  @spec compile_glob(String.t(), binary()) :: Regex.t()
+  def compile_glob(pattern, opts) when is_binary(pattern) and is_binary(opts) do
     body =
       pattern
       |> String.split(~r/[*?]/, include_captures: true, trim: true)
@@ -218,6 +229,6 @@ defmodule Grappa.IRC.Mask do
     # weaker anchor has no test that could notice (review, #1984). The
     # backslashes are pinned by `MaskTest` — a lost one reads as a bare letter
     # and silently matches nothing, which is how the first cut shipped.
-    Regex.compile!("\\A" <> body <> "\\z")
+    Regex.compile!("\\A" <> body <> "\\z", opts)
   end
 end
