@@ -868,7 +868,39 @@ defmodule Grappa.Protocol do
   # `text_pattern` that server drops, and would then show an entry it cannot
   # honour; that is the new-client → old-server break the NUMBER expresses,
   # and it is expressed by bumping it, not by refusing to serve v1 clients.
-  @protocol_version 31
+  #
+  # ---------------------------------------------------------------------------
+  # 32 — #1894: `away_nick_suffix_changed`, the auto-away nick rename
+  # ---------------------------------------------------------------------------
+  #
+  # One new user-topic push kind. `away_nick_suffix` is `string | null`, and
+  # `null` is a VALUE — it is how "I switched the rename off" travels — so the
+  # key is always present. Purely additive, and the number moves anyway: that
+  # is #1393d, and reason (1) applies literally, because a cic bundle grows an
+  # arm that REQUIRES this payload to validate against its generated schema and
+  # so cannot be served by a server predating it.
+  #
+  # ⚠️ 31 IS NOT OURS, and the gap is deliberate — the #2143 situation again,
+  # seen early this time rather than after the fact. #2299 (w1) carries 31 and
+  # was measured CI-green and a PURE fast-forward on `3bff24403` (`is-ancestor`
+  # rc=0, with a negative control at rc=1) while this branch was still local,
+  # so it lands first and this one takes 32.
+  #
+  # The asymmetry is the whole argument, and it is worth more than the number:
+  # a GAP is harmless, a COLLISION is a lie. Two branches merging the same
+  # number leave `server >= N` no longer meaning "has everything N had", which
+  # is the only property the number exists to carry. An unclaimed 31 — were
+  # #2299 to die — is a hole nobody ever believed anything about.
+  #
+  # Ordering is enforced by the history and not by hope: this branch is rebased
+  # onto a `main` that already carries 31 before its PR opens, so the order of
+  # the numbers is the order of the commits.
+  #
+  # @min_protocol_version stays at 1. An unrecognised push `kind` has always
+  # been ignorable (unknown-is-never-fatal), so no bundle predating v32 is left
+  # unable to talk to this server — it simply never learns the suffix changed,
+  # which for a client with no arm for it is the same thing.
+  @protocol_version 32
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -903,7 +935,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 31
+  @spec version() :: 32
   def version, do: @protocol_version
 
   @doc """
