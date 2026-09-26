@@ -8568,22 +8568,39 @@ defmodule Grappa.Session.Server do
   #   * no suffix — the subject never switched the rename on. This is the
   #     default and the overwhelmingly common case; it is silent because
   #     nothing happened and nothing was skipped.
-  #   * the suffixed nick would exceed the network's `NICKLEN` — see
-  #     below. It LOGS, because a subject who DID switch the rename on and
-  #     sees nothing happen is owed the reason.
+  #   * the suffix ALONE fills the network's `NICKLEN` — see below. It
+  #     LOGS, because a subject who DID switch the rename on and sees
+  #     nothing happen is owed the reason.
   #
-  # ## The overflow arm is the status quo, NOT a ruling (#1894)
+  # ## Overflow TRIMS THE BASE, reversing what first shipped (#1894)
   #
-  # Leaving the nick alone is what this code does today for every subject,
-  # so refusing here adds no behaviour. The alternative — trimming the
-  # BASE so the suffix survives, as `Identifier.collision_fallback/3` does
-  # for #676 — is the option that adds some, and it is a product call that
-  # has not been made. Do NOT resolve it by reading `collision_fallback/3`
-  # as precedent: there the suffix is load-bearing because it is what
-  # ESCAPES a collision, and eating it re-sends the rejected nick forever;
-  # here it is load-bearing because it is what peers READ, and trimming
-  # the base is what makes them stop recognising the person it is meant to
-  # describe.
+  # The first cut of this function refused on overflow and left the nick
+  # alone, arguing that the suffix is what peers READ and that trimming
+  # the base is what stops them recognising the person it describes. vjt
+  # ruled the other way on 2026-09-26 — truncate the base, do not refuse
+  # the rename — and the ruling is what this code implements. The suffix
+  # is the part the subject CHOSE and the part carrying the meaning, so it
+  # is the part that survives whole; `Identifier.collision_fallback/3`
+  # already builds exactly that shape for #676, now for a second reason.
+  #
+  # Reusing that builder swallows the fitting case whole: when the target
+  # already clears the cap, its `String.slice/3` returns the base
+  # untouched and the result is byte-identical to a plain concatenation.
+  # A separate "it fits" branch would be dead code, so there is not one.
+  #
+  # The refusal that REMAINS is a different fact — it is the builder's own
+  # precondition, a `cap` with no room for even one base character. Our
+  # own ceiling cannot reach it: `Identifier.valid_nick_suffix?/1` caps a
+  # stored suffix at `max_nick_length() - 1` (measured — 29 passes, 30
+  # does not), so only a network advertising a SMALLER `NICKLEN` can.
+  #
+  # Its condition is spelled as the guard it protects — `byte_size`, NOT
+  # `String.length` — so the two cannot drift into a
+  # `FunctionClauseError`. The unit mismatch that buys is inert here
+  # rather than merely conservative: the same predicate refuses a
+  # non-ASCII suffix outright (measured — `valid_nick_suffix?("é")` is
+  # `false`, `@nick_regex` carrying no `u` flag), so every suffix that can
+  # reach this function has `byte_size == String.length`.
   #
   # `nicklen` is `nil` before 005; our own ceiling stands in, the same
   # substitution `AuthFSM` makes for the 433 ladder.
@@ -8594,23 +8611,22 @@ defmodule Grappa.Session.Server do
         nil
 
       suffix ->
-        target = state.nick <> suffix
-
         cap =
           ISupport.nicklen(Map.get(state, :isupport, ISupport.default())) ||
             Identifier.max_nick_length()
 
-        if String.length(target) <= cap do
-          target
+        if cap > byte_size(suffix) do
+          Identifier.collision_fallback(state.nick, suffix, cap)
         else
-          # The two numbers go in the MESSAGE, not in Logger metadata. The
-          # allowlist in `config/config.exs` is curated, each key carrying
-          # the argument for its own existence, and two more of them for one
-          # rare skip line is a mechanism heavier than its problem. The
-          # operator still reads both values, which is what log honesty asks
-          # for; nothing aggregates on them.
+          # The suffix and the cap go in the MESSAGE, not in Logger
+          # metadata. The allowlist in `config/config.exs` is curated, each
+          # key carrying the argument for its own existence, and two more of
+          # them for one rare skip line is a mechanism heavier than its
+          # problem. The operator still reads both values, which is what log
+          # honesty asks for; nothing aggregates on them.
           Logger.info(
-            "away nick rename skipped — #{target} exceeds NICKLEN #{cap}",
+            "away nick rename skipped — suffix #{suffix} leaves no room " <>
+              "for a base nick under NICKLEN #{cap}",
             nick: state.nick
           )
 

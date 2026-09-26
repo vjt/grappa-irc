@@ -11992,7 +11992,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "a suffix that would overflow NICKLEN leaves the nick alone" do
+    test "a suffix that would overflow NICKLEN trims the BASE and keeps the suffix whole" do
       # 28 chars + "-away" is 33, past the 30 our own ceiling stands in with
       # while the fake ircd advertises no NICKLEN. Built from the production
       # constant so a change to the cap moves the fixture with it.
@@ -12011,6 +12011,70 @@ defmodule Grappa.Session.ServerTest do
       :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
+      # A LITERAL, deliberately, and not a second spelling of
+      # `collision_fallback/3`'s arithmetic: 25 `a` plus the whole 5-char
+      # suffix. The pin against the production constant is what turns a
+      # changed cap into a loud red here instead of a silently-adjusted
+      # fixture, and the literal is what makes the assertion discriminate —
+      # a build that clamped the 33-char target from the RIGHT would also
+      # land on 30 characters and pass any length-only check.
+      expected = "aaaaaaaaaaaaaaaaaaaaaaaaa-away"
+      assert String.length(expected) == Identifier.max_nick_length()
+
+      :ok = Session.set_auto_away({:user, user.id}, network.id)
+
+      # NOT an equality predicate on `expected`: that can only ever answer
+      # "the exact line I predicted did / did not appear", so a wrong build
+      # reads as a bare timeout. Matching "a NICK that is not the
+      # handshake's" captures WHATEVER the rename put on the wire and lets
+      # the assertion below print it.
+      handshake_nick = "NICK " <> long <> "\r\n"
+
+      assert {:ok, line} =
+               IRCServer.wait_for_line(
+                 server,
+                 &(String.starts_with?(&1, "NICK ") and &1 != handshake_nick),
+                 1_000
+               )
+
+      assert line == "NICK " <> expected <> "\r\n"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a suffix with no room left for a base character leaves the nick alone" do
+      # The ONE arm that still refuses, and the only way to reach it: the
+      # settings boundary caps a suffix at `max_nick_length() - 1`, so our
+      # own 30-char ceiling always leaves at least one base character. A
+      # network advertising a SMALLER NICKLEN does not — 10 chars of suffix
+      # against `NICKLEN=9` leaves nothing to trim the base down to.
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "bot"))
+      {user, network, _} = setup_user_and_network(port, %{nick: "bot"})
+
+      {:ok, _} =
+        Grappa.UserSettings.put_away_nick_suffix(
+          {:user, user.id},
+          "-away-idle",
+          Grappa.Subject.label({:user, user.name})
+        )
+
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      # PREFIX rides along so the `isupport_changed` broadcast can serve as
+      # the "005 processed" barrier — without it the away below races the
+      # 005 and the cap read is the 30-char default, which is the arm ABOVE.
+      IRCServer.feed(server, ":irc.test.org 005 bot NICKLEN=9 PREFIX=(ov)@+ :are supported\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :isupport_changed}
+                     },
+                     1_000
+
       # `config/test.exs` sets `level: :warning`, so the skip line — an
       # :info — is dropped globally before any capture handler sees it.
       # The per-module override scopes the bump to this one module, as
@@ -12027,25 +12091,22 @@ defmodule Grappa.Session.ServerTest do
           # auto-away REASON is itself "auto-away (…)", and
           # `wait_for_line/3` rescans the whole history, so
           # `contains?("-away")` matched the AWAY line the barrier above
-          # had just waited for. The handshake's own `NICK <long>` does
-          # not carry the trailing hyphen.
+          # had just waited for. The handshake's own `NICK bot` does not
+          # carry the trailing hyphen.
           assert {:error, :timeout} =
-                   IRCServer.wait_for_line(
-                     server,
-                     &String.starts_with?(&1, "NICK " <> long <> "-"),
-                     200
-                   )
+                   IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK bot-"), 200)
         end)
 
-      # The silent wire is NOT enough on its own, measured: lifting the cap
-      # in `away_nick_target/1` leaves this test green, because the 33-char
-      # target then reaches `Client.send_nick/2` and `Identifier.valid_nick?/1`
-      # refuses it one layer lower. Two different refusals paint the same
-      # picture from outside, so the assertion names which one ran — and the
-      # log line is a contract in its own right, the reason a subject who
-      # switched the rename ON and saw nothing happen is owed.
+      # The silent wire is NOT enough on its own, measured on this test's
+      # predecessor: with the cap lifted the over-long target reached
+      # `Client.send_nick/2` and `Identifier.valid_nick?/1` refused it one
+      # layer lower, leaving the wire just as quiet. Two different refusals
+      # paint the same picture from outside, so the assertion names which
+      # one ran and pins both numbers it read — and the log line is a
+      # contract in its own right, the reason a subject who switched the
+      # rename ON and saw nothing happen is owed.
       assert log =~ "away nick rename skipped"
-      assert log =~ "exceeds NICKLEN"
+      assert log =~ "suffix -away-idle leaves no room for a base nick under NICKLEN 9"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

@@ -19615,3 +19615,101 @@ number on its own, whereas a bump that adds one always costs the four
 sites above. A note claiming "nothing here is consumed by this client"
 is only true when no kind moved, and copying it forward when one did is
 the shape of comment that stays true exactly as long as nobody reads it.
+<!-- entry #1894b -->
+
+---
+
+## 2026-09-26 — #1894b: the NICKLEN overflow arm shipped refusing, and a ruling reversed it
+
+The auto-away nick rename (entry `#1894` above) was built REFUSING when
+`<nick><suffix>` would exceed the network's `NICKLEN`: leave the nick
+alone, log an `:info` saying why. That entry recorded the question as
+deliberately open — *"what to do when `nick + suffix` exceeds
+`NICKLEN`"* — and argued the refusal was the status quo rather than an
+answer, since leaving the nick alone is what the code did for everyone
+before the feature existed.
+
+vjt ruled on 2026-09-26: TRUNCATE the base nick, do not refuse the
+rename. **Relayed through the ircbot session, not observed first-hand.**
+It landed while the branch was open and green on fifteen commits, so
+option A never reached `main` — but it was written, tested and reviewed
+as the answer, and this entry exists so the reversal is legible rather
+than looking like B was always the plan.
+
+The suffix is the part the subject CHOSE and the part carrying the
+meaning, so it survives whole and the base gives way. That is exactly
+what `Identifier.collision_fallback/3` builds for #676's 433 ladder, and
+the first cut deliberately declined to read it as precedent: there the
+suffix is load-bearing because it ESCAPES a collision, here because peers
+READ it. The ruling says the second reason suffices on its own. The
+builder is now shared by both.
+
+### The cost the ruling accepts, and what already absorbs it
+
+The disanalogy section of the entry above named a real price: trimming
+the base "can walk it into somebody else's nick". The ruling accepts it,
+and nothing new was built to cover it, because the rename path already
+has the answer — there is no collision pre-check by design, the target
+goes out and the ircd arbitrates. On a 433 our nick simply never changes,
+`away_nick_restore` still holds the nick we are on, and the restore's
+equality guard makes the return a no-op. Truncation widens the odds of
+hitting that path; it cannot strand the session anywhere new.
+
+### Reuse collapsed the fitting branch, so the diff DELETES a branch
+
+`collision_fallback/3` is a no-op when the target already fits:
+`String.slice(base, 0, cap - len(suffix))` returns the base untouched and
+the result is byte-identical to a plain concatenation. `away_nick_target/1`
+therefore has no "it fits" branch at all — one call, one refusal.
+
+The refusal that REMAINS is a different fact from the one that shipped:
+not "the target is too long" but the builder's own precondition, a `cap`
+with no room for even one base character. It is unreachable through our
+own ceiling and it is not dead code. Measured: `valid_nick_suffix?/1`
+passes a 29-char suffix and refuses a 30-char one, so against the 30-char
+default at least one base character always survives; a network
+advertising `NICKLEN=9` against a 10-char suffix reaches the arm, which
+is what the new test builds by feeding a 005.
+
+Its condition is spelled as the guard it protects — `byte_size`, NOT
+`String.length` — so the two cannot drift into a `FunctionClauseError`.
+The unit mismatch that buys is INERT rather than merely conservative:
+measured, `valid_nick_suffix?("é")` is `false` (`@nick_regex` carries no
+`u` flag, so `\w` is ASCII), so every suffix that can reach the function
+has `byte_size == String.length`.
+
+### A truncated nick needs no new visibility mechanism
+
+Truncation hands peers a nick the subject did not literally choose, and
+#676 point 3 already announces an unexpected identity on `$server`. That
+path does NOT apply and was not extended: it hangs off 001 RPL_WELCOME,
+where there is no NICK message to read the outcome from. A runtime rename
+has one — `EventRouter.route_nick/3` reconciles `state.nick` and emits
+`{:own_nick_renamed, …}`, and `Session.Server` broadcasts
+`Wire.own_nick_changed/2` carrying the nick upstream actually accepted.
+The subject sees the real nick through the ordinary door.
+
+### The test INVERTED rather than weakened
+
+"a suffix that would overflow NICKLEN leaves the nick alone" asserted an
+ABSENCE plus a log line, and the entry above records why the log half was
+needed: with the cap lifted the over-long target reached
+`Identifier.valid_nick?/1` inside `Client.send_nick/2` and was refused a
+layer lower, leaving the wire equally quiet. Under the ruling the outcome
+is POSITIVE, so the replacement asserts the resulting nick byte for byte
+— a LITERAL rather than a second spelling of the builder's arithmetic,
+pinned to `max_nick_length()` by a sanity assert so a changed cap is a
+loud red and not a quietly-adjusted fixture. The absence half moves to
+the new test covering the arm that still refuses, log assertion and all.
+
+Three mutants, each killing exactly one of the 38 tests in the describe:
+
+* right-clamp the concatenation instead of trimming the base → the wire
+  carries `…aaaa-a`, thirty characters, which any length-only assertion
+  would have accepted;
+* drop the residual refusal → `collision_fallback/3`'s guard raises
+  `FunctionClauseError` and the session dies;
+* concatenate with no trim at all → nothing reaches the wire and the log
+  reads `verb=nick reason=invalid_line`, i.e. the layer BELOW refusing.
+  The test still discriminates, because what it asserts is a PRESENCE —
+  the trap an absence-only assertion walks into.
