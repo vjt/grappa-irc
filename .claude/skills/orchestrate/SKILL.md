@@ -1842,6 +1842,33 @@ said "ask vjt for the STACK lane", which is flatly wrong: lanes are MINE).
   🪞 **Regola violata dalla sua autrice venti minuti dopo averla scritta, su un tick di ROUTINE** — e
   viveva SOLO nell'handoff, cioe' in un file che si pota. **Una regola permanente che sta nell'handoff
   muore alla prima potatura: si migra QUI, subito.**
+- 🔴🔴 **`gh api --jq … 2>/dev/null` SU UNA CHIAMATA **FALLITA** NON TORNA VUOTO: TORNA IL CORPO
+  D'ERRORE JSON SU **STDOUT** — quindi una guardia scritta `[ -n "$out" ]` PASSA proprio quando la
+  chiamata e' morta (orch, 2026-09-26, difetto in un watcher MIO).** Misurato:
+  `gh api repos/O/R/issues/999999/comments --jq '.[-1].id // 0' 2>/dev/null` ⇒ **rc=1** e
+  `out={"message":"Not Found","documentation_url":…,"status":"404"}`. Il `2>/dev/null` silenzia stderr
+  e **l'errore non passa da stderr**: `--jq` non ha niente da filtrare e `gh` stampa il corpo. ⇒ **si
+  legge l'RC DELLA CHIAMATA, e si accetta il valore solo se e' della FORMA attesa** (li': tutto cifre).
+  🔴🔴 **E IL DANNO VERO STA UN PIANO SOPRA, NEL DIFF: IN UN WATCHER A TOKEN, «ASSENTE DAL BASELINE»
+  VALE DUE COSE DIVERSE — *nessun commento* e *nessuna risposta* — E CONFONDERLE FA SPARARE UN BURST
+  DI FALSI POSITIVI.** Il v1 ometteva il token quando la lettura falliva; **un solo fallimento
+  transitorio all'ARM** lasciava il baseline incompleto, e al primo poll riuscito i token ricomparivano
+  come "nuovi": **SEI `NEW-COMMENT` in un colpo, tutti con `last-id 0`**, cioe' accusando numeri che
+  **non hanno alcun commento**. Il tell che smaschera la classe in un secondo: **un `last-id 0` non puo'
+  essere un commento nuovo, per costruzione.**
+  🥇 **Forma che regge: ogni soggetto produce SEMPRE un token — l'id, oppure `ERR` — mai assente e mai
+  testo libero; e le TRE transizioni sono etichettate diverse**: `id → id` diverso = **NEW-COMMENT**;
+  `* → ERR` = **AXIS-UNREAD**, che NON e' un commento nuovo; `ERR|MISSING → id` = **FIRST-READ**,
+  *ignoto se nuovo*, e **silenzioso se l'id e' 0** (li' non c'e' proprio niente). Piu' un
+  **`ARM-WARN` che conta i soggetti non letti all'arm**, cosi' un baseline incompleto si vede invece
+  di pagarsi dopo.
+  🥇 **E i rami si PROVANO tutti, o un ramo che non puo' sparare e' lo stesso difetto un piano sotto:**
+  fixture a risposta nota, cinque transizioni, ognuna deve produrre esattamente la propria riga — e il
+  burst di stasera ridato in pasto al v2 deve produrre **NIENTE**. Fatto, 5 su 5.
+  🥇 **Perche' il verso FALSO-POSITIVO e' quello che conta qui: un watcher che grida al lupo insegna a
+  scartare la sua riga a occhio** — e l'asse dei commenti e' proprio quello che in questo progetto e'
+  gia' costato **25 ore** di stallo perche' nessuno lo guardava. **Un cancello che si fa ignorare non e'
+  meno rotto di uno spento.**
 - 🔴 **`API Error: Stream idle timeout` looks exactly like IDLE.** Cure = a SHORT `riprendi.` — do not clear.
 - 🔴 **QUEUED INPUT ≠ SWALLOWED ≠ DELIVERED.** Proof of delivery is a `-S` capture showing `❯ <text>` as a TURN.
   🔴🔴 **BUT ON A VERY SHORT PANE THAT PROOF DOES NOT EXIST, AND ITS ABSENCE READS AS "SWALLOWED"
