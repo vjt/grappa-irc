@@ -19573,3 +19573,45 @@ fake, whose refusal is modelled as "the nick never becomes ours" rather than
 as a 433 numeric — post-registration that numeric has owners of its own
 (`GhostRecovery`, `RecoverIdentity`) and routing a real one would have
 exercised them instead of the guard under test.
+
+### Correction: shottino is a THIRD mirror of the wire, and this slice said it was not
+
+The commit that bumped the protocol to 32 argued that
+`WIRE_PROTOCOL_VERSION` in `frontends/shottino/wire.h` should be left
+alone, and one clause of that argument was simply false: *"no gate in
+this repo ties the two"*. There is one. `frontends/shottino/tests/
+test_commands.c` reads `@protocol_version` straight out of
+`lib/grappa/protocol.ex` and asserts it equals the `#define`, and a
+second check there walks every event `kind` that cicchetto narrows in
+`userTopic.ts` / `wireNarrow.ts` and requires `wire.c` to know it. CI
+went red on both. The number was not the whole repair either: both
+switches over `wire_kind` are exhaustive under `-Wswitch`, so a new kind
+must be taught to the enum, to `KIND_TABLE`, to the narrower in `wire.c`
+and to the render switch in `shottino.c` — four sites, not one.
+
+**What went wrong is worth more than the fix.** The measurement taken was
+"of the last 40 commits touching `protocol.ex`, ZERO also touch
+`wire.h`", and that number is real — it just answers a different
+question. It measures the PRACTICE (who has historically edited what)
+and was read as the CONSTRAINT (whether anything enforces a relationship).
+A gate can be young, or can simply never have fired, and either way it
+leaves no trace in that history: the pin here had caught exactly one bump
+before this one. The general rule: **to claim nothing enforces X, look
+for the enforcement, not for the edits.** The homes are the test
+directories, the CI workflow, and the Makefile — enumerate them, do not
+sample commits.
+
+The evidence was also already in hand and went unread. The very commit
+cited as proof that shottino keeps its own schedule is `7170f9db7`,
+*"declare the protocol it speaks, **and pin it to the server's
+number**"* — the second half of its own subject line says the pin
+exists. A citation was taken for its first clause while the clause that
+refuted the argument sat in the same sentence.
+
+For the next bump: `wire.h` carries a note above the `#define` which the
+file itself instructs you to REPLACE rather than append to, and it now
+records the distinction that matters — v31 moved no `kind` and so was a
+number on its own, whereas a bump that adds one always costs the four
+sites above. A note claiming "nothing here is consumed by this client"
+is only true when no kind moved, and copying it forward when one did is
+the shape of comment that stays true exactly as long as nobody reads it.
