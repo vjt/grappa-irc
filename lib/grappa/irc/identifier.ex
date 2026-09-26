@@ -134,6 +134,47 @@ defmodule Grappa.IRC.Identifier do
   def valid_nick?(s) when is_binary(s), do: Regex.match?(@nick_regex, s)
   def valid_nick?(_), do: false
 
+  # The shortest legal nick, used ONLY as the probe base below. Any
+  # single character of `@nick_regex`'s HEAD class would do; `a` is the
+  # one that says least.
+  @nick_suffix_probe_base "a"
+
+  @doc """
+  True iff `s` can be APPENDED to a nick and still leave a syntactically
+  valid nickname — non-empty, drawn from the nick TAIL class, and short
+  enough to leave room for at least one base character.
+
+  #1894 needs this for the user-chosen auto-away suffix, which is stored
+  once and appended to whatever nick the session happens to hold on each
+  network, so it is validated on its own at the write boundary.
+
+  ## Why a probe base and not a second regex
+
+  The answer is derived from `@nick_regex` itself rather than restated:
+  a nick is a HEAD character followed by TAIL characters, so `s` is a
+  legal tail exactly when `#{@nick_suffix_probe_base} <> s` is a legal
+  nick. That also lands the length bound for free — the regex caps a
+  nick at `max_nick_length/0`, so the probe admits a suffix of at most
+  `max_nick_length/0 - 1`, which is the same "leave room for at least
+  one base character" rule `collision_fallback/3` states in its guard.
+
+  A sibling `@nick_suffix_regex` would be a second spelling of the tail
+  class, and two spellings drift — the mistake `channel_sigil?/1`'s
+  moduledoc warns about one paragraph at a time. This function cannot
+  drift from `valid_nick?/1`, because it IS `valid_nick?/1`.
+
+  This is a SYNTAX predicate, not a fit check: whether `nick <> s` clears
+  the network's advertised `NICKLEN` is a per-network question its caller
+  answers with a live 005, and cannot be answered here at save time.
+  """
+  @spec valid_nick_suffix?(term()) :: boolean()
+  def valid_nick_suffix?(""), do: false
+
+  def valid_nick_suffix?(s) when is_binary(s),
+    do: valid_nick?(@nick_suffix_probe_base <> s)
+
+  def valid_nick_suffix?(_), do: false
+
   @doc """
   Clamp `nick` to the IRCd nick length cap (`#{@max_nick_length}` chars).
 
