@@ -461,6 +461,13 @@ defmodule GrappaWeb.Router do
     get "/me/settings/auto-away-reason", UserSettingsController, :show_auto_away_reason
     put "/me/settings/auto-away-reason", UserSettingsController, :update_auto_away_reason
 
+    # #1894 — the suffix appended to the nick while that same auto-away is
+    # held (`<nick>-away`), off unless the subject sets one. Carried on
+    # live session state like the reason above, and retuned over the same
+    # bridge topic.
+    get "/me/settings/away-nick-suffix", UserSettingsController, :show_away_nick_suffix
+    put "/me/settings/away-nick-suffix", UserSettingsController, :update_away_nick_suffix
+
     # #228 — per-subject vhost (source-bind) self-selection. GET returns
     # the allowed set (generally-available ∪ granted) + current selection
     # + pin; PUT persists a selection authz-clamped to the allowed set.

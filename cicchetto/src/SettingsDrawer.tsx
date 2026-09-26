@@ -16,7 +16,14 @@ import InlineConfirmButton from "./InlineConfirmButton";
 import { windowCandidates } from "./lib/activeWindows";
 import { ApiError, displayNick, type Network, visitorNetworkNick } from "./lib/api";
 import { getSubject, token } from "./lib/auth";
-import { autoAwayDebounceValue, loadAutoAwayDebounce, saveAutoAwayDebounce } from "./lib/autoAway";
+import {
+  autoAwayDebounceValue,
+  awayNickSuffixValue,
+  loadAutoAwayDebounce,
+  loadAwayNickSuffix,
+  saveAutoAwayDebounce,
+  saveAwayNickSuffix,
+} from "./lib/autoAway";
 import { createBackdropDismiss } from "./lib/backdropDismiss";
 import { playBeep } from "./lib/beep";
 import { getBoldMentions } from "./lib/boldMentions";
@@ -250,6 +257,10 @@ const SettingsDrawer: Component<Props> = (props) => {
     null,
   );
   const [autoAwayReasonDraft, setAutoAwayReasonDraft] = createSignal<string | null>(null);
+  const [awayNickSuffixDraft, setAwayNickSuffixDraft] = createSignal<string | null>(null);
+  const [awayNickSuffixSavingError, setAwayNickSuffixSavingError] = createSignal<string | null>(
+    null,
+  );
   const [autoAwayReasonSavingError, setAutoAwayReasonSavingError] = createSignal<string | null>(
     null,
   );
@@ -762,6 +773,7 @@ const SettingsDrawer: Component<Props> = (props) => {
       // surfaces on its own, as does a later push from another device.
       void loadQuitPartReason(t);
       void loadAutoAwayReason(t);
+      void loadAwayNickSuffix(t);
       // M2 — same reason: the peer-profiles toggle must show the
       // subject's actual opt-in, not a client-side guess.
       void loadShowPeerProfiles(t);
@@ -1136,6 +1148,7 @@ const SettingsDrawer: Component<Props> = (props) => {
   // through to the stored string.
   const quitPartReasonText = (): string => quitPartReasonDraft() ?? quitPartReasonValue() ?? "";
   const autoAwayReasonText = (): string => autoAwayReasonDraft() ?? autoAwayReasonValue() ?? "";
+  const awayNickSuffixText = (): string => awayNickSuffixDraft() ?? awayNickSuffixValue() ?? "";
 
   // Saving posts the field's raw contents — an emptied box included, which
   // is the clear gesture. The server answers with what it stored (`null`
@@ -1187,6 +1200,27 @@ const SettingsDrawer: Component<Props> = (props) => {
   const commitAutoAwayReason = () => {
     if (autoAwayReasonText() === (autoAwayReasonValue() ?? "")) return;
     void onAutoAwayReasonSave();
+  };
+
+  // #1894 — the nick suffix commits exactly like the reason above it: the
+  // raw box contents, an emptied one included, which is how the rename is
+  // switched back off. The server answers with what it stored and the
+  // dropped draft snaps the input back to reading through that answer.
+  const onAwayNickSuffixSave = async () => {
+    const t = token();
+    if (t === null) return;
+    setAwayNickSuffixSavingError(null);
+    try {
+      await saveAwayNickSuffix(t, awayNickSuffixText());
+      setAwayNickSuffixDraft(null);
+    } catch (err) {
+      setAwayNickSuffixSavingError(err instanceof Error ? err.message : "save_failed");
+    }
+  };
+
+  const commitAwayNickSuffix = () => {
+    if (awayNickSuffixText() === (awayNickSuffixValue() ?? "")) return;
+    void onAwayNickSuffixSave();
   };
 
   const onAutoAwayCustomSave = async () => {
@@ -2177,6 +2211,39 @@ const SettingsDrawer: Component<Props> = (props) => {
               <Show when={autoAwayReasonSavingError() !== null}>
                 <p class="auto-away-error" role="alert" data-testid="auto-away-reason-error">
                   {autoAwayReasonSavingError()}
+                </p>
+              </Show>
+
+              {/* #1894 — the optional nick rename, in THIS fieldset for the
+                  same reason the reason field is: it is meaningless without
+                  the delay above it, and "never — stay online" makes it
+                  inert. Empty is the OFF state and it is the default, so the
+                  placeholder shows a SHAPE rather than a value: printing
+                  `-away` as a placeholder would read as "this is what will
+                  happen", and nothing happens until a suffix is stored. */}
+              <label class="leave-reason-row">
+                <span class="leave-reason-label">nick suffix:</span>
+                <input
+                  type="text"
+                  autocapitalize="none"
+                  autocorrect="off"
+                  spellcheck={false}
+                  placeholder="leave empty to keep your nick"
+                  data-testid="away-nick-suffix-input"
+                  value={awayNickSuffixText()}
+                  onInput={(e) => setAwayNickSuffixDraft(e.currentTarget.value)}
+                  onBlur={commitAwayNickSuffix}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      commitAwayNickSuffix();
+                    }
+                  }}
+                />
+              </label>
+              <Show when={awayNickSuffixSavingError() !== null}>
+                <p class="auto-away-error" role="alert" data-testid="away-nick-suffix-error">
+                  {awayNickSuffixSavingError()}
                 </p>
               </Show>
             </fieldset>

@@ -263,7 +263,7 @@ let _socket: Socket | null = null;
 // pushes an older server simply never sends, and an absent push leaves the
 // stores at the value the REST read already gave them, so this bundle is
 // still served by an older server.
-export const CLIENT_PROTOCOL_VERSION = 31;
+export const CLIENT_PROTOCOL_VERSION = 32;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

@@ -97,6 +97,9 @@ defmodule Grappa.UserSettings do
   | `"auto_away_reason"`   | `leave_reason()`       | `get_auto_away_reason/1`,       |
   |                        | (`""` clears the key)  | `put_auto_away_reason/3`        |
   |                        |                        | (issue 2150)                    |
+  | `"away_nick_suffix"`   | `away_nick_suffix()`   | `get_away_nick_suffix/1`,       |
+  |                        | (absent = OFF)         | `put_away_nick_suffix/3`        |
+  |                        |                        | (#1894)                         |
 
   ## Boundary
 
@@ -1641,14 +1644,14 @@ defmodule Grappa.UserSettings do
   defp validate_leave_reason(value, field, subject) when is_binary(value) do
     cond do
       byte_size(value) > @leave_reason_max_bytes ->
-        leave_reason_error(
+        settings_field_error(
           field,
           subject,
           "must be at most #{@leave_reason_max_bytes} bytes"
         )
 
       not Identifier.safe_line_token?(value) ->
-        leave_reason_error(
+        settings_field_error(
           field,
           subject,
           "must not contain CR, LF or NUL"
@@ -1660,10 +1663,15 @@ defmodule Grappa.UserSettings do
   end
 
   defp validate_leave_reason(_, field, subject),
-    do: leave_reason_error(field, subject, "must be a string, or null to clear it")
+    do: settings_field_error(field, subject, "must be a string, or null to clear it")
 
-  @spec leave_reason_error(atom(), Subject.t(), String.t()) :: {:error, Ecto.Changeset.t()}
-  defp leave_reason_error(field, subject, message) do
+  # Builds the `{:error, changeset}` a rejected scalar setting returns, with
+  # the message attached to `field`. Named for the shape it produces rather
+  # than for its first caller: #1894's suffix validator needs exactly this
+  # and a second copy would be the duplication this file's own accessors
+  # keep avoiding.
+  @spec settings_field_error(atom(), Subject.t(), String.t()) :: {:error, Ecto.Changeset.t()}
+  defp settings_field_error(field, subject, message) do
     attrs = Subject.put_subject_id(%{data: %{}}, subject)
 
     cs =
@@ -1673,6 +1681,146 @@ defmodule Grappa.UserSettings do
 
     {:error, cs}
   end
+
+  # ---------------------------------------------------------------------------
+  # away_nick_suffix accessor (#1894)
+  # ---------------------------------------------------------------------------
+
+  # #1894 — the suffix appended to the subject's nick while the bouncer has
+  # marked them auto-away, the `away_nick` behaviour of irssi/mIRC/ircII.
+  #
+  # ONE key, and it is the suffix itself rather than a boolean beside it.
+  # Two keys can disagree — `enabled: true` next to no suffix has no
+  # meaning, and nothing in a JSON blob stops a client from writing it —
+  # whereas a nullable suffix has exactly the two states the feature has.
+  #
+  # `nil` is the OFF state here, where #348 needed a `0` sentinel for it
+  # (`auto_away_debounce_seconds`): there `nil` was already spoken for by
+  # "no preference, keep the server-wide default", and a delay has such a
+  # default. A suffix does not — the feature ships OFF (see the issue's
+  # traffic argument: a NICK is broadcast to every shared channel, twice
+  # per idle cycle) — so `nil` is free to mean what it reads as.
+  @away_nick_suffix_key "away_nick_suffix"
+
+  @typedoc """
+  #1894 — the subject's auto-away nick suffix.
+
+    * `nil` — OFF. The nick is left alone on auto-away, which is what
+      every subject got before this setting existed.
+    * `String.t()` — appended to the nick when the bouncer marks the
+      subject auto-away, and removed again when they come back.
+
+  There is no third state, and the empty string is not one: it normalises
+  to `nil` at the write boundary and the key is deleted, so OFF has one
+  spelling in storage (the `t:leave_reason/0` rule).
+  """
+  @type away_nick_suffix :: String.t() | nil
+
+  @doc """
+  The subject's auto-away nick suffix, or `nil` when the feature is off
+  for them.
+
+  `nil` is also what an unusable stored value reads back as. The reader
+  re-runs the same `Grappa.IRC.Identifier.valid_nick_suffix?/1` the writer
+  enforced, because this value is CONCATENATED onto an outbound `NICK`
+  line: a hand-edited row carrying a space or a CRLF would otherwise reach
+  the wire, and "degrade to off" is the only safe reading of a suffix we
+  cannot prove legal.
+  """
+  @spec get_away_nick_suffix(Subject.t()) :: away_nick_suffix()
+  def get_away_nick_suffix({_, _} = subject) do
+    case fetch_existing_or_nil(subject) do
+      nil ->
+        nil
+
+      %Settings{data: data} ->
+        suffix = data[@away_nick_suffix_key]
+        if Identifier.valid_nick_suffix?(suffix), do: suffix, else: nil
+    end
+  end
+
+  @doc """
+  Stores the subject's auto-away nick suffix and announces it on BOTH
+  surfaces.
+
+  Pass `nil` or `""` to switch the feature off — both delete the key (see
+  `t:away_nick_suffix/0`). Anything that is not a legal nick tail is a
+  changeset error on `:away_nick_suffix`.
+
+  ## Why the charset guard runs HERE
+
+  The same argument `put_quit_part_reason/3` makes: a suffix refused only
+  when it is USED would leave the subject with a setting that looks saved
+  and silently never applies, and the moment it would apply is the moment
+  they are not watching — they are idle, which is the whole premise of
+  auto-away. Refusing at save time puts the 422 next to the field.
+
+  It is a SYNTAX guard and not a fit check. Whether `nick <> suffix`
+  clears the network's `NICKLEN` is per-network, needs a live 005, and
+  cannot be decided here; the session answers it at rename time.
+
+  ## Two surfaces, like the auto-away reason
+
+  The value is carried on live session state (resolved once at spawn,
+  next to `auto_away_debounce_ms` and `auto_away_reason`), so a write that
+  only reached the subject's other devices would leave every running
+  session using the old suffix until it restarts. The bridge broadcast is
+  what makes "a knob turned now applies now" true.
+  """
+  @spec put_away_nick_suffix(Subject.t(), term(), String.t()) ::
+          {:ok, Settings.t()} | {:error, Ecto.Changeset.t() | :db_unavailable}
+  def put_away_nick_suffix({_, _} = subject, value, subject_label)
+      when is_binary(subject_label) do
+    with {:ok, stored} <- validate_away_nick_suffix(value, subject),
+         {:ok, saved} <-
+           update_data(subject, &put_or_delete(&1, @away_nick_suffix_key, stored)) do
+      # AFTER the transaction returned, never inside it — a retried attempt
+      # would re-announce a change that had been rolled back (the
+      # `put_auto_away_debounce_seconds/3` rule).
+      :ok =
+        Phoenix.PubSub.broadcast(
+          Grappa.PubSub,
+          Topic.user_settings(subject_label),
+          {:away_nick_suffix_changed, stored}
+        )
+
+      :ok =
+        Grappa.PubSub.broadcast_event(
+          Topic.user(subject_label),
+          Wire.away_nick_suffix_changed(stored)
+        )
+
+      {:ok, saved}
+    end
+  end
+
+  # Returns the value to STORE, so the `""` -> `nil` normalisation happens
+  # once, here, and `put_or_delete/3` is handed something it can delete on.
+  @spec validate_away_nick_suffix(term(), Subject.t()) ::
+          {:ok, away_nick_suffix()} | {:error, Ecto.Changeset.t()}
+  defp validate_away_nick_suffix(nil, _), do: {:ok, nil}
+  defp validate_away_nick_suffix("", _), do: {:ok, nil}
+
+  defp validate_away_nick_suffix(value, subject) when is_binary(value) do
+    if Identifier.valid_nick_suffix?(value) do
+      {:ok, value}
+    else
+      settings_field_error(
+        :away_nick_suffix,
+        subject,
+        "must be appendable to a nick: nick-tail characters only, " <>
+          "at most #{Identifier.max_nick_length() - 1} of them"
+      )
+    end
+  end
+
+  defp validate_away_nick_suffix(_, subject),
+    do:
+      settings_field_error(
+        :away_nick_suffix,
+        subject,
+        "must be a string, or null to switch the rename off"
+      )
 
   # ---------------------------------------------------------------------------
   # vhost_selection accessors (#228)

@@ -134,6 +134,7 @@ static const struct {
     {"directory_progress", WIRE_DIRECTORY_PROGRESS},
     {"directory_complete", WIRE_DIRECTORY_COMPLETE},
     {"directory_failed", WIRE_DIRECTORY_FAILED},
+    {"away_nick_suffix_changed", WIRE_AWAY_NICK_SUFFIX_CHANGED},
 };
 
 const char *wire_kind_name(wire_kind k) {
@@ -880,6 +881,10 @@ bool wire_narrow(const json_value *p, struct wire_event *ev) {
     case WIRE_DIRECTORY_FAILED:
         if (!json_str_req(p, "network", &e.u.directory.network)) return false;
         if (!json_str_req(p, "reason", &e.u.directory.reason)) return false;
+        break;
+
+    case WIRE_AWAY_NICK_SUFFIX_CHANGED:
+        if (!json_str_opt(p, "away_nick_suffix", &e.u.away_nick_suffix.suffix)) return false;
         break;
 
     case WIRE_UNKNOWN:

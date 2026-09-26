@@ -310,6 +310,11 @@ vi.mock("../lib/uploadOrchestrator", () => ({
 // about the CONTROL: what it offers, what it sends, and what it shows
 // when the server refuses.
 const autoAwayHolder = vi.hoisted(() => ({ current: null as number | null }));
+// #1894 — the nick suffix is cached in this same module (it belongs to the
+// auto-away FEATURE, not to the leave reasons), so its three verbs are
+// mocked here with the same holder posture as the debounce above.
+const awayNickSuffixHolder = vi.hoisted(() => ({ current: null as string | null }));
+
 vi.mock("../lib/autoAway", () => ({
   loadAutoAwayDebounce: vi.fn(async () => {
     /* no-op; the drawer test asserts on the call only */
@@ -318,6 +323,13 @@ vi.mock("../lib/autoAway", () => ({
     autoAwayHolder.current = seconds;
   }),
   autoAwayDebounceValue: () => autoAwayHolder.current,
+  loadAwayNickSuffix: vi.fn(async () => {
+    /* no-op; the drawer test asserts on the call only */
+  }),
+  saveAwayNickSuffix: vi.fn(async (_t: string, suffix: string | null) => {
+    awayNickSuffixHolder.current = suffix;
+  }),
+  awayNickSuffixValue: () => awayNickSuffixHolder.current,
 }));
 
 // issue 2150 — same posture as the auto-away mock above: the two

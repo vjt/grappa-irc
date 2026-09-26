@@ -111,4 +111,27 @@ defmodule Grappa.UserSettings.Wire do
           auto_away_reason_changed_payload()
   def auto_away_reason_changed(reason) when is_nil(reason) or is_binary(reason),
     do: %{kind: :auto_away_reason_changed, auto_away_reason: reason}
+
+  @typedoc """
+  Wire shape of the `away_nick_suffix_changed` push (#1894).
+
+  `away_nick_suffix`: `null` = the rename is OFF, which is the default and
+  what every subject had before the setting existed. `null` is a VALUE
+  here — it is how "I switched it off" travels — so the key is always
+  present.
+  """
+  @type away_nick_suffix_changed_payload :: %{
+          kind: :away_nick_suffix_changed,
+          away_nick_suffix: String.t() | nil
+        }
+
+  @doc """
+  Builds the `away_nick_suffix_changed` push payload. See
+  `quit_part_reason_changed/1` for why a pass-through still gets a
+  builder.
+  """
+  @spec away_nick_suffix_changed(UserSettings.away_nick_suffix()) ::
+          away_nick_suffix_changed_payload()
+  def away_nick_suffix_changed(suffix) when is_nil(suffix) or is_binary(suffix),
+    do: %{kind: :away_nick_suffix_changed, away_nick_suffix: suffix}
 end

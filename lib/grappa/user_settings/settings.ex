@@ -39,6 +39,7 @@ defmodule Grappa.UserSettings.Settings do
   | `"vhost_selection"`    | `list(String.t())`                  | `Grappa.Vhosts` (#228)       |
   | `"display_prefs"`      | `Grappa.UserSettings.display_prefs()` | `Grappa.UserSettings` (#449) |
   | `"auto_away_debounce_seconds"` | `pos_integer() \\| 0` (`0` = OFF) | `Grappa.UserSettings` (#348) |
+  | `"away_nick_suffix"`   | `String.t()` (absent = OFF)         | `Grappa.UserSettings` (#1894) |
 
   ## String-key invariant (IMPORTANT)
 

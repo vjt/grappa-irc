@@ -560,6 +560,33 @@ never render a clear.
 
 Both are `string | null`. Check `protocol_version >= 23`.
 
+### 4d-bis. The auto-away nick rename (#1894, v32)
+
+A third user-topic push on the same axis, carrying the suffix the bouncer
+appends to the subject's nick while it holds them auto-away:
+
+```json
+{"kind": "away_nick_suffix_changed", "away_nick_suffix": "-away"}
+```
+
+Same always-present-key rule as the pair above, and `null` again means
+something rather than nothing — but a DIFFERENT something. For the two
+reasons `null` hides a server-owned string the client must not print. Here
+`null` hides nothing at all: the rename is OFF, the nick is left alone, and
+that is the default every subject has until they set a suffix.
+
+The rename rides auto-away only. An explicit `/away` never renames. On the
+way back the bouncer restores the nick it took; if the bare nick has since
+been taken it stays decorated and the refusal numeric routes to the
+subject, rather than a retry ladder running underneath them.
+
+A client MUST NOT derive the away nick itself. The server decides whether
+the rename happens at all — a target that would exceed the network's
+`NICKLEN` is skipped and the nick left alone — so a client that renders
+`nick + suffix` will show a nick nobody is using.
+
+`string | null`. Check `protocol_version >= 32`.
+
 ### 4e. A network left or joined the session (issue 2219, v28)
 
 `DELETE /session/networks/:slug` detaches a network from the caller's own
@@ -1064,6 +1091,7 @@ forever.
 | `archive_purged` | user | archived scrollback for one target was deleted |
 | `auto_away_debounce_changed` | user | the subject's auto-away debounce setting changed |
 | `auto_away_reason_changed` | user | the subject's remembered auto-away text changed |
+| `away_nick_suffix_changed` | user | the subject's auto-away nick suffix changed (`null` = rename off) |
 | `away_confirmed` | user | upstream acked an AWAY / BACK |
 | `banlist_bundle` | requester | the folded `+b` / `+e` / `+I` list for one channel (§5c) |
 | `bundle_hash` | user | a new cic bundle is live — hash + version |

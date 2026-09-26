@@ -471,6 +471,12 @@ defmodule Grappa.Session.Server do
           # defaults to that same constant, so a session built without the
           # key behaves exactly as it did before the setting existed.
           optional(:auto_away_reason) => String.t(),
+          # #1894 — the suffix this session appends to its nick when that
+          # same debounce fires. Injected by `Grappa.Session.start_session/3`
+          # from the subject's setting; an omitted opt (test seam) defaults
+          # to `nil`, which is the rename switched OFF and therefore the
+          # pre-#1894 behaviour byte for byte.
+          optional(:away_nick_suffix) => UserSettings.away_nick_suffix(),
           # M2 — the subject's opt-in to peer CTCP USERINFO/AVATAR queries
           # (source of the member-list gender badge). Normally injected by
           # `Grappa.Session.start_session/3`, mirror of the debounce opt
@@ -653,6 +659,24 @@ defmodule Grappa.Session.Server do
           # resolver substitutes `AwayState.auto_away_reason/0` when the
           # subject stored none, so no consumer has a nil case to handle.
           auto_away_reason: String.t(),
+          # #1894 — the suffix appended to the nick on auto-away, `nil` when
+          # the subject has not switched the rename on (the default). Sits
+          # next to the reason above and is re-tuned live by the same bridge
+          # topic, via `{:away_nick_suffix_changed, _}`.
+          away_nick_suffix: UserSettings.away_nick_suffix(),
+          # #1894 — the nick to send ourselves back to when the away clears,
+          # `nil` whenever no away rename of ours is outstanding.
+          #
+          # It is a STORE and not a derivation, and the difference is one
+          # corner: stripping the suffix off `state.nick` would look like
+          # the same answer, and gives the wrong one for a subject whose
+          # real nick ALREADY ends in their suffix (`pippo-away` with
+          # `-away` set) on a cycle where the rename did not land — there
+          # the strip invents a rename that never happened and walks them
+          # to `pippo`. Once we have renamed, `state.nick` holds the
+          # decorated nick and nothing else in the process remembers the
+          # bare one, so this duplicates no existing state.
+          away_nick_restore: String.t() | nil,
           # S4.2: IRCv3 caps confirmed active by upstream CAP ACK. Keys are
           # lowercase cap names (e.g. "labeled-response"). Empty until the
           # upstream ACKs at least one cap. Added on ACK and retired on a
@@ -1318,6 +1342,12 @@ defmodule Grappa.Session.Server do
       # opt still wins for tests, and the fallback is the constant every
       # session sent before the setting existed.
       auto_away_reason: Map.get(opts, :auto_away_reason, AwayState.auto_away_reason()),
+      # #1894 — same shape again; the `nil` fallback is the rename OFF, so
+      # a session built without the key never touches its nick.
+      away_nick_suffix: Map.get(opts, :away_nick_suffix, nil),
+      # Never injectable: an away rename can only be outstanding because
+      # THIS process sent one, so a fresh session has none by construction.
+      away_nick_restore: nil,
       caps_active: MapSet.new(),
       labels_pending: %{},
       # S10 — sibling prime-stamp map for the labels_pending lazy TTL sweep.
@@ -2038,7 +2068,20 @@ defmodule Grappa.Session.Server do
   # `Identifier.safe_line_token?/1` before this handler fires); the
   # `Client.send_nick/2` byte-boundary gate is the second line of
   # defense for malformed values that bypass the facade.
+  #
+  # #1894 — a manual nick change DROPS any outstanding away-rename
+  # restore, whether or not the line reaches the wire. The subject has
+  # just named the nick they want; sending them somewhere else when the
+  # away clears would overrule a choice they made more recently than ours,
+  # and they would have no way to tell what did it.
+  #
+  # The DOOR is what distinguishes theirs from ours — this handler is only
+  # ever reached from `Session.send_nick/3` — so nothing here has to guess
+  # from the string, which would misread a subject who manually types the
+  # very nick we were going to restore them to.
   def handle_call({:send_nick, new_nick}, _, state) when is_binary(new_nick) do
+    state = Map.put(state, :away_nick_restore, nil)
+
     case Client.send_nick(state.client, new_nick) do
       :ok -> {:reply, :ok, state}
       {:error, _} = err -> {:reply, err, state}
@@ -3425,6 +3468,24 @@ defmodule Grappa.Session.Server do
   # editing a text field.
   def handle_info({:auto_away_reason_changed, preference}, state) do
     {:noreply, apply_auto_away_reason(state, resolve_auto_away_reason(preference))}
+  end
+
+  # #1894 — the subject switched the auto-away nick rename on, off, or
+  # onto a different suffix, from any of their devices. Same bridge topic
+  # and same "applies now" contract as the two above.
+  #
+  # Unlike the reason, this does NOT re-issue anything for a session that
+  # is already `:away_auto`, and the asymmetry is the point. Re-sending
+  # `AWAY` with new text costs bystanders nothing; re-sending `NICK` costs
+  # them a line in every channel they share with an idle person, which is
+  # the traffic argument that made this feature opt-in to begin with. The
+  # new suffix applies from the next idle cycle.
+  #
+  # The outstanding restore is deliberately left alone: it names the nick
+  # we took the subject AWAY from, a fact the suffix cannot change, so a
+  # subject who retunes mid-away still lands back on their own nick.
+  def handle_info({:away_nick_suffix_changed, suffix}, state) do
+    {:noreply, Map.put(state, :away_nick_suffix, suffix)}
   end
 
   # KVIrc-style CTCP USERINFO profile — a live edit via
@@ -8462,7 +8523,145 @@ defmodule Grappa.Session.Server do
       Client.send_away(state.client, state.auto_away_reason)
     )
 
-    %{state | away_state: AwayState.set_auto_away(state.away_state, state.auto_away_reason)}
+    state
+    |> Map.put(:away_state, AwayState.set_auto_away(state.away_state, state.auto_away_reason))
+    |> rename_for_away()
+  end
+
+  # #1894 — append the subject's suffix to our nick, if they set one.
+  #
+  # Only the AUTO path calls this. An explicit `/away` that renamed would
+  # surprise people: they typed a status, not a nick change, and the issue
+  # settles the scope that way.
+  #
+  # ## There is no collision pre-check, deliberately
+  #
+  # The target may be taken. We send anyway and let the ircd answer: on a
+  # 433 our nick simply does not change, `away_nick_restore` still holds
+  # the nick we are already on, and `restore_away_nick/1`'s equality guard
+  # makes the return a no-op. The session can therefore never be stranded
+  # on a decorated nick by a collision — which is the acceptance criterion
+  # — without borrowing `GhostRecovery`, whose retry half never landed
+  # (#1541) and whose failure mode is exactly the stranding forbidden
+  # here. "Skip the rename" is the issue's own cheap answer; this gets it
+  # from the protocol instead of from a pre-flight WHOIS that would be
+  # stale by the time the NICK went out anyway.
+  #
+  # `Map.get` / `Map.put` (not dot-access and not `%{state | ...}`) per the
+  # #229 hot-reload convention: these keys are newer than some live procs.
+  @spec rename_for_away(t()) :: t()
+  defp rename_for_away(state) do
+    case away_nick_target(state) do
+      nil ->
+        state
+
+      target ->
+        maybe_log_send_failure("away_nick_rename", Client.send_nick(state.client, target))
+        Map.put(state, :away_nick_restore, state.nick)
+    end
+  end
+
+  # The nick to rename TO, or `nil` when there is none to send.
+  #
+  # Two `nil` arms, and they are different facts:
+  #
+  #   * no suffix — the subject never switched the rename on. This is the
+  #     default and the overwhelmingly common case; it is silent because
+  #     nothing happened and nothing was skipped.
+  #   * the suffix ALONE fills the network's `NICKLEN` — see below. It
+  #     LOGS, because a subject who DID switch the rename on and sees
+  #     nothing happen is owed the reason.
+  #
+  # ## Overflow TRIMS THE BASE, reversing what first shipped (#1894)
+  #
+  # The first cut of this function refused on overflow and left the nick
+  # alone, arguing that the suffix is what peers READ and that trimming
+  # the base is what stops them recognising the person it describes. vjt
+  # ruled the other way on 2026-09-26 — truncate the base, do not refuse
+  # the rename — and the ruling is what this code implements. The suffix
+  # is the part the subject CHOSE and the part carrying the meaning, so it
+  # is the part that survives whole; `Identifier.collision_fallback/3`
+  # already builds exactly that shape for #676, now for a second reason.
+  #
+  # Reusing that builder swallows the fitting case whole: when the target
+  # already clears the cap, its `String.slice/3` returns the base
+  # untouched and the result is byte-identical to a plain concatenation.
+  # A separate "it fits" branch would be dead code, so there is not one.
+  #
+  # The refusal that REMAINS is a different fact — it is the builder's own
+  # precondition, a `cap` with no room for even one base character. Our
+  # own ceiling cannot reach it: `Identifier.valid_nick_suffix?/1` caps a
+  # stored suffix at `max_nick_length() - 1` (measured — 29 passes, 30
+  # does not), so only a network advertising a SMALLER `NICKLEN` can.
+  #
+  # Its condition is spelled as the guard it protects — `byte_size`, NOT
+  # `String.length` — so the two cannot drift into a
+  # `FunctionClauseError`. The unit mismatch that buys is inert here
+  # rather than merely conservative: the same predicate refuses a
+  # non-ASCII suffix outright (measured — `valid_nick_suffix?("é")` is
+  # `false`, `@nick_regex` carrying no `u` flag), so every suffix that can
+  # reach this function has `byte_size == String.length`.
+  #
+  # `nicklen` is `nil` before 005; our own ceiling stands in, the same
+  # substitution `AuthFSM` makes for the 433 ladder.
+  @spec away_nick_target(t()) :: String.t() | nil
+  defp away_nick_target(state) do
+    case Map.get(state, :away_nick_suffix) do
+      nil ->
+        nil
+
+      suffix ->
+        cap =
+          ISupport.nicklen(Map.get(state, :isupport, ISupport.default())) ||
+            Identifier.max_nick_length()
+
+        if cap > byte_size(suffix) do
+          Identifier.collision_fallback(state.nick, suffix, cap)
+        else
+          # The suffix and the cap go in the MESSAGE, not in Logger
+          # metadata. The allowlist in `config/config.exs` is curated, each
+          # key carrying the argument for its own existence, and two more of
+          # them for one rare skip line is a mechanism heavier than its
+          # problem. The operator still reads both values, which is what log
+          # honesty asks for; nothing aggregates on them.
+          Logger.info(
+            "away nick rename skipped — suffix #{suffix} leaves no room " <>
+              "for a base nick under NICKLEN #{cap}",
+            nick: state.nick
+          )
+
+          nil
+        end
+    end
+  end
+
+  # #1894 — send ourselves back to the nick we were on before the away
+  # rename, if one is outstanding.
+  #
+  # The equality guard is what absorbs a rename that never landed: after a
+  # 433 the stored nick IS the current nick, and re-sending it would be a
+  # NICK line that asks for nothing. Folded, because a case-only
+  # difference is not a drift — the same argument
+  # `reclaim_configured_nick/1` makes one screen up.
+  #
+  # Sent ONCE and not laddered. If the bare nick has been taken while we
+  # were idle we stay decorated and the numeric routes to the subject,
+  # which is the posture issue 2252 already ruled for the sibling reclaim:
+  # asking again cannot change who holds the nick, and the operator needs
+  # to READ why it did not come back rather than watch a spin.
+  @spec restore_away_nick(t()) :: t()
+  defp restore_away_nick(state) do
+    case Map.get(state, :away_nick_restore) do
+      nil ->
+        state
+
+      want ->
+        if fold_key(state, want) != fold_key(state, state.nick) do
+          maybe_log_send_failure("away_nick_restore", Client.send_nick(state.client, want))
+        end
+
+        Map.put(state, :away_nick_restore, nil)
+    end
   end
 
   # Clear any active away state (explicit or auto). Issues bare `AWAY` upstream
@@ -8479,11 +8678,20 @@ defmodule Grappa.Session.Server do
   #
   # S4.2: `label` is a UUID string when labeled-response cap is active;
   # `nil` otherwise.
+  #
+  # #1894: BOTH clauses restore the nick, and the gate is the outstanding
+  # rename rather than the away kind. A subject who goes auto-away, is
+  # renamed, then types `/away lunch` and later `/back` leaves through the
+  # explicit door with a decorated nick — gating on `:away_auto` here is
+  # exactly how they would keep it.
   @spec unset_away_internal(t(), String.t() | nil) :: t()
   defp unset_away_internal(state, nil) do
     maybe_log_send_failure("unset_away", Client.send_away_unset(state.client))
     maybe_broadcast_mentions_bundle(state)
-    %{state | away_state: AwayState.unset_away(state.away_state)}
+
+    state
+    |> Map.put(:away_state, AwayState.unset_away(state.away_state))
+    |> restore_away_nick()
   end
 
   defp unset_away_internal(state, label) when is_binary(label) do
@@ -8493,7 +8701,10 @@ defmodule Grappa.Session.Server do
     )
 
     maybe_broadcast_mentions_bundle(state)
-    %{state | away_state: AwayState.unset_away(state.away_state)}
+
+    state
+    |> Map.put(:away_state, AwayState.unset_away(state.away_state))
+    |> restore_away_nick()
   end
 
   # REV-E (H11): single fire-and-forget Logger helper for AWAY-internal

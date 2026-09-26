@@ -8553,6 +8553,14 @@ static void handle_wire_event(struct app *app, const char *topic_network,
     case WIRE_SERVER_SETTINGS_CHANGED:
     case WIRE_ARCHIVE_CHANGED:
     case WIRE_ARCHIVE_PURGED:
+    /* issue 1894. It joins this group for the same reason its neighbours
+     * are in it: it reports a SETTING, and this client has no settings
+     * surface to refresh — the same class as server_settings_changed and
+     * supported_umodes_changed two lines up. A card would announce, to the
+     * person who just made the change, a change they made. The rename
+     * itself still shows up where it belongs: the server sends NICK, so
+     * the nick change arrives as a nick_change like any other. */
+    case WIRE_AWAY_NICK_SUFFIX_CHANGED:
     case WIRE_UNKNOWN:
         /* Narrowed but not yet rendered — landing here is deliberate, not
          * a gap in the switch. Each becomes a card or a store update in a

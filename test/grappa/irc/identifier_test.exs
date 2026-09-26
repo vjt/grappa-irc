@@ -64,6 +64,59 @@ defmodule Grappa.IRC.IdentifierTest do
     end
   end
 
+  # #1894 — the user-chosen auto-away nick suffix, validated on its own at
+  # the settings write boundary because the nick it will be appended to is
+  # per-network and not known until the session holds one.
+  describe "valid_nick_suffix?/1" do
+    test "accepts tail-class suffixes" do
+      assert Identifier.valid_nick_suffix?("-away")
+      assert Identifier.valid_nick_suffix?("_afk")
+      assert Identifier.valid_nick_suffix?("|zZz")
+      assert Identifier.valid_nick_suffix?("[away]")
+      assert Identifier.valid_nick_suffix?("1")
+    end
+
+    test "rejects the empty suffix — absence is spelled nil, not \"\"" do
+      refute Identifier.valid_nick_suffix?("")
+    end
+
+    test "rejects non-binaries" do
+      refute Identifier.valid_nick_suffix?(nil)
+      refute Identifier.valid_nick_suffix?(:away)
+      refute Identifier.valid_nick_suffix?(42)
+    end
+
+    test "rejects anything outside the nick tail class" do
+      refute Identifier.valid_nick_suffix?(" away")
+      refute Identifier.valid_nick_suffix?("-away!")
+      refute Identifier.valid_nick_suffix?("-a way")
+      refute Identifier.valid_nick_suffix?("-away\r\n")
+      refute Identifier.valid_nick_suffix?("-caffè")
+    end
+
+    # The bound is DERIVED from the nick cap, not a number of its own: a
+    # suffix may be at most `max_nick_length() - 1`, which is
+    # `collision_fallback/3`'s "room for at least one base character" rule
+    # arriving from the other side. Pinned so a change to the cap fails
+    # here rather than silently moving what the settings API accepts.
+    test "accepts at most max_nick_length/0 - 1, leaving room for a base" do
+      cap = Identifier.max_nick_length()
+
+      assert Identifier.valid_nick_suffix?(String.duplicate("a", cap - 1))
+      refute Identifier.valid_nick_suffix?(String.duplicate("a", cap))
+    end
+
+    test "a valid suffix appended to a valid nick is a valid nick" do
+      check all(
+              base <- string(?a..?z, min_length: 1, max_length: 10),
+              suffix <- string(?a..?z, min_length: 1, max_length: 10)
+            ) do
+        assert Identifier.valid_nick_suffix?(suffix)
+        assert Identifier.valid_nick?(base <> suffix)
+      end
+    end
+  end
+
   # #676 — the 433 collision-fallback candidate builder. The suffix is the
   # part that MUST survive: a builder that let the cap eat it would hand the
   # ircd back the very nick it just rejected, and the retry ladder would spin

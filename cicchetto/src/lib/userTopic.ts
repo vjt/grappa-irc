@@ -4,7 +4,7 @@ import { refreshAliases } from "./aliasList";
 import { assertNever, type QueryWindowEntry, type WhoisExtraLine, type WireUserEvent } from "./api";
 import { loadArchive } from "./archive";
 import { clearLocalAuth, socketUserName, token } from "./auth";
-import { applyAutoAwayDebounceFromWire } from "./autoAway";
+import { applyAutoAwayDebounceFromWire, applyAwayNickSuffixFromWire } from "./autoAway";
 import { setAwayState } from "./awayStatus";
 import { setBanlistBundle } from "./banlistCard";
 import { setServerBundleHash, setServerBundleVersion } from "./bundleHash";
@@ -117,6 +117,7 @@ import {
   S_SessionWireWindowPendingPayload,
   S_UserSettingsWireAutoAwayDebounceChangedPayload,
   S_UserSettingsWireAutoAwayReasonChangedPayload,
+  S_UserSettingsWireAwayNickSuffixChangedPayload,
   S_UserSettingsWireQuitPartReasonChangedPayload,
 } from "./wireSchema";
 import type { ServerSettingsWireUploadView } from "./wireTypes";
@@ -726,6 +727,10 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       return validate(S_UserSettingsWireQuitPartReasonChangedPayload, r);
     case "auto_away_reason_changed":
       return validate(S_UserSettingsWireAutoAwayReasonChangedPayload, r);
+    case "away_nick_suffix_changed":
+      // #1894 — same posture again: `null` is the subject switching the
+      // rename off, a MEANINGFUL value rather than a missing field.
+      return validate(S_UserSettingsWireAwayNickSuffixChangedPayload, r);
     case "archive_changed":
       // UX-1 (2026-05-17) — server broadcasts after a successful PART
       // (channel moves into archive list). Single-field envelope: cic
@@ -1404,6 +1409,12 @@ moduleRoot(() => {
 
         case "auto_away_reason_changed":
           applyAutoAwayReasonFromWire(payload.auto_away_reason);
+          return;
+
+        case "away_nick_suffix_changed":
+          // #1894 — display copy only. The SERVER decides whether to
+          // rename and what to; cic never originates it.
+          applyAwayNickSuffixFromWire(payload.away_nick_suffix);
           return;
 
         case "archive_changed":

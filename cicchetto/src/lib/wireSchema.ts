@@ -1514,6 +1514,11 @@ export const S_UserSettingsWireAutoAwayReasonChangedPayload = {
   o: { kind: { l: "auto_away_reason_changed" }, auto_away_reason: { u: ["s", "z"] } },
 } as const;
 
+// Grappa.UserSettings.Wire.away_nick_suffix_changed_payload/0
+export const S_UserSettingsWireAwayNickSuffixChangedPayload = {
+  o: { kind: { l: "away_nick_suffix_changed" }, away_nick_suffix: { u: ["s", "z"] } },
+} as const;
+
 // Grappa.UserSettings.Wire.quit_part_reason_changed_payload/0
 export const S_UserSettingsWireQuitPartReasonChangedPayload = {
   o: { kind: { l: "quit_part_reason_changed" }, quit_part_reason: { u: ["s", "z"] } },

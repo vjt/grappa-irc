@@ -141,7 +141,21 @@ defmodule GrappaWeb.RouterScopeTest do
     {"GET", "/me/settings/quit-part-reason"},
     {"PUT", "/me/settings/quit-part-reason"},
     {"GET", "/me/settings/auto-away-reason"},
-    {"PUT", "/me/settings/auto-away-reason"}
+    {"PUT", "/me/settings/auto-away-reason"},
+    # #1894 — the auto-away nick suffix, the third knob on the same
+    # feature as the two above: `auto-away-debounce-seconds` is WHEN it
+    # fires, `auto-away-reason` is the TEXT it puts on the wire, and this
+    # is the NICK it wears while it holds. Splitting the three across the
+    # gate would be a boundary drawn by accident. It is the most visible
+    # of them — a nick renders in every shared member list, not just in a
+    # /whois — and that is the argument stated rather than skipped: the
+    # write still reaches no credential and reads back no secret, it can
+    # only ever decorate the nick the account ALREADY holds (it appends,
+    # it does not name a target), the rename is refused outright when the
+    # result would exceed NICKLEN, and `nil` — the default — is the whole
+    # feature switched off.
+    {"GET", "/me/settings/away-nick-suffix"},
+    {"PUT", "/me/settings/away-nick-suffix"}
   ]
 
   # Routes with no bearer gate at all — the login doors, the public

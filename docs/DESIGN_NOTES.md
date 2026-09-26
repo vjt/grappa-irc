@@ -19467,3 +19467,249 @@ invisible locally. It is neither: `git grep` finds it in NO workflow under
 against the COMMITTED document — and `scripts/bats.sh` is line 40 of
 `scripts/check.sh`. It is local, and it runs in CI only by being inside the
 bats suite. (It is inert for this slice regardless: no new event `kind`.)
+<!-- entry #1894 -->
+
+---
+
+## 2026-09-26 — #1894: the auto-away nick rename, and the three questions it answered from measurements already in the tree
+
+`away_nick` — `<nick>` becomes `<nick>-away` while the bouncer holds the
+subject auto-away — shipped opt-in and default OFF. The feature itself is
+small. What is worth recording is that three of the six design questions the
+issue posed were already answered by code in this repository, and the fourth
+is deliberately still open.
+
+### The setting shape is derived from the WEAKER of two precedents
+
+The issue offered a boolean beside a suffix string, or a single nullable
+suffix. #348 (`auto_away_debounce_seconds`) is the loud precedent and it is a
+sentinel design: ONE key, THREE states, `0` meaning OFF. Copying it would have
+produced a sentinel here too.
+
+It should not, and the reason is the state #348 has that this does not.
+`auto_away_debounce_seconds` needs `nil` for "nothing stored, keep the
+server-wide default", because a delay HAS a server-wide default; OFF therefore
+had nowhere to live but a sentinel. A suffix has no default — the feature
+ships off — so `nil` is free to mean OFF, and the sentinel would be ceremony
+around a state that does not exist.
+
+issue 2150 (`auto_away_reason`) is the precedent that actually fits, and it is
+followed whole: `String.t() | nil`, `""` normalised to `nil` at the write
+boundary so OFF has one spelling in storage, both broadcast surfaces because a
+live session carries the value.
+
+**The general rule this leaves behind:** a precedent is matched on the STATE
+SPACE it had to represent, not on the shape it ended up with. Two settings
+that look alike from the outside owe different storage when one of them has a
+default and the other does not.
+
+The boolean-plus-suffix option was refused on a property neither precedent
+states: two keys in one JSON blob can disagree, and `enabled: true` beside no
+suffix is a state with no meaning the session could act on.
+
+### A collision needs no pre-check, because the protocol already answers
+
+The issue asks whether to reuse `GhostRecovery` for a taken target nick, and
+notes #1541 — its retry half never landed, and it strands the session on
+`<nick>_`. That is a measurement, and it decides the question: the mechanism
+on offer fails in exactly the way the acceptance criterion forbids.
+
+But the cheap answer the issue proposes — pre-check, then skip — is not needed
+either. Send the NICK and let the ircd rule: on a refusal our nick does not
+change, the stored restore target is still the nick we are already on, and the
+equality guard on the return makes the restore a no-op. The session cannot be
+stranded on a decorated nick by a collision, and nothing had to be asked in
+advance — which also dodges a pre-flight WHOIS that would be stale by the time
+the NICK reached the wire.
+
+### The reverse direction was ruled a month ago, for a sibling
+
+If the bare nick is taken while the subject was idle, the restore fails and
+they stay decorated. The temptation is a retry ladder. Issue 2252 already
+settled this for `reclaim_configured_nick/1`: send once, do not ladder,
+because asking again cannot change who holds a nick, and the operator needs to
+READ why it did not come back. The refusal routes to them. Same posture here,
+and it is a citation rather than a new decision.
+
+### What the #676 precedent does NOT settle
+
+`Identifier.collision_fallback/3` answers the overflow question for the 433
+ladder: trim the BASE, the suffix always survives. It is tempting to read that
+as deciding #1894's overflow too.
+
+It does not, and the disanalogy is the useful part. In #676 the suffix is
+load-bearing because it is what ESCAPES the collision — let the clamp eat it
+and you hand the ircd back the nick it just rejected, and the ladder spins for
+ever. In #1894 the suffix is load-bearing because it is what other people
+READ, and trimming the base is precisely what stops them recognising the
+person the nick is meant to describe (and can walk it into somebody else's
+nick). Same shape, opposite consequence.
+
+So the arm ships as a refusal — leave the nick alone, log the skip. That is
+what the code did for everyone before this change, so it adds no behaviour;
+truncating is the option that would, and it is a product call that has not
+been made. **Open, and deliberately: what to do when `nick + suffix` exceeds
+`NICKLEN`.**
+
+### Two smaller things worth not rediscovering
+
+The restore target is STORED rather than derived by stripping the suffix off
+`state.nick`. The strip agrees everywhere except one corner — a subject whose
+real nick already ends in their own suffix, on a cycle where the rename did
+not land — and there it invents a rename that never happened. Once the rename
+HAS landed nothing else in the process remembers the bare nick, so the field
+duplicates nothing.
+
+A suffix retuned mid-away does not re-NICK, where a reason retuned mid-away
+DOES re-issue `AWAY` (2150). The asymmetry is the whole argument for the
+feature being opt-in: re-sending `AWAY` costs bystanders nothing, re-sending
+`NICK` costs them a line in every channel they share with someone who is idle.
+
+### Not established here
+
+Nothing in this entry was measured against a live ircd. The collision and
+restore arms are argued from the protocol and exercised against the in-process
+fake, whose refusal is modelled as "the nick never becomes ours" rather than
+as a 433 numeric — post-registration that numeric has owners of its own
+(`GhostRecovery`, `RecoverIdentity`) and routing a real one would have
+exercised them instead of the guard under test.
+
+### Correction: shottino is a THIRD mirror of the wire, and this slice said it was not
+
+The commit that bumped the protocol to 32 argued that
+`WIRE_PROTOCOL_VERSION` in `frontends/shottino/wire.h` should be left
+alone, and one clause of that argument was simply false: *"no gate in
+this repo ties the two"*. There is one. `frontends/shottino/tests/
+test_commands.c` reads `@protocol_version` straight out of
+`lib/grappa/protocol.ex` and asserts it equals the `#define`, and a
+second check there walks every event `kind` that cicchetto narrows in
+`userTopic.ts` / `wireNarrow.ts` and requires `wire.c` to know it. CI
+went red on both. The number was not the whole repair either: both
+switches over `wire_kind` are exhaustive under `-Wswitch`, so a new kind
+must be taught to the enum, to `KIND_TABLE`, to the narrower in `wire.c`
+and to the render switch in `shottino.c` — four sites, not one.
+
+**What went wrong is worth more than the fix.** The measurement taken was
+"of the last 40 commits touching `protocol.ex`, ZERO also touch
+`wire.h`", and that number is real — it just answers a different
+question. It measures the PRACTICE (who has historically edited what)
+and was read as the CONSTRAINT (whether anything enforces a relationship).
+A gate can be young, or can simply never have fired, and either way it
+leaves no trace in that history: the pin here had caught exactly one bump
+before this one. The general rule: **to claim nothing enforces X, look
+for the enforcement, not for the edits.** The homes are the test
+directories, the CI workflow, and the Makefile — enumerate them, do not
+sample commits.
+
+The evidence was also already in hand and went unread. The very commit
+cited as proof that shottino keeps its own schedule is `7170f9db7`,
+*"declare the protocol it speaks, **and pin it to the server's
+number**"* — the second half of its own subject line says the pin
+exists. A citation was taken for its first clause while the clause that
+refuted the argument sat in the same sentence.
+
+For the next bump: `wire.h` carries a note above the `#define` which the
+file itself instructs you to REPLACE rather than append to, and it now
+records the distinction that matters — v31 moved no `kind` and so was a
+number on its own, whereas a bump that adds one always costs the four
+sites above. A note claiming "nothing here is consumed by this client"
+is only true when no kind moved, and copying it forward when one did is
+the shape of comment that stays true exactly as long as nobody reads it.
+<!-- entry #1894b -->
+
+---
+
+## 2026-09-26 — #1894b: the NICKLEN overflow arm shipped refusing, and a ruling reversed it
+
+The auto-away nick rename (entry `#1894` above) was built REFUSING when
+`<nick><suffix>` would exceed the network's `NICKLEN`: leave the nick
+alone, log an `:info` saying why. That entry recorded the question as
+deliberately open — *"what to do when `nick + suffix` exceeds
+`NICKLEN`"* — and argued the refusal was the status quo rather than an
+answer, since leaving the nick alone is what the code did for everyone
+before the feature existed.
+
+vjt ruled on 2026-09-26: TRUNCATE the base nick, do not refuse the
+rename. **Relayed through the ircbot session, not observed first-hand.**
+It landed while the branch was open and green on fifteen commits, so
+option A never reached `main` — but it was written, tested and reviewed
+as the answer, and this entry exists so the reversal is legible rather
+than looking like B was always the plan.
+
+The suffix is the part the subject CHOSE and the part carrying the
+meaning, so it survives whole and the base gives way. That is exactly
+what `Identifier.collision_fallback/3` builds for #676's 433 ladder, and
+the first cut deliberately declined to read it as precedent: there the
+suffix is load-bearing because it ESCAPES a collision, here because peers
+READ it. The ruling says the second reason suffices on its own. The
+builder is now shared by both.
+
+### The cost the ruling accepts, and what already absorbs it
+
+The disanalogy section of the entry above named a real price: trimming
+the base "can walk it into somebody else's nick". The ruling accepts it,
+and nothing new was built to cover it, because the rename path already
+has the answer — there is no collision pre-check by design, the target
+goes out and the ircd arbitrates. On a 433 our nick simply never changes,
+`away_nick_restore` still holds the nick we are on, and the restore's
+equality guard makes the return a no-op. Truncation widens the odds of
+hitting that path; it cannot strand the session anywhere new.
+
+### Reuse collapsed the fitting branch, so the diff DELETES a branch
+
+`collision_fallback/3` is a no-op when the target already fits:
+`String.slice(base, 0, cap - len(suffix))` returns the base untouched and
+the result is byte-identical to a plain concatenation. `away_nick_target/1`
+therefore has no "it fits" branch at all — one call, one refusal.
+
+The refusal that REMAINS is a different fact from the one that shipped:
+not "the target is too long" but the builder's own precondition, a `cap`
+with no room for even one base character. It is unreachable through our
+own ceiling and it is not dead code. Measured: `valid_nick_suffix?/1`
+passes a 29-char suffix and refuses a 30-char one, so against the 30-char
+default at least one base character always survives; a network
+advertising `NICKLEN=9` against a 10-char suffix reaches the arm, which
+is what the new test builds by feeding a 005.
+
+Its condition is spelled as the guard it protects — `byte_size`, NOT
+`String.length` — so the two cannot drift into a `FunctionClauseError`.
+The unit mismatch that buys is INERT rather than merely conservative:
+measured, `valid_nick_suffix?("é")` is `false` (`@nick_regex` carries no
+`u` flag, so `\w` is ASCII), so every suffix that can reach the function
+has `byte_size == String.length`.
+
+### A truncated nick needs no new visibility mechanism
+
+Truncation hands peers a nick the subject did not literally choose, and
+#676 point 3 already announces an unexpected identity on `$server`. That
+path does NOT apply and was not extended: it hangs off 001 RPL_WELCOME,
+where there is no NICK message to read the outcome from. A runtime rename
+has one — `EventRouter.route_nick/3` reconciles `state.nick` and emits
+`{:own_nick_renamed, …}`, and `Session.Server` broadcasts
+`Wire.own_nick_changed/2` carrying the nick upstream actually accepted.
+The subject sees the real nick through the ordinary door.
+
+### The test INVERTED rather than weakened
+
+"a suffix that would overflow NICKLEN leaves the nick alone" asserted an
+ABSENCE plus a log line, and the entry above records why the log half was
+needed: with the cap lifted the over-long target reached
+`Identifier.valid_nick?/1` inside `Client.send_nick/2` and was refused a
+layer lower, leaving the wire equally quiet. Under the ruling the outcome
+is POSITIVE, so the replacement asserts the resulting nick byte for byte
+— a LITERAL rather than a second spelling of the builder's arithmetic,
+pinned to `max_nick_length()` by a sanity assert so a changed cap is a
+loud red and not a quietly-adjusted fixture. The absence half moves to
+the new test covering the arm that still refuses, log assertion and all.
+
+Three mutants, each killing exactly one of the 38 tests in the describe:
+
+* right-clamp the concatenation instead of trimming the base → the wire
+  carries `…aaaa-a`, thirty characters, which any length-only assertion
+  would have accepted;
+* drop the residual refusal → `collision_fallback/3`'s guard raises
+  `FunctionClauseError` and the session dies;
+* concatenate with no trim at all → nothing reaches the wire and the log
+  reads `verb=nick reason=invalid_line`, i.e. the layer BELOW refusing.
+  The test still discriminates, because what it asserts is a PRESENCE —
+  the trap an absence-only assertion walks into.

@@ -307,6 +307,47 @@ defmodule GrappaWeb.UserSettingsController do
 
   def update_auto_away_reason(_, _), do: {:error, :bad_request}
 
+  @doc """
+  `GET /me/settings/away-nick-suffix` — the suffix appended to the
+  subject's nick while the bouncer holds them auto-away (#1894), or
+  `null` when the rename is off.
+
+  `null` is the default and means the nick is left alone, which is the
+  behaviour every subject had before the setting existed.
+  """
+  @spec show_away_nick_suffix(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def show_away_nick_suffix(conn, _) do
+    subject = Subject.from_assigns(conn.assigns)
+    render(conn, :away_nick_suffix, suffix: UserSettings.get_away_nick_suffix(subject))
+  end
+
+  @doc """
+  `PUT /me/settings/away-nick-suffix` — persists the auto-away nick
+  suffix.
+
+  Body: `{"away_nick_suffix": "<tail>" | null}`. `null` and `""` both
+  switch the rename off; anything that is not a legal nick tail is a 422
+  on `field_errors.away_nick_suffix`.
+
+  Like the auto-away reason and unlike the QUIT/PART default, this
+  reaches LIVE sessions: the context announces on the settings bridge
+  topic, so the suffix a session would use on its next idle cycle is the
+  one just saved rather than the one it booted with.
+  """
+  @spec update_away_nick_suffix(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :bad_request | Ecto.Changeset.t() | :db_unavailable}
+  def update_away_nick_suffix(conn, %{"away_nick_suffix" => suffix})
+      when is_binary(suffix) or is_nil(suffix) do
+    subject = Subject.from_assigns(conn.assigns)
+    subject_label = GrappaWeb.Subject.topic_label(conn.assigns.current_subject)
+
+    with {:ok, _} <- UserSettings.put_away_nick_suffix(subject, suffix, subject_label) do
+      render(conn, :away_nick_suffix, suffix: UserSettings.get_away_nick_suffix(subject))
+    end
+  end
+
+  def update_away_nick_suffix(_, _), do: {:error, :bad_request}
+
   # `0` is the OFF sentinel on the wire (JSON has no atoms); the context
   # speaks `:disabled`. Every other integer travels untouched so the
   # range verdict — including a negative one — stays the context's to

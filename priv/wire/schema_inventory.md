@@ -9,9 +9,9 @@ unread set is a work list instead of invisible weight. It is regenerated
 by `mix grappa.gen_wire_types` and held by the same `--check` that holds
 the two TypeScript artefacts, so it cannot go stale quietly.
 
-    generated                 196
-    imported by cicchetto     64
-    reachable at runtime      132
+    generated                 197
+    imported by cicchetto     65
+    reachable at runtime      133
     never read                64
 
 "Reachable" counts a schema nested inside an imported one: the validator

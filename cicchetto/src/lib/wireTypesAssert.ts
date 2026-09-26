@@ -136,6 +136,7 @@ import type {
   SessionWireTopicEntryWire,
   UserSettingsWireAutoAwayDebounceChangedPayload,
   UserSettingsWireAutoAwayReasonChangedPayload,
+  UserSettingsWireAwayNickSuffixChangedPayload,
   UserSettingsWireQuitPartReasonChangedPayload,
   WindowCountsWireEvent,
   WireSessionEvent,
@@ -380,6 +381,7 @@ type CrossModuleArm = {
   // reach them and only a named counterpart pins the shape.
   quit_part_reason_changed: UserSettingsWireQuitPartReasonChangedPayload;
   auto_away_reason_changed: UserSettingsWireAutoAwayReasonChangedPayload;
+  away_nick_suffix_changed: UserSettingsWireAwayNickSuffixChangedPayload;
   server_settings_changed: ServerSettingsWireChangedPayload;
   connection_state_changed: NetworksWireConnectionStateEvent;
   // issue 2219 — the detach event. A `Grappa.Networks.Wire` payload like

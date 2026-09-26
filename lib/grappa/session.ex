@@ -322,6 +322,11 @@ defmodule Grappa.Session do
           # the spawn boundary below next to the window above. Kept in sync
           # with the `Grappa.Session.Server.init_opts/0` twin.
           optional(:auto_away_reason) => String.t(),
+          # #1894 — the suffix appended to the nick while that same auto-away
+          # is held, `nil` when the subject has not switched the rename on.
+          # Resolved at the spawn boundary below next to the reason. Kept in
+          # sync with the `Grappa.Session.Server.init_opts/0` twin.
+          optional(:away_nick_suffix) => UserSettings.away_nick_suffix(),
           # M2 — the subject's `show_peer_profiles` opt-in (peer CTCP
           # USERINFO/AVATAR queries), resolved at the spawn boundary below
           # exactly like `auto_away_debounce_ms`. Kept in sync with the
@@ -399,6 +404,13 @@ defmodule Grappa.Session do
       # used before the setting existed, so the wire is unchanged for them.
       |> Map.put_new_lazy(:auto_away_reason, fn ->
         Server.auto_away_reason_for(subject)
+      end)
+      # #1894 — and the SUFFIX that same transition appends to the nick,
+      # read at the same choke point. `nil` for a subject who never set
+      # one, which is every subject until they do: the rename is off by
+      # default, so their sessions behave exactly as before.
+      |> Map.put_new_lazy(:away_nick_suffix, fn ->
+        UserSettings.get_away_nick_suffix(subject)
       end)
       |> Map.put_new_lazy(:show_peer_profiles, fn ->
         UserSettings.get_show_peer_profiles(subject)

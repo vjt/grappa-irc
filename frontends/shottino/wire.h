@@ -53,27 +53,34 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v30 -> v31 (issue 2294, the first bump this pin caught):
- * an `/ignore` entry gained an OPTIONAL glob over the message TEXT
- * beside its `nick!user@host` mask. What moved is the REST list at
- * `/networks/:network_id/ignores` — an additive `entries` array beside
- * the unchanged `masks`, a `text_pattern` beside `mask` on the two
- * mutations, and one new 422 token `invalid_text_pattern`. No event
- * `kind` changed and no existing field was repurposed.
+ * Last read, v31 -> v32 (issue 1894): auto-away can now RENAME the nick,
+ * appending a subject-chosen suffix and putting it back on the way out.
+ * Opt-in, default off. What moved on the wire is one new user-topic push
+ * `kind`, `away_nick_suffix_changed`, carrying `away_nick_suffix` as
+ * `string | null` — `null` being the VALUE that says the rename is
+ * switched off, so the key is always present. Two REST doors were added
+ * under `/me/settings/away-nick-suffix`. No existing field was
+ * repurposed.
  *
- * Nothing here is consumed by this client, and that is measured rather
- * than assumed: `/ignores` appears in no source file under this
- * directory, nor do `masks`, `text_pattern` or `invalid_mask`, while
- * other `/networks/:slug/...` routes plainly do (dcc_offers,
- * dcc-auto-accept). shottino's `/ignore` is an ALIAS for `/block`, a
- * client-LOCAL nick mute compared with `irc_name_eq` and kept in the
- * state directory — a different thing wearing the same word. So the
- * bump is the whole repair: no parser is behind, and no terminal
- * behaviour changes.
+ * THIS ONE WAS CONSUMED, unlike v31, and the difference is the point: a
+ * new `kind` is exactly the thing this client cannot skip, because the
+ * parity gate walks every kind cicchetto narrows and both switches over
+ * `wire_kind` are exhaustive under -Wswitch. So the bump was NOT the
+ * whole repair — `KIND_TABLE`, the enum, the narrower in wire.c and the
+ * render switch in shottino.c all had to learn it, and a note claiming
+ * otherwise would have been false. v31 moved no kind and touched no
+ * parser; that is why it could be a number on its own.
+ *
+ * The rename NEEDS no terminal work beyond narrowing, and that is
+ * measured rather than waved through: the server renames by sending
+ * NICK upstream, so what reaches this client is an ordinary
+ * `nick_change` on the channel topics, which it already renders. The new
+ * kind reports the SETTING, and this client has no settings surface —
+ * hence the deliberate no-render arm beside server_settings_changed.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 31
+#define WIRE_PROTOCOL_VERSION 32
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -189,7 +196,8 @@ typedef enum {
     WIRE_ARCHIVE_PURGED,
     WIRE_DIRECTORY_PROGRESS,
     WIRE_DIRECTORY_COMPLETE,
-    WIRE_DIRECTORY_FAILED
+    WIRE_DIRECTORY_FAILED,
+    WIRE_AWAY_NICK_SUFFIX_CHANGED
 } wire_kind;
 
 const char *wire_kind_name(wire_kind k);
@@ -618,6 +626,14 @@ struct wire_event {
             long count;   /* progress: seen so far; complete: total */
             const char *reason; /* failed only */
         } directory;
+
+        struct {
+            /* NULL is a VALUE here, not an absence: it is how "the rename
+             * is switched off" travels. The key is always present on the
+             * wire; `json_str_opt` also tolerates it missing, which is the
+             * same latitude every other nullable field in this file takes. */
+            const char *suffix;
+        } away_nick_suffix;
     } u;
 };
 

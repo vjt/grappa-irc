@@ -1588,10 +1588,16 @@ export type UserSettingsWireAutoAwayReasonChangedPayload = {
   auto_away_reason: string | null;
 };
 
+export type UserSettingsWireAwayNickSuffixChangedPayload = {
+  kind: "away_nick_suffix_changed";
+  away_nick_suffix: string | null;
+};
+
 export type WireUserSettingsEvent =
   | UserSettingsWireAutoAwayDebounceChangedPayload
   | UserSettingsWireQuitPartReasonChangedPayload
-  | UserSettingsWireAutoAwayReasonChangedPayload;
+  | UserSettingsWireAutoAwayReasonChangedPayload
+  | UserSettingsWireAwayNickSuffixChangedPayload;
 
 // === Grappa.Vhosts.AdminWire ===
 
