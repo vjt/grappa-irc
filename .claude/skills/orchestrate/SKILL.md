@@ -1823,6 +1823,25 @@ said "ask vjt for the STACK lane", which is flatly wrong: lanes are MINE).
 - 🔴 **On resume, orphan waiters from the PRE-CLEAR session keep running and EAT EVENTS** while notifying a dead
   session (their cmdline carries the old `/tmp/claude-<id>-cwd`). Kill them and re-arm fresh — cursor-tracking
   loses nothing. Verify with `pgrep -fl 'wait-for-ev''ent.sh'` (the unsplit pattern kills its own shell).
+- 🔴🔴 **UN GLIFO CERVELLO CHE NON E' IL MIO, NEL MIO PANE, DECAPITA L'AUTO-CLEAR IN SILENZIO — E LA
+  SORGENTE NON E' L'HANDOFF, E' `capture-pane` STAMPATO GREZZO (orch, 2026-09-26).** Il parse del
+  watchdog pesca il **PRIMO** glifo del buffer; un `tail -4` del pane di una worker porta dentro la sua
+  status line INTERA e la mette **SOPRA** la mia, cioe' esattamente dove il parse guarda per primo.
+  Misurato: dopo una cattura di w1 il buffer portava il suo **8%** mentre il mio era **38%**. **La
+  direzione e' quella che costa: il watchdog smette di cleararmi, e uno che non clea si osserva
+  identico a uno che non ha ancora bisogno di clearare** — ennesima faccia di *"non puoi accorgerti del
+  silenzio"*, stavolta sul mio stesso salvagente.
+  🥇 **DUE cose, e la seconda non era scritta da nessuna parte.** **(1) Un pane non si stampa mai
+  grezzo: si ESTRAE.** `CTX=$(… | grep -oE '[0-9]+% ░' | tail -1 | grep -oE '[0-9]+')`, costo con
+  `grep -oE '\$[0-9]+\.[0-9]+' | **tail** -1` — **`tail`, non `head`: la status line sta in FONDO**, e
+  `head` pesca il primo `$x.y` del TESTO della worker (difetto gia' a verbale, qui dall'altro lato).
+  **(2) LA CURA, quando ce l'hai gia' nel buffer, e' `tmux clear-history -t <IL MIO pane>`** — e' il MIO
+  scrollback, non tocca niente di nessun altro. Misurato `rc=0`, e **subito dopo
+  `auto-clear-watch.sh status` rilegge il MIO ctx (38%)** invece dell'8% della worker: **quello `status`
+  e' l'unica cosa che dice se il parse e' tornato sano, e va girato SEMPRE dopo la pulizia.**
+  🪞 **Regola violata dalla sua autrice venti minuti dopo averla scritta, su un tick di ROUTINE** — e
+  viveva SOLO nell'handoff, cioe' in un file che si pota. **Una regola permanente che sta nell'handoff
+  muore alla prima potatura: si migra QUI, subito.**
 - 🔴 **`API Error: Stream idle timeout` looks exactly like IDLE.** Cure = a SHORT `riprendi.` — do not clear.
 - 🔴 **QUEUED INPUT ≠ SWALLOWED ≠ DELIVERED.** Proof of delivery is a `-S` capture showing `❯ <text>` as a TURN.
   🔴🔴 **BUT ON A VERY SHORT PANE THAT PROOF DOES NOT EXIST, AND ITS ABSENCE READS AS "SWALLOWED"
