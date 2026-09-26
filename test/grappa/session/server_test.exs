@@ -30,7 +30,7 @@ defmodule Grappa.Session.ServerTest do
   import Grappa.{AuthFixtures, MessageEventAssertions}
   import Mox
 
-  alias Grappa.IRC.Message
+  alias Grappa.IRC.{Identifier, Message}
 
   alias Grappa.{
     IRCServer,
@@ -8832,7 +8832,7 @@ defmodule Grappa.Session.ServerTest do
 
       # ...AND the WHO accumulator is primed so a subsequent 352/315 surfaces.
       # Key is the folded args (production fn, never hardcoded); display is raw.
-      key = Grappa.IRC.Identifier.canonical_target("+s hub.azzurra.chat")
+      key = Identifier.canonical_target("+s hub.azzurra.chat")
       entry = Map.get(SessionStateHelpers.fetch(pid).who_pending, key)
       assert entry.target_display == "+s hub.azzurra.chat"
       assert entry.replies == []
@@ -9910,7 +9910,7 @@ defmodule Grappa.Session.ServerTest do
     # against the canonical form on the wire. The fed-back JOIN-self
     # echo also uses the canonical form so EventRouter's downstream
     # state seeding observes the same key everywhere.
-    canonical = Grappa.IRC.Identifier.canonical_target(channel)
+    canonical = Identifier.canonical_target(channel)
 
     # Wait for the session to send JOIN (proves 001 processed)
     {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN #{canonical}"), 1_000)
@@ -11976,7 +11976,7 @@ defmodule Grappa.Session.ServerTest do
       # 28 chars + "-away" is 33, past the 30 our own ceiling stands in with
       # while the fake ircd advertises no NICKLEN. Built from the production
       # constant so a change to the cap moves the fixture with it.
-      long = String.duplicate("a", Grappa.IRC.Identifier.max_nick_length() - 2)
+      long = String.duplicate("a", Identifier.max_nick_length() - 2)
       {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", long))
       {user, network, _} = setup_user_and_network(port, %{nick: long})
 
