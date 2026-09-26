@@ -55,6 +55,15 @@ defmodule GrappaWeb.UserSettingsJSON do
   @type auto_away_reason_response :: %{auto_away_reason: String.t() | nil}
 
   @typedoc """
+  Wire shape for the away_nick_suffix envelope (#1894).
+
+  `null` = the auto-away rename is off, which is the default. There is no
+  server-side suffix to withhold here — unlike the debounce and the
+  reason, absence means the feature does nothing at all.
+  """
+  @type away_nick_suffix_response :: %{away_nick_suffix: String.t() | nil}
+
+  @typedoc """
   One allowed vhost in the self-service view (#228, #251, #252).
 
   `name` is the address's reverse-DNS (cloak) string — the human label
@@ -149,6 +158,11 @@ defmodule GrappaWeb.UserSettingsJSON do
   @doc "Renders the `:auto_away_reason` action — GET/PUT 200 shape (issue 2150)."
   @spec auto_away_reason(%{reason: UserSettings.leave_reason()}) :: auto_away_reason_response()
   def auto_away_reason(%{reason: reason}), do: %{auto_away_reason: reason}
+
+  @doc "Renders the `:away_nick_suffix` action — GET/PUT 200 shape (#1894)."
+  @spec away_nick_suffix(%{suffix: UserSettings.away_nick_suffix()}) ::
+          away_nick_suffix_response()
+  def away_nick_suffix(%{suffix: suffix}), do: %{away_nick_suffix: suffix}
 
   @doc "Renders the `:vhost` action — GET/PUT 200 response shape (#228, #251)."
   @spec vhost(%{available: [vhost_option()], selection: [String.t()]}) ::

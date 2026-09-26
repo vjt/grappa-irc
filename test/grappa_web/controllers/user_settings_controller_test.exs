@@ -1313,6 +1313,78 @@ defmodule GrappaWeb.UserSettingsControllerTest do
     end
   end
 
+  describe "GET/PUT /me/settings/away-nick-suffix (#1894)" do
+    test "401 without bearer on both verbs", %{conn: conn} do
+      assert json_response(get(conn, "/me/settings/away-nick-suffix"), 401)
+
+      assert json_response(
+               put(conn, "/me/settings/away-nick-suffix", %{"away_nick_suffix" => "-away"}),
+               401
+             )
+    end
+
+    test "returns null when never persisted — the rename ships OFF", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn = conn |> put_bearer(session.id) |> get("/me/settings/away-nick-suffix")
+
+      assert json_response(conn, 200) == %{"away_nick_suffix" => nil}
+    end
+
+    test "200 + persisted, then readable back through GET", %{conn: conn} do
+      {user, session} = user_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/me/settings/away-nick-suffix", %{"away_nick_suffix" => "-away"})
+
+      assert json_response(conn, 200) == %{"away_nick_suffix" => "-away"}
+      assert UserSettings.get_away_nick_suffix({:user, user.id}) == "-away"
+    end
+
+    test "null switches it back off and round-trips as null", %{conn: conn} do
+      {user, session} = user_and_session()
+      authed = put_bearer(conn, session.id)
+
+      assert json_response(
+               put(authed, "/me/settings/away-nick-suffix", %{"away_nick_suffix" => "-away"}),
+               200
+             ) == %{"away_nick_suffix" => "-away"}
+
+      assert json_response(
+               put(authed, "/me/settings/away-nick-suffix", %{"away_nick_suffix" => nil}),
+               200
+             ) == %{"away_nick_suffix" => nil}
+
+      assert UserSettings.get_away_nick_suffix({:user, user.id}) == nil
+    end
+
+    test "422 + field_errors on a suffix that is not a legal nick tail", %{conn: conn} do
+      {user, session} = user_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/me/settings/away-nick-suffix", %{"away_nick_suffix" => " away"})
+
+      assert %{"error" => "validation_failed", "field_errors" => fe} = json_response(conn, 422)
+      assert Map.has_key?(fe, "away_nick_suffix")
+      assert UserSettings.get_away_nick_suffix({:user, user.id}) == nil
+    end
+
+    test "400 when the body does not carry the key at all", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/me/settings/away-nick-suffix", %{"nope" => "-away"})
+
+      assert json_response(conn, 400)
+    end
+  end
+
   describe "GET/PUT /me/settings/auto-away-reason" do
     test "401 without bearer on both verbs", %{conn: conn} do
       assert json_response(get(conn, "/me/settings/auto-away-reason"), 401)
