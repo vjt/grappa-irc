@@ -8595,6 +8595,7 @@ defmodule Grappa.Session.Server do
 
       suffix ->
         target = state.nick <> suffix
+
         cap =
           ISupport.nicklen(Map.get(state, :isupport, ISupport.default())) ||
             Identifier.max_nick_length()
