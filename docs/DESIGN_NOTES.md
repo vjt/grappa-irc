@@ -19467,3 +19467,109 @@ invisible locally. It is neither: `git grep` finds it in NO workflow under
 against the COMMITTED document — and `scripts/bats.sh` is line 40 of
 `scripts/check.sh`. It is local, and it runs in CI only by being inside the
 bats suite. (It is inert for this slice regardless: no new event `kind`.)
+<!-- entry #1894 -->
+
+---
+
+## 2026-09-26 — #1894: the auto-away nick rename, and the three questions it answered from measurements already in the tree
+
+`away_nick` — `<nick>` becomes `<nick>-away` while the bouncer holds the
+subject auto-away — shipped opt-in and default OFF. The feature itself is
+small. What is worth recording is that three of the six design questions the
+issue posed were already answered by code in this repository, and the fourth
+is deliberately still open.
+
+### The setting shape is derived from the WEAKER of two precedents
+
+The issue offered a boolean beside a suffix string, or a single nullable
+suffix. #348 (`auto_away_debounce_seconds`) is the loud precedent and it is a
+sentinel design: ONE key, THREE states, `0` meaning OFF. Copying it would have
+produced a sentinel here too.
+
+It should not, and the reason is the state #348 has that this does not.
+`auto_away_debounce_seconds` needs `nil` for "nothing stored, keep the
+server-wide default", because a delay HAS a server-wide default; OFF therefore
+had nowhere to live but a sentinel. A suffix has no default — the feature
+ships off — so `nil` is free to mean OFF, and the sentinel would be ceremony
+around a state that does not exist.
+
+issue 2150 (`auto_away_reason`) is the precedent that actually fits, and it is
+followed whole: `String.t() | nil`, `""` normalised to `nil` at the write
+boundary so OFF has one spelling in storage, both broadcast surfaces because a
+live session carries the value.
+
+**The general rule this leaves behind:** a precedent is matched on the STATE
+SPACE it had to represent, not on the shape it ended up with. Two settings
+that look alike from the outside owe different storage when one of them has a
+default and the other does not.
+
+The boolean-plus-suffix option was refused on a property neither precedent
+states: two keys in one JSON blob can disagree, and `enabled: true` beside no
+suffix is a state with no meaning the session could act on.
+
+### A collision needs no pre-check, because the protocol already answers
+
+The issue asks whether to reuse `GhostRecovery` for a taken target nick, and
+notes #1541 — its retry half never landed, and it strands the session on
+`<nick>_`. That is a measurement, and it decides the question: the mechanism
+on offer fails in exactly the way the acceptance criterion forbids.
+
+But the cheap answer the issue proposes — pre-check, then skip — is not needed
+either. Send the NICK and let the ircd rule: on a refusal our nick does not
+change, the stored restore target is still the nick we are already on, and the
+equality guard on the return makes the restore a no-op. The session cannot be
+stranded on a decorated nick by a collision, and nothing had to be asked in
+advance — which also dodges a pre-flight WHOIS that would be stale by the time
+the NICK reached the wire.
+
+### The reverse direction was ruled a month ago, for a sibling
+
+If the bare nick is taken while the subject was idle, the restore fails and
+they stay decorated. The temptation is a retry ladder. Issue 2252 already
+settled this for `reclaim_configured_nick/1`: send once, do not ladder,
+because asking again cannot change who holds a nick, and the operator needs to
+READ why it did not come back. The refusal routes to them. Same posture here,
+and it is a citation rather than a new decision.
+
+### What the #676 precedent does NOT settle
+
+`Identifier.collision_fallback/3` answers the overflow question for the 433
+ladder: trim the BASE, the suffix always survives. It is tempting to read that
+as deciding #1894's overflow too.
+
+It does not, and the disanalogy is the useful part. In #676 the suffix is
+load-bearing because it is what ESCAPES the collision — let the clamp eat it
+and you hand the ircd back the nick it just rejected, and the ladder spins for
+ever. In #1894 the suffix is load-bearing because it is what other people
+READ, and trimming the base is precisely what stops them recognising the
+person the nick is meant to describe (and can walk it into somebody else's
+nick). Same shape, opposite consequence.
+
+So the arm ships as a refusal — leave the nick alone, log the skip. That is
+what the code did for everyone before this change, so it adds no behaviour;
+truncating is the option that would, and it is a product call that has not
+been made. **Open, and deliberately: what to do when `nick + suffix` exceeds
+`NICKLEN`.**
+
+### Two smaller things worth not rediscovering
+
+The restore target is STORED rather than derived by stripping the suffix off
+`state.nick`. The strip agrees everywhere except one corner — a subject whose
+real nick already ends in their own suffix, on a cycle where the rename did
+not land — and there it invents a rename that never happened. Once the rename
+HAS landed nothing else in the process remembers the bare nick, so the field
+duplicates nothing.
+
+A suffix retuned mid-away does not re-NICK, where a reason retuned mid-away
+DOES re-issue `AWAY` (2150). The asymmetry is the whole argument for the
+feature being opt-in: re-sending `AWAY` costs bystanders nothing, re-sending
+`NICK` costs them a line in every channel they share with someone who is idle.
+
+### Not established here
+
+Nothing in this entry was measured against a live ircd. The collision and
+restore arms are argued from the protocol and exercised against the in-process
+fake, whose refusal is modelled as "the nick never becomes ours" rather than
+as a 433 numeric — post-registration that numeric has owners of its own
+(`GhostRecovery`, `RecoverIdentity`) and routing a real one would have
+exercised them instead of the guard under test.
