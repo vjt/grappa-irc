@@ -1111,6 +1111,31 @@ at that merge (#1632). ONE batched deploy (~4–5 already-closed issues), ONE du
   (release), Pi (docker) e il jail non rispondono alla stessa domanda allo stesso modo.
   ⚠️ **Limite dichiarato: manca una lettura di `/api/config` PRIMA** — la conclusione poggia
   sull'aritmetica `StartedAt`/`RestartCount`/data del commit, non su un before/after.
+  🔴🔴 **E LA CONSEGUENZA CHE QUELLA MISURA NON AVEVA TIRATO, E CHE FA LEGGERE UNO STAGING SANO COME
+  INDIETRO: SU `:docker` LA STRINGA DI VERSIONE NOMINA L'HEAD DELL'ALBERO BIND-MONTATO — COMPRESI I
+  COMMIT **SOLO LOCALI** DELL'ORCHESTRATRICE (orch, 2026-09-26, misurato).** Staging riportava
+  `1.5.9-d1f6b4ca9` e `d1f6b4ca9` **e' un mio commit docs-only che non sta su main**: `--is-ancestor`
+  risponde **rc=1 in ENTRAMBE le direzioni** (contro `origin/main` e viceversa), che e' la firma di
+  *"non e' sulla stessa linea"* e su uno staging **perfettamente corrente**.
+  🔑 **Percio' la stringa di versione NON risponde a *"staging e' indietro rispetto a main?"***:
+  risponde a *"con quale HEAD sono stati compilati i beam"*, e su un albero bind-montato quell'HEAD lo
+  muove **chiunque committi nel checkout**, orchestratrice inclusa. Leggerla come posizione di main
+  produce un delta inventato — e la direzione e' quella che costa, perche' invita a un deploy che non
+  serve (o, con un `git pull`, a muovere un checkout che e' anche STAGING).
+  🥇 **La domanda si risponde in DUE pezzi, e sono su assi diversi:** **(1) server** —
+  `git diff --name-only <sha della stringa>..origin/main` e si guarda se tocca `lib/` (misurato li':
+  **ZERO file `lib/`** su 6 commit, tutti `cicchetto/src` + `cicchetto/e2e` + `docs/` ⇒ **niente da far
+  girare, nessun deploy server dovuto**); **(2) client** — un **TOKEN DI CONTENUTO** nel bundle
+  **DAVVERO SERVITO**, con la catena completa: assente nell'albero PRE (`git grep <token> <sha pre>` ⇒ 0),
+  presente in quello di main (⇒ 1), presente nell'artefatto servito (⇒ 1), **e l'artefatto confermato
+  come quello servito** leggendo l'hash dalla pagina (`curl -sk … | grep -oE 'index-[A-Za-z0-9_-]+\.js'`)
+  invece di fidarsi del nome del file su disco. Piu' pos ctrl e neg ctrl. Misurato: `Disk budget`
+  **0 → 1 → 1**, pos ctrl `adm-scroll`/`admin-tab-uploads` presenti, neg ctrl 0, pagina → `index-CiKlyPe9.js`,
+  cioe' esattamente il file grepato. ⇒ **staging CORRENTE, deploy NON dovuto** — e' un **negativo
+  MISURATO**, che e' un risultato e va scritto, o la prossima sessione ri-deriva la stessa domanda.
+  ⚠️ **Il token si sceglie fra i valori di RUNTIME** (una label, una classe CSS, una chiave): un nome che
+  vive solo in un'annotazione di tipo **nel bundle non c'e' per costruzione**, e il suo zero e' un falso
+  rosso su un deploy sano.
 - 🔴 **`grappa.chat` is the MARKETING SITE; the APP is `irc.sindro.me`.**
 - 🔴🔴 **E LA VOLTA IN CUI A MUOVERE main SONO IO, NEL MEZZO DELL'ATTESA DI UN MERGE, IL CONTO LO
   PAGA LA WORKER (orch, 2026-09-21, misurato su di me).** Con la PR #2272 **verde 9/9 e provata
