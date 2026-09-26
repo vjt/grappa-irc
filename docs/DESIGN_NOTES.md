@@ -19284,3 +19284,68 @@ did, and a candidate must not be sized by continuing the series.
 **Not established here:** whether 24px actually clears the veil. Only the
 device can say that — the e2e cannot see the band at all, by its own header —
 and the number is vjt's via the reporter, not retunable from this side.
+<!-- entry #2296 -->
+
+---
+
+## 2026-09-25 — #2296: the sidebar × is painted on row hover, not on every row
+
+Request from #grappa: every sidebar row (channel → leave confirm, query →
+close, network header → disconnect confirm, pseudo-row → `forceParted`)
+carried a permanent ×, next to the unread badge, which made the list noisy.
+The × is now shown only while its row is hovered or holds keyboard focus.
+
+**One CSS rule, gated on `@media (hover: hover) and (pointer: fine)`, no
+component change.**
+Every × on the surface is a `.sidebar-close` inside a
+`.sidebar-network-section li`, so one hide + one reveal covers all four row
+kinds and no row kind can drift into a different treatment.
+
+**`opacity`, never `display` or `visibility`.** Both of those take the button
+out of the tab order, and then the focus reveal has nothing to reveal: a
+keyboard user could no longer reach the × at all. `display: none` also
+removes the box, so the unread badge would jump sideways on every hover.
+With `opacity: 0` the × keeps its space and stays tabbable, and the #96
+focus ring on `.sidebar-close:focus-visible` still applies.
+
+**The focus reveal is `li:has(:focus-visible)`, not `li:focus-within`.**
+The first cut used `:focus-within`, and the interactive test caught it:
+after a MOUSE click the window button keeps focus, so the row just clicked
+kept its × after the pointer left, until focus moved elsewhere (the compose
+box, say). That read as a stuck hover. `:focus-visible` is the browser's own
+"this focus came from the keyboard" heuristic, so a keyboard user still gets
+the × on the focused row and a mouse user never has it pinned.
+
+**Touch keeps the always-visible ×.** A device without hover has nothing to
+reveal it with, so outside the gate nothing changes. The gate is
+`(hover: hover) and (pointer: fine)` rather than the sheet's usual bare
+`(hover: hover)` (review feedback on the PR): some Android phones and
+tablets, with a stylus or on some browsers, report `hover: hover` while a
+finger is the primary pointer, and they must keep the always-visible ×.
+Both features test the PRIMARY input, so a touch-primary device stays on
+the touch side even with a mouse or trackpad attached.
+
+**The reverse case needs its own block: `@media (any-pointer: coarse)`.** A
+2-in-1 (touchscreen laptop) whose PRIMARY pointer is the mouse matches the
+gate above, and a finger on its screen has no hover to reveal the ×.
+`any-pointer` asks whether ANY input is coarse, so a block under it forces
+the × back to `opacity: 1`. It has the hide's specificity, so it must stay
+AFTER the gate in the sheet; the test pins the order. The price is that a
+2-in-1 keeps the always-visible × even when used with the mouse, which is
+the side to err on: a hidden × on a touch screen cannot be reached at all.
+
+**The hover / selected bar is painted on the ROW, so it reaches the right
+edge (vjt, on #grappa).** Before, the bar was the window button's
+background, so it stopped short of the umode chip and the ×, which then
+sat outside the highlighted row. It is now `li:hover` / `li.selected`, and
+the old button-only backgrounds are gone rather than layered underneath.
+With the pointer ON the ×, only the × is lit: the row rule is written as
+`li:hover:not(:has(.sidebar-close:hover))`, so it stops MATCHING rather
+than painting `transparent`, which lets a network header whose × is hovered
+fall back to its #71 tint. On the selected row the accent text colour
+still marks the selection while the × is hovered. The row rule and the
+header tint have the same `(0,2,1)` base on the same `<li>`, so the row
+rule must come after the tint; the test pins that order too.
+
+Not decided here: whether anyone relied on the always-visible × on desktop.
+That is a product call for vjt, and it is one CSS block to revert.

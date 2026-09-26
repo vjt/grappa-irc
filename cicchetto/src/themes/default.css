@@ -2082,12 +2082,7 @@ html.resize-dragging * {
   cursor: pointer;
 }
 
-.sidebar-network-section li .sidebar-window-btn:hover {
-  background: var(--border);
-}
-
 .sidebar-network-section li.selected .sidebar-window-btn {
-  background: var(--border);
   color: var(--accent);
 }
 
@@ -2160,6 +2155,41 @@ html.resize-dragging * {
 .sidebar-close:hover {
   background: var(--border);
   color: var(--fg);
+}
+
+/* issue 2296 — the × is painted only while its row is hovered or holds
+   keyboard focus, instead of on every row next to the unread badge.
+   `opacity`, never `display`/`visibility`: the × keeps its box so the badge
+   does not jump on hover, and it stays in the tab order so a keyboard user
+   can reach it. The focus reveal is `:has(:focus-visible)`, NOT
+   `:focus-within`: the latter also matches after a MOUSE click (the clicked
+   window button keeps focus), which pinned the × on the row just clicked
+   until focus moved elsewhere. `:focus-visible` only matches focus the
+   browser judges keyboard-driven. Gated on `(hover: hover) and
+   (pointer: fine)` because a touch device has no hover to reveal it with:
+   there it stays always visible, exactly as before. `pointer: fine` on top
+   of `hover: hover` because some Android phones/tablets (stylus, some
+   browsers) report `hover: hover` while a finger is the primary pointer. */
+@media (hover: hover) and (pointer: fine) {
+  .sidebar-network-section li .sidebar-close {
+    opacity: 0;
+  }
+
+  .sidebar-network-section li:hover .sidebar-close,
+  .sidebar-network-section li:has(:focus-visible) .sidebar-close {
+    opacity: 1;
+  }
+}
+
+/* issue 2296, re-review — a 2-in-1 (touchscreen laptop) with a mouse as the
+   primary pointer matches the gate above (`hover`/`pointer` both test the
+   PRIMARY input), and a finger on its screen has no hover to reveal the ×.
+   `any-pointer: coarse` is true when ANY input is coarse, so it puts the ×
+   back. Same specificity as the hide: it must stay AFTER the gate. */
+@media (any-pointer: coarse) {
+  .sidebar-network-section li .sidebar-close {
+    opacity: 1;
+  }
 }
 
 .sidebar-channel-name {
@@ -2392,6 +2422,20 @@ html.resize-dragging * {
 
 .sidebar-network-section > li:not(.sidebar-network-header) .sidebar-window-btn {
   padding-left: 0.75rem;
+}
+
+/* issue 2296 — the hover / selected bar is painted on the ROW, not on the
+   window button, so it runs to the right edge and takes in the umode chip
+   and the × instead of stopping at the button and leaving the × outside.
+   With the pointer ON the ×, the row rule stops matching and only the × is
+   lit (`.sidebar-close:hover`), so the × reads as its own target; on the
+   selected row the accent text colour still marks the selection meanwhile.
+   Placed AFTER the #71 header tint (same (0,2,1) base, so order decides) and
+   written as "does not match" rather than "paint transparent", so a header
+   whose × is hovered falls back to its own tint. */
+.sidebar-network-section li:hover:not(:has(.sidebar-close:hover)),
+.sidebar-network-section li.selected:not(:has(.sidebar-close:hover)) {
+  background: var(--border);
 }
 
 /* #96 — keyboard focus ring for every interactive sidebar surface. The
