@@ -98,6 +98,35 @@ defmodule Grappa.Session.ServerTest do
     {user, network, credential}
   end
 
+  # #1894 — `welcome_handler/2` never echoes a NICK back, so a session
+  # driven by it keeps its original `state.nick` for ever. That makes
+  # "the rename landed" and "the ircd refused it" the SAME picture from
+  # the client side, and a test built on it cannot tell the two apart —
+  # which is precisely the distinction the away-rename restore turns on.
+  #
+  # This handler welcomes like its sibling AND confirms every
+  # post-registration NICK the way a real ircd does, with a source prefix
+  # naming the nick being left. Pre-registration NICKs are NOT echoed: the
+  # handshake sends one before `USER`, and confirming a nick change before
+  # 001 is not a thing an ircd does.
+  defp nick_echo_handler(prefix, nick) do
+    welcome = IRCServer.welcome_handler(prefix, nick)
+
+    fn state, line ->
+      if String.starts_with?(line, "NICK ") and Map.get(state, :registered, false) do
+        from = Map.get(state, :nick, nick)
+        to = line |> String.replace_prefix("NICK ", "") |> String.trim_trailing("\r\n")
+
+        {:reply, ":#{from}!u@h NICK :#{to}\r\n", Map.put(state, :nick, to)}
+      else
+        {:reply, reply, next} = welcome.(state, line)
+        registered = Map.get(state, :registered, false) or String.starts_with?(line, "USER ")
+
+        {:reply, reply, Map.put(next, :registered, registered)}
+      end
+    end
+  end
+
   # Poll until the fake ircd has seen `target` CTCP PING answers, or the
   # deadline passes — a condition, not a sleep. Returns whatever the last
   # sample was so the caller asserts on a number rather than on a timeout.
@@ -11817,6 +11846,225 @@ defmodule Grappa.Session.ServerTest do
 
       assert {:ok, "AWAY :idle text\r\n"} =
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # -------------------------------------------------------------------
+    # #1894 — the auto-away nick rename, opt-in and default OFF
+    # -------------------------------------------------------------------
+    #
+    # The acceptance criterion with teeth is the LAST one: a session must
+    # never be left sitting on a decorated nick. Three ways that could
+    # happen are covered below — the target is taken, the subject renamed
+    # themselves mid-away, and the away was cleared through the explicit
+    # door rather than the auto one.
+
+    test "with no suffix stored the nick is never touched — the default is OFF" do
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
+      {user, network, _} = setup_user_and_network(port)
+      pid = start_session_for(user, network)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      assert :ok = Session.set_auto_away({:user, user.id}, network.id)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :"), 1_000)
+
+      # The handshake already sent one NICK. Anything AFTER the AWAY is
+      # this feature firing when it must not.
+      assert {:error, :timeout} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK grappa-test-"), 200)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "with a suffix stored, auto-away renames and coming back restores" do
+      {server, port} = IRCServer.start_server(nick_echo_handler(":server", "grappa-test"))
+      {user, network, _} = setup_user_and_network(port)
+
+      {:ok, _} =
+        Grappa.UserSettings.put_away_nick_suffix(
+          {:user, user.id},
+          "-away",
+          Grappa.Subject.label({:user, user.name})
+        )
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      :ok = Session.set_auto_away({:user, user.id}, network.id)
+
+      assert {:ok, "NICK grappa-test-away\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK grappa-test-away"), 1_000)
+
+      :ok = Session.unset_away({:user, user.id}, network.id)
+
+      assert {:ok, "NICK grappa-test\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "NICK grappa-test\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a target the ircd refuses leaves the session on its own nick, not a decorated one" do
+      # Deliberately the NON-echoing `welcome_handler/2`: the nick we asked
+      # for never becomes ours, which is the one fact a refusal leaves
+      # behind and the only one the restore guard reads. The 433 NUMERIC
+      # itself is out of scope here — post-registration it has owners of
+      # its own (`GhostRecovery`, `RecoverIdentity`), and routing a real
+      # one through this test would exercise them instead of the guard.
+      # What is asserted is therefore modelled on the outcome, not on the
+      # numeric, and the pairing with the echoing test above is what makes
+      # it discriminate: same script, opposite handler, opposite verdict.
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
+      {user, network, _} = setup_user_and_network(port)
+
+      {:ok, _} =
+        Grappa.UserSettings.put_away_nick_suffix(
+          {:user, user.id},
+          "-away",
+          Grappa.Subject.label({:user, user.name})
+        )
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      :ok = Session.set_auto_away({:user, user.id}, network.id)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK grappa-test-away"), 1_000)
+
+      :ok = Session.unset_away({:user, user.id}, network.id)
+
+      assert {:error, :timeout} =
+               IRCServer.wait_for_line(server, &(&1 == "NICK grappa-test\r\n"), 200)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a manual /nick while away drops the pending restore" do
+      {server, port} = IRCServer.start_server(nick_echo_handler(":server", "grappa-test"))
+      {user, network, _} = setup_user_and_network(port)
+
+      {:ok, _} =
+        Grappa.UserSettings.put_away_nick_suffix(
+          {:user, user.id},
+          "-away",
+          Grappa.Subject.label({:user, user.name})
+        )
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      :ok = Session.set_auto_away({:user, user.id}, network.id)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK grappa-test-away"), 1_000)
+
+      :ok = Session.send_nick({:user, user.id}, network.id, "pippo")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "NICK pippo\r\n"), 1_000)
+
+      :ok = Session.unset_away({:user, user.id}, network.id)
+
+      # The subject named the nick they want more recently than we did.
+      assert {:error, :timeout} =
+               IRCServer.wait_for_line(server, &(&1 == "NICK grappa-test\r\n"), 200)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a suffix that would overflow NICKLEN leaves the nick alone" do
+      # 28 chars + "-away" is 33, past the 30 our own ceiling stands in with
+      # while the fake ircd advertises no NICKLEN. Built from the production
+      # constant so a change to the cap moves the fixture with it.
+      long = String.duplicate("a", Grappa.IRC.Identifier.max_nick_length() - 2)
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", long))
+      {user, network, _} = setup_user_and_network(port, %{nick: long})
+
+      {:ok, _} =
+        Grappa.UserSettings.put_away_nick_suffix(
+          {:user, user.id},
+          "-away",
+          Grappa.Subject.label({:user, user.name})
+        )
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      :ok = Session.set_auto_away({:user, user.id}, network.id)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :"), 1_000)
+
+      assert {:error, :timeout} =
+               IRCServer.wait_for_line(server, &String.contains?(&1, "-away"), 200)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "clearing an auto-away through the EXPLICIT door still restores the nick" do
+      # `/away lunch` over an auto-away, then `/back`. The unset leaves
+      # through the explicit clause, so a restore gated on the away KIND
+      # rather than on the outstanding rename would strand the subject
+      # decorated.
+      {server, port} = IRCServer.start_server(nick_echo_handler(":server", "grappa-test"))
+      {user, network, _} = setup_user_and_network(port)
+
+      {:ok, _} =
+        Grappa.UserSettings.put_away_nick_suffix(
+          {:user, user.id},
+          "-away",
+          Grappa.Subject.label({:user, user.name})
+        )
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      :ok = Session.set_auto_away({:user, user.id}, network.id)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK grappa-test-away"), 1_000)
+
+      :ok = Session.set_explicit_away({:user, user.id}, network.id, "lunch")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :lunch"), 1_000)
+
+      :ok = Session.unset_away({:user, user.id}, network.id)
+
+      assert {:ok, "NICK grappa-test\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "NICK grappa-test\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "retuning the suffix mid-away does NOT re-NICK, and applies next cycle" do
+      {server, port} = IRCServer.start_server(nick_echo_handler(":server", "grappa-test"))
+      {user, network, _} = setup_user_and_network(port)
+      label = Grappa.Subject.label({:user, user.name})
+
+      {:ok, _} = Grappa.UserSettings.put_away_nick_suffix({:user, user.id}, "-away", label)
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      :ok = Session.set_auto_away({:user, user.id}, network.id)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK grappa-test-away"), 1_000)
+
+      # Through the CONTEXT, so the bridge broadcast is under test too.
+      {:ok, _} = Grappa.UserSettings.put_away_nick_suffix({:user, user.id}, "-zzz", label)
+
+      # A re-NICK here would cost every shared channel a line for an idle
+      # person — the traffic argument that made the feature opt-in.
+      assert {:error, :timeout} =
+               IRCServer.wait_for_line(server, &String.contains?(&1, "-zzz"), 200)
+
+      # But the session DID adopt it: the next cycle uses the new suffix.
+      # Without this half the test also passes on a handler that dropped
+      # the message on the floor.
+      :ok = Session.unset_away({:user, user.id}, network.id)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "NICK grappa-test\r\n"), 1_000)
+
+      :ok = Session.set_auto_away({:user, user.id}, network.id)
+
+      assert {:ok, "NICK grappa-test-zzz\r\n"} =
+               IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK grappa-test-zzz"), 1_000)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
