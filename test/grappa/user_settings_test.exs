@@ -2413,6 +2413,110 @@ defmodule Grappa.UserSettingsTest do
     end
   end
 
+  describe "get/put_away_nick_suffix — the auto-away nick rename (#1894)" do
+    test "returns nil when nothing is stored — the rename ships OFF" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.get_or_init({:user, user.id})
+
+      assert UserSettings.get_away_nick_suffix({:user, user.id}) == nil
+    end
+
+    test "persists a suffix and reads it back byte-identical" do
+      user = user_fixture()
+
+      assert {:ok, _} = UserSettings.put_away_nick_suffix({:user, user.id}, "-away", label(user))
+      assert UserSettings.get_away_nick_suffix({:user, user.id}) == "-away"
+    end
+
+    test "the empty string CLEARS the key rather than storing \"\"" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.put_away_nick_suffix({:user, user.id}, "-away", label(user))
+
+      assert {:ok, %Settings{} = saved} =
+               UserSettings.put_away_nick_suffix({:user, user.id}, "", label(user))
+
+      assert UserSettings.get_away_nick_suffix({:user, user.id}) == nil
+      refute Map.has_key?(saved.data, "away_nick_suffix")
+    end
+
+    test "nil switches it off the same way" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.put_away_nick_suffix({:user, user.id}, "-away", label(user))
+
+      assert {:ok, _} = UserSettings.put_away_nick_suffix({:user, user.id}, nil, label(user))
+      assert UserSettings.get_away_nick_suffix({:user, user.id}) == nil
+    end
+
+    test "refuses anything that is not a legal nick tail" do
+      user = user_fixture()
+
+      for bad <- [" away", "-away!", "-a way", "-away\r\nQUIT", "-caffè"] do
+        assert {:error, %Ecto.Changeset{} = cs} =
+                 UserSettings.put_away_nick_suffix({:user, user.id}, bad, label(user)),
+               "expected #{inspect(bad)} to be refused"
+
+        assert Keyword.has_key?(cs.errors, :away_nick_suffix)
+      end
+
+      assert UserSettings.get_away_nick_suffix({:user, user.id}) == nil
+    end
+
+    test "refuses a non-string" do
+      user = user_fixture()
+
+      assert {:error, %Ecto.Changeset{} = cs} =
+               UserSettings.put_away_nick_suffix({:user, user.id}, 42, label(user))
+
+      assert Keyword.has_key?(cs.errors, :away_nick_suffix)
+    end
+
+    # The bound is the nick ceiling minus the one character a base needs,
+    # read from the production constant rather than retyped.
+    test "refuses a suffix with no room left for a base nick" do
+      user = user_fixture()
+      too_long = String.duplicate("a", Grappa.IRC.Identifier.max_nick_length())
+
+      assert {:error, %Ecto.Changeset{}} =
+               UserSettings.put_away_nick_suffix({:user, user.id}, too_long, label(user))
+
+      assert {:ok, _} =
+               UserSettings.put_away_nick_suffix(
+                 {:user, user.id},
+                 String.duplicate("a", Grappa.IRC.Identifier.max_nick_length() - 1),
+                 label(user)
+               )
+    end
+
+    # A row hand-edited past the writer's guard must not reach an outbound
+    # NICK line. The reader re-runs the same predicate and degrades to OFF.
+    test "a stored value the writer could not have produced reads back as OFF" do
+      user = user_fixture()
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
+
+      {:ok, _} =
+        settings
+        |> Ecto.Changeset.change(data: Map.put(settings.data, "away_nick_suffix", " oops\r\n"))
+        |> Grappa.Repo.update()
+
+      assert UserSettings.get_away_nick_suffix({:user, user.id}) == nil
+    end
+
+    test "it is independent of the leave-reason keys that share the blob" do
+      user = user_fixture()
+
+      {:ok, _} = UserSettings.put_auto_away_reason({:user, user.id}, "idle", label(user))
+      {:ok, _} = UserSettings.put_away_nick_suffix({:user, user.id}, "-away", label(user))
+
+      assert UserSettings.get_auto_away_reason({:user, user.id}) == "idle"
+      assert UserSettings.get_away_nick_suffix({:user, user.id}) == "-away"
+
+      {:ok, _} = UserSettings.put_away_nick_suffix({:user, user.id}, "", label(user))
+
+      assert UserSettings.get_auto_away_reason({:user, user.id}) == "idle"
+      assert UserSettings.get_away_nick_suffix({:user, user.id}) == nil
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # The leave-reason announcements (issue 2150)
   # ---------------------------------------------------------------------------
