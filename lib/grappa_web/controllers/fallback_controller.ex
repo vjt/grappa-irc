@@ -90,6 +90,7 @@ defmodule GrappaWeb.FallbackController do
            | :theme_cap_reached
            | :list_full
            | :invalid_mask
+           | :invalid_text_pattern
            | :not_raster
            | :too_large
            | :ssrf_blocked
@@ -309,6 +310,16 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:unprocessable_entity)
     |> json(%{error: "invalid_mask"})
+  end
+
+  # issue 2294 — the /ignore entry's OPTIONAL text-pattern half is refused
+  # (blank after trimming, CR/LF, or longer than any body could be). 422 for
+  # the same reason `:invalid_mask` is, and a SEPARATE token so cic can say
+  # which of the two things the operator typed is the problem.
+  def call(conn, {:error, :invalid_text_pattern}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "invalid_text_pattern"})
   end
 
   # #75 themes background pipeline — the source (upload or fetched URL) is not

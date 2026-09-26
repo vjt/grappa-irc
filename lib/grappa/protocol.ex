@@ -830,7 +830,45 @@ defmodule Grappa.Protocol do
   # the capped caller reads `count` out of that body and gets the SAME boolean,
   # slower. An old client never sends `cap` and cannot tell this server from
   # v29. Both directions keep working, so nothing here refuses anybody.
-  @protocol_version 30
+  # v31 (issue 2294) — the `/ignore` list grew a second, OPTIONAL dimension:
+  # an entry may carry a glob over the message TEXT beside its
+  # `nick!user@host` mask, and a PRIVMSG/NOTICE is dropped when both match.
+  # It is what makes a relay bot's individual authors ignorable — every line
+  # a bridge relays wears the BRIDGE's prefix, so #162 could only silence all
+  # of them at once.
+  #
+  # Additive on the wire, twice over. `GET/POST/DELETE
+  # /networks/:network_id/ignores` keep answering with `masks`, the same list
+  # of strings in the same order; the new `entries` array is a SECOND
+  # projection of the same list carrying `{mask, text_pattern}`. `POST` takes
+  # an optional `text_pattern` beside `mask`, `DELETE` takes it as a query
+  # parameter, and a request that never mentions it behaves exactly as it did
+  # at v30. Turning `masks` into a list of objects was the obvious shape and
+  # is the one thing forbidden outright — a repurposed field, not an added
+  # one (#447, and the #1626 bar for taking one back is a RULING, which this
+  # slice does not have and does not need).
+  #
+  # MEASURED, and the measurement changed the diff. `mix grappa.wire_pin
+  # --check` was run on the FIRST cut, which added `entries` to the
+  # controller's inline `json/2` map: it answered `wire shape and protocol 30
+  # agree.` at rc 0 — GREEN on a wire-shape change. Positive control on the
+  # same tree, same session: one word changed in a `GrappaWeb.*JSON` view's
+  # `@spec` took it RED with the digest moving
+  # `sha256:e4ce7cff…6ba4db` -> `sha256:6c795fc0…89be8`, and reverting
+  # returned it byte-identical. The pin digests what the `*JSON` views
+  # DECLARE (#2037), so an inline render is outside it. The rendering
+  # therefore moved into `GrappaWeb.IgnoresJSON`, and the same gate then went
+  # RED by itself: `sha256:e4ce7cff…6ba4db` -> `sha256:d009b819…40bd41`, with
+  # the protocol «30 (unchanged)». The bump below is that gate's verdict.
+  #
+  # @min_protocol_version stays at 1, and both directions say why. An old
+  # bundle never sends `text_pattern` and reads only `masks`, which still
+  # carries every entry's mask — including a targeted one, so no rule
+  # disappears from its view. A new bundle talking to an old server sends a
+  # `text_pattern` that server drops, and would then show an entry it cannot
+  # honour; that is the new-client → old-server break the NUMBER expresses,
+  # and it is expressed by bumping it, not by refusing to serve v1 clients.
+  @protocol_version 31
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -865,7 +903,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 30
+  @spec version() :: 31
   def version, do: @protocol_version
 
   @doc """

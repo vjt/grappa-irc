@@ -20,6 +20,7 @@ defmodule Grappa.UserSettingsTest do
 
   import Grappa.AuthFixtures
 
+  alias Grappa.IRC.Ignore
   alias Grappa.PubSub.Topic
   alias Grappa.{Repo, UserSettings}
   alias Grappa.UserSettings.Settings
@@ -1433,34 +1434,103 @@ defmodule Grappa.UserSettingsTest do
       assert UserSettings.get_ignores({:user, user.id}, "azzurra") == []
     end
 
+    # issue 2294 — the list used to be bare mask STRINGS. A node running this
+    # code WILL read rows an older one wrote (a hot reload runs no migration),
+    # so the legacy encoding reads as a pattern-less entry rather than as junk.
+    test "a legacy bare-string list reads as pattern-less entries" do
+      user = user_fixture()
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
+
+      Repo.update!(
+        Settings.changeset(settings, %{
+          data: %{"ignores" => %{"azzurra" => ["spambot!*@*", 42, %{"nope" => 1}]}}
+        })
+      )
+
+      assert [%Ignore{mask: "spambot!*@*", text_pattern: nil}] =
+               UserSettings.get_ignores({:user, user.id}, "azzurra")
+    end
+
     test "is keyed by network — an ignore on one network does not leak to another" do
       user = user_fixture()
-      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "spambot", :ascii)
+      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "spambot", nil, :ascii)
 
-      assert UserSettings.get_ignores({:user, user.id}, "azzurra") == ["spambot!*@*"]
+      assert [%Ignore{mask: "spambot!*@*", text_pattern: nil}] =
+               UserSettings.get_ignores({:user, user.id}, "azzurra")
+
       assert UserSettings.get_ignores({:user, user.id}, "ircnet") == []
     end
   end
 
-  describe "add_ignore/3" do
+  describe "add_ignore/5" do
     test "normalises a bare nick and returns the resulting list" do
       user = user_fixture()
 
-      assert {:ok, :added, "spambot!*@*", ["spambot!*@*"]} =
-               UserSettings.add_ignore({:user, user.id}, "azzurra", "SpamBot", :ascii)
+      assert {:ok, :added, %Ignore{mask: "spambot!*@*", text_pattern: nil}, [%Ignore{mask: "spambot!*@*"}]} =
+               UserSettings.add_ignore({:user, user.id}, "azzurra", "SpamBot", nil, :ascii)
     end
 
     test "is idempotent across spellings of the same mask" do
       user = user_fixture()
-      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "spambot", :ascii)
+      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "spambot", nil, :ascii)
 
-      assert {:ok, :already_ignored, "spambot!*@*", ["spambot!*@*"]} =
-               UserSettings.add_ignore({:user, user.id}, "azzurra", "SPAMBOT!*@*", :ascii)
+      assert {:ok, :already_ignored, %Ignore{mask: "spambot!*@*"}, [%Ignore{mask: "spambot!*@*"}]} =
+               UserSettings.add_ignore({:user, user.id}, "azzurra", "SPAMBOT!*@*", nil, :ascii)
+    end
+
+    # issue 2294 — identity is the PAIR. The relay case IS two entries on one
+    # mask; collapsing them on the mask alone would make the second add a
+    # no-op and the feature unusable for what it was asked for.
+    test "the same mask with two text patterns is two entries, not one" do
+      user = user_fixture()
+
+      {:ok, :added, _, _} =
+        UserSettings.add_ignore({:user, user.id}, "azzurra", "relay", "<A>*", :ascii)
+
+      assert {:ok, :added, %Ignore{mask: "relay!*@*", text_pattern: "<B>*"}, list} =
+               UserSettings.add_ignore({:user, user.id}, "azzurra", "relay", "<B>*", :ascii)
+
+      assert length(list) == 2
+    end
+
+    test "a pattern-less add beside a targeted one on the same mask is a THIRD entry" do
+      user = user_fixture()
+
+      {:ok, :added, _, _} =
+        UserSettings.add_ignore({:user, user.id}, "azzurra", "relay", "<A>*", :ascii)
+
+      assert {:ok, :added, %Ignore{text_pattern: nil}, [_, _]} =
+               UserSettings.add_ignore({:user, user.id}, "azzurra", "relay", nil, :ascii)
+    end
+
+    test "an identical pair is still idempotent" do
+      user = user_fixture()
+
+      {:ok, :added, _, _} =
+        UserSettings.add_ignore({:user, user.id}, "azzurra", "relay", "<A>*", :ascii)
+
+      assert {:ok, :already_ignored, _, [_]} =
+               UserSettings.add_ignore({:user, user.id}, "azzurra", "RELAY", "<A>*", :ascii)
     end
 
     test "rejects an unparseable mask" do
       user = user_fixture()
-      assert {:error, :invalid_mask} = UserSettings.add_ignore({:user, user.id}, "azzurra", "a b", :ascii)
+
+      assert {:error, :invalid_mask} =
+               UserSettings.add_ignore({:user, user.id}, "azzurra", "a b", nil, :ascii)
+
+      assert UserSettings.get_ignores({:user, user.id}, "azzurra") == []
+    end
+
+    test "rejects an unusable text pattern on its own token" do
+      user = user_fixture()
+
+      assert {:error, :invalid_text_pattern} =
+               UserSettings.add_ignore({:user, user.id}, "azzurra", "relay", "  ", :ascii)
+
+      assert {:error, :invalid_text_pattern} =
+               UserSettings.add_ignore({:user, user.id}, "azzurra", "relay", "a\r\nb", :ascii)
+
       assert UserSettings.get_ignores({:user, user.id}, "azzurra") == []
     end
 
@@ -1468,45 +1538,87 @@ defmodule Grappa.UserSettingsTest do
       user = user_fixture()
 
       for i <- 1..100 do
-        {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "n#{i}", :ascii)
+        {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "n#{i}", nil, :ascii)
       end
 
-      assert {:error, :list_full} = UserSettings.add_ignore({:user, user.id}, "azzurra", "one-more", :ascii)
+      assert {:error, :list_full} =
+               UserSettings.add_ignore({:user, user.id}, "azzurra", "one-more", nil, :ascii)
+
       # The cap is per network: another network is untouched.
-      assert {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "ircnet", "fine", :ascii)
+      assert {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "ircnet", "fine", nil, :ascii)
     end
 
     test "preserves sibling settings keys" do
       user = user_fixture()
       {:ok, _} = UserSettings.put_upload_ttl_seconds({:user, user.id}, 3600)
-      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "spambot", :ascii)
+      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "spambot", nil, :ascii)
 
       assert UserSettings.get_upload_ttl_seconds({:user, user.id}) == 3600
     end
+
+    # The STORED encoding, not the decoded one: a pattern-less entry writes the
+    # `mask` key alone, so the common row does not grow a `null`.
+    test "stores the entry as a map, omitting the text key when there is none" do
+      user = user_fixture()
+      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "spambot", nil, :ascii)
+      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "relay", "<A>*", :ascii)
+
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
+
+      assert settings.data["ignores"]["azzurra"] == [
+               %{"mask" => "relay!*@*", "text_pattern" => "<A>*"},
+               %{"mask" => "spambot!*@*"}
+             ]
+    end
   end
 
-  describe "remove_ignore/3" do
+  describe "remove_ignore/5" do
     test "removes by normalised mask and returns the resulting list" do
       user = user_fixture()
-      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "spambot", :ascii)
-      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "*!*@evil.example", :ascii)
+      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "spambot", nil, :ascii)
 
-      assert {:ok, :removed, "spambot!*@*", ["*!*@evil.example"]} =
-               UserSettings.remove_ignore({:user, user.id}, "azzurra", "SPAMBOT", :ascii)
+      {:ok, _, _, _} =
+        UserSettings.add_ignore({:user, user.id}, "azzurra", "*!*@evil.example", nil, :ascii)
+
+      assert {:ok, :removed, %Ignore{mask: "spambot!*@*"}, [%Ignore{mask: "*!*@evil.example"}]} =
+               UserSettings.remove_ignore({:user, user.id}, "azzurra", "SPAMBOT", nil, :ascii)
     end
 
     test "is idempotent — removing an absent mask is still ok" do
       user = user_fixture()
 
-      assert {:ok, :not_ignored, "nobody!*@*", []} =
-               UserSettings.remove_ignore({:user, user.id}, "azzurra", "nobody", :ascii)
+      assert {:ok, :not_ignored, %Ignore{mask: "nobody!*@*"}, []} =
+               UserSettings.remove_ignore({:user, user.id}, "azzurra", "nobody", nil, :ascii)
+    end
+
+    # issue 2294 — a removal is the EXACT inverse of the add that wrote the
+    # entry. Naming no pattern must not delete a targeted rule the operator
+    # never named, and naming the wrong one must not delete anything.
+    test "a pattern-less removal leaves a targeted entry on the same mask standing" do
+      user = user_fixture()
+
+      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "relay", "<A>*", :ascii)
+
+      assert {:ok, :not_ignored, %Ignore{text_pattern: nil}, [%Ignore{text_pattern: "<A>*"}]} =
+               UserSettings.remove_ignore({:user, user.id}, "azzurra", "relay", nil, :ascii)
+    end
+
+    test "removes the pair that was named and only that one" do
+      user = user_fixture()
+      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "relay", "<A>*", :ascii)
+      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "relay", "<B>*", :ascii)
+
+      assert {:ok, :removed, %Ignore{text_pattern: "<A>*"}, [%Ignore{text_pattern: "<B>*"}]} =
+               UserSettings.remove_ignore({:user, user.id}, "azzurra", "RELAY", "<A>*", :ascii)
     end
 
     # The put_or_delete rule: an empty list is ABSENCE, not a stored [].
     test "an emptied network drops its key, and an emptied map drops the ignores key" do
       user = user_fixture()
-      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "spambot", :ascii)
-      {:ok, _, _, _} = UserSettings.remove_ignore({:user, user.id}, "azzurra", "spambot", :ascii)
+      {:ok, _, _, _} = UserSettings.add_ignore({:user, user.id}, "azzurra", "spambot", nil, :ascii)
+
+      {:ok, _, _, _} =
+        UserSettings.remove_ignore({:user, user.id}, "azzurra", "spambot", nil, :ascii)
 
       {:ok, settings} = UserSettings.get_or_init({:user, user.id})
       refute Map.has_key?(settings.data, "ignores")

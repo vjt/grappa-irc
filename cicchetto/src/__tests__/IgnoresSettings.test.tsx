@@ -7,14 +7,24 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // through the store, the add-form adds through the store, the list is
 // refreshed on open because nothing broadcasts it).
 
-const addIgnoreMock = vi.fn().mockResolvedValue({ masks: [], mask: "x!*@*", outcome: "added" });
-const delIgnoreMock = vi
-  .fn()
-  .mockResolvedValue({ masks: [], mask: "spambot!*@*", outcome: "removed" });
+const addIgnoreMock = vi.fn().mockResolvedValue({
+  masks: [],
+  entries: [],
+  mask: "x!*@*",
+  text_pattern: null,
+  outcome: "added",
+});
+const delIgnoreMock = vi.fn().mockResolvedValue({
+  masks: [],
+  entries: [],
+  mask: "spambot!*@*",
+  text_pattern: null,
+  outcome: "removed",
+});
 const refreshIgnoresMock = vi.fn().mockResolvedValue([]);
 
 let networksData: Array<{ kind: string; id: number; slug: string; nick: string }> = [];
-let ignoresData: Record<string, string[]> = {};
+let ignoresData: Record<string, Array<{ mask: string; text_pattern: string | null }>> = {};
 
 vi.mock("../lib/auth", () => ({ token: () => "tok" }));
 
@@ -26,8 +36,10 @@ vi.mock("../lib/networks", () => ({
 vi.mock("../lib/ignoreList", () => ({
   ignoresBySlug: () => ignoresData,
   refreshIgnores: (t: string, slug: string) => refreshIgnoresMock(t, slug),
-  addIgnore: (t: string, slug: string, mask: string) => addIgnoreMock(t, slug, mask),
-  delIgnore: (t: string, slug: string, mask: string) => delIgnoreMock(t, slug, mask),
+  addIgnore: (t: string, slug: string, mask: string, text: string | null) =>
+    addIgnoreMock(t, slug, mask, text),
+  delIgnore: (t: string, slug: string, mask: string, text: string | null) =>
+    delIgnoreMock(t, slug, mask, text),
 }));
 
 import IgnoresSettings from "../IgnoresSettings";
@@ -39,10 +51,16 @@ beforeEach(() => {
     { kind: "user", id: 1, slug: "freenode", nick: "vjt" },
     { kind: "user", id: 2, slug: "ircnet", nick: "vjt" },
   ];
-  ignoresData = { freenode: ["spambot!*@*", "*!*@*.evil.example"] };
+  ignoresData = {
+    freenode: [
+      { mask: "spambot!*@*", text_pattern: null },
+      { mask: "*!*@*.evil.example", text_pattern: null },
+      { mask: "relay!*@*", text_pattern: "<SomeNick>*" },
+    ],
+  };
 });
 
-describe("IgnoresSettings (#162)", () => {
+describe("IgnoresSettings (#162, issue 2294)", () => {
   it("renders the sub-page with one block per network", () => {
     render(() => <IgnoresSettings onBack={() => {}} />);
     expect(screen.getByTestId("ignores-subpage")).toBeInTheDocument();
@@ -64,14 +82,28 @@ describe("IgnoresSettings (#162)", () => {
     expect(refreshIgnoresMock).toHaveBeenCalledWith("tok", "ircnet");
   });
 
-  it("shows the masks of a network and × removes through the store, by network", () => {
+  it("shows the entries of a network and × removes through the store, by network", () => {
     render(() => <IgnoresSettings onBack={() => {}} />);
     expect(screen.getByText("spambot!*@*")).toBeInTheDocument();
     expect(screen.getByText("*!*@*.evil.example")).toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", { name: /stop ignoring spambot!\*@\* on freenode/i }),
     );
-    expect(delIgnoreMock).toHaveBeenCalledWith("tok", "freenode", "spambot!*@*");
+    expect(delIgnoreMock).toHaveBeenCalledWith("tok", "freenode", "spambot!*@*", null);
+  });
+
+  // issue 2294 — the row names BOTH halves, and the × removes the PAIR. A ×
+  // that sent the mask alone would delete a rule the operator never pointed
+  // at (or nothing at all), which is the whole reason identity is the pair.
+  it("an entry with a text pattern renders both halves and × removes the PAIR", () => {
+    render(() => <IgnoresSettings onBack={() => {}} />);
+    expect(screen.getByText("relay!*@* matching <SomeNick>*")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /stop ignoring relay!\*@\* matching <SomeNick>\* on freenode/i,
+      }),
+    );
+    expect(delIgnoreMock).toHaveBeenCalledWith("tok", "freenode", "relay!*@*", "<SomeNick>*");
   });
 
   it("the per-network add-form adds through the store, scoped to that network", () => {
@@ -79,7 +111,27 @@ describe("IgnoresSettings (#162)", () => {
     const input = screen.getByTestId("ignores-add-ircnet") as HTMLInputElement;
     fireEvent.input(input, { target: { value: "troll" } });
     fireEvent.submit(input.closest("form") as HTMLFormElement);
-    expect(addIgnoreMock).toHaveBeenCalledWith("tok", "ircnet", "troll");
+    expect(addIgnoreMock).toHaveBeenCalledWith("tok", "ircnet", "troll", null);
+  });
+
+  it("the optional pattern input rides the same add", () => {
+    render(() => <IgnoresSettings onBack={() => {}} />);
+    const mask = screen.getByTestId("ignores-add-ircnet") as HTMLInputElement;
+    const pattern = screen.getByTestId("ignores-add-pattern-ircnet") as HTMLInputElement;
+    fireEvent.input(mask, { target: { value: "relay" } });
+    fireEvent.input(pattern, { target: { value: "<A> *" } });
+    fireEvent.submit(mask.closest("form") as HTMLFormElement);
+    expect(addIgnoreMock).toHaveBeenCalledWith("tok", "ircnet", "relay", "<A> *");
+  });
+
+  it("a blank pattern input is NO pattern, not an empty one the server would refuse", () => {
+    render(() => <IgnoresSettings onBack={() => {}} />);
+    const mask = screen.getByTestId("ignores-add-ircnet") as HTMLInputElement;
+    const pattern = screen.getByTestId("ignores-add-pattern-ircnet") as HTMLInputElement;
+    fireEvent.input(mask, { target: { value: "relay" } });
+    fireEvent.input(pattern, { target: { value: "   " } });
+    fireEvent.submit(mask.closest("form") as HTMLFormElement);
+    expect(addIgnoreMock).toHaveBeenCalledWith("tok", "ircnet", "relay", null);
   });
 
   it("a network with nothing ignored says so and still offers the add-form", () => {

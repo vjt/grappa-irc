@@ -191,9 +191,13 @@ defmodule Grappa.HotReload.LongLivedModules do
     Grappa.Session.WhowasAccum,
     Grappa.Session.WindowState,
     Grappa.IRC.FakeLag,
-    # #162 — `Session.Server` holds the ignore list COMPILED, a list of
-    # `%Grappa.IRC.Mask{}`; a field-add to that struct is a state-shape
-    # change for every live session, so its file is on the preflight's list.
+    # #162 / issue 2294 — `Session.Server` holds the ignore list COMPILED, a
+    # list of `%Grappa.IRC.Ignore.Compiled{}`, each wrapping a
+    # `%Grappa.IRC.Mask{}`; a field-add to either is a state-shape change for
+    # every live session, so both files are on the preflight's list.
+    # `Ignore.Compiled` is NESTED in `ignore.ex` and must NOT get an entry of
+    # its own — the unit of coverage is the FILE, and its parent covers it.
+    Grappa.IRC.Ignore,
     Grappa.IRC.Mask
   ]
 
@@ -247,6 +251,7 @@ defmodule Grappa.HotReload.LongLivedModules do
           | Grappa.Session.WhowasAccum
           | Grappa.Session.WindowState
           | Grappa.IRC.FakeLag
+          | Grappa.IRC.Ignore
           | Grappa.IRC.Mask
 
   @doc """

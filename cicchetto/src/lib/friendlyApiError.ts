@@ -274,6 +274,12 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       // (empty, whitespace, or not `nick!user@host`). A bare nick is
       // fine — it becomes `nick!*@*` server-side — so name the shape.
       return "That ignore mask is not valid. Use a nick or nick!user@host.";
+    case "invalid_text_pattern":
+      // issue 2294 — the OPTIONAL second half of an `/ignore` entry, refused
+      // by `Grappa.IRC.Ignore.normalize/3` (blank, CR/LF, or longer than any
+      // message could be). Named apart from `invalid_mask` because the
+      // operator typed two things and only one of them is the problem.
+      return "That ignore text pattern is not valid. Use * and ? as wildcards.";
     // #364 bucket H (cross-surface S3) — four FallbackController tokens
     // whose server comments assert cic copy exists, but KnownApiErrorCode
     // had no arm, so they leaked the raw `<status> <code>` string into

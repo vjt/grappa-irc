@@ -243,7 +243,13 @@ export type SlashCommand =
   // #162 — /ignore + /unignore, the server-honoured mask list. irssi-direct:
   // `/ignore <mask>` adds (a bare nick means nick!*@*), `/unignore <mask>`
   // removes, and a BARE `/ignore` lists what is set for this network.
-  | { kind: "ignore"; action: "add" | "del"; mask: string }
+  //
+  // issue 2294 — everything AFTER the mask is one optional glob over the
+  // message TEXT (`/ignore Gazzurbo!*@* <SomeNick>*`), and a line is dropped
+  // only when both halves match. `null` is "no pattern" — byte-for-byte the
+  // #162 entry. The pattern is the REST of the line, not a token, because a
+  // relayed author's prefix legitimately carries spaces.
+  | { kind: "ignore"; action: "add" | "del"; mask: string; textPattern: string | null }
   // #356/#385 — a BARE verb that opens a settings sub-page instead of
   // printing inline (watch-family → watch lists; bare /alias → aliases).
   // Opening the drawer IS the feedback. `section` widens as sub-pages gain
@@ -331,9 +337,25 @@ function parseNickReason(kind: NickReasonKind, verb: string, rest: string): Slas
 // settings sub-page, the same door bare `/hilight` and `/notify` take (the
 // list with its per-entry × is right there; Gabriele's ruling, 2026-09-06).
 function parseIgnore(_verb: string, rest: string): SlashCommand {
-  const [mask] = tokens(rest);
-  if (mask === undefined) return { kind: "open-settings", section: "ignores" };
-  return { kind: "ignore", action: "add", mask };
+  const split = splitMaskAndPattern(rest);
+  if (split === null) return { kind: "open-settings", section: "ignores" };
+  return { kind: "ignore", action: "add", ...split };
+}
+
+// issue 2294 — the mask is the FIRST whitespace-delimited token (a mask can
+// never contain one, `Grappa.IRC.Mask.normalize/2` refuses it) and the text
+// pattern is everything after it, trimmed. The remainder is taken raw rather
+// than re-joined from `tokens/1`: a pattern's interior spacing is part of
+// what it matches, and `tokens/1` would collapse a run of them.
+function splitMaskAndPattern(rest: string): { mask: string; textPattern: string | null } | null {
+  const trimmed = rest.trim();
+  if (trimmed === "") return null;
+
+  const at = trimmed.search(/\s/);
+  if (at === -1) return { mask: trimmed, textPattern: null };
+
+  const pattern = trimmed.slice(at + 1).trim();
+  return { mask: trimmed.slice(0, at), textPattern: pattern === "" ? null : pattern };
 }
 
 // #1480 — `/beep`, the shortcut into the notification-sound preference. vjt's
@@ -371,9 +393,9 @@ function parseBeep(verb: string, rest: string): SlashCommand {
 }
 
 function parseUnignore(verb: string, rest: string): SlashCommand {
-  const [mask] = tokens(rest);
-  if (mask === undefined) return { kind: "error", verb, message: "/unignore requires a mask" };
-  return { kind: "ignore", action: "del", mask };
+  const split = splitMaskAndPattern(rest);
+  if (split === null) return { kind: "error", verb, message: "/unignore requires a mask" };
+  return { kind: "ignore", action: "del", ...split };
 }
 
 // #356 — presence-watch parser, shared by /notify + /watch (alias).

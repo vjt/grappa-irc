@@ -97,7 +97,7 @@ defmodule Grappa.Session.Server do
   }
 
   alias Grappa.Dcc.{Policy, Report, Transfer}
-  alias Grappa.IRC.{AuthFSM, Client, CTCP, Identifier, LineSplit, Mask, Message}
+  alias Grappa.IRC.{AuthFSM, Client, CTCP, Identifier, Ignore, LineSplit, Message}
   alias Grappa.IRC.DCC.Offer
   alias Grappa.Net.SourceAliasManager
   alias Grappa.PubSub.Topic
@@ -477,10 +477,11 @@ defmodule Grappa.Session.Server do
           # above; omitted opt (test seam) defaults to `false` — silent
           # unless a test explicitly opts in.
           optional(:show_peer_profiles) => boolean(),
-          # #162 — stored `/ignore` masks, resolved at the spawn boundary
-          # (`Grappa.Session.start_session/3`); compiled in `init/1`. Kept
-          # in sync with the `Grappa.Session.start_session/3` opts twin.
-          optional(:ignores) => [String.t()],
+          # #162 / issue 2294 — stored `/ignore` entries, resolved at the
+          # spawn boundary (`Grappa.Session.start_session/3`); compiled in
+          # `init/1`. Kept in sync with the `Grappa.Session.start_session/3`
+          # opts twin.
+          optional(:ignores) => [Ignore.t()],
           # GH #189 — on-connect perform list + its `$oper_pass` secret,
           # decrypted plaintext from the credential (nil when unset). Run at 001
           # before the built-in identify and before autojoin. The `$nickserv_pass`
@@ -719,11 +720,12 @@ defmodule Grappa.Session.Server do
           # /notify must work on ircds that support WATCH but don't
           # advertise it).
           presence_mechanism: ISupport.presence_mechanism() | nil,
-          # #162: the /ignore masks for THIS network, normalised `nick!user@host`
-          # globs. Loaded from UserSettings at init and re-synced on every
-          # mutation, so EventRouter's delivery filter stays a pure read of
-          # state — no IO on the inbound hot path.
-          ignores: [Mask.compiled()],
+          # #162 / issue 2294: the /ignore entries for THIS network — a
+          # normalised `nick!user@host` glob and an optional glob over the
+          # message text. Loaded from UserSettings at init and re-synced on
+          # every mutation, so EventRouter's delivery filter stays a pure
+          # read of state — no IO on the inbound hot path.
+          ignores: [Ignore.compiled()],
           # #1946: the ISON polling loop. `presence_poll_ref` is the armed
           # timer (nil when the mechanism is not `:ison`, or when the watch
           # list is empty — an empty list arms nothing at all).
@@ -1333,7 +1335,7 @@ defmodule Grappa.Session.Server do
       # a join storm). Compiled ONCE here and on every `:ignores_changed`,
       # never per message. Absent = a unit test built the Server directly
       # (the boundary was bypassed), the same contract as its two siblings.
-      ignores: Mask.compile_all(Map.get(opts, :ignores, [])),
+      ignores: Ignore.compile_all(Map.get(opts, :ignores, [])),
       # #247: /notify presence map — seeded at the end-of-MOTD arm.
       presence: %{},
       presence_armed: false,
@@ -2701,8 +2703,8 @@ defmodule Grappa.Session.Server do
   # #162 — the ignore list changed (REST add/remove). The controller hands over
   # the whole resulting list rather than a diff: it is small, bounded, and a
   # replace cannot drift from the DB the way an incremental patch could.
-  def handle_call({:ignores_changed, masks}, _, state) when is_list(masks) do
-    {:reply, :ok, Map.put(state, :ignores, Mask.compile_all(masks))}
+  def handle_call({:ignores_changed, entries}, _, state) when is_list(entries) do
+    {:reply, :ok, Map.put(state, :ignores, Ignore.compile_all(entries))}
   end
 
   @doc """

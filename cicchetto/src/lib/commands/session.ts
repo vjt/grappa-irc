@@ -123,6 +123,11 @@ export const recoverCommand: CommandHandler<"recover"> = async (cmd, ctx) => {
  * add. The window keeps the rows, so what was asked and done stays readable
  * as history (Gabriele, 2026-09-06).
  *
+ * issue 2294 — when the entry carries a text pattern the row names BOTH
+ * halves (`added relay!*@* matching <SomeNick>*`), because the operator typed
+ * two things and an echo of one of them cannot be checked against what they
+ * meant. The pattern is echoed from the SERVER's answer, like the mask.
+ *
  * Every call goes through `ignoreList.ts`, the store the ignore-list
  * settings sub-page reads, so a verb typed here updates a sub-page that is
  * open — one state, the pattern `/hilight` + the watch-lists page set.
@@ -142,17 +147,24 @@ const ignoreLines = async (
 ): Promise<CommandOutputLine[]> => {
   switch (cmd.action) {
     case "add": {
-      const r = await addIgnore(token, slug, cmd.mask);
-      const text = r.outcome === "added" ? `added ${r.mask}` : `${r.mask} is already ignored`;
+      const r = await addIgnore(token, slug, cmd.mask, cmd.textPattern);
+      const what = describeEntry(r.mask, r.text_pattern);
+      const text = r.outcome === "added" ? `added ${what}` : `${what} is already ignored`;
       return [{ label: "Ignore:", text, indent: false }];
     }
     case "del": {
-      const r = await delIgnore(token, slug, cmd.mask);
-      const text = r.outcome === "removed" ? `removed ${r.mask}` : `${r.mask} was not ignored`;
+      const r = await delIgnore(token, slug, cmd.mask, cmd.textPattern);
+      const what = describeEntry(r.mask, r.text_pattern);
+      const text = r.outcome === "removed" ? `removed ${what}` : `${what} was not ignored`;
       return [{ label: "Unignore:", text, indent: false }];
     }
   }
 };
+
+// issue 2294 — one spelling for an entry in operator-facing text, so the
+// verb row and the settings row cannot describe the same rule two ways.
+const describeEntry = (mask: string, textPattern: string | null): string =>
+  textPattern === null ? mask : `${mask} matching ${textPattern}`;
 
 export const notifyCommand: CommandHandler<"notify"> = async (cmd, ctx) => {
   // The id is not used — this arm addresses the network by SLUG over REST — but

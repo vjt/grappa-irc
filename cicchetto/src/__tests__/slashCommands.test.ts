@@ -1528,14 +1528,21 @@ describe("parseSlash — /oper", () => {
 // section (removal lives there, per-entry ×).
 // #162 — /ignore + /unignore, the server-honoured mask list. irssi-direct:
 // one mask per call; a bare /ignore opens the ignore-list settings sub-page
-// (like bare /hilight). Levels are deliberately NOT parsed
-// (v1 drops content only), so a second token is ignored, not a second mask.
-describe("parseSlash — /ignore + /unignore (#162)", () => {
-  it("/ignore <mask> → ignore add", () => {
+// (like bare /hilight). Levels are deliberately NOT parsed.
+//
+// issue 2294 REVERSED what the trailing text means, and the old posture had
+// a test of its own ("a trailing token is not a second one" — it was
+// DISCARDED). Everything after the mask is now ONE optional glob over the
+// message text, which is what makes a single author behind a relay bot
+// ignorable. The test below is that old one rewritten to the new meaning,
+// not deleted: the discard was the behaviour, and the behaviour changed.
+describe("parseSlash — /ignore + /unignore (#162, issue 2294)", () => {
+  it("/ignore <mask> → ignore add, with no text pattern", () => {
     expect(parseSlash("/ignore spambot")).toEqual({
       kind: "ignore",
       action: "add",
       mask: "spambot",
+      textPattern: null,
     });
   });
 
@@ -1544,14 +1551,25 @@ describe("parseSlash — /ignore + /unignore (#162)", () => {
       kind: "ignore",
       action: "add",
       mask: "*!*@Evil.Example",
+      textPattern: null,
     });
   });
 
-  it("/ignore takes ONE mask; a trailing token is not a second one", () => {
-    expect(parseSlash("/ignore spambot PUBLIC")).toEqual({
+  it("everything after the mask is ONE text pattern, spaces and all", () => {
+    expect(parseSlash("/ignore Gazzurbo!*@* <SomeNick> ciao *")).toEqual({
+      kind: "ignore",
+      action: "add",
+      mask: "Gazzurbo!*@*",
+      textPattern: "<SomeNick> ciao *",
+    });
+  });
+
+  it("a pattern of only whitespace is no pattern, not an empty one", () => {
+    expect(parseSlash("/ignore spambot    ")).toEqual({
       kind: "ignore",
       action: "add",
       mask: "spambot",
+      textPattern: null,
     });
   });
 
@@ -1564,6 +1582,16 @@ describe("parseSlash — /ignore + /unignore (#162)", () => {
       kind: "ignore",
       action: "del",
       mask: "spambot",
+      textPattern: null,
+    });
+  });
+
+  it("/unignore carries the pattern too — a removal names the PAIR it removes", () => {
+    expect(parseSlash("/unignore Gazzurbo!*@* <SomeNick>*")).toEqual({
+      kind: "ignore",
+      action: "del",
+      mask: "Gazzurbo!*@*",
+      textPattern: "<SomeNick>*",
     });
   });
 

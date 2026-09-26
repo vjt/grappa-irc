@@ -17,7 +17,7 @@ defmodule Grappa.Session.IgnoresSpawnTest do
   use Grappa.DataCase, async: false
   import Grappa.AuthFixtures
 
-  alias Grappa.IRC.Mask
+  alias Grappa.IRC.{Ignore, Mask}
   alias Grappa.{IRCServer, Session, UserSettings}
   alias Grappa.Networks.{Credentials, SessionPlan}
 
@@ -31,30 +31,54 @@ defmodule Grappa.Session.IgnoresSpawnTest do
     {user, network, credential}
   end
 
-  test "a spawned session carries its stored masks, compiled, from the first line" do
+  test "a spawned session carries its stored entries, compiled, from the first line" do
     {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
     {user, network, _} = setup_user_and_network(port)
     subject = {:user, user.id}
-    {:ok, :added, _, _} = UserSettings.add_ignore(subject, network.slug, "SpamBot", :ascii)
+    {:ok, :added, _, _} = UserSettings.add_ignore(subject, network.slug, "SpamBot", nil, :ascii)
 
     pid = start_session_for(user, network)
     :ok = IRCServer.await_handshake(server, 1_000)
 
-    assert [%Mask{source: "spambot!*@*", user: :any, host: :any}] = :sys.get_state(pid).ignores
+    assert [
+             %Ignore.Compiled{
+               mask: %Mask{source: "spambot!*@*", user: :any, host: :any},
+               text: nil
+             }
+           ] = :sys.get_state(pid).ignores
+  end
+
+  # issue 2294 — the text half survives the SAME boundary. A stored pattern
+  # that arrived uncompiled would be a per-line regex build on the inbound
+  # hot path, which is exactly what #1984 took out of this feature.
+  test "a stored text pattern arrives compiled too" do
+    {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+    {user, network, _} = setup_user_and_network(port)
+    subject = {:user, user.id}
+
+    {:ok, :added, _, _} =
+      UserSettings.add_ignore(subject, network.slug, "relay", "<SomeNick>*", :ascii)
+
+    pid = start_session_for(user, network)
+    :ok = IRCServer.await_handshake(server, 1_000)
+
+    assert [%Ignore.Compiled{mask: %Mask{source: "relay!*@*"}, text: %Regex{}}] =
+             :sys.get_state(pid).ignores
   end
 
   test "a caller-supplied :ignores wins at the boundary, like its two siblings" do
     {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
     {user, network, _} = setup_user_and_network(port)
     subject = {:user, user.id}
-    {:ok, :added, _, _} = UserSettings.add_ignore(subject, network.slug, "stored", :ascii)
+    {:ok, :added, _, _} = UserSettings.add_ignore(subject, network.slug, "stored", nil, :ascii)
 
+    {:ok, given} = Ignore.normalize("given!*@*", nil, :ascii)
     {:ok, plan} = SessionPlan.resolve(Credentials.get_credential!(user, network))
-    {:ok, pid} = Session.start_session(subject, network.id, Map.put(plan, :ignores, ["given!*@*"]))
+    {:ok, pid} = Session.start_session(subject, network.id, Map.put(plan, :ignores, [given]))
     on_exit(fn -> Session.stop_session(subject, network.id) end)
     :ok = IRCServer.await_handshake(server, 1_000)
 
-    assert [%Mask{source: "given!*@*"}] = :sys.get_state(pid).ignores
+    assert [%Ignore.Compiled{mask: %Mask{source: "given!*@*"}}] = :sys.get_state(pid).ignores
   end
 
   test "ignores_changed/3 re-syncs the live session with the list compiled" do
@@ -66,9 +90,14 @@ defmodule Grappa.Session.IgnoresSpawnTest do
     :ok = IRCServer.await_handshake(server, 1_000)
     assert [] = :sys.get_state(pid).ignores
 
-    :ok = Session.ignores_changed(subject, network.id, ["*!*@evil.example"])
+    {:ok, entry} = Ignore.normalize("*!*@evil.example", nil, :ascii)
+    :ok = Session.ignores_changed(subject, network.id, [entry])
 
-    assert [%Mask{source: "*!*@evil.example", nick: :any, user: :any, host: %Regex{}}] =
-             :sys.get_state(pid).ignores
+    assert [
+             %Ignore.Compiled{
+               mask: %Mask{source: "*!*@evil.example", nick: :any, user: :any, host: %Regex{}},
+               text: nil
+             }
+           ] = :sys.get_state(pid).ignores
   end
 end

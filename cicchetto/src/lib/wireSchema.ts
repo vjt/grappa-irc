@@ -1694,6 +1694,7 @@ export const S_ErrorTokensRestErrorToken = {
     { l: "theme_cap_reached" },
     { l: "list_full" },
     { l: "invalid_mask" },
+    { l: "invalid_text_pattern" },
     { l: "not_raster" },
     { l: "too_large" },
     { l: "ssrf_blocked" },

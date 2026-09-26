@@ -101,6 +101,11 @@ defmodule GrappaWeb.ErrorTokens do
           # #162 — 422: a `/ignore` mask that `Grappa.IRC.Mask.normalize/1`
           # rejects (empty, whitespace, CRLF, bad `nick!user@host` order).
           | :invalid_mask
+          # issue 2294 — 422: the OPTIONAL text pattern half of the same
+          # entry, refused on its own axis (blank, CRLF, over-long). A
+          # distinct token from `:invalid_mask` because the operator typed
+          # two things and only one of them is wrong.
+          | :invalid_text_pattern
           | :not_raster
           | :too_large
           | :ssrf_blocked

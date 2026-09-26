@@ -128,7 +128,7 @@ defmodule Grappa.Session do
     # drifts. It is a pure module with no process or state behind it.
     exports: [NSInterceptor, Server, Wire]
 
-  alias Grappa.IRC.{AuthFSM, CTCP, Identifier}
+  alias Grappa.IRC.{AuthFSM, CTCP, Identifier, Ignore}
   alias Grappa.Session.{Deps, FloodAllowance, ISupport, Server, Wire}
   alias Grappa.UserSettings
 
@@ -327,15 +327,16 @@ defmodule Grappa.Session do
           # exactly like `auto_away_debounce_ms`. Kept in sync with the
           # `Grappa.Session.Server.init_opts/0` twin.
           optional(:show_peer_profiles) => boolean(),
-          # #162 — the subject's `/ignore` masks on this network, as stored
-          # (strings; the Server compiles them). Resolved at the spawn
+          # #162 / issue 2294 — the subject's `/ignore` entries on this
+          # network, decoded (`Grappa.IRC.Ignore` structs; the Server
+          # compiles them). Resolved at the spawn
           # boundary below like the two above, and for a reason a respawn
           # makes concrete: a `:transient` restart re-runs `init/1` with the
           # SAME opts and does not re-run this boundary, so a read placed in
           # `init/1` fires again on every crash — which is exactly what
           # `JoinSeedCostTest` counted as a stray query inside a join storm.
           # Kept in sync with the `Grappa.Session.Server.init_opts/0` twin.
-          optional(:ignores) => [String.t()],
+          optional(:ignores) => [Ignore.t()],
           # issue 2137 — REQUIRED, not optional. Both producers inject it and
           # `Grappa.Session.Deps.refresh!/2` refuses a plan without it, so the
           # typespec now says what the door enforces. It is also the one place
@@ -2171,15 +2172,15 @@ defmodule Grappa.Session do
   end
 
   @doc """
-  #162 — pushes the current `/ignore` mask list to the live session for
+  #162 — pushes the current `/ignore` entry list to the live session for
   `(subject, network_id)` so the delivery filter picks it up immediately.
   No live session is a normal `:ok`: the next spawn reads the list from
   `UserSettings` at the spawn boundary (`start_session/3`).
   """
-  @spec ignores_changed(subject(), integer(), [String.t()]) :: :ok
-  def ignores_changed(subject, network_id, masks)
-      when is_subject(subject) and is_integer(network_id) and is_list(masks) do
-    case call_session(subject, network_id, {:ignores_changed, masks}) do
+  @spec ignores_changed(subject(), integer(), [Ignore.t()]) :: :ok
+  def ignores_changed(subject, network_id, entries)
+      when is_subject(subject) and is_integer(network_id) and is_list(entries) do
+    case call_session(subject, network_id, {:ignores_changed, entries}) do
       :ok ->
         :ok
 
