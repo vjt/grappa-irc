@@ -303,6 +303,7 @@ const HAND_SWITCH_ARMS = [
   "auto_away_debounce_changed",
   "auto_away_reason_changed",
   "away_confirmed",
+  "away_nick_suffix_changed",
   "banlist_bundle",
   "bundle_hash",
   "channels_changed",
@@ -722,11 +723,11 @@ describe("#1393 — user-topic boundary census", () => {
       censusedNotInSwitch: [...censused].filter((k) => !handSwitch.has(k)),
     }).toMatchInlineSnapshot(`
       {
-        "censused": 49,
+        "censused": 50,
         "censusedNotInSwitch": [
           "whois_avatar_ready",
         ],
-        "handArms": 48,
+        "handArms": 49,
         "inSwitchNotCensused": [],
       }
     `);
@@ -753,9 +754,9 @@ describe("#1393 — user-topic boundary census", () => {
       divergent,
     }).toMatchInlineSnapshot(`
       {
-        "armsAtParity": 41,
-        "armsCensused": 50,
-        "armsWithSchema": 49,
+        "armsAtParity": 42,
+        "armsCensused": 51,
+        "armsWithSchema": 50,
         "brokenOracles": [],
         "divergent": [
           {
@@ -891,10 +892,10 @@ describe("#1393 — user-topic boundary census", () => {
       divergent,
     }).toMatchInlineSnapshot(`
       {
-        "armsAtValueParity": 49,
-        "comparablePairs": 49,
+        "armsAtValueParity": 50,
+        "comparablePairs": 50,
         "divergent": [],
-        "pairs": 50,
+        "pairs": 51,
         "skippedOneSideRejected": 1,
       }
     `);

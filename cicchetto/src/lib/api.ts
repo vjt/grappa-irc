@@ -1383,6 +1383,11 @@ export type WireUserEvent =
   // `Grappa.UserSettings.Wire.{quit_part,auto_away}_reason_changed/1`.
   | { kind: "quit_part_reason_changed"; quit_part_reason: string | null }
   | { kind: "auto_away_reason_changed"; auto_away_reason: string | null }
+  // #1894 — the auto-away nick rename. `null` is the OFF state and hides
+  // nothing server-side, unlike the two reasons above: with no suffix the
+  // nick is simply left alone. Mirrors
+  // `Grappa.UserSettings.Wire.away_nick_suffix_changed/1`.
+  | { kind: "away_nick_suffix_changed"; away_nick_suffix: string | null }
   | { kind: "archive_changed"; network_slug: string }
   // UX-7-B (2026-05-22) — `archive_purged` push after a destructive
   // archive-entry delete (operator dropped scrollback for the target).

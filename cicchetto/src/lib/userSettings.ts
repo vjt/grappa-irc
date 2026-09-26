@@ -587,3 +587,51 @@ export async function putAutoAwayReason(
   const body = (await res.json()) as AutoAwayReasonResponse;
   return body.auto_away_reason;
 }
+
+// ---------------------------------------------------------------------------
+// The auto-away nick suffix — #1894.
+//
+// `<nick>` becomes `<nick><suffix>` while the bouncer holds the subject
+// auto-away, and goes back when they return. `null` means the rename is
+// OFF, which is the default and what every subject had before the setting
+// existed — unlike the two reasons above, `null` here hides no server-side
+// string, because there is none: nothing happens at all.
+//
+// Same empty-string rule as the reasons: the server normalises `""` to
+// `null` and deletes the key, so emptying the input IS the off switch.
+//
+// The nick charset is deliberately NOT mirrored on this side. An illegal
+// suffix comes back as a 422 whose message names the rule, which is one
+// source of truth instead of two — the posture the reasons take on their
+// byte ceiling and the debounce takes on its range.
+// ---------------------------------------------------------------------------
+
+export type AwayNickSuffixResponse = {
+  away_nick_suffix: string | null;
+};
+
+export async function getAwayNickSuffix(token: string): Promise<string | null> {
+  const res = await fetch("/me/settings/away-nick-suffix", {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw await readError(res, false);
+  const body = (await res.json()) as AwayNickSuffixResponse;
+  return body.away_nick_suffix;
+}
+
+export async function putAwayNickSuffix(
+  token: string,
+  suffix: string | null,
+): Promise<string | null> {
+  const res = await fetch("/me/settings/away-nick-suffix", {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ away_nick_suffix: suffix }),
+  });
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as AwayNickSuffixResponse;
+  return body.away_nick_suffix;
+}
