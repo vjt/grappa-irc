@@ -8603,10 +8603,15 @@ defmodule Grappa.Session.Server do
         if String.length(target) <= cap do
           target
         else
-          Logger.info("away nick rename skipped — target exceeds NICKLEN",
-            nick: state.nick,
-            suffix: suffix,
-            cap: cap
+          # The two numbers go in the MESSAGE, not in Logger metadata. The
+          # allowlist in `config/config.exs` is curated, each key carrying
+          # the argument for its own existence, and two more of them for one
+          # rare skip line is a mechanism heavier than its problem. The
+          # operator still reads both values, which is what log honesty asks
+          # for; nothing aggregates on them.
+          Logger.info(
+            "away nick rename skipped — #{target} exceeds NICKLEN #{cap}",
+            nick: state.nick
           )
 
           nil
