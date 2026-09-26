@@ -11899,10 +11899,19 @@ defmodule Grappa.Session.ServerTest do
       assert {:ok, "NICK grappa-test-away\r\n"} =
                IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK grappa-test-away"), 1_000)
 
-      :ok = Session.unset_away({:user, user.id}, network.id)
+      # The restore guard compares the stored nick against the LIVE one, so
+      # the echo has to have been applied before the unset — while the two
+      # are still equal the restore correctly declines to send, and the test
+      # would be reading a race rather than the feature.
+      assert await_nick(pid, "grappa-test-away", 1_000) == "grappa-test-away"
 
-      assert {:ok, "NICK grappa-test\r\n"} =
-               IRCServer.wait_for_line(server, &(&1 == "NICK grappa-test\r\n"), 1_000)
+      :ok = Session.unset_auto_away({:user, user.id}, network.id)
+
+      # A COUNT and not a first-match wait: the handshake already put one
+      # `NICK grappa-test` on the wire and `wait_for_line/3` rescans the
+      # whole history, so an equality predicate matches that one and passes
+      # whether or not the restore ever fires.
+      assert await_sent_line_count(server, &(&1 == "NICK grappa-test\r\n"), 2, 1_000) == :ok
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -11934,10 +11943,17 @@ defmodule Grappa.Session.ServerTest do
       :ok = Session.set_auto_away({:user, user.id}, network.id)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK grappa-test-away"), 1_000)
 
-      :ok = Session.unset_away({:user, user.id}, network.id)
+      :ok = Session.unset_auto_away({:user, user.id}, network.id)
 
-      assert {:error, :timeout} =
-               IRCServer.wait_for_line(server, &(&1 == "NICK grappa-test\r\n"), 200)
+      # The bare `AWAY` is the unset path's FIRST wire effect and the
+      # restore, if it fires at all, goes out right behind it. Waiting for
+      # it turns what would be a bare deadline into "the path ran, and it
+      # chose not to send" — the handshake sends no bare AWAY, so the line
+      # is unambiguous even under the history rescan.
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "AWAY\r\n"), 1_000)
+
+      assert await_sent_line_count(server, &(&1 == "NICK grappa-test\r\n"), 2, 200) ==
+               {:error, {:timeout, 1}}
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -11963,11 +11979,15 @@ defmodule Grappa.Session.ServerTest do
       :ok = Session.send_nick({:user, user.id}, network.id, "pippo")
       {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "NICK pippo\r\n"), 1_000)
 
-      :ok = Session.unset_away({:user, user.id}, network.id)
+      :ok = Session.unset_auto_away({:user, user.id}, network.id)
 
-      # The subject named the nick they want more recently than we did.
-      assert {:error, :timeout} =
-               IRCServer.wait_for_line(server, &(&1 == "NICK grappa-test\r\n"), 200)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "AWAY\r\n"), 1_000)
+
+      # The subject named the nick they want more recently than we did. The
+      # count is against the handshake's own `NICK grappa-test`, which stays
+      # the only one on the wire.
+      assert await_sent_line_count(server, &(&1 == "NICK grappa-test\r\n"), 2, 200) ==
+               {:error, {:timeout, 1}}
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -11991,11 +12011,41 @@ defmodule Grappa.Session.ServerTest do
       :ok = IRCServer.await_handshake(server, 1_000)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
 
-      :ok = Session.set_auto_away({:user, user.id}, network.id)
-      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :"), 1_000)
+      # `config/test.exs` sets `level: :warning`, so the skip line — an
+      # :info — is dropped globally before any capture handler sees it.
+      # The per-module override scopes the bump to this one module, as
+      # the OPER-redaction sentinel below does for the same reason.
+      Logger.put_module_level(Grappa.Session.Server, :info)
+      on_exit(fn -> Logger.delete_module_level(Grappa.Session.Server) end)
 
-      assert {:error, :timeout} =
-               IRCServer.wait_for_line(server, &String.contains?(&1, "-away"), 200)
+      log =
+        capture_log(fn ->
+          :ok = Session.set_auto_away({:user, user.id}, network.id)
+          {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :"), 1_000)
+
+          # The predicate is about the NICK, not about the substring: the
+          # auto-away REASON is itself "auto-away (…)", and
+          # `wait_for_line/3` rescans the whole history, so
+          # `contains?("-away")` matched the AWAY line the barrier above
+          # had just waited for. The handshake's own `NICK <long>` does
+          # not carry the trailing hyphen.
+          assert {:error, :timeout} =
+                   IRCServer.wait_for_line(
+                     server,
+                     &String.starts_with?(&1, "NICK " <> long <> "-"),
+                     200
+                   )
+        end)
+
+      # The silent wire is NOT enough on its own, measured: lifting the cap
+      # in `away_nick_target/1` leaves this test green, because the 33-char
+      # target then reaches `Client.send_nick/2` and `Identifier.valid_nick?/1`
+      # refuses it one layer lower. Two different refusals paint the same
+      # picture from outside, so the assertion names which one ran — and the
+      # log line is a contract in its own right, the reason a subject who
+      # switched the rename ON and saw nothing happen is owed.
+      assert log =~ "away nick rename skipped"
+      assert log =~ "exceeds NICKLEN"
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -12021,14 +12071,14 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = Session.set_auto_away({:user, user.id}, network.id)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK grappa-test-away"), 1_000)
+      assert await_nick(pid, "grappa-test-away", 1_000) == "grappa-test-away"
 
       :ok = Session.set_explicit_away({:user, user.id}, network.id, "lunch")
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :lunch"), 1_000)
 
-      :ok = Session.unset_away({:user, user.id}, network.id)
+      :ok = Session.unset_explicit_away({:user, user.id}, network.id)
 
-      assert {:ok, "NICK grappa-test\r\n"} =
-               IRCServer.wait_for_line(server, &(&1 == "NICK grappa-test\r\n"), 1_000)
+      assert await_sent_line_count(server, &(&1 == "NICK grappa-test\r\n"), 2, 1_000) == :ok
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -12046,6 +12096,7 @@ defmodule Grappa.Session.ServerTest do
 
       :ok = Session.set_auto_away({:user, user.id}, network.id)
       {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "NICK grappa-test-away"), 1_000)
+      assert await_nick(pid, "grappa-test-away", 1_000) == "grappa-test-away"
 
       # Through the CONTEXT, so the bridge broadcast is under test too.
       {:ok, _} = Grappa.UserSettings.put_away_nick_suffix({:user, user.id}, "-zzz", label)
@@ -12057,9 +12108,12 @@ defmodule Grappa.Session.ServerTest do
 
       # But the session DID adopt it: the next cycle uses the new suffix.
       # Without this half the test also passes on a handler that dropped
-      # the message on the floor.
-      :ok = Session.unset_away({:user, user.id}, network.id)
-      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "NICK grappa-test\r\n"), 1_000)
+      # the message on the floor. The nick has to be back — and APPLIED —
+      # before the second cycle, or the target is computed off the
+      # decorated one.
+      :ok = Session.unset_auto_away({:user, user.id}, network.id)
+      assert await_sent_line_count(server, &(&1 == "NICK grappa-test\r\n"), 2, 1_000) == :ok
+      assert await_nick(pid, "grappa-test", 1_000) == "grappa-test"
 
       :ok = Session.set_auto_away({:user, user.id}, network.id)
 
