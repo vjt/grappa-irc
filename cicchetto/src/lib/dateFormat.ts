@@ -182,19 +182,43 @@ export function renderDateTime(
  * punctuation (measured: `en-GB` carries no comma, `en-US` does). An explicit
  * key cannot: the user asked for a field order, and a long-form month has
  * none to give — `ymd` in particular has no word form at all. So the weekday
- * stays localized and the rest becomes the chosen notation. This is the one
- * place the preference adds a year the label did not carry before; that is
- * the cost of answering "which notation" unambiguously, and a separator in a
- * scrollback that spans a year is better for it.
+ * stays localized and the rest becomes the chosen notation.
+ *
+ * EVERY key carries the year outside the CURRENT local year, and no key
+ * carries it inside one. The explicit three get it from `renderDate`, which
+ * has always written it; `auto` adds it here (issue 2304, vjt #grappa
+ * 2026-09-27 21:18), where it used to be absent at every distance. A
+ * separator in a scrollback that spans a year is better for it — and so is
+ * the floating date pill, which shares this label rather than minting a
+ * second one, so the rule lands on both consumers at once. Current-year
+ * labels are byte-identical to what they were.
+ *
+ * `nowMs` is a PARAMETER and not a `Date.now()` read, for the same reason
+ * `locale` is: this renderer takes its ambient inputs explicitly and
+ * `formatDayLabel` below is the one door that resolves them. It also leaves
+ * nothing for a test to read by accident — a suite asserting "no year" while
+ * silently consulting the real clock passes until the calendar turns over.
+ * A non-finite `nowMs` compares equal to no year, so a broken clock renders
+ * the year ALWAYS: more information, never a throw.
  */
-export function renderDayLabel(epochMs: number, key: DateFormatKey, locale: string): string {
+export function renderDayLabel(
+  epochMs: number,
+  key: DateFormatKey,
+  locale: string,
+  nowMs: number,
+): string {
   if (!renderable(epochMs)) return UNRENDERABLE;
   const d = new Date(epochMs);
   if (key === "auto") {
+    // `undefined` is how `Intl` is told a component is ABSENT — the option bag
+    // is read with a plain Get, so this is the same object shape as before for
+    // a current-year day, not a request for a default.
+    const inCurrentYear = d.getFullYear() === new Date(nowMs).getFullYear();
     return new Intl.DateTimeFormat(locale, {
       weekday: "long",
       month: "long",
       day: "numeric",
+      year: inCurrentYear ? undefined : "numeric",
     }).format(d);
   }
   const weekday = new Intl.DateTimeFormat(locale, { weekday: "long" }).format(d);
@@ -212,7 +236,7 @@ export function formatDateTime(epochMs: number): string {
   return renderDateTime(epochMs, current(), resolveLocale(), getTimeFormat());
 }
 
-/** The day-separator label per the CURRENT preference. */
+/** The day-separator label per the CURRENT preference, on the CURRENT year. */
 export function formatDayLabel(epochMs: number): string {
-  return renderDayLabel(epochMs, current(), resolveLocale());
+  return renderDayLabel(epochMs, current(), resolveLocale(), Date.now());
 }

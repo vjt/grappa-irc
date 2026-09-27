@@ -3,6 +3,7 @@ import {
   DATE_FORMAT_KEYS,
   type DateFormatKey,
   FALLBACK_LOCALE,
+  formatDayLabel,
   getDateFormat,
   renderDate,
   renderDateTime,
@@ -25,8 +26,24 @@ const AT = (h: number, min: number, s: number): number =>
 
 const INSTANT = AT(0, 5, 7);
 
+// issue 2304 — `renderDayLabel` now also needs to know WHICH YEAR IT IS, and
+// that makes the wall clock an input to the expectations. The three `auto`
+// assertions below used to read the real one implicitly: they asserted a label
+// with NO year on a 2026 instant, which is right only while the machine
+// running them also says 2026. Nobody would have touched a line and they would
+// have gone red on 1 January 2027.
+//
+// So the clock is a PARAMETER, not a stubbed global, and that is the point:
+// with `nowMs` in the signature there is no real clock left for a test to read
+// by accident. These three pin it, and both directions are asserted against
+// them — same instant, same locale, a clock in its year and a clock outside it.
+const NOW_SAME_YEAR = new Date(2026, 8, 28, 12, 0, 0).getTime(); // 2026, like INSTANT
+const NOW_LATER_YEAR = new Date(2027, 0, 1, 0, 30, 0).getTime(); // the year after
+const NOW_EARLIER_YEAR = new Date(2025, 5, 1, 12, 0, 0).getTime(); // the year before
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
   localStorage.clear();
 });
 
@@ -105,11 +122,25 @@ describe("every renderer is TOTAL — a non-finite instant must not throw", () =
   it("renderDateTime and renderDayLabel do the same — all three doors, not one", () => {
     for (const bad of BAD) {
       expect(renderDateTime(bad, "auto", "en-US", "hms")).toBe("—");
-      expect(renderDayLabel(bad, "auto", "en-US")).toBe("—");
+      expect(renderDayLabel(bad, "auto", "en-US", NOW_SAME_YEAR)).toBe("—");
       // The explicit keys route through different code than `auto` (no Intl at
       // all for the date), so they are asserted separately rather than assumed.
       expect(renderDateTime(bad, "dmy", "en-US", "hm")).toBe("—");
-      expect(renderDayLabel(bad, "dmy", "en-US")).toBe("—");
+      expect(renderDayLabel(bad, "dmy", "en-US", NOW_SAME_YEAR)).toBe("—");
+    }
+  });
+
+  it("a non-finite CLOCK cannot throw either — the year comparison is the second instant", () => {
+    // issue 2304 added a second `new Date()` to this renderer, on an argument
+    // the caller supplies. `renderable()` guards only the first. The degradation
+    // is deliberate and asserted rather than assumed: a NaN year compares equal
+    // to nothing, so an unreadable clock renders the year ALWAYS — the safe
+    // direction (more information, never a throw, never a blank pane).
+    for (const bad of BAD) {
+      expect(() => renderDayLabel(INSTANT, "auto", "en-GB", bad)).not.toThrow();
+      expect(renderDayLabel(INSTANT, "auto", "en-GB", bad)).toBe(
+        renderDayLabel(INSTANT, "auto", "en-GB", NOW_LATER_YEAR),
+      );
     }
   });
 
@@ -118,7 +149,7 @@ describe("every renderer is TOTAL — a non-finite instant must not throw", () =
     // input would satisfy the two tests above.
     expect(renderDate(INSTANT, "dmy", "en-US")).not.toBe("—");
     expect(renderDateTime(INSTANT, "dmy", "en-US", "hms")).not.toBe("—");
-    expect(renderDayLabel(INSTANT, "auto", "en-GB")).not.toBe("—");
+    expect(renderDayLabel(INSTANT, "auto", "en-GB", NOW_SAME_YEAR)).not.toBe("—");
   });
 });
 
@@ -145,20 +176,92 @@ describe("renderDayLabel — the scrollback day separator keeps its WORDS", () =
     // MEASURED in the runtime, not assumed: en-GB carries no comma and en-US
     // does. `auto` delegates the whole string to Intl precisely so it keeps
     // whatever each locale does here.
-    expect(renderDayLabel(INSTANT, "auto", "en-GB")).toBe("Monday 21 September");
-    expect(renderDayLabel(INSTANT, "auto", "en-US")).toBe("Monday, September 21");
-    expect(renderDayLabel(INSTANT, "auto", "it-IT")).toBe("lunedì 21 settembre");
+    //
+    // issue 2304: these are the CURRENT-YEAR labels, and the ruling is that
+    // they stay byte-identical. The clock is passed explicitly so that stays
+    // true on 1 January 2027.
+    expect(renderDayLabel(INSTANT, "auto", "en-GB", NOW_SAME_YEAR)).toBe("Monday 21 September");
+    expect(renderDayLabel(INSTANT, "auto", "en-US", NOW_SAME_YEAR)).toBe("Monday, September 21");
+    expect(renderDayLabel(INSTANT, "auto", "it-IT", NOW_SAME_YEAR)).toBe("lunedì 21 settembre");
+  });
+
+  it("auto ADDS the year once the day is not in the clock's year — in both directions", () => {
+    // issue 2304 (vjt, #grappa 2026-09-27 21:18). A separator reading "Monday
+    // 21 September" in a scrollback that spans a year says nothing about WHICH
+    // 21 September, and the floating pill inherits the same label, so it is one
+    // rule for both consumers.
+    //
+    // BOTH directions off the same instant: a clock in the year AFTER (reading
+    // old scrollback, the common case) and a clock in the year BEFORE (a
+    // future-dated row — clock skew upstream, or an archive imported with a bad
+    // stamp). The rule is "not the current year", not "in the past".
+    expect(renderDayLabel(INSTANT, "auto", "en-GB", NOW_LATER_YEAR)).toBe(
+      "Monday 21 September 2026",
+    );
+    expect(renderDayLabel(INSTANT, "auto", "en-US", NOW_LATER_YEAR)).toBe(
+      "Monday, September 21, 2026",
+    );
+    expect(renderDayLabel(INSTANT, "auto", "it-IT", NOW_LATER_YEAR)).toBe(
+      "lunedì 21 settembre 2026",
+    );
+    expect(renderDayLabel(INSTANT, "auto", "en-GB", NOW_EARLIER_YEAR)).toBe(
+      "Monday 21 September 2026",
+    );
+  });
+
+  it("the clock is what DISCRIMINATES — one instant, one locale, two answers", () => {
+    // The two assertions above would both pass against a renderer that ignored
+    // the clock and always printed the year, if the first one's expectations
+    // had been "fixed" to match. Stated as an inequality so that reading is
+    // closed: the label MUST depend on the clock, and the year-bearing one must
+    // be the longer of the two.
+    const inYear = renderDayLabel(INSTANT, "auto", "en-GB", NOW_SAME_YEAR);
+    const outOfYear = renderDayLabel(INSTANT, "auto", "en-GB", NOW_LATER_YEAR);
+    expect(inYear).not.toBe(outOfYear);
+    expect(outOfYear).toContain("2026");
+    expect(inYear).not.toContain("2026");
   });
 
   it("an explicit key renders the localized weekday beside the chosen notation", () => {
-    expect(renderDayLabel(INSTANT, "dmy", "en-GB")).toBe("Monday, 21/09/2026");
-    expect(renderDayLabel(INSTANT, "ymd", "en-GB")).toBe("Monday, 2026-09-21");
+    expect(renderDayLabel(INSTANT, "dmy", "en-GB", NOW_SAME_YEAR)).toBe("Monday, 21/09/2026");
+    expect(renderDayLabel(INSTANT, "ymd", "en-GB", NOW_SAME_YEAR)).toBe("Monday, 2026-09-21");
+  });
+
+  it("the explicit keys are DEAF to the clock — they carry the year unconditionally", () => {
+    // issue 2304 is an `auto`-only rule: `renderDate` already writes the year
+    // into all three explicit notations, so a clock-dependent label there would
+    // either duplicate it or start dropping it. Pinned per key rather than as a
+    // sentence, because the `auto` branch is the one that reads `nowMs` and a
+    // misplaced read would land in the shared tail.
+    for (const key of ["dmy", "mdy", "ymd"] as const) {
+      expect(renderDayLabel(INSTANT, key, "en-GB", NOW_LATER_YEAR)).toBe(
+        renderDayLabel(INSTANT, key, "en-GB", NOW_SAME_YEAR),
+      );
+    }
   });
 
   it("keeps the weekday in the viewer's LANGUAGE while the key drives the order", () => {
     // The whole reason the label is not just `renderDate`: an Italian viewer
     // who asks for `dmy` must still read "lunedì", not "Monday".
-    expect(renderDayLabel(INSTANT, "dmy", "it-IT")).toBe("lunedì, 21/09/2026");
+    expect(renderDayLabel(INSTANT, "dmy", "it-IT", NOW_SAME_YEAR)).toBe("lunedì, 21/09/2026");
+  });
+});
+
+describe("formatDayLabel — the reactive door reads the REAL clock", () => {
+  // The seam the parameter opens: `renderDayLabel` can be perfect and the app
+  // still wrong if the one caller hands it a constant. Fake timers are the only
+  // way to state that from outside, and they are used HERE and nowhere else in
+  // this file — everything above asserts against an argument.
+  it("hands the wall clock through, so a label crosses over at the year boundary", () => {
+    setDateFormat("auto");
+    vi.stubGlobal("navigator", { languages: ["en-GB"], language: "en-GB" });
+    vi.useFakeTimers();
+
+    vi.setSystemTime(NOW_SAME_YEAR);
+    expect(formatDayLabel(INSTANT)).toBe("Monday 21 September");
+
+    vi.setSystemTime(NOW_LATER_YEAR);
+    expect(formatDayLabel(INSTANT)).toBe("Monday 21 September 2026");
   });
 });
 
