@@ -4164,7 +4164,17 @@ html.is-ios27-band {
   --ios27-band-clearance: 24px;
 }
 
-/* The one rule. See the ADDITIVE note above before touching the `calc`. */
+/* The one rule for the SHELL'S FLOW. See the ADDITIVE note above before
+   touching the `calc`.
+
+   issue 2302 — it is no longer the only rule in the porkaround. Thirteen more
+   surfaces anchor to the top OUTSIDE this padding box and needed the same
+   clearance; they are ONE block near the END of this file (search
+   `issue 2302 — THE REST OF THE TOP-ANCHORED SURFACES`), plus the two mobile
+   drawers inside the `max-width: 768px` block and `.credits-roll` inside the
+   reduced-motion one. The census that keeps that list honest is a gate, not a
+   comment: `ios27Band.test.ts` asserts it as a set equality in both
+   directions. */
 html.is-ios27-band .shell {
   padding-top: calc(var(--safe-area-inset-top) + var(--ios27-band-clearance));
 }
@@ -9447,6 +9457,37 @@ html.is-ios27-band .shell {
 
   .shell-members.open {
     transform: translateX(0);
+  }
+
+  /* issue 2302 — THE TWO MOBILE DRAWERS CLEAR THE BAND. The main block of
+     these overrides is next to the `.shell` rule (~:4170); these two are here
+     and CANNOT be moved up there, which is the opposite of what the #2190
+     note says about `.shell` and is worth stating because the two rules read
+     as siblings.
+
+     🔴 `.shell` is declared BOTH inside and outside this media block, so its
+     gated rule sits at TOP LEVEL to beat both the phone and the iPad render.
+     These two drawers are the reverse: `top` and `height` exist ONLY inside
+     this block. A top-level gated rule would therefore also apply ABOVE
+     768px, where the sidebar is a grid track and not `position: fixed` —
+     `top` would be inert there, but `height` would NOT, and a calc'd height
+     would be imposed on the DESKTOP sidebar. Same element, same class,
+     opposite placement rule, and getting it wrong breaks the desktop layout
+     silently. Keep these INSIDE the media query.
+
+     BOTH HALVES, and the pairing is the point: `top` grows by the clearance
+     and `height` shrinks by the same term, so the drawer's BOTTOM stays
+     exactly where it is today. That is the rule stated on the sidebar above
+     — put the clearance on `top` and compensate `height` — and moving `top`
+     alone would hand the drawer back the bottom overrun #1751 removed. */
+  html.is-ios27-band .shell-mobile .shell-sidebar,
+  html.is-ios27-band .shell-mobile .shell-members {
+    top: calc(var(--safe-area-inset-top) + var(--ios27-band-clearance));
+    height: calc(
+      var(--viewport-height, 100dvh) -
+      var(--safe-area-inset-top) -
+      var(--ios27-band-clearance)
+    );
   }
 
   /* UX-5 bucket BM (2026-05-20) — MembersPane inside the mobile drawer
@@ -15986,6 +16027,16 @@ audio.media-viewer-media {
     padding: max(3rem, var(--safe-area-inset-top)) 1.5rem max(3rem, var(--safe-area-inset-bottom));
   }
 
+  /* issue 2302 — and this one is HERE, not with the other ten at ~:4170,
+     because the padding it overrides exists only under reduced motion: the
+     rolling `.credits-roll` is `position: absolute` and pays no top inset at
+     all. A top-level gated rule would hand a top padding to the animated roll
+     as well, which anchors nowhere near the top. */
+  html.is-ios27-band .credits-roll {
+    padding: max(3rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))) 1.5rem
+      max(3rem, var(--safe-area-inset-bottom));
+  }
+
   /* #1931 — the heart pulses, so it is motion and it stops here with the
      rest. A `<3` that merely sits there is still the joke. */
   .credits-heart {
@@ -16023,6 +16074,100 @@ audio.media-viewer-media {
   position: static;
   animation: none;
   padding: max(3rem, var(--safe-area-inset-top)) 1.5rem max(3rem, var(--safe-area-inset-bottom));
+}
+
+/* issue 2302 — THE REST OF THE TOP-ANCHORED SURFACES. The rule above shifts
+   the shell's FLOW; anything `position: fixed` / `absolute` that anchors to
+   the bare inset sits outside that padding box and never sees the clearance.
+   Reported on the members drawer (the `MEMBERS (43)` heading rendered inside
+   the veil while the channel header behind it, in the flow, sat below it),
+   then on the channel sidebar and the archive modal. vjt widened the scope to
+   EVERY top-anchored surface rather than the three that were photographed.
+
+   🔴 WHY THIRTEEN RULES AND NOT ONE TOKEN. Folding the clearance into
+   `--safe-area-inset-top` under this class would cure the whole class in one
+   declaration, and it is not available. `--safe-area-inset-top:
+   calc(var(--safe-area-inset-top) + …)` is a self-reference, invalid at
+   computed-value time, so every consumer would silently fall back; the only
+   other spelling needs a SECOND `env(safe-area-inset-` write, which
+   `safeAreaInsetToken.test.ts` rejects by census with nothing to add yourself
+   to. And even granting both, `:root:root` (0,2,0) — how issue913, issue1751
+   and issue2190 all stub the inset in Playwright — beats
+   `html.is-ios27-band` (0,1,1), so the grown token would be discarded in
+   exactly the specs that measure this. The per-surface patch is what is left,
+   and `ios27Band.test.ts` holds the census as a SET EQUALITY in both
+   directions so the next surface cannot slip through the way these did.
+
+   THE FLOOR STAYS OUTSIDE THE SUM. `max(<floor>, calc(inset + clearance))`,
+   never `max(<floor>, inset) + clearance`: the floor is a minimum breathing
+   room and the clearance is part of the distance from the screen edge the
+   content owes, so at inset 0 the second spelling would push a surface a
+   whole floor FURTHER down than the band needs.
+
+   ONLY THE TOP COMPONENT MOVES in the `padding` / `inset` shorthands. The
+   band is a top-edge artefact; growing the other three sides would inset
+   surfaces for no reason.
+
+   WHY THIS BLOCK SITS DOWN HERE rather than beside the `.shell` rule it
+   continues, which is where a reader would look for it. MEASURED, not
+   preferred: these ten have HIGHER specificity than the rules they override,
+   so placing them earlier in the sheet makes every one of those base rules a
+   descending-specificity selector — biome's `noDescendingSpecificity` went
+   26 → 35 with the block up there and back to 26, exactly the baseline, with
+   it here, after the last base rule it overrides. The cascade does not care
+   either way (specificity wins regardless of order); the linter does, and it
+   is right that source order should ascend. The block stays WHOLE so the
+   porkaround is still one revert, and the `.shell` rule carries a pointer.
+
+   These ten are top-level because the rules they override are. THREE MORE
+   LIVE ELSEWHERE, and they have to — see the note on the drawers inside the
+   `max-width: 768px` block, and `.credits-roll` inside the reduced-motion
+   one. */
+html.is-ios27-band .error-banners {
+  padding-top: calc(var(--safe-area-inset-top) + var(--ios27-band-clearance));
+}
+
+html.is-ios27-band .modal-backdrop-viewport {
+  padding: max(1rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))) 1rem
+    max(1.5rem, var(--safe-area-inset-bottom)) 1rem;
+}
+
+html.is-ios27-band .settings-drawer {
+  padding: max(1rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))) 1rem
+    max(1.5rem, var(--safe-area-inset-bottom)) 1rem;
+}
+
+html.is-ios27-band .delete-account-modal {
+  padding: max(0.75rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))) 1rem
+    max(1.5rem, var(--safe-area-inset-bottom));
+}
+
+html.is-ios27-band .archive-modal {
+  padding: max(0.75rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))) 1rem
+    max(1.5rem, var(--safe-area-inset-bottom));
+}
+
+html.is-ios27-band .theme-editor-modal {
+  padding: max(0.75rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))) 1rem
+    max(1.5rem, var(--safe-area-inset-bottom));
+}
+
+html.is-ios27-band .context-menu-safe-area {
+  inset: calc(var(--safe-area-inset-top) + var(--ios27-band-clearance)) var(--safe-area-inset-right)
+    var(--safe-area-inset-bottom) var(--safe-area-inset-left);
+}
+
+html.is-ios27-band .diag-float {
+  top: max(0.5rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance)));
+}
+
+html.is-ios27-band .credits-chrome {
+  top: max(0.5rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance)));
+}
+
+html.is-ios27-band .credits-roll-ended {
+  padding: max(3rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))) 1.5rem
+    max(3rem, var(--safe-area-inset-bottom));
 }
 
 /* The heart. Big, ASCII, and beating — the pulse is what makes `<3` read as a

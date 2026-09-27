@@ -400,3 +400,231 @@ describe("the clearance rules are gated — no platform without the class pays",
     }
   });
 });
+
+// ── issue 2302 — the census of TOP-ANCHORED surfaces ───────────────────────
+//
+// #2190 put the clearance on `.shell`, and on `.shell` alone. Every surface
+// that is `position: fixed` / `absolute` and anchors to the bare
+// `--safe-area-inset-top` sits OUTSIDE the shell's padding box, so the
+// clearance never reaches it: on the reporter's phone the members drawer's
+// `MEMBERS (43)` heading rendered inside the WebKit standalone top fade while
+// the channel header behind it — in the shell's flow — sat below the band.
+//
+// 🔴 `hit > 0` WOULD NOT BE A CENSUS, and that distinction is the whole file.
+// #2190 shipped with a "STILL VEILED AFTER THIS" list that named three
+// surfaces and missed the two drawers, which is how they reached a device.
+// So the assertion is a SET EQUALITY IN BOTH DIRECTIONS: every surface in the
+// table has exactly one gated rule, AND no gated rule exists that the table
+// does not name. One-directional coverage would let a fourteenth surface be
+// cured silently, and — the failure this file already warns about further up
+// — would let a SECOND gated `.shell` rule pay the clearance twice.
+//
+// WHY NOT FOLD THE CLEARANCE INTO THE TOKEN, which would cure the class in
+// one declaration instead of thirteen rules. Measured and rejected, and NOT
+// on taste: `--safe-area-inset-top: calc(var(--safe-area-inset-top) + …)` is
+// a self-reference and invalid at computed-value time, and the only other
+// spelling needs a SECOND `env(safe-area-inset-` write, which
+// `safeAreaInsetToken.test.ts` rejects by census with nothing to add yourself
+// to. Even granting both, `:root:root` (0,2,0) — how issue913, issue1751 and
+// issue2190 all stub the inset — beats `html.is-ios27-band` (0,1,1), so the
+// grown token would be discarded in exactly the specs that measure it.
+//
+// EVIDENCE IS A COLUMN, not decoration. THREE of these surfaces were seen
+// veiled on a device; TEN were read off the stylesheet and have never been
+// observed by anyone. The ruling covers all thirteen, so all thirteen are
+// cured — but the table records which claim is which, because a census that
+// reads uniformly confident about thirteen surfaces when three were measured
+// is teaching something false.
+
+/** Seen veiled on a device, or inferred from the stylesheet alone. */
+type BandEvidence = "device" | "css";
+
+type BandSurface = {
+  /** Selector WITHOUT the gate; `gated()` prepends it. */
+  readonly surface: string;
+  /** Declarations the gated rule must carry. Compared whitespace-insensitively. */
+  readonly declarations: readonly string[];
+  readonly evidence: BandEvidence;
+};
+
+/**
+ * The offset a top-anchored surface owes on a banded device. Spelled once:
+ * thirteen hand-written copies is how a retune of the clearance would come to
+ * miss one of them.
+ */
+const SUM = "calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))";
+
+const gated = (surface: string): string => `html.${IOS27_BAND_CLASS} ${surface}`;
+
+const BAND_SURFACES: readonly BandSurface[] = [
+  // The two mobile drawers. BOTH halves, and the pairing is not optional:
+  // `top` grows by the clearance and `height` shrinks by the same term, so
+  // the drawer's BOTTOM stays exactly where it is today. Move `top` alone and
+  // the drawer overruns the bottom edge it reaches now — which is the check
+  // the issue body asks for, and the rule the stylesheet states for itself at
+  // the sidebar: put the clearance on `top` and compensate `height`.
+  {
+    surface: ".shell-mobile .shell-sidebar",
+    declarations: [
+      `top: ${SUM};`,
+      "height: calc(var(--viewport-height, 100dvh) - var(--safe-area-inset-top) - var(--ios27-band-clearance));",
+    ],
+    evidence: "device",
+  },
+  {
+    surface: ".shell-mobile .shell-members",
+    declarations: [
+      `top: ${SUM};`,
+      "height: calc(var(--viewport-height, 100dvh) - var(--safe-area-inset-top) - var(--ios27-band-clearance));",
+    ],
+    evidence: "device",
+  },
+  // The floors stay OUTSIDE the sum, and the arithmetic is the reason. A
+  // floor is a minimum breathing room; the clearance is part of the distance
+  // from the screen edge the content owes. `max(1rem, inset + clearance)` is
+  // right and `max(1rem, inset) + clearance` is not: at inset 0 the second
+  // spelling pushes a surface to 1rem + the clearance, further down than the
+  // band needs, while the first lands exactly on the clearance.
+  {
+    surface: ".archive-modal",
+    declarations: [
+      `padding: max(0.75rem, ${SUM}) 1rem max(1.5rem, var(--safe-area-inset-bottom));`,
+    ],
+    evidence: "device",
+  },
+  {
+    surface: ".error-banners",
+    declarations: [`padding-top: ${SUM};`],
+    evidence: "css",
+  },
+  {
+    surface: ".modal-backdrop-viewport",
+    declarations: [
+      `padding: max(1rem, ${SUM}) 1rem max(1.5rem, var(--safe-area-inset-bottom)) 1rem;`,
+    ],
+    evidence: "css",
+  },
+  {
+    surface: ".settings-drawer",
+    declarations: [
+      `padding: max(1rem, ${SUM}) 1rem max(1.5rem, var(--safe-area-inset-bottom)) 1rem;`,
+    ],
+    evidence: "css",
+  },
+  {
+    surface: ".delete-account-modal",
+    declarations: [
+      `padding: max(0.75rem, ${SUM}) 1rem max(1.5rem, var(--safe-area-inset-bottom));`,
+    ],
+    evidence: "css",
+  },
+  {
+    surface: ".theme-editor-modal",
+    declarations: [
+      `padding: max(0.75rem, ${SUM}) 1rem max(1.5rem, var(--safe-area-inset-bottom));`,
+    ],
+    evidence: "css",
+  },
+  // Only the TOP component moves. The other three keep the bare tokens: the
+  // band is a top-edge artefact and a `inset`/`padding` shorthand that grew
+  // on all four sides would inset the whole ruler for no reason.
+  {
+    surface: ".context-menu-safe-area",
+    declarations: [
+      `inset: ${SUM} var(--safe-area-inset-right) var(--safe-area-inset-bottom) var(--safe-area-inset-left);`,
+    ],
+    evidence: "css",
+  },
+  {
+    surface: ".diag-float",
+    declarations: [`top: max(0.5rem, ${SUM});`],
+    evidence: "css",
+  },
+  {
+    surface: ".credits-chrome",
+    declarations: [`top: max(0.5rem, ${SUM});`],
+    evidence: "css",
+  },
+  // The two credits surfaces carry a 3rem floor, which on the reporter's
+  // phone (62px inset) is already below the band — so these two plausibly
+  // need nothing. Cured anyway, because "3rem probably covers it" is an
+  // inference about ONE device's inset and the gate fires on every iOS 27
+  // PWA including the iPad. The sum costs nothing where the floor already
+  // wins: `max()` picks the larger either way.
+  {
+    surface: ".credits-roll",
+    declarations: [`padding: max(3rem, ${SUM}) 1.5rem max(3rem, var(--safe-area-inset-bottom));`],
+    evidence: "css",
+  },
+  {
+    surface: ".credits-roll-ended",
+    declarations: [`padding: max(3rem, ${SUM}) 1.5rem max(3rem, var(--safe-area-inset-bottom));`],
+    evidence: "css",
+  },
+];
+
+/**
+ * Rules that READ the clearance, which is not the same as rules that mention
+ * the token: `html.is-ios27-band` DECLARES it and must not be counted as a
+ * surface. Filtering on `var(` is the difference between counting uses and
+ * counting occurrences of a name.
+ */
+function clearanceReaders(): { selectors: string; body: string }[] {
+  return allRules().filter((rule) => rule.body.includes("var(--ios27-band-clearance)"));
+}
+
+/**
+ * A declaration's SHAPE, with formatting normalised away: whitespace runs
+ * collapsed, and the padding biome inserts when it wraps a long `calc()` over
+ * several lines removed from inside the parentheses.
+ *
+ * Deliberately NOT a byte comparison. The formatter owns how these
+ * declarations are broken across lines — the drawer pair's `calc()` is long
+ * enough that it wraps — so pinning the bytes would make this census fail on a
+ * biome version bump while the stylesheet still said exactly the right thing.
+ * Every token, operator and its order stays pinned; only the whitespace the
+ * formatter is free to move does not.
+ */
+const collapse = (text: string): string =>
+  text.replace(/\s+/g, " ").replace(/\(\s+/g, "(").replace(/\s+\)/g, ")").trim();
+
+describe("issue 2302 — every top-anchored surface clears the band", () => {
+  it.each(BAND_SURFACES)("$surface — evidence: $evidence", (surface) => {
+    const matching = clearanceReaders().filter((rule) =>
+      selectorList(rule.selectors).includes(gated(surface.surface)),
+    );
+    // Exactly one, not at-least-one: two gated rules on the same surface is
+    // the double-count, and `toHaveLength(1)` is what makes that red.
+    expect(matching).toHaveLength(1);
+    const body = collapse(matching[0]?.body ?? "");
+    for (const declaration of surface.declarations) {
+      expect(body).toContain(collapse(declaration));
+    }
+  });
+
+  it("the census names EVERY clearance reader, and every reader is in the census", () => {
+    // The set equality, in both directions at once. `.shell` is #2190's own
+    // rule and belongs to the set even though it is not one of this issue's
+    // surfaces — leaving it out would make the comparison one-directional
+    // again by way of an exception.
+    const expected = [...BAND_SURFACES.map((one) => gated(one.surface)), gated(".shell")].sort();
+    const actual = clearanceReaders()
+      .flatMap((rule) => selectorList(rule.selectors))
+      .sort();
+    expect(actual).toEqual(expected);
+  });
+
+  it("records that ten of the thirteen surfaces were never observed veiled", () => {
+    // Not a coverage assertion — a HONESTY one. If a later reader promotes a
+    // row to `device` they have to have a screenshot; if they add a surface
+    // and forget the column, the counts below move and say so.
+    const byEvidence = (kind: BandEvidence): string[] =>
+      BAND_SURFACES.filter((one) => one.evidence === kind).map((one) => one.surface);
+    expect(byEvidence("device")).toEqual([
+      ".shell-mobile .shell-sidebar",
+      ".shell-mobile .shell-members",
+      ".archive-modal",
+    ]);
+    expect(byEvidence("css")).toHaveLength(10);
+  });
+});

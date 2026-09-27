@@ -202,6 +202,35 @@ const CENSUS = [
   ":root | --safe-area-inset-left: env(safe-area-inset-left, 0px)",
   ":root | --safe-area-inset-right: env(safe-area-inset-right, 0px)",
   ":root | --safe-area-inset-top: env(safe-area-inset-top, 0px)",
+  // issue 2302 — and then there were fourteen. Same kind of row as the one
+  // above and for the same reason: `.shell` shifts the FLOW, and everything
+  // fixed/absolute that anchors to the top sits outside its padding box, so
+  // each of these restates the inset in order to ADD the clearance to it. The
+  // `env()`-once invariant this file exists for is UNTOUCHED — not one of
+  // these writes `env(`, they all read the token, which is why the offenders
+  // assertion above stays green while this transcription grows.
+  //
+  // 🔴 THIS IS WHERE FOLDING THE CLEARANCE INTO THE TOKEN WOULD HAVE LANDED,
+  // and why it could not. One declaration under `html.is-ios27-band` would
+  // replace all thirteen rows — but `--safe-area-inset-top:
+  // calc(var(--safe-area-inset-top) + …)` is a self-reference and invalid at
+  // computed-value time, and the only other spelling needs a SECOND `env(`
+  // write, which the offenders assertion rejects by design. Even granting
+  // both, `:root:root` (0,2,0) — how issue913, issue1751 and issue2190 stub
+  // this very token — outranks `html.is-ios27-band` (0,1,1), so the grown
+  // value would be discarded in exactly the specs that measure it. Thirteen
+  // rows is the price of that, and the census in `ios27Band.test.ts` is what
+  // keeps the list from rotting.
+  "html.is-ios27-band .archive-modal | padding: max(0.75rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))) 1rem max(1.5rem, var(--safe-area-inset-bottom))",
+  "html.is-ios27-band .context-menu-safe-area | inset: calc(var(--safe-area-inset-top) + var(--ios27-band-clearance)) var(--safe-area-inset-right) var(--safe-area-inset-bottom) var(--safe-area-inset-left)",
+  "html.is-ios27-band .credits-chrome | top: max(0.5rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance)))",
+  "html.is-ios27-band .credits-roll | padding: max(3rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))) 1.5rem max(3rem, var(--safe-area-inset-bottom))",
+  "html.is-ios27-band .credits-roll-ended | padding: max(3rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))) 1.5rem max(3rem, var(--safe-area-inset-bottom))",
+  "html.is-ios27-band .delete-account-modal | padding: max(0.75rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))) 1rem max(1.5rem, var(--safe-area-inset-bottom))",
+  "html.is-ios27-band .diag-float | top: max(0.5rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance)))",
+  "html.is-ios27-band .error-banners | padding-top: calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))",
+  "html.is-ios27-band .modal-backdrop-viewport | padding: max(1rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))) 1rem max(1.5rem, var(--safe-area-inset-bottom)) 1rem",
+  "html.is-ios27-band .settings-drawer | padding: max(1rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))) 1rem max(1.5rem, var(--safe-area-inset-bottom)) 1rem",
   // issue 2190 — the ONLY row here that is not a surface insetting itself:
   // it is an OVERRIDE of the `.shell | padding-top` row above, gated on the
   // iOS 27 compositor-band class, and it restates the inset precisely so it
@@ -216,4 +245,11 @@ const CENSUS = [
   // `ios27Band.test.ts` owns that call; this row only records that a second
   // consumer of the top inset now exists, deliberately.
   "html.is-ios27-band .shell | padding-top: calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))",
+  // The two drawers are ONE grouped rule, so the selector list comes back
+  // whole and both declarations sit under it. Grouped on purpose: the sheet
+  // already warns that two drawers answering the same geometry problem two
+  // different ways is how the next one gets copied from whichever was nearer.
+  "html.is-ios27-band .shell-mobile .shell-sidebar, html.is-ios27-band .shell-mobile .shell-members | height: calc( var(--viewport-height, 100dvh) - var(--safe-area-inset-top) - var(--ios27-band-clearance) )",
+  "html.is-ios27-band .shell-mobile .shell-sidebar, html.is-ios27-band .shell-mobile .shell-members | top: calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))",
+  "html.is-ios27-band .theme-editor-modal | padding: max(0.75rem, calc(var(--safe-area-inset-top) + var(--ios27-band-clearance))) 1rem max(1.5rem, var(--safe-area-inset-bottom))",
 ];

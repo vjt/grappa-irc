@@ -80,9 +80,24 @@ describe("#949 context menu safe-area clamp", () => {
     expect(ruleBody(".context-menu-safe-area")).toMatch(/pointer-events:\s*none/);
   });
 
-  it("the ruler is declared once, so the measured box is the one written here", () => {
+  it("exactly one UNGATED rule declares the ruler, and any other is platform-gated", () => {
     // The rect is read from live layout, so ANY second rule reaching this class
-    // silently redefines what the placement math measures.
+    // redefines what the placement math measures. The word that carries the
+    // guard is SILENTLY: a second rule is a defect when nothing announces it.
+    //
+    // 🔴 THIS USED TO COUNT OCCURRENCES AND EXPECT EXACTLY ONE, and issue 2302
+    // is what made that count wrong rather than the rule wrong. The iOS 27
+    // compositor band eats the top of the display, so the RULER has to shrink
+    // from the top on that platform too — otherwise the placement math hands
+    // back a box whose top edge is inside the veil and the menu is positioned
+    // into it. That override is deliberate, gated on `is-ios27-band`, and
+    // named in `ios27Band.test.ts`'s census, which is the opposite of silent.
+    //
+    // So the assertion is now TWO facts where it was one count, and it is
+    // tighter, not looser: exactly ONE selector reaching this class may be
+    // ungated — a stray second base rule is still red, which is the original
+    // failure mode — AND the total is pinned, so a third rule cannot arrive
+    // without someone editing this line and saying why.
     //
     // Comments stripped first, which is this module's convention everywhere
     // else ("prose that mentions a property cannot satisfy or trip a
@@ -90,7 +105,9 @@ describe("#949 context menu safe-area clamp", () => {
     // missed it: #1751 named this class in the `:root` note explaining what
     // the fallback protects, and a guard about RULES went red over a sentence.
     const declarations = themeCss.replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(declarations.match(/\.context-menu-safe-area/g)?.length).toBe(1);
+    const reaching = declarations.match(/[^{}\n]*\.context-menu-safe-area[^{}\n]*/g) ?? [];
+    expect(reaching).toHaveLength(2);
+    expect(reaching.filter((one) => !one.includes("is-ios27-band"))).toHaveLength(1);
   });
 
   it(".context-menu caps its height against the viewport MINUS both vertical insets", () => {
