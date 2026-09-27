@@ -19799,3 +19799,116 @@ transitionend test: `SIDEBAR_EXIT_FLOOR_MS` is 400, so a disposal inside 150 ms
 cannot be the backstop's doing. Without that budget both tests would pass on
 the timer alone and the transitionend read would be untested — green, and
 measuring nothing.
+<!-- entry #2302 -->
+
+---
+
+## 2026-09-27 — #2302: the band clearance is thirteen rules, and the drawers' placement rule is the INVERSE of the shell's
+
+#2190 gave the iOS 27 compositor band one cure: `html.is-ios27-band .shell`
+adds a clearance to the shell's `padding-top`, shifting the whole flow below
+the veil. That note carried a "STILL VEILED AFTER THIS" list naming three
+surfaces — and it was wrong by ten. Every surface that is `position: fixed` or
+`absolute` and anchors to the bare `--safe-area-inset-top` sits OUTSIDE the
+shell's padding box, so the clearance never reaches it. Reported on the
+members drawer (its `MEMBERS (43)` heading rendered inside the WebKit
+standalone fade while the channel header behind it, in the flow, sat below the
+band), then on the channel sidebar, then on the archive modal. vjt widened the
+scope to every top-anchored surface rather than the three photographed.
+
+**The census is now a gate and not a comment.** `ios27Band.test.ts` asserts
+the list as a SET EQUALITY IN BOTH DIRECTIONS: every surface named has exactly
+one gated rule, and no gated rule exists the table does not name. `hit > 0`
+would not be a census — a prose list is exactly what missed the drawers, and a
+comment has no gate that breaks when it becomes false. The reverse direction
+matters as much as the forward one: it is what makes a SECOND gated `.shell`
+rule red, which is the double-count this porkaround is one edit away from at
+all times.
+
+### The mechanism was measured, not chosen, and the obvious cure is unavailable
+
+Folding the clearance into `--safe-area-inset-top` under the gate would cure
+the whole class in one declaration instead of thirteen rules. It cannot be
+written. `--safe-area-inset-top: calc(var(--safe-area-inset-top) + …)` is a
+self-reference, invalid at computed-value time, so every consumer would
+silently fall back; and the only other spelling needs a SECOND
+`env(safe-area-inset-` write, which `safeAreaInsetToken.test.ts` rejects by
+census with nothing to add yourself to. **A gate is not weakened to let a
+design option through.**
+
+Even granting both, it would be self-defeating: `:root:root` (0,2,0) — how
+`issue913`, `issue1751` and `issue2190` all stub the inset in Playwright —
+outranks `html.is-ios27-band` (0,1,1), so the grown token would be discarded
+in exactly the specs that measure the clearance, and `issue2190`'s
+`STUB_INSET + CLEARANCE` assertion would collapse to `STUB_INSET`. Raising the
+gate's specificity does not rescue it: the rule would then read a RAW token
+the specs do not stub, so the sum they assert still never appears.
+
+**What was NOT found, and is recorded because the question was asked:** no
+consumer of the token for which growth would be WRONG. The two `max-height`
+caps (`.rail-actions-menu`, `.context-menu`) would shrink, in the direction
+this sheet already blesses — "a menu shorter than it could be, never one that
+overflows" — and on a banded device the paintable area genuinely is smaller.
+They are outside the census and untouched.
+
+### 🔴 The drawers' placement rule is the INVERSE of the shell's, and getting it wrong breaks the desktop silently
+
+#2190 states that its gated `.shell` rule must stay OUT of the media query,
+because `.shell` is declared both inside and outside `max-width: 768px` and a
+top-level rule at (0,2,1) beats both the phone and the iPad render. Reading
+that as a general rule for this porkaround is a trap.
+
+The two mobile drawers are the exact reverse. Their `top` AND `height` exist
+ONLY inside the `max-width: 768px` block. A top-level gated rule would
+therefore also apply ABOVE 768px, where the sidebar is a grid track and not
+`position: fixed`: `top` would be inert there, but `height` would NOT, and a
+calc'd height would be imposed on the DESKTOP sidebar. Same element, same
+class, opposite placement rule, and nothing fails loudly. `.credits-roll` is a
+third case for the same reason — the padding it overrides exists only under
+`prefers-reduced-motion`, because the rolling version is `position: absolute`
+and pays no top inset at all.
+
+**Both halves or neither, on the drawers.** `top` grows by the clearance and
+`height` shrinks by the same term, so the drawer's BOTTOM stays exactly where
+it is today. That is the rule this sheet already states for itself — put the
+clearance on `top` and compensate `height` — and moving `top` alone hands back
+the bottom overrun #1751 removed.
+
+### Two smaller measured calls
+
+**The floor stays outside the sum:** `max(<floor>, calc(inset + clearance))`,
+never `max(<floor>, inset) + clearance`. The floor is a minimum breathing
+room; the clearance is part of the distance from the screen edge the content
+owes. At inset 0 the second spelling pushes a surface a whole floor further
+down than the band needs. Only the TOP component of a `padding` / `inset`
+shorthand moves — the band is a top-edge artefact.
+
+**The block sits at the END of the stylesheet, not beside the `.shell` rule it
+continues, and that is measured rather than preferred.** These rules have
+higher specificity than the ones they override, so placing them earlier makes
+every base rule a descending-specificity selector: biome's
+`noDescendingSpecificity` went 26 → 35 with the block up there and back to 26,
+exactly the baseline, with it after the last base rule it overrides. The
+cascade does not care; the linter does, and it is right that source order
+should ascend. The block stays WHOLE so the porkaround remains one revert, and
+the `.shell` rule carries a pointer to it.
+
+### What is measured and what is not
+
+THREE of the thirteen surfaces were observed veiled on a device — the channel
+sidebar, the members drawer and the archive modal — all three via vjt over
+relay, none seen by the worker who wrote this. The other TEN are read off the
+stylesheet alone and have never been observed veiled by anyone; they are cured
+because the ruling covers every top-anchored surface, not because anyone saw
+them fail. That split is a column in the test table rather than a sentence
+here, so it cannot rot: a census reading uniformly confident about thirteen
+surfaces when three were measured is teaching something false. `.credits-roll`
+and `.credits-roll-ended` carry a 3rem floor that plausibly already clears the
+band on the reporter's phone; they are cured anyway, because "3rem probably
+covers it" is an inference about ONE device's inset while the gate fires on
+every iOS 27 PWA including the iPad, and `max()` costs nothing where the floor
+already wins.
+
+Not established here: how any of this LOOKS. Playwright's webkit is not iOS
+and synthesizes no safe-area inset, so an e2e there can only exercise the
+mechanism — the computed value — never the veil.
