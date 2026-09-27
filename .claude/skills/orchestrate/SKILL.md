@@ -2750,6 +2750,26 @@ nessuna riscrittura possibile. Misurala lo stesso se costa due comandi, ma dichi
   regge e' `git -C .worktrees/<x> status --porcelain --ignored`.
   🥇 **E il vero salvagente non e' il check: e' che la worker se ne sia GIA' andata.** Verifica il suo cwd
   nel pane prima di potare — un controllo che non hai capito ti assolve solo per fortuna.
+  🔴🔴 **E `du -sh` NON MISURA LO SPAZIO CHE RECUPERI: SU APFS SBAGLIA DI ~20x, E IO HO SCRITTO IL
+  SUO NUMERO NELL'HANDOFF COME "N LIBERATI" (w1, 2026-09-27, correggendomi con la misura).** Avevo
+  registrato **561M liberati** per una worktree potata e **561M** come taglia della successiva:
+  entrambi erano `du -sh`, **mai un delta di `df`**. Il recupero vero e' stato **26,6M** — `Used`
+  scende di **27 224 KB** e `Avail` sale dello **stesso identico numero** (nessun rumore di terzi in
+  mezzo ⇒ delta attribuibile). **Causa: i `node_modules` di una worktree sono cloni `cp -Rc`, cioe'
+  BLOCCHI CONDIVISI con l'originale** — `du` li conta INTERI e cancellarli non restituisce nulla
+  finche' la copia sorgente vive. I **35 514 inode** dicono che i FILE erano tanti davvero; lo spazio
+  no.
+  🥇 **REGOLA: «quanto ho liberato» e' un DELTA e si misura con `df` ai due lati; `du -sh` risponde
+  a «quanto e' grande l'albero», che su un filesystem con clonazione a blocchi e' una domanda
+  DIVERSA.** E' il mio errore n.1 (*leggo la struttura e ne deduco una magnitudine mai misurata*) in
+  costume nuovo: **lo strumento era giusto, la grandezza no.**
+  ⚠️ **E la conseguenza operativa e' che il caso "disco" per uno sweep di worktree e' MOLTO piu'
+  debole di come lo scrivevo**: sulle altre ~40 il recupero atteso e' dell'ordine delle decine di MiB
+  ciascuna, **non misurato su nessuna** — quindi non si inventa quel lavoro citando un `du`.
+  🥇 *E lei ha aggiunto un pos ctrl che non avevo chiesto: **lo stesso `porcelain --ignored` DEVE
+  stampare righe** (5, li'). Cosi' il `porcelain` VUOTO del passo prima e' una MISURA e non un
+  mutismo — il controllo DENTRO lo strumento, applicato al check che questo file prescrive due
+  paragrafi sopra.*
   🥇🥇 **PERCHE' NESSUN CENSIMENTO DI RAMI TI SALVERA' DA QUESTO: SONO DUE ASSI DIVERSI** (w2, 2026-08-20,
   chiuso con la prova giusta). Trovato un file assente da main **dentro** una worktree il cui ramo era
   dichiarato ATTERRATO — da una worker nel censimento e riprodotto **17 su 17** dall'altra. Sembrava il caso
