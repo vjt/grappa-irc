@@ -4794,6 +4794,66 @@ html.is-ios27-band .shell {
   pointer-events: none;
 }
 
+/* issue 2304 — the floating date pill. Names the day of the rows at the top of
+   the viewport while the operator scrolls, then fades; `ScrollbackPane.tsx` and
+   `lib/dayPill.ts` own when. Container-anchored on `.scrollback-pane` like the
+   #133 overlay, the #693 bar and the #1094 spinner, so it takes no layout space
+   and never enters `.scrollback`'s `scrollHeight`.
+
+   z-index 3 puts it BELOW the far-behind bar (4), and that ordering is the
+   point: that bar is opaque, persistent and the only way back into an
+   abandoned region, while this is a transient decoration that pins nothing.
+   When both are up the bar wins and the pill is simply not seen — which is
+   also why it needs no `pointer-events` exemption beyond `none`. Below the
+   #1094 spinner (5) for the same reason, one tier down.
+
+   Opaque background: it paints over live message rows, and a translucent pill
+   over text makes both unreadable. `max-width` + ellipsis because the label is
+   a long-form localized date that grows a year in issue 2304's other half, and
+   a narrow pane must clip it rather than reach the pane's edges.
+
+   The fade is `opacity` only — a compositor property, so a pill appearing or
+   going never reflows the message list behind it. There is deliberately no
+   fade IN: the element mounts with the class already on, so the transition has
+   no prior value to run from, and a date that appears the instant the reader
+   starts scrolling is the behaviour being copied. */
+.scrollback-date-pill {
+  position: absolute;
+  top: 0.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  max-width: 80%;
+  padding: 0.1rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 0.8em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 200ms ease-out;
+  /* Both forms — same reason as .scrollback-day-separator-label. */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.scrollback-date-pill-shown {
+  opacity: 1;
+}
+
+/* The pill still appears and still goes; only the crossfade does. Reduced
+   motion asks for no animation, not for a date that never leaves the top of
+   the pane. */
+@media (prefers-reduced-motion: reduce) {
+  .scrollback-date-pill {
+    transition: none;
+  }
+}
+
 .scrollback-far-behind {
   position: absolute;
   top: 0;

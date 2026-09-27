@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   type DaySeparatorSighting,
-  type TopBandObservation,
-  placeOf,
   pillDayAt,
+  placeOf,
+  type TopBandObservation,
   topBandRootMargin,
 } from "../lib/dayPill";
 
@@ -19,11 +19,7 @@ import {
 // place. A sign error in any of the three is silent — the pill just shows the
 // wrong date, or none.
 
-const obs = (
-  isIntersecting: boolean,
-  top: number,
-  rootTop: number | null,
-): TopBandObservation => ({
+const obs = (isIntersecting: boolean, top: number, rootTop: number | null): TopBandObservation => ({
   isIntersecting,
   boundingClientRect: { top },
   rootBounds: rootTop === null ? null : { top: rootTop },
@@ -89,14 +85,14 @@ describe("pillDayAt — the day the pill names, or nothing", () => {
   });
 
   it("lets the band win over any number of days above it", () => {
-    expect(
-      pillDayAt([sighting(100, "above"), sighting(200, "above"), sighting(300, "band")]),
-    ).toBe(null);
+    expect(pillDayAt([sighting(100, "above"), sighting(200, "above"), sighting(300, "band")])).toBe(
+      null,
+    );
     // …and regardless of the order they are iterated in, which for the live
     // Map is insertion order and therefore arbitrary.
-    expect(
-      pillDayAt([sighting(300, "band"), sighting(100, "above"), sighting(200, "above")]),
-    ).toBe(null);
+    expect(pillDayAt([sighting(300, "band"), sighting(100, "above"), sighting(200, "above")])).toBe(
+      null,
+    );
   });
 
   it("names nothing when every separator is still below the band", () => {
