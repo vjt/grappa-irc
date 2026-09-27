@@ -19912,3 +19912,125 @@ already wins.
 Not established here: how any of this LOOKS. Playwright's webkit is not iOS
 and synthesizes no safe-area inset, so an e2e there can only exercise the
 mechanism — the computed value — never the veil.
+<!-- entry #2304 -->
+
+---
+
+## 2026-09-28 — #2304: the floating date pill, and the year the `auto` day label never carried
+
+Two halves of one label. The issue asks for a Telegram-style pill floating at
+the top of the scrollback naming the day of the rows in view; the scope
+addition in its comments (vjt, #grappa 21:18) asks for the year on that label
+when the day is not in the current one. They are the same string — the pill
+renders through `formatDayLabel` exactly as the inline separators do — so the
+year rule lands on both consumers by construction, and that is the reason it
+was not built as a pill-only concern.
+
+### The year is a CLOCK reading, and that turned an existing test into a bomb
+
+`renderDayLabel`'s `auto` branch asked `Intl` for weekday + month + day and
+never for the year, at any distance: a separator in a year-spanning buffer read
+`Monday 21 September` and named no year at all. The three explicit notations
+always carried it, via `renderDate`. The rule now is uniform — year outside the
+viewer's current local year, no year inside it, in BOTH directions (a clock
+after the day, and a clock before it, which is a future-dated row from upstream
+skew or a badly stamped import).
+
+The interesting part is not the rule, it is what the rule does to the tests
+that were already there. `dateFormat.test.ts` asserted the three `auto` labels
+WITHOUT a year against a fixed 2026 instant. Those assertions were correct only
+while the machine running them also said 2026: nobody would have touched a line
+and they would have gone red on 1 January 2027. So the clock is now a
+PARAMETER, `renderDayLabel(epochMs, key, locale, nowMs)`, and `formatDayLabel`
+is the one door that reads `Date.now()` — the same shape `locale` already had,
+for the same reason. The point of the parameter is not purity, it is that there
+is no real clock left for a test to consult by accident; both directions are
+asserted against pinned values, and a `formatDayLabel` case under fake timers
+proves the door passes the wall clock through rather than a constant.
+
+Measured both ways rather than argued: forcing `year: "numeric"`
+unconditionally reddens the current-year case, the discriminator and the door
+(3 tests); omitting the year entirely — the pre-change state — reddens the
+out-of-year case, the discriminator and the door (3 tests).
+
+A non-finite `nowMs` compares equal to no year, so an unreadable clock renders
+the year always. That is the safe direction for a function that runs inside a
+render path, and it is asserted beside the existing totality cases rather than
+left to be rediscovered.
+
+### The pill watches the SEPARATORS, and only them
+
+The naive implementation reads rects for the rows near the top on every scroll
+event, which is a forced layout on the one path that cannot afford one (#782 /
+#1041). An `IntersectionObserver` inverts it — the browser reports crossings,
+the entry carries rects it has already computed, and a pane nobody is scrolling
+costs nothing — and the day can only change where a day separator sits, so a
+handful of elements are observed instead of a row per message.
+
+The observation region is a BAND at the top of the pane, not its top edge, and
+that is what makes the issue's "do not show the date twice" expressible. A
+separator inside the band is a separator the reader can see, exactly where the
+pill would paint. Suppressing the pill there is not politeness: the rows under
+that separator belong to the NEW day while the pill, which reports the last day
+to have scrolled PAST, still names the previous one. A pill in that window
+would be wrong and not merely redundant.
+
+`rootMargin` accepts no `calc()` and its percentages are of the root's own box,
+so "the top N px" can only be written as a negative bottom margin in px — which
+is why the pane's height has to be read at all, and why the observer is REBUILT
+(not reconfigured; `rootMargin` is fixed at construction) when that height
+moves. The existing #285 `ResizeObserver` already knows when it does and drives
+the rebuild from its height-changed arm; there is no second observer. The
+margin is clamped so it can never go positive: a 0-height root — which is the
+state at first build — would otherwise GROW the region past the pane, every
+separator would report `band`, and the pill would silently never appear.
+
+State is ONE map keyed by the separator ELEMENT. Elements have exact lifetimes
+(`ref` seeds the entry, `onCleanup` deletes it), so nothing can go stale; a
+day-keyed map outlives the row that put it there — the ring cap dropping an old
+day, a channel switch — and would need housekeeping that drifts. Seeding each
+entry at `below`, the place that shows no pill, makes the map's keys the set of
+mounted separators, so no second collection is needed to remember what to
+observe.
+
+### "Hidden when pinned to the bottom and idle" is a gate that already existed
+
+The pill arms off the BUGHUNT-2 operator-input gate in `onScroll` — the same
+`recentInput` test the scroll-settle cursor write uses. The scrolls that gate
+rejects are the pane's own (the activation park, the tail-follow write, a
+prepend correction), and every one of them would otherwise flash a date across
+the top of a window the operator just opened. A pane at rest arms nothing, so
+no separate at-the-bottom condition is needed; a window switch disarms the
+linger explicitly, since an activation parks the new pane at its tail.
+
+Mounted on the LABEL, faded by the CLASS. The 5s linger has to fade, so the
+element must outlive the state change — a `Show` on visibility would unmount it
+and leave nothing to transition. The label going away is the other case and
+there the instant hide is what is wanted: it happens when a separator reaches
+the band, and fading over a date the reader can already see is the double print
+the rule forbids.
+
+### iOS 27: MEASURED to need no rule of its own
+
+The issue asks the pill to respect the #2190 / #2302 top clearance. It does,
+with nothing added. The clearance is ONE gated rule, `html.is-ios27-band .shell
+{ padding-top: calc(var(--safe-area-inset-top) + var(--ios27-band-clearance)) }`,
+and it shifts the whole flow; `.scrollback-pane` is inside `.shell`
+(`Shell.tsx` renders `.shell` → `.shell-main` → `ScrollbackPane` on both the
+desktop and the mobile branch), and the pill is absolutely positioned against
+that pane. So it starts below the clearance by containment. No gated rule, no
+new reader of `--ios27-band-clearance`, and nothing for the `ios27Band.test.ts`
+census to name — which matters, because that census is an absence assertion
+over every rule mentioning the token, and a `.scrollback`-selector reader would
+redden it.
+
+### Not measured
+
+The geometry. jsdom has no layout and `setupTests.ts` installs an inert
+`IntersectionObserver`, so no unit test can show that the observer fires at the
+right scroll offsets, that the band lands where the pill paints, or that the
+fade runs — only the decisions downstream of an observation are covered, which
+is why they were split into `lib/dayPill.ts` at all. The issue's own "not
+measured" note about the cost of tracking the top row is likewise still not
+measured: the design avoids a per-event layout read by construction, and no
+number has been taken for it.

@@ -29,6 +29,7 @@ import { isChannelName } from "./lib/chantypes";
 import { type CommandOutputEntry, commandOutputByWindow } from "./lib/commandOutput";
 import { stripCtcpAction } from "./lib/ctcpAction";
 import { formatDayLabel } from "./lib/dateFormat";
+import { type DaySeparatorSighting, pillDayAt, placeOf, topBandRootMargin } from "./lib/dayPill";
 import { diagPush } from "./lib/diagLog";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { highlightPatterns } from "./lib/highlightList";
@@ -196,6 +197,22 @@ const PRESENCE_CURSOR_SETTLE_MS = 500;
 // Firing inside that window would mark the backlog read from under the
 // operator. 500ms is ~30 frames of margin; it is NOT a tuning knob.
 const READ_AT_TAIL_SETTLE_MS = 500;
+
+// issue 2304 — the floating date pill lingers this long after the last
+// operator scroll, then fades. vjt's number (#grappa 2026-09-27 23:16), given
+// with the observation that Telegram uses a shorter one; it is a taste
+// setting, not a derived quantity, so it is one edit away from another value.
+const DATE_PILL_LINGER_MS = 5000;
+
+// issue 2304 — the height of the strip at the top of the scroll pane that the
+// pill occupies, and therefore the strip an inline day separator must not be
+// in while the pill shows (the issue's "do not show the date twice"). Sized to
+// the pill's own box in `default.css` — `top: 0.5rem` plus a line at
+// `font-size: 0.8em` plus its padding — rounded UP, since an under-estimate
+// lets a separator paint under the pill and an over-estimate only suppresses
+// the pill slightly early. Absolute px, not rem: it is fed to `rootMargin`,
+// which takes no relative font units at all.
+const DATE_PILL_BAND_PX = 40;
 
 // BUGHUNT-2: input-event-recency window for the scroll-settle gate.
 // onScroll only arms the settle timer if a real operator input event
@@ -1220,7 +1237,12 @@ const ScrollbackLine: Component<{
 };
 
 // C7.1: row types for the mixed separator+message rendering list.
-type SeparatorRow = { type: "separator"; label: string; id: string };
+// issue 2304 — `at` is the instant the label was rendered FROM (the first
+// message of that day), carried so the floating date pill can order the
+// separators it observes and re-render the same label through the same
+// formatter. Not a second source of truth for the label: one epoch, one
+// `formatDateLabel`, so the pill and the separator cannot disagree.
+type SeparatorRow = { type: "separator"; label: string; id: string; at: number };
 // C7.3: unread-marker row — distinct variant so JSX render branch is a
 // clean discriminated union (no `kind` subfield conditionals inside SeparatorRow).
 type UnreadMarkerRow = { type: "unread-marker"; count: number; id: string };
@@ -1568,6 +1590,102 @@ const ScrollbackPane: Component<Props> = (props) => {
 
   const key = () => channelKey(props.networkSlug, props.channelName);
   const messages = () => scrollbackByChannel()[key()];
+
+  // ---------------------------------------------------------------------
+  // issue 2304 — the floating date pill. Names the day of the rows at the
+  // TOP of the viewport while the reader scrolls, the way Telegram does; the
+  // decisions live in `lib/dayPill.ts` (and are covered there), this is the
+  // wiring the browser has to supply.
+  //
+  // ONE map, keyed by the separator ELEMENT and not by the day. Elements have
+  // exact lifetimes — the `ref` seeds an entry, `onCleanup` deletes it — so
+  // nothing can go stale, whereas a day-keyed map outlives the row that put
+  // it there (the ring cap dropping an old day, a channel switch) and would
+  // need housekeeping of its own. Seeded at `below`, the place that shows no
+  // pill, so the map's keys ARE the mounted separators and no second
+  // collection is needed to remember which elements to observe.
+  const daySightings = new Map<Element, DaySeparatorSighting>();
+  let dayBandObserver: IntersectionObserver | undefined;
+  const [pillDay, setPillDay] = createSignal<number | null>(null);
+  // Whether an operator scroll is still recent enough to be showing the pill.
+  // Falls on its own timer; the label half is `pillDay`, and the pill needs
+  // both. Named for the state it holds, not for the timer that clears it.
+  const [pillLingering, setPillLingering] = createSignal(false);
+  let pillLingerTimer: number | undefined;
+
+  const refreshPillDay = (): void => {
+    setPillDay(pillDayAt(daySightings.values()));
+  };
+
+  // Rebuilt rather than reconfigured, because `rootMargin` is fixed at
+  // construction and it encodes the pane's HEIGHT (see `topBandRootMargin`).
+  // The existing #285 ResizeObserver already knows when that height moves and
+  // calls this from there; there is no second observer for it.
+  const rebuildDayBandObserver = (): void => {
+    if (typeof IntersectionObserver === "undefined" || !listRef) return;
+    const root = listRef;
+    dayBandObserver?.disconnect();
+    dayBandObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const known = daySightings.get(entry.target);
+          // An entry can be delivered for a target unobserved since it was
+          // queued (the `<For>` recreates every row on a rows() change). Its
+          // sighting is gone and must not come back.
+          if (known === undefined) continue;
+          daySightings.set(entry.target, { dayAt: known.dayAt, place: placeOf(entry) });
+        }
+        refreshPillDay();
+      },
+      {
+        root,
+        rootMargin: topBandRootMargin(root.clientHeight, DATE_PILL_BAND_PX),
+        threshold: 0,
+      },
+    );
+    for (const el of daySightings.keys()) dayBandObserver.observe(el);
+  };
+
+  // Called from the separator's `ref`, which for the first render runs BEFORE
+  // `onMount` — hence the seed-then-observe order: the entry exists whether or
+  // not the observer does yet, and `rebuildDayBandObserver` picks up whatever
+  // is in the map when it runs.
+  const observeDaySeparator = (el: HTMLElement, dayAt: number): void => {
+    daySightings.set(el, { dayAt, place: "below" });
+    dayBandObserver?.observe(el);
+    onCleanup(() => {
+      dayBandObserver?.unobserve(el);
+      daySightings.delete(el);
+      refreshPillDay();
+    });
+  };
+
+  const armDatePill = (): void => {
+    setPillLingering(true);
+    if (pillLingerTimer !== undefined) window.clearTimeout(pillLingerTimer);
+    pillLingerTimer = window.setTimeout(() => setPillLingering(false), DATE_PILL_LINGER_MS);
+  };
+
+  const disarmDatePill = (): void => {
+    if (pillLingerTimer !== undefined) window.clearTimeout(pillLingerTimer);
+    pillLingerTimer = undefined;
+    setPillLingering(false);
+  };
+
+  // A window switch is not the reader scrolling. Without this the linger
+  // survives the switch and the next pane opens with a pill it never earned —
+  // which is exactly the "hidden when the pane is pinned to the bottom and
+  // idle" case, since an activation parks the new window at its tail.
+  createEffect(on(key, () => disarmDatePill()));
+
+  // The label comes from the SAME formatter the inline separator used, fed the
+  // same instant, so the two cannot drift — including through the issue 2304
+  // year rule, which applies to both by construction. Reading it in a memo
+  // also keeps the pill live when the date-format preference changes.
+  const datePillLabel = createMemo((): string | null => {
+    const at = pillDay();
+    return at === null ? null : formatDateLabel(at);
+  });
   // #1067 — the message behind a gesture's `.scrollback-line`. The row already
   // carries `data-msg-id` (the settle/cursor walk reads it), so the gesture
   // hands back a DOM node and this turns it into the typed row the reply quote
@@ -1868,6 +1986,7 @@ const ScrollbackPane: Component<Props> = (props) => {
           type: "separator",
           label: formatDateLabel(msg.server_time),
           id: `sep-${msg.id}`,
+          at: msg.server_time,
         });
       }
       result.push({ type: "message", msg });
@@ -2375,9 +2494,23 @@ const ScrollbackPane: Component<Props> = (props) => {
         const moved = lastContainerHeight !== null && height !== lastContainerHeight;
         lastContainerHeight = height;
         if (moved && followMode()) applyActivation("tail-only", false);
+        // issue 2304 — the date pill's band is a px `rootMargin` computed from
+        // this same height, and `rootMargin` is fixed at construction. A box
+        // change without this leaves the band measuring the OLD pane: on a
+        // keyboard-shrunk pane it would sit below the fold entirely and the
+        // pill would stop suppressing itself over a visible separator. Height
+        // changes only — a width-only change (and the callback RO delivers on
+        // `observe()`) does not move the band.
+        if (moved) rebuildDayBandObserver();
       });
       overflowObserver.observe(listRef);
     }
+
+    // issue 2304 — first build of the date-pill band observer. Here and not in
+    // the component body because it needs `listRef` bound and its height
+    // readable; the separators already rendered seeded themselves into
+    // `daySightings` from their `ref`, and this observes all of them.
+    rebuildDayBandObserver();
 
     // #285 reopen part (3) — defensive post-mount settle re-measure. Fires
     // regardless of any resize / box change, so the no-event settle that RO and
@@ -2395,6 +2528,11 @@ const ScrollbackPane: Component<Props> = (props) => {
       listRef?.removeEventListener("touchcancel", onTouchEndEl);
       for (const t of settleTimers) window.clearTimeout(t);
       overflowObserver?.disconnect();
+      // issue 2304 — the pill's band observer and its linger timer, torn down
+      // beside the ResizeObserver that rebuilds one and the settle timer the
+      // other is a sibling of.
+      dayBandObserver?.disconnect();
+      disarmDatePill();
       if (scrollSettleTimer !== undefined) {
         window.clearTimeout(scrollSettleTimer);
       }
@@ -4040,6 +4178,15 @@ const ScrollbackPane: Component<Props> = (props) => {
     const recentInput = inputAt !== null && Date.now() - inputAt < INPUT_EVENT_RECENCY_MS;
     if (!recentInput) return;
 
+    // issue 2304 — the date pill rides the SAME gate, and that is the whole of
+    // "hidden when the pane is pinned to the bottom and idle". The pill is a
+    // reading aid for someone moving through the buffer; the scrolls this gate
+    // rejects are the pane's own (the activation park, the tail-follow write,
+    // a prepend correction), and every one of them would otherwise flash a
+    // date across the top of a window the operator just opened. No separate
+    // at-the-bottom condition is needed: a pane at rest arms nothing.
+    armDatePill();
+
     if (scrollSettleTimer !== undefined) {
       window.clearTimeout(scrollSettleTimer);
     }
@@ -4335,6 +4482,41 @@ const ScrollbackPane: Component<Props> = (props) => {
           <span class="scrollback-loading-older-spinner" />
         </div>
       </Show>
+      {/* issue 2304 — the floating date pill. Container-anchored like the
+          #133 overlay, the #693 far-behind bar and the #1094 spinner, and for
+          the first of their reasons: it must not be in `.scrollback`'s
+          `scrollHeight`, or every appearance would resize the scroll list
+          under the reader it exists to orient.
+
+          Below the topic bar by construction, and below the issue 2190 iOS 27
+          band clearance likewise: that clearance is one gated rule on `.shell`
+          (`html.is-ios27-band .shell`), which shifts the whole flow, and this
+          pane is inside it. No gated rule of its own, and nothing for the
+          `ios27Band.test.ts` census to name.
+
+          Mounted on the LABEL and faded by the CLASS, which is a split and not
+          an accident. The 5s linger has to fade, so the element must outlive
+          the state change — a `<Show>` on visibility would unmount it and
+          there would be nothing left to transition. The label going away is
+          the other case, and there the instant hide is what is wanted: it
+          happens when an inline separator reaches the band, and fading over a
+          date the reader can already see is exactly the double-print the rule
+          forbids. */}
+      <Show when={datePillLabel()}>
+        {(label) => (
+          <div
+            class="scrollback-date-pill"
+            classList={{ "scrollback-date-pill-shown": pillLingering() }}
+            data-testid="scrollback-date-pill"
+            // The same date is in the reading order already, as the inline
+            // separator this is a copy of. Announcing it again on every day
+            // boundary crossed while scrolling is noise, not information.
+            aria-hidden="true"
+          >
+            {label()}
+          </div>
+        )}
+      </Show>
       <div
         ref={listRef}
         class="scrollback"
@@ -4389,8 +4571,16 @@ const ScrollbackPane: Component<Props> = (props) => {
           <For each={rows()}>
             {(row) => {
               if (row.type === "separator") {
+                const at = row.at;
                 return (
-                  <div class="scrollback-day-separator" data-testid="day-separator">
+                  <div
+                    class="scrollback-day-separator"
+                    data-testid="day-separator"
+                    // issue 2304 — the floating pill watches these, and only
+                    // these: the day can change nowhere else, so a handful of
+                    // elements carry what a per-row observer would cost.
+                    ref={(el) => observeDaySeparator(el, at)}
+                  >
                     <span class="scrollback-day-separator-line" />
                     <span class="scrollback-day-separator-label">{row.label}</span>
                     <span class="scrollback-day-separator-line" />

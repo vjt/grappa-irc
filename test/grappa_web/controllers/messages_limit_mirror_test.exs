@@ -4,8 +4,8 @@ defmodule GrappaWeb.MessagesLimitMirrorTest do
   limits, and until this file nothing compared a copy with its original.
 
   `@default_limit` (the unconfigured-client page size) is re-declared as
-  `REST_PAGE_SIZE` in 17 specs; `@max_http_limit` (the boundary ceiling)
-  as `MAX_HTTP_LIMIT` in 5. Twenty-two numbers kept in lockstep by hand,
+  `REST_PAGE_SIZE` in 18 specs; `@max_http_limit` (the boundary ceiling)
+  as `MAX_HTTP_LIMIT` in 5. Twenty-three numbers kept in lockstep by hand,
   with no witness: change the attribute and every spec keeps asserting
   the old page size, silently, because a Playwright spec seeds its own
   fixture and never asks the server what its default is.
@@ -59,7 +59,7 @@ defmodule GrappaWeb.MessagesLimitMirrorTest do
   # to the state #1646 measured. Landing either means changing the number
   # here, which is the moment someone reads this.
   @mirrors [
-    {"REST_PAGE_SIZE", "default_limit", 17},
+    {"REST_PAGE_SIZE", "default_limit", 18},
     {"MAX_HTTP_LIMIT", "max_http_limit", 5}
   ]
 
