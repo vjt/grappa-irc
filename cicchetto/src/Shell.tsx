@@ -161,13 +161,60 @@ const Shell: Component = () => {
   const [sidebarSlidIn, setSidebarSlidIn] = createSignal(false);
   let sidebarExitTimer: ReturnType<typeof setTimeout> | undefined;
 
+  // issue 2303 — the drawer's scroll position, carried ACROSS the unmount.
+  // `.shell-sidebar` is the scroll container (`overflow-y`, default.css) and
+  // #1041 destroys it on close, so the position has to live out here or every
+  // swipe reopens at the top. A plain variable, not a signal: nothing renders
+  // from it. Not persisted either — it is a within-session convenience, and a
+  // position restored across a reload would be describing a list that has
+  // moved on.
+  let sidebarEl: HTMLElement | undefined;
+  let sidebarScrollTop = 0;
+
+  // Where the scroll is READ, and the reason it is here rather than at the two
+  // call sites: both dispose edges converge on this function — the transform's
+  // `transitionend` calls it directly, the SIDEBAR_EXIT_FLOOR_MS backstop
+  // through the timer — so one read covers both by construction. Each edge
+  // still has its own test: the convergence is a fact about today's code.
+  //
+  // Dropping the reference is what makes the read idempotent. Solid does not
+  // invoke a `ref` with `undefined` on unmount the way React does, so without
+  // this the variable would keep pointing at a detached node, and a second
+  // dispose would overwrite a good position with the 0 a detached element
+  // reports in a real browser.
   const disposeSidebar = (): void => {
+    if (sidebarEl !== undefined) {
+      sidebarScrollTop = sidebarEl.scrollTop;
+      sidebarEl = undefined;
+    }
     if (sidebarExitTimer !== undefined) {
       clearTimeout(sidebarExitTimer);
       sidebarExitTimer = undefined;
     }
     setSidebarMounted(false);
     setSidebarSlidIn(false);
+  };
+
+  // Clamping to the REOPENED list: channels may have been parted while the
+  // drawer was closed, so the old offset can be past the new end.
+  //
+  // The explicit clamp is the VERIFIABLE FORM of that requirement, and that is
+  // why it is written out — NOT because a browser needs it. A browser clamps
+  // any `scrollTop` assignment to the element's own maximum on its own. jsdom
+  // does not (measured: `el.scrollTop = 99999` reads back 99999), and it runs
+  // no layout at all (`scrollHeight` is 0 for every element), so relying on the
+  // native clamp would leave this requirement with a test nobody could make
+  // fail. The `scrollHeight > 0` gate is what keeps the layout-less case
+  // honest: a 0 there means "nothing is known about the height", which is not
+  // the same fact as "the list is empty", so it defers to the native clamp
+  // rather than inventing a bound and zeroing the restore.
+  const restoreSidebarScroll = (): void => {
+    const el = sidebarEl;
+    if (el === undefined) return;
+    el.scrollTop =
+      el.scrollHeight > 0
+        ? Math.min(sidebarScrollTop, Math.max(0, el.scrollHeight - el.clientHeight))
+        : sidebarScrollTop;
   };
 
   const openSidebar = (): void => {
@@ -182,7 +229,17 @@ const Shell: Component = () => {
         // meantime armed the exit timer, and sliding in now would flash the bar
         // open on its way out. An open→close→open inside those two frames
         // cleared the timer again, so this correctly slides in for the reopen.
-        if (sidebarMounted() && sidebarExitTimer === undefined) setSidebarSlidIn(true);
+        //
+        // issue 2303 restores the scroll HERE, before the class flip, so the
+        // panel slides in already at the right offset instead of jumping once
+        // it has arrived. It cannot be done in the `ref` callback: measured,
+        // Solid runs that while the element is still orphaned
+        // (`document.contains` false, `parentNode` null), and an element
+        // outside the document has no layout for the assignment to survive.
+        if (sidebarMounted() && sidebarExitTimer === undefined) {
+          restoreSidebarScroll();
+          setSidebarSlidIn(true);
+        }
       }),
     );
   };
@@ -1190,6 +1247,9 @@ const Shell: Component = () => {
             <aside
               class="shell-sidebar"
               classList={{ open: sidebarSlidIn() }}
+              ref={(el) => {
+                sidebarEl = el;
+              }}
               onTransitionEnd={(e) => {
                 // Dispose at the END of the exit slide, never at the class flip.
                 // Descendants bubble their own transitions through here, hence
