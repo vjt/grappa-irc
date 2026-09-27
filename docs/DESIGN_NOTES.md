@@ -19713,3 +19713,89 @@ Three mutants, each killing exactly one of the 38 tests in the describe:
   reads `verb=nick reason=invalid_line`, i.e. the layer BELOW refusing.
   The test still discriminates, because what it asserts is a PRESENCE —
   the trap an absence-only assertion walks into.
+<!-- entry #2303 -->
+
+---
+
+## 2026-09-27 — #2303: the mobile drawer's scroll position, carried across an unmount that stays
+
+The #1041 left-edge drawer always reopened at the top. `.shell-sidebar` is
+the scroll container and `Shell.tsx` destroys it at the end of the exit
+transition, so its `scrollTop` went with it.
+
+**The unmount is not the bug and does NOT reopen.** A mounted-but-hidden
+sidebar keeps every subscription live — `channelsBySlug`,
+`queryWindowsByNetwork`, `windowStateByChannel`, the unread badges — re-running
+on every message on every network to repaint something behind the left edge.
+The escape hatch would be an `onScreen` prop, which is exactly #782's failure
+mode: a prop can be forgotten, an absent component cannot. So the position is
+carried AROUND the unmount rather than the unmount avoided. (vjt on #grappa,
+2026-09-27; **relayed to the worker, not observed first-hand**.)
+
+### Where the read goes, and why one read covers two edges
+
+There are two dispose edges — the transform's `transitionend` and the
+`SIDEBAR_EXIT_FLOOR_MS` backstop — and both converge on `disposeSidebar`. The
+read therefore lives THERE, once, rather than at the two call sites.
+Convergence is a fact about today's code and not a guarantee, so each edge
+still gets its own test; what the shared read buys is that neither can be
+forgotten, not that testing one would do.
+
+`disposeSidebar` also drops the element reference after reading it. Solid does
+not invoke a `ref` with `undefined` on unmount the way React does, so the
+variable would otherwise keep pointing at a detached node — and a second
+dispose would overwrite a good offset with the `0` a detached element reports
+in a real browser.
+
+### The restore cannot happen in the `ref` callback — measured
+
+The issue left open whether the restore must wait for the two-rAF slide-in or
+could happen at mount. Half of that is now measured, and it kills one variant:
+in a `<Show>`, Solid runs the `ref` callback while the element is still
+ORPHANED — `document.contains(el)` is `false` and `parentNode` is `null`. It is
+in the document by the very next microtask. An element outside the document has
+no layout, so an assignment made there cannot survive.
+
+**Still NOT measured: whether being in the document is ENOUGH, or whether the
+layout must also have been computed.** jsdom runs no layout, so the cic gate
+cannot answer it, and a webkit e2e would measure the mechanism rather than iOS.
+The restore is therefore placed in the two-rAF callback that `openSidebar`
+already owns — the option that is correct under BOTH answers, needs no new
+timing mechanism, and puts the offset in place before the class flip so the
+panel slides in already scrolled instead of jumping on arrival. That is a
+choice made to be insensitive to the open question, not an answer to it.
+
+### The clamp is written out because it is the VERIFIABLE form of the rule
+
+Channels may have been parted while the drawer was closed, so the old offset
+can sit past the new end. **A browser already clamps any `scrollTop` assignment
+to the element's own maximum**, so the explicit clamp buys nothing at runtime —
+it is here because jsdom does not clamp (measured: `el.scrollTop = 99999` reads
+back `99999`) and runs no layout (`scrollHeight` is `0` for every element).
+Leaving it to the native clamp would give the requirement a test nobody could
+make fail, and a requirement that cannot fail is not a requirement.
+
+The `scrollHeight > 0` gate is what keeps the layout-less case honest: `0`
+there means "nothing is known about the height", which is NOT the same fact as
+"the list is empty", so it defers to the native clamp rather than inventing a
+bound and zeroing the restore. The test stages a shorter list on
+`HTMLElement.prototype` — measured as `configurable` — so what is under test is
+this component's arithmetic, never a browser's.
+
+### Five mutants, and two of them exist only to prove the edges are separate
+
+| mutation | red | green |
+| --- | --- | --- |
+| drop the save in `disposeSidebar` | all 3 | — |
+| drop the `restoreSidebarScroll()` call | all 3 | — |
+| drop the clamp, assign raw | clamp only (`expected 500 to be 200`) | both edges |
+| disable the `transitionend` dispose | transitionend + clamp | backstop |
+| make the backstop timer dispose nothing | backstop | transitionend + clamp |
+
+The last two are complementary and their victims are disjoint, which is the
+evidence that the two edge tests exercise different code and are not one test
+written twice. The oracle that separates them is a 150 ms budget on the
+transitionend test: `SIDEBAR_EXIT_FLOOR_MS` is 400, so a disposal inside 150 ms
+cannot be the backstop's doing. Without that budget both tests would pass on
+the timer alone and the transitionend read would be untested — green, and
+measuring nothing.

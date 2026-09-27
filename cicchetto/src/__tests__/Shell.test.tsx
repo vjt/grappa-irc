@@ -1064,6 +1064,102 @@ describe("Shell — mobile layout (isMobile = true)", () => {
     });
   });
 
+  // issue 2303 — the drawer is DESTROYED on close (#1041 keeps the unmount on
+  // purpose: a mounted-but-hidden sidebar re-runs every subscription on every
+  // message, and an `onScreen` gate is #782's failure mode), so `.shell-sidebar`
+  // — the scroll container — takes its `scrollTop` with it. The position is
+  // carried across the unmount instead.
+  //
+  // The two dispose edges get a test EACH. They converge on `disposeSidebar`
+  // today, so one read covers both by construction — but convergence is a fact
+  // about today's code, not a guarantee, and a test that exercises one arm
+  // cannot tell you the other still works.
+  describe("issue 2303 — scroll position survives the drawer's unmount", () => {
+    const openDrawer = async (container: HTMLElement): Promise<HTMLElement> => {
+      const shell = container.querySelector(".shell-mobile") as HTMLElement;
+      swipeHorizontally(shell, 5, 200, 300);
+      await waitFor(() => {
+        expect(container.querySelector(".shell-sidebar.open")).not.toBeNull();
+      });
+      return container.querySelector(".shell-sidebar") as HTMLElement;
+    };
+
+    it("restores it when the SIDEBAR_EXIT_FLOOR_MS backstop is what disposed the drawer", async () => {
+      mobileState.value = true;
+      const { container } = render(() => <Shell />);
+
+      const aside = await openDrawer(container);
+      aside.scrollTop = 120;
+
+      // Close and let it go the whole way on the timer. jsdom emits no
+      // transitionend of its own, so NOT firing one is what isolates this arm:
+      // the backstop is the only edge that can dispose here.
+      fireEvent.click(container.querySelector(".shell-drawer-backdrop") as HTMLElement);
+      await waitFor(() => expect(container.querySelectorAll(".shell-sidebar").length).toBe(0), {
+        timeout: 1_000,
+      });
+
+      const reopened = await openDrawer(container);
+      await waitFor(() => expect(reopened.scrollTop).toBe(120));
+    });
+
+    it("restores it when the transform transitionend is what disposed the drawer", async () => {
+      mobileState.value = true;
+      const { container } = render(() => <Shell />);
+
+      const aside = await openDrawer(container);
+      aside.scrollTop = 96;
+
+      fireEvent.click(container.querySelector(".shell-drawer-backdrop") as HTMLElement);
+      fireEvent.transitionEnd(aside, { propertyName: "transform" });
+
+      // The 150ms budget is the ORACLE that separates this arm from the one
+      // above: SIDEBAR_EXIT_FLOOR_MS is 400, so a disposal inside 150ms cannot
+      // be the backstop's doing. Without the budget both tests would pass on
+      // the timer alone and the transitionend read would be untested.
+      await waitFor(() => expect(container.querySelectorAll(".shell-sidebar").length).toBe(0), {
+        timeout: 150,
+      });
+
+      const reopened = await openDrawer(container);
+      await waitFor(() => expect(reopened.scrollTop).toBe(96));
+    });
+
+    it("clamps to the REOPENED list's height when channels were parted while it was closed", async () => {
+      mobileState.value = true;
+      const { container } = render(() => <Shell />);
+
+      const aside = await openDrawer(container);
+      aside.scrollTop = 500;
+
+      fireEvent.click(container.querySelector(".shell-drawer-backdrop") as HTMLElement);
+      fireEvent.transitionEnd(aside, { propertyName: "transform" });
+      await waitFor(() => expect(container.querySelectorAll(".shell-sidebar").length).toBe(0), {
+        timeout: 150,
+      });
+
+      // jsdom runs no layout: `scrollHeight` and `clientHeight` are 0 for every
+      // element and an over-large `scrollTop` is stored verbatim rather than
+      // clamped. Both were measured before this test was written. So the
+      // shorter list is STAGED on the prototype — measured as configurable —
+      // and what is under test is this component's arithmetic, not a browser's.
+      const proto = HTMLElement.prototype;
+      const realScrollHeight = Object.getOwnPropertyDescriptor(proto, "scrollHeight");
+      const realClientHeight = Object.getOwnPropertyDescriptor(proto, "clientHeight");
+      Object.defineProperty(proto, "scrollHeight", { value: 300, configurable: true });
+      Object.defineProperty(proto, "clientHeight", { value: 100, configurable: true });
+
+      try {
+        const reopened = await openDrawer(container);
+        // 500 asked for, 300 - 100 = 200 available.
+        await waitFor(() => expect(reopened.scrollTop).toBe(200));
+      } finally {
+        if (realScrollHeight) Object.defineProperty(proto, "scrollHeight", realScrollHeight);
+        if (realClientHeight) Object.defineProperty(proto, "clientHeight", realClientHeight);
+      }
+    });
+  });
+
   // C6.1: on mobile, a .bottom-bar element IS rendered (BottomBar).
   it("bottom-bar IS rendered on mobile", () => {
     mobileState.value = true;
