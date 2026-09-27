@@ -2909,6 +2909,30 @@ nessuna riscrittura possibile. Misurala lo stesso se costa due comandi, ma dichi
   ✅ **Recuperato solo perche' il `cp` c'era** (la regola scritta dopo il caso regex, ripagata nella
   stessa ora). Ripristino verificato per CHIAVE — sei su sei presenti, neg ctrl su una chiave
   inventata = 0 — **mai dal conteggio righe**, che qui e' esattamente lo strumento che non vede.
+  🔴🔴 **TERZA GENERAZIONE, 2026-09-27: IL TAGLIO PER ANCORE MANGIA LA *RIGA VUOTA* PRIMA
+  DELL'HEADING, ED ENTRAMBI GLI ASSERT PRESCRITTI QUI SOPRA PASSANO.** Cercavo `j = s.index('\n##
+  <heading>')` per delimitare l'ultimo item di una lista: quel `\n` non e' il terminatore della
+  MIA riga, e' il terminatore della **riga vuota** che la separa dall'heading ⇒ la regione uccisa
+  e' *item + riga vuota*, e il testo di rimpiazzo (una riga sola, senza newline finale) la lascia
+  sparita. **L'assert di contenuto (`chiave DENTRO old`) e' vero; l'assert di vicinanza (`chiave
+  della sezione accanto NON in old`) e' vero pure** — nessuno dei due guarda i BYTE al confine.
+  🥇 **E l'unica cosa che l'ha beccato e' la PREDIZIONE DELLE RIGHE CHE NON TORNAVA** (`153 -> 153`
+  dove attendevo `154`, per una riga di tabella aggiunta). ⇒ **la nota qui sopra va letta con la sua
+  ASIMMETRIA: un conteggio che NON torna e' un'ACCUSA, un conteggio che torna non prova NIENTE.**
+  Nel caso 2026-09-20 tornava e mentiva; qui non tornava ed era il solo segnale. **Percio' la
+  predizione si scrive PRIMA e si INVESTIGA quando scarta, anche di UNA riga e anche se il
+  markdown continua a renderizzare** — un `diff <backup> <file> | grep -E '^[0-9]'` dice in una riga
+  QUALE hunk ha collassato (li': `53,54c54`, cioe' due righe diventate una).
+  🔑 **CURA, e vale per ogni taglio per ancore: l'`end` si ancora al testo dell'heading SENZA il
+  `\n` davanti** (`s.index('## <heading>')`), cosi' la riga vuota resta fuori dalla regione; **e si
+  LEGGE LA FORMA sul file dopo la scrittura** — testo / vuota / heading, con `cat -A` se serve. E' la
+  stessa pretesa che la ricetta `DESIGN_NOTES` fa da mesi sul suo confine (*fine-entry / marcatore /
+  vuota / `---` / vuota / `## `*): **li' e' un check, qui non lo era, e il file non e' nemmeno
+  versionato.**
+  🪞 *Terza faccia dello stesso taglio in una settimana — regex che mangia 120 righe, ancora di fine
+  troppo in la' che mangia cinque registri, ancora di fine LARGA DI UN BYTE che mangia una riga
+  vuota. Le prime due si vedono, la terza no: **piu' la cura di un taglio diventa precisa, piu' il
+  suo residuo di errore diventa invisibile.***
 - 🥇🥇 **UN ASSERT SU CONFIGURAZIONE IL CUI SOGGETTO *DOCUMENTA SÉ STESSO* PASSERÀ SULLA
   DOCUMENTAZIONE, E SOLO CANCELLARE LA COSA CHE SORVEGLIA LO RIVELA (w1, 2026-09-14, #2125).**
   Gate bats nuovo su `integration.yml`: match a substring per `fetch-depth: 0`. **Cancellata la
