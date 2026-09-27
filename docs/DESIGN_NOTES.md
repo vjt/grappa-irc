@@ -20034,3 +20034,113 @@ is why they were split into `lib/dayPill.ts` at all. The issue's own "not
 measured" note about the cost of tracking the top row is likewise still not
 measured: the design avoids a per-event layout read by construction, and no
 number has been taken for it.
+<!-- entry #2301 -->
+
+---
+
+## 2026-09-28 — #2301: the narrow-pane threshold moves to 383 — a tie-break that landed on a real phone
+
+#2161's narrow-pane override puts the window bar in flow below
+`NARROW_PANE_QUERY`, regardless of the #1766 preference. That entry says, in as
+many words, that only the band's two ENDS were measured and that 384 itself was
+a tie-break (`768 / 2`, half `MOBILE_QUERY`'s own breakpoint, chosen so the file
+gained no new number family). 1.5.10 shipped it. The tie-break was a real
+device.
+
+### The measurement
+
+A user on `#grappa` — Samsung Galaxy S Ultra, Chrome, default display zoom —
+reports **384 x 690 CSS px**, DPR 2.81, screen 384 x 832
+(whatismyviewport.com). `(max-width: 384px)` matches at exactly 384, so on
+every one of those phones the window bar was forced into flow and the leading
+opener never mounted: a user who had switched the bar off on 1.5.9 got it back
+on upgrade and lost the door. The phone's edge swipes work. Nothing about it is
+the iPadOS Split View case the override exists for.
+
+**That measurement reached this entry RELAYED.** The screenshot was reported on
+IRC; the author of this entry did not see it and cannot read that channel. It
+is recorded as a report, at the precision it was reported in — not as something
+verified here.
+
+### 383, and the band it now sits in
+
+The bullets in `theme.ts` BOUND the threshold; none of them picks it:
+
+* `> 380` — #2160's measured Split View pane (iPad Pro 11, landscape,
+  installed PWA, `standalone: true`). Must be INSIDE.
+* `< 384` — this measurement. Must be OUTSIDE. New, and it is the bound that
+  binds.
+* `< 393` — `devices["iPhone 15"].viewport.width`, the narrowest viewport this
+  project's e2e projects drive. Subsumed by the 384 above, and kept anyway: it
+  is the bound a red e2e spec would name.
+
+That leaves **[381, 383]**, and inside it nothing is measured. **383 is still a
+TIE-BREAK** — the top of the admissible set, not a derived value. What picks
+the top rather than 381 is that nothing distinguishes the three (no viewport in
+that span has been measured either way) and the top keeps the most Split View
+pane widths inside, which is what the ruling is for.
+
+**NOT MEASURED, and it is why 383 is not promoted to a derivation:** whether
+other S Ultra generations, or the same phone at another display-zoom setting,
+report the same 384. One device, one reading. A second measurement can move
+this number again.
+
+Out of scope, deliberately: a second threshold, and OS sniffing. #2161 records
+both as ruled out, and its "two things a width cannot do" section survives this
+unchanged — a pane WIDER than the threshold still loses the same two gestures
+and is still uncovered, and phones NARROWER than the measured pane (iPhone SE
+375, most Galaxy S 360) are still covered and still lose the preference. Moving
+384 to 383 does not touch either list. It removes one device from the second.
+
+### The change is one number; the rest of the diff is prose that went false
+
+`theme.ts`'s "Why 384" heading, its `768 / 2` tie-break paragraph and its
+"WIDER than 384" cost note; `showBottomBar.ts`'s "the threshold is 384"; the
+unit test's "384 is the threshold itself"; the e2e spec's "the threshold (384)
+was derived to sit between them". All in the SAME commit as the number. A
+comment has no gate that breaks when it stops being true — the next reader
+reasons from it and DEDUCES a defect that is not there. They ship together, or
+the cure plants the next bug.
+
+The **2026-09-18 #2161 entry above is NOT rewritten.** It is a dated record of
+what was decided that day, and what was decided that day was 384 for the reason
+it gives. This entry supersedes it; the log does not get edited into having
+been right.
+
+### The mutants, and what they say the gate is reading
+
+`theme.ts` carries the number in the declaration AND in the comments above it —
+exactly the shape where a substring assertion passes against the JUSTIFICATION
+while the configuration is gone (#2125, measured on `integration.yml`).
+`windowBarInFlow.test.ts` does not substring-match: it boots the real module
+against a fake `matchMedia` that answers the module's own query string. Proven
+rather than argued — three mutants on the declaration line, comments left at
+383 (5 occurrences of `383` still in the file each time), each restored and
+`diff -q`'d IDENTICAL:
+
+| mutant | declaration becomes | rc | tests killed |
+| --- | --- | --- | --- |
+| value emptied | `""` | 1 | 4 |
+| off-by-one up | `"(max-width: 384px)"` | 1 | 1, then 2 |
+| off-by-one down | `"(max-width: 382px)"` | 1 | 1 |
+
+The emptied value takes four tests down while every `383` in the prose is still
+sitting there. The gate reads the configuration.
+
+**The off-by-one mutants exposed a coverage hole, and that is why a test was
+added.** Each killed exactly ONE test, and it was the boundary pair
+(`bootAt(383)` true, `bootAt(384)` false) — the test this slice had just
+edited. One red is enough to say "it discriminates" and it hid a hole: the pair
+asks whether the threshold includes itself and excludes the next pixel, so it
+FOLLOWS the threshold. Move the number to 390 and the pair becomes 390/391,
+still green, with the Galaxy claim silently gone. The device-anchored arm
+`is FALSE at 384 (issue 2301's measured Galaxy S Ultra portrait)` is the cure,
+mirroring the 380 and 393 arms already in the file, which pin DEVICES rather
+than the threshold. The up-mutant now takes two.
+
+### What this does not establish
+
+The e2e spec cannot reach the new bound. The two touch projects drive 393 and
+412, no Playwright device sits at 384, and the spec was not widened to add one
+— the 384 claim lives in the unit suite. The e2e spec's negative control at 393
+is now a viewport bound rather than the measured one, and its comment says so.
