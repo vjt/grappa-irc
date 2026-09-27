@@ -20144,3 +20144,137 @@ The e2e spec cannot reach the new bound. The two touch projects drive 393 and
 412, no Playwright device sits at 384, and the spec was not widened to add one
 — the 384 claim lives in the unit suite. The e2e spec's negative control at 393
 is now a viewport bound rather than the measured one, and its comment says so.
+<!-- entry #2305 -->
+
+---
+
+## 2026-09-28 — #2305: the scrollback pane never pans sideways — one declaration, and the four things it was checked against first
+
+vjt's iOS PWA screenshot of `#irc40` on EFnet (`#grappa`, 2026-09-27 23:37)
+shows the whole scrollback pane dragged horizontally: every row clipped on the
+left, ordinary messages as much as the art that caused it. The content is mIRC
+block art — read-only on the prod DB, five consecutive lines of 223–273 bytes
+by `interdom3`, bodies shaped `\x0315,15 \x034,4  \x0f  …`, so each "pixel" is
+a run of spaces with fg = bg.
+
+### The absence was not a neutral default
+
+`.scrollback` declared `overflow-y: scroll` and nothing for x. That is not "the
+x axis is unset": per CSS Overflow 3, when one axis is not `visible` the other
+axis' `visible` computes to **`auto`**. So the pane had been a horizontal
+scroller all along, waiting for a row wider than itself. The cure is therefore
+a declaration and not a value correction, and the gate below asserts PRESENCE
+first for exactly that reason.
+
+### The scope is a ruling, and the clipping is accepted
+
+vjt, relayed (`#grappa` 2026-09-27, ~21:59Z — the author of this entry cannot
+read that channel): *"lascia perdere per ora, metti overflow e bon, poi ci
+pensiamo a horiz scroll"*.
+
+So an art row wider than the pane **loses its right-hand side**, and that is a
+deliberate, temporary choice rather than an oversight. It does sit against the
+same conversation's *"keep block art visible and intact"*; the objection was
+put and the narrower scope was chosen. Giving art its own horizontally
+scrollable box is a separate slice, and **how an art row is even RECOGNISED is
+open** — colour-code density, a line made mostly of bg-coloured spaces,
+consecutive same-sender lines within ~2 s were all floated and none ruled on.
+The issue says it in as many words: not the implementer's call to invent. No
+heuristic was written here.
+
+### 🔴 The risk, enumerated BEFORE the cure was applied
+
+Clipping a pane is cheap to write and expensive to get wrong, because things
+inside that pane overflow it ON PURPOSE. What was checked, and how:
+
+* **#1067 swipe-to-reply — the one that looked fatal, and is not.**
+  `.scrollback-line` carries `touch-action: pan-y` with the comment *"the
+  horizontal axis is ours to claim"*, and the gesture drives `transform`
+  inline while the finger is down. Three findings: the claim is **RIGHTWARD
+  ONLY** (`messageGestures.ts`: `if (current.x <= start.x) return;` — a
+  leftward drag is never claimed), the slide is capped at
+  `SWIPE_MAX_SLIDE_PX = 72`, and **nothing is revealed behind the row** — the
+  slide IS the feedback, there is no icon, no pseudo-element, nothing to lose.
+  The decisive point is the regime: **every non-`visible` overflow value
+  CLIPS**; they differ only in whether a scrolling mechanism is offered. The
+  pane already computed `auto`, so a swiping row was already clipped at this
+  same edge. The cure changes what can be SCROLLED TO, not what is PAINTED.
+  What it also removes is a defect nobody had filed: under `auto`, a
+  right-translated row extended the scrollable overflow, so the pane became
+  pannable for the duration of a swipe.
+* **The `.scrollback-highlight::before` accent bar** is `position: absolute`
+  at `left: calc(-2px - 0.25rem)` inside the pane's own 1rem gutter — 10px
+  INSIDE the clip edge, in the direction that never moves under a rightward
+  swipe. Its own comment already claims *"Inside the scrollport, so nothing
+  clips it"*, and that stays true.
+* **The #133 overlay, the #280 float stack and the #1094 older-page spinner
+  are SIBLINGS, not descendants** — children of `.scrollback-pane` beside
+  `.scrollback` (`ScrollbackPane.tsx`: the pane opens, then the overlay, then
+  the scroll list, then the float stack). `.scrollback-loading-older`'s own
+  comment says it is *"Out of `.scrollback`"* and not in its `scrollHeight`.
+  An `overflow` on `.scrollback` cannot reach any of them.
+* **Context menus portal to `<body>`** (`ContextMenu.tsx`), explicitly so the
+  fixed menu and its backdrop are never trapped in a pane's stacking context.
+
+### `clip` and not `hidden`, decided by measurement
+
+Both clip identically. They differ in one thing: `hidden` leaves the element a
+**scroll container**, so `scrollLeft` stays settable and there is real
+scrollable overflow beneath it for something to reconcile against. `clip`
+creates no scroll container at all.
+
+That is not a theoretical preference here — the sheet already carries a
+device-measured instance of the class. `.credits-*` used `overflow: hidden`
+over an absolutely positioned roll translated a viewport below the fold, and a
+touch made the engine reconcile a `scrollTop` the page never set: the entire
+frame jumps **178px in a single frame**, cross-correlated off vjt's recording
+frame by frame at 60fps. It was cured by moving to `clip`, with the note that
+this removes the class rather than papering over the symptom. Under `hidden`
+this pane would be that same shape with a real overflowing art row underneath.
+
+Two supporting measurements. **Nothing reads or writes `scrollLeft` on
+`.scrollback`** — the three sites that touch `scrollLeft` at all are
+`.bottom-bar`, the media viewer and pinch-zoom, so `clip`'s lack of a
+programmatic scroll breaks no reader. And the pane holds focusable descendants
+(inline buttons, clickable nicks); under `hidden` the browser scrolling one of
+them into view from the far right would pan the pane, and under `clip` it
+cannot. **No `hidden` fallback is written under it**: at this project's
+browserslist targets the minifier collapses the pair to `clip` alone, so the
+fallback never reaches a browser and only trips `noDuplicateProperties`.
+
+### The gate, and the trap the file arms by itself
+
+`default.css` is prose-heavy and the new comment alone names `overflow-x`
+twice and `clip` eight times; the file carries 67 `clip` and 21 `overflow-x` in
+total. A guard doing a substring match on the sheet would read the
+JUSTIFICATION and report on the CONFIGURATION — the #2125 shape.
+`scrollbackNoHorizontalPan.test.ts` reads through `nestedRuleBodies(".scrollback")`,
+which strips comments and scopes to the rule body, and throws when the selector
+has no rule so a rename cannot pass vacuously.
+
+Four arms, three of which name a distinct way to break this: the rule exists
+exactly once; `overflow-x` is DECLARED (the original bug regressing); its value
+is `clip` and not one of the scroll-container values; and the `overflow`
+SHORTHAND is absent while `overflow-y` stays `scroll` — because `overflow:
+clip` reads like a tidier spelling and would stop the pane scrolling at all.
+
+Proven rather than asserted. Each mutant edits only the declaration line, all
+the prose left in place, each restored with `diff -q` reporting IDENTICAL:
+
+| mutant | declaration becomes | rc | tests killed |
+| --- | --- | --- | --- |
+| declaration DELETED | *(line removed)* | 1 | 2 |
+| papered over | `overflow-x: hidden;` | 1 | 1 |
+| shorthand | `overflow: clip;` | 1 | 3 |
+
+The deleted-declaration mutant goes red with 66 occurrences of `clip` still
+sitting in the file. The gate reads the configuration.
+
+### What this does NOT establish
+
+The claim is a computed overflow regime and jsdom has no layout: it resolves no
+cascade and paints nothing, so **no test here observes any clipping**. The gate
+pins the declaration the regime follows from, and nothing more. That the real
+engine on vjt's device now refuses to pan — and that a swiping row looks
+unchanged doing it — is an INFERENCE from the spec and from the code, not a
+measurement. No e2e was added and no device was driven.
