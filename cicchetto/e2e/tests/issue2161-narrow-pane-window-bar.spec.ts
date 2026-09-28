@@ -29,7 +29,11 @@
 //
 // ## The two widths, and why they are these two
 //
-// Both are measured, and the threshold (384) was derived to sit between them:
+// Both are measured, and the threshold (383) sits between them. What it is NOT
+// is derived: 383 is a tie-break inside [381, 383], and the top of that set is
+// pinned by a width this suite cannot drive — issue 2301 measured a Galaxy S
+// Ultra in portrait at 384 CSS px, exactly where the threshold shipped in
+// 1.5.10, so a flagship phone lost the #1766 preference. See theme.ts.
 //
 //   * **380 x 650** — #2160's sample from the reporting device: iPad Pro 11,
 //     iPadOS 26.7, landscape Split View, installed PWA (`standalone: true`).
@@ -140,11 +144,13 @@ test("@webkit @touch mobile: the threshold discriminates, and it does so live", 
 
   await hideTheBar(page);
 
-  // 🔴 The negative control, at the measured upper bound of the band. A cure
-  // that forces the bar on unconditionally — the lazy reading of "keep the
-  // window bar in flow" — passes every other assertion in this file and fails
-  // right here. 393 is a phone, the swipes work there, and the preference is
-  // the user's to keep.
+  // 🔴 The negative control, at the narrowest viewport this suite can drive.
+  // (The MEASURED upper bound is issue 2301's 384, nine pixels below — no
+  // Playwright device sits there, so the unit suite owns that end.) A cure that
+  // forces the bar on unconditionally — the lazy reading of "keep the window
+  // bar in flow" — passes every other assertion in this file and fails right
+  // here. 393 is a phone, the swipes work there, and the preference is the
+  // user's to keep.
   await expect(page.locator(BOTTOM_BAR)).toHaveCount(0, { timeout: 10_000 });
   await expect(page.getByLabel(WINDOWS_OPENER)).toBeVisible({ timeout: 10_000 });
 

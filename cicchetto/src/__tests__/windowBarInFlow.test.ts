@@ -13,18 +13,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 //
 // The claim under test is a NUMBER, and mocking `isNarrowPane` away would leave
 // it untested: a suite that stubs the signal passes identically at a threshold
-// of 375 or 500, i.e. at values that break the two things the threshold is
-// bounded by. So the fake here answers the module's REAL query string against a
-// width, and the two tests that matter drive the two measured ends of the band:
+// of 375 or 500, i.e. at values that break the things the threshold is bounded
+// by. So the fake here answers the module's REAL query string against a width,
+// and the tests that matter drive the THREE measured widths:
 //
 //   * 380 x 650 CSS px — #2160's sample from the reporting device (iPad Pro 11,
 //     iPadOS 26.7, landscape Split View, installed PWA) — must be INSIDE.
+//   * 384 x 690 CSS px — issue 2301's Galaxy S Ultra in portrait (Chrome at the
+//     default display zoom, DPR 2.81) — must be OUTSIDE. 1.5.10's threshold sat
+//     exactly ON it, which is the regression that moved the number down to 383.
 //   * 393 — `devices["iPhone 15"].viewport.width`, the narrowest viewport the
 //     e2e projects drive — must be OUTSIDE, or the override swallows every
 //     phone the suite runs and #1766's own spec goes red.
 //
-// Move the threshold below 381 and the first fails; move it to 393 or above and
-// the second fails. Neither can pass vacuously.
+// Move the threshold below 381 and the first fails; move it to 384 or above and
+// the second fails. Nothing here can pass vacuously.
 
 // #458 — `displayPrefs` reaches the scrollback store on a presence reveal. This
 // file only wants `buildWireMap`, but the import graph comes with it; stub the
@@ -137,13 +140,30 @@ describe("issue 2161 — the window bar stays in flow in a narrow pane", () => {
       expect(windowBarInFlow()).toBe(true);
     });
 
+    // 🔴 The REGRESSION arm, and it is deliberately not the boundary pair below.
+    // That pair asks "does the threshold include itself and exclude +1", so it
+    // follows the threshold wherever it goes: move the number to 390 and the
+    // pair moves to 390/391, still green, with the Galaxy claim silently gone.
+    // This one is anchored to a DEVICE, like the 380 and 393 arms around it, so
+    // it stays red for any threshold >= 384 no matter how the pair is rewritten.
+    it("is FALSE at 384 (issue 2301's measured Galaxy S Ultra portrait) with the preference OFF", async () => {
+      localStorage.setItem("cicchetto.showBottomBar", "false");
+      const { windowBarInFlow, getShowBottomBar } = await bootAt(384);
+      expect(getShowBottomBar()).toBe(false);
+      expect(windowBarInFlow()).toBe(false);
+    });
+
     // The two ends are 12px apart, so the band is worth pinning from the inside
-    // as well: 384 is the threshold itself and `max-width` is inclusive.
+    // as well: 383 is the threshold itself and `max-width` is inclusive. The
+    // width just above it is not an arbitrary +1 — 384 is issue 2301's MEASURED
+    // Galaxy S Ultra portrait viewport, the device 1.5.10's threshold sat
+    // exactly on and the reason this number moved down. This pair is what pins
+    // 383: an off-by-one in EITHER direction turns one of the two red.
     it("includes the threshold width itself and excludes the first width above it", async () => {
       localStorage.setItem("cicchetto.showBottomBar", "false");
-      const at = await bootAt(384);
+      const at = await bootAt(383);
       expect(at.windowBarInFlow()).toBe(true);
-      const above = await bootAt(385);
+      const above = await bootAt(384);
       expect(above.windowBarInFlow()).toBe(false);
     });
 

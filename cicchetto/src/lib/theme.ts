@@ -56,26 +56,47 @@ const ADMIN_NARROW_QUERY = "(max-width: 899px)";
 // Direction 1 (arming a band inboard of the system's own) is NOT taken: the
 // width iPadOS reserves for the divider is unmeasured and nobody is guessing it.
 //
-// ## Why 384, and against what it is measured
+// ## Why 383, and against what it is measured
 //
-// Both ENDS of the admissible band are measured; the point inside it is a
-// tie-break, and this comment is the only place that says which is which.
+// THREE widths are measured and 383 is not one of them. Each bullet below
+// bounds the threshold; none of them picks it, and this comment is the only
+// place that says which is which.
 //
 //   * `> 380` — the narrow Split View pane measured on the reporting device
 //     (#2160: 380 x 650 CSS px, iPad Pro 11 landscape, installed PWA,
 //     `standalone: true`). The ruling requires that width to be INSIDE.
+//   * `< 384` — issue 2301: a Samsung Galaxy S Ultra in portrait, Chrome at
+//     the default display zoom, reports 384 x 690 CSS px (DPR 2.81, screen
+//     384 x 832). A flagship phone whose edge swipes work — and the threshold
+//     1.5.10 shipped sat exactly ON it, so every one of those phones lost the
+//     #1766 preference and the ☰ with it. It has to be OUTSIDE.
 //   * `< 393` — `devices["iPhone 15"].viewport.width`, the narrowest viewport
 //     this project's own e2e projects drive (`chromium-pixel-touch` is a
 //     Pixel 7 at 412). A threshold at or above it forces the bar back on for
 //     every phone the suite runs, which is #1766's own configuration — its
 //     spec would go red for asserting the preference it exists to prove.
+//     Subsumed by the 384 above, and kept anyway: it is the bound a red e2e
+//     spec would name, because 393 is a viewport the suite actually drives.
 //
-// That leaves [381, 392]; inside it nothing is measured. 384 is `768 / 2`,
-// half MOBILE_QUERY's own breakpoint, so no new number family enters the file.
+// That leaves [381, 383]; inside it nothing is measured. 383 is a TIE-BREAK —
+// the top of the admissible set, not a derived value. What picks the top
+// rather than 381 is that nothing distinguishes the three (no viewport in that
+// span has been measured either way) and the top keeps the most Split View
+// pane widths inside, which is what the ruling is for.
+//
+// 384 WAS that tie-break (`768 / 2`, half MOBILE_QUERY's own breakpoint, so no
+// new number family entered the file — tidy, and wrong): a midpoint chosen for
+// arithmetic landed on a real device. That is the whole argument for writing
+// down which numbers in a band are measured and which are a guess.
+//
+// 🔴 NOT MEASURED, and the reason 383 stays a tie-break instead of becoming a
+// derivation: whether other S Ultra generations, or the same phone at another
+// display-zoom setting, report the same 384. One device, one reading — a
+// second measurement can move this number again.
 //
 // 🔴 What a width threshold CANNOT do — this is the accepted cost of ruling
 // out OS sniffing, not an oversight to cure with a second threshold. A Split
-// View pane WIDER than 384 (a 50/50 split on the same device is ~507 CSS px)
+// View pane WIDER than 383 (a 50/50 split on the same device is ~507 CSS px)
 // loses the same two gestures and is NOT covered; and several shipping phones
 // in portrait are NARROWER than the measured pane (iPhone SE 375, most Galaxy
 // S 360), so they ARE covered and do lose the preference even though their
@@ -85,7 +106,7 @@ const ADMIN_NARROW_QUERY = "(max-width: 899px)";
 // Same literal-in-CSS caveat as the two queries above — except that nothing
 // mirrors this one: the window bar is a JSX MOUNT gate (#1766), never a
 // `display: none`, so this number lives here and only here.
-const NARROW_PANE_QUERY = "(max-width: 384px)";
+const NARROW_PANE_QUERY = "(max-width: 383px)";
 
 // Resolves the OS preference via matchMedia. Defensive against environments
 // without matchMedia (older browsers, SSR — neither applies to cicchetto

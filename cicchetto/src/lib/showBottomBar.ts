@@ -82,7 +82,7 @@ export function setShowBottomBar(on: boolean): void {
 // The override is vjt's direction-2 ruling for iPadOS Split View, where the OS
 // eats both edge bands and the swipes never arm: below NARROW_PANE_QUERY the
 // bar stays in flow WHATEVER the preference says. See theme.ts for why the
-// threshold is 384 and for the two things a width cannot tell apart.
+// threshold is 383 and for the two things a width cannot tell apart.
 //
 // 🔴 `getShowBottomBar()` — the RAW preference — stays the reader for the two
 // places that must never see the override, and both are load-bearing:
