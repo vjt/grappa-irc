@@ -431,7 +431,7 @@ defmodule Grappa.Session.NSInterceptor do
   defp identify_password(rest) do
     case String.split(rest) do
       [password] -> password
-      [_account, password | _] -> password
+      [_, password | _] -> password
     end
   end
 
@@ -442,8 +442,8 @@ defmodule Grappa.Session.NSInterceptor do
   # `+r` inside the window then committed a `Guest<N>` over the real secret.
   defp ghost_password(rest) do
     case String.split(rest) do
-      [_nick] -> :passthrough
-      [_nick, password | _] -> {:capture, :identify, password}
+      [_] -> :passthrough
+      [_, password | _] -> {:capture, :identify, password}
     end
   end
 
