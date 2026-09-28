@@ -2939,6 +2939,23 @@ nessuna riscrittura possibile. Misurala lo stesso se costa due comandi, ma dichi
       quattro sezioni erano perse e nessuna delle ruling parcheggiate sarebbe mai tornata.
   ⚠️ **Il ceiling delle ~120 righe è un obiettivo, non un verdetto.** Una potatura va giudicata da
   COSA è sparito, non da quanto è corto il risultato.
+  🔴🔴 **E LA PREDIZIONE STESSA SI PRENDE CON DUE RIGHELLI STORTI, MISURATO 2026-09-28:
+  IN PYTHON `len(s)` NON E' UN CONTEGGIO DI BYTE, E `len(testo.split('\n'))` NON E' UN CONTEGGIO DI
+  RIGHE.** Patchando l'handoff ho predetto `righe=179 byte=72913` e misurato `wc -l -c` **178 /
+  74790**. Nessuno dei due scarti e' un difetto della patch: **`split('\n')` restituisce N+1
+  elementi su un file che finisce con newline** (quindi la predizione delle righe e' sempre +1), e
+  **`len(s)` conta CARATTERI** — su questo file, denso di emoji e accenti, i due valori divergono del
+  ~2,6 % (`char=72913` contro `byte=74790`, verificato con `len(s.encode())`).
+  🔑 **Forma che regge: righe = `s.count('\n')`, byte = `len(s.encode())`** — e si predicono
+  **nella stessa unita' con cui li rileggerai** (`wc -l -c`), o la verifica confronta due grandezze
+  diverse e non risponde alla domanda.
+  ⚠️ **E il verso conta: il file misurato risulta PIU' GRANDE del predetto**, cioe' la firma di
+  una patch che ha scritto piu' del dovuto ⇒ **un controllo che accusa una patch sana**. Nel verso
+  opposto (un file con pochi multibyte) lo scarto sparisce e il righello storto **assolve in
+  silenzio** — ed e' li' che non lo scopri.
+  🧪 **Il discriminante costa una riga:** se lo scarto e' ~2-3 % e il file e' pieno di emoji,
+  sospetta l'UNITA' prima del contenuto; `python3 -c "s=open(f,encoding='utf-8').read();
+  print(len(s), len(s.encode()))"` chiude la domanda senza toccare la patch.
 - 🔴🔴 **UNA `assert` VERA LETTA NEL VERSO SBAGLIATO: IL TAGLIO A FETTA CHE INGHIOTTE LA SEZIONE
   ACCANTO, E IL CONTROLLO CHE DOVEVA BECCARLO LO CONFERMA (orch, 2026-09-20, sull'handoff).**
   Dopo il disastro della regex avevo adottato il taglio per ANCORE (`s.index(start)` / `s.index(end)`)
