@@ -18,21 +18,19 @@ import { nestedRuleBodies } from "./helpers/themeCss";
 // needs a real engine, and this file does not pretend to be one. What CAN be
 // pinned is the declaration the regime follows from.
 //
+// 🔴 AND THAT IS A NARROWER THING THAN IT LOOKS, which this file learned the
+// hard way: it once pinned a declaration whose COMPUTED value was the exact
+// opposite of what it asserted, and stayed green. The two gates are not
+// interchangeable and neither replaces the other — this one pins what the
+// sheet DECLARES, `e2e/tests/issue2305-scrollback-no-horizontal-pan.spec.ts`
+// pins what an engine RESOLVES. A claim about the resolved value does not
+// belong in here, because nothing in here can falsify it.
+//
 // `nestedRuleBodies` strips CSS comments, which is load-bearing rather than
 // tidy: the prose above this rule names `overflow-x`, `clip` and `hidden`
 // several times over, and a guard doing a substring match on the sheet would
 // read the JUSTIFICATION and report on the CONFIGURATION. It also throws when
 // the selector has no rule at all, so a rename cannot pass this vacuously.
-
-/**
- * Values of `overflow-x` that still make the element a scroll container, so a
- * `scrollLeft` nobody set stays settable and an engine — or the browser
- * scrolling a focusable descendant into view — can pan the pane after all.
- * `hidden` is in here on purpose: it clips identically and fixes the symptom
- * while leaving the class of bug alive. See `.credits-*`, which paid for that
- * with a measured 178px single-frame jump.
- */
-const SCROLL_CONTAINER_VALUES = ["auto", "scroll", "hidden"];
 
 /** Every `property: value` pair in a rule body, in source order. */
 function declarations(body: string): { property: string; value: string }[] {
@@ -74,15 +72,26 @@ describe("issue 2305 — the scrollback pane never scrolls sideways", () => {
     expect(valuesOf(body, "overflow-x")).toHaveLength(1);
   });
 
-  it("pins it to clip, which creates no scroll container at all", () => {
+  // 🔴 This used to pin `clip` and, as its stated REASON, assert that the
+  // value was not one of `auto | scroll | hidden` — the values that leave the
+  // pane a scroll container. It was GREEN while the computed value was
+  // `hidden`, one of the three it excluded, because it read the DECLARED text
+  // and nothing here resolves a cascade. The e2e
+  // (`e2e/tests/issue2305-scrollback-no-horizontal-pan.spec.ts`) asked an
+  // engine instead and measured, on Chrome 147 and Mobile Safari 26.4, that
+  // `clip` on one axis with a SCROLLING value on the other computes to
+  // `hidden` — the engine parses `clip` and then computes it away. This pane
+  // must scroll in y, so `clip` is unreachable here and the sheet now
+  // declares what actually ships.
+  //
+  // Pinning the exact value on an exact-length list is STRICTER than what it
+  // replaces: `auto`, `scroll`, `visible` and a re-introduced `clip` all go
+  // red, and `clip` going red is the point — it is the value whose
+  // reappearance would re-arm the claim this comment exists to retire.
+  it("pins it to hidden — the only value this axis pairing can hold", () => {
     const [body] = nestedRuleBodies(".scrollback");
     if (body === undefined) throw new Error(".scrollback has no rule body");
-    const [value] = valuesOf(body, "overflow-x");
-    expect(value).toBe("clip");
-    // Stated as its own assertion because it is the REASON, and the reason is
-    // what a future edit will be tempted to drop: `hidden` looks like the same
-    // cure and is not.
-    expect(SCROLL_CONTAINER_VALUES).not.toContain(value);
+    expect(valuesOf(body, "overflow-x")).toEqual(["hidden"]);
   });
 
   it("leaves the vertical axis scrolling — the shorthand would take it away", () => {

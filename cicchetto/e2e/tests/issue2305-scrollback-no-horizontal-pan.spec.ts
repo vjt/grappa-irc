@@ -3,42 +3,49 @@
 //
 // WHY THIS EXISTS NEXT TO `src/__tests__/scrollbackNoHorizontalPan.test.ts`,
 // WHICH IS NOT REDUNDANT WITH IT. That file is a textual scan of the
-// stylesheet: it reads `.scrollback`'s rule body and pins that the body
-// DECLARES `overflow-x: clip` exactly once, that the `overflow` shorthand is
-// absent, and that there is exactly one rule block deciding the pane's
-// overflow. Those are strong and they stay. But it measures the TEXT
-// DECLARED in one file, and two things can still be true with it green:
+// stylesheet: it reads `.scrollback`'s rule body and pins what the body
+// DECLARES for the x axis, that the `overflow` shorthand is absent, and that
+// exactly one rule block decides the pane's overflow. Those are strong and
+// they stay. But it measures the TEXT DECLARED in one file, and two things
+// can still be true with it green:
 //
 //   1. A LATER rule — anywhere in the sheet, in a media query, in a
 //      `html.is-ios27-band` block, in a file the scan never opens — is more
 //      specific and wins the cascade. The scan looks at one selector in one
 //      file and cannot see a competitor by construction.
-//   2. The ENGINE does not honour the value. `clip` is a CSS Overflow 3
-//      addition, not a universal one, and an engine that does not know it
-//      drops the declaration — at which point `overflow-y: scroll` forces
-//      the x axis' `visible` to compute back to `auto` and the pane is a
-//      horizontal scroller again, which IS the reported bug. The sheet would
-//      still say `clip`. jsdom cannot arbitrate this: it resolves no cascade
-//      and implements no layout, so there is no computed overflow in there
-//      to read.
+//   2. The ENGINE COMPUTES THE DECLARED VALUE INTO A DIFFERENT ONE, which is
+//      not a hypothetical: it is what happened here, and it is why this file
+//      exists. The rule shipped `overflow-x: clip` and the scan went green on
+//      it while both engines resolved `hidden` — CSS Overflow 3 computes a
+//      `clip` on one axis to `hidden` when the other axis scrolls, and this
+//      pane must scroll in y. Measured at `about:blank` on detached elements,
+//      reading both axes in one pass, Chrome 147 and Mobile Safari 26.4
+//      agreeing to the character: clip+visible→clip, clip+scroll→HIDDEN,
+//      clip+clip→clip, clip+auto→HIDDEN, hidden+scroll→hidden. The engine
+//      PARSES `clip` and then computes it away.
 //
-// This spec answers both by asking the engine what it actually resolved.
+// jsdom can arbitrate neither: it resolves no cascade and implements no
+// layout, so there is no computed overflow in there to read. This spec asks
+// the engine what it actually resolved.
 //
-// WHY `@webkit` AND NOT THE DESKTOP DEFAULT. vjt's report is an iOS PWA
-// screenshot of `#irc40`: the platform where the bug was SEEN is WebKit, and
-// point 2 above is an engine-support question, which is the one class of
-// regression a run on the other engine cannot see. An untagged spec runs on
-// desktop `chromium` and NOWHERE ELSE, so it would have been a green off the
-// defect's platform.
+// WHY BOTH TAGS, WHICH IS TO SAY: WHY TWO ENGINES. Point 2 is a question
+// about what an ENGINE does with a declaration, so a gate that asks it of
+// exactly one engine has answered half of its own question. `@webkit` puts
+// this on `webkit-iphone-15`, the platform vjt's iOS PWA screenshot of
+// `#irc40` came from; `@touch` puts it on `chromium-pixel-touch`, the Blink
+// half. Both engines agreeing is also what tells a spec-mandated computed
+// value apart from a per-engine quirk — though it does NOT rule out a shared
+// toolchain cause, since both load the same bundle from the same build.
 //
-// 🔴 The tag is an opt-IN to `webkit-iphone-15` and simultaneously an opt-OUT
-// of `chromium`: that project's `grepInvert` is the complement of the touch
-// projects' greps, so a tagged spec does not also run there. Measured on
-// `playwright test --list`, which collects this file on `webkit-iphone-15`
-// alone — do not read the config header's "also runs on" as additive to the
-// desktop default. The consequence is deliberate but it IS a gap: nothing
-// here proves Chromium resolves `clip` on this pane. Adding `@touch`
-// alongside would buy `chromium-pixel-touch` and close it, at one more test.
+// 🔴 A tag is an opt-IN to a touch project and simultaneously an opt-OUT of
+// the desktop default: `chromium`'s `grepInvert` is the complement of the two
+// touch projects' greps, so a tagged spec does not also run there. Read the
+// config header's "also runs on" as "in addition to the other touch project",
+// never as additive to the desktop. Measured on `playwright test --list`:
+// untagged this file would be collected once, on desktop `chromium` alone;
+// with both tags it is collected twice, once per touch project, and never on
+// the desktop. Nothing is lost by that — `chromium-pixel-touch` is the same
+// engine as the desktop project, so the Blink answer is covered either way.
 //
 // WHAT THIS SPEC DELIBERATELY DOES NOT DO. It does not synthesise an mIRC art
 // row, does not detect one, and does not attempt a horizontal scroll or drag.
@@ -62,10 +69,11 @@ type PaneOverflow = {
   /** The claim under test. */
   overflowX: string;
   /**
-   * The other half of the claim: the shorthand would have taken this with
-   * it. `overflow: clip` and `overflow-x: clip` are indistinguishable on the
-   * x axis and differ here, so this is what separates the fix from the one
-   * edit that would break the pane outright.
+   * The other half of the claim, and the axis the whole rule exists to
+   * PRESERVE. A one-value `overflow` shorthand would set both axes and read
+   * `hidden` here too, which is indistinguishable from the fix on x and kills
+   * the scrolling this pane exists for — so this is the value that separates
+   * the two.
    */
   overflowY: string;
   /**
@@ -74,9 +82,10 @@ type PaneOverflow = {
    * `min-height: 0`) and both differ from their initial values (`0` and
    * `auto`), so they can only read as pinned here if the element really is
    * the pane AND the stylesheet really reached it. Without them a green on
-   * `overflowX` would not distinguish "the engine resolved clip" from "I
-   * measured something else entirely" — and an element that is absent or
-   * unstyled is exactly how a spec goes green while proving nothing.
+   * `overflowX` would not distinguish "the engine resolved the pane's own
+   * rule" from "I measured something else entirely" — and an element that is
+   * absent or unstyled is exactly how a spec goes green while proving
+   * nothing.
    */
   control: { flexGrow: string; minHeight: string };
   /**
@@ -87,7 +96,7 @@ type PaneOverflow = {
   laidOut: boolean;
 };
 
-test("@webkit issue2305 — the scrollback pane resolves overflow-x: clip and keeps scrolling vertically", async ({
+test("@webkit @touch issue2305 — the scrollback pane resolves overflow-x: hidden and keeps scrolling vertically", async ({
   page,
 }) => {
   if (CHANNEL === undefined) throw new Error("AUTOJOIN_CHANNELS empty");
@@ -116,11 +125,14 @@ test("@webkit issue2305 — the scrollback pane resolves overflow-x: clip and ke
   expect(pane.laidOut).toBe(true);
   expect(pane.control).toEqual({ flexGrow: "1", minHeight: "0px" });
 
-  // The claim. `clip` and not `hidden`: `hidden` clips identically and still
-  // makes the pane a scroll container on x, which leaves a `scrollLeft`
-  // settable and the class of bug alive. An engine that dropped the
-  // declaration reports `auto` here — forced by the `scroll` below, per CSS
-  // Overflow 3 — which is the reported bug rather than a near miss.
-  expect(pane.overflowX).toBe("clip");
+  // The claim, and `hidden` EXACT is the strong form rather than the lax one.
+  // The reported bug is `auto` — an axis left to fall through and become a
+  // real horizontal scroller — and `auto`, `scroll` and `visible` all stay
+  // red here. What the exact match ADDS is that `clip` goes red too, which is
+  // deliberate: `clip` is the value this rule first shipped, and it is
+  // unreachable while the axis below scrolls. A `clip|hidden` alternation
+  // would accept it back and hide exactly the regression this spec was
+  // written to find.
+  expect(pane.overflowX).toBe("hidden");
   expect(pane.overflowY).toBe("scroll");
 });
