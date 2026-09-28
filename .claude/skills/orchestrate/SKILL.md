@@ -4446,3 +4446,37 @@ aperto **non ha stampato niente** (forma che regge: un flag — `awk 'f{print} /
 (*un grep su un identificatore misura le OCCORRENZE DEL TESTO, non gli USI*), che si chiude
 escludendo i commenti (`grep -v '^[[:space:]]*#'`) **con il pos ctrl sulla forma giusta**. ⇒ quando un
 auto-check accusa uno script che hai appena scritto, **il primo sospetto è il check.**
+
+## 🧪 UN POS CTRL DI `git status --porcelain` **NUDO** SUL REPO PRINCIPALE È MORTO: LÌ NON C'È SPORCO TRACCIATO, E LO SPORCO SI **COSTRUISCE** (w1, 2026-09-28, correggendo un numero mio già a verbale)
+Questo file ordina, giustamente, di provare che una worktree è pulita con `git -C <wt> status
+--porcelain` **da dentro**, e di non leggere quel vuoto come un dato finché un pos ctrl non dimostra
+che il comando parla. Il numero che avevo messo a verbale come pos ctrl — **1341 righe sul repo
+principale** — **veniva da `--porcelain --ignored`**. Misurato: **senza `--ignored` il repo
+principale ha ZERO tracked sporchi** ⇒ quel pos ctrl, girato nella forma NUDA che si usa sul
+bersaglio, **risponde 0 esattamente come il bersaglio pulito** ⇒ **non discrimina niente.**
+🔑 **La coppia (domanda, strumento) non è la stessa nelle due invocazioni:** `--ignored` misura
+*"quanta roba ignorata c'è"*, il nudo misura *"ci sono modifiche tracciate"*, e su questo checkout
+la seconda è **strutturalmente zero**. Un pos ctrl preso con flag diversi da quelli dello strumento
+è il difetto già a verbale qui — qui nel verso che **ASSOLVE**, cioè quello che non si nota.
+🥇 **CURA, ed è sua: lo sporco si COSTRUISCE.** Una worktree `--detach` usa-e-getta, un `touch`/una
+riga in un file tracciato ⇒ ` M README.md`, si legge **1**, si ripristina ⇒ **0**. Solo allora il
+vuoto sul bersaglio è una **misura** e non un mutismo. ⇒ **nei brief: «il pos ctrl del `porcelain`
+si fabbrica, non si pesca»**, e chi cita un numero deve dire **con quali flag** l'ha preso.
+🪞 *E il difetto era MIO e stava in un artefatto che le worker leggono come premessa: un numero in
+un brief va accompagnato dalla DOMANDA a cui risponde, o diventa una premessa che nessuno ricontrolla.*
+
+## 🔎 `git worktree list | grep -c detach` MISURA LA STRINGA `(detached HEAD)`, NON LE WORKTREE `--detach` RESIDUE (orch, 2026-09-28, difetto in una verifica MIA)
+Per controllare che una potatura non avesse lasciato in giro la worktree `--detach` di servizio ho
+girato `git worktree list | grep -c detach` ⇒ **2**, contro lo **0** che la worker riportava. Sembrava
+una discrepanza fra due misuratori. **Non lo era: il mio predicato pesca `(detached HEAD)`**, cioè il
+marcatore di stato che due worktree **preesistenti e legittime** portano da sempre
+(`w1-2102-oidc`, `w2-mainred`). `grep -c "detach-main"` — il nome della worktree di servizio — ⇒ **0**,
+d'accordo con lei.
+🔑 **Due predicati diversi sullo stesso output, e l'unico che risponde alla mia domanda è quello che
+nomina l'ARTEFATTO** (`detach-main`), non quello che nomina la CLASSE (`detach`). *Un grep su un
+token misura le occorrenze del TESTO, non la cosa* — regola già in questo file, incontrata qui dal
+lato in cui **ACCUSA una worker che aveva ragione.**
+🥇 **E la mossa giusta, prima di aprire un caso: quando la tua misura contraddice quella di chi ha
+fatto il lavoro, RILEGGI IL TUO PREDICATO prima di rileggere il suo referto.** La sua evidenza è di
+prima mano, la tua è una sonda costruita al volo — e la sonda è la parte nuova, quindi la parte
+probabilmente rotta.
