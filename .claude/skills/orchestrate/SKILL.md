@@ -4107,6 +4107,19 @@ giusta.
   `(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+`
   — con neg ctrl **decisivo** (keyword presente, numero **senza** cancelletto ⇒ 0) e la sua controparte
   col cancelletto (⇒ 2), cioe' i due versi della regola che questo file gia' scrive.
+  🔴🔴 **E LA FORMA RIPARATA QUI SOPRA E' ANCORA CIECA SU META' DELLE GRAFIE, PERCHE' IL **CASE** FA
+  PARTE DEL PREDICATO E LA PROSA ATTORNO PARLA SOLO DI ADIACENZA (orch, 2026-09-28).** Misurato su
+  sette grafie: **senza `-i`, `Closes #999999` / `Fixes #999999` / `CLOSES #999999` NON matchano** —
+  e la maiuscola e' **la grafia piu' comune di tutte**. Con `-i`: **7/7**; neg ctrl (keyword +
+  numero **senza** cancelletto; *"this does not fix issue 999999"*) **0**. ⇒ **lo scanner si gira
+  `grep -icE`, e il `-i` non e' un'abitudine: e' un pezzo del predicato.**
+  🥇 **E l'ho scoperto per il verso FORTUNATO della trappola gia' a verbale piu' sotto (*un pos ctrl
+  girato con flag DIVERSI dallo strumento*): lo scan aveva `-i`, il pos ctrl no ⇒ il controllo era
+  PIU' STRETTO dello strumento ⇒ ha accusato uno strumento sano.** Nel verso opposto — pos ctrl piu'
+  PERMISSIVO — avrebbe **ASSOLTO un matcher cieco, in silenzio**, e nessuno avrebbe mai guardato.
+  ⚠️ **Quando riscrivi questa sezione: NON mettere un numero di issue REALE accanto a una keyword** —
+  sei cifre che non possono risolvere. Citare la trappola la fa scattare, e questo file ne porta due
+  istanze misurate (un body di PR **e** un messaggio di commit).
   🥇🥇 **LA LEZIONE NON E' IL REGEX, E' IL POS CTRL: un controllo positivo per un MATCHER deve
   esercitare OGNI GRAFIA CHE IL PARSER VERO ACCETTA, non un esemplare.** Con un solo esemplare
   (keyword nuda + numero) il mio scanner passava da mesi — era un pos ctrl **per quell'esemplare**, non per la
