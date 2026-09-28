@@ -4380,3 +4380,39 @@ La ricetta in questo file chiede quattro controlli, di cui il portante e' il **p
 ⚠️ **L'aritmetica predetta PRIMA resta, e per una ragione diversa:** i due `cmp` provano l'identita' **una volta che sai N**; l'aritmetica e' la sola che si possa scrivere **prima di girare il rebase**, quindi e' l'unica **falsificabile in anticipo**. Le due cose non si sostituiscono.
 🔴 **E RESTA UN ASSE CHE NESSUNO DEI DUE `cmp` PUO' VEDERE, e l'ha chiuso lei senza che lo chiedessi: LA ROTTURA SEMANTICA.** Main portava uno `Shell.tsx` nuovo, il ramo tre file di test: **un `cmp` byte-per-byte su ogni file passa in silenzio mentre il codice non compila piu' o un test non regge.** ⇒ **dopo un rebase si gira la suite** (li': `bun.sh run test` rc=0, 373 file / 7642 test). *Una prova di identita' testuale non e' una prova di correttezza, e la ricetta non lo diceva.*
 🥇 **Terza cosa da chiedere nei brief, e l'ha fatta da se': DERIVARE LA PREDIZIONE IN PROPRIO PRIMA DI LEGGERE LA MIA.** Ha ricalcolato `1125354+6725 = 1132079` e `19801+113 = 19914` e solo dopo ha confrontato. **Due derivazioni indipendenti che coincidono sono due misure; una che legge la mia e' un'ECO** — e questo file registra gia' che una conferma che ripete la fonte non e' una verifica.
+
+## ⏱️🔴 L'ANCORA D'OROLOGIO DI UN WAITER È CONGELATA ALL'ARM: SE MAIN SI MUOVE, `stale=0` SMETTE DI ESSERE UNA MISURA E DIVENTA UN ARTEFATTO DI *QUANDO HAI ARMATO* (orch, 2026-09-28, difetto in uno strumento mio)
+Fratello della sezione qui sopra, e la coppia va letta insieme: là il **SOGGETTO** di controllo perde
+la proprietà per cui l'avevi scelto; qui è il **TERMINE DI PARAGONE** a scadere, e la differenza è che
+lo strumento non si rifiuta di armarsi — **continua a rispondere, con un numero che sembra un dato.**
+🔬 **Misurato.** Waiter su PR 2308 armato con `MAIN_TS=23:40:04Z` (la punta di allora). Venti minuti
+dopo un pari ha pushato la release e main è andata a `23:59:00Z`. Il predicato confronta gli
+`started_at` con `MAIN_TS`, **che nel frattempo non si era mosso** ⇒ i check partiti `~23:56–23:59`
+risultano **NON** stantii e il waiter avrebbe stampato `stale=0`. Ma quello zero non risponde a *"il
+verde attesta la base CORRENTE?"*: risponde a *"main si è mossa dopo che ho **ARMATO**?"*, che è
+un'altra domanda.
+🔑 **E il verso è quello cattivo: UNDER-REPORT.** Un falso `CI-STALE` si nota (prescrive un push che
+scopri inutile); un `stale=0` da un'ancora scaduta **fa passare un verde che attesta una base
+sparita**, cioè esattamente ciò per cui il predicato esiste. *Un metro che invecchia mentre lo usi non
+segnala l'invecchiamento: risponde più lentamente della realtà.*
+🥇 **CURA: l'ancora si RI-DERIVA a ogni giro, come già si ri-derivava la head.** Modello `v8` in
+`artifacts/ci-waiter-model/ci-waiter-v8.sh`. Ed emetti **`MAIN-MOVED` con la sha nuova E il numero di
+file del delta**, perché il giudizio che segue — *ciò che si è mosso può invalidare questo verde?* —
+si deve poter fare **senza una seconda interrogazione**.
+🥇🥇 **E il verdetto di staleness NON ORDINA un push: lo PROPONE con i dati.** `CI-STALE … serve un
+push` è una **prescrizione** dedotta da un predicato che non sa *cosa* si è mosso; `v8` stampa
+`CI-NOT-RED-BUT-STALE … tot=N bad=0 stale=M vs main_ts=…` e chiude con *"DECIDI cosa è cambiato prima
+di chiedere un push"*. Nel caso reale il delta era **UN file, `VERSION`** — la PR non lo tocca, e
+`version_single_source_test` confronta `VERSION` con la lettura che `mix.exs` fa di `VERSION`, quindi
+è autoconsistente a qualunque valore ⇒ **il verde regge, ma per una MISURA, non per il gate.**
+🛑 **E NON si ri-arma per "aggiustare" il numero.** Ri-ancorare un waiter in volo sposta il metro per
+ottenere la risposta che ti piace **e** butta il verdetto in volo pagando un giro di shard. Si corregge
+il MODELLO per il prossimo, si dichiara il limite di quello in corso, e il giudizio lo si porta a mano
+con la misura accanto.
+🪞 *Contorno di metodo, e vale oltre il caso: i miei tre auto-check su `v8` hanno dato due risposte
+"sbagliate" e **in entrambi i casi era rotta la SONDA, non lo script.*** `awk '/^re/,0'` come range
+aperto **non ha stampato niente** (forma che regge: un flag — `awk 'f{print} /re/{f=1}'`), e
+`grep -c 'date=format:'` contava **la prosa che VIETA quella forma** — il difetto già a verbale qui
+(*un grep su un identificatore misura le OCCORRENZE DEL TESTO, non gli USI*), che si chiude
+escludendo i commenti (`grep -v '^[[:space:]]*#'`) **con il pos ctrl sulla forma giusta**. ⇒ quando un
+auto-check accusa uno script che hai appena scritto, **il primo sospetto è il check.**
