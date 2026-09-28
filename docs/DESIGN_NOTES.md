@@ -20433,3 +20433,83 @@ directly and never reaches `departed_channels/2`; measured with a mutant that
 empties the `{:parted, _}` clause, it stays green, so that clause had no test at
 all. Without the organic arm, "a kick no longer departs" and "nothing departs
 any more" were the same green.
+<!-- entry #2318 -->
+
+---
+
+## 2026-09-29 — #2318: a NickServ password lives in the slot services read, not in the last token
+
+A registered visitor could not log in from cicchetto (`401 :password_mismatch`)
+while the same NickServ password identified fine from a plain client; the stored
+`password_encrypted` had become a `Guest<N>` nick. The issue named a suspect from
+reading the code: `NSInterceptor`'s catch-all took the LAST whitespace token of
+any IDENTIFY / ID / SIDENTIFY / GHOST / PASS line as the password.
+
+### What the services actually read
+
+Read off the handlers, not inferred — `azzurra/services` `src/nickserv.c` at
+`23473ed` (the module's pin) AND at HEAD `5b38d02`, byte-identical over the
+four handlers below although the file itself moved; `atheme/atheme` master;
+`oftc/oftc-ircservices` develop.
+
+| verb | Azzurra | Atheme | OFTC |
+|---|---|---|---|
+| IDENTIFY / ID / IDENT / SIDENTIFY / PASS, 1 token | the password | the password | the password |
+| same, 2 tokens | 2nd (`do_identify:1669`) | 2nd | **1st** (`IDENTIFY password [nick]`) |
+| same, 3+ tokens | 2nd — a third is never read | 2nd onward, as one param | 1st |
+| GHOST, 1 token | `NS_GHOST_SYNTAX_ERROR` (`do_ghost:3439`) | valid for an identified caller, no password | no GHOST verb (REGAIN) |
+| GHOST, 2+ tokens | 2nd | 2nd | — |
+| RECOVER / RELEASE | `<nick> <pass>`, both required | — | — |
+
+Every Azzurra door reaches the same `strtok` pair: bahamut's message table gives
+`IDENTIFY`, `NS` and `NICKSERV` ONE parameter (`include/msg.h`), so the rest of
+the line reaches services whole, and `m_pass` forwards `parv[1] parv[2]` and
+drops the rest.
+
+So the last token was wrong in exactly two shapes: a one-token GHOST, whose lone
+token is a NICK, and any line with a third token. The cure reads the grammar:
+the identify family takes the lone token or the second of two or more; GHOST
+takes the second, and with the nick alone captures nothing.
+
+### Two premises the dispatch carried, and what the source said
+
+The issue called one-token `GHOST <nick>` "valid on services when the sender is
+already identified". That is Atheme; on Azzurra, where the report came from, it
+is a syntax error. It does not matter to the cure — the interceptor captures on
+SEND, before services answer — but it bounds how the value can have reached the
+row. The dispatch also listed `IDENTIFY <account>` as a one-token form whose
+token is not a password; on all three services a lone IDENTIFY token IS the
+password (`do_identify:1689` moves it into `pass` and takes the account from the
+caller's nick), so that form was always captured correctly.
+
+### What is proven, and what is not
+
+Proven against the pre-cure code, in `server_test.exs`: a real `IDENTIFY s3cret`
+staged, then `GHOST Guest12345` inside the window, then `+r` — the credential
+reads back `"Guest12345"`. That is the reported shape, end to end.
+
+NOT proven: that this is what the affected user did on 2026-09-19. The upstream
+line was never retrieved (logs rotated, scrollback not read), and a user ghosting
+a `Guest` nick is odd. A second path produces the same value deterministically
+and is worth naming: a perform line `NS IDENTIFY $nick $nickserv_pass` on a
+credential with no stored password expands the empty `$nickserv_pass` to `""`
+(`PerformList`, by design), the capture regex trims the trailing blank, and the
+line reaches the interceptor as `IDENTIFY <nick>` — ONE token, which services
+and both the old and the new rule all read as the password. This cure does NOT
+close that path; the defect there is an expansion that changes what the line
+means, and it belongs to `PerformList`. Nothing on record distinguishes the two
+paths.
+
+### Deliberately out of scope
+
+- **OFTC's reversed IDENTIFY.** The interceptor has no flavour input, so
+  `/ns IDENTIFY <pass> <nick>` on OFTC stages the nick, before and after this
+  change. Threading `services_flavor` through fixes it only half-way:
+  `RecoverIdentity` and `GhostRecovery` send Azzurra-shaped lines on every
+  network, and curing the reader alone would leave two patterns.
+- **The corrupted row.** It is the operator's to repair; there is still no
+  operator door to clear a visitor's stored NickServ password, which is why
+  the user is locked out rather than merely mis-stored.
+- **`IDENT` and `NS PASS`.** Both are `do_identify` aliases in Azzurra's
+  command table that the verb regex does not list, so they are not captured at
+  all — a missed rendezvous, never a corrupted row.
