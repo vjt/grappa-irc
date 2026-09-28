@@ -20270,11 +20270,36 @@ the prose left in place, each restored with `diff -q` reporting IDENTICAL:
 The deleted-declaration mutant goes red with 66 occurrences of `clip` still
 sitting in the file. The gate reads the configuration.
 
-### What this does NOT establish
+### The second gate, on a real engine
 
-The claim is a computed overflow regime and jsdom has no layout: it resolves no
-cascade and paints nothing, so **no test here observes any clipping**. The gate
-pins the declaration the regime follows from, and nothing more. That the real
-engine on vjt's device now refuses to pan — and that a swiping row looks
-unchanged doing it — is an INFERENCE from the spec and from the code, not a
-measurement. No e2e was added and no device was driven.
+The jsdom scan reads the TEXT DECLARED in one rule in one file, and two things
+survive it green: a later, more specific rule winning the cascade from
+somewhere the scan never opens, and an engine that does not honour `clip` at
+all — it drops the declaration, `overflow-y: scroll` forces the x axis back to
+the computed `auto`, and the sheet still says `clip`. Both are invisible to a
+textual scan by construction, so
+`cicchetto/e2e/tests/issue2305-scrollback-no-horizontal-pan.spec.ts` asks the
+engine what it RESOLVED: `getComputedStyle(pane).overflowX === "clip"` and
+`overflowY === "scroll"` (the second is what separates the fix from the
+shorthand, which would take the vertical scrolling with it).
+
+`@webkit`, and that is an opt-OUT as much as an opt-in: the `chromium`
+project's `grepInvert` is the complement of the touch projects' greps, so the
+tag moves this spec onto `webkit-iphone-15` and OFF the desktop default —
+measured on `playwright test --list`, 1016 → 1017 collected, the one new line
+carrying `[webkit-iphone-15]` and no chromium twin. WebKit is where vjt saw
+the bug and where the engine-support question actually bites, so the trade is
+deliberate; the gap it leaves is that nothing proves Chromium resolves `clip`
+on this pane, and `@touch` alongside would close it at one more test.
+
+The control sits INSIDE the same `evaluate`: `flexGrow` and `minHeight` are
+read off the same rule block, both differ from their initial values, and both
+are asserted before the overflow. Without them a green would not separate "the
+engine resolved clip" from "I measured something that is not the pane".
+
+### What this still does NOT establish
+
+No test here observes any CLIPPING. The e2e reads a resolved property, not a
+painted result: that an over-wide art row is actually cut at the pane edge on
+vjt's device, and that a swiping row looks unchanged doing it, remain
+INFERENCES from the spec and the code. No device was driven.
