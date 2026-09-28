@@ -1832,9 +1832,22 @@ said "ask vjt for the STACK lane", which is flatly wrong: lanes are MINE).
   identico a uno che non ha ancora bisogno di clearare** — ennesima faccia di *"non puoi accorgerti del
   silenzio"*, stavolta sul mio stesso salvagente.
   🥇 **DUE cose, e la seconda non era scritta da nessuna parte.** **(1) Un pane non si stampa mai
-  grezzo: si ESTRAE.** `CTX=$(… | grep -oE '[0-9]+% ░' | tail -1 | grep -oE '[0-9]+')`, costo con
+  grezzo: si ESTRAE.** `CTX=$(… | grep -oE '[0-9]+% [█░]' | tail -1 | grep -oE '[0-9]+')`, costo con
   `grep -oE '\$[0-9]+\.[0-9]+' | **tail** -1` — **`tail`, non `head`: la status line sta in FONDO**, e
   `head` pesca il primo `$x.y` del TESTO della worker (difetto gia' a verbale, qui dall'altro lato).
+  🪞🔴 **E LA CLASSE DI CARATTERE VA MISURATA, NON DEDOTTA: QUESTA RIGA PORTAVA `% ░` PER GIORNI ED E'
+  CIECA SU OGNI PANE SOPRA LO ZERO (orch, 2026-09-28, misurato su w1).** La barra di contesto e'
+  **PARZIALMENTE PIENA**: a `21%` rende `21% █░░░░░░` ⇒ il carattere subito dopo `% ` e' **`█`, non
+  `░`**, e l'estrattore restituisce **VUOTO** su un valore perfettamente leggibile. Misurato nello
+  stesso giro: `%16` ⇒ `PARSE_FAIL` col vecchio, **`21%`** col nuovo; `%28` a `8%` (barra tutta `░`)
+  ⇒ **funzionava con entrambi**, ed e' per questo che il difetto e' sopravvissuto — **il caso che
+  passa e' quello a contesto BASSO, cioe' quello su cui non devi decidere niente.** La forma che
+  regge e' la **CLASSE** `[█░]`.
+  🥇 **E il difetto si vede solo se l'estrattore FALLISCE RUMOROSAMENTE**: `${CTX:-PARSE_FAIL}` ha
+  stampato l'accusa accanto al `tail` del pane, dove il `21%` era in chiaro. Con un `${CTX:-}` nudo
+  sarebbe uscito `ctx=%` — **un campo vuoto si legge come "il pane non ha status line", non come "il
+  mio grep e' storto"** (e' la lezione *"una guardia stampa il VALORE GREZZO, non una CAUSA"* vista
+  dal lato dell'estrattore). ⇒ **ogni estrattore di campo porta il suo default parlante.**
   **(2) LA CURA, quando ce l'hai gia' nel buffer, e' `tmux clear-history -t <IL MIO pane>`** — e' il MIO
   scrollback, non tocca niente di nessun altro. Misurato `rc=0`, e **subito dopo
   `auto-clear-watch.sh status` rilegge il MIO ctx (38%)** invece dell'8% della worker: **quello `status`
