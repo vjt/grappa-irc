@@ -2753,9 +2753,9 @@ nessuna riscrittura possibile. Misurala lo stesso se costa due comandi, ma dichi
   🔴🔴 **E `du -sh` NON MISURA LO SPAZIO CHE RECUPERI: SU APFS SBAGLIA DI ~20x, E IO HO SCRITTO IL
   SUO NUMERO NELL'HANDOFF COME "N LIBERATI" (w1, 2026-09-27, correggendomi con la misura).** Avevo
   registrato **561M liberati** per una worktree potata e **561M** come taglia della successiva:
-  entrambi erano `du -sh`, **mai un delta di `df`**. Il recupero vero e' stato **26,6M** — `Used`
-  scende di **27 224 KB** e `Avail` sale dello **stesso identico numero** (nessun rumore di terzi in
-  mezzo ⇒ delta attribuibile). **Causa: i `node_modules` di una worktree sono cloni `cp -Rc`, cioe'
+  entrambi erano `du -sh`, **mai un delta di `df`**. Il recupero vero e' stato **26,6M** — `df` leggeva
+  `Used` in calo di **27 224 KB** e `Avail` in salita dello stesso numero — **e quel "stesso numero"
+  NON provava l'isolamento, vedi l'emendamento qui sotto**. **Causa: i `node_modules` di una worktree sono cloni `cp -Rc`, cioe'
   BLOCCHI CONDIVISI con l'originale** — `du` li conta INTERI e cancellarli non restituisce nulla
   finche' la copia sorgente vive. I **35 514 inode** dicono che i FILE erano tanti davvero; lo spazio
   no.
@@ -2763,6 +2763,23 @@ nessuna riscrittura possibile. Misurala lo stesso se costa due comandi, ma dichi
   a «quanto e' grande l'albero», che su un filesystem con clonazione a blocchi e' una domanda
   DIVERSA.** E' il mio errore n.1 (*leggo la struttura e ne deduco una magnitudine mai misurata*) in
   costume nuovo: **lo strumento era giusto, la grandezza no.**
+  🔴🔴 **EMENDAMENTO `2026-09-28`, E CADE LA PROVA CHE SOSTENEVA IL NUMERO — ritrattato da w1 su
+  se' stessa, misurando: `Used` e `Avail` SPECULARI NON PROVANO NIENTE, SONO UN'IDENTITA'
+  CONTABILE.** Su un volume a capacita' fissa `Used + Avail` e' **costante per costruzione**, quindi
+  i due si muovono **sempre** specularmente — con o senza rumore di terzi. Ieri lo lessi come
+  isolamento; oggi, potando `w2-2301`, **la stessa forma e' uscita col segno ROVESCIATO**:
+  `Used` **+7 720 KB** e `Avail` **−7 720 KB**, cioe' **il volume risulta PIU' PIENO dopo una
+  cancellazione**. ⇒ **la CONCLUSIONE regge** (`du -sh` non e' lo spazio recuperato) **e la sua
+  EVIDENZA no**: i 26,6M di ieri sono una LETTURA di `df`, mai un delta ATTRIBUIBILE.
+  🥇 **Quindi la REGOLA si restringe, e nel verso che conta: su un host condiviso e vivo «quanto ho
+  liberato» NON e' misurabile NEMMENO con `df`** — fra i due campioni ci stanno la worktree
+  `--detach` creata e rimossa, i gate, e ogni processo dell'host. **La grandezza che regge e' gli
+  INODE** (34 613 li', 35 514 ieri): sono legati ai FILE rimossi, non al rumore di blocchi. ⇒ **si
+  riporta il conteggio di inode e si dichiara lo spazio NON MISURATO**, invece di dare un numero di
+  byte che nessuno puo' attribuire.
+  🥇 *E la forma della correzione e' quella da chiedere: ha spaccato la propria lezione in CLAUSOLE
+  e ne ha buttata UNA — non l'ha difesa e non l'ha ritirata in blocco. Una lezione puo' avere la
+  conclusione giusta e l'evidenza sbagliata, ed e' l'evidenza che il prossimo lettore riusa.*
   ⚠️ **E la conseguenza operativa e' che il caso "disco" per uno sweep di worktree e' MOLTO piu'
   debole di come lo scrivevo**: sulle altre ~40 il recupero atteso e' dell'ordine delle decine di MiB
   ciascuna, **non misurato su nessuna** — quindi non si inventa quel lavoro citando un `du`.
