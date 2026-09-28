@@ -285,7 +285,9 @@ defmodule Grappa.Networks.Credentials do
   GH #1385 — apply a live membership CHANGE to the rejoin snapshot rather
   than overwriting it: the row becomes `(row ∪ joined) − departed`, capped.
   `joined` is the session's CURRENT channel keyset, `departed` the channels
-  THIS change removed from it (self-PART / self-KICK / eager `/part`).
+  THIS change removed from it (self-PART / eager `/part`). A self-KICK is
+  NOT a departure (issue 2317): the channel stays planned and the next
+  reconnect rejoins it.
 
   This is the writer `Session.Server` uses; `update_last_joined_channels/3`
   above is the absolute setter, and a session must never reach for it. The

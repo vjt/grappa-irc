@@ -5983,9 +5983,17 @@ defmodule Grappa.Session.Server do
   end
 
   # #1385 — the departures this batch of effects carries, folded to the
-  # members-map key space. `:parted` and `:kicked` are emitted by EventRouter
-  # ONLY for ourselves (a peer's PART/KICK is a scrollback row and leaves the
-  # keyset alone), so they ARE the leave set.
+  # members-map key space. `:parted` is emitted by EventRouter ONLY for
+  # ourselves (a peer's PART is a scrollback row and leaves the keyset
+  # alone), so it IS the leave set.
+  #
+  # Issue 2317 — `:kicked` is deliberately NOT a departure. It empties the
+  # keyset exactly as a PART does, but the subject did not choose to leave,
+  # and the `:kicked` arm of `apply_effects/2` already keeps the window in
+  # the sidebar so the operator can retry. Counting it here made the
+  # persisted plan contradict that: the next reconnect dropped the channel
+  # outright instead of rejoining it (and failing visibly on a ban). No
+  # auto-rejoin rides on this — the snapshot is only read at boot.
   #
   # This is deliberately sourced from the EVENTS and not from a diff of the
   # previous and current keyset. A diff reads any keyset that empties as
@@ -5997,7 +6005,6 @@ defmodule Grappa.Session.Server do
   defp departed_channels(effects, state) do
     Enum.flat_map(effects, fn
       {:parted, channel} -> [fold_key(state, channel)]
-      {:kicked, channel, _, _} -> [fold_key(state, channel)]
       _ -> []
     end)
   end

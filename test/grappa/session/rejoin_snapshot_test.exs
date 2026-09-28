@@ -12,6 +12,10 @@ defmodule Grappa.Session.RejoinSnapshotTest do
   and a session that dies mid-restore must still plan the complete set on
   its next boot.
 
+  Issue 2317 adds the third axis: WHICH departures may shrink the snapshot.
+  A self-KICK moves the live keyset exactly as a self-PART does, so the
+  effect is the only thing that separates an eviction from a goodbye.
+
   `async: false` — `Grappa.SessionRegistry` / `SessionSupervisor` /
   `Grappa.PubSub` are singletons.
   """
@@ -62,7 +66,10 @@ defmodule Grappa.Session.RejoinSnapshotTest do
   defp await_first_echo_persisted(server, user, pid) do
     :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
     IRCServer.feed(server, ":grappa-test!u@h JOIN :#a\r\n")
+    await_channels_changed(pid)
+  end
 
+  defp await_channels_changed(pid) do
     assert_receive %Phoenix.Socket.Broadcast{event: "event", payload: %{kind: :channels_changed}},
                    1_000
 
@@ -99,6 +106,62 @@ defmodule Grappa.Session.RejoinSnapshotTest do
     assert Credentials.get_credential!(user, network).last_joined_channels == ~w(#a #b)
 
     :ok = GenServer.stop(pid, :normal, 1_000)
+  end
+
+  # Issue 2317. `#a` is LIVE (its echo came back), so the KICK empties the
+  # keyset exactly as a PART would and the effect is the whole discriminator.
+  # A kick is not a goodbye: the subject did not choose to leave, so the
+  # channel stays in the plan and the next reconnect still carries it.
+  test "a self-KICK keeps the channel in the rejoin snapshot" do
+    %{server: server, user: user, network: network, pid: pid} = restoring_session()
+
+    :ok = await_first_echo_persisted(server, user, pid)
+
+    IRCServer.feed(server, ":badbot!b@h KICK #a grappa-test :banned\r\n")
+    :ok = await_channels_changed(pid)
+
+    assert Credentials.get_credential!(user, network).last_joined_channels == @snapshot
+
+    :ok = GenServer.stop(pid, :normal, 1_000)
+  end
+
+  # The positive control for the arm above, and NOT a duplicate of the
+  # eager-PART test: that one goes through `handle_cast({:send_part, _})`,
+  # which calls the persister directly and never reaches
+  # `departed_channels/2`. An organic PART echo is the only thing that
+  # exercises the `{:parted, _}` clause the kick arm sits beside — without
+  # it, "a kick no longer departs" and "nothing departs at all" are the
+  # same green.
+  test "an organic self-PART still drops the channel from the snapshot" do
+    %{server: server, user: user, network: network, pid: pid} = restoring_session()
+
+    :ok = await_first_echo_persisted(server, user, pid)
+
+    IRCServer.feed(server, ":grappa-test!u@h PART #a :later\r\n")
+    :ok = await_channels_changed(pid)
+
+    assert Credentials.get_credential!(user, network).last_joined_channels == ~w(#b #c)
+
+    :ok = GenServer.stop(pid, :normal, 1_000)
+  end
+
+  # The user-visible half of issue 2317. The report is "the channel
+  # disappears from the channel list entirely", and the list a reconnect
+  # rebuilds is the plan: a rejoin that fails on the ban still renders a
+  # not-joined window, whereas a channel absent from the plan renders
+  # nothing at all.
+  test "a kicked channel is still planned on the next boot" do
+    %{server: server, user: user, network: network, pid: pid} = restoring_session()
+
+    :ok = await_first_echo_persisted(server, user, pid)
+
+    IRCServer.feed(server, ":badbot!b@h KICK #a grappa-test :banned\r\n")
+    :ok = await_channels_changed(pid)
+
+    :ok = GenServer.stop(pid, :normal, 1_000)
+
+    {:ok, plan} = SessionPlan.resolve(Credentials.get_credential!(user, network))
+    assert "#a" in plan.autojoin_channels
   end
 
   test "a session that dies mid-restore still plans the full set on its next boot" do

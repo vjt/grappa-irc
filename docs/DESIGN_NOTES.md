@@ -20390,3 +20390,46 @@ element under another gesture; quoting it about this pane would be borrowing a
 measurement, which is the move this whole section exists to stop. What is
 established is narrower and worth stating plainly: the value that ships is the
 value the sheet declares, and the two gates now disagree about nothing.
+<!-- entry #2317 -->
+
+---
+
+## 2026-09-29 — #2317: a self-KICK is not a departure — the rejoin snapshot and the sidebar now agree
+
+**The defect.** `Session.Server.departed_channels/2` fed `{:kicked, …}` into the
+departure set beside `{:parted, …}` — two distinct clauses emitting the same
+`[fold_key(state, channel)]`. `Credentials.merge_last_joined_channels/4` writes
+`(row ∪ keyset) − departed`, so a self-KICK subtracted the channel from
+`last_joined_channels` exactly as a PART did. The next reconnect planned no JOIN
+for it and no window came back. Reported on Azzurra: a badly configured bot
+kickbans on rejoin after a deploy, and "in some cases" the channel vanished from
+the list.
+
+**The contradiction was internal.** The `:kicked` arm of `apply_effects/2` already
+said the opposite in memory — the window stays in the sidebar, greyed, so the
+operator can retry, because archiving on a kick "would punish the victim". The
+persisted plan disagreed with the live window state about the same decision. The
+cure removes the clause, not a special case: a kick still empties the keyset, so
+the write still fires (the gate is the keyset change), and the channel survives
+through the `row` side of the union.
+
+**Why "in some cases".** Read, not reproduced: cic's `windowStateByChannel` starts
+empty and is seeded only by live events and the per-channel cold-subscribe
+snapshot, and `windowIsPresent` keeps a `kicked` window until the user's own ×.
+So a tab that stays open keeps the greyed window on its own, and the loss shows
+only when cic reloads (a deploy that ships a new bundle forces one) and rebuilds
+from a server that no longer planned the channel. With the channel planned, the
+reconnect goes through `record_in_flight_join/2` → `window_pending` → 474 →
+`join_failed`, a visible not-joined window.
+
+**Deliberately not added.** No auto-rejoin after a kick — the snapshot is read
+only at boot, so nothing loops against a kickban bot in-session. A kick taken
+while the session runs is retried at most once per reconnect, and fails visibly.
+
+**Test shape, and the control it needed.** `rejoin_snapshot_test.exs` gained a
+self-KICK arm, a next-boot plan arm, and an ORGANIC self-PART arm. The existing
+PART test goes through `handle_cast({:send_part, _})`, which calls the persister
+directly and never reaches `departed_channels/2`; measured with a mutant that
+empties the `{:parted, _}` clause, it stays green, so that clause had no test at
+all. Without the organic arm, "a kick no longer departs" and "nothing departs
+any more" were the same green.
