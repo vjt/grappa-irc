@@ -3932,6 +3932,75 @@ button.topic-bar-windows-opener {
      below rejects pan ONLY when a trustworthy measurement proves the
      content does not overflow. */
   overflow-y: scroll;
+  /* issue 2305 — the pane must NEVER pan horizontally, and the absence of
+     this line was not a neutral default. Per CSS Overflow 3, an `overflow-y`
+     that is not `visible` forces the other axis' `visible` to compute to
+     `auto`, so ANY row wider than the pane turned `.scrollback` ITSELF into a
+     horizontal scroller. mIRC block art — runs of spaces with fg = bg — is
+     exactly such a row: vjt's iOS PWA screenshot of `#irc40` shows every line
+     clipped on the left because the whole pane had been dragged sideways.
+
+     🔴 `hidden`, and it says `hidden` because `clip` IS NOT AVAILABLE HERE.
+     This line read `clip` first, on the argument that `hidden` still makes
+     the pane a SCROLL CONTAINER on x — a `scrollLeft` nobody set stays
+     settable, and `.credits-*` pays for that class of bug with a measured
+     178px single-frame jump. The argument is sound and it is UNREACHABLE on
+     this element, which an e2e caught by asking the engine instead of the
+     sheet. Measured on both engines (Chrome 147, Mobile Safari 26.4), on
+     detached elements at `about:blank`, reading BOTH axes in one pass:
+
+         declared            computed-x   computed-y
+         clip    + visible     clip         visible
+         clip    + scroll      HIDDEN       scroll
+         clip    + clip        clip         clip
+         clip    + auto        HIDDEN       auto
+         hidden  + scroll      hidden       scroll
+
+     The engine PARSES `clip` (the element's own inline `overflowX` still
+     reads `clip`) and then computes it away: per CSS Overflow 3 a `clip` on
+     one axis with a scrolling value on the other computes to `hidden`. This
+     pane must scroll in y, so the pairing is forced and `clip` cannot survive
+     it. Rows 2 and 5 are the same computed state, so the two declarations are
+     indistinguishable in effect and the sheet may as well say what ships.
+
+     That also disqualifies the `.credits-*` citation in the direction it was
+     used: `.credits-*` gets `clip` because it clips BOTH axes and nothing
+     scrolls there (row 3). Its own comment says the rest, and it is the
+     precedent that DOES transfer — the two credits rules that deliberately
+     scroll in y "re-declare `overflow-x: hidden` alongside their
+     `overflow-y: auto`, because `clip` on one axis with `auto` on the other
+     is not a pairing worth relying on". Row 4 is that sentence, measured.
+
+     So the sub-class the old text claimed to close — the BROWSER scrolling a
+     focusable descendant of a row into view — is not closed. That is a
+     DIRECTION, not a measured harm: the 178px jump was a different element,
+     different content, different gesture, and nothing has been observed on
+     this pane. The JS class IS closed and that part was never in doubt: the
+     only three sites that touch `scrollLeft` are `.bottom-bar`, the media
+     viewer and pinch-zoom, none of them this.
+
+     Keep this as `overflow-x`, never the `overflow` shorthand: the shorthand
+     would take `overflow-y` with it and kill the scrolling this pane exists
+     for. Pinned by `scrollbackNoHorizontalPan.test.ts`.
+
+     What this CLIPS, knowingly: an art row wider than the pane loses its
+     right-hand side. vjt ruled it (relayed, `#grappa` 2026-09-27) — "lascia
+     perdere per ora, metti overflow e bon, poi ci pensiamo a horiz scroll".
+     Giving the art its own horizontally-scrollable box is a separate slice,
+     and how an art row is even RECOGNISED is open — deliberately not
+     invented here.
+
+     NOT broken by this, enumerated BEFORE it was applied. The #1067
+     swipe-to-reply drives `translateX(0..72px)` RIGHTWARD on a row while the
+     finger is down; that already clipped at this same edge under the computed
+     `auto`, because every non-`visible` overflow value clips and they differ
+     only in whether a scrolling mechanism is offered. It reveals nothing
+     behind the row — the slide IS the feedback — so there is no icon to lose.
+     `.scrollback-highlight::before` sits at -6px inside a 1rem gutter, 10px
+     INSIDE this clip edge. The #133 overlay, the #280 float stack and the
+     #1094 older-page spinner are SIBLINGS of this element rather than
+     descendants, and the context menus portal to <body>. */
+  overflow-x: hidden;
   padding: 0.5rem 1rem;
   font-family: var(--font-mono);
   font-size: var(--font-size);

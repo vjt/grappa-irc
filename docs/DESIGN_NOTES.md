@@ -20144,3 +20144,249 @@ The e2e spec cannot reach the new bound. The two touch projects drive 393 and
 412, no Playwright device sits at 384, and the spec was not widened to add one
 — the 384 claim lives in the unit suite. The e2e spec's negative control at 393
 is now a viewport bound rather than the measured one, and its comment says so.
+<!-- entry #2305 -->
+
+---
+
+## 2026-09-28 — #2305: the scrollback pane never pans sideways — one declaration, and the four things it was checked against first
+
+vjt's iOS PWA screenshot of `#irc40` on EFnet (`#grappa`, 2026-09-27 23:37)
+shows the whole scrollback pane dragged horizontally: every row clipped on the
+left, ordinary messages as much as the art that caused it. The content is mIRC
+block art — read-only on the prod DB, five consecutive lines of 223–273 bytes
+by `interdom3`, bodies shaped `\x0315,15 \x034,4  \x0f  …`, so each "pixel" is
+a run of spaces with fg = bg.
+
+### The absence was not a neutral default
+
+`.scrollback` declared `overflow-y: scroll` and nothing for x. That is not "the
+x axis is unset": per CSS Overflow 3, when one axis is not `visible` the other
+axis' `visible` computes to **`auto`**. So the pane had been a horizontal
+scroller all along, waiting for a row wider than itself. The cure is therefore
+a declaration and not a value correction, and the gate below asserts PRESENCE
+first for exactly that reason.
+
+### The scope is a ruling, and the clipping is accepted
+
+vjt, relayed (`#grappa` 2026-09-27, ~21:59Z — the author of this entry cannot
+read that channel): *"lascia perdere per ora, metti overflow e bon, poi ci
+pensiamo a horiz scroll"*.
+
+So an art row wider than the pane **loses its right-hand side**, and that is a
+deliberate, temporary choice rather than an oversight. It does sit against the
+same conversation's *"keep block art visible and intact"*; the objection was
+put and the narrower scope was chosen. Giving art its own horizontally
+scrollable box is a separate slice, and **how an art row is even RECOGNISED is
+open** — colour-code density, a line made mostly of bg-coloured spaces,
+consecutive same-sender lines within ~2 s were all floated and none ruled on.
+The issue says it in as many words: not the implementer's call to invent. No
+heuristic was written here.
+
+### 🔴 The risk, enumerated BEFORE the cure was applied
+
+Clipping a pane is cheap to write and expensive to get wrong, because things
+inside that pane overflow it ON PURPOSE. What was checked, and how:
+
+* **#1067 swipe-to-reply — the one that looked fatal, and is not.**
+  `.scrollback-line` carries `touch-action: pan-y` with the comment *"the
+  horizontal axis is ours to claim"*, and the gesture drives `transform`
+  inline while the finger is down. Three findings: the claim is **RIGHTWARD
+  ONLY** (`messageGestures.ts`: `if (current.x <= start.x) return;` — a
+  leftward drag is never claimed), the slide is capped at
+  `SWIPE_MAX_SLIDE_PX = 72`, and **nothing is revealed behind the row** — the
+  slide IS the feedback, there is no icon, no pseudo-element, nothing to lose.
+  The decisive point is the regime: **every non-`visible` overflow value
+  CLIPS**; they differ only in whether a scrolling mechanism is offered. The
+  pane already computed `auto`, so a swiping row was already clipped at this
+  same edge. The cure changes what can be SCROLLED TO, not what is PAINTED.
+  What it also removes is a defect nobody had filed: under `auto`, a
+  right-translated row extended the scrollable overflow, so the pane became
+  pannable for the duration of a swipe.
+* **The `.scrollback-highlight::before` accent bar** is `position: absolute`
+  at `left: calc(-2px - 0.25rem)` inside the pane's own 1rem gutter — 10px
+  INSIDE the clip edge, in the direction that never moves under a rightward
+  swipe. Its own comment already claims *"Inside the scrollport, so nothing
+  clips it"*, and that stays true.
+* **The #133 overlay, the #280 float stack and the #1094 older-page spinner
+  are SIBLINGS, not descendants** — children of `.scrollback-pane` beside
+  `.scrollback` (`ScrollbackPane.tsx`: the pane opens, then the overlay, then
+  the scroll list, then the float stack). `.scrollback-loading-older`'s own
+  comment says it is *"Out of `.scrollback`"* and not in its `scrollHeight`.
+  An `overflow` on `.scrollback` cannot reach any of them.
+* **Context menus portal to `<body>`** (`ContextMenu.tsx`), explicitly so the
+  fixed menu and its backdrop are never trapped in a pane's stacking context.
+
+### 🔴 `hidden`, because `clip` is UNREACHABLE on this element
+
+This section first read *"`clip` and not `hidden`, decided by measurement"* and
+argued it at length. The argument was sound and the value was unavailable, and
+the thing that found that out is the e2e added in the same PR: it asked an
+engine instead of the sheet and went red on its first run, on both engines, at
+`Expected: "clip" / Received: "hidden"`.
+
+The difference the argument rests on is real: `hidden` leaves the element a
+**scroll container**, so `scrollLeft` stays settable and there is scrollable
+overflow beneath it to reconcile against, while `clip` creates no scroll
+container at all. The sheet even carries a device-measured instance of the
+cost — `.credits-*` used `overflow: hidden` over a roll translated a viewport
+below the fold, a touch made the engine reconcile a `scrollTop` the page never
+set, and the frame jumped **178px in one frame**, cross-correlated off vjt's
+recording at 60fps, cured by moving to `clip`.
+
+None of that is available here. Measured at `about:blank` on detached
+elements, both axes read in one pass, Chrome 147 and Mobile Safari 26.4
+agreeing to the character:
+
+| declared | computed-x | computed-y |
+|---|---|---|
+| `clip` + `visible` | `clip` | `visible` |
+| `clip` + `scroll` | **`hidden`** | `scroll` |
+| `clip` + `clip` | `clip` | `clip` |
+| `clip` + `auto` | **`hidden`** | `auto` |
+| `hidden` + `scroll` | `hidden` | `scroll` |
+
+The element's own inline `overflowX` still reads `clip` in row 2, so the
+engine PARSES the value and then computes it away — this is not missing
+support. Per CSS Overflow 3 a `clip` on one axis computes to `hidden` when the
+other axis scrolls, and this pane must scroll in y. Rows 2 and 5 are the same
+computed state, so the two declarations are indistinguishable in effect, and
+the sheet now declares what actually ships.
+
+**The `.credits-*` citation does not transfer in the direction it was used.**
+`.credits-*` gets `clip` because it clips BOTH axes and nothing scrolls there
+(row 3). Its own comment carries the half that DOES transfer, and it was
+sitting four lines from the number that was quoted: the two credits rules that
+deliberately scroll re-declare *"`overflow-x: hidden` alongside their
+`overflow-y: auto`, because `clip` on one axis with `auto` on the other is not
+a pairing worth relying on"*. Row 4 is that sentence, measured.
+
+**So one sub-class the old text claimed to close is open again**: the pane
+holds focusable descendants (inline buttons, clickable nicks) and the BROWSER
+scrolling one of them into view can pan a `hidden` box. That is a DIRECTION
+and not a measured harm — the 178px was a different element, different
+content, different gesture, and nothing has been observed on this pane. The
+JS half is closed and never depended on this: the only three sites that touch
+`scrollLeft` are `.bottom-bar`, the media viewer and pinch-zoom, none of them
+this.
+
+Two claims from the old text are **withdrawn rather than rewritten**, because
+nothing measured them: that the minifier collapses a `hidden`/`clip` fallback
+pair to `clip` at this project's browserslist targets (no such pair was ever
+built, so the claim was never exercised), and that `hidden` would make this
+pane "that same shape" as the credits roll. What the built artefact DOES show
+is that the minifier rewrites longhands into the two-value shorthand faithfully
+and downlevels nothing: `overflow:clip scroll` shipped from a `clip` source,
+`overflow:hidden auto` appears five times elsewhere, and a bare `overflow:clip`
+survives for `.credits-*`. The engine computed the value away; the build did
+not.
+
+### The gate, and the trap the file arms by itself
+
+`default.css` is prose-heavy and the comment on this rule alone names
+`overflow-x` 3 times and `clip` 21; the file carries 83 `clip` and 22
+`overflow-x` in total, and the numbers went UP with the correction above,
+because explaining why a value is unavailable costs more words than choosing
+it. A guard doing a substring match on the sheet would read the JUSTIFICATION
+and report on the CONFIGURATION — the #2125 shape.
+`scrollbackNoHorizontalPan.test.ts` reads through `nestedRuleBodies(".scrollback")`,
+which strips comments and scopes to the rule body, and throws when the selector
+has no rule so a rename cannot pass vacuously.
+
+Four arms, three of which name a distinct way to break this: the rule exists
+exactly once; `overflow-x` is DECLARED (the original bug regressing); its value
+is EXACTLY `hidden`; and the `overflow` SHORTHAND is absent while `overflow-y`
+stays `scroll` — because `overflow: clip` reads like a tidier spelling and
+would stop the pane scrolling at all.
+
+The third arm used to pin `clip` and, as its stated reason, assert the value
+was not one of `auto | scroll | hidden`. It was GREEN while the computed value
+was `hidden`, one of the three it excluded. The replacement is an exact match
+on an exact-length list, which is STRICTER and not laxer: `auto`, `scroll`,
+`visible` all still go red, and so now does `clip` — deliberately, since a
+`clip` reappearing is precisely what would re-arm the retired claim. The
+lesson generalises past this file: **a scan of the declared text cannot host
+an assertion about the computed value, because nothing in it can falsify one.**
+That is the division of labour between the two gates, and neither replaces the
+other.
+
+Proven rather than asserted. Each mutant edits only the declaration line, all
+the prose left in place, each restored with `diff -q` reporting IDENTICAL:
+
+| mutant | declaration becomes | rc | tests killed |
+| --- | --- | --- | --- |
+| declaration DELETED | *(line removed)* | 1 | 2 |
+| the retired value returns | `overflow-x: clip;` | 1 | 1 |
+| the original bug | `overflow-x: auto;` | 1 | 1 |
+| shorthand | `overflow: hidden;` | 1 | 3 |
+
+Re-run against the corrected declaration, not carried over: the old table's
+middle row mutated to `hidden`, which is now what ships, so it had stopped
+being a mutant at all. Each edits only the declaration line, anchored to its
+text and never to a line number, with the prose left in place and every
+restore verified `diff -q` IDENTICAL.
+
+The deleted-declaration mutant goes red with 83 occurrences of `clip` and 98
+of `hidden` still sitting in the file — the gate reads the configuration, not
+the prose. And the two single-kill rows are single for a structural reason
+worth stating rather than glossing: the only arm that can see the VALUE is the
+value pin, so a mutation of the value can kill exactly one test by
+construction. That is not breadth of coverage and should not be read as any.
+
+### The second gate, on a real engine
+
+The jsdom scan reads the TEXT DECLARED in one rule in one file, and two things
+survive it green: a later, more specific rule winning the cascade from
+somewhere the scan never opens, and the ENGINE computing the declared value
+into a different one. The second is not a hypothetical — it is what the
+section above documents, and this gate is how it was found. So
+`cicchetto/e2e/tests/issue2305-scrollback-no-horizontal-pan.spec.ts` asks the
+engine what it RESOLVED: `getComputedStyle(pane).overflowX === "hidden"` and
+`overflowY === "scroll"` (the second is what separates the fix from the
+shorthand, which would take the vertical scrolling with it).
+
+`hidden` EXACT and never a `clip|hidden` alternation. That is the STRONG form,
+not the lax one: the reported bug was `auto`, and `auto`, `scroll` and
+`visible` all stay red either way — what the exact match adds is that `clip`
+goes red too, which is the point, since a `clip` reappearing in the sheet is
+exactly the regression this gate exists to catch.
+
+`@webkit @touch`, i.e. TWO engines, and the second tag is not symmetry for
+its own sake. Failure 2 asks what an ENGINE does with a declaration, so a gate
+that asks it of one engine has answered half of its own question.
+`webkit-iphone-15` is the platform vjt's screenshot came from;
+`chromium-pixel-touch` is the Blink half. Both agreeing to the character is
+what tells a spec-mandated computed value apart from a per-engine quirk — the
+tag was taken on the SUSPICION that Blink and WebKit might differ on `clip`,
+and the measurement above killed that suspicion rather than confirming it.
+The tag is kept anyway, because "the two engines agree" is a fact this gate
+now asserts continuously instead of a fact somebody measured once.
+
+A tag is also an opt-OUT: `chromium`'s `grepInvert` is the complement of the
+two touch projects' greps, so a tagged spec does not run on the desktop
+default at all. Measured on `playwright test --list`: 1016 → 1018 collected
+across 476 → 477 files, two new lines, one per touch project, and no desktop
+twin. Nothing is lost by that — `chromium-pixel-touch` is the same engine as
+the desktop project. Read the config header's "also runs on" as "in addition
+to the other touch project", never as additive to the desktop.
+
+The control sits INSIDE the same `evaluate`: `flexGrow` and `minHeight` are
+read off the same rule block, both differ from their initial values, and both
+are asserted before the overflow. Without them a green would not separate
+"the engine resolved the pane's own rule" from "I measured something that is
+not the pane". This is what made the red attributable on sight: the failure
+landed on the value assertion with both controls already green, and both
+`error-context.md` page snapshots showed a populated `#spec-w0` scrollback.
+
+### What this still does NOT establish
+
+No test here observes any CLIPPING. The e2e reads a resolved property, not a
+painted result: that an over-wide art row is actually cut at the pane edge on
+vjt's device, and that a swiping row looks unchanged doing it, remain
+INFERENCES from the spec and the code. No device was driven.
+
+Nor is `hidden` shown to be HARMLESS here. The scroll-into-view sub-class is
+open by argument, not by observation, and the 178px figure belongs to another
+element under another gesture; quoting it about this pane would be borrowing a
+measurement, which is the move this whole section exists to stop. What is
+established is narrower and worth stating plainly: the value that ships is the
+value the sheet declares, and the two gates now disagree about nothing.
