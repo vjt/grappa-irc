@@ -47,7 +47,7 @@ defmodule GrappaWeb.Admin.NetworksController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{AdminEvents, Networks}
+  alias Grappa.{AdminEvents, Networks, Scrollback}
   alias Grappa.AdminEvents.Wire, as: AdminEventsWire
   alias Grappa.Admission
   alias Grappa.Admission.NetworkCircuit
@@ -171,19 +171,33 @@ defmodule GrappaWeb.Admin.NetworksController do
   end
 
   @doc """
-  Admin-panel bucket 1 — delete network. Refuses via FallbackController
-  on `{:credentials_present, N}` (409) or `:scrollback_present` (409);
-  unknown id → 404. Returns `204 No Content` on success.
+  Admin-panel bucket 1 — delete network, together with its scrollback
+  (issue 2320). Refuses via FallbackController on
+  `{:credentials_present, N}` (409); unknown id → 404. Returns
+  `204 No Content` on success.
   """
   @spec delete(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
-          | {:error, :not_found | :scrollback_present | {:credentials_present, non_neg_integer()}}
+          | {:error, :not_found | {:credentials_present, non_neg_integer()}}
   def delete(conn, %{"id" => id}) do
     with {:ok, parsed} <- parse_id(id),
          {:ok, net} <- fetch_network(parsed),
          :ok <- Networks.delete_network(net) do
       :ok = emit_network_deleted(net, conn)
       conn |> put_status(:no_content) |> text("")
+    end
+  end
+
+  @doc """
+  Issue 2320 — how many scrollback rows a network delete takes with it:
+  `%{message_count: n}`. Its own endpoint, asked when the delete confirm
+  opens, so `index/2` keeps its O(1)-per-row reads. Unknown id → 404.
+  """
+  @spec message_count(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :not_found}
+  def message_count(conn, %{"id" => id}) do
+    with {:ok, parsed} <- parse_id(id),
+         {:ok, net} <- fetch_network(parsed) do
+      json(conn, %{message_count: Scrollback.count_for_network(net.id)})
     end
   end
 

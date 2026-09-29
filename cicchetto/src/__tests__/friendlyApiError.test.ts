@@ -119,7 +119,6 @@ const CASES: Array<{ code: string; matches: RegExp; info?: Record<string, unknow
   { code: "forbidden_vhost", matches: /vhost isn't available/i },
   { code: "source_not_local", matches: /address this server can send from/i },
   { code: "already_exists", matches: /already exists/i },
-  { code: "scrollback_present", matches: /saved history/i },
   { code: "last_admin", matches: /remove the last admin/i },
   // credentials_present carries credential_count; interpolated + fallback.
   {

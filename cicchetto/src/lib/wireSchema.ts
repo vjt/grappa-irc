@@ -1747,7 +1747,6 @@ export const S_ErrorTokensRestErrorToken = {
     { l: "already_exists" },
     { l: "already_attached" },
     { l: "credentials_present" },
-    { l: "scrollback_present" },
     { l: "last_admin" },
     { l: "share_token_expired" },
     { l: "share_token_consumed" },

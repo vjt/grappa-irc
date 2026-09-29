@@ -1063,6 +1063,29 @@ distinct, exactly as for a nick); and a CTCP **ACTION** is matched on the
 UNWRAPPED text (`waves`, not `\x01ACTION waves\x01`), while any other CTCP
 frame is matched raw.
 
+### 8d. Deleting a network takes its scrollback with it (issue 2320, v33)
+
+Admin console only (`is_admin` bearer). `DELETE /admin/networks/:id` used to
+refuse with **409 `scrollback_present`** while any scrollback row referenced
+the network. It no longer refuses on that: the network goes together with
+every row of its scrollback, across all subjects. The one refusal left is
+**409 `credentials_present`** (with `credential_count`) — unbind every
+credential first, as before.
+
+`scrollback_present` is **gone from the error-token set** at v33. A client
+that still has an arm for it keeps working — the server simply never sends
+it again.
+
+To tell the operator what the delete destroys, ask first:
+
+* `GET /admin/networks/:id/message_count` → `{"message_count": n}`, the
+  number of scrollback rows the delete takes. Unknown id → 404.
+
+It is a separate request on purpose: `GET /admin/networks` keeps its cheap
+per-row reads, and the count is paid only when a confirm actually opens.
+Against a server older than v33 the route does not exist (404) — a client
+must treat that as "cannot confirm", not as zero.
+
 ## 9. Event kind inventory (issue 2260)
 
 Every `"event"` frame carries a `kind`. This is the complete set the server

@@ -53,34 +53,23 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v31 -> v32 (issue 1894): auto-away can now RENAME the nick,
- * appending a subject-chosen suffix and putting it back on the way out.
- * Opt-in, default off. What moved on the wire is one new user-topic push
- * `kind`, `away_nick_suffix_changed`, carrying `away_nick_suffix` as
- * `string | null` — `null` being the VALUE that says the rename is
- * switched off, so the key is always present. Two REST doors were added
- * under `/me/settings/away-nick-suffix`. No existing field was
- * repurposed.
+ * Last read, v32 -> v33 (issue 2320): deleting a network now takes its
+ * scrollback with it. What moved on the wire is one ADDED admin route,
+ * `GET /admin/networks/:id/message_count` -> `{message_count}`, and one
+ * REMOVED error token, `scrollback_present`, which the delete can no
+ * longer earn. No kind was added and no field was repurposed.
  *
- * THIS ONE WAS CONSUMED, unlike v31, and the difference is the point: a
- * new `kind` is exactly the thing this client cannot skip, because the
- * parity gate walks every kind cicchetto narrows and both switches over
- * `wire_kind` are exhaustive under -Wswitch. So the bump was NOT the
- * whole repair — `KIND_TABLE`, the enum, the narrower in wire.c and the
- * render switch in shottino.c all had to learn it, and a note claiming
- * otherwise would have been false. v31 moved no kind and touched no
- * parser; that is why it could be a number on its own.
- *
- * The rename NEEDS no terminal work beyond narrowing, and that is
- * measured rather than waved through: the server renames by sending
- * NICK upstream, so what reaches this client is an ordinary
- * `nick_change` on the channel topics, which it already renders. The new
- * kind reports the SETTING, and this client has no settings surface —
- * hence the deliberate no-render arm beside server_settings_changed.
+ * NUMBER ONLY, and measured rather than assumed: this client names the
+ * removed token nowhere and never calls the new route, so no arm died and
+ * no parser has anything to learn. What it does NOT cover is behaviour:
+ * the admin "Delete network" action sends the same DELETE, which used to
+ * be refused with scrollback present and now deletes it, behind a confirm
+ * that states no count. That is issue 2325, deliberately left out of the
+ * bump.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 32
+#define WIRE_PROTOCOL_VERSION 33
 
 #include <stdbool.h>
 #include <stddef.h>

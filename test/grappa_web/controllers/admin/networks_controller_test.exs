@@ -593,6 +593,20 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
       assert Networks.get_network(net.id) == nil
     end
 
+    # issue 2320 — scrollback no longer refuses the delete; it goes with it.
+    test "204 on a network WITH scrollback, and the scrollback goes too", %{conn: conn} do
+      slug = "del-sb-#{System.unique_integer([:positive])}"
+      {:ok, net} = Networks.find_or_create_network(%{slug: slug})
+      seed_message(net)
+      assert Grappa.Scrollback.count_for_network(net.id) == 1
+
+      session = admin_session()
+      conn = conn |> put_bearer(session.id) |> delete("/admin/networks/#{net.id}")
+      assert response(conn, 204) == ""
+      assert Networks.get_network(net.id) == nil
+      assert Grappa.Scrollback.count_for_network(net.id) == 0
+    end
+
     test "409 credentials_present with count when bound credentials exist", %{conn: conn} do
       slug = "del-bound-#{System.unique_integer([:positive])}"
       {:ok, net} = Networks.find_or_create_network(%{slug: slug})
@@ -643,5 +657,62 @@ defmodule GrappaWeb.Admin.NetworksControllerTest do
       assert is_binary(actor_id)
       assert is_binary(actor_name)
     end
+  end
+
+  # issue 2320 — the confirm button's message count comes from the server,
+  # asked when the confirm opens (not on every list render: `index/2` keeps
+  # its O(1)-per-row reads).
+  describe "GET /admin/networks/:id/message_count" do
+    test "401 without bearer", %{conn: conn} do
+      conn = get(conn, "/admin/networks/999999/message_count")
+      assert json_response(conn, 401) == %{"error" => "unauthorized"}
+    end
+
+    test "403 for non-admin user", %{conn: conn} do
+      {_, session} = user_and_session()
+      conn = conn |> put_bearer(session.id) |> get("/admin/networks/999999/message_count")
+      assert json_response(conn, 403) == %{"error" => "forbidden"}
+    end
+
+    test "404 for unknown id", %{conn: conn} do
+      session = admin_session()
+      conn = conn |> put_bearer(session.id) |> get("/admin/networks/999999999/message_count")
+      assert json_response(conn, 404) == %{"error" => "not_found"}
+    end
+
+    test "200 + the exact count of that network's rows, not another's", %{conn: conn} do
+      {:ok, net} = Networks.find_or_create_network(%{slug: "cnt-#{System.unique_integer([:positive])}"})
+      {:ok, other} = Networks.find_or_create_network(%{slug: "cnt-o-#{System.unique_integer([:positive])}"})
+      for _ <- 1..3, do: seed_message(net)
+      seed_message(other)
+
+      session = admin_session()
+      conn = conn |> put_bearer(session.id) |> get("/admin/networks/#{net.id}/message_count")
+      assert json_response(conn, 200) == %{"message_count" => 3}
+    end
+
+    test "200 + zero for an empty network", %{conn: conn} do
+      {:ok, net} = Networks.find_or_create_network(%{slug: "cnt-e-#{System.unique_integer([:positive])}"})
+      session = admin_session()
+      conn = conn |> put_bearer(session.id) |> get("/admin/networks/#{net.id}/message_count")
+      assert json_response(conn, 200) == %{"message_count" => 0}
+    end
+  end
+
+  defp seed_message(net) do
+    user = user_fixture()
+
+    {:ok, msg} =
+      Grappa.ScrollbackHelpers.insert(%{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#seed",
+        sender: "alice",
+        body: "hi",
+        kind: :privmsg,
+        server_time: System.system_time(:millisecond)
+      })
+
+    msg
   end
 end

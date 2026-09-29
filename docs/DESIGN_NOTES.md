@@ -20513,3 +20513,122 @@ paths.
 - **`IDENT` and `NS PASS`.** Both are `do_identify` aliases in Azzurra's
   command table that the verb regex does not list, so they are not captured at
   all — a missed rendezvous, never a corrupted row.
+<!-- entry #2320 -->
+
+---
+
+## 2026-09-29 — #2320: deleting a network takes its scrollback, in batches
+
+**The ruling (maintainer, not reopened here).** When the admin confirms, the
+network goes together with its scrollback, with no extra gate. The confirm
+button says how much goes ("Delete network and 12,345 messages"), and the
+number comes from the SERVER. `{:error, :scrollback_present}` is gone from the
+server, the generated wire union, `friendlyApiError` and its test. The
+`{:credentials_present, N}` guard is untouched and still runs BEFORE any row
+goes, so a refused delete loses nothing.
+
+**What has to be deleted by hand: only `messages`.** FK census taken with
+`pragma_foreign_key_list` on a database migrated FROM ZERO (the bench's `build`,
+100 of 100 migrations, top `20260921020323`), and it matches the earlier census
+on a migrated copy of the test DB row for row:
+
+* `RESTRICT` onto `networks`: `messages.network_id`, and
+  `network_credentials.network_id` (= the guard).
+* `CASCADE` onto `networks`: `channel_directory`, `dcc_files`,
+  `network_featured_channels`, `network_servers`, `notify_entries`,
+  `peer_avatars`, `query_windows`, `read_cursors`.
+* Second level: the only FK into `messages` is
+  `read_cursors.last_read_message_id ON DELETE SET NULL`, and no table
+  references any of the cascading ones. Negative control (an invented table):
+  0 rows.
+
+`foreign_keys: :on` holds in every env (`config/runtime.exs`), so both the
+cascades and the RESTRICT really fire.
+
+**The threshold is derived, not chosen.** Every other writer waits for the
+purge's write lock. A writer outside `Repo.BusyRetry` has only prod's
+`busy_timeout` (SSOT `config/runtime.exs`, 300 ms on 2026-09-29) before it
+fails, so no single purge transaction may hold the lock that long ON PROD.
+Prod was measured 3-4.5x slower than local (issue 1365's thread).
+
+**Measured, `test/bench_2320.exs`** (committed, same posture as
+`bench_2240.exs`). A fresh migrated DB with every production index; prod pool
+knobs; a concurrent writer inserting on ANOTHER network every 20 ms and counting
+the inserts that fail with busy. Voyager, docker container. Two substrates: the
+corpus on the bind-mounted `runtime/`, and a copy on the container's own `/tmp`.
+
+| shape | rows | substrate | lock hold | writer failures |
+|---|---|---|---|---|
+| one DELETE | 100k | bind mount | 1 970 ms | 4 |
+| one DELETE | 100k | /tmp | 734 ms | 1 |
+| one DELETE | 1M | /tmp | 9 258 ms | 25 |
+| batches of 1 000 | 100k | /tmp | p50 20.0, p99 36.4, max 78.4 ms | 0 |
+| batches of 1 000 | 1M | /tmp | p50 25.9, p99 36.4, max 87.1 ms | 0 |
+| batches of 1 000 | 100k | bind mount | p50 79.9-96.3, p99 299-434 ms | 0-3 |
+
+A single statement is out even at 100k rows. Azzurra's scrollback is ~3.56 M
+rows (issue 1365, 2026-09-20), which projects to tens of seconds of lock hold:
+the #1715 class. The per-batch hold stays FLAT as the network grows (20.0 →
+25.9 ms p50 from 100k to 1M), because each batch picks its ids through
+`messages_network_id_index` from the front, and the rows deleted before are
+already gone from that index. 1 000 rows: ×4.5 on the /tmp p99 is ~165 ms,
+under 300. The bind-mount numbers are the noisy host-filesystem layer (fixed
+cost ~45 ms per statement even at 250 rows, with occasional spikes past 400 ms
+at every batch size). I quote them so nobody reads the /tmp column as a
+floor. **Neither column is a prod duration**, and nothing here was measured
+on m42.
+
+**The shape, and the atomicity the brief asked for and could not have.** The
+brief said "one transaction" AND "batch if the measurement requires it", and
+those two exclude each other. `Networks.delete_network/1` is now:
+
+1. the guard (credentials == 0), before anything is deleted;
+2. `Scrollback.purge_network/1`: batches of `network_purge_batch_rows/0` =
+   1 000, each ONE autocommitted `DELETE … WHERE id IN (SELECT id … LIMIT
+   1000)` under `BusyRetry`;
+3. one `immediate_transaction`: the guard again, a one-statement sweep of any
+   residue (`purge_network_residue/1`, no retry, since it runs inside the
+   transaction), then the row, whose cascades take the rest.
+
+A failure between 2 and 3 leaves the network with less scrollback. That is
+acceptable: the operator had already confirmed the rows go, and a retry
+finishes the job. With zero credentials no session exists on the network, so
+no rows arrive during the purge and the count on the button is stable until
+the delete. The residue sweep covers the one way that can fail: a credential
+bound and unbound again while the batches ran.
+
+**The count has its own endpoint.** `GET /admin/networks/:id/message_count`
+answers `{message_count: n}` and is asked only when the confirm opens.
+`index/2` claims O(1) reads per row, and a per-network `count(*)` in the list
+payload would break that claim on every render. The plan is a COVERING-index
+search on `messages_network_id_index` (1M rows: 13 ms warm, 89 ms cold, on
+/tmp). The S33 query-plan pin now guards this query, because its old subject
+`has_messages_for_network?/1` died with the `:scrollback_present` branch.
+cic keeps the armed button DISABLED ("Counting messages…") until the number
+arrives, and if the count fails it disarms and shows the error, so nobody
+confirms blind.
+
+**Protocol 33.** The token left the generated `ErrorToken` union, so
+`wire_pin` went red on its own (`3b9fe257…` → `92f9c55f…`). The min version
+stays at 1. An old bundle's `scrollback_present` arm just goes dead. A new
+bundle against an old server gets a 404 from `message_count` and disarms. The
+new endpoint renders inline like the rest of the admin networks controller,
+so the pin does not cover it (the v31 finding); the digest moved because of
+the token alone.
+
+**Tests, and what mutation says about them.** A mutant that stops the purge
+after its FIRST batch turns exactly one test red: the direct
+`Scrollback.purge_network/1` test. The end-to-end "larger than one batch" test
+in `NetworksTest` stays green, because the final transaction's residue sweep
+deletes what the stopped purge left (an overdetermined outcome). Its comment
+says so. A mutant that moves the guard after the purge turns the "guard deletes
+NOTHING" test red. Two things are NOT pinned by any test: removing the residue
+sweep from `delete_network/1`, and removing the second guard check. Both
+defend against a credential bound and unbound during the purge, and no test
+builds that race.
+
+**A bench gotcha that cost a run.** Migrating from zero through a 5-connection
+pool failed on `20260516184555` with `no such column:
+max_concurrent_user_sessions`, the column the migration before it had just
+added. With a 1-connection pool, the way `mix ecto.migrate` runs, it passes.
+The cause was NOT established; the bench builds with pool size 1 and says why.

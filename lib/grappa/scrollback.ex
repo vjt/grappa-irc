@@ -1966,28 +1966,85 @@ defmodule Grappa.Scrollback do
   end
 
   @doc """
-  Returns `true` if at least one row exists for `network_id`.
+  Returns how many scrollback rows reference `network_id`, across every
+  subject and channel.
 
-  Sole consumer is `Grappa.Networks.delete_network/1`'s teardown gate:
-  the `messages.network_id` FK is `:restrict`, so an explicit network
-  delete refuses with `{:error, :scrollback_present}` while any archival
-  scrollback still references it. The operator must delete the messages
-  first (Phase 5 `mix grappa.delete_scrollback`). Unbind no longer
-  consults this — it never deletes the network (GH #105).
+  Sole consumer is the admin network-delete confirm (issue 2320): deleting
+  a network takes its scrollback with it, and the confirm button names the
+  number of rows that go (`GET /admin/networks/:id/message_count`). Asked
+  once when the confirm opens, never on the list render.
 
-  Pre-A22 the same query was inlined in `Networks` as a raw
-  `from(m in "messages", ...)` to dodge the Networks↔Scrollback
-  Boundary cycle — cycle still exists structurally (Scrollback
-  schemas reference `Networks.Network` via `belongs_to`), but
-  exposing the query through this boundary keeps schema knowledge
-  in one place even when `Networks` opts out of taking the
-  Boundary dep.
-
-  `Repo.exists?/1` with `limit: 1` is O(index lookup), not a count.
+  Reads `messages_network_id_index` (S33) — a covering-index count, not a
+  table scan; pinned by the query-plan test in `ScrollbackTest`.
   """
-  @spec has_messages_for_network?(integer()) :: boolean()
-  def has_messages_for_network?(network_id) when is_integer(network_id) do
-    query = from(m in Message, where: m.network_id == ^network_id, select: 1, limit: 1)
-    Repo.exists?(query)
+  @spec count_for_network(integer()) :: non_neg_integer()
+  def count_for_network(network_id) when is_integer(network_id) do
+    Message
+    |> where([m], m.network_id == ^network_id)
+    |> Repo.aggregate(:count)
+  end
+
+  # issue 2320 — rows per purge statement. Each batch is ONE autocommitted
+  # DELETE, so this bounds how long the purge holds SQLite's write lock at a
+  # time, and that hold is what every other writer waits behind (a writer
+  # outside `BusyRetry` has only prod's `busy_timeout` for it). Derived from
+  # `test/bench_2320.exs` on voyager's container /tmp, a 1M-row network: at
+  # 1_000 rows the hold measured p50 25.9 ms / p99 36.4 ms / max 87.1 ms,
+  # flat against network size (100k rows: p50 20.0 / p99 36.4), with zero
+  # failures of a concurrent writer; ONE statement over the same 1M rows held
+  # the lock 9_258 ms and failed 25 of that writer's inserts. prod has
+  # measured 3-4.5x slower than local, which keeps 1_000 under the budget
+  # and a larger batch not reliably so. DESIGN_NOTES 2026-09-29.
+  @network_purge_batch_rows 1_000
+
+  @doc "Rows `purge_network/1` deletes per statement (issue 2320)."
+  @spec network_purge_batch_rows() :: 1_000
+  def network_purge_batch_rows, do: @network_purge_batch_rows
+
+  @doc """
+  Deletes every scrollback row of `network_id`, across every subject and
+  channel, in batches of `network_purge_batch_rows/0` — each its own
+  autocommitted statement under `BusyRetry`, so no single transaction holds
+  the write lock for the whole purge (issue 2320: one statement over a
+  1M-row network held it for seconds). NOT atomic: a failure midway leaves
+  the network with less scrollback, which is safe because the caller has
+  already decided the rows go and a retry finishes the job.
+
+  Sole caller is `Grappa.Networks.delete_network/1`, which checks the
+  credentials guard BEFORE calling this and deletes the network row after.
+  Returns the number of rows deleted.
+  """
+  @spec purge_network(integer()) :: {:ok, non_neg_integer()} | {:error, :db_unavailable}
+  def purge_network(network_id) when is_integer(network_id), do: purge_network(network_id, 0)
+
+  defp purge_network(network_id, acc) do
+    batch =
+      from(m in Message,
+        where: m.network_id == ^network_id,
+        select: m.id,
+        limit: ^@network_purge_batch_rows
+      )
+
+    case BusyRetry.run(fn ->
+           {:ok, Message |> where([m], m.id in subquery(batch)) |> Repo.delete_all()}
+         end) do
+      {:ok, {0, _}} -> {:ok, acc}
+      {:ok, {n, _}} -> purge_network(network_id, acc + n)
+      {:error, :db_unavailable} = err -> err
+    end
+  end
+
+  @doc """
+  Deletes whatever `purge_network/1` left of `network_id`, in ONE statement
+  and with NO retry: it runs INSIDE `Grappa.Networks.delete_network/1`'s
+  final transaction, where a retry would re-run a statement the enclosing
+  transaction owns, and the residue is the rows written after the purge's
+  last batch — none, unless the credentials guard was crossed meanwhile.
+  Returns the number of rows deleted.
+  """
+  @spec purge_network_residue(integer()) :: non_neg_integer()
+  def purge_network_residue(network_id) when is_integer(network_id) do
+    {n, _} = Message |> where([m], m.network_id == ^network_id) |> Repo.delete_all()
+    n
   end
 end

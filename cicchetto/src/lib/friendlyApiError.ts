@@ -376,10 +376,6 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       // Admin bucket 1 — 409 duplicate slug (`POST /admin/networks`) or
       // duplicate (host, port) (`POST /admin/networks/:id/servers`).
       return "That already exists.";
-    case "scrollback_present":
-      // Admin bucket 1 — 409, `DELETE /admin/networks/:id` refuses when
-      // archival scrollback would be orphaned.
-      return "This network still has saved history. Clear it before deleting the network.";
     case "last_admin":
       // Admin bucket 2 — 422, demote/delete refused for the sole admin
       // (would lock the deployment out of its own admin panel).

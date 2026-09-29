@@ -397,14 +397,25 @@ defmodule Grappa.Networks do
   end
 
   @doc """
-  Deletes a network row. Refuses with `{:error, {:credentials_present, N}}`
-  when any user has a credential bound — operator must unbind every
-  credential first (per admin-panel A-5: no silent cascade across other
-  users' sessions). Refuses with `{:error, :scrollback_present}` when
-  archival messages would be orphaned — the `messages.network_id` FK is
-  `:restrict` (S29 C2). This is the ONLY path that deletes a network;
-  `Credentials.unbind_credential/2` never does (GH #105). Servers
-  cascade via the FK `:delete_all` from `network_servers`.
+  Deletes a network row TOGETHER WITH its scrollback (issue 2320: the
+  admin has confirmed, and the confirm names the row count). Refuses with
+  `{:error, {:credentials_present, N}}` when any subject has a credential
+  bound — operator must unbind every credential first (per admin-panel
+  A-5: no silent cascade across other users' sessions). The guard runs
+  BEFORE any row goes, so a refused delete loses nothing. This is the ONLY
+  path that deletes a network; `Credentials.unbind_credential/2` never
+  does (GH #105).
+
+  `messages.network_id` is `ON DELETE RESTRICT` (S29 C2), so the rows are
+  purged explicitly — in batches, by `Scrollback.purge_network/1`, because
+  one statement over a large network holds the write lock for seconds.
+  Every other table referencing `networks` cascades from the final
+  `DELETE`, and the only reference INTO `messages`
+  (`read_cursors.last_read_message_id`) is `ON DELETE SET NULL`. The
+  purge is therefore not atomic with the row delete: the final
+  transaction re-checks the guard and sweeps any residue, and a failure
+  in between leaves the network with less scrollback, retryable. A
+  sustained write-lock contention surfaces as `{:error, :db_unavailable}`.
 
   Returns `{:error, :not_found}` for an unknown / stale id —
   idempotency-by-rejection (matches `Networks.disconnect/2`'s
@@ -414,27 +425,49 @@ defmodule Grappa.Networks do
           :ok
           | {:error,
              :not_found
-             | :scrollback_present
+             | :db_unavailable
              | {:credentials_present, non_neg_integer()}}
   def delete_network(%Network{id: network_id}) when is_integer(network_id) do
-    case Repo.get(Network, network_id) do
-      nil ->
-        {:error, :not_found}
+    with %Network{} = net <- Repo.get(Network, network_id) || {:error, :not_found},
+         :ok <- ensure_no_credentials(network_id),
+         {:ok, _} <- Scrollback.purge_network(network_id) do
+      delete_purged_network(net)
+    end
+  end
 
-      %Network{} = net ->
-        cred_count = count_credentials_for_network(network_id)
+  # The last step, in ONE transaction: the guard again (a credential bound
+  # while the batches ran would have a session writing rows), the residue
+  # of the purge (whatever landed after its last batch — nothing, unless
+  # that guard was crossed and uncrossed meanwhile), then the row, whose FK
+  # cascades take the rest.
+  defp delete_purged_network(%Network{} = net) do
+    tx = fn -> Repo.immediate_transaction(fn -> delete_purged_row(net) end) end
 
-        cond do
-          cred_count > 0 ->
-            {:error, {:credentials_present, cred_count}}
+    case Repo.BusyRetry.run(tx) do
+      {:ok, :ok} -> :ok
+      {:error, _} = err -> err
+    end
+  end
 
-          Scrollback.has_messages_for_network?(network_id) ->
-            {:error, :scrollback_present}
+  # The transaction body, extracted so the `BusyRetry.run →
+  # immediate_transaction` wrapper stays within credo's max nesting (the
+  # `Visitors.create_anon/4` shape). A crossed guard rolls back.
+  defp delete_purged_row(%Network{id: network_id} = net) do
+    case ensure_no_credentials(network_id) do
+      :ok ->
+        _ = Scrollback.purge_network_residue(network_id)
+        {:ok, _} = Repo.delete(net)
+        :ok
 
-          true ->
-            {:ok, _} = Repo.delete(net)
-            :ok
-        end
+      {:error, reason} ->
+        Repo.rollback(reason)
+    end
+  end
+
+  defp ensure_no_credentials(network_id) do
+    case count_credentials_for_network(network_id) do
+      0 -> :ok
+      n -> {:error, {:credentials_present, n}}
     end
   end
 

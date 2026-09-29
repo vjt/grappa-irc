@@ -18,6 +18,7 @@ vi.mock("../lib/api", async () => {
     adminResetCircuit: vi.fn(),
     adminCreateNetwork: vi.fn(),
     adminDeleteNetwork: vi.fn(),
+    adminNetworkMessageCount: vi.fn(),
     adminListServers: vi.fn(),
     adminAddServer: vi.fn(),
     adminDeleteServer: vi.fn(),
@@ -550,9 +551,10 @@ describe("AdminNetworksTab", () => {
       });
     });
 
-    it("delete inline-confirm fires adminDeleteNetwork", async () => {
+    it("delete inline-confirm names the server's message count, then fires adminDeleteNetwork", async () => {
       const api = await import("../lib/api");
       vi.mocked(api.adminListNetworks).mockResolvedValue([BAHAMUT]);
+      vi.mocked(api.adminNetworkMessageCount).mockResolvedValue(12345);
       vi.mocked(api.adminDeleteNetwork).mockResolvedValue(undefined);
       render(() => <AdminNetworksTab />);
       await screen.findByTestId(`admin-network-row-${BAHAMUT.slug}`);
@@ -560,23 +562,79 @@ describe("AdminNetworksTab", () => {
       const btn = screen.getByTestId(`admin-network-delete-${BAHAMUT.slug}`);
       expect(btn.textContent).toBe("Delete");
       fireEvent.click(btn);
-      expect(btn.textContent).toBe("Confirm delete");
+      await waitFor(() => {
+        expect(btn.textContent).toBe("Delete network and 12,345 messages");
+      });
+      expect(api.adminNetworkMessageCount).toHaveBeenCalledWith("test-bearer", BAHAMUT.id);
       fireEvent.click(btn);
       await waitFor(() => {
         expect(api.adminDeleteNetwork).toHaveBeenCalledWith("test-bearer", BAHAMUT.id);
       });
     });
 
+    // issue 2320 — nobody confirms a delete blind: until the count arrives
+    // the armed button says so and cannot be clicked.
+    it("keeps the armed delete disabled while the count is outstanding", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListNetworks).mockResolvedValue([BAHAMUT]);
+      let resolveCount: (n: number) => void = () => {};
+      vi.mocked(api.adminNetworkMessageCount).mockReturnValue(
+        new Promise<number>((resolve) => {
+          resolveCount = resolve;
+        }),
+      );
+      vi.mocked(api.adminDeleteNetwork).mockResolvedValue(undefined);
+      render(() => <AdminNetworksTab />);
+      await screen.findByTestId(`admin-network-row-${BAHAMUT.slug}`);
+
+      const btn = screen.getByTestId(`admin-network-delete-${BAHAMUT.slug}`) as HTMLButtonElement;
+      fireEvent.click(btn);
+      expect(btn.textContent).toBe("Counting messages…");
+      expect(btn.disabled).toBe(true);
+      fireEvent.click(btn);
+      expect(api.adminDeleteNetwork).not.toHaveBeenCalled();
+
+      resolveCount(1);
+      await waitFor(() => {
+        expect(btn.textContent).toBe("Delete network and 1 message");
+      });
+      expect(btn.disabled).toBe(false);
+    });
+
+    it("disarms and reports when the count cannot be read", async () => {
+      const api = await import("../lib/api");
+      vi.mocked(api.adminListNetworks).mockResolvedValue([BAHAMUT]);
+      vi.mocked(api.adminNetworkMessageCount).mockRejectedValue(
+        new api.ApiError(404, "not_found", {}),
+      );
+      render(() => <AdminNetworksTab />);
+      await screen.findByTestId(`admin-network-row-${BAHAMUT.slug}`);
+
+      const btn = screen.getByTestId(`admin-network-delete-${BAHAMUT.slug}`);
+      fireEvent.click(btn);
+      await waitFor(() => {
+        expect(screen.getByTestId("admin-networks-error").textContent).toContain(
+          "could not count messages — not_found",
+        );
+      });
+      expect(btn.textContent).toBe("Delete");
+      expect(api.adminDeleteNetwork).not.toHaveBeenCalled();
+    });
+
     it("surfaces 409 credentials_present with the operator-facing message", async () => {
       const api = await import("../lib/api");
       vi.mocked(api.adminListNetworks).mockResolvedValue([BAHAMUT]);
       const err = new api.ApiError(409, "credentials_present", { credential_count: 3 });
+      vi.mocked(api.adminNetworkMessageCount).mockResolvedValue(0);
       vi.mocked(api.adminDeleteNetwork).mockRejectedValue(err);
       render(() => <AdminNetworksTab />);
       await screen.findByTestId(`admin-network-row-${BAHAMUT.slug}`);
 
       const btn = screen.getByTestId(`admin-network-delete-${BAHAMUT.slug}`);
       fireEvent.click(btn);
+      await waitFor(() => {
+        expect(btn.textContent).toBe("Delete network and 0 messages");
+      });
       fireEvent.click(btn);
       await waitFor(() => {
         const errBanner = screen.getByTestId("admin-networks-error");

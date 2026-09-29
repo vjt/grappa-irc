@@ -27,7 +27,7 @@ defmodule Grappa.NetworksTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, Networks, Repo}
+  alias Grappa.{Accounts, Networks, Repo, Scrollback}
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.{Credential, Credentials, Network, Server, Servers, SessionPlan}
   alias Grappa.PubSub.Topic
@@ -2138,29 +2138,111 @@ defmodule Grappa.NetworksTest do
       assert Repo.get(Network, net.id) != nil
     end
 
-    test "refuses when scrollback rows exist (returns :scrollback_present)" do
+    # issue 2320 — the maintainer's ruling: confirming the delete takes the
+    # scrollback with it. The other network's rows are the control that the
+    # purge is scoped by network and not a table-wide wipe.
+    test "deletes the network together with its scrollback, leaving other networks' rows" do
       net = network_fixture()
+      other = network_fixture()
       user = user_fixture()
 
-      # Seed a single scrollback row — has_messages_for_network?/1
-      # short-circuits on the first row.
-      {:ok, _} =
-        Grappa.ScrollbackHelpers.insert(%{
-          user_id: user.id,
-          network_id: net.id,
-          channel: "#smoke",
-          sender: "alice",
-          body: "hi",
-          kind: :privmsg,
-          server_time: System.system_time(:millisecond)
-        })
+      for n <- 1..3, do: seed_message(user, net, "#gone-#{n}")
+      seed_message(user, other, "#kept")
 
-      assert {:error, :scrollback_present} = Networks.delete_network(net)
+      assert Scrollback.count_for_network(net.id) == 3
+
+      assert :ok = Networks.delete_network(net)
+      assert Repo.get(Network, net.id) == nil
+      assert Scrollback.count_for_network(net.id) == 0
+      assert Scrollback.count_for_network(other.id) == 1
+    end
+
+    # End to end over more than one purge batch. This does NOT prove the
+    # batching loop: the final transaction's residue sweep would delete what
+    # a first-batch-only purge left, so a purge that stopped early still
+    # passes here (measured by mutation). The loop is pinned by the direct
+    # `Scrollback.purge_network/1` test in `ScrollbackTest`.
+    test "deletes a scrollback larger than one purge batch" do
+      net = network_fixture()
+      user = user_fixture()
+      rows = Scrollback.network_purge_batch_rows() * 2 + 1
+      seed_messages(user, net, rows)
+
+      assert Scrollback.count_for_network(net.id) == rows
+      assert :ok = Networks.delete_network(net)
+      assert Repo.get(Network, net.id) == nil
+      assert Scrollback.count_for_network(net.id) == 0
+    end
+
+    test "a read cursor on the deleted network goes with it" do
+      net = network_fixture()
+      user = user_fixture()
+      msg = seed_message(user, net, "#cursor")
+
+      {:ok, _} = Grappa.ReadCursor.set({:user, user.id}, net.id, "#cursor", msg.id)
+      assert Grappa.ReadCursor.get({:user, user.id}, net.id, "#cursor") != nil
+
+      assert :ok = Networks.delete_network(net)
+      assert Grappa.ReadCursor.get({:user, user.id}, net.id, "#cursor") == nil
+    end
+
+    # The guard must run BEFORE any row goes: a refused delete that had
+    # already purged part of the scrollback would lose history for nothing.
+    test "the credentials guard refuses and deletes NOTHING, scrollback included" do
+      net = network_fixture()
+      user = user_fixture()
+      seed_message(user, net, "#stays")
+
+      {:ok, _} = Credentials.bind_credential(user, net, %{nick: "vjt", auth_method: :none})
+
+      assert {:error, {:credentials_present, 1}} = Networks.delete_network(net)
       assert Repo.get(Network, net.id) != nil
+      assert Scrollback.count_for_network(net.id) == 1
     end
 
     test "returns :not_found for an unknown id (idempotency-by-rejection)" do
       assert {:error, :not_found} = Networks.delete_network(%Network{id: 999_999_999})
     end
+  end
+
+  # issue 2320 — one real row, through the production changeset.
+  defp seed_message(user, net, channel) do
+    {:ok, msg} =
+      Grappa.ScrollbackHelpers.insert(%{
+        user_id: user.id,
+        network_id: net.id,
+        channel: channel,
+        sender: "alice",
+        body: "hi",
+        kind: :privmsg,
+        server_time: System.system_time(:millisecond)
+      })
+
+    msg
+  end
+
+  # issue 2320 — many rows for the multi-batch purge test. `insert_all`
+  # because thousands of changeset round-trips would dominate the suite;
+  # the columns are the ones a real privmsg row carries.
+  defp seed_messages(user, net, n) do
+    now = DateTime.utc_now()
+    ts = System.system_time(:millisecond)
+
+    1..n
+    |> Enum.map(fn i ->
+      %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#bulk",
+        sender: "alice",
+        body: "line #{i}",
+        kind: :privmsg,
+        meta: %{},
+        server_time: ts + i,
+        inserted_at: now
+      }
+    end)
+    |> Enum.chunk_every(500)
+    |> Enum.each(&Repo.insert_all(Scrollback.Message, &1))
   end
 end
