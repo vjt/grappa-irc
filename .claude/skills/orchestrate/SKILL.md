@@ -2985,6 +2985,30 @@ nessuna riscrittura possibile. Misurala lo stesso se costa due comandi, ma dichi
   🧪 **Il discriminante costa una riga:** se lo scarto e' ~2-3 % e il file e' pieno di emoji,
   sospetta l'UNITA' prima del contenuto; `python3 -c "s=open(f,encoding='utf-8').read();
   print(len(s), len(s.encode()))"` chiude la domanda senza toccare la patch.
+  🔴🔴 **E C'E' UN TERZO RIGHELLO STORTO CHE I DUE DI SOPRA NON COPRONO, PERCHE' NON E' UN'UNITA'
+  SBAGLIATA MA UN ORDINE IMPOSSIBILE: UNA RIGA DI RESOCONTO CHE CITA LA TAGLIA FINALE DEL FILE CHE
+  LA CONTIENE E' FALSA NELL'ISTANTE IN CUI LA SCRIVI (orch, 2026-09-29, presa su di me).** Potando
+  l'handoff ho messo nella sezione «QUESTO FILE» la contabilita' della potatura — *`153 righe /
+  63.611 byte` → `153 / 61.367`, `-2.244 byte`* — e **quella scrittura ha portato il file a 61.714**:
+  il numero descriveva lo stato **prima** della scrittura che lo pubblicava, cioe' uno stato che non
+  esiste piu' in nessun istante in cui qualcuno possa leggere quella riga.
+  🔑 **Non e' un errore di calcolo, e' una RICORSIONE:** ogni valore che scrivi cambia la grandezza
+  che stai dichiarando ⇒ **non esiste un numero da scrivere PRIMA che sia vero DOPO**, a meno che la
+  scrittura non sia **a taglia costante**.
+  🥇 **CURA, e si verifica da se': lo SCAMBIO A LUNGHEZZA IDENTICA.** Misura la taglia REALE dopo
+  l'ULTIMA scrittura, poi sostituisci il segnaposto col valore vero **scegliendo una grafia con gli
+  stessi byte** (`61.367`→`61.714`, `-2.244`→`-1.897`: stesse cifre, stesso separatore) e
+  **asserisci `len(nuovo)==len(vecchio)` PRIMA, e `len(s2.encode())==len(s.encode())` DOPO** — se il
+  byte count si muove, il numero appena scritto e' di nuovo falso e lo script ABORTA invece di
+  pubblicarlo. Chiusa cosi', la riga afferma la taglia del file che la porta, e **la verifica e'
+  cercare quella stringa DENTRO il file** (la taglia misurata, formattata come nel testo, deve dare
+  hit — un pos ctrl che vive nell'artefatto stesso).
+  ⚠️ **In alternativa, ed e' piu' semplice: NON citare la taglia finale affatto** — cita il DELTA
+  delle sezioni tolte, o la taglia del BACKUP, che sono grandezze di un file che non stai scrivendo.
+  🪞 *E il verso del danno e' quello che si propaga: la contabilita' di una potatura e' precisamente
+  la riga che il prossimo lettore prende come punto di partenza per la SUA predizione ⇒ un numero
+  falso li' non sbaglia una volta, sbaglia il giro dopo, in mano a qualcun altro.* **Stessa famiglia
+  di «una lezione non puo' citare un numero che non la misura», col soggetto che misura SE STESSO.**
 - 🔴🔴 **UNA `assert` VERA LETTA NEL VERSO SBAGLIATO: IL TAGLIO A FETTA CHE INGHIOTTE LA SEZIONE
   ACCANTO, E IL CONTROLLO CHE DOVEVA BECCARLO LO CONFERMA (orch, 2026-09-20, sull'handoff).**
   Dopo il disastro della regex avevo adottato il taglio per ANCORE (`s.index(start)` / `s.index(end)`)
