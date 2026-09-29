@@ -1,0 +1,234 @@
+defmodule Grappa.DmConversations do
+  @moduledoc """
+  The DM conversation identity (issue 1365): one `dm_conversations` row per
+  `(subject, network, folded peer nick)`, the parent every DM-keyed store
+  points at by FK (`messages.dm_conversation_id`,
+  `read_cursors.dm_conversation_id`).
+
+  ## Lifecycle
+
+    * **Minted on first contact** — the first persisted DM row
+      (`Grappa.Scrollback.persist_event/1`) or the first window open
+      (`Grappa.QueryWindows.open/4`), whichever comes first.
+    * **Open is state**, not existence: `opened_at` is set while the query
+      window is open and cleared when it closes. Closing is an UPDATE.
+    * **Never deleted — except as the loser of a rename MERGE**, and only
+      once every child has moved to the survivor (`Grappa.NickMigration`
+      owns that sequence; the FK is NO ACTION, so a forgotten child makes
+      the delete fail instead of orphaning the row).
+
+  ## One folded nick, one conversation (ruling T1, 2026-09-28)
+
+  The fold-unique index is TOTAL — open and closed rows alike — so a lookup
+  is never ambiguous. The fold is `Identifier.canonical_target/1` in memory
+  and `Identifier.nick_fold/1` in SQL, character-identical to the index
+  expression; CLAUDE.md's rfc1459 national-char gap is inherited unchanged,
+  like every other nick KEY.
+
+  ## Leg 1: written, not yet read
+
+  `query_windows` stays the source of the window list through legs 1-3 and
+  this table is written beside it; no reader consults it yet. What makes the
+  dual write honest is that every writer of the nick-keyed stores also
+  writes here, in the same transaction.
+
+  ## Callers guarantee the subject and network exist
+
+  No FK pre-check here: the persist path's own message insert already raises
+  on a missing parent, and `QueryWindows.open/4` validates both before it
+  reaches this module. A missing parent raises `Ecto.ConstraintError`.
+  """
+
+  use Boundary,
+    top_level?: true,
+    deps: [Grappa.IRC, Grappa.Repo, Grappa.Subject],
+    exports: [Conversation]
+
+  import Ecto.Query
+
+  alias Grappa.DmConversations.Conversation
+  alias Grappa.IRC.Identifier
+  alias Grappa.{Repo, Subject}
+
+  require Identifier
+
+  @typedoc """
+  What a rename did to the conversation that bore the old nick.
+
+    * `:renamed` — the common case: no conversation holds the new nick and
+      every row moved with the rename, so the row's display column was
+      UPDATEd in place. One statement, the id unchanged.
+    * `{:move, from_id, to_id}` — the new nick already has a conversation
+      (a MERGE), or only part of the old conversation's rows moved (a
+      SPLIT, own-nick self window only). The caller must re-point the moved
+      children from `from_id` to `to_id` in bounded batches, then delete
+      `from_id` if it has none left.
+  """
+  @type follow :: :renamed | {:move, pos_integer(), pos_integer()}
+
+  @doc """
+  The conversation whose peer folds to `nick`, minting it (closed, with
+  `nick` as its display spelling) when there is none.
+
+  Safe outside a transaction — a concurrent mint loses the insert race and
+  re-selects the winner — but meant to run inside the caller's write
+  transaction, so the row and its first child commit together.
+  """
+  @spec resolve!(Subject.t(), integer(), String.t()) :: Conversation.t()
+  def resolve!({_, _} = subject, network_id, nick) when is_integer(network_id) and is_binary(nick) do
+    case get(subject, network_id, nick) do
+      nil -> mint!(subject, network_id, nick, nil)
+      %Conversation{} = conversation -> conversation
+    end
+  end
+
+  @doc """
+  The conversation whose peer folds to `nick`, or `nil`.
+  """
+  @spec get(Subject.t(), integer(), String.t()) :: Conversation.t() | nil
+  def get({_, _} = subject, network_id, nick) when is_integer(network_id) and is_binary(nick) do
+    subject
+    |> by_nick(network_id, Identifier.canonical_target(nick))
+    |> Repo.one()
+  end
+
+  @doc """
+  Marks the conversation with `nick` open, minting it open when it does not
+  exist. An already-open conversation keeps its `opened_at` — the
+  first-opened semantics of `QueryWindows.open/4`, which it mirrors.
+  """
+  @spec open!(Subject.t(), integer(), String.t(), DateTime.t()) :: Conversation.t()
+  def open!({_, _} = subject, network_id, nick, %DateTime{} = opened_at)
+      when is_integer(network_id) and is_binary(nick) do
+    case get(subject, network_id, nick) do
+      nil -> mint!(subject, network_id, nick, opened_at)
+      %Conversation{opened_at: nil} = conversation -> set_opened_at!(conversation, opened_at)
+      %Conversation{} = conversation -> conversation
+    end
+  end
+
+  @doc """
+  Marks the conversation with `nick` closed. Idempotent: `:ok` whether or
+  not it was open, or existed.
+  """
+  @spec close(Subject.t(), integer(), String.t()) :: :ok
+  def close({_, _} = subject, network_id, nick) when is_integer(network_id) and is_binary(nick) do
+    subject
+    |> by_nick(network_id, Identifier.canonical_target(nick))
+    |> Repo.update_all(set: [opened_at: nil, updated_at: now()])
+
+    :ok
+  end
+
+  @doc """
+  Applies a nick rename to `source`, the conversation that bore the old nick,
+  AFTER the nick-keyed stores have moved (`Grappa.NickMigration`).
+
+  `keeps_rows?` answers whether any of `source`'s messages still carry the OLD
+  key — the caller measures it, because only the caller knows which rows its
+  rename moved. A peer rename moves the whole conversation; an own-nick
+  rename moves only the self rows (`Scrollback.rename_self_window/4`), so a
+  conversation that also holds history with a peer who bore our old nick
+  keeps those rows.
+
+  Open state follows the window: whatever `QueryWindows.rename/4` did, the
+  window that was open at the old nick is now at the new one, so an open
+  `source` opens the target and closes itself.
+
+  MUST run inside the caller's write transaction. See `t:follow/0`.
+  """
+  @spec follow_rename(Subject.t(), Conversation.t(), String.t(), boolean()) :: follow()
+  def follow_rename({_, _} = subject, %Conversation{} = source, new_nick, keeps_rows?)
+      when is_binary(new_nick) and is_boolean(keeps_rows?) do
+    case get(subject, source.network_id, new_nick) do
+      nil when not keeps_rows? ->
+        {1, _} =
+          Conversation
+          |> where([c], c.id == ^source.id)
+          |> Repo.update_all(set: [peer_nick: new_nick, updated_at: now()])
+
+        :renamed
+
+      target ->
+        target = target || mint!(subject, source.network_id, new_nick, nil)
+        :ok = carry_open_state(source, target)
+        {:move, source.id, target.id}
+    end
+  end
+
+  @doc """
+  Deletes a merged-away conversation. The FK is NO ACTION, so this RAISES if
+  a child still points at it — the caller proves it has none first, inside
+  the same write transaction.
+  """
+  @spec delete!(pos_integer()) :: :ok
+  def delete!(id) when is_integer(id) do
+    {1, _} = Conversation |> where([c], c.id == ^id) |> Repo.delete_all()
+    :ok
+  end
+
+  # The single folded-nick predicate, character-identical to the unique
+  # expression index (`lower(peer_nick)`) so every lookup seeks it.
+  @spec by_nick(Subject.t(), integer(), String.t()) :: Ecto.Query.t()
+  defp by_nick(subject, network_id, folded_nick) do
+    Conversation
+    |> Subject.subject_where(subject)
+    |> where([c], c.network_id == ^network_id)
+    |> where([c], Identifier.nick_fold(c.peer_nick) == ^folded_nick)
+  end
+
+  @spec carry_open_state(Conversation.t(), Conversation.t()) :: :ok
+  defp carry_open_state(%Conversation{opened_at: nil}, _), do: :ok
+
+  defp carry_open_state(%Conversation{} = source, %Conversation{} = target) do
+    # An already-open target keeps its own `opened_at` (an unchanged field
+    # makes `Repo.update!/1` a no-op, no statement issued).
+    %Conversation{} = set_opened_at!(target, target.opened_at || source.opened_at)
+    %Conversation{} = set_opened_at!(source, nil)
+    :ok
+  end
+
+  @spec set_opened_at!(Conversation.t(), DateTime.t() | nil) :: Conversation.t()
+  defp set_opened_at!(%Conversation{} = conversation, opened_at) do
+    conversation
+    |> Ecto.Changeset.change(opened_at: opened_at)
+    |> Repo.update!()
+  end
+
+  @spec mint!(Subject.t(), integer(), String.t(), DateTime.t() | nil) :: Conversation.t()
+  defp mint!(subject, network_id, nick, opened_at) do
+    attrs =
+      Subject.put_subject_id(
+        %{network_id: network_id, peer_nick: nick, opened_at: opened_at},
+        subject
+      )
+
+    inserted =
+      %Conversation{}
+      |> Conversation.changeset(attrs)
+      |> Repo.insert!(on_conflict: :nothing, conflict_target: conflict_target(subject))
+
+    case inserted do
+      # `on_conflict: :nothing` hands back an id-less struct when a
+      # concurrent mint won the race: the winner is the conversation.
+      %Conversation{id: nil} ->
+        subject |> by_nick(network_id, Identifier.canonical_target(nick)) |> Repo.one!()
+
+      %Conversation{} = conversation ->
+        conversation
+    end
+  end
+
+  # The partial unique indexes carry `WHERE <subject>_id IS NOT NULL`, and
+  # SQLite only matches an upsert target that mirrors the predicate. The fold
+  # is derived from the single source, as in `QueryWindows`.
+  @nick_fold_sql Identifier.nick_fold_sql("peer_nick")
+
+  defp conflict_target({:user, _}),
+    do: {:unsafe_fragment, "(user_id, network_id, #{@nick_fold_sql}) WHERE user_id IS NOT NULL"}
+
+  defp conflict_target({:visitor, _}),
+    do: {:unsafe_fragment, "(visitor_id, network_id, #{@nick_fold_sql}) WHERE visitor_id IS NOT NULL"}
+
+  defp now, do: DateTime.truncate(DateTime.utc_now(), :second)
+end

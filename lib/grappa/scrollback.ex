@@ -37,6 +37,11 @@ defmodule Grappa.Scrollback do
     # `belongs_to` and its typespec — metadata atoms, not a reference the
     # checker resolves (#1399).
     deps: [
+      # issue 1365 — `persist_event/1` resolves (mints on first contact) the
+      # DM conversation a DM-eligible row belongs to, inside the insert's own
+      # transaction. Acyclic: `Grappa.DmConversations` deps only
+      # `IRC`/`Repo`/`Subject`.
+      Grappa.DmConversations,
       Grappa.IRC,
       # `Wire.to_json/1` matches `%Network{slug: slug}`, the wire-shape
       # contract from A1+A26 — a real reference, declared since #1398 made
@@ -53,6 +58,7 @@ defmodule Grappa.Scrollback do
 
   import Ecto.Query
 
+  alias Grappa.DmConversations
   alias Grappa.IRC.Identifier
   alias Grappa.{Repo, Subject}
   alias Grappa.Repo.BusyRetry
@@ -222,9 +228,64 @@ defmodule Grappa.Scrollback do
   # error is RETURNED, never raised, so it is not retried). Kept as a named
   # function rather than inlined to hold
   # `persist_event/1`'s nesting ≤ 2 (Credo).
+  #
+  # issue 1365 — a DM-eligible row is inserted together with its conversation
+  # (resolved, and minted on first contact) inside ONE write transaction, so
+  # the parent and its first child commit or roll back together. That is
+  # still one retry-wrapped op: a rolled-back transaction means the row did
+  # not land, which is the only thing `:persist_unavailable` may mean here.
+  # Channel and `$server` rows keep the bare insert — no transaction, no
+  # extra lock — so the change costs nothing off the DM path.
   @spec persist_row(Ecto.Changeset.t()) :: {:ok, Message.t()} | {:error, persist_error()}
   defp persist_row(changeset) do
-    with_pool_retry(fn -> Repo.insert(changeset) end)
+    with_pool_retry(fn -> insert_row(changeset, dm_conversation_key(changeset)) end)
+  end
+
+  @spec insert_row(Ecto.Changeset.t(), String.t() | nil) ::
+          {:ok, Message.t()} | {:error, Ecto.Changeset.t()}
+  defp insert_row(changeset, nil), do: Repo.insert(changeset)
+
+  defp insert_row(changeset, key) do
+    Repo.immediate_transaction(fn ->
+      conversation =
+        DmConversations.resolve!(
+          changeset_subject(changeset),
+          Ecto.Changeset.get_field(changeset, :network_id),
+          key
+        )
+
+      case changeset
+           |> Ecto.Changeset.put_change(:dm_conversation_id, conversation.id)
+           |> Repo.insert() do
+        {:ok, message} -> message
+        {:error, %Ecto.Changeset{} = failed} -> Repo.rollback(failed)
+      end
+    end)
+  end
+
+  # The row's DM conversation key, RAW (it becomes the display spelling when
+  # the row mints the conversation), or `nil` when the row belongs to no DM.
+  # It is the key every DM reader groups on — `COALESCE(dm_with, channel)`,
+  # admitted by `dm_eligible?/1` — so the FK and the readers can never
+  # disagree about which conversation a row is in. An invalid changeset has
+  # no key: it takes the bare insert and fails validation there, unchanged.
+  @spec dm_conversation_key(Ecto.Changeset.t()) :: String.t() | nil
+  defp dm_conversation_key(%Ecto.Changeset{valid?: false}), do: nil
+
+  defp dm_conversation_key(changeset) do
+    key =
+      Ecto.Changeset.get_field(changeset, :dm_with) ||
+        Ecto.Changeset.get_field(changeset, :channel)
+
+    if dm_eligible?(key), do: key
+  end
+
+  @spec changeset_subject(Ecto.Changeset.t()) :: Subject.t()
+  defp changeset_subject(changeset) do
+    case Ecto.Changeset.get_field(changeset, :user_id) do
+      nil -> {:visitor, Ecto.Changeset.get_field(changeset, :visitor_id)}
+      user_id -> {:user, user_id}
+    end
   end
 
   # #357 D1 — span metadata. `channel`/`network_id` via `Map.get` (nil on a
@@ -1912,6 +1973,70 @@ defmodule Grappa.Scrollback do
 
       {:ok, count}
     end
+  end
+
+  @doc """
+  issue 1365 — re-points rows of DM conversation `from_id` whose
+  key folds to `nick` onto conversation `to_id`, and returns how many moved
+  (at most `batch_size`).
+
+  The batch unit of a rename MERGE or SPLIT (`Grappa.NickMigration`): the
+  caller loops, one short write transaction per call, until a call moves
+  fewer than `batch_size` — never one transaction proportional to the history
+  (issue 2319: 331 rows re-keyed under one ~9.5 s lock broke an unrelated
+  write). The key predicate is the one every DM reader groups on, so a row
+  moves exactly when its key says it belongs to the target.
+
+  Seeks `messages_dm_conversation_id_index`. Takes no retry of its own: it
+  runs inside the caller's transaction.
+  """
+  @spec move_dm_conversation_rows(pos_integer(), pos_integer(), String.t(), pos_integer()) ::
+          non_neg_integer()
+  def move_dm_conversation_rows(from_id, to_id, nick, batch_size)
+      when is_integer(from_id) and is_integer(to_id) and is_binary(nick) and
+             is_integer(batch_size) and batch_size > 0 do
+    batch =
+      from_id
+      |> dm_conversation_rows_keyed(Identifier.canonical_target(nick))
+      |> select([m], m.id)
+      |> limit(^batch_size)
+
+    {count, _} =
+      Message
+      |> where([m], m.id in subquery(batch))
+      |> Repo.update_all(set: [dm_conversation_id: to_id])
+
+    count
+  end
+
+  @doc """
+  issue 1365 — true iff DM conversation `id` still holds a row whose key folds
+  to `nick`. How `Grappa.NickMigration` tells a rename that moved a whole
+  conversation from one that moved only part of it.
+  """
+  @spec dm_conversation_keyed?(pos_integer(), String.t()) :: boolean()
+  def dm_conversation_keyed?(id, nick) when is_integer(id) and is_binary(nick) do
+    id
+    |> dm_conversation_rows_keyed(Identifier.canonical_target(nick))
+    |> Repo.exists?()
+  end
+
+  @doc """
+  issue 1365 — true iff any row still points at DM conversation `id`. A
+  merged-away conversation may be deleted only once this is false.
+  """
+  @spec dm_conversation_rows?(pos_integer()) :: boolean()
+  def dm_conversation_rows?(id) when is_integer(id) do
+    Message
+    |> where([m], m.dm_conversation_id == ^id)
+    |> Repo.exists?()
+  end
+
+  @spec dm_conversation_rows_keyed(pos_integer(), String.t()) :: Ecto.Query.t()
+  defp dm_conversation_rows_keyed(id, folded) do
+    Message
+    |> where([m], m.dm_conversation_id == ^id)
+    |> where_dm_peer(folded)
   end
 
   @doc """

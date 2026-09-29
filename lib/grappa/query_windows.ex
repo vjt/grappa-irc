@@ -19,7 +19,10 @@ defmodule Grappa.QueryWindows do
   consume the list via Phoenix Channels snapshot on join; individual
   open/close events are pushed as they happen. This table is NOT a
   conversation record — it's purely a UI-state flag. Scrollback is
-  owned by `Grappa.Scrollback`.
+  owned by `Grappa.Scrollback`; the conversation identity is
+  `Grappa.DmConversations` (issue 1365), whose open state `open/4` and
+  `close/4` write in the same transaction as the window row while both
+  tables are live (legs 1-3).
 
   ## Subject-scoped (visitor-parity V1, 2026-05-15)
 
@@ -79,6 +82,7 @@ defmodule Grappa.QueryWindows do
   ## Boundary
 
   `Grappa.QueryWindows` is a standalone context. Its only deps are:
+    * `Grappa.DmConversations` — the conversation's open state (issue 1365).
     * `Grappa.Repo` — persistence.
     * `Grappa.IRC` — `Identifier.nick_fold/1` (ASCII DM-target key).
     * `Grappa.ReadCursor` — `delete_for_dm/3`, the window's sibling row
@@ -106,6 +110,10 @@ defmodule Grappa.QueryWindows do
     # cycle the waiver avoided, `Session → QueryWindows → Networks → Session`,
     # cannot form through a leaf that depends only on `Grappa.IRC`.
     deps: [
+      # issue 1365 — `open/4` / `close/4` write the conversation's open state
+      # in the same transaction as the window row (the leg 1-3 dual write).
+      # Acyclic: `Grappa.DmConversations` deps only `IRC`/`Repo`/`Subject`.
+      Grappa.DmConversations,
       Grappa.IRC,
       Grappa.PubSub,
       # issue 2201 — `close/4` deletes the window's sibling read cursor in the
@@ -122,6 +130,7 @@ defmodule Grappa.QueryWindows do
 
   alias Grappa.{
     Accounts.User,
+    DmConversations,
     IRC.Identifier,
     Networks.Network,
     PubSub.Topic,
@@ -194,7 +203,7 @@ defmodule Grappa.QueryWindows do
         # #523 — ride out a transient SQLITE_BUSY on the window insert; sustained
         # saturation degrades to `{:error, :db_unavailable}` (a WS "open_failed"
         # reply, or a 503 at any REST caller) rather than crashing the channel.
-        Repo.BusyRetry.run(fn -> do_insert(cs, subject, network_id, target_nick) end)
+        insert_window(cs, subject, network_id, target_nick)
       else
         {:error, cs}
       end
@@ -252,6 +261,10 @@ defmodule Grappa.QueryWindows do
             |> Repo.delete_all()
 
           ReadCursor.delete_for_dm(subject, network_id, target_nick)
+
+          # issue 1365 — closing is an UPDATE on the conversation, never a
+          # DELETE: the conversation outlives its window.
+          :ok = DmConversations.close(subject, network_id, target_nick)
 
           count
         end)
@@ -443,6 +456,30 @@ defmodule Grappa.QueryWindows do
   # ---------------------------------------------------------------------------
   # Private helpers
   # ---------------------------------------------------------------------------
+
+  # issue 1365 — the conversation's open state is written in the SAME
+  # transaction as the window row (the leg 1-3 dual write), so the two can
+  # never be observed disagreeing. Retry outside, transaction inside, as
+  # `close/4`.
+  @spec insert_window(Ecto.Changeset.t(), Subject.t(), integer(), String.t()) ::
+          {:ok, Window.t()} | {:error, Ecto.Changeset.t() | :db_unavailable}
+  defp insert_window(cs, subject, network_id, target_nick) do
+    Repo.BusyRetry.run(fn ->
+      Repo.immediate_transaction(fn -> open_in_transaction(cs, subject, network_id, target_nick) end)
+    end)
+  end
+
+  @spec open_in_transaction(Ecto.Changeset.t(), Subject.t(), integer(), String.t()) :: Window.t()
+  defp open_in_transaction(cs, subject, network_id, target_nick) do
+    case do_insert(cs, subject, network_id, target_nick) do
+      {:ok, %Window{} = window} ->
+        %{} = DmConversations.open!(subject, network_id, window.target_nick, window.opened_at)
+        window
+
+      {:error, %Ecto.Changeset{} = failed} ->
+        Repo.rollback(failed)
+    end
+  end
 
   @spec do_insert(Ecto.Changeset.t(), Subject.t(), integer(), String.t()) ::
           {:ok, Window.t()} | {:error, Ecto.Changeset.t()}

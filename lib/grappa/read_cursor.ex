@@ -75,6 +75,9 @@ defmodule Grappa.ReadCursor do
     # `belongs_to` and its typespec — metadata atoms, not a reference
     # Boundary can gate (#1399).
     deps: [
+      # issue 1365 — a new DM cursor points at its conversation. Acyclic:
+      # `Grappa.DmConversations` deps only `IRC`/`Repo`/`Subject`.
+      Grappa.DmConversations,
       Grappa.IRC,
       Grappa.PubSub,
       Grappa.Repo,
@@ -92,11 +95,12 @@ defmodule Grappa.ReadCursor do
 
   import Ecto.Query
 
+  alias Grappa.DmConversations
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
   alias Grappa.ReadCursor.{Cursor, Wire}
-  alias Grappa.{Repo, Subject}
+  alias Grappa.{Repo, Scrollback, Subject}
   alias Grappa.Scrollback.Message
 
   # Identifier.nick_fold/1 is a query macro (ASCII fold fragment) used by
@@ -779,6 +783,39 @@ defmodule Grappa.ReadCursor do
     count
   end
 
+  @doc """
+  issue 1365 — re-points the cursors of DM conversation `from_id` whose key
+  folds to `nick` onto conversation `to_id`, and returns how many moved. The
+  cursor half of a rename MERGE or SPLIT (`Grappa.NickMigration`), run after
+  `rename_dm_peer/4` has re-keyed the cursor itself. At most one row per
+  subject and key, so no batching. No retry: it runs inside the caller's
+  transaction.
+  """
+  @spec move_dm_conversation(pos_integer(), pos_integer(), String.t()) :: non_neg_integer()
+  def move_dm_conversation(from_id, to_id, nick)
+      when is_integer(from_id) and is_integer(to_id) and is_binary(nick) do
+    folded = Identifier.canonical_target(nick)
+
+    {count, _} =
+      Cursor
+      |> where([c], c.dm_conversation_id == ^from_id)
+      |> where([c], Identifier.nick_fold(c.channel) == ^folded)
+      |> Repo.update_all(set: [dm_conversation_id: to_id])
+
+    count
+  end
+
+  @doc """
+  issue 1365 — true iff any cursor still points at DM conversation `id`. A
+  merged-away conversation may be deleted only once this is false.
+  """
+  @spec dm_conversation_cursor?(pos_integer()) :: boolean()
+  def dm_conversation_cursor?(id) when is_integer(id) do
+    Cursor
+    |> where([c], c.dm_conversation_id == ^id)
+    |> Repo.exists?()
+  end
+
   @spec cursor_folds_to?(subject(), integer(), String.t()) :: boolean()
   defp cursor_folds_to?(subject, network_id, folded) do
     Cursor
@@ -868,7 +905,25 @@ defmodule Grappa.ReadCursor do
 
     %Cursor{}
     |> Cursor.changeset(attrs)
+    |> Ecto.Changeset.put_change(
+      :dm_conversation_id,
+      dm_conversation_id(subject, network_id, channel)
+    )
     |> Repo.insert()
+  end
+
+  # issue 1365 — a DM cursor points at the conversation its window key names.
+  # A LOOKUP, never a mint: `message_belongs?/4` has already proved a row of
+  # that window exists, and persisting that row minted the conversation. `nil`
+  # for a channel or `$server` cursor.
+  @spec dm_conversation_id(subject(), integer(), String.t()) :: integer() | nil
+  defp dm_conversation_id(subject, network_id, channel) do
+    with true <- Scrollback.dm_eligible?(channel),
+         %{id: id} <- DmConversations.get(subject, network_id, channel) do
+      id
+    else
+      _ -> nil
+    end
   end
 
   @spec message_belongs?(subject(), integer(), String.t(), pos_integer()) :: boolean()

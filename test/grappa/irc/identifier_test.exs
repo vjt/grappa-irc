@@ -1090,6 +1090,17 @@ defmodule Grappa.IRC.IdentifierTest do
              "#{@folded_name_migration} is missing #{expected}"
     end
 
+    test "the issue 1365 dm_conversations index embeds the ASCII fold from nick_fold_sql/1" do
+      [path] = Path.wildcard("priv/repo/migrations/*_create_dm_conversations.exs")
+      source = File.read!(path)
+
+      # The attribute line, for the same reason as the #1353 pin above: the
+      # moduledoc spells the bare expression too.
+      expected = ~s(@nick_fold "#{Identifier.nick_fold_sql("peer_nick")}")
+
+      assert String.contains?(source, expected), "#{path} is missing #{expected}"
+    end
+
     test "no migration newer than the #525 re-fold reintroduces the rfc1459 fold" do
       # Lexicographic basename compare == chronological (YYYYMMDDHHMMSS
       # prefix). The re-fold migration and everything before it may carry

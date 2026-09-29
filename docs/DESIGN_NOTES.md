@@ -20632,3 +20632,128 @@ pool failed on `20260516184555` with `no such column:
 max_concurrent_user_sessions`, the column the migration before it had just
 added. With a 1-connection pool, the way `mix ecto.migrate` runs, it passes.
 The cause was NOT established; the bench builds with pool size 1 and says why.
+<!-- entry #1365a -->
+
+---
+
+## 2026-09-29 — #1365a: `dm_conversations`, leg 1 — schema, backfill, and every writer
+
+Leg 1 of the conversation identity ruled on the issue (option 2, the new
+table; ruling T1, the total index). Schema, backfill, and the write path
+that keeps it true. `query_windows` and every nick column stay written
+beside it through legs 1-3 (orchestrator, Q3); no reader consults the FK yet.
+
+**Shape.** One row per `(subject, network, lower(peer_nick))`, minted on
+first contact, `peer_nick` RAW. Open is STATE: `opened_at` non-NULL while the
+window is open, NULL once closed — one nullable column rather than the plan's
+`opened_at` + `closed_at` pair, which could encode states that mean nothing
+(closed before opened). The fold-unique index is TOTAL, open and closed rows
+alike. Children point at it through nullable `dm_conversation_id` on
+`messages` and `read_cursors`, FK **NO ACTION** — a merge that forgets a child
+fails loudly instead of orphaning it (`SET NULL` would be the silent version).
+
+**"Never deleted" holds everywhere EXCEPT the loser of a rename merge.** T1
+turned a rename into a nick that already has a conversation into a merge: the
+loser's children move to the survivor, THEN the loser is deleted. That is a
+correction to the prose of the 2026-09-28 ruling ("never deleted"), not a
+deviation from it, and it is written here so the next reader who finds both
+the phrase and the `DELETE` does not read a contradiction.
+
+**The key is the one the readers group on, and the plan's orphan class is
+dropped (deliberate deviation from the 2026-09-28 backfill plan).** A row's
+conversation is `lower(COALESCE(dm_with, channel))` over the rows
+`Scrollback.dm_eligible?/1` admits. The plan left untagged CURRENT-own-nick
+rows (`channel = own`, `dm_with IS NULL`) NULL, to reproduce the self-window
+narrowing of `channel_or_dm_where/3`. Two reasons against: the readers do not
+agree on that class (the #396 unread counts and `list_archive/3` group it
+under the own-nick key, only the fetch narrows it away), and "current own
+nick" moves on every `/nick`, so a static FK keyed on it would freeze one
+moment into the schema. The narrowing stays a READ filter, expressible on top
+of the FK at leg 3b.
+
+**Writers, all in the transaction that writes the nick-keyed store:**
+
+- `Scrollback.persist_event/1` resolves (mints on first contact) the
+  conversation and inserts the row in ONE write transaction. DM path only —
+  channel and `$server` rows keep the bare insert, no transaction, no lock.
+- `QueryWindows.open/4` / `close/4` open and close the conversation in the
+  window row's transaction. Close is an UPDATE.
+- `ReadCursor` sets the FK on a new DM cursor (a lookup, never a mint).
+- `NickMigration` follows a rename with the rows the nick-keyed stores moved,
+  and only when they moved: a windowless peer rename moves no history today,
+  so it moves no conversation either. No collision and the whole
+  conversation moved → ONE UPDATE of `peer_nick`, id unchanged. Collision →
+  MERGE. An own-nick rename that moves only the self rows of a conversation
+  also holding history with a peer who bore our old nick → SPLIT (the moved
+  rows join the new nick's conversation, the rest stay). Whether rows stayed
+  behind is MEASURED after the move, on the peer arm too.
+
+**The merge and the split move children in bounded batches, AFTER the
+migration transaction commits** — 500 rows per write transaction, never one
+transaction proportional to the history. That constraint is the ruling's
+(T1), and issue 2319 is why: 331 rows re-keyed under one ~9.5 s lock failed
+an unrelated password write and crashed `Visitors.Reaper`. Between the commit
+and the last batch a moved row still points at the old conversation, which is
+still a live parent. **Known gap, stated rather than hidden:** a batch that
+exhausts its retry budget stops the move (`:move_incomplete`, logged); nothing
+resumes it. Leg 1 is safe with that — nothing reads the FK — but leg 3b's
+entry condition must include zero divergent rows, and the SQL oracle for it
+exists (`test/support/dm_conversations_helpers.ex`).
+
+Note that leg 1 does NOT shorten the #2319 lock: `Scrollback.rename_dm_peer/4`
+still rewrites the nick columns in the migration transaction, as it must
+while they are dual-written. The single-UPDATE rename is what leg 4 buys.
+
+**The mute stays nick-keyed, and why.** `user_settings.data.muted_targets` is
+a JSON map key (`"<slug> <folded target>"`) shared with channel mutes; it
+cannot carry an FK, and `UserSettings.rename_muted_target/4` already follows
+renames. Recorded so leg 4 does not look for it among the FKs.
+
+**The backfill is a migration with `@disable_ddl_transaction`**, separate from
+the DDL one: the DDL commits atomically, the data then commits per statement,
+the message attach per conversation in batches of 1,000. Parents are all
+minted before any child is touched; mint is `ON CONFLICT DO NOTHING`, attach
+is `WHERE dm_conversation_id IS NULL`, open state is mirrored from
+`query_windows` — so a re-run after a crash converges (tested over a
+partially attached table). Sources in mint order: window spelling, then the
+latest raw message key, then DM cursors.
+
+**Measured by a peer, not by this branch (2026-09-29).** `sqlite3` CLI with
+`.timer on`, wall-clock, on a WRITABLE copy of the prod copy (5,201,283
+`messages`, 30,259 with `dm_with NOT NULL`):
+
+| step | wall |
+|---|---|
+| `ALTER TABLE messages ADD COLUMN dm_conversation_id` | 0.60 s |
+| `CREATE INDEX` on the all-NULL column (before the backfill) | 4.54 s |
+| fake backfill `UPDATE` of the 30,259 `dm_with` rows (`id % 441 + 1`), one statement | 3.51 s |
+| `CREATE INDEX` on the populated column (after the backfill) | 5.18 s |
+| `DELETE` of one conversation (~69 rows) with the index | 0.27 s |
+
+Two limits, and the numbers may not be quoted without them (plus a third
+question nobody answered: whether the peer's index was PARTIAL, like the
+migration's, is not stated). **Substrate:** a
+Pi 5, aarch64, NVMe on LUKS, page cache WARM from the copy just made; m42 is
+different hardware, so these are an ORDER OF MAGNITUDE, not prod's numbers.
+**The backfill measured is FAKE:** 3.51 s is the WRITE cost of 30,259 rows,
+not the derivation of each row's conversation key the real backfill computes
+— a floor, not the backfill's cost. What follows: the migrations already
+index BEFORE the backfill (the DDL migration runs first), the cheaper of the
+two orders; and every step is seconds, not minutes — yet a writer does not
+wait seconds: SQLite's `busy_timeout` parks it for 300 ms per attempt and
+`Grappa.Repo.BusyRetry` rides it out for a 1,500 ms budget in prod, so ~5 s
+of held lock is ~3.5x past the budget and a writer landing behind it gets
+`Database busy` (the peer's reading, issuecomment-5881482187; the budget is a
+deadline checked between attempts, not a preemption). The deploy class and any maintenance
+window are vjt's to decide, not this entry's. Correctness is proven on
+fabricated databases, one class per fixture row.
+
+**Rollback, unverified.** The DDL's `down/0` drops the two child columns with
+`ALTER TABLE … DROP COLUMN`; SQLite documents refusing that for a column used
+in a foreign key constraint, and it has not been run on our pinned version.
+Until it is, the lossless rollback is "leave the nullable columns, stop
+writing them": the nick columns were never touched.
+
+**Not depended on:** the 37-vs-61 discrepancy in the window-only class. The
+backfill's mint count is checked against the distinct keys of the same
+database, and staging's zero windows means class D is fabricated anyway.

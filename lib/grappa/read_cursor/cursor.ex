@@ -51,6 +51,7 @@ defmodule Grappa.ReadCursor.Cursor do
           channel: String.t() | nil,
           last_read_message_id: integer() | nil,
           last_read_message: Message.t() | Ecto.Association.NotLoaded.t() | nil,
+          dm_conversation_id: integer() | nil,
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -62,6 +63,11 @@ defmodule Grappa.ReadCursor.Cursor do
     belongs_to :last_read_message, Message, foreign_key: :last_read_message_id
 
     field :channel, :string
+
+    # issue 1365 — the DM conversation a DM-keyed cursor belongs to, set by
+    # `ReadCursor` at insert and never cast from the caller. `nil` on channel
+    # and `$server` cursors. Written in leg 1, read by nothing yet.
+    field :dm_conversation_id, :id
 
     timestamps(type: :utc_datetime_usec)
   end
