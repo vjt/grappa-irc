@@ -24,6 +24,7 @@ import {
   adminListFeaturedChannels,
   adminListNetworks,
   adminListServers,
+  adminNetworkMessageCount,
   adminPatchNetworkSettings,
   adminResetCircuit,
   adminRunReaper,
@@ -154,6 +155,11 @@ const AUTOCONNECT_LOCKED_HINT =
 // `colspan` at desktop width; on a phone only slug + actions survive.
 const NETWORK_COLUMNS = 11;
 
+// issue 2320 — the delete confirm's message count. An explicit locale, not
+// `toLocaleString()`: an implicit default would take the browser's UI
+// language as its notation (issue 2270's lesson, and `localeDateGuard`).
+const COUNT_FORMAT = new Intl.NumberFormat("en-US");
+
 function reapKey(): string {
   return "force-reap";
 }
@@ -196,6 +202,10 @@ const AdminNetworksTab: Component = () => {
   // sibling rows.
   const [edits, setEdits] = createStore<Record<string, RowEdit>>({});
   const [confirmingKey, setConfirmingKey] = createSignal<string | null>(null);
+  // issue 2320 — the scrollback count the armed delete button states, keyed
+  // by slug. Absent while the server is being asked: the button is disabled
+  // until the number is known, so nobody confirms a delete blind.
+  const [deleteCounts, setDeleteCounts] = createSignal<Record<string, number>>({});
   const [error, setError] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
   const [reapResult, setReapResult] = createSignal<{ count: number; at: string } | null>(null);
@@ -452,6 +462,32 @@ const AdminNetworksTab: Component = () => {
     }
   };
 
+  const onArmDeleteNetwork = async (net: AdminNetwork): Promise<void> => {
+    const t = token();
+    if (t === null) return;
+    setError(null);
+    setDeleteCounts((prev) => {
+      const { [net.slug]: _stale, ...rest } = prev;
+      return rest;
+    });
+    setConfirmingKey(`delete:${net.slug}`);
+    try {
+      const count = await adminNetworkMessageCount(t, net.id);
+      setDeleteCounts((prev) => ({ ...prev, [net.slug]: count }));
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : "request_failed";
+      setError(`delete (${net.slug}): could not count messages — ${code}`);
+      setConfirmingKey(null);
+    }
+  };
+
+  const deleteConfirmLabel = (slug: string): string => {
+    const count = deleteCounts()[slug];
+    if (count === undefined) return "Counting messages…";
+    const noun = count === 1 ? "message" : "messages";
+    return `Delete network and ${COUNT_FORMAT.format(count)} ${noun}`;
+  };
+
   const onDeleteNetwork = async (net: AdminNetwork): Promise<void> => {
     const t = token();
     if (t === null) return;
@@ -466,8 +502,6 @@ const AdminNetworksTab: Component = () => {
           typeof err.info.credential_count === "number" ? err.info.credential_count : null;
         if (err.code === "credentials_present" && count !== null) {
           setError(`delete (${net.slug}): ${count} bound credential(s) — unbind first`);
-        } else if (err.code === "scrollback_present") {
-          setError(`delete (${net.slug}): scrollback present — purge first`);
         } else {
           setError(`delete (${net.slug}): ${err.code}`);
         }
@@ -883,9 +917,15 @@ const AdminNetworksTab: Component = () => {
                           </Show>
                           <InlineConfirmButton
                             idleLabel="Delete"
-                            confirmLabel="Confirm delete"
+                            confirmLabel={deleteConfirmLabel(net.slug)}
                             armed={confirmingKey() === `delete:${net.slug}`}
-                            onArm={() => setConfirmingKey(`delete:${net.slug}`)}
+                            disabled={
+                              confirmingKey() === `delete:${net.slug}` &&
+                              deleteCounts()[net.slug] === undefined
+                            }
+                            onArm={() => {
+                              void onArmDeleteNetwork(net);
+                            }}
                             onConfirm={() => onDeleteNetwork(net)}
                             testId={`admin-network-delete-${net.slug}`}
                             extraClass="delete-btn"

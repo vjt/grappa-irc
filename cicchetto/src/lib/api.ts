@@ -3374,6 +3374,18 @@ export async function adminCreateNetwork(
   return (await res.json()) as AdminNetwork;
 }
 
+// issue 2320 — how many scrollback rows a network delete takes with it. Asked
+// when the delete confirm opens, so the button can say it; the count is the
+// server's, never derived client-side.
+export async function adminNetworkMessageCount(token: string, id: number): Promise<number> {
+  const res = await fetch(`/admin/networks/${encodeURIComponent(String(id))}/message_count`, {
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as { message_count: number };
+  return body.message_count;
+}
+
 export async function adminDeleteNetwork(token: string, id: number): Promise<void> {
   const res = await fetch(`/admin/networks/${encodeURIComponent(String(id))}`, {
     method: "DELETE",
