@@ -4228,6 +4228,26 @@ giusta.
   **Non la riscrivo — e' un verbale di una misura fatta davvero** — ma vale come avviso: **questo file
   contiene grafie VIVE, e citarne una in un messaggio di commit o in un body di PR la fa sparare.**
   Quando ne aggiungi una nuova, **usa un numero a sei cifre che non puo' risolvere.**
+  🔴🔴 **E L'ARGOMENTO DELLO SCAN E' PARTE DEL PREDICATO QUANTO IL REGEX:
+  `git log --format='%B' <sha> <sha> <sha>` NON E' «QUEI TRE COMMIT», E' TUTTA L'ANCESTRY
+  (orch, 2026-09-29).** Girata cosi', la scansione ha letto **182.921 righe** e riportato **60 hit**
+  — tutti di commit di altri lungo la storia del repo, **e li ho letti come miei**. ⇒ un ROSSO che
+  accusa un artefatto sano, **sul cancello che esiste proprio per non chiudere le issue a
+  tradimento**, e il verso che costa: ti manda a investigare commit che non hai scritto.
+  🔑 **Forma giusta: `git log --no-walk`**, che prende i commit NOMINATI e nessun antenato.
+  🥇 **E il pos ctrl va preso SULL'ARTEFATTO, non su una grafia sintetica:** li' era
+  `grep -c '^orchestrate:'` sull'output, atteso **3**, cioe' *"sto guardando esattamente i miei tre
+  messaggi"*. **Senza quello un `0 hit` non distingue *«sono puliti»* da *«ho grepato il vuoto»***
+  — e il secondo e' il caso in cui lo scanner ti serviva davvero. Rifatta: **0 hit**, pos ctrl
+  **3/3 sui commit** e **7/7 sulle grafie**, neg ctrl 0.
+  🪞 *Ennesima faccia dello zero falso e plausibile, in costume di RANGE: non lo strumento rotto,
+  non l'artefatto sbagliato, non il privilegio — ma **un argomento che allarga l'insieme sotto esame
+  di cinque ordini di grandezza senza dirlo**. E le due invocazioni si somigliano al punto che
+  rileggendo il comando la differenza non si vede: si vede solo nel CONTEGGIO, che era assurdo.*
+  🥇 **Regola generale: prima di leggere il verdetto di uno scanner, chiediti su QUANTE unita' ha
+  girato, e se quel numero e' quello che credevi.** Un conteggio di input implausibile e' un'accusa
+  contro l'invocazione, non contro il dato — la stessa asimmetria per cui un risultato uniforme
+  (0/N o N/N) accusa lo strumento prima del codice.
 - 🥇🥇 **DUE DOMANDE *ADIACENTI IN CANALE* SONO AMBIGUE ESATTAMENTE COME DUE DOMANDE FUSE IN UN
   MESSAGGIO — e questa meta' non era scritta (paletto del pari, 2026-09-21).** Questo file gia'
   ordina di **etichettare chi chiede cosa** quando ACCORPI le domande, perche' vjt risponde **per
