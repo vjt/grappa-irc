@@ -19,10 +19,21 @@ defmodule Grappa.QueryWindows.Wire do
 
   @type windows_map :: %{integer() => [windows_entry()]}
 
+  @typedoc """
+  One open DM window. `dm_conversation_id` (issue 1365 leg 2, protocol 34)
+  is the conversation's identity, carried BESIDE `target_nick`, which stays
+  the display and is neither removed nor repurposed. `null` means the
+  window's conversation is missing — a divergence, never expected.
+
+  It is `optional` because a server predating protocol 34 omits it: a client
+  must not reject the entry for its absence, and a client that keys on it
+  must fall back to the folded nick when it is absent.
+  """
   @type windows_entry :: %{
           required(:network_id) => integer(),
           required(:target_nick) => String.t(),
-          required(:opened_at) => String.t()
+          required(:opened_at) => String.t(),
+          optional(:dm_conversation_id) => integer() | nil
         }
 
   @typedoc """
@@ -46,7 +57,8 @@ defmodule Grappa.QueryWindows.Wire do
     %{
       network_id: w.network_id,
       target_nick: w.target_nick,
-      opened_at: DateTime.to_iso8601(w.opened_at)
+      opened_at: DateTime.to_iso8601(w.opened_at),
+      dm_conversation_id: w.dm_conversation_id
     }
   end
 

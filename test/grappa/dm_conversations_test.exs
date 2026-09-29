@@ -18,7 +18,9 @@ defmodule Grappa.DmConversationsTest do
   alias Grappa.{DmConversations, DmConversationsHelpers}
   alias Grappa.DmConversations.Conversation
   alias Grappa.{QueryWindows, ReadCursor, Scrollback, ScrollbackHelpers}
+  alias Grappa.QueryWindows.Wire, as: QueryWindowsWire
   alias Grappa.Scrollback.Message
+  alias Grappa.Scrollback.Wire, as: ScrollbackWire
   alias Grappa.Visitors.Visitor
 
   setup do
@@ -174,6 +176,77 @@ defmodule Grappa.DmConversationsTest do
       assert [%Conversation{id: id, opened_at: %DateTime{}}] = conversations()
       assert row.dm_conversation_id == id
     end
+  end
+
+  describe "leg 2 — the conversation id on the wire, beside the nick" do
+    test "a DM message carries its conversation id on both doors; a channel row carries null", %{
+      user: user,
+      net: net
+    } do
+      dm = persist(net, %{user_id: user.id}, "me", "Alice", "Alice")
+      chan = persist(net, %{user_id: user.id}, "#grappa", nil, "alice")
+      %Conversation{id: id} = DmConversations.get({:user, user.id}, net.id, "alice")
+
+      assert %{kind: :message, message: %{dm_conversation_id: ^id}} =
+               ScrollbackWire.message_payload(dm, net.slug)
+
+      assert %{dm_conversation_id: ^id} = dm |> Repo.preload(:network) |> ScrollbackWire.to_json()
+
+      # The key is PRESENT and null on a non-DM row — absent means "a server
+      # predating the field", which is a different statement.
+      decoded = chan |> ScrollbackWire.message_payload(net.slug) |> Jason.encode!() |> Jason.decode!()
+      assert Map.fetch!(decoded["message"], "dm_conversation_id") == nil
+    end
+
+    test "the window list names the SAME conversation as the window's DM rows", %{
+      user: user,
+      net: net,
+      subject: subject
+    } do
+      row = persist(net, %{user_id: user.id}, "me", "alice", "alice")
+      {:ok, _} = QueryWindows.open(subject, net.id, "Alice", user.name)
+
+      assert %{kind: :query_windows_list, windows: windows} = windows_list(subject)
+      assert [net.id] == Map.keys(windows)
+      assert [%{target_nick: "Alice", dm_conversation_id: id}] = windows_ids(windows)[net.id]
+      assert is_integer(id)
+      assert id == row.dm_conversation_id
+    end
+
+    test "a window with no conversation renders null rather than inventing one", %{
+      user: user,
+      net: net,
+      subject: subject
+    } do
+      # A divergence leg 1's writers never produce: the row is inserted past
+      # `QueryWindows.open/4`. The wire must say so, not paper over it.
+      {:ok, _} =
+        %QueryWindows.Window{}
+        |> QueryWindows.Window.changeset(%{
+          user_id: user.id,
+          network_id: net.id,
+          target_nick: "ghost",
+          opened_at: DateTime.utc_now(:second)
+        })
+        |> Repo.insert()
+
+      assert conversations() == []
+      assert %{windows: windows} = windows_list(subject)
+      assert %{net.id => [%{target_nick: "ghost", dm_conversation_id: nil}]} == windows_ids(windows)
+    end
+  end
+
+  defp windows_list(subject) do
+    subject
+    |> QueryWindows.list_for_subject()
+    |> QueryWindowsWire.render_grouped()
+    |> QueryWindowsWire.windows_list_payload()
+  end
+
+  defp windows_ids(windows) do
+    Map.new(windows, fn {network_id, entries} ->
+      {network_id, Enum.map(entries, &Map.take(&1, [:target_nick, :dm_conversation_id]))}
+    end)
   end
 
   describe "ReadCursor — a new DM cursor points at its conversation" do

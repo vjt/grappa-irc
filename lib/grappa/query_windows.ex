@@ -405,13 +405,26 @@ defmodule Grappa.QueryWindows do
   ASC` is the tiebreaker.
 
   Returns `%{}` when the subject has no open windows.
+
+  Each window carries `dm_conversation_id`, the id of its conversation
+  (issue 1365 leg 2), looked up by the folded nick in one extra query —
+  `nil` only when the conversation is missing, which leg 1's writers never
+  produce.
   """
   @spec list_for_subject(Subject.t()) :: %{integer() => [Window.t()]}
   def list_for_subject({_, _} = subject) do
-    Window
-    |> Subject.subject_where(subject)
-    |> order_by([w], asc: w.opened_at, asc: w.id)
-    |> Repo.all()
+    windows =
+      Window
+      |> Subject.subject_where(subject)
+      |> order_by([w], asc: w.opened_at, asc: w.id)
+      |> Repo.all()
+
+    ids = DmConversations.ids_for(subject, Enum.map(windows, &{&1.network_id, &1.target_nick}))
+
+    windows
+    |> Enum.map(fn %Window{} = w ->
+      %{w | dm_conversation_id: Map.get(ids, {w.network_id, Identifier.canonical_target(w.target_nick)})}
+    end)
     |> Enum.group_by(& &1.network_id)
   end
 

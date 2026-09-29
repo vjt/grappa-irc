@@ -53,23 +53,20 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v32 -> v33 (issue 2320): deleting a network now takes its
- * scrollback with it. What moved on the wire is one ADDED admin route,
- * `GET /admin/networks/:id/message_count` -> `{message_count}`, and one
- * REMOVED error token, `scrollback_present`, which the delete can no
- * longer earn. No kind was added and no field was repurposed.
+ * Last read, v33 -> v34 (issue 1365 leg 2): every scrollback row and
+ * every `query_windows_list` entry gains `dm_conversation_id`, the id of
+ * the DM conversation, BESIDE the nick. No kind was added, no field was
+ * removed or repurposed, and both keys are optional in the server's
+ * typespec (a pre-34 server omits them).
  *
- * NUMBER ONLY, and measured rather than assumed: this client names the
- * removed token nowhere and never calls the new route, so no arm died and
- * no parser has anything to learn. What it does NOT cover is behaviour:
- * the admin "Delete network" action sends the same DELETE, which used to
- * be refused with scrollback present and now deletes it, behind a confirm
- * that states no count. That is issue 2325, deliberately left out of the
- * bump.
+ * NUMBER ONLY: this client keys its DM windows on the nick and reads
+ * neither key, and wire.c ignores keys it does not ask for, so no parser
+ * has anything to learn. Keying the windows on the id is the cic leg of
+ * issue 1365 and would be this client's too, deliberately not done here.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 33
+#define WIRE_PROTOCOL_VERSION 34
 
 #include <stdbool.h>
 #include <stddef.h>
