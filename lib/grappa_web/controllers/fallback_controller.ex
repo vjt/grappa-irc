@@ -80,7 +80,6 @@ defmodule GrappaWeb.FallbackController do
            | :unsupported_media_type
            | :already_exists
            | :already_attached
-           | :scrollback_present
            | :last_admin
            | :share_token_expired
            | :share_token_consumed
@@ -840,16 +839,6 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:conflict)
     |> json(%{error: "credentials_present", credential_count: n})
-  end
-
-  # Admin-panel bucket 1 — `DELETE /admin/networks/:id` refuses when
-  # archival scrollback would be orphaned (`Networks.delete_network/1`'s
-  # :restrict-FK gate). Sole producer since GH #105 dropped the
-  # `unbind_credential/2` cascade-on-empty that used to share this body.
-  def call(conn, {:error, :scrollback_present}) do
-    conn
-    |> put_status(:conflict)
-    |> json(%{error: "scrollback_present"})
   end
 
   # Admin-panel bucket 2 — `PUT /admin/users/:id` (demote) +

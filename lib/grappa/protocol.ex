@@ -900,7 +900,30 @@ defmodule Grappa.Protocol do
   # been ignorable (unknown-is-never-fatal), so no bundle predating v32 is left
   # unable to talk to this server — it simply never learns the suffix changed,
   # which for a client with no arm for it is the same thing.
-  @protocol_version 32
+  #
+  # ---------------------------------------------------------------------------
+  # 33 — issue 2320: a network delete takes its scrollback with it
+  # ---------------------------------------------------------------------------
+  #
+  # Two changes, one of each sign. ADDED: `GET /admin/networks/:id/message_count`
+  # answering `{message_count: n}`, which the delete confirm reads to name the
+  # rows that go. REMOVED: the `scrollback_present` error token, because
+  # `DELETE /admin/networks/:id` no longer refuses on scrollback — the refusal
+  # it named cannot happen any more. The token leaves the generated
+  # `ErrorToken` union, so a bundle built against this server has no arm for
+  # it (`friendlyApiError`'s switch is exhaustive over that union).
+  #
+  # Removing a TOKEN is not the #1626 case, and it needs no ruling: #1626
+  # governs taking a FIELD out of a shape a client requires. A token is a value
+  # the server MAY send; a client that still knows it simply never sees it
+  # again, the way it never sees any refusal the server has no reason to make.
+  #
+  # @min_protocol_version stays at 1. An old bundle keeps working against this
+  # server: its `scrollback_present` arm goes dead, and it never calls the new
+  # endpoint. The break the number expresses runs new-client → old-server — a
+  # new bundle asks `message_count` of a server without the route, gets a 404,
+  # and the admin tab shows the error and disarms instead of confirming blind.
+  @protocol_version 33
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -935,7 +958,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 32
+  @spec version() :: 33
   def version, do: @protocol_version
 
   @doc """

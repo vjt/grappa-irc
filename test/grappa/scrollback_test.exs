@@ -3961,23 +3961,25 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
-  # S33 (2026-07-08 codebase review — rides-along) — the network-delete
-  # gate `has_messages_for_network?/1` reads `WHERE network_id = ? LIMIT
-  # 1`. Every composite messages index leads with user_id / visitor_id,
-  # so pre-fix that read (and the RESTRICT-FK child scan on network
+  # S33 (2026-07-08 codebase review — rides-along) — every composite
+  # messages index leads with user_id / visitor_id, so pre-fix a
+  # `WHERE network_id = ?` read (and the RESTRICT-FK child scan on network
   # delete) full-scanned the largest table. The leading `[:network_id]`
-  # index turns both into an index seek.
+  # index turns both into an index seek. Since issue 2320 the read it pins
+  # is `count_for_network/1`, the admin delete confirm's row count.
   describe "S33 — messages.network_id leading index" do
-    test "has_messages_for_network?/1 query plan uses messages_network_id_index",
+    test "count_for_network/1 query plan uses messages_network_id_index",
          %{user: user, network: net} do
       for st <- [10, 20, 30], do: {:ok, _} = ScrollbackHelpers.insert(sample(user, net, st))
 
-      # Mirrors `has_messages_for_network?/1`'s query verbatim.
-      %Exqlite.Result{rows: rows} =
-        Repo.query!(
-          "EXPLAIN QUERY PLAN SELECT 1 FROM messages WHERE network_id = ? LIMIT 1",
-          [net.id]
-        )
+      assert Scrollback.count_for_network(net.id) == 3
+
+      # Mirrors `count_for_network/1`'s query (`Repo.aggregate(:count)` emits
+      # `count(*)`), planned through Ecto rather than a hand-typed string.
+      {sql, params} =
+        Repo.to_sql(:all, from(m in Message, where: m.network_id == ^net.id, select: count()))
+
+      %Exqlite.Result{rows: rows} = Repo.query!("EXPLAIN QUERY PLAN " <> sql, params)
 
       plan = Enum.map_join(rows, "\n", fn [_, _, _, detail] -> detail end)
 
@@ -3988,6 +3990,61 @@ defmodule Grappa.ScrollbackTest do
              #{plan}
              """
     end
+  end
+
+  # issue 2320 — a network delete takes its scrollback, in batches. Called
+  # directly here because through `Networks.delete_network/1` the final
+  # transaction's residue sweep would clean up after a purge that stopped
+  # at its first batch, and the multi-batch test there could not tell.
+  describe "purge_network/1 + purge_network_residue/1 (issue 2320)" do
+    test "purge_network/1 deletes more than one batch, and only that network's rows",
+         %{user: user, network: net} do
+      {:ok, other} = Networks.find_or_create_network(%{slug: "other-#{uniq()}"})
+      rows = Scrollback.network_purge_batch_rows() * 2 + 1
+      bulk_insert(user, net, rows)
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, other, 1))
+
+      assert {:ok, ^rows} = Scrollback.purge_network(net.id)
+      assert Scrollback.count_for_network(net.id) == 0
+      assert Scrollback.count_for_network(other.id) == 1
+    end
+
+    test "purge_network/1 on an empty network deletes nothing", %{network: net} do
+      assert {:ok, 0} = Scrollback.purge_network(net.id)
+    end
+
+    test "purge_network_residue/1 deletes every row of that network in one go",
+         %{user: user, network: net} do
+      {:ok, other} = Networks.find_or_create_network(%{slug: "other-#{uniq()}"})
+      rows = Scrollback.network_purge_batch_rows() + 1
+      bulk_insert(user, net, rows)
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, other, 1))
+
+      assert Scrollback.purge_network_residue(net.id) == rows
+      assert Scrollback.count_for_network(net.id) == 0
+      assert Scrollback.count_for_network(other.id) == 1
+    end
+  end
+
+  defp bulk_insert(user, net, n) do
+    now = DateTime.utc_now()
+
+    1..n
+    |> Enum.map(fn i ->
+      %{
+        user_id: user.id,
+        network_id: net.id,
+        channel: "#bulk",
+        sender: "alice",
+        body: "line #{i}",
+        kind: :privmsg,
+        meta: %{},
+        server_time: i,
+        inserted_at: now
+      }
+    end)
+    |> Enum.chunk_every(500)
+    |> Enum.each(&Repo.insert_all(Message, &1))
   end
 
   # #379 (P0, 2026-07-22) — CP29 R-2 index regression. R-2 switched the

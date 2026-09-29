@@ -1782,7 +1782,6 @@ export const ERROR_TOKENS_REST_ERROR_TOKEN = [
   "already_exists",
   "already_attached",
   "credentials_present",
-  "scrollback_present",
   "last_admin",
   "share_token_expired",
   "share_token_consumed",

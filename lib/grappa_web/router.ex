@@ -168,6 +168,8 @@ defmodule GrappaWeb.Router do
     # Admin-panel bucket 1 (2026-05-31) — strict-create + delete + server CRUD.
     post "/networks", NetworksController, :create
     delete "/networks/:id", NetworksController, :delete
+    # issue 2320 — the delete confirm names the scrollback rows that go.
+    get "/networks/:id/message_count", NetworksController, :message_count
     get "/networks/:network_id/servers", ServersController, :index
     post "/networks/:network_id/servers", ServersController, :create
     put "/networks/:network_id/servers/:id", ServersController, :update
