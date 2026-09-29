@@ -25,10 +25,13 @@ defmodule Grappa.DmConversations do
   expression; CLAUDE.md's rfc1459 national-char gap is inherited unchanged,
   like every other nick KEY.
 
-  ## Leg 1: written, not yet read
+  ## Leg 1: written, not yet read — leg 2: its id is published
 
   `query_windows` stays the source of the window list through legs 1-3 and
-  this table is written beside it; no reader consults it yet. What makes the
+  this table is written beside it; no reader of a DM-keyed store consults it
+  yet. Leg 2 puts the conversation id on the wire beside the nick
+  (`ids_for/2`, `messages.dm_conversation_id`), looked up by the same folded
+  nick every reader already keys on. What makes the
   dual write honest is that every writer of the nick-keyed stores also
   writes here, in the same transaction.
 
@@ -90,6 +93,35 @@ defmodule Grappa.DmConversations do
     subject
     |> by_nick(network_id, Identifier.canonical_target(nick))
     |> Repo.one()
+  end
+
+  @doc """
+  The id of the conversation behind each `{network_id, nick}` pair that has
+  one, keyed by `{network_id, folded nick}`. A pair with no conversation is
+  absent from the map; this never mints.
+
+  Issue 1365 leg 2: what lets a window entry carry the conversation id
+  beside its nick on the wire. The lookup goes BY THE FOLDED NICK, the key
+  every reader still uses — no child store is read by id here. Switching the
+  readers onto the FK is leg 3b, and a wire rollback must not drag it along.
+  """
+  @spec ids_for(Subject.t(), [{integer(), String.t()}]) :: %{{integer(), String.t()} => integer()}
+  def ids_for({_, _}, []), do: %{}
+
+  def ids_for({_, _} = subject, pairs) when is_list(pairs) do
+    network_ids = pairs |> Enum.map(fn {network_id, _} -> network_id end) |> Enum.uniq()
+    folds = pairs |> Enum.map(fn {_, nick} -> Identifier.canonical_target(nick) end) |> Enum.uniq()
+
+    # Filtering the two columns independently over-fetches the cross product
+    # (a fold that exists on another of the subject's networks); the map is
+    # keyed on the exact pair, so the extra rows are never looked up.
+    Conversation
+    |> Subject.subject_where(subject)
+    |> where([c], c.network_id in ^network_ids)
+    |> where([c], Identifier.nick_fold(c.peer_nick) in ^folds)
+    |> select([c], {c.network_id, c.peer_nick, c.id})
+    |> Repo.all()
+    |> Map.new(fn {network_id, peer_nick, id} -> {{network_id, Identifier.canonical_target(peer_nick)}, id} end)
   end
 
   @doc """

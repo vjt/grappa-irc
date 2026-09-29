@@ -20757,3 +20757,69 @@ writing them": the nick columns were never touched.
 **Not depended on:** the 37-vs-61 discrepancy in the window-only class. The
 backfill's mint count is checked against the distinct keys of the same
 database, and staging's zero windows means class D is fabricated anyway.
+<!-- entry #1365c -->
+
+---
+
+## 2026-09-29 — #1365c: issue 1365 leg 2, the conversation id goes on the wire
+
+Leg 2 of four. `dm_conversation_id` — the id of the `dm_conversations` row
+leg 1 minted — now rides BESIDE the nick on two shapes: every scrollback row
+(`Scrollback.Wire.t`, so the `message` push, the REST pages and `GET /boot`'s
+heads) and every `query_windows_list` entry (`QueryWindows.Wire.windows_entry`).
+The nick keys (`channel`, `sender`, `target_nick`), the per-channel topic and
+every REST path are untouched. Protocol 33 → 34; `min_protocol_version` stays 1.
+
+**Why these two and no others.** The id goes where the NICK ITSELF is the
+routing key a client has to trust: a DM row (the production defect of issue
+1365 is an inbound DM routed by its nick into the self window) and the window
+list (the only place a client learns which id stands behind which open
+window, and the barrier broadcast after a peer rename). `read_cursor_set` and
+`window_counts` ride the per-channel topic, which already names the window
+once the client holds the id↔window map; the archive listing and
+`archive_purged` are keyed on the target, and emitting the id there would
+need a join inside `list_archive/3`, whose complexity class #1626 took a field
+off the wire to protect; `mentions_bundle`'s projection is a summary, not a
+routing surface. Each of those is an addition a later leg can make; none is
+needed for leg 3 to key cic's windows on the id.
+
+**`optional(...)` in both typespecs, although the server always emits the
+key.** cic validates REST message pages and `query_windows_list` entries
+against the generated schema, and `walkObject` rejects a missing REQUIRED
+key — measured in `wireValidate.ts`, not assumed. A required key would make a
+bundle built from this commit discard every message page of a pre-34 server
+(the routine `--cic`-first deploy order) and would oblige
+`MIN_SERVER_PROTOCOL_VERSION` to jump to 34 in the same change.
+`serverProtocol.ts` names two cures for that, and this is the one that
+removes the condition rather than announcing it (the #1766
+`show_bottom_bar?` shape). It is also the choice that keeps the leg
+reversible — the reason issue 1365 sequenced `query_windows`' retirement
+after it: a leg-3 client obliged to cope with the key's absence survives a
+rollback of this leg.
+
+**`null` and absent are different statements.** Absent: a server before 34.
+`null` on a row: no DM, or the one class leg 1 could not attribute. `null` on
+a window entry: its conversation is missing — a divergence, never a default.
+
+**The window id is looked up BY THE FOLDED NICK, and that is not leg 3b.**
+`query_windows` has no FK to its conversation, so `list_for_subject/1` makes
+one extra query (`DmConversations.ids_for/2`, filtered to the open windows'
+networks and folds) and fills a virtual field. That reads the new table to
+ANNOTATE, keyed on the old key; it changes no reader's result set and
+queries no child store by id. The message side reads no table at all: the id
+is a column on the row. Leg 3b — readers querying the DM stores BY the FK —
+is untouched, so a rollback of this leg drags no read path with it.
+
+**The #2260 gate needed no edit, measured.** It derives the set of event
+KINDS from the generated `wireTypes.ts` and demands one inventory row per
+kind; this leg adds a field and no kind, and the gate answered `all 57 client
+event kinds have an entry` before and after. The inventory rows for `message`
+and `query_windows_list` were updated anyway, and the field is documented in
+`CLIENT_PROTOCOL.md` §5f. Teaching the gate to check fields would be a
+coverage change of its own, not something to smuggle into a product leg.
+
+**shottino moves its number only.** `test_commands` pins
+`WIRE_PROTOCOL_VERSION` to `protocol.ex`, so the bump reddens it by design;
+`wire.c` looks keys up by name and never checks an object's key set, so the
+new key is inert there. Keying shottino's windows on the id would be its own
+leg 3, not done here.

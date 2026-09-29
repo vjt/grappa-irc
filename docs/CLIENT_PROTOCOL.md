@@ -799,6 +799,55 @@ for every gap — as are negatives, non-integers and `?cap[]=1`.
 Check `protocol_version >= 30`, or just send it: the fallback above is why
 you do not have to.
 
+### 5f. A DM conversation has an id, beside its nick (issue 1365, v34)
+
+Until v34 a DM conversation had no identity on the wire but the peer's
+nick, and a nick is display state the peer changes at will. From v34 two
+shapes carry **`dm_conversation_id`**, an integer naming one conversation:
+
+| where | what it names |
+|---|---|
+| every scrollback row — the `message` push, `GET …/messages` pages, `GET /boot` head pages | the DM conversation the row belongs to |
+| every `query_windows_list` entry, beside `target_nick` | the conversation behind that open window |
+
+**The nick is not going anywhere.** `channel`, `sender` and `target_nick`
+keep exactly their meaning, the per-channel topic and every REST path are
+still keyed on the name, and no request accepts the id as input. The id is
+an addition you can key your own state on; it replaces nothing.
+
+**What one id means.** One conversation per peer, per network, per account,
+where "peer" is the nick under the same ASCII fold as the topic segment (§4): `Alice` and `alice`
+are one conversation, `nick[1]` and `nick{1}` are two. A row of either
+direction — you to them, them to you — carries the same id. The id does NOT
+claim the peer is the same person across a rename; it claims the window is
+the same window.
+
+**Across a NICK**, which is the reason the id exists:
+
+- a peer renaming to a nick you have **no** conversation with keeps the
+  conversation's id — the next `query_windows_list` shows the same id under
+  the new `target_nick`;
+- a peer renaming to a nick you **already** have a conversation with merges
+  the two: the old id's rows move to the surviving id and the old id stops
+  existing. The move runs in bounded batches after the rename, so a page
+  fetched while it runs can still show rows under the old id. Treat an id you no longer hold a
+  window for as a reason to refetch, never as an error.
+
+**`null` and absent are different statements, and you must accept both:**
+
+- `null` on a scrollback row: the row is in no DM (a channel, `$server`), or
+  it is an inbound DM written before the field existed that the server
+  could not attribute. On a window entry: the window's conversation is
+  missing — a divergence the server never expects to produce.
+- **absent**: the server predates v34. Both keys are declared `optional` in
+  the server's typespecs precisely so a client written against v34 keeps
+  working against an older server: fall back to the nick.
+
+**Not carried in v34**: `read_cursor_set` and `window_counts` (both ride the
+per-channel topic, which already names the window), the archive listing
+and `archive_purged` (keyed on the target), and the per-message
+projection inside `mentions_bundle`. Key those on what they carry today.
+
 ---
 
 ## 6. Rate limiting & flood protection (#630)
@@ -1137,7 +1186,7 @@ forever.
 | `lusers_bundle` | user | `/LUSERS` answer — **fans out to every connection**, because the server also emits it unsolicited at connect (§4) |
 | `members_seeded` | channel | pre-sorted member list on 366 RPL_ENDOFNAMES |
 | `mentions_bundle` | user | cross-channel mention summary, fired on the auto-away → present transition |
-| `message` | channel | a scrollback row; its own `message.kind` (`privmsg`, `notice`, `join`, `part`, `quit`, `nick_change`, `mode`, …) is a **different axis** from this one |
+| `message` | channel | a scrollback row; its own `message.kind` (`privmsg`, `notice`, `join`, `part`, `quit`, `nick_change`, `mode`, …) is a **different axis** from this one. From v34 it carries `dm_conversation_id` (§5f) |
 | `names_reply` | requester | `/NAMES` answer |
 | `network_attached` | user | the subject re-attached a network binding (§4e) |
 | `network_detached` | user | the subject hid a network binding (§4e) |
@@ -1147,7 +1196,7 @@ forever.
 | `presence_changed` | user | our presence / away state changed |
 | `presence_error` | user | upstream watch-list rejection (`ERR_MONLISTFULL`, `ERR_TOOMANYWATCH`) |
 | `presence_snapshot` | user | cold-join presence snapshot, pushed to your socket alone |
-| `query_windows_list` | user | the full DM window list; also the "rename fully applied" barrier after a peer NICK |
+| `query_windows_list` | user | the full DM window list, each entry with its `dm_conversation_id` from v34 (§5f); also the "rename fully applied" barrier after a peer NICK |
 | `quit_part_reason_changed` | user | the subject's remembered quit / part text changed (§4d) |
 | `read_cursor_set` | channel | the read cursor moved — `last_read_message_id` + badge count |
 | `recover_progress` | user | ghost-recovery progress |

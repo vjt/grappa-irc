@@ -923,7 +923,42 @@ defmodule Grappa.Protocol do
   # endpoint. The break the number expresses runs new-client → old-server — a
   # new bundle asks `message_count` of a server without the route, gets a 404,
   # and the admin tab shows the error and disarms instead of confirming blind.
-  @protocol_version 33
+  #
+  # ---------------------------------------------------------------------------
+  # 34 — issue 1365 leg 2: the DM conversation id, beside the nick
+  # ---------------------------------------------------------------------------
+  #
+  # `dm_conversation_id` lands on two shapes: every scrollback row
+  # (`Grappa.Scrollback.Wire.t`, so the `message` push, the REST pages, `GET
+  # /boot`'s head pages) and every `query_windows_list` entry
+  # (`Grappa.QueryWindows.Wire.windows_entry`). It is the id of the
+  # `dm_conversations` row leg 1 minted; `null` on a row in no DM. The nick
+  # (`channel`, `sender`, `target_nick`) is untouched — neither removed nor
+  # repurposed — so this is additive, and it bumps for the #1393d reason: a
+  # client that starts keying its DM windows on the id (leg 3) cannot be
+  # served by a server that never sends it.
+  #
+  # 🔴 The field is `optional(...)` in BOTH typespecs although this server
+  # always emits it, and that is a decision, not an oversight. cic validates
+  # REST message pages and `query_windows_list` entries against the generated
+  # schema, and `walkObject` REJECTS an object missing a required key. A
+  # required key would therefore make a bundle built from this commit throw
+  # away every message page of a pre-34 server — the routine `--cic`-first
+  # deploy order — and would oblige `MIN_SERVER_PROTOCOL_VERSION` to jump to
+  # 34 in the same change (the obligation in `serverProtocol.ts`). Optional is
+  # the OTHER cure that module names, the #1766 `show_bottom_bar?` shape: it
+  # removes the condition instead of announcing it. It is also what keeps
+  # this leg reversible, which is the property issue 1365 sequenced it for —
+  # leg 2 is the leg most likely to be backed out, and a leg-3 client that
+  # has to cope with the key's absence survives that rollback.
+  #
+  # Checked for a collision before claiming 34: the one open PR that edits
+  # this file (#2102) carries 21, far behind.
+  #
+  # @min_protocol_version stays at 1. An old bundle drops an undeclared key
+  # (`walkObject`: "Undeclared keys are dropped, never rejected"), so every
+  # client that talks to this server today still does.
+  @protocol_version 34
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -935,8 +970,10 @@ defmodule Grappa.Protocol do
   # and now that the bump is routine the tripwire is what keeps it from
   # being done half-way.
   #
-  # 🔴 THE NUMBER LIVES IN THREE PLACES, AND A REBASE WALKS PAST TWO OF
-  # THEM. Measured on issue 2150 rebasing onto v22:
+  # 🔴 THE NUMBER LIVES IN FOUR PLACES, AND A REBASE WALKS PAST THREE OF
+  # THEM. Measured on issue 2150 rebasing onto v22 (sites 1-3); site 4 was
+  # missing from this list until issue 1365 leg 2, and a bump that trusted
+  # the list went red on it (#2324):
   #
   #   1. `@protocol_version` above        — CONFLICTS. The prose around it
   #      diverges between branches, so git stops and a human decides.
@@ -946,10 +983,14 @@ defmodule Grappa.Protocol do
   #   3. `CLIENT_PROTOCOL_VERSION` in     — NEVER CONSIDERED. Another file,
   #      `cicchetto/src/lib/socket.ts`       another language. No merge will
   #      ever raise it, in either direction.
+  #   4. `WIRE_PROTOCOL_VERSION` in       — NEVER CONSIDERED either, and C.
+  #      `frontends/shottino/wire.h`         shottino's `test_commands` pins
+  #      it to this file, so a bump that skips it is red in the shottino CI
+  #      job and in no Elixir gate.
   #
   # So this spec is a tripwire against a half-done bump TYPED BY HAND, and
-  # not against a rebase — one you never step on cannot trip. Site 3 is
-  # worse: on issue 2150 it was simply never edited, the pair stayed unequal
+  # not against a rebase — one you never step on cannot trip. Sites 3 and
+  # 4 are worse. On issue 2150 site 3 was simply never edited, the pair stayed unequal
   # from the wire commit onward, and the ONLY thing that said so was
   # `protocol_test.exs` — which runs in `scripts/check.sh` and in no
   # targeted suite, so five commits carried the inequality with no red.
@@ -958,7 +999,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 33
+  @spec version() :: 34
   def version, do: @protocol_version
 
   @doc """

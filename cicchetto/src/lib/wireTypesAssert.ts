@@ -209,6 +209,7 @@ export type _Assert_ScrollbackMessage = Assert<
       sender: string;
       body: string | null;
       meta: ScrollbackMetaT;
+      dm_conversation_id?: number | null;
     }
   >
 >;
@@ -253,6 +254,7 @@ export type _Assert_QueryWindowEntry = Assert<
       network_id: number;
       target_nick: string;
       opened_at: string;
+      dm_conversation_id?: number | null;
     }
   >
 >;

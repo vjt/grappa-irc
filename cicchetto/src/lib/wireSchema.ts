@@ -856,7 +856,8 @@ export const S_NotifyWireNotifyListPayload = {
 
 // Grappa.QueryWindows.Wire.windows_entry/0
 export const S_QueryWindowsWireWindowsEntry = {
-  o: { network_id: "i", target_nick: "s", opened_at: "s" },
+  o: { network_id: "i", target_nick: "s", opened_at: "s", dm_conversation_id: { u: ["i", "z"] } },
+  q: ["dm_conversation_id"],
 } as const;
 
 // Grappa.QueryWindows.Wire.windows_map/0
@@ -914,7 +915,9 @@ export const S_ScrollbackWireT = {
     sender: "s",
     body: { u: ["s", "z"] },
     meta: S_ScrollbackMetaT,
+    dm_conversation_id: { u: ["i", "z"] },
   },
+  q: ["dm_conversation_id"],
 } as const;
 
 // Grappa.Scrollback.Wire.event/0

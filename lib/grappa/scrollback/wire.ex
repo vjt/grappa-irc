@@ -58,15 +58,27 @@ defmodule Grappa.Scrollback.Wire do
   alias Grappa.Scrollback
   alias Grappa.Scrollback.{Message, Meta}
 
+  @typedoc """
+  One scrollback row. `dm_conversation_id` (issue 1365 leg 2, protocol 34)
+  names the DM conversation the row belongs to, BESIDE `channel` and
+  `sender`, which keep their meaning. It is `null` on every row that is not
+  in a DM — channels, `$server` — and on the one DM class leg 1 could not
+  attribute (an inbound DM written before the field, keyed on our own nick
+  with no `dm_with`).
+
+  It is `optional` because a server predating protocol 34 omits it; absent
+  and `null` are different statements, and a client must reject neither.
+  """
   @type t :: %{
-          id: integer(),
-          network: String.t(),
-          channel: String.t(),
-          server_time: integer(),
-          kind: Message.kind(),
-          sender: String.t(),
-          body: String.t() | nil,
-          meta: Meta.t()
+          required(:id) => integer(),
+          required(:network) => String.t(),
+          required(:channel) => String.t(),
+          required(:server_time) => integer(),
+          required(:kind) => Message.kind(),
+          required(:sender) => String.t(),
+          required(:body) => String.t() | nil,
+          required(:meta) => Meta.t(),
+          optional(:dm_conversation_id) => integer() | nil
         }
 
   @type event :: %{kind: :message, message: t()}
@@ -149,7 +161,8 @@ defmodule Grappa.Scrollback.Wire do
       kind: kind,
       sender: m.sender,
       body: m.body,
-      meta: m.meta
+      meta: m.meta,
+      dm_conversation_id: m.dm_conversation_id
     }
   end
 

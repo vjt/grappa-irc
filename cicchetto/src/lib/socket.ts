@@ -263,7 +263,14 @@ let _socket: Socket | null = null;
 // pushes an older server simply never sends, and an absent push leaves the
 // stores at the value the REST read already gave them, so this bundle is
 // still served by an older server.
-export const CLIENT_PROTOCOL_VERSION = 33;
+//
+// 34 (issue 1365 leg 2) — `dm_conversation_id` on every scrollback row and
+// every `query_windows_list` entry, beside the nick. This bundle does not
+// read it yet (leg 3 does), so the number moves because the server speaks
+// v34 and the pair must come from one commit, as at v22. Both keys are
+// generated OPTIONAL, so this bundle still validates a pre-34 server's
+// pages and `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 34;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //
