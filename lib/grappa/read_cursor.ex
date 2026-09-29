@@ -783,6 +783,39 @@ defmodule Grappa.ReadCursor do
     count
   end
 
+  @doc """
+  issue 1365 — re-points the cursors of DM conversation `from_id` whose key
+  folds to `nick` onto conversation `to_id`, and returns how many moved. The
+  cursor half of a rename MERGE or SPLIT (`Grappa.NickMigration`), run after
+  `rename_dm_peer/4` has re-keyed the cursor itself. At most one row per
+  subject and key, so no batching. No retry: it runs inside the caller's
+  transaction.
+  """
+  @spec move_dm_conversation(pos_integer(), pos_integer(), String.t()) :: non_neg_integer()
+  def move_dm_conversation(from_id, to_id, nick)
+      when is_integer(from_id) and is_integer(to_id) and is_binary(nick) do
+    folded = Identifier.canonical_target(nick)
+
+    {count, _} =
+      Cursor
+      |> where([c], c.dm_conversation_id == ^from_id)
+      |> where([c], Identifier.nick_fold(c.channel) == ^folded)
+      |> Repo.update_all(set: [dm_conversation_id: to_id])
+
+    count
+  end
+
+  @doc """
+  issue 1365 — true iff any cursor still points at DM conversation `id`. A
+  merged-away conversation may be deleted only once this is false.
+  """
+  @spec dm_conversation_cursor?(pos_integer()) :: boolean()
+  def dm_conversation_cursor?(id) when is_integer(id) do
+    Cursor
+    |> where([c], c.dm_conversation_id == ^id)
+    |> Repo.exists?()
+  end
+
   @spec cursor_folds_to?(subject(), integer(), String.t()) :: boolean()
   defp cursor_folds_to?(subject, network_id, folded) do
     Cursor

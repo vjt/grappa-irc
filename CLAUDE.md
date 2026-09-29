@@ -164,7 +164,10 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   the DM read cursor (`ReadCursor.rename_dm_peer/4` — else the migrated
   history reads fully unread), the per-conversation MUTE
   (`UserSettings.rename_muted_target/4` — nick-keyed since #1038 keyed it
-  `(network, peer)`; #1340), and cic's own caches
+  `(network, peer)`; #1340), the `dm_conversations` row (issue 1365 leg 1,
+  `DmConversations.follow_rename/4` via `NickMigration` — one UPDATE, or a
+  MERGE / SPLIT whose children move in bounded batches after the migration
+  commits), and cic's own caches
   (`scrollback.renameScrollbackKey` + `readCursor.renameReadCursorChannel`
   + `selection.followQueryNick`, driven by the per-channel `nick_change`,
   mirroring `members.ts`). Server-driven: `EventRouter` emits

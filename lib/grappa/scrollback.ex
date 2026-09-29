@@ -1976,6 +1976,70 @@ defmodule Grappa.Scrollback do
   end
 
   @doc """
+  issue 1365 — re-points rows of DM conversation `from_id` whose
+  key folds to `nick` onto conversation `to_id`, and returns how many moved
+  (at most `batch_size`).
+
+  The batch unit of a rename MERGE or SPLIT (`Grappa.NickMigration`): the
+  caller loops, one short write transaction per call, until a call moves
+  fewer than `batch_size` — never one transaction proportional to the history
+  (issue 2319: 331 rows re-keyed under one ~9.5 s lock broke an unrelated
+  write). The key predicate is the one every DM reader groups on, so a row
+  moves exactly when its key says it belongs to the target.
+
+  Seeks `messages_dm_conversation_id_index`. Takes no retry of its own: it
+  runs inside the caller's transaction.
+  """
+  @spec move_dm_conversation_rows(pos_integer(), pos_integer(), String.t(), pos_integer()) ::
+          non_neg_integer()
+  def move_dm_conversation_rows(from_id, to_id, nick, batch_size)
+      when is_integer(from_id) and is_integer(to_id) and is_binary(nick) and
+             is_integer(batch_size) and batch_size > 0 do
+    batch =
+      from_id
+      |> dm_conversation_rows_keyed(Identifier.canonical_target(nick))
+      |> select([m], m.id)
+      |> limit(^batch_size)
+
+    {count, _} =
+      Message
+      |> where([m], m.id in subquery(batch))
+      |> Repo.update_all(set: [dm_conversation_id: to_id])
+
+    count
+  end
+
+  @doc """
+  issue 1365 — true iff DM conversation `id` still holds a row whose key folds
+  to `nick`. How `Grappa.NickMigration` tells a rename that moved a whole
+  conversation from one that moved only part of it.
+  """
+  @spec dm_conversation_keyed?(pos_integer(), String.t()) :: boolean()
+  def dm_conversation_keyed?(id, nick) when is_integer(id) and is_binary(nick) do
+    id
+    |> dm_conversation_rows_keyed(Identifier.canonical_target(nick))
+    |> Repo.exists?()
+  end
+
+  @doc """
+  issue 1365 — true iff any row still points at DM conversation `id`. A
+  merged-away conversation may be deleted only once this is false.
+  """
+  @spec dm_conversation_rows?(pos_integer()) :: boolean()
+  def dm_conversation_rows?(id) when is_integer(id) do
+    Message
+    |> where([m], m.dm_conversation_id == ^id)
+    |> Repo.exists?()
+  end
+
+  @spec dm_conversation_rows_keyed(pos_integer(), String.t()) :: Ecto.Query.t()
+  defp dm_conversation_rows_keyed(id, folded) do
+    Message
+    |> where([m], m.dm_conversation_id == ^id)
+    |> where_dm_peer(folded)
+  end
+
+  @doc """
   UX-1 (2026-05-17) — deletes all scrollback rows for a channel in a
   `(subject, network_id)` pair. Case-insensitive on the channel name
   (IRC channels are case-insensitive per RFC 1459 §2.2).

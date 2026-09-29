@@ -11,6 +11,11 @@ defmodule Grappa.NickMigration do
       migrated history reads as fully unread (#373).
     * `Grappa.UserSettings.rename_muted_target!/4` — the per-conversation
       mute, nick-keyed since #1038 (#1340).
+    * `Grappa.DmConversations.follow_rename/4` — the conversation identity
+      (issue 1365): it follows exactly the rows the stores above moved. A
+      rename into a nick that already has a conversation is a MERGE whose
+      children move in bounded batches AFTER this transaction commits
+      (`settle_conversation/3`), then the loser row is deleted.
 
   and, when the nick that moved is OUR OWN, `Scrollback.rename_own_nick/4`
   (the inbound-DM own-nick TAG, #514) plus `rename_self_window/4` and the
@@ -102,6 +107,7 @@ defmodule Grappa.NickMigration do
   use Boundary,
     top_level?: true,
     deps: [
+      Grappa.DmConversations,
       Grappa.QueryWindows,
       Grappa.ReadCursor,
       Grappa.Repo,
@@ -110,8 +116,16 @@ defmodule Grappa.NickMigration do
       Grappa.UserSettings
     ]
 
-  alias Grappa.{QueryWindows, ReadCursor, Repo, Scrollback, Subject, UserSettings}
+  alias Grappa.{DmConversations, QueryWindows, ReadCursor, Repo, Scrollback, Subject, UserSettings}
   alias Grappa.Repo.BusyRetry
+
+  require Logger
+
+  # issue 1365 — rows re-pointed per write transaction when a rename merges
+  # or splits a DM conversation. Bounded so no single lock is proportional to
+  # a history: issue 2319 measured 331 rows re-keyed under one ~9.5 s lock
+  # breaking an unrelated write.
+  @move_batch 500
 
   @typedoc """
   Outcome of a peer rename. `window` is `:noop` when the peer had no query
@@ -122,7 +136,8 @@ defmodule Grappa.NickMigration do
   @type peer_result :: %{
           window: :renamed | :noop,
           rows: non_neg_integer(),
-          mute: :renamed | :noop
+          mute: :renamed | :noop,
+          conversation: conversation_outcome()
         }
 
   @typedoc """
@@ -135,8 +150,28 @@ defmodule Grappa.NickMigration do
           tag_rows: non_neg_integer(),
           rows: non_neg_integer(),
           window: :renamed | :noop,
-          mute: :renamed | :noop
+          mute: :renamed | :noop,
+          conversation: conversation_outcome()
         }
+
+  @typedoc """
+  What the rename did to the `dm_conversations` row of the old nick (issue
+  1365). It follows exactly the rows the nick-keyed stores moved, and only
+  when they moved:
+
+    * `:noop` — no rows moved, or the old nick had no conversation.
+    * `:renamed` — the whole conversation moved and the new nick had none:
+      one UPDATE of its display column, id unchanged.
+    * `:merged` — the new nick already had a conversation; every child moved
+      to it in bounded batches and the old row was deleted (ruling T1).
+    * `:split` — only part of the old conversation moved (the self window
+      holding history with a peer who bore our old nick): the moved children
+      now point at the new nick's conversation, the rest stay.
+    * `:move_incomplete` — a batch ran out of retry budget. The committed
+      prefix is consistent row by row (every child points at a live parent),
+      but the move stopped; logged, and the old row is kept.
+  """
+  @type conversation_outcome :: :noop | :renamed | :merged | :split | :move_incomplete
 
   @doc """
   Migrates every store keyed on a PEER's old nick, atomically.
@@ -169,19 +204,22 @@ defmodule Grappa.NickMigration do
   @spec windowed_peer_renamed(Subject.t(), integer(), String.t(), String.t(), String.t()) ::
           {:ok, peer_result()} | {:error, Ecto.Changeset.t() | :db_unavailable}
   defp windowed_peer_renamed(subject, network_id, network_slug, old_nick, new_nick) do
-    migrate(fn ->
+    fn ->
       mute = UserSettings.rename_muted_target!(subject, network_slug, old_nick, new_nick)
 
       case QueryWindows.rename(subject, network_id, old_nick, new_nick) do
         {:ok, :renamed} ->
           {:ok, rows} = Scrollback.rename_dm_peer(subject, network_id, old_nick, new_nick)
           :ok = ReadCursor.rename_dm_peer(subject, network_id, old_nick, new_nick)
-          %{window: :renamed, rows: rows, mute: mute}
+          conversation = follow_conversation(subject, network_id, old_nick, new_nick)
+          %{window: :renamed, rows: rows, mute: mute, conversation: conversation}
 
         {:ok, :noop} ->
-          %{window: :noop, rows: 0, mute: mute}
+          %{window: :noop, rows: 0, mute: mute, conversation: :noop}
       end
-    end)
+    end
+    |> migrate()
+    |> settle_conversation(old_nick, new_nick)
   end
 
   # #1378 — a peer we never queried is the OVERWHELMING case: IRC delivers a
@@ -223,7 +261,7 @@ defmodule Grappa.NickMigration do
           {:ok, peer_result()} | {:error, Ecto.Changeset.t() | :db_unavailable}
   defp windowless_peer_renamed(subject, network_slug, old_nick, new_nick) do
     case UserSettings.rename_muted_target(subject, network_slug, old_nick, new_nick) do
-      {:ok, mute} -> {:ok, %{window: :noop, rows: 0, mute: mute}}
+      {:ok, mute} -> {:ok, %{window: :noop, rows: 0, mute: mute, conversation: :noop}}
       {:error, _} = err -> err
     end
   end
@@ -248,7 +286,7 @@ defmodule Grappa.NickMigration do
   def own_renamed({_, _} = subject, network_id, network_slug, old_nick, new_nick)
       when is_integer(network_id) and is_binary(network_slug) and is_binary(old_nick) and
              is_binary(new_nick) do
-    migrate(fn ->
+    fn ->
       {:ok, tag_rows} = Scrollback.rename_own_nick(subject, network_id, old_nick, new_nick)
       {:ok, rows} = Scrollback.rename_self_window(subject, network_id, old_nick, new_nick)
 
@@ -256,17 +294,100 @@ defmodule Grappa.NickMigration do
         :ok = ReadCursor.rename_dm_peer(subject, network_id, old_nick, new_nick)
         {:ok, window} = QueryWindows.rename(subject, network_id, old_nick, new_nick)
         mute = UserSettings.rename_muted_target!(subject, network_slug, old_nick, new_nick)
+        conversation = follow_conversation(subject, network_id, old_nick, new_nick)
 
-        %{tag_rows: tag_rows, rows: rows, window: window, mute: mute}
+        %{tag_rows: tag_rows, rows: rows, window: window, mute: mute, conversation: conversation}
       else
-        %{tag_rows: tag_rows, rows: 0, window: :noop, mute: :noop}
+        %{tag_rows: tag_rows, rows: 0, window: :noop, mute: :noop, conversation: :noop}
       end
-    end)
+    end
+    |> migrate()
+    |> settle_conversation(old_nick, new_nick)
   end
 
+  # One retried write transaction — the migration itself, and each batch of a
+  # conversation move after it.
   @spec migrate((-> result)) :: {:ok, result} | {:error, Ecto.Changeset.t() | :db_unavailable}
-        when result: peer_result() | own_result()
+        when result: term()
   defp migrate(fun) do
     BusyRetry.run(fn -> Repo.immediate_transaction(fun) end)
+  end
+
+  # issue 1365 — the conversation half of a rename, inside the migration
+  # transaction and AFTER the scrollback moved: what `follow_rename/4` has to
+  # decide is which conversation the moved rows now belong to, and only the
+  # post-move rows can say whether the old conversation still has any of its
+  # own. Measured rather than assumed on the peer arm too, where the whole
+  # conversation moves by construction: a row the scrollback rename missed
+  # then splits off correctly instead of being dragged to the new nick.
+  @spec follow_conversation(Subject.t(), integer(), String.t(), String.t()) ::
+          :noop | DmConversations.follow()
+  defp follow_conversation(subject, network_id, old_nick, new_nick) do
+    case DmConversations.get(subject, network_id, old_nick) do
+      nil ->
+        :noop
+
+      source ->
+        keeps_rows? = Scrollback.dm_conversation_keyed?(source.id, old_nick)
+        DmConversations.follow_rename(subject, source, new_nick, keeps_rows?)
+    end
+  end
+
+  # A merge or split re-points its children AFTER the migration committed, in
+  # bounded write transactions of their own — never inside the migration's,
+  # whose lock would then grow with the conversation (ruling T1: "bounded
+  # batches, never as one long write transaction"). Between the commit and
+  # the last batch a moved row still points at the old conversation, which
+  # is still a live parent, and no reader consults the FK in leg 1.
+  @spec settle_conversation({:ok, map()} | {:error, term()}, String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  defp settle_conversation({:ok, %{conversation: {:move, from_id, to_id}} = result}, old_nick, new_nick) do
+    {:ok, %{result | conversation: move_rows(from_id, to_id, old_nick, new_nick)}}
+  end
+
+  defp settle_conversation(other, _, _), do: other
+
+  @spec move_rows(pos_integer(), pos_integer(), String.t(), String.t()) :: conversation_outcome()
+  defp move_rows(from_id, to_id, old_nick, new_nick) do
+    batch = migrate(fn -> Scrollback.move_dm_conversation_rows(from_id, to_id, new_nick, @move_batch) end)
+
+    case batch do
+      {:ok, @move_batch} -> move_rows(from_id, to_id, old_nick, new_nick)
+      {:ok, _} -> finish_move(from_id, to_id, old_nick, new_nick)
+      {:error, :db_unavailable} -> move_incomplete(old_nick, new_nick)
+    end
+  end
+
+  # The cursor and the delete share one transaction, so "no child left" is
+  # proved under the same lock that deletes the parent.
+  @spec finish_move(pos_integer(), pos_integer(), String.t(), String.t()) :: conversation_outcome()
+  defp finish_move(from_id, to_id, old_nick, new_nick) do
+    finished =
+      migrate(fn ->
+        ReadCursor.move_dm_conversation(from_id, to_id, new_nick)
+
+        if Scrollback.dm_conversation_rows?(from_id) or ReadCursor.dm_conversation_cursor?(from_id) do
+          :split
+        else
+          :ok = DmConversations.delete!(from_id)
+          :merged
+        end
+      end)
+
+    case finished do
+      {:ok, outcome} -> outcome
+      {:error, :db_unavailable} -> move_incomplete(old_nick, new_nick)
+    end
+  end
+
+  @spec move_incomplete(String.t(), String.t()) :: :move_incomplete
+  defp move_incomplete(old_nick, new_nick) do
+    Logger.warning(
+      "DM conversation move stopped: db unavailable — some rows still point at the old nick's conversation",
+      old_nick: old_nick,
+      new_nick: new_nick
+    )
+
+    :move_incomplete
   end
 end
