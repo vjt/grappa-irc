@@ -1242,6 +1242,23 @@ il proprio valore finale col valore di w1 di tre minuti prima. **Due file attrav
 simili in momenti diversi** — il numero da solo non identifica niente, ed e' la stessa famiglia del
 numero di riga che scade appena main si muove.
 
+🔴🔴 **COMPILE E STACK NON SONO DUE CORSIE INDIPENDENTI AL LIVELLO DOCKER: CONDIVIDONO IL COMPOSE
+PROJECT `grappa`, e le ho allocate a due worker nello stesso paio di minuti (orch, 2026-09-29,
+misurato da w2 e non da me).** Mentre la e2e di w2 girava e' partito `grappa-grappa-run-<hash>`
+(`MIX_ENV=dev mix…`, progetto `grappa`) — **il rebase di w1, ordinato da me subito dopo aver
+concesso la STACK a lei.** Nessun danno misurato (la sua suite ha chiuso verde) **ma e' fortuna,
+non progetto.** ⇒ **una concessione STACK e un ordine che vuole COMPILE non vanno nella stessa
+finestra**, e la sonda giusta e' quella dell'ARTEFATTO
+(`docker ps --format '{{.Names}}' | grep -c '^grappa-grappa-run'`), **mai `docker ps -q | wc -l`**,
+che conta i container di servizio e non i run.
+🥇🥇 **E NELLO STESSO ORDINE HO CITATO UN'AUTORITA' CHE NON COPRIVA LA CORSIA CHE CONCEDEVO: l'HAND-BACK
+DI w1 SULLA CORSIA *COMPILE* come autorita' per liberare la *STACK*.** Due corsie diverse, e w1 non ha
+mai tenuto la STACK (*"la corsia e2e non e' mia"*, parole sue). Cio' che la rendeva libera era la **MIA
+misura** — e nello stesso ordine scrivevo che la misura NON e' l'autorita'. ⇒ **un hand-back libera LA
+CORSIA CHE NOMINA, e nessun'altra**: e' la famiglia dell'etichetta che asserisce una causa che non puo'
+osservare, applicata a una CONCESSIONE. 🥇 *w2 ha preso il resto per buono **dichiarandolo**, invece di
+incassarlo in silenzio: chiedi quella forma nei brief.*
+
 🔑 **REBASE BEFORE GATING.** 📟 `🧠 NN%` is the CONTEXT gauge (40%-clear rule); **`⚗️ NN％` is NOT context.**
 **CLEAR WORKERS AT 40%**, at a CLEAN BOUNDARY (after a commit, or while a long gate runs) — gate FIRST, then clear:
 clearing on unverified edits leaves the next session unable to tell whether they hold.
