@@ -1212,6 +1212,18 @@ WAS true; only `pgrep` on the host records what IS.
 Probe (non-interactive ssh has no docker on PATH):
 `ssh voyager 'export PATH=$PATH:/usr/local/bin:/opt/homebrew/bin; pgrep -f "check.sh|bats-exec|mix |integration.sh"; docker ps'`
 — `check.sh`'s bats stage shows NO container, so `docker ps` ALONE LIES; `pgrep` is the authority.
+🔴🔴 **E SENZA `export PATH` QUELLA SONDA STAMPA UNO ZERO CHE NON E' MAI STATO MISURATO — E
+ACCANTO GLI ESCE UNA RIGA VERA CHE LO FA SEMBRARE BUONO (orch, 2026-09-29).** Su voyager `docker`
+non sta nel PATH di una shell `ssh` non interattiva ⇒ `zsh: command not found: docker` su
+**stderr**, `grep -c` su un input VUOTO ⇒ **`0` su stdout**, indistinguibile da uno zero misurato.
+Misurato nello stesso blocco: `RUN_CONTAINERS=0` **falso** accanto a `COMPILE_PROCS=9` **vero**,
+perche' `pgrep` nel PATH di default c'e'. 🔑 **Una riga sana accanto a una falsa, nello stesso
+output, presta credibilita' alla falsa** — ed e' il verso che costa: uno zero falso **CONCEDE**
+una corsia occupata.
+🥇 **REGOLA: una sonda REMOTA porta il suo pos ctrl NELLA STESSA invocazione** (li': `docker ps`
+deve stampare almeno un nome, misurato **1**), **e un `grep -c` non si legge senza sapere se il
+comando a monte ha parlato.** *Ennesima faccia dello zero falso e plausibile: non lo strumento
+rotto e non l'artefatto sbagliato, ma il **PATH**.*
 🔴🔴 **NON ESISTE L'ALLOCAZIONE APERTA — misurato 2026-09-18, DUE `check.sh` IN VOLO SULLO
 STESSO `_build`, e nessuno dei due verdetti era attribuibile a nessun ramo.** Alle 09:3x avevo detto
 a w2 *"la corsia e' tua quando ti serve, basta che me la chiedi"* — che e' **un'allocazione, non
