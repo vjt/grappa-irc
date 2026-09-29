@@ -8728,6 +8728,41 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    # issue 2318 — the reported corruption, end to end: a registered visitor's
+    # stored NickServ password came back as a `Guest<N>` nick. A one-token
+    # `GHOST <nick>` used to be staged as an identify capture with the NICK as
+    # its "password", latest-wins over the real IDENTIFY already staged, so
+    # the `+r` that confirmed the real one committed the nick instead.
+    test "issue 2318 — a one-token GHOST inside the window never overwrites the staged password" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {visitor, network} = visitor_with_network(port)
+      pid = start_visitor_session_for(visitor, network)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg({:visitor, visitor.id}, network.id, "NickServ", "IDENTIFY s3cret")
+
+      assert :ok =
+               Session.send_raw({:visitor, visitor.id}, network.id, "PRIVMSG NickServ :GHOST Guest12345")
+
+      send(
+        pid,
+        {:irc,
+         %Message{
+           command: :mode,
+           params: [visitor_nick(visitor), "+r"],
+           prefix: {:server, "irc.example.test"},
+           tags: %{}
+         }}
+      )
+
+      _ = SessionStateHelpers.fetch(pid)
+      assert visitor_password(visitor, network) == "s3cret"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "visitor session: :pending_auth_timeout → no commit, password_encrypted stays nil" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {visitor, network} = visitor_with_network(port)

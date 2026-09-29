@@ -49,17 +49,17 @@ defmodule Grappa.Session.NSInterceptorTest do
       assert :passthrough = intercept("PING :foo")
     end
 
-    test "captures the ID alias (azzurra m_identify alias) — last token, :identify" do
+    test "captures the ID alias (azzurra m_identify alias) — lone token, :identify" do
       assert {:capture, :identify, "secret"} = intercept("PRIVMSG NickServ :ID secret")
       assert {:capture, :identify, "secret"} = intercept("PRIVMSG NickServ :id secret")
     end
 
-    test "captures SIDENTIFY (silent identify) — last token, :identify" do
+    test "captures SIDENTIFY (silent identify) — lone token, :identify" do
       assert {:capture, :identify, "secret"} =
                intercept("PRIVMSG NickServ :SIDENTIFY secret")
     end
 
-    test "captures IDENTIFY/ID with an account argument — password is the last token" do
+    test "captures IDENTIFY/ID with an account argument — password is the second token" do
       assert {:capture, :identify, "secret"} =
                intercept("PRIVMSG NickServ :IDENTIFY myacct secret")
 
@@ -84,12 +84,12 @@ defmodule Grappa.Session.NSInterceptorTest do
       assert {:capture, :identify, "secret"} = intercept("SIDENTIFY myacct secret")
     end
 
-    test "captures PASS post-connect identify (m_pass -> m_identify) — last token, :identify" do
+    test "captures PASS post-connect identify (m_pass -> m_identify) — lone or second token, :identify" do
       assert {:capture, :identify, "secret"} = intercept("PASS secret")
       assert {:capture, :identify, "secret"} = intercept("PASS mynick secret")
     end
 
-    test "GHOST is :identify (last token); REGISTER is :register (first token)" do
+    test "GHOST is :identify (second token); REGISTER is :register (first token)" do
       assert {:capture, :identify, "secret"} =
                intercept("PRIVMSG NickServ :GHOST oldnick secret")
 
@@ -97,9 +97,41 @@ defmodule Grappa.Session.NSInterceptorTest do
                intercept("PRIVMSG NickServ :REGISTER secret me@x.io")
     end
 
-    test "NS GHOST is :identify (last token); NS REGISTER is :register (first token)" do
+    test "NS GHOST is :identify (second token); NS REGISTER is :register (first token)" do
       assert {:capture, :identify, "secret"} = intercept("NS GHOST oldnick secret")
       assert {:capture, :register, "secret"} = intercept("NS REGISTER secret me@x.io")
+    end
+
+    # issue 2318 — `do_ghost` (`src/nickserv.c:3439`) reads `<nick> <pass>`
+    # with two `strtok`s and answers NS_GHOST_SYNTAX_ERROR when the second is
+    # missing; Atheme's `GHOST <target> [password]` (`ghost.c:24`) accepts the
+    # one-token form from an identified caller. Either way the lone token is
+    # a NICK, and capturing it staged that nick as the password — committed
+    # over the real one by the next `+r` inside the window.
+    test "issue 2318 — a one-token GHOST carries no password: passthrough, every form" do
+      assert :passthrough = intercept("PRIVMSG NickServ :GHOST Guest12345")
+      assert :passthrough = intercept("PRIVMSG NickServ@services.azzurra.chat :ghost Guest12345")
+      assert :passthrough = intercept("NS GHOST Guest12345")
+      assert :passthrough = intercept("NICKSERV GHOST Guest12345")
+      assert :passthrough = intercept("PRIVMSG NickServ :GHOST   Guest12345   ")
+    end
+
+    # issue 2318 — every door reaches services' own `strtok(NULL, " ")` pair:
+    # the ircd hands `IDENTIFY` / `NS` / `NICKSERV` ONE parameter (bahamut
+    # `include/msg.h:316,324,343`, so the rest of the line arrives whole) and
+    # `m_pass` joins `parv[1] parv[2]` and drops the rest. So the password is
+    # the SECOND token and a third is never read — the LAST token of a longer
+    # line is whatever the user typed after it, never the secret.
+    test "issue 2318 — with three or more tokens the password is the SECOND, never the last" do
+      assert {:capture, :identify, "s3cret"} =
+               intercept("PRIVMSG NickServ :IDENTIFY vjt s3cret Guest12345")
+
+      assert {:capture, :identify, "s3cret"} = intercept("NS ID vjt s3cret trailing words")
+      assert {:capture, :identify, "s3cret"} = intercept("SIDENTIFY vjt s3cret extra")
+      assert {:capture, :identify, "s3cret"} = intercept("PASS vjt s3cret extra")
+
+      assert {:capture, :identify, "s3cret"} =
+               intercept("PRIVMSG NickServ :GHOST vjt s3cret Guest12345")
     end
 
     test "a verb-only identify line with no password is passthrough (no empty capture)" do

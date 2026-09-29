@@ -31,8 +31,10 @@ defmodule Grappa.Session.NSInterceptor do
   merely CONTAINS "identify"/"pass"/"set passwd"/"resetpass" is never captured — raw IRC
   frames start with the command verb, PRIVMSGs start with `PRIVMSG`.
 
-  Password extraction: last whitespace token for IDENTIFY/ID/SIDENTIFY/GHOST/
-  PASS (`IDENTIFY [account] <pass>`, `GHOST <nick> <pass>`, `PASS [nick] <pass>`);
+  Password extraction: for IDENTIFY/ID/SIDENTIFY/PASS the lone token, or the
+  SECOND of two or more (`IDENTIFY [account] <pass>`, `PASS [nick] <pass>` —
+  services read two tokens and never a third); for GHOST the SECOND token, and
+  NOTHING when the nick stands alone (`GHOST <nick> <pass>`, issue 2318);
   FIRST token for REGISTER (`REGISTER <pass> <email>`); the SECOND token for
   SET PASSWD (#977); the THIRD for RESETPASS (#978). The Azzurra verb is
   `SET PASSWD`, NOT `SET PASSWORD`
@@ -405,18 +407,45 @@ defmodule Grappa.Session.NSInterceptor do
 
   defp intercept_pass(line) do
     case Regex.run(@pass_re, line, capture: :all_but_first) do
-      [rest] -> {:capture, :identify, last_token(rest)}
+      [rest] -> {:capture, :identify, identify_password(rest)}
       nil -> :passthrough
     end
   end
 
-  # Catch-all: IDENTIFY / ID / SIDENTIFY / GHOST all take the password as
-  # the last token AND grant +r synchronously → `:identify`. Only REGISTER
-  # (password first, +r granted later via the auth-code) needs its own
-  # clause AND its own `:register` kind (#129).
+  # REGISTER takes the password first and earns `+r` later, via the auth code,
+  # so it has its own `:register` kind (#129). GHOST names a nick before its
+  # password, and with the nick alone carries none (issue 2318). The rest of
+  # the identify family is `identify_password/1`.
   defp dispatch("REGISTER", rest), do: {:capture, :register, first_token(rest)}
-  defp dispatch(_, rest), do: {:capture, :identify, last_token(rest)}
+  defp dispatch("GHOST", rest), do: ghost_password(rest)
+  defp dispatch(_, rest), do: {:capture, :identify, identify_password(rest)}
 
-  defp last_token(rest), do: rest |> String.split() |> List.last()
+  # `do_identify` (`src/nickserv.c:1669`): two `strtok(NULL, " ")`. With one
+  # token that token is the password and the account is the caller's nick;
+  # with two, the SECOND is the password; a third is never read. Every door
+  # reaches that same pair — the ircd hands `IDENTIFY`, `NS` and `NICKSERV`
+  # one parameter, so the rest of the line arrives whole (bahamut
+  # `include/msg.h`), and `m_pass` forwards `parv[1] parv[2]` and drops the
+  # rest. Taking the LAST token instead (issue 2318) read whatever followed
+  # the password as the password.
+  defp identify_password(rest) do
+    case String.split(rest) do
+      [password] -> password
+      [_, password | _] -> password
+    end
+  end
+
+  # `do_ghost` (`src/nickserv.c:3439`) requires `<nick> <pass>` and answers a
+  # lone nick with NS_GHOST_SYNTAX_ERROR; Atheme accepts the lone nick from
+  # an identified caller (`GHOST <target> [password]`). Neither puts a
+  # password on that line, and capturing the nick staged it as one — the next
+  # `+r` inside the window then committed a `Guest<N>` over the real secret.
+  defp ghost_password(rest) do
+    case String.split(rest) do
+      [_] -> :passthrough
+      [_, password | _] -> {:capture, :identify, password}
+    end
+  end
+
   defp first_token(rest), do: rest |> String.split() |> List.first()
 end
