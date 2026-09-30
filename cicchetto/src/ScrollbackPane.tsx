@@ -35,6 +35,7 @@ import { isDocumentVisible } from "./lib/documentVisibility";
 import { highlightPatterns } from "./lib/highlightList";
 import { type InviteAckEntry, inviteAckBySlug } from "./lib/inviteAck";
 import { chantypesForNetwork, prefixForNetwork } from "./lib/isupport";
+import { jumpToMessageRequest } from "./lib/jumpToMessageCommand";
 import { jumpToUnreadRequest } from "./lib/jumpToUnreadCommand";
 import { membersByChannel } from "./lib/members";
 import { isMentionRow } from "./lib/mentionMatch";
@@ -64,6 +65,7 @@ import {
   dismissFarBehind,
   farBehindByChannel,
   isLoadingOlder,
+  jumpToMessage,
   jumpToUnread,
   lastOwnSend,
   loadMore as loadMoreScrollback,
@@ -1474,6 +1476,35 @@ const ScrollbackPane: Component<Props> = (props) => {
   // tail-follow already re-establishes them, no latch needed.
   const [markerActivationPending, setMarkerActivationPending] = createSignal(false);
 
+  // issue 2333 — the message a mention tap asked this window to land on. It
+  // does not get a scroll authority of its own: while it is set, it REPLACES
+  // the unread divider as the anchor the marker-activation above lands on
+  // (`activationAnchor`), so it inherits the whole latch contract — re-asserted
+  // across every rows recreation, handed back on operator input — instead of
+  // racing it. Cleared on a window switch and on operator input.
+  const [jumpTargetId, setJumpTargetId] = createSignal<number | null>(null);
+
+  // The element a marker-activation lands on, and how: the requested message
+  // (centred) while a jump is in effect, else the rendered unread divider
+  // (at the top). `null` = nothing to land on. Read INSIDE the latch only:
+  // outside it the activation is not a marker one, and a stale target must
+  // not steer it.
+  const activationAnchor = (): { el: HTMLElement; block: ScrollLogicalPosition } | null => {
+    if (!listRef) return null;
+    const target = markerActivationPending() ? jumpTargetId() : null;
+    if (target !== null) {
+      const row = listRef.querySelector<HTMLElement>(`.scrollback-line[data-msg-id="${target}"]`);
+      return row ? { el: row, block: "center" } : null;
+    }
+    const marker = listRef.querySelector<HTMLElement>('[data-testid="unread-marker"]');
+    return marker ? { el: marker, block: "start" } : null;
+  };
+
+  // A jump requested but not yet rendered (the region is being fetched): the
+  // activation must hold still rather than fall to the tail and then jump.
+  const jumpPending = (): boolean =>
+    markerActivationPending() && jumpTargetId() !== null && activationAnchor() === null;
+
   // FREEZE CONTRACT (2026-06-08, vjt "step-away" request): the FROZEN
   // bottom boundary of the unread block — sibling to `sessionTopId` (the
   // frozen TOP boundary). The `rows` memo derives the divider from THIS
@@ -2796,12 +2827,9 @@ const ScrollbackPane: Component<Props> = (props) => {
         // visibility-return's scrolled-up arm was IN this query, which is exactly
         // the defect issue 2032 reported. Routing is what ships; the comment had
         // been stale for two releases.
-        const marker =
-          mode === "marker-or-tail"
-            ? (listRef.querySelector('[data-testid="unread-marker"]') as HTMLElement | null)
-            : null;
-        if (marker?.scrollIntoView) {
-          marker.scrollIntoView({ block: "start" });
+        const anchor = mode === "marker-or-tail" ? activationAnchor() : null;
+        if (anchor?.el.scrollIntoView) {
+          anchor.el.scrollIntoView({ block: anchor.block });
           // Set both concerns from the settled distance (layout is stable
           // inside the rAF×2). A far divider ⇒ false: `followMode` off so the
           // length-effect's `if (!followMode()) return` guard yields (its
@@ -2812,7 +2840,10 @@ const ScrollbackPane: Component<Props> = (props) => {
           const near = distance <= SCROLL_BOTTOM_THRESHOLD_PX;
           setFollowMode(near);
           setAtBottomNow(near);
-        } else if (mode === "preserve-only") {
+        } else if (mode === "preserve-only" || (mode === "marker-or-tail" && jumpPending())) {
+          // issue 2333 — a requested message still being fetched lands HERE too:
+          // hold, rather than tail-snap and then jump. The rows change that
+          // brings it re-asserts through the latch (`applyScrollForContentChange`).
           // #535 + issue 2032 — the scrolled-up arm of visibility-return.
           // PRESERVE the reader's position UNCONDITIONALLY: do not tail-snap, do
           // not jump to a divider, and leave `followMode`/`atBottomNow` false
@@ -3009,6 +3040,8 @@ const ScrollbackPane: Component<Props> = (props) => {
         // stranding it (307 race). (This effect is `defer`-skipped on the
         // initial mount; first-focus-after-login is the COLD MOUNT handled by
         // onMount — also a marker activation now. #168, 2026-07-03.)
+        // issue 2333 — a jump belongs to the window it was requested for.
+        setJumpTargetId(null);
         setMarkerActivationPending(true);
         applyActivation("marker-or-tail", true);
       },
@@ -3520,8 +3553,8 @@ const ScrollbackPane: Component<Props> = (props) => {
         // on a rendered divider, so the node is here; the rAF×2 that follows
         // still owns the settled read (`followMode`/`atBottomNow` from the real
         // distance) and corrects any pre-layout inaccuracy of this leg.
-        const marker = listRef.querySelector('[data-testid="unread-marker"]') as HTMLElement | null;
-        marker?.scrollIntoView?.({ block: "start" });
+        const anchor = activationAnchor();
+        anchor?.el.scrollIntoView?.({ block: anchor.block });
         scrollToActivation("marker-or-tail", false);
         return;
       }
@@ -3574,7 +3607,7 @@ const ScrollbackPane: Component<Props> = (props) => {
     // far-behind flag in ONE flush, so the divider is already gone from the DOM
     // by the time this gate runs. Split into two writes it said yes to a divider
     // that was about to vanish — see `appendPageToScrollback`'s batch.
-    if (markerActivationPending() && listRef.querySelector('[data-testid="unread-marker"]')) {
+    if (markerActivationPending() && activationAnchor() !== null) {
       intents.push({ kind: "marker-activation", key: k, lifetime: "sticky" });
     }
     if (followMode()) {
@@ -3892,6 +3925,7 @@ const ScrollbackPane: Component<Props> = (props) => {
     on(lastInputEventAtMs, (ts) => {
       if (ts === null) return;
       setMarkerActivationPending(false);
+      setJumpTargetId(null);
       // issue 2091 — the operator taking over ends our claim on the scroll, for
       // the same reason it hands back marker authority one line above: from here
       // the events are theirs and the pagers are theirs. This is what keeps the
@@ -4347,6 +4381,7 @@ const ScrollbackPane: Component<Props> = (props) => {
     // arrive — one more trigger on the existing scroll writer, not a second
     // scroll authority. Stood back down if the fetch failed, so a dead latch
     // can't yank a later unrelated rows() change.
+    setJumpTargetId(null);
     setMarkerActivationPending(true);
     void jumpToUnread(props.networkSlug, props.channelName).then((jumped) => {
       if (!jumped) setMarkerActivationPending(false);
@@ -4359,6 +4394,34 @@ const ScrollbackPane: Component<Props> = (props) => {
   // it is the same one the bar fires. `defer` skips the value read at mount,
   // so only a genuine request runs it.
   createEffect(on(jumpToUnreadRequest, () => jumpToUnreadGesture(), { defer: true }));
+
+  // issue 2333 — a tap on a mention row (`jumpToMessageCommand`). Served once
+  // per nonce, and only once this pane IS the requested window: the caller
+  // sets the selection and the request in one batch, and this effect is
+  // created after the key-effect above, so the switch has already cleared the
+  // previous target and armed the latch when it runs.
+  //
+  // It re-arms the same #168 latch a switch arms, with the message as the
+  // anchor (`activationAnchor`), and turns the tail-follow off so a live
+  // append during the fetch cannot carry the pane away first. A failed jump
+  // (the window does not hold the id, or the fetch failed) drops the target
+  // and re-runs the plain activation — the operator still lands on the window,
+  // which is what the tap did before this issue.
+  let servedJumpNonce = 0;
+  createEffect(
+    on([jumpToMessageRequest, key], ([req, k]) => {
+      if (req === null || req.key !== k || req.nonce === servedJumpNonce) return;
+      servedJumpNonce = req.nonce;
+      setJumpTargetId(req.id);
+      setMarkerActivationPending(true);
+      setFollowMode(false);
+      void jumpToMessage(props.networkSlug, props.channelName, req.id).then((landed) => {
+        if (servedJumpNonce !== req.nonce) return;
+        if (!landed) setJumpTargetId(null);
+        applyActivation("marker-or-tail", false);
+      });
+    }),
+  );
 
   const dismissFarBehindGesture = () => {
     // Re-latch the frozen divider to whatever was marked read. Dismiss is an

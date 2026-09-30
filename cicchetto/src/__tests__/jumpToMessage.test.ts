@@ -94,7 +94,13 @@ describe("jumpToMessage", () => {
     expect(landed).toBe(true);
     // The same fetch shape as `jumpToUnread`, anchored on the TARGET:
     // `after(id)` is `id > target`, `before(id + 1)` is `id <= target`.
-    expect(listMessagesAfter).toHaveBeenCalledWith("tok", SLUG, CHAN, 50, scrollback.UNREAD_RETENTION_CAP);
+    expect(listMessagesAfter).toHaveBeenCalledWith(
+      "tok",
+      SLUG,
+      CHAN,
+      50,
+      scrollback.UNREAD_RETENTION_CAP,
+    );
     expect(listMessages).toHaveBeenCalledWith("tok", SLUG, CHAN, 51);
     // REPLACED, not merged: the tail region and the target region are not
     // contiguous, and store order is display order.
@@ -130,7 +136,11 @@ describe("jumpToMessage", () => {
 
     expect(landed).toBe(true);
     expect(countMessagesAfter).toHaveBeenCalledWith("tok", SLUG, CHAN, 10);
-    expect(scrollback.farBehindByChannel()[key]).toEqual({ missed: 1500, events: 30, resumeFrom: 10 });
+    expect(scrollback.farBehindByChannel()[key]).toEqual({
+      missed: 1500,
+      events: 30,
+      resumeFrom: 10,
+    });
   });
 
   it("does not freeze when the region reaches down to the cursor", async () => {
@@ -187,5 +197,34 @@ describe("jumpToMessage", () => {
     expect(await scrollback.jumpToMessage(SLUG, CHAN, 800)).toBe(true);
 
     expect(scrollback.measuredUnreadByChannel()[key]).toBeUndefined();
+  });
+
+  // A tap from the mentions window MOUNTS the pane on a window this session
+  // may never have loaded, so the selection's cold load and the jump race for
+  // the same key. The cold load MERGES; landing after the swap it would splice
+  // the tail into the target region — a silent hole, store order being display
+  // order. The jump waits for it instead.
+  it("waits for an in-flight cold load instead of racing it", async () => {
+    const scrollback = await import("../lib/scrollback");
+    let releaseCold: (rows: ScrollbackMessage[]) => void = () => {};
+    listMessages.mockImplementation((_t: string, _s: string, _c: string, before?: number) =>
+      before === undefined
+        ? new Promise<ScrollbackMessage[]>((r) => {
+            releaseCold = r;
+          })
+        : Promise.resolve(range(40, 50).reverse()),
+    );
+    listMessagesAfter.mockResolvedValue(range(51, 60));
+
+    const cold = scrollback.loadInitialScrollback(SLUG, CHAN);
+    const jump = scrollback.jumpToMessage(SLUG, CHAN, 50);
+    // Give the jump every chance to finish on its own BEFORE the cold load
+    // lands — the order that splices — then let the cold load land.
+    await new Promise((r) => setTimeout(r, 0));
+    releaseCold(range(900, 950).reverse());
+    await cold;
+
+    expect(await jump).toBe(true);
+    expect(ids(scrollback.scrollbackByChannel()[key])).toEqual(range(40, 60).map((m) => m.id));
   });
 });

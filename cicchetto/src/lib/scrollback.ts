@@ -448,6 +448,10 @@ export type PrependCommitSeam = () => (() => void) | undefined;
 
 const exports = identityScopedStore((onIdentityChange) => {
   const loadedChannels = new Set<ChannelKey>();
+  // issue 2333 — the cold load currently running per key, so `jumpToMessage`
+  // can wait it out instead of racing it. Entries delete themselves when the
+  // load settles; nothing to clear on an identity change.
+  const initialLoadInFlight = new Map<ChannelKey, Promise<void>>();
   // CP14 B2: per-key in-flight Set guards against scroll-burst fan-out
   // (the user flicks the scrollbar; the browser fires `scroll` 5+ times
   // in a frame and the onScroll handler would otherwise dispatch 5+
@@ -1239,6 +1243,12 @@ const exports = identityScopedStore((onIdentityChange) => {
   // region reaches the cursor. A hole that cannot be measured refuses the
   // jump rather than landing unfrozen.
   //
+  // A cold load in flight for the same key is AWAITED first. A tap from the
+  // mentions window mounts the pane on a window this session may never have
+  // loaded, so the selection's cold load and this jump race; the cold load
+  // MERGES, and landing after the swap it would splice the tail into the
+  // target region — the silent hole `anchorAtTail` refuses to create.
+  //
   // The carried unread measurement (#947 / issue 2069) is DROPPED on a swap:
   // it claims the pane is contiguous from its `at`, which the new region
   // does not honour, and `loadNewer` would go on extending `through` over
@@ -1247,6 +1257,8 @@ const exports = identityScopedStore((onIdentityChange) => {
     const t = token();
     if (!t) return false;
     const key = channelKey(slug, name);
+    await initialLoadInFlight.get(key);
+    if (identityMoved(t)) return false;
     if ((scrollbackByChannel()[key] ?? []).some((m) => m.id === id)) return true;
     if (jumpInFlight.has(key)) return false;
     jumpInFlight.add(key);
@@ -1261,7 +1273,10 @@ const exports = identityScopedStore((onIdentityChange) => {
       const oldest = rows[0]?.id ?? id;
       const cursor = getReadCursor(slug, name);
       const holed =
-        cursor !== null && oldest > cursor + 1 && beforePage.length === PAGE_LIMIT && !farBehindByChannel()[key];
+        cursor !== null &&
+        oldest > cursor + 1 &&
+        beforePage.length === PAGE_LIMIT &&
+        !farBehindByChannel()[key];
       const probe = holed && cursor !== null ? await probeGap(t, slug, name, cursor) : null;
       if (identityMoved(t)) return false;
       if (holed && probe === null) return false;
@@ -1322,6 +1337,14 @@ const exports = identityScopedStore((onIdentityChange) => {
     const key = channelKey(slug, name);
     if (loadedChannels.has(key)) return;
     loadedChannels.add(key);
+    // issue 2333 — published so `jumpToMessage` can wait for it (see there).
+    let settleInitialLoad: () => void = () => {};
+    initialLoadInFlight.set(
+      key,
+      new Promise<void>((resolve) => {
+        settleInitialLoad = resolve;
+      }),
+    );
     // Seed an empty list so the pane renders immediately while the
     // REST page is in flight; WS events arriving in the meantime
     // append to this seed via `appendToScrollback`.
@@ -1448,6 +1471,9 @@ const exports = identityScopedStore((onIdentityChange) => {
       // skips one live-delivery catch-up while re-paying for a cold load.
       if (identityMoved(t)) return;
       loadedChannels.delete(key);
+    } finally {
+      initialLoadInFlight.delete(key);
+      settleInitialLoad();
     }
   };
 
