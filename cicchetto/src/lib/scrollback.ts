@@ -1215,6 +1215,77 @@ const exports = identityScopedStore((onIdentityChange) => {
     }
   };
 
+  // issue 2333 — tap a mention, land on the message. Same fetch shape and
+  // same REPLACE as `jumpToUnread` above, anchored on the TARGET instead of
+  // the read cursor: `after(id)` is `id > target`, `before(id + 1)` is
+  // `id <= target`, disjoint by construction. A message already in the pane
+  // needs no fetch — the caller only has to scroll to it.
+  //
+  // Returns whether the message is now in the pane. `false` leaves the pane
+  // exactly as it was: the window does not hold that id (a mention filed
+  // under a window it is not shown in), the fetch failed, or — below — the
+  // hole could not be measured.
+  //
+  // #693, the half a jump to an ARBITRARY row owes that `jumpToUnread` does
+  // not: that verb anchors at the cursor, so its region starts where the
+  // operator stopped reading. This one can land ABOVE the cursor with rows
+  // between the two that are not in the pane, and every passive cursor
+  // writer (`setCursorIfAdvances`) offers the newest RENDERED id — it would
+  // mark the hole read. So a hole puts the window in the existing
+  // far-behind state, which is exactly the claim that record makes ("the
+  // unread region is NOT in this pane") and exactly what freezes those
+  // writers. A hole is a FULL before-page whose oldest row is still above
+  // the cursor; a short page means the server had nothing older, so the
+  // region reaches the cursor. A hole that cannot be measured refuses the
+  // jump rather than landing unfrozen.
+  //
+  // The carried unread measurement (#947 / issue 2069) is DROPPED on a swap:
+  // it claims the pane is contiguous from its `at`, which the new region
+  // does not honour, and `loadNewer` would go on extending `through` over
+  // rows that are no longer there.
+  const jumpToMessage = async (slug: string, name: string, id: number): Promise<boolean> => {
+    const t = token();
+    if (!t) return false;
+    const key = channelKey(slug, name);
+    if ((scrollbackByChannel()[key] ?? []).some((m) => m.id === id)) return true;
+    if (jumpInFlight.has(key)) return false;
+    jumpInFlight.add(key);
+    try {
+      const [afterPage, beforePage] = await Promise.all([
+        listMessagesAfter(t, slug, name, id, PAGE_LIMIT),
+        listMessages(t, slug, name, id + 1),
+      ]);
+      if (identityMoved(t)) return false;
+      if (!beforePage.some((m) => m.id === id)) return false;
+      const rows = [...afterPage, ...beforePage].sort(byServerTimeThenId);
+      const oldest = rows[0]?.id ?? id;
+      const cursor = getReadCursor(slug, name);
+      const holed =
+        cursor !== null && oldest > cursor + 1 && beforePage.length === PAGE_LIMIT && !farBehindByChannel()[key];
+      const probe = holed && cursor !== null ? await probeGap(t, slug, name, cursor) : null;
+      if (identityMoved(t)) return false;
+      if (holed && probe === null) return false;
+      batch(() => {
+        setScrollbackByChannel((prev) => ({ ...prev, [key]: rows }));
+        loadNewerExhausted.delete(key);
+        loadMoreExhausted.delete(key);
+        clearMeasuredUnread(key);
+        if (probe !== null && cursor !== null) {
+          setFarBehindByChannel((prev) => ({
+            ...prev,
+            [key]: { missed: probe.messages, events: probe.events, resumeFrom: cursor },
+          }));
+        }
+      });
+      return true;
+    } catch (err) {
+      console.error("[scrollback] jumpToMessage failed", slug, name, err);
+      return false;
+    } finally {
+      if (!identityMoved(t)) jumpInFlight.delete(key);
+    }
+  };
+
   // #693 — the other exit: "I don't care about those, I'm caught up now."
   //
   // Needed because the far-behind state FREEZES the read cursor (see
@@ -1906,6 +1977,7 @@ const exports = identityScopedStore((onIdentityChange) => {
     farBehindByChannel,
     isLoadingOlder,
     jumpToUnread,
+    jumpToMessage,
     loadInitialScrollback,
     loadMore,
     loadNewer,
@@ -1926,6 +1998,7 @@ export const dismissFarBehind = exports.dismissFarBehind;
 export const farBehindByChannel = exports.farBehindByChannel;
 export const isLoadingOlder = exports.isLoadingOlder;
 export const jumpToUnread = exports.jumpToUnread;
+export const jumpToMessage = exports.jumpToMessage;
 export const loadInitialScrollback = exports.loadInitialScrollback;
 export const loadMore = exports.loadMore;
 export const loadNewer = exports.loadNewer;
