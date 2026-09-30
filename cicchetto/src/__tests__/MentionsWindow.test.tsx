@@ -66,6 +66,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={vi.fn()}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -79,7 +80,13 @@ describe("MentionsWindow", () => {
   it("heading uses singular message/channel wording when count is 1", () => {
     const bundle = makeBundle({ messages: [MSG0] });
     render(() => (
-      <MentionsWindow bundle={bundle} ownNick="vjt" onMentionClicked={vi.fn()} onClose={vi.fn()} />
+      <MentionsWindow
+        bundle={bundle}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
     ));
 
     const header = screen.getByTestId("mentions-header");
@@ -96,6 +103,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={vi.fn()}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
     expect(screen.getByTestId("mentions-header").textContent).toContain("lunch");
@@ -104,7 +112,13 @@ describe("MentionsWindow", () => {
   it("renders without away_reason when reason is null", () => {
     const bundle = makeBundle({ away_reason: null });
     render(() => (
-      <MentionsWindow bundle={bundle} ownNick="vjt" onMentionClicked={vi.fn()} onClose={vi.fn()} />
+      <MentionsWindow
+        bundle={bundle}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
     ));
     expect(screen.getByTestId("mentions-header").textContent).not.toContain("·");
   });
@@ -116,6 +130,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={vi.fn()}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -129,7 +144,13 @@ describe("MentionsWindow", () => {
   it("clusters multiple rows from the same channel under one label", () => {
     const bundle = makeBundle({ messages: [MSG0, MSG0B, MSG1] });
     render(() => (
-      <MentionsWindow bundle={bundle} ownNick="vjt" onMentionClicked={vi.fn()} onClose={vi.fn()} />
+      <MentionsWindow
+        bundle={bundle}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
     ));
 
     const groups = screen.getAllByTestId("mentions-group");
@@ -149,6 +170,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={vi.fn()}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -168,6 +190,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={onClicked}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -194,6 +217,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={onClicked}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -232,6 +256,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={onClicked}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -257,6 +282,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={onClicked}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -276,6 +302,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={vi.fn()}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -289,7 +316,13 @@ describe("MentionsWindow", () => {
     setHighlightPatternsForTest(["deploy"]);
     const bundle = makeBundle({ messages: [{ ...MSG0, body: "the deploy is done" }] });
     render(() => (
-      <MentionsWindow bundle={bundle} ownNick="vjt" onMentionClicked={vi.fn()} onClose={vi.fn()} />
+      <MentionsWindow
+        bundle={bundle}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
     ));
 
     const rows = screen.getAllByTestId("mentions-row");
@@ -303,7 +336,13 @@ describe("MentionsWindow", () => {
   it("does not highlight a row the operator authored", () => {
     const bundle = makeBundle({ messages: [{ ...MSG0, sender: "vjt", body: "vjt: prova" }] });
     render(() => (
-      <MentionsWindow bundle={bundle} ownNick="vjt" onMentionClicked={vi.fn()} onClose={vi.fn()} />
+      <MentionsWindow
+        bundle={bundle}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
     ));
 
     const rows = screen.getAllByTestId("mentions-row");
@@ -313,7 +352,13 @@ describe("MentionsWindow", () => {
   it("still highlights the SAME body from a peer (issue 1481 control)", () => {
     const bundle = makeBundle({ messages: [{ ...MSG0, sender: "alice", body: "vjt: prova" }] });
     render(() => (
-      <MentionsWindow bundle={bundle} ownNick="vjt" onMentionClicked={vi.fn()} onClose={vi.fn()} />
+      <MentionsWindow
+        bundle={bundle}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
     ));
 
     const rows = screen.getAllByTestId("mentions-row");
@@ -327,6 +372,7 @@ describe("MentionsWindow", () => {
         ownNick={null}
         onMentionClicked={vi.fn()}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -342,6 +388,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={vi.fn()}
         onClose={onClose}
+        railOpener={null}
       />
     ));
 
@@ -366,6 +413,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={onClicked}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -381,5 +429,33 @@ describe("MentionsWindow", () => {
     expect(onClicked).not.toHaveBeenCalled();
     // The link is free to navigate — nothing prevents its default.
     expect(ev.defaultPrevented).toBe(false);
+  });
+  // issue 2333 — the rail door slot renders between the heading and the ✕, and
+  // `null` renders nothing: the header's own children are unchanged.
+  it("renders the railOpener slot before the close ✕, and nothing for null", () => {
+    const { unmount } = render(() => (
+      <MentionsWindow
+        bundle={makeBundle()}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={<button type="button" data-testid="slot-door" />}
+      />
+    ));
+    const door = screen.getByTestId("slot-door");
+    expect(door.nextElementSibling?.getAttribute("data-testid")).toBe("mentions-close");
+    unmount();
+
+    render(() => (
+      <MentionsWindow
+        bundle={makeBundle()}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
+    ));
+    const main = screen.getByTestId("mentions-close").parentElement;
+    expect(main?.children.length).toBe(2);
   });
 });

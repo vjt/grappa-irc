@@ -1,4 +1,4 @@
-import { type Component, createMemo, For, Show } from "solid-js";
+import { type Component, createMemo, For, type JSX, Show } from "solid-js";
 import type { MentionsBundleMessage } from "./lib/api";
 import { highlightPatterns } from "./lib/highlightList";
 import { isMentionRow } from "./lib/mentionMatch";
@@ -62,6 +62,17 @@ type Props = {
   ownNick: string | null;
   onMentionClicked: (args: MentionClickedArgs) => void;
   onClose: () => void;
+  /**
+   * issue 2333 — the ☰ rail door, rendered in this header just before the ✕,
+   * or `null`. On a phone Shell suppresses the floating `.shell-chrome` row for
+   * this kind, as it does for admin: the float lands on the header's top-right
+   * corner at z-index 41, i.e. on the ✕, and the tap meant to leave the window
+   * opened the rail instead. The door moves INTO the header rather than going
+   * away — bucket L keeps "settings reachable from every window kind" here,
+   * unlike #1050's list window. Desktop passes `null`: its rail is permanent.
+   * Required, not defaulted, by the same argument `PaneTopBar`'s slots make.
+   */
+  railOpener: JSX.Element;
 };
 
 // Cluster the mention rows under their window, preserving first-seen
@@ -122,6 +133,7 @@ const MentionsWindow: Component<Props> = (props) => {
       <div class="mentions-header" data-testid="mentions-header">
         <div class="mentions-header-main">
           <span class="mentions-heading">while you were /away — {summary()}</span>
+          {props.railOpener}
           {/* #188 item 5 — close-x top-right, reusing the /list pane's
               `.directory-close` affordance. Shell wires `onClose` to
               `closeToPreviousWindow` so it restores the prior window. */}

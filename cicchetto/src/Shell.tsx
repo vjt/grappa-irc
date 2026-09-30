@@ -68,7 +68,7 @@ import MentionsWindow, { type MentionClickedArgs } from "./MentionsWindow";
 import ModeModal from "./ModeModal";
 import NamesModal from "./NamesModal";
 import NextActiveButton from "./NextActiveButton";
-import { PaneTopBarWindowsOpener } from "./PaneTopBar";
+import { PaneTopBarRailOpener, PaneTopBarWindowsOpener } from "./PaneTopBar";
 import PrivacyModal from "./PrivacyModal";
 import RailActions from "./RailActions";
 import RailContext from "./RailContext";
@@ -879,6 +879,7 @@ const Shell: Component = () => {
                     ownNick={ownNickForSlug(selectedChannel()?.networkSlug ?? "")}
                     onMentionClicked={handleMentionClicked}
                     onClose={() => closeToPreviousWindow(selectedChannel()?.networkSlug ?? "")}
+                    railOpener={null}
                   />
                 </Match>
                 <Match when={selKind() === "home"}>
@@ -1084,7 +1085,21 @@ const Shell: Component = () => {
               the z-index, and its zero-height box would stay over the header.
               Reads `selKind()` — the same memo the mobile `<Match>` below
               switches on — rather than re-deriving the kind here. */}
-            <Show when={selKind() !== "channel" && selKind() !== "list" && !isAdminPaneVisible()}>
+            {/* issue 2333 — `mentions` is the fourth exclusion, with ADMIN's
+              remedy rather than #1050's. Its ✕ is the last child of its header
+              too, so the float swallowed the close tap the same way; but the
+              window keeps its rail door — MentionsWindow hosts the same
+              `PaneTopBarRailOpener` AdminPane does, inline before the ✕. No
+              left `#` door there, on admin's argument: the ✕ exits to a window
+              that carries one. */}
+            <Show
+              when={
+                selKind() !== "channel" &&
+                selKind() !== "list" &&
+                selKind() !== "mentions" &&
+                !isAdminPaneVisible()
+              }
+            >
               <ShellChrome
                 leading={windowsRailOpener()}
                 onOpenRail={() =>
@@ -1172,6 +1187,14 @@ const Shell: Component = () => {
                   ownNick={ownNickForSlug(selectedChannel()?.networkSlug ?? "")}
                   onMentionClicked={handleMentionClicked}
                   onClose={() => closeToPreviousWindow(selectedChannel()?.networkSlug ?? "")}
+                  railOpener={
+                    <PaneTopBarRailOpener
+                      onOpenRail={() =>
+                        toggleMembersPanel({ membersOpen, setMembersOpen, setSettingsOpen })
+                      }
+                      railLabel="open actions"
+                    />
+                  }
                 />
               </Match>
               <Match when={selKind() === "home"}>
