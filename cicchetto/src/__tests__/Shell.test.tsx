@@ -1331,6 +1331,43 @@ describe("Shell — mobile layout (isMobile = true)", () => {
       expect(container.querySelector("[data-testid='shell-chrome-rail-opener']")).toBeNull();
     });
 
+    // issue 2333 — mentions is the fourth exclusion, with admin's remedy and
+    // not #1050's: the floated ☰ landed on the header's ✕ exactly as on /list,
+    // but this window keeps its rail door, re-homed INTO its header before the
+    // ✕. The door must still OPEN the rail, or the exclusion traded an overlap
+    // for a stranded window.
+    it("mobile mentions window: the .shell-chrome row is SUPPRESSED and the header hosts the rail door (issue 2333)", async () => {
+      mobileState.value = true;
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "", kind: "mentions" });
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector(".mentions-window")).not.toBeNull();
+      });
+      expect(container.querySelector(".shell-chrome")).toBeNull();
+      const door = container.querySelector<HTMLButtonElement>(
+        ".mentions-header-main .topic-bar-hamburger",
+      );
+      expect(door).not.toBeNull();
+      // Before the ✕, so the ✕ keeps the corner the float used to cover.
+      expect(door?.nextElementSibling?.getAttribute("data-testid")).toBe("mentions-close");
+      expect(container.querySelector(".shell-members.open")).toBeNull();
+      door?.click();
+      await waitFor(() => {
+        expect(container.querySelector(".shell-members.open")).not.toBeNull();
+      });
+    });
+
+    it("desktop mentions window: no rail door in the header — the rail is permanent (issue 2333)", async () => {
+      mobileState.value = false;
+      selectionState.setSelSig({ networkSlug: "freenode", channelName: "", kind: "mentions" });
+      const { container } = render(() => <Shell />);
+      await waitFor(() => {
+        expect(container.querySelector(".mentions-window")).not.toBeNull();
+      });
+      expect(container.querySelector(".mentions-header .topic-bar-hamburger")).toBeNull();
+      expect(container.querySelector("[data-testid='mentions-close']")).not.toBeNull();
+    });
+
     it("#71 INC-2 — desktop channel window: NO .shell-chrome row (removed); cog lives in the permanent rail; NO launcher footer", async () => {
       mobileState.value = false;
       selectionState.setSelSig({ networkSlug: "freenode", channelName: "#a", kind: "channel" });

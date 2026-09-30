@@ -217,8 +217,10 @@ export type _Assert_MentionsBundleMessage = Assert<
   Equal<
     MentionsBundleMessage,
     {
+      id?: number;
       server_time: number;
       channel: string;
+      dm_with?: string | null;
       sender: string;
       body: string | null;
       kind: MessageKind;

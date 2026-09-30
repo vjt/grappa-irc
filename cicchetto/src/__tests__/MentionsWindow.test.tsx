@@ -18,16 +18,20 @@ beforeEach(() => {
 });
 
 const MSG0 = {
+  id: 101,
   server_time: 1_746_442_200_000,
   channel: "#grappa",
+  dm_with: null,
   sender: "alice",
   body: "hey vjt, you around?",
   kind: "privmsg",
 } as const;
 
 const MSG1 = {
+  id: 102,
   server_time: 1_746_442_201_000,
   channel: "#irc",
+  dm_with: null,
   sender: "bob",
   body: "vjt are you back",
   kind: "privmsg",
@@ -36,8 +40,10 @@ const MSG1 = {
 // Same channel as MSG0 — used to prove per-channel grouping clusters
 // multiple rows under ONE channel label (#188 item 2).
 const MSG0B = {
+  id: 103,
   server_time: 1_746_442_202_000,
   channel: "#grappa",
+  dm_with: null,
   sender: "carol",
   body: "vjt ping",
   kind: "privmsg",
@@ -60,6 +66,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={vi.fn()}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -73,7 +80,13 @@ describe("MentionsWindow", () => {
   it("heading uses singular message/channel wording when count is 1", () => {
     const bundle = makeBundle({ messages: [MSG0] });
     render(() => (
-      <MentionsWindow bundle={bundle} ownNick="vjt" onMentionClicked={vi.fn()} onClose={vi.fn()} />
+      <MentionsWindow
+        bundle={bundle}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
     ));
 
     const header = screen.getByTestId("mentions-header");
@@ -90,6 +103,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={vi.fn()}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
     expect(screen.getByTestId("mentions-header").textContent).toContain("lunch");
@@ -98,7 +112,13 @@ describe("MentionsWindow", () => {
   it("renders without away_reason when reason is null", () => {
     const bundle = makeBundle({ away_reason: null });
     render(() => (
-      <MentionsWindow bundle={bundle} ownNick="vjt" onMentionClicked={vi.fn()} onClose={vi.fn()} />
+      <MentionsWindow
+        bundle={bundle}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
     ));
     expect(screen.getByTestId("mentions-header").textContent).not.toContain("·");
   });
@@ -110,6 +130,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={vi.fn()}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -123,7 +144,13 @@ describe("MentionsWindow", () => {
   it("clusters multiple rows from the same channel under one label", () => {
     const bundle = makeBundle({ messages: [MSG0, MSG0B, MSG1] });
     render(() => (
-      <MentionsWindow bundle={bundle} ownNick="vjt" onMentionClicked={vi.fn()} onClose={vi.fn()} />
+      <MentionsWindow
+        bundle={bundle}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
     ));
 
     const groups = screen.getAllByTestId("mentions-group");
@@ -143,6 +170,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={vi.fn()}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -153,7 +181,7 @@ describe("MentionsWindow", () => {
     expect(firstRow?.textContent).toContain("hey vjt, you around?");
   });
 
-  it("row click invokes onMentionClicked with the right {networkSlug, channel, serverTime}", () => {
+  it("row click hands Shell the window and the message to land on", () => {
     const onClicked = vi.fn<(args: MentionClickedArgs) => void>();
 
     render(() => (
@@ -162,6 +190,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={onClicked}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -173,8 +202,9 @@ describe("MentionsWindow", () => {
     expect(onClicked).toHaveBeenCalledTimes(1);
     expect(onClicked).toHaveBeenCalledWith({
       networkSlug: "freenode",
-      channel: "#grappa",
-      serverTime: 1_746_442_200_000,
+      window: "#grappa",
+      kind: "channel",
+      messageId: 101,
     });
   });
 
@@ -187,6 +217,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={onClicked}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -197,8 +228,70 @@ describe("MentionsWindow", () => {
 
     expect(onClicked).toHaveBeenCalledWith({
       networkSlug: "freenode",
-      channel: "#irc",
-      serverTime: 1_746_442_201_000,
+      window: "#irc",
+      kind: "channel",
+      messageId: 102,
+    });
+  });
+
+  // issue 2333 — an inbound DM is stored at `channel = <own nick>`. Filed
+  // under `channel` it would be labelled with our own nick and the tap would
+  // open the self window, where the row is not shown. `dm_with` names the
+  // peer's window.
+  it("files an inbound DM mention under the peer, and taps into the peer's query", () => {
+    const onClicked = vi.fn<(args: MentionClickedArgs) => void>();
+    const dm = {
+      id: 104,
+      server_time: 1_746_442_203_000,
+      channel: "vjt",
+      dm_with: "Alice",
+      sender: "Alice",
+      body: "vjt: psst",
+      kind: "privmsg",
+    } as const;
+
+    render(() => (
+      <MentionsWindow
+        bundle={makeBundle({ messages: [dm] })}
+        ownNick="vjt"
+        onMentionClicked={onClicked}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
+    ));
+
+    expect(screen.getByTestId("mentions-group-channel").textContent).toBe("Alice");
+    fireEvent.click(screen.getByTestId("mentions-row"));
+    expect(onClicked).toHaveBeenCalledWith({
+      networkSlug: "freenode",
+      window: "Alice",
+      kind: "query",
+      messageId: 104,
+    });
+  });
+
+  // A server predating protocol 35 sends neither key. The tap still switches
+  // to the window — what it did before issue 2333 — and asks for no scroll.
+  it("taps without a message to land on when the server predates the id", () => {
+    const onClicked = vi.fn<(args: MentionClickedArgs) => void>();
+    const { id: _id, dm_with: _dm, ...legacy } = MSG0;
+
+    render(() => (
+      <MentionsWindow
+        bundle={makeBundle({ messages: [legacy] })}
+        ownNick="vjt"
+        onMentionClicked={onClicked}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
+    ));
+
+    fireEvent.click(screen.getByTestId("mentions-row"));
+    expect(onClicked).toHaveBeenCalledWith({
+      networkSlug: "freenode",
+      window: "#grappa",
+      kind: "channel",
+      messageId: null,
     });
   });
 
@@ -209,6 +302,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={vi.fn()}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -222,7 +316,13 @@ describe("MentionsWindow", () => {
     setHighlightPatternsForTest(["deploy"]);
     const bundle = makeBundle({ messages: [{ ...MSG0, body: "the deploy is done" }] });
     render(() => (
-      <MentionsWindow bundle={bundle} ownNick="vjt" onMentionClicked={vi.fn()} onClose={vi.fn()} />
+      <MentionsWindow
+        bundle={bundle}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
     ));
 
     const rows = screen.getAllByTestId("mentions-row");
@@ -236,7 +336,13 @@ describe("MentionsWindow", () => {
   it("does not highlight a row the operator authored", () => {
     const bundle = makeBundle({ messages: [{ ...MSG0, sender: "vjt", body: "vjt: prova" }] });
     render(() => (
-      <MentionsWindow bundle={bundle} ownNick="vjt" onMentionClicked={vi.fn()} onClose={vi.fn()} />
+      <MentionsWindow
+        bundle={bundle}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
     ));
 
     const rows = screen.getAllByTestId("mentions-row");
@@ -246,7 +352,13 @@ describe("MentionsWindow", () => {
   it("still highlights the SAME body from a peer (issue 1481 control)", () => {
     const bundle = makeBundle({ messages: [{ ...MSG0, sender: "alice", body: "vjt: prova" }] });
     render(() => (
-      <MentionsWindow bundle={bundle} ownNick="vjt" onMentionClicked={vi.fn()} onClose={vi.fn()} />
+      <MentionsWindow
+        bundle={bundle}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
     ));
 
     const rows = screen.getAllByTestId("mentions-row");
@@ -260,6 +372,7 @@ describe("MentionsWindow", () => {
         ownNick={null}
         onMentionClicked={vi.fn()}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -275,6 +388,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={vi.fn()}
         onClose={onClose}
+        railOpener={null}
       />
     ));
 
@@ -299,6 +413,7 @@ describe("MentionsWindow", () => {
         ownNick="vjt"
         onMentionClicked={onClicked}
         onClose={vi.fn()}
+        railOpener={null}
       />
     ));
 
@@ -314,5 +429,33 @@ describe("MentionsWindow", () => {
     expect(onClicked).not.toHaveBeenCalled();
     // The link is free to navigate — nothing prevents its default.
     expect(ev.defaultPrevented).toBe(false);
+  });
+  // issue 2333 — the rail door slot renders between the heading and the ✕, and
+  // `null` renders nothing: the header's own children are unchanged.
+  it("renders the railOpener slot before the close ✕, and nothing for null", () => {
+    const { unmount } = render(() => (
+      <MentionsWindow
+        bundle={makeBundle()}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={<button type="button" data-testid="slot-door" />}
+      />
+    ));
+    const door = screen.getByTestId("slot-door");
+    expect(door.nextElementSibling?.getAttribute("data-testid")).toBe("mentions-close");
+    unmount();
+
+    render(() => (
+      <MentionsWindow
+        bundle={makeBundle()}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
+    ));
+    const main = screen.getByTestId("mentions-close").parentElement;
+    expect(main?.children.length).toBe(2);
   });
 });

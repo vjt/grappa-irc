@@ -48,13 +48,22 @@ defmodule Grappa.Session.Wire do
   ## Mentions bundle decision (arch review A8)
 
   The `mentions_bundle/5` per-message map is a deliberately-stripped
-  projection of `Scrollback.Message` — `%{server_time, channel,
-  sender, body, kind}`. The bundle is rendered as a cross-channel
-  summary view that doesn't need id/network/meta; keeping the
-  divergence small but EXPLICIT in one place. REV-K M19 (2026-05-22)
-  paid down the historical `sender_nick:` field name — bundle now
-  uses `sender:` matching `Scrollback.Wire.t/0` so consumers handling
-  both shapes use one field name.
+  projection of `Scrollback.Message` — `%{id, server_time, channel,
+  dm_with, sender, body, kind}`. The bundle is a cross-channel summary
+  view: it still carries no network (the payload names it once) and no
+  meta; keeping the divergence small but EXPLICIT in one place. REV-K
+  M19 (2026-05-22) paid down the historical `sender_nick:` field name —
+  bundle now uses `sender:` matching `Scrollback.Wire.t/0` so consumers
+  handling both shapes use one field name.
+
+  Issue 2333 (protocol 35) reversed the "doesn't need id" half of this
+  decision: tapping a mention scrolls to the message, so the row names
+  it (`id`), and it names the WINDOW it lives in. An inbound DM is
+  stored at `channel = <own nick>`, which on its own points at the
+  self window, where that row is not shown — so the peer rides
+  `dm_with` (RAW, like the column; `nil` off a DM) beside `channel`,
+  which keeps its meaning. Both are `optional` in the typespec because
+  a server predating 35 omits them; see `mentions_bundle_message/0`.
   """
 
   alias Grappa.IRC.LineSplit
@@ -555,12 +564,21 @@ defmodule Grappa.Session.Wire do
           state: :present | :away
         }
 
+  @typedoc """
+  One row of the away bundle. `id` and `dm_with` (issue 2333, protocol
+  35) are `optional` for the reason `Scrollback.Wire.t/0` gives for
+  `dm_conversation_id`: a server predating 35 omits them, and a client
+  validating against a REQUIRED key would discard that server's whole
+  bundle. This server always emits both.
+  """
   @type mentions_bundle_message :: %{
-          server_time: integer(),
-          channel: String.t(),
-          sender: String.t(),
-          body: String.t() | nil,
-          kind: Message.kind()
+          optional(:id) => integer(),
+          required(:server_time) => integer(),
+          required(:channel) => String.t(),
+          optional(:dm_with) => String.t() | nil,
+          required(:sender) => String.t(),
+          required(:body) => String.t() | nil,
+          required(:kind) => Message.kind()
         }
 
   @type mentions_bundle_payload :: %{
@@ -1618,8 +1636,10 @@ defmodule Grappa.Session.Wire do
   @spec project_bundle_message(Message.t()) :: mentions_bundle_message()
   defp project_bundle_message(%Message{kind: kind} = m) when kind != nil do
     %{
+      id: m.id,
       server_time: m.server_time,
       channel: m.channel,
+      dm_with: m.dm_with,
       sender: m.sender,
       body: m.body,
       # S14 consistency: this sibling Message-kind projection passes the

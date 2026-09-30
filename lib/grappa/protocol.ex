@@ -958,7 +958,30 @@ defmodule Grappa.Protocol do
   # @min_protocol_version stays at 1. An old bundle drops an undeclared key
   # (`walkObject`: "Undeclared keys are dropped, never rejected"), so every
   # client that talks to this server today still does.
-  @protocol_version 34
+  #
+  # ---------------------------------------------------------------------------
+  # 35 — issue 2333: a mention names its message, and its window
+  # ---------------------------------------------------------------------------
+  #
+  # Two keys on each `mentions_bundle` row (`Session.Wire.mentions_bundle_message`):
+  # `id`, the message id, so tapping a mention can scroll to it; and `dm_with`,
+  # the RAW peer of an inbound DM (`null` off a DM). An inbound DM is stored at
+  # `channel = <own nick>`, so `channel` alone points at the self window, where
+  # that row is not shown; `channel` keeps its meaning. Additive, and it bumps
+  # for the #1393d reason: a client that scrolls on `id` cannot be served by a
+  # server that never sends it.
+  #
+  # Both are `optional(...)` in the typespec for the reason 34 gives above: cic
+  # validates user-topic pushes against the generated schema, `walkObject`
+  # rejects a missing REQUIRED key, and the routine `--cic`-first deploy would
+  # otherwise make a new bundle throw away every away bundle of a pre-35
+  # server. A client without `id` falls back to switching windows only.
+  #
+  # Checked for a collision before claiming 35: the one open PR that edits this
+  # file (#2102) is far behind.
+  #
+  # @min_protocol_version stays at 1: an old bundle drops the undeclared keys.
+  @protocol_version 35
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -999,7 +1022,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 34
+  @spec version() :: 35
   def version, do: @protocol_version
 
   @doc """

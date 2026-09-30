@@ -20823,3 +20823,55 @@ coverage change of its own, not something to smuggle into a product leg.
 `wire.c` looks keys up by name and never checks an object's key set, so the
 new key is inert there. Keying shottino's windows on the id would be its own
 leg 3, not done here.
+<!-- entry #2333 -->
+
+---
+
+## 2026-09-30 — #2333: a mention tap lands on the message, in the right window
+
+Slice A of issue 2333: the "while you were /away" window. A tap on a mention
+switched to the channel and left the pane wherever it was, so the message the
+tap was about was often not on screen ("could not find the message"); and an
+inbound DM mention opened the SELF window, because an inbound DM is stored at
+`channel = <own nick>` and the bundle carried nothing else.
+
+**Wire (protocol 35).** Each `mentions_bundle` row gains `id` and `dm_with`
+(CLIENT_PROTOCOL §5g). `channel` keeps its meaning; the window is
+`dm_with ?? channel`. Both keys are `optional` in the typespec, on the
+issue 1365 leg 2 precedent: cic validates user-topic pushes against the
+generated schema, `walkObject` rejects a missing required key, and a
+cic-first deploy would otherwise drop every bundle of a pre-35 server.
+Without `id` the tap only focuses the window, as before.
+
+**The jump is a command, not a store call.** `requestJumpToMessage` is the
+sibling of `jumpToUnreadCommand` (#1765): the caller owns the gesture, the
+pane owns the #168 activation latch and the #608 scroll applier. A caller
+reaching `scrollback.jumpToMessage` directly swaps the rows and leaves the
+pane parked. In the pane the target REPLACES the unread divider as the
+activation anchor. `jumpToMessage` awaits a cold load in flight on the same
+key: the tap mounts a window the session may never have loaded, and the
+cold load MERGES — landing after the swap it splices the tail into the
+target region, a silent hole.
+
+**A region with a hole below the cursor reuses the far-behind record**
+(freezing the three passive writers, #693); the carried `measuredUnread`
+(#947 / issue 2069) is DROPPED on the swap, because its contiguity-from-`at`
+premise does not survive it. **Open for vjt:** leaving the window follows
+today's #1019 default — `dismissFarBehind`, i.e. mark read up to the newest
+loaded row. That function's own note calls itself "the ONE place the cursor
+jumps a region the operator never read — by their own explicit gesture",
+and the gesture here was "take me to this mention", not "I am done".
+
+**Mobile ✕ (admin's remedy, not #1050's).** The floating `.shell-chrome`
+☰ (#985, z-index 41) sat on the mentions header's ✕. Shell now suppresses
+the row for `mentions` too, and MentionsWindow hosts the same
+`PaneTopBarRailOpener` AdminPane does, before the ✕ — the window keeps its
+rail door (bucket L), which #1050 relaxed for /list only. No left `#` door,
+on admin's argument: the ✕ exits to a window that carries one.
+
+**Not done here, stated so nobody rediscovers them:** the "at any time"
+entry point to the mentions window (scope 1, waiting on vjt); shottino's
+identical DM misrouting (its own slice, noted in `wire.h`); and a defect
+shared with `jumpToUnread` — after a jump into an old region, a live row or
+the rejoin refresh is appended AFTER the region, leaving a silent hole
+(`appendPageToScrollback`).

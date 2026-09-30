@@ -800,8 +800,9 @@ defmodule Grappa.Session.WireTest do
   end
 
   describe "mentions_bundle/5" do
-    test "projects each Message.t() to {server_time, channel, sender, body, kind} per CP15-decision; kind atom→string" do
+    test "projects each Message.t() to {id, server_time, channel, dm_with, sender, body, kind}; kind atom passes through" do
       m1 = %Message{
+        id: 41,
         server_time: 1_700_000_001,
         channel: "#grappa",
         sender: "alice",
@@ -810,6 +811,7 @@ defmodule Grappa.Session.WireTest do
       }
 
       m2 = %Message{
+        id: 42,
         server_time: 1_700_000_002,
         channel: "#grappa",
         sender: "bob",
@@ -834,21 +836,47 @@ defmodule Grappa.Session.WireTest do
                away_reason: "afk",
                messages: [
                  %{
+                   id: 41,
                    server_time: 1_700_000_001,
                    channel: "#grappa",
+                   dm_with: nil,
                    sender: "alice",
                    body: "vjt: hey",
                    kind: :privmsg
                  },
                  %{
+                   id: 42,
                    server_time: 1_700_000_002,
                    channel: "#grappa",
+                   dm_with: nil,
                    sender: "bob",
                    body: "vjt: pong",
                    kind: :action
                  }
                ]
              }
+    end
+
+    # issue 2333 — an inbound DM is stored at `channel = <own nick>`, so
+    # `channel` alone names the SELF window, where the row is not shown. The
+    # peer rides `dm_with`, RAW, beside it; `channel` keeps its meaning.
+    test "an inbound DM mention carries dm_with, the peer's window, beside channel" do
+      dm = %Message{
+        id: 77,
+        server_time: 1_700_000_003,
+        channel: "vjt",
+        dm_with: "Alice",
+        sender: "Alice",
+        body: "vjt: psst",
+        kind: :privmsg
+      }
+
+      %{messages: [row]} =
+        Wire.mentions_bundle("azzurra", "2026-05-08T08:00:00.000Z", "2026-05-08T08:05:00.000Z", nil, [dm])
+
+      assert row.id == 77
+      assert row.channel == "vjt"
+      assert row.dm_with == "Alice"
     end
 
     test "tolerates nil away_reason" do
