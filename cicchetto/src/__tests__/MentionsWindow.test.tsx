@@ -18,16 +18,20 @@ beforeEach(() => {
 });
 
 const MSG0 = {
+  id: 101,
   server_time: 1_746_442_200_000,
   channel: "#grappa",
+  dm_with: null,
   sender: "alice",
   body: "hey vjt, you around?",
   kind: "privmsg",
 } as const;
 
 const MSG1 = {
+  id: 102,
   server_time: 1_746_442_201_000,
   channel: "#irc",
+  dm_with: null,
   sender: "bob",
   body: "vjt are you back",
   kind: "privmsg",
@@ -36,8 +40,10 @@ const MSG1 = {
 // Same channel as MSG0 — used to prove per-channel grouping clusters
 // multiple rows under ONE channel label (#188 item 2).
 const MSG0B = {
+  id: 103,
   server_time: 1_746_442_202_000,
   channel: "#grappa",
+  dm_with: null,
   sender: "carol",
   body: "vjt ping",
   kind: "privmsg",
@@ -153,7 +159,7 @@ describe("MentionsWindow", () => {
     expect(firstRow?.textContent).toContain("hey vjt, you around?");
   });
 
-  it("row click invokes onMentionClicked with the right {networkSlug, channel, serverTime}", () => {
+  it("row click hands Shell the window and the message to land on", () => {
     const onClicked = vi.fn<(args: MentionClickedArgs) => void>();
 
     render(() => (
@@ -173,8 +179,9 @@ describe("MentionsWindow", () => {
     expect(onClicked).toHaveBeenCalledTimes(1);
     expect(onClicked).toHaveBeenCalledWith({
       networkSlug: "freenode",
-      channel: "#grappa",
-      serverTime: 1_746_442_200_000,
+      window: "#grappa",
+      kind: "channel",
+      messageId: 101,
     });
   });
 
@@ -197,8 +204,68 @@ describe("MentionsWindow", () => {
 
     expect(onClicked).toHaveBeenCalledWith({
       networkSlug: "freenode",
-      channel: "#irc",
-      serverTime: 1_746_442_201_000,
+      window: "#irc",
+      kind: "channel",
+      messageId: 102,
+    });
+  });
+
+  // issue 2333 — an inbound DM is stored at `channel = <own nick>`. Filed
+  // under `channel` it would be labelled with our own nick and the tap would
+  // open the self window, where the row is not shown. `dm_with` names the
+  // peer's window.
+  it("files an inbound DM mention under the peer, and taps into the peer's query", () => {
+    const onClicked = vi.fn<(args: MentionClickedArgs) => void>();
+    const dm = {
+      id: 104,
+      server_time: 1_746_442_203_000,
+      channel: "vjt",
+      dm_with: "Alice",
+      sender: "Alice",
+      body: "vjt: psst",
+      kind: "privmsg",
+    } as const;
+
+    render(() => (
+      <MentionsWindow
+        bundle={makeBundle({ messages: [dm] })}
+        ownNick="vjt"
+        onMentionClicked={onClicked}
+        onClose={vi.fn()}
+      />
+    ));
+
+    expect(screen.getByTestId("mentions-group-channel").textContent).toBe("Alice");
+    fireEvent.click(screen.getByTestId("mentions-row"));
+    expect(onClicked).toHaveBeenCalledWith({
+      networkSlug: "freenode",
+      window: "Alice",
+      kind: "query",
+      messageId: 104,
+    });
+  });
+
+  // A server predating protocol 35 sends neither key. The tap still switches
+  // to the window — what it did before issue 2333 — and asks for no scroll.
+  it("taps without a message to land on when the server predates the id", () => {
+    const onClicked = vi.fn<(args: MentionClickedArgs) => void>();
+    const { id: _id, dm_with: _dm, ...legacy } = MSG0;
+
+    render(() => (
+      <MentionsWindow
+        bundle={makeBundle({ messages: [legacy] })}
+        ownNick="vjt"
+        onMentionClicked={onClicked}
+        onClose={vi.fn()}
+      />
+    ));
+
+    fireEvent.click(screen.getByTestId("mentions-row"));
+    expect(onClicked).toHaveBeenCalledWith({
+      networkSlug: "freenode",
+      window: "#grappa",
+      kind: "channel",
+      messageId: null,
     });
   });
 

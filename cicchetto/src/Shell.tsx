@@ -1,4 +1,5 @@
 import {
+  batch,
   type Component,
   createEffect,
   createMemo,
@@ -34,6 +35,7 @@ import { getDraft, tabComplete } from "./lib/compose";
 import { appendToCompose } from "./lib/composeAppend";
 import { placeCaretInView } from "./lib/composeCaret";
 import { casemappingForNetwork } from "./lib/isupport";
+import { requestJumpToMessage } from "./lib/jumpToMessageCommand";
 import { install, registerHandlers, uninstall } from "./lib/keybindings";
 import { loadLastFocused } from "./lib/lastFocusedChannel";
 import { mentionsBundleBySlug } from "./lib/mentionsWindow";
@@ -42,7 +44,11 @@ import { isNetworkParked } from "./lib/networkParked";
 import { channelsBySlug, isAdmin, networkBySlug, networks, user } from "./lib/networks";
 import { nickEquals } from "./lib/nickEquals";
 import { createOverlayLock, overlayCount } from "./lib/overlayScrollLock";
-import { queryWindowsByNetwork } from "./lib/queryWindows";
+import {
+  canonicalQueryNick,
+  openQueryWindowState,
+  queryWindowsByNetwork,
+} from "./lib/queryWindows";
 import {
   closeToPreviousWindow,
   selectedChannel,
@@ -58,7 +64,7 @@ import { HOME_WINDOW_NAME, HOME_WINDOW_SLUG, kindHasScrollback } from "./lib/win
 import { isActiveChannelJoined } from "./lib/windowState";
 import MediaViewerModal from "./MediaViewerModal";
 import MembersPane from "./MembersPane";
-import MentionsWindow from "./MentionsWindow";
+import MentionsWindow, { type MentionClickedArgs } from "./MentionsWindow";
 import ModeModal from "./ModeModal";
 import NamesModal from "./NamesModal";
 import NextActiveButton from "./NextActiveButton";
@@ -420,27 +426,23 @@ const Shell: Component = () => {
     return ownNickForNetwork(net, me);
   };
 
-  // C8.2 — click-to-context handler for MentionsWindow rows.
-  // CP29 R-4: previously this called `setReadCursor(slug, ch, serverTime-1)`
-  // to position the unread-marker just before the clicked message. The
-  // server-side cursor model (id-based, forward-only, validated against
-  // (subject, network, channel)) cannot express "rewind to just before
-  // an arbitrary timestamp" — the MentionsBundle wire shape doesn't
-  // even carry message ids, only server_time. Drop the cursor-rewind
-  // here; focus-switch alone still navigates the operator to the
-  // mention's window. Restoring "scroll to mention with marker just
-  // above" requires a wider fix (extend MentionsBundle wire shape with
-  // message id + thread the id through to a one-shot scroll-to verb in
-  // ScrollbackPane). Deferred — separate cluster.
-  const handleMentionClicked = (args: {
-    networkSlug: string;
-    channel: string;
-    serverTime: number;
-  }) => {
-    setSelectedChannel({
-      networkSlug: args.networkSlug,
-      channelName: args.channel,
-      kind: "channel",
+  // C8.2 / issue 2333 — a tap on a MentionsWindow row: switch to the window
+  // the mention lives in and land the pane on the message. The switch and the
+  // request go out in ONE batch; the pane serves the request once it IS that
+  // window (`jumpToMessageCommand`), so the two need no ordering. A DM opens
+  // (or re-focuses) the peer's query exactly as the nick menu's "Query" does,
+  // folded to the existing window's casing. No id (a pre-35 server) means no
+  // scroll: the tap switches windows, as it did before.
+  const handleMentionClicked = (args: MentionClickedArgs) => {
+    const net = networkBySlug(args.networkSlug);
+    const name =
+      args.kind === "query" && net ? canonicalQueryNick(net.id, args.window) : args.window;
+    if (args.kind === "query" && net) {
+      openQueryWindowState(net.id, name, new Date().toISOString());
+    }
+    batch(() => {
+      setSelectedChannel({ networkSlug: args.networkSlug, channelName: name, kind: args.kind });
+      if (args.messageId !== null) requestJumpToMessage(args.networkSlug, name, args.messageId);
     });
   };
 
@@ -863,7 +865,7 @@ const Shell: Component = () => {
                 </Match>
                 <Match when={selKind() === "mentions"}>
                   {/* C8.1 — mentions window. Rendered instead of ScrollbackPane+ComposeBox.
-                    onMentionClicked will navigate to channel + scroll-to-timestamp (C8.2). */}
+                    onMentionClicked lands on the message in its window (issue 2333). */}
                   <MentionsWindow
                     bundle={
                       mentionsBundleBySlug()[selectedChannel()?.networkSlug ?? ""] ?? {
