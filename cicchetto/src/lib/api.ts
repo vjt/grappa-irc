@@ -881,8 +881,10 @@ export type NotifyEntry = NotifyWireEntry;
 
 // Per-message item in the `mentions_bundle` payload (Session.Wire
 // `mentions_bundle_message/0`). Deliberately stripped vs
-// `ScrollbackMessage`: no id/network/meta — the bundle is a
-// cross-channel summary view that doesn't need persistence keys.
+// `ScrollbackMessage`: no network/meta — the bundle is a cross-channel
+// summary view. Issue 2333 (v35) added `id` (the message a tap scrolls
+// to) and `dm_with` (the peer of an inbound DM, whose `channel` is our
+// own nick); both optional, absent from a pre-35 server.
 // S14 — `kind` is the `Message.kind()` closed set (same as
 // `ScrollbackMessage.kind`); the server typespec now pins the literal
 // union so codegen emits it and `_Assert_MentionsBundleMessage` gates

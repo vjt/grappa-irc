@@ -1175,12 +1175,15 @@ export const S_SessionWireMembersSeededPayload = {
 // Grappa.Session.Wire.mentions_bundle_message/0
 export const S_SessionWireMentionsBundleMessage = {
   o: {
+    id: "i",
     server_time: "i",
     channel: "s",
+    dm_with: { u: ["s", "z"] },
     sender: "s",
     body: { u: ["s", "z"] },
     kind: S_ScrollbackMessageKind,
   },
+  q: ["id", "dm_with"],
 } as const;
 
 // Grappa.Session.Wire.mentions_bundle_payload/0

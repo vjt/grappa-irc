@@ -1266,8 +1266,10 @@ export type SessionWireAwayConfirmedPayload = {
 };
 
 export type SessionWireMentionsBundleMessage = {
+  id?: number;
   server_time: number;
   channel: string;
+  dm_with?: string | null;
   sender: string;
   body: string | null;
   kind: ScrollbackMessageKind;

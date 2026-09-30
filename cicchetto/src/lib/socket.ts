@@ -270,7 +270,13 @@ let _socket: Socket | null = null;
 // v34 and the pair must come from one commit, as at v22. Both keys are
 // generated OPTIONAL, so this bundle still validates a pre-34 server's
 // pages and `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 34;
+//
+// 35 (issue 2333) — `id` and `dm_with` on every `mentions_bundle` row: the
+// message to scroll to on a tap, and the peer window of an inbound DM. Both
+// keys are generated OPTIONAL, so this bundle still validates a pre-35
+// server's away bundle (the tap then only switches windows) and
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 35;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

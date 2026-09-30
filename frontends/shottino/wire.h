@@ -53,20 +53,23 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v33 -> v34 (issue 1365 leg 2): every scrollback row and
- * every `query_windows_list` entry gains `dm_conversation_id`, the id of
- * the DM conversation, BESIDE the nick. No kind was added, no field was
- * removed or repurposed, and both keys are optional in the server's
- * typespec (a pre-34 server omits them).
+ * Last read, v34 -> v35 (issue 2333): every `mentions_bundle` row gains
+ * `id` (the message id) and `dm_with` (the raw peer of an inbound DM,
+ * null off a DM). No kind was added, no field was removed or
+ * repurposed, and both keys are optional in the server's typespec (a
+ * pre-35 server omits them).
  *
- * NUMBER ONLY: this client keys its DM windows on the nick and reads
- * neither key, and wire.c ignores keys it does not ask for, so no parser
- * has anything to learn. Keying the windows on the id is the cic leg of
- * issue 1365 and would be this client's too, deliberately not done here.
+ * NUMBER ONLY: `check_mention` / `wire_mention_at` read named keys and
+ * ignore the rest, so the new ones cost this parser nothing. They are
+ * not ADOPTED either, and one of them bites here too: shottino.c files
+ * each away mention under `m.channel`, which for an inbound DM is our
+ * own nick, so a DM mention lands in the self window — the misrouting
+ * `dm_with` exists to cure. Reading it is this client's own change,
+ * deliberately not done in the protocol bump.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 34
+#define WIRE_PROTOCOL_VERSION 35
 
 #include <stdbool.h>
 #include <stddef.h>

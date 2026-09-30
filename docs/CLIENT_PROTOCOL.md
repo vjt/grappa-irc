@@ -847,6 +847,29 @@ the same window.
 per-channel topic, which already names the window), the archive listing
 and `archive_purged` (keyed on the target), and the per-message
 projection inside `mentions_bundle`. Key those on what they carry today.
+(The `mentions_bundle` rows gained `id` and `dm_with` in v35 — §5g — but
+still no `dm_conversation_id`.)
+
+### 5g. A mention names its message and its window (issue 2333, v35)
+
+From v35 every row of `mentions_bundle.messages` carries two more keys:
+
+| key | what it is |
+|---|---|
+| `id` | the scrollback id of the message — the same id `GET …/messages` rows carry, so it works as a `?before=` / `?after=` / `?around=` cursor |
+| `dm_with` | on an inbound DM, the peer's nick, RAW (as they spelled it); `null` on every other row |
+
+**Why `dm_with`, and why `channel` did not change.** An inbound DM is
+stored at `channel` = **your own nick** — `channel` there names the
+recipient, not the window. So `channel` alone would send you to your
+self window (`/msg <yournick>`), where that row is not shown. The window
+of a mention is `dm_with` when it is non-null, else `channel`; fold it as
+you fold any DM window name (§4). `channel` keeps its meaning on every
+row: nothing was repurposed.
+
+**Absent** means the server predates v35: both keys are declared
+`optional` in the server's typespec for that reason. Without `id` you
+cannot scroll to the message; switch to the window and stop there.
 
 ---
 
@@ -1185,7 +1208,7 @@ forever.
 | `links_bundle` | requester | `/LINKS` answer |
 | `lusers_bundle` | user | `/LUSERS` answer — **fans out to every connection**, because the server also emits it unsolicited at connect (§4) |
 | `members_seeded` | channel | pre-sorted member list on 366 RPL_ENDOFNAMES |
-| `mentions_bundle` | user | cross-channel mention summary, fired on the auto-away → present transition |
+| `mentions_bundle` | user | cross-channel mention summary, fired on the auto-away → present transition. From v35 each row carries `id` and `dm_with` (§5g) |
 | `message` | channel | a scrollback row; its own `message.kind` (`privmsg`, `notice`, `join`, `part`, `quit`, `nick_change`, `mode`, …) is a **different axis** from this one. From v34 it carries `dm_conversation_id` (§5f) |
 | `names_reply` | requester | `/NAMES` answer |
 | `network_attached` | user | the subject re-attached a network binding (§4e) |
