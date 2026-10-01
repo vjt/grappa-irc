@@ -570,8 +570,6 @@ defmodule Grappa.Push.Triggers do
     Identifier.canonical_target(sender) in Map.get(prefs, :private_messages_only, [])
   end
 
-  defp sender_in_whitelist?(_, _), do: false
-
   defp channel_match?(%Message{} = message, prefs, own_nick, patterns) do
     Map.get(prefs, :channel_messages_all, false) or
       channel_in_whitelist?(message, prefs) or
@@ -586,8 +584,6 @@ defmodule Grappa.Push.Triggers do
     # re-open; folding every identifier closes that hole.
     Identifier.canonical_target(channel) in Map.get(prefs, :channel_messages_only, [])
   end
-
-  defp channel_in_whitelist?(_, _), do: false
 
   defp mention_match?(%Message{body: body, sender: sender}, prefs, own_nick, patterns) do
     # #1674 — the sender half of the mention rule, the same conjunct the

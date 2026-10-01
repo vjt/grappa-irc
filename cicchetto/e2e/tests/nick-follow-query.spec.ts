@@ -1,26 +1,18 @@
-// #373 — a query (DM) window must FOLLOW a peer's NICK change. Third of the
-// query-window-identity family after #371 (services allowlist) and #372
-// (incoming casing fold). DISTINCT: not casing — the peer genuinely RENAMES
-// (old ≢ new) and nothing migrated the window old→new, so the window kept
-// the stale nick and outbound sends routed to the vanished nick → server
-// 401 ERR_NOSUCHNICK ("window looks stuck; messages bounce").
+// Issue 1365 — a peer's NICK change moves NO query-window state. This spec
+// used to pin #373, the opposite: the window followed the rename. The ruling
+// on issue 1365 (comment 5934112501, relayed from vjt on IRC #grappa): a nick
+// change, a peer's or our own, causes no database update; only the UI
+// changes. Accepted price: a renamed peer's next message opens a NEW query
+// window, and the old window keeps its history under the old nick.
 //
-// Fixed server-authoritative + cic-cache-mirror:
-//   * server: EventRouter observes the peer NICK → renames the QueryWindows
-//     row + migrates the DM scrollback (dm_with/channel) old→new →
-//     broadcasts query_windows_list (sidebar relabel + routing follow),
-//   * cic: on the per-channel nick_change, migrate the LIVE scrollback key
-//     + this device's selection so the focused window keeps routing.
+// Inverted rather than deleted: the end-to-end path (a real peer renaming
+// while sharing a channel, the only case IRC delivers a NICK) is still the
+// one ExUnit/vitest cannot exercise, and it is where a server that renamed
+// while cic did not — or the reverse — would show up as a phantom or a
+// vanished window.
 //
-// This e2e pins the LIVE, end-to-end behaviour the ExUnit/vitest units
-// can't: the sidebar row RELABELS, prior history stays under the window,
-// and a subsequent send REACHES THE RENAMED PEER (no 401). The peer shares
-// a channel with us — the only case IRC delivers a NICK (protocol limit,
-// documented as an out-of-scope boundary).
-//
-// Per `feedback_ux_e2e_mandatory` (a UX-behaviour change ships a Playwright
-// e2e) and `feedback_e2e_user_class_parity_matrix` (the surface is
-// subject-agnostic, so one user-class spec suffices). No `@webkit` tag →
+// Per `feedback_ux_e2e_mandatory` and `feedback_e2e_user_class_parity_matrix`
+// (subject-agnostic, one user-class spec suffices). No `@webkit` tag →
 // desktop/chromium project only, so the `.shell-sidebar` selector applies.
 
 import {
@@ -42,11 +34,11 @@ const RUN_ID = crypto.randomUUID().slice(0, 8);
 const OLD_NICK = `Guest${RUN_ID}`;
 const NEW_NICK = `NickTmp${RUN_ID}`;
 const CHANNEL = AUTOJOIN_CHANNELS[0];
-const OWN_BODY = `#373 own ${RUN_ID}`;
-const REPLY_BODY = `#373 reply ${RUN_ID}`;
-const FOLLOWUP_BODY = `#373 followup ${RUN_ID}`;
+const OWN_BODY = `1365 own ${RUN_ID}`;
+const REPLY_BODY = `1365 reply ${RUN_ID}`;
+const AFTER_BODY = `1365 after ${RUN_ID}`;
 
-test("query window follows a peer NICK change — relabels, keeps history, routes with no 401", async ({
+test("a peer NICK change leaves the query window and its history at the old nick; the new nick opens a new window", async ({
   page,
 }) => {
   const vjt = specUser();
@@ -56,21 +48,12 @@ test("query window follows a peer NICK change — relabels, keeps history, route
   const peer = await IrcPeer.connect({ nick: OLD_NICK });
   try {
     // Share a channel so grappa observes the peer's NICK (IRC only relays a
-    // NICK to users sharing a channel with the renamer).
+    // NICK to users sharing a channel with the renamer). Gate on the peer's
+    // JOIN rendering in our channel: grappa broadcasts that row from the same
+    // apply that adds OLD_NICK to state.members, so the rename below is
+    // observed as a tracked member's (#530/#653) — the case that USED to
+    // migrate, and so the one worth proving inert.
     await peer.join(CHANNEL);
-
-    // #530/#653 — the STEP-3 relabel under test fires ONLY when grappa emits
-    // {:peer_nick_renamed}, and event_router.ex gates that on the renamer
-    // being a tracked member of a shared channel (peer_rename_effects:
-    // `channels != []`, i.e. OLD_NICK present in grappa's state.members).
-    // `peer.join` above awaits only the peer's OWN join echo from bahamut —
-    // NOT grappa's observation of it. Under full-gate load grappa can process
-    // the peer's #spec-wN JOIN late; a rename that lands first leaves
-    // `channels == []` → no peer_nick_renamed → the sidebar never relabels
-    // and STEP 3 fails. Gate on the peer's JOIN line rendering in our #spec-wN
-    // scrollback: grappa broadcasts that row from the SAME apply that adds
-    // OLD_NICK to state.members, so its presence is the observable proof the
-    // shared-membership precondition holds before we drive the rename.
     await expect(
       scrollbackLine(page, "join", OLD_NICK).filter({ hasText: CHANNEL }).first(),
     ).toBeVisible({ timeout: 10_000 });
@@ -81,11 +64,12 @@ test("query window follows a peer NICK change — relabels, keeps history, route
     const oldRow = sidebar.locator(".sidebar-channel-name", {
       hasText: new RegExp(`^${OLD_NICK}$`),
     });
+    const newRow = sidebar.locator(".sidebar-channel-name", {
+      hasText: new RegExp(`^${NEW_NICK}$`),
+    });
     await expect(oldRow).toHaveCount(1, { timeout: 5_000 });
 
-    // STEP 2 — build a two-way conversation so the history-migration is
-    // observable: own send (gate on the query-window subscribe) + peer reply
-    // (gate on the own-nick DM-listener subscribe).
+    // STEP 2 — a two-way conversation under the OLD nick.
     await waitForQueryWindowReady(page, NETWORK_SLUG, OLD_NICK);
     await composeSend(page, OWN_BODY);
     await expect(
@@ -98,46 +82,41 @@ test("query window follows a peer NICK change — relabels, keeps history, route
       page.locator('[data-testid="scrollback-line"]', { hasText: REPLY_BODY }),
     ).toBeVisible({ timeout: 5_000 });
 
-    // STEP 3 — the peer RENAMES.
+    // STEP 3 — the peer RENAMES, then speaks under the new nick. The PRIVMSG
+    // rides the same upstream connection as the NICK, so grappa applies the
+    // rename first; the new window it opens (#422 auto-open) is the barrier
+    // that proves the rename has been processed before the asserts below.
     await peer.changeNick(NEW_NICK);
-
-    // Sidebar relabels authoritatively (server query_windows_list): the NEW
-    // row appears and the OLD row is gone — one window, not a phantom split.
-    const newRow = sidebar.locator(".sidebar-channel-name", {
-      hasText: new RegExp(`^${NEW_NICK}$`),
-    });
+    peer.privmsg(await specLiveNick(), AFTER_BODY);
     await expect(newRow).toHaveCount(1, { timeout: 5_000 });
-    await expect(oldRow).toHaveCount(0);
 
-    // History followed: the pre-rename conversation is still in the (still-
-    // focused) window — cic migrated the live scrollback key + selection.
+    // The OLD window is still there — not relabelled, not merged away.
+    await expect(oldRow).toHaveCount(1);
+
+    // ...still focused, with its whole history and nothing from after the
+    // rename: the post-rename line belongs to the NEW window.
     await expect(
       page.locator('[data-testid="scrollback-line"]', { hasText: OWN_BODY }),
     ).toBeVisible();
     await expect(
       page.locator('[data-testid="scrollback-line"]', { hasText: REPLY_BODY }),
     ).toBeVisible();
-
-    // STEP 4 — the core fix: a send in the focused window REACHES THE RENAMED
-    // PEER. Pre-fix it routed to the vanished old nick → 401 and never
-    // arrived. The peer's receive-listener is attached before the send —
-    // `waitForPrivmsg` takes the send as its trigger and sequences the two.
-    //
-    // Gate on the NEW query topic being subscribed first: after the rename
-    // the query-windows loop re-joins `(slug, NEW_NICK)`, and the server
-    // fastlanes the own echo ONLY to a subscribed socket (no PubSub replay,
-    // #254). Without this gate the own-echo render (line below) races the
-    // re-subscribe — the send still ROUTES (asserted by the wait), but
-    // its scrollback echo can miss the live push until the next refresh.
-    await waitForQueryWindowReady(page, NETWORK_SLUG, NEW_NICK);
-    // The send is the wait's trigger (#806): the peer is listening before
-    // it fires, and the delivery budget starts once it has fired — the
-    // round trip inside `composeSend` is not charged to delivery.
-    await peer.waitForPrivmsg(specNick(), FOLLOWUP_BODY, () => composeSend(page, FOLLOWUP_BODY)); // fails with cause SILENCE if grappa still routed to the stale nick
     await expect(
-      page.locator('[data-testid="scrollback-line"]', { hasText: FOLLOWUP_BODY }),
+      page.locator('[data-testid="scrollback-line"]', { hasText: AFTER_BODY }),
+    ).toHaveCount(0);
+
+    // STEP 4 — the NEW window holds only the post-rename line.
+    await selectChannel(page, NETWORK_SLUG, NEW_NICK);
+    await expect(
+      page.locator('[data-testid="scrollback-line"]', { hasText: AFTER_BODY }),
     ).toBeVisible({ timeout: 5_000 });
+    await expect(
+      page.locator('[data-testid="scrollback-line"]', { hasText: REPLY_BODY }),
+    ).toHaveCount(0);
+    await expect(
+      page.locator('[data-testid="scrollback-line"]', { hasText: OWN_BODY }),
+    ).toHaveCount(0);
   } finally {
-    await peer.disconnect("#373 done");
+    await peer.disconnect("1365 done");
   }
 });

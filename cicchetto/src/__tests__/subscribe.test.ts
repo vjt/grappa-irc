@@ -3826,6 +3826,7 @@ describe("subscribe — UX-6-L foreground beep wiring", () => {
         server_time: 0,
         kind: "privmsg",
         sender: "bob",
+        dm_with: "bob",
         body: "hey",
         meta: {},
       },
@@ -4078,7 +4079,7 @@ describe("subscribe — #868 the beep obeys the notification prefs", () => {
     const eventCalls = mockChannel.on.mock.calls.filter((c) => c[0] === "event");
     const dmHandler = eventCalls[dmJoinIdx]?.[1] as (p: unknown) => void;
     // Body carries the own nick on purpose: the DM branch owns this row, so
-    // `channel_mentions` must NOT rescue it. That is the server's `dm?/2`
+    // `channel_mentions` must NOT rescue it. That is the server's `Message.dm?/1`
     // routing, and the client now agrees.
     dmHandler({
       kind: "message",
@@ -4089,6 +4090,7 @@ describe("subscribe — #868 the beep obeys the notification prefs", () => {
         server_time: 0,
         kind: "privmsg",
         sender: "bob",
+        dm_with: "bob",
         body: "alice ping",
         meta: {},
       },
@@ -4130,6 +4132,7 @@ describe("subscribe — #868 the beep obeys the notification prefs", () => {
         server_time: 0,
         kind: "privmsg",
         sender: "bob",
+        dm_with: "bob",
         body: "no mention here",
         meta: {},
       },

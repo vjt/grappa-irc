@@ -210,6 +210,7 @@ export type _Assert_ScrollbackMessage = Assert<
       body: string | null;
       meta: ScrollbackMetaT;
       dm_conversation_id?: number | null;
+      dm_with?: string | null;
     }
   >
 >;

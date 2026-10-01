@@ -916,8 +916,9 @@ export const S_ScrollbackWireT = {
     body: { u: ["s", "z"] },
     meta: S_ScrollbackMetaT,
     dm_conversation_id: { u: ["i", "z"] },
+    dm_with: { u: ["s", "z"] },
   },
-  q: ["dm_conversation_id"],
+  q: ["dm_conversation_id", "dm_with"],
 } as const;
 
 // Grappa.Scrollback.Wire.event/0

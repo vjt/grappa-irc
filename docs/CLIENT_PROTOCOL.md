@@ -871,6 +871,31 @@ row: nothing was repurposed.
 `optional` in the server's typespec for that reason. Without `id` you
 cannot scroll to the message; switch to the window and stop there.
 
+### 5h. A scrollback row says whether it is a DM (issue 1365, v36)
+
+From v36 every scrollback row (the `message` push, the REST pages, the
+`GET /boot` head pages) carries **`dm_with`**: the DM peer's nick, RAW,
+on every row of a DM conversation — inbound AND outbound (and the self
+window, where it is your own nick) — and `null` on every other row. It is
+the same key, with the same meaning and the same optionality, as the
+`mentions_bundle` row's `dm_with` (§5g); on a mention it is only ever
+inbound because your own rows are never mentions.
+
+**Why it matters: a nick change rewrites nothing.** Since issue 1365 a
+nick change — a peer's or your own — causes no server-side update. An
+inbound DM keeps `channel` = the nick **you held when it arrived**, so
+after your first rename "`channel` equals my nick" stops recognising
+your DM history. "Is this row a DM?" is `dm_with != null`. Your OWN rows
+carry `dm_with` too (an outbound DM names its peer), so decide "is this
+row mine?" first, by comparing `sender` with your nick.
+
+A peer's rename does not move their query window either: their next
+message under the new nick opens a NEW window, and the old one keeps its
+history under the old nick.
+
+**Absent** means the server predates v36; fall back to comparing
+`channel` with your nick, which is correct for a row you just received.
+
 ---
 
 ## 6. Rate limiting & flood protection (#630)
@@ -1209,7 +1234,7 @@ forever.
 | `lusers_bundle` | user | `/LUSERS` answer — **fans out to every connection**, because the server also emits it unsolicited at connect (§4) |
 | `members_seeded` | channel | pre-sorted member list on 366 RPL_ENDOFNAMES |
 | `mentions_bundle` | user | cross-channel mention summary, fired on the auto-away → present transition. From v35 each row carries `id` and `dm_with` (§5g) |
-| `message` | channel | a scrollback row; its own `message.kind` (`privmsg`, `notice`, `join`, `part`, `quit`, `nick_change`, `mode`, …) is a **different axis** from this one. From v34 it carries `dm_conversation_id` (§5f) |
+| `message` | channel | a scrollback row; its own `message.kind` (`privmsg`, `notice`, `join`, `part`, `quit`, `nick_change`, `mode`, …) is a **different axis** from this one. From v34 it carries `dm_conversation_id` (§5f), from v36 `dm_with` (§5h) |
 | `names_reply` | requester | `/NAMES` answer |
 | `network_attached` | user | the subject re-attached a network binding (§4e) |
 | `network_detached` | user | the subject hid a network binding (§4e) |
@@ -1219,7 +1244,7 @@ forever.
 | `presence_changed` | user | our presence / away state changed |
 | `presence_error` | user | upstream watch-list rejection (`ERR_MONLISTFULL`, `ERR_TOOMANYWATCH`) |
 | `presence_snapshot` | user | cold-join presence snapshot, pushed to your socket alone |
-| `query_windows_list` | user | the full DM window list, each entry with its `dm_conversation_id` from v34 (§5f); also the "rename fully applied" barrier after a peer NICK |
+| `query_windows_list` | user | the full DM window list, each entry with its `dm_conversation_id` from v34 (§5f); also the "rename fully applied" barrier after OUR OWN nick change moves the self window (a peer NICK moves nothing since issue 1365, §5h) |
 | `quit_part_reason_changed` | user | the subject's remembered quit / part text changed (§4d) |
 | `read_cursor_set` | channel | the read cursor moved — `last_read_message_id` + badge count |
 | `recover_progress` | user | ghost-recovery progress |

@@ -87,6 +87,30 @@ describe("narrowChannelEvent (bucket G H4+U3)", () => {
       expect(narrowChannelEvent({ kind: "message", message: bad })).toBeNull();
     });
 
+    // issue 1365 (protocol 36) — `dm_with` is what `pushTriggers.shouldNotify`
+    // classifies a DM by. A narrower that rebuilds the row and leaves it out
+    // turns every live DM into a channel row for the beep, silently.
+    it("carries dm_with through (issue 1365)", () => {
+      const dm = { ...validMessage, channel: "vjt", sender: "alice", dm_with: "alice" };
+      const out = narrowChannelEvent({ kind: "message", message: dm });
+      expect(out?.kind === "message" && out.message.dm_with).toBe("alice");
+    });
+
+    it("keeps a null dm_with null and an absent one absent (pre-36 server)", () => {
+      const nulled = narrowChannelEvent({
+        kind: "message",
+        message: { ...validMessage, dm_with: null },
+      });
+      expect(nulled?.kind === "message" && nulled.message.dm_with).toBeNull();
+      const absent = narrowChannelEvent({ kind: "message", message: validMessage });
+      expect(absent?.kind === "message" && "dm_with" in absent.message).toBe(false);
+    });
+
+    it("rejects a wrong-typed dm_with", () => {
+      const bad = { ...validMessage, dm_with: 7 };
+      expect(narrowChannelEvent({ kind: "message", message: bad })).toBeNull();
+    });
+
     // B6.11 HIGH-7 (no-silent-drops 2026-05-14): :server_event was
     // missing from VALID_MESSAGE_KINDS — first integration smoke
     // surfaced it (B2 INVITE CTA test failed with the row silently

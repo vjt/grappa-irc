@@ -68,6 +68,13 @@ defmodule Grappa.Scrollback.Wire do
 
   It is `optional` because a server predating protocol 34 omits it; absent
   and `null` are different statements, and a client must reject neither.
+
+  `dm_with` (issue 1365, protocol 36) is the column verbatim: RAW, `nil` off
+  a DM — the same field, name and optionality the away bundle's row carries
+  (`Grappa.Session.Wire.mentions_bundle_message`, issue 2333). It is what
+  "is this row a DM?" reads (`Message.dm?/1`, cic `pushTriggers.ts`), and it
+  is the one DM fact a nick change never rewrites: an inbound DM's `channel`
+  is the nick WE held at receipt, which goes stale on our first rename.
   """
   @type t :: %{
           required(:id) => integer(),
@@ -78,7 +85,8 @@ defmodule Grappa.Scrollback.Wire do
           required(:sender) => String.t(),
           required(:body) => String.t() | nil,
           required(:meta) => Meta.t(),
-          optional(:dm_conversation_id) => integer() | nil
+          optional(:dm_conversation_id) => integer() | nil,
+          optional(:dm_with) => String.t() | nil
         }
 
   @type event :: %{kind: :message, message: t()}
@@ -162,7 +170,8 @@ defmodule Grappa.Scrollback.Wire do
       sender: m.sender,
       body: m.body,
       meta: m.meta,
-      dm_conversation_id: m.dm_conversation_id
+      dm_conversation_id: m.dm_conversation_id,
+      dm_with: m.dm_with
     }
   end
 

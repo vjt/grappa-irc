@@ -939,6 +939,7 @@ export type ScrollbackWireT = {
   body: string | null;
   meta: ScrollbackMetaT;
   dm_conversation_id?: number | null;
+  dm_with?: string | null;
 };
 
 export type ScrollbackWireEvent = {

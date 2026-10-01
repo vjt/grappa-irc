@@ -64,7 +64,7 @@ defmodule Grappa.Push.Payload do
 
   `build_presence/3` is the sibling constructor for a `/notify` presence
   flip. It returns the same `t()` and needs no service-worker change, but
-  it is a SEPARATE function rather than a clause of `build/3`: that one is
+  it is a SEPARATE function rather than a clause of `build/2`: that one is
   hard-wired to a `%Scrollback.Message{}`, and a presence transition has no
   row, no sender and no body. It is also PURE in all three arguments — no
   `subject`, no badge count, no DB (see the badge note below).
@@ -133,7 +133,7 @@ defmodule Grappa.Push.Payload do
   def build(%Message{} = message, network_slug) when is_binary(network_slug) do
     dm? = Message.dm?(message)
 
-    sender = message.sender || ""
+    sender = message.sender
 
     {title, dedup_key, deep_link_target} =
       if dm? do
@@ -171,7 +171,7 @@ defmodule Grappa.Push.Payload do
   ## Tag
 
   `"<network_slug>:presence:<folded_nick>"`. The `presence:` infix is
-  load-bearing, not decoration: `build/3` writes
+  load-bearing, not decoration: `build/2` writes
   `"<slug>:<channel_or_dm_peer>"`, so a BARE-nick presence tag would equal
   the DM tag for that same nick and the OS would coalesce alice's DM banner
   with alice's presence banner, each overwriting the other. `:` is excluded
@@ -201,8 +201,8 @@ defmodule Grappa.Push.Payload do
   Stamps the PWA icon-badge count onto a built payload (door #1,
   2026-06-21).
 
-  Kept OUT of `build/3` because the badge needs a DB-backed count
-  (`Grappa.Push.BadgeCount`), while `build/3` is a pure transcription of
+  Kept OUT of `build/2` because the badge needs a DB-backed count
+  (`Grappa.Push.BadgeCount`), while `build/2` is a pure transcription of
   the message. `Grappa.Push.Triggers` computes the count on the dispatch
   path and merges it here so the service worker can
   `setAppBadge(payload.badge)` while the app is closed. Payloads built

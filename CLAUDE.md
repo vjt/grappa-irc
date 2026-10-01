@@ -128,9 +128,8 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   `GrappaChannel` topic join) from `Grappa.Session.casemapping/2` (a
   GenServer call, `:ascii` when no live pid). A folded WRITE forces a
   folded READ compare — including plain-`==` sites no `canonical_*` grep
-  surfaces (`channel == own_nick` in `Push.Triggers.dm?`/`Payload`,
-  self-window `dm_with == ^channel`) and the raw
-  `Repo.update_all(set: channel:)` in `rename_dm_peer`. **Known niche gaps
+  surfaces (self-window `dm_with == ^channel`) and the raw
+  `Repo.update_all(set: channel:)` in `rename_self_window`. **Known niche gaps
   (rfc1459-only, out of scope, DESIGN_NOTES 2026-07-30):** a national-char
   DM peer on rfc1459 (`dm_with` RAW + `nick_fold` ASCII, like the
   members-map raw key); the pre-connect autojoin plan folded ASCII before
@@ -155,61 +154,50 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   (server-consistent identity, not a fold-MATCH site). cic mirrors with
   `nickEquals` — including the INCOMING DM re-key (`subscribe.ts` →
   `canonicalQueryNick`) and the archive-visibility filter (`archive.ts` →
-  `normalizeNick`), the client twins of the #372 server fold. **A peer NICK change is an identity MIGRATION, not a fold
-  (GH #373).** When `old ≢ new` (a genuine rename, not a casing) EVERY
-  store of the old nick moves old→new, folding only to MATCH the old:
-  the `query_windows` row (`QueryWindows.rename/4` — UPDATE, or MERGE on
-  a fold-collision with an existing `new` window), the DM scrollback
-  (`Scrollback.rename_dm_peer/4` — `dm_with` + outbound/orphan `channel`),
-  the DM read cursor (`ReadCursor.rename_dm_peer/4` — else the migrated
-  history reads fully unread), the per-conversation MUTE
-  (`UserSettings.rename_muted_target/4` — nick-keyed since #1038 keyed it
-  `(network, peer)`; #1340), the `dm_conversations` row (issue 1365 leg 1,
-  `DmConversations.follow_rename/4` via `NickMigration` — one UPDATE, or a
-  MERGE / SPLIT whose children move in bounded batches after the migration
-  commits), and cic's own caches
-  (`scrollback.renameScrollbackKey` + `readCursor.renameReadCursorChannel`
-  + `selection.followQueryNick`, driven by the per-channel `nick_change`,
-  mirroring `members.ts`). Server-driven: `EventRouter` emits
-  `{:peer_nick_renamed, old, new}`, `Session.Server.apply_effects/2`
-  renames the row (`QueryWindows.rename/4`, no broadcast), migrates the
-  DM history + read cursor on `:renamed` only, migrates the mute
-  UNCONDITIONALLY (a mute outlives the window it silenced, so gating it on
-  the window row would strand it — same posture as the `:unknown` presence
-  reset in that arm), and THEN broadcasts
-  `query_windows_list` (`QueryWindows.broadcast_windows_list/2`) — the
-  broadcast is a truthful "rename fully applied" barrier, so a consumer
-  reacting to the event is guaranteed the history has already moved
-  old→new (broadcasting mid-migration raced a follow-on
-  `Scrollback.fetch`; #373 rename-order fix). A NEW nick-keyed store MUST
-  be added to this migration set or a rename silently strands its
-  old-nick rows — the set and its one retried transaction live in
-  `Grappa.NickMigration` (#1374), not in `Session.Server`. Boundary limit: IRC delivers a NICK only to
-  channel-sharing peers, so a query with someone in no shared channel
-  cannot follow. **Our OWN nick keys exactly one window — the SELF
-  window (`/msg <ownnick>`, GH #948) — and it has its own set** on
-  `{:own_nick_renamed, old, new}`: `Scrollback.rename_self_window/4`
-  (rows) → `ReadCursor.rename_dm_peer/4` → `QueryWindows.rename/4` →
-  `UserSettings.rename_muted_target/4` → broadcast, GATED on a non-zero
-  row count (the inverse of the peer arm, which gates on the window) —
-  and the mute is INSIDE that gate here, unlike the peer arm, because the
-  row count is the only evidence the window is ours (#1340). A window at our old nick is EITHER
-  our self window OR a leftover query with a peer who bore that nick
-  before us, and the fold-unique index makes those ONE row — only the
-  scrollback's `sender` separates them (folded to MATCH; the fold is
-  never STORED). **On a SELF row `sender` MIGRATES** (raw new nick),
-  unlike a peer's frozen `sender`: all three columns name the same
-  person, an UPDATE that does not preserve the shape its predicate
-  matches is one-shot (`a→b→a` via GhostRecovery would strand the
-  window for good), and `Push.Triggers.own_row?/2` reads `sender` as a
-  LIVE identity test. **General rule: a DISPLAY column migrates when a
-  consumer reads it as the LIVE identity** — why #514 re-keys the
-  own-nick TAG in `channel` (#498), and why a peer's `sender` does not
-  move. #514's `rename_own_nick/4` is the sibling that moves the
-  inbound-DM own-nick TAG (not a window key), disjoint by the `dm_with`
-  conjunct. cic does NOT mirror the self-window rename: the
-  `own_nick_changed` event carries neither the old nick nor whether the
-  migration ran, so a client mirror would originate state.
+  `normalizeNick`), the client twins of the #372 server fold. **A nick change writes NOTHING to the DB — a peer's or our own (issue
+  1365, reversing #373/#514; ruling relayed from vjt on IRC #grappa,
+  comment 5934112501).** Only the UI changes. The accepted price: a
+  renamed peer's next message opens a NEW query window (the old one keeps
+  its history under the old nick), and a mute is evaded by changing nick.
+  So on `{:peer_nick_renamed, old}` `Session.Server` only demotes the
+  vacated nick's `/notify` presence (#378, in memory) — the
+  `query_windows` row, the DM scrollback, the read cursor and the mute all
+  stay at `old`, and cic moves none of its caches either (`subscribe.ts`;
+  the members map still follows through `routeMessage`). Boundary limit
+  that used to matter here and no longer does: IRC delivers a NICK only to
+  channel-sharing peers. **The inbound-DM own-nick TAG stays too:** an
+  inbound DM is persisted at `channel = <own nick at receipt>`, and since
+  issue 1365 that value is history, never re-keyed (#514's
+  `rename_own_nick/4` is gone). Nothing may read it as the LIVE nick: "is
+  this row a DM?" is `Grappa.Scrollback.Message.dm?/1` = `dm_with` is set
+  (`Push.Triggers` notify + badge, `Push.Payload`), mirrored by cic's
+  `pushTriggers.ts` off the row's `dm_with` (on the scrollback wire since
+  protocol 36). Own rows carry `dm_with` too (outbound DMs), so "is this
+  row mine?" (`Triggers.own_row?/2`, `sender` vs the live nick) is asked
+  FIRST. **Our OWN nick: the zero-write goal is RULED and NOT implemented,
+  for want of the mechanism.** It keys exactly one window — the SELF
+  window (`/msg <ownnick>`, GH #948) — and until something decides which
+  key replaces a nick-keyed self window, `{:own_nick_renamed, old, new}`
+  still moves it through `Grappa.NickMigration.own_renamed/5` (one retried
+  transaction, #1374): `Scrollback.rename_self_window/4` (rows) →
+  `ReadCursor.rename_dm_peer/4` → `QueryWindows.rename/4` →
+  `UserSettings.rename_muted_target!/4` → `DmConversations.follow_rename/4`
+  → broadcast `query_windows_list`, GATED on a non-zero row count. A
+  window at our old nick is EITHER our self window OR a leftover query
+  with a peer who bore that nick before us, and the fold-unique index
+  makes those ONE row — only the scrollback's `sender` separates them
+  (folded to MATCH; the fold is never STORED). **On a SELF row `sender`
+  MIGRATES** (raw new nick): all three columns name the same person, an
+  UPDATE that does not preserve the shape its predicate matches is
+  one-shot (`a→b→a` via GhostRecovery would strand the window for good),
+  and `Push.Triggers.own_row?/2` reads `sender` as a LIVE identity test.
+  **General rule: a DISPLAY column migrates only while a consumer reads it
+  as the LIVE identity** — which is why the self row's `sender` moves and,
+  since issue 1365 moved the DM test onto `dm_with`, why the own-nick TAG
+  no longer does. A NEW nick-keyed store is the wrong move: key it on
+  something a rename does not touch. cic does NOT mirror the self-window
+  rename: the `own_nick_changed` event carries neither the old nick nor
+  whether the migration ran, so a client mirror would originate state.
 - **Read state is server-owned, per (subject, network, channel).**
   Cursor = `last_read_message_id` (FK to `messages.id`). Removing
   server-side cursor is a breaking change. The write cadence (settle

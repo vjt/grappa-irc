@@ -276,7 +276,13 @@ let _socket: Socket | null = null;
 // keys are generated OPTIONAL, so this bundle still validates a pre-35
 // server's away bundle (the tap then only switches windows) and
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 35;
+//
+// 36 (issue 1365) — `dm_with` on every scrollback row, the DM discriminator
+// a nick change never rewrites (`pushTriggers.shouldNotify` reads it).
+// Generated OPTIONAL, so this bundle still validates a pre-36 server's rows;
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9 (issue 1365's Q2: the floor does
+// not move).
+export const CLIENT_PROTOCOL_VERSION = 36;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

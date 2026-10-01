@@ -63,6 +63,27 @@
     "expected": true
   },
   {
+    "name": "DM: a row received under our OLD nick is still a DM after a rename (issue 1365)",
+    "message": {
+      "kind": "privmsg",
+      "channel": "oldvjt",
+      "sender": "alice",
+      "dm_with": "alice",
+      "body": "ping"
+    },
+    "network_slug": "azzurra",
+    "own_nick": "vjt",
+    "prefs": {
+      "channel_messages_all": false,
+      "channel_messages_only": [],
+      "channel_mentions": false,
+      "private_messages_all": true,
+      "private_messages_only": []
+    },
+    "patterns": [],
+    "expected": true
+  },
+  {
     "name": "DM: sender in whitelist notifies when _all is off",
     "message": {
       "kind": "privmsg",

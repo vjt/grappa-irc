@@ -53,23 +53,24 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v34 -> v35 (issue 2333): every `mentions_bundle` row gains
- * `id` (the message id) and `dm_with` (the raw peer of an inbound DM,
- * null off a DM). No kind was added, no field was removed or
- * repurposed, and both keys are optional in the server's typespec (a
- * pre-35 server omits them).
+ * Last read, v35 -> v36 (issue 1365): every scrollback row gains
+ * `dm_with` (the raw DM peer, null off a DM), the same key the
+ * `mentions_bundle` row got in v35. No kind was added, no field was
+ * removed or repurposed, and the key is optional in the server's
+ * typespec (a pre-36 server omits it).
  *
- * NUMBER ONLY: `check_mention` / `wire_mention_at` read named keys and
- * ignore the rest, so the new ones cost this parser nothing. They are
- * not ADOPTED either, and one of them bites here too: shottino.c files
- * each away mention under `m.channel`, which for an inbound DM is our
- * own nick, so a DM mention lands in the self window — the misrouting
- * `dm_with` exists to cure. Reading it is this client's own change,
- * deliberately not done in the protocol bump.
+ * NUMBER ONLY: the scrollback parser reads named keys and ignores the
+ * rest, so the new one costs nothing. It is not ADOPTED either. Why it
+ * exists: since issue 1365 a nick change rewrites nothing server-side,
+ * so an inbound DM keeps `channel` = the nick we held at receipt, and
+ * "channel equals my nick" stops recognising DMs after our first
+ * rename. The away-mention misrouting v35 named is still open here too.
+ * Reading `dm_with` is this client's own change, deliberately not done
+ * in the protocol bump.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 35
+#define WIRE_PROTOCOL_VERSION 36
 
 #include <stdbool.h>
 #include <stddef.h>
