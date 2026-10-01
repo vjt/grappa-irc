@@ -676,16 +676,17 @@ defmodule Grappa.ReadCursor do
   end
 
   @doc """
-  #373 — migrates the DM read cursor for `old_nick` to `new_nick` in
-  `(subject, network_id)`, so a query window that followed a peer's NICK
-  keeps its read state. Without this the migrated history reads as fully
+  Migrates the DM read cursor for `old_nick` to `new_nick` in
+  `(subject, network_id)`, so a window that followed a NICK keeps its read
+  state. Born for #373's peer rename; since issue 1365 a peer rename moves
+  nothing and the one caller is the own-nick SELF-window migration (#948). Without this the migrated history reads as fully
   UNREAD: the `new` window has no cursor row (the old row is stranded at
   `old`), so `WindowCounts` derives the count from `cursor || 0`.
 
   Case-insensitive on both nicks (ASCII fold, #121/#525). The cursor
   `channel` is stored CANONICAL (folded via `Identifier.canonical_target/1`
-  at the write boundary, #532 D) and matched fold-wise here, mirroring
-  `Scrollback.rename_dm_peer/4`. `fold(old) == fold(new)` (a case-only
+  at the write boundary, #532 D) and matched fold-wise here.
+  `fold(old) == fold(new)` (a case-only
   change) is a noop — the fold already resolves. A nick-collision (a
   cursor already folds to `new`, i.e. a merge into an existing DM) keeps
   the `new` cursor and drops the `old` one (mirrors `QueryWindows.rename/4`
@@ -695,9 +696,8 @@ defmodule Grappa.ReadCursor do
   cursor between the exists-check and the update — the unique index would
   otherwise reject the rename and crash the caller.
 
-  Returns `:ok`. Sole caller: `Grappa.Session.Server.apply_effects/2` on
-  `{:peer_nick_renamed, old, new}`, alongside `Scrollback.rename_dm_peer/4`
-  and after `QueryWindows.rename/4` reports `:renamed`.
+  Returns `:ok`. Sole caller: `Grappa.NickMigration.own_renamed/5`, after
+  `Scrollback.rename_self_window/4` reports a non-zero count.
   """
   @spec rename_dm_peer(subject(), integer(), String.t(), String.t()) :: :ok
   def rename_dm_peer(subject, network_id, old_nick, new_nick)

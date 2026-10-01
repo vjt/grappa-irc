@@ -40,41 +40,54 @@ defmodule Grappa.Push.PayloadTest do
 
   defp slug_gen, do: StreamData.string([?a..?z, ?0..?9, ?-], min_length: 1, max_length: 10)
 
-  describe "build/3 — channel message" do
+  describe "build/2 — channel message" do
     test "title is '<sender> in <channel>'" do
-      payload = Payload.build(msg(channel: "#sniffo", sender: "alice", body: "hi"), "libera", "vjt")
+      payload = Payload.build(msg(channel: "#sniffo", sender: "alice", body: "hi"), "libera")
       assert payload.title == "alice in #sniffo"
       assert payload.body == "hi"
     end
 
     test "tag = '<network_slug>:<channel>' for OS dedup" do
-      payload = Payload.build(msg(channel: "#sniffo"), "libera", "vjt")
+      payload = Payload.build(msg(channel: "#sniffo"), "libera")
       assert payload.tag == "libera:#sniffo"
     end
 
     test "url percent-encodes channel #" do
-      payload = Payload.build(msg(channel: "#sniffo"), "libera", "vjt")
+      payload = Payload.build(msg(channel: "#sniffo"), "libera")
       assert payload.url == "/?network=libera&channel=%23sniffo"
     end
 
     test "url percent-encodes UTF-8 channel names" do
-      payload = Payload.build(msg(channel: "#café"), "libera", "vjt")
+      payload = Payload.build(msg(channel: "#café"), "libera")
       assert payload.url == "/?network=libera&channel=%23caf%C3%A9"
     end
 
     test "url percent-encodes ampersand-prefixed channel" do
-      payload = Payload.build(msg(channel: "&local"), "libera", "vjt")
+      payload = Payload.build(msg(channel: "&local"), "libera")
       assert payload.url == "/?network=libera&channel=%26local"
     end
   end
 
-  describe "build/3 — DM (channel == own_nick)" do
+  describe "build/2 — DM (the row threads a DM: dm_with is set)" do
+    test "a DM received under our OLD nick still builds as a DM (issue 1365)" do
+      # Same rule as `Triggers.should_notify?/5`: `dm_with`, never the stale
+      # own-nick TAG in `channel` that a rename no longer rewrites.
+      payload =
+        Payload.build(
+          msg(channel: "oldvjt", sender: "alice", body: "ping", dm_with: "alice"),
+          "libera"
+        )
+
+      assert payload.title == "alice"
+      assert payload.tag == "libera:alice"
+      assert payload.url == "/?network=libera&channel=alice"
+    end
+
     test "title is just the sender nick" do
       payload =
         Payload.build(
           msg(channel: "vjt", sender: "alice", body: "ping", dm_with: "alice"),
-          "libera",
-          "vjt"
+          "libera"
         )
 
       assert payload.title == "alice"
@@ -83,27 +96,27 @@ defmodule Grappa.Push.PayloadTest do
 
     test "tag = '<network_slug>:<sender>' (groups same-peer DMs)" do
       payload =
-        Payload.build(msg(channel: "vjt", sender: "alice", dm_with: "alice"), "libera", "vjt")
+        Payload.build(msg(channel: "vjt", sender: "alice", dm_with: "alice"), "libera")
 
       assert payload.tag == "libera:alice"
     end
 
     test "url deep-links to the peer nick (not own_nick)" do
       payload =
-        Payload.build(msg(channel: "vjt", sender: "alice", dm_with: "alice"), "libera", "vjt")
+        Payload.build(msg(channel: "vjt", sender: "alice", dm_with: "alice"), "libera")
 
       assert payload.url == "/?network=libera&channel=alice"
     end
   end
 
-  describe "build/3 — degenerate inputs" do
+  describe "build/2 — degenerate inputs" do
     test "nil body becomes empty string (no crash)" do
-      payload = Payload.build(msg(channel: "#sniffo", body: nil), "libera", "vjt")
+      payload = Payload.build(msg(channel: "#sniffo", body: nil), "libera")
       assert payload.body == ""
     end
 
     test "shape is always the four required atom keys" do
-      payload = Payload.build(msg(channel: "#sniffo"), "libera", "vjt")
+      payload = Payload.build(msg(channel: "#sniffo"), "libera")
       assert Enum.sort(Map.keys(payload)) == [:body, :tag, :title, :url]
     end
   end
@@ -112,7 +125,7 @@ defmodule Grappa.Push.PayloadTest do
   # build/3 — mIRC formatting projection (issue 1977)
   # ---------------------------------------------------------------------------
 
-  describe "build/3 — mIRC formatting projection (issue 1977)" do
+  describe "build/2 — mIRC formatting projection (issue 1977)" do
     # `\x03` is non-printing, so the OS notification renderer DROPS the byte
     # and leaves its decimal operands sitting in the text as ordinary digits —
     # the lock-screen capture that filed 1977 read `04QUACK` where the wire
@@ -125,7 +138,7 @@ defmodule Grappa.Push.PayloadTest do
     test "a colour-padded body reaches the payload as the text a human read" do
       body = @color <> "15QUACK" <> @color <> "04,08 quack" <> @color
 
-      payload = Payload.build(msg(channel: "#allnitecafe", body: body), "azzurra", "vjt")
+      payload = Payload.build(msg(channel: "#allnitecafe", body: body), "azzurra")
 
       assert payload.body == "QUACK quack"
 
@@ -140,8 +153,7 @@ defmodule Grappa.Push.PayloadTest do
       payload =
         Payload.build(
           msg(channel: "vjt", sender: "alice", dm_with: "alice", body: @color <> "15ping"),
-          "libera",
-          "vjt"
+          "libera"
         )
 
       assert payload.title == "alice"
@@ -161,8 +173,7 @@ defmodule Grappa.Push.PayloadTest do
       payload =
         Payload.build(
           msg(channel: "#" <> @color <> "04allnitecafe", sender: "peluche"),
-          "azzurra",
-          "vjt"
+          "azzurra"
         )
 
       assert payload.title == "peluche in #allnitecafe"
@@ -176,7 +187,7 @@ defmodule Grappa.Push.PayloadTest do
     test "the tag and the deep link keep the RAW channel key" do
       channel = "#" <> @color <> "04allnitecafe"
 
-      payload = Payload.build(msg(channel: channel), "azzurra", "vjt")
+      payload = Payload.build(msg(channel: channel), "azzurra")
 
       assert payload.tag == "azzurra:" <> channel
       assert payload.url == "/?network=azzurra&channel=%23%0304allnitecafe"
@@ -185,7 +196,7 @@ defmodule Grappa.Push.PayloadTest do
     test "the projection IS MircFormat.plain_text/1, not a private copy" do
       body = @color <> "04,08QUACK" <> "\x02bold\x0F"
 
-      payload = Payload.build(msg(channel: "#allnitecafe", body: body), "azzurra", "vjt")
+      payload = Payload.build(msg(channel: "#allnitecafe", body: body), "azzurra")
 
       assert payload.body == MircFormat.plain_text(body)
       # Non-vacuity: the input MUST be one the projection actually changes,
@@ -200,7 +211,7 @@ defmodule Grappa.Push.PayloadTest do
     test "CTCP framing survives the projection" do
       body = "\x01ACTION " <> @color <> "04waves\x01"
 
-      payload = Payload.build(msg(channel: "#allnitecafe", body: body), "azzurra", "vjt")
+      payload = Payload.build(msg(channel: "#allnitecafe", body: body), "azzurra")
 
       assert payload.body == "\x01ACTION waves\x01"
     end
@@ -208,7 +219,7 @@ defmodule Grappa.Push.PayloadTest do
 
   describe "put_badge/2 — door #1 icon-badge stamp" do
     test "adds the :badge key, preserving the base payload" do
-      base = Payload.build(msg(channel: "#sniffo", sender: "alice", body: "hi"), "libera", "vjt")
+      base = Payload.build(msg(channel: "#sniffo", sender: "alice", body: "hi"), "libera")
       stamped = Payload.put_badge(base, 7)
 
       assert stamped.badge == 7
@@ -221,7 +232,7 @@ defmodule Grappa.Push.PayloadTest do
     end
 
     test "a zero badge is still stamped explicitly (cleared state)" do
-      base = Payload.build(msg(channel: "#sniffo"), "libera", "vjt")
+      base = Payload.build(msg(channel: "#sniffo"), "libera")
       assert Payload.put_badge(base, 0).badge == 0
     end
   end
@@ -292,8 +303,8 @@ defmodule Grappa.Push.PayloadTest do
         dm = msg(channel: "vjt", sender: nick, dm_with: nick, body: "ping")
         chan = msg(channel: channel, sender: nick, body: "ping")
 
-        refute presence_tag == Payload.build(dm, slug, "vjt").tag
-        refute presence_tag == Payload.build(chan, slug, "vjt").tag
+        refute presence_tag == Payload.build(dm, slug).tag
+        refute presence_tag == Payload.build(chan, slug).tag
       end
     end
   end

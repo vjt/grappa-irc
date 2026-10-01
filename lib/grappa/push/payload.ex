@@ -14,7 +14,7 @@ defmodule Grappa.Push.Payload do
 
   ## Title / body
 
-    * **DM** (`channel == own_nick`): `title = sender`, body = the
+    * **DM** (`Message.dm?/1`): `title = sender`, body = the
       message body. Notification shape mirrors how mobile messengers
       surface a 1:1 chat — sender on top line, content on second.
     * **Channel** (everything else): `title = "<sender> in <channel>"`,
@@ -122,26 +122,16 @@ defmodule Grappa.Push.Payload do
   @doc """
   Builds a notification payload for `message` on `network_slug`.
 
-  `own_nick` is the per-(user, network) IRC nick — read from
-  `Grappa.Networks.Credential` at the call site, NEVER the account
-  name (the two diverge: an account `marcellobarnaba` may be `vjt-grappa`
-  on libera and `vjt` on azzurra). Same hazard cic dodged in CP15 H3
-  (account name vs IRC nick); the server-side trigger path inherits
-  it.
-
-  `dm?` discriminator: the inbound row's `channel` KEY equals own_nick
-  (mirrors `Grappa.Scrollback.dm_peer/4`'s inbound branch). #537 — the
-  `channel` KEY is folded at the persist boundary, so the compare folds
-  BOTH sides (`canonical_target/1`) or a mixed-case own_nick misses its
-  own folded DM rows.
+  DM vs channel is `Grappa.Scrollback.Message.dm?/1` — the same rule
+  `Grappa.Push.Triggers.should_notify?/5` decides by (issue 1365), so the
+  row that notified as a DM is the row that renders as one. It used to be
+  a second copy of "the row's `channel` TAG folds to own_nick", which took
+  an `own_nick` argument for nothing else; the TAG is no longer re-keyed on
+  a self-rename, and a second definition of DM is how the two would drift.
   """
-  @spec build(Message.t(), network_slug :: String.t(), own_nick :: String.t()) :: t()
-  def build(%Message{} = message, network_slug, own_nick)
-      when is_binary(network_slug) and is_binary(own_nick) do
-    dm? =
-      is_binary(message.channel) and
-        Identifier.canonical_target(message.channel) ==
-          Identifier.canonical_target(own_nick)
+  @spec build(Message.t(), network_slug :: String.t()) :: t()
+  def build(%Message{} = message, network_slug) when is_binary(network_slug) do
+    dm? = Message.dm?(message)
 
     sender = message.sender || ""
 

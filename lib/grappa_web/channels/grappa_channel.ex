@@ -634,8 +634,8 @@ defmodule GrappaWeb.GrappaChannel do
   #      from a client that did not opt in.
   #   2. The kind is in `Message.pausable_presence_kinds/0`, the strict
   #      subset whose only consumer is the members map. `nick_change` and
-  #      `mode` are OUT of that set on purpose (#372/#373 identity migration
-  #      and channel-mode state), which is why this reads the pausable list
+  #      `mode` are OUT of that set on purpose (own-nick cache below, members
+  #      map, channel-mode state), which is why this reads the pausable list
   #      and not `suppressed_presence_kinds/0`.
   #   3. The row is not OURS. An own PART tears the window down client-side,
   #      so dropping it would leak a subscription and strand a dead window —
@@ -672,8 +672,8 @@ defmodule GrappaWeb.GrappaChannel do
   # matching a nick nobody holds, and the very next own PART is dropped. The
   # signal is the `nick_change` row itself — which is NOT in the pausable set,
   # so a suppressing socket is guaranteed to see it (that carve-out was taken
-  # for cic's #372/#373 migration; the server piggybacks on it rather than
-  # adding a second source of truth).
+  # for cic's #372/#373 migration, which issue 1365 deleted; this cache is
+  # now one of the reasons it stays).
   #
   # Only OUR rename moves the cache: a peer's `nick_change` carries the peer's
   # old nick as `sender` and folds against a different identity.

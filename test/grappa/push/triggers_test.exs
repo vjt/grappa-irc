@@ -38,7 +38,8 @@ defmodule Grappa.Push.TriggersTest do
       sender: opts[:sender] || "alice",
       body: opts[:body] || "hello",
       kind: opts[:kind] || :privmsg,
-      server_time: 1_700_000_000_000
+      server_time: 1_700_000_000_000,
+      dm_with: opts[:dm_with]
     }
   end
 
@@ -118,14 +119,33 @@ defmodule Grappa.Push.TriggersTest do
     end
   end
 
-  describe "should_notify?/5 — DM (channel == own_nick)" do
+  describe "should_notify?/5 — DM (the row threads a DM: dm_with is set)" do
+    test "a DM received under our OLD nick is still a DM after we renamed (issue 1365)" do
+      # The ruling (issue 1365, relayed): a nick change writes nothing to the
+      # DB. The row keeps `channel` = the nick we held at receipt, so the DM
+      # rule cannot be "channel folds to the live own_nick" any more — it is
+      # `dm_with`, which a self-rename never touches.
+      m = msg(channel: "oldvjt", sender: "alice", dm_with: "alice", body: "ping")
+
+      assert notify?(
+               m,
+               "vjt",
+               prefs(
+                 private_messages_all: true,
+                 channel_messages_all: false,
+                 channel_mentions: false
+               ),
+               []
+             )
+    end
+
     test "private_messages_all=true → notify regardless of sender" do
-      m = msg(channel: "vjt", sender: "alice", body: "ping")
+      m = msg(channel: "vjt", sender: "alice", dm_with: "alice", body: "ping")
       assert notify?(m, "vjt", prefs(private_messages_all: true), [])
     end
 
     test "private_messages_all=false + sender NOT in whitelist → no notify" do
-      m = msg(channel: "vjt", sender: "alice", body: "ping")
+      m = msg(channel: "vjt", sender: "alice", dm_with: "alice", body: "ping")
 
       refute notify?(
                m,
@@ -136,7 +156,7 @@ defmodule Grappa.Push.TriggersTest do
     end
 
     test "private_messages_all=false + sender IN whitelist → notify" do
-      m = msg(channel: "vjt", sender: "alice", body: "ping")
+      m = msg(channel: "vjt", sender: "alice", dm_with: "alice", body: "ping")
 
       assert notify?(
                m,
@@ -147,7 +167,7 @@ defmodule Grappa.Push.TriggersTest do
     end
 
     test "whitelist comparison is case-insensitive on sender" do
-      m = msg(channel: "vjt", sender: "ALICE", body: "ping")
+      m = msg(channel: "vjt", sender: "ALICE", dm_with: "ALICE", body: "ping")
 
       assert notify?(
                m,
@@ -162,7 +182,7 @@ defmodule Grappa.Push.TriggersTest do
       # are the SAME nick (but foo{bar} is DIFFERENT). The stored list is
       # canonicalized to the folded form (UserSettings.normalize_list), so
       # an inbound FOO[BAR] must fold to foo[bar] and match.
-      m = msg(channel: "vjt", sender: "FOO[BAR]", body: "ping")
+      m = msg(channel: "vjt", sender: "FOO[BAR]", dm_with: "FOO[BAR]", body: "ping")
 
       assert notify?(
                m,
@@ -173,7 +193,7 @@ defmodule Grappa.Push.TriggersTest do
     end
 
     test "whitelist match folds sender under ASCII case — tilde kept (#525)" do
-      m = msg(channel: "vjt", sender: "FOO~BAZ", body: "ping")
+      m = msg(channel: "vjt", sender: "FOO~BAZ", dm_with: "FOO~BAZ", body: "ping")
 
       assert notify?(
                m,
@@ -186,7 +206,7 @@ defmodule Grappa.Push.TriggersTest do
     test "DM does NOT consider channel_messages flags" do
       # A DM with channel_messages_all=true but private_messages_all=false
       # should NOT notify — the DM branch is independent.
-      m = msg(channel: "vjt", sender: "alice", body: "ping")
+      m = msg(channel: "vjt", sender: "alice", dm_with: "alice", body: "ping")
 
       refute notify?(
                m,
@@ -299,7 +319,7 @@ defmodule Grappa.Push.TriggersTest do
     test "an INBOUND DM from the peer still notifies (regression guard)" do
       # Inbound DM: channel == own_nick, sender == peer. The own-row
       # exclusion must NOT suppress a genuine inbound message.
-      m = msg(channel: "vjt", sender: "peer", body: "ping")
+      m = msg(channel: "vjt", sender: "peer", dm_with: "peer", body: "ping")
 
       assert notify?(m, "vjt", prefs(private_messages_all: true), [])
     end
@@ -345,7 +365,7 @@ defmodule Grappa.Push.TriggersTest do
     test "a DM mutes the PEER on ONE network, not the peer everywhere" do
       # The DM half of #1038: the key is the peer, and the same nick on two
       # networks is two different people.
-      m = msg(channel: "vjt", sender: "Alice", body: "ping")
+      m = msg(channel: "vjt", sender: "Alice", dm_with: "Alice", body: "ping")
       p = Map.merge(muted("azzurra alice"), %{private_messages_all: true})
 
       refute Triggers.should_notify?(m, "azzurra", "vjt", p, [])
@@ -356,7 +376,7 @@ defmodule Grappa.Push.TriggersTest do
       # Both halves compose through one `channel_key/2`, so a channel mute and
       # a DM mute on the same network are distinguished only by the sigil the
       # fold leaves in place.
-      dm = msg(channel: "vjt", sender: "alice", body: "ping")
+      dm = msg(channel: "vjt", sender: "alice", dm_with: "alice", body: "ping")
       chan = msg(channel: "#alice", sender: "bob", body: "vjt: ping")
       p = Map.merge(muted("azzurra alice"), %{private_messages_all: true})
 
@@ -532,7 +552,7 @@ defmodule Grappa.Push.TriggersTest do
       user = user_fixture()
       # No subscription_fixture/2 call.
 
-      m = msg(channel: "vjt", sender: "alice", body: "ping")
+      m = msg(channel: "vjt", sender: "alice", dm_with: "alice", body: "ping")
 
       assert :ok =
                Triggers.evaluate_and_dispatch(m, %{
@@ -594,7 +614,7 @@ defmodule Grappa.Push.TriggersTest do
       sub = subscription_fixture(subject, endpoint)
       assert is_nil(sub.last_used_at)
 
-      m = msg(channel: "vjt", sender: "alice", body: "ping")
+      m = msg(channel: "vjt", sender: "alice", dm_with: "alice", body: "ping")
 
       :ok =
         Triggers.evaluate_and_dispatch(m, %{

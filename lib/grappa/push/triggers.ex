@@ -26,11 +26,11 @@ defmodule Grappa.Push.Triggers do
   by window shape:
 
     0. **Own row** (`sender` folds to `own_nick`) — never notify (#532 C).
-       An OUTBOUND DM is persisted with `channel = peer` (only INBOUND
-       carries `channel = own_nick`), so a shape test would misroute it to
-       the channel branch and run the user's own highlight patterns over
-       their own message body. Excluding by sender-identity kills that for
-       both self-authored shapes (outbound DM + own channel message).
+       An OUTBOUND DM carries `dm_with = peer` exactly like an inbound one,
+       so the DM shape alone cannot tell the directions apart, and an own
+       channel message would run the user's own highlight patterns over
+       their own body. Excluding by sender-identity kills that for both
+       self-authored shapes (outbound DM + own channel message).
 
     0b. **Muted conversation** (#866, network-keyed by #1038) — the composite
        `Identifier.channel_key(network_slug, target)`, where `target` is the
@@ -38,10 +38,9 @@ defmodule Grappa.Push.Triggers do
        `prefs.muted_targets` — never notify. This beats every reason below,
        INCLUDING a direct mention: vjt's Q2 ruling is that the mute always
        wins, because "I silenced this room" staying silent is the polite
-       default. The target is the conversation and NOT `message.channel` for
-       the same reason step 0 exists — an inbound DM carries
-       `channel = own_nick`, so that key would collapse every DM onto a
-       single mute. The NETWORK is in the key because `#linux` on two
+       default. The target is the conversation and NOT `message.channel`:
+       an inbound DM carries `channel = <own nick at receipt>`, so that key
+       would collapse every DM onto a single mute. The NETWORK is in the key because `#linux` on two
        networks is two rooms and the same nick on two networks is two people
        (#1038, reversing #866's deliberate network-blind key).
 
@@ -51,7 +50,7 @@ defmodule Grappa.Push.Triggers do
 
   Otherwise returns `true` for one of three reasons:
 
-    1. **DM** (`message.channel == own_nick`):
+    1. **DM** (`Message.dm?/1` — the row carries `dm_with`; issue 1365):
        `prefs.private_messages_all` OR
        `Identifier.canonical_target(message.sender) in prefs.private_messages_only`.
 
@@ -290,7 +289,7 @@ defmodule Grappa.Push.Triggers do
         # away before reaching it and cannot be miscounted as suppressed.
         if should_notify?(message, network_slug, own_nick, prefs, patterns) and
              not foreground_visible?(subject, subject_label, network_slug) do
-          payload = build_payload(message, network_slug, own_nick, subject)
+          payload = build_payload(message, network_slug, subject)
           Push.Sender.send_to_subject(subject, payload)
         end
       end)
@@ -382,13 +381,12 @@ defmodule Grappa.Push.Triggers do
       when is_binary(network_slug) and is_binary(own_nick) and is_map(prefs) and is_list(patterns) do
     cond do
       # #532 C — the subject's OWN rows never notify, decided by IDENTITY
-      # (sender folds to own_nick), NOT by window shape. An OUTBOUND DM is
-      # persisted with `channel = peer` (only INBOUND carries `channel =
-      # own_nick`), so the `dm?/2` shape test below misses it and it would
-      # fall to the channel branch, where the user's OWN highlight patterns
-      # run over their OWN message body — counting an outgoing DM as
-      # notify-worthy. Excluding by sender-identity kills that for BOTH
-      # directions of self-authored rows (outbound DM + own channel msg).
+      # (sender folds to own_nick), NOT by window shape. An OUTBOUND DM
+      # carries `dm_with = peer` exactly like an inbound one, so the DM rule
+      # below cannot tell the two directions apart, and an own channel
+      # message would run the user's OWN highlight patterns over their OWN
+      # body. Excluding by sender-identity kills both self-authored shapes
+      # (outbound DM + own channel msg) before any shape test runs.
       # This is the ONE predicate `Push.BadgeCount` folds over the unread
       # tail, so the badge and the OS notification can never disagree.
       own_row?(message, own_nick) -> false
@@ -397,8 +395,8 @@ defmodule Grappa.Push.Triggers do
       # in the `cond` rather than inside the two branches is what makes that
       # true structurally instead of by remembering to add `and not muted?` to
       # each new disjunct.
-      muted?(message, network_slug, prefs, own_nick) -> false
-      dm?(message, own_nick) -> dm_match?(message, prefs)
+      muted?(message, network_slug, prefs) -> false
+      Message.dm?(message) -> dm_match?(message, prefs)
       true -> channel_match?(message, prefs, own_nick, patterns)
     end
   end
@@ -501,9 +499,9 @@ defmodule Grappa.Push.Triggers do
   # `:badge_source` config is live — OMITS the badge field rather than
   # crashing the Task or stamping a wrong `0` that would clear the icon;
   # the push still fires, the SW just leaves the badge untouched.
-  @spec build_payload(Message.t(), String.t(), String.t(), Subject.t()) :: Payload.t()
-  defp build_payload(message, network_slug, own_nick, subject) do
-    payload = Payload.build(message, network_slug, own_nick)
+  @spec build_payload(Message.t(), String.t(), Subject.t()) :: Payload.t()
+  defp build_payload(message, network_slug, subject) do
+    payload = Payload.build(message, network_slug)
 
     case Push.BadgeSource.count(subject) do
       count when is_integer(count) -> Payload.put_badge(payload, count)
@@ -513,9 +511,9 @@ defmodule Grappa.Push.Triggers do
 
   # #532 C — is this row the subject's OWN message? Folded identity
   # compare (`Identifier.canonical_target/1`, #121) between the row's sender
-  # and the live own_nick, NOT the window-shape `channel == own_nick` test
-  # (which only holds for INBOUND DMs, so it can't recognise an outbound
-  # DM as self-authored). The row already carries everything needed to
+  # and the live own_nick, NOT a window-shape test (`Message.dm?/1` holds
+  # for BOTH directions of a DM, so it can't recognise an outbound DM as
+  # self-authored). The row already carries everything needed to
   # decide — this is the "is this row mine?" the moduledoc's decision tree
   # asks first.
   defp own_row?(%Message{sender: sender}, own_nick) when is_binary(sender) do
@@ -524,22 +522,10 @@ defmodule Grappa.Push.Triggers do
 
   defp own_row?(_, _), do: false
 
-  # Canonical DM rule across the codebase: inbound row's `channel`
-  # field equals own_nick. Mirrors `Grappa.Scrollback.dm_peer/4`'s
-  # inbound branch + cic's dm-listener channelKey rule. #537 — the
-  # `channel` KEY is now folded at the persist boundary
-  # (`Message.canonicalize_channel/1`), so this compare MUST fold both
-  # sides (`canonical_target/1`) or a mixed-case own_nick fails to match
-  # its own folded DM rows.
-  defp dm?(%Message{channel: channel}, own_nick) when is_binary(channel) and is_binary(own_nick),
-    do: Identifier.canonical_target(channel) == Identifier.canonical_target(own_nick)
-
-  defp dm?(_, _), do: false
-
   # #866 — is this row's CONVERSATION muted? Network-keyed since #1038.
   #
   # The TARGET is the conversation, NOT the row's `channel` field. An inbound
-  # DM is persisted with `channel = own_nick`, so keying on `channel` would
+  # DM is persisted with `channel = <own nick at receipt>`, so keying on `channel` would
   # make one "mute vjt" entry silence every DM the operator ever receives,
   # while "mute alice" silenced nothing. So: the channel for a channel row,
   # the PEER for a DM.
@@ -558,9 +544,9 @@ defmodule Grappa.Push.Triggers do
   # `until` is deliberately not consulted. Expiry belongs to the READER
   # (`UserSettings.get_notification_prefs/1`, Q3), which is what keeps this
   # predicate pure and the shared truth-table free of a `now` column.
-  defp muted?(%Message{channel: channel, sender: sender} = message, network_slug, prefs, own_nick)
+  defp muted?(%Message{channel: channel, sender: sender} = message, network_slug, prefs)
        when is_binary(channel) and is_binary(sender) and is_binary(network_slug) do
-    target = if dm?(message, own_nick), do: sender, else: channel
+    target = if Message.dm?(message), do: sender, else: channel
 
     Map.has_key?(
       Map.get(prefs, :muted_targets, %{}),
@@ -568,7 +554,7 @@ defmodule Grappa.Push.Triggers do
     )
   end
 
-  defp muted?(_, _, _, _), do: false
+  defp muted?(_, _, _), do: false
 
   defp dm_match?(%Message{} = message, prefs) do
     Map.get(prefs, :private_messages_all, false) or

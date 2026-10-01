@@ -226,9 +226,11 @@ defmodule Grappa.Scrollback.Message do
   # "is this presence?" (what the history fetch omits), this one is "is this
   # presence we can afford never to receive?". A kind landing in the
   # suppressed set must be considered HERE on purpose rather than inherited
-  # silently — `nick_change` drives the #372/#373 identity migration and
-  # `mode` feeds channel-mode state, so both stay deliverable even to a paused
-  # window. Mirrors cic's PAUSABLE_PRESENCE_KINDS
+  # silently — `nick_change` feeds the members map AND the paused socket's
+  # own-nick cache (`GrappaChannel.track_own_nick/2`; the #372/#373 client
+  # identity migration it was carved out for went with issue 1365), and
+  # `mode` feeds channel-mode state, so both stay deliverable even to a
+  # paused window. Mirrors cic's PAUSABLE_PRESENCE_KINDS
   # (cicchetto/src/lib/presencePause.ts), same order; the subset relation and
   # the cross-language agreement are both gated by `presence_filter_test.exs`.
   @pausable_presence_kinds [:join, :part, :quit]
@@ -334,9 +336,10 @@ defmodule Grappa.Scrollback.Message do
   and governs what the HISTORY fetch omits — a row the operator can always
   scroll back to. This one answers "is this presence the client can afford
   never to be told about?", and a kind that says no has a consumer that
-  breaks silently without it: `nick_change` drives the #372/#373 client-side
-  identity migration, `mode` feeds channel-mode state that outlives the
-  pause. Their only consumer being the members map is what makes
+  breaks silently without it: `nick_change` keeps a paused socket's own-nick
+  cache current (`GrappaChannel.track_own_nick/2`; the #372/#373 client
+  identity migration it was first carved out for went with issue 1365),
+  `mode` feeds channel-mode state that outlives the pause. Their only consumer being the members map is what makes
   join/part/quit safe to drop — the refetch on resume rebuilds exactly that.
 
   Mirrors cic's `PAUSABLE_PRESENCE_KINDS`
@@ -603,4 +606,25 @@ defmodule Grappa.Scrollback.Message do
   # server-window rows without changeset rejection.
   @spec valid_target?(term()) :: boolean()
   defp valid_target?(s), do: Identifier.valid_channel?(s) or Identifier.valid_nick?(s) or s == "$server"
+
+  @doc """
+  True iff the row threads a DM conversation — `dm_with` is set. Issue 1365
+  SINGLE SOURCE for "is this row a DM?": `Grappa.Push.Triggers` (notify +
+  badge) and `Grappa.Push.Payload` (title, tag, deep link) both read this.
+
+  It used to be `fold(channel) == fold(own_nick)`: an inbound DM is
+  persisted at `channel = <own nick at receipt>`, and that TAG was re-keyed
+  on every self-rename (#514) so it kept matching the live nick. The ruling
+  on issue 1365 (relayed from vjt) is that a nick change writes nothing to
+  the DB, so the TAG now stays at the nick we held — and `dm_with`, which
+  `Grappa.Scrollback.dm_peer/4` sets on exactly the rows whose target was
+  us at receipt (plus our own outbound DMs), is the one fact a rename never
+  touches. Own rows are excluded upstream by the identity test
+  (`Triggers.own_row?/2`, #532 C), never by this shape.
+
+  Mirrors `isDm` in `cicchetto/src/lib/pushTriggers.ts`; the shared truth
+  table (`should_notify_parity_test.exs`) gates the two.
+  """
+  @spec dm?(t()) :: boolean()
+  def dm?(%__MODULE__{dm_with: dm_with}), do: is_binary(dm_with)
 end

@@ -4213,127 +4213,14 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
-  describe "#373 — query window follows a peer NICK change" do
-    test "peer NICK migrates the open query window + its DM scrollback old -> new" do
-      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, _} = setup_user_and_network(port)
-      own = "grappa-test"
-
-      pid = start_session_for(user, network)
-      :ok = IRCServer.await_handshake(server, 1_000)
-
-      net_id = network.id
-      topic = Topic.user(user.name)
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, topic)
-
-      # The session processes its mailbox serially in arrival order, so
-      # these two lines are fully applied before the NICK below: the peer
-      # is in #sniffo (the only case IRC delivers a NICK) and the inbound
-      # DM row is persisted (channel=own_nick, dm_with=peer).
-      IRCServer.feed(server, ":Guest87449!~g@host JOIN #sniffo\r\n")
-      IRCServer.feed(server, ":Guest87449!~g@host PRIVMSG #{own} :ciao\r\n")
-
-      # #422: the inbound DM ITSELF auto-opens the server-side query window
-      # (no cic `open_query_window` push — cic is a pure renderer). Wait for
-      # THAT broadcast first: it proves the window exists pre-rename AND
-      # deterministically drains it off the topic so it can't race into the
-      # rename assertion below (the socket→Client→session hop makes a bare
-      # mailbox flush insufficient).
-      assert_receive %Phoenix.Socket.Broadcast{
-                       event: "event",
-                       payload: %{
-                         kind: :query_windows_list,
-                         windows: %{^net_id => [%{target_nick: "Guest87449"}]}
-                       }
-                     },
-                     1_000
-
-      # The peer renames.
-      IRCServer.feed(server, ":Guest87449!~g@host NICK :NickTemporaneo\r\n")
-
-      # The `query_windows_list` broadcast is emitted by apply_effects
-      # AFTER it migrates the DM scrollback + read cursor (#373 rename-order
-      # fix), so receiving it is a TRUTHFUL barrier: the history reads below
-      # are guaranteed to see the migrated rows. Pre-fix `rename/4`
-      # broadcast mid-migration, so this assert_receive could unblock before
-      # `Scrollback.rename_dm_peer/4` ran → the fetch below raced to [].
-      assert_receive %Phoenix.Socket.Broadcast{
-                       event: "event",
-                       payload: %{kind: :query_windows_list, windows: windows}
-                     },
-                     1_000
-
-      assert [%{target_nick: "NickTemporaneo"}] = Map.fetch!(windows, network.id)
-
-      # The window row followed the rename.
-      result = Grappa.QueryWindows.list_for_subject({:user, user.id})
-      assert [%{target_nick: "NickTemporaneo"}] = result[network.id]
-
-      # History reads under the NEW window; the OLD nick is empty.
-      assert [row] = Scrollback.fetch({:user, user.id}, network.id, "NickTemporaneo", nil, 10, own, false)
-      assert row.body == "ciao"
-      assert Scrollback.fetch({:user, user.id}, network.id, "Guest87449", nil, 10, own, false) == []
-
-      :ok = GenServer.stop(pid, :normal, 1_000)
-    end
-
-    test "#1340 K-S2 — the per-conversation MUTE follows the peer NICK too" do
-      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
-      {user, network, _} = setup_user_and_network(port)
-      own = "grappa-test"
-
-      pid = start_session_for(user, network)
-      :ok = IRCServer.await_handshake(server, 1_000)
-
-      net_id = network.id
-      slug = network.slug
-      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
-
-      # The operator silenced this peer. Since #1038 that mute is keyed on
-      # `(network, peer nick)` — a nick-keyed store, so the rename below must
-      # carry it, exactly as it carries the window, the history and the cursor.
-      assert {:ok, _} =
-               put_all_muted({:user, user.id}, %{"#{slug} guest87449" => %{"until" => nil}})
-
-      IRCServer.feed(server, ":Guest87449!~g@host JOIN #sniffo\r\n")
-      IRCServer.feed(server, ":Guest87449!~g@host PRIVMSG #{own} :ciao\r\n")
-
-      assert_receive %Phoenix.Socket.Broadcast{
-                       event: "event",
-                       payload: %{
-                         kind: :query_windows_list,
-                         windows: %{^net_id => [%{target_nick: "Guest87449"}]}
-                       }
-                     },
-                     1_000
-
-      IRCServer.feed(server, ":Guest87449!~g@host NICK :NickTemporaneo\r\n")
-
-      # Same truthful barrier the sibling test uses: the broadcast is emitted
-      # after the migration, so reading the prefs below cannot race it.
-      assert_receive %Phoenix.Socket.Broadcast{
-                       event: "event",
-                       payload: %{kind: :query_windows_list, windows: %{^net_id => [_ | _]}}
-                     },
-                     1_000
-
-      # Silenced before, silenced after. Left out of the set, the key would
-      # still read `guest87449` and the peer would start notifying again with
-      # nothing on screen to explain why.
-      assert Grappa.UserSettings.get_notification_prefs({:user, user.id}).muted_targets == %{
-               "#{slug} nicktemporaneo" => %{"until" => nil}
-             }
-
-      :ok = GenServer.stop(pid, :normal, 1_000)
-    end
-
-    # #1374 P-S2 — the migration chain used to run bare against `Repo`, each
-    # step strictly bound (`{:ok, _} =` / `:ok =`) inside the supervised
-    # session. A transient SQLITE_BUSY therefore RAISED and took the session
-    # (and the user's connection) down, mid-migration: the exact class of the
-    # 2026-07-19 incident, and the trigger — a netsplit rejoin renaming many
-    # peers at once — is precisely the correlated write burst.
-    test "a sustained DB busy during a peer rename drops it whole and the session survives" do
+  describe "issue 1365 — a peer NICK change writes nothing to the DB" do
+    # The ruling (issue 1365, comment 5934112501, relayed from vjt on IRC):
+    # a nick change causes NO database update; only the UI changes. The
+    # accepted price is that a renamed peer's next message opens a NEW query
+    # window, and that a mute is evaded by changing nick. This pins the
+    # inverse of what #373 / #1340 used to pin: every nick-keyed store stays
+    # at the OLD nick.
+    test "window row, DM history, read cursor and mute all stay at the old nick" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network, _} = setup_user_and_network(port)
       own = "grappa-test"
@@ -4352,9 +4239,8 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, ":Guest87449!~g@host JOIN #sniffo\r\n")
       IRCServer.feed(server, ":Guest87449!~g@host PRIVMSG #{own} :ciao\r\n")
 
-      # #422 auto-open: waiting for the window broadcast proves the whole
-      # pre-state (window row + DM row) exists BEFORE the fault is armed, and
-      # drains the topic so a later broadcast cannot be mistaken for this one.
+      # #422 auto-open: the window broadcast proves the pre-state exists and
+      # drains the topic before the rename.
       assert_receive %Phoenix.Socket.Broadcast{
                        event: "event",
                        payload: %{
@@ -4367,42 +4253,31 @@ defmodule Grappa.Session.ServerTest do
       assert [pre_row] = Scrollback.fetch(subject, net_id, "Guest87449", nil, 10, own, false)
       {:ok, _} = ReadCursor.set(subject, net_id, "Guest87449", pre_row.id)
 
-      # Saturate every retry loop this session enters from here on.
-      Repo.BusyRetry.arm_faults(pid, 10_000, fire_on: 1)
-      on_exit(fn -> Repo.BusyRetry.disarm_faults(pid) end)
+      IRCServer.feed(server, ":Guest87449!~g@host NICK :NickTemporaneo\r\n")
 
-      log =
-        capture_log(fn ->
-          IRCServer.feed(server, ":Guest87449!~g@host NICK :NickTemporaneo\r\n")
+      # DB-free FIFO barrier: PING is answered from the same serial mailbox,
+      # so the PONG proves the NICK's effects have fully run.
+      IRCServer.feed(server, "PING :rename-barrier\r\n")
+      assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "PONG"), 2_000)
 
-          # DB-free FIFO barrier: PING is answered from the SAME serial
-          # mailbox, so the PONG proves the NICK's effects have fully run.
-          # It cannot itself be starved by the armed fault (no Repo call on
-          # that path), which every DB-backed barrier here could be.
-          IRCServer.feed(server, "PING :rename-barrier\r\n")
+      # Nothing moved, so there is no rename to announce.
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :query_windows_list}}
 
-          assert {:ok, _} =
-                   IRCServer.wait_for_line(server, &String.contains?(&1, "PONG"), 2_000)
-        end)
-
-      # The terminal is the #590 background-DROP posture, not a crash.
-      assert Process.alive?(pid)
-      assert log =~ "peer NICK migration db unavailable — session continues"
-
-      # And the drop is WHOLE: window row, DM history and read cursor all
-      # still stand at the old nick. A per-step retry would have let the
-      # earlier steps land and stranded the later ones.
       assert [%{target_nick: "Guest87449"}] = QueryWindows.list_for_subject(subject)[net_id]
-      assert [_] = Scrollback.fetch(subject, net_id, "Guest87449", nil, 10, own, false)
+
+      assert [row] = Scrollback.fetch(subject, net_id, "Guest87449", nil, 10, own, false)
+      assert row.id == pre_row.id
+      assert row.dm_with == "Guest87449"
       assert Scrollback.fetch(subject, net_id, "NickTemporaneo", nil, 10, own, false) == []
-      assert %{last_read_message_id: _} = ReadCursor.get(subject, net_id, "Guest87449")
+
+      assert %{last_read_message_id: last_read} = ReadCursor.get(subject, net_id, "Guest87449")
+      assert last_read == pre_row.id
       assert ReadCursor.get(subject, net_id, "NickTemporaneo") == nil
 
       assert Grappa.UserSettings.get_notification_prefs(subject).muted_targets == %{
                "#{slug} guest87449" => %{"until" => nil}
              }
 
-      Repo.BusyRetry.disarm_faults(pid)
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
   end

@@ -178,7 +178,7 @@ defmodule Grappa.Push.BadgeCountLiveNickTest do
     assert BadgeCount.count(subject) == 0
   end
 
-  describe "#514 — a self-rename re-keys inbound DM rows received under the old nick" do
+  describe "#514 / issue 1365 — DM rows received under the old nick, after a self-rename" do
     @peer "alice"
 
     # Seeds a DM window with `@peer` holding one read anchor and one unread
@@ -222,6 +222,20 @@ defmodule Grappa.Push.BadgeCountLiveNickTest do
       # After: the tag follows the identity, the row classifies as a DM, and
       # `private_messages_all: true` credits it → 1.
       assert BadgeCount.count(subject) == 1
+    end
+
+    # issue 1365 — the ruling (relayed): a nick change, OURS included, writes
+    # nothing to the DB. The badge credit above now survives because the DM
+    # rule reads `dm_with`, not because the TAG moved: it must NOT move.
+    test "no row is rewritten: the own-nick TAG stays at the nick we held at receipt" do
+      {subject, network} = seed_dm_then_rename()
+
+      channels =
+        subject
+        |> Scrollback.fetch(network.id, @peer, nil, 100, @live_nick, false)
+        |> Enum.map(& &1.channel)
+
+      assert channels == [@configured_nick, @configured_nick]
     end
 
     # #514 REFUTATION PIN (1/2). The issue flagged the DM-window fetch as

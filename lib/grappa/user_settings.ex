@@ -712,16 +712,21 @@ defmodule Grappa.UserSettings do
 
   @doc """
   Moves ONE `muted_targets` entry from `old_target` to `new_target` on
-  `network_slug` — the mute's membership of the #373 nick-migration set.
+  `network_slug`, inside the caller's transaction (#1374 P-S2).
 
   Since #1038 the mute key is `(network, target)` and, for a DM, the target IS
-  the peer's nick, which makes `muted_targets` a nick-keyed store like the
-  three the peer-NICK arm already migrates. Left out of that set, a mute is
-  the one thing a rename does NOT carry: the window, the DM history and the
-  read cursor all follow, the mute key does not, and the peer the operator
-  silenced starts notifying again with nothing on screen to explain why.
-  Called from `Session.Server`'s `:peer_nick_renamed` arm and from the
-  `:own_nick_renamed` self-window migration.
+  a nick, which makes `muted_targets` a nick-keyed store. Issue 1365 (ruling
+  relayed from vjt) took the PEER rename out of every store, this one
+  included: a mute is evaded by changing nick, and that price was accepted.
+  The ONE remaining caller is the own-nick SELF-window migration
+  (`Grappa.NickMigration.own_renamed/5`), which is ruled to zero writes as
+  well and stays only until the self window has a key that does not move.
+
+  NO frame. It is reached only from inside a `Repo.BusyRetry.run(fn ->
+  Repo.immediate_transaction(…) end)`, where the enclosing engine already
+  holds both halves and retries the WHOLE transaction. A nested retry would
+  sleep while holding the open transaction's connection; a nested
+  `immediate_transaction/1` would collapse to a savepoint and buy nothing.
 
   ## Why it is not a `put_notification_prefs/2`
 
@@ -737,14 +742,14 @@ defmodule Grappa.UserSettings do
 
   On a fold-collision — the operator had ALSO muted the destination nick —
   the DESTINATION entry stays and the source entry is dropped. Both keys mean
-  "silence this conversation", so the union is the only sane merge, and the
-  `until` to keep is the one the operator set against the identity that
-  survives. This is the mute's shape of the same fold-collision merge
-  `QueryWindows.rename/4` performs on the window row.
+  "silence this conversation", so the union is the only sane merge.
 
-  Returns `{:ok, :noop}` when the two keys fold equal (a case-only NICK), when
-  the subject has no settings row, or when nothing was muted under
-  `old_target`.
+  Returns `:noop` when the two keys fold equal (a case-only NICK), when the
+  subject has no settings row, or when nothing was muted under `old_target`.
+  It returns the bare outcome, not `{:ok, outcome}`: in a transaction a
+  changeset rejection is `Repo.rollback/1` (see `write_data!/2`), so the
+  caller sees it as its own `Repo.immediate_transaction/1` returning
+  `{:error, changeset}`.
 
   > #### The client copy lags {: .warning}
   >
@@ -752,48 +757,6 @@ defmodule Grappa.UserSettings do
   > user-topic join (`userTopic.ts`). The SERVER push predicate honours the
   > migrated key immediately; cic's foreground beep and the settings drawer
   > keep the pre-rename map until the next (re)join or reload.
-  """
-  @spec rename_muted_target(Subject.t(), String.t(), String.t(), String.t()) ::
-          {:ok, :renamed | :noop} | {:error, Ecto.Changeset.t() | :db_unavailable}
-  def rename_muted_target({_, _} = subject, network_slug, old_target, new_target)
-      when is_binary(network_slug) and is_binary(old_target) and is_binary(new_target) do
-    # Two ways to have nothing to migrate, one answer: the spellings fold to one
-    # key, or the old key is not muted. Only past both does this take a frame —
-    # #1378, do not take SQLite's single write lock to migrate nothing.
-    with {old_key, new_key} <- rekey_pair(network_slug, old_target, new_target),
-         true <- muted_key?(subject, old_key) do
-      # Same `data` blob, same lost-update hazard as the setters (#1375), so the
-      # same frame — but NOT `update_data/2`: a rename must never CREATE the
-      # row, and it reports which of the two things it did. The probe's read is
-      # NOT trusted for the write: `rekey_muted_target/3` re-reads inside the
-      # transaction and is the only thing that decides what gets written.
-      write_transaction(fn ->
-        rekey_muted_target(fetch_existing_or_nil(subject), old_key, new_key)
-      end)
-    else
-      _ -> {:ok, :noop}
-    end
-  end
-
-  @doc """
-  In-transaction variant of `rename_muted_target/4` (#1374 P-S2).
-
-  Identical migration, one difference that is the whole contract: NO frame.
-  It is reached only from inside a `Repo.BusyRetry.run(fn ->
-  Repo.immediate_transaction(…) end)` — `Grappa.NickMigration`, which owns
-  the nick-rename set — where the enclosing engine already holds both halves
-  and retries the WHOLE transaction. A nested retry there would sleep while
-  holding the open transaction's connection, extending the very contention it
-  waits on; a nested `immediate_transaction/1` would collapse to a savepoint
-  and buy nothing.
-
-  It returns the bare outcome, not `{:ok, outcome}`: in a transaction a
-  changeset rejection is `Repo.rollback/1` (see `write_data!/2`), so there is
-  no error arm left for a tuple to carry. The caller sees the rejection as
-  its own `Repo.immediate_transaction/1` returning `{:error, changeset}`.
-
-  Mirrors the `Grappa.Accounts` revoke family's caller-facing/in-transaction
-  split (`accounts.ex`, "The family contract (#636)").
   """
   @spec rename_muted_target!(Subject.t(), String.t(), String.t(), String.t()) :: :renamed | :noop
   def rename_muted_target!({_, _} = subject, network_slug, old_target, new_target)
@@ -831,15 +794,8 @@ defmodule Grappa.UserSettings do
     end
   end
 
-  # The ONE "is this key muted?" question. `rename_muted_target/4`'s probe asks
-  # it OUTSIDE the transaction to decide whether to open one; `rekey_muted_target/3`
-  # asks it again INSIDE to decide what to write. Sharing the predicate is what
-  # makes the probe safe — #1378's discipline for `QueryWindows.exists?/3`, that
-  # the cheap question be BY CONSTRUCTION the question the write then asks, so
-  # the two cannot drift onto different notions of "nothing to migrate".
-  #
-  # Returns the two maps the rewrite needs, because deciding and locating are
-  # the same traversal; `nil` IS the answer "no".
+  # Is `key` muted? Returns the two maps the rewrite needs, because deciding
+  # and locating are the same traversal; `nil` IS the answer "no".
   @spec muted_prefs(Settings.t() | nil, String.t()) :: {map(), map()} | nil
   defp muted_prefs(nil, _), do: nil
 
@@ -849,14 +805,6 @@ defmodule Grappa.UserSettings do
 
     if is_map(muted) and Map.has_key?(muted, key), do: {prefs, muted}, else: nil
   end
-
-  # The probe. Costs one indexed SELECT on the write path, which is the price
-  # of not taking the write lock in the common case — a peer NICK fans out to
-  # every session sharing a channel and almost none of them mute that peer.
-  # Deliberately NOT used by `rename_muted_target!/4`: inside a transaction the
-  # lock is already held, so the probe there would buy nothing and cost a read.
-  @spec muted_key?(Subject.t(), String.t()) :: boolean()
-  defp muted_key?(subject, key), do: muted_prefs(fetch_existing_or_nil(subject), key) != nil
 
   # ---------------------------------------------------------------------------
   # upload_ttl_seconds accessors (UX-4 bucket M, 2026-05-19)

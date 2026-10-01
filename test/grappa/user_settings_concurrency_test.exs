@@ -39,7 +39,6 @@ defmodule Grappa.UserSettingsConcurrencyTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.IRC.Identifier
   alias Grappa.UserSettings
   alias Grappa.UserSettings.Settings
 
@@ -102,25 +101,6 @@ defmodule Grappa.UserSettingsConcurrencyTest do
     assert_receive {:peer_done, {:ok, %Settings{}}}, 2_000
 
     assert UserSettings.get_highlight_patterns(subject) == ["ciao"]
-    assert UserSettings.get_last_client_prefix64(subject) == "AABB"
-  end
-
-  test "a mute rename does not drop a key another writer commits between its read and its write" do
-    user = user_fixture()
-    subject = {:user, user.id}
-
-    muted = %{Identifier.channel_key("azzurra", "old") => %{"until" => nil}}
-    prefs = Map.put(UserSettings.default_notification_prefs(), :muted_targets, muted)
-
-    {:ok, _} = UserSettings.put_notification_prefs(subject, prefs)
-
-    interleave(subject, &write_prefix/1)
-
-    assert {:ok, :renamed} = UserSettings.rename_muted_target(subject, "azzurra", "old", "new")
-    assert_receive {:peer_done, {:ok, %Settings{}}}, 2_000
-
-    renamed = UserSettings.get_notification_prefs(subject).muted_targets
-    assert Map.has_key?(renamed, Identifier.channel_key("azzurra", "new"))
     assert UserSettings.get_last_client_prefix64(subject) == "AABB"
   end
 end
