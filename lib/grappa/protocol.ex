@@ -981,7 +981,31 @@ defmodule Grappa.Protocol do
   # file (#2102) is far behind.
   #
   # @min_protocol_version stays at 1: an old bundle drops the undeclared keys.
-  @protocol_version 35
+  #
+  # ---------------------------------------------------------------------------
+  # 36 — issue 1365: a scrollback row says whether it is a DM
+  # ---------------------------------------------------------------------------
+  #
+  # `dm_with` on every scrollback row (`Grappa.Scrollback.Wire.t`, so the
+  # `message` push, the REST pages, `GET /boot`'s head pages): the column
+  # verbatim, RAW, `null` off a DM — the same key, meaning and optionality 35
+  # put on the away bundle row. The ruling on issue 1365 (relayed from vjt): a
+  # nick change writes nothing to the DB, so an inbound DM's `channel` keeps
+  # the nick we held at receipt and stops matching the live one; "is this row
+  # a DM?" is now `dm_with`, on the server (`Message.dm?/1`) and in cic's push
+  # mirror (`pushTriggers.ts`), and the client needs the field to ask it.
+  # Additive, and it bumps for the #1393d reason: a client that classifies on
+  # `dm_with` cannot be served by a server that never sends it.
+  #
+  # `optional(...)` for the reason 34 gives above. This is the CURRENT axis
+  # only: `MIN_SERVER_PROTOCOL_VERSION` (cic's floor, issue 1365's Q2 "no bump
+  # to 34") is a different axis and does not move here.
+  #
+  # Checked for a collision before claiming 36: the one open PR that edits this
+  # file (#2102) carries 21, far behind.
+  #
+  # @min_protocol_version stays at 1: an old bundle drops the undeclared key.
+  @protocol_version 36
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1022,7 +1046,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 35
+  @spec version() :: 36
   def version, do: @protocol_version
 
   @doc """

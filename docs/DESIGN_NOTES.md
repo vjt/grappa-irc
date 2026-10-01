@@ -417,3 +417,74 @@ it is an edit. The glue that belongs to neither side is the separator BEFORE an
 entry's block, never a line inside it. And the index column counts `##`
 sections, so an undated `##` heading inside the month (September has one,
 `## #1922`) counts there too.
+<!-- entry #1365d -->
+
+---
+
+## 2026-10-01 — #1365d: a nick change writes nothing; "is this a DM?" is `dm_with` (protocol 36)
+
+**The ruling, and its provenance.** Comment 5934112501 on issue 1365
+(2026-10-01T15:00Z): a nick change, a peer's OR our own, causes NO database
+update; only the UI changes. Accepted downsides: a renamed peer opens a NEW
+query window, and a mute is evaded by changing nick. vjt said it on IRC
+#grappa (~14:59Z); the comment was written by a peer relaying it, and
+`author=vjt` on it is the fleet token, not proof of authorship. This entry
+records it as RELAYED.
+
+**What this slice does (fetta A minus the wire removal).**
+
+- *Peer axis, built.* `{:peer_nick_renamed, old}` (the effect lost its
+  unread `new_nick`) keeps only the #378 presence reset, which is in-memory
+  state, not a DB update. `NickMigration.peer_renamed/5` and its
+  windowed/windowless halves are deleted, and with them the code that had no
+  other caller: `Scrollback.rename_dm_peer/4`, the framed
+  `UserSettings.rename_muted_target/4` and its #1378 probe,
+  `QueryWindows.exists?/3`. cic stops moving its caches on `nick_change` in
+  the same change (the server not renaming while cic did would be cic
+  originating state). The e2e `nick-follow-query` is inverted, not deleted.
+- *The own-nick TAG (#514) stops moving.* An inbound DM sits at
+  `channel = <own nick at receipt>`; `Push.Triggers.dm?/2` compared it with
+  the LIVE nick, which is why #514 re-keyed it on every self-rename — a
+  write the ruling forbids. Of the three options (re-key: forbidden; a
+  sentinel in `channel`: a ~30k-row backfill, also an update; a history of
+  our nicks: a write per rename) only one survives: classify by `dm_with`,
+  which `Scrollback.dm_peer/4` sets on exactly the rows whose target was us
+  at receipt, and which no rename touches. It is `Message.dm?/1`, the ONE
+  rule for `Triggers` (push + badge) and `Payload` (which had a second copy
+  of the TAG test and loses the `own_nick` argument it existed for). That
+  `Payload` only ever sees fresh rows is read, not measured: moving it is
+  consistency, not a recorded bug.
+- *The wire, protocol 36.* cic's push mirror (`pushTriggers.ts`) could not
+  follow: the live scrollback row carried no `dm_with`. Left there, the
+  shared truth table had to drop the one row where server and client
+  disagree, which makes it a table shaped not to see the divergence. So
+  `dm_with` joins `Scrollback.Wire.t`, copying the away bundle's field
+  (issue 2333, protocol 35): same name, RAW, `null` off a DM, `optional`.
+  Additive, so `@protocol_version` 35 → 36 under #1393d; `wire_pin --check`
+  was red before the re-pin and green after. `@min_protocol_version` stays
+  1, and cic's `MIN_SERVER_PROTOCOL_VERSION` stays 9: that floor is the
+  axis issue 1365's Q2 ruled on ("no bump to 34"), and this does not touch
+  it. Found on the way: cic's hand narrower (`narrowScrollbackMessage`)
+  rebuilt the row and dropped every key it did not list, so `dm_with` had
+  to be added there too, test-first. It drops `dm_conversation_id` the same
+  way, which means no live WS row has ever delivered that field to cic;
+  recorded, not changed (its removal is leg 4, an open question for vjt).
+
+**What it deliberately does NOT do.**
+
+- *Our own nick: RULED to zero writes, NOT implemented, for want of the
+  mechanism.* The self window (`/msg <ownnick>`, #948) is keyed on our
+  nick, and which key replaces it is undecided. `own_renamed/5` keeps
+  moving it (rows, cursor, window row, mute, DM conversation) until that
+  is decided. A named debt, not out of scope.
+- *Removing `dm_conversation_id` from the wire and the `dm_conversations`
+  files* waits on an explicit ruling (#1626: removal is never a judgement
+  call inside a slice). Staging never ran migrations 20260929001416/17
+  (measured on a frozen `.backup` of the staging DB by the orchestrator);
+  that says nothing about prod m42.
+
+**The census of what remains of `NickMigration`.** One public verb,
+`own_renamed/5`, and everything left in the module is reached from it: the
+retried transaction, `follow_conversation`, and the bounded-batch merge.
+The merge/batch tests that reached it through `peer_renamed/5` now reach it
+through `own_renamed/5`, so the live merge path is still covered.

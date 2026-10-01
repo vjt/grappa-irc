@@ -156,7 +156,8 @@ function narrowScrollbackMessage(raw: unknown): ScrollbackMessage | null {
     typeof r.sender !== "string" ||
     (r.body !== null && typeof r.body !== "string") ||
     typeof r.meta !== "object" ||
-    r.meta === null
+    r.meta === null ||
+    (r.dm_with !== undefined && r.dm_with !== null && typeof r.dm_with !== "string")
   )
     return null;
   return {
@@ -168,6 +169,10 @@ function narrowScrollbackMessage(raw: unknown): ScrollbackMessage | null {
     sender: r.sender,
     body: r.body as string | null,
     meta: r.meta as Record<string, unknown>,
+    // issue 1365 (protocol 36) — the DM discriminator `shouldNotify` reads.
+    // Absent stays absent: a pre-36 server never sends it, and absent and
+    // `null` are different statements (see `Scrollback.Wire.t`).
+    ...(r.dm_with !== undefined && { dm_with: r.dm_with as string | null }),
   };
 }
 

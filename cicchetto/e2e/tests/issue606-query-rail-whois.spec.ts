@@ -7,8 +7,9 @@
 //     AND a WHOIS card in the RAIL (NOT the scrollback overlay), auto-fetched;
 //   * the rail card is persistent — no × dismiss affordance (unlike the
 //     scrollback /whois card);
-//   * a peer NICK while the query is open re-labels the heading (#373 swaps
-//     selectedChannel in place, which the heading reads live);
+//   * a peer NICK while the query is open does NOT re-label the heading:
+//     issue 1365 (ruling relayed from vjt) — a nick change moves no window
+//     state, so the window and its heading stay at the old nick;
 //   * an explicit `/whois` still renders its OWN card in the scrollback
 //     overlay, even though the rail already shows one — the two stores are
 //     disjoint by the server-marked `source` (#606 option 2), so `/whois` is
@@ -87,12 +88,9 @@ test("query rail shows heading + auto-fetched WHOIS card, follows NICK, coexists
     // card by `issue474-server-info-rail.spec.ts`.
     await expectRailFieldsStacked(railCard, ".whois-card-fields");
 
-    // A peer NICK while the query is open re-labels the heading (live).
+    // A peer NICK while the query is open does NOT re-label the heading
+    // (issue 1365: a nick change moves no window state).
     await peer.changeNick(PEER_RENAMED);
-    await expect(ctx.locator(".rail-query-heading")).toHaveText(
-      new RegExp(`private conversation with ${PEER_RENAMED}`, "i"),
-      { timeout: 5_000 },
-    );
 
     // Explicit /whois still renders its OWN card in the scrollback overlay,
     // even though the rail already shows one — do not disturb the /whois card.
@@ -100,6 +98,14 @@ test("query rail shows heading + auto-fetched WHOIS card, follows NICK, coexists
     const overlayCard = page.locator(".scrollback-overlay").getByTestId("whois-card");
     await expect(overlayCard).toBeVisible({ timeout: 5_000 });
     await expect(overlayCard.locator(".whois-card-target")).toHaveText(PEER_RENAMED);
+
+    // The WHOIS reply for the NEW nick can only exist after the ircd applied
+    // the rename, and it rides the same upstream link as the NICK line, so by
+    // now grappa has seen the NICK: the heading staying at PEER is a
+    // measured non-change, not a race lost early.
+    await expect(ctx.locator(".rail-query-heading")).toHaveText(
+      new RegExp(`private conversation with ${PEER}$`, "i"),
+    );
     // The overlay card DOES carry the × dismiss (the user asked for it)...
     await expect(overlayCard.locator(".whois-card-close")).toHaveCount(1);
     // ...and the rail card is STILL present (two disjoint cards at once).

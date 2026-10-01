@@ -36,6 +36,7 @@ export type ShouldNotifyMessage = {
   kind: string;
   channel: string;
   sender: string;
+  dm_with?: string | null;
   body: string | null;
 };
 
@@ -52,7 +53,7 @@ export type ShouldNotifyMessage = {
  *      `channelKey(networkSlug, target)`, where target is the channel or the
  *      PEER for a DM, present in `muted_targets`. Beats every reason below
  *      it, mentions included.
- *   4. DM (channel folds to ownNick): private_messages_all OR
+ *   4. DM (the row carries `dm_with`, issue 1365): private_messages_all OR
  *      asciiFold(sender) in private_messages_only (mirrors the
  *      server's `canonical_target(sender) in ...`).
  *   5. channel: channel_messages_all OR canonicalChannel(channel) in
@@ -73,11 +74,10 @@ export function shouldNotify(
   // convention as `wireNarrow.ts`.
   if (!NOTIFY_KINDS.has(message.kind as MessageKind)) return false;
 
-  // #532 C, #868 — "is this row mine?" asked BEFORE the window-shape test
-  // below, because an OUTBOUND DM is persisted with `channel = peer` (only an
-  // INBOUND one carries `channel = own_nick`): the shape test misroutes it to
-  // the channel branch, where the operator's own highlight patterns run over
-  // the operator's own body. The server has had this step since #532 C
+  // #532 C, #868 — "is this row mine?" asked BEFORE the DM test below,
+  // because an OUTBOUND DM carries `dm_with = peer` exactly like an inbound
+  // one, and an own channel message would otherwise run the operator's own
+  // highlight patterns over the operator's own body. The server has had this step since #532 C
   // (`triggers.ex` `own_row?/2`); this port did not, and the shared fixture
   // had no row that could see the gap.
   //
@@ -90,15 +90,13 @@ export function shouldNotify(
   // rationale (#1861) travelled with it.
   if (isOwnRow(message.sender, ownNick)) return false;
 
-  // Fold BOTH sides, mirroring the server's `dm?/2`. The `channel` KEY is
-  // folded at the persist boundary (`Message.canonicalize_channel/1`, #537)
-  // while `ownNick` is the RAW live nick off `net.nick` — so a raw `===`
-  // silently fails for any operator whose nick carries an uppercase letter,
-  // routing their inbound DMs into the channel branch. `canonicalChannel` is
-  // the client mirror of `Identifier.canonical_target/1` and folds a
-  // nick-shaped identifier exactly as it folds a channel (a sigil sits
-  // outside `A-Z`), which is why the same function serves both sides here.
-  const isDm = canonicalChannel(message.channel) === canonicalChannel(ownNick);
+  // Mirrors the server's `Message.dm?/1` (issue 1365, protocol 36): a row is
+  // a DM when it carries `dm_with`. It used to compare the row's `channel`
+  // with the live own nick, but an inbound DM's `channel` is the nick we
+  // held AT RECEIPT, and since issue 1365 (ruling relayed from vjt) a nick
+  // change rewrites nothing — so that TAG goes stale on our first rename.
+  // `!= null` and not `!== null`: a pre-36 server omits the key.
+  const isDm = message.dm_with != null;
 
   // #866 — the per-conversation mute, and it wins over EVERY reason below,
   // including a direct mention (vjt's Q2: the mute always wins, because the

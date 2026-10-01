@@ -53,8 +53,23 @@ defmodule Grappa.Scrollback.WireTest do
                sender: "vjt",
                body: "msg 42",
                meta: %{},
-               dm_conversation_id: nil
+               dm_conversation_id: nil,
+               dm_with: nil
              }
+    end
+
+    # issue 1365 (protocol 36) — an inbound DM carries `dm_with` RAW, the
+    # discriminator a nick change never rewrites; `channel` keeps the own
+    # nick we held at receipt. Same field the away bundle carries (#2333).
+    test "an inbound DM row carries dm_with RAW beside the own-nick channel",
+         %{user: user, network: network} do
+      {:ok, msg} =
+        ScrollbackHelpers.insert(sample(user, network, 43, %{channel: "vjt", sender: "Alice", dm_with: "Alice"}))
+
+      wire = msg |> Repo.preload(:network) |> Wire.to_json()
+
+      assert wire.dm_with == "Alice"
+      assert wire.channel == "vjt"
     end
 
     # S14: kind is the Message.kind() ATOM in the term (Jason
