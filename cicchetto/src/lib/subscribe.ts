@@ -33,6 +33,7 @@ import { createPresencePause, PRESENCE_PAUSE_ENABLED } from "./presencePause";
 import { shouldNotify } from "./pushTriggers";
 import { setEnsureQueryTopicJoined } from "./queryTopicJoin";
 import { canonicalQueryNick, queryWindowsByNetwork } from "./queryWindows";
+import { copyRailWhois } from "./railWhois";
 import { applyJoinReply, applyReadCursorSet } from "./readCursor";
 import { recordSeen } from "./reconnectBackfill";
 import { appendToScrollback, refreshScrollback } from "./scrollback";
@@ -691,15 +692,27 @@ moduleRoot(() => {
             routeMessage(slug, key, name, message, ownNick);
           }
 
-          // A peer's NICK moves nothing here (issue 1365, vjt's ruling of
-          // 2026-10-01: a nick change causes no update). The server no longer
-          // renames the query window row, so the window, its scrollback, its
-          // cursor and the rail's WHOIS entry all stay under the old nick, and
-          // the renamed peer opens a NEW window the first time it writes. Moving
-          // cic's caches here would file the window under a nick the server's
+          // A peer's NICK moves no window state here (issue 1365, ruling
+          // relayed from vjt, 2026-10-01: a nick change causes no update). The
+          // server no longer renames the query window row, so the window, its
+          // scrollback and its cursor stay under the old nick, and the renamed
+          // peer opens a NEW window the first time it writes. Moving those
+          // caches would file the window under a nick the server's
           // `query_windows_list` does not carry — cic originating state. The
           // members map still follows the rename, via `routeMessage` above
           // (`applyPresenceEvent`).
+          //
+          // The rail's WHOIS cache is the exception, and it is COPIED, not
+          // moved: it holds server replies about a person, not window state,
+          // and both the old and the new window can put the card on screen.
+          // Fires once per shared channel; a second copy is a no-op.
+          if (message.kind === "nick_change" && !nickEquals(message.sender, ownNick, casemapping)) {
+            const newNick =
+              typeof message.meta.new_nick === "string" ? message.meta.new_nick : null;
+            if (newNick !== null && !nickEquals(message.sender, newNick, casemapping)) {
+              copyRailWhois(slug, message.sender, newNick);
+            }
+          }
 
           // #200: tear down the per-channel WS subscription on OWN-part.
           // Pre-#200 `joined` was only `.leave()`d on token rotation, so an

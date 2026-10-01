@@ -24,7 +24,8 @@ import type { WhoisBundle } from "../lib/api";
 //   7. railWhoisFor is reactive + case-folded.
 //   8. no live network id → no WHOIS, no throw.
 //   9. identity rotation wipes the cache.
-//  10. #373 — the cache follows a peer NICK instead of stranding it.
+//  10. issue 1365 — a peer NICK copies a KNOWN bundle to the new nick; an
+//      unanswered ask is not copied, and an entry already there wins.
 
 vi.mock("../lib/auth", async () => {
   const { createSignal } = await import("solid-js");
@@ -207,6 +208,27 @@ describe("railWhois", () => {
     const { requestRailWhois } = await import("../lib/railWhois");
     requestRailWhois("ghost", "alice");
     expect(pushWhoisMock).not.toHaveBeenCalled();
+  });
+
+  it("copyRailWhois does not copy an unanswered ask — the new nick still asks once", async () => {
+    // The reply to an ask in flight keys on the OLD nick, so a copied
+    // marker would suppress the new nick's ask while the answer landed
+    // elsewhere. Nothing is known, so nothing is carried.
+    const { copyRailWhois, requestRailWhois } = await import("../lib/railWhois");
+    requestRailWhois("azzurra", "Guest87449");
+    copyRailWhois("azzurra", "Guest87449", "NickTemporaneo");
+    pushWhoisMock.mockClear();
+    requestRailWhois("azzurra", "NickTemporaneo");
+    expect(pushWhoisMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("copyRailWhois keeps an entry already under the new nick (the fresher observation)", async () => {
+    const { copyRailWhois, ingestRailWhois, railWhoisFor } = await import("../lib/railWhois");
+    ingestRailWhois("azzurra", "Guest87449", bundle("Guest87449"));
+    ingestRailWhois("azzurra", "NickTemporaneo", bundle("NickTemporaneo"));
+    copyRailWhois("azzurra", "Guest87449", "NickTemporaneo");
+    expect(railWhoisFor("azzurra", "NickTemporaneo")?.host).toBe("NickTemporaneo.host");
+    expect(railWhoisFor("azzurra", "Guest87449")?.host).toBe("Guest87449.host");
   });
 
   it("wipes the cache on identity rotation (logout/token change)", async () => {

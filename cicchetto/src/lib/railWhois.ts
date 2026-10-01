@@ -163,9 +163,56 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     put(slug, key, { at: Date.now(), bundle });
   };
 
-  return { railWhoisFor, requestRailWhois, ingestRailWhois };
+  // Issue 1365 — a peer renamed: COPY its cached bundle old→new. A rename no
+  // longer moves the query window (the server writes nothing on a NICK), so
+  // the renamed peer keeps its old window and opens a new one, and the card
+  // can come on screen under EITHER nick. The bundle describes the same
+  // person — host, realname, channels all still hold — so the new nick gets
+  // a copy and the old window keeps its own. Either miss would cost a WHOIS
+  // upstream (one more closely-spaced command on the connection, and "<nick>
+  // is doing a WHOIS on you" in front of a +y peer); moving instead of
+  // copying only trades the new nick's WHOIS for one on the old nick, which
+  // nobody holds any more. This is a cache of server replies, not window
+  // state: it originates nothing the server would contradict.
+  //
+  // ONLY an entry that KNOWS something is copied. An ask still in flight, or
+  // one answered empty, has nothing to carry, and its reply keys on the OLD
+  // nick (`userTopic` routes on the wire `target`). An entry already under
+  // the new nick wins: it is the fresher observation of that identity.
+  const copyRailWhois = (slug: string, oldNick: string, newNick: string): void => {
+    const casemapping = casemappingForSlug(slug);
+    const oldKey = normalizeNick(oldNick, casemapping);
+    const newKey = normalizeNick(newNick, casemapping);
+    if (oldKey === newKey) return;
+    setByNick((prev) => {
+      const net = prev[slug];
+      const known = net?.[oldKey];
+      if (net === undefined || known?.bundle == null || !whoisBundleHasFields(known.bundle)) {
+        return prev;
+      }
+      if (newKey in net) return prev;
+      return {
+        ...prev,
+        [slug]: {
+          ...net,
+          [newKey]: {
+            at: known.at,
+            // 307 RPL_WHOISREGNICK is "identified for THIS nick", not for the
+            // person, so it is the one bahamut field a rename invalidates:
+            // carrying it would badge the renamed peer "registered" on no
+            // evidence. A services `account` (330) is connection-scoped and
+            // legitimately survives.
+            bundle: { ...known.bundle, target: newNick, is_registered: false },
+          },
+        },
+      };
+    });
+  };
+
+  return { railWhoisFor, requestRailWhois, ingestRailWhois, copyRailWhois };
 });
 
 export const railWhoisFor = exports_.railWhoisFor;
 export const requestRailWhois = exports_.requestRailWhois;
 export const ingestRailWhois = exports_.ingestRailWhois;
+export const copyRailWhois = exports_.copyRailWhois;

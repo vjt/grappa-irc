@@ -531,3 +531,45 @@ ours: an unread one counts as an inbound DM unless it is muted (the mute stays
 on the old key, and that is the key the row resolves to). Outbound DMs to
 peers already behaved this way before this change — nothing ever migrated
 their `sender`.
+<!-- entry #1365f -->
+
+---
+
+## 2026-10-01 — #1365f: of cic's four rename mirrors, three were never caches — the rail WHOIS is, and is copied
+
+**The licence and the criterion.** vjt, relayed from IRC #grappa at 23:00
+Europe/Rome (not seen first-hand): «non e' un prb modificare cic» and «se la
+cache non serve si puo togliere, se serve la lasciamo». The first is the
+licence to touch cic; the second hands the decision on the four #373 mirrors to
+a technical criterion — does the cache serve once the server migrates nothing?
+The reason each one goes or stays is the invariant below, not the licence.
+
+**Why three go.** `subscribe.ts` on main said it in its own comment: the
+mirrors were the client half of a migration whose server half renamed the
+`query_windows` row. With the server writing nothing on a NICK:
+
+- `renameScrollbackKey` would file rows under the new nick that the server
+  never returns for that key (they keep `dm_with` = the old nick);
+- `renameReadCursorChannel` would move a cursor the server keeps at the old
+  key — read state is server-owned;
+- `followQueryNick` would select a window absent from `query_windows_list`,
+  and its only non-originating form, `openQueryWindowState`, is a database
+  write caused by a nick change, which the ruling forbids. The 401 it used to
+  avoid is the accepted price.
+
+Each would make cic originate state.
+
+**Why the rail WHOIS stays, and as a COPY.** It is a cache of the server's own
+`whois_bundle` replies about a person, not window state, and it serves without
+any server migration: the renamed peer's new window puts the card on screen,
+and without the entry the rail asks upstream again, which a +y peer is told
+about. Measured in `subscribe.test.ts` by counting `pushWhois` calls over the
+P → P2 round trip on both windows (positive control inside the test: an
+unknown nick costs exactly one): with the mirror removed, 1 WHOIS, on P2; with
+the old MOVE, 1 WHOIS, on P, which nobody holds any more; with COPY, 0 and 0.
+COPY wins both cells, so there is nothing to balance. 307 RPL_WHOISREGNICK is
+still dropped from the copy (identified for that nick, not the person); an
+unanswered ask is not copied, and an entry already under the new nick wins.
+
+**What the mutant said.** COPY → MOVE killed 2 tests, both written or rewritten
+in this slice: no assert that predates it depended on the behaviour.

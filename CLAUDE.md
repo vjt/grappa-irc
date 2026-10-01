@@ -161,8 +161,11 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   So on `{:peer_nick_renamed, old}` `Session.Server` only demotes the
   vacated nick's `/notify` presence (#378, in memory) — the
   `query_windows` row, the DM scrollback, the read cursor and the mute all
-  stay at `old`, and cic moves none of its caches either (`subscribe.ts`;
-  the members map still follows through `routeMessage`). Boundary limit
+  stay at `old`, and cic moves none of its window caches either
+  (`subscribe.ts`; the members map still follows through `routeMessage`).
+  The one cic cache that does react is the rail WHOIS, and it is COPIED
+  to the new nick, never moved: it holds server replies about a person,
+  not window state, and both windows can show the card (#1365f). Boundary limit
   that used to matter here and no longer does: IRC delivers a NICK only to
   channel-sharing peers. **The inbound-DM own-nick TAG stays too:** an
   inbound DM is persisted at `channel = <own nick at receipt>`, and since
