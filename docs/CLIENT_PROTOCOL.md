@@ -822,16 +822,11 @@ direction — you to them, them to you — carries the same id. The id does NOT
 claim the peer is the same person across a rename; it claims the window is
 the same window.
 
-**Across a NICK**, which is the reason the id exists:
-
-- a peer renaming to a nick you have **no** conversation with keeps the
-  conversation's id — the next `query_windows_list` shows the same id under
-  the new `target_nick`;
-- a peer renaming to a nick you **already** have a conversation with merges
-  the two: the old id's rows move to the surviving id and the old id stops
-  existing. The move runs in bounded batches after the rename, so a page
-  fetched while it runs can still show rows under the old id. Treat an id you no longer hold a
-  window for as a reason to refetch, never as an error.
+**Across a NICK nothing moves** (issue 1365, both a peer's rename and our
+own): the id stays with the window and the nick it was opened under, and
+the renamed nick gets a conversation — and an id — of its own at its first
+contact. No id is ever merged away or re-pointed. Treat an id you no longer
+hold a window for as a reason to refetch, never as an error.
 
 **`null` and absent are different statements, and you must accept both:**
 
@@ -1244,7 +1239,7 @@ forever.
 | `presence_changed` | user | our presence / away state changed |
 | `presence_error` | user | upstream watch-list rejection (`ERR_MONLISTFULL`, `ERR_TOOMANYWATCH`) |
 | `presence_snapshot` | user | cold-join presence snapshot, pushed to your socket alone |
-| `query_windows_list` | user | the full DM window list, each entry with its `dm_conversation_id` from v34 (§5f); also the "rename fully applied" barrier after OUR OWN nick change moves the self window (a peer NICK moves nothing since issue 1365, §5h) |
+| `query_windows_list` | user | the full DM window list, each entry with its `dm_conversation_id` from v34 (§5f); no NICK moves a window since issue 1365 (§5h), so no rename emits it |
 | `quit_part_reason_changed` | user | the subject's remembered quit / part text changed (§4d) |
 | `read_cursor_set` | channel | the read cursor moved — `last_read_message_id` + badge count |
 | `recover_progress` | user | ghost-recovery progress |

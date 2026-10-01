@@ -12,10 +12,9 @@ defmodule Grappa.DmConversations do
       (`Grappa.QueryWindows.open/4`), whichever comes first.
     * **Open is state**, not existence: `opened_at` is set while the query
       window is open and cleared when it closes. Closing is an UPDATE.
-    * **Never deleted — except as the loser of a rename MERGE**, and only
-      once every child has moved to the survivor (`Grappa.NickMigration`
-      owns that sequence; the FK is NO ACTION, so a forgotten child makes
-      the delete fail instead of orphaning the row).
+    * **Never deleted, never renamed.** Since the own-nick rename went to
+      zero writes too, nothing re-keys a conversation: a peer or we change
+      nick, and the next contact under the new nick mints its own.
 
   ## One folded nick, one conversation (ruling T1, 2026-09-28)
 
@@ -54,20 +53,6 @@ defmodule Grappa.DmConversations do
   alias Grappa.{Repo, Subject}
 
   require Identifier
-
-  @typedoc """
-  What a rename did to the conversation that bore the old nick.
-
-    * `:renamed` — the common case: no conversation holds the new nick and
-      every row moved with the rename, so the row's display column was
-      UPDATEd in place. One statement, the id unchanged.
-    * `{:move, from_id, to_id}` — the new nick already has a conversation
-      (a MERGE), or only part of the old conversation's rows moved (a
-      SPLIT, own-nick self window only). The caller must re-point the moved
-      children from `from_id` to `to_id` in bounded batches, then delete
-      `from_id` if it has none left.
-  """
-  @type follow :: :renamed | {:move, pos_integer(), pos_integer()}
 
   @doc """
   The conversation whose peer folds to `nick`, minting it (closed, with
@@ -152,53 +137,6 @@ defmodule Grappa.DmConversations do
     :ok
   end
 
-  @doc """
-  Applies a nick rename to `source`, the conversation that bore the old nick,
-  AFTER the nick-keyed stores have moved (`Grappa.NickMigration`).
-
-  `keeps_rows?` answers whether any of `source`'s messages still carry the OLD
-  key — the caller measures it, because only the caller knows which rows its
-  rename moved. A peer rename moves the whole conversation; an own-nick
-  rename moves only the self rows (`Scrollback.rename_self_window/4`), so a
-  conversation that also holds history with a peer who bore our old nick
-  keeps those rows.
-
-  Open state follows the window: whatever `QueryWindows.rename/4` did, the
-  window that was open at the old nick is now at the new one, so an open
-  `source` opens the target and closes itself.
-
-  MUST run inside the caller's write transaction. See `t:follow/0`.
-  """
-  @spec follow_rename(Subject.t(), Conversation.t(), String.t(), boolean()) :: follow()
-  def follow_rename({_, _} = subject, %Conversation{} = source, new_nick, keeps_rows?)
-      when is_binary(new_nick) and is_boolean(keeps_rows?) do
-    case get(subject, source.network_id, new_nick) do
-      nil when not keeps_rows? ->
-        {1, _} =
-          Conversation
-          |> where([c], c.id == ^source.id)
-          |> Repo.update_all(set: [peer_nick: new_nick, updated_at: now()])
-
-        :renamed
-
-      target ->
-        target = target || mint!(subject, source.network_id, new_nick, nil)
-        :ok = carry_open_state(source, target)
-        {:move, source.id, target.id}
-    end
-  end
-
-  @doc """
-  Deletes a merged-away conversation. The FK is NO ACTION, so this RAISES if
-  a child still points at it — the caller proves it has none first, inside
-  the same write transaction.
-  """
-  @spec delete!(pos_integer()) :: :ok
-  def delete!(id) when is_integer(id) do
-    {1, _} = Conversation |> where([c], c.id == ^id) |> Repo.delete_all()
-    :ok
-  end
-
   # The single folded-nick predicate, character-identical to the unique
   # expression index (`lower(peer_nick)`) so every lookup seeks it.
   @spec by_nick(Subject.t(), integer(), String.t()) :: Ecto.Query.t()
@@ -207,17 +145,6 @@ defmodule Grappa.DmConversations do
     |> Subject.subject_where(subject)
     |> where([c], c.network_id == ^network_id)
     |> where([c], Identifier.nick_fold(c.peer_nick) == ^folded_nick)
-  end
-
-  @spec carry_open_state(Conversation.t(), Conversation.t()) :: :ok
-  defp carry_open_state(%Conversation{opened_at: nil}, _), do: :ok
-
-  defp carry_open_state(%Conversation{} = source, %Conversation{} = target) do
-    # An already-open target keeps its own `opened_at` (an unchanged field
-    # makes `Repo.update!/1` a no-op, no statement issued).
-    %Conversation{} = set_opened_at!(target, target.opened_at || source.opened_at)
-    %Conversation{} = set_opened_at!(source, nil)
-    :ok
   end
 
   @spec set_opened_at!(Conversation.t(), DateTime.t() | nil) :: Conversation.t()

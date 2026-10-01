@@ -245,8 +245,7 @@ defmodule Grappa.QueryWindows do
     # reply) rather than crashing the channel with a raised busy.
     #
     # issue 2201 — the read cursor is the window's SIBLING and goes with it.
-    # Composition is `Grappa.NickMigration`'s: retry OUTSIDE, transaction
-    # INSIDE, broadcast NEITHER. The transaction adds no lock this path did
+    # Composition: retry OUTSIDE, transaction INSIDE, broadcast NEITHER. The transaction adds no lock this path did
     # not already take (the window delete is a write either way), and it is
     # what keeps a crash between the two deletes from leaving exactly the
     # orphan this change exists to stop.
@@ -278,102 +277,6 @@ defmodule Grappa.QueryWindows do
       {:error, :db_unavailable} = err ->
         err
     end
-  end
-
-  @doc """
-  Renames the DM (query) window for `old_nick` to `new_nick` on
-  `(subject, network_id)`. Born for #373 (a query window following a
-  peer's NICK); since issue 1365 a peer rename moves nothing, and the one
-  caller is the own-nick SELF-window migration (#948,
-  `Grappa.NickMigration.own_renamed/5`).
-
-  Case-insensitive on `old_nick` (ASCII fold, #121/#525). Returns:
-
-    * `{:ok, :noop}` when `old_nick` and `new_nick` fold to the SAME
-      identity (a case-only change — the fold-keyed row already resolves
-      to `new_nick`, and IRC nick routing is case-insensitive, so nothing
-      moves; #372 covers the display dedup), OR when no window folds to
-      `old_nick` (a peer we never queried renamed — nothing to follow).
-    * `{:ok, :renamed}` when a window folding to `old_nick` moved to
-      `new_nick`. If a window folding to `new_nick` ALREADY exists
-      (nick-collision), the `old_nick` row is DELETED and the existing
-      `new_nick` row kept — the two DM histories coalesce under one
-      window on the read path (`Scrollback.channel_or_dm_where/3`
-      aggregates every row folding to the peer; #372 fold-dedup).
-
-  Does NOT broadcast: on `:renamed` the caller
-  (`Session.Server.apply_effects/2`) lets the migration commit and THEN
-  calls `broadcast_windows_list/2`, so the
-  `query_windows_list` event is a truthful "rename fully applied"
-  barrier rather than firing mid-migration (a `:noop` changed nothing,
-  so the caller broadcasts nothing).
-  """
-  @spec rename(Subject.t(), integer(), String.t(), String.t()) ::
-          {:ok, :renamed | :noop}
-  def rename({_, _} = subject, network_id, old_nick, new_nick)
-      when is_integer(network_id) and is_binary(old_nick) and is_binary(new_nick) do
-    folded_old = Identifier.canonical_target(old_nick)
-    folded_new = Identifier.canonical_target(new_nick)
-
-    if folded_old == folded_new do
-      {:ok, :noop}
-    else
-      do_rename(subject, network_id, folded_old, folded_new, new_nick)
-    end
-  end
-
-  # The one folded-nick window predicate; `rename/4`'s two gates derive
-  # from it.
-  @spec window_query(Subject.t(), integer(), String.t()) :: Ecto.Query.t()
-  defp window_query(subject, network_id, folded_nick) do
-    Window
-    |> Subject.subject_where(subject)
-    |> where([w], w.network_id == ^network_id)
-    |> where([w], Identifier.nick_fold(w.target_nick) == ^folded_nick)
-  end
-
-  @spec do_rename(Subject.t(), integer(), String.t(), String.t(), String.t()) ::
-          {:ok, :renamed | :noop}
-  defp do_rename(subject, network_id, folded_old, folded_new, new_nick) do
-    old_query = window_query(subject, network_id, folded_old)
-
-    if Repo.exists?(old_query) do
-      if new_window_exists?(subject, network_id, folded_new) do
-        # Nick-collision merge: the target identity already has a window.
-        # Drop the old row; the read path coalesces both DM histories
-        # under the survivor (no row duplication — distinct message rows
-        # simply aggregate to one folded key).
-        Repo.delete_all(old_query)
-      else
-        # This rename runs in the (per-subject-serialized) Session.Server,
-        # but `open/4` runs in the Phoenix channel process, so a concurrent
-        # `open(new_nick)` CAN race a row into `folded_new` between the
-        # check above and this update — the fold unique index would then
-        # reject the UPDATE (and `update_all` has no changeset to attach a
-        # `unique_constraint/2` to, so it raises rather than returns an
-        # error). Rescue that race and degrade to the merge path: the
-        # target identity now has a window, so drop the old row.
-        try do
-          Repo.update_all(old_query, set: [target_nick: new_nick])
-        rescue
-          Ecto.ConstraintError -> Repo.delete_all(old_query)
-        end
-      end
-
-      # NB: no broadcast here — the caller broadcasts AFTER migrating the
-      # DM scrollback + read cursor, so the `query_windows_list` event is
-      # a truthful "rename fully applied" barrier (#373 rename-order fix).
-      {:ok, :renamed}
-    else
-      {:ok, :noop}
-    end
-  end
-
-  @spec new_window_exists?(Subject.t(), integer(), String.t()) :: boolean()
-  defp new_window_exists?(subject, network_id, folded_new) do
-    subject
-    |> window_query(network_id, folded_new)
-    |> Repo.exists?()
   end
 
   @doc """
@@ -415,10 +318,9 @@ defmodule Grappa.QueryWindows do
   Case-insensitive under the ASCII fold (#121/#372/#525): `open?(s, n,
   "SeenServ")` matches a stored `"seenserv"` window. `"nick[1]"` and
   `"nick{1}"` are DISTINCT windows (brackets `[ ] \\ ~` are NOT folded).
-  Folds `target_nick` via `Identifier.canonical_target/1` and delegates to
-  the same `new_window_exists?/3` exists-query the fold-collision path in
-  `rename/4` uses — character-identical to the folded unique **expression**
-  index, so the check is sargable.
+  Folds `target_nick` via `Identifier.canonical_target/1` into an exists
+  query on `Identifier.nick_fold/1` — character-identical to the folded
+  unique **expression** index, so the check is sargable.
 
   Added for #400: `Grappa.Session.EventRouter` re-keys a services-sender
   NOTICE / PRIVMSG onto this window instead of the synthetic `$server`
@@ -430,7 +332,13 @@ defmodule Grappa.QueryWindows do
   @spec open?(Subject.t(), integer(), String.t()) :: boolean()
   def open?({_, _} = subject, network_id, target_nick)
       when is_integer(network_id) and is_binary(target_nick) do
-    new_window_exists?(subject, network_id, Identifier.canonical_target(target_nick))
+    folded = Identifier.canonical_target(target_nick)
+
+    Window
+    |> Subject.subject_where(subject)
+    |> where([w], w.network_id == ^network_id)
+    |> where([w], Identifier.nick_fold(w.target_nick) == ^folded)
+    |> Repo.exists?()
   end
 
   @doc """
@@ -547,21 +455,10 @@ defmodule Grappa.QueryWindows do
     end
   end
 
-  @doc """
-  Broadcasts the full current window list for `subject` on
-  `Topic.user(subject_label)` as a `query_windows_list` event.
-
-  Public because `rename/4` deliberately does NOT broadcast (#373): the
-  caller (`Session.Server.apply_effects/2`) must migrate the DM
-  scrollback + read cursor FIRST, then call this — so the broadcast is a
-  truthful "the rename is fully applied" barrier. If `rename/4`
-  broadcast internally (as `open/4` / `close/4` do, which have no
-  follow-on migration), a client reacting to the event could read the
-  DM history before its rows moved old -> new. `open/4` / `close/4` call
-  the same helper inline since they have nothing to order it against.
-  """
+  # Broadcasts the full current window list for `subject` on
+  # `Topic.user(subject_label)` as a `query_windows_list` event.
   @spec broadcast_windows_list(Subject.t(), String.t()) :: :ok
-  def broadcast_windows_list(subject, subject_label) do
+  defp broadcast_windows_list(subject, subject_label) do
     payload =
       subject
       |> list_for_subject()

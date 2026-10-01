@@ -338,7 +338,6 @@ defmodule Grappa.Session.EventRouter do
           | {:presence_error, :list_full, detail :: String.t()}
           | {:presence_command_unknown, :monitor | :watch | :ison}
           | {:peer_nick_renamed, old_nick :: String.t()}
-          | {:own_nick_renamed, old_nick :: String.t(), new_nick :: String.t()}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -1099,10 +1098,9 @@ defmodule Grappa.Session.EventRouter do
   # differently is the whole defect.
   #
   # The rejection belongs HERE, where the rename effects are coined, and
-  # not in their consumers: `{:own_nick_renamed, old, new}` and
-  # `{:peer_nick_renamed, old}` carry IDENTITIES, and a consumer is
-  # entitled to trust that shape rather than re-validate it. Same reason
-  # one guard covers both branches — one malformed line, one door.
+  # not in their consumer: `{:peer_nick_renamed, old}` carries an
+  # IDENTITY, and a consumer is entitled to trust that shape rather than
+  # re-validate it. One malformed line, one door.
   #
   # Deliberately narrow: the blank class only, NOT `Identifier.valid_nick?/1`.
   # That predicate is anchored ASCII and capped at 30 — right for what WE
@@ -4731,27 +4729,6 @@ defmodule Grappa.Session.EventRouter do
   # RPL_WELCOME); callers always pass a binary first arg (parsed wire
   # nick), mirroring `Grappa.Session.NumericRouter.nick_eq?/2`.
   @spec nick_eq?(String.t(), String.t() | nil) :: boolean()
-  # #948: OUR OWN rename. It keys exactly one store, the SELF window
-  # (`/msg <ownnick>`), which `Grappa.NickMigration.own_renamed/5` moves —
-  # ruled to zero writes by issue 1365 too, kept until that window has a key
-  # that does not move with our nick. (The inbound-DM own-nick TAG #514 used
-  # to re-key here as well; since issue 1365 `Message.dm?/1` reads `dm_with`
-  # instead, so the TAG stays.)
-  #
-  # Genuine renames only (`old ≢ new` under the fold) — a case-only change
-  # reads back equal and needs no rewrite. And NO `channels != []` gate,
-  # unlike the peer arm: that gate encodes "IRC only delivers a peer's NICK
-  # through a shared channel", which says nothing about our own echo — a
-  # session with zero channels joined still renames itself.
-  @spec own_nick_rename_effects(state(), String.t(), String.t()) :: [effect()]
-  defp own_nick_rename_effects(state, old_nick, new_nick) do
-    if nick_eq?(old_nick, state.nick) and not nick_eq?(old_nick, new_nick) do
-      [{:own_nick_renamed, old_nick, new_nick}]
-    else
-      []
-    end
-  end
-
   @spec route_nick(Message.t(), String.t(), state()) :: {:cont, state(), [effect()]}
   defp route_nick(msg, new_nick, state) do
     old_nick = Message.sender_nick(msg)
@@ -4858,8 +4835,6 @@ defmodule Grappa.Session.EventRouter do
         []
       end
 
-    own_rename_effects = own_nick_rename_effects(state, old_nick, new_nick)
-
     # #581 — mirror bahamut's SILENT +r-strip on our own genuine self-rename
     # (see strip_r_on_self_rename/4) so the per-session umode set stays truthful.
     {final_state, self_umode_effects} =
@@ -4868,7 +4843,7 @@ defmodule Grappa.Session.EventRouter do
     {:cont, final_state,
      persist_effects ++
        self_server_effects ++
-       visitor_persist_effects ++ peer_rename_effects ++ own_rename_effects ++ self_umode_effects}
+       visitor_persist_effects ++ peer_rename_effects ++ self_umode_effects}
   end
 
   # Blank = empty or whitespace-only. `String.trim/1` (not `== ""`) because

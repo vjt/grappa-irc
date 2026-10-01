@@ -128,8 +128,7 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   `GrappaChannel` topic join) from `Grappa.Session.casemapping/2` (a
   GenServer call, `:ascii` when no live pid). A folded WRITE forces a
   folded READ compare — including plain-`==` sites no `canonical_*` grep
-  surfaces (self-window `dm_with == ^channel`) and the raw
-  `Repo.update_all(set: channel:)` in `rename_self_window`. **Known niche gaps
+  surfaces (self-window `dm_with == ^channel`). **Known niche gaps
   (rfc1459-only, out of scope, DESIGN_NOTES 2026-07-30):** a national-char
   DM peer on rfc1459 (`dm_with` RAW + `nick_fold` ASCII, like the
   members-map raw key); the pre-connect autojoin plan folded ASCII before
@@ -174,30 +173,23 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   `pushTriggers.ts` off the row's `dm_with` (on the scrollback wire since
   protocol 36). Own rows carry `dm_with` too (outbound DMs), so "is this
   row mine?" (`Triggers.own_row?/2`, `sender` vs the live nick) is asked
-  FIRST. **Our OWN nick: the zero-write goal is RULED and NOT implemented,
-  for want of the mechanism.** It keys exactly one window — the SELF
-  window (`/msg <ownnick>`, GH #948) — and until something decides which
-  key replaces a nick-keyed self window, `{:own_nick_renamed, old, new}`
-  still moves it through `Grappa.NickMigration.own_renamed/5` (one retried
-  transaction, #1374): `Scrollback.rename_self_window/4` (rows) →
-  `ReadCursor.rename_dm_peer/4` → `QueryWindows.rename/4` →
-  `UserSettings.rename_muted_target!/4` → `DmConversations.follow_rename/4`
-  → broadcast `query_windows_list`, GATED on a non-zero row count. A
-  window at our old nick is EITHER our self window OR a leftover query
-  with a peer who bore that nick before us, and the fold-unique index
-  makes those ONE row — only the scrollback's `sender` separates them
-  (folded to MATCH; the fold is never STORED). **On a SELF row `sender`
-  MIGRATES** (raw new nick): all three columns name the same person, an
-  UPDATE that does not preserve the shape its predicate matches is
-  one-shot (`a→b→a` via GhostRecovery would strand the window for good),
-  and `Push.Triggers.own_row?/2` reads `sender` as a LIVE identity test.
-  **General rule: a DISPLAY column migrates only while a consumer reads it
-  as the LIVE identity** — which is why the self row's `sender` moves and,
-  since issue 1365 moved the DM test onto `dm_with`, why the own-nick TAG
-  no longer does. A NEW nick-keyed store is the wrong move: key it on
-  something a rename does not touch. cic does NOT mirror the self-window
-  rename: the `own_nick_changed` event carries neither the old nick nor
-  whether the migration ran, so a client mirror would originate state.
+  FIRST. **Our OWN nick writes nothing either** (issue 1365 C4, mechanism
+  relayed from vjt on IRC #grappa 2026-10-01, not seen first-hand): there
+  is no `{:own_nick_renamed}` effect and no `Grappa.NickMigration` any
+  more. The SELF window (`/msg <ownnick>`, GH #948) stays at the nick it
+  was opened under, with its rows, read cursor and mute; `/msg <newnick>`
+  opens a new one — the same accepted price as a renamed peer. Two
+  consequences come with it and are part of the price, not bugs to
+  rediscover: (1) the old self window now reads as a query with a PEER
+  bearing our old nick, so whoever takes that nick next lands in it; (2)
+  `Push.Triggers.own_row?/2` reads `sender` as the LIVE identity, so a self
+  row written under the old nick stops counting as ours — if it was still
+  unread it counts as an inbound DM. **General rule: no DISPLAY column
+  migrates on a rename; a consumer that reads one as the LIVE identity
+  must accept that a row predating a rename stops matching.** A NEW
+  nick-keyed store is the wrong move: key it on something a rename does
+  not touch. cic mirrors none of this: `own_nick_changed` updates the live
+  nick and nothing else.
 - **Read state is server-owned, per (subject, network, channel).**
   Cursor = `last_read_message_id` (FK to `messages.id`). Removing
   server-side cursor is a breaking change. The write cadence (settle
