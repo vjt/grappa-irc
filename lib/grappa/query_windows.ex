@@ -282,8 +282,10 @@ defmodule Grappa.QueryWindows do
 
   @doc """
   Renames the DM (query) window for `old_nick` to `new_nick` on
-  `(subject, network_id)` — the server-authoritative half of #373 (a
-  query window following a peer's NICK change).
+  `(subject, network_id)`. Born for #373 (a query window following a
+  peer's NICK); since issue 1365 a peer rename moves nothing, and the one
+  caller is the own-nick SELF-window migration (#948,
+  `Grappa.NickMigration.own_renamed/5`).
 
   Case-insensitive on `old_nick` (ASCII fold, #121/#525). Returns:
 
@@ -297,13 +299,11 @@ defmodule Grappa.QueryWindows do
       (nick-collision), the `old_nick` row is DELETED and the existing
       `new_nick` row kept — the two DM histories coalesce under one
       window on the read path (`Scrollback.channel_or_dm_where/3`
-      aggregates every row folding to the peer; #372 fold-dedup). The
-      caller migrates the scrollback rows old -> new via
-      `Scrollback.rename_dm_peer/4` on this result.
+      aggregates every row folding to the peer; #372 fold-dedup).
 
   Does NOT broadcast: on `:renamed` the caller
-  (`Session.Server.apply_effects/2`) migrates the DM scrollback + read
-  cursor and THEN calls `broadcast_windows_list/2`, so the
+  (`Session.Server.apply_effects/2`) lets the migration commit and THEN
+  calls `broadcast_windows_list/2`, so the
   `query_windows_list` event is a truthful "rename fully applied"
   barrier rather than firing mid-migration (a `:noop` changed nothing,
   so the caller broadcasts nothing).
@@ -322,28 +322,8 @@ defmodule Grappa.QueryWindows do
     end
   end
 
-  @doc """
-  Does `subject` hold a DM window whose `target_nick` folds to `nick`?
-
-  The read half of `rename/4`'s own gate, exposed because a caller needs to
-  know whether a rename has anything to move BEFORE paying for the machinery
-  that would move it — `Grappa.NickMigration.peer_renamed/5` opens a write
-  transaction only when this answers true (#1378).
-
-  Folds `nick` like every other nick KEY (#121/#537), so the caller passes
-  the RAW nick off the wire.
-  """
-  @spec exists?(Subject.t(), integer(), String.t()) :: boolean()
-  def exists?({_, _} = subject, network_id, nick)
-      when is_integer(network_id) and is_binary(nick) do
-    subject
-    |> window_query(network_id, Identifier.canonical_target(nick))
-    |> Repo.exists?()
-  end
-
-  # The one folded-nick window predicate. `rename/4`'s two gates and
-  # `exists?/3` all derive from it, so the probe a caller makes is BY
-  # CONSTRUCTION the same question the rename then asks.
+  # The one folded-nick window predicate; `rename/4`'s two gates derive
+  # from it.
   @spec window_query(Subject.t(), integer(), String.t()) :: Ecto.Query.t()
   defp window_query(subject, network_id, folded_nick) do
     Window

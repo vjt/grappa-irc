@@ -15,7 +15,7 @@ defmodule Grappa.Session.PresencePushTest do
 
   Also pins the rename fix AND its measured limit. A watched peer renaming
   emits `731` (or `601`/`605`) for the freed nick, which without the
-  presence reset in the `{:peer_nick_renamed, _, _}` arm would be a genuine
+  presence reset in the `{:peer_nick_renamed, _}` arm would be a genuine
   `:transition` — "alice went offline" on the lockscreen about someone who
   merely renamed. That half is fixed. The other half the design claimed —
   silence when a DIFFERENT human takes the freed nick — is NOT bought by

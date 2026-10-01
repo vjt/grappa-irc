@@ -62,7 +62,8 @@ defmodule Grappa.Push.ShouldNotifyParityTest do
         kind: Map.fetch!(@kinds, c["message"]["kind"]),
         channel: c["message"]["channel"],
         sender: c["message"]["sender"],
-        body: c["message"]["body"]
+        body: c["message"]["body"],
+        dm_with: c["message"]["dm_with"]
       }
 
       # JSON carries string-keyed prefs; should_notify?/5 reads atom keys.

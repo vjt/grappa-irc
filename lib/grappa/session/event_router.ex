@@ -337,7 +337,7 @@ defmodule Grappa.Session.EventRouter do
              :monitor | :watch | :ison}
           | {:presence_error, :list_full, detail :: String.t()}
           | {:presence_command_unknown, :monitor | :watch | :ison}
-          | {:peer_nick_renamed, old_nick :: String.t(), new_nick :: String.t()}
+          | {:peer_nick_renamed, old_nick :: String.t()}
           | {:own_nick_renamed, old_nick :: String.t(), new_nick :: String.t()}
 
   @doc """
@@ -1100,7 +1100,7 @@ defmodule Grappa.Session.EventRouter do
   #
   # The rejection belongs HERE, where the rename effects are coined, and
   # not in their consumers: `{:own_nick_renamed, old, new}` and
-  # `{:peer_nick_renamed, old, new}` carry IDENTITIES, and a consumer is
+  # `{:peer_nick_renamed, old}` carry IDENTITIES, and a consumer is
   # entitled to trust that shape rather than re-validate it. Same reason
   # one guard covers both branches — one malformed line, one door.
   #
@@ -4731,22 +4731,18 @@ defmodule Grappa.Session.EventRouter do
   # RPL_WELCOME); callers always pass a binary first arg (parsed wire
   # nick), mirroring `Grappa.Session.NumericRouter.nick_eq?/2`.
   @spec nick_eq?(String.t(), String.t() | nil) :: boolean()
-  # #514: OUR OWN rename is not the mirror image of a peer's. A peer nick is
-  # a WINDOW KEY, which is why the `:peer_nick_renamed` arm moves three
-  # stores and then broadcasts the move. Our own nick keys nothing: an
-  # inbound DM's window is `dm_with` (the peer), which a self-rename never
-  # touches. What our nick DOES leave behind is a TAG — every inbound DM row
-  # is persisted at `channel = <own nick at receipt>`, and
-  # `Push.Triggers.dm?/2` reads that back against the LIVE nick (#498), so a
-  # stale tag drops those rows out of the notify set. Hence ONE store to
-  # re-key, no query window, no read cursor, nothing to broadcast.
+  # #948: OUR OWN rename. It keys exactly one store, the SELF window
+  # (`/msg <ownnick>`), which `Grappa.NickMigration.own_renamed/5` moves —
+  # ruled to zero writes by issue 1365 too, kept until that window has a key
+  # that does not move with our nick. (The inbound-DM own-nick TAG #514 used
+  # to re-key here as well; since issue 1365 `Message.dm?/1` reads `dm_with`
+  # instead, so the TAG stays.)
   #
   # Genuine renames only (`old ≢ new` under the fold) — a case-only change
   # reads back equal and needs no rewrite. And NO `channels != []` gate,
   # unlike the peer arm: that gate encodes "IRC only delivers a peer's NICK
-  # through a shared channel", which says nothing about our own echo, and the
-  # rows at stake are DMs — a DM-only session with zero channels joined is
-  # precisely the case #514 was filed from.
+  # through a shared channel", which says nothing about our own echo — a
+  # session with zero channels joined still renames itself.
   @spec own_nick_rename_effects(state(), String.t(), String.t()) :: [effect()]
   defp own_nick_rename_effects(state, old_nick, new_nick) do
     if nick_eq?(old_nick, state.nick) and not nick_eq?(old_nick, new_nick) do
@@ -4849,17 +4845,15 @@ defmodule Grappa.Session.EventRouter do
           []
       end
 
-    # #373: a PEER rename (not our own) must migrate that peer's open query
-    # window + its DM scrollback old -> new, so the window follows the nick
-    # and outbound sends stop routing to the now-vanished old nick (401).
-    # Emitted only when the renamer is a tracked member (`channels != []`) —
-    # that is the only case IRC delivers a peer's NICK to us, and it mirrors
-    # the per-channel fan-out gate above. `Session.Server.apply_effects/2`
-    # gates the actual DB migration on a query window existing (no-op
-    # otherwise), so a peer we never queried costs one indexed lookup.
+    # A PEER rename (not our own). Issue 1365 (ruling relayed from vjt): it
+    # moves no DB state — the query window stays at the old nick — so the
+    # effect carries only the vacated nick, whose `/notify` presence entry
+    # `Session.Server` demotes (#378). Emitted only when the renamer is a
+    # tracked member (`channels != []`) — the only case IRC delivers a
+    # peer's NICK to us, mirroring the per-channel fan-out gate above.
     peer_rename_effects =
       if not nick_eq?(old_nick, state.nick) and channels != [] do
-        [{:peer_nick_renamed, old_nick, new_nick}]
+        [{:peer_nick_renamed, old_nick}]
       else
         []
       end

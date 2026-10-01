@@ -1,7 +1,13 @@
 [
   {
     "name": "kind gate: notice never notifies (even with everything on)",
-    "message": { "kind": "notice", "channel": "#sniffo", "sender": "alice", "body": "vjt: ping" },
+    "message": {
+      "kind": "notice",
+      "channel": "#sniffo",
+      "sender": "alice",
+      "dm_with": null,
+      "body": "vjt: ping"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -16,7 +22,13 @@
   },
   {
     "name": "kind gate: join never notifies",
-    "message": { "kind": "join", "channel": "#sniffo", "sender": "alice", "body": null },
+    "message": {
+      "kind": "join",
+      "channel": "#sniffo",
+      "sender": "alice",
+      "dm_with": null,
+      "body": null
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -31,7 +43,13 @@
   },
   {
     "name": "DM: private_messages_all notifies regardless of sender",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "alice",
+      "dm_with": "alice",
+      "body": "ping"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -46,7 +64,13 @@
   },
   {
     "name": "DM: sender in whitelist notifies when _all is off",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "alice",
+      "dm_with": "alice",
+      "body": "ping"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -61,7 +85,13 @@
   },
   {
     "name": "DM: sender NOT in whitelist does not notify",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "alice",
+      "dm_with": "alice",
+      "body": "ping"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -76,7 +106,13 @@
   },
   {
     "name": "DM: whitelist match is case-insensitive on sender",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "ALICE", "body": "ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "ALICE",
+      "dm_with": "ALICE",
+      "body": "ping"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -91,7 +127,13 @@
   },
   {
     "name": "DM: whitelist folds CASE but not brackets — Foo[1] matches foo[1] (#525)",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "Foo[1]", "body": "ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "Foo[1]",
+      "dm_with": "Foo[1]",
+      "body": "ping"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -106,7 +148,13 @@
   },
   {
     "name": "DM does NOT consider channel flags",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "alice",
+      "dm_with": "alice",
+      "body": "ping"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -125,6 +173,7 @@
       "kind": "privmsg",
       "channel": "#sniffo",
       "sender": "alice",
+      "dm_with": null,
       "body": "no mention here"
     },
     "network_slug": "azzurra",
@@ -145,6 +194,7 @@
       "kind": "privmsg",
       "channel": "#sniffo",
       "sender": "alice",
+      "dm_with": null,
       "body": "no mention here"
     },
     "network_slug": "azzurra",
@@ -165,6 +215,7 @@
       "kind": "privmsg",
       "channel": "#SNIFFO",
       "sender": "alice",
+      "dm_with": null,
       "body": "no mention here"
     },
     "network_slug": "azzurra",
@@ -185,6 +236,7 @@
       "kind": "privmsg",
       "channel": "#Foo[1]",
       "sender": "alice",
+      "dm_with": null,
       "body": "no mention here"
     },
     "network_slug": "azzurra",
@@ -205,6 +257,7 @@
       "kind": "privmsg",
       "channel": "#sniffo",
       "sender": "alice",
+      "dm_with": null,
       "body": "vjt: are you there?"
     },
     "network_slug": "azzurra",
@@ -225,6 +278,7 @@
       "kind": "privmsg",
       "channel": "#sniffo",
       "sender": "alice",
+      "dm_with": null,
       "body": "oncall page incoming"
     },
     "network_slug": "azzurra",
@@ -241,7 +295,13 @@
   },
   {
     "name": "channel: channel_mentions off → mention does not notify",
-    "message": { "kind": "privmsg", "channel": "#sniffo", "sender": "alice", "body": "vjt: ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "#sniffo",
+      "sender": "alice",
+      "dm_with": null,
+      "body": "vjt: ping"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -256,7 +316,13 @@
   },
   {
     "name": "channel: all off + no whitelist + no mention → no notify",
-    "message": { "kind": "privmsg", "channel": "#sniffo", "sender": "alice", "body": "no mention" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "#sniffo",
+      "sender": "alice",
+      "dm_with": null,
+      "body": "no mention"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -275,6 +341,7 @@
       "kind": "privmsg",
       "channel": "#sniffo",
       "sender": "alice",
+      "dm_with": null,
       "body": "vjtbot is paged"
     },
     "network_slug": "azzurra",
@@ -295,6 +362,7 @@
       "kind": "action",
       "channel": "#sniffo",
       "sender": "alice",
+      "dm_with": null,
       "body": "waves at vjt"
     },
     "network_slug": "azzurra",
@@ -315,6 +383,7 @@
       "kind": "privmsg",
       "channel": "#sniffo",
       "sender": "vjt",
+      "dm_with": null,
       "body": "vjt: note to self"
     },
     "network_slug": "azzurra",
@@ -331,7 +400,13 @@
   },
   {
     "name": "own row (#532 C): beats channel_messages_all — the identity gate runs FIRST",
-    "message": { "kind": "privmsg", "channel": "#sniffo", "sender": "vjt", "body": "hello all" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "#sniffo",
+      "sender": "vjt",
+      "dm_with": null,
+      "body": "hello all"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -350,6 +425,7 @@
       "kind": "privmsg",
       "channel": "alice",
       "sender": "vjt",
+      "dm_with": "alice",
       "body": "vjt will be late"
     },
     "network_slug": "azzurra",
@@ -366,7 +442,13 @@
   },
   {
     "name": "own row (#532 C): self-msg (channel=own_nick, sender=own_nick) beats private_messages_all",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "vjt", "body": "reminder" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "vjt",
+      "dm_with": "vjt",
+      "body": "reminder"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -385,6 +467,7 @@
       "kind": "privmsg",
       "channel": "#sniffo",
       "sender": "VJT",
+      "dm_with": null,
       "body": "vjt: note to self"
     },
     "network_slug": "azzurra",
@@ -405,6 +488,7 @@
       "kind": "privmsg",
       "channel": "#sniffo",
       "sender": "vjtx",
+      "dm_with": null,
       "body": "vjt: ping"
     },
     "network_slug": "azzurra",
@@ -421,7 +505,13 @@
   },
   {
     "name": "DM shape (#537): channel is stored FOLDED, so a mixed-case own_nick still routes to the DM branch",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "hello" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "alice",
+      "dm_with": "alice",
+      "body": "hello"
+    },
     "network_slug": "azzurra",
     "own_nick": "VJT",
     "prefs": {
@@ -436,7 +526,13 @@
   },
   {
     "name": "DM shape (#537): a mis-routed DM would notify via channel_mentions the user never asked for",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "VJT: yo" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "alice",
+      "dm_with": "alice",
+      "body": "VJT: yo"
+    },
     "network_slug": "azzurra",
     "own_nick": "VJT",
     "prefs": {
@@ -451,7 +547,13 @@
   },
   {
     "name": "channel fold is ASCII, not Unicode: #CAFÉ does not hit a #café whitelist entry (#525)",
-    "message": { "kind": "privmsg", "channel": "#CAFÉ", "sender": "alice", "body": "hello" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "#CAFÉ",
+      "sender": "alice",
+      "dm_with": null,
+      "body": "hello"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -466,7 +568,13 @@
   },
   {
     "name": "sender fold is ASCII, not Unicode: CAFÉ does not hit a café whitelist entry (#525)",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "CAFÉ", "body": "hello" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "CAFÉ",
+      "dm_with": "CAFÉ",
+      "body": "hello"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -481,7 +589,13 @@
   },
   {
     "name": "DM shape (#537): a real channel is NOT a DM even when own_nick folds into its name",
-    "message": { "kind": "privmsg", "channel": "#vjt", "sender": "alice", "body": "hello" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "#vjt",
+      "sender": "alice",
+      "dm_with": null,
+      "body": "hello"
+    },
     "network_slug": "azzurra",
     "own_nick": "VJT",
     "prefs": {
@@ -496,7 +610,13 @@
   },
   {
     "name": "mute (#866): a muted channel beats channel_messages_all",
-    "message": { "kind": "privmsg", "channel": "#noisy", "sender": "alice", "body": "chatter" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "#noisy",
+      "sender": "alice",
+      "dm_with": null,
+      "body": "chatter"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -512,7 +632,13 @@
   },
   {
     "name": "mute (#866 Q2): a muted channel beats a direct mention — the mute always wins",
-    "message": { "kind": "privmsg", "channel": "#noisy", "sender": "alice", "body": "vjt: ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "#noisy",
+      "sender": "alice",
+      "dm_with": null,
+      "body": "vjt: ping"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -528,7 +654,13 @@
   },
   {
     "name": "mute (#866): a muted channel beats its own channel_messages_only entry",
-    "message": { "kind": "privmsg", "channel": "#noisy", "sender": "alice", "body": "chatter" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "#noisy",
+      "sender": "alice",
+      "dm_with": null,
+      "body": "chatter"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -544,7 +676,13 @@
   },
   {
     "name": "mute (#866): muting one channel leaves its unmuted sibling notifying",
-    "message": { "kind": "privmsg", "channel": "#quiet", "sender": "alice", "body": "vjt: ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "#quiet",
+      "sender": "alice",
+      "dm_with": null,
+      "body": "vjt: ping"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -560,7 +698,13 @@
   },
   {
     "name": "mute (#866): a muted DM peer beats private_messages_all",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "alice",
+      "dm_with": "alice",
+      "body": "ping"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -576,7 +720,13 @@
   },
   {
     "name": "mute (#866): the DM mute keys on the PEER, so muting own_nick silences nothing",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "alice",
+      "dm_with": "alice",
+      "body": "ping"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -592,7 +742,13 @@
   },
   {
     "name": "mute (#866): muting one DM peer leaves another peer's DM notifying",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "bob", "body": "ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "bob",
+      "dm_with": "bob",
+      "body": "ping"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -608,7 +764,13 @@
   },
   {
     "name": "mute (#866): the incoming side folds A-Z, so a muted #noisy silences #NoIsY",
-    "message": { "kind": "privmsg", "channel": "#NoIsY", "sender": "alice", "body": "chatter" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "#NoIsY",
+      "sender": "alice",
+      "dm_with": null,
+      "body": "chatter"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -624,7 +786,13 @@
   },
   {
     "name": "mute (#866): the DM peer folds A-Z too, so a muted alice silences ALICE",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "ALICE", "body": "ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "ALICE",
+      "dm_with": "ALICE",
+      "body": "ping"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -640,7 +808,13 @@
   },
   {
     "name": "mute (#866 #525): the fold is ASCII, so a muted #café does not silence #CAFÉ",
-    "message": { "kind": "privmsg", "channel": "#CAFÉ", "sender": "alice", "body": "chatter" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "#CAFÉ",
+      "sender": "alice",
+      "dm_with": null,
+      "body": "chatter"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -656,7 +830,13 @@
   },
   {
     "name": "mute (#866 Q3): until is opaque to the predicate — an elapsed one still silences, because expiry belongs to the reader",
-    "message": { "kind": "privmsg", "channel": "#noisy", "sender": "alice", "body": "chatter" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "#noisy",
+      "sender": "alice",
+      "dm_with": null,
+      "body": "chatter"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -672,7 +852,13 @@
   },
   {
     "name": "mute (#1038): the SAME channel on ANOTHER network still notifies — the network is in the key",
-    "message": { "kind": "privmsg", "channel": "#noisy", "sender": "alice", "body": "vjt: ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "#noisy",
+      "sender": "alice",
+      "dm_with": null,
+      "body": "vjt: ping"
+    },
     "network_slug": "libera",
     "own_nick": "vjt",
     "prefs": {
@@ -688,7 +874,13 @@
   },
   {
     "name": "mute (#1038): the same nick on ANOTHER network is a different person, so the DM notifies",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "alice", "body": "ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "alice",
+      "dm_with": "alice",
+      "body": "ping"
+    },
     "network_slug": "libera",
     "own_nick": "vjt",
     "prefs": {
@@ -704,7 +896,13 @@
   },
   {
     "name": "mute (#1038): a BARE stored key matches nothing and fails OPEN",
-    "message": { "kind": "privmsg", "channel": "#noisy", "sender": "alice", "body": "chatter" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "#noisy",
+      "sender": "alice",
+      "dm_with": null,
+      "body": "chatter"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -720,7 +918,13 @@
   },
   {
     "name": "mute (#1038): a channel mute does not silence a DM peer of the same name on the same network",
-    "message": { "kind": "privmsg", "channel": "vjt", "sender": "noisy", "body": "ping" },
+    "message": {
+      "kind": "privmsg",
+      "channel": "vjt",
+      "sender": "noisy",
+      "dm_with": "noisy",
+      "body": "ping"
+    },
     "network_slug": "azzurra",
     "own_nick": "vjt",
     "prefs": {
@@ -740,6 +944,7 @@
       "kind": "privmsg",
       "channel": "$server",
       "sender": "MemoServ",
+      "dm_with": null,
       "body": "vjt, you have 1 new memo."
     },
     "network_slug": "azzurra",
@@ -760,6 +965,7 @@
       "kind": "privmsg",
       "channel": "$server",
       "sender": "nightwish.azzurra.chat",
+      "dm_with": null,
       "body": "*** Notice -- Client connecting: vjt"
     },
     "network_slug": "azzurra",
@@ -780,6 +986,7 @@
       "kind": "privmsg",
       "channel": "#sniffo",
       "sender": "Conserv",
+      "dm_with": null,
       "body": "vjt: are you there?"
     },
     "network_slug": "azzurra",
@@ -800,6 +1007,7 @@
       "kind": "privmsg",
       "channel": "$server",
       "sender": "MemoServ",
+      "dm_with": null,
       "body": "vjt, you have 1 new memo."
     },
     "network_slug": "azzurra",

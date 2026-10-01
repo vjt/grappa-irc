@@ -280,15 +280,14 @@ defmodule Grappa.Session.EventRouterPropertyTest do
         {:presence_command_unknown, cmd} ->
           assert cmd in [:monitor, :watch]
 
-        # #373 — a peer NICK migrates its query window; #948's self twin
-        # re-keys the DM tag. Both are IDENTITIES, so `is_binary/1` alone
-        # would be the certificate of nothing this file has already been
-        # burned by twice (see the #279 and #878 arms above): a blank name
-        # satisfies it while naming nobody. Assert the class the effects
-        # actually promise — a non-blank nick on both sides.
-        {:peer_nick_renamed, old_nick, new_nick} ->
+        # A peer NICK names the vacated nick (#378 presence reset); #948's
+        # self twin moves the self window. Both are IDENTITIES, so
+        # `is_binary/1` alone would be the certificate of nothing this file
+        # has already been burned by twice (see the #279 and #878 arms
+        # above): a blank name satisfies it while naming nobody. Assert the
+        # class the effects actually promise — a non-blank nick.
+        {:peer_nick_renamed, old_nick} ->
           assert String.trim(old_nick) != ""
-          assert String.trim(new_nick) != ""
 
         {:own_nick_renamed, old_nick, new_nick} ->
           assert String.trim(old_nick) != ""
@@ -438,9 +437,8 @@ defmodule Grappa.Session.EventRouterPropertyTest do
                "blank own rename from param #{inspect(param)}"
       end
 
-      for {:peer_nick_renamed, old, new} <- effects do
-        assert String.trim(old) != "" and String.trim(new) != "",
-               "blank peer rename from param #{inspect(param)}"
+      for {:peer_nick_renamed, old} <- effects do
+        assert String.trim(old) != "", "blank peer rename from param #{inspect(param)}"
       end
     end
   end

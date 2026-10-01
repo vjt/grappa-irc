@@ -1093,7 +1093,14 @@ defmodule Grappa.UserSettingsTest do
     end
   end
 
-  describe "rename_muted_target/4 (#1340 K-S2 — the mute joins the #373 set)" do
+  describe "rename_muted_target!/4 (#1340 K-S2 — the mute moves with the SELF window)" do
+    # The bang variant has no frame of its own: production reaches it only
+    # inside `Grappa.NickMigration`'s retried transaction, so the test opens
+    # the transaction it expects. Since issue 1365 a PEER rename no longer
+    # moves the mute; the own-nick self window is the one remaining caller.
+    defp rename_muted(subject, slug, old, new),
+      do: Repo.transaction(fn -> UserSettings.rename_muted_target!(subject, slug, old, new) end)
+
     test "moves the mute from the old nick to the new one, on that network only" do
       user = user_fixture()
 
@@ -1105,7 +1112,7 @@ defmodule Grappa.UserSettingsTest do
                })
 
       assert {:ok, :renamed} =
-               UserSettings.rename_muted_target({:user, user.id}, "azzurra", "guest", "Guest2")
+               rename_muted({:user, user.id}, "azzurra", "guest", "Guest2")
 
       # The renamed peer is still silenced, under the identity they now
       # carry; the same nick on another network and the channel mute beside
@@ -1124,7 +1131,7 @@ defmodule Grappa.UserSettingsTest do
       assert {:ok, _} = put_muted(user, %{"azzurra guest" => %{"until" => until}})
 
       assert {:ok, :renamed} =
-               UserSettings.rename_muted_target({:user, user.id}, "azzurra", "guest", "Guest2")
+               rename_muted({:user, user.id}, "azzurra", "guest", "Guest2")
 
       assert read_muted(user) == %{"azzurra guest2" => %{"until" => until}}
     end
@@ -1137,7 +1144,7 @@ defmodule Grappa.UserSettingsTest do
       assert {:ok, _} = put_muted(user, %{"azzurra guest87449" => %{"until" => nil}})
 
       assert {:ok, :renamed} =
-               UserSettings.rename_muted_target(
+               rename_muted(
                  {:user, user.id},
                  "azzurra",
                  "Guest87449",
@@ -1153,7 +1160,7 @@ defmodule Grappa.UserSettingsTest do
       assert {:ok, _} = put_muted(user, %{"azzurra guest" => %{"until" => nil}})
 
       assert {:ok, :noop} =
-               UserSettings.rename_muted_target({:user, user.id}, "azzurra", "guest", "GUEST")
+               rename_muted({:user, user.id}, "azzurra", "guest", "GUEST")
 
       assert read_muted(user) == %{"azzurra guest" => %{"until" => nil}}
     end
@@ -1172,7 +1179,7 @@ defmodule Grappa.UserSettingsTest do
                })
 
       assert {:ok, :renamed} =
-               UserSettings.rename_muted_target({:user, user.id}, "azzurra", "guest", "guest2")
+               rename_muted({:user, user.id}, "azzurra", "guest", "guest2")
 
       assert read_muted(user) == %{"azzurra guest2" => %{"until" => until}}
     end
@@ -1183,7 +1190,7 @@ defmodule Grappa.UserSettingsTest do
       assert {:ok, _} = put_muted(user, %{"azzurra #linux" => %{"until" => nil}})
 
       assert {:ok, :noop} =
-               UserSettings.rename_muted_target({:user, user.id}, "azzurra", "guest", "Guest2")
+               rename_muted({:user, user.id}, "azzurra", "guest", "Guest2")
 
       assert read_muted(user) == %{"azzurra #linux" => %{"until" => nil}}
     end
@@ -1192,7 +1199,7 @@ defmodule Grappa.UserSettingsTest do
       user = user_fixture()
 
       assert {:ok, :noop} =
-               UserSettings.rename_muted_target({:user, user.id}, "azzurra", "guest", "Guest2")
+               rename_muted({:user, user.id}, "azzurra", "guest", "Guest2")
     end
 
     test "leaves every OTHER notification pref exactly as it was" do
@@ -1212,7 +1219,7 @@ defmodule Grappa.UserSettingsTest do
       before = UserSettings.get_notification_prefs({:user, user.id})
 
       assert {:ok, :renamed} =
-               UserSettings.rename_muted_target({:user, user.id}, "azzurra", "guest", "Guest2")
+               rename_muted({:user, user.id}, "azzurra", "guest", "Guest2")
 
       after_rename = UserSettings.get_notification_prefs({:user, user.id})
 
