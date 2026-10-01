@@ -18,9 +18,9 @@ const railWhoisForMock = vi.hoisted(() =>
   vi.fn<(slug: string, nick: string) => WhoisBundle | undefined>(),
 );
 
-// selection is signal-backed so a live NICK change (followQueryNick swapping
-// selectedChannel) re-renders the container mid-mount, exercising #606's
-// "heading must follow the nick" contract.
+// selection is signal-backed so switching the focused query re-renders the
+// container mid-mount, exercising #606's "heading must follow the selected
+// nick" contract.
 vi.mock("../lib/selection", async () => {
   const { createSignal } = await import("solid-js");
   const [sel, setSel] = createSignal<SelectedChannel | null>(null);
@@ -148,11 +148,11 @@ describe("RailContext query context (#606)", () => {
     expect(screen.queryByTestId("rail-server-info")).toBeNull();
   });
 
-  it("updates the heading when the query's nick changes while open (followQueryNick)", async () => {
+  it("updates the heading when the focus moves to another query while open", async () => {
     await setSelected(sel("query", "alice"));
     await renderContainer(true);
     expect(screen.getByTestId("rail-query-context").textContent).toContain("alice");
-    // A peer NICK alice→alice2 swaps selectedChannel in place (#373).
+    // The operator switches from the query with alice to the one with alice2.
     await setSelected(sel("query", "alice2"));
     const ctx = screen.getByTestId("rail-query-context");
     expect(ctx.textContent).toContain("alice2");
@@ -231,13 +231,11 @@ describe("RailContext whois fetch is gated on the card being on screen (#782)", 
     expect(requestRailWhoisMock).toHaveBeenCalledTimes(1);
   });
 
-  it("asks for the NEW nick when a rename swaps the focused query on screen", async () => {
-    // #373 — `followQueryNick` swaps selectedChannel in place. This fires the
-    // effect with the new identity, and it MUST: the card now shows a nick the
-    // rail may not know. It does not cost a command in practice — `subscribe.ts`
-    // migrates the rail cache old->new BEFORE the swap, so `requestRailWhois`
-    // lands on a hit. That ordering is what keeps a rename free; reverse it and
-    // every rename asks the ircd again.
+  it("asks for the NEW nick when the focus moves to another query on screen", async () => {
+    // Switching the focused query fires the effect with the new identity, and
+    // it MUST: the card now shows a nick the rail may not know. (A peer rename
+    // no longer swaps the selection since issue 1365, so this is the operator
+    // switching windows, not the ircd.)
     await setSelected(sel("query", "alice"));
     await renderContainer(true);
     await setSelected(sel("query", "alice2"));

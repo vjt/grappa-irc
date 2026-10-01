@@ -1,4 +1,4 @@
-import { createEffect, createRoot, createSignal, on } from "solid-js";
+import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { channelKey } from "../lib/channelKey";
 import { DEFAULT_NOTIFICATION_PREFS, type NotificationPrefs } from "../lib/userSettings";
@@ -1157,11 +1157,11 @@ describe("subscribe — WS join effect", () => {
       );
     });
 
-    it("a peer NICK migrates the rail WHOIS cache too (#373 migration set)", async () => {
-      // The rail's per-nick WHOIS cache (#606) joined the #373 set: without
-      // this wiring the rename strands the bundle under the dead nick, the
-      // card blanks, and the rail's fetch-on-select fires a redundant
-      // upstream WHOIS right before the operator's next send.
+    it("a peer NICK moves none of the query window's state (issue 1365 ruling)", async () => {
+      // vjt, 2026-10-01: a nick change causes no update, and a renamed peer
+      // opens a NEW query window. The server no longer renames the window
+      // row, so cic moving its caches would put the window under a nick the
+      // server's list does not carry — cic originating state.
       localStorage.setItem("grappa-token", "tok");
       localStorage.setItem(
         "grappa-subject",
@@ -1169,46 +1169,8 @@ describe("subscribe — WS join effect", () => {
       );
       await seedStubs();
       const rail = await import("../lib/railWhois");
-      await loadStores();
-      await vi.waitFor(() => {
-        expect(mockChannel.on).toHaveBeenCalled();
-      });
-
-      rail.ingestRailWhois("freenode", "Guest99", {
-        target: "Guest99",
-        host: "guest.example",
-      } as never);
-
-      fireMessageEvent("#grappa", {
-        id: 20,
-        kind: "nick_change",
-        sender: "Guest99",
-        meta: { new_nick: "Renamed99" },
-      });
-
-      expect(rail.railWhoisFor("freenode", "Guest99")).toBeUndefined();
-      expect(rail.railWhoisFor("freenode", "Renamed99")?.host).toBe("guest.example");
-    });
-
-    it("migrates the rail cache BEFORE the selection swap wakes its watchers", async () => {
-      // The load-bearing half of the fix. `followQueryNick` swaps the
-      // selection, and Solid flushes effects at the end of that write — so
-      // RailContext's fetch-on-select effect runs INSIDE the swap. If the
-      // rail cache were migrated after it, that effect would see a miss and
-      // send the very WHOIS this PR exists to stop (measured at 8s of delay
-      // on the operator's next message, and a "<nick> is doing a WHOIS on
-      // you" notice at a +y peer, for a rename nobody asked about).
-      //
-      // Pinned without mounting the component: an effect on the selection is
-      // scheduled exactly like RailContext's, so what it can see at wake time
-      // is what RailContext can see.
-      localStorage.setItem("grappa-token", "tok");
-      localStorage.setItem(
-        "grappa-subject",
-        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
-      );
-      await seedStubs();
-      const rail = await import("../lib/railWhois");
+      const sb = await import("../lib/scrollback");
+      const { channelKey } = await import("../lib/channelKey");
       const store = await loadStores();
       await vi.waitFor(() => {
         expect(mockChannel.on).toHaveBeenCalled();
@@ -1218,32 +1180,36 @@ describe("subscribe — WS join effect", () => {
         target: "Guest99",
         host: "guest.example",
       } as never);
+      sb.appendToScrollback(channelKey("freenode", "Guest99"), {
+        id: 900,
+        network: "freenode",
+        channel: "Guest99",
+        server_time: 1,
+        kind: "privmsg",
+        sender: "Guest99",
+        body: "before the rename",
+        meta: {},
+      } as never);
       store.setSelectedChannel({
         networkSlug: "freenode",
         channelName: "Guest99",
         kind: "query",
       });
 
-      let seenAtSwap: unknown = "the watcher never woke";
-      createRoot(() =>
-        createEffect(
-          on(
-            () => store.selectedChannel()?.channelName,
-            (name) => {
-              if (name === "Renamed99") seenAtSwap = rail.railWhoisFor("freenode", "Renamed99");
-            },
-          ),
-        ),
-      );
-
       fireMessageEvent("#grappa", {
-        id: 21,
+        id: 20,
         kind: "nick_change",
         sender: "Guest99",
         meta: { new_nick: "Renamed99" },
       });
 
-      expect(seenAtSwap).toEqual(expect.objectContaining({ host: "guest.example" }));
+      expect(store.selectedChannel()?.channelName).toBe("Guest99");
+      expect(rail.railWhoisFor("freenode", "Guest99")?.host).toBe("guest.example");
+      expect(rail.railWhoisFor("freenode", "Renamed99")).toBeUndefined();
+      expect(
+        sb.scrollbackByChannel()[channelKey("freenode", "Guest99")]?.map((m) => m.id),
+      ).toContain(900);
+      expect(sb.scrollbackByChannel()[channelKey("freenode", "Renamed99")]).toBeUndefined();
     });
 
     it("logout (token → null) clears scrollback + unread + selection", async () => {
@@ -4312,31 +4278,6 @@ describe("subscribe — own nick after a rename (#1340 C-S1)", () => {
 
     expect(beep.playBeep).toHaveBeenCalled();
   });
-
-  it("our OWN second rename is not mirrored as a peer rename", async () => {
-    // To a stale closure our own next `/nick` looks like somebody else's, so
-    // the #373 peer-migration arm fires on our own identity — cic originating
-    // a rename it is supposed to mirror. Observed through the rail WHOIS
-    // cache, one of the three caches that arm moves.
-    const store = await seedAndJoin();
-    const rail = await import("../lib/railWhois");
-
-    store.mutateNetworkNick(1, "zelda");
-    rail.ingestRailWhois("freenode", "zelda", {
-      target: "zelda",
-      host: "own.example",
-    } as never);
-
-    fireMessageEvent("#grappa", {
-      id: 32,
-      kind: "nick_change",
-      sender: "zelda",
-      meta: { new_nick: "zelda2" },
-    });
-
-    expect(rail.railWhoisFor("freenode", "zelda")?.host).toBe("own.example");
-    expect(rail.railWhoisFor("freenode", "zelda2")).toBeUndefined();
-  });
 });
 
 // #1341 — the DM-listener must RELEASE the own-nick topic it holds when the
@@ -4635,12 +4576,13 @@ describe("subscribe — presence pause on unfocused channels (#1680)", () => {
     expect(members.applyPresenceEvent).toHaveBeenCalledTimes(1);
   });
 
-  // The carve-outs. These kinds ride the same "presence" label but have
-  // consumers that are load-bearing even for a channel nobody is watching:
-  // a peer NICK drives the #372/#373 cache migration, and an own PART tears
-  // the window down. Dropping them with the rest would strand cic's caches
-  // at a dead nick and leak a subscription — silently, in both cases.
-  it("still processes a peer NICK on a paused channel (the #373 migration)", async () => {
+  // The carve-outs. These kinds ride the same "presence" label but stay out of
+  // the pause: an own PART tears the window down, and dropping it would leak a
+  // subscription. A peer NICK used to drive the #372/#373 cache migration;
+  // issue 1365 deleted that, and the carve-out now only feeds the members map
+  // (see presencePause.ts for why it has not been lifted yet). This pins the
+  // behaviour as it stands, not a reason that is gone.
+  it("still processes a peer NICK on a paused channel (carve-out kept)", async () => {
     localStorage.setItem("grappa-token", "tok");
     localStorage.setItem(
       "grappa-subject",
