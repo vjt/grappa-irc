@@ -88,7 +88,6 @@ defmodule Grappa.Session.Server do
     Dcc,
     Log,
     Mentions,
-    NickMigration,
     QueryWindows,
     Scrollback,
     Session,
@@ -7185,42 +7184,6 @@ defmodule Grappa.Session.Server do
     apply_effects(rest, reset_presence_for(state, old_nick))
   end
 
-  # #948: WE renamed. The SELF window moves behind its row-count gate, and
-  # `Grappa.NickMigration.own_renamed/5` owns that gate and the transaction
-  # around it. Issue 1365 ruled this axis to zero writes as well; it stays
-  # until a self-window key that does not move with our nick exists. The
-  # inbound-DM own-nick TAG (#514) no longer moves at all.
-  #
-  # `state` here is the POST-route state, so `state.nick` already reads the
-  # NEW nick. The arm never consults it — both nicks travel in the effect —
-  # which is why it cannot be bitten by which side of the rename it sees.
-  #
-  # Ordering against the per-channel `:persist` nick_change rows queued ahead
-  # of this effect is immaterial: those are `channel = #chan` / `$server`
-  # with `dm_with = nil`, and the migration predicate requires a non-nil
-  # `dm_with`, so they can never be swept up.
-  defp apply_effects([{:own_nick_renamed, old_nick, new_nick} | rest], state) do
-    case NickMigration.own_renamed(
-           state.subject,
-           state.network_id,
-           state.network_slug,
-           old_nick,
-           new_nick
-         ) do
-      {:ok, result} ->
-        log_own_rename(state, old_nick, new_nick, result)
-
-      {:error, reason} ->
-        Logger.warning("own NICK migration db unavailable — session continues",
-          old_nick: old_nick,
-          new_nick: new_nick,
-          reason: inspect(reason)
-        )
-    end
-
-    apply_effects(rest, state)
-  end
-
   # An inbound INVITE we did not ask for, applied to the window model.
   #
   # `:joined` (already in the room) and `:pending` (a JOIN in flight) must
@@ -7271,32 +7234,6 @@ defmodule Grappa.Session.Server do
 
       state
     end
-  end
-
-  # The session-side half of an own-nick migration: what an operator reads
-  # back, and the ONE broadcast. The barrier fires only when a window
-  # actually moved — `:noop` is a real state (the self window can be CLOSED
-  # while its history lives in Archive: the rows still had to follow, but
-  # announcing a window move would be a lie).
-  @spec log_own_rename(t(), String.t(), String.t(), NickMigration.own_result()) :: :ok
-  defp log_own_rename(state, old_nick, new_nick, %{rows: rows, window: window}) do
-    if rows > 0 do
-      if window == :renamed do
-        :ok = QueryWindows.broadcast_windows_list(state.subject, state.subject_label)
-      end
-
-      # `window:` rides the line because the two outcomes are different
-      # events for an operator reading this back, and a bare "followed"
-      # would describe work the `:noop` branch did not do.
-      Logger.info("self window followed our own NICK",
-        old_nick: old_nick,
-        new_nick: new_nick,
-        rows_migrated: rows,
-        window: window
-      )
-    end
-
-    :ok
   end
 
   # #349 — commit-on-+r for USER sessions, scoped to the REGISTER case. A

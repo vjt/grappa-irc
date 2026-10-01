@@ -710,102 +710,6 @@ defmodule Grappa.UserSettings do
     end
   end
 
-  @doc """
-  Moves ONE `muted_targets` entry from `old_target` to `new_target` on
-  `network_slug`, inside the caller's transaction (#1374 P-S2).
-
-  Since #1038 the mute key is `(network, target)` and, for a DM, the target IS
-  a nick, which makes `muted_targets` a nick-keyed store. Issue 1365 (ruling
-  relayed from vjt) took the PEER rename out of every store, this one
-  included: a mute is evaded by changing nick, and that price was accepted.
-  The ONE remaining caller is the own-nick SELF-window migration
-  (`Grappa.NickMigration.own_renamed/5`), which is ruled to zero writes as
-  well and stays only until the self window has a key that does not move.
-
-  NO frame. It is reached only from inside a `Repo.BusyRetry.run(fn ->
-  Repo.immediate_transaction(…) end)`, where the enclosing engine already
-  holds both halves and retries the WHOLE transaction. A nested retry would
-  sleep while holding the open transaction's connection; a nested
-  `immediate_transaction/1` would collapse to a savepoint and buy nothing.
-
-  ## Why it is not a `put_notification_prefs/2`
-
-  That writer full-replaces the prefs map through the whole validation
-  pipeline, and its reader counterpart PRUNES elapsed snoozes. Re-keying one
-  entry must not silently rewrite the other seven fields, must not turn a
-  rename into a snooze sweep, and must not be refusable by the
-  at-least-one-trigger guard — a rename is a MIGRATION of what the operator
-  already chose, never a new choice. So this is a surgical read-modify-write
-  over the stored map.
-
-  ## Collision
-
-  On a fold-collision — the operator had ALSO muted the destination nick —
-  the DESTINATION entry stays and the source entry is dropped. Both keys mean
-  "silence this conversation", so the union is the only sane merge.
-
-  Returns `:noop` when the two keys fold equal (a case-only NICK), when the
-  subject has no settings row, or when nothing was muted under `old_target`.
-  It returns the bare outcome, not `{:ok, outcome}`: in a transaction a
-  changeset rejection is `Repo.rollback/1` (see `write_data!/2`), so the
-  caller sees it as its own `Repo.immediate_transaction/1` returning
-  `{:error, changeset}`.
-
-  > #### The client copy lags {: .warning}
-  >
-  > `notification_prefs` has NO broadcast — cic hydrates it on every
-  > user-topic join (`userTopic.ts`). The SERVER push predicate honours the
-  > migrated key immediately; cic's foreground beep and the settings drawer
-  > keep the pre-rename map until the next (re)join or reload.
-  """
-  @spec rename_muted_target!(Subject.t(), String.t(), String.t(), String.t()) :: :renamed | :noop
-  def rename_muted_target!({_, _} = subject, network_slug, old_target, new_target)
-      when is_binary(network_slug) and is_binary(old_target) and is_binary(new_target) do
-    case rekey_pair(network_slug, old_target, new_target) do
-      nil -> :noop
-      {old_key, new_key} -> rekey_muted_target(fetch_existing_or_nil(subject), old_key, new_key)
-    end
-  end
-
-  # `nil` when the two spellings fold to ONE key — a casing change, not a
-  # rename, so there is no key to migrate and no reason to reach the DB.
-  @spec rekey_pair(String.t(), String.t(), String.t()) :: {String.t(), String.t()} | nil
-  defp rekey_pair(network_slug, old_target, new_target) do
-    old_key = Identifier.channel_key(network_slug, old_target)
-    new_key = Identifier.channel_key(network_slug, new_target)
-
-    if old_key == new_key, do: nil, else: {old_key, new_key}
-  end
-
-  @spec rekey_muted_target(Settings.t() | nil, String.t(), String.t()) :: :renamed | :noop
-  defp rekey_muted_target(settings, old_key, new_key) do
-    case muted_prefs(settings, old_key) do
-      nil ->
-        :noop
-
-      {prefs, muted} ->
-        {entry, without_old} = Map.pop(muted, old_key)
-        # put_new, not put: the destination's own entry wins the collision.
-        next_muted = Map.put_new(without_old, new_key, entry)
-        next_prefs = Map.put(prefs, "muted_targets", next_muted)
-
-        _ = write_data!(settings, Map.put(settings.data, @notification_prefs_key, next_prefs))
-        :renamed
-    end
-  end
-
-  # Is `key` muted? Returns the two maps the rewrite needs, because deciding
-  # and locating are the same traversal; `nil` IS the answer "no".
-  @spec muted_prefs(Settings.t() | nil, String.t()) :: {map(), map()} | nil
-  defp muted_prefs(nil, _), do: nil
-
-  defp muted_prefs(%Settings{} = settings, key) do
-    prefs = Map.get(settings.data, @notification_prefs_key, %{})
-    muted = if is_map(prefs), do: Map.get(prefs, "muted_targets", %{}), else: %{}
-
-    if is_map(muted) and Map.has_key?(muted, key), do: {prefs, muted}, else: nil
-  end
-
   # ---------------------------------------------------------------------------
   # upload_ttl_seconds accessors (UX-4 bucket M, 2026-05-19)
   # ---------------------------------------------------------------------------
@@ -864,12 +768,14 @@ defmodule Grappa.UserSettings do
   bring neither half of its own: the retrying spelling ran TWO more retry
   loops inside that transaction, each sleeping on the connection it holds —
   extending the very contention it waits on — and each turning the busy into
-  a return value where the transaction needed the raise. See the family
-  contract on `rename_muted_target!/4`.
+  a return value where the transaction needed the raise. A nested
+  `immediate_transaction/1` would collapse to a savepoint and buy nothing, so
+  this brings no frame at all: the enclosing engine holds both halves and
+  retries the WHOLE transaction.
 
-  Keeps the `{:ok, _}` wrapper its twin has, unlike `rename_muted_target!/4`:
-  the error arm here is REACHABLE without a rollback, because
-  `validate_upload_ttl_seconds/2` rejects before the DB is touched at all.
+  Keeps the `{:ok, _}` wrapper its twin has: the error arm here is REACHABLE
+  without a rollback, because `validate_upload_ttl_seconds/2` rejects before
+  the DB is touched at all.
   """
   @spec put_upload_ttl_seconds!(Subject.t(), pos_integer() | nil) ::
           {:ok, Settings.t()} | {:error, Ecto.Changeset.t()}

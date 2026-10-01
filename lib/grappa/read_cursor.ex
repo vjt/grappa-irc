@@ -103,8 +103,8 @@ defmodule Grappa.ReadCursor do
   alias Grappa.{Repo, Scrollback, Subject}
   alias Grappa.Scrollback.Message
 
-  # Identifier.nick_fold/1 is a query macro (ASCII fold fragment) used by
-  # rename_dm_peer/4 to match a DM cursor by the fold of the peer nick.
+  # Identifier.nick_fold/1 is a query macro (ASCII fold fragment) used to
+  # match a DM cursor by the fold of the peer nick.
   require Identifier
 
   # ---------------------------------------------------------------------------
@@ -676,77 +676,6 @@ defmodule Grappa.ReadCursor do
   end
 
   @doc """
-  Migrates the DM read cursor for `old_nick` to `new_nick` in
-  `(subject, network_id)`, so a window that followed a NICK keeps its read
-  state. Born for #373's peer rename; since issue 1365 a peer rename moves
-  nothing and the one caller is the own-nick SELF-window migration (#948). Without this the migrated history reads as fully
-  UNREAD: the `new` window has no cursor row (the old row is stranded at
-  `old`), so `WindowCounts` derives the count from `cursor || 0`.
-
-  Case-insensitive on both nicks (ASCII fold, #121/#525). The cursor
-  `channel` is stored CANONICAL (folded via `Identifier.canonical_target/1`
-  at the write boundary, #532 D) and matched fold-wise here.
-  `fold(old) == fold(new)` (a case-only
-  change) is a noop — the fold already resolves. A nick-collision (a
-  cursor already folds to `new`, i.e. a merge into an existing DM) keeps
-  the `new` cursor and drops the `old` one (mirrors `QueryWindows.rename/4`
-  keep-new merge; a rare imperfection if `old` was read further, self-heals
-  on the next settle). The `Ecto.ConstraintError` rescue covers the (rare)
-  race where a concurrent `set/4` from the channel process lands a `new`
-  cursor between the exists-check and the update — the unique index would
-  otherwise reject the rename and crash the caller.
-
-  Returns `:ok`. Sole caller: `Grappa.NickMigration.own_renamed/5`, after
-  `Scrollback.rename_self_window/4` reports a non-zero count.
-  """
-  @spec rename_dm_peer(subject(), integer(), String.t(), String.t()) :: :ok
-  def rename_dm_peer(subject, network_id, old_nick, new_nick)
-      when is_integer(network_id) and is_binary(old_nick) and is_binary(new_nick) do
-    folded_old = Identifier.canonical_target(old_nick)
-    folded_new = Identifier.canonical_target(new_nick)
-
-    if folded_old == folded_new do
-      :ok
-    else
-      old_query =
-        Cursor
-        |> Subject.subject_where(subject)
-        |> where(
-          [c],
-          c.network_id == ^network_id and Identifier.nick_fold(c.channel) == ^folded_old
-        )
-
-      cond do
-        not Repo.exists?(old_query) ->
-          :ok
-
-        cursor_folds_to?(subject, network_id, folded_new) ->
-          Repo.delete_all(old_query)
-          :ok
-
-        true ->
-          try do
-            # #532 D — store the CANONICAL nick key, not the raw new_nick.
-            # The cursor write boundary now folds nick-shaped keys
-            # (`Identifier.canonical_target/1`), so a raw-cased channel here
-            # would re-fork the window the moment the next `set/4` folds its
-            # lookup and misses this row.
-            Repo.update_all(old_query, set: [channel: folded_new])
-          rescue
-            Ecto.ConstraintError ->
-              # A concurrent set/4 (channel process, NOT the serialized
-              # Session.Server) raced a `new` cursor in between the check
-              # and the update → the unique index rejects the rename.
-              # Degrade to the merge path: keep the new, drop the old.
-              Repo.delete_all(old_query)
-          end
-
-          :ok
-      end
-    end
-  end
-
-  @doc """
   issue 2201 — deletes the DM read cursor for `target_nick` on
   `(subject, network_id)`, and returns how many rows went.
 
@@ -766,8 +695,8 @@ defmodule Grappa.ReadCursor do
 
   **No `BusyRetry.run/1` here, deliberately.** This runs INSIDE the caller's
   `Repo.immediate_transaction/1`, and a nested retry would sleep holding the
-  open transaction's connection (the `Grappa.NickMigration` composition rule:
-  retry outside, transaction inside).
+  open transaction's connection (the composition rule: retry outside,
+  transaction inside).
   """
   @spec delete_for_dm(subject(), integer(), String.t()) :: non_neg_integer()
   def delete_for_dm(subject, network_id, target_nick)
@@ -781,47 +710,6 @@ defmodule Grappa.ReadCursor do
       |> Repo.delete_all()
 
     count
-  end
-
-  @doc """
-  issue 1365 — re-points the cursors of DM conversation `from_id` whose key
-  folds to `nick` onto conversation `to_id`, and returns how many moved. The
-  cursor half of a rename MERGE or SPLIT (`Grappa.NickMigration`), run after
-  `rename_dm_peer/4` has re-keyed the cursor itself. At most one row per
-  subject and key, so no batching. No retry: it runs inside the caller's
-  transaction.
-  """
-  @spec move_dm_conversation(pos_integer(), pos_integer(), String.t()) :: non_neg_integer()
-  def move_dm_conversation(from_id, to_id, nick)
-      when is_integer(from_id) and is_integer(to_id) and is_binary(nick) do
-    folded = Identifier.canonical_target(nick)
-
-    {count, _} =
-      Cursor
-      |> where([c], c.dm_conversation_id == ^from_id)
-      |> where([c], Identifier.nick_fold(c.channel) == ^folded)
-      |> Repo.update_all(set: [dm_conversation_id: to_id])
-
-    count
-  end
-
-  @doc """
-  issue 1365 — true iff any cursor still points at DM conversation `id`. A
-  merged-away conversation may be deleted only once this is false.
-  """
-  @spec dm_conversation_cursor?(pos_integer()) :: boolean()
-  def dm_conversation_cursor?(id) when is_integer(id) do
-    Cursor
-    |> where([c], c.dm_conversation_id == ^id)
-    |> Repo.exists?()
-  end
-
-  @spec cursor_folds_to?(subject(), integer(), String.t()) :: boolean()
-  defp cursor_folds_to?(subject, network_id, folded) do
-    Cursor
-    |> Subject.subject_where(subject)
-    |> where([c], c.network_id == ^network_id and Identifier.nick_fold(c.channel) == ^folded)
-    |> Repo.exists?()
   end
 
   # ---------------------------------------------------------------------------

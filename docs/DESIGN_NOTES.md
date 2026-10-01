@@ -488,3 +488,46 @@ records it as RELAYED.
 retried transaction, `follow_conversation`, and the bounded-batch merge.
 The merge/batch tests that reached it through `peer_renamed/5` now reach it
 through `own_renamed/5`, so the live merge path is still covered.
+<!-- entry #1365e -->
+
+---
+
+## 2026-10-01 — #1365e: our own nick change writes nothing either
+
+**Provenance.** The goal was already ruled in comment 5934112501 on issue
+1365 ("vorrei andare a 0 anche in questo caso"); what was missing was the
+mechanism — which key replaces the nick-keyed SELF window (#948). Proposed by
+the worker as the exact analogue of the peer price, posted on IRC #grappa as
+the only line in flight at 22:56 Europe/Rome, answered by vjt at 22:58 with
+«va BENISSIMO». RELAYED by a peer session, not seen first-hand by the
+orchestrator or the worker.
+
+**The mechanism.** None: the self window keeps the nick it was opened under,
+with its rows, read cursor and mute, and `/msg <newnick>` opens a new window —
+a renamed peer's next message does the same since #1365d. So there is no
+`{:own_nick_renamed}` effect, and `Grappa.NickMigration` (#1374) goes with its
+last verb. Its stores lose their rename verbs: `Scrollback.rename_self_window/4`,
+`ReadCursor.rename_dm_peer/4`, `QueryWindows.rename/4`,
+`UserSettings.rename_muted_target!/4`.
+
+**The dm_conversations merge machinery goes in the SAME commit, by caller
+count, not by inference from the ruling.** `DmConversations.follow_rename/4`
+and `delete!/1`, `ReadCursor.move_dm_conversation/3` and
+`dm_conversation_cursor?/1`, `Scrollback.move_dm_conversation_rows/4`,
+`dm_conversation_keyed?/2` and `dm_conversation_rows?/1` had zero callers
+outside `NickMigration` — measured with `mix xref trace` over every file that
+calls the three modules (positive control: `DmConversations.get/3` from
+`read_cursor.ex`, found) plus a local-call grep inside each defining module
+(positive control: `by_nick`, found). The dual write, the schema and the wire
+field are untouched: they are #1365's other legs, held on #1626.
+`QueryWindows.broadcast_windows_list/2` was public only for the rename's
+"fully applied" barrier and is now private.
+
+**What the price includes, so nobody rediscovers it as a bug.** The old self
+window now reads as a query with a peer bearing our old nick, so whoever takes
+that nick next lands in it. And `Push.Triggers.own_row?/2` reads `sender` as
+the live identity, so a self row written under the old nick stops counting as
+ours: an unread one counts as an inbound DM unless it is muted (the mute stays
+on the old key, and that is the key the row resolves to). Outbound DMs to
+peers already behaved this way before this change — nothing ever migrated
+their `sender`.

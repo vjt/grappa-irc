@@ -690,21 +690,13 @@ config :logger, :console,
     :event,
     :duration_ms,
     :clean,
-    # #373 — `Grappa.Session.Server.apply_effects/2` logs when a query
-    # window follows a peer NICK: `:old_nick` + `:new_nick` (the rename)
-    # and `:rows_migrated` (DM scrollback rows moved). Logger-only
-    # diagnostics — NOT scrollback `Meta` keys, so they extend the
-    # allowlist beyond `Meta.known_keys/0` (the sync test is a subset
-    # check: known_keys ⊆ metadata). `:new_nick` pre-exists above.
+    # `Grappa.SessionLog`'s "session nick changed" line names the nick we
+    # left. Logger-only diagnostics — NOT a scrollback `Meta` key, so it
+    # extends the allowlist beyond `Meta.known_keys/0` (the sync test is a
+    # subset check: known_keys ⊆ metadata). `:new_nick` pre-exists above.
+    # (`:rows_migrated` and `:window` went with the nick-rename migration
+    # lines, issue 1365.)
     :old_nick,
-    :rows_migrated,
-    # #948 — the SELF-window sibling of that line reuses `:old_nick` /
-    # `:new_nick` / `:rows_migrated` and adds `:window`
-    # (`:renamed | :noop`), because the rows can migrate while no window
-    # row moves: the self window may be CLOSED with its history in
-    # Archive. Without it the line would claim work the `:noop` branch
-    # did not do.
-    :window,
     # #800 S7 — `Grappa.IRC.Client`'s per-frame outbound-cost line, at
     # DEBUG (silent in production, which runs at :info). `:sent_bytes` and
     # `:commands_10s` are MEASURED — what this process put on the wire and
