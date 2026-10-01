@@ -163,63 +163,9 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     put(slug, key, { at: Date.now(), bundle });
   };
 
-  // #373 — a peer renamed: move its cached bundle old→new. This cache is a
-  // nick-keyed store, so it belongs to the rename migration set (CLAUDE.md:
-  // one that skips it strands its old-nick rows) alongside the scrollback,
-  // the read cursor and the selection. Stranding it costs three ways: the
-  // card blanks, `requestRailWhois` misses on the new nick and re-asks the
-  // ircd (one more closely-spaced command on a connection whose next PRIVMSG
-  // then waits behind it — measured at 8s), and that re-ask puts "<nick> is
-  // doing a WHOIS on you" in front of a +y peer for the crime of renaming.
-  // A rename is an identity MIGRATION, so the bundle describes the same
-  // person — host, realname, channels all still hold — and it is relabelled
-  // rather than refetched.
-  //
-  // ONLY an entry that KNOWS something migrates. An ask still in flight, or
-  // one answered empty, has nothing to carry — and its reply keys on the OLD
-  // nick (`userTopic` routes on the wire `target`), so moving the marker
-  // would suppress the new nick's ask while the answer landed on the dead
-  // key. Dropping it lets the new nick ask once, which is the right outcome:
-  // nothing is known about this peer, so a rename has nothing to preserve.
-  //
-  // Merge rule mirrors `renameReadCursorChannel`: an entry already under the
-  // new nick wins (it is the fresher observation of that identity).
-  const renameRailWhois = (slug: string, oldNick: string, newNick: string): void => {
-    const casemapping = casemappingForSlug(slug);
-    const oldKey = normalizeNick(oldNick, casemapping);
-    const newKey = normalizeNick(newNick, casemapping);
-    if (oldKey === newKey) return;
-    setByNick((prev) => {
-      const net = prev[slug];
-      if (net === undefined || !(oldKey in net)) return prev;
-      const { [oldKey]: moved, ...rest } = net;
-      if (moved?.bundle == null || !whoisBundleHasFields(moved.bundle) || newKey in rest) {
-        return { ...prev, [slug]: rest };
-      }
-      const carried = moved.bundle;
-      return {
-        ...prev,
-        [slug]: {
-          ...rest,
-          [newKey]: {
-            at: moved.at,
-            // 307 RPL_WHOISREGNICK is "identified for THIS nick", not for the
-            // person, so it is the one bahamut field a rename invalidates:
-            // carrying it would badge the renamed peer "registered" on no
-            // evidence. A services `account` (330) is connection-scoped and
-            // legitimately survives — on those networks the badge stays, and
-            // rightly, because there the account IS the person.
-            bundle: { ...carried, target: newNick, is_registered: false },
-          },
-        },
-      };
-    });
-  };
-
-  return { railWhoisFor, requestRailWhois, ingestRailWhois, renameRailWhois };
+  return { railWhoisFor, requestRailWhois, ingestRailWhois };
 });
 
 export const railWhoisFor = exports_.railWhoisFor;
 export const requestRailWhois = exports_.requestRailWhois;
 export const ingestRailWhois = exports_.ingestRailWhois;
-export const renameRailWhois = exports_.renameRailWhois;

@@ -60,7 +60,7 @@ const LEGACY_KEY_PREFIX = "rc:";
 // Folding HERE rather than at each call site is the single-door form the
 // key/display/wire split asks for: every entry point (`getReadCursor`,
 // `applyMeEnvelope`, `applyJoinReply`, `applyReadCursorSet`, `setReadCursor`'s
-// optimistic advance, `renameReadCursorChannel`) inherits it and no future
+// optimistic advance) inherits it and no future
 // caller can get it wrong. It is idempotent, so the already-folded `/me` keys
 // are unaffected; it is invisible for channels, whose names arrive canonical
 // (raw === folded), which is why only queries ever broke. Display casing is
@@ -79,8 +79,7 @@ const [cursors, setCursors] = moduleRoot(() => createSignal<Record<string, numbe
 // path that may move a cursor backward (`applyReadCursorSet`, the
 // authoritative WS echo). Returning `prev` UNCHANGED on a no-op is
 // load-bearing, not tidiness: a rebuilt-but-equal object wakes every cursor
-// consumer for nothing (the same reason `renameReadCursorChannel` bails early
-// on a pure re-casing).
+// consumer for nothing.
 const advanceOnly = (
   prev: Record<string, number>,
   key: string,
@@ -311,39 +310,6 @@ export const setReadCursor = async (
  */
 export const clearReadCursors = (): void => {
   setCursors({});
-};
-
-/**
- * #373 — a query window's peer renamed; move its read cursor from
- * `(networkSlug, oldChannel)` to `(networkSlug, newChannel)`. The server
- * migrates its `read_cursors` row (`ReadCursor.rename_dm_peer/4`) but does
- * NOT broadcast a `read_cursor_set` for it, so this keeps THIS device's
- * cache in step — else the relabeled window derives its unread from a
- * missing cursor (whole history flips unread) until the next settle POST.
- * On a merge (the new key already has a cursor) the existing new cursor
- * wins (mirrors the server keep-new merge). No-op when the old key holds
- * nothing (a member rename with no DM cursor).
- */
-export const renameReadCursorChannel = (
-  networkSlug: string,
-  oldChannel: string,
-  newChannel: string,
-): void => {
-  // The `nick_change` event carries whatever casing the ircd sent on either
-  // side, so "same window, nothing to migrate" is a KEY question and folds
-  // (#973). A pure re-casing (`Foo` → `foo`) is one identity, not a rename:
-  // without the fold it fell through to a self-migration that rebuilt the map
-  // into an equal-but-new object and woke every cursor consumer for nothing.
-  if (cacheKey(networkSlug, oldChannel) === cacheKey(networkSlug, newChannel)) return;
-  setCursors((prev) => {
-    const oldKey = cacheKey(networkSlug, oldChannel);
-    const oldVal = prev[oldKey];
-    if (oldVal === undefined) return prev;
-    const newKey = cacheKey(networkSlug, newChannel);
-    const { [oldKey]: _drop, ...rest } = prev;
-    // Merge: keep the pre-existing new cursor (drop old); else adopt old.
-    return newKey in rest ? rest : { ...rest, [newKey]: oldVal };
-  });
 };
 
 // One-shot purge of the legacy localStorage backend. The pre-flip

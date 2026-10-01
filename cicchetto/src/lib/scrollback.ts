@@ -150,8 +150,8 @@ export const UNREAD_RETENTION_CAP = PAGE_LIMIT;
 
 // Canonical scrollback ordering: `server_time` ASC, `id` ASC tie-break —
 // the client mirror of the server's `[desc: server_time, desc: id]`
-// (`Scrollback.fetch/5`). Single source so `mergeIntoScrollback` and
-// `renameScrollbackKey` (#373) can never drift on the tie-break rule.
+// (`Scrollback.fetch/5`). Single source so every merge site here sorts
+// on the same tie-break rule.
 const byServerTimeThenId = (a: ScrollbackMessage, b: ScrollbackMessage): number => {
   if (a.server_time !== b.server_time) return a.server_time - b.server_time;
   return a.id - b.id;
@@ -895,52 +895,6 @@ const exports = identityScopedStore((onIdentityChange) => {
       if (fresh.length === 0) return prev;
       const merged = [...existing, ...fresh].sort(byServerTimeThenId);
       return { ...prev, [key]: merged };
-    });
-  };
-
-  // #373 — a query window's peer renamed; move its in-memory scrollback
-  // from `oldKey` (slug, oldNick) to `newKey` (slug, newNick), merging into
-  // any rows already under the new key (dedup by id, canonical order). The
-  // server migrated the DM rows in the DB (`Scrollback.rename_dm_peer/4`)
-  // and broadcasts the new window list; this keeps the LIVE Solid cache in
-  // step so the relabeled window shows its history instantly instead of
-  // flickering empty until the next refresh. cic-owned cache maintenance —
-  // the sidebar row list stays server-authoritative. No-op when the old key
-  // holds nothing (a member rename with no query window costs one lookup).
-  const renameScrollbackKey = (oldKey: ChannelKey, newKey: ChannelKey): void => {
-    if (oldKey === newKey) return;
-    // #693 — the far-behind record is nick-keyed for a DM, so it belongs to
-    // the #373 migration set (CLAUDE.md: a new nick-keyed store that skips it
-    // strands its old-nick rows). Stranded, the renamed pane loses its jump
-    // affordance AND its divider suppression — the marker comes back labelled
-    // with the loaded rows while thousands are missing, which is the wrong
-    // number the suppression exists to prevent.
-    setFarBehindByChannel((prev) => {
-      if (!(oldKey in prev)) return prev;
-      const { [oldKey]: moved, ...rest } = prev;
-      return moved === undefined ? rest : { ...rest, [newKey]: moved };
-    });
-    // #947 — same argument, same migration set (CLAUDE.md #373: a new
-    // nick-keyed store that skips this strands its old-nick rows). The count
-    // is about a conversation, not about a spelling of the peer's nick;
-    // stranded, the relabeled pane falls back to counting its truncated rows
-    // and shows the page size — the number this record exists to replace.
-    setMeasuredUnreadByChannel((prev) => {
-      if (!(oldKey in prev)) return prev;
-      const { [oldKey]: moved, ...rest } = prev;
-      return moved === undefined ? rest : { ...rest, [newKey]: moved };
-    });
-    setScrollbackByChannel((prev) => {
-      if (!(oldKey in prev)) return prev;
-      const oldRows = prev[oldKey] ?? [];
-      const { [oldKey]: _drop, ...rest } = prev;
-      if (oldRows.length === 0) return rest;
-      const existing = rest[newKey] ?? [];
-      const ids = new Set(existing.map((m) => m.id));
-      const merged = [...existing, ...oldRows.filter((m) => !ids.has(m.id))].sort(
-        byServerTimeThenId,
-      );
-      return { ...rest, [newKey]: merged };
     });
   };
 
@@ -2009,7 +1963,6 @@ const exports = identityScopedStore((onIdentityChange) => {
     loadNewer,
     measuredUnreadByChannel,
     purgeScrollback,
-    renameScrollbackKey,
     refreshScrollback,
     sendMessage,
     lastOwnSend,
@@ -2030,7 +1983,6 @@ export const loadMore = exports.loadMore;
 export const loadNewer = exports.loadNewer;
 export const measuredUnreadByChannel = exports.measuredUnreadByChannel;
 export const purgeScrollback = exports.purgeScrollback;
-export const renameScrollbackKey = exports.renameScrollbackKey;
 export const refreshScrollback = exports.refreshScrollback;
 export const sendMessage = exports.sendMessage;
 export const lastOwnSend = exports.lastOwnSend;

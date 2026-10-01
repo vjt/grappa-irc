@@ -78,15 +78,12 @@ const RailContext: Component<Props> = (props) => {
 
   // Fetch-on-visible. The key composes BOTH halves of "showing a nick we may
   // not have" — the identity on display and whether it is on display at all —
-  // so the effect fires on a query being selected while open, on the drawer
-  // opening over an already-selected query, and on a #373 rename swapping the
-  // nick underneath. It does NOT fire when the drawer closes (key goes to
-  // null) nor on unrelated selection churn. The store decides whether the ask
-  // costs an upstream command: a nick already known short-circuits, which is
-  // also why a rename is free — `subscribe.ts` migrates the rail cache
-  // old→new BEFORE `followQueryNick` swaps the selection, so this lands on a
-  // hit. Solid flushes effects at the end of the write, so that ordering is
-  // what holds it true; reverse it and every rename asks the ircd again.
+  // so the effect fires on a query being selected while open, and on the drawer
+  // opening over an already-selected query. It does NOT fire when the drawer
+  // closes (key goes to null) nor on unrelated selection churn. The store
+  // decides whether the ask costs an upstream command: a nick already known
+  // short-circuits. A peer rename no longer swaps the selection (issue 1365),
+  // so it does not wake this effect either.
   //
   // A nick cannot contain a space, so the separator is unambiguous.
   createEffect(

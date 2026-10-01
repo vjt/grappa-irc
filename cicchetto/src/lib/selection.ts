@@ -1,6 +1,5 @@
 import { createEffect, createMemo, createSignal, on, untrack } from "solid-js";
 import { token } from "./auth";
-import { casemappingForSlug } from "./casemapping";
 import { type ChannelKey, canonicalChannel, channelKey, decodeChannelKey } from "./channelKey";
 import { identityScopedStore } from "./identityScopedStore";
 import { casemappingForNetwork } from "./isupport";
@@ -1038,28 +1037,6 @@ const exports = identityScopedStore((onIdentityChange) => {
     });
   };
 
-  // #373 — a query window's peer renamed (observed via a per-channel
-  // NICK). If THIS device has that exact query window focused, follow the
-  // rename so the focused window keeps routing to the live nick — an
-  // outbound send would otherwise route to the vanished old nick → 401
-  // no-such-nick. Per-device, cic-owned focus (mirrors members.ts renaming
-  // a member); the window LIST itself stays server-authoritative
-  // (`query_windows_list`). No-op unless the CURRENT selection is the
-  // (slug, oldNick) query. `nickEquals` under this network's CASEMAPPING
-  // (#121/#525/#1861) so a case-shift casing still matches; caller
-  // (subscribe.ts) only invokes this for a genuine rename (old ≢ new).
-  const followQueryNick = (slug: string, oldNick: string, newNick: string): void => {
-    const sel = untrack(selectedChannel);
-    if (
-      sel !== null &&
-      sel.kind === "query" &&
-      sel.networkSlug === slug &&
-      nickEquals(sel.channelName, oldNick, casemappingForSlug(slug))
-    ) {
-      setSelectedChannel({ networkSlug: slug, channelName: newNick, kind: "query" });
-    }
-  };
-
   return {
     unreadCounts,
     messagesUnread,
@@ -1074,7 +1051,6 @@ const exports = identityScopedStore((onIdentityChange) => {
     clearServerSeedCount,
     applySeedEnvelope,
     setCursorIfAdvances,
-    followQueryNick,
     noteConnectionState,
   };
 });
@@ -1092,5 +1068,4 @@ export const setServerSeedCount = exports.setServerSeedCount;
 export const clearServerSeedCount = exports.clearServerSeedCount;
 export const applySeedEnvelope = exports.applySeedEnvelope;
 export const setCursorIfAdvances = exports.setCursorIfAdvances;
-export const followQueryNick = exports.followQueryNick;
 export const noteConnectionState = exports.noteConnectionState;

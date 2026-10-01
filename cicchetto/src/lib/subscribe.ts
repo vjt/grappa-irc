@@ -33,11 +33,10 @@ import { createPresencePause, PRESENCE_PAUSE_ENABLED } from "./presencePause";
 import { shouldNotify } from "./pushTriggers";
 import { setEnsureQueryTopicJoined } from "./queryTopicJoin";
 import { canonicalQueryNick, queryWindowsByNetwork } from "./queryWindows";
-import { renameRailWhois } from "./railWhois";
-import { applyJoinReply, applyReadCursorSet, renameReadCursorChannel } from "./readCursor";
+import { applyJoinReply, applyReadCursorSet } from "./readCursor";
 import { recordSeen } from "./reconnectBackfill";
-import { appendToScrollback, refreshScrollback, renameScrollbackKey } from "./scrollback";
-import { followQueryNick, selectedChannel, setServerSeedCount } from "./selection";
+import { appendToScrollback, refreshScrollback } from "./scrollback";
+import { selectedChannel, setServerSeedCount } from "./selection";
 import { type ChannelJoinParams, joinChannel } from "./socket";
 import { socketHealth } from "./socketHealth";
 import { SERVER_WINDOW_NAME } from "./windowKinds";
@@ -692,47 +691,15 @@ moduleRoot(() => {
             routeMessage(slug, key, name, message, ownNick);
           }
 
-          // #373: a PEER's NICK migrates that peer's query-window cic-owned
-          // caches — the live scrollback under (slug, oldNick) → (slug,
-          // newNick) and, if THIS device has that query focused, the
-          // selection — so a focused query keeps routing to the live nick
-          // (an outbound send would otherwise 401 on the vanished old nick).
-          // The sidebar row LIST stays server-authoritative: the server
-          // renames the QueryWindows row and broadcasts query_windows_list
-          // (#373 server half). Fires once per shared channel; both verbs are
-          // idempotent no-ops when nothing matches (a plain member rename
-          // with no query window). Own self-rename (sender == ownNick) is
-          // skipped — own nick rides own_nick_changed, not a query window.
-          if (message.kind === "nick_change" && !nickEquals(message.sender, ownNick, casemapping)) {
-            const newNick =
-              typeof message.meta.new_nick === "string" ? message.meta.new_nick : null;
-            // Guard genuine rename: a case-only shift (old ≡ new under this
-            // network's fold, #121/#525/#1861) needs no key move
-            // (canonicalQueryNick already resolves casing) and the server row
-            // stays put (`:noop`).
-            if (newNick !== null && !nickEquals(message.sender, newNick, casemapping)) {
-              // The scrollback + cursor caches are keyed by the query
-              // window's STORED casing, which can differ from the NICK
-              // line's sender casing (#372: window opened `guest`, peer is
-              // `Guest`). Resolve the old key via canonicalQueryNick so the
-              // exact-keyed cache moves hit; falls back to the raw sender
-              // when no window exists (then all three are no-ops anyway).
-              // followQueryNick fold-matches on its own but takes the same
-              // resolved value for consistency.
-              const net = networks()?.find((n) => n.slug === slug);
-              const oldNick = net ? canonicalQueryNick(net.id, message.sender) : message.sender;
-              renameScrollbackKey(channelKey(slug, oldNick), channelKey(slug, newNick));
-              renameReadCursorChannel(slug, oldNick, newNick);
-              // #606 — the rail's per-nick WHOIS cache is a nick-keyed store,
-              // so it migrates with the rest. ORDER IS LOAD-BEARING: it must
-              // run BEFORE `followQueryNick`, whose selection swap wakes the
-              // RailContext fetch-on-select effect. Migrate first and that
-              // effect finds a fresh cache entry and stays quiet; migrate
-              // after and it has already fired a redundant upstream WHOIS.
-              renameRailWhois(slug, oldNick, newNick);
-              followQueryNick(slug, oldNick, newNick);
-            }
-          }
+          // A peer's NICK moves nothing here (issue 1365, vjt's ruling of
+          // 2026-10-01: a nick change causes no update). The server no longer
+          // renames the query window row, so the window, its scrollback, its
+          // cursor and the rail's WHOIS entry all stay under the old nick, and
+          // the renamed peer opens a NEW window the first time it writes. Moving
+          // cic's caches here would file the window under a nick the server's
+          // `query_windows_list` does not carry — cic originating state. The
+          // members map still follows the rename, via `routeMessage` above
+          // (`applyPresenceEvent`).
 
           // #200: tear down the per-channel WS subscription on OWN-part.
           // Pre-#200 `joined` was only `.leave()`d on token rotation, so an

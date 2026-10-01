@@ -510,27 +510,6 @@ describe("#693 far-behind resume", () => {
     expect(farBehindByChannel()[key]).toBeDefined();
   });
 
-  it("a peer rename carries the far-behind record with the window (#373 set)", async () => {
-    const { loadInitialScrollback, renameScrollbackKey, farBehindByChannel } = await import(
-      "../lib/scrollback"
-    );
-    const { applyJoinReply } = await import("../lib/readCursor");
-    const { channelKey } = await import("../lib/channelKey");
-    applyJoinReply("net", "oldpeer", 100);
-    countMessagesAfterSpy.mockResolvedValue(probe(3000));
-    listMessagesSpy.mockResolvedValue([row(3100)]);
-    await loadInitialScrollback("net", "oldpeer");
-
-    renameScrollbackKey(channelKey("net", "oldpeer"), channelKey("net", "newpeer"));
-
-    expect(farBehindByChannel()[channelKey("net", "newpeer")]).toEqual({
-      missed: 3000,
-      events: 0,
-      resumeFrom: 100,
-    });
-    expect(farBehindByChannel()[channelKey("net", "oldpeer")]).toBeUndefined();
-  });
-
   it("dismissing marks the loaded tail read and drops the flag", async () => {
     const { loadInitialScrollback, dismissFarBehind, farBehindByChannel } = await import(
       "../lib/scrollback"

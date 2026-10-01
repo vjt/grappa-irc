@@ -43,10 +43,12 @@
 // twin) has five members, and two of them have consumers that are
 // load-bearing even for a channel nobody is watching:
 //
-//   * `nick_change` drives the #372/#373 client-side identity migration —
-//     renameScrollbackKey / renameReadCursorChannel / renameRailWhois /
-//     followQueryNick. Drop it and cic's caches stay keyed to a nick that no
-//     longer exists, silently, until something forces a refetch.
+//   * `nick_change` drove the #372/#373 client-side identity migration,
+//     which issue 1365 deleted (a nick change moves no window state). Its
+//     remaining consumer is the members map, the same one the three pausable
+//     kinds have — so this carve-out has outlived its reason. It stays until
+//     the server's `Message.pausable_presence_kinds/0` moves with it: the two
+//     sets are byte-pinned and cannot be changed from this side alone.
 //   * `mode` feeds channel-mode state that survives the pause.
 //
 // And regardless of kind, our OWN presence is never noise: an own PART tears
