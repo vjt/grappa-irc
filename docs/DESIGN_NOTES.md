@@ -384,3 +384,36 @@ Tracked here until resolved in the README or an issue.
 - Anything that was decided inside a private channel and hasn't been published elsewhere. The repo is public; private crew chatter stays private.
 - Implementation scheduling ("I'll do X next week") — that belongs on the issue tracker, not in-repo.
 - Anything that belongs in `CONTRIBUTING.md` or a future issue template — to be added when the project moves past spec-only.
+<!-- entry #2335 -->
+
+---
+
+## 2026-10-01 — #2335: September rolled out, and the boundary of a marked first entry
+
+September moved to `docs/design_notes/2026-09.md` verbatim, the August
+procedure (issue 2138, `60d8ddeb4`) applied unchanged — predict the byte and
+line arithmetic on both files first, reassemble the original with `cmp` and a
+one-byte mutant that must answer rc=1, and compare the multiset of deleted
+lines with the archive's lines so that nothing is invented and nothing lost.
+
+**Why now and not "when someone gets to it":** check 0 of
+`scripts/design-notes-gate.sh` is not driven by the calendar. It takes the
+NEWEST month among the inline entry headings and fails on every other one, so
+the first October entry on any branch turned that branch red for as long as
+September stayed inline. The rollover is the prerequisite of every append in
+the new month, which is exactly why issue 2138 put it in a gate.
+
+**The one thing August did not decide.** August's first entry predated the
+#1271 marker, so its archive opens on the `##` heading and the `---` glue above
+it was dropped. September's first entry opens with `<!-- entry #1044 -->` — by
+the #1271 convention that entry's own first appended line — so the archive
+opens on the MARKER and keeps the entry's block (marker / blank / `---` /
+blank / heading) whole. Only the blank between the preamble and the marker is
+glue, and it is the only line deleted without landing in the archive.
+
+**Apply:** when a month's first entry carries a marker, the archive starts at
+the marker, not at the heading: the marker is part of the entry, and dropping
+it is an edit. The glue that belongs to neither side is the separator BEFORE an
+entry's block, never a line inside it. And the index column counts `##`
+sections, so an undated `##` heading inside the month (September has one,
+`## #1922`) counts there too.
