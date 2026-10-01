@@ -98,8 +98,18 @@ vi.mock("../lib/api", () => ({
   },
 }));
 
+// The rail asks upstream through `pushWhois`; counting its calls is how the
+// issue-1365 rename test MEASURES the WHOIS a peer NICK costs.
+const pushWhoisMock = vi.hoisted(() =>
+  vi.fn<(id: number, nick: string, server: string | null, origin: string) => Promise<void>>(() =>
+    Promise.resolve(),
+  ),
+);
+
 vi.mock("../lib/socket", () => ({
   joinChannel: vi.fn(() => mockChannel),
+  pushWhois: (id: number, nick: string, server: string | null, origin: string) =>
+    pushWhoisMock(id, nick, server, origin),
 }));
 
 vi.mock("../lib/members", () => ({
@@ -1204,12 +1214,97 @@ describe("subscribe — WS join effect", () => {
       });
 
       expect(store.selectedChannel()?.channelName).toBe("Guest99");
+      // The rail's WHOIS cache is not window state: it is COPIED, so the old
+      // window keeps its bundle AND the new nick has one (the WHOIS count is
+      // pinned by the test below).
       expect(rail.railWhoisFor("freenode", "Guest99")?.host).toBe("guest.example");
-      expect(rail.railWhoisFor("freenode", "Renamed99")).toBeUndefined();
+      expect(rail.railWhoisFor("freenode", "Renamed99")?.host).toBe("guest.example");
       expect(
         sb.scrollbackByChannel()[channelKey("freenode", "Guest99")]?.map((m) => m.id),
       ).toContain(900);
       expect(sb.scrollbackByChannel()[channelKey("freenode", "Renamed99")]).toBeUndefined();
+    });
+
+    it("a peer NICK costs no rail WHOIS on either window: the cache is COPIED (issue 1365)", async () => {
+      // A renamed peer keeps its old query window and opens a new one, so
+      // the rail card can come on screen under EITHER nick. The bundle
+      // describes the same person, so the new nick gets a copy and the old
+      // window keeps its own: no WHOIS upstream, which a +y peer would be
+      // told about. Moving it instead trades the new nick's WHOIS for one
+      // on the old nick, which nobody holds any more.
+      localStorage.setItem("grappa-token", "tok");
+      localStorage.setItem(
+        "grappa-subject",
+        JSON.stringify({ kind: "user", id: "u1", name: "alice" }),
+      );
+      await seedStubs();
+      const rail = await import("../lib/railWhois");
+      await loadStores();
+      await vi.waitFor(() => {
+        expect(mockChannel.on).toHaveBeenCalled();
+      });
+
+      // Positive control: an unknown nick costs exactly one WHOIS, so a zero
+      // below is the cache answering, not the counter being dead.
+      pushWhoisMock.mockClear();
+      rail.requestRailWhois("freenode", "stranger");
+      expect(pushWhoisMock).toHaveBeenCalledTimes(1);
+
+      rail.ingestRailWhois("freenode", "Guest99", {
+        network: "freenode",
+        target: "Guest99",
+        source: "rail",
+        user: "guest",
+        host: "guest.example",
+        realname: "Guest User",
+        server: null,
+        server_info: null,
+        is_operator: false,
+        oper_text: null,
+        idle_seconds: null,
+        signon: null,
+        channels: null,
+        using_ssl: false,
+        is_registered: true,
+        is_admin: false,
+        is_services_admin: false,
+        is_helper: false,
+        is_chanop: false,
+        is_agent: false,
+        is_java: false,
+        umodes: null,
+        away_message: null,
+        actually_host: null,
+        actually_ip: null,
+        account: null,
+        secure: false,
+        secure_cipher: null,
+        certfp: null,
+      } as never);
+
+      fireMessageEvent("#grappa", {
+        id: 21,
+        kind: "nick_change",
+        sender: "Guest99",
+        meta: { new_nick: "Renamed99" },
+      });
+
+      pushWhoisMock.mockClear();
+      rail.requestRailWhois("freenode", "Guest99");
+      rail.requestRailWhois("freenode", "Renamed99");
+      expect(pushWhoisMock).toHaveBeenCalledTimes(0);
+
+      // 307 RPL_WHOISREGNICK is "identified for THIS nick": the copy drops
+      // it, the old window's own bundle keeps it.
+      expect(rail.railWhoisFor("freenode", "Renamed99")).toMatchObject({
+        target: "Renamed99",
+        host: "guest.example",
+        is_registered: false,
+      });
+      expect(rail.railWhoisFor("freenode", "Guest99")).toMatchObject({
+        target: "Guest99",
+        is_registered: true,
+      });
     });
 
     it("logout (token → null) clears scrollback + unread + selection", async () => {
