@@ -359,16 +359,6 @@ struct window {
      * a buffer with no room is not the server's answer either. */
     bool history_inflight;
     bool history_exhausted;
-    /* The tail page has been read for this window once. From then on the
-     * socket delivers what is new and the reconnect backfill (`?after=`)
-     * closes any gap, so coming back to the window asks the server for
-     * nothing: the rows are already here.
-     *
-     * Re-reading the tail on every focus used to cost a request per
-     * keystroke on Alt-arrow, and it was also how rows got DRAWN TWICE —
-     * a re-read row whose id had aged out of the seen ring was taken for
-     * new and appended at the bottom, under messages hours younger. */
-    bool history_loaded;
 };
 
 enum job_kind {
@@ -3575,10 +3565,6 @@ static void clear_active_window_log(struct app *app) {
      * again. Keeping the latch would make /clear the one way to lose
      * scroll-back permanently. */
     app->windows[cur].history_exhausted = false;
-    /* And the tail is read again the next time the window is focused,
-     * as it always was before reading became once-per-window: an empty
-     * window is not one whose history is "already here". */
-    app->windows[cur].history_loaded = false;
     for (size_t p = 0; p < app->pane_count; p++) {
         app->panes[p].scroll_offset = 0;
         app->panes[p].scroll_pinned = false;
@@ -7243,17 +7229,39 @@ static void fetch_scrollback_target(struct app *app, const char *network, const 
     free(chan);
     struct http_response r = http_request(app, "GET", path, NULL);
     free(path);
-    if (r.status >= 200 && r.status < 300) {
-        parse_messages(app, r.body, r.body_len);
-        pthread_mutex_lock(&app->lock);
-        for (size_t i = 0; i < app->window_count; i++)
-            if (window_matches(&app->windows[i], network, channel))
-                app->windows[i].history_loaded = true;
-        pthread_mutex_unlock(&app->lock);
-    } else {
-        log_line(app, "GET messages failed HTTP %d", r.status);
-    }
+    if (r.status >= 200 && r.status < 300) parse_messages(app, r.body, r.body_len);
+    else log_line(app, "GET messages failed HTTP %d", r.status);
     free(r.body);
+}
+
+/* Does this window still hold any server row?
+ *
+ * DERIVED from the buffer, never latched beside it: the ring is shared by
+ * every window, and a quiet one's rows are pushed out by busy ones in a
+ * day or two. A flag saying "already read" would then keep that window
+ * empty for good — no rows, so no `?before=` cursor to page from either.
+ * Caller holds app->lock. */
+static bool window_holds_rows_locked(const struct app *app, const char *network,
+                                     const char *channel) {
+    return window_oldest_id_locked(app, window_scope_id_locked(app, network, channel)) > 0;
+}
+
+static void backfill_window(struct app *app, const char *network, const char *channel,
+                            long after_id);
+
+/* Bring one window up to date, asking only for what it lacks: the rows
+ * after the newest one seen when it holds some (the socket was down, so
+ * nothing was pushed), the tail when it holds none (never read, cleared,
+ * or evicted by busier windows). */
+static void refresh_window(struct app *app, const char *network, const char *channel) {
+    long after = 0;
+    pthread_mutex_lock(&app->lock);
+    if (window_holds_rows_locked(app, network, channel))
+        for (size_t i = 0; i < app->window_count; i++)
+            if (window_matches(&app->windows[i], network, channel)) after = app->windows[i].last_id;
+    pthread_mutex_unlock(&app->lock);
+    if (after > 0) backfill_window(app, network, channel, after);
+    else fetch_scrollback_target(app, network, channel);
 }
 
 static void fetch_scrollback(struct app *app, struct window *w) {
@@ -9940,6 +9948,11 @@ static const char *clipboard_copy(const char *text) {
     if (!argv) return NULL;
     int fds[2];
     if (pipe(fds) != 0) return NULL;
+    /* Like every pipe here: a child some other thread forks meanwhile
+     * must not inherit the write end, or the tool never sees EOF. dup2
+     * onto stdin below still hands the tool its own copy. */
+    set_cloexec(fds[0]);
+    set_cloexec(fds[1]);
     pid_t pid = fork();
     if (pid == 0) {
         /* Double fork, like the desktop opener: the tool stays behind to
@@ -14223,7 +14236,7 @@ static void *worker_main(void *arg) {
     while (dequeue_job(app, &job)) {
         switch (job.kind) {
         case JOB_FETCH:
-            fetch_scrollback_target(app, job.network, job.channel);
+            refresh_window(app, job.network, job.channel);
             break;
         case JOB_HISTORY:
             fetch_older_scrollback(app, job.network, job.channel, strtol(job.arg1, NULL, 10));
@@ -14369,16 +14382,16 @@ static void enqueue_fetch(struct app *app, const char *network, const char *chan
      * belongs here rather than at each caller — $llm reached the server
      * through two of them and answered with an HTTP 400 both times. */
     if (is_local_window(channel)) return;
-    /* Already read once: the window is kept current by the socket and
-     * the reconnect backfill, so there is nothing to ask for. See
-     * `history_loaded`. */
+    /* The rows are already here and the socket is keeping them current:
+     * there is nothing to ask for. Re-reading the tail on every focus
+     * cost a request per Alt-arrow, and it was how rows got DRAWN TWICE —
+     * a re-read row whose id had aged out of the seen ring was taken for
+     * new and appended under messages hours younger. See refresh_window
+     * for what a focus asks when this does not hold. */
     pthread_mutex_lock(&app->lock);
-    bool loaded = false;
-    for (size_t i = 0; i < app->window_count && !loaded; i++)
-        loaded = window_matches(&app->windows[i], network, channel) &&
-                 app->windows[i].history_loaded;
+    bool held = window_holds_rows_locked(app, network, channel);
     pthread_mutex_unlock(&app->lock);
-    if (loaded) return;
+    if (held && app->ws_connected) return;
     struct job job = { .kind = JOB_FETCH };
     snprintf(job.network, sizeof(job.network), "%s", network);
     snprintf(job.channel, sizeof(job.channel), "%s", channel);
@@ -24317,6 +24330,10 @@ int main(int argc, char **argv) {
         startup("joining websocket topics");
         ws_join_topics(app);
         log_line(app, "websocket connected");
+        /* The tails above were read one window at a time, BEFORE any topic
+         * was joined: whatever was said in that interval reached no door.
+         * The same `?after=` catch-up a reconnect does closes it. */
+        ws_backfill_all(app);
     } else {
         /* Arm the retry timer rather than settling permanently into
          * REST-only mode: a server still coming up is the common cause of

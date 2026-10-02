@@ -5467,20 +5467,37 @@ TEST(a_row_still_on_screen_is_not_drawn_again_after_the_ring_forgets_it) {
 }
 
 /* Coming back to a window must not ask the server for what is already
- * on screen: the socket keeps it current and the reconnect backfill
- * closes any gap. A window never read is still read. */
-TEST(focusing_a_window_already_read_fetches_nothing) {
+ * on screen while the socket is keeping it current. Anything less than
+ * that — a window never read, one whose rows the shared ring has pushed
+ * out, a socket that is down — still asks. */
+TEST(focusing_a_window_asks_only_when_its_rows_are_not_already_current) {
     struct app *app = window_app();
     CHECK(app != NULL);
     add_window_ex(app, "azzurra", "##sniffo", true);
+    app->ws_connected = true;
 
+    enqueue_fetch(app, "azzurra", "##sniffo"); /* never read */
+    CHECK_LONG(jobs_queued(app), 1);
+    app->jobs_head = app->jobs_tail;
+
+    say(app, 7, "alice", "last week");
+    enqueue_fetch(app, "azzurra", "##SNIFFO"); /* held, socket up */
+    CHECK_LONG(jobs_queued(app), 0);
+
+    app->ws_connected = false; /* REST only: nothing is pushed */
     enqueue_fetch(app, "azzurra", "##sniffo");
     CHECK_LONG(jobs_queued(app), 1);
-
     app->jobs_head = app->jobs_tail;
-    app->windows[0].history_loaded = true;
-    enqueue_fetch(app, "azzurra", "##SNIFFO");
-    CHECK_LONG(jobs_queued(app), 0);
+    app->ws_connected = true;
+
+    /* Busier windows push this one's rows out of the shared ring: with
+     * no rows there is no ?before= cursor either, so only the tail can
+     * bring it back. */
+    pthread_mutex_lock(&app->lock);
+    while (app->log_count) log_shift_locked(app);
+    pthread_mutex_unlock(&app->lock);
+    enqueue_fetch(app, "azzurra", "##sniffo");
+    CHECK_LONG(jobs_queued(app), 1);
     free_app(app);
 }
 
@@ -5925,7 +5942,7 @@ int main(void) {
     RUN(a_query_rings_and_a_channel_only_announces);
     RUN(an_arriving_call_rings_only_where_it_should);
     RUN(a_row_still_on_screen_is_not_drawn_again_after_the_ring_forgets_it);
-    RUN(focusing_a_window_already_read_fetches_nothing);
+    RUN(focusing_a_window_asks_only_when_its_rows_are_not_already_current);
     RUN(a_day_line_separates_rows_from_different_days_and_only_those);
     RUN(a_row_with_no_time_does_not_break_the_day_line);
     RUN(delete_for_me_is_offered_on_a_stored_message_only);

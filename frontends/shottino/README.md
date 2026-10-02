@@ -487,10 +487,12 @@ A row shows only `HH:MM`, so the chat draws a line where the day changes —
 not mistaken for the unread divider.
 
 A window's history is read **once**: at startup, or the first time a window
-opens. After that the websocket keeps it current and a reconnect fetches only
-what came after the last message seen (`?after=`), so switching windows costs
-no request at all. `/clear` empties a window and lets the next focus read it
-again.
+opens. After that the websocket keeps it current, so switching windows costs no
+request at all. When the websocket is down (or was not yet joined, as during
+startup) a focus or a reconnect asks only for what came after the last message
+seen (`?after=`). A window that holds nothing — never read, `/clear`ed, or
+whose lines busier windows pushed out of the shared 20000-line buffer — reads
+its tail again on focus.
 
 ## The settings panel
 
