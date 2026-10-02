@@ -1756,8 +1756,9 @@ TEST(the_dm_listener_follows_the_nick_the_topic_is_named_after) {
 
 /* ── An inbound DM belongs to the sender, however it arrived ───────────
  *
- * grappa stores an inbound DM at `channel = OUR nick, dm_with = peer`
- * and does not put `dm_with` on the wire, so the client re-derives the
+ * grappa stores an inbound DM at `channel = OUR nick, dm_with = peer`.
+ * These rows carry no `dm_with` — the shape a server below protocol 36
+ * sends — so they exercise the FALLBACK, where the client re-derives the
  * window from the sender. That re-key used to run on LIVE rows only:
  * fetched history kept our own nick as its channel and was filed under
  * a window with our own name that nothing opens. A query then showed
@@ -1817,6 +1818,56 @@ TEST(a_message_to_ourselves_stays_in_the_own_nick_window) {
      * the row itself files under whatever own-nick window exists. */
     size_t before = app->window_count;
     feed_dm(app, false, "vjt", "vjt", 201, "note to self");
+    CHECK_LONG(app->window_count, before);
+    free_app(app);
+}
+
+/* ── `dm_with` names the peer, and our own rename cannot move it ───────
+ *
+ * Issue 1365: a nick change rewrites NOTHING server-side, so an inbound
+ * DM keeps `channel` = the nick we held when it arrived. After our first
+ * rename `channel == own nick` is false for every row stored before it,
+ * and the fallback alone files them under our OLD nick, a window nothing
+ * opens. `dm_with` (on every row since protocol 36) is the one DM fact a
+ * rename never touches. These rows go through the real narrower, so the
+ * field is read off the wire exactly as the server sends it. */
+static void feed_row_json(struct app *app, const char *json) {
+    json_doc *doc = json_parse(json, strlen(json), NULL, 0);
+    CHECK(doc != NULL);
+    if (!doc) return;
+    struct wire_scrollback_message m;
+    CHECK(wire_narrow_message(json_root(doc), &m));
+    render_message(app, &m, false);
+    json_free(doc);
+}
+
+TEST(an_inbound_dm_stored_before_our_rename_lands_in_the_peers_window) {
+    struct app *app = window_app();
+    CHECK(app != NULL);
+    /* We were "vjt" when sarabean wrote, and we are "_vjt" now. */
+    snprintf(app->networks[0].nick, sizeof(app->networks[0].nick), "%s", "_vjt");
+    feed_row_json(app, "{\"id\":301,\"network\":\"azzurra\",\"channel\":\"vjt\","
+                       "\"server_time\":1754222400,\"kind\":\"privmsg\","
+                       "\"sender\":\"sarabean\",\"body\":\"before your rename\","
+                       "\"meta\":{},\"dm_with\":\"sarabean\"}");
+    CHECK(window_exists(app, "azzurra", "sarabean"));
+    CHECK(!window_exists(app, "azzurra", "vjt"));
+    free_app(app);
+}
+
+TEST(a_row_whose_dm_with_is_its_own_channel_opens_no_window) {
+    struct app *app = window_app();
+    CHECK(app != NULL);
+    /* Our outbound half (`channel = dm_with = peer`) and a note to
+     * ourselves (`channel = dm_with = us`) are already where they belong.
+     * Re-keying them would open a window named after ourselves off the
+     * back of our own message — the thing the test above guards on the
+     * fallback path. */
+    size_t before = app->window_count;
+    feed_row_json(app, "{\"id\":401,\"network\":\"azzurra\",\"channel\":\"vjt\","
+                       "\"server_time\":1754222400,\"kind\":\"privmsg\","
+                       "\"sender\":\"vjt\",\"body\":\"note to self\","
+                       "\"meta\":{},\"dm_with\":\"vjt\"}");
     CHECK_LONG(app->window_count, before);
     free_app(app);
 }
@@ -5427,6 +5478,8 @@ int main(void) {
     RUN(a_query_is_never_asked_for_a_member_list);
     RUN(a_fetched_inbound_dm_lands_in_the_senders_window_not_our_own);
     RUN(a_message_to_ourselves_stays_in_the_own_nick_window);
+    RUN(an_inbound_dm_stored_before_our_rename_lands_in_the_peers_window);
+    RUN(a_row_whose_dm_with_is_its_own_channel_opens_no_window);
     RUN(an_away_mention_is_replayed_in_the_window_it_was_said_in);
     RUN(the_dm_listener_follows_the_nick_the_topic_is_named_after);
     RUN(the_admin_sessions_tab_reads_the_shape_the_server_sends);

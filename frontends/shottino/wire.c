@@ -281,6 +281,7 @@ bool wire_narrow_message(const json_value *m, struct wire_scrollback_message *ou
     if (!message_kind_of(json_get(m, "kind"), &s.kind)) return false;
     if (!json_str_req(m, "sender", &s.sender)) return false;
     if (!json_str_opt(m, "body", &s.body)) return false;
+    if (!json_str_opt(m, "dm_with", &s.dm_with)) return false;
     s.meta = json_get(m, "meta");
     if (json_type_of(s.meta) != JSON_OBJECT) return false;
     *out = s;

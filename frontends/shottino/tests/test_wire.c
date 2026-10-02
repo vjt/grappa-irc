@@ -72,6 +72,28 @@ TEST(message) {
     CHECK(ev.u.message.body == NULL);
     CHECK(ev.u.message.kind == MSG_JOIN);
     json_free(d);
+
+    /* dm_with (protocol 36) is optional: absent from a server that predates
+     * it, null off a DM, the peer on a DM row. Absent and null both narrow
+     * to NULL, which is what sends render_message to its fallback. */
+    d = narrow(MSG_OK, &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.u.message.dm_with == NULL);
+    json_free(d);
+    d = narrow("{\"kind\":\"message\",\"message\":{\"id\":9,\"network\":\"azz\","
+               "\"channel\":\"vjt\",\"server_time\":1,\"kind\":\"privmsg\",\"sender\":\"bob\","
+               "\"body\":\"hi\",\"meta\":{},\"dm_with\":\"bob\"}}",
+               &ev, &ok);
+    CHECK(ok);
+    CHECK_STR(ev.u.message.dm_with, "bob");
+    json_free(d);
+    d = narrow("{\"kind\":\"message\",\"message\":{\"id\":10,\"network\":\"azz\","
+               "\"channel\":\"#dev\",\"server_time\":1,\"kind\":\"privmsg\",\"sender\":\"bob\","
+               "\"body\":\"hi\",\"meta\":{},\"dm_with\":null}}",
+               &ev, &ok);
+    CHECK(ok);
+    CHECK(ev.u.message.dm_with == NULL);
+    json_free(d);
 }
 
 TEST(message_rejects_bad_shapes) {
@@ -93,6 +115,10 @@ TEST(message_rejects_bad_shapes) {
     reject("{\"kind\":\"message\",\"message\":{\"id\":1,\"network\":\"a\",\"channel\":\"#c\","
            "\"server_time\":1,\"kind\":\"privmsg\",\"sender\":\"s\",\"body\":\"b\","
            "\"meta\":null}}");
+    /* dm_with present must be a string. */
+    reject("{\"kind\":\"message\",\"message\":{\"id\":1,\"network\":\"a\",\"channel\":\"#c\","
+           "\"server_time\":1,\"kind\":\"privmsg\",\"sender\":\"s\",\"body\":\"b\","
+           "\"meta\":{},\"dm_with\":7}}");
     /* No message object at all. */
     reject("{\"kind\":\"message\"}");
 }
