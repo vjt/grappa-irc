@@ -45,7 +45,6 @@ defmodule Grappa.QueryWindows.Window do
           network: Network.t() | Ecto.Association.NotLoaded.t() | nil,
           target_nick: String.t() | nil,
           opened_at: DateTime.t() | nil,
-          dm_conversation_id: integer() | nil,
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
         }
@@ -57,14 +56,6 @@ defmodule Grappa.QueryWindows.Window do
 
     field :target_nick, :string
     field :opened_at, :utc_datetime
-
-    # issue 1365 leg 2 — the id of the `dm_conversations` row behind this
-    # window, published on the wire beside `target_nick`. NOT a column: the
-    # table has no FK to its conversation (it is dual-written beside it until
-    # leg 4 retires it), so `QueryWindows.list_for_subject/1` fills it by the
-    # folded nick. `nil` there means the conversation is MISSING — a
-    # divergence, never a default.
-    field :dm_conversation_id, :id, virtual: true
 
     timestamps(type: :utc_datetime)
   end

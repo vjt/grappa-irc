@@ -75,9 +75,6 @@ defmodule Grappa.ReadCursor do
     # `belongs_to` and its typespec — metadata atoms, not a reference
     # Boundary can gate (#1399).
     deps: [
-      # issue 1365 — a new DM cursor points at its conversation. Acyclic:
-      # `Grappa.DmConversations` deps only `IRC`/`Repo`/`Subject`.
-      Grappa.DmConversations,
       Grappa.IRC,
       Grappa.PubSub,
       Grappa.Repo,
@@ -95,12 +92,11 @@ defmodule Grappa.ReadCursor do
 
   import Ecto.Query
 
-  alias Grappa.DmConversations
   alias Grappa.IRC.Identifier
   alias Grappa.Networks.Network
   alias Grappa.PubSub.Topic
   alias Grappa.ReadCursor.{Cursor, Wire}
-  alias Grappa.{Repo, Scrollback, Subject}
+  alias Grappa.{Repo, Subject}
   alias Grappa.Scrollback.Message
 
   # Identifier.nick_fold/1 is a query macro (ASCII fold fragment) used to
@@ -793,25 +789,7 @@ defmodule Grappa.ReadCursor do
 
     %Cursor{}
     |> Cursor.changeset(attrs)
-    |> Ecto.Changeset.put_change(
-      :dm_conversation_id,
-      dm_conversation_id(subject, network_id, channel)
-    )
     |> Repo.insert()
-  end
-
-  # issue 1365 — a DM cursor points at the conversation its window key names.
-  # A LOOKUP, never a mint: `message_belongs?/4` has already proved a row of
-  # that window exists, and persisting that row minted the conversation. `nil`
-  # for a channel or `$server` cursor.
-  @spec dm_conversation_id(subject(), integer(), String.t()) :: integer() | nil
-  defp dm_conversation_id(subject, network_id, channel) do
-    with true <- Scrollback.dm_eligible?(channel),
-         %{id: id} <- DmConversations.get(subject, network_id, channel) do
-      id
-    else
-      _ -> nil
-    end
   end
 
   @spec message_belongs?(subject(), integer(), String.t(), pos_integer()) :: boolean()

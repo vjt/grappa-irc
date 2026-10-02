@@ -1828,9 +1828,6 @@ describe("#1393 — user-topic boundary census", () => {
         {
           "arm": "query_windows_list",
           "matrix": {
-            "windows.key.0.dm_conversation_id/drop": "accept",
-            "windows.key.0.dm_conversation_id/null": "accept",
-            "windows.key.0.dm_conversation_id/wrong-type": "reject",
             "windows.key.0.network_id/drop": "reject",
             "windows.key.0.network_id/null": "reject",
             "windows.key.0.network_id/wrong-type": "reject",
@@ -1857,7 +1854,6 @@ describe("#1393 — user-topic boundary census", () => {
             "windows": {
               "key": [
                 {
-                  "dm_conversation_id": 1,
                   "network_id": 1,
                   "opened_at": "sample",
                   "target_nick": "sample",
