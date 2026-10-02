@@ -566,8 +566,8 @@ defmodule Grappa.Session.Wire do
 
   @typedoc """
   One row of the away bundle. `id` and `dm_with` (issue 2333, protocol
-  35) are `optional` for the reason `Scrollback.Wire.t/0` gives for
-  `dm_with`: a server predating 35 omits them, and a client
+  35) are `optional` for the reason `Scrollback.Wire.t/0` gives for its
+  own `dm_with` (36): a server predating 35 omits them, and a client
   validating against a REQUIRED key would discard that server's whole
   bundle. This server always emits both.
   """

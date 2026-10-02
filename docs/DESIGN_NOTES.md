@@ -653,3 +653,28 @@ test database of this slice never had them.
 origin/main as of 2026-10-02 00:12Z (`20260929001417`). If a migration lands
 first with a higher stamp, regenerate this one past it, or two files can
 end up claiming one version.
+
+**The first #1626 condition, which the paragraph above skipped.** "The field
+stands between the server and a property it cannot otherwise have" holds
+here by ARGUMENT, not measurement: the id names a `dm_conversations` row, so
+emitting it means keeping that table and writing it on every persisted DM
+row, window open and close, and new DM cursor. The property bought back is
+the one the issue 1365 ruling asks for, a DM write that touches only the
+row and no identity a nick has to keep true. The ruling's own stated ground
+was narrower ("oggi non serve a nulla"); whether "unused" alone clears the
+bar is vjt's to say.
+
+**Production's state is the one that is not known.** No tag contains the
+deleted pair, but production pulls origin/main. If it ran main between
+2026-09-29 and this change, the drop takes its costly branch there: `DROP
+COLUMN` rewrites `messages` (~5.2M rows) under the write lock during the cold
+deploy. Probe before deploying, read-only: `SELECT version FROM
+schema_migrations WHERE version IN (20260929001416, 20260929001417)`; empty
+means the run is a no-op.
+
+**After the merge, worktrees branched before it break on the shared
+databases.** The first migrate on the shared `runtime/grappa_{dev,test}.db`
+drops the columns; a worktree whose code still declares `field
+:dm_conversation_id` on `Message` and `Cursor` then selects a column that no
+longer exists, and every message or cursor query there fails until it
+rebases (or runs under its own `GRAPPA_CACHE_ID`).

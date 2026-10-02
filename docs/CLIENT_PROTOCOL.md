@@ -147,11 +147,13 @@ is: `protocol_version` has moved several times under this rule while
 written here on purpose — see the note under `GET /api/config`; the
 moving number is stale the moment it is typed, and it has been, twice.)
 
-### 2b. One field has been REMOVED, and what that costs you
+### 2b. Two fields have been REMOVED, and what that costs you
 
 ⚠️ `row_count` is gone from the archive entry
-(`GET /networks/:network_id/archive`) as of protocol **v8**. It is the first
-and so far only field this wire has taken back.
+(`GET /networks/:network_id/archive`) as of protocol **v8**. It was the
+first field this wire took back. The second is `dm_conversation_id`, gone
+from scrollback rows and `query_windows_list` entries as of **v37** — see
+§5f; it was always optional, so a permissive client never noticed.
 
 **Why it was allowed.** An exact per-target row count has to visit that
 target's rows, which is the whole `(subject, network)` partition, so
@@ -165,7 +167,9 @@ target. Nothing else about the entry changed: `target`, `kind` and
 the field must be what blocks a property the server cannot otherwise
 have; the break must be measured against a real client rather than
 argued; and it takes an explicit ruling. Ordinary tidying does not
-qualify — nothing has ever been removed for being unused.
+qualify. `dm_conversation_id` was unused when it went, but that is not
+what let it go: it could not be emitted without a whole table kept in step
+with every DM write, which is the property its removal buys back (§5f).
 
 **What it means for your client, concretely.** Validate *permissively*:
 tolerate an absent field you do not read, and never make a hard
