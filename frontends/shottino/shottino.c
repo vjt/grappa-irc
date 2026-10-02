@@ -359,6 +359,16 @@ struct window {
      * a buffer with no room is not the server's answer either. */
     bool history_inflight;
     bool history_exhausted;
+    /* The tail page has been read for this window once. From then on the
+     * socket delivers what is new and the reconnect backfill (`?after=`)
+     * closes any gap, so coming back to the window asks the server for
+     * nothing: the rows are already here.
+     *
+     * Re-reading the tail on every focus used to cost a request per
+     * keystroke on Alt-arrow, and it was also how rows got DRAWN TWICE —
+     * a re-read row whose id had aged out of the seen ring was taken for
+     * new and appended at the bottom, under messages hours younger. */
+    bool history_loaded;
 };
 
 enum job_kind {
@@ -2117,6 +2127,20 @@ static bool log_row_in_scope(const struct app *app, size_t i, log_scope_id scope
  * here" are two facts, and history is about the second. */
 static bool log_row_is_window(const struct app *app, size_t i, log_scope_id scope) {
     return app->log_scope[i] != 0 && app->log_scope[i] == scope;
+}
+
+/* Is the server row `id` already in the buffer, filed under this window?
+ * The id is the identity — the same one the seen ring keys on — and the
+ * scope keeps a row that was rendered somewhere else from vetoing this
+ * one. Caller holds app->lock. */
+static bool log_holds_message_locked(const struct app *app, long id, const char *network,
+                                     const char *channel) {
+    if (id <= 0) return false;
+    log_scope_id scope = window_scope_id_locked(app, network, channel);
+    if (scope == 0) return false;
+    for (size_t i = app->log_count; i > 0; i--)
+        if (app->log_ids[i - 1] == id && app->log_scope[i - 1] == scope) return true;
+    return false;
 }
 
 /* The oldest server id among a window's rows, or 0 when it has none —
@@ -4638,6 +4662,16 @@ static void render_message(struct app *app, const struct wire_scrollback_message
                 return;
             }
         }
+        /* The ring is a RECENT memory and forgets: with a few busy
+         * windows twelve thousand ids is a day or two. A row whose id has
+         * aged out but which is still in the buffer is still a duplicate,
+         * and taking it for new appends a copy of last week under this
+         * morning. The buffer is the authority on what is on screen, so
+         * it is asked too. */
+        if (log_holds_message_locked(app, id, network, display_channel)) {
+            pthread_mutex_unlock(&app->lock);
+            return;
+        }
         struct seen_message *seen = &app->seen[app->seen_next];
         seen->id = id;
         snprintf(seen->network, sizeof(seen->network), "%s", network);
@@ -7025,8 +7059,16 @@ static void fetch_scrollback_target(struct app *app, const char *network, const 
     free(chan);
     struct http_response r = http_request(app, "GET", path, NULL);
     free(path);
-    if (r.status >= 200 && r.status < 300) parse_messages(app, r.body, r.body_len);
-    else log_line(app, "GET messages failed HTTP %d", r.status);
+    if (r.status >= 200 && r.status < 300) {
+        parse_messages(app, r.body, r.body_len);
+        pthread_mutex_lock(&app->lock);
+        for (size_t i = 0; i < app->window_count; i++)
+            if (window_matches(&app->windows[i], network, channel))
+                app->windows[i].history_loaded = true;
+        pthread_mutex_unlock(&app->lock);
+    } else {
+        log_line(app, "GET messages failed HTTP %d", r.status);
+    }
     free(r.body);
 }
 
@@ -13945,6 +13987,16 @@ static void enqueue_fetch(struct app *app, const char *network, const char *chan
      * belongs here rather than at each caller — $llm reached the server
      * through two of them and answered with an HTTP 400 both times. */
     if (is_local_window(channel)) return;
+    /* Already read once: the window is kept current by the socket and
+     * the reconnect backfill, so there is nothing to ask for. See
+     * `history_loaded`. */
+    pthread_mutex_lock(&app->lock);
+    bool loaded = false;
+    for (size_t i = 0; i < app->window_count && !loaded; i++)
+        loaded = window_matches(&app->windows[i], network, channel) &&
+                 app->windows[i].history_loaded;
+    pthread_mutex_unlock(&app->lock);
+    if (loaded) return;
     struct job job = { .kind = JOB_FETCH };
     snprintf(job.network, sizeof(job.network), "%s", network);
     snprintf(job.channel, sizeof(job.channel), "%s", channel);

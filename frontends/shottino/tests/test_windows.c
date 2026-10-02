@@ -5428,6 +5428,61 @@ TEST(the_settings_panel_lists_every_setting) {
     free_app(app);
 }
 
+/* ── Scrollback that is already here ───────────────────────────────── */
+
+static size_t jobs_queued(struct app *app) {
+    return (app->jobs_tail + JOB_QUEUE - app->jobs_head) % JOB_QUEUE;
+}
+
+static void say(struct app *app, long id, const char *sender, const char *body) {
+    struct wire_scrollback_message m = { 0 };
+    m.id = id;
+    m.network = "azzurra";
+    m.channel = "##sniffo";
+    m.sender = sender;
+    m.body = body;
+    m.kind = MSG_PRIVMSG;
+    m.server_time = 1790000000000L + id * 60000L;
+    render_message(app, &m, false);
+}
+
+/* The bug as reported: open a channel, and a copy of last week's lines
+ * turns up UNDER this morning's. The tail page is re-read and the seen
+ * ring has long forgotten those ids — so the buffer, which still holds
+ * the rows, has to be the one that says "already here". */
+TEST(a_row_still_on_screen_is_not_drawn_again_after_the_ring_forgets_it) {
+    struct app *app = window_app();
+    CHECK(app != NULL);
+    add_window_ex(app, "azzurra", "##sniffo", true);
+    say(app, 7, "alice", "last week");
+    say(app, 9, "vjt", "this morning");
+    size_t before = app->log_count;
+
+    app->seen_count = 0; /* the ring has wrapped */
+    say(app, 7, "alice", "last week");
+    CHECK_LONG(app->log_count, before);
+    CHECK(strstr(app->log[app->log_count - 1], "this morning") != NULL);
+    free_app(app);
+}
+
+/* Coming back to a window must not ask the server for what is already
+ * on screen: the socket keeps it current and the reconnect backfill
+ * closes any gap. A window never read is still read. */
+TEST(focusing_a_window_already_read_fetches_nothing) {
+    struct app *app = window_app();
+    CHECK(app != NULL);
+    add_window_ex(app, "azzurra", "##sniffo", true);
+
+    enqueue_fetch(app, "azzurra", "##sniffo");
+    CHECK_LONG(jobs_queued(app), 1);
+
+    app->jobs_head = app->jobs_tail;
+    app->windows[0].history_loaded = true;
+    enqueue_fetch(app, "azzurra", "##SNIFFO");
+    CHECK_LONG(jobs_queued(app), 0);
+    free_app(app);
+}
+
 int main(void) {
     /* This suite calls the real prefs_save/prefs_load. See test.h. */
     test_use_temp_home();
@@ -5573,5 +5628,7 @@ int main(void) {
     RUN(rejoining_a_running_call_rebuilds_the_link_rather_than_replaying_it);
     RUN(a_query_rings_and_a_channel_only_announces);
     RUN(an_arriving_call_rings_only_where_it_should);
+    RUN(a_row_still_on_screen_is_not_drawn_again_after_the_ring_forgets_it);
+    RUN(focusing_a_window_already_read_fetches_nothing);
     return test_report();
 }
