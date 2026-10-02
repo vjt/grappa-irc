@@ -4561,10 +4561,23 @@ static void render_message(struct app *app, const struct wire_scrollback_message
     char display_channel[MAX_CHANNEL];
     snprintf(display_channel, sizeof(display_channel), "%s", channel);
     const char *own_nick = own_nick_for_network(app, network);
-    /* An inbound DM is stored at `channel = OUR nick`, and the window it
-     * belongs to is named after the SENDER. grappa does not put
-     * `dm_with` on the wire, so re-deriving that is the client's job —
-     * cicchetto does the same thing in its own dm listener.
+    /* An inbound DM is stored at `channel = OUR nick at receipt`, and the
+     * window it belongs to is named after the PEER. The row says who
+     * that is: `dm_with` (on every scrollback row since protocol 36) is
+     * the peer on both halves of a conversation, and it is the one DM
+     * fact a nick change never rewrites. Since issue 1365 a rename
+     * writes nothing server-side, so after our first `/nick` every row
+     * stored before it still carries our OLD nick as its channel:
+     * "channel equals my nick" is false for all of them, and only
+     * `dm_with` still files them under the peer. A row whose `dm_with`
+     * already IS its channel — our outbound half, a note to ourselves —
+     * is where it belongs and is left alone.
+     *
+     * `dm_with` is optional on the wire: a server below protocol 36
+     * omits it, and for that server the old derivation stays as the
+     * fallback — channel equals our CURRENT nick and the sender is
+     * somebody else. It is right until our first rename, which is all
+     * such a server can tell us.
      *
      * This used to be gated on `live`, which made history behave
      * differently from arrival: a FETCHED inbound DM kept `channel =
@@ -4580,9 +4593,17 @@ static void render_message(struct app *app, const struct wire_scrollback_message
      * how it reached us, so the two paths ask the same question now. A
      * message to ourselves (sender == our nick) is excluded and stays
      * where it is: that window IS the own-nick one. */
-    if (!ctcp_reply && !ctcp_request && own_nick && nick_case_equal(channel, own_nick) &&
-        sender[0] && !nick_case_equal(sender, own_nick)) {
-        snprintf(display_channel, sizeof(display_channel), "%s", sender);
+    const char *peer = NULL;
+    if (!ctcp_reply && !ctcp_request) {
+        if (m->dm_with) {
+            if (m->dm_with[0] && !nick_case_equal(m->dm_with, channel)) peer = m->dm_with;
+        } else if (own_nick && nick_case_equal(channel, own_nick) && sender[0] &&
+                   !nick_case_equal(sender, own_nick)) {
+            peer = sender;
+        }
+    }
+    if (peer) {
+        snprintf(display_channel, sizeof(display_channel), "%s", peer);
         add_window_ex(app, network, display_channel, false);
     }
     /* Same door the windows use: a row addressed to the network's own
@@ -7472,7 +7493,10 @@ static bool current_window_key(struct app *app, char *network, size_t net_sz, ch
  * server to re-broadcast the window list.
  *
  * The re-keying was already in place at the other end (render_message
- * turns `channel == own nick` back into the sender's window). Only the
+ * files an inbound row under its `dm_with`, or under the sender when
+ * `channel == own nick` on a server below protocol 36). The topic here
+ * is the CURRENT nick, and that is right even after a rename: a DM
+ * arriving now is stored at the nick we hold now. Only the
  * subscription was missing. cicchetto calls the same thing its
  * dm-listener loop; this is shottino's half of the same contract.
  *

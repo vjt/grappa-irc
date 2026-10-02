@@ -58,12 +58,11 @@
  * v34 had put it. This client never read it, so nothing here changes.
  * No kind was added and nothing was repurposed.
  *
- * NUMBER ONLY. Still open from v36: since issue 1365 a nick change
- * rewrites nothing server-side, so an inbound DM keeps `channel` = the
- * nick we held at receipt, and "channel equals my nick" stops
- * recognising DMs after our first rename; `dm_with` (on every row since
- * v36) is the discriminator, and adopting it is this client's own change.
- * The away-mention misrouting v35 named is still open here too.
+ * NUMBER ONLY. The v36 gap is CLOSED (issue 2338): an inbound DM is
+ * filed under the row's `dm_with`, so our own rename no longer strands
+ * the rows stored before it; "channel equals my nick" is kept only as the
+ * fallback for a server that omits the field. The away-mention misrouting
+ * v35 named is still open here.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
@@ -256,6 +255,7 @@ struct wire_scrollback_message {
     wire_message_kind kind;
     const char *sender;
     const char *body;         /* nullable */
+    const char *dm_with;      /* nullable: nil off a DM, absent below protocol 36 */
     const json_value *meta;   /* object; opaque bag, read per call site */
 };
 

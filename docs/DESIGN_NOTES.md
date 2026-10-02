@@ -678,3 +678,37 @@ drops the columns; a worktree whose code still declares `field
 :dm_conversation_id` on `Message` and `Cursor` then selects a column that no
 longer exists, and every message or cursor query there fails until it
 rebases (or runs under its own `GRAPPA_CACHE_ID`).
+<!-- entry #2338 -->
+
+---
+
+## 2026-10-02 — #2338: shottino files an inbound DM under `dm_with`, and keeps the old derivation only as a fallback
+
+shottino decided an inbound DM's window by re-deriving it from
+`channel == own nick`. Issue 1365's ruling — a nick change writes NOTHING
+to the database (comment 5934112501 on issue 1365, relayed from IRC, not
+read first-hand) — made that derivation permanently wrong after our first
+`/nick`: every row stored before the rename keeps our OLD nick as its
+channel, the predicate is false for all of them, and nothing later repairs
+it, because the stored value is history by design.
+
+The row already names the peer. `dm_with` (on every scrollback row since
+protocol 36) is the peer on both halves of a conversation and is the one DM
+fact a rename never rewrites, so `render_message` files a row under its
+`dm_with` whenever that differs from the row's channel. A row whose
+`dm_with` IS its channel — our outbound half, a note to ourselves — is
+already where it belongs and opens nothing. Absent or null `dm_with`
+narrows to NULL, and only then does the old `channel == own nick`
+derivation run: it is the fallback for a server below protocol 36, right
+until our first rename, which is all such a server can say.
+
+The live DM listener (`ws_sync_dm_listeners`) is unchanged and correct: it
+subscribes the CURRENT own-nick topic, and a DM arriving now is stored at
+the nick we hold now. The rename only strands rows already stored.
+
+**Apply:** a client deciding "whose conversation is this row?" reads
+`dm_with`, never a comparison against the live nick. Any column that holds
+"our nick at receipt" is history after issue 1365, and a predicate that
+compares it with the live nick goes false at the first rename and stays
+false. Keep such a derivation only behind the field's absence, for a server
+that predates it.
