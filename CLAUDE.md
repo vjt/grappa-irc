@@ -217,7 +217,10 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   entry (protocol v8) — because emitting it forced
   `Scrollback.list_archive/3` to visit the whole `(subject, network)`
   partition, and no amount of query work buys the complexity class back
-  while an exact per-group count is in the shape. The bar that case
+  while an exact per-group count is in the shape. A second followed —
+  `dm_conversation_id` (protocol v37, issue 1365) — because it could not
+  be emitted without the `dm_conversations` table and its write on every
+  DM row; the reasoning is in `Grappa.Protocol`'s 37 block. The bar that case
   sets, and it is deliberately high: the field must be the thing
   standing between the server and a property it cannot otherwise have;
   the break must be MEASURED on the real client (cic's generated

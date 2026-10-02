@@ -28,6 +28,14 @@ defmodule Grappa.Repo.Migrations.DropDmConversations do
   A version in `schema_migrations` with no file is reported, never refused,
   by `Grappa.Deploy.MigrationAudit`, so the first state migrates cleanly.
 
+  ⚠️ **Production is the one database whose state is not known here.** No
+  tag contains the pair, but production pulls origin/main, not tags. If it
+  ran main between 2026-09-29 and this change, it is in the FIRST state, and
+  this migration then rewrites `messages` (~5.2M rows) with `DROP COLUMN`
+  under the write lock during the cold deploy. Before deploying, read
+  `SELECT version FROM schema_migrations WHERE version IN (20260929001416,
+  20260929001417)` on the production database: empty means a no-op.
+
   ## Order is load-bearing
 
   Indexes first: SQLite refuses `ALTER TABLE … DROP COLUMN` on a column a

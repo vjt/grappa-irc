@@ -31,10 +31,12 @@ defmodule Grappa.Protocol do
   working against a NEW server.
 
   **Removal is no longer "never", it is "only on a ruling" (v8, #1626).**
-  One field has been taken back: `row_count` on the archive entry, because
-  emitting it forced the listing to visit the whole partition and no
-  amount of query work could buy the complexity class back while it
-  stayed. The bar that removal has to clear, set by that case: the field
+  Two fields have been taken back. `row_count` on the archive entry (v8),
+  because emitting it forced the listing to visit the whole partition and
+  no amount of query work could buy the complexity class back while it
+  stayed. And `dm_conversation_id` (v37, issue 1365), which could not be
+  emitted without keeping the `dm_conversations` table and its write on
+  every DM row — see the 37 block below. The bar that removal has to clear, set by that case: the field
   must be the thing standing between the server and a property it cannot
   otherwise have, the break has to be measured on the real client rather
   than argued, and it takes a ruling — not a judgement call inside the
@@ -1017,10 +1019,24 @@ defmodule Grappa.Protocol do
   # nick change writes nothing to the DB made leg 3 moot, and no client ever
   # read the field.
   #
-  # A FIELD removal, so this is the #1626 case and it took a ruling: vjt's
-  # "levalo" on 2026-10-02 at 00:01Z, RELAYED by a peer reading IRC, not seen
-  # first-hand. The bar #1626 sets is that the break is MEASURED on the real
-  # client, and it was, before the regeneration: the generated cic schema at
+  # A FIELD removal, so this is the #1626 case, and the three conditions it
+  # sets, one by one.
+  #
+  # (1) "The field stands between the server and a property it cannot
+  # otherwise have" — ARGUED, not measured. The id names a `dm_conversations`
+  # row, so emitting it means keeping that table and writing it on every
+  # persisted DM row, every window open and close, and every new DM cursor
+  # (a second identity store beside the nick, kept true by a dual write).
+  # The property is the one the issue 1365 ruling asks for: a DM write that
+  # touches only the row, and no identity anywhere that a nick has to keep
+  # true. Note the ruling's own stated ground was narrower — "oggi non serve a
+  # nulla", nothing reads it — and whether that alone would clear (1) is
+  # vjt's to say, not this comment's.
+  #
+  # (2) A ruling: vjt's "levalo" on 2026-10-02 at 00:01Z, RELAYED by a peer
+  # reading IRC, not seen first-hand.
+  #
+  # (3) The break MEASURED on the real client, before the regeneration: the generated cic schema at
   # 36 listed the key in the OPTIONAL set (`q`) of both shapes, and
   # `validate/2` ACCEPTED a scrollback row and a `query_windows_list` entry
   # without it, while rejecting the same payloads without a REQUIRED key
