@@ -455,6 +455,43 @@ chooses it, the wheel walks the list, and a click anywhere outside the box
 closes it — the same as Esc. Right-click needs mouse reporting, which is on by
 default; `Ctrl-R` works either way.
 
+## Delete for me
+
+The message menu ends with **Delete for me…** on any message grappa stored.
+It asks first — the second box puts **Cancel** on top, so `Enter` by reflex
+deletes nothing — and then removes the line from this terminal. It is a
+**local** removal, like `/block`: grappa keeps the message and every other
+device still shows it. The deleted ids are saved in the state directory
+(`<key>.hidden`, keyed by server and identity), so the line stays gone after a
+restart and whichever fetch would have brought it back.
+
+## Selecting and copying
+
+Drag with the left button over the chat to select **messages**: the rows go
+reverse-video as the pointer moves, and releasing copies them, one per line,
+without the `[network/channel]` prefix and without colour codes. Only the
+window you started in is selected, so the sidebar and the userlist never come
+along — which is what the terminal's own Shift-drag does, because it copies
+screen lines. A plain click selects nothing; any click dismisses a selection.
+
+The copy goes out as OSC 52, which the terminal itself puts on the clipboard
+(kitty, foot, wezterm, alacritty, iTerm2, xterm when allowed — and it works
+over ssh), and also through `wl-copy`, `xclip` or `xsel` when one is installed,
+for terminals that ignore OSC 52. Shift-drag still gives you the terminal's
+selection when you want screen text instead.
+
+## Days and the scrollback cache
+
+A row shows only `HH:MM`, so the chat draws a line where the day changes —
+`── Friday 25 September 2026 ──`, in your locale, in the accent colour so it is
+not mistaken for the unread divider.
+
+A window's history is read **once**: at startup, or the first time a window
+opens. After that the websocket keeps it current and a reconnect fetches only
+what came after the last message seen (`?after=`), so switching windows costs
+no request at all. `/clear` empties a window and lets the next focus read it
+again.
+
 ## The settings panel
 
 `/settings` opens it. Every preference `/set` knows is listed there, with its
@@ -535,6 +572,7 @@ directory it did not choose; an empty value counts as unset.
 | `llm.conf` | `llm.*` — the model transport's own configuration |
 | `shottino.conf` | everything else `/set` knows |
 | `*.conf~` | the version before the last write |
+| `<key>.hidden` | message ids deleted "for me" on one server, one per line |
 
 **Every write keeps the previous version**, and the new file arrives by rename
 rather than by truncating in place — so a crash mid-write leaves the old file

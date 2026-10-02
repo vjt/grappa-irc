@@ -532,6 +532,15 @@ struct pane_region {
     size_t pane;
 };
 
+/* Where a chat row was drawn this frame, and which row it is — EVERY row,
+ * operational lines included, unlike msg_region (which is about people).
+ * What a drag-selection maps the pointer through. */
+struct row_region {
+    int y0, y1;
+    size_t row;
+    log_scope_id scope;
+};
+
 struct link_region {
     int y0;
     int y1;
@@ -1363,6 +1372,22 @@ struct app {
     size_t link_region_count;
     struct msg_region msg_regions[MAX_LINK_REGIONS];
     size_t msg_region_count;
+    struct row_region row_regions[MAX_LINK_REGIONS];
+    size_t row_region_count;
+    /* A drag-selection of whole messages, in ONE window's rows.
+     *
+     * The terminal's own selection (Shift-drag) copies SCREEN lines, so
+     * it takes the sidebar and the roster with every message. This one
+     * is the client's: it knows which rows are messages and which window
+     * they belong to, and copies the messages and nothing else.
+     *
+     * Kept as buffer indices, so it survives a redraw and a scroll; every
+     * door that moves rows corrects them (log_row_removed_locked, the
+     * insert in log_push_locked), and a bulk drop clears it. */
+    bool sel_dragging;
+    bool sel_shown;
+    size_t sel_anchor, sel_end;
+    log_scope_id sel_scope;
     struct topic_region topic_regions[MAX_PANES];
     size_t topic_region_count;
     struct win_region win_regions[MAX_WINDOWS];
@@ -1972,6 +1997,11 @@ static bool is_channel_name(const char *name) {
 static void log_row_removed_locked(struct app *app, size_t i) {
     if (app->log_insert_at > i) app->log_insert_at--;
     if (app->log_last_index > i) app->log_last_index--;
+    /* A selection that loses its own end is cleared rather than guessed:
+     * it would otherwise silently start on a different message. */
+    if (app->sel_anchor == i || app->sel_end == i) app->sel_shown = app->sel_dragging = false;
+    if (app->sel_anchor > i) app->sel_anchor--;
+    if (app->sel_end > i) app->sel_end--;
 }
 
 static void log_shift_locked(struct app *app) {
@@ -2123,6 +2153,8 @@ static void log_push_locked(struct app *app, char *line, bool mention, unsigned 
         if (app->log_insert_at > app->log_count) app->log_insert_at = app->log_count;
         i = app->log_insert_at++;
         for (size_t k = app->log_count; k > i; k--) log_row_move_locked(app, k, k - 1);
+        if (app->sel_anchor >= i) app->sel_anchor++;
+        if (app->sel_end >= i) app->sel_end++;
     }
     app->log_last_index = i;
     app->log[i] = line;
@@ -3515,6 +3547,7 @@ static size_t log_drop_rows_locked(struct app *app, log_row_doomed doomed, const
     app->log_count = write_i;
     app->log_insert_at -= gone_before_insert;
     app->log_last_index -= gone_before_last;
+    if (gone) app->sel_shown = app->sel_dragging = false;
     return gone;
 }
 
@@ -9817,6 +9850,129 @@ static void add_msg_region(struct app *app, int y0, int y1, int x0, int x1, size
     r->id = app->log_ids[row];
 }
 
+/* Is row `i` inside the selection shown in the window `scope`?
+ * Caller holds app->lock. */
+static bool row_selected_locked(const struct app *app, size_t i, log_scope_id scope) {
+    if (!app->sel_shown || scope != app->sel_scope) return false;
+    size_t lo = app->sel_anchor < app->sel_end ? app->sel_anchor : app->sel_end;
+    size_t hi = app->sel_anchor < app->sel_end ? app->sel_end : app->sel_anchor;
+    return i >= lo && i <= hi && log_row_in_scope(app, i, scope);
+}
+
+/* The row of window `scope` drawn at screen line `y` last frame. Past the
+ * top or the bottom of what was drawn, the nearest end — a drag that
+ * overshoots the pane still means "to the first / last message here".
+ * False when the window drew nothing. Caller holds app->lock. */
+static bool row_at_y_locked(const struct app *app, int y, log_scope_id scope, size_t *row) {
+    const struct row_region *top = NULL, *bottom = NULL;
+    for (size_t k = 0; k < app->row_region_count; k++) {
+        const struct row_region *r = &app->row_regions[k];
+        if (r->scope != scope) continue;
+        if (y >= r->y0 && y <= r->y1) {
+            *row = r->row;
+            return true;
+        }
+        if (!top || r->y0 < top->y0) top = r;
+        if (!bottom || r->y1 > bottom->y1) bottom = r;
+    }
+    if (!top) return false;
+    *row = y < top->y0 ? top->row : bottom->row;
+    return true;
+}
+
+/* The selected messages as plain text, oldest first, one per line:
+ * without the "[network/channel]" filing prefix and without colour
+ * codes — what a person means by the words on screen. NULL when nothing
+ * is selected. The caller frees. Caller holds app->lock. */
+static char *selection_text_locked(const struct app *app) {
+    if (!app->sel_shown) return NULL;
+    size_t lo = app->sel_anchor < app->sel_end ? app->sel_anchor : app->sel_end;
+    size_t hi = app->sel_anchor < app->sel_end ? app->sel_end : app->sel_anchor;
+    if (hi >= app->log_count) return NULL;
+    size_t cap = 1, len = 0;
+    for (size_t i = lo; i <= hi; i++)
+        if (log_row_in_scope(app, i, app->sel_scope)) cap += strlen(app->log[i]) + 1;
+    char *out = malloc(cap);
+    if (!out) return NULL;
+    out[0] = 0;
+    for (size_t i = lo; i <= hi; i++) {
+        if (!log_row_in_scope(app, i, app->sel_scope)) continue;
+        const char *line = app->log[i];
+        if (line[0] == '[') {
+            const char *close = strchr(line, ']');
+            if (close) line = close[1] == ' ' ? close + 2 : close + 1;
+        }
+        size_t room = cap - len;
+        size_t n = mirc_has_formatting(line) ? mirc_strip(line, out + len, room)
+                                             : (size_t)snprintf(out + len, room, "%s", line);
+        if (n >= room) n = room - 1;
+        len += n;
+        if (len + 1 < cap) out[len++] = '\n';
+        out[len] = 0;
+    }
+    if (len && out[len - 1] == '\n') out[--len] = 0;
+    return out;
+}
+
+/* Put `text` on the system clipboard, by every door that might be open:
+ * OSC 52, which the terminal itself honours (kitty, foot, wezterm,
+ * alacritty, iTerm2, xterm with it allowed — and it works over ssh), and
+ * the desktop's own tool when one is installed, for the terminals that
+ * ignore OSC 52 (VTE-based ones). The tool runs detached with its
+ * output on /dev/null, so it cannot scribble over the screen. Returns
+ * which tool took it, or NULL when only OSC 52 was tried. */
+static const char *clipboard_copy(const char *text) {
+    size_t len = strlen(text);
+    char *b64 = base64_encode((const unsigned char *)text, len);
+    if (b64) {
+        fprintf(stdout, "\033]52;c;%s\a", b64);
+        fflush(stdout);
+        free(b64);
+    }
+    const char *const *argv = NULL;
+    static const char *const wl[] = {"wl-copy", NULL};
+    static const char *const xclip[] = {"xclip", "-selection", "clipboard", NULL};
+    static const char *const xsel[] = {"xsel", "--clipboard", "--input", NULL};
+    const char *wayland = getenv("WAYLAND_DISPLAY"), *x11 = getenv("DISPLAY");
+    if (wayland && wayland[0] && media_tool_available("wl-copy")) argv = wl;
+    else if (x11 && x11[0] && media_tool_available("xclip")) argv = xclip;
+    else if (x11 && x11[0] && media_tool_available("xsel")) argv = xsel;
+    if (!argv) return NULL;
+    int fds[2];
+    if (pipe(fds) != 0) return NULL;
+    pid_t pid = fork();
+    if (pid == 0) {
+        /* Double fork, like the desktop opener: the tool stays behind to
+         * serve the selection and must be reaped by init, not by us. */
+        if (fork() == 0) {
+            close(fds[1]);
+            dup2(fds[0], STDIN_FILENO);
+            if (fds[0] > STDERR_FILENO) close(fds[0]);
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) {
+                dup2(devnull, STDOUT_FILENO);
+                dup2(devnull, STDERR_FILENO);
+                if (devnull > STDERR_FILENO) close(devnull);
+            }
+            execvp(argv[0], (char *const *)argv);
+            _exit(127);
+        }
+        _exit(0);
+    }
+    close(fds[0]);
+    bool ok = pid > 0;
+    for (size_t off = 0; ok && off < len;) {
+        ssize_t w = write(fds[1], text + off, len - off);
+        if (w < 0 && errno == EINTR) continue;
+        if (w <= 0) ok = false;
+        else off += (size_t)w;
+    }
+    close(fds[1]);
+    if (pid > 0)
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+    return ok ? argv[0] : NULL;
+}
+
 static void draw_chat_pane(struct app *app, struct pane *pane, int x, int y, int width, int height,
                            bool focused, bool split) {
     if (width < 8 || height < 2) return;
@@ -10051,6 +10207,16 @@ static void draw_chat_pane(struct app *app, struct pane *pane, int x, int y, int
             drawn_rows++;
             draw_message_line(msg_y, x + 1, width - 2, text_skip, draw_lines, app->log[i],
                               app->log_mentions[i], app->log_pending[i] != 0);
+            if (row_selected_locked(app, i, wanted_prefix))
+                for (int ly = msg_y; ly < msg_y + draw_lines; ly++)
+                    mvchgat(ly, x + 1, width - 2, A_NORMAL, CP_SELECTED, NULL);
+            if (app->row_region_count < MAX_LINK_REGIONS) {
+                struct row_region *rr = &app->row_regions[app->row_region_count++];
+                rr->y0 = msg_y;
+                rr->y1 = msg_y + draw_lines - 1;
+                rr->row = i;
+                rr->scope = wanted_prefix;
+            }
             /* EVERY link is clickable, not only the ones that turn into
              * pictures: `kind` decides whether the click previews or hands
              * the URL to the browser. */
@@ -10429,6 +10595,7 @@ static void draw(struct app *app) {
      * the last call would keep eating clicks after the call ended. */
     app->call_draw_w = app->call_draw_h = 0;
     app->msg_region_count = 0;
+    app->row_region_count = 0;
     app->win_region_count = 0;
     app->topic_region_count = 0;
     app->pane_region_count = 0;
@@ -18354,7 +18521,7 @@ static void show_help(struct app *app) {
     log_line(app, "files: /upload <path> — post a local file and share its link (IRC stays text; the link is clickable)");
     log_line(app, "       /voicemsg (/vmsg), /video — record one and post it; Enter sends, Esc discards");
     log_line(app, "       /stt — speak instead of typing; the words land in the input line (off by default)");
-    log_line(app, "terminal: mouse tracking is ON by default (click links, right-click a message, wheel over the userlist); hold Shift to select text as usual, or /mouse off to give selection back unconditionally");
+    log_line(app, "terminal: mouse tracking is ON by default (click links, right-click a message, wheel over the userlist); drag over messages to copy them; hold Shift for the terminal's own selection, or /mouse off to give selection back unconditionally");
     log_line(app, "media: images render INLINE when the terminal supports it (kitty/iTerm2/sixel) or as colour art otherwise; video and GIFs PLAY as colour art (/media still for one frame)");
     log_line(app, "audio: an audio link NEVER plays on arrival — click it (or /preview /view it) and it plays out of band via mpv/ffplay, falling back to your desktop handler");
     log_line(app, "       /media [on|off|all|first-party] — ON for ALL hosts by default (off entirely without ffmpeg): every image link is fetched when it scrolls into view, so the host learns your IP; /media first-party limits it to this deployment's uploads");
@@ -21125,6 +21292,49 @@ static int admin_row_at_locked(struct app *app, int x, int y) {
     return -1;
 }
 
+/* One event of a drag-selection, if one is in progress. Returns true when
+ * the event was the selection's (and so must not reach anything else).
+ *
+ * `y` extends the selection to the message drawn there; `release` ends
+ * it and copies what it covers; `other_button` (a right click, the wheel,
+ * or a NEW left press — the release of the last drag was lost, and the
+ * press must still reach its link or window) abandons it. Split from
+ * handle_mouse so it can be driven without a terminal. */
+static bool selection_drag(struct app *app, int y, bool release, bool other_button) {
+    pthread_mutex_lock(&app->lock);
+    if (!app->sel_dragging) {
+        pthread_mutex_unlock(&app->lock);
+        return false;
+    }
+    if (other_button) {
+        app->sel_dragging = app->sel_shown = false;
+        pthread_mutex_unlock(&app->lock);
+        return false;
+    }
+    size_t row;
+    if (row_at_y_locked(app, y, app->sel_scope, &row)) {
+        app->sel_end = row;
+        /* Any movement shows it — including along one message, which is
+         * how a single message is selected. */
+        if (!release) app->sel_shown = true;
+    }
+    char *text = NULL;
+    if (release) {
+        app->sel_dragging = false;
+        text = selection_text_locked(app);
+    }
+    pthread_mutex_unlock(&app->lock);
+    if (text && text[0]) {
+        const char *tool = clipboard_copy(text);
+        size_t lines = 1;
+        for (const char *c = text; *c; c++) lines += *c == '\n';
+        log_line(app, "copied %zu message%s to the clipboard (%s)", lines, lines == 1 ? "" : "s",
+                 tool ? tool : "OSC 52 — if nothing pasted, install wl-copy, xclip or xsel");
+    }
+    free(text);
+    return true;
+}
+
 /* Map a mouse event to a link region: motion updates the hover hint, a
  * left button press over a region acts on the link — a picture previews
  * in place, anything else opens in the browser. */
@@ -21377,6 +21587,14 @@ static void handle_mouse(struct app *app) {
         return;
     }
 
+    /* A drag in progress owns every event until the button comes up:
+     * whatever the pointer passes over — a link, the sidebar, the roster —
+     * the drag is about the messages it started in. With SGR reporting
+     * (1006, which this client turns on) a drag arrives as motion. */
+    if (selection_drag(app, ev.y, (ev.bstate & BUTTON1_RELEASED) != 0,
+                       right || wheel_up || wheel_down || (ev.bstate & BUTTON1_PRESSED)))
+        return;
+
     if (right) {
         /* A picture (or its link) under the pointer answers first: it is
          * the more specific thing, and the message row it belongs to is
@@ -21441,6 +21659,34 @@ static void handle_mouse(struct app *app) {
             handle_command(app, cmd);
             return;
         }
+        /* A press on a chat row arms a selection there — not on a link,
+         * whose press keeps meaning "open it". It is not SHOWN until the
+         * pointer moves: a plain click selects nothing. Any press also
+         * drops the selection on screen, which is how one is dismissed. */
+        pthread_mutex_lock(&app->lock);
+        app->sel_shown = false;
+        app->sel_dragging = false;
+        if (!region_at_locked(app, ev.x, ev.y)) {
+            for (size_t i = 0; i < app->row_region_count; i++) {
+                const struct row_region *rr = &app->row_regions[i];
+                if (ev.y < rr->y0 || ev.y > rr->y1) continue;
+                bool in_pane = false;
+                for (size_t k = 0; k < app->pane_region_count; k++) {
+                    const struct pane_region *pr = &app->pane_regions[k];
+                    if (ev.y >= pr->y0 && ev.y <= pr->y1 && ev.x >= pr->x0 && ev.x <= pr->x1 &&
+                        rr->scope == window_scope_id_locked(app,
+                                                            app->windows[app->panes[pr->pane].window].network,
+                                                            app->windows[app->panes[pr->pane].window].channel))
+                        in_pane = true;
+                }
+                if (!in_pane) continue;
+                app->sel_dragging = true;
+                app->sel_anchor = app->sel_end = rr->row;
+                app->sel_scope = rr->scope;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&app->lock);
     }
 
     /* Wheel over a member pane scrolls the roster. Which column that is
@@ -24058,7 +24304,8 @@ int main(int argc, char **argv) {
                           " Install it, then /media on");
         }
         log_line(app, "mouse tracking ON — click links, right-click a message, wheel over the "
-                      "userlist; hold Shift to select text as usual, or /mouse off");
+                      "userlist; drag over messages to copy them; Shift for the terminal's own selection, or "
+                      "/mouse off");
     }
     seed_state(app);
     /* Before the first fetch, so a deleted message is never drawn. */

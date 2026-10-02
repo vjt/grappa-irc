@@ -5650,6 +5650,135 @@ TEST(a_message_deleted_for_me_stays_gone) {
     free_app(app);
 }
 
+/* ── Selecting messages ────────────────────────────────────────────── */
+
+static void said_in(struct app *app, long id, const char *channel, const char *body) {
+    struct wire_scrollback_message m = { 0 };
+    m.id = id;
+    m.network = "azzurra";
+    m.channel = channel;
+    m.sender = "alice";
+    m.body = body;
+    m.kind = MSG_PRIVMSG;
+    m.server_time = 1790208000000L + id * 60000L;
+    render_message(app, &m, false);
+}
+
+/* The rows a frame drew, as draw_chat_pane records them: one screen line
+ * per row of `scope`, from `y`. */
+static void drawn_from(struct app *app, log_scope_id scope, int y) {
+    app->row_region_count = 0;
+    for (size_t i = 0; i < app->log_count; i++) {
+        if (!log_row_in_scope(app, i, scope)) continue;
+        struct row_region *rr = &app->row_regions[app->row_region_count++];
+        rr->y0 = rr->y1 = y++;
+        rr->row = i;
+        rr->scope = scope;
+    }
+}
+
+/* What the terminal's own selection got wrong: it copies SCREEN lines,
+ * sidebar and roster included. The client's copies the window's
+ * messages — not the other window's rows interleaved in the buffer, not
+ * the filing prefix, not the colour codes. */
+TEST(a_selection_copies_this_windows_messages_and_nothing_else) {
+    struct app *app = window_app();
+    CHECK(app != NULL);
+    add_window_ex(app, "azzurra", "##sniffo", true);
+    add_window_ex(app, "azzurra", "#other", false);
+    said_in(app, 1, "##sniffo", "first");
+    said_in(app, 2, "#other", "not this one");
+    said_in(app, 3, "##sniffo", "\00304red\003 second");
+    said_in(app, 4, "##sniffo", "third");
+    log_scope_id scope = window_scope_id_locked(app, "azzurra", "##sniffo");
+    drawn_from(app, scope, 5);
+
+    app->sel_dragging = true;
+    app->sel_scope = scope;
+    CHECK(row_at_y_locked(app, 5, scope, &app->sel_anchor));
+    app->sel_end = app->sel_anchor;
+    CHECK(selection_drag(app, 6, false, false)); /* onto the second message */
+    CHECK(app->sel_shown);
+    CHECK(app->sel_dragging);
+
+    char *text = selection_text_locked(app);
+    CHECK(text != NULL);
+    if (text) {
+        CHECK(strstr(text, "first") != NULL);
+        CHECK(strstr(text, "red second") != NULL);
+        CHECK(strstr(text, "not this one") == NULL);
+        CHECK(strstr(text, "third") == NULL);
+        CHECK(strstr(text, "[azzurra/") == NULL);
+        CHECK(strchr(text, '\003') == NULL);
+    }
+    free(text);
+
+    /* Past the bottom of the pane is "to the last message here". */
+    CHECK(selection_drag(app, 40, false, false));
+    text = selection_text_locked(app);
+    CHECK(text && strstr(text, "third") != NULL);
+    free(text);
+    free_app(app);
+}
+
+/* A plain click selects nothing, and a new press — a lost release, a
+ * click on a link — must reach its target rather than extend a drag. */
+TEST(a_click_is_not_a_selection_and_a_new_press_ends_a_drag) {
+    struct app *app = window_app();
+    CHECK(app != NULL);
+    add_window_ex(app, "azzurra", "##sniffo", true);
+    said_in(app, 1, "##sniffo", "first");
+    log_scope_id scope = window_scope_id_locked(app, "azzurra", "##sniffo");
+    drawn_from(app, scope, 5);
+
+    app->sel_dragging = true;
+    app->sel_scope = scope;
+    app->sel_anchor = app->sel_end = 0;
+    CHECK(!app->sel_shown);
+    CHECK(!selection_drag(app, 5, false, true));
+    CHECK(!app->sel_dragging);
+    CHECK(!app->sel_shown);
+    CHECK(selection_text_locked(app) == NULL);
+    CHECK(!selection_drag(app, 5, false, false)); /* nothing in progress */
+    free_app(app);
+}
+
+/* The selection is held as buffer indices, so the doors that move rows
+ * move it too: the oldest row falling off the ring, a page of history
+ * inserted above it. */
+TEST(a_selection_follows_its_rows_when_the_buffer_moves) {
+    struct app *app = window_app();
+    CHECK(app != NULL);
+    add_window_ex(app, "azzurra", "##sniffo", true);
+    said_in(app, 1, "##sniffo", "first");
+    said_in(app, 2, "##sniffo", "second");
+    said_in(app, 3, "##sniffo", "third");
+    app->sel_scope = window_scope_id_locked(app, "azzurra", "##sniffo");
+    app->sel_shown = true;
+    app->sel_anchor = 1;
+    app->sel_end = 2;
+
+    pthread_mutex_lock(&app->lock);
+    app->log_insert_at = 0;
+    app->log_insert_tid = pthread_self();
+    app->log_insert_active = true;
+    pthread_mutex_unlock(&app->lock);
+    said_in(app, -5, "##sniffo", "older");
+    app->log_insert_active = false;
+    CHECK_LONG(app->sel_anchor, 2);
+    CHECK_LONG(app->sel_end, 3);
+
+    pthread_mutex_lock(&app->lock);
+    log_shift_locked(app);
+    pthread_mutex_unlock(&app->lock);
+    CHECK_LONG(app->sel_anchor, 1);
+    CHECK_LONG(app->sel_end, 2);
+    char *text = selection_text_locked(app);
+    CHECK(text && strstr(text, "second") && strstr(text, "third") && !strstr(text, "first"));
+    free(text);
+    free_app(app);
+}
+
 int main(void) {
     /* This suite calls the real prefs_save/prefs_load. See test.h. */
     test_use_temp_home();
@@ -5802,5 +5931,8 @@ int main(void) {
     RUN(delete_for_me_is_offered_on_a_stored_message_only);
     RUN(delete_for_me_asks_first_and_cancel_is_the_default);
     RUN(a_message_deleted_for_me_stays_gone);
+    RUN(a_selection_copies_this_windows_messages_and_nothing_else);
+    RUN(a_click_is_not_a_selection_and_a_new_press_ends_a_drag);
+    RUN(a_selection_follows_its_rows_when_the_buffer_moves);
     return test_report();
 }
