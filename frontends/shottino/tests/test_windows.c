@@ -5483,6 +5483,83 @@ TEST(focusing_a_window_already_read_fetches_nothing) {
     free_app(app);
 }
 
+/* ── The day line ──────────────────────────────────────────────────── */
+
+static void said_at(struct app *app, long id, long server_time_ms, const char *body) {
+    struct wire_scrollback_message m = { 0 };
+    m.id = id;
+    m.network = "azzurra";
+    m.channel = "##sniffo";
+    m.sender = "alice";
+    m.body = body;
+    m.kind = MSG_PRIVMSG;
+    m.server_time = server_time_ms;
+    render_message(app, &m, false);
+}
+
+/* Rows only say HH:MM, so a week of history reads as one day unless the
+ * pane says where each day starts. The line belongs to the row ABOVE it
+ * and is counted in that row's height — measured and drawn alike, or the
+ * newest line is clipped off the bottom. */
+TEST(a_day_line_separates_rows_from_different_days_and_only_those) {
+    setenv("TZ", "UTC", 1);
+    tzset();
+    struct app *app = window_app();
+    CHECK(app != NULL);
+    add_window_ex(app, "azzurra", "##sniffo", true);
+    long thursday = 1790208000000L; /* Thursday 2026-09-24 00:00 UTC */
+    said_at(app, 1, thursday + 10L * 3600000L, "morning");
+    said_at(app, 2, thursday + 11L * 3600000L, "same day");
+    said_at(app, 3, thursday + 30L * 3600000L, "next day");
+
+    struct pane_view view;
+    log_scope_id scope = window_scope_id_locked(app, "azzurra", "##sniffo");
+    pane_view_collect(app, scope, SIZE_MAX, 120, 40, 0, &view);
+    CHECK_LONG(view.count, 3);
+    CHECK(!view.day_below[0]);
+    CHECK(view.day_below[1]);
+    CHECK(!view.day_below[2]);
+    CHECK_LONG(view.heights[0], view.text_heights[0]);
+    CHECK_LONG(view.heights[1], view.text_heights[1] + 1);
+    CHECK_LONG(view.day_at[1], (thursday + 30L * 3600000L) / 1000);
+    CHECK(view.at_top);
+    CHECK_LONG(view.content_lines,
+               view.text_heights[0] + view.text_heights[1] + view.text_heights[2] + 1);
+
+    char label[96];
+    day_label((time_t)(view.day_at[1]), label, sizeof(label));
+    CHECK(strstr(label, "2026") != NULL);
+    CHECK(strstr(label, "25") != NULL);
+    free_app(app);
+    unsetenv("TZ");
+    tzset();
+}
+
+/* An operational line between two days (a /whois answer, a join notice
+ * with no time) neither draws a line of its own nor hides the change. */
+TEST(a_row_with_no_time_does_not_break_the_day_line) {
+    setenv("TZ", "UTC", 1);
+    tzset();
+    struct app *app = window_app();
+    CHECK(app != NULL);
+    add_window_ex(app, "azzurra", "##sniffo", true);
+    long thursday = 1790208000000L;
+    said_at(app, 1, thursday + 10L * 3600000L, "thursday");
+    log_line(app, "[azzurra/##sniffo] --- an operational line");
+    said_at(app, 2, thursday + 34L * 3600000L, "friday");
+
+    struct pane_view view;
+    log_scope_id scope = window_scope_id_locked(app, "azzurra", "##sniffo");
+    pane_view_collect(app, scope, SIZE_MAX, 120, 40, 0, &view);
+    CHECK_LONG(view.count, 3);
+    CHECK(view.day_below[0]);
+    CHECK(!view.day_below[1]);
+    CHECK(!view.day_below[2]);
+    free_app(app);
+    unsetenv("TZ");
+    tzset();
+}
+
 int main(void) {
     /* This suite calls the real prefs_save/prefs_load. See test.h. */
     test_use_temp_home();
@@ -5630,5 +5707,7 @@ int main(void) {
     RUN(an_arriving_call_rings_only_where_it_should);
     RUN(a_row_still_on_screen_is_not_drawn_again_after_the_ring_forgets_it);
     RUN(focusing_a_window_already_read_fetches_nothing);
+    RUN(a_day_line_separates_rows_from_different_days_and_only_those);
+    RUN(a_row_with_no_time_does_not_break_the_day_line);
     return test_report();
 }

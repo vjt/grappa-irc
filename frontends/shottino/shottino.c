@@ -1104,6 +1104,11 @@ struct app {
      * unread divider be placed at the exact row the server's read cursor
      * points at, rather than guessed from position. */
     long log_ids[LOG_LINES];
+    /* When the row happened (the server's time, local seconds), 0 for a
+     * row that is not a scrollback message. What the day line between two
+     * rows is decided from — the text carries only HH:MM, which is how a
+     * week of history read as one confusing day. */
+    time_t log_times[LOG_LINES];
     size_t log_count;
     struct pending_echo pending[256];
     /* File offers the server is holding for a human (§4b). Not windows
@@ -1955,6 +1960,7 @@ static void log_shift_locked(struct app *app) {
     memmove(app->log_mentions, app->log_mentions + 1, sizeof(app->log_mentions[0]) * (LOG_LINES - 1));
     memmove(app->log_pending, app->log_pending + 1, sizeof(app->log_pending[0]) * (LOG_LINES - 1));
     memmove(app->log_ids, app->log_ids + 1, sizeof(app->log_ids[0]) * (LOG_LINES - 1));
+    memmove(app->log_times, app->log_times + 1, sizeof(app->log_times[0]) * (LOG_LINES - 1));
     memmove(app->log_media, app->log_media + 1, sizeof(app->log_media[0]) * (LOG_LINES - 1));
     memmove(app->log_scope, app->log_scope + 1, sizeof(app->log_scope[0]) * (LOG_LINES - 1));
     app->log_count--;
@@ -1967,6 +1973,7 @@ static void log_row_move_locked(struct app *app, size_t dst, size_t src) {
     app->log_mentions[dst] = app->log_mentions[src];
     app->log_pending[dst] = app->log_pending[src];
     app->log_ids[dst] = app->log_ids[src];
+    app->log_times[dst] = app->log_times[src];
     app->log_media[dst] = app->log_media[src];
     app->log_scope[dst] = app->log_scope[src];
 }
@@ -2102,6 +2109,7 @@ static void log_push_locked(struct app *app, char *line, bool mention, unsigned 
     app->log_mentions[i] = mention;
     app->log_pending[i] = pending;
     app->log_ids[i] = 0;
+    app->log_times[i] = 0;
     app->log_media[i] = -1;
     app->log_scope[i] = log_scope_of_locked(app, line);
     app->log_count++;
@@ -4824,7 +4832,10 @@ static void render_message(struct app *app, const struct wire_scrollback_message
      * appended: a presence kind with nothing to say, or a hidden one,
      * would otherwise stamp its id onto somebody else's line and drag
      * the unread divider there. */
-    if (wrote && app->log_count > 0) app->log_ids[app->log_last_index] = id;
+    if (wrote && app->log_count > 0) {
+        app->log_ids[app->log_last_index] = id;
+        app->log_times[app->log_last_index] = ts;
+    }
     /* The row's inline image slot is NOT claimed here. It is claimed by
      * the draw path, the first time the row is actually on screen — the
      * #451 first-party test and the `/media` toggle are both questions
@@ -9437,10 +9448,36 @@ static size_t draw_member_list(struct app *app, struct window *w, int y, int x, 
  * Sized by the pane rather than by the buffer: the arrays this replaced
  * were LOG_LINES long and lived on the draw path's stack, which is what
  * pinned the buffer at 2000 rows for as long as it was. */
+/* Do two instants fall on the same calendar day HERE? Compared as a
+ * (year, day-of-year) pair in local time, so a DST change is not a new
+ * day and midnight is. */
+static bool same_local_day(time_t a, time_t b) {
+    struct tm ta, tb;
+    localtime_r(&a, &ta);
+    localtime_r(&b, &tb);
+    return ta.tm_year == tb.tm_year && ta.tm_yday == tb.tm_yday;
+}
+
+/* The words on a day line: weekday and full date, in the user's locale
+ * (main sets LC_ALL from the environment, so an Italian terminal reads
+ * "venerdì 02 ottobre 2026"). The year is always there — a scrollback
+ * spans a new year as easily as a new day. */
+static void day_label(time_t at, char *out, size_t out_sz) {
+    struct tm tm;
+    localtime_r(&at, &tm);
+    if (strftime(out, out_sz, "%A %d %B %Y", &tm) == 0 && out_sz) out[0] = 0;
+}
+
 struct pane_view {
     size_t rows[PANE_VIEW_ROWS]; /* log indices, OLDEST first */
     int heights[PANE_VIEW_ROWS]; /* total: text + divider + picture */
     int text_heights[PANE_VIEW_ROWS];
+    /* A day line is drawn UNDER this row: the next row of the window
+     * happened on a different day. Its line is part of this row's
+     * height, so the walk and the draw spend it the same way. `day_at`
+     * is the newer row's time — the day the line announces. */
+    bool day_below[PANE_VIEW_ROWS];
+    time_t day_at[PANE_VIEW_ROWS];
     size_t count;
     /* Lines of rows[0] that sit above the region — a row is several
      * lines and the offset is counted in lines, so the topmost one is
@@ -9484,12 +9521,25 @@ static void pane_view_collect(struct app *app, log_scope_id scope, size_t divide
     int below = 0; /* lines under the first row taken into view */
     size_t n = 0;
     size_t i = app->log_count;
+    /* The newest timed row seen so far — the one just BELOW the row being
+     * measured, since the walk runs upward. */
+    time_t newer_at = 0;
     while (i > 0) {
         i--;
         if (!log_row_in_scope(app, i, scope)) continue;
         int th = message_display_lines(app->log[i], width - 2);
         if (th < 1) th = 1;
         int h = th;
+        bool day_below = false;
+        time_t day_at = 0;
+        if (app->log_times[i] > 0) {
+            if (newer_at > 0 && !same_local_day(app->log_times[i], newer_at)) {
+                day_below = true;
+                day_at = newer_at;
+                h += 1;
+            }
+            newer_at = app->log_times[i];
+        }
         /* The divider occupies a row of its own above the first unread
          * message, and the DRAW pass spends one. Reserved here or the
          * budget is a line short of what gets drawn, the content
@@ -9528,6 +9578,8 @@ static void pane_view_collect(struct app *app, log_scope_id scope, size_t divide
             v->rows[n] = i;
             v->heights[n] = h;
             v->text_heights[n] = th;
+            v->day_below[n] = day_below;
+            v->day_at[n] = day_at;
             n++;
         }
         acc += h;
@@ -9549,12 +9601,18 @@ static void pane_view_collect(struct app *app, log_scope_id scope, size_t divide
         size_t j = n - 1 - k;
         size_t r = v->rows[k];
         int hh = v->heights[k], tt = v->text_heights[k];
+        bool db = v->day_below[k];
+        time_t da = v->day_at[k];
         v->rows[k] = v->rows[j];
         v->heights[k] = v->heights[j];
         v->text_heights[k] = v->text_heights[j];
+        v->day_below[k] = v->day_below[j];
+        v->day_at[k] = v->day_at[j];
         v->rows[j] = r;
         v->heights[j] = hh;
         v->text_heights[j] = tt;
+        v->day_below[j] = db;
+        v->day_at[j] = da;
     }
     v->count = n;
 
@@ -9995,6 +10053,21 @@ static void draw_chat_pane(struct app *app, struct pane *pane, int x, int y, int
             }
         }
         used_lines += draw_lines;
+        /* The day line, under the row and above the next day's first. Its
+         * line was reserved in the row's height by the walk, so it is
+         * spent here whenever there is room — the only lines of a row
+         * that can be above the region are the ones before it. */
+        if (view.day_below[vi] && used_lines < scroll_h) {
+            char label[96];
+            day_label(view.day_at[vi], label, sizeof(label));
+            int ly = scroll_y + used_lines;
+            attron(COLOR_PAIR(CP_ACCENT) | A_BOLD);
+            mvhline(ly, x + 1, ACS_HLINE, width - 2);
+            if (label[0] && (int)strlen(label) + 6 < width) mvprintw(ly, x + 3, " %s ", label);
+            attroff(COLOR_PAIR(CP_ACCENT) | A_BOLD);
+            used_lines += 1;
+            last_drawn_vi = (int)vi;
+        }
     }
     if (lay) {
         /* used < scroll_h with rows left undrawn means the budget ran out
