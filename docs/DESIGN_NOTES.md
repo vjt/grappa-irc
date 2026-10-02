@@ -636,3 +636,20 @@ version already marked applied. Every gate of this slice ran under
 `GRAPPA_CACHE_ID=w1-1365` (own `_build`, `deps`, PLT and test partition).
 After the merge the same drop cleans each shared database the first time it
 migrates.
+
+**Caveat, by design: orphan versions stay in `schema_migrations`.** A
+database that applied the deleted pair keeps `20260929001416` and
+`20260929001417` in `schema_migrations` with no file behind them; the drop
+removes the schema, not those rows. Nothing breaks: Ecto's pending filter
+keys on the VERSION and an orphan joins no set, and
+`Deploy.MigrationAudit` reports it as `applied_without_file` without
+refusing. It is a divergence between `schema_migrations` and the tree that a
+future reader should read as this, not as a defect. Measured on this host,
+read-only, 2026-10-02 00:22Z: 2 of 55 local databases carry the pair, the
+shared `runtime/grappa_dev.db` and `runtime/grappa_test.db`; the isolated
+test database of this slice never had them.
+
+**At rebase: re-check the stamp.** `20261002001215` is past every version on
+origin/main as of 2026-10-02 00:12Z (`20260929001417`). If a migration lands
+first with a higher stamp, regenerate this one past it, or two files can
+end up claiming one version.
