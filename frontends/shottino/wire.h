@@ -53,24 +53,21 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v35 -> v36 (issue 1365): every scrollback row gains
- * `dm_with` (the raw DM peer, null off a DM), the same key the
- * `mentions_bundle` row got in v35. No kind was added, no field was
- * removed or repurposed, and the key is optional in the server's
- * typespec (a pre-36 server omits it).
+ * Last read, v36 -> v37 (issue 1365): `dm_conversation_id` is REMOVED
+ * from every scrollback row and every query_windows_list entry, where
+ * v34 had put it. This client never read it, so nothing here changes.
+ * No kind was added and nothing was repurposed.
  *
- * NUMBER ONLY: the scrollback parser reads named keys and ignores the
- * rest, so the new one costs nothing. It is not ADOPTED either. Why it
- * exists: since issue 1365 a nick change rewrites nothing server-side,
- * so an inbound DM keeps `channel` = the nick we held at receipt, and
- * "channel equals my nick" stops recognising DMs after our first
- * rename. The away-mention misrouting v35 named is still open here too.
- * Reading `dm_with` is this client's own change, deliberately not done
- * in the protocol bump.
+ * NUMBER ONLY. Still open from v36: since issue 1365 a nick change
+ * rewrites nothing server-side, so an inbound DM keeps `channel` = the
+ * nick we held at receipt, and "channel equals my nick" stops
+ * recognising DMs after our first rename; `dm_with` (on every row since
+ * v36) is the discriminator, and adopting it is this client's own change.
+ * The away-mention misrouting v35 named is still open here too.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 36
+#define WIRE_PROTOCOL_VERSION 37
 
 #include <stdbool.h>
 #include <stddef.h>

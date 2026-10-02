@@ -573,3 +573,66 @@ unanswered ask is not copied, and an entry already under the new nick wins.
 
 **What the mutant said.** COPY → MOVE killed 2 tests, both written or rewritten
 in this slice: no assert that predates it depended on the behaviour.
+<!-- entry #1365g -->
+
+---
+
+## 2026-10-02 — #1365g: dm_conversations goes, and dm_conversation_id leaves the wire (protocol 37)
+
+**Ruling, RELAYED and not seen first-hand.** vjt on IRC #grappa, relayed by a
+peer: 2026-10-02 00:01Z "levalo" to the question "oggi non serve a nulla, su
+main il server lo manda ma cicchetto non lo legge, era per la leg 3 (DM per id
+invece che per nick); se la leg 3 non si fa si puo' togliere, lo togliamo?".
+The scope ruling of 2026-10-01 (comment 5934112501, also relayed) is the
+premise: a nick change writes nothing to the DB, so nothing has to outlive a
+nick, and leg 3 (DM windows keyed by id) has no reason to exist.
+
+**What goes, together.** The table and its writers (C5): `Grappa.DmConversations`
+and its schema, the dual write in `Scrollback.persist_event/1`,
+`QueryWindows.open/4`/`close/4` and `ReadCursor`'s cursor insert, the FK fields
+on `Message` and `Cursor`, the virtual field on `Window`. And the wire field
+(C6): `dm_conversation_id` off `Scrollback.Wire.t` and
+`QueryWindows.Wire.windows_entry`. Doing C5 alone would have left a field
+naming rows that no longer exist; doing C6 alone, a table written forever for
+nobody.
+
+**The #1626 bar, item by item.** (a) A ruling: the one above, relayed.
+(b) The break MEASURED on the real client, before the cic regeneration: a
+scratch vitest against the generated schema at protocol 36 — the key in the
+optional set `q` of both shapes — had `validate/2` ACCEPT a scrollback row and
+a `query_windows_list` entry without it, and REJECT the same payloads without a
+required key (`sender`, `target_nick`) as the positive control, 6 of 6.
+origin/main's schema (35) carries the same optional set; v1.5.11, the last
+tag, never had the key. No existing bundle stops validating, so
+`min_protocol_version` stays at 1. (c) The shape moved, so the number moved:
+`wire_pin --check` went red on the digest (and on 36 → 37) before the re-pin.
+
+**The migrations are DELETED, not undone.** No release tag contains
+`…001416_create_dm_conversations` or `…001417_backfill_dm_conversations`
+(`git tag --contains` is empty; v1.5.11 is from 2026-09-27). That is
+consistent with "never deployed" and does not prove it. Keeping them and
+adding a plain drop would have made a database that never ran them build a
+partial index over every `messages` row, run the backfill, then rewrite
+`messages` again with `DROP COLUMN`, under the write lock, for a shape that
+ends up gone. Instead one generated migration,
+`20261002001215_drop_dm_conversations`, is CONDITIONAL: `DROP INDEX IF
+EXISTS`, `DROP COLUMN` only where `pragma_table_info` sees the column,
+`DROP TABLE IF EXISTS`. On a database that applied the pair (dev and test
+databases that ran main since 2026-09-29) it removes everything and keeps the
+child rows; on one that did not, every statement finds nothing. A version in
+`schema_migrations` with no file is reported, not refused, by
+`Deploy.MigrationAudit`. Deploy class: COLD (a new migration file).
+
+**Measured on SQLite 3.53.3: indexes before columns.** `ALTER TABLE … DROP
+COLUMN` on a column a partial index still names fails with `error in index …
+after drop column`; with the index gone it succeeds even though the column
+carries `REFERENCES dm_conversations(id)`. The deleted create migration's
+`down/0` already had that order; it had simply never run.
+
+**Shared test database.** `runtime/grappa_test.db` comes from the main
+checkout's bind and is shared by every worktree; running this drop there
+would leave main's code writing a column that no longer exists, under a
+version already marked applied. Every gate of this slice ran under
+`GRAPPA_CACHE_ID=w1-1365` (own `_build`, `deps`, PLT and test partition).
+After the merge the same drop cleans each shared database the first time it
+migrates.

@@ -32,7 +32,6 @@ defmodule Grappa.SubjectXorTest do
   alias Grappa.Accounts.Session
   alias Grappa.ChannelDirectory.Entry, as: DirectoryEntry
   alias Grappa.Dcc.SpoolFile
-  alias Grappa.DmConversations.Conversation
   alias Grappa.Networks.Credential
   alias Grappa.Notify.Entry, as: NotifyEntry
   alias Grappa.Push.Subscription
@@ -50,7 +49,7 @@ defmodule Grappa.SubjectXorTest do
   @missing_subject "must set user_id or visitor_id"
   @mutually_exclusive "user_id and visitor_id are mutually exclusive"
 
-  # {schema, its subject-bearing changeset}. Twelve spell it `changeset/2`;
+  # {schema, its subject-bearing changeset}. Eleven spell it `changeset/2`;
   # `Uploads.Upload` splits insert from soft-delete and only the former
   # casts the subject FKs, and `Dcc.SpoolFile` (issue 2089) has only an
   # insert — a spooled file is written once and hard-deleted, never
@@ -60,7 +59,6 @@ defmodule Grappa.SubjectXorTest do
     {Message, :changeset},
     {Cursor, :changeset},
     {Window, :changeset},
-    {Conversation, :changeset},
     {DirectoryEntry, :changeset},
     {NotifyEntry, :changeset},
     {Subscription, :changeset},

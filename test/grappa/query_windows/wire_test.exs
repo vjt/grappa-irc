@@ -21,28 +21,14 @@ defmodule Grappa.QueryWindows.WireTest do
       window = %Grappa.QueryWindows.Window{
         network_id: 7,
         target_nick: "Alice",
-        opened_at: opened,
-        dm_conversation_id: 58
+        opened_at: opened
       }
 
       assert Wire.render(window) == %{
                network_id: 7,
                target_nick: "Alice",
-               opened_at: DateTime.to_iso8601(opened),
-               dm_conversation_id: 58
+               opened_at: DateTime.to_iso8601(opened)
              }
-    end
-
-    # issue 1365 leg 2 — null is the honest signal of a window whose
-    # conversation is missing; the key is never dropped.
-    test "renders a window with no conversation as dm_conversation_id: nil" do
-      window = %Grappa.QueryWindows.Window{
-        network_id: 7,
-        target_nick: "Alice",
-        opened_at: ~U[2026-05-12 12:34:56Z]
-      }
-
-      assert %{dm_conversation_id: nil} = Wire.render(window)
     end
   end
 
@@ -52,15 +38,13 @@ defmodule Grappa.QueryWindows.WireTest do
 
       grouped = %{
         7 => [
-          %Grappa.QueryWindows.Window{network_id: 7, target_nick: "a", opened_at: opened, dm_conversation_id: 3}
+          %Grappa.QueryWindows.Window{network_id: 7, target_nick: "a", opened_at: opened}
         ],
         9 => []
       }
 
       assert Wire.render_grouped(grouped) == %{
-               7 => [
-                 %{network_id: 7, target_nick: "a", opened_at: DateTime.to_iso8601(opened), dm_conversation_id: 3}
-               ],
+               7 => [%{network_id: 7, target_nick: "a", opened_at: DateTime.to_iso8601(opened)}],
                9 => []
              }
     end

@@ -37,11 +37,6 @@ defmodule Grappa.Scrollback do
     # `belongs_to` and its typespec — metadata atoms, not a reference the
     # checker resolves (#1399).
     deps: [
-      # issue 1365 — `persist_event/1` resolves (mints on first contact) the
-      # DM conversation a DM-eligible row belongs to, inside the insert's own
-      # transaction. Acyclic: `Grappa.DmConversations` deps only
-      # `IRC`/`Repo`/`Subject`.
-      Grappa.DmConversations,
       Grappa.IRC,
       # `Wire.to_json/1` matches `%Network{slug: slug}`, the wire-shape
       # contract from A1+A26 — a real reference, declared since #1398 made
@@ -58,7 +53,6 @@ defmodule Grappa.Scrollback do
 
   import Ecto.Query
 
-  alias Grappa.DmConversations
   alias Grappa.IRC.Identifier
   alias Grappa.{Repo, Subject}
   alias Grappa.Repo.BusyRetry
@@ -228,64 +222,9 @@ defmodule Grappa.Scrollback do
   # error is RETURNED, never raised, so it is not retried). Kept as a named
   # function rather than inlined to hold
   # `persist_event/1`'s nesting ≤ 2 (Credo).
-  #
-  # issue 1365 — a DM-eligible row is inserted together with its conversation
-  # (resolved, and minted on first contact) inside ONE write transaction, so
-  # the parent and its first child commit or roll back together. That is
-  # still one retry-wrapped op: a rolled-back transaction means the row did
-  # not land, which is the only thing `:persist_unavailable` may mean here.
-  # Channel and `$server` rows keep the bare insert — no transaction, no
-  # extra lock — so the change costs nothing off the DM path.
   @spec persist_row(Ecto.Changeset.t()) :: {:ok, Message.t()} | {:error, persist_error()}
   defp persist_row(changeset) do
-    with_pool_retry(fn -> insert_row(changeset, dm_conversation_key(changeset)) end)
-  end
-
-  @spec insert_row(Ecto.Changeset.t(), String.t() | nil) ::
-          {:ok, Message.t()} | {:error, Ecto.Changeset.t()}
-  defp insert_row(changeset, nil), do: Repo.insert(changeset)
-
-  defp insert_row(changeset, key) do
-    Repo.immediate_transaction(fn ->
-      conversation =
-        DmConversations.resolve!(
-          changeset_subject(changeset),
-          Ecto.Changeset.get_field(changeset, :network_id),
-          key
-        )
-
-      case changeset
-           |> Ecto.Changeset.put_change(:dm_conversation_id, conversation.id)
-           |> Repo.insert() do
-        {:ok, message} -> message
-        {:error, %Ecto.Changeset{} = failed} -> Repo.rollback(failed)
-      end
-    end)
-  end
-
-  # The row's DM conversation key, RAW (it becomes the display spelling when
-  # the row mints the conversation), or `nil` when the row belongs to no DM.
-  # It is the key every DM reader groups on — `COALESCE(dm_with, channel)`,
-  # admitted by `dm_eligible?/1` — so the FK and the readers can never
-  # disagree about which conversation a row is in. An invalid changeset has
-  # no key: it takes the bare insert and fails validation there, unchanged.
-  @spec dm_conversation_key(Ecto.Changeset.t()) :: String.t() | nil
-  defp dm_conversation_key(%Ecto.Changeset{valid?: false}), do: nil
-
-  defp dm_conversation_key(changeset) do
-    key =
-      Ecto.Changeset.get_field(changeset, :dm_with) ||
-        Ecto.Changeset.get_field(changeset, :channel)
-
-    if dm_eligible?(key), do: key
-  end
-
-  @spec changeset_subject(Ecto.Changeset.t()) :: Subject.t()
-  defp changeset_subject(changeset) do
-    case Ecto.Changeset.get_field(changeset, :user_id) do
-      nil -> {:visitor, Ecto.Changeset.get_field(changeset, :visitor_id)}
-      user_id -> {:user, user_id}
-    end
+    with_pool_retry(fn -> Repo.insert(changeset) end)
   end
 
   # #357 D1 — span metadata. `channel`/`network_id` via `Map.get` (nil on a

@@ -53,7 +53,6 @@ defmodule Grappa.Scrollback.WireTest do
                sender: "vjt",
                body: "msg 42",
                meta: %{},
-               dm_conversation_id: nil,
                dm_with: nil
              }
     end

@@ -1005,7 +1005,35 @@ defmodule Grappa.Protocol do
   # file (#2102) carries 21, far behind.
   #
   # @min_protocol_version stays at 1: an old bundle drops the undeclared key.
-  @protocol_version 36
+  #
+  # ---------------------------------------------------------------------------
+  # 37 — issue 1365: the DM conversation id is taken back (34, reversed)
+  # ---------------------------------------------------------------------------
+  #
+  # REMOVED: `dm_conversation_id` from both shapes 34 put it on
+  # (`Grappa.Scrollback.Wire.t`, `Grappa.QueryWindows.Wire.windows_entry`),
+  # together with the `dm_conversations` table it named. It existed for leg 3
+  # (DM windows keyed by id instead of nick); the ruling on issue 1365 that a
+  # nick change writes nothing to the DB made leg 3 moot, and no client ever
+  # read the field.
+  #
+  # A FIELD removal, so this is the #1626 case and it took a ruling: vjt's
+  # "levalo" on 2026-10-02 at 00:01Z, RELAYED by a peer reading IRC, not seen
+  # first-hand. The bar #1626 sets is that the break is MEASURED on the real
+  # client, and it was, before the regeneration: the generated cic schema at
+  # 36 listed the key in the OPTIONAL set (`q`) of both shapes, and
+  # `validate/2` ACCEPTED a scrollback row and a `query_windows_list` entry
+  # without it, while rejecting the same payloads without a REQUIRED key
+  # (`sender`, `target_nick`) as the positive control. origin/main's schema at
+  # 35 carries the same optional set; the last release tag (v1.5.11) predates
+  # the key entirely. So no bundle that exists stops validating this server.
+  #
+  # Bumped because the shape moved (the #1393d rule covers a removal too):
+  # `wire_pin --check` went red on the digest before the re-pin.
+  #
+  # @min_protocol_version stays at 1, on the measurement above: every bundle
+  # that knows the key tolerates its absence, and none ever read it.
+  @protocol_version 37
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1046,7 +1074,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 36
+  @spec version() :: 37
   def version, do: @protocol_version
 
   @doc """

@@ -282,7 +282,13 @@ let _socket: Socket | null = null;
 // Generated OPTIONAL, so this bundle still validates a pre-36 server's rows;
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9 (issue 1365's Q2: the floor does
 // not move).
-export const CLIENT_PROTOCOL_VERSION = 36;
+//
+// 37 (issue 1365) — `dm_conversation_id` is taken back off both shapes 34
+// put it on. This bundle never read it; its generated schema simply stops
+// declaring the key. `MIN_SERVER_PROTOCOL_VERSION` stays at 9: a 34-36
+// server still sends the key, and an undeclared key is dropped, never
+// rejected.
+export const CLIENT_PROTOCOL_VERSION = 37;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

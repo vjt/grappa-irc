@@ -418,7 +418,6 @@ defmodule Grappa.Scrollback.Message do
           body: String.t() | nil,
           meta: Meta.t(),
           dm_with: String.t() | nil,
-          dm_conversation_id: integer() | nil,
           inserted_at: DateTime.t() | nil
         }
 
@@ -450,13 +449,6 @@ defmodule Grappa.Scrollback.Message do
     # writer's and cic's channel for the tag — this is a read-path projection
     # of it, not a second input.
     field :structural, :boolean, default: false
-
-    # issue 1365 — the DM conversation this row belongs to, set by
-    # `Scrollback.persist_event/1` on every DM-eligible row and NEVER cast
-    # from the caller: the conversation is derived from the row's key, the
-    # same way `structural` is derived from `meta`. `nil` on channel and
-    # `$server` rows. Written in leg 1, read by nothing yet.
-    field :dm_conversation_id, :id
 
     timestamps(type: :utc_datetime_usec, updated_at: false)
   end

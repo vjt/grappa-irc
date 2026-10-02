@@ -904,7 +904,6 @@ export type QueryWindowsWireWindowsEntry = {
   network_id: number;
   target_nick: string;
   opened_at: string;
-  dm_conversation_id?: number | null;
 };
 
 export type QueryWindowsWireWindowsListPayload = {
@@ -938,7 +937,6 @@ export type ScrollbackWireT = {
   sender: string;
   body: string | null;
   meta: ScrollbackMetaT;
-  dm_conversation_id?: number | null;
   dm_with?: string | null;
 };
 
