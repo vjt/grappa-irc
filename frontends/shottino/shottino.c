@@ -571,6 +571,9 @@ struct msg_region {
     int y0, y1, x0, x1;
     char nick[MAX_CHANNEL];
     char body[MAX_LINE];
+    /* The server row this region draws, 0 for a line that is not one —
+     * what "delete for me" removes. */
+    long id;
 };
 
 /* ── The overlay ───────────────────────────────────────────────────────
@@ -836,6 +839,11 @@ enum overlay_action {
      * about the space the picture takes on screen, not about forgetting
      * the URL was ever posted. */
     ACT_HIDE,
+    /* "Delete for me": a LOCAL removal of one message — grappa keeps it
+     * and every other device still shows it. Two steps, like the admin
+     * deletes: the first entry only asks, the second does it. */
+    ACT_DELETE_ASK,
+    ACT_DELETE_MINE,
     /* A settings row: apply the value the menu names, or open it for
      * typing when the value is not one of a known few. */
     ACT_SET_VALUE,
@@ -922,6 +930,11 @@ struct overlay {
     /* This OVERLAY_MENU is about the running call rather than about a
      * nick or a URL — the picture was what the pointer was over. */
     bool call_controls;
+    /* Menu on a message: which server row it is (0 when the line is not
+     * one), and whether the box is asking to confirm deleting it. On the
+     * overlay so closing the box disarms it. */
+    long msg_id;
+    bool confirm_delete;
     enum admin_verb pending;
     /* OVERLAY_ADMIN in FORM mode: the fields being filled in, which one
      * has the cursor, and what they will create. ADMIN_V_NONE means this
@@ -1104,6 +1117,13 @@ struct app {
      * unread divider be placed at the exact row the server's read cursor
      * points at, rather than guessed from position. */
     long log_ids[LOG_LINES];
+    /* Server rows deleted "for me": never drawn again by this terminal,
+     * whichever door brings them back (the tail, a page of history, the
+     * reconnect backfill). Saved per server and identity — see
+     * hidden_path. Grows; a person deletes a handful, not thousands, so
+     * a scan is the honest structure. */
+    long *hidden_ids;
+    size_t hidden_count, hidden_cap;
     /* When the row happened (the server's time, local seconds), 0 for a
      * row that is not a scrollback message. What the day line between two
      * rows is decided from — the text carries only HH:MM, which is how a
@@ -2135,6 +2155,30 @@ static bool log_row_in_scope(const struct app *app, size_t i, log_scope_id scope
  * here" are two facts, and history is about the second. */
 static bool log_row_is_window(const struct app *app, size_t i, log_scope_id scope) {
     return app->log_scope[i] != 0 && app->log_scope[i] == scope;
+}
+
+/* Was this server row deleted "for me"? Caller holds app->lock. */
+static bool is_hidden_locked(const struct app *app, long id) {
+    if (id <= 0) return false;
+    for (size_t i = 0; i < app->hidden_count; i++)
+        if (app->hidden_ids[i] == id) return true;
+    return false;
+}
+
+/* Remember a deletion. False only when memory ran out, which the caller
+ * reports — a deletion that silently did not stick would come back on
+ * the next fetch. Caller holds app->lock. */
+static bool hidden_add_locked(struct app *app, long id) {
+    if (id <= 0 || is_hidden_locked(app, id)) return true;
+    if (app->hidden_count == app->hidden_cap) {
+        size_t cap = app->hidden_cap ? app->hidden_cap * 2 : 64;
+        long *grown = realloc(app->hidden_ids, cap * sizeof(*grown));
+        if (!grown) return false;
+        app->hidden_ids = grown;
+        app->hidden_cap = cap;
+    }
+    app->hidden_ids[app->hidden_count++] = id;
+    return true;
 }
 
 /* Is the server row `id` already in the buffer, filed under this window?
@@ -3442,15 +3486,11 @@ static void clear_current_unread_locked(struct app *app) {
     }
 }
 
-static void clear_active_window_log(struct app *app) {
-    pthread_mutex_lock(&app->lock);
-    size_t cur = focused_window_locked(app);
-    if (cur >= app->window_count) {
-        pthread_mutex_unlock(&app->lock);
-        return;
-    }
-    log_scope_id key = window_scope_id_locked(app, app->windows[cur].network,
-                                              app->windows[cur].channel);
+/* Drop every row `doomed` names, keeping the rest in order. Returns how
+ * many went. Caller holds app->lock. */
+typedef bool (*log_row_doomed)(const struct app *app, size_t i, const void *ctx);
+
+static size_t log_drop_rows_locked(struct app *app, log_row_doomed doomed, const void *ctx) {
     size_t write_i = 0;
     /* COUNTED, not one log_row_removed_locked per row: that helper takes
      * an index in the ring as it stands, and here the indices being
@@ -3460,15 +3500,13 @@ static void clear_active_window_log(struct app *app) {
      * is its old one less the removals before it, so that is what is
      * counted. */
     size_t gone_before_insert = 0, gone_before_last = 0;
+    size_t gone = 0;
     for (size_t read_i = 0; read_i < app->log_count; read_i++) {
-        /* Everything filed under this window goes, its operational rows
-         * included: /clear clears the WINDOW, and a preview message left
-         * behind by a cleared channel is exactly the leftover this scope
-         * exists to prevent. */
-        if (log_row_is_window(app, read_i, key)) {
+        if (doomed(app, read_i, ctx)) {
             free(app->log[read_i]);
             if (read_i < app->log_insert_at) gone_before_insert++;
             if (read_i < app->log_last_index) gone_before_last++;
+            gone++;
             continue;
         }
         log_row_move_locked(app, write_i, read_i);
@@ -3477,12 +3515,37 @@ static void clear_active_window_log(struct app *app) {
     app->log_count = write_i;
     app->log_insert_at -= gone_before_insert;
     app->log_last_index -= gone_before_last;
+    return gone;
+}
+
+static bool row_is_window(const struct app *app, size_t i, const void *ctx) {
+    return log_row_is_window(app, i, *(const log_scope_id *)ctx);
+}
+
+static void clear_active_window_log(struct app *app) {
+    pthread_mutex_lock(&app->lock);
+    size_t cur = focused_window_locked(app);
+    if (cur >= app->window_count) {
+        pthread_mutex_unlock(&app->lock);
+        return;
+    }
+    log_scope_id key = window_scope_id_locked(app, app->windows[cur].network,
+                                              app->windows[cur].channel);
+    /* Everything filed under this window goes, its operational rows
+     * included: /clear clears the WINDOW, and a preview message left
+     * behind by a cleared channel is exactly the leftover this scope
+     * exists to prevent. */
+    log_drop_rows_locked(app, row_is_window, &key);
     /* Paging starts over with the buffer. The latch means "the server has
      * nothing before the oldest row we hold", and this window no longer
      * holds one: whatever it refills with, there is history under it
      * again. Keeping the latch would make /clear the one way to lose
      * scroll-back permanently. */
     app->windows[cur].history_exhausted = false;
+    /* And the tail is read again the next time the window is focused,
+     * as it always was before reading became once-per-window: an empty
+     * window is not one whose history is "already here". */
+    app->windows[cur].history_loaded = false;
     for (size_t p = 0; p < app->pane_count; p++) {
         app->panes[p].scroll_offset = 0;
         app->panes[p].scroll_pinned = false;
@@ -4664,6 +4727,13 @@ static void render_message(struct app *app, const struct wire_scrollback_message
      * A duplicate delivery must be inert. */
     if (id > 0 && network[0] && channel[0]) {
         pthread_mutex_lock(&app->lock);
+        /* Deleted "for me": whichever door brought it back, it stays
+         * gone. Before everything else, so it rings nothing, answers
+         * nothing and reaches no bridge either. */
+        if (is_hidden_locked(app, id)) {
+            pthread_mutex_unlock(&app->lock);
+            return;
+        }
         for (size_t i = 0; i < app->seen_count; i++) {
             if (app->seen[i].id == id && irc_name_eq(app->seen[i].network, network) && irc_name_eq(app->seen[i].channel, channel)) {
                 pthread_mutex_unlock(&app->lock);
@@ -6851,6 +6921,76 @@ static void blocks_save(struct app *app) {
     for (size_t i = 0; i < app->block_count; i++) fprintf(f, "%s\n", app->blocks[i]);
     pthread_mutex_unlock(&app->lock);
     fclose(f);
+}
+
+/* ── Delete for me ─────────────────────────────────────────────────────
+ *
+ * The server has no per-message delete, and this one is not a moderation
+ * act anyway: it is "I do not want this line on MY screen". So it is
+ * local, like /block — grappa keeps the row, the PWA still shows it — and
+ * it survives the client in the state directory, keyed by server AND
+ * identity, because message ids are only unique within one grappa. */
+static char *hidden_path(struct app *app) {
+    char *dir = shottino_state_dir();
+    char key[32];
+    token_key_hash(app->url.base, app->subject, key, sizeof(key));
+    char *path = xasprintf("%s/%s.hidden", dir, key);
+    free(dir);
+    return path;
+}
+
+/* One id per line. Like the block list: a bad line is skipped, never a
+ * reason to refuse to start. */
+static void hidden_load(struct app *app) {
+    char *path = hidden_path(app);
+    FILE *f = fopen(path, "r");
+    free(path);
+    if (!f) return;
+    char line[64];
+    pthread_mutex_lock(&app->lock);
+    while (fgets(line, sizeof(line), f)) {
+        char *end = NULL;
+        long id = strtol(line, &end, 10);
+        if (end != line && id > 0) hidden_add_locked(app, id);
+    }
+    pthread_mutex_unlock(&app->lock);
+    fclose(f);
+}
+
+static void hidden_save(struct app *app) {
+    char *path = hidden_path(app);
+    pthread_mutex_lock(&app->lock);
+    size_t len = 0;
+    char *text = malloc(app->hidden_count * 24 + 1);
+    if (text) {
+        text[0] = 0;
+        for (size_t i = 0; i < app->hidden_count; i++)
+            len += (size_t)sprintf(text + len, "%ld\n", app->hidden_ids[i]);
+    }
+    pthread_mutex_unlock(&app->lock);
+    if (!text || !config_write(app, path, text, "delete for me"))
+        log_line(app, "delete for me: the message is gone for now but will come back after a restart");
+    free(text);
+    free(path);
+}
+
+static bool row_has_id(const struct app *app, size_t i, const void *ctx) {
+    return app->log_ids[i] == *(const long *)ctx;
+}
+
+/* Remove one message from this terminal, now and for good. */
+static void delete_for_me(struct app *app, long id) {
+    if (id <= 0) return;
+    pthread_mutex_lock(&app->lock);
+    bool remembered = hidden_add_locked(app, id);
+    size_t gone = log_drop_rows_locked(app, row_has_id, &id);
+    pthread_mutex_unlock(&app->lock);
+    if (!remembered) {
+        log_line(app, "delete for me: out of memory — the message will come back on the next fetch");
+        return;
+    }
+    hidden_save(app);
+    if (gone == 0) log_line(app, "delete for me: that message is no longer on screen");
 }
 
 static bool load_saved_token(struct app *app, const char *path) {
@@ -9660,8 +9800,9 @@ static void add_nick_region_locked(struct app *app, int y, int x0, int x1, const
     r->body[0] = '\0';
 }
 
-static void add_msg_region(struct app *app, int y0, int y1, int x0, int x1, const char *line) {
+static void add_msg_region(struct app *app, int y0, int y1, int x0, int x1, size_t row) {
     if (app->msg_region_count >= MAX_LINK_REGIONS) return;
+    const char *line = app->log[row];
     char prefix[256], nick[256];
     const char *body = NULL;
     if (!split_message_line(line, prefix, sizeof(prefix), nick, sizeof(nick), &body)) return;
@@ -9673,6 +9814,7 @@ static void add_msg_region(struct app *app, int y0, int y1, int x0, int x1, cons
     r->x1 = x1;
     snprintf(r->nick, sizeof(r->nick), "%s", nick);
     snprintf(r->body, sizeof(r->body), "%s", body ? body : "");
+    r->id = app->log_ids[row];
 }
 
 static void draw_chat_pane(struct app *app, struct pane *pane, int x, int y, int width, int height,
@@ -9916,7 +10058,7 @@ static void draw_chat_pane(struct app *app, struct pane *pane, int x, int y, int
                 add_link_region_locked(app, msg_y, msg_y + draw_lines - 1, x + 1,
                                 x + width - 2, url_tok, mk);
             /* And every row that carries a nick is right-clickable. */
-            add_msg_region(app, msg_y, msg_y + draw_lines - 1, x + 1, x + width - 2, app->log[i]);
+            add_msg_region(app, msg_y, msg_y + draw_lines - 1, x + 1, x + width - 2, i);
         }
         /* Claim the row's inline slot HERE, the first time the row is on
          * screen — not when the message arrived.
@@ -14672,6 +14814,15 @@ static size_t overlay_items_locked(struct app *app, struct overlay_item *out, si
             return n;
         }
         if (!ov->nick[0]) return n;
+        /* The second question, and nothing else: Cancel FIRST so Enter
+         * pressed by reflex is the answer that does nothing — the same
+         * ordering as the admin deletes and the ringing call. */
+        if (ov->confirm_delete && ov->msg_id > 0) {
+            menu_add(out, &n, max, ACT_ADMIN_CANCEL, ov->nick, "", "Cancel");
+            menu_add(out, &n, max, ACT_DELETE_MINE, ov->nick, "",
+                     "Delete for me — gone from this terminal, kept by the server");
+            return n;
+        }
         /* Replying needs something they SAID, which a roster row does
          * not have: the menu offers what the thing under the pointer can
          * actually do, rather than an entry that fails when chosen. */
@@ -14704,7 +14855,8 @@ static size_t overlay_items_locked(struct app *app, struct overlay_item *out, si
         if (own_oper_on_network_locked(app) &&
             !menu_add(out, &n, max, ACT_KILL, ov->nick, "", "Kill %s", ov->nick))
             return n;
-        menu_add(out, &n, max, ACT_INSERT, ov->nick, "", "Type %s", ov->nick);
+        if (!menu_add(out, &n, max, ACT_INSERT, ov->nick, "", "Type %s", ov->nick)) return n;
+        if (ov->msg_id > 0) menu_add(out, &n, max, ACT_DELETE_ASK, ov->nick, "", "Delete for me…");
         return n;
     }
     /* The media picker: the last PICKER_MAX pictures and clips posted in
@@ -14798,6 +14950,8 @@ static void overlay_close(struct app *app) {
      * surviving the box that asked for it. */
     app->overlay.pending = ADMIN_V_NONE;
     app->overlay.call_controls = false;
+    app->overlay.msg_id = 0;
+    app->overlay.confirm_delete = false;
     app->overlay.form_verb = ADMIN_V_NONE;
     app->overlay.form_count = 0;
     app->overlay.form_sel = 0;
@@ -14967,6 +15121,7 @@ static void overlay_activate(struct app *app) {
         snprintf(body, sizeof(body), "%s", items[app->overlay.sel].body);
     }
     pending = app->overlay.pending;
+    long msg_id = app->overlay.msg_id;
     if (app->overlay.kind == OVERLAY_ADMIN) {
         const struct admin_row *sel = admin_selected_locked(app);
         if (sel) row = *sel;
@@ -14991,6 +15146,18 @@ static void overlay_activate(struct app *app) {
     }
     if (action == ACT_ADMIN && verb != ADMIN_V_NONE) {
         admin_verb_run(app, verb, row);
+        return;
+    }
+    /* Same shape as the admin confirmation: asking REOPENS the menu with
+     * the question armed, about the same message. */
+    if (action == ACT_DELETE_ASK && msg_id > 0) {
+        pthread_mutex_lock(&app->lock);
+        app->overlay.kind = OVERLAY_MENU;
+        app->overlay.msg_id = msg_id;
+        app->overlay.confirm_delete = true;
+        app->overlay.sel = 0;
+        app->overlay.top = 0;
+        pthread_mutex_unlock(&app->lock);
         return;
     }
     /* A media row need not carry a nick — a bare URL is still something
@@ -15078,6 +15245,11 @@ static void overlay_activate(struct app *app) {
         break;
     case ACT_HIDE:
         if (body[0]) hide_media_url(app, body);
+        break;
+    case ACT_DELETE_MINE:
+        if (msg_id > 0) delete_for_me(app, msg_id);
+        break;
+    case ACT_DELETE_ASK: /* handled above the switch */
         break;
     case ACT_CALL_ANSWER:
     case ACT_CALL_DECLINE:
@@ -21235,6 +21407,8 @@ static void handle_mouse(struct app *app) {
             app->overlay.setting[0] = 0;
             snprintf(app->overlay.nick, sizeof(app->overlay.nick), "%s", r->nick);
             snprintf(app->overlay.body, sizeof(app->overlay.body), "%s", r->body);
+            app->overlay.msg_id = r->id;
+            app->overlay.confirm_delete = false;
             break;
         }
         pthread_mutex_unlock(&app->lock);
@@ -23887,6 +24061,8 @@ int main(int argc, char **argv) {
                       "userlist; hold Shift to select text as usual, or /mouse off");
     }
     seed_state(app);
+    /* Before the first fetch, so a deleted message is never drawn. */
+    hidden_load(app);
     startup("loading initial scrollback for %zu windows", app->window_count);
     for (size_t i = 0; i < app->window_count; i++) fetch_scrollback(app, &app->windows[i]);
     startup("connecting websocket");
@@ -24000,6 +24176,7 @@ int main(int argc, char **argv) {
     /* After the worker is joined, so nothing is still writing into it. */
     view_dir_cleanup(app);
     for (size_t i = 0; i < app->log_count; i++) free(app->log[i]);
+    free(app->hidden_ids);
     settings_free_defaults(app);
     llm_history_free(app);
     pthread_cond_destroy(&app->jobs_cond);

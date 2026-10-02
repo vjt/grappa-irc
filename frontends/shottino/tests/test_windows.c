@@ -38,6 +38,7 @@ static struct app *window_app(void) {
 
 static void free_app(struct app *app) {
     for (size_t i = 0; i < app->log_count; i++) free(app->log[i]);
+    free(app->hidden_ids);
     /* Mirrors the production teardown: the captured defaults are heap
      * strings and ASan is watching. */
     settings_free_defaults(app);
@@ -5560,6 +5561,95 @@ TEST(a_row_with_no_time_does_not_break_the_day_line) {
     tzset();
 }
 
+/* ── Delete for me ─────────────────────────────────────────────────── */
+
+static size_t message_menu(struct app *app, long id, struct overlay_item *items, size_t max) {
+    app->overlay.kind = OVERLAY_MENU;
+    snprintf(app->overlay.nick, sizeof(app->overlay.nick), "%s", "alice");
+    snprintf(app->overlay.body, sizeof(app->overlay.body), "%s", "last week");
+    app->overlay.msg_id = id;
+    return overlay_items_locked(app, items, max);
+}
+
+static bool log_has_id(struct app *app, long id) {
+    for (size_t i = 0; i < app->log_count; i++)
+        if (app->log_ids[i] == id) return true;
+    return false;
+}
+
+/* Offered on a message the server stored, and only there: a line with no
+ * id is not something a later fetch could bring back, nor delete. */
+TEST(delete_for_me_is_offered_on_a_stored_message_only) {
+    struct app *app = window_app();
+    CHECK(app != NULL);
+    add_window_ex(app, "azzurra", "##sniffo", true);
+    struct overlay_item items[32];
+    size_t n = message_menu(app, 7, items, 32);
+    CHECK(menu_offers(items, n, ACT_DELETE_ASK));
+    CHECK(!menu_offers(items, n, ACT_DELETE_MINE));
+    n = message_menu(app, 0, items, 32);
+    CHECK(!menu_offers(items, n, ACT_DELETE_ASK));
+    free_app(app);
+}
+
+/* Asking does nothing but ask; the second box puts Cancel first, so a
+ * reflexive Enter is the answer that cannot lose anything. */
+TEST(delete_for_me_asks_first_and_cancel_is_the_default) {
+    struct app *app = window_app();
+    CHECK(app != NULL);
+    add_window_ex(app, "azzurra", "##sniffo", true);
+    say(app, 7, "alice", "last week");
+    struct overlay_item items[32];
+    size_t n = message_menu(app, 7, items, 32);
+    for (size_t i = 0; i < n; i++)
+        if (items[i].action == ACT_DELETE_ASK) app->overlay.sel = i;
+    overlay_activate(app);
+    CHECK(app->overlay.kind == OVERLAY_MENU);
+    CHECK(app->overlay.confirm_delete);
+    CHECK_LONG(app->overlay.msg_id, 7);
+    CHECK(log_has_id(app, 7));
+
+    n = overlay_items_locked(app, items, 32);
+    CHECK_LONG(n, 2);
+    CHECK(items[0].action == ACT_ADMIN_CANCEL);
+    CHECK(items[1].action == ACT_DELETE_MINE);
+
+    app->overlay.sel = 0; /* Enter by reflex */
+    overlay_activate(app);
+    CHECK(app->overlay.kind == OVERLAY_NONE);
+    CHECK(log_has_id(app, 7));
+    free_app(app);
+}
+
+/* Confirmed: the row leaves the screen, and no later fetch — the tail,
+ * a page of history, the reconnect backfill — draws it again. The list
+ * survives a restart. */
+TEST(a_message_deleted_for_me_stays_gone) {
+    struct app *app = window_app();
+    CHECK(app != NULL);
+    add_window_ex(app, "azzurra", "##sniffo", true);
+    say(app, 7, "alice", "last week");
+    say(app, 9, "vjt", "this morning");
+
+    struct overlay_item items[32];
+    message_menu(app, 7, items, 32);
+    app->overlay.confirm_delete = true;
+    app->overlay.sel = 1;
+    overlay_activate(app);
+    CHECK(!log_has_id(app, 7));
+    CHECK(log_has_id(app, 9));
+
+    app->seen_count = 0;
+    say(app, 7, "alice", "last week");
+    CHECK(!log_has_id(app, 7));
+
+    app->hidden_count = 0;
+    hidden_load(app);
+    CHECK(is_hidden_locked(app, 7));
+    CHECK(!is_hidden_locked(app, 9));
+    free_app(app);
+}
+
 int main(void) {
     /* This suite calls the real prefs_save/prefs_load. See test.h. */
     test_use_temp_home();
@@ -5709,5 +5799,8 @@ int main(void) {
     RUN(focusing_a_window_already_read_fetches_nothing);
     RUN(a_day_line_separates_rows_from_different_days_and_only_those);
     RUN(a_row_with_no_time_does_not_break_the_day_line);
+    RUN(delete_for_me_is_offered_on_a_stored_message_only);
+    RUN(delete_for_me_asks_first_and_cancel_is_the_default);
+    RUN(a_message_deleted_for_me_stays_gone);
     return test_report();
 }
