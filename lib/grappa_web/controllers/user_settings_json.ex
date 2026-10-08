@@ -27,6 +27,9 @@ defmodule GrappaWeb.UserSettingsJSON do
   @typedoc "Wire shape for the upload_confirm_enabled envelope (#1883)."
   @type upload_confirm_enabled_response :: %{upload_confirm_enabled: boolean()}
 
+  @typedoc "Wire shape for the ban_mask_form envelope (issue 2347)."
+  @type ban_mask_form_response :: %{ban_mask_form: String.t()}
+
   @typedoc """
   Wire shape for the auto_away_debounce_seconds envelope (#348).
 
@@ -130,6 +133,15 @@ defmodule GrappaWeb.UserSettingsJSON do
   @spec upload_confirm_enabled(%{enabled: boolean()}) :: upload_confirm_enabled_response()
   def upload_confirm_enabled(%{enabled: enabled}) do
     %{upload_confirm_enabled: enabled}
+  end
+
+  @doc """
+  Renders the `:ban_mask_form` action — GET/PUT 200 shape (issue 2347).
+  The context's atom becomes its wire string here, on the way out.
+  """
+  @spec ban_mask_form(%{form: UserSettings.ban_mask_form()}) :: ban_mask_form_response()
+  def ban_mask_form(%{form: form}) do
+    %{ban_mask_form: Atom.to_string(form)}
   end
 
   @doc """

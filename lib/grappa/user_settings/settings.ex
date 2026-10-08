@@ -40,6 +40,7 @@ defmodule Grappa.UserSettings.Settings do
   | `"display_prefs"`      | `Grappa.UserSettings.display_prefs()` | `Grappa.UserSettings` (#449) |
   | `"auto_away_debounce_seconds"` | `pos_integer() \\| 0` (`0` = OFF) | `Grappa.UserSettings` (#348) |
   | `"away_nick_suffix"`   | `String.t()` (absent = OFF)         | `Grappa.UserSettings` (#1894) |
+  | `"ban_mask_form"`      | `String.t()` (absent = `"host"`)    | `Grappa.UserSettings` (issue 2347) |
 
   ## String-key invariant (IMPORTANT)
 
