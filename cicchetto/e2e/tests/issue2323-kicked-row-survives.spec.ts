@@ -51,21 +51,22 @@ test.afterEach(async () => {
   }
 });
 
-// The self-JOIN line is the WS-truth that the JOIN echo landed and the
-// window flipped to joined (cp15-b6's gate; a bare sidebar wait races it).
+// Barrier: the JOIN echo landed and the window is JOINED, not merely
+// pending. A self-JOIN scrollback line cannot be the gate on a REjoin — the
+// first join's line already matches — and "not greyed" holds for a pending
+// row too. Measured: the rejoin's JOIN sat ~2s in the send bucket, the gate
+// passed on the stale line, and the next KICK hit a channel we were not in.
+// So: the row must be the LIVE channel row (pseudo-rows, pending included,
+// carry `data-window-state`), and the member list — rendered only for a
+// joined window, which `/join` focuses — must name us.
 async function joinAndAwait(page: Page, name: string): Promise<void> {
   await composeSend(page, `/join ${name}`);
-  await expect(
-    page
-      .locator('[data-testid="scrollback-line"][data-kind="join"]')
-      .filter({ hasText: specNick() })
-      .filter({ hasText: name })
-      .last(),
-  ).toBeVisible({ timeout: 10_000 });
-  await expect(
-    sidebarWindow(page, NETWORK_SLUG, name).locator(".sidebar-window-greyed"),
-  ).toHaveCount(0, {
-    timeout: 10_000,
+  const row = sidebarWindow(page, NETWORK_SLUG, name);
+  await expect(row).toHaveCount(1, { timeout: 15_000 });
+  await expect(row).not.toHaveAttribute("data-window-state", /.*/, { timeout: 15_000 });
+  await expect(row.locator(".sidebar-window-greyed")).toHaveCount(0);
+  await expect(page.locator(".members-pane li", { hasText: specNick() })).toBeVisible({
+    timeout: 15_000,
   });
 }
 
