@@ -895,7 +895,17 @@ does not change: no new kinds, no new fields.
 `:failed` is included on purpose. It is the same hole for the same reason, and
 fixing only `:kicked` would leave a refused JOIN to evaporate on reload.
 
+**Measured on the e2e stack.** Without the fix, the live path (kick → rejoin →
+kick, with the second kick landing on an unselected window) is GREEN and the
+reload witness is RED. With the fix, both are green. So the live path is not
+where the row goes missing.
+
 **Not established.** Whether vjt's client reloaded between the kick and the
-report. The live path (kick → rejoin → kick) is pinned by its own e2e. If that
-e2e ever goes red, the vanishing has a second cause that this entry does not
-cover.
+report. If it did not, the vanishing has a second cause that this entry does
+not cover.
+
+**Test gotcha.** A rejoin cannot be gated on a self-JOIN scrollback line,
+because the first join's line already matches. "Not greyed" is not a gate
+either, because a `pending` row is not greyed. The rejoin's JOIN sat ~2s in
+the send bucket, the stale gate passed, and the next KICK hit a channel the
+session was not in. Gate on the live (non-pseudo) row plus the member list.
