@@ -8,6 +8,7 @@ import {
 import { dismissInviteToast, inviteToasts } from "./lib/inviteLink";
 import { copyToasts, dismissCopyToast } from "./lib/messageMenu";
 import { dismissPresenceToast, presenceToasts } from "./lib/notifyWatch";
+import { dismissOpsMenuToast, opsMenuToasts } from "./lib/opsMenu";
 import NickText from "./NickText";
 
 // The client's ONE toast surface (#775, extracted from #247's PresenceToasts).
@@ -120,6 +121,17 @@ const Toasts: Component = () => {
       <For each={copyToasts()}>
         {(toast) => (
           <ToastRow tone="error" icon="!" onDismiss={() => dismissCopyToast(toast.id)}>
+            <span class="toast-text">{toast.message}</span>
+          </ToastRow>
+        )}
+      </For>
+      {/* issue 2346 — an op verb fired from a menu (the nick menu, or the ban
+          rows on a join/part/quit row) failed after the menu closed: a
+          rejected push, or Ban host / Kickban refusing to guess a mask because
+          the host is unknown. */}
+      <For each={opsMenuToasts()}>
+        {(toast) => (
+          <ToastRow tone="error" icon="!" onDismiss={() => dismissOpsMenuToast(toast.id)}>
             <span class="toast-text">{toast.message}</span>
           </ToastRow>
         )}

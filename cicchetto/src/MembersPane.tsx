@@ -250,6 +250,7 @@ const MembersPane: Component<Props> = (props) => {
               networkId={nid}
               channelName={props.channelName}
               targetNick={mf().nick}
+              targetHost={null}
               ownModes={ownModes()}
               position={{ x: mf().x, y: mf().y }}
               onClose={closeMenu}

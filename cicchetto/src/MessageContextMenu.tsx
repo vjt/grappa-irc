@@ -7,6 +7,7 @@ import {
   messageMenu,
   selectMessageText,
 } from "./lib/messageMenu";
+import { banMenuItems } from "./lib/opsMenu";
 import { replyQuote, replyToMessage } from "./lib/replyQuote";
 
 // #1067 — the long-press menu on a scrollback message: Copy / Reply / Select…
@@ -55,6 +56,10 @@ const MessageContextMenu: Component = () => {
       enabled: true,
       action: () => selectMessageText(target.row),
     },
+    // issue 2346 — on a join/part/quit row, the ban rows for the person it is
+    // about, after Select… so the row verbs above keep their places. The same
+    // builder as the nick menu: one mask, one gate, two doors.
+    ...(target.ban === null ? [] : banMenuItems(target.ban)),
   ];
 
   return (

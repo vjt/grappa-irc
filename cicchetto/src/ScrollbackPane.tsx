@@ -50,6 +50,7 @@ import { closeMessageMenu, messageMenu, openMessageMenu } from "./lib/messageMen
 import { networkIdBySlug, networks, user } from "./lib/networks";
 import { snapshotSenderPrefix } from "./lib/nickColor";
 import { nickEquals } from "./lib/nickEquals";
+import type { BanMenuTarget } from "./lib/opsMenu";
 import { overlayCount } from "./lib/overlayScrollLock";
 import {
   channelPresenceVisible,
@@ -526,9 +527,24 @@ const userhostSuffix = (msg: ScrollbackMessage): string => {
   return typeof user === "string" && typeof host === "string" ? ` [${user}@${host}]` : "";
 };
 
+// issue 2346 — the host a join/part/quit row's prefix carried, for the ban
+// rows: `*!*@host` straight off the row, no USERHOST round-trip, and the only
+// host there is for a nick that has since QUIT. null on every other kind
+// (their meta carries no prefix) and on a cloaked prefix.
+const isJoinPartQuit = (msg: ScrollbackMessage): boolean =>
+  msg.kind === "join" || msg.kind === "part" || msg.kind === "quit";
+
+const presenceHost = (msg: ScrollbackMessage): string | null => {
+  if (!isJoinPartQuit(msg)) return null;
+  const host = msg.meta.sender_host;
+  return typeof host === "string" ? host : null;
+};
+
 type NickHandlers = {
   onNickClick: (nick: string) => void;
-  onNickContextMenu: (nick: string, e: MouseEvent) => void;
+  // issue 2346 — `host` is the row's own prefix host when it has one
+  // (`presenceHost`), so the nick menu's Ban host / Kickban can use it.
+  onNickContextMenu: (nick: string, host: string | null, e: MouseEvent) => void;
   // No-silent-drops bucket 2: INVITE row's [Join] CTA. Click handler
   // is wired by the parent ScrollbackLine, which has access to the
   // active networkSlug + auth token via createScope.
@@ -843,7 +859,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       type="button"
       class="scrollback-sender scrollback-inline-button nick-clickable"
       onClick={() => handlers.onNickClick(nick)}
-      onContextMenu={(e: MouseEvent) => handlers.onNickContextMenu(nick, e)}
+      onContextMenu={(e: MouseEvent) => handlers.onNickContextMenu(nick, null, e)}
     >
       {bracketLeft}
       <NickText nick={nick} prefix={prefixFor(nick)} />
@@ -858,12 +874,16 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
   // #1950 split it in two along that same rule: the glyph is a PARAMETER of
   // the shared button, never a default, so each call site has to say which
   // reading of the grade it wants. One button definition, two named readings.
-  const bareSpanWithPrefix = (nick: string, prefix: PrefixGlyph): JSX.Element => (
+  const bareSpanWithPrefix = (
+    nick: string,
+    prefix: PrefixGlyph,
+    host: string | null,
+  ): JSX.Element => (
     <button
       type="button"
       class="scrollback-sender scrollback-inline-button nick-clickable"
       onClick={() => handlers.onNickClick(nick)}
-      onContextMenu={(e: MouseEvent) => handlers.onNickContextMenu(nick, e)}
+      onContextMenu={(e: MouseEvent) => handlers.onNickContextMenu(nick, host, e)}
     >
       <NickText nick={nick} prefix={prefix} />
     </button>
@@ -873,7 +893,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
   // kind that renders without brackets: `action`. Routes through `prefixFor`,
   // whose content branch is the only glyph source left in this module.
   const contentSenderSpan = (nick: string): JSX.Element =>
-    bareSpanWithPrefix(nick, prefixFor(nick));
+    bareSpanWithPrefix(nick, prefixFor(nick), null);
 
   // #1950 — RECORD reading: no glyph at all.
   //
@@ -893,7 +913,12 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
   // on `$server` — plus every `renderRawEvent` and `server_event` sender. That
   // is the whole switch below except `action`, which is why the rule is stated
   // here once instead of enumerated at each arm.
-  const recordSenderSpan = (nick: string): JSX.Element => bareSpanWithPrefix(nick, "");
+  const recordSenderSpan = (nick: string): JSX.Element => bareSpanWithPrefix(nick, "", null);
+
+  // issue 2346 — the RECORD reading for the SENDER of a join/part/quit row,
+  // the one nick on a row whose host the row also carries.
+  const presenceSenderSpan = (): JSX.Element =>
+    bareSpanWithPrefix(msg.sender, "", presenceHost(msg));
 
   switch (msg.kind) {
     case "privmsg": {
@@ -1045,7 +1070,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
     case "join":
       return (
         <span class="scrollback-body">
-          * {recordSenderSpan(msg.sender)}
+          * {presenceSenderSpan()}
           {userhostSuffix(msg)} has joined {msg.channel}
         </span>
       );
@@ -1053,7 +1078,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       const reason = reasonOf(msg);
       return (
         <span class="scrollback-body">
-          * {recordSenderSpan(msg.sender)}
+          * {presenceSenderSpan()}
           {userhostSuffix(msg)} has left {msg.channel}
           {reasonSuffix(reason)}
         </span>
@@ -1063,7 +1088,7 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       const reason = reasonOf(msg);
       return (
         <span class="scrollback-body">
-          * {recordSenderSpan(msg.sender)}
+          * {presenceSenderSpan()}
           {userhostSuffix(msg)} has quit{reasonSuffix(reason)}
         </span>
       );
@@ -1187,7 +1212,7 @@ const ScrollbackLine: Component<{
   userNick: string | null;
   networkSlug: string;
   onNickClick: (nick: string) => void;
-  onNickContextMenu: (nick: string, e: MouseEvent) => void;
+  onNickContextMenu: (nick: string, host: string | null, e: MouseEvent) => void;
   onJoinChannel: (channel: string) => void;
 }> = (props) => {
   // #370 — a mention is own nick ∪ custom highlight patterns; a privmsg
@@ -1594,7 +1619,7 @@ const ScrollbackPane: Component<Props> = (props) => {
   const [sessionTopId, setSessionTopId] = createSignal<number | null>(null);
 
   // C7.6: context menu state — null when closed.
-  type ContextMenuState = { targetNick: string; x: number; y: number };
+  type ContextMenuState = { targetNick: string; targetHost: string | null; x: number; y: number };
   const [contextMenu, setContextMenu] = createSignal<ContextMenuState | null>(null);
 
   // #360 — mention-aware scroll-to-bottom badge. Holds the nearest-first ids
@@ -1793,9 +1818,9 @@ const ScrollbackPane: Component<Props> = (props) => {
   };
 
   // C7.6: right-click a nick → show UserContextMenu at cursor.
-  const handleNickContextMenu = (nick: string, e: MouseEvent): void => {
+  const handleNickContextMenu = (nick: string, host: string | null, e: MouseEvent): void => {
     e.preventDefault();
-    setContextMenu({ targetNick: nick, x: e.clientX, y: e.clientY });
+    setContextMenu({ targetNick: nick, targetHost: host, x: e.clientX, y: e.clientY });
   };
 
   // No-silent-drops bucket 2: [Join] CTA in INVITE rows.
@@ -2420,6 +2445,22 @@ const ScrollbackPane: Component<Props> = (props) => {
     // Select…) and none of them means something different under a mouse, so
     // trimming per modality would only buy a "which input am I" signal that
     // lies on a touchscreen laptop.
+    // issue 2346 — the ban rows on a join/part/quit row, for the person it is
+    // about. Channel windows only: a ban is a channel mode, and anywhere else
+    // there is no channel to set it on.
+    const presenceBanTarget = (msg: ScrollbackMessage): BanMenuTarget | null => {
+      const nid = networkId();
+      if (props.kind !== "channel" || nid === undefined) return null;
+      if (!isJoinPartQuit(msg)) return null;
+      return {
+        networkId: nid,
+        networkSlug: props.networkSlug,
+        channelName: props.channelName,
+        nick: msg.sender,
+        host: presenceHost(msg),
+        ownModes: ownModes(),
+      };
+    };
     const openMenuForRow = (row: HTMLElement, at: Point): void => {
       const msg = messageForRow(row);
       if (msg === null) return;
@@ -2429,6 +2470,7 @@ const ScrollbackPane: Component<Props> = (props) => {
         networkSlug: props.networkSlug,
         channelName: props.channelName,
         at,
+        ban: presenceBanTarget(msg),
       });
     };
     if (listRef) {
@@ -4833,6 +4875,7 @@ const ScrollbackPane: Component<Props> = (props) => {
             networkId={networkId() ?? 0}
             channelName={props.channelName}
             targetNick={cm().targetNick}
+            targetHost={cm().targetHost}
             ownModes={ownModes()}
             position={{ x: cm().x, y: cm().y }}
             onClose={() => setContextMenu(null)}

@@ -1,5 +1,4 @@
-import { buildBanMask } from "../banMask";
-import { friendlyError } from "../friendlyError";
+import { kickban } from "../kickban";
 import {
   pushChannelBan,
   pushChannelDeop,
@@ -10,7 +9,6 @@ import {
   pushChannelUnban,
   pushChannelVoice,
   pushRaw,
-  resolveUserhost,
 } from "../socket";
 import type { CommandHandler } from "./context";
 
@@ -76,42 +74,25 @@ export const banCommand: CommandHandler<"ban"> = async (cmd, ctx) => {
 };
 
 /**
- * #386 — kickban. Ban FIRST (`*!*@host`, no rejoin window), THEN kick — two
- * frames, attempt BOTH regardless (vjt decision #4). The host comes from the
- * on-demand `resolveUserhost` lookup (cic has none client-side); a cache MISS
- * → null → fail-closed (vjt decision #1: never guess a wider mask), so the ban
- * is NOT sent — but the kick still fires (immediate intent) and the ban error
- * is surfaced.
+ * #386 — kickban: ban `*!*@host` first, then kick, both attempted, fail-closed
+ * on an unknown host. The verb is `lib/kickban` (issue 2346), shared with the
+ * nick and presence-row menus; `/kb` has no row to read a host off, so it
+ * always resolves.
  */
 export const kbCommand: CommandHandler<"kb"> = async (cmd, ctx) => {
   const chanOrErr = ctx.requireChannel("kb");
   if (typeof chanOrErr !== "string") return chanOrErr;
   const networkId = ctx.requireNetworkId(ctx.networkSlug, "kb");
   if (typeof networkId !== "number") return networkId;
-
-  let banError: string | null = null;
-  try {
-    const uh = await resolveUserhost(networkId, cmd.nick);
-    const mask = uh ? buildBanMask("host", { nick: cmd.nick, user: uh.user, host: uh.host }) : null;
-    if (mask === null) {
-      banError = `/kb: host unknown for ${cmd.nick} — ban not set (run /whois ${cmd.nick} first); kicking anyway`;
-    } else {
-      await pushChannelBan(networkId, chanOrErr, mask);
-    }
-  } catch (e) {
-    banError = `/kb: ban failed — ${friendlyError(e)}`;
-  }
-
-  // Always attempt the kick (getting the person out is the intent).
-  try {
-    await pushChannelKick(networkId, chanOrErr, cmd.nick, cmd.reason);
-  } catch (kickErr) {
-    // Both failed → surface the ban error (primary) if present, else the kick's.
-    return { error: banError ?? `/kb: kick failed — ${friendlyError(kickErr)}` };
-  }
-
-  if (banError !== null) return { error: banError };
-  return { ok: true };
+  const error = await kickban({
+    networkId,
+    channel: chanOrErr,
+    nick: cmd.nick,
+    reason: cmd.reason,
+    knownHost: null,
+    label: "/kb",
+  });
+  return error === null ? { ok: true } : { error };
 };
 
 /**

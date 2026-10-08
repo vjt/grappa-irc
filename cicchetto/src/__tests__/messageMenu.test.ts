@@ -65,6 +65,7 @@ describe("messageMenu store", () => {
       networkSlug: "azzurra",
       channelName: "#grappa",
       at: { x: 10, y: 20 },
+      ban: null,
     });
     expect(messageMenu()?.row).toBe(row);
     expect(messageMenu()?.at).toEqual({ x: 10, y: 20 });
