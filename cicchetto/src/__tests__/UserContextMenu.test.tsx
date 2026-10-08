@@ -5,7 +5,8 @@ import { pressAndClick } from "./helpers/pointerEvents";
 // C5.1 — UserContextMenu: right-click submenu on member nick.
 //
 // Tests assert:
-//   1. All 9 items render (op/deop/voice/devoice/kick/ban/WHOIS/CTCP/query).
+//   1. All 11 items render (op/deop/voice/devoice/kick/ban nick/ban host/
+//      kickban/WHOIS/CTCP/query — issue 2346 replaced the bare "ban").
 //   2. When own nick has @-mode, op-gated items are enabled.
 //   3. When own nick lacks @-mode, op-gated items are disabled (not hidden).
 //   4. WHOIS + Query are always enabled regardless of modes.
@@ -20,6 +21,7 @@ const mockPushChannelDevoice = vi.fn();
 const mockPushChannelKick = vi.fn();
 const mockPushChannelBan = vi.fn();
 const mockPushWhois = vi.fn();
+const mockResolveUserhost = vi.fn();
 const mockOpenQueryWindowState = vi.fn();
 const mockSetSelectedChannel = vi.fn();
 const mockSendCtcpQuery = vi.fn();
@@ -32,6 +34,7 @@ vi.mock("../lib/socket", () => ({
   pushChannelKick: (...args: unknown[]) => mockPushChannelKick(...args),
   pushChannelBan: (...args: unknown[]) => mockPushChannelBan(...args),
   pushWhois: (...args: unknown[]) => mockPushWhois(...args),
+  resolveUserhost: (...args: unknown[]) => mockResolveUserhost(...args),
 }));
 
 // #1192 — the CTCP submenu dispatches through the shared seam; its own
@@ -65,6 +68,8 @@ vi.mock("../lib/selection", () => ({
 // We also need to mock pushWhois — UserContextMenu uses pushWhois from socket.ts.
 // The mock above covers it.
 
+import { channelKey } from "../lib/channelKey";
+import { seedFromTest } from "../lib/members";
 import {
   __resetForTest,
   overlayEscapeDepth,
@@ -72,11 +77,14 @@ import {
 } from "../lib/overlayScrollLock";
 import UserContextMenu from "../UserContextMenu";
 
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
 const baseProps = {
   networkSlug: "freenode",
   networkId: 42,
   channelName: "#grappa",
   targetNick: "alice",
+  targetHost: null as string | null,
   ownModes: [] as string[],
   position: { x: 100, y: 200 },
   onClose: vi.fn(),
@@ -85,19 +93,34 @@ const baseProps = {
 beforeEach(() => {
   vi.clearAllMocks();
   mockSendCtcpQuery.mockResolvedValue(undefined);
+  for (const m of [
+    mockPushChannelOp,
+    mockPushChannelDeop,
+    mockPushChannelVoice,
+    mockPushChannelDevoice,
+    mockPushChannelKick,
+    mockPushChannelBan,
+  ]) {
+    m.mockResolvedValue(undefined);
+  }
+  seedFromTest(channelKey("freenode", "#grappa"), [{ nick: "alice", modes: [] }]);
   __resetForTest();
 });
 
 describe("UserContextMenu", () => {
-  describe("renders all 9 items", () => {
-    it("shows Op, Deop, Voice, Devoice, Kick, Ban, WHOIS, CTCP, Query", () => {
+  describe("renders all 11 items", () => {
+    it("shows Op, Deop, Voice, Devoice, Kick, Ban nick, Ban host, Kickban, WHOIS, CTCP, Query", () => {
       render(() => <UserContextMenu {...baseProps} />);
       expect(screen.getByRole("button", { name: /^op$/i })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /^deop$/i })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /^voice$/i })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /^devoice$/i })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /^kick$/i })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: /^ban$/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^ban nick$/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^ban host$/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^kickban$/i })).toBeInTheDocument();
+      // issue 2346 — the ambiguous bare "Ban" is gone.
+      expect(screen.queryByRole("button", { name: /^ban$/i })).toBeNull();
       expect(screen.getByRole("button", { name: /^whois$/i })).toBeInTheDocument();
       // #1192 — the shell appends the ▸, so the accessible name carries it.
       expect(screen.getByRole("button", { name: /^ctcp ▸$/i })).toBeInTheDocument();
@@ -113,7 +136,9 @@ describe("UserContextMenu", () => {
       expect(screen.getByRole("button", { name: /^voice$/i })).toBeDisabled();
       expect(screen.getByRole("button", { name: /^devoice$/i })).toBeDisabled();
       expect(screen.getByRole("button", { name: /^kick$/i })).toBeDisabled();
-      expect(screen.getByRole("button", { name: /^ban$/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /^ban nick$/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /^ban host$/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /^kickban$/i })).toBeDisabled();
     });
 
     it("disabled items are NOT hidden (still rendered)", () => {
@@ -139,7 +164,9 @@ describe("UserContextMenu", () => {
       expect(screen.getByRole("button", { name: /^voice$/i })).not.toBeDisabled();
       expect(screen.getByRole("button", { name: /^devoice$/i })).not.toBeDisabled();
       expect(screen.getByRole("button", { name: /^kick$/i })).not.toBeDisabled();
-      expect(screen.getByRole("button", { name: /^ban$/i })).not.toBeDisabled();
+      expect(screen.getByRole("button", { name: /^ban nick$/i })).not.toBeDisabled();
+      expect(screen.getByRole("button", { name: /^ban host$/i })).not.toBeDisabled();
+      expect(screen.getByRole("button", { name: /^kickban$/i })).not.toBeDisabled();
     });
   });
 
@@ -174,10 +201,50 @@ describe("UserContextMenu", () => {
       expect(mockPushChannelKick).toHaveBeenCalledWith(42, "#grappa", "alice", "");
     });
 
-    it("Ban button calls pushChannelBan with nick!*@* fallback mask", async () => {
+    it("Ban nick bans nick!*@*", async () => {
       render(() => <UserContextMenu {...baseProps} ownModes={["@"]} />);
-      pressAndClick(screen.getByRole("button", { name: /^ban$/i }));
+      pressAndClick(screen.getByRole("button", { name: /^ban nick$/i }));
       expect(mockPushChannelBan).toHaveBeenCalledWith(42, "#grappa", "alice!*@*");
+    });
+
+    it("Ban host with no host from the opener resolves it, then bans *!*@host", async () => {
+      mockResolveUserhost.mockResolvedValue({ user: "ident", host: "alice.example.net" });
+      render(() => <UserContextMenu {...baseProps} ownModes={["@"]} />);
+      pressAndClick(screen.getByRole("button", { name: /^ban host$/i }));
+      await flush();
+      expect(mockResolveUserhost).toHaveBeenCalledWith(42, "alice");
+      expect(mockPushChannelBan).toHaveBeenCalledWith(42, "#grappa", "*!*@alice.example.net");
+    });
+
+    it("Ban host with the opener's host bans it without a lookup", async () => {
+      render(() => (
+        <UserContextMenu {...baseProps} ownModes={["@"]} targetHost="row.example.net" />
+      ));
+      pressAndClick(screen.getByRole("button", { name: /^ban host$/i }));
+      await flush();
+      expect(mockResolveUserhost).not.toHaveBeenCalled();
+      expect(mockPushChannelBan).toHaveBeenCalledWith(42, "#grappa", "*!*@row.example.net");
+    });
+
+    it("Kickban bans the host FIRST, then kicks", async () => {
+      render(() => (
+        <UserContextMenu {...baseProps} ownModes={["@"]} targetHost="row.example.net" />
+      ));
+      pressAndClick(screen.getByRole("button", { name: /^kickban$/i }));
+      await flush();
+      expect(mockPushChannelBan).toHaveBeenCalledWith(42, "#grappa", "*!*@row.example.net");
+      expect(mockPushChannelKick).toHaveBeenCalledWith(42, "#grappa", "alice", "");
+      const [banOrder] = mockPushChannelBan.mock.invocationCallOrder;
+      const [kickOrder] = mockPushChannelKick.mock.invocationCallOrder;
+      if (banOrder === undefined || kickOrder === undefined) throw new Error("both must fire");
+      expect(banOrder).toBeLessThan(kickOrder);
+    });
+
+    it("Kickban is disabled for a nick no longer in the channel", () => {
+      seedFromTest(channelKey("freenode", "#grappa"), [{ nick: "bob", modes: [] }]);
+      render(() => <UserContextMenu {...baseProps} ownModes={["@"]} />);
+      expect(screen.getByRole("button", { name: /^kickban$/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: /^ban host$/i })).not.toBeDisabled();
     });
 
     it("Query button calls openQueryWindowState and setSelectedChannel", async () => {

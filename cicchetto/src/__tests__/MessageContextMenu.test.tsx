@@ -84,6 +84,7 @@ describe("Select… with the compose keyboard up", () => {
       networkSlug: "azzurra",
       channelName: "#grappa",
       at: { x: 10, y: 20 },
+      ban: null,
     });
 
     const delivered: string[] = [];
@@ -131,6 +132,7 @@ function openOver(row: HTMLElement, over: Partial<ScrollbackMessage>): void {
     networkSlug: NET,
     channelName: CHAN,
     at: { x: 10, y: 20 },
+    ban: null,
   });
 }
 
@@ -168,5 +170,45 @@ describe("the !addquote item", () => {
     const item = screen.getByText("!addquote");
     expect(item).toBeTruthy();
     expect((item as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+// issue 2346 — a join/part/quit row offers the ban rows for the person it is
+// about. The rows themselves (masks, gates, toasts) are pinned in
+// opsMenu.test.ts; what is asserted here is that the message menu shows them
+// exactly when the opener hands it a ban target, and after the row verbs.
+describe("the ban rows on a presence row", () => {
+  it("follow Select… when the opener supplies a ban target", () => {
+    render(() => <MessageContextMenu />);
+    openMessageMenu({
+      msg: { ...msg(), kind: "quit", body: null, sender: "Guest123" } as ScrollbackMessage,
+      row: scrollbackRow("12:34 * Guest123 has quit"),
+      networkSlug: NET,
+      channelName: CHAN,
+      at: { x: 10, y: 20 },
+      ban: {
+        networkId: 7,
+        networkSlug: NET,
+        channelName: CHAN,
+        nick: "Guest123",
+        host: "flapper.example.net",
+        ownModes: ["@"],
+      },
+    });
+    expect(labels()).toEqual([
+      "Copy",
+      "Reply",
+      "!addquote",
+      "Select…",
+      "Ban nick",
+      "Ban host",
+      "Kickban",
+    ]);
+  });
+
+  it("are absent when there is no ban target", () => {
+    render(() => <MessageContextMenu />);
+    openOver(scrollbackRow("12:34 <vjt> ciao"), {});
+    expect(labels()).not.toContain("Ban host");
   });
 });

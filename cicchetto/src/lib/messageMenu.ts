@@ -2,6 +2,7 @@ import { createSignal } from "solid-js";
 import type { ScrollbackMessage } from "./api";
 import { copyText } from "./clipboard";
 import { isTextEntry } from "./keepKeyboard";
+import type { BanMenuTarget } from "./opsMenu";
 import type { Point } from "./swipe";
 import { createToastQueue } from "./toasts";
 
@@ -24,6 +25,11 @@ export type MessageMenuTarget = {
   networkSlug: string;
   channelName: string;
   at: Point;
+  // issue 2346 — the person a join/part/quit row is about, with the host off
+  // its prefix, so the menu can offer Ban nick / Ban host / Kickban on the
+  // row itself; null on every other row. Resolved by the opener, which knows
+  // the window's own modes — this store knows rows.
+  ban: BanMenuTarget | null;
 };
 
 const [messageMenu, setMessageMenu] = createSignal<MessageMenuTarget | null>(null);

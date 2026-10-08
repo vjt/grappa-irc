@@ -1,10 +1,10 @@
 import type { Component } from "solid-js";
 import ContextMenu, { type ContextMenuAction, type ContextMenuItem } from "./ContextMenu";
 import { sendCtcpQuery } from "./lib/ctcpQuery";
+import { banMenuItems, runOpsVerb } from "./lib/opsMenu";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { setSelectedChannel } from "./lib/selection";
 import {
-  pushChannelBan,
   pushChannelDeop,
   pushChannelDevoice,
   pushChannelKick,
@@ -15,13 +15,13 @@ import {
 
 // Right-click context menu for member-list nicks (spec #3, C5.1).
 //
-// Renders 8 items: op / deop / voice / devoice / kick / ban (all gated on
-// own-nick @ mode, disabled-but-NOT-hidden when unmet) + WHOIS + Query
-// (always enabled, no perm required).
+// Op / deop / voice / devoice / kick and the issue 2346 ban rows (Ban nick /
+// Ban host / Kickban, from `lib/opsMenu`) are all gated on own-nick @ mode,
+// disabled-but-NOT-hidden when unmet; WHOIS + CTCP + Query are always enabled.
 //
-// Dispatches to existing socket.ts push helpers — no new IRC-issuance path.
-// Ban mask uses the `nick!*@*` fallback (WHOIS-cache mask derivation is
-// deferred per spec #3 note; see commit body for gap flag).
+// Dispatches to existing socket.ts push helpers — no new IRC-issuance path —
+// and every op verb goes through `runOpsVerb`, so a rejected push is a toast
+// rather than an unhandled rejection behind a menu that has already closed.
 //
 // The chrome (portal, backdrop, Escape, the #487 measured viewport clamp) lives
 // in `ContextMenu`, shared since #1067 added the long-press message menu. This
@@ -45,6 +45,10 @@ export type Props = {
   networkId: number;
   channelName: string;
   targetNick: string;
+  // issue 2346 — the host when the opener already has it (a join/part/quit
+  // row's prefix), so Ban host / Kickban skip the USERHOST lookup; null from
+  // every other opener.
+  targetHost: string | null;
   ownModes: string[];
   position: { x: number; y: number };
   onClose: () => void;
@@ -87,35 +91,51 @@ const UserContextMenu: Component<Props> = (props) => {
     {
       label: "Op",
       enabled: isOp(),
-      action: () => pushChannelOp(props.networkId, props.channelName, [props.targetNick]),
+      action: () =>
+        runOpsVerb("Op", pushChannelOp(props.networkId, props.channelName, [props.targetNick])),
     },
     {
       label: "Deop",
       enabled: isOp(),
-      action: () => pushChannelDeop(props.networkId, props.channelName, [props.targetNick]),
+      action: () =>
+        runOpsVerb("Deop", pushChannelDeop(props.networkId, props.channelName, [props.targetNick])),
     },
     {
       label: "Voice",
       enabled: isOp(),
-      action: () => pushChannelVoice(props.networkId, props.channelName, [props.targetNick]),
+      action: () =>
+        runOpsVerb(
+          "Voice",
+          pushChannelVoice(props.networkId, props.channelName, [props.targetNick]),
+        ),
     },
     {
       label: "Devoice",
       enabled: isOp(),
-      action: () => pushChannelDevoice(props.networkId, props.channelName, [props.targetNick]),
+      action: () =>
+        runOpsVerb(
+          "Devoice",
+          pushChannelDevoice(props.networkId, props.channelName, [props.targetNick]),
+        ),
     },
     {
       label: "Kick",
       // Bare KICK, no reason input prompt in C5.1.
       enabled: isOp(),
-      action: () => pushChannelKick(props.networkId, props.channelName, props.targetNick, ""),
+      action: () =>
+        runOpsVerb(
+          "Kick",
+          pushChannelKick(props.networkId, props.channelName, props.targetNick, ""),
+        ),
     },
-    {
-      label: "Ban",
-      // Fallback mask: nick!*@*. WHOIS-cache mask derivation deferred (spec #3 gap).
-      enabled: isOp(),
-      action: () => pushChannelBan(props.networkId, props.channelName, `${props.targetNick}!*@*`),
-    },
+    ...banMenuItems({
+      networkId: props.networkId,
+      networkSlug: props.networkSlug,
+      channelName: props.channelName,
+      nick: props.targetNick,
+      host: props.targetHost,
+      ownModes: props.ownModes,
+    }),
     {
       label: "WHOIS",
       // Always enabled — no perm required.
