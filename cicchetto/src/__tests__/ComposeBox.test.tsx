@@ -125,6 +125,9 @@ vi.mock("../lib/networks", () => ({
 }));
 
 import ComposeBox from "../ComposeBox";
+// issue 2356 — the REAL diag ring and its flag: the gesture lines are the
+// thing under test, so neither is mocked.
+import { DIAG_FLAG_KEY } from "../DiagFloat";
 // #1331 — the reconnect reads the REAL token store (the seam calls
 // `token()` exactly as every other authed verb does); the mock stops at the
 // network boundary.
@@ -145,6 +148,7 @@ import {
   confirmRequest,
   dismissConfirm,
 } from "../lib/confirmDialog";
+import { diagLog } from "../lib/diagLog";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -775,6 +779,66 @@ describe("ComposeBox", () => {
       } finally {
         vi.mocked(compose.getDraft).mockReturnValue("");
       }
+    });
+  });
+
+  // issue 2356 — the swipe diag ring could not tell WHY a gesture went
+  // unclaimed: a horizontal drag is refused for a live selection (#1205), for
+  // a touchmove that never arrives, or for travel under the slop, and a tap
+  // prints the same `END claimed=no dy=0` as all three. So TS and END now
+  // carry the selection, END the x travel and how many touchmoves arrived.
+  // Diagnostics only: gated on `cic_diag`, nothing is pushed without it.
+  describe("issue 2356 — the swipe diag names why a drag went unclaimed", () => {
+    const composerWith = async (draft: string): Promise<HTMLTextAreaElement> => {
+      const compose = await import("../lib/compose");
+      vi.mocked(compose.getDraft).mockReturnValue(draft);
+      render(() => <ComposeBox networkSlug="freenode" channelName="#a" />);
+      return screen.getByPlaceholderText(/message #a/i) as HTMLTextAreaElement;
+    };
+
+    afterEach(async () => {
+      localStorage.removeItem(DIAG_FLAG_KEY);
+      const compose = await import("../lib/compose");
+      vi.mocked(compose.getDraft).mockReturnValue("");
+    });
+
+    it("without cic_diag a swipe pushes nothing into the ring", async () => {
+      localStorage.removeItem(DIAG_FLAG_KEY);
+      const ta = await composerWith("hello world");
+      ta.setSelectionRange(5, 5);
+      const before = diagLog();
+      fireTouch(ta, "touchstart", { clientX: 100, clientY: 300 });
+      fireTouch(ta, "touchmove", { clientX: 160, clientY: 302 });
+      fireTouch(ta, "touchend", { clientX: 160, clientY: 302 });
+      // Same array: `diagPush` always builds a new one, so identity is the
+      // proof that it never ran.
+      expect(diagLog()).toBe(before);
+    });
+
+    it("with cic_diag, TS and END carry the selection, END the dx and the move count", async () => {
+      localStorage.setItem(DIAG_FLAG_KEY, "1");
+      const ta = await composerWith("hello world");
+      ta.setSelectionRange(5, 5);
+      fireTouch(ta, "touchstart", { clientX: 100, clientY: 300 });
+      fireTouch(ta, "touchmove", { clientX: 130, clientY: 301 });
+      fireTouch(ta, "touchmove", { clientX: 160, clientY: 302 });
+      fireTouch(ta, "touchend", { clientX: 160, clientY: 302 });
+      // Newest first: END, CLAIM, TS.
+      const [end, , ts] = diagLog();
+      expect(ts).toMatch(/^TS .* sel=5,5$/);
+      expect(end).toMatch(/^END claimed=horizontal .* dx=60 moves=2 sel=5,5$/);
+    });
+
+    it("an unclaimed drag over a live selection says so: the selection and the moves are in the line", async () => {
+      localStorage.setItem(DIAG_FLAG_KEY, "1");
+      const ta = await composerWith("hello world");
+      ta.setSelectionRange(0, 5);
+      fireTouch(ta, "touchstart", { clientX: 100, clientY: 300 });
+      fireTouch(ta, "touchmove", { clientX: 160, clientY: 302 });
+      fireTouch(ta, "touchend", { clientX: 160, clientY: 302 });
+      const [end, ts] = diagLog();
+      expect(ts).toMatch(/^TS .* sel=0,5$/);
+      expect(end).toMatch(/^END claimed=no act=none .* dx=60 moves=1 sel=0,5$/);
     });
   });
 
