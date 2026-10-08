@@ -247,6 +247,10 @@ vi.mock("../lib/userSettings", async () => {
       .fn()
       .mockImplementation((_t: string, prefs: unknown) => Promise.resolve(prefs)),
     getUploadTtlSeconds: vi.fn().mockResolvedValue(null),
+    // issue 2347 — the drawer hydrates the ban type through the REAL
+    // `banMaskPref` cache, so the REST pair is what gets stubbed.
+    getBanMaskForm: vi.fn().mockResolvedValue("host"),
+    putBanMaskForm: vi.fn().mockImplementation((_t: string, form: string) => Promise.resolve(form)),
     putUploadTtlSeconds: vi
       .fn()
       .mockImplementation((_t: string, seconds: number | null) => Promise.resolve(seconds)),
@@ -3317,5 +3321,65 @@ describe("SettingsDrawer text size — presets write numbers, custom clamps (iss
     expect(fontSize.setFontSizePx).not.toHaveBeenCalled();
     expect(localStorage.getItem(STORAGE_KEY)).toBe("22");
     expect(customBox().value).toBe("22");
+  });
+});
+
+// issue 2347 — the default ban type `/kb` and the Kickban menu entry use. The
+// select reads the `banMaskPref` cache and writes through `putBanMaskForm`;
+// the cache is real here and only the REST pair is stubbed, so these cases
+// pin the drawer wiring end to end on the client.
+describe("SettingsDrawer — ban type (issue 2347)", () => {
+  beforeEach(async () => {
+    const pref = await import("../lib/banMaskPref");
+    pref.resetBanMaskFormForTests();
+  });
+
+  const select = () => screen.getByTestId("ban-mask-form-select") as HTMLSelectElement;
+
+  it("hydrates from the server when the drawer opens, and shows the stored type", async () => {
+    const api = await import("../lib/userSettings");
+    vi.mocked(api.getBanMaskForm).mockResolvedValueOnce("user_host");
+    wrap(true);
+    openSub("general-settings-entry");
+
+    await waitFor(() => {
+      expect(api.getBanMaskForm).toHaveBeenCalledWith("test-bearer");
+      expect(select().value).toBe("user_host");
+    });
+  });
+
+  it("offers exactly the three forms, under a legend of its own", () => {
+    wrap(true);
+    openSub("general-settings-entry");
+
+    expect(Array.from(select().options).map((o) => o.value)).toEqual(["host", "nick", "user_host"]);
+    expect(select().closest("fieldset")?.querySelector("legend")?.textContent).toMatch(/ban type/i);
+  });
+
+  it("choosing a type saves it and the select follows the server's echo", async () => {
+    const api = await import("../lib/userSettings");
+    wrap(true);
+    openSub("general-settings-entry");
+
+    fireEvent.change(select(), { target: { value: "nick" } });
+
+    await waitFor(() => {
+      expect(api.putBanMaskForm).toHaveBeenCalledWith("test-bearer", "nick");
+      expect(select().value).toBe("nick");
+    });
+  });
+
+  it("a refused save names the error and leaves the stored type in place", async () => {
+    const api = await import("../lib/userSettings");
+    vi.mocked(api.putBanMaskForm).mockRejectedValueOnce(new Error("validation_failed"));
+    wrap(true);
+    openSub("general-settings-entry");
+
+    fireEvent.change(select(), { target: { value: "nick" } });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("ban-mask-form-error")).toHaveTextContent("validation_failed");
+    });
+    expect(select().value).toBe("host");
   });
 });

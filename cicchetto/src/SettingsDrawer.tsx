@@ -25,6 +25,8 @@ import {
   saveAwayNickSuffix,
 } from "./lib/autoAway";
 import { createBackdropDismiss } from "./lib/backdropDismiss";
+import { type BanMaskForm, isBanMaskForm } from "./lib/banMask";
+import { banMaskFormValue, loadBanMaskForm, saveBanMaskForm } from "./lib/banMaskPref";
 import { playBeep } from "./lib/beep";
 import { getBoldMentions } from "./lib/boldMentions";
 import { type ChannelKey, decodeChannelKey } from "./lib/channelKey";
@@ -198,6 +200,15 @@ const DATE_FORMAT_LABELS: Record<DateFormatKey, string> = {
   ymd: "year first",
 };
 
+// issue 2347 — what each ban type bans, in the words an op reads a mask in.
+// A Record so a new form in `BanMaskForm` fails to compile here until it has
+// a label; insertion order is the option order, the default first.
+const BAN_MASK_FORM_LABELS: Record<BanMaskForm, string> = {
+  host: "*!*@host — anyone on their host (default)",
+  nick: "nick!*@* — their nick, on any host",
+  user_host: "*!user@host — their ident on their host",
+};
+
 const SettingsDrawer: Component<Props> = (props) => {
   const [fontPx, setFontPx] = createSignal<number>(getFontSizePx());
   const [timeFmt, setTimeFmt] = createSignal<TimeFormatKey>(getTimeFormat());
@@ -231,6 +242,8 @@ const SettingsDrawer: Component<Props> = (props) => {
   // change. `null` = "use the active host's defaultTtl".
   const [uploadTtlSavingError, setUploadTtlSavingError] = createSignal<string | null>(null);
   const [uploadConfirmSavingError, setUploadConfirmSavingError] = createSignal<string | null>(null);
+  // issue 2347 — the default ban type /kb and Kickban use.
+  const [banMaskFormSavingError, setBanMaskFormSavingError] = createSignal<string | null>(null);
   // #348 — auto-away debounce. The server owns the behaviour AND the
   // accepted range; these three only drive the control. `customMode`
   // is a MODE the user can enter without having written anything yet,
@@ -764,6 +777,9 @@ const SettingsDrawer: Component<Props> = (props) => {
       // first user interaction.
       void loadUploadTtlSeconds(t);
       void loadUploadConfirmEnabled(t);
+      // issue 2347 — same reason: the ban-type select must show what the
+      // server stored, not the cache's "host" default.
+      void loadBanMaskForm(t);
       // #348 — same reason: the auto-away control must show what the
       // server stored, not a client-side guess.
       void loadAutoAwayDebounce(t);
@@ -1270,6 +1286,26 @@ const SettingsDrawer: Component<Props> = (props) => {
     } catch (err) {
       const code = err instanceof Error ? err.message : "save_failed";
       setUploadConfirmSavingError(code);
+    }
+  };
+
+  // issue 2347 — the ban type. Write-through like the confirm above. On a
+  // refused save the cache never moved, so the select is put back by hand:
+  // Solid does not re-assign a `value` whose signal did not change, and the
+  // control would otherwise show a type that was never stored.
+  const onBanMaskFormChange = async (e: Event) => {
+    const t = token();
+    if (t === null) return;
+    const el = e.currentTarget as HTMLSelectElement;
+    const next = el.value;
+    if (!isBanMaskForm(next)) return;
+    setBanMaskFormSavingError(null);
+    try {
+      await saveBanMaskForm(t, next);
+    } catch (err) {
+      el.value = banMaskFormValue();
+      const code = err instanceof Error ? err.message : "save_failed";
+      setBanMaskFormSavingError(code);
     }
   };
 
@@ -2290,6 +2326,38 @@ const SettingsDrawer: Component<Props> = (props) => {
               <Show when={quitPartReasonSavingError() !== null}>
                 <p class="auto-away-error" role="alert" data-testid="quit-part-reason-error">
                   {quitPartReasonSavingError()}
+                </p>
+              </Show>
+            </fieldset>
+
+            {/* issue 2347 — the default ban type. Account-wide and on the
+                general page, beside the leave message, because both decide
+                what the next command you type sends without you spelling it
+                out. Ban nick / Ban host in the menus never read it. */}
+            <fieldset class="ban-mask-form-fieldset">
+              <legend>ban type</legend>
+              <label class="ban-mask-form-row">
+                <select
+                  aria-label="ban type for /kb and Kickban"
+                  data-testid="ban-mask-form-select"
+                  value={banMaskFormValue()}
+                  onChange={(e) => {
+                    void onBanMaskFormChange(e);
+                  }}
+                >
+                  <For each={Object.entries(BAN_MASK_FORM_LABELS)}>
+                    {([form, label]) => <option value={form}>{label}</option>}
+                  </For>
+                </select>
+              </label>
+              {/* ONE sentence — the general-page blurb test counts full stops. */}
+              <p class="settings-section-blurb" data-testid="ban-mask-form-hint">
+                Used by /kb and the Kickban menu entry, while Ban nick and Ban host keep their own
+                mask — a ban whose part is unknown is not sent, and the kick still is.
+              </p>
+              <Show when={banMaskFormSavingError() !== null}>
+                <p class="auto-away-error" role="alert" data-testid="ban-mask-form-error">
+                  {banMaskFormSavingError()}
                 </p>
               </Show>
             </fieldset>

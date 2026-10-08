@@ -30,6 +30,7 @@ import LinksModal from "./LinksModal";
 import { jumpToNextActiveWindow, jumpToPrevActiveWindow } from "./lib/activeWindows";
 import { ownNickForNetwork } from "./lib/api";
 import { token } from "./lib/auth";
+import { loadBanMaskForm } from "./lib/banMaskPref";
 import { channelKey } from "./lib/channelKey";
 import { getDraft, tabComplete } from "./lib/compose";
 import { appendToCompose } from "./lib/composeAppend";
@@ -537,6 +538,9 @@ const Shell: Component = () => {
     // must honour the saved preference, not only uploads made after the
     // settings drawer has been opened once.
     void loadUploadConfirmEnabled(t);
+    // issue 2347 — and the ban type, so the first /kb or Kickban of the
+    // session bans in the stored form rather than the cache's default.
+    void loadBanMaskForm(t);
   });
 
   // #71 INC-2 — the "auto-close the members drawer on a non-joined-channel

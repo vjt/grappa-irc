@@ -4633,9 +4633,11 @@ describe("compose submit — channel ops verbs", () => {
     const pref = await import("../lib/banMaskPref");
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ ban_mask_form: "nick" }), { status: 200 }),
-      ),
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ ban_mask_form: "nick" }), { status: 200 }),
+        ),
     );
     try {
       await pref.loadBanMaskForm("tok");
