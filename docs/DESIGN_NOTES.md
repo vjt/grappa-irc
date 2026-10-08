@@ -712,3 +712,46 @@ the nick we hold now. The rename only strands rows already stored.
 compares it with the live nick goes false at the first rename and stays
 false. Keep such a derivation only behind the field's absence, for a server
 that predates it.
+<!-- entry #2343 -->
+
+---
+
+## 2026-10-08 — #2343: the upload confirm asks "Shrink videos before sending" per batch, and does not write it back
+
+The transcode switch lived only in Settings (device-local, default OFF since
+#2173), so an operator who never opened the drawer sent a 12.3 Mbps 1080p
+HEVC clip untouched without knowing the switch existed. The upload confirm
+already asks one per-batch term, the TTL (#2094); it now asks this one
+beside it. Proposed on #grappa, approved by vjt on the issue.
+
+**The confirm store gains ONE on/off term, `ConfirmToggle`, and no more.**
+#2094 wrote "deliberately ONE choice — a second control would be a form
+wearing a modal's chrome". vjt's approval narrows that to one choice and at
+most one switch; a caller that needs more still needs a form. Every
+`ConfirmRequest` declares `toggle` explicitly (`null` on the ten dialogs
+that ask nothing), the same explicit-null contract as `choice`.
+
+**Shown only while the batch holds a video**, reactively: removing the last
+clip from the list removes the switch, since it does nothing to any other
+category. "Video" is the dispatch's own `categoryOf(baseMime(type))`, so the
+dialog and the pipeline cannot disagree on what counts.
+
+**Carried per item, like `ttlSeconds`:** `videoProcessing: boolean | null`
+rides the queue and `lastAttempt`, so a retry keeps the batch's answer even
+if the device preference changed in between. `null` means no dialog asked
+(`upload_confirm_enabled` off) and the device preference decides at
+dispatch, exactly as before. The answer is resolved once per attempt and
+feeds both the transform and the over-cap refusal, whose recourse now names
+where the answer was given: "Tick … when sending" for a dialog answer, "Turn
+on … in Settings" otherwise. The old Settings copy was wrong advice to an
+operator whose Settings already said ON.
+
+**No write-back to the device preference — a REVERSIBLE choice, pending
+vjt.** The issue left it open. Not writing back is #2094's posture for the
+TTL: a tick given while looking at one batch is not a change to the device.
+Reversing it is one line in the confirm's `onToggle` plus two inverted
+assertions (vitest "does not write the answer back", e2e arms (a)/(b)).
+
+**Apply:** a new per-batch upload term follows this shape: seed from the
+stored preference, carry per item with `null` for "not asked", resolve once
+per attempt, never write back without a ruling.
