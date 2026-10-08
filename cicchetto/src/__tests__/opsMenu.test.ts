@@ -17,6 +17,12 @@ vi.mock("../lib/socket", () => ({
   pushChannelBan: (...a: unknown[]) => mockBan(...a),
 }));
 
+// issue 2347 — the subject's ban type, as the cache would hold it after boot.
+let mockBanMaskForm: "nick" | "host" | "user_host" = "host";
+vi.mock("../lib/banMaskPref", () => ({
+  banMaskFormValue: () => mockBanMaskForm,
+}));
+
 vi.mock("../lib/networks", () => ({
   networkIdBySlug: () => undefined,
   networks: vi.fn(() => [{ id: 7, slug: "azzurra", inserted_at: "x", updated_at: "y" }]),
@@ -46,6 +52,7 @@ const byLabel = (items: ContextMenuAction[], label: string): ContextMenuAction =
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockBanMaskForm = "host";
   mockBan.mockResolvedValue(undefined);
   mockBanHost.mockResolvedValue(null);
   mockKickban.mockResolvedValue(null);
@@ -87,8 +94,29 @@ describe("banMenuItems", () => {
       channel: "#grappa",
       nick: "Guest123",
       reason: "",
+      form: "host",
       label: "Kickban",
     });
+  });
+
+  it("Kickban bans in the subject's ban type, read when the row is clicked", async () => {
+    const items = banMenuItems(target);
+    mockBanMaskForm = "user_host";
+    byLabel(items, "Kickban").action();
+    await flush();
+    expect(mockKickban).toHaveBeenCalledWith(expect.objectContaining({ form: "user_host" }));
+  });
+
+  it("Ban nick and Ban host keep their fixed form whatever the ban type says", async () => {
+    mockBanMaskForm = "user_host";
+    const items = banMenuItems(target);
+    byLabel(items, "Ban nick").action();
+    byLabel(items, "Ban host").action();
+    await flush();
+    expect(mockBan).toHaveBeenCalledWith(7, "#grappa", "Guest123!*@*");
+    expect(mockBanHost).toHaveBeenCalledWith(
+      expect.objectContaining({ knownHost: "flapper.example.net", label: "Ban host" }),
+    );
   });
 
   it("Kickban finds the nick across a case difference (the fold, not ===)", () => {

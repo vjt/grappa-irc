@@ -89,6 +89,7 @@ describe("kickban", () => {
       channel: "#grappa",
       nick: "Guest123",
       reason: "",
+      form: "host",
       label: "Kickban",
     });
     expect(err).toBeNull();
@@ -108,6 +109,7 @@ describe("kickban", () => {
       channel: "#grappa",
       nick: "alice",
       reason: "",
+      form: "host",
       label: "Kickban",
     });
     expect(mockBan).not.toHaveBeenCalled();
@@ -125,6 +127,7 @@ describe("kickban", () => {
       channel: "#grappa",
       nick: "alice",
       reason: "",
+      form: "host",
       label: "Kickban",
     });
     expect(err).toMatch(/^Kickban: ban failed — /);
@@ -137,8 +140,59 @@ describe("kickban", () => {
       channel: "#grappa",
       nick: "alice",
       reason: "",
+      form: "host",
       label: "Kickban",
     });
     expect(err).toMatch(/^Kickban: kick failed — /);
+  });
+
+  // issue 2347 — the subject's default ban type. The form is a PARAMETER, not
+  // a read of the cached setting inside the verb: the callers own where the
+  // value comes from, and this file can pin every form without a store.
+  it("form nick bans nick!*@* without asking the server, then kicks", async () => {
+    const err = await kickban({
+      networkId: 7,
+      channel: "#grappa",
+      nick: "alice",
+      reason: "",
+      form: "nick",
+      label: "Kickban",
+    });
+    expect(err).toBeNull();
+    expect(mockResolve).not.toHaveBeenCalled();
+    expect(mockBan).toHaveBeenCalledWith(7, "#grappa", "alice!*@*");
+    expect(mockKick).toHaveBeenCalledWith(7, "#grappa", "alice", "");
+  });
+
+  it("form user_host bans *!user@host with the RESOLVED ident, then kicks", async () => {
+    mockResolve.mockResolvedValue({ user: "~ident", host: "flapper.example.net" });
+    const err = await kickban({
+      networkId: 7,
+      channel: "#grappa",
+      nick: "alice",
+      reason: "",
+      form: "user_host",
+      label: "/kb",
+    });
+    expect(err).toBeNull();
+    expect(mockBan).toHaveBeenCalledWith(7, "#grappa", "*!~ident@flapper.example.net");
+    expect(mockKick).toHaveBeenCalledWith(7, "#grappa", "alice", "");
+  });
+
+  it("form user_host on an unknown userhost is fail-closed: no ban, kick anyway", async () => {
+    mockResolve.mockResolvedValue(null);
+    const err = await kickban({
+      networkId: 7,
+      channel: "#grappa",
+      nick: "alice",
+      reason: "",
+      form: "user_host",
+      label: "/kb",
+    });
+    expect(mockBan).not.toHaveBeenCalled();
+    expect(mockKick).toHaveBeenCalledWith(7, "#grappa", "alice", "");
+    expect(err).toBe(
+      "/kb: user@host unknown for alice — ban not set (run /whois alice first); kicking anyway",
+    );
   });
 });
