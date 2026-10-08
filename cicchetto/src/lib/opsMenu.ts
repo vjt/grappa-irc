@@ -1,5 +1,6 @@
 import type { ContextMenuAction } from "../ContextMenu";
 import { buildBanMask } from "./banMask";
+import { banMaskFormValue } from "./banMaskPref";
 import { casemappingForSlug } from "./casemapping";
 import { channelKey } from "./channelKey";
 import { friendlyError } from "./friendlyError";
@@ -57,7 +58,8 @@ export type BanMenuTarget = {
 
 /**
  * Ban nick / Ban host / Kickban. Gated on own `@`, like every op row on the
- * nick menu (disabled, never hidden). Kickban additionally needs the nick to
+ * nick menu (disabled, never hidden). Ban nick and Ban host are fixed forms;
+ * Kickban bans in the subject's ban type (issue 2347). Kickban additionally needs the nick to
  * be IN the channel: a quit row's nick is gone, and there is no one to kick.
  * Reads the members store, so call it inside an accessor to stay reactive.
  */
@@ -106,6 +108,9 @@ export function banMenuItems(t: BanMenuTarget): ContextMenuAction[] {
             channel: t.channelName,
             nick: t.nick,
             reason: "",
+            // Read at the click, not at menu build: a change made in settings
+            // while the menu is open still applies (issue 2347).
+            form: banMaskFormValue(),
             label: "Kickban",
           }),
         ),

@@ -1,4 +1,4 @@
-import { buildBanMask } from "./banMask";
+import { type BanMaskForm, buildBanMask, type UserhostParts } from "./banMask";
 import { friendlyError } from "./friendlyError";
 import { pushChannelBan, pushChannelKick, resolveUserhost } from "./socket";
 
@@ -16,20 +16,27 @@ import { pushChannelBan, pushChannelKick, resolveUserhost } from "./socket";
 // and never throw: the composer renders the string inline, the menus toast
 // it, and neither has to remember a try/catch.
 
-type BanOutcome = { kind: "banned" } | { kind: "host_unknown" } | { kind: "failed"; e: unknown };
+type BanOutcome = { kind: "banned" } | { kind: "parts_unknown" } | { kind: "failed"; e: unknown };
 
-async function banByHost(
+async function banByForm(
   networkId: number,
   channel: string,
   nick: string,
+  form: BanMaskForm,
   knownHost: string | null,
 ): Promise<BanOutcome> {
   try {
-    let host = knownHost;
-    if (host === null) host = (await resolveUserhost(networkId, nick))?.host ?? null;
-    // Fail-closed (#386, vjt decision #1): no host, no mask — never a wider guess.
-    const mask = buildBanMask("host", { nick, user: null, host });
-    if (mask === null) return { kind: "host_unknown" };
+    let parts: UserhostParts = { nick, user: null, host: knownHost };
+    // A nick ban needs nothing but the nick, so it asks the server nothing. A
+    // known host is `banHost`'s, which only ever builds the host form.
+    if (form !== "nick" && knownHost === null) {
+      const uh = await resolveUserhost(networkId, nick);
+      parts = { nick, user: uh?.user ?? null, host: uh?.host ?? null };
+    }
+    // Fail-closed (#386, vjt decision #1): a missing component, no mask —
+    // never a wider guess.
+    const mask = buildBanMask(form, parts);
+    if (mask === null) return { kind: "parts_unknown" };
     await pushChannelBan(networkId, channel, mask);
     return { kind: "banned" };
   } catch (e) {
@@ -37,8 +44,11 @@ async function banByHost(
   }
 }
 
-function hostUnknown(label: string, nick: string): string {
-  return `${label}: host unknown for ${nick} — ban not set (run /whois ${nick} first)`;
+// Names the component the form needed, so the operator knows what /whois
+// would fill in. Only the host and user_host forms can miss.
+function partsUnknown(label: string, nick: string, form: BanMaskForm): string {
+  const what = form === "user_host" ? "user@host" : "host";
+  return `${label}: ${what} unknown for ${nick} — ban not set (run /whois ${nick} first)`;
 }
 
 export type BanHostParams = {
@@ -51,12 +61,12 @@ export type BanHostParams = {
 
 /** Ban `*!*@host`. Returns the error to show, or `null` once the ban is sent. */
 export async function banHost(p: BanHostParams): Promise<string | null> {
-  const outcome = await banByHost(p.networkId, p.channel, p.nick, p.knownHost);
+  const outcome = await banByForm(p.networkId, p.channel, p.nick, "host", p.knownHost);
   switch (outcome.kind) {
     case "banned":
       return null;
-    case "host_unknown":
-      return hostUnknown(p.label, p.nick);
+    case "parts_unknown":
+      return partsUnknown(p.label, p.nick, "host");
     case "failed":
       return `${p.label}: ban failed — ${friendlyError(outcome.e)}`;
   }
@@ -67,6 +77,9 @@ export type KickbanParams = {
   channel: string;
   nick: string;
   reason: string;
+  /** The subject's ban type (issue 2347) — `banMaskFormValue()` at the call
+   *  site, never read in here, so the verb stays a function of its inputs. */
+  form: BanMaskForm;
   label: string;
 };
 
@@ -74,15 +87,18 @@ export type KickbanParams = {
  * #386 — kickban. Takes NO known host, unlike `banHost`: the kick lands on
  * whoever holds the nick NOW, so the ban must be on that person's host too.
  * A row's host names whoever held the nick when the row was written — on a
- * recycled Guest nick, a different person (issue 2346 review). Ban FIRST (`*!*@host`, no rejoin window), THEN kick — two
- * frames, attempt BOTH regardless (vjt decision #4). An unknown host sends no
- * ban, but the kick still fires (getting the person out is the intent) and the
- * ban error is what comes back. Both failing → the ban error, the primary one.
+ * recycled Guest nick, a different person (issue 2346 review). Ban FIRST
+ * (no rejoin window), in the subject's chosen form (issue 2347), THEN kick —
+ * two frames, attempt BOTH regardless (vjt decision #4). A form whose
+ * component is unknown sends no ban, but the kick still fires (getting the
+ * person out is the intent) and the ban error is what comes back. Both
+ * failing → the ban error, the primary one.
  */
 export async function kickban(p: KickbanParams): Promise<string | null> {
-  const outcome = await banByHost(p.networkId, p.channel, p.nick, null);
+  const outcome = await banByForm(p.networkId, p.channel, p.nick, p.form, null);
   let banError: string | null = null;
-  if (outcome.kind === "host_unknown") banError = `${hostUnknown(p.label, p.nick)}; kicking anyway`;
+  if (outcome.kind === "parts_unknown")
+    banError = `${partsUnknown(p.label, p.nick, p.form)}; kicking anyway`;
   if (outcome.kind === "failed") banError = `${p.label}: ban failed — ${friendlyError(outcome.e)}`;
 
   try {

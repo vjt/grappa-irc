@@ -15,6 +15,7 @@
 // inline.
 
 import { ApiError, readError } from "./api";
+import { type BanMaskForm, isBanMaskForm } from "./banMask";
 import type { DateFormatKey } from "./dateFormat";
 import { DEFAULT_NOTIFICATION_SOUND, type NotificationSound } from "./notificationSound";
 import type { PresencePref } from "./presenceFilter";
@@ -501,6 +502,45 @@ export async function putUploadConfirmEnabled(token: string, enabled: boolean): 
   if (!res.ok) throw await readError(res);
   const body = (await res.json()) as UploadConfirmEnabledResponse;
   return body.upload_confirm_enabled;
+}
+
+// ---------------------------------------------------------------------------
+// ban_mask_form — issue 2347. The ban type `/kb` and the Kickban menu entry
+// send: "nick" (`nick!*@*`), "host" (`*!*@host`, the default and what `/kb`
+// always sent) or "user_host" (`*!user@host`). The explicit Ban nick / Ban
+// host rows keep their own form and never read this.
+//
+// A value off the closed set — a future server's new form — reads as "host":
+// a form this bundle cannot build must not become some other ban.
+// ---------------------------------------------------------------------------
+
+export type BanMaskFormResponse = {
+  ban_mask_form: string;
+};
+
+export async function getBanMaskForm(token: string): Promise<BanMaskForm> {
+  const res = await fetch("/me/settings/ban-mask-form", {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  // ISOLATED from the dead-token handler, like `getUploadConfirmEnabled`
+  // above: a boot read, and a transient 401 must not log the session out.
+  if (!res.ok) throw await readError(res, false);
+  const body = (await res.json()) as BanMaskFormResponse;
+  return isBanMaskForm(body.ban_mask_form) ? body.ban_mask_form : "host";
+}
+
+export async function putBanMaskForm(token: string, form: BanMaskForm): Promise<BanMaskForm> {
+  const res = await fetch("/me/settings/ban-mask-form", {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ ban_mask_form: form }),
+  });
+  if (!res.ok) throw await readError(res);
+  const body = (await res.json()) as BanMaskFormResponse;
+  return isBanMaskForm(body.ban_mask_form) ? body.ban_mask_form : "host";
 }
 
 // ---------------------------------------------------------------------------

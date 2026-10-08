@@ -1,3 +1,4 @@
+import { banMaskFormValue } from "../banMaskPref";
 import { kickban } from "../kickban";
 import {
   pushChannelBan,
@@ -74,10 +75,11 @@ export const banCommand: CommandHandler<"ban"> = async (cmd, ctx) => {
 };
 
 /**
- * #386 — kickban: ban `*!*@host` first, then kick, both attempted, fail-closed
- * on an unknown host. The verb is `lib/kickban` (issue 2346), shared with the
- * nick and presence-row menus; `/kb` has no row to read a host off, so it
- * always resolves.
+ * #386 — kickban: ban first, in the subject's ban type (issue 2347, default
+ * `*!*@host`), then kick, both attempted, fail-closed on an unknown
+ * component. The verb is `lib/kickban` (issue 2346), shared with the nick and
+ * presence-row menus; `/kb` has no row to read a host off, so it always
+ * resolves.
  */
 export const kbCommand: CommandHandler<"kb"> = async (cmd, ctx) => {
   const chanOrErr = ctx.requireChannel("kb");
@@ -89,6 +91,7 @@ export const kbCommand: CommandHandler<"kb"> = async (cmd, ctx) => {
     channel: chanOrErr,
     nick: cmd.nick,
     reason: cmd.reason,
+    form: banMaskFormValue(),
     label: "/kb",
   });
   return error === null ? { ok: true } : { error };

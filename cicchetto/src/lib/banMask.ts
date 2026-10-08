@@ -18,11 +18,20 @@
 //
 // FAIL-CLOSED (vjt decision #1): when a form needs a component that is
 // unknown (host or user is null), return `null` — DO NOT guess a wider mask.
-// `/kb`'s default form is "host"; a null there surfaces the failure to the
-// operator ("run /whois first") rather than banning something wider than
-// intended.
+// `/kb`'s form is the subject's ban-type setting (issue 2347, default "host");
+// a null there surfaces the failure to the operator ("run /whois first")
+// rather than banning something wider than intended.
 
-export type BanMaskForm = "nick" | "host" | "user_host";
+// The closed set, spelled once. issue 2347 stores the subject's default form
+// server-side (`GET`/`PUT /me/settings/ban-mask-form`), and a value read off
+// the wire is narrowed against this list before anything builds a mask.
+export const BAN_MASK_FORMS = ["nick", "host", "user_host"] as const;
+
+export type BanMaskForm = (typeof BAN_MASK_FORMS)[number];
+
+export function isBanMaskForm(v: unknown): v is BanMaskForm {
+  return typeof v === "string" && (BAN_MASK_FORMS as readonly string[]).includes(v);
+}
 
 export type UserhostParts = {
   nick: string;

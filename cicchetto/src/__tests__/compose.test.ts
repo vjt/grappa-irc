@@ -4624,6 +4624,38 @@ describe("compose submit — channel ops verbs", () => {
     }
   });
 
+  // issue 2347 — `/kb` bans in the subject's ban type. The type is loaded the
+  // production way (REST read into the cache), not poked into it.
+  it("/kb <nick> with a stored nick ban type → bans nick!*@* with no userhost lookup", async () => {
+    localStorage.setItem("grappa-token", "tok");
+    const socket = await import("../lib/socket");
+    const compose = await import("../lib/compose");
+    const pref = await import("../lib/banMaskPref");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ ban_mask_form: "nick" }), { status: 200 }),
+      ),
+    );
+    try {
+      await pref.loadBanMaskForm("tok");
+      expect(pref.banMaskFormValue()).toBe("nick");
+      vi.mocked(socket.pushChannelBan).mockResolvedValue(undefined);
+      vi.mocked(socket.pushChannelKick).mockResolvedValue(undefined);
+      const k = channelKey("freenode", "#a");
+      compose.setDraft(k, "/kb alice");
+      const result = await compose.submit(k, "freenode", "#a");
+
+      expect(socket.resolveUserhost).not.toHaveBeenCalled();
+      expect(socket.pushChannelBan).toHaveBeenCalledWith(1, "#a", "alice!*@*");
+      expect(socket.pushChannelKick).toHaveBeenCalledWith(1, "#a", "alice", "");
+      expect(result).toEqual({ ok: true });
+    } finally {
+      vi.unstubAllGlobals();
+      pref.resetBanMaskFormForTests();
+    }
+  });
+
   it("/kb missing nick → error, no ban, no kick", async () => {
     localStorage.setItem("grappa-token", "tok");
     const socket = await import("../lib/socket");
