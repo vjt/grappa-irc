@@ -35,6 +35,8 @@ export type UserhostParts = {
  * Returns the mask string, or `null` when the chosen form needs a component
  * that is unknown (fail-closed — never a wider guess).
  */
+export function buildBanMask(form: "nick", parts: UserhostParts): string;
+export function buildBanMask(form: BanMaskForm, parts: UserhostParts): string | null;
 export function buildBanMask(form: BanMaskForm, parts: UserhostParts): string | null {
   switch (form) {
     case "nick":

@@ -76,7 +76,10 @@ describe("banMenuItems", () => {
     });
   });
 
-  it("Kickban runs the shared ban-then-kick verb with the row's host", async () => {
+  // issue 2346 review — a row's host names whoever held the nick when the row
+  // was written; on a recycled Guest nick that is someone else. Kickban kicks
+  // the CURRENT holder, so it must not ban the row's host.
+  it("Kickban runs the shared ban-then-kick verb WITHOUT the row's host", async () => {
     byLabel(banMenuItems(target), "Kickban").action();
     await flush();
     expect(mockKickban).toHaveBeenCalledWith({
@@ -84,9 +87,13 @@ describe("banMenuItems", () => {
       channel: "#grappa",
       nick: "Guest123",
       reason: "",
-      knownHost: "flapper.example.net",
       label: "Kickban",
     });
+  });
+
+  it("Kickban finds the nick across a case difference (the fold, not ===)", () => {
+    // Seeded `guest123` against target `Guest123`: enabled only via nickEquals.
+    expect(byLabel(banMenuItems(target), "Kickban").enabled).toBe(true);
   });
 
   it("without @ every row is disabled but still there", () => {

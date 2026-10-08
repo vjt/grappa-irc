@@ -226,13 +226,14 @@ describe("UserContextMenu", () => {
       expect(mockPushChannelBan).toHaveBeenCalledWith(42, "#grappa", "*!*@row.example.net");
     });
 
-    it("Kickban bans the host FIRST, then kicks", async () => {
+    it("Kickban bans the CURRENT holder's host FIRST, then kicks — never the row's", async () => {
+      mockResolveUserhost.mockResolvedValue({ user: "ident", host: "now.example.net" });
       render(() => (
         <UserContextMenu {...baseProps} ownModes={["@"]} targetHost="row.example.net" />
       ));
       pressAndClick(screen.getByRole("button", { name: /^kickban$/i }));
       await flush();
-      expect(mockPushChannelBan).toHaveBeenCalledWith(42, "#grappa", "*!*@row.example.net");
+      expect(mockPushChannelBan).toHaveBeenCalledWith(42, "#grappa", "*!*@now.example.net");
       expect(mockPushChannelKick).toHaveBeenCalledWith(42, "#grappa", "alice", "");
       const [banOrder] = mockPushChannelBan.mock.invocationCallOrder;
       const [kickOrder] = mockPushChannelKick.mock.invocationCallOrder;

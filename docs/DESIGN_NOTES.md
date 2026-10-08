@@ -815,8 +815,12 @@ addition is `knownHost`: a join/part/quit row already carries the sender's
 host in `meta.sender_host` (the "not measured" question on the issue — it
 does, and the row has rendered it as `[user@host]` since the presence-meta
 work), and for a QUIT that is the only host there is. A known host is used
-verbatim; `null` falls back to `/kb`'s on-demand `resolveUserhost`. The
-three rows themselves come from ONE builder, `lib/opsMenu.ts`
+verbatim by **Ban host**; `null` falls back to `/kb`'s on-demand
+`resolveUserhost`. **Kickban takes no known host and always resolves**: it
+kicks whoever holds the nick NOW, and a row's host names whoever held it when
+the row was written — on a recycled Guest nick, a different person, so
+row-host-plus-kick would ban one person and kick another (caught in review).
+The three rows themselves come from ONE builder, `lib/opsMenu.ts`
 `banMenuItems`, used by the nick menu and by the message menu on a presence
 row, so the two doors cannot disagree on a mask, a label or a gate.
 
@@ -841,7 +845,11 @@ open the menu — one door, so the menu cannot differ by opener, and the
 members pane and the scrollback only had to bind it. It stands down if the
 platform sends its own `contextmenu` mid-hold (no double open on Android),
 and it swallows the release, without which the synthesized click on the nick
-opens a query window and closes the menu. It lives beside
+opens a query window and closes the menu. That shield is pinned only as
+`defaultPrevented` in the unit test: the e2e's in-page TouchEvents are
+untrusted and Chromium never synthesizes a click from them, so no e2e
+assertion there could fail — whether WebKit honours it is the issue 1956
+question, still open. It lives beside
 `bindMessageGestures` rather than inside it: that binder excludes inline
 controls (the nick among them) precisely so a hold on a nick never opens the
 MESSAGE menu, and that excluded space is exactly what this one occupies.

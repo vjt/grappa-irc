@@ -89,7 +89,6 @@ export const kbCommand: CommandHandler<"kb"> = async (cmd, ctx) => {
     channel: chanOrErr,
     nick: cmd.nick,
     reason: cmd.reason,
-    knownHost: null,
     label: "/kb",
   });
   return error === null ? { ok: true } : { error };
