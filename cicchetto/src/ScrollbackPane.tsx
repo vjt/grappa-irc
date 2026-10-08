@@ -50,6 +50,7 @@ import { closeMessageMenu, messageMenu, openMessageMenu } from "./lib/messageMen
 import { networkIdBySlug, networks, user } from "./lib/networks";
 import { snapshotSenderPrefix } from "./lib/nickColor";
 import { nickEquals } from "./lib/nickEquals";
+import { bindNickLongPress } from "./lib/nickLongPress";
 import type { BanMenuTarget } from "./lib/opsMenu";
 import { overlayCount } from "./lib/overlayScrollLock";
 import {
@@ -2496,6 +2497,10 @@ const ScrollbackPane: Component<Props> = (props) => {
       });
       onCleanup(disposeGestures);
       onCleanup(bindMessageContextMenu(listRef, { onContextMenu: openMenuForRow }));
+      // issue 2346 — and the hold on a NICK, which the message gestures leave
+      // alone: it delivers the nick's own `contextmenu`, so the nick menu opens
+      // on iOS the way a right-click opens it everywhere else.
+      onCleanup(bindNickLongPress(listRef, ".nick-clickable"));
     }
     // A menu left open over a row this pane is about to destroy would float
     // above the next channel, still holding a detached element.

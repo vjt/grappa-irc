@@ -1,4 +1,4 @@
-import { type Component, createMemo, createSignal, For, Show } from "solid-js";
+import { type Component, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { ownNickForNetwork } from "./lib/api";
 import { sigilRankForSlug } from "./lib/casemapping";
 import { channelKey } from "./lib/channelKey";
@@ -8,6 +8,7 @@ import { memberSigil } from "./lib/memberSigil";
 import { type MemberEntry, type MemberGender, membersByChannel, sortMembers } from "./lib/members";
 import { networkBySlug, networks, user } from "./lib/networks";
 import { nickEquals } from "./lib/nickEquals";
+import { bindNickLongPress } from "./lib/nickLongPress";
 import { canonicalQueryNick, openQueryWindowState } from "./lib/queryWindows";
 import { setSelectedChannel } from "./lib/selection";
 import { windowStateByChannel } from "./lib/windowState";
@@ -202,8 +203,15 @@ const MembersPane: Component<Props> = (props) => {
     setMenuFor(() => null);
   };
 
+  // issue 2346 — a hold on a member opens the same menu a right-click does,
+  // for the touch devices that send no `contextmenu` of their own (iOS).
+  let paneRef: HTMLDivElement | undefined;
+  onMount(() => {
+    if (paneRef) onCleanup(bindNickLongPress(paneRef, ".member-name"));
+  });
+
   return (
-    <div class="members-pane">
+    <div class="members-pane" ref={paneRef}>
       <h3>members ({list().length})</h3>
       <Show when={state() === "joined"} fallback={<p class="muted">not joined</p>}>
         <Show when={list().length > 0} fallback={<p class="muted">loading…</p>}>
