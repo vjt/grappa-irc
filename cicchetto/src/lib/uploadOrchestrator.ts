@@ -105,10 +105,18 @@ const inflight = new Map<ChannelKey, ActiveUpload>();
 // retryUpload has the file + slug + channel to re-dispatch with.
 // Carries the batch's `ttlSeconds` too (#2094): a retry re-sends the file the
 // operator already answered for, so it must re-send it on the terms they
-// chose — re-reading the preference here would silently change them.
+// chose — re-reading the preference here would silently change them. The
+// batch's `videoProcessing` answer rides along for the same reason (issue
+// 2343).
 const lastAttempt = new Map<
   ChannelKey,
-  { file: File; networkSlug: string; channelName: string; ttlSeconds: number | null }
+  {
+    file: File;
+    networkSlug: string;
+    channelName: string;
+    ttlSeconds: number | null;
+    videoProcessing: boolean | null;
+  }
 >();
 // #1883 (ordering fix) — the batch waiting behind the privacy notice, as a
 // CONTINUATION rather than a staged file.
@@ -134,11 +142,15 @@ let pendingTrigger: (() => void) | null = null;
 // stored preference at dispatch exactly as it did before this field existed.
 // Resolving it here rather than at dispatch would freeze a host token chosen
 // against whichever host was active when the operator dropped the file.
+// issue 2343 — `videoProcessing` is the batch's other answer, carried the same
+// way and with the same `null`: no dialog, so the device preference decides
+// at dispatch exactly as it did before the dialog could ask.
 type QueuedUpload = {
   file: File;
   networkSlug: string;
   channelName: string;
   ttlSeconds: number | null;
+  videoProcessing: boolean | null;
 };
 const queue = new Map<ChannelKey, QueuedUpload[]>();
 
@@ -446,9 +458,21 @@ function unsupportedTypeMessage(host: UploadHost): string {
 //
 // The label comes from `videoProcessing.ts`, never retyped here — the whole
 // value of a pointer is that it points at something findable under that name.
-function overCapRecourse(category: UploadCategory): string {
-  if (category !== "video" || getVideoProcessingEnabled()) return "";
-  return ` Turn on "${VIDEO_PROCESSING_LABEL}" in Settings to compress it first.`;
+//
+// issue 2343 — and it points at where the answer was GIVEN. With the confirm
+// on, the clip went up unshrunk because of the dialog's switch, not the
+// drawer's, and "turn it on in Settings" would be wrong advice to an operator
+// whose Settings already say ON. `answeredInDialog` is that distinction;
+// `processed` is the attempt's effective answer, whichever door gave it.
+function overCapRecourse(
+  category: UploadCategory,
+  processed: boolean,
+  answeredInDialog: boolean,
+): string {
+  if (category !== "video" || processed) return "";
+  return answeredInDialog
+    ? ` Tick "${VIDEO_PROCESSING_LABEL}" when sending to compress it first.`
+    : ` Turn on "${VIDEO_PROCESSING_LABEL}" in Settings to compress it first.`;
 }
 
 // Single category-dispatched pipeline (uploads cluster Task 5):
@@ -462,13 +486,19 @@ async function dispatchUpload(
   channelName: string,
   file: File,
   ttlSeconds: number | null,
+  videoProcessing: boolean | null,
 ): Promise<void> {
   const host = activeHost();
 
   // #49 root fix: lastAttempt is the user's LATEST selection, recorded
   // before any gate can reject — retry always retries what the error
   // box shows, and a new selection always replaces a rejected one.
-  lastAttempt.set(key, { file, networkSlug, channelName, ttlSeconds });
+  lastAttempt.set(key, { file, networkSlug, channelName, ttlSeconds, videoProcessing });
+
+  // issue 2343 — the batch's answer first, the device preference behind it.
+  // Resolved ONCE per attempt, here, because two places act on it (the
+  // transform below and the cap refusal's recourse) and must not disagree.
+  const processVideo = videoProcessing ?? getVideoProcessingEnabled();
 
   // #1256: gate on the TYPE. `file.type` may carry a charset the paste
   // path declares truthfully, and the host accept-lists are bare types.
@@ -503,7 +533,7 @@ async function dispatchUpload(
   // the same policy gates); image/document pass through.
   let uploadFile = file;
   if (category === "video") {
-    const prepared = await prepareVideo(key, host, file, controller);
+    const prepared = await prepareVideo(key, host, file, controller, processVideo);
     if (prepared === null) return; // error entry already set, or cancelled
     uploadFile = prepared;
     inflight.set(key, { controller, file: uploadFile, networkSlug, channelName });
@@ -519,7 +549,11 @@ async function dispatchUpload(
       loaded: 0,
       total: 0,
       phase: "uploading",
-      error: `File is too large (max ${formatBytes(cap)}).${overCapRecourse(category)}`,
+      error: `File is too large (max ${formatBytes(cap)}).${overCapRecourse(
+        category,
+        processVideo,
+        videoProcessing !== null,
+      )}`,
     });
     return;
   }
@@ -681,6 +715,7 @@ async function prepareVideo(
   host: UploadHost,
   file: File,
   controller: AbortController,
+  processVideo: boolean,
 ): Promise<File | null> {
   // Read ONCE per attempt so no gate below can straddle an admin change
   // mid-upload and reject against a value the message never named. Read
@@ -695,7 +730,9 @@ async function prepareVideo(
   // would fetch it and then decline to use it. Above the setEntry for a
   // second reason: ComposeBox renders "processing video…" off
   // `phase === "transcoding"`, and with the switch off nothing is processing.
-  if (!getVideoProcessingEnabled()) {
+  // issue 2343 — the switch is now the attempt's resolved answer (the batch's,
+  // or the device preference when no dialog asked), passed in by the caller.
+  if (!processVideo) {
     return originalUnderPolicy(key, file, controller, maxDurationSeconds);
   }
 
@@ -887,6 +924,9 @@ export function triggerUploads(
         channelName,
         normalised.map((s) => s.file),
         null,
+        // issue 2343 — same reasoning: no dialog, no answer, and the device
+        // preference decides at dispatch as it always did.
+        null,
       );
       return;
     }
@@ -927,6 +967,14 @@ export function triggerUploads(
     const [batchTtlSeconds, setBatchTtlSeconds] = createSignal<number | null>(
       effectiveTtlSeconds(confirmHost),
     );
+    // issue 2343 — whether THIS batch's videos are shrunk first. Same posture
+    // as the TTL above, point for point: seeded from the device preference so
+    // the box opens showing what would have happened anyway, per request so a
+    // cancelled question takes its answer with it, and not written back — a
+    // tick given while looking at one batch is not a change to the device.
+    const [batchVideoProcessing, setBatchVideoProcessing] = createSignal(
+      getVideoProcessingEnabled(),
+    );
 
     requestConfirm({
       onDisplaced,
@@ -947,6 +995,7 @@ export function triggerUploads(
           channelName,
           staged().map((s) => s.file),
           batchTtlSeconds(),
+          batchVideoProcessing(),
         ),
       // No third door: there is no other route to "post this file here". Cancel
       // and Send are the whole question.
@@ -973,6 +1022,17 @@ export function triggerUploads(
               value: () => String(batchTtlSeconds()),
               onSelect: (value) => setBatchTtlSeconds(Number(value)),
             },
+      // issue 2343 — asked only while the batch holds a video: the switch does
+      // nothing to any other category, and a term that changes nothing is
+      // noise. Reactive on `staged`, so removing the last clip removes it. The
+      // category is the dispatch's own (`categoryOf` on the base type), so the
+      // dialog and the pipeline agree on what counts as a video.
+      toggle: {
+        label: VIDEO_PROCESSING_LABEL,
+        shown: () => staged().some((s) => categoryOf(baseMime(s.file.type)) === "video"),
+        checked: batchVideoProcessing,
+        onToggle: setBatchVideoProcessing,
+      },
       attachments: {
         items: (): ConfirmAttachment[] => staged().map((s) => s.attachment),
         onRemove: (id: string): void => {
@@ -998,6 +1058,7 @@ function enqueueUploads(
   channelName: string,
   files: File[],
   ttlSeconds: number | null,
+  videoProcessing: boolean | null,
 ): void {
   if (files.length === 0) return;
   const items: QueuedUpload[] = files.map((file) => ({
@@ -1005,6 +1066,7 @@ function enqueueUploads(
     networkSlug,
     channelName,
     ttlSeconds,
+    videoProcessing,
   }));
   const q = queue.get(key) ?? [];
   // A batch is "ongoing" only while something is genuinely processing — an
@@ -1064,7 +1126,14 @@ function pumpQueue(key: ChannelKey): void {
 // nothing reaches the queue un-acknowledged and asking again here would be a
 // second prompt for a question already answered.
 function startUpload(key: ChannelKey, item: QueuedUpload): void {
-  void dispatchUpload(key, item.networkSlug, item.channelName, item.file, item.ttlSeconds);
+  void dispatchUpload(
+    key,
+    item.networkSlug,
+    item.channelName,
+    item.file,
+    item.ttlSeconds,
+    item.videoProcessing,
+  );
 }
 
 export function acknowledgePrivacy(rememberChoice: boolean): void {
@@ -1132,6 +1201,7 @@ export function retryUpload(key: ChannelKey): void {
     networkSlug: ctx.networkSlug,
     channelName: ctx.channelName,
     ttlSeconds: ctx.ttlSeconds,
+    videoProcessing: ctx.videoProcessing,
   });
   queue.set(key, q);
   pumpQueue(key);
