@@ -1882,3 +1882,177 @@ describe("the per-batch TTL choice (#2094)", () => {
     expect(host.ttls).toEqual(["24h"]);
   });
 });
+
+// --------------------------------------------------------------------
+// The per-batch video-shrink switch — issue 2343
+//
+// The transcode switch lived only in Settings, so an operator who never
+// opened the drawer sent a 12 Mbps 1080p clip untouched without knowing the
+// switch existed. The confirm now asks it beside the TTL, for the batch the
+// operator is looking at: seeded from the device preference, carried per
+// item so a retry keeps it, and shown only when there is a video to shrink.
+// --------------------------------------------------------------------
+
+describe("the per-batch video-shrink switch (issue 2343)", () => {
+  const clip = (name = "clip.mp4", bytes = 16): File =>
+    new File([new Uint8Array(bytes)], name, { type: "video/mp4" });
+
+  beforeEach(async () => {
+    vi.mocked(userSettings.getUploadConfirmEnabled).mockResolvedValue(true);
+    await loadUploadConfirmEnabled("tok");
+    localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+    vi.mocked(activeHost).mockReturnValue(categoryHost());
+    vt.probeDuration.mockResolvedValue(30);
+  });
+
+  it("is offered, under the Settings name, when the batch holds a video", () => {
+    triggerUploads(key, slug, channel, [sampleImage(), clip()]);
+
+    const toggle = confirmRequest()?.toggle;
+    // The production constant, never retyped: the dialog and the drawer name
+    // one control, and the over-cap refusal points at it by that name.
+    expect(toggle?.label).toBe(VIDEO_PROCESSING_LABEL);
+    expect(toggle?.shown()).toBe(true);
+  });
+
+  it("is not shown for a batch with no video in it", () => {
+    triggerUploads(key, slug, channel, [sampleImage()]);
+    expect(confirmRequest()).not.toBeNull();
+    expect(confirmRequest()?.toggle?.shown() ?? false).toBe(false);
+  });
+
+  // Removing the last video row takes the reason for asking with it.
+  it("leaves when the last video row is removed", () => {
+    triggerUploads(key, slug, channel, [sampleImage(), clip()]);
+    const videoRow = confirmRequest()
+      ?.attachments?.items()
+      .find((a) => a.label === "clip.mp4");
+    expect(videoRow).toBeDefined();
+
+    confirmRequest()?.attachments?.onRemove(videoRow?.id ?? "");
+
+    expect(confirmRequest()?.toggle?.shown()).toBe(false);
+  });
+
+  it("is seeded from the device preference — OFF by default", () => {
+    triggerUploads(key, slug, channel, [clip()]);
+    expect(confirmRequest()?.toggle?.checked()).toBe(false);
+  });
+
+  it("is seeded from the device preference — ON when the device says so", () => {
+    setVideoProcessingEnabled(true);
+    triggerUploads(key, slug, channel, [clip()]);
+    expect(confirmRequest()?.toggle?.checked()).toBe(true);
+  });
+
+  it("ticked with the preference OFF — this batch is transcoded", async () => {
+    triggerUploads(key, slug, channel, [clip()]);
+    confirmRequest()?.toggle?.onToggle(true);
+    acceptConfirm();
+
+    await awaitTranscodeStart(1);
+  });
+
+  it("unticked with the preference ON — this batch goes up untouched", async () => {
+    setVideoProcessingEnabled(true);
+    const original = clip();
+    triggerUploads(key, slug, channel, [original]);
+    confirmRequest()?.toggle?.onToggle(false);
+    acceptConfirm();
+
+    // Referential: the host gets the very File the picker gave us.
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(1));
+    expect(pendingResolvers[0]?.file).toBe(original);
+    expect(vt.transcodes).toHaveLength(0);
+  });
+
+  it("applies the answer to every video in the batch", async () => {
+    triggerUploads(key, slug, channel, [clip("a.mp4"), clip("b.mp4")]);
+    confirmRequest()?.toggle?.onToggle(true);
+    acceptConfirm();
+
+    await awaitTranscodeStart(1);
+    vt.transcodes[0]?.resolve({ ok: clip("a.mp4") });
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(1));
+    pendingResolvers[0]?.resolve("https://h/a");
+
+    // The SECOND clip is the proof that the answer rode the queue rather than
+    // being read once at the first dispatch.
+    await awaitTranscodeStart(2);
+  });
+
+  // A retry re-sends the file the operator already answered for, on the terms
+  // they chose — re-reading the preference would silently change them.
+  it("a retry keeps the batch's answer even if the preference changed since", async () => {
+    triggerUploads(key, slug, channel, [clip()]);
+    confirmRequest()?.toggle?.onToggle(true);
+    acceptConfirm();
+
+    await awaitTranscodeStart(1);
+    vt.transcodes[0]?.resolve({ ok: clip() });
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(1));
+    pendingResolvers[0]?.reject({ kind: "network" });
+    await vi.waitFor(() => expect(uploadState(key)?.error).toBeTruthy());
+
+    setVideoProcessingEnabled(false);
+    retryUpload(key);
+
+    await awaitTranscodeStart(2);
+  });
+
+  it("a cancelled batch takes its answer with it", () => {
+    triggerUploads(key, slug, channel, [clip()]);
+    confirmRequest()?.toggle?.onToggle(true);
+    dismissConfirm();
+
+    triggerUploads(key, slug, channel, [clip()]);
+    expect(confirmRequest()?.toggle?.checked()).toBe(false);
+  });
+
+  // The dialog's answer is about THIS batch. Writing it back would turn a
+  // look at the files into a durable change to a device setting — the
+  // posture #2094 took for the TTL.
+  it("does not write the answer back to the device preference", () => {
+    triggerUploads(key, slug, channel, [clip()]);
+    confirmRequest()?.toggle?.onToggle(true);
+    acceptConfirm();
+
+    expect(localStorage.getItem(VIDEO_PROCESSING_STORAGE_KEY)).toBeNull();
+  });
+
+  // The refusal must point at a control that exists where the operator is.
+  // With the dialog on, the answer that sent the clip unshrunk was given IN
+  // the dialog, and "turn it on in Settings" would be wrong advice for an
+  // operator whose Settings already say ON.
+  it("an over-cap clip sent unshrunk from the dialog names the dialog's switch", async () => {
+    setVideoProcessingEnabled(true);
+    triggerUploads(key, slug, channel, [clip("big.mp4", 6 * 1024 * 1024)]);
+    confirmRequest()?.toggle?.onToggle(false);
+    acceptConfirm();
+
+    await vi.waitFor(() =>
+      expect(uploadState(key)?.error).toBe(
+        `File is too large (max 5 MB). Tick "${VIDEO_PROCESSING_LABEL}" when sending to compress it first.`,
+      ),
+    );
+  });
+});
+
+describe("the video-shrink switch with the confirm OFF (issue 2343)", () => {
+  beforeEach(() => {
+    localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+    vi.mocked(activeHost).mockReturnValue(categoryHost());
+    vt.probeDuration.mockResolvedValue(30);
+  });
+
+  // No dialog, no per-batch answer: the Settings value applies, as before.
+  it("the device preference still decides", async () => {
+    setVideoProcessingEnabled(true);
+    triggerUploads(key, slug, channel, [
+      new File([new Uint8Array(16)], "clip.mp4", { type: "video/mp4" }),
+    ]);
+
+    expect(confirmRequest()).toBeNull();
+    await awaitTranscodeStart(1);
+  });
+});
