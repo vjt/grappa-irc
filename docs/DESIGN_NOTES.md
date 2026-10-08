@@ -794,3 +794,64 @@ suffix stays the line's last token either way.
 **Apply:** the posted body is composed in cic, not the server, and nothing
 server-side parses it. A consumer that extracts the upload URL from a body
 must stop at the first space: the link is followed by ` (<n>h)`.
+<!-- entry #2346 -->
+
+---
+
+## 2026-10-08 — #2346: Ban nick / Ban host / Kickban on both menus, and a hold on a nick opens the nick menu
+
+A flapper QUIT/JOINs #grappa every ~15 minutes under a fresh Guest nick, so
+the ban has to go on the host, and from a phone no ban was reachable at all:
+the nick menu (`UserContextMenu`) opened only on `contextmenu`, which iOS
+never sends for a hold, and its one "Ban" row banned `nick!*@*` — the mask a
+new nick walks straight past. vjt's ruling on the issue: separate rows
+**Ban nick** (`nick!*@*`), **Ban host** (`*!*@host`, fail-closed) and
+**Kickban** (host mask, ban-then-kick); the bare "Ban" goes away; on both the
+nick menu and the join/part/quit rows.
+
+**One verb, three doors.** `/kb`'s body moved to `lib/kickban.ts`
+(`banHost` / `kickban`), and `kbCommand` is now a caller of it. The one
+addition is `knownHost`: a join/part/quit row already carries the sender's
+host in `meta.sender_host` (the "not measured" question on the issue — it
+does, and the row has rendered it as `[user@host]` since the presence-meta
+work), and for a QUIT that is the only host there is. A known host is used
+verbatim; `null` falls back to `/kb`'s on-demand `resolveUserhost`. The
+three rows themselves come from ONE builder, `lib/opsMenu.ts`
+`banMenuItems`, used by the nick menu and by the message menu on a presence
+row, so the two doors cannot disagree on a mask, a label or a gate.
+
+**Kickban is gated on presence, not on row kind.** Disabled (never hidden)
+unless the nick is in the channel's members store: a quit row's nick is
+gone, but a flapper who has since rejoined is present again, and a gate on
+"is this a quit row" would get that case wrong. Ban nick / Ban host stay
+enabled for an op either way.
+
+**Kickban with an unknown host behaves like `/kb`**: no ban, the kick still
+fires, the ban error surfaces. Menu failures — that, a Ban host miss, or any
+rejected op push — go to a toast (`opsMenuToasts`, on the one toast surface),
+because the menu has closed by the time the push settles. Before this, a
+rejected Op/Kick from the nick menu was an unhandled rejection and nothing
+else; all the op rows now go through `runOpsVerb`.
+
+**The long-press delivers the nick's own `contextmenu`, it opens nothing
+itself** (`lib/nickLongPress.ts`). Android already turns a hold into a
+`contextmenu`; iOS does not, so after a stationary hold the binder dispatches
+that event on the nick and the handlers that already answer a right-click
+open the menu — one door, so the menu cannot differ by opener, and the
+members pane and the scrollback only had to bind it. It stands down if the
+platform sends its own `contextmenu` mid-hold (no double open on Android),
+and it swallows the release, without which the synthesized click on the nick
+opens a query window and closes the menu. It lives beside
+`bindMessageGestures` rather than inside it: that binder excludes inline
+controls (the nick among them) precisely so a hold on a nick never opens the
+MESSAGE menu, and that excluded space is exactly what this one occupies.
+
+**Ban rows on the message menu appear on join/part/quit rows only**, in
+channel windows only. That is the issue's scope; a privmsg row's sender is a
+person too, and offering the rows there (host by lookup) is a one-line
+widening of `presenceBanTarget` if wanted.
+
+**Not device-verified.** The e2e drives Chromium with `hasTouch` and proves
+the wiring and the wire (the peer receives the MODE/KICK); that iOS sends no
+`contextmenu` for the hold and that the hold feels right is on-device
+dogfood.
