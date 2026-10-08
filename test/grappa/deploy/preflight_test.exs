@@ -1211,6 +1211,11 @@ defmodule Grappa.Deploy.PreflightTest do
     # default, no backfill — so it deploys HOT. Measured by the classifier
     # here, which is the point of the pin: the entry was added because this
     # test failed, not to make it pass.)
+    # (issue 2348's `20261008142332_create_channel_snapshots` is a plain
+    # `create table` whose subject XOR is a COLUMN-level `check:` inside the
+    # block, not the raw `execute` `create_dcc_files` uses — which is what
+    # keeps it off the COLD list. Measured: this test went red listing it
+    # as the one extra HOT file before the entry was added.)
     @migrations_glob "priv/repo/migrations/*.exs"
     @expected_hot ~w(
       20260425000000_init
@@ -1254,6 +1259,7 @@ defmodule Grappa.Deploy.PreflightTest do
       20260828230305_add_profile_fields_to_network_credentials
       20260829145052_create_peer_avatars
       20260919140437_add_detached_at_to_network_credentials
+      20261008142332_create_channel_snapshots
     )
 
     test "every migration on disk classifies, and the HOT set is exactly the pinned one" do
