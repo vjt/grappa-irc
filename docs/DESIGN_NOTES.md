@@ -863,3 +863,39 @@ widening of `presenceBanTarget` if wanted.
 the wiring and the wire (the peer receives the MODE/KICK); that iOS sends no
 `contextmenu` for the hold and that the hold feels right is on-device
 dogfood.
+<!-- entry #2323 -->
+
+---
+
+## 2026-10-08 — issue 2323: a kicked or failed window comes back after a reload
+
+**Problem.** vjt was kicked from #grappa and the channel disappeared from his
+desktop sidebar. The intended behaviour was already written down: a `kicked`
+window stays as a greyed row until its × or a rejoin.
+
+**Gap found (by reading the code; not reproduced against prod).** A KICK, like
+a refused JOIN, takes the channel out of the live keyset. Unless autojoin lists
+it, `GET /channels` stops listing it too, so the row exists only in cic's
+in-memory `windowStateByChannel`. The live `kicked` / `join_failed` event goes
+out on the user topic once. After a reload (or a backgrounded PWA) cic
+subscribes per channel only to channels it already knows about, so the
+per-channel snapshot (`WindowState.to_wire/3`) that would restore the state
+never runs. The server still holds the window as `:kicked` and nothing on
+screen shows it. This is #482's gap, on the two terminal not-joined states.
+
+**Fix.** `WindowState.rejected_windows/2` lists every `:kicked` and `:failed`
+window. It builds each payload through `to_wire/3`, so it is exactly the
+expression the live broadcast and the per-channel snapshot use (CP15 B7). It
+rides the existing `Session.session_snapshot/2` call, so the login hot path
+gets no extra round-trip (#482's measured cost), and `push_session_snapshot/2`
+pushes the payloads on the user topic. Unlike `:invited` these kinds are legal
+on both topics, so a separate twin projection is unnecessary. The wire shape
+does not change: no new kinds, no new fields.
+
+`:failed` is included on purpose. It is the same hole for the same reason, and
+fixing only `:kicked` would leave a refused JOIN to evaporate on reload.
+
+**Not established.** Whether vjt's client reloaded between the kick and the
+report. The live path (kick → rejoin → kick) is pinned by its own e2e. If that
+e2e ever goes red, the vanishing has a second cause that this entry does not
+cover.
