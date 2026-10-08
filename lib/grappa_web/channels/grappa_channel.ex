@@ -1682,6 +1682,13 @@ defmodule GrappaWeb.GrappaChannel do
 
           Enum.each(snapshot.invited_windows, &push(socket, "event", &1))
 
+          # issue 2323 — the `:kicked` / `:failed` windows, same gap: the
+          # channel is gone from `GET /channels` unless autojoin lists it, so
+          # a client that reloads never subscribes per-channel to it and the
+          # per-channel snapshot that would carry the state never runs. The
+          # greyed row comes back only if the user topic says so.
+          Enum.each(snapshot.rejected_windows, &push(socket, "event", &1))
+
           # issue 2089 — the DCC consent banners, same treatment and same
           # reason as the invited windows above: the live `dcc_offer` is
           # broadcast once, PubSub does not replay, and a reload would

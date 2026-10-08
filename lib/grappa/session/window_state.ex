@@ -59,6 +59,12 @@ defmodule Grappa.Session.WindowState do
   (it resolves to `:joined` / `:failed` within the JOIN round-trip) and
   needs none. `:parked` (T32 placeholder) returns `:not_tracked` until the
   disconnect verbs land.
+
+  `:failed` and `:kicked` ARE served by `to_wire/3`, but that path only runs
+  for a channel the client already subscribes to — and after a reload it
+  subscribes to neither, since both states took the channel out of
+  `GET /channels`. So they ride the user topic too, via `rejected_windows/2`
+  (issue 2323), built on `to_wire/3` so the two paths cannot diverge.
   """
 
   alias Grappa.Session.Wire, as: SessionWire
@@ -491,5 +497,34 @@ defmodule Grappa.Session.WindowState do
       when is_binary(network_slug) do
     for {channel, :invited} <- states,
         do: SessionWire.window_invited(network_slug, channel, Map.fetch!(invited_by, channel))
+  end
+
+  @doc """
+  Returns the `kicked` / `join_failed` snapshot payloads for EVERY channel
+  currently in `:kicked` or `:failed` state — the windows the channel
+  REJECTED, and the second user-topic cold-WS-subscribe backfill source
+  (issue 2323).
+
+  Both states take the channel out of the live keyset, so unless it is in
+  autojoin `GET /channels` stops listing it, and the greyed row that keeps
+  it on screen (removed only by its × or a rejoin) rests on the client's
+  in-memory window state alone. The event that put it there is broadcast on
+  the user topic once; a client subscribing later — a reload, a
+  backgrounded PWA — never learns the row exists, because it only
+  subscribes per-channel to channels it already knows about, so
+  `to_wire/3`'s per-channel snapshot never gets a chance to run. This is
+  #482's gap on the two terminal not-joined states.
+
+  Built from `to_wire/3`, so each payload is the per-channel snapshot's —
+  and therefore the event-time broadcast's — exact expression (the CP15 B7
+  invariant). Unlike `:invited`, these kinds are legal on BOTH topics, which
+  is why the projection can be shared rather than given a twin.
+  """
+  @spec rejected_windows(t(), String.t()) :: [Grappa.Session.window_state_snapshot()]
+  def rejected_windows(%__MODULE__{states: states} = ws, network_slug) when is_binary(network_slug) do
+    for {channel, state} when state in [:failed, :kicked] <- states do
+      {:ok, payload} = to_wire(ws, network_slug, channel)
+      payload
+    end
   end
 end
