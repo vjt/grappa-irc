@@ -1049,7 +1049,26 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1, on the measurement above: every bundle
   # that knows the key tolerates its absence, and none ever read it.
-  @protocol_version 37
+  #
+  # ---------------------------------------------------------------------------
+  # 38 — issue 2347: the default ban type becomes a per-user setting
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `GET`/`PUT /me/settings/ban-mask-form`, carrying `ban_mask_form`
+  # (`"nick"` | `"host"` | `"user_host"`; absent key = `"host"`, the mask `/kb`
+  # always sent). REST only, no push kind: the client reads it when it composes
+  # a ban and nothing on the server acts on it — the v11 `upload_confirm_enabled`
+  # shape. Unlike v11, `wire_pin` DOES see this one: since #2037 the digest spans
+  # the `@spec`s the `GrappaWeb.*JSON` views export, and `ban_mask_form_response`
+  # is one. Bumped on the #1393d rule either way — reason (1) applies literally,
+  # a bundle that reads the setting gets a 404 from a server predating it.
+  #
+  # Checked for a collision before claiming 38: the one open PR that edits this
+  # file (#2102) carries 21, far behind.
+  #
+  # @min_protocol_version stays at 1: purely additive, no existing client asks
+  # for the route, and cic treats a failed read as the `"host"` default.
+  @protocol_version 38
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1090,7 +1109,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 37
+  @spec version() :: 38
   def version, do: @protocol_version
 
   @doc """

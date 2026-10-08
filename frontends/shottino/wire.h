@@ -53,10 +53,11 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v36 -> v37 (issue 1365): `dm_conversation_id` is REMOVED
- * from every scrollback row and every query_windows_list entry, where
- * v34 had put it. This client never read it, so nothing here changes.
- * No kind was added and nothing was repurposed.
+ * Last read, v37 -> v38 (issue 2347): a new REST pair,
+ * `GET`/`PUT /me/settings/ban-mask-form`, carrying `ban_mask_form`
+ * (`"nick"` | `"host"` | `"user_host"`, default `"host"`) — the ban type
+ * cic's `/kb` and Kickban compose. No push kind was added, no payload
+ * moved, and this client sends no bans, so nothing here changes.
  *
  * NUMBER ONLY. The v36 gap is CLOSED (issue 2338): an inbound DM is
  * filed under the row's `dm_with`, so our own rename no longer strands
@@ -66,7 +67,7 @@
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 37
+#define WIRE_PROTOCOL_VERSION 38
 
 #include <stdbool.h>
 #include <stddef.h>
