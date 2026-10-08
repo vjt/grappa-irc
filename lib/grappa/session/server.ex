@@ -2953,6 +2953,9 @@ defmodule Grappa.Session.Server do
         identified: IdentityState.identified?(state),
         account: Map.get(state, :account),
         invited_windows: WindowState.invited_windows(state.window_state, state.network_slug),
+        # issue 2323 — `:kicked` / `:failed`, for the same reason: the
+        # greyed row survives a reload only if the snapshot says it exists.
+        rejected_windows: WindowState.rejected_windows(state.window_state, state.network_slug),
         # issue 2089 — the DCC twin of `invited_windows`, riding the SAME
         # call for the SAME measured reason: #482 established what a second
         # serial blocking round-trip per network costs the login hot path.

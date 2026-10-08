@@ -1161,6 +1161,37 @@ defmodule GrappaWeb.GrappaChannelTest do
       assert net_slug == network.slug
     end
 
+    test "after-join snapshot: replays kicked for a :kicked window on the user topic (issue 2323)" do
+      # The KICK broadcast `kicked` on the user topic ONCE, with NO socket
+      # subscribed yet. The channel left the live keyset with it, so unless it
+      # is in autojoin (it happens to be here; the snapshot must not care)
+      # `GET /channels` no longer lists it, and a client subscribing later
+      # only learns the greyed row exists from this snapshot.
+      {irc_server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network} = setup_user_and_network_with_session(port)
+
+      welcome_session_on_channel(irc_server, "#snap")
+
+      IRCServer.feed(irc_server, ":void!u@h KICK #snap grappa-snap :loser\r\n")
+      flush_server(irc_server)
+
+      {:ok, _, _} =
+        user.name
+        |> build_socket()
+        |> subscribe_and_join(Topic.user(user.name), %{})
+
+      assert_push("event", %{
+        kind: :kicked,
+        network: net_slug,
+        channel: "#snap",
+        state: :kicked,
+        by: "void",
+        reason: "loser"
+      })
+
+      assert net_slug == network.slug
+    end
+
     # CP23 S4 B4 — bundle_hash push on user-topic join.
     #
     # The `Grappa.Cic.Bundle` reader live-reads `runtime/cicchetto-dist/

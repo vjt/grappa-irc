@@ -461,6 +461,45 @@ defmodule Grappa.Session.WindowStateTest do
     end
   end
 
+  describe "rejected_windows/2 — user-topic cold-snapshot backfill (issue 2323)" do
+    # A KICK or a refused JOIN takes the channel out of the live keyset, so
+    # unless it is in autojoin `GET /channels` stops listing it and the
+    # greyed row hangs on cic's in-memory window state alone — which a reload
+    # discards. This enumerates those windows for the user-topic snapshot,
+    # through `to_wire/3`, i.e. the SAME Wire verbs the live broadcast uses.
+    alias Grappa.Session.Wire, as: SessionWire
+
+    test "returns the kicked / join_failed payload for EVERY :kicked and :failed channel, nothing else" do
+      ws =
+        WindowState.new()
+        |> WindowState.set_kicked("#out", "void", "loser")
+        |> WindowState.set_failed("#nope", "Cannot join (+i)", 473)
+        |> WindowState.set_invited("#random", "alice")
+        |> WindowState.set_pending("#joining")
+        |> WindowState.set_joined("#here")
+
+      assert MapSet.new(WindowState.rejected_windows(ws, "azzurra")) ==
+               MapSet.new([
+                 SessionWire.kicked("azzurra", "#out", "void", "loser"),
+                 SessionWire.join_failed("azzurra", "#nope", "Cannot join (+i)", 473)
+               ])
+    end
+
+    test "a rejoin takes the channel back out" do
+      ws =
+        WindowState.new()
+        |> WindowState.set_kicked("#out", "void", "loser")
+        |> WindowState.set_pending("#out")
+        |> WindowState.set_joined("#out")
+
+      assert WindowState.rejected_windows(ws, "azzurra") == []
+    end
+
+    test "returns [] for a brand-new (empty) window state" do
+      assert WindowState.rejected_windows(WindowState.new(), "azzurra") == []
+    end
+  end
+
   describe "property: set_joined-after-set_failed clears failure metadata" do
     property "any sequence of set_failed followed by set_joined leaves failure_meta nil" do
       check all(
