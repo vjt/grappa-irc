@@ -784,8 +784,12 @@ cut errs towards "already gone". Every ladder shipped today is whole hours,
 so the fraction is dormant. Not decided here, deliberately: whether the
 separator follows the UI locale once i18n lands.
 
-**#2288's `[NNN]` handle**, if it lands, goes in FRONT of the URL —
-`[042] https://… (1,5h)` — so the suffix stays the line's last token.
+**#2288's `[NNN]` handle** is that issue's to place, with one constraint
+found here: the issue text sketches `[042] https://… (1,5h)`, but the
+category emoji must stay IMMEDIATELY before the URL — `mediaLink.ts`'s
+`TRAILING_EMOJI_RE` reads only the text preceding the link, and a handle
+between the two would stop legacy extensionless links classifying. The TTL
+suffix stays the line's last token either way.
 
 **Apply:** the posted body is composed in cic, not the server, and nothing
 server-side parses it. A consumer that extracts the upload URL from a body

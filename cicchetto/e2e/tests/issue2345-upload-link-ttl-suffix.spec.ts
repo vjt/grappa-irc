@@ -89,5 +89,5 @@ test("2345 — the posted link names the chosen TTL, and the server agrees", asy
   // ±30 min is wider than any container skew and nowhere near the 24h default.
   const lifetimeSeconds = (Date.parse(upload.expires_at) - sentAt) / 1000;
   expect(lifetimeSeconds, "the server does not expire the file an hour out").toBeGreaterThan(1_800);
-  expect(lifetimeSeconds, "the server does not expire the file an hour out").toBeLessThan(7_200);
+  expect(lifetimeSeconds, "the server does not expire the file an hour out").toBeLessThan(5_400);
 });
