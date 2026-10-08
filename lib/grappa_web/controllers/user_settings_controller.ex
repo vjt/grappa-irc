@@ -188,6 +188,40 @@ defmodule GrappaWeb.UserSettingsController do
   def update_upload_confirm_enabled(_, _), do: {:error, :bad_request}
 
   @doc """
+  `GET /me/settings/ban-mask-form` — the ban type `/kb` and the Kickban
+  menu entry use (issue 2347): `"nick"` (`nick!*@*`), `"host"`
+  (`*!*@host`) or `"user_host"` (`*!user@host`).
+
+  Default `"host"`, the mask `/kb` always sent before the setting existed.
+  """
+  @spec show_ban_mask_form(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def show_ban_mask_form(conn, _) do
+    subject = Subject.from_assigns(conn.assigns)
+    render(conn, :ban_mask_form, form: UserSettings.get_ban_mask_form(subject))
+  end
+
+  @doc """
+  `PUT /me/settings/ban-mask-form` — persists the default ban type. Body:
+  `{"ban_mask_form": "nick" | "host" | "user_host"}`.
+
+  A missing key is a 400; any value outside the closed set — wrong string,
+  `null`, a number — is a 422 on `field_errors.ban_mask_form`, because the
+  closed set is checked once, in the context, not twice. Read by the
+  client when it composes the ban, so no session is involved.
+  """
+  @spec update_ban_mask_form(Plug.Conn.t(), map()) ::
+          Plug.Conn.t() | {:error, :bad_request | Ecto.Changeset.t() | :db_unavailable}
+  def update_ban_mask_form(conn, %{"ban_mask_form" => form}) do
+    subject = Subject.from_assigns(conn.assigns)
+
+    with {:ok, _} <- UserSettings.put_ban_mask_form(subject, form) do
+      render(conn, :ban_mask_form, form: UserSettings.get_ban_mask_form(subject))
+    end
+  end
+
+  def update_ban_mask_form(_, _), do: {:error, :bad_request}
+
+  @doc """
   `GET /me/settings/auto-away-debounce-seconds` — the subject's
   auto-away grace period (#348).
 

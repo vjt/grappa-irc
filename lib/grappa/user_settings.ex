@@ -71,6 +71,9 @@ defmodule Grappa.UserSettings do
   | `"upload_confirm_enabled"` | `boolean()`        | `get_upload_confirm_enabled/1`, |
   |                        |                        | `put_upload_confirm_enabled/2`  |
   |                        |                        | (#1883)                         |
+  | `"ban_mask_form"`      | `ban_mask_form()`      | `get_ban_mask_form/1`,          |
+  |                        | (absent = `:host`)     | `put_ban_mask_form/2`           |
+  |                        |                        | (issue 2347)                    |
   | `"ignores"`            | `ignores()`            | `get_ignores/2`, `add_ignore/5`,|
   |                        |                        | `remove_ignore/5` (#162, 2294)  |
   | `"vhost_selection"`    | `list(String.t())`     | `get_vhost_selection/1`,        |
@@ -904,6 +907,78 @@ defmodule Grappa.UserSettings do
     # explicit `false` row would be a second spelling of the default. Same
     # rule as `put_show_peer_profiles/2`.
     update_data(subject, &put_or_delete(&1, @upload_confirm_enabled_key, value || nil))
+  end
+
+  # ---------------------------------------------------------------------------
+  # ban_mask_form accessor (issue 2347 — the default ban type for /kb, Kickban)
+  # ---------------------------------------------------------------------------
+
+  @ban_mask_form_key "ban_mask_form"
+
+  @typedoc """
+  The shape of the ban `/kb` and the Kickban menu entry send (issue 2347):
+  `:nick` = `nick!*@*`, `:host` = `*!*@host`, `:user_host` = `*!user@host`.
+  The same closed set as cic's `BanMaskForm` (`lib/banMask.ts`), which
+  builds the mask — the server only stores which one the subject picked.
+  """
+  @type ban_mask_form :: :nick | :host | :user_host
+
+  # Wire string -> atom, the one place the closed set is spelled. An explicit
+  # map rather than `String.to_existing_atom/1`: the input is user-controlled,
+  # and "an atom that happens to exist" is not the same set as this one.
+  @ban_mask_forms %{"nick" => :nick, "host" => :host, "user_host" => :user_host}
+  @ban_mask_form_default :host
+
+  @doc "The closed set of ban mask forms, in no particular order."
+  @spec ban_mask_forms() :: [ban_mask_form()]
+  def ban_mask_forms, do: Map.values(@ban_mask_forms)
+
+  @doc """
+  The ban type `subject` wants `/kb` and the Kickban menu entry to use.
+
+  Default `:host`, the `*!*@host` ban `/kb` always sent before this setting
+  existed, so a subject who never opens settings sees no change. An absent
+  key, a missing row and a stored value outside the closed set all read back
+  as the default: an unknown value must never turn into a wider or narrower
+  ban than the subject chose.
+
+  Read by the CLIENT when it composes the ban; nothing on the server acts on
+  it, so there is no live-retune bridge (the `upload_confirm_enabled`
+  posture).
+  """
+  @spec get_ban_mask_form(Subject.t()) :: ban_mask_form()
+  def get_ban_mask_form({_, _} = subject) do
+    case fetch_existing_or_nil(subject) do
+      nil -> @ban_mask_form_default
+      %Settings{data: data} ->
+        Map.get(@ban_mask_forms, data[@ban_mask_form_key], @ban_mask_form_default)
+    end
+  end
+
+  @doc """
+  Stores the ban type for `subject`, given as its wire string (`"nick"`,
+  `"host"`, `"user_host"`).
+
+  Anything else — another string, `nil`, a number, an atom — is a changeset
+  error on `:ban_mask_form` and nothing is written. The default `"host"`
+  DELETES the key rather than storing it, so the default has one spelling
+  in storage (the `put_upload_confirm_enabled/2` rule).
+  """
+  @spec put_ban_mask_form(Subject.t(), term()) ::
+          {:ok, Settings.t()} | {:error, Ecto.Changeset.t() | :db_unavailable}
+  def put_ban_mask_form({_, _} = subject, value) do
+    case Map.fetch(@ban_mask_forms, value) do
+      {:ok, form} ->
+        stored = if form == @ban_mask_form_default, do: nil, else: value
+        update_data(subject, &put_or_delete(&1, @ban_mask_form_key, stored))
+
+      :error ->
+        settings_field_error(
+          :ban_mask_form,
+          subject,
+          "must be one of #{inspect(Map.keys(@ban_mask_forms))}"
+        )
+    end
   end
 
   # ---------------------------------------------------------------------------

@@ -435,6 +435,12 @@ defmodule GrappaWeb.Router do
         UserSettingsController,
         :update_upload_confirm_enabled
 
+    # issue 2347 — the default ban type `/kb` and the Kickban menu entry build
+    # their mask with. Like the upload confirm above, the client reads it and
+    # composes the frame itself; the server only stores the choice.
+    get "/me/settings/ban-mask-form", UserSettingsController, :show_ban_mask_form
+    put "/me/settings/ban-mask-form", UserSettingsController, :update_ban_mask_form
+
     # #348 — the WS-disconnect -> upstream AWAY grace period, per subject.
     # ONE scalar carries three states: `null` = no preference (the
     # server-wide default applies), `0` = OFF (no timer is ever armed),
