@@ -1982,8 +1982,11 @@ describe("the per-batch video-shrink switch (issue 2343)", () => {
   });
 
   // A retry re-sends the file the operator already answered for, on the terms
-  // they chose — re-reading the preference would silently change them.
-  it("a retry keeps the batch's answer even if the preference changed since", async () => {
+  // they chose — re-reading the preference would silently change them. Both
+  // directions, each with the device preference saying the OPPOSITE of the
+  // batch at retry time, so a retry that fell back to the preference would
+  // flip the outcome.
+  it("a retry keeps a TICKED batch's answer over a device preference that says OFF", async () => {
     triggerUploads(key, slug, channel, [clip()]);
     confirmRequest()?.toggle?.onToggle(true);
     acceptConfirm();
@@ -1994,10 +1997,28 @@ describe("the per-batch video-shrink switch (issue 2343)", () => {
     pendingResolvers[0]?.reject({ kind: "network" });
     await vi.waitFor(() => expect(uploadState(key)?.error).toBeTruthy());
 
-    setVideoProcessingEnabled(false);
+    expect(localStorage.getItem(VIDEO_PROCESSING_STORAGE_KEY)).toBeNull(); // device: OFF
     retryUpload(key);
 
     await awaitTranscodeStart(2);
+  });
+
+  it("a retry keeps an UNTICKED batch's answer after the device preference is turned ON", async () => {
+    const original = clip();
+    triggerUploads(key, slug, channel, [original]);
+    acceptConfirm(); // left unticked, the OFF default
+
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(1));
+    pendingResolvers[0]?.reject({ kind: "network" });
+    await vi.waitFor(() => expect(uploadState(key)?.error).toBeTruthy());
+
+    // A real change between the attempt and the retry.
+    setVideoProcessingEnabled(true);
+    retryUpload(key);
+
+    await vi.waitFor(() => expect(pendingResolvers.length).toBe(2));
+    expect(pendingResolvers[1]?.file).toBe(original);
+    expect(vt.transcodes).toHaveLength(0);
   });
 
   it("a cancelled batch takes its answer with it", () => {
