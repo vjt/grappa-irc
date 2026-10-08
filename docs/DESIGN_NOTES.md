@@ -948,3 +948,16 @@ change: since #2037 the digest spans the JSON views' `@spec`s, and
 `ban_mask_form_response` is one. `@min_protocol_version` and cic's
 `MIN_SERVER_PROTOCOL_VERSION` stay put: a pre-38 server 404s the read and
 cic falls back to `"host"`, which is what `/kb` sent before.
+
+**The client half.** `kickban` takes the form as a PARAMETER and never
+reads the cache itself, so the verb stays a function of its inputs and the
+unit tests pin every form without a store. `nick` asks the server nothing;
+`user_host` keeps the `user` that `resolveUserhost` already returned and
+`/kb` used to drop; a missing component is still fail-closed and the error
+names which one (`host` / `user@host`). The cache is `lib/banMaskPref` (the
+`uploadOrchestrator` shape): loaded at boot in `Shell` and on drawer open,
+written through on change, and read by `/kb` and the Kickban row at SEND
+time — a change made with the menu open still applies. A wire value off
+the closed set reads as `"host"`: a form this bundle cannot build must not
+become another ban. The drawer select is put back by hand on a refused
+save, because Solid does not re-assign a `value` whose signal never moved.
