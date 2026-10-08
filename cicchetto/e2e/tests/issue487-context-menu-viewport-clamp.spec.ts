@@ -92,10 +92,12 @@ test.describe("#487 context menu viewport clamp", () => {
     // Precondition (anti-hollow-green): at the raw click the menu WOULD have
     // overflowed BOTH edges, so the flip math was genuinely exercised.
     // #1192 added the CTCP group between WHOIS and Query, so the nick menu is
-    // nine rows. Kept as an exact count, not a `>=`: this number is the
-    // precondition that the menu really is tall enough to overflow, and a
-    // loosened assertion would stop noticing if the menu ever shrank.
-    expect(g.itemCount).toBe(9);
+    // nine rows; issue 2346 replaced the one Ban row with Ban nick / Ban host
+    // / Kickban (disabled without @, never hidden), so it is eleven. Kept as
+    // an exact count, not a `>=`: this number is the precondition that the
+    // menu really is tall enough to overflow, and a loosened assertion would
+    // stop noticing if the menu ever shrank.
+    expect(g.itemCount).toBe(11);
     expect(g.height).toBeGreaterThan(0);
     expect(vp.height - 4 + g.height).toBeGreaterThan(g.innerHeight);
     expect(vp.width - 4 + g.width).toBeGreaterThan(g.innerWidth);
