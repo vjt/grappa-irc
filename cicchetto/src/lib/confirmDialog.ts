@@ -109,9 +109,11 @@ export type ConfirmChoiceOption = {
 // does not know that, and a second caller asking a different one-of-N
 // question needs nothing here.
 //
-// Deliberately ONE choice and not a list of them: a confirm dialog asks one
-// question, and a second control on it would be a form wearing a modal's
-// chrome. A caller that needs two is a caller that needs a form.
+// Still ONE choice and not a list of them. #2094 argued that a second control
+// would make the dialog a form wearing a modal's chrome; issue 2343 (vjt's
+// approval) narrowed that to "one choice and at most one switch", and no
+// further: the switch below is the batch's other term, not a second question.
+// A caller that needs more than that is a caller that needs a form.
 export type ConfirmChoice = {
   // VISIBLE label, and the accessible name with it — the modal wraps the
   // control in a `<label>` so there is exactly one. Unlike the SettingsDrawer
@@ -127,6 +129,26 @@ export type ConfirmChoice = {
   // The caller owns the selection. The store does not hold it, so a request
   // that is displaced takes its half-made choice with it.
   onSelect: (value: string) => void;
+};
+
+// issue 2343 — an OPTIONAL on/off term, asked beside the choice above and on
+// the same terms: a pre-formatted control in, a boolean out, and the store
+// knows nothing about what is being switched. Its first caller is the upload
+// confirm's "Shrink videos before sending", which is per batch for the reason
+// the TTL is: the dialog is where the operator can see what the batch IS.
+export type ConfirmToggle = {
+  // VISIBLE label and accessible name in one, like `ConfirmChoice.label`: the
+  // modal wraps the checkbox in a `<label>`.
+  label: string;
+  // Reactive, because whether the switch means anything can change while the
+  // dialog is open — the upload confirm's applies only to videos, and removing
+  // the last video row takes the reason for asking with it. A switch that
+  // does nothing is noise, so it leaves rather than lingering inert.
+  shown: () => boolean;
+  // Reactive for the same reason as `ConfirmChoice.value`.
+  checked: () => boolean;
+  // The caller owns the state, as with `ConfirmChoice.onSelect`.
+  onToggle: (checked: boolean) => void;
 };
 
 export type ConfirmAttachments = {
@@ -165,6 +187,8 @@ export type ConfirmRequest = {
   // #2094 — same explicit-`null` contract again: a dialog that asks nothing
   // beyond yes/no says so where it is written, not by opening the modal.
   choice: ConfirmChoice | null;
+  // issue 2343 — and again: a dialog with no on/off term says so in place.
+  toggle: ConfirmToggle | null;
   // #1964 — which button takes focus on open, i.e. what a bare Enter answers.
   // Explicit on every call site, like the two fields above: which key sends
   // and which key discards must be readable at the call site, not by opening

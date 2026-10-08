@@ -24,6 +24,7 @@ describe("confirmDialog store (#195)", () => {
       onConfirm,
       alternative: null,
       choice: null,
+      toggle: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -40,6 +41,7 @@ describe("confirmDialog store (#195)", () => {
       onConfirm,
       alternative: null,
       choice: null,
+      toggle: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -57,6 +59,7 @@ describe("confirmDialog store (#195)", () => {
       onConfirm,
       alternative: null,
       choice: null,
+      toggle: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -80,6 +83,7 @@ describe("confirmDialog store (#195)", () => {
       onConfirm: first,
       alternative: null,
       choice: null,
+      toggle: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -90,6 +94,7 @@ describe("confirmDialog store (#195)", () => {
       onConfirm: second,
       alternative: null,
       choice: null,
+      toggle: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -118,6 +123,7 @@ describe("confirmDialog store (#195)", () => {
         onConfirm,
         alternative: alt(onSelect),
         choice: null,
+        toggle: null,
         attachments: null,
         defaultButton: "cancel",
       });
@@ -138,6 +144,7 @@ describe("confirmDialog store (#195)", () => {
         onConfirm,
         alternative: alt(onSelect),
         choice: null,
+        toggle: null,
         attachments: null,
         defaultButton: "cancel",
       });
@@ -156,6 +163,7 @@ describe("confirmDialog store (#195)", () => {
         onConfirm,
         alternative: alt(onSelect),
         choice: null,
+        toggle: null,
         attachments: null,
         defaultButton: "cancel",
       });
@@ -174,6 +182,7 @@ describe("confirmDialog store (#195)", () => {
         onConfirm,
         alternative: null,
         choice: null,
+        toggle: null,
         attachments: null,
         defaultButton: "cancel",
       });
