@@ -84,6 +84,12 @@ test("2343 (a) — ticked in the dialog with Settings OFF: this batch is shrunk"
 
   await sendPickedFiles(page);
 
+  // OPAQUE_VIDEO here does reach the transcoder, which bends the fixture's
+  // "never handed to a decoder" contract (fixtures/bytes.ts) the same way
+  // uploads2's video journey does. Nothing below depends on a decode: the
+  // chunk oracle fires at the import, before any frame is read, and the link
+  // lands on either branch — the re-encode or the fallback to the original.
+  //
   // Transcode-or-fallback, as in uploads2: the bytes may be the re-encode or
   // the original, and the link lands either way.
   await expect(scrollbackLine(page, "privmsg", "🎬").first()).toBeVisible({ timeout: 60_000 });
