@@ -370,7 +370,11 @@ describe("upload lifecycle", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(sendMessage).toHaveBeenCalledWith(slug, channel, "📸 https://litter.catbox.moe/abc.png");
+    expect(sendMessage).toHaveBeenCalledWith(
+      slug,
+      channel,
+      "📸 https://litter.catbox.moe/abc.png (24h)",
+    );
     expect(uploadState(key)).toBeNull();
   });
 
@@ -636,7 +640,11 @@ describe("category dispatch", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(sendMessage).toHaveBeenCalledWith(slug, channel, "📄 https://litter.catbox.moe/abc.pdf");
+    expect(sendMessage).toHaveBeenCalledWith(
+      slug,
+      channel,
+      "📄 https://litter.catbox.moe/abc.pdf (24h)",
+    );
     expect(uploadState(key)).toBeNull();
   });
 
@@ -648,7 +656,11 @@ describe("category dispatch", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(sendMessage).toHaveBeenCalledWith(slug, channel, "📸 https://litter.catbox.moe/abc.png");
+    expect(sendMessage).toHaveBeenCalledWith(
+      slug,
+      channel,
+      "📸 https://litter.catbox.moe/abc.png (24h)",
+    );
   });
 
   it("audio upload → host.upload called + 🎵-prefixed PRIVMSG", async () => {
@@ -660,7 +672,11 @@ describe("category dispatch", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(sendMessage).toHaveBeenCalledWith(slug, channel, "🎵 https://litter.catbox.moe/abc.mp3");
+    expect(sendMessage).toHaveBeenCalledWith(
+      slug,
+      channel,
+      "🎵 https://litter.catbox.moe/abc.mp3 (24h)",
+    );
     expect(uploadState(key)).toBeNull();
   });
 
@@ -689,7 +705,7 @@ describe("category dispatch", () => {
     expect(sendMessage).toHaveBeenCalledWith(
       slug,
       channel,
-      "🎵 https://litter.catbox.moe/ring.m4r",
+      "🎵 https://litter.catbox.moe/ring.m4r (24h)",
     );
   });
 
@@ -710,7 +726,7 @@ describe("category dispatch", () => {
       expect(sendMessage).toHaveBeenCalledWith(
         slug,
         channel,
-        "🎬 https://litter.catbox.moe/abc.mp4",
+        "🎬 https://litter.catbox.moe/abc.mp4 (24h)",
       ),
     );
   });
@@ -872,7 +888,7 @@ describe("video transcode branch", () => {
       expect(sendMessage).toHaveBeenCalledWith(
         slug,
         channel,
-        "🎬 https://litter.catbox.moe/abc.mp4",
+        "🎬 https://litter.catbox.moe/abc.mp4 (24h)",
       ),
     );
     expect(uploadState(key)).toBeNull();
@@ -1226,7 +1242,11 @@ describe("#49 — stale retry buffer", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(sendMessage).toHaveBeenCalledWith(slug, channel, "📸 https://litter.catbox.moe/b.png");
+    expect(sendMessage).toHaveBeenCalledWith(
+      slug,
+      channel,
+      "📸 https://litter.catbox.moe/b.png (24h)",
+    );
     expect(uploadState(key)).toBeNull();
   });
 });
@@ -1316,6 +1336,55 @@ describe("TTL persistence", () => {
     expect(capturedTtl).toBe("24h");
   });
 
+  // issue 2345 — the posted line names the TTL the upload was SENT with, so a
+  // reader can add it to the message timestamp and tell whether the link is
+  // still live without clicking it into the opaque 404.
+  describe("posted link carries the TTL (issue 2345)", () => {
+    const sendWith = async (host: UploadHost): Promise<void> => {
+      localStorage.setItem("image-upload-privacy-acknowledged:test-host", "1");
+      vi.mocked(activeHost).mockReturnValue(host);
+      triggerUploadConfirmed(key, slug, channel, sampleImage());
+      pendingResolvers[0]?.resolve("https://h/x.png");
+      await vi.waitFor(() => expect(sendMessage).toHaveBeenCalled());
+    };
+
+    it("names the host default when no preference is cached", async () => {
+      await sendWith(makeTestHost());
+      expect(sendMessage).toHaveBeenCalledWith(slug, channel, "📸 https://h/x.png (24h)");
+    });
+
+    it("names the cached preference, not the default", async () => {
+      await saveUploadTtlSeconds("tok", 3600);
+      await sendWith(makeTestHost());
+      expect(sendMessage).toHaveBeenCalledWith(slug, channel, "📸 https://h/x.png (1h)");
+    });
+
+    it("writes a fractional hour with a comma, cut to the tenth", async () => {
+      await sendWith(
+        makeTestHost({
+          ttlOptions: [{ value: "90m", label: "90 minutes", seconds: 5400 }],
+          defaultTtl: "90m",
+        }),
+      );
+      expect(sendMessage).toHaveBeenCalledWith(slug, channel, "📸 https://h/x.png (1,5h)");
+    });
+
+    it("never rounds UP: 1h59m reads as (1,9h), not (2h)", async () => {
+      await sendWith(
+        makeTestHost({
+          ttlOptions: [{ value: "119m", label: "119 minutes", seconds: 7140 }],
+          defaultTtl: "119m",
+        }),
+      );
+      expect(sendMessage).toHaveBeenCalledWith(slug, channel, "📸 https://h/x.png (1,9h)");
+    });
+
+    it("posts the bare link when the host has no TTL ladder (nothing known to name)", async () => {
+      await sendWith(makeTestHost({ ttlOptions: [], defaultTtl: null }));
+      expect(sendMessage).toHaveBeenCalledWith(slug, channel, "📸 https://h/x.png");
+    });
+  });
+
   it("loadUploadTtlSeconds swallows REST errors silently (cache stays null)", async () => {
     vi.mocked(userSettings.getUploadTtlSeconds).mockRejectedValueOnce(new Error("network"));
     await loadUploadTtlSeconds("tok");
@@ -1351,9 +1420,9 @@ describe("sequential multi-file queue (#118)", () => {
     pendingResolvers[2]?.resolve("https://h/c");
     await vi.waitFor(() => expect(vi.mocked(sendMessage).mock.calls.length).toBe(3));
     expect(vi.mocked(sendMessage).mock.calls.map((c) => c[2])).toEqual([
-      "📸 https://h/a",
-      "📸 https://h/b",
-      "📸 https://h/c",
+      "📸 https://h/a (24h)",
+      "📸 https://h/b (24h)",
+      "📸 https://h/c (24h)",
     ]);
   });
 
@@ -1384,7 +1453,7 @@ describe("sequential multi-file queue (#118)", () => {
 
     pendingResolvers[1]?.resolve("https://h/b");
     await vi.waitFor(() => expect(vi.mocked(sendMessage).mock.calls.length).toBe(1));
-    expect(vi.mocked(sendMessage).mock.calls[0]?.[2]).toBe("📸 https://h/b");
+    expect(vi.mocked(sendMessage).mock.calls[0]?.[2]).toBe("📸 https://h/b (24h)");
   });
 
   it("cancel stops the whole batch — no further dispatch", async () => {
@@ -1814,6 +1883,23 @@ describe("the per-batch TTL choice (#2094)", () => {
     acceptConfirm();
 
     expect(host.ttls).toEqual(["24h"]);
+  });
+
+  // issue 2345 — the posted line names the batch's answer, not the stored
+  // preference it overrode: that answer is what the host was asked for.
+  it("the posted link names the CHOSEN duration", async () => {
+    await saveUploadTtlSeconds("tok", 86_400);
+    vi.mocked(activeHost).mockReturnValue(makeTestHost());
+
+    triggerUpload(key, slug, channel, sampleImage());
+    const choice = confirmRequest()?.choice;
+    if (!choice) throw new Error("the confirm should offer the TTL ladder");
+    choice.onSelect("3600");
+    acceptConfirm();
+    pendingResolvers[0]?.resolve("https://h/x.png");
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalled());
+
+    expect(sendMessage).toHaveBeenCalledWith(slug, channel, "📸 https://h/x.png (1h)");
   });
 
   // A one-off stays one-off. The drawer is where a durable preference is

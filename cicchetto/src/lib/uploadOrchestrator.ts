@@ -303,6 +303,27 @@ function effectiveTtlSeconds(host: UploadHost): number | null {
   return host.ttlOptions.find((opt) => opt.value === host.defaultTtl)?.seconds ?? null;
 }
 
+// issue 2345 — the TTL the upload was SENT with, appended to the posted link
+// (`📸 https://… (24h)`) so a reader adds it to the message timestamp their
+// client already shows and knows whether the link is still live, instead of
+// clicking into the deliberate opaque 404. Relative, not an absolute expiry:
+// an absolute time would need a timezone, the timestamp is already local.
+//
+// Named from the token that went over the wire, never re-derived from the
+// preference: that token is what the host was asked for, and our own server
+// refuses any value off its ladder rather than clamping it. A token the host's
+// ladder does not name posts the bare link — there is nothing known to say.
+//
+// Hours with a comma decimal (Sythos' request), cut DOWN to the tenth: a
+// rounded-up figure would tell a reader a dead link is still live.
+function ttlSuffix(host: UploadHost, ttl: string | undefined): string {
+  const seconds = host.ttlOptions.find((opt) => opt.value === ttl)?.seconds;
+  if (seconds === undefined) return "";
+  const tenths = Math.floor(seconds / 360);
+  const hours = tenths % 10 === 0 ? `${tenths / 10}` : `${Math.floor(tenths / 10)},${tenths % 10}`;
+  return ` (${hours}h)`;
+}
+
 function setEntry(key: ChannelKey, entry: UploadStateEntry | null): void {
   setUploadStates((prev) => {
     if (entry === null) {
@@ -601,7 +622,11 @@ async function dispatchUpload(
       inflight.delete(key);
       setEntry(key, null);
       // Auto-send PRIVMSG with the per-category emoji prefix — A7.
-      void sendMessage(networkSlug, channelName, `${CATEGORY_EMOJI[category]} ${url}`);
+      void sendMessage(
+        networkSlug,
+        channelName,
+        `${CATEGORY_EMOJI[category]} ${url}${ttlSuffix(host, ttl)}`,
+      );
       pumpQueue(key); // #118: start the next queued file
     })
     .catch((err: UploadError) => {
