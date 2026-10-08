@@ -1286,6 +1286,81 @@ defmodule Grappa.UserSettingsTest do
   end
 
   # ---------------------------------------------------------------------------
+  # ban_mask_form accessor (issue 2347 — the default ban type for /kb, Kickban)
+  # ---------------------------------------------------------------------------
+
+  describe "get_ban_mask_form/1" do
+    test "returns :host when no settings row exists — today's /kb behaviour" do
+      assert UserSettings.get_ban_mask_form({:user, Ecto.UUID.generate()}) == :host
+    end
+
+    test "returns :host when a row exists but carries no ban_mask_form key" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.get_or_init({:user, user.id})
+      assert UserSettings.get_ban_mask_form({:user, user.id}) == :host
+    end
+
+    # A hand-edited or future-client row must not widen or narrow the ban
+    # into something the subject never picked: an unknown value reads as
+    # the default, never as a guess at what was meant.
+    test "returns :host when the stored value is outside the closed set" do
+      user = user_fixture()
+      {:ok, settings} = UserSettings.get_or_init({:user, user.id})
+
+      Repo.update!(Settings.changeset(settings, %{data: %{"ban_mask_form" => "domain"}}))
+      assert UserSettings.get_ban_mask_form({:user, user.id}) == :host
+    end
+
+    test "returns the stored form for each member of the closed set" do
+      for form <- UserSettings.ban_mask_forms() do
+        user = user_fixture()
+        {:ok, _} = UserSettings.put_ban_mask_form({:user, user.id}, Atom.to_string(form))
+        assert UserSettings.get_ban_mask_form({:user, user.id}) == form
+      end
+    end
+  end
+
+  describe "put_ban_mask_form/2" do
+    test "persists nick and reads it back" do
+      user = user_fixture()
+      assert {:ok, %Settings{}} = UserSettings.put_ban_mask_form({:user, user.id}, "nick")
+      assert UserSettings.get_ban_mask_form({:user, user.id}) == :nick
+    end
+
+    test "persists the default by DELETING the key, not by storing \"host\"" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.put_ban_mask_form({:user, user.id}, "user_host")
+      {:ok, settings} = UserSettings.put_ban_mask_form({:user, user.id}, "host")
+
+      assert UserSettings.get_ban_mask_form({:user, user.id}) == :host
+      refute Map.has_key?(settings.data, "ban_mask_form")
+    end
+
+    test "rejects a value outside the closed set with a :ban_mask_form error, storing nothing" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.put_ban_mask_form({:user, user.id}, "nick")
+
+      for bad <- ["domain", "", "NICK", nil, 1, :nick] do
+        assert {:error, %Ecto.Changeset{} = cs} =
+                 UserSettings.put_ban_mask_form({:user, user.id}, bad)
+
+        assert Keyword.has_key?(cs.errors, :ban_mask_form)
+      end
+
+      assert UserSettings.get_ban_mask_form({:user, user.id}) == :nick
+    end
+
+    test "preserves other keys in data" do
+      user = user_fixture()
+      {:ok, _} = UserSettings.put_upload_confirm_enabled({:user, user.id}, true)
+      {:ok, _} = UserSettings.put_ban_mask_form({:user, user.id}, "nick")
+
+      assert UserSettings.get_upload_confirm_enabled({:user, user.id}) == true
+      assert UserSettings.get_ban_mask_form({:user, user.id}) == :nick
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # ignores accessors (#162 — the /ignore mask list)
   # ---------------------------------------------------------------------------
 

@@ -109,6 +109,14 @@ defmodule GrappaWeb.RouterScopeTest do
     # changes no credential and reveals nothing about the account.
     {"GET", "/me/settings/upload-confirm-enabled"},
     {"PUT", "/me/settings/upload-confirm-enabled"},
+    # issue 2347 — the default ban type /kb and the Kickban menu entry
+    # build their mask with. Client-usable: it picks the SHAPE of a ban
+    # the client itself composes and sends, the way the upload opt-in
+    # above picks how it sends a file. It reaches no credential, reveals
+    # nothing about the account, and widens no permission — whether the
+    # ban is accepted is still the channel's operator check upstream.
+    {"GET", "/me/settings/ban-mask-form"},
+    {"PUT", "/me/settings/ban-mask-form"},
     {"GET", "/me/settings/auto-away-debounce-seconds"},
     {"PUT", "/me/settings/auto-away-debounce-seconds"},
     {"GET", "/me/settings/vhost"},

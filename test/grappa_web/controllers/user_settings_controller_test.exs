@@ -451,6 +451,69 @@ defmodule GrappaWeb.UserSettingsControllerTest do
     end
   end
 
+  describe "/me/settings/ban-mask-form (issue 2347)" do
+    test "401 without bearer", %{conn: conn} do
+      assert json_response(get(conn, "/me/settings/ban-mask-form"), 401) ==
+               %{"error" => "unauthorized"}
+    end
+
+    # Visitor parity: a visitor can hold ops on a channel like anyone else,
+    # and /kb reads this form for whoever runs it.
+    test "200 + host for an unset visitor", %{conn: conn} do
+      {_, session} = visitor_and_session()
+
+      conn = conn |> put_bearer(session.id) |> get("/me/settings/ban-mask-form")
+      assert json_response(conn, 200) == %{"ban_mask_form" => "host"}
+    end
+
+    test "defaults to host — the *!*@host ban /kb always sent", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn = conn |> put_bearer(session.id) |> get("/me/settings/ban-mask-form")
+      assert json_response(conn, 200) == %{"ban_mask_form" => "host"}
+    end
+
+    test "PUT round-trips every form, and PUT host clears back to the default", %{conn: conn} do
+      {user, session} = user_and_session()
+      conn = put_bearer(conn, session.id)
+
+      for form <- ["nick", "user_host"] do
+        assert json_response(put(conn, "/me/settings/ban-mask-form", %{"ban_mask_form" => form}), 200) ==
+                 %{"ban_mask_form" => form}
+
+        assert json_response(get(conn, "/me/settings/ban-mask-form"), 200) ==
+                 %{"ban_mask_form" => form}
+      end
+
+      assert json_response(put(conn, "/me/settings/ban-mask-form", %{"ban_mask_form" => "host"}), 200) ==
+               %{"ban_mask_form" => "host"}
+
+      assert UserSettings.get_ban_mask_form({:user, user.id}) == :host
+    end
+
+    test "422 + field_errors on a form outside the closed set, and NOTHING is stored",
+         %{conn: conn} do
+      {user, session} = user_and_session()
+      conn = put_bearer(conn, session.id)
+      {:ok, _} = UserSettings.put_ban_mask_form({:user, user.id}, "nick")
+
+      for bad <- ["domain", "", 1, nil] do
+        resp = put(conn, "/me/settings/ban-mask-form", %{"ban_mask_form" => bad})
+        assert %{"error" => "validation_failed", "field_errors" => fe} = json_response(resp, 422)
+        assert Map.has_key?(fe, "ban_mask_form")
+      end
+
+      assert UserSettings.get_ban_mask_form({:user, user.id}) == :nick
+    end
+
+    test "400 when the key is missing", %{conn: conn} do
+      {_, session} = user_and_session()
+
+      conn = conn |> put_bearer(session.id) |> put("/me/settings/ban-mask-form", %{})
+      assert json_response(conn, 400) == %{"error" => "bad_request"}
+    end
+  end
+
   describe "GET /me/settings/show-peer-profiles — auth gating" do
     test "401 without bearer", %{conn: conn} do
       conn = get(conn, "/me/settings/show-peer-profiles")
