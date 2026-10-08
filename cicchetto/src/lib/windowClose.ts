@@ -176,6 +176,7 @@ export function confirmLeaveChannel(networkSlug: string, channelName: string): v
     alternative: null,
     attachments: null,
     choice: null,
+    toggle: null,
     defaultButton: "cancel",
   });
 }
@@ -192,6 +193,7 @@ export function confirmDisconnectNetwork(networkSlug: string): void {
     alternative: null,
     attachments: null,
     choice: null,
+    toggle: null,
     defaultButton: "cancel",
   });
 }
@@ -227,6 +229,7 @@ export function confirmRemoveNetwork(
     alternative: null,
     attachments: null,
     choice: null,
+    toggle: null,
     defaultButton: "cancel",
   });
 }

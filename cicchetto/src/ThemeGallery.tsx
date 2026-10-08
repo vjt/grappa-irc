@@ -230,6 +230,7 @@ const ThemeGallery: Component<Props> = (props) => {
       alternative: null,
       attachments: null,
       choice: null,
+      toggle: null,
       defaultButton: "cancel",
     });
 

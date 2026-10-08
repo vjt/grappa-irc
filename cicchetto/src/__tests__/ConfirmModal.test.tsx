@@ -34,6 +34,7 @@ describe("ConfirmModal (#195)", () => {
       onConfirm: vi.fn(),
       alternative: null,
       choice: null,
+      toggle: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -55,6 +56,7 @@ describe("ConfirmModal (#195)", () => {
       onConfirm,
       alternative: null,
       choice: null,
+      toggle: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -73,6 +75,7 @@ describe("ConfirmModal (#195)", () => {
       onConfirm,
       alternative: null,
       choice: null,
+      toggle: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -91,6 +94,7 @@ describe("ConfirmModal (#195)", () => {
       onConfirm,
       alternative: null,
       choice: null,
+      toggle: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -112,6 +116,7 @@ describe("ConfirmModal (#195)", () => {
       onConfirm,
       alternative: null,
       choice: null,
+      toggle: null,
       attachments: null,
       defaultButton: "cancel",
     });
@@ -136,6 +141,7 @@ describe("ConfirmModal (#195)", () => {
         onConfirm: vi.fn(),
         alternative: null,
         choice: null,
+        toggle: null,
         attachments: null,
         defaultButton: "cancel",
       });
@@ -153,6 +159,7 @@ describe("ConfirmModal (#195)", () => {
         onConfirm,
         alternative: { label: "Upload as .txt", onSelect },
         choice: null,
+        toggle: null,
         attachments: null,
         defaultButton: "cancel",
       });
@@ -186,6 +193,7 @@ describe("ConfirmModal (#195)", () => {
         onConfirm: vi.fn(),
         alternative: null,
         choice: null,
+        toggle: null,
         attachments: { items: () => items, onRemove },
         defaultButton: "confirm",
       });
@@ -200,6 +208,7 @@ describe("ConfirmModal (#195)", () => {
         onConfirm: vi.fn(),
         alternative: null,
         choice: null,
+        toggle: null,
         attachments: null,
         defaultButton: "cancel",
       });
@@ -393,6 +402,7 @@ describe("ConfirmModal (#195)", () => {
         onConfirm,
         alternative: null,
         choice: null,
+        toggle: null,
         attachments: null,
         defaultButton,
       });
@@ -439,6 +449,7 @@ describe("ConfirmModal (#195)", () => {
         onConfirm: vi.fn(),
         alternative: null,
         choice: null,
+        toggle: null,
         attachments: {
           items: () => items,
           onRemove: (id: string): void => {
@@ -495,6 +506,7 @@ describe("ConfirmModal (#195)", () => {
           value,
           onSelect,
         },
+        toggle: null,
         attachments: null,
         defaultButton: "confirm",
       });
@@ -508,6 +520,7 @@ describe("ConfirmModal (#195)", () => {
         onConfirm: vi.fn(),
         alternative: null,
         choice: null,
+        toggle: null,
         attachments: null,
         defaultButton: "cancel",
       });
@@ -568,5 +581,97 @@ describe("ConfirmModal (#195)", () => {
       // Still the same dialog, still answering with Enter on Send.
       expect(document.activeElement).toBe(screen.getByTestId("confirm-modal-confirm"));
     });
+  });
+
+  // issue 2343 — the optional on/off term. Same contract as the choice: the
+  // store carries a pre-formatted control, this component shows it, names it
+  // and reports back, and the caller owns the value.
+  describe("the switch (issue 2343)", () => {
+    const openWithToggle = (
+      shown: () => boolean,
+      checked: () => boolean,
+      onToggle: (v: boolean) => void,
+    ): void =>
+      requestConfirm({
+        title: "Send to #a?",
+        body: "b",
+        confirmLabel: "Send",
+        onConfirm: vi.fn(),
+        alternative: null,
+        choice: null,
+        toggle: { label: "Shrink videos before sending", shown, checked, onToggle },
+        attachments: null,
+        defaultButton: "confirm",
+      });
+
+    it("renders nothing when the request carries no switch", () => {
+      render(() => <ConfirmModal />);
+      openWithChoiceless();
+      expect(screen.queryByTestId("confirm-modal-toggle")).toBeNull();
+    });
+
+    it("renders a checkbox named by its visible label, in the caller's state", () => {
+      render(() => <ConfirmModal />);
+      openWithToggle(
+        () => true,
+        () => true,
+        vi.fn(),
+      );
+
+      const box = screen.getByLabelText("Shrink videos before sending") as HTMLInputElement;
+      expect(box).toBe(screen.getByTestId("confirm-modal-toggle-input"));
+      expect(box.type).toBe("checkbox");
+      expect(box.checked).toBe(true);
+    });
+
+    it("reports a flip back to the caller", () => {
+      const onToggle = vi.fn();
+      render(() => <ConfirmModal />);
+      openWithToggle(
+        () => true,
+        () => false,
+        onToggle,
+      );
+
+      fireEvent.click(screen.getByTestId("confirm-modal-toggle-input"));
+
+      expect(onToggle).toHaveBeenCalledWith(true);
+    });
+
+    // Reactive both ways, without the request being replaced: the caller's
+    // `shown` going false takes the switch away (the upload confirm's last
+    // video row was removed), and its state follows the caller's signal.
+    it("follows the caller's shown and checked without the request being replaced", async () => {
+      const [shown, setShown] = createSignal(true);
+      const [checked, setChecked] = createSignal(false);
+      render(() => <ConfirmModal />);
+      openWithToggle(shown, checked, setChecked);
+
+      fireEvent.click(screen.getByTestId("confirm-modal-toggle-input"));
+      await waitFor(() =>
+        expect((screen.getByTestId("confirm-modal-toggle-input") as HTMLInputElement).checked).toBe(
+          true,
+        ),
+      );
+
+      setShown(false);
+      await waitFor(() => expect(screen.queryByTestId("confirm-modal-toggle")).toBeNull());
+      // Still the same dialog, still answering with Enter on Send.
+      expect(document.activeElement).toBe(screen.getByTestId("confirm-modal-confirm"));
+    });
+
+    function openWithChoiceless(): void {
+      requestConfirm({
+        title: "t",
+        body: "b",
+        confirmLabel: "Yes",
+        onConfirm: vi.fn(),
+        alternative: null,
+        choice: null,
+        toggle: null,
+        attachments: null,
+        defaultButton: "cancel",
+      });
+    }
   });
 });

@@ -236,6 +236,7 @@ function routeGuardedText(
         },
         attachments: null,
         choice: null,
+        toggle: null,
         defaultButton: "cancel",
       });
       return;
@@ -253,6 +254,7 @@ function routeGuardedText(
         alternative: null,
         attachments: null,
         choice: null,
+        toggle: null,
         defaultButton: "cancel",
       });
       return;

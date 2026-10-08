@@ -6348,6 +6348,22 @@ html.is-ios27-band .shell {
   cursor: pointer;
 }
 
+/* issue 2343 — the optional on/off term, under the choice and laid out like it:
+   same gap, same muted label size, so the two read as one block of terms. The
+   checkbox keeps the browser's own drawing (the global input rule excludes
+   checkboxes, as SettingsDrawer's copy of this same switch does). */
+.confirm-modal-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+.confirm-modal-toggle-label {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .confirm-modal-cancel {
   background: transparent;
   color: var(--fg);

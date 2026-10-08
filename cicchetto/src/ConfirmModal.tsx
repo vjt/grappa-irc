@@ -291,6 +291,27 @@ const ConfirmModal: Component = () => {
                 </label>
               )}
             </Show>
+            {/* issue 2343 — the optional on/off term, directly under the
+                choice: both are terms of THIS batch, so they read as one block
+                between the files and the answer. `shown` is the caller's call
+                and is reactive, so the switch leaves the moment it stops
+                meaning anything instead of lingering inert. */}
+            <Show when={req().toggle}>
+              {(tg) => (
+                <Show when={tg().shown()}>
+                  <label class="confirm-modal-toggle" data-testid="confirm-modal-toggle">
+                    <input
+                      type="checkbox"
+                      class="confirm-modal-toggle-input"
+                      data-testid="confirm-modal-toggle-input"
+                      checked={tg().checked()}
+                      onChange={(e) => tg().onToggle(e.currentTarget.checked)}
+                    />
+                    <span class="confirm-modal-toggle-label">{tg().label}</span>
+                  </label>
+                </Show>
+              )}
+            </Show>
             <div class="confirm-modal-actions">
               <button
                 ref={cancelBtn}

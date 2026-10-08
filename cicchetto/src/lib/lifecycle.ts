@@ -160,6 +160,7 @@ export function confirmDetach(onDone: () => void): void {
     alternative: null,
     attachments: null,
     choice: null,
+    toggle: null,
     defaultButton: "cancel",
   });
 }
@@ -178,6 +179,7 @@ export function confirmQuit(onDone: () => void): void {
     alternative: null,
     attachments: null,
     choice: null,
+    toggle: null,
     defaultButton: "cancel",
   });
 }
