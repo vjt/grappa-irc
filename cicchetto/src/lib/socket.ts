@@ -288,7 +288,12 @@ let _socket: Socket | null = null;
 // declaring the key. `MIN_SERVER_PROTOCOL_VERSION` stays at 9: a 34-36
 // server still sends the key, and an undeclared key is dropped, never
 // rejected.
-export const CLIENT_PROTOCOL_VERSION = 37;
+//
+// 38 (issue 2347) — `GET`/`PUT /me/settings/ban-mask-form`, the default ban
+// type `/kb` and Kickban compose. REST only, no push. A pre-38 server 404s
+// the read, and the bundle falls back to `"host"` — the mask `/kb` always
+// sent — so `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 38;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //
