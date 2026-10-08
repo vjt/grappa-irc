@@ -755,3 +755,38 @@ assertions (vitest "does not write the answer back", e2e arms (a)/(b)).
 **Apply:** a new per-batch upload term follows this shape: seed from the
 stored preference, carry per item with `null` for "not asked", resolve once
 per attempt, never write back without a ruling.
+<!-- entry #2345 -->
+
+---
+
+## 2026-10-08 — #2345: the posted upload link names its TTL, from the token the host was sent
+
+An upload posted into a channel used to be a bare `📸 https://…`; a reader
+on a plain IRC client, or scrolling back later, could only learn whether
+it was still live by clicking into the deliberate opaque 404. cic now
+appends the TTL the upload was sent with — `📸 https://… (24h)` — and the
+reader adds it to the timestamp their own client shows. Relative and not an
+absolute expiry: an absolute time needs a timezone, and the message
+timestamp is already local to each reader.
+
+**The figure comes from the host token that went over the wire**
+(`ttlSuffix/2` in `uploadOrchestrator.ts`), never re-derived from the
+stored preference. That token already folds the three layers #2094 set up
+(batch choice → preference → host default), and the embedded server
+REFUSES a value off `@allowed_ttl_seconds` with a 400 instead of clamping
+it, so the suffix is the deletion time the server applied. A token the
+active host's ladder does not name posts the bare link: there is nothing
+known to say, and a guessed figure is worse than none.
+
+**Format:** hours, comma decimal (the requester's spelling), cut DOWN to
+the tenth. Rounding up would tell a reader a dead link is still live; the
+cut errs towards "already gone". Every ladder shipped today is whole hours,
+so the fraction is dormant. Not decided here, deliberately: whether the
+separator follows the UI locale once i18n lands.
+
+**#2288's `[NNN]` handle**, if it lands, goes in FRONT of the URL —
+`[042] https://… (1,5h)` — so the suffix stays the line's last token.
+
+**Apply:** the posted body is composed in cic, not the server, and nothing
+server-side parses it. A consumer that extracts the upload URL from a body
+must stop at the first space: the link is followed by ` (<n>h)`.
