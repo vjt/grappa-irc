@@ -949,7 +949,9 @@ defmodule Grappa.UserSettings do
   @spec get_ban_mask_form(Subject.t()) :: ban_mask_form()
   def get_ban_mask_form({_, _} = subject) do
     case fetch_existing_or_nil(subject) do
-      nil -> @ban_mask_form_default
+      nil ->
+        @ban_mask_form_default
+
       %Settings{data: data} ->
         Map.get(@ban_mask_forms, data[@ban_mask_form_key], @ban_mask_form_default)
     end
