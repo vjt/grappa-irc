@@ -909,3 +909,42 @@ because the first join's line already matches. "Not greyed" is not a gate
 either, because a `pending` row is not greyed. The rejoin's JOIN sat ~2s in
 the send bucket, the stale gate passed, and the next KICK hit a channel the
 session was not in. Gate on the live (non-pseudo) row plus the member list.
+<!-- entry #2347 -->
+
+---
+
+## 2026-10-08 — #2347: the default ban type is a per-user setting, stored on the server
+
+**Ask (Mezmerize, ruled «va bene accoda» by vjt, 2026-10-06):** a setting
+that picks the ban type `/kb` and the Kickban menu entry send — `nick`
+(`nick!*@*`), `host` (`*!*@host`) or `user_host` (`*!user@host`). The fixed
+Ban nick / Ban host entries #2346 added keep their own form. Fail-closed
+stays: a form whose component is unknown sends no ban, and the kick still
+fires.
+
+**Where it lives — a new `user_settings.data` key `"ban_mask_form"`, not
+`localStorage` (orchestrator ruling, Fork 2 = A).** Every per-user setting
+already lives server-side under its own key with its own
+`/me/settings/<key>` door, and a ban type picked on the desktop should be
+the one `/kb` uses from the phone. The door is REST get/put only, the
+`upload_confirm_enabled` shape (v11): the client reads the value when it
+composes the ban and nothing on the server acts on it, so a live push
+(the #1894 shape) would buy a mirror nobody needs and one more kind for
+shottino to learn.
+
+**Shape.** The context speaks atoms (`:nick | :host | :user_host`), the
+wire speaks the strings cic's `BanMaskForm` already uses; the closed set
+is spelled once, as a map, so a user-controlled string never becomes an
+atom by `String.to_existing_atom/1` ("an atom that exists" is a wider set
+than this one). The default `"host"` DELETES the key — one spelling for
+the default in storage — and a stored value outside the set reads back as
+`:host`, because an unknown value must not turn into a wider or narrower
+ban than the subject picked. A missing body key is a 400; every value
+outside the set, `null` included, is a 422 on `field_errors.ban_mask_form`,
+checked once in the context rather than twice.
+
+**Protocol 38.** Bumped on the #1393d rule. Unlike v11, `wire_pin` sees this
+change: since #2037 the digest spans the JSON views' `@spec`s, and
+`ban_mask_form_response` is one. `@min_protocol_version` and cic's
+`MIN_SERVER_PROTOCOL_VERSION` stay put: a pre-38 server 404s the read and
+cic falls back to `"host"`, which is what `/kb` sent before.
