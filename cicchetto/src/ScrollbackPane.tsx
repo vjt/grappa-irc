@@ -531,7 +531,7 @@ const userhostSuffix = (msg: ScrollbackMessage): string => {
 // issue 2346 — the host a join/part/quit row's prefix carried, for the ban
 // rows: `*!*@host` straight off the row, no USERHOST round-trip, and the only
 // host there is for a nick that has since QUIT. null on every other kind
-// (their meta carries no prefix) and on a cloaked prefix.
+// (their meta carries no prefix) and when the meta carries no host at all.
 const isJoinPartQuit = (msg: ScrollbackMessage): boolean =>
   msg.kind === "join" || msg.kind === "part" || msg.kind === "quit";
 
@@ -2459,7 +2459,11 @@ const ScrollbackPane: Component<Props> = (props) => {
         channelName: props.channelName,
         nick: msg.sender,
         host: presenceHost(msg),
-        ownModes: ownModes(),
+        // A getter, so the rows re-gate live if we are deopped with the menu up
+        // — the nick menu reads its prop the same way.
+        get ownModes() {
+          return ownModes();
+        },
       };
     };
     const openMenuForRow = (row: HTMLElement, at: Point): void => {

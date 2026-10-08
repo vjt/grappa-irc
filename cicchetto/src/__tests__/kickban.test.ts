@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // so the menus run the SAME verb. `/kb`'s own wiring stays pinned in
 // compose.test.ts; this file pins the shared verb, including the one thing
 // the menus add: a host the caller already KNOWS (a join/part/quit row's
-// prefix) is used as-is and the USERHOST round-trip is skipped.
+// prefix) is used as-is by `banHost`, and `kickban` refuses one: it kicks
+// whoever holds the nick now, so it must ban THAT person's host.
 
 const mockBan = vi.fn();
 const mockKick = vi.fn();
@@ -79,17 +80,19 @@ describe("banHost", () => {
 });
 
 describe("kickban", () => {
-  it("with a known host: bans *!*@host FIRST, then kicks, no lookup", async () => {
+  beforeEach(() => mockResolve.mockResolvedValue({ user: "ident", host: "h.example" }));
+
+  it("resolves the CURRENT holder's host, bans *!*@host FIRST, then kicks", async () => {
+    mockResolve.mockResolvedValue({ user: "ident", host: "flapper.example.net" });
     const err = await kickban({
       networkId: 7,
       channel: "#grappa",
       nick: "Guest123",
       reason: "",
-      knownHost: "flapper.example.net",
       label: "Kickban",
     });
     expect(err).toBeNull();
-    expect(mockResolve).not.toHaveBeenCalled();
+    expect(mockResolve).toHaveBeenCalledWith(7, "Guest123");
     expect(mockBan).toHaveBeenCalledWith(7, "#grappa", "*!*@flapper.example.net");
     expect(mockKick).toHaveBeenCalledWith(7, "#grappa", "Guest123", "");
     const [banOrder] = mockBan.mock.invocationCallOrder;
@@ -105,7 +108,6 @@ describe("kickban", () => {
       channel: "#grappa",
       nick: "alice",
       reason: "",
-      knownHost: null,
       label: "Kickban",
     });
     expect(mockBan).not.toHaveBeenCalled();
@@ -123,7 +125,6 @@ describe("kickban", () => {
       channel: "#grappa",
       nick: "alice",
       reason: "",
-      knownHost: "h.example",
       label: "Kickban",
     });
     expect(err).toMatch(/^Kickban: ban failed — /);
@@ -136,7 +137,6 @@ describe("kickban", () => {
       channel: "#grappa",
       nick: "alice",
       reason: "",
-      knownHost: "h.example",
       label: "Kickban",
     });
     expect(err).toMatch(/^Kickban: kick failed — /);

@@ -9,14 +9,21 @@
 // the WIRE by the peer (the MODE / KICK it receives), not by a menu rendering:
 //
 //   1. a hold on a JOIN row opens the row menu, whose Ban host takes the host
-//      straight off the row's own prefix — asserted EXACT, against the
-//      `[user@host]` the row displays, so a mask built from anywhere else fails;
+//      off the row's own prefix — asserted EXACT against the `[user@host]` the
+//      row displays. (The peer is still present, so the userhost lookup would
+//      return the same host: this proves the mask, not WHICH source built it;
+//      the known-host path is pinned in the unit tests.)
 //   2. a hold on the NICK inside that row opens the nick menu (not the message
 //      menu) and Ban nick sends `nick!*@*`;
 //   3. a hold on a members-pane nick opens the nick menu, and Kickban sends
 //      both the `*!*@host` ban and the KICK, and the peer leaves the members
 //      pane. (Ban-BEFORE-kick is pinned in the unit tests; the two waits here
 //      do not order the frames.)
+//
+// NOT covered here: that the hold's release is not turned into a click. These
+// TouchEvents are built in-page, hence untrusted, and Chromium never makes a
+// click out of an untrusted touchend — an assertion on it could not fail. The
+// release shield is pinned only as `defaultPrevented` in nickLongPress.test.ts.
 //
 // Harness, as in the #1067 / #2014 siblings: chromium with `hasTouch: true`,
 // which puts the primary pointer at COARSE; the gesture is synthesized in-page
@@ -160,9 +167,6 @@ test("issue 2346 — a hold on the NICK in a row opens the nick menu; Ban nick s
     // The NICK menu, not the row menu: it has Query and no Copy.
     await expect(menuItem(page, "Query")).toBeVisible();
     await expect(menuItem(page, "Copy")).toHaveCount(0);
-    // And the hold's release did not fall through as a tap: a tap on a nick
-    // opens a query window and closes the menu.
-    await expect(page.locator(".context-menu")).toBeVisible();
 
     const sawBan = peer.waitForLine(
       new RegExp(`MODE ${escapeRe(channel)} \\+b ${escapeRe(peer.nick)}!\\*@\\*`),

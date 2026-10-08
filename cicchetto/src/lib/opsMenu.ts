@@ -48,7 +48,9 @@ export type BanMenuTarget = {
   channelName: string;
   nick: string;
   // The host the caller already has — a presence row's prefix — or null to
-  // resolve it from the server's userhost cache at click time.
+  // resolve it from the server's userhost cache at click time. Ban host only:
+  // Kickban always resolves, because it kicks whoever holds the nick NOW and
+  // a row's host may belong to an earlier holder of a recycled nick.
   host: string | null;
   ownModes: string[];
 };
@@ -75,7 +77,7 @@ export function banMenuItems(t: BanMenuTarget): ContextMenuAction[] {
           pushChannelBan(
             t.networkId,
             t.channelName,
-            buildBanMask("nick", { nick: t.nick, user: null, host: null }) ?? `${t.nick}!*@*`,
+            buildBanMask("nick", { nick: t.nick, user: null, host: null }),
           ),
         ),
     },
@@ -104,7 +106,6 @@ export function banMenuItems(t: BanMenuTarget): ContextMenuAction[] {
             channel: t.channelName,
             nick: t.nick,
             reason: "",
-            knownHost: t.host,
             label: "Kickban",
           }),
         ),
