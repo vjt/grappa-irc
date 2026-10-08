@@ -37,7 +37,27 @@ async function cdpSwipeRight(cdp: CDPSession, x: number, y: number, dx: number):
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 }
 
-test("@touch issue 2356 — a swipe right completes a non-empty nick prefix", async ({ page }) => {
+// The drafts, each ending in a nick prefix at the caret. vjt's two reported
+// repros come verbatim in shape (his words, his nick swapped for the spec's),
+// and the controls split the two readings of "it depends on the content":
+// the NUMBER of words vs the LENGTH of the line.
+type Case = { name: string; lead: string; word: (nick: string) => string };
+const CASES: Case[] = [
+  { name: "bare prefix", lead: "", word: (n) => n.slice(0, 3) },
+  { name: "vjt repro 1", lead: "asd d dh dh hdj djjdjd ", word: (n) => n },
+  { name: "vjt repro 1, prefix", lead: "asd d dh dh hdj djjdjd ", word: (n) => n.slice(0, 3) },
+  { name: "vjt repro 2", lead: "a a a a a a a ", word: (n) => n },
+  { name: "vjt repro 2, prefix", lead: "a a a a a a a ", word: (n) => n.slice(0, 3) },
+  { name: "1 word, same length as repro 2", lead: "aaaaaaaaaaaaa ", word: (n) => n.slice(0, 3) },
+  { name: "2 words", lead: "a ", word: (n) => n.slice(0, 3) },
+  {
+    name: "wraps past the input width",
+    lead: "una riga lunga che va a capo nel textarea stretto del telefono ",
+    word: (n) => n.slice(0, 3),
+  },
+];
+
+test("@touch issue 2356 — a swipe right completes the nick at the caret", async ({ page }) => {
   if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
   const nick = specNick();
   // The production gesture diag ring (`cic_diag`): ComposeBox pushes its own
@@ -48,19 +68,7 @@ test("@touch issue 2356 — a swipe right completes a non-empty nick prefix", as
 
   const ta = composeTextarea(page);
   await expect(ta).toBeVisible();
-  const prefix = nick.slice(0, 3);
-  const completed = `${nick}: `;
-
-  // Barrier: the keyboard door completes the same prefix.
   await ta.click();
-  await ta.fill(prefix);
-  await ta.press("Tab");
-  await expect(ta).toHaveValue(completed);
-
-  // Re-arm: `fill` fires input → setDraft, which drops the tab cycle.
-  await ta.fill(prefix);
-  await expect(ta).toHaveValue(prefix);
-  expect(await ta.evaluate((el: HTMLTextAreaElement) => el.selectionEnd)).toBe(prefix.length);
 
   // Probe: every touch phase as the textarea saw it, read AFTER the
   // production listener ran (a bubble listener on window), so a red explains
@@ -72,24 +80,46 @@ test("@touch issue 2356 — a swipe right completes a non-empty nick prefix", as
       window.addEventListener(type, (e) => {
         if (e.target !== el) return;
         w.__touchLog.push(
-          `${type} t=${Math.round(e.timeStamp)} trusted=${e.isTrusted} cancelable=${e.cancelable} prevented=${e.defaultPrevented} sel=${el.selectionStart},${el.selectionEnd} value=${JSON.stringify(el.value)}`,
+          `${type} t=${Math.round(e.timeStamp)} prevented=${e.defaultPrevented} sel=${el.selectionStart},${el.selectionEnd} st=${el.scrollTop} value=${JSON.stringify(el.value)}`,
         );
       });
     }
   });
-
-  const box = await ta.boundingBox();
-  if (box === null) throw new Error("compose textarea has no box");
   const cdp = await page.context().newCDPSession(page);
-  // Start over the typed text — the reported shape — and drag right.
-  await cdpSwipeRight(cdp, box.x + 12, box.y + box.height / 2, 120);
 
-  const log = await page.evaluate(() => (window as unknown as { __touchLog: string[] }).__touchLog);
-  const diag = await page.getByTestId("diag-float-swipe").innerText();
-  await test.info().attach("touch-log", {
-    body: `${log.join("\n")}\n--- diag ring (newest first) ---\n${diag}`,
-    contentType: "text/plain",
-  });
+  for (const c of CASES) {
+    const draft = c.lead + c.word(nick);
+    // A nick that is the first token is an addressee (": "), anywhere else a
+    // word (" ") — the engine's own suffix rule.
+    const completed = `${c.lead}${nick}${c.lead === "" ? ": " : " "}`;
 
-  await expect(ta).toHaveValue(completed);
+    // Barrier, per case: the keyboard door completes THIS draft, so a swipe
+    // red below can only be the gesture door, never the engine or the members.
+    await ta.fill(draft);
+    await ta.press("Tab");
+    await expect.soft(ta, `${c.name}: Tab`).toHaveValue(completed);
+
+    // Re-arm: `fill` fires input → setDraft, which drops the tab cycle.
+    await ta.fill(draft);
+    await expect(ta).toHaveValue(draft);
+    await page.evaluate(() => {
+      (window as unknown as { __touchLog: string[] }).__touchLog.length = 0;
+    });
+
+    const box = await ta.boundingBox();
+    if (box === null) throw new Error("compose textarea has no box");
+    // Start over the typed text — the reported shape — and drag right.
+    await cdpSwipeRight(cdp, box.x + 12, box.y + box.height / 2, 120);
+
+    await expect.soft(ta, `${c.name}: swipe`).toHaveValue(completed);
+    const log = await page.evaluate(
+      () => (window as unknown as { __touchLog: string[] }).__touchLog,
+    );
+    const diag = await page.getByTestId("diag-float-swipe").innerText();
+    const body = `draft=${JSON.stringify(draft)} final=${JSON.stringify(await ta.inputValue())}\n${log.join("\n")}\n--- diag ring (newest first) ---\n${diag}`;
+    // Printed as well as attached: a green run keeps no attachments, and a
+    // green case is evidence too.
+    console.log(`[2356] ${c.name}\n${body}`);
+    await test.info().attach(`touch-log ${c.name}`, { body, contentType: "text/plain" });
+  }
 });
