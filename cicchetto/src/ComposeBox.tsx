@@ -245,6 +245,9 @@ const ComposeBox: Component<Props> = (props) => {
   // runtime. Reset every touchstart; read once, at touchend.
   let swipeStartTime = 0;
   let claimedAxis: DragAxis | null = null;
+  // issue 2356 — touchmoves received this touch, claimed or not. Diag only:
+  // it splits "no touchmove ever arrived" from "moved, but not claimed".
+  let moveCount = 0;
   // On-device gesture diagnostics (#123): captured once per touch at
   // touchstart so the flag is read a single time, not per move. When on,
   // touchstart / claim / touchend push a line into diagLog for DiagFloat to
@@ -335,16 +338,18 @@ const ComposeBox: Component<Props> = (props) => {
     swipeStart = t ? { x: t.clientX, y: t.clientY } : null;
     swipeStartTime = performance.now();
     claimedAxis = null;
+    moveCount = 0;
     diagOn = isDiagEnabled();
     if (diagOn && textareaEl && t) {
       const el = textareaEl;
       diagPush(
-        `TS y=${Math.round(t.clientY)} st=${el.scrollTop} sh=${el.scrollHeight} ch=${el.clientHeight}`,
+        `TS y=${Math.round(t.clientY)} st=${el.scrollTop} sh=${el.scrollHeight} ch=${el.clientHeight} sel=${el.selectionStart},${el.selectionEnd}`,
       );
     }
   };
 
   const onTouchMove = (e: TouchEvent) => {
+    moveCount += 1;
     if (swipeStart === null || e.touches.length !== 1) return;
     const t = e.touches[0];
     if (t === undefined) return;
@@ -391,8 +396,12 @@ const ComposeBox: Component<Props> = (props) => {
       claimed === null ? null : gestureAction(start, end, performance.now() - swipeStartTime);
     if (diagOn) {
       const st = textareaEl ? textareaEl.scrollTop : -1;
+      // issue 2356 — dx, the move count and the selection are what separate
+      // the three ways a horizontal drag goes unclaimed (#1205 selection, no
+      // touchmove, under the slop) from each other and from a tap.
+      const sel = textareaEl ? `${textareaEl.selectionStart},${textareaEl.selectionEnd}` : "-";
       diagPush(
-        `END claimed=${claimed ?? "no"} act=${action ?? "none"} dy=${Math.round(end.y - start.y)} st=${st}`,
+        `END claimed=${claimed ?? "no"} act=${action ?? "none"} dy=${Math.round(end.y - start.y)} st=${st} dx=${Math.round(end.x - start.x)} moves=${moveCount} sel=${sel}`,
       );
     }
     switch (action) {
