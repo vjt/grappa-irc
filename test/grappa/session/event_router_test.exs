@@ -73,6 +73,11 @@ defmodule Grappa.Session.EventRouterTest do
     )
   end
 
+  defp membership_snapshots(effects),
+    do: Enum.filter(effects, &match?({:membership_snapshot, _, _}, &1))
+
+  defp names_replies(effects), do: Enum.filter(effects, &match?({:names_reply, _, _, _}, &1))
+
   defp msg(command, params, prefix \\ nil) do
     %Message{command: command, params: params, prefix: prefix, tags: %{}}
   end
@@ -4441,9 +4446,39 @@ defmodule Grappa.Session.EventRouterTest do
 
       m = msg({:numeric, 366}, ["vjt", "#italia", "End of /NAMES list."], {:server, "irc"})
 
-      assert {:cont, ^state, [{:members_seeded, "#italia", members}]} = EventRouter.route(m, state)
+      assert {:cont, ^state, [{:members_seeded, "#italia", members} | _]} = EventRouter.route(m, state)
       # The router emits the raw map; server.ex sorts + serializes for the wire.
       assert members == %{"vjt" => [], "alice" => ["@"]}
+    end
+
+    # issue 2348 — the persisted membership snapshot. Counted by filtering
+    # rather than by the effect list's exact shape, so the order or a sibling
+    # effect can move without touching these.
+    test "366 on a JOINED channel emits exactly one :membership_snapshot with the roster" do
+      roster = %{"vjt" => ["@"], "alice" => [], "Bob" => ["+"]}
+      state = base_state(%{members: %{"#sniffo" => roster}})
+      m = msg({:numeric, 366}, ["vjt", "#sniffo", "End of /NAMES list."], {:server, "irc"})
+
+      {:cont, _, effects} = EventRouter.route(m, state)
+
+      assert [{:membership_snapshot, "#sniffo", ^roster}] = membership_snapshots(effects)
+    end
+
+    test "366 answering /names on a channel we are NOT in emits no :membership_snapshot" do
+      # The /names reply for an unjoined channel ends in the same 366, but
+      # the session holds no roster of its own there: persisting one would
+      # record a membership that never existed.
+      state =
+        base_state(%{
+          members: %{"#sniffo" => %{"vjt" => []}},
+          names_pending: %{"#other" => %{target_display: "#other", names: ["@alice", "bob"]}}
+        })
+
+      m = msg({:numeric, 366}, ["vjt", "#other", "End of /NAMES list."], {:server, "irc"})
+
+      {:cont, _, effects} = EventRouter.route(m, state)
+
+      assert membership_snapshots(effects) == []
     end
 
     test "366 for a channel with no members entry still emits :members_seeded (empty channel)" do
@@ -7352,8 +7387,12 @@ defmodule Grappa.Session.EventRouterTest do
       {:cont, _, effects_nj} = EventRouter.route(m, not_joined)
       {:cont, _, effects_j} = EventRouter.route(m, joined)
 
-      assert [{:members_seeded, "#bofh", _}, {:names_reply, "#bofh", roster_nj, nil}] = effects_nj
-      assert [{:members_seeded, "#bofh", _}, {:names_reply, "#bofh", roster_j, nil}] = effects_j
+      # The joined side also carries issue 2348's :membership_snapshot; the
+      # claim here is about the names_reply alone, so pick it out.
+      assert [{:names_reply, "#bofh", roster_nj, nil}] = names_replies(effects_nj)
+      assert [{:names_reply, "#bofh", roster_j, nil}] = names_replies(effects_j)
+      assert membership_snapshots(effects_nj) == []
+      assert [{:membership_snapshot, "#bofh", _}] = membership_snapshots(effects_j)
       assert roster_nj == [{"alice", ["@"]}, {"bob", ["+"]}]
       assert roster_j == roster_nj
     end

@@ -85,6 +85,7 @@ defmodule Grappa.Session.Server do
 
   alias Grappa.{
     ChannelDirectory,
+    ChannelSnapshots,
     Dcc,
     Log,
     Mentions,
@@ -6531,6 +6532,26 @@ defmodule Grappa.Session.Server do
         channel,
         SessionWire.members_seeded(state.network_slug, channel, members)
       )
+
+    apply_effects(rest, state)
+  end
+
+  # issue 2348 — persist the JOINED channel's roster at its 366 (the router
+  # gates on the members entry). Logged and continued on failure, like every
+  # persist here: a slow DB must never cost the user the upstream link.
+  defp apply_effects([{:membership_snapshot, channel, members_map} | rest], state) do
+    ts = System.system_time(:millisecond)
+
+    case ChannelSnapshots.record(state.subject, state.network_id, channel, members_map, ts) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("channel snapshot insert failed — session continues",
+          channel: channel,
+          error: inspect(reason)
+        )
+    end
 
     apply_effects(rest, state)
   end

@@ -14,6 +14,7 @@ defmodule Grappa.Session.EventRouter do
               | {:topic_changed, channel, topic_entry()}
               | {:channel_modes_changed, channel, channel_mode_entry()}
               | {:members_seeded, channel, members} -- 366 RPL_ENDOFNAMES landed; carries snapshot
+              | {:membership_snapshot, channel, members} -- same 366, JOINED channel only: persist it
 
   This shape was extracted per the 2026-04-27 architecture review
   (finding A6, CP10 D4) and mirrors `Grappa.IRC.AuthFSM` from D2 — the
@@ -294,6 +295,7 @@ defmodule Grappa.Session.EventRouter do
           | {:channel_created, String.t(), DateTime.t()}
           | {:away_confirmed, :present | :away}
           | {:members_seeded, String.t(), %{(nick :: String.t()) => modes :: [String.t()]}}
+          | {:membership_snapshot, String.t(), %{(nick :: String.t()) => modes :: [String.t()]}}
           | {:names_reply, channel :: String.t(), roster :: [{String.t(), [String.t()]}], Grappa.Session.reply_to()}
           | {:who_reply, target :: String.t(), users :: [map()], Grappa.Session.reply_to()}
           | {:server_reply, source :: Grappa.Session.Wire.server_reply_source(), lines :: [String.t()],
@@ -1446,6 +1448,12 @@ defmodule Grappa.Session.EventRouter do
   # ALWAYS fires here (the JOIN-time seed path); names_reply fires ONLY
   # when the operator explicitly issued /names (the gate). One parser,
   # two consumers: seeding always, names_reply on request.
+  #
+  # issue 2348 — a third: {:membership_snapshot, channel, members} for the
+  # persisted roster, gated on the channel being JOINED (an entry in
+  # state.members). A /names on a channel we are not in ends in the same
+  # 366, and there the roster is not ours. On the join path the entry is
+  # complete here: self-JOIN reset it and every 353 precedes the 366.
   defp do_route(
          %Message{command: {:numeric, 366}, params: [_, channel, _ | _]},
          state
@@ -1454,9 +1462,14 @@ defmodule Grappa.Session.EventRouter do
     members = Map.get(state.members, channel, %{})
     members_seeded = {:members_seeded, channel, members}
 
+    snapshot =
+      if Map.has_key?(state.members, channel),
+        do: [{:membership_snapshot, channel, members}],
+        else: []
+
     {state_after_names, names_effects} = drain_names_pending(state, channel)
 
-    {:cont, state_after_names, [members_seeded | names_effects]}
+    {:cont, state_after_names, [members_seeded | snapshot ++ names_effects]}
   end
 
   # 311 RPL_WHOISUSER: `:server 311 own_nick target user host * :realname`.
