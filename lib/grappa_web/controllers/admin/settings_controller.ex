@@ -166,10 +166,13 @@ defmodule GrappaWeb.Admin.SettingsController do
   end
 
   # issue 2359 (ruling: LIVE) — a write that carried `auto_away` reaches the
-  # RUNNING sessions too, not only the next spawn. Gated on the subtree so an
-  # upload or dcc save does not wake every session for nothing; the context
+  # RUNNING sessions too, not only the next spawn. Gated on the KEY having been
+  # written (a `null` or `{}` subtree writes nothing) so an upload or dcc save
+  # does not wake every session for nothing; the context
   # decides, per session, whether anything moved.
-  defp reapply_auto_away(%{"auto_away" => _}), do: Session.reapply_auto_away_site_default()
+  defp reapply_auto_away(%{"auto_away" => %{"default_debounce_seconds" => _}}),
+    do: Session.reapply_auto_away_site_default()
+
   defp reapply_auto_away(_), do: :ok
 
   # UX-6-B2 (2026-05-21): fan out the new view on every live
