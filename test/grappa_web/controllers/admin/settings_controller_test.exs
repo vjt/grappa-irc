@@ -717,6 +717,117 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
     end
   end
 
+  describe "auto_away subtree (issue 2359)" do
+    setup do
+      {_, session} = user_and_session(is_admin: true)
+      %{session: session}
+    end
+
+    test "GET shows nothing stored, next to the fallback it stands in for", %{
+      conn: conn,
+      session: session
+    } do
+      conn = conn |> put_bearer(session.id) |> get("/admin/settings")
+
+      assert %{"settings" => %{"auto_away" => auto_away}} = json_response(conn, 200)
+
+      assert auto_away == %{
+               "default_debounce_seconds" => nil,
+               "fallback_debounce_seconds" => div(ServerSettings.auto_away_fallback_ms() + 999, 1000)
+             }
+    end
+
+    test "PUT stores every ladder value, off included, and reads it back", %{
+      conn: conn,
+      session: session
+    } do
+      for seconds <- [0, 60, 300, 600, 1800, 3600] do
+        resp = conn |> put_auto_away(session, seconds) |> json_response(200)
+        assert resp["settings"]["auto_away"]["default_debounce_seconds"] == seconds
+        assert ServerSettings.get_auto_away_default_seconds() == seconds
+      end
+    end
+
+    test "PUT null clears the stored value — the fallback applies again", %{
+      conn: conn,
+      session: session
+    } do
+      :ok = ServerSettings.put_auto_away_default_seconds(1800)
+
+      resp = conn |> put_auto_away(session, nil) |> json_response(200)
+
+      assert resp["settings"]["auto_away"]["default_debounce_seconds"] == nil
+      assert ServerSettings.get_auto_away_default_seconds() == nil
+      assert ServerSettings.auto_away_default_ms() == ServerSettings.auto_away_fallback_ms()
+    end
+
+    test "422 invalid_setting for a value off the ladder — nothing is stored", %{
+      conn: conn,
+      session: session
+    } do
+      for bad <- [45, -1, 7200, "600", 600.5, true] do
+        assert %{"error" => "invalid_setting", "field" => "auto_away.default_debounce_seconds"} =
+                 conn |> put_auto_away(session, bad) |> json_response(422)
+      end
+
+      assert ServerSettings.get_auto_away_default_seconds() == nil
+    end
+
+    test "422 invalid_setting names an unknown auto_away key — nothing is persisted", %{
+      conn: conn,
+      session: session
+    } do
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{
+          "auto_away" => %{"default_debounce_seconds" => 300, "debounce_seconds" => 300}
+        })
+
+      assert %{"error" => "invalid_setting", "field" => "auto_away.debounce_seconds"} =
+               json_response(conn, 422)
+
+      assert ServerSettings.get_auto_away_default_seconds() == nil
+    end
+
+    test "400 for a malformed (non-map) auto_away subtree — no silent swallow", %{
+      conn: conn,
+      session: session
+    } do
+      conn = conn |> put_bearer(session.id) |> put("/admin/settings", %{"auto_away" => 600})
+
+      assert json_response(conn, 400)
+    end
+
+    test "the fan-out carries the RESOLVED default every client renders", %{
+      conn: conn,
+      session: session
+    } do
+      user_name = "autoaway-#{System.unique_integer([:positive])}"
+      :ok = WSPresence.register(user_name, self())
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user_name))
+
+      assert conn |> put_auto_away(session, 0) |> json_response(200)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+        event: "event",
+        payload: %{kind: :server_settings_changed, auto_away: %{default_debounce_seconds: 0}}
+      }
+
+      assert build_conn() |> put_auto_away(session, nil) |> json_response(200)
+
+      fallback = div(ServerSettings.auto_away_fallback_ms() + 999, 1000)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+        event: "event",
+        payload: %{
+          kind: :server_settings_changed,
+          auto_away: %{default_debounce_seconds: ^fallback}
+        }
+      }
+    end
+  end
+
   describe "PUT /admin/settings — fan-out (UX-6-B2)" do
     setup do
       {_, session} = user_and_session(is_admin: true)
@@ -833,5 +944,11 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
       assert json_response(conn, 422)
       refute_receive %Phoenix.Socket.Broadcast{event: "event"}, 50
     end
+  end
+
+  defp put_auto_away(conn, session, value) do
+    conn
+    |> put_bearer(session.id)
+    |> put("/admin/settings", %{"auto_away" => %{"default_debounce_seconds" => value}})
   end
 end

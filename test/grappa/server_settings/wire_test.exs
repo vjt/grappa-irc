@@ -19,6 +19,7 @@ defmodule Grappa.ServerSettings.WireTest do
         per_visitor_cap_bytes: 104_857_600,
         video_max_duration_seconds: 120
       },
+      auto_away: %{default_debounce_seconds: 600},
       http_host_aliases: aliases
     }
   end
@@ -67,6 +68,15 @@ defmodule Grappa.ServerSettings.WireTest do
       assert decoded["upload"]["audio_per_file_cap_bytes"] == 26_214_400
       assert decoded["upload"]["video_max_duration_seconds"] == 120
       assert decoded["http_host_aliases"] == ["irc.sindro.me"]
+    end
+
+    test "carries the resolved auto-away site default (issue 2359), 0 = off" do
+      payload = Wire.server_settings_changed(view(:embedded, []))
+      assert payload.auto_away == %{default_debounce_seconds: 600}
+
+      off = Wire.server_settings_changed(%{view(:embedded, []) | auto_away: %{default_debounce_seconds: 0}})
+      decoded = off |> Jason.encode!() |> Jason.decode!()
+      assert decoded["auto_away"] == %{"default_debounce_seconds" => 0}
     end
 
     test "kind field is the discriminator cic dispatches on" do

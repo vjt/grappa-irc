@@ -8,7 +8,9 @@ defmodule GrappaWeb.Admin.SettingsController do
   Returns the admin settings view — the `upload` subtree of
   `public_view/0` plus the admin-only `addressing` (#543) and `dcc` (issue
   2185) subtrees, both read straight from the `Grappa.ServerSettings`
-  accessors because neither is part of `public_view/0`. It deliberately
+  accessors because neither is part of `public_view/0`, and the admin
+  projection of `auto_away` (issue 2359): the STORED site default
+  (`nil` = follow the boot fallback) next to that fallback. It deliberately
   OMITS the #324 `http_host_aliases` that the authenticated
   `/api/server-settings` carries: those are deployment config
   (env-derived), not an admin-editable DB setting. Wire shape:
@@ -29,6 +31,10 @@ defmodule GrappaWeb.Admin.SettingsController do
           dcc: %{
             max_transfer_bytes: pos_integer(),
             global_cap_bytes: pos_integer()
+          },
+          auto_away: %{
+            default_debounce_seconds: 0 | 60 | 300 | 600 | 1800 | 3600 | nil,
+            fallback_debounce_seconds: pos_integer()
           },
           addressing: %{
             mode: "pool_with_reservations" | "static_mapping_with_reservations",
@@ -57,18 +63,21 @@ defmodule GrappaWeb.Admin.SettingsController do
           "max_transfer_bytes" => pos_integer(),
           "global_cap_bytes" => pos_integer()
         },
+        "auto_away" => %{
+          "default_debounce_seconds" => 0 | 60 | 300 | 600 | 1800 | 3600 | nil
+        },
         "addressing" => %{
           "mode" => "pool_with_reservations" | "static_mapping_with_reservations",
           "static_mapping_prefix" => String.t()
         }
       }
 
-  All three of `upload`, `dcc` and `addressing` are independently optional
+  All four of `upload`, `dcc`, `auto_away` and `addressing` are independently optional
   subtrees, and every key within each is optional — the controller upserts
   only the keys present in the body. Any invalid value (out-of-set
   host/mode string, non-positive integer cap, non-16-bit-group prefix
   length) collapses to 422 `invalid_setting` with the offending dotted key
-  in `field`, and so does any key outside the three closed sets above
+  in `field`, and so does any key outside the four closed sets above
   (#1407 W-S3) — a typo is named, never absorbed, and it refuses the WHOLE
   body rather than applying the keys it did recognise.
 
@@ -97,8 +106,8 @@ defmodule GrappaWeb.Admin.SettingsController do
   alias Grappa.PubSub.Topic
   alias Grappa.ServerSettings.Wire, as: SettingsWire
 
-  # The three closed key sets. Every entry here MUST have a matching
-  # `apply_upload_key/2` / `apply_dcc_key/2` clause (resp. a
+  # The four closed key sets. Every entry here MUST have a matching
+  # `apply_upload_key/2` / `apply_dcc_key/2` / `apply_auto_away_key/2` clause (resp. a
   # `resolve_addressing_*` one) — adding a key to one and not the other is
   # caught by that key's own per-key test, loudly, never silently.
   #
@@ -125,6 +134,10 @@ defmodule GrappaWeb.Admin.SettingsController do
   @dcc_keys ~w(max_transfer_bytes global_cap_bytes)
 
   @addressing_keys ~w(mode static_mapping_prefix)
+
+  # issue 2359 — the auto-away site default. One key; `null` is a VALUE here
+  # (delete the row, back to the boot fallback), not an absent key.
+  @auto_away_keys ~w(default_debounce_seconds)
 
   @doc false
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
@@ -179,7 +192,8 @@ defmodule GrappaWeb.Admin.SettingsController do
 
   defp apply_updates(params) when is_map(params) do
     with :ok <- apply_subtree(params, "upload", @upload_keys, &apply_upload_key/2),
-         :ok <- apply_subtree(params, "dcc", @dcc_keys, &apply_dcc_key/2) do
+         :ok <- apply_subtree(params, "dcc", @dcc_keys, &apply_dcc_key/2),
+         :ok <- apply_subtree(params, "auto_away", @auto_away_keys, &apply_auto_away_key/2) do
       apply_addressing(Map.get(params, "addressing"))
     end
   end
@@ -318,6 +332,22 @@ defmodule GrappaWeb.Admin.SettingsController do
   defp apply_dcc_key("global_cap_bytes", _),
     do: {:error, {:invalid_setting, "dcc.global_cap_bytes"}}
 
+  # ---- auto_away.* (issue 2359) ---------------------------------------
+  #
+  # The closed set is `ServerSettings`'s, so the controller does not restate
+  # it: anything the context refuses is the 422 naming the key. `nil`
+  # (JSON null) clears the stored value — the boot fallback applies again.
+  defp apply_auto_away_key("default_debounce_seconds", v) when is_integer(v) or is_nil(v) do
+    case ServerSettings.put_auto_away_default_seconds(v) do
+      :ok -> :ok
+      {:error, :db_unavailable} = err -> err
+      {:error, :invalid_value} -> {:error, {:invalid_setting, "auto_away.default_debounce_seconds"}}
+    end
+  end
+
+  defp apply_auto_away_key("default_debounce_seconds", _),
+    do: {:error, {:invalid_setting, "auto_away.default_debounce_seconds"}}
+
   # ---- addressing.* — probe-gated unit apply (#543 / #609) ----------
   #
   # Unlike `upload`, the addressing subtree is applied as a UNIT, not key by
@@ -426,6 +456,9 @@ defmodule GrappaWeb.Admin.SettingsController do
         max_transfer_bytes: ServerSettings.get_dcc_max_transfer_bytes(),
         global_cap_bytes: ServerSettings.get_dcc_global_cap_bytes()
       },
+      # issue 2359 — the STORED value (nil = follow the fallback) beside the
+      # fallback itself; the RESOLVED one is what `public_view/0` ships.
+      auto_away: ServerSettings.auto_away_admin_view(),
       addressing: %{
         mode: ServerSettings.addressing_mode(),
         static_mapping_prefix: ServerSettings.static_mapping_prefix()

@@ -22,6 +22,9 @@ defmodule Grappa.Application do
       Grappa.Push,
       Grappa.RateLimit,
       Grappa.Repo,
+      # issue 2359 — start/2 calls ServerSettings.boot/0 (the auto-away
+      # fallback DI-seam, moved off Session.Server).
+      Grappa.ServerSettings,
       Grappa.Session,
       Grappa.ShareTokens,
       Grappa.Uploads,
@@ -179,14 +182,18 @@ defmodule Grappa.Application do
     # CLAUDE.md-designated boundary (mirrors `Grappa.Uploads.boot/1`).
     :ok = Grappa.Cic.Bundle.boot(cic_dist_root())
 
-    # #671: resolve the auto-away debounce window into `:persistent_term`
-    # so `Grappa.Session.start_session/3` injects it into every session's
-    # start opts lock-free (dynamic children have no static-child inject
-    # point; boot → persistent_term → spawn-boundary inject is the
-    # start_link-opts pattern for them). Prod sets no config key → the
-    # compile-time 600_000 default; the integration env (config/dev.exs)
-    # sets it short. Mirrors `Grappa.Uploads.boot/1`.
-    :ok = Grappa.Session.Server.boot()
+    # #671: resolve the auto-away debounce FALLBACK into `:persistent_term`
+    # so `Grappa.Session.start_session/3` can resolve every session's window
+    # lock-free (dynamic children have no static-child inject point; boot →
+    # persistent_term → spawn-boundary inject is the start_link-opts pattern
+    # for them). Prod sets no config key → the compile-time 600_000 default;
+    # the integration env (config/dev.exs) sets it short. Owned by
+    # `ServerSettings` since issue 2359: an admin-stored site default
+    # overrides it at runtime, and this stays the value when none is stored.
+    :ok =
+      :grappa
+      |> Application.get_env(Grappa.Session.Server, [])
+      |> Grappa.ServerSettings.boot()
 
     # Child order is load-bearing — see CLAUDE.md "Don't touch supervision
     # tree ordering casually." Each comment below documents the WHY so a
