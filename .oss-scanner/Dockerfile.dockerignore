@@ -1,0 +1,39 @@
+# Build-context filter for .oss-scanner/Dockerfile ONLY (BuildKit reads
+# `<Dockerfile>.dockerignore` in place of the root `.dockerignore`).
+#
+# The root file is written for grappa's own images and drops `docs/`; this
+# one keeps the source AND the design record, and drops only build output,
+# local state and nested worktrees.
+
+.git/
+.elixir_ls/
+.dialyxir_*
+.caches/
+
+_build/
+deps/
+cover/
+doc/
+priv/plts/
+
+runtime/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+.env
+.env.*
+!.env.example
+
+*.log
+*.swp
+*~
+
+**/node_modules
+cicchetto/dist/
+cicchetto/e2e/nginx-certs/
+cicchetto/e2e/test-results/
+cicchetto/e2e/playwright-report/
+
+.worktrees/
