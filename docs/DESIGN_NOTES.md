@@ -961,3 +961,73 @@ time — a change made with the menu open still applies. A wire value off
 the closed set reads as `"host"`: a form this bundle cannot build must not
 become another ban. The drawer select is put back by hand on a refused
 save, because Solid does not re-assign a `value` whose signal never moved.
+<!-- entry #2359 -->
+
+---
+
+## 2026-10-09 — issue 2359: the auto-away site default is an admin knob, and the user sees its value
+
+**The report.** A self-hoster: Settings → auto-away offered `use site
+default` with no value behind it, and the default itself could only move by
+editing app config and restarting. #348 left the label bare on purpose —
+cic could not know the server constant, and a copy would go stale.
+
+**What changed.** `auto_away.default_debounce_seconds` is a `ServerSettings`
+key on the upload-limit machinery (Admin → Settings, `server_settings_changed`
+fan-out). The server ships the RESOLVED value on every door
+(`GET /api/server-settings`, after-join snapshot, push), so the drawer
+reads `use site default (10 minutes)` / `(off)` off `serverSettings()` and
+re-labels live. That retires #348's reason for the bare label instead of
+contradicting it: the number still is never a copy kept in cic.
+
+**Encoding: seconds, `0` = off** — the per-subject
+`auto_away_debounce_seconds` encoding, because it is the same fact. The
+ladder `[0, 60, 300, 600, 1800, 3600]` is the user presets plus off, a
+closed set guarded in `put_auto_away_default_seconds/1` and turned into a
+422 at the controller, like every sibling key. No per-key changeset: none
+of the siblings has one, and a second validation pattern in one module is
+the thing CLAUDE.md's consistency rule exists to stop. The generated admin
+wire type says `non_neg_integer() | nil`, not the literal ladder, because
+the codegen renders no integer literals; the closed set lives in the
+context.
+
+**No row = the boot fallback, and `PUT null` deletes the row.** "The
+app-config value stays the boot fallback" is only true if the admin can get
+back to it; without the delete, the first save would make the config value
+dead for good. The admin view therefore carries the STORED value next to
+the fallback, so the select's "server config (N)" entry names what it
+stands for.
+
+**The fallback seam moved from `Session.Server` to `ServerSettings`.**
+`public_view/0` must ship the resolved value and Session must resolve
+against it; leaving the seam in Session would make ServerSettings depend
+on Session while Session depends on ServerSettings — a Boundary cycle. The
+config key is read at its OLD path,
+`config :grappa, Grappa.Session.Server, auto_away_debounce_ms:`, so an
+operator who set it keeps the value they set. `boot/1` now takes the
+keyword list (the `Uploads.boot/1` shape), which leaves `application.ex`
+as the only env reader and makes the seam testable without `put_env`. A
+non-positive value raises at boot: the fallback is rendered in whole
+seconds with `ceil`, and a `0` would read as "off". `init/1`'s own default
+stays the BOOT value, not the resolver — the resolver reads the DB and
+`init/1` re-runs on every `:transient` respawn.
+
+**One resolver, both doors.** `Session.Server.resolve_auto_away_debounce(nil)`
+reads `ServerSettings.auto_away_default_ms/0`. That covers the spawn
+boundary and the live preference refresh, so a user who goes back to "use
+site default" on a running session gets the CURRENT site value (tested).
+**Pushing an admin change into sessions that are already running is NOT
+built** — vjt's ruling is pending, and the resolver is what both answers
+need. If the ruling is "live", the change is one fan-out after a successful
+`auto_away` write in `Admin.SettingsController.update/2`: for each live
+session, re-resolve `auto_away_debounce_for(subject)` (re-reading the
+preference, so a session with its own value is untouched) and feed
+`apply_auto_away_debounce/2`. Until then, a fact for the ruling: the
+drawer label follows the admin live while a running session keeps the
+window it spawned with, so the label is ahead of the session until the
+session respawns.
+
+**Client tolerance.** The narrower degrades an absent or malformed value to
+`null` (bare label) instead of dropping the push, declared on both widening
+registries; strict would oblige `MIN_SERVER_PROTOCOL_VERSION` to 39 over a
+label. Protocol 39, the four version sites bumped together.

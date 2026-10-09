@@ -1157,6 +1157,34 @@ per-row reads, and the count is paid only when a confirm actually opens.
 Against a server older than v33 the route does not exist (404) — a client
 must treat that as "cannot confirm", not as zero.
 
+### 8e. The auto-away site default is on the wire (issue 2359, v39)
+
+`GET /api/server-settings`, the user-topic after-join snapshot and the
+`server_settings_changed` push carry a new subtree:
+
+```json
+"auto_away": { "default_debounce_seconds": 600 }
+```
+
+It is the window a session waits before the automatic `AWAY` when the
+subject chose no preference of their own (`auto_away_debounce_seconds`
+absent). Same encoding as that per-subject setting: **seconds, `0` = off**.
+It is the RESOLVED value — what the operator stored in Admin → Settings,
+else the deployment's boot config — so print it as is; there is nothing
+for a client to combine. It moves at runtime: re-render on every
+`server_settings_changed`, do not cache it for the session.
+
+Against a server older than v39 the subtree is absent. Render the
+no-preference entry WITHOUT a number then; do not substitute a guess.
+
+Admin console only (`is_admin` bearer): `GET`/`PUT /admin/settings` carry
+an `auto_away` subtree of their own —
+`{"default_debounce_seconds": <stored or null>, "fallback_debounce_seconds": n}`.
+`PUT` accepts `default_debounce_seconds` in `0, 60, 300, 600, 1800, 3600`
+or `null`, which deletes the stored value so the boot config applies
+again; anything else is **422 `invalid_setting`** with
+`field: "auto_away.default_debounce_seconds"`.
+
 ## 9. Event kind inventory (issue 2260)
 
 Every `"event"` frame carries a `kind`. This is the complete set the server
