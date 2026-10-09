@@ -449,8 +449,13 @@ defmodule Grappa.Session do
   whose user set their own delay is left exactly as it was, timer
   included. Fire-and-forget: the signal carries no value, because the
   value a session needs depends on a preference only the session's
-  subject owns. A session that dies before reading it respawns through
-  `start_session/3`, which resolves the same way.
+  subject owns.
+
+  ⚠️ Not durable across a `:transient` restart: the supervisor restarts a
+  crashed session with the child spec `start_session/3` built, so it comes
+  back on the window resolved at that ORIGINAL spawn until the next admin
+  save or a full stop/start. The same gap #348's live preference refresh
+  already has; see DESIGN_NOTES `#2359b`.
   """
   @spec reapply_auto_away_site_default() :: :ok
   def reapply_auto_away_site_default do
