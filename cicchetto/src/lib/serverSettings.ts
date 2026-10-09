@@ -2,7 +2,7 @@ import { createSignal } from "solid-js";
 import { token } from "./auth";
 import { identityScopedStore } from "./identityScopedStore";
 import type { UploadCategory } from "./uploadCategory";
-import type { ServerSettingsWireUploadView } from "./wireTypes";
+import type { ServerSettingsWireAutoAwayView, ServerSettingsWireUploadView } from "./wireTypes";
 
 // UX-6-B2 (2026-05-21) — operator-visible server-settings reactive
 // signal. Source of truth for the `embeddedHost.maxFileSizeBytes`
@@ -77,6 +77,11 @@ export type ServerSettingsView = {
   // array — `[]` before the first snapshot / on an old server — so the
   // classifier falls back to the page origin only.
   httpHostAliases: string[];
+  // issue 2359 — the auto-away SITE default, resolved by the server
+  // (admin-stored, else its boot fallback): seconds, `0` = off. `null`
+  // when the server did not say — before protocol 39, or a malformed
+  // value — and the drawer then prints the bare "use site default".
+  autoAwayDefaultSeconds: number | null;
 };
 
 // Public-subset wire shape — mirrors `GET /api/server-settings`
@@ -91,7 +96,14 @@ export type ServerSettingsView = {
 export type ServerSettingsWirePayload = {
   upload: ServerSettingsWireUploadView;
   http_host_aliases?: string[];
+  // issue 2359 — optional for the same reason as the aliases: a server
+  // before protocol 39 omits it, and the REST path is a blind cast.
+  auto_away?: ServerSettingsWireAutoAwayView | null;
 };
+
+// Seconds, `0` = off — anything else is not a window the server sent.
+const autoAwaySeconds = (v: unknown): number | null =>
+  typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null;
 
 const exports_ = identityScopedStore((onIdentityChange) => {
   const [serverSettings, setServerSettings] = createSignal<ServerSettingsView | null>(null);
@@ -117,6 +129,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       // #324 — absent (old server / pre-snapshot / REST blind-cast) → []
       // so mediaLink admits the page origin only (pre-#324 behaviour).
       httpHostAliases: raw.http_host_aliases ?? [],
+      autoAwayDefaultSeconds: autoAwaySeconds(raw.auto_away?.default_debounce_seconds),
     });
   };
 

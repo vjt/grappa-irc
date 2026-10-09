@@ -483,6 +483,10 @@ type NoArms<Message extends string, T> = [T] extends [never]
 //     to `WireSessionEvent["kind"]`, and this arm is `Grappa.RateLimit.Wire`
 //     — so the ONE arm whose widening was declared in prose could not be
 //     declared in types, and went unchecked in both directions.
+//   * `server_settings_changed.auto_away` (issue 2359) — `| null` over the
+//     generated subtree: a server before protocol 39 omits it, and the
+//     narrower degrades to `null` (the bare "use site default" label)
+//     rather than dropping the push and every upload knob with it.
 //
 // The generated type describes the server we ship; a widened field
 // describes the set of servers cic must survive. That is why these are not
@@ -497,6 +501,7 @@ export type DeliberatelyWidened = {
   recover_progress: "reason";
   recover_result: "reason";
   web_session_severed: "code";
+  server_settings_changed: "auto_away";
 };
 
 // The kinds cic declares by hand, and the kinds something here checks.

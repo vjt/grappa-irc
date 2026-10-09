@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { allRules, ruleBody, selectorList } from "./helpers/themeCss";
 
 vi.mock("@solidjs/router", () => ({
@@ -2495,16 +2495,59 @@ describe("SettingsDrawer — auto-away debounce (#348)", () => {
     expect(opts).toContain("600");
   });
 
-  // cic does NOT know the server's default — it is a server constant, and
-  // a copy here would print a stale number the day it changes.
-  it("names no number on the site-default option", () => {
+  // issue 2359 — the site-default entry carries the number the SERVER
+  // sends (`serverSettings()`), and only that: never a copy kept in cic,
+  // which would print a stale number the day the admin moves it.
+  const siteDefaultOption = (): HTMLOptionElement | undefined =>
+    Array.from(
+      (screen.getByTestId("auto-away-select") as HTMLSelectElement).querySelectorAll("option"),
+    ).find((o) => o.value === "");
+
+  const pushSiteDefault = async (seconds: number | null): Promise<void> => {
+    const { applyServerSettings } = await import("../lib/serverSettings");
+    applyServerSettings({
+      upload: {
+        active_host: "embedded",
+        image_per_file_cap_bytes: 10 * 1024 * 1024,
+        video_per_file_cap_bytes: 50 * 1024 * 1024,
+        document_per_file_cap_bytes: 10 * 1024 * 1024,
+        audio_per_file_cap_bytes: 25 * 1024 * 1024,
+        global_cap_bytes: 10 * 1024 * 1024 * 1024,
+        per_user_cap_bytes: 1024 * 1024 * 1024,
+        per_visitor_cap_bytes: 100 * 1024 * 1024,
+        video_max_duration_seconds: 120,
+      },
+      http_host_aliases: [],
+      auto_away: seconds === null ? null : { default_debounce_seconds: seconds },
+    });
+  };
+
+  afterEach(async () => {
+    const { setServerSettings } = await import("../lib/serverSettings");
+    setServerSettings(null);
+  });
+
+  it("names no number on the site-default option while the server has said none", async () => {
+    await pushSiteDefault(null);
     wrap(true);
     openSub("general-settings-entry");
-    const select = screen.getByTestId("auto-away-select") as HTMLSelectElement;
-    const dflt = Array.from(select.querySelectorAll("option")).find((o) => o.value === "");
 
-    expect(dflt?.textContent).toMatch(/default/i);
-    expect(dflt?.textContent).not.toMatch(/\d/);
+    expect(siteDefaultOption()?.textContent).toBe("use site default");
+  });
+
+  it("names the server's site default, and follows a live change to it", async () => {
+    await pushSiteDefault(600);
+    wrap(true);
+    openSub("general-settings-entry");
+
+    expect(siteDefaultOption()?.textContent).toBe("use site default (10 minutes)");
+
+    // The admin moves it while the drawer is open: the next
+    // server_settings_changed re-labels the entry, no reload.
+    await pushSiteDefault(0);
+    await waitFor(() => {
+      expect(siteDefaultOption()?.textContent).toBe("use site default (off)");
+    });
   });
 
   it("loads the stored preference on mount", async () => {

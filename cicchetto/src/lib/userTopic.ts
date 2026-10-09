@@ -606,6 +606,17 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       const httpHostAliases = Array.isArray(r.http_host_aliases)
         ? r.http_host_aliases.filter((h): h is string => typeof h === "string")
         : [];
+      // issue 2359 — the auto-away site default. Lenient like the two
+      // above: a pre-39 server omits it, and dropping the push over it
+      // would strand every upload knob. Absent / malformed → null, which
+      // the drawer renders as the bare "use site default". Declared on both
+      // registries (`DeliberatelyWidened`, `wireUserBoundary`'s census).
+      const aa = r.auto_away as Record<string, unknown> | null | undefined;
+      const aaSeconds = typeof aa === "object" && aa !== null ? aa.default_debounce_seconds : null;
+      const autoAway =
+        typeof aaSeconds === "number" && Number.isInteger(aaSeconds) && aaSeconds >= 0
+          ? { default_debounce_seconds: aaSeconds }
+          : null;
       return {
         kind: "server_settings_changed",
         upload: {
@@ -620,6 +631,7 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
           video_max_duration_seconds: videoMaxDurationSeconds,
         },
         http_host_aliases: httpHostAliases,
+        auto_away: autoAway,
       };
     }
     case "peer_away":
@@ -1298,6 +1310,7 @@ moduleRoot(() => {
           applyServerSettings({
             upload: payload.upload,
             http_host_aliases: payload.http_host_aliases,
+            auto_away: payload.auto_away,
           });
           return;
 

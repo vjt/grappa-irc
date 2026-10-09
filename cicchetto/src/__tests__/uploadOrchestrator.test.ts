@@ -803,6 +803,7 @@ describe("video transcode branch", () => {
       uploadGlobalCapBytes: 1,
       uploadVideoMaxDurationSeconds: seconds,
       httpHostAliases: [],
+      autoAwayDefaultSeconds: null,
     });
   };
 

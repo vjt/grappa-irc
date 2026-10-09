@@ -15,6 +15,7 @@ import AdminToolbar from "./admin/AdminToolbar";
 import { useRefreshSlot } from "./admin/refreshSlot";
 import { type AdminSettingsView, ApiError, adminGetSettings, adminPutSettings } from "./lib/api";
 import { token } from "./lib/auth";
+import { AUTO_AWAY_PRESETS, formatAutoAwaySeconds } from "./lib/autoAwayLadder";
 
 // UX-6-B2 (2026-05-21) — Admin Settings tab.
 //
@@ -38,6 +39,11 @@ import { token } from "./lib/auth";
 //   * `dcc.max_transfer_bytes` / `dcc.global_cap_bytes` — the two DCC
 //     ceilings (issue 2185, form in issue 2202): the per-transfer size
 //     limit and the whole spool's disk budget.
+//   * `auto_away.default_debounce_seconds` — the auto-away SITE default
+//     (issue 2359): the window a session waits when its user chose none.
+//     A ladder, not a number field: the server accepts only the user
+//     presets plus off. The empty entry is `null` — no stored value, the
+//     server's boot config applies — and it names that config's value.
 //
 // ⚠️ The two DCC keys are NOT cross-validated against each other, on
 // vjt's ruling (`settings_controller.ex` @dcc_keys / `ServerSettings`):
@@ -110,6 +116,18 @@ const AdminSettingsTab: Component = () => {
   // view, which is admin-only (not in `public_view/0`).
   const [dccMaxTransferMiB, setDccMaxTransferMiB] = createSignal<number>(100);
   const [dccGlobalCapGiB, setDccGlobalCapGiB] = createSignal<number>(10);
+  // issue 2359 — the select's value: "" = null (follow the server config),
+  // otherwise the seconds as a string, "0" being off.
+  const [autoAwayDefault, setAutoAwayDefault] = createSignal<string>("");
+
+  // The `null` entry names the value it stands for — the server's boot
+  // config — so "follow config" is never a blind pick.
+  const serverConfigLabel = (): string => {
+    const view = settings();
+    return view === null
+      ? "server config"
+      : `server config (${formatAutoAwaySeconds(view.auto_away.fallback_debounce_seconds)})`;
+  };
 
   const applyView = (view: AdminSettingsView): void => {
     setSettings(view);
@@ -122,6 +140,8 @@ const AdminSettingsTab: Component = () => {
     setVideoMaxDurationS(view.upload.video_max_duration_seconds);
     setDccMaxTransferMiB(view.dcc.max_transfer_bytes / MIB);
     setDccGlobalCapGiB(view.dcc.global_cap_bytes / GIB);
+    const stored = view.auto_away.default_debounce_seconds;
+    setAutoAwayDefault(stored === null ? "" : String(stored));
   };
 
   // Every numeric row of the upload card, in render order. The four
@@ -254,6 +274,9 @@ const AdminSettingsTab: Component = () => {
           max_transfer_bytes: Math.round(dccMaxTransferMiB() * MIB),
           global_cap_bytes: Math.round(dccGlobalCapGiB() * GIB),
         },
+        auto_away: {
+          default_debounce_seconds: autoAwayDefault() === "" ? null : Number(autoAwayDefault()),
+        },
       });
       applyView(view);
       setSavedAt(Date.now());
@@ -297,7 +320,7 @@ const AdminSettingsTab: Component = () => {
       {/* The toolbar stays: unlike the tabs whose band was title-plus-refresh
           and nothing else, its subtitle names the scope of everything below
           (server-wide, not per-network), which the nav above does not say. */}
-      <AdminToolbar title="Settings" subtitle="Server-wide upload and DCC limits" />
+      <AdminToolbar title="Settings" subtitle="Server-wide upload, DCC and auto-away settings" />
 
       <div class="adm-scroll">
         <Show when={error()}>
@@ -353,6 +376,41 @@ const AdminSettingsTab: Component = () => {
             <AdminCard title="DCC" subtitle="Transfer ceilings for the DCC spool">
               <div class="adm-field-rows">
                 <For each={dccRows}>{numberRow}</For>
+              </div>
+            </AdminCard>
+
+            {/* issue 2359 — its own card: not an upload or DCC limit, and
+                the one setting here every user SEES (their drawer's "use
+                site default (…)" follows this value live). */}
+            <AdminCard title="Auto-away" subtitle="Default for users who have not chosen one">
+              <div class="adm-field-rows">
+                <AdminField
+                  label="Default delay"
+                  for="admin-settings-auto-away-default"
+                  error={
+                    fieldError() === "auto_away.default_debounce_seconds"
+                      ? "invalid value"
+                      : undefined
+                  }
+                >
+                  <select
+                    id="admin-settings-auto-away-default"
+                    data-testid="admin-settings-auto-away-default"
+                    value={autoAwayDefault()}
+                    onChange={(e) => setAutoAwayDefault(e.currentTarget.value)}
+                    disabled={saving()}
+                    classList={{
+                      "admin-settings-field-error":
+                        fieldError() === "auto_away.default_debounce_seconds",
+                    }}
+                  >
+                    <option value="">{serverConfigLabel()}</option>
+                    <option value="0">off</option>
+                    <For each={AUTO_AWAY_PRESETS}>
+                      {(preset) => <option value={String(preset.seconds)}>{preset.label}</option>}
+                    </For>
+                  </select>
+                </AdminField>
               </div>
             </AdminCard>
 

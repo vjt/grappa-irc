@@ -77,6 +77,8 @@ import type {
   ScrollbackMessageKind,
   ScrollbackWireArchiveWireEntry,
   ScrollbackWireT,
+  ServerSettingsWireAdminAutoAwayView,
+  ServerSettingsWireAutoAwayView,
   ServerSettingsWireUploadView,
   SessionISupportCasemapping,
   SessionLogWireT,
@@ -1371,6 +1373,10 @@ export type WireUserEvent =
       // upload link on any of them. Narrowed to string[] in userTopic.ts
       // (malformed / absent → []), threaded into applyServerSettings.
       http_host_aliases: string[];
+      // issue 2359 — the resolved auto-away site default. Narrowed in
+      // userTopic.ts: absent (pre-39 server) or malformed → null, never a
+      // dropped push.
+      auto_away: ServerSettingsWireAutoAwayView | null;
     }
   // #348 — the subject's auto-away debounce changed, on this device or
   // another one. ONE scalar, three states: null = no preference (the
@@ -2422,6 +2428,9 @@ export type AdminSettingsView = {
   // one drift-gated definition.
   upload: ServerSettingsWireUploadView;
   dcc: AdminSettingsDccView;
+  // issue 2359 — generated: the STORED site default (null = follow the
+  // server's boot fallback) beside that fallback.
+  auto_away: ServerSettingsWireAdminAutoAwayView;
 };
 
 export type AdminSettingsResponse = { settings: AdminSettingsView };
@@ -2436,6 +2445,8 @@ export type AdminSettingsUpdate = {
   // generated upload shape; `active_host?` inherits the closed set.
   upload?: Partial<ServerSettingsWireUploadView>;
   dcc?: Partial<AdminSettingsDccView>;
+  // `null` clears the stored value — the fallback applies again.
+  auto_away?: Pick<ServerSettingsWireAdminAutoAwayView, "default_debounce_seconds">;
 };
 
 export async function adminGetSettings(token: string): Promise<AdminSettingsView> {
