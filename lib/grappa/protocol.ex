@@ -1068,7 +1068,28 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: purely additive, no existing client asks
   # for the route, and cic treats a failed read as the `"host"` default.
-  @protocol_version 38
+  #
+  # ---------------------------------------------------------------------------
+  # 39 — issue 2359: the auto-away site default reaches the client
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `auto_away: %{default_debounce_seconds}` on the `server_settings_changed`
+  # push, the after-join snapshot and `GET /api/server-settings` (all three are
+  # `ServerSettings.Wire.server_settings_changed/1` / `public_view/0`): seconds,
+  # RESOLVED (admin-stored, else the boot fallback), `0` = off — the encoding of
+  # the per-subject `auto_away_debounce_seconds`. And on `GET`/`PUT
+  # /admin/settings`, an `auto_away` subtree carrying the STORED value (`null` =
+  # follow the fallback) plus `fallback_debounce_seconds`. Generated shapes
+  # (`auto_away_view`, `admin_auto_away_view`), so `wire_pin` sees the change.
+  # Bumped on the #1393d rule: a bundle that labels "use site default (…)" off
+  # the field gets nothing to print from a server predating it.
+  #
+  # Checked for a collision before claiming 39: the one open PR that edits this
+  # file (#2102) carries 21.
+  #
+  # @min_protocol_version stays at 1: purely additive; cic renders the bare
+  # "use site default" label when the field is absent.
+  @protocol_version 39
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1109,7 +1130,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 38
+  @spec version() :: 39
   def version, do: @protocol_version
 
   @doc """

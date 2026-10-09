@@ -369,8 +369,8 @@ defmodule Grappa.UserSettings do
 
   # #348 — the grace period between "every device of this subject went
   # hidden" and the upstream `AWAY`. ONE key, THREE states, because the
-  # delay and the off switch are ONE control: absent = the server-wide
-  # default (`Grappa.Session.Server.auto_away_debounce_ms/0`), the `0`
+  # delay and the off switch are ONE control: absent = the site default
+  # (`Grappa.ServerSettings.auto_away_default_ms/0`, issue 2359), the `0`
   # sentinel = OFF (no timer is armed at all — never a very large one),
   # any other in-range integer = seconds.
   @auto_away_debounce_seconds_key "auto_away_debounce_seconds"

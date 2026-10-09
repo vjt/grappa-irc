@@ -924,6 +924,14 @@ export const S_ScrollbackWireEvent = {
   o: { kind: { l: "message" }, message: S_ScrollbackWireT },
 } as const;
 
+// Grappa.ServerSettings.Wire.admin_auto_away_view/0
+export const S_ServerSettingsWireAdminAutoAwayView = {
+  o: { default_debounce_seconds: { u: ["i", "z"] }, fallback_debounce_seconds: "i" },
+} as const;
+
+// Grappa.ServerSettings.Wire.auto_away_view/0
+export const S_ServerSettingsWireAutoAwayView = { o: { default_debounce_seconds: "i" } } as const;
+
 // Grappa.ServerSettings.Wire.upload_view/0
 export const S_ServerSettingsWireUploadView = {
   o: {
@@ -944,6 +952,7 @@ export const S_ServerSettingsWireChangedPayload = {
   o: {
     kind: { l: "server_settings_changed" },
     upload: S_ServerSettingsWireUploadView,
+    auto_away: S_ServerSettingsWireAutoAwayView,
     http_host_aliases: { a: "s" },
   },
 } as const;

@@ -67,7 +67,7 @@
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 38
+#define WIRE_PROTOCOL_VERSION 39
 
 #include <stdbool.h>
 #include <stddef.h>

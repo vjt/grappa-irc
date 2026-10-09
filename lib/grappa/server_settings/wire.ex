@@ -78,12 +78,35 @@ defmodule Grappa.ServerSettings.Wire do
         }
 
   @typedoc """
+  The auto-away site default as every client sees it (issue 2359): seconds,
+  RESOLVED (the admin-stored value, else the boot fallback), `0` = off —
+  the same encoding as the per-subject `auto_away_debounce_seconds`. cic
+  prints it in the "use site default (…)" label.
+  """
+  @type auto_away_view :: %{default_debounce_seconds: non_neg_integer()}
+
+  @typedoc """
+  The admin projection of the same knob (`GET`/`PUT /admin/settings`):
+  what is STORED — `nil` means "follow the boot fallback" — and that
+  fallback, so the admin select can label the entry that stands for it.
+
+  `non_neg_integer()` and not the literal ladder: the codegen renders no
+  integer literals. The closed set is `ServerSettings.auto_away_default_seconds/0`,
+  enforced at the write door.
+  """
+  @type admin_auto_away_view :: %{
+          default_debounce_seconds: non_neg_integer() | nil,
+          fallback_debounce_seconds: pos_integer()
+        }
+
+  @typedoc """
   Wire shape pushed on the user-topic when admin updates server
   settings, OR observed at after-join (snapshot push).
   """
   @type changed_payload :: %{
           kind: :server_settings_changed,
           upload: upload_view(),
+          auto_away: auto_away_view(),
           http_host_aliases: [String.t()]
         }
 
@@ -128,15 +151,21 @@ defmodule Grappa.ServerSettings.Wire do
   @doc """
   Renders a `Grappa.ServerSettings.public_view/0` map to its public
   wire shape for the `server_settings_changed` event push. Delegates
-  the `upload` subtree projection to `upload_view/1`; the
-  `http_host_aliases` list (#324) passes through unchanged.
+  the `upload` subtree projection to `upload_view/1`; the resolved
+  auto-away site default (issue 2359) and the `http_host_aliases` list
+  (#324) pass through unchanged.
   """
   @spec server_settings_changed(Grappa.ServerSettings.public_view()) :: changed_payload()
-  def server_settings_changed(%{upload: %{} = upload, http_host_aliases: aliases})
-      when is_list(aliases) do
+  def server_settings_changed(%{
+        upload: %{} = upload,
+        auto_away: %{default_debounce_seconds: seconds},
+        http_host_aliases: aliases
+      })
+      when is_list(aliases) and is_integer(seconds) and seconds >= 0 do
     %{
       kind: :server_settings_changed,
       upload: upload_view(upload),
+      auto_away: %{default_debounce_seconds: seconds},
       http_host_aliases: aliases
     }
   end

@@ -104,6 +104,11 @@ defmodule Grappa.Session do
       # architecture doc already names — this is its first real caller.
       Grappa.RateLimit,
       Grappa.Scrollback,
+      # issue 2359 — `Session.Server.resolve_auto_away_debounce/1` resolves
+      # "no preference" over the admin-tunable SITE default. Forward edge:
+      # ServerSettings takes no Session dep (it owns the boot fallback for
+      # exactly that reason), so no Boundary cycle.
+      Grappa.ServerSettings,
       # #1398 §7 — `Backoff` was an EXPORT of this boundary; it is now a leaf
       # of its own, so `Session.Server`'s four `Backoff.*` calls need it as a
       # dep like any other sibling. A leaf that leaves `exports:` enters
@@ -380,10 +385,11 @@ defmodule Grappa.Session do
     # boundary injects). `put_new` so a caller/test that already set the
     # key (a substituted short window) wins.
     #
-    # #348 — the value is now the SUBJECT's preference resolved over that
-    # boot default (and `:disabled` when they switched auto-away off), so
+    # #348 — the value is now the SUBJECT's preference resolved over the
+    # site default (and `:disabled` when they switched auto-away off), so
     # a session starts on the window its user chose. A subject with no
-    # preference resolves to the same boot default as before.
+    # preference resolves to the site default — since issue 2359 the
+    # admin-stored value, else the boot fallback.
     # M2 — same choke point + `put_new_lazy` posture as the debounce
     # above: the subject's `show_peer_profiles` opt-in resolved once at
     # spawn, a substituted opts/test value still wins.

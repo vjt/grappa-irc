@@ -90,6 +90,7 @@ defmodule Grappa.Session.Server do
     Mentions,
     QueryWindows,
     Scrollback,
+    ServerSettings,
     Session,
     SessionLog,
     UserSettings
@@ -148,29 +149,6 @@ defmodule Grappa.Session.Server do
   pattern-match on it directly.
   """
   @type window_ref :: %{kind: NumericRouter.window_kind(), target: String.t() | nil}
-
-  # 10-minute debounce before issuing AWAY after all WS connections drop.
-  # Gives the user generous room to close a tab / lock the phone / switch
-  # apps without the bouncer flapping them AWAY and back — 30s was too
-  # twitchy for real mobile usage (a screen-lock immediately read as away).
-  # The DEFAULT auto-away reason lives on `AwayState.auto_away_reason/0`
-  # (moved there in cluster #7); since issue 2150 the text actually sent is
-  # `state.auto_away_reason`, resolved over that default at the spawn
-  # boundary from the subject's own setting.
-  #
-  # This is the PRODUCTION DEFAULT, injectable per the CLAUDE.md
-  # start_link-opts pattern (#671): `boot/0` reads
-  # `config :grappa, Grappa.Session.Server, auto_away_debounce_ms: …` once
-  # at boot into `:persistent_term`; `Grappa.Session.start_session/3` (the
-  # spawn boundary) injects the value into the opts map; `do_init/1`
-  # stores it on `state.auto_away_debounce_ms`. Prod sets no config key, so
-  # the value stays byte-identical 600_000; the integration env
-  # (`config/dev.exs`, `MIX_ENV=dev`) sets it short so the auto-away
-  # disconnect e2e can observe the upstream AWAY without a 10-min wait.
-  @auto_away_debounce_ms 600_000
-
-  # `:persistent_term` key holding the boot-resolved debounce default.
-  @auto_away_debounce_key {__MODULE__, :auto_away_debounce_ms}
 
   # 10s is generous for an upstream NickServ → +r MODE round-trip; even
   # a sluggish ircd should confirm in <2s. The timer is a fail-safe so
@@ -971,46 +949,11 @@ defmodule Grappa.Session.Server do
   end
 
   @doc """
-  Reads the auto-away debounce config once at boot into
-  `:persistent_term`. Called from `Grappa.Application.start/2` (the
-  designated `Application.get_env` boundary — CLAUDE.md
-  "Application.{put,get}_env: boot-time only"). Mirrors the other
-  boot/0 DI-seams (`Grappa.Uploads.boot/1`, `Grappa.Admission.Config.boot/0`).
-
-  Absent config (prod) → the compile-time default (`600_000`), so
-  production stays byte-identical. The integration env
-  (`config/dev.exs`) overrides it short so the auto-away disconnect e2e
-  need not wait 10 minutes. `start_session/3` reads the resolved value
-  via `auto_away_debounce_ms/0` and injects it into the session's
-  start opts.
-  """
-  @spec boot() :: :ok
-  def boot do
-    debounce_ms =
-      :grappa
-      |> Application.get_env(__MODULE__, [])
-      |> Keyword.get(:auto_away_debounce_ms, @auto_away_debounce_ms)
-
-    :persistent_term.put(@auto_away_debounce_key, debounce_ms)
-  end
-
-  @doc """
-  Boot-resolved auto-away debounce (ms) — lock-free `:persistent_term`
-  read. Falls back to the compile-time default when `boot/0` has not run
-  (e.g. a unit test that starts a bare Server without the app tree).
-  Injected into the session opts by `Grappa.Session.start_session/3`;
-  a per-session opts override still wins in `do_init/1` (the test seam).
-  """
-  @spec auto_away_debounce_ms() :: non_neg_integer()
-  def auto_away_debounce_ms do
-    :persistent_term.get(@auto_away_debounce_key, @auto_away_debounce_ms)
-  end
-
-  @doc """
   Turns a stored #348 preference into the window this session waits.
 
-  `nil` (no preference) resolves to the boot-resolved default, so a
-  subject who never touched the knob is byte-identical to pre-#348;
+  `nil` (no preference) resolves to the SITE default
+  (`ServerSettings.auto_away_default_ms/0` — the admin-stored value, else
+  the boot fallback; issue 2359), which may itself be `:disabled`;
   `:disabled` passes through as the OFF state the arm site refuses to
   arm on; a seconds integer becomes milliseconds.
 
@@ -1020,7 +963,7 @@ defmodule Grappa.Session.Server do
   """
   @spec resolve_auto_away_debounce(UserSettings.auto_away_debounce()) ::
           non_neg_integer() | :disabled
-  def resolve_auto_away_debounce(nil), do: auto_away_debounce_ms()
+  def resolve_auto_away_debounce(nil), do: ServerSettings.auto_away_default_ms()
   def resolve_auto_away_debounce(:disabled), do: :disabled
 
   def resolve_auto_away_debounce(seconds) when is_integer(seconds) and seconds > 0,
@@ -1028,7 +971,7 @@ defmodule Grappa.Session.Server do
 
   @doc """
   The auto-away window for `subject`: their #348 preference resolved
-  over the boot default. Read at the spawn boundary
+  over the site default. Read at the spawn boundary
   (`Grappa.Session.start_session/3`) so a session starts on the value
   the user chose, not only on the one they choose next.
   """
@@ -1334,8 +1277,10 @@ defmodule Grappa.Session.Server do
       auto_away_timer: nil,
       # #671 — debounce window from the spawn boundary
       # (`start_session/3`); an explicit opt still wins so a unit test can
-      # substitute a short window without runtime config tricks.
-      auto_away_debounce_ms: Map.get(opts, :auto_away_debounce_ms, @auto_away_debounce_ms),
+      # substitute a short window without runtime config tricks. The
+      # fallback is the boot value, NOT the site resolver: that one reads
+      # the DB, and `init/1` re-runs on every `:transient` respawn.
+      auto_away_debounce_ms: Map.get_lazy(opts, :auto_away_debounce_ms, &ServerSettings.auto_away_fallback_ms/0),
       # issue 2150 — same shape and same reason as the window above: the
       # spawn boundary resolves the subject's stored reason, an explicit
       # opt still wins for tests, and the fallback is the constant every
@@ -3408,7 +3353,7 @@ defmodule Grappa.Session.Server do
 
   # S3.2 / #182 — the last VISIBLE device for this user backgrounded or
   # closed (sockets may still be connected but hidden). Schedule the
-  # `@auto_away_debounce_ms` (10-min) debounce before issuing auto-away.
+  # `state.auto_away_debounce_ms` debounce before issuing auto-away.
   # If already `:away_explicit`, skip entirely — the user intentionally
   # went away.
   def handle_info({:ws_all_hidden, _}, %{away_state: %AwayState{state: :away_explicit}} = state) do

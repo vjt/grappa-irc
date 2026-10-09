@@ -26,6 +26,7 @@ defmodule Grappa.ServerSettings do
   | `"addressing.static_mapping_prefix"`    | `String.t()` (v6 CIDR) \\| `nil` | `nil`       | #543 |
   | `"dcc.max_transfer_bytes"`              | `pos_integer()`            | 104_857_600 (100MiB) | 2185 |
   | `"dcc.global_cap_bytes"`                | `pos_integer()`            | 10_737_418_240 (10GiB) | 2185 |
+  | `"auto_away.default_debounce_seconds"`  | `0 \\| 60 \\| 300 \\| 600 \\| 1800 \\| 3600` (`0` = off) | no row → boot fallback (`auto_away_fallback_ms/0`, 600_000 ms) | issue 2359 |
 
   `addressing.*` and `dcc.*` are **admin-only** — deliberately NOT in
   `public_view/0` (that broadcasts to every cic client); the admin
@@ -36,7 +37,8 @@ defmodule Grappa.ServerSettings do
   Returns the operator-visible subset for `GET /api/server-settings`:
   the upload block (active_host + the per-category per-file caps +
   global_cap_bytes + the issue-2175 per-subject ceilings + the #201
-  video duration ceiling) plus `http_host_aliases` — the deployment's HTTP
+  video duration ceiling), the RESOLVED auto-away site default (issue
+  2359 — stored value, else the boot fallback) plus `http_host_aliases` — the deployment's HTTP
   host aliases (#324, from `Grappa.HttpHosts`, config-derived not
   DB-backed) that cic's media-link classifier admits. Admin-only
   settings (when added) stay out of this view.
@@ -79,6 +81,8 @@ defmodule Grappa.ServerSettings do
       Grappa.HttpHosts,
       Grappa.Net.IpLiteral
     ]
+
+  import Ecto.Query, only: [from: 2]
 
   alias Grappa.Net.IpLiteral
   alias Grappa.PubSub, as: GrappaPubSub
@@ -178,6 +182,31 @@ defmodule Grappa.ServerSettings do
   @default_dcc_max_transfer_bytes 100 * 1024 * 1024
   @default_dcc_global_cap_bytes 10 * 1024 * 1024 * 1024
 
+  # issue 2359 — the auto-away SITE default, the window a session waits
+  # when its subject chose no #348 preference. Public (in `public_view/0`):
+  # cic renders it in the "use site default (…)" label.
+  #
+  # Seconds, `0` = off — the SAME encoding as the per-subject
+  # `auto_away_debounce_seconds`, because it is the same fact. The ladder is
+  # cic's `AUTO_AWAY_PRESETS` plus off; anything else is refused at the door.
+  # NO ROW means "follow the boot fallback" below, which is how the app
+  # config value keeps meaning something after an admin has touched the knob
+  # (`put_auto_away_default_seconds(nil)` deletes the row).
+  @key_auto_away_default_seconds "auto_away.default_debounce_seconds"
+  @auto_away_default_seconds_ladder [0, 60, 300, 600, 1800, 3600]
+
+  # The boot fallback, owned here since issue 2359 (it was
+  # `Grappa.Session.Server`'s): `public_view/0` must ship the RESOLVED
+  # default and Session must resolve against it, and a ServerSettings →
+  # Session edge would close a Boundary cycle. The config key is read at its
+  # OLD path, unchanged, so an operator who set it keeps the value they set.
+  # Prod sets none → 10 minutes; `config/dev.exs` sets it short for the
+  # auto-away e2e. Why 10: generous room to close a tab, lock the phone or
+  # switch apps without the bouncer flapping the user AWAY and back — 30s
+  # was too twitchy for real mobile use (a screen-lock read as away).
+  @default_auto_away_fallback_ms 600_000
+  @auto_away_fallback_key {__MODULE__, :auto_away_fallback_ms}
+
   @type upload_host :: :embedded | :litterbox
 
   @typedoc "Closed set of outbound addressing modes (#543)."
@@ -186,6 +215,9 @@ defmodule Grappa.ServerSettings do
   @typedoc "Closed set of upload categories — one per-file cap each."
   @type upload_category :: :image | :video | :document | :audio
   @upload_categories [:image, :video, :document, :audio]
+
+  @typedoc "The auto-away site-default ladder, in seconds; `0` is off (issue 2359)."
+  @type auto_away_default_seconds :: 0 | 60 | 300 | 600 | 1800 | 3600
 
   @type public_view :: %{
           upload: %{
@@ -199,6 +231,7 @@ defmodule Grappa.ServerSettings do
             per_visitor_cap_bytes: pos_integer(),
             video_max_duration_seconds: pos_integer()
           },
+          auto_away: %{default_debounce_seconds: non_neg_integer()},
           http_host_aliases: [String.t()]
         }
 
@@ -497,6 +530,112 @@ defmodule Grappa.ServerSettings do
 
   def put_dcc_global_cap_bytes(_), do: {:error, :invalid_value}
 
+  # ---- auto_away.default_debounce_seconds (issue 2359) ---------------
+
+  @doc """
+  Stores the boot fallback in `:persistent_term`. `config` is the keyword
+  list under `config :grappa, Grappa.Session.Server` — the key the value has
+  always lived under — read by `Grappa.Application.start/2`, the designated
+  `Application.get_env` boundary (the `Grappa.Uploads.boot/1` shape). No
+  `auto_away_debounce_ms:` in it → 10 minutes.
+
+  A non-positive or non-integer value raises: the fallback is rendered to
+  cic in whole seconds (`ceil`), and a `0` there would read as "off".
+  """
+  @spec boot(keyword()) :: :ok
+  def boot(config) when is_list(config) do
+    case Keyword.get(config, :auto_away_debounce_ms, @default_auto_away_fallback_ms) do
+      ms when is_integer(ms) and ms > 0 ->
+        :persistent_term.put(@auto_away_fallback_key, ms)
+
+      other ->
+        raise ArgumentError,
+              "config :grappa, Grappa.Session.Server, auto_away_debounce_ms: " <>
+                "must be a positive integer of milliseconds, got: #{inspect(other)}"
+    end
+  end
+
+  @doc """
+  The boot-resolved fallback (ms) — the window when no admin value is
+  stored. Falls back to the compile-time 10 minutes when `boot/0` has not
+  run (a unit test with no app tree).
+  """
+  @spec auto_away_fallback_ms() :: pos_integer()
+  def auto_away_fallback_ms,
+    do: :persistent_term.get(@auto_away_fallback_key, @default_auto_away_fallback_ms)
+
+  @doc """
+  The admin-STORED site default, or `nil` when none is stored (the boot
+  fallback applies). A stored value outside the ladder reads as `nil`, the
+  posture `read_cap/2` takes for a corrupt row.
+  """
+  @spec get_auto_away_default_seconds() :: auto_away_default_seconds() | nil
+  def get_auto_away_default_seconds do
+    with raw when is_binary(raw) <- get_raw(@key_auto_away_default_seconds),
+         {n, ""} when n in @auto_away_default_seconds_ladder <- Integer.parse(raw) do
+      n
+    else
+      _ -> nil
+    end
+  end
+
+  @doc """
+  The site default a session on "no preference" waits: the stored value,
+  else the boot fallback. `:disabled` when the admin switched it off. The
+  ONE resolver — `Grappa.Session.Server.resolve_auto_away_debounce/1` reads
+  it for both the spawn boundary and the live preference refresh.
+  """
+  @spec auto_away_default_ms() :: pos_integer() | :disabled
+  def auto_away_default_ms do
+    case get_auto_away_default_seconds() do
+      nil -> auto_away_fallback_ms()
+      0 -> :disabled
+      seconds -> seconds * 1_000
+    end
+  end
+
+  @doc """
+  Pins the site default to a ladder value (`0` = off), or deletes the row
+  with `nil` so the boot fallback applies again. Anything else is
+  `:invalid_value`.
+  """
+  @spec put_auto_away_default_seconds(auto_away_default_seconds() | nil) ::
+          :ok | {:error, :invalid_value | :db_unavailable}
+  def put_auto_away_default_seconds(nil), do: delete_raw(@key_auto_away_default_seconds)
+
+  def put_auto_away_default_seconds(n) when n in @auto_away_default_seconds_ladder,
+    do: put_raw(@key_auto_away_default_seconds, Integer.to_string(n))
+
+  def put_auto_away_default_seconds(_), do: {:error, :invalid_value}
+
+  @doc """
+  The admin view of the knob: what is STORED (`nil` = follow the fallback)
+  and the fallback itself, so the admin select can label its "server
+  config" entry with the value it stands for.
+  """
+  @spec auto_away_admin_view() :: %{
+          default_debounce_seconds: auto_away_default_seconds() | nil,
+          fallback_debounce_seconds: pos_integer()
+        }
+  def auto_away_admin_view do
+    %{
+      default_debounce_seconds: get_auto_away_default_seconds(),
+      fallback_debounce_seconds: ms_to_seconds(auto_away_fallback_ms())
+    }
+  end
+
+  # The resolved site default in the wire's encoding — seconds, `0` = off.
+  @spec auto_away_default_seconds_resolved() :: non_neg_integer()
+  defp auto_away_default_seconds_resolved do
+    case get_auto_away_default_seconds() do
+      nil -> ms_to_seconds(auto_away_fallback_ms())
+      seconds -> seconds
+    end
+  end
+
+  # Ceil, never floor: a positive window must never render as `0`, which is off.
+  defp ms_to_seconds(ms), do: div(ms + 999, 1_000)
+
   # ---- Public projection -------------------------------------------
 
   @doc "Returns the operator-visible subset for cic + admin REST surfaces."
@@ -514,6 +653,9 @@ defmodule Grappa.ServerSettings do
         per_visitor_cap_bytes: get_upload_per_visitor_cap_bytes(),
         video_max_duration_seconds: get_upload_video_max_duration_seconds()
       },
+      # issue 2359 — RESOLVED (stored, else boot fallback), so cic can
+      # print the number behind "use site default".
+      auto_away: %{default_debounce_seconds: auto_away_default_seconds_resolved()},
       # #324 — deployment HTTP host aliases (config, not DB): boot-derived
       # in config/runtime.exs, stashed via Grappa.HttpHosts. cic's media-
       # link classifier admits an upload link on ANY alias.
@@ -557,6 +699,22 @@ defmodule Grappa.ServerSettings do
         # the get-or-insert above; surface as a generic invalid_value
         # rather than leaking changeset internals to callers.
         {:error, :invalid_value}
+    end
+  end
+
+  # issue 2359 — the "back to the fallback" write. Absent row is the
+  # fallback, so a delete is the write; it broadcasts like `put_raw/2`
+  # because the RESOLVED value in `public_view/0` moved.
+  defp delete_raw(key) do
+    result =
+      Repo.BusyRetry.run(fn ->
+        {_count, _} = Repo.delete_all(from(s in Setting, where: s.key == ^key))
+        {:ok, :deleted}
+      end)
+
+    case result do
+      {:ok, _} -> broadcast_changed()
+      {:error, :db_unavailable} = err -> err
     end
   end
 

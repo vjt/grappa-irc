@@ -293,7 +293,7 @@ let _socket: Socket | null = null;
 // type `/kb` and Kickban compose. REST only, no push. A pre-38 server 404s
 // the read, and the bundle falls back to `"host"` — the mask `/kb` always
 // sent — so `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 38;
+export const CLIENT_PROTOCOL_VERSION = 39;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

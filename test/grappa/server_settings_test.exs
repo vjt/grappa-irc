@@ -467,4 +467,118 @@ defmodule Grappa.ServerSettingsTest do
       refute Map.has_key?(view, :static_mapping_prefix)
     end
   end
+
+  describe "auto_away.default_debounce_seconds (issue 2359)" do
+    setup do
+      # The fallback lives in process-global :persistent_term; restore it so
+      # a value set here never reaches a sibling (max_cases: 1 serializes,
+      # the restore keeps it hermetic regardless).
+      prior = ServerSettings.auto_away_fallback_ms()
+      on_exit(fn -> :ok = ServerSettings.boot(auto_away_debounce_ms: prior) end)
+      :ok = ServerSettings.boot(auto_away_debounce_ms: 600_000)
+      :ok
+    end
+
+    test "with no row the boot fallback applies, and nothing reads as stored" do
+      assert ServerSettings.get_auto_away_default_seconds() == nil
+      assert ServerSettings.auto_away_default_ms() == 600_000
+      assert ServerSettings.public_view().auto_away == %{default_debounce_seconds: 600}
+    end
+
+    test "boot/1 with no key is ten minutes — prod sets no config" do
+      :ok = ServerSettings.boot([])
+      assert ServerSettings.auto_away_fallback_ms() == 600_000
+    end
+
+    test "boot/1 reads the config value, and the wire rounds it UP so it never reads as off" do
+      :ok = ServerSettings.boot(auto_away_debounce_ms: 2_000)
+      assert ServerSettings.auto_away_default_ms() == 2_000
+      assert ServerSettings.public_view().auto_away.default_debounce_seconds == 2
+
+      :ok = ServerSettings.boot(auto_away_debounce_ms: 1_500)
+      assert ServerSettings.public_view().auto_away.default_debounce_seconds == 2
+
+      :ok = ServerSettings.boot(auto_away_debounce_ms: 1)
+      assert ServerSettings.public_view().auto_away.default_debounce_seconds == 1
+    end
+
+    test "boot/1 refuses a value that is not a positive integer of milliseconds" do
+      for bad <- [0, -1, 1.5, "600000", nil] do
+        assert_raise ArgumentError, ~r/auto_away_debounce_ms/, fn ->
+          ServerSettings.boot(auto_away_debounce_ms: bad)
+        end
+      end
+    end
+
+    test "every ladder value round-trips and overrides the fallback" do
+      for seconds <- [60, 300, 600, 1800, 3600] do
+        assert :ok = ServerSettings.put_auto_away_default_seconds(seconds)
+        assert ServerSettings.get_auto_away_default_seconds() == seconds
+        assert ServerSettings.auto_away_default_ms() == seconds * 1_000
+        assert ServerSettings.public_view().auto_away.default_debounce_seconds == seconds
+      end
+    end
+
+    test "0 is OFF: the resolver answers :disabled and the wire carries 0" do
+      assert :ok = ServerSettings.put_auto_away_default_seconds(0)
+      assert ServerSettings.get_auto_away_default_seconds() == 0
+      assert ServerSettings.auto_away_default_ms() == :disabled
+      assert ServerSettings.public_view().auto_away.default_debounce_seconds == 0
+    end
+
+    test "a value off the ladder is refused and nothing is stored" do
+      for bad <- [45, 59, 7200, -1, 86_400, "600", 600.0, :disabled] do
+        assert {:error, :invalid_value} = ServerSettings.put_auto_away_default_seconds(bad)
+      end
+
+      assert ServerSettings.get_auto_away_default_seconds() == nil
+      refute Repo.get_by(Setting, key: "auto_away.default_debounce_seconds")
+    end
+
+    test "nil deletes the row, so the boot fallback applies again" do
+      :ok = ServerSettings.put_auto_away_default_seconds(1800)
+      assert :ok = ServerSettings.put_auto_away_default_seconds(nil)
+
+      refute Repo.get_by(Setting, key: "auto_away.default_debounce_seconds")
+      assert ServerSettings.get_auto_away_default_seconds() == nil
+      assert ServerSettings.auto_away_default_ms() == 600_000
+    end
+
+    test "nil with no row stored is a no-op success" do
+      assert :ok = ServerSettings.put_auto_away_default_seconds(nil)
+      assert ServerSettings.get_auto_away_default_seconds() == nil
+    end
+
+    test "a corrupt stored value reads as unset, never as a window" do
+      Repo.insert!(%Setting{key: "auto_away.default_debounce_seconds", value: "45"})
+      assert ServerSettings.get_auto_away_default_seconds() == nil
+      assert ServerSettings.auto_away_default_ms() == 600_000
+    end
+
+    test "put AND clear broadcast server_settings_changed carrying the RESOLVED value" do
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, ServerSettings.topic())
+
+      :ok = ServerSettings.put_auto_away_default_seconds(300)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+        payload: %{kind: :server_settings_changed, auto_away: %{default_debounce_seconds: 300}}
+      }
+
+      :ok = ServerSettings.put_auto_away_default_seconds(nil)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+        payload: %{kind: :server_settings_changed, auto_away: %{default_debounce_seconds: 600}}
+      }
+    end
+
+    test "the admin view separates what is STORED from the fallback it stands in for" do
+      assert ServerSettings.auto_away_admin_view() ==
+               %{default_debounce_seconds: nil, fallback_debounce_seconds: 600}
+
+      :ok = ServerSettings.put_auto_away_default_seconds(0)
+
+      assert ServerSettings.auto_away_admin_view() ==
+               %{default_debounce_seconds: 0, fallback_debounce_seconds: 600}
+    end
+  end
 end

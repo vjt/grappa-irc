@@ -985,9 +985,19 @@ export type ServerSettingsWireUploadView = {
   video_max_duration_seconds: number;
 };
 
+export type ServerSettingsWireAutoAwayView = {
+  default_debounce_seconds: number;
+};
+
+export type ServerSettingsWireAdminAutoAwayView = {
+  default_debounce_seconds: number | null;
+  fallback_debounce_seconds: number;
+};
+
 export type ServerSettingsWireChangedPayload = {
   kind: "server_settings_changed";
   upload: ServerSettingsWireUploadView;
+  auto_away: ServerSettingsWireAutoAwayView;
   http_host_aliases: string[];
 };
 
