@@ -708,7 +708,7 @@ defmodule Grappa.ServerSettings do
   defp delete_raw(key) do
     result =
       Repo.BusyRetry.run(fn ->
-        {_count, _} = Repo.delete_all(from(s in Setting, where: s.key == ^key))
+        {_, _} = Repo.delete_all(from(s in Setting, where: s.key == ^key))
         {:ok, :deleted}
       end)
 
