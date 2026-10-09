@@ -37,6 +37,22 @@ defmodule GrappaWeb.ServerSettingsControllerTest do
       assert upload["video_max_duration_seconds"] == 45
     end
 
+    test "carries the RESOLVED auto-away site default — the REST door of issue 2359", %{conn: conn} do
+      {_, session} = user_and_session([])
+      fallback = div(ServerSettings.auto_away_fallback_ms() + 999, 1000)
+
+      assert %{"auto_away" => %{"default_debounce_seconds" => ^fallback}} =
+               conn |> put_bearer(session.id) |> get("/api/server-settings") |> json_response(200)
+
+      :ok = ServerSettings.put_auto_away_default_seconds(0)
+
+      assert %{"auto_away" => %{"default_debounce_seconds" => 0}} =
+               build_conn()
+               |> put_bearer(session.id)
+               |> get("/api/server-settings")
+               |> json_response(200)
+    end
+
     test "response carries the deployment HTTP host aliases (#324)", %{conn: conn} do
       prior = Grappa.HttpHosts.aliases()
       on_exit(fn -> :ok = Grappa.HttpHosts.boot(prior) end)

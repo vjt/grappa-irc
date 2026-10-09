@@ -28,6 +28,9 @@ defmodule GrappaWeb.ServerSettingsController do
           # #201 — video duration ceiling cic enforces before upload.
           video_max_duration_seconds: pos_integer()
         },
+        # issue 2359 — the auto-away site default, RESOLVED (admin-stored,
+        # else the boot fallback): seconds, 0 = off.
+        auto_away: %{default_debounce_seconds: non_neg_integer()},
         # #324 — the deployment's HTTP host aliases; cic's media-link
         # classifier admits an upload link on ANY of them. No `kind`
         # field here (the WS `server_settings_changed` event carries it;
@@ -44,7 +47,12 @@ defmodule GrappaWeb.ServerSettingsController do
   @doc false
   @spec show(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def show(conn, _) do
-    %{upload: u, http_host_aliases: aliases} = ServerSettings.public_view()
-    json(conn, %{upload: SettingsWire.upload_view(u), http_host_aliases: aliases})
+    %{upload: u, auto_away: auto_away, http_host_aliases: aliases} = ServerSettings.public_view()
+
+    json(conn, %{
+      upload: SettingsWire.upload_view(u),
+      auto_away: auto_away,
+      http_host_aliases: aliases
+    })
   end
 end
