@@ -24,6 +24,7 @@ import {
   saveAutoAwayDebounce,
   saveAwayNickSuffix,
 } from "./lib/autoAway";
+import { AUTO_AWAY_PRESETS, siteDefaultLabel } from "./lib/autoAwayLadder";
 import { createBackdropDismiss } from "./lib/backdropDismiss";
 import { type BanMaskForm, isBanMaskForm } from "./lib/banMask";
 import { banMaskFormValue, loadBanMaskForm, saveBanMaskForm } from "./lib/banMaskPref";
@@ -110,6 +111,7 @@ import {
 } from "./lib/push";
 import { reconnectConnectedNetworks } from "./lib/reconnect";
 import { selectedChannel } from "./lib/selection";
+import { serverSettings } from "./lib/serverSettings";
 import { consumePendingSettingsPage, type SettingsSubPage } from "./lib/settingsNav";
 import { isShareableSubject, openShareModal, SHARE_SESSION_LABEL } from "./lib/shareModal";
 import { getShowBottomBar } from "./lib/showBottomBar";
@@ -170,19 +172,6 @@ export type Props = {
   open: boolean;
   onClose: () => void;
 };
-
-// #348 — the auto-away ladder the control offers. Deliberately coarse:
-// these are the answers to "how long before my friends see me as away",
-// and anything between the rungs is what the custom entry is for. The
-// site-default entry carries NO number — cic does not know the server's
-// constant and a copy here would go stale the day it moves.
-const AUTO_AWAY_PRESETS = [
-  { seconds: 60, label: "1 minute" },
-  { seconds: 300, label: "5 minutes" },
-  { seconds: 600, label: "10 minutes" },
-  { seconds: 1800, label: "30 minutes" },
-  { seconds: 3600, label: "1 hour" },
-];
 
 // issue 2270 — the human name of each notation. UI copy, so it lives here
 // beside the markup rather than in `lib/dateFormat.ts`, matching how the
@@ -2171,7 +2160,12 @@ const SettingsDrawer: Component<Props> = (props) => {
                     void onAutoAwayChange(e);
                   }}
                 >
-                  <option value="">use site default</option>
+                  {/* issue 2359 — the number behind the default, from the
+                      server (`serverSettings()`, refreshed live on every
+                      `server_settings_changed`), never a copy of it. */}
+                  <option value="">
+                    {siteDefaultLabel(serverSettings()?.autoAwayDefaultSeconds ?? null)}
+                  </option>
                   <option value="off">never — stay online</option>
                   <For each={AUTO_AWAY_PRESETS}>
                     {(preset) => <option value={String(preset.seconds)}>{preset.label}</option>}

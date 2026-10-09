@@ -58,6 +58,7 @@ describe("applyServerSettings/1 — wire → store shape", () => {
       uploadVideoMaxDurationSeconds: 90,
       // #324 — absent on the wire → [] (page origin only).
       httpHostAliases: [],
+      autoAwayDefaultSeconds: null,
     });
   });
 
@@ -121,6 +122,7 @@ describe("applyServerSettings/1 — wire → store shape", () => {
       uploadGlobalCapBytes: 6,
       uploadVideoMaxDurationSeconds: 90,
       httpHostAliases: [],
+      autoAwayDefaultSeconds: null,
     });
   });
 
@@ -148,6 +150,34 @@ describe("applyServerSettings/1 — wire → store shape", () => {
   it("defaults httpHostAliases to [] when the wire omits it (old server / pre-snapshot)", () => {
     applyServerSettings({ upload: wireUpload("embedded") });
     expect(serverSettings()?.httpHostAliases).toEqual([]);
+  });
+
+  // issue 2359 — the auto-away site default, resolved by the server.
+  it("maps auto_away.default_debounce_seconds into autoAwayDefaultSeconds, 0 = off kept as 0", () => {
+    applyServerSettings({
+      upload: wireUpload("embedded"),
+      auto_away: { default_debounce_seconds: 600 },
+    });
+    expect(serverSettings()?.autoAwayDefaultSeconds).toBe(600);
+
+    applyServerSettings({
+      upload: wireUpload("embedded"),
+      auto_away: { default_debounce_seconds: 0 },
+    });
+    expect(serverSettings()?.autoAwayDefaultSeconds).toBe(0);
+  });
+
+  it("is null — not a guessed number — when the wire omits or mangles it (pre-39 server)", () => {
+    applyServerSettings({ upload: wireUpload("embedded") });
+    expect(serverSettings()?.autoAwayDefaultSeconds).toBeNull();
+
+    for (const bad of [-1, 1.5, "600", null]) {
+      applyServerSettings({
+        upload: wireUpload("embedded"),
+        auto_away: { default_debounce_seconds: bad as unknown as number },
+      });
+      expect(serverSettings()?.autoAwayDefaultSeconds).toBeNull();
+    }
   });
 });
 

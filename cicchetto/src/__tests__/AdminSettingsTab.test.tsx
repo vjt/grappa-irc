@@ -51,6 +51,10 @@ const DEFAULTS: AdminSettingsView = {
     max_transfer_bytes: 100 * 1024 * 1024,
     global_cap_bytes: 10 * 1024 * 1024 * 1024,
   },
+  // issue 2359 — nothing stored, so the server's boot config applies.
+  // 2s is off the ladder on purpose (the integration env's value): the
+  // "server config (…)" entry must name ANY fallback, not only a rung.
+  auto_away: { default_debounce_seconds: null, fallback_debounce_seconds: 2 },
 };
 
 beforeEach(() => {
@@ -72,6 +76,7 @@ describe("AdminSettingsTab — initial render", () => {
   it("pre-populates the form fields from the GET response — four per-type caps (Task 7 + audio)", async () => {
     const api = await import("../lib/api");
     vi.mocked(api.adminGetSettings).mockResolvedValue({
+      auto_away: DEFAULTS.auto_away,
       upload: {
         active_host: "litterbox",
         image_per_file_cap_bytes: 5 * 1024 * 1024,
@@ -123,6 +128,7 @@ describe("AdminSettingsTab — initial render", () => {
     const api = await import("../lib/api");
     vi.mocked(api.adminGetSettings).mockResolvedValue({
       upload: DEFAULTS.upload,
+      auto_away: DEFAULTS.auto_away,
       dcc: {
         max_transfer_bytes: 200 * 1024 * 1024,
         global_cap_bytes: 25 * 1024 * 1024 * 1024,
@@ -236,6 +242,8 @@ describe("AdminSettingsTab — save", () => {
           max_transfer_bytes: 200 * 1024 * 1024,
           global_cap_bytes: 8 * 1024 * 1024 * 1024,
         },
+        // Untouched select → the stored null goes back as null.
+        auto_away: { default_debounce_seconds: null },
       });
     });
   });
@@ -427,6 +435,104 @@ describe("AdminSettingsTab — save", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("admin-settings-error")).toHaveTextContent("error: internal");
+    });
+  });
+});
+
+describe("AdminSettingsTab — auto-away site default (issue 2359)", () => {
+  const autoAwaySelect = async (): Promise<HTMLSelectElement> => {
+    await waitFor(() => {
+      expect(screen.getByTestId("admin-settings-auto-away-default")).toBeInTheDocument();
+    });
+    return screen.getByTestId("admin-settings-auto-away-default") as HTMLSelectElement;
+  };
+
+  it("the null entry names the server config value it stands for", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminGetSettings).mockResolvedValue(DEFAULTS);
+
+    render(() => <AdminSettingsTab />);
+    const select = await autoAwaySelect();
+
+    expect(select.value).toBe("");
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual([
+      "server config (2 seconds)",
+      "off",
+      "1 minute",
+      "5 minutes",
+      "10 minutes",
+      "30 minutes",
+      "1 hour",
+    ]);
+  });
+
+  it("pre-selects a STORED value, off included", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminGetSettings).mockResolvedValue({
+      ...DEFAULTS,
+      auto_away: { default_debounce_seconds: 0, fallback_debounce_seconds: 600 },
+    });
+
+    render(() => <AdminSettingsTab />);
+    const select = await autoAwaySelect();
+
+    expect(select.value).toBe("0");
+    expect(select.options[0]?.textContent).toBe("server config (10 minutes)");
+  });
+
+  it("PUTs the picked rung as seconds, and the config entry as null", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminGetSettings).mockResolvedValue(DEFAULTS);
+    vi.mocked(api.adminPutSettings).mockResolvedValue(DEFAULTS);
+
+    render(() => <AdminSettingsTab />);
+    const select = await autoAwaySelect();
+
+    fireEvent.change(select, { target: { value: "1800" } });
+    fireEvent.click(screen.getByTestId("admin-settings-save"));
+
+    await waitFor(() => {
+      expect(api.adminPutSettings).toHaveBeenCalledWith(
+        "test-bearer",
+        expect.objectContaining({ auto_away: { default_debounce_seconds: 1800 } }),
+      );
+    });
+
+    fireEvent.change(select, { target: { value: "0" } });
+    fireEvent.click(screen.getByTestId("admin-settings-save"));
+
+    await waitFor(() => {
+      expect(api.adminPutSettings).toHaveBeenLastCalledWith(
+        "test-bearer",
+        expect.objectContaining({ auto_away: { default_debounce_seconds: 0 } }),
+      );
+    });
+
+    fireEvent.change(select, { target: { value: "" } });
+    fireEvent.click(screen.getByTestId("admin-settings-save"));
+
+    await waitFor(() => {
+      expect(api.adminPutSettings).toHaveBeenLastCalledWith(
+        "test-bearer",
+        expect.objectContaining({ auto_away: { default_debounce_seconds: null } }),
+      );
+    });
+  });
+
+  it("422 on auto_away.default_debounce_seconds marks the select", async () => {
+    const api = await import("../lib/api");
+    vi.mocked(api.adminGetSettings).mockResolvedValue(DEFAULTS);
+    vi.mocked(api.adminPutSettings).mockRejectedValue(
+      new api.ApiError(422, "invalid_setting", { field: "auto_away.default_debounce_seconds" }),
+    );
+
+    render(() => <AdminSettingsTab />);
+    const select = await autoAwaySelect();
+
+    fireEvent.click(screen.getByTestId("admin-settings-save"));
+
+    await waitFor(() => {
+      expect(select.classList.contains("admin-settings-field-error")).toBe(true);
     });
   });
 });

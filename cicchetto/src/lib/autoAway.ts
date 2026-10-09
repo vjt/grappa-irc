@@ -8,8 +8,9 @@
  * on the laptop without a reload.
  *
  * Three states in one value, matching the wire: `null` = no preference
- * (the server's own default applies — a number cic deliberately does
- * not know), `0` = off, `N` = seconds.
+ * (the server's SITE default applies — cic learns that number only from
+ * the server, as `serverSettings().autoAwayDefaultSeconds`, never as a
+ * copy of its own; issue 2359), `0` = off, `N` = seconds.
  *
  * ## #1894 — the nick suffix lives here too
  *

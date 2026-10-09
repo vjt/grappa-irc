@@ -611,6 +611,24 @@ const DECLARED_TOLERANCES = {
       quote: "Filter to strings so a proxy-mangled element",
       why: "#324 — a mangled element is filtered out so it cannot poison mediaLink's host-membership check.",
     },
+    // issue 2359 — the auto-away site default, one reason for the subtree
+    // and its one field. Strict would oblige `MIN_SERVER_PROTOCOL_VERSION`
+    // to 39 over a LABEL, and the bare "use site default" is an honest
+    // rendering of a server that did not say.
+    auto_away: {
+      ops: ["drop", "null", "wrong-type"],
+      covers: "any-unusable-value",
+      file: "userTopic",
+      quote: "Absent / malformed → null",
+      why: "issue 2359 — a pre-39 server omits the subtree; dropping the push over it would strand every upload knob beside it, for a field cic only prints in a label.",
+    },
+    "auto_away.default_debounce_seconds": {
+      ops: ["drop", "null", "wrong-type"],
+      covers: "any-unusable-value",
+      file: "userTopic",
+      quote: "Absent / malformed → null",
+      why: "issue 2359 — as `auto_away`: an unusable value reads as `the server did not say`, which the drawer renders as the bare label, never a guessed number.",
+    },
   },
   bundle_hash: {
     version: {
@@ -785,8 +803,8 @@ describe("#1393 — user-topic boundary census", () => {
           },
           {
             "arm": "server_settings_changed",
-            "handAcceptsSchemaRejects": "upload.per_user_cap_bytes/drop, upload.per_user_cap_bytes/null, upload.per_user_cap_bytes/wrong-type, upload.per_visitor_cap_bytes/drop, upload.per_visitor_cap_bytes/null, upload.per_visitor_cap_bytes/wrong-type, upload.video_max_duration_seconds/drop, upload.video_max_duration_seconds/null, upload.video_max_duration_seconds/wrong-type, http_host_aliases/drop, http_host_aliases/null, http_host_aliases/wrong-type, http_host_aliases.0/null, http_host_aliases.0/wrong-type",
-            "mutations": 38,
+            "handAcceptsSchemaRejects": "upload.per_user_cap_bytes/drop, upload.per_user_cap_bytes/null, upload.per_user_cap_bytes/wrong-type, upload.per_visitor_cap_bytes/drop, upload.per_visitor_cap_bytes/null, upload.per_visitor_cap_bytes/wrong-type, upload.video_max_duration_seconds/drop, upload.video_max_duration_seconds/null, upload.video_max_duration_seconds/wrong-type, auto_away/drop, auto_away/null, auto_away/wrong-type, auto_away.default_debounce_seconds/drop, auto_away.default_debounce_seconds/null, auto_away.default_debounce_seconds/wrong-type, http_host_aliases/drop, http_host_aliases/null, http_host_aliases/wrong-type, http_host_aliases.0/null, http_host_aliases.0/wrong-type",
+            "mutations": 44,
             "schema": "S_ServerSettingsWireChangedPayload",
             "schemaAcceptsHandRejects": "-",
             "schemaRejectsValid": false,
@@ -2415,8 +2433,8 @@ describe("#1393 — user-topic boundary census", () => {
       stale: [...declared].filter((k) => !observed.has(k)).sort(),
     }).toMatchInlineSnapshot(`
       {
-        "declared": 66,
-        "measured": 66,
+        "declared": 72,
+        "measured": 72,
         "stale": [],
         "unexplained": [],
       }
@@ -2480,7 +2498,7 @@ describe("#1393 — user-topic boundary census", () => {
       noWrittenReason: entries.filter((e) => e.covers === "none").map((e) => `${e.arm} ${e.path}`),
     }).toMatchInlineSnapshot(`
       {
-        "deliberate": 29,
+        "deliberate": 31,
         "noWrittenReason": [],
         "widerThanItsWrittenReason": [],
       }

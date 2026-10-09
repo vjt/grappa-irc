@@ -1290,6 +1290,59 @@ describe("userTopic", () => {
     });
   });
 
+  // issue 2359 — the auto-away site default rides the same push, lenient
+  // like the duration cap: a pre-39 server omits it, and dropping the push
+  // over it would strand every upload knob.
+  describe("server_settings_changed arm — auto-away site default (issue 2359)", () => {
+    const uploadWire = {
+      active_host: "embedded",
+      image_per_file_cap_bytes: 1,
+      video_per_file_cap_bytes: 2,
+      document_per_file_cap_bytes: 3,
+      audio_per_file_cap_bytes: 4,
+      global_cap_bytes: 5,
+    };
+
+    afterEach(async () => {
+      const ss = await import("../lib/serverSettings");
+      ss.setServerSettings(null);
+    });
+
+    it("carries the server's value into the store, 0 = off included", async () => {
+      const ss = await import("../lib/serverSettings");
+      channelMock.fireEvent({
+        kind: "server_settings_changed",
+        upload: uploadWire,
+        auto_away: { default_debounce_seconds: 1800 },
+        http_host_aliases: [],
+      });
+      expect(ss.serverSettings()?.autoAwayDefaultSeconds).toBe(1800);
+
+      channelMock.fireEvent({
+        kind: "server_settings_changed",
+        upload: uploadWire,
+        auto_away: { default_debounce_seconds: 0 },
+        http_host_aliases: [],
+      });
+      expect(ss.serverSettings()?.autoAwayDefaultSeconds).toBe(0);
+    });
+
+    it("an absent or malformed value reads null and the rest still applies", async () => {
+      const ss = await import("../lib/serverSettings");
+      for (const autoAway of [undefined, null, { default_debounce_seconds: -1 }, "600"]) {
+        channelMock.fireEvent({
+          kind: "server_settings_changed",
+          upload: uploadWire,
+          ...(autoAway === undefined ? {} : { auto_away: autoAway }),
+          http_host_aliases: [],
+        });
+        const view = ss.serverSettings();
+        expect(view?.autoAwayDefaultSeconds).toBeNull();
+        expect(view?.uploadPerFileCapBytes.video).toBe(2);
+      }
+    });
+  });
+
   // issue 2175 — the two per-subject ceilings ride the same settings
   // push. Narrowed LENIENTLY like the duration cap above, but with a
   // fallback taken from the payload (`global_cap_bytes`) rather than a
