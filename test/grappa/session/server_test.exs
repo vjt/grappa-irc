@@ -11534,6 +11534,65 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    # issue 2359 ruling (LIVE) — an admin change of the site default reaches
+    # a RUNNING session that follows it, and only such a session.
+
+    test "an admin site-default change moves a live session with no preference (issue 2359)" do
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      # Pre-state: booted on the fallback, which is NOT the value set below,
+      # so only the fan-out can produce the assertion at the end.
+      assert SessionStateHelpers.fetch(pid).auto_away_debounce_ms ==
+               Grappa.ServerSettings.auto_away_fallback_ms()
+
+      refute Grappa.ServerSettings.auto_away_fallback_ms() == 300_000
+
+      :ok = Grappa.ServerSettings.put_auto_away_default_seconds(300)
+      :ok = Session.reapply_auto_away_site_default()
+
+      assert SessionStateHelpers.fetch(pid).auto_away_debounce_ms == 300_000
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "an admin site-default change leaves a live session with its own delay untouched (issue 2359)" do
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
+      {user, network, _} = setup_user_and_network(port)
+
+      {:ok, _} =
+        Grappa.UserSettings.put_auto_away_debounce_seconds(
+          {:user, user.id},
+          3_600,
+          topic_label(user)
+        )
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      device = visible_device(user)
+      :ok = background(user, device)
+
+      # A timer in flight is the witness: re-applying even the SAME window
+      # would re-arm it (#348's retune ruling) and restart the user's wait.
+      timer = SessionStateHelpers.auto_away_timer(SessionStateHelpers.fetch(pid))
+      assert timer != nil
+
+      :ok = Grappa.ServerSettings.put_auto_away_default_seconds(300)
+      :ok = Session.reapply_auto_away_site_default()
+
+      state = SessionStateHelpers.fetch(pid)
+      assert state.auto_away_debounce_ms == 3_600_000
+      assert SessionStateHelpers.auto_away_timer(state) == timer
+
+      Process.exit(device, :kill)
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     # #348 — visitors auto-away too. Until this, `Session.Server` only
     # subscribed to the presence bridge for `{:user, _}` subjects, so a
     # visitor who backgrounded their tab stayed visibly present upstream

@@ -441,6 +441,25 @@ defmodule Grappa.Session do
   end
 
   @doc """
+  Tells every live `Session.Server` on this node that the admin changed
+  the auto-away SITE default (issue 2359, ruling: LIVE).
+
+  Each session re-resolves its own window — its subject's preference over
+  the site default — and adopts it only when it differs, so a session
+  whose user set their own delay is left exactly as it was, timer
+  included. Fire-and-forget: the signal carries no value, because the
+  value a session needs depends on a preference only the session's
+  subject owns. A session that dies before reading it respawns through
+  `start_session/3`, which resolves the same way.
+  """
+  @spec reapply_auto_away_site_default() :: :ok
+  def reapply_auto_away_site_default do
+    Grappa.SessionRegistry
+    |> Registry.select([{{{:session, :_, :_}, :"$1", :_}, [], [:"$1"]}])
+    |> Enum.each(&send(&1, :auto_away_site_default_changed))
+  end
+
+  @doc """
   Every derived `::cb` source alias currently held by a live `Session.Server`
   on this node, de-duplicated (#543 INC-6).
 
