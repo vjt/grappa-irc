@@ -1188,8 +1188,9 @@ again; anything else is **422 `invalid_setting`** with
 A successful `PUT` takes effect on RUNNING sessions too: every live session
 whose subject has no preference of their own moves to the new window at
 once (an armed timer restarts at the new length); a session with an
-explicit `auto_away_debounce_seconds` is untouched. So the number the
-no-preference label prints is the window the user's sessions are using.
+explicit `auto_away_debounce_seconds` is untouched. Known exception: a
+session the server restarted after a crash returns to the window it was
+first started with, until the next admin save.
 
 ## 9. Event kind inventory (issue 2260)
 

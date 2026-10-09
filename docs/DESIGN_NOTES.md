@@ -1040,9 +1040,14 @@ worker — neither the orchestrator nor the worker saw it first-hand.
 **Shape.** `Grappa.Session.reapply_auto_away_site_default/0` sends a bare
 `:auto_away_site_default_changed` to every pid in `Grappa.SessionRegistry`
 (the `{:session, _, _}` keys). The admin controller calls it after a
-SUCCESSFUL write whose body carried the `auto_away` subtree — not on an
-upload or dcc save, and not on a 422, since `with` never reaches it. The
-fan-out lives in the context, not the controller (controllers thin).
+SUCCESSFUL write whose body carried `auto_away.default_debounce_seconds` —
+not on an upload or dcc save, and not on an error return, since `with`
+never reaches it. ⚠️ The subtrees are NOT written in one transaction, so a
+body pairing a valid `auto_away` with an invalid `addressing` stores the new
+default and then fails: running sessions keep the old window until the next
+save. Same exposure the `server_settings_changed` push has; accepted, not
+fixed here. The fan-out lives in the context, not the controller
+(controllers thin).
 
 **The signal carries no value, on purpose.** What a session should wait is
 its subject's preference resolved over the site default, and only the
@@ -1061,11 +1066,21 @@ in-flight timer re-arms at the new window from the moment of the change —
 
 **Costs accepted.** One preference read per live session per admin
 `auto_away` save — rare, admin-only, the same read the spawn door makes.
-Fire-and-forget: a session that dies before reading the signal respawns
-through `start_session/3`, which resolves the same way, so there is no lost
-update to recover.
+
+**🔴 Known gap, NOT closed here: a `:transient` restart reverts the
+window.** `start_session/3` resolves the window ONCE into the child spec,
+and `DynamicSupervisor` restarts a crashed session with that same spec —
+it never passes through `start_session/3` again, and `init/1` deliberately
+takes the opt rather than reading the DB. So a session that adopted a new
+site default and later crashes comes back on the window of its ORIGINAL
+spawn, until the next admin save or a full stop/start. Found in review, not
+in the field. It predates this entry: #348's live PREFERENCE refresh has
+the identical revert. The cure (re-resolve in `init/1`, or read the window
+lazily) changes a posture the `init/1` comment defends and touches #348, so
+it is left to a ruling rather than taken inside this slice.
 
 **No wire change.** Nothing new is emitted to clients; the
 `server_settings_changed` push already carried the resolved default. The
 label-ahead-of-session gap this entry's parent recorded is closed for every
-running session that follows the default.
+running session that follows the default — except one that has been
+restarted by its supervisor since (the gap above).
