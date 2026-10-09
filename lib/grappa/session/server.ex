@@ -3395,6 +3395,18 @@ defmodule Grappa.Session.Server do
     {:noreply, apply_auto_away_debounce(state, resolve_auto_away_debounce(preference))}
   end
 
+  # issue 2359 (ruling: LIVE) — the admin moved the SITE default. Re-resolve
+  # the subject's window and adopt it only when it moved: a session holding
+  # its own preference resolves to the value it already has, and applying
+  # even an unchanged window would re-arm an in-flight timer (#348's retune
+  # ruling) and restart that user's wait for nothing.
+  def handle_info(:auto_away_site_default_changed, state) do
+    case auto_away_debounce_for(state.subject) do
+      same when same == state.auto_away_debounce_ms -> {:noreply, state}
+      debounce -> {:noreply, apply_auto_away_debounce(state, debounce)}
+    end
+  end
+
   # issue 2150 — the subject rewrote the auto-away reason, from any of
   # their devices. Same bridge topic and same "applies now, not at the
   # next restart" contract as the debounce above.

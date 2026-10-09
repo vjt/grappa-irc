@@ -91,7 +91,10 @@ defmodule GrappaWeb.Admin.SettingsController do
   for cic reactive update without a poll. Same precedent +
   iterator as `AdminController.cic_bundle_changed/2` (CP23 S4 B5
   cic-bundle fan-out): one broadcast per operator with a live WS.
-  Wire-shape lives at `Grappa.ServerSettings.Wire`.
+  Wire-shape lives at `Grappa.ServerSettings.Wire`. A write carrying
+  `auto_away` additionally calls `Grappa.Session.reapply_auto_away_site_default/0`
+  (issue 2359, ruling: LIVE), so running sessions that follow the site
+  default move with it; sessions with their own delay do not.
 
   The intermediate `Grappa.ServerSettings.topic/0` broadcast that
   `put_*/1` emits stays as an in-process signal for tests + any
@@ -102,7 +105,7 @@ defmodule GrappaWeb.Admin.SettingsController do
   use GrappaWeb, :controller
 
   alias Grappa.Net.SourceAliasManager
-  alias Grappa.{PubSub, ServerSettings, WSPresence}
+  alias Grappa.{PubSub, ServerSettings, Session, WSPresence}
   alias Grappa.PubSub.Topic
   alias Grappa.ServerSettings.Wire, as: SettingsWire
 
@@ -157,9 +160,17 @@ defmodule GrappaWeb.Admin.SettingsController do
     with :ok <- apply_updates(params) do
       view = ServerSettings.public_view()
       :ok = fanout_changed(view)
+      :ok = reapply_auto_away(params)
       json(conn, %{settings: render_view(view)})
     end
   end
+
+  # issue 2359 (ruling: LIVE) — a write that carried `auto_away` reaches the
+  # RUNNING sessions too, not only the next spawn. Gated on the subtree so an
+  # upload or dcc save does not wake every session for nothing; the context
+  # decides, per session, whether anything moved.
+  defp reapply_auto_away(%{"auto_away" => _}), do: Session.reapply_auto_away_site_default()
+  defp reapply_auto_away(_), do: :ok
 
   # UX-6-B2 (2026-05-21): fan out the new view on every live
   # `Topic.user(name)`. Mirrors `AdminController.cic_bundle_changed/2`'s

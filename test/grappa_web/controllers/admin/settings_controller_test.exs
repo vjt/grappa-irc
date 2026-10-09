@@ -826,6 +826,32 @@ defmodule GrappaWeb.Admin.SettingsControllerTest do
         }
       }
     end
+
+    # issue 2359 ruling (LIVE) — the write also reaches every RUNNING session.
+    # The test process stands in for one, registered under the production
+    # key; what a real session does with the signal is pinned in
+    # `Grappa.Session.ServerTest`.
+    test "a PUT carrying auto_away signals every live session", %{conn: conn, session: session} do
+      key = Grappa.Session.Server.registry_key({:user, Ecto.UUID.generate()}, 1)
+      {:ok, _} = Registry.register(Grappa.SessionRegistry, key, nil)
+
+      assert conn |> put_auto_away(session, 300) |> json_response(200)
+
+      assert_receive :auto_away_site_default_changed
+    end
+
+    test "a PUT without auto_away leaves live sessions alone", %{conn: conn, session: session} do
+      key = Grappa.Session.Server.registry_key({:user, Ecto.UUID.generate()}, 1)
+      {:ok, _} = Registry.register(Grappa.SessionRegistry, key, nil)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put("/admin/settings", %{"dcc" => %{"max_transfer_bytes" => 1024}})
+
+      assert json_response(conn, 200)
+      refute_receive :auto_away_site_default_changed, 100
+    end
   end
 
   describe "PUT /admin/settings — fan-out (UX-6-B2)" do
