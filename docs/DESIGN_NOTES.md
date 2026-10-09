@@ -1016,18 +1016,56 @@ stays the BOOT value, not the resolver — the resolver reads the DB and
 reads `ServerSettings.auto_away_default_ms/0`. That covers the spawn
 boundary and the live preference refresh, so a user who goes back to "use
 site default" on a running session gets the CURRENT site value (tested).
-**Pushing an admin change into sessions that are already running is NOT
-built** — vjt's ruling is pending, and the resolver is what both answers
-need. If the ruling is "live", the change is one fan-out after a successful
-`auto_away` write in `Admin.SettingsController.update/2`: for each live
-session, re-resolve `auto_away_debounce_for(subject)` (re-reading the
-preference, so a session with its own value is untouched) and feed
-`apply_auto_away_debounce/2`. Until then, a fact for the ruling: the
-drawer label follows the admin live while a running session keeps the
-window it spawned with, so the label is ahead of the session until the
-session respawns.
+Whether an admin change also reaches sessions that are ALREADY running
+was left to a ruling; it came back "live" — see the addendum below.
 
 **Client tolerance.** The narrower degrades an absent or malformed value to
 `null` (bare label) instead of dropping the push, declared on both widening
 registries; strict would oblige `MIN_SERVER_PROTOCOL_VERSION` to 39 over a
 label. Protocol 39, the four version sites bumped together.
+<!-- entry #2359b -->
+
+---
+
+## 2026-10-09 — issue 2359b: an admin change of the site default reaches running sessions
+
+**Ruling: LIVE.** A session that follows the site default follows an admin
+change while it runs; a session whose user set an explicit delay is not
+touched. **Provenance, stated as it reached this branch:** vjt handed the
+question to Lucy ("solo le nuove direi? ma chiedi a lucy", 18:29Z); Lucy
+answered "live" on Azzurra `#grappa` at 19:02Z. That answer was RELAYED by
+the peer session vjt-claude-9a to the orchestrator and from there to this
+worker — neither the orchestrator nor the worker saw it first-hand.
+
+**Shape.** `Grappa.Session.reapply_auto_away_site_default/0` sends a bare
+`:auto_away_site_default_changed` to every pid in `Grappa.SessionRegistry`
+(the `{:session, _, _}` keys). The admin controller calls it after a
+SUCCESSFUL write whose body carried the `auto_away` subtree — not on an
+upload or dcc save, and not on a 422, since `with` never reaches it. The
+fan-out lives in the context, not the controller (controllers thin).
+
+**The signal carries no value, on purpose.** What a session should wait is
+its subject's preference resolved over the site default, and only the
+session reads its subject's preference; shipping the site value would make
+every session re-derive "do I follow it?" from a second copy of the rule.
+Each session runs the existing `auto_away_debounce_for/1` — the spawn
+door's resolver, so spawn and live refresh cannot disagree.
+
+**Adopt only on change.** A session with its own delay resolves to the
+window it already holds, and `apply_auto_away_debounce/2` with even the
+SAME window would cancel and re-arm an in-flight timer (#348's retune
+ruling), restarting that user's wait for an admin action that was never
+about them. The handler compares first. A session that DOES move with an
+in-flight timer re-arms at the new window from the moment of the change —
+#348's semantics, unchanged.
+
+**Costs accepted.** One preference read per live session per admin
+`auto_away` save — rare, admin-only, the same read the spawn door makes.
+Fire-and-forget: a session that dies before reading the signal respawns
+through `start_session/3`, which resolves the same way, so there is no lost
+update to recover.
+
+**No wire change.** Nothing new is emitted to clients; the
+`server_settings_changed` push already carried the resolved default. The
+label-ahead-of-session gap this entry's parent recorded is closed for every
+running session that follows the default.

@@ -1185,6 +1185,12 @@ or `null`, which deletes the stored value so the boot config applies
 again; anything else is **422 `invalid_setting`** with
 `field: "auto_away.default_debounce_seconds"`.
 
+A successful `PUT` takes effect on RUNNING sessions too: every live session
+whose subject has no preference of their own moves to the new window at
+once (an armed timer restarts at the new length); a session with an
+explicit `auto_away_debounce_seconds` is untouched. So the number the
+no-preference label prints is the window the user's sessions are using.
+
 ## 9. Event kind inventory (issue 2260)
 
 Every `"event"` frame carries a `kind`. This is the complete set the server
