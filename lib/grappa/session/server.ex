@@ -440,7 +440,7 @@ defmodule Grappa.Session.Server do
           # #348 preference over the boot-resolved default; a test /
           # integration env may substitute a short window. `:disabled` is
           # the #348 OFF state — no debounce timer is ever armed.
-          optional(:auto_away_debounce_ms) => non_neg_integer() | :disabled,
+          optional(:auto_away_debounce_ms) => pos_integer() | :disabled,
           # issue 2150 — the text this session sends when the debounce above
           # fires. Injected by `Grappa.Session.start_session/3`, which
           # resolves the subject's stored reason over
@@ -629,7 +629,7 @@ defmodule Grappa.Session.Server do
           # boot-resolved default; opts override in tests). `:disabled`
           # (#348) means auto-away is off for this subject: the arm site
           # arms nothing rather than arming a very long timer.
-          auto_away_debounce_ms: non_neg_integer() | :disabled,
+          auto_away_debounce_ms: pos_integer() | :disabled,
           # issue 2150 — the reason sent with the automatic `AWAY`, resolved
           # at the spawn boundary next to the window above and re-tuned live
           # by `{:auto_away_reason_changed, _}`. Always a binary: the
@@ -962,7 +962,7 @@ defmodule Grappa.Session.Server do
   new one by the settings broadcast.
   """
   @spec resolve_auto_away_debounce(UserSettings.auto_away_debounce()) ::
-          non_neg_integer() | :disabled
+          pos_integer() | :disabled
   def resolve_auto_away_debounce(nil), do: ServerSettings.auto_away_default_ms()
   def resolve_auto_away_debounce(:disabled), do: :disabled
 
@@ -975,7 +975,7 @@ defmodule Grappa.Session.Server do
   (`Grappa.Session.start_session/3`) so a session starts on the value
   the user chose, not only on the one they choose next.
   """
-  @spec auto_away_debounce_for(Grappa.Subject.t()) :: non_neg_integer() | :disabled
+  @spec auto_away_debounce_for(Grappa.Subject.t()) :: pos_integer() | :disabled
   def auto_away_debounce_for({_, _} = subject) do
     subject
     |> UserSettings.get_auto_away_debounce_seconds()
@@ -8082,7 +8082,7 @@ defmodule Grappa.Session.Server do
   # the next hide", and a knob that visibly does nothing until you hide
   # again is the worse surprise. The window therefore restarts from the
   # moment of the change.
-  @spec apply_auto_away_debounce(t(), non_neg_integer() | :disabled) :: t()
+  @spec apply_auto_away_debounce(t(), pos_integer() | :disabled) :: t()
   defp apply_auto_away_debounce(state, :disabled) do
     :ok = cancel_and_drain(state.auto_away_timer, :auto_away_debounce_fire)
     %{state | auto_away_debounce_ms: :disabled, auto_away_timer: nil}
