@@ -1,5 +1,6 @@
 defmodule Grappa.IRC.CTCPTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias Grappa.IRC.CTCP
 
@@ -105,6 +106,29 @@ defmodule Grappa.IRC.CTCPTest do
       assert CTCP.action_text("\x01ACTION\x01") == :none
       assert CTCP.action_text("\x01PING 1706743200000\x01") == :none
       assert CTCP.action_text("") == :none
+    end
+
+    # The two ACTION readers must agree byte for byte: `Grappa.IRC.Ignore`
+    # matches on `action_text/1` where it used to match on `verb_args/1`'s
+    # args, so this is the equivalence that swap rests on. The prefixes are
+    # the frame shapes the classifier draws a line between; the tail is any
+    # bytes, with or without the closing delimiter.
+    property "agrees with action?/1 and with verb_args/1's ACTION args" do
+      prefixes = ["", "\x01", "\x01ACTION", "\x01ACTION ", "\x01action ", "\x01PING ", "\x01 ACTION "]
+
+      check all(
+              prefix <- StreamData.member_of(prefixes),
+              tail <- StreamData.binary(),
+              close <- StreamData.member_of(["", "\x01"])
+            ) do
+        body = prefix <> tail <> close
+
+        if CTCP.action?(body) do
+          assert {"ACTION", CTCP.action_text(body)} == CTCP.verb_args(body)
+        else
+          assert CTCP.action_text(body) == :none
+        end
+      end
     end
   end
 end
