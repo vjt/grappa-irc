@@ -249,13 +249,9 @@ defmodule Grappa.IRC.Ignore do
   # What the pattern is matched AGAINST — see the moduledoc's ACTION rule.
   @spec text_subject(String.t()) :: String.t()
   defp text_subject(body) do
-    if CTCP.action?(body) do
-      case CTCP.verb_args(body) do
-        {"ACTION", args} -> args
-        _ -> body
-      end
-    else
-      body
+    case CTCP.action_text(body) do
+      :none -> body
+      text -> text
     end
   end
 end
