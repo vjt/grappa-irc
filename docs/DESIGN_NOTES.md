@@ -1084,3 +1084,28 @@ it is left to a ruling rather than taken inside this slice.
 label-ahead-of-session gap this entry's parent recorded is closed for every
 running session that follows the default — except one that has been
 restarted by its supervisor since (the gap above).
+<!-- entry #2366 -->
+
+---
+
+## 2026-10-10 — issue 2366: a CTCP ACTION renders as `* sender text` on the push door
+
+**Decision.** `Push.Payload.build/2` renders an `:action` row's body as
+`* <sender> <text>` — the emote cic shows — and only then applies the
+#1977 `plain_text/1` projection. The frame is removed by
+`CTCP.action_text/1`, next to `action?/1` and `verb_args/1`. Push does not
+get a second CTCP parser. The stored row keeps `\x01ACTION …\x01`, per the
+wire-format rule. This is a projection at the door, like 1977.
+
+**Why the sender is repeated under a DM title.** A DM banner's title is
+already the sender, so `alice` / `* alice waves` repeats the nick. That is
+deliberate: the body then reads the same on every surface, in-app and
+lock screen, DM and channel, and the bare text alone (`waves`) is not
+recognisably an emote. Every OTHER CTCP frame still reaches the payload
+framed, because only ACTION is conversation.
+
+**Measured, not fixed here.** `Grappa.Mentions.body_matches?/2` (push,
+sidebar badge, away bundle) matches against `plain_text(body)` with the
+frame still on. A real nick still matches, because `\x01` is not `\w`.
+But the matchers are caseless, so a highlight pattern `action` (or a nick
+`Action`) fires on every `/me`. That door is left to a ruling.
