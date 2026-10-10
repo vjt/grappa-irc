@@ -84,6 +84,20 @@ defmodule Grappa.IRC.CTCP do
 
   def verb_args(_), do: :none
 
+  @doc """
+  The text of a CTCP ACTION — what a reader of `* nick text` saw (issue
+  2366).
+
+  Unframes only: the `\\x01ACTION ` opener and the optional closing `\\x01`
+  go, every other byte stays (mIRC formatting is a separate projection,
+  `Grappa.IRC.MircFormat.plain_text/1`). `:none` for exactly the bodies
+  `action?/1` rejects. For the doors that render or match the TEXT of an
+  emote rather than its frame; the stored row keeps the frame.
+  """
+  @spec action_text(binary()) :: binary() | :none
+  def action_text(<<0x01, "ACTION ", rest::binary>>), do: strip_trailing_delim(rest)
+  def action_text(_), do: :none
+
   # Drops a single trailing `\x01` (CTCP's optional closing delimiter) so the
   # last argument doesn't carry the delimiter byte. Byte-level per "IRC is
   # bytes"; safe on an empty binary.

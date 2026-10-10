@@ -84,4 +84,27 @@ defmodule Grappa.IRC.CTCPTest do
       assert CTCP.verb_args("\x01 VERSION") == :none
     end
   end
+
+  # issue 2366 — the ACTION payload as a reader sees it, for the doors that
+  # render or match the text rather than the frame (push body, ignore match).
+  describe "action_text/1" do
+    test "unwraps a closed ACTION frame" do
+      assert CTCP.action_text("\x01ACTION waves at the channel\x01") == "waves at the channel"
+    end
+
+    test "lenient when the trailing \\x01 is absent (mirrors action?/1)" do
+      assert CTCP.action_text("\x01ACTION waves") == "waves"
+    end
+
+    test "leaves interior formatting bytes alone — unframing is not de-formatting" do
+      assert CTCP.action_text("\x01ACTION \x0304waves\x01") == "\x0304waves"
+    end
+
+    test ":none for anything action?/1 rejects" do
+      assert CTCP.action_text("waves") == :none
+      assert CTCP.action_text("\x01ACTION\x01") == :none
+      assert CTCP.action_text("\x01PING 1706743200000\x01") == :none
+      assert CTCP.action_text("") == :none
+    end
+  end
 end
