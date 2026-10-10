@@ -57,8 +57,12 @@ defmodule Grappa.Push.Payload do
   that does not exist and land the click on a channel nobody is in.
 
   The stripper is the mIRC one, not a control-byte purge: CTCP framing
-  (`\\x01`) round-trips verbatim per CLAUDE.md's wire-format rule, so an
-  ACTION row still reaches the payload framed.
+  (`\\x01`) round-trips verbatim per CLAUDE.md's wire-format rule. The one
+  verb that is conversation is unwrapped BEFORE the projection: an `:action`
+  row's body renders as `* <sender> <text>`, the emote cic shows (issue
+  2366) — left framed, the OS dropped the `\\x01` and the lock screen read
+  `ACTION slaps sarahbean`. Every other CTCP frame still reaches the payload
+  framed.
 
   ## Presence transitions (#378)
 
@@ -102,7 +106,7 @@ defmodule Grappa.Push.Payload do
   trivial to test.
   """
 
-  alias Grappa.IRC.{Identifier, MircFormat}
+  alias Grappa.IRC.{CTCP, Identifier, MircFormat}
   alias Grappa.Scrollback.Message
 
   @typedoc """
@@ -144,11 +148,23 @@ defmodule Grappa.Push.Payload do
 
     %{
       title: MircFormat.plain_text(title),
-      body: MircFormat.plain_text(message.body || ""),
+      body: MircFormat.plain_text(rendered_body(message)),
       tag: "#{network_slug}:#{dedup_key}",
       url: build_url(network_slug, deep_link_target)
     }
   end
+
+  # issue 2366 — an ACTION renders as the emote cic shows, `* <sender> <text>`.
+  # Left framed, the OS drops the non-printing `\x01` and the verb reaches the
+  # lock screen as text: `ACTION slaps sarahbean`. Both persist paths classify
+  # `:action` through `CTCP.action?/1`, so an `:action` row is always framed;
+  # the match crashes on one that is not rather than render `* alice none`.
+  defp rendered_body(%Message{kind: :action, sender: sender, body: body}) do
+    <<_::binary>> = text = CTCP.action_text(body)
+    "* #{sender} #{text}"
+  end
+
+  defp rendered_body(%Message{body: body}), do: body || ""
 
   @doc """
   Builds a notification payload for a `/notify` presence transition (#378).

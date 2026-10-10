@@ -205,15 +205,67 @@ defmodule Grappa.Push.PayloadTest do
     end
 
     # CLAUDE.md's charset rule: CTCP framing is NOT formatting and round-trips
-    # verbatim. `build/3` now runs a stripper over the body, so pin here that
-    # the stripper is the mIRC one and not a general control-byte purge — an
-    # ACTION row must still reach the payload framed.
-    test "CTCP framing survives the projection" do
-      body = "\x01ACTION " <> @color <> "04waves\x01"
+    # verbatim. Pin that the stripper is the mIRC one and not a general
+    # control-byte purge: a non-ACTION frame on a `:privmsg` row (every verb
+    # but ACTION persists as one) still reaches the payload framed. ACTION is
+    # the one verb that is conversation, and it is unwrapped on purpose — see
+    # the issue 2366 block below.
+    test "non-ACTION CTCP framing survives the projection" do
+      body = "\x01DCC " <> @color <> "04SEND\x01"
 
       payload = Payload.build(msg(channel: "#allnitecafe", body: body), "azzurra")
 
-      assert payload.body == "\x01ACTION waves\x01"
+      assert payload.body == "\x01DCC SEND\x01"
+    end
+  end
+
+  describe "build/2 — CTCP ACTION renders as an emote (issue 2366)" do
+    # The OS renderer drops the non-printing `\x01` and leaves the verb in
+    # the text: vjt's lock screen read `ACTION slaps sarahbean` for a `/me`.
+    # Expectations are LITERALS, what a reader of cic's `* nick text` saw.
+    test "a channel action reads '* <sender> <text>'" do
+      payload =
+        Payload.build(
+          msg(channel: "#sniffo", sender: "alice", kind: :action, body: "\x01ACTION waves\x01"),
+          "libera"
+        )
+
+      assert payload.body == "* alice waves"
+      assert payload.title == "alice in #sniffo"
+      refute payload.body =~ "\x01"
+      refute payload.body =~ "ACTION"
+    end
+
+    test "a DM action reads the same, under the DM title" do
+      payload =
+        Payload.build(
+          msg(channel: "vjt", sender: "alice", dm_with: "alice", kind: :action, body: "\x01ACTION waves\x01"),
+          "libera"
+        )
+
+      assert payload.title == "alice"
+      assert payload.body == "* alice waves"
+    end
+
+    test "lenient framing without the closing \\x01 still unwraps" do
+      payload =
+        Payload.build(msg(channel: "#sniffo", kind: :action, body: "\x01ACTION waves"), "libera")
+
+      assert payload.body == "* alice waves"
+    end
+
+    test "mIRC colour inside the action text is still projected" do
+      body = "\x01ACTION " <> @color <> "04,08slaps" <> @color <> " sarahbean\x01"
+
+      payload = Payload.build(msg(channel: "#sniffo", sender: "vjt", kind: :action, body: body), "libera")
+
+      assert payload.body == "* vjt slaps sarahbean"
+    end
+
+    test "a :privmsg body is not touched by the emote rendering" do
+      payload = Payload.build(msg(channel: "#sniffo", sender: "alice", body: "waves"), "libera")
+
+      assert payload.body == "waves"
     end
   end
 
