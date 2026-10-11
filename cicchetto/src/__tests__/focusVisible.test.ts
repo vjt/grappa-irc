@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { focusRules } from "./helpers/themeCss";
+import { focusRules, horizontalInsets, isZeroInset, nestedRuleBodies } from "./helpers/themeCss";
 
 // #96 — keyboard focus visibility.
 //
@@ -76,5 +76,21 @@ describe("#96 — focus indicators are never silently removed", () => {
     expect(owning.length).toBeGreaterThan(0);
     const withRing = owning.filter(({ body }) => /^\d/.test(outlineValue(body) ?? ""));
     expect(withRing.length).toBeGreaterThan(0);
+  });
+});
+
+// issue 2375 — the `>` prompt's ring above is drawn INSET (`outline-offset:
+// -2px`, so the row's own frame can't clip it), which means it occupies the
+// input's innermost 2px. With `padding: 0.25rem 0` the caret and the first
+// glyph sat ON that ring (vjt's iOS screenshot). Both horizontal sides need a
+// real gap. What this cannot prove: that the gap clears the ring once painted
+// — that is geometry, and the e2e spec measures it in a browser.
+describe("issue 2375 — the services prompt text clears its inset focus ring", () => {
+  it(".service-modal-prompt-input declares a non-zero horizontal padding on both sides", () => {
+    const insets = nestedRuleBodies(".service-modal-prompt-input").flatMap(horizontalInsets);
+    const padding = insets.filter(({ property }) => property.startsWith("padding"));
+    // A 2-value shorthand yields ONE inline component (it covers both sides).
+    expect(padding.length).toBeGreaterThan(0);
+    expect(padding.filter(({ component }) => isZeroInset(component))).toEqual([]);
   });
 });

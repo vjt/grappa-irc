@@ -11969,7 +11969,9 @@ html.is-ios27-band .shell {
   background: transparent;
   border: none;
   outline: none;
-  padding: 0.25rem 0;
+  /* issue 2375 — the focus ring below is inset (it covers the innermost 2px),
+     so a zero inline padding put the caret and first glyph ON it. */
+  padding: 0.25rem 0.5rem;
 }
 
 /* #96 — this input is the one focus surface in the app with NO cue at all:
