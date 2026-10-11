@@ -16,6 +16,7 @@
 import {
   type Casemapping,
   casemappingForNetwork,
+  chantypesForNetwork,
   prefixForNetwork,
   sigilRankForNetwork,
 } from "./isupport";
@@ -32,6 +33,15 @@ import { networkIdBySlug } from "./networks";
  */
 export const casemappingForSlug = (slug: string): Casemapping =>
   casemappingForNetwork(networkIdBySlug(slug) ?? null);
+
+/**
+ * #1255 — the channel sigils the network behind `slug` advertised (005
+ * CHANTYPES), falling back to the RFC 2812 class for a network with no live
+ * session or one that omits the token. Was `compose.sigilsFor` until issue
+ * 2375 gave the completion engine a second door that needs the same hop.
+ */
+export const chantypesForSlug = (slug: string): readonly string[] =>
+  chantypesForNetwork(networkIdBySlug(slug) ?? null);
 
 /**
  * The membership sigils the network behind `slug` advertised, highest rank

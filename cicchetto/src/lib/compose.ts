@@ -2,9 +2,8 @@ import { createEffect, createSignal, on } from "solid-js";
 import { aliases } from "./aliasList";
 import { ownNickForNetwork } from "./api";
 import { token } from "./auth";
-import { casemappingForSlug } from "./casemapping";
-import { type ChannelKey, channelKey, decodeChannelKey } from "./channelKey";
-import { isChannelName } from "./chantypes";
+import { chantypesForSlug } from "./casemapping";
+import { type ChannelKey, channelKey } from "./channelKey";
 import type { CommandContext, DispatchOutcome, SubmitResult } from "./commands/context";
 import { fanOutCommand } from "./commands/fanout";
 import { watchlistCommand } from "./commands/highlight";
@@ -78,12 +77,9 @@ import { documentTeardownEpoch, documentTornDownSince } from "./documentTeardown
 import { type FramePreview, framePreview } from "./frameBudget";
 import { friendlyError } from "./friendlyError";
 import { identityScopedStore } from "./identityScopedStore";
-import { chantypesForNetwork, sigilRankForNetwork } from "./isupport";
-import { joinedChannelsOnNetwork } from "./joinedChannels";
-import { membersByChannel } from "./members";
+import { sigilRankForNetwork } from "./isupport";
 import { splitMessageLines } from "./messageLines";
 import { networkBySlug, networkIdBySlug, user } from "./networks";
-import { normalizeNick } from "./nickEquals";
 import { ensureQueryTopicJoined } from "./queryTopicJoin";
 import { canonicalQueryNick, openQueryWindowState } from "./queryWindows";
 // #1225 — the seam sends a PRIVMSG to the window OR relays a NOTICE/CTCP to a
@@ -95,26 +91,8 @@ import { draftLines, sendBodyLines, wireBody } from "./sendPipeline";
 import { isServicesSender } from "./servicesSender";
 import { parseSlash } from "./slashCommands";
 import { peelStatusmsg } from "./statusmsg";
+import { type TabCycle, tabCompleteStep } from "./tabCompletion";
 import { SERVER_WINDOW_NAME } from "./windowKinds";
-
-// #1255 — the channel sigils this NETWORK advertised (005 CHANTYPES),
-// falling back to the RFC 2812 class for a network with no live session or
-// one that omits the token. This replaced a hardcoded `/^[#&+!]/` whose
-// comment named the correct source and admitted nothing in the stack parsed
-// it; the widening plumbed it through `isupport_changed`. (The comment used
-// to carry a `TODO(#30)`, which pointed at a closed, unrelated issue.)
-const sigilsFor = (slug: string): readonly string[] =>
-  chantypesForNetwork(networkIdBySlug(slug) ?? null);
-
-// #1003 — IRC nicks wear decoration (`_omino_`, `bob^`, `gio-vanni`), so
-// Tab must reach `_omino_` from the bare `omi`. Deliberately NOT taught to
-// `normalizeNick`/`asciiFold`: those are protocol IDENTITY (the cic mirror
-// of `Grappa.IRC.Identifier.canonical_target/1` and `/2`, shared with
-// nickColor / notifyWatch / channelKey / pingCorrelation), and folding `_`
-// there would make `foo` and `f_o_o` the SAME person for highlight, colour
-// and presence. This one is local to the completion matcher, where a wrong
-// guess costs a second Tab, not an identity merge.
-const stripNickDecoration = (s: string): string => s.replace(/[[\]\\`_^{|}-]/g, "");
 
 // Per-channel compose state. Owns:
 //   * `composeByChannel` — { draft, history, historyCursor } per key.
@@ -270,23 +248,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   // gains no new writer, and no await is introduced anywhere near it.
   createEffect(on(composeByChannel, persistDrafts, { defer: true }));
 
-  // Tab-complete cycle anchor. Continuation is detected by RANGE, not by
-  // word equality, so it survives the ": "/" " suffix that sits after the
-  // caret and a re-tap that lands the caret anywhere inside the inserted
-  // nick. `suffix` is the persistent positional suffix for the whole cycle;
-  // `lastInsertion` is the exact text written last (nick+suffix, OR the
-  // typed word in the revert slot) — the continuation guard compares the
-  // anchored span against it.
-  let tabCycle: {
-    key: ChannelKey;
-    typedWord: string; // original-case word the user typed; restored in revert slot
-    prefix: string; // lowercased typedWord; the match filter
-    idx: number; // 0..matches.length; === matches.length is the revert slot
-    anchorStart: number;
-    anchorEnd: number;
-    lastInsertion: string;
-    suffix: string; // ": " (line start) or " " (mid-sentence)
-  } | null = null;
+  // The compose door's tab-complete cycle (shape and rules: lib/tabCompletion).
+  let tabCycle: TabCycle | null = null;
 
   onIdentityChange(() => setComposeByChannel({}));
   onIdentityChange(() => {
@@ -640,7 +603,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     // #1255 — the parser decides "channel or nick?" for /join, /part, /topic
     // and /mode, and that answer is per-network. It stays pure and takes the
     // advertised sigils as data, exactly as it takes the alias map.
-    const cmd = parseSlash(text, aliases(), sigilsFor(networkSlug));
+    const cmd = parseSlash(text, aliases(), chantypesForSlug(networkSlug));
     // Empty short-circuits before the token check — an empty submit is
     // a no-op regardless of session state, and the consumer (ComposeBox)
     // wants the same outcome whether or not a token is in play.
@@ -672,7 +635,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       // it hard enough to MUTATE on it: `foldChannelKey` folds the key for
       // `kind: "channel"` and for no other kind.
       //
-      // What this replaces: an `isChannelName(name, sigilsFor(...))` sniff —
+      // What this replaces: an `isChannelName(name, chantypesForSlug(...))` sniff —
       // a second, independent answer to a question the selection had already
       // answered, derived from different data (the network's advertised
       // CHANTYPES) that can disagree with it. When it did, a window the store
@@ -764,7 +727,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       text,
       token: t,
       getActiveChannel,
-      sigils: () => sigilsFor(networkSlug),
+      sigils: () => chantypesForSlug(networkSlug),
       requireChannel,
       requireNetworkId,
       resolveBareWhoisNick,
@@ -1364,143 +1327,24 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     }
   };
 
-  // Tab-complete. Cycles matches for the word at the cursor, irssi-style.
-  // Cycle space is [match0 … matchN-1, <typed>]: after the last match the
-  // next forward step restores the originally-typed text, then wraps to
-  // match0. Writes the completed draft itself via writeState (NOT setDraft,
-  // which nulls tabCycle and would kill the cycle) — callers only place the
-  // caret. Returns the new input + caret, or null when there's nothing to
-  // complete.
-  //
-  // #30 — the token's leading sigil picks the candidate SET (channels vs
-  // members) and the suffix; the cycle, the revert slot and the anchor are
-  // shared. There is ONE completion engine, deliberately: a parallel one
-  // would drift on the re-tap/anchor rules that took #737 to get right.
+  // The compose door onto the ONE completion engine (lib/tabCompletion,
+  // issue 2375 — the services prompt is the other door). What stays here is
+  // what is compose-specific: the #737 drain refusal, the cycle living
+  // beside the per-channel drafts, and the write through writeState (NOT
+  // setDraft, which nulls tabCycle and would kill the cycle) — callers only
+  // place the caret. Line-start nicks get the ": " addressee suffix.
   const tabComplete = (
     key: ChannelKey,
     input: string,
     cursor: number,
     forward: boolean,
   ): { newInput: string; newCursor: number } | null => {
-    // #737 — tab-complete writes the draft directly (see writeState below),
-    // so it needs the same refusal as setDraft / the history walk.
     if (isDraining(key)) return null;
-
-    // #1255 — completing a CHANNEL vs a NICK is decided by this network's
-    // advertised sigils, not the RFC class: on a `CHANTYPES=#` network a
-    // `&foo` token completes against members, not channels.
-    const tabSlug = decodeChannelKey(key)?.slug ?? "";
-    const tabSigils = sigilsFor(tabSlug);
-    // #1861 — the same per-network resolution for the nick fold. A key that
-    // does not decode leaves the slug empty, which resolves to `:ascii`.
-    const tabCasemapping = casemappingForSlug(tabSlug);
-
-    const continuing =
-      tabCycle !== null &&
-      tabCycle.key === key &&
-      cursor >= tabCycle.anchorStart &&
-      cursor <= tabCycle.anchorEnd &&
-      input.slice(tabCycle.anchorStart, tabCycle.anchorEnd) === tabCycle.lastInsertion;
-
-    let anchorStart: number;
-    let typedWord: string;
-    let prefix: string;
-    let suffix: string;
-    let oldEnd: number;
-
-    if (continuing && tabCycle !== null) {
-      anchorStart = tabCycle.anchorStart;
-      typedWord = tabCycle.typedWord;
-      prefix = tabCycle.prefix;
-      suffix = tabCycle.suffix;
-      oldEnd = tabCycle.anchorEnd;
-    } else {
-      // Fresh cycle: find the word ending at the cursor.
-      let start = cursor;
-      while (start > 0 && !/\s/.test(input[start - 1] ?? "")) start -= 1;
-      typedWord = input.slice(start, cursor);
-      if (typedWord.length === 0) return null;
-      anchorStart = start;
-      // Fold with the NETWORK's casemapping (not a bare toLowerCase) so
-      // `Foo` completes a member `foo`. On bahamut (`CASEMAPPING=ascii`,
-      // #525) that folds `A-Z` ONLY: `[ ] \ ~` are NOT folded, so for
-      // IDENTITY `foo{` and `Foo[1]` stay DISTINCT nicks. On an rfc1459
-      // network (#1861) they are the SAME nick and the literal level says
-      // so. toLowerCase is avoided because it Unicode-over-folds non-ASCII
-      // (`CAFÉ`→`café`), not the brackets. Mirror of
-      // `Grappa.IRC.Identifier.canonical_target/2`.
-      //
-      // Careful, this is only HALF the completion rule (#1003): the second
-      // level below counts `{ | }` as decoration alongside `[ ] \`, so on
-      // an `:ascii` network `foo{<TAB>` CAN still reach `Foo[1]` — strictly
-      // BEHIND every literal match, never displacing one. That is not an
-      // identity merge and does not soften #525: nothing here is a key, and
-      // what gets inserted is always the real nick. Keep both halves stated
-      // — a reader who sees only this paragraph will "fix" the second level
-      // as a leftover.
-      prefix = normalizeNick(typedWord, tabCasemapping);
-      // ": " only when the word is the first token on the line — and only
-      // for a NICK. A channel is a topic of conversation, never an
-      // addressee, so `#chan: ` would be wrong at line start (#30).
-      suffix =
-        !isChannelName(typedWord, tabSigils) && input.slice(0, anchorStart).trim() === ""
-          ? ": "
-          : " ";
-      oldEnd = cursor;
-    }
-
-    const isChannel = isChannelName(typedWord, tabSigils);
-    const candidates = isChannel
-      ? joinedChannelsOnNetwork(key)
-      : (membersByChannel()[key] ?? []).map((m) => m.nick);
-    const byName = (a: string, b: string) => a.localeCompare(b);
-    const literal = candidates
-      .filter((c) => normalizeNick(c, tabCasemapping).startsWith(prefix))
-      .sort(byName);
-    // Second level (#1003), nicks only: the same prefix test with the
-    // decoration removed from BOTH sides. It runs AFTER the literal
-    // matches — the order IS the behaviour, so with `omino` and `_oMiNo_`
-    // both present the first Tab still yields the literal `omino`. A
-    // decoration-only word (`_`) strips to nothing and would match every
-    // member, so it stays on the literal level. The channel branch never
-    // strips: `#foo-bar` is a DIFFERENT channel from `#foobar`.
-    const looseWord = isChannel ? "" : stripNickDecoration(prefix);
-    const loose =
-      looseWord === ""
-        ? []
-        : candidates
-            .filter(
-              (c) =>
-                !literal.includes(c) &&
-                stripNickDecoration(normalizeNick(c, tabCasemapping)).startsWith(looseWord),
-            )
-            .sort(byName);
-    const matches = [...literal, ...loose];
-    if (matches.length === 0) return null;
-
-    const span = matches.length + 1; // matches + the revert slot
-    const idx =
-      continuing && tabCycle !== null
-        ? (((tabCycle.idx + (forward ? 1 : -1)) % span) + span) % span
-        : 0;
-
-    // idx === matches.length is the revert slot: restore the typed text.
-    const insertion = idx === matches.length ? typedWord : matches[idx] + suffix;
-    const newInput = input.slice(0, anchorStart) + insertion + input.slice(oldEnd);
-    const anchorEnd = anchorStart + insertion.length;
-
-    tabCycle = {
-      key,
-      typedWord,
-      prefix,
-      idx,
-      anchorStart,
-      anchorEnd,
-      lastInsertion: insertion,
-      suffix,
-    };
-    writeState(key, (s) => ({ ...s, draft: newInput }));
-    return { newInput, newCursor: anchorEnd };
+    const step = tabCompleteStep({ key, input, cursor, forward, cycle: tabCycle, addressee: true });
+    if (step === null) return null;
+    tabCycle = step.cycle;
+    writeState(key, (s) => ({ ...s, draft: step.newInput }));
+    return { newInput: step.newInput, newCursor: step.newCursor };
   };
 
   return {
