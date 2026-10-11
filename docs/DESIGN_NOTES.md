@@ -1171,3 +1171,58 @@ error. That is why the bump carries the rule here even though
 `fetch_after`, `fetch_around`, `fetch_by_time`) and `count_after` now start
 from one private `window_query/5` (subject, network, channel-or-DM,
 presence), so they cannot disagree about which rows a window holds.
+<!-- entry #2370 -->
+
+---
+
+## 2026-10-11 — issue 2370: a failed or stuck upstream write costs the caller, not the session
+
+**Decision.** `Client.send_line/2` catches the `{:timeout, _}` exit of its
+`GenServer.call`, and ONLY that one, and answers `{:error, :timeout}`.
+Every case site in `Session.Server` that matched only `:ok` and
+`:invalid_line` (privmsg and notice after the persist, the two
+service-target sends, PONG) now hands any other `{:error, _}` back to its
+caller and logs it. Before this, either path took the whole session down
+over one write: the exit propagated, or the unmatched tuple raised
+`CaseClauseError`, and the supervisor restarted the session with `client:
+nil`. Every send in the respawn window then hit the second hole, and that
+is the double crash the issue reports.
+
+**`:timeout` means delivery UNKNOWN, not "not sent".** The frame stays in
+the Client's mailbox and reaches the wire once the Client runs again. A test
+pins this. So the after-persist warning has two wordings: `not sent` for a
+transport error, `delivery unknown` for a timeout. A dead Client still exits
+the caller. That is pinned too: the link carries the death to the session
+anyway, and calling it a stall would misname it. Catching the timeout also
+keeps the frame out of the exit reason, which for `OPER` carried the
+password (#961).
+
+**Declared choice, reversible on its own: with `client: nil` the four
+persisting sends (privmsg, ctcp, notice, statusmsg) are refused BEFORE the
+persist** (`{:error, :no_socket}`, no row). There is nothing to write to,
+so a row would be a line the operator reads as sent that never left. The
+alternative was to keep persist-then-send and leave the row. A write that
+fails AFTER the persist still keeps its row, because on `:timeout` the frame
+may still go out and deleting it would be wrong as often as keeping it.
+
+**`send_join` gets its own `:timeout` arm.** Its catch-all reads any other
+transport error as "link down, reply `not_connected`", which is false for a
+timeout. The JOIN answers `:timeout` (504) and records nothing. If the frame
+does go out, its echo opens the window like any other JOIN echo does.
+
+**REST door.** Once these errors travel as values, `:no_socket` / `:closed`
+reach `FallbackController`, which had no clause for them and raised a
+bodyless 500. They now map to the existing `upstream_unreachable` (502).
+That adds no wire token and needs no protocol bump. The open `:inet.posix()`
+half of `Session.send_transport_error/0` stays unmapped: no guard names it
+without catching unrelated atoms.
+
+**Accepted, not changed.** The REST → session and session → Client
+deadlines are both 5 s and nested, so a REST caller always gives up first
+and reads `:timeout` from its own call. The session's answer goes nowhere
+(OTP drops the late reply). The tests pay that 5 s in wall clock. No
+injectable deadline was added to production for them.
+
+**Out of this slice.** The nick lost across the crash is won't-fix (vjt's
+ruling on the issue). Why the Client stalled ≥5 s and who sent the second
+and third copies were not measured, and this entry claims neither.
