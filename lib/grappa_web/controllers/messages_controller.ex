@@ -43,8 +43,9 @@ defmodule GrappaWeb.MessagesController do
   `?limit=banana`) returns `{:error, :bad_request}` via
   `FallbackController`. Forgiving the typo would mask client bugs;
   that bar is set by the read-only nature of this endpoint, not
-  relaxed by it. `?before=` / `?after=` / `?around=` are mutually
-  exclusive — supplying any two together returns 400.
+  relaxed by it. `?before=` / `?after=` / `?around=` and the time cursors
+  `?before_time=` / `?after_time=` / `?around_time=` (issue 2372) are ONE
+  mutually exclusive set — supplying any two together returns 400.
 
   Cursor semantics (post-CP29 R-2): all three cursors are integer
   `messages.id` values. `?before=<id>` was previously `server_time`
@@ -125,7 +126,8 @@ defmodule GrappaWeb.MessagesController do
   paginated scrollback fetch for the authenticated subject.
 
   Optional query params (cursors are mutually exclusive — any two of
-  `before` / `after` / `around` together returns 400):
+  `before` / `after` / `around` / `before_time` / `after_time` /
+  `around_time` together returns 400):
 
     * `before` — `id` cursor; returns rows whose `id` is strictly
       LESS than the value, in DESCENDING `(server_time, id)` order
@@ -139,6 +141,12 @@ defmodule GrappaWeb.MessagesController do
       around`, merged DESC. Used by R-4's "open window centered on
       cursor" flow when the user opens a channel with an existing
       read cursor.
+    * `before_time` / `after_time` / `around_time` (issue 2372) — the same
+      three shapes keyed on TIME: a decimal epoch-ms integer (`0` to int64
+      max; anything else is 400), filtered STRICTLY on `server_time` and
+      ordered by `(server_time, id)`. Rows sharing the bound millisecond are
+      excluded by both `before_time` and `after_time`; page onward with the
+      id cursors. See `Grappa.Scrollback.fetch_by_time/7`.
     * Absent: latest page (DESC, no cursor).
     * `limit` — page size (default `#{@default_limit}`, HTTP ceiling
       `#{@max_http_limit}` enforced at the boundary; `Grappa.Scrollback`
@@ -187,6 +195,9 @@ defmodule GrappaWeb.MessagesController do
 
           {:around, around_id} ->
             Scrollback.fetch_around(subject, network.id, channel, around_id, limit, own_nick, hide_presence)
+
+          {:time, cursor} ->
+            Scrollback.fetch_by_time(subject, network.id, channel, cursor, limit, own_nick, hide_presence)
         end
 
       render(conn, :index, messages: messages)
@@ -571,20 +582,41 @@ defmodule GrappaWeb.MessagesController do
   defp resolve_hide_presence(subject, network, channel),
     do: Resolver.hidden?(subject, network.slug, network.id, channel)
 
-  # Cursor mutex: at most one of `before` / `after` / `around`. Two or
-  # more present together silently picking one would mask client bugs;
-  # 400 is the right answer (consistent with the rest of this
-  # controller's "present-and-unparseable = 400" rule).
+  # Cursor mutex: at most one of the six cursors — `before` / `after` /
+  # `around` (ids) and, since issue 2372, `before_time` / `after_time` /
+  # `around_time` (epoch ms). Two or more present together silently picking
+  # one would mask client bugs; 400 is the right answer (consistent with the
+  # rest of this controller's "present-and-unparseable = 400" rule).
+  @cursor_params [
+    {"before", :before},
+    {"after", :after},
+    {"around", :around},
+    {"before_time", {:time, :before}},
+    {"after_time", {:time, :after}},
+    {"around_time", {:time, :around}}
+  ]
+
   defp parse_direction(params) do
-    cursors =
-      Enum.reject(
-        [{:before, params["before"]}, {:after, params["after"]}, {:around, params["around"]}],
-        fn {_, v} -> is_nil(v) end
-      )
+    cursors = for {key, tag} <- @cursor_params, not is_nil(params[key]), do: {tag, params[key]}
 
     case cursors do
       [] -> {:ok, {:before, nil}}
+      [{{:time, dir}, raw}] -> with {:ok, t} <- parse_epoch_ms(raw), do: {:ok, {:time, {dir, t}}}
       [{tag, raw}] -> with {:ok, n} <- parse_int(raw), do: {:ok, {tag, n}}
+      _ -> {:error, :bad_request}
+    end
+  end
+
+  # issue 2372 — ONE value format, decimal epoch milliseconds: the unit every
+  # row's `server_time` already carries on this wire, so a client re-sends a
+  # row's own value unconverted. Non-negative, and capped at the int64 the
+  # column is: past it the bind would fail inside exqlite, a 500 for what is
+  # a malformed request.
+  @max_epoch_ms 9_223_372_036_854_775_807
+
+  defp parse_epoch_ms(raw) do
+    case parse_int(raw) do
+      {:ok, t} when t >= 0 and t <= @max_epoch_ms -> {:ok, t}
       _ -> {:error, :bad_request}
     end
   end

@@ -373,6 +373,139 @@ defmodule GrappaWeb.MessagesControllerTest do
     assert Enum.map(body, & &1["body"]) == ["m4", "m3", "m2", "m1", "m0"]
   end
 
+  # issue 2372 — time cursors. `seed/2` writes m0..m4 at server_time 0..4.
+  describe "time cursors (issue 2372)" do
+    test "GET ?before_time=<ms> returns rows strictly older, newest first",
+         %{conn: conn, user: user, network: network} do
+      seed(user, network)
+      body = json_response(get(conn, "/networks/azzurra/channels/%23sniffo/messages?before_time=3"), 200)
+      assert Enum.map(body, & &1["body"]) == ["m2", "m1", "m0"]
+    end
+
+    test "GET ?after_time=<ms>&limit=2 returns rows strictly newer, oldest first",
+         %{conn: conn, user: user, network: network} do
+      seed(user, network)
+
+      body =
+        json_response(get(conn, "/networks/azzurra/channels/%23sniffo/messages?after_time=1&limit=2"), 200)
+
+      assert Enum.map(body, & &1["body"]) == ["m2", "m3"]
+    end
+
+    test "GET ?around_time=<ms>&limit=4 centres on the time, newest first",
+         %{conn: conn, user: user, network: network} do
+      seed(user, network)
+
+      body =
+        json_response(get(conn, "/networks/azzurra/channels/%23sniffo/messages?around_time=2&limit=4"), 200)
+
+      assert Enum.map(body, & &1["body"]) == ["m4", "m3", "m2", "m1"]
+    end
+
+    test "a time-cursor row carries the same wire shape as an id-cursor row",
+         %{conn: conn, user: user, network: network} do
+      seed(user, network)
+      by_id = json_response(get(conn, "/networks/azzurra/channels/%23sniffo/messages?before=999999999"), 200)
+      by_time = json_response(get(conn, "/networks/azzurra/channels/%23sniffo/messages?before_time=999"), 200)
+      assert by_time == by_id
+    end
+
+    test "GET ?before_time with a hidden-presence channel counts visible rows (#458)",
+         %{conn: conn, user: user, network: network} do
+      :ok = put_presence_pref(user, "azzurra #sniffo", "hide")
+      # privmsg@0, join@1, quit@2 — plus a privmsg PAST the bound, so a door
+      # that ignored `before_time` answers "later", and one that ignored the
+      # pref answers the quit.
+      seed_mixed(user, network)
+
+      {:ok, _} =
+        ScrollbackHelpers.insert(%{
+          user_id: user.id,
+          network_id: network.id,
+          channel: "#sniffo",
+          server_time: 5,
+          kind: :privmsg,
+          sender: "vjt",
+          body: "later"
+        })
+
+      body =
+        json_response(get(conn, "/networks/azzurra/channels/%23sniffo/messages?before_time=3&limit=1"), 200)
+
+      assert Enum.map(body, & &1["body"]) == ["hello"]
+    end
+
+    # One mutex over all six cursors: every pair, id×time included.
+    for {a, b} <- [
+          {"before_time", "after_time"},
+          {"before_time", "around_time"},
+          {"after_time", "around_time"},
+          {"before", "before_time"},
+          {"after", "after_time"},
+          {"around", "around_time"},
+          {"before", "after_time"},
+          {"around", "before_time"}
+        ] do
+      test "GET ?#{a} and ?#{b} together returns 400", %{conn: conn} do
+        conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?#{unquote(a)}=1&#{unquote(b)}=2")
+        assert json_response(conn, 400)["error"] == "bad_request"
+      end
+    end
+
+    # One value format: decimal epoch milliseconds, 0..int64 max. ISO-8601 is
+    # refused rather than half-supported.
+    for {label, raw} <- [
+          {"non-numeric", "banana"},
+          {"fractional", "1.5"},
+          {"negative", "-1"},
+          {"ISO-8601", "2026-10-11T10:00:00.000Z"},
+          {"empty", ""},
+          {"past int64", "9223372036854775808"}
+        ],
+        param <- ~w(before_time after_time around_time) do
+      test "GET ?#{param}=<#{label}> returns 400", %{conn: conn} do
+        conn =
+          get(
+            conn,
+            "/networks/azzurra/channels/%23sniffo/messages?#{unquote(param)}=#{URI.encode_www_form(unquote(raw))}"
+          )
+
+        assert json_response(conn, 400)["error"] == "bad_request"
+      end
+    end
+
+    test "GET ?before_time=<int64 max> is accepted (boundary)", %{conn: conn, user: user, network: network} do
+      seed(user, network)
+
+      body =
+        json_response(
+          get(conn, "/networks/azzurra/channels/%23sniffo/messages?before_time=9223372036854775807"),
+          200
+        )
+
+      assert length(body) == 5
+    end
+
+    test "GET ?after_time=0 is accepted and excludes server_time 0 (strict)",
+         %{conn: conn, user: user, network: network} do
+      seed(user, network)
+      body = json_response(get(conn, "/networks/azzurra/channels/%23sniffo/messages?after_time=0"), 200)
+      assert Enum.map(body, & &1["body"]) == ["m1", "m2", "m3", "m4"]
+    end
+
+    test "GET ?before_time with ?limit=201 returns 400 (shared HTTP ceiling)", %{conn: conn} do
+      conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?before_time=5&limit=201")
+      assert json_response(conn, 400)["error"] == "bad_request"
+    end
+
+    for param <- ~w(before_time after_time around_time) do
+      test "GET a list-valued ?#{param} returns 400, not a 500", %{conn: conn} do
+        conn = get(conn, "/networks/azzurra/channels/%23sniffo/messages?#{unquote(param)}[]=1")
+        assert json_response(conn, 400)["error"] == "bad_request"
+      end
+    end
+  end
+
   test "GET ?after=<id>&limit=2 caps the page size", %{conn: conn, user: user, network: network} do
     seed(user, network)
     # cursor BELOW the lowest id in the table — yields all five, capped to 2.

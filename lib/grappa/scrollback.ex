@@ -482,11 +482,8 @@ defmodule Grappa.Scrollback do
              (is_binary(own_nick) or is_nil(own_nick)) and is_boolean(hide_presence) do
     capped = min(limit, @max_limit)
 
-    Message
-    |> Subject.subject_where(subject)
-    |> where([m], m.network_id == ^network_id)
-    |> channel_or_dm_where(channel, own_nick)
-    |> maybe_exclude_presence(hide_presence)
+    subject
+    |> window_query(network_id, channel, own_nick, hide_presence)
     |> maybe_before(before)
     |> order_by([m], desc: m.id)
     |> limit(^capped)
@@ -560,11 +557,8 @@ defmodule Grappa.Scrollback do
              (is_binary(own_nick) or is_nil(own_nick)) and is_boolean(hide_presence) do
     capped = min(limit, @max_limit)
 
-    Message
-    |> Subject.subject_where(subject)
-    |> where([m], m.network_id == ^network_id)
-    |> channel_or_dm_where(channel, own_nick)
-    |> maybe_exclude_presence(hide_presence)
+    subject
+    |> window_query(network_id, channel, own_nick, hide_presence)
     |> where([m], m.id > ^after_id)
     |> order_by([m], asc: m.id)
     |> limit(^capped)
@@ -759,11 +753,8 @@ defmodule Grappa.Scrollback do
       when is_integer(network_id) and is_integer(after_id) and
              (is_binary(own_nick) or is_nil(own_nick)) and is_boolean(hide_presence) and
              ((is_integer(cap) and cap > 0) or is_nil(cap)) do
-    Message
-    |> Subject.subject_where(subject)
-    |> where([m], m.network_id == ^network_id)
-    |> channel_or_dm_where(channel, own_nick)
-    |> maybe_exclude_presence(hide_presence)
+    subject
+    |> window_query(network_id, channel, own_nick, hide_presence)
     |> where([m], m.id > ^after_id)
     |> count_rows(cap)
   end
@@ -1071,12 +1062,7 @@ defmodule Grappa.Scrollback do
     before_count = div(capped, 2)
     after_count = capped - before_count
 
-    base =
-      Message
-      |> Subject.subject_where(subject)
-      |> where([m], m.network_id == ^network_id)
-      |> channel_or_dm_where(channel, own_nick)
-      |> maybe_exclude_presence(hide_presence)
+    base = window_query(subject, network_id, channel, own_nick, hide_presence)
 
     before_rows =
       base
@@ -1098,6 +1084,85 @@ defmodule Grappa.Scrollback do
     # before-rows (already DESC). Single chronological-DESC list,
     # consistent with fetch/6 callers.
     Enum.reverse(after_rows) ++ before_rows
+  end
+
+  @typedoc "issue 2372 — a time cursor: a direction and an epoch-ms bound."
+  @type time_cursor :: {:before | :after | :around, integer()}
+
+  @doc """
+  issue 2372 — the time-cursor twin of `fetch/7` / `fetch_after/7` /
+  `fetch_around/7`, for a client bridging IRCv3 `draft/chathistory`, whose
+  `timestamp=` selectors name a moment rather than a row.
+
+    * `{:before, t}` — rows with `server_time < t`, the `limit` nearest `t`,
+      DESC by `(server_time, id)`.
+    * `{:after, t}` — rows with `server_time > t`, the `limit` nearest `t`,
+      ASC by `(server_time, id)`.
+    * `{:around, t}` — `floor(limit/2)` rows with `server_time <= t` plus
+      `ceil(limit/2)` with `server_time > t`, merged DESC — the same split
+      `fetch_around/7` makes on `id`.
+
+  The bound is STRICT and on `server_time` alone, so every row sharing the
+  millisecond `t` is outside both `:before` and `:after` — the chathistory
+  BEFORE/AFTER semantics, and the reason a client pages onward with the id
+  cursors rather than by re-sending a row's `server_time`.
+
+  ## Why this sorts on `(server_time, id)` while `fetch/7` sorts on `id`
+
+  The sort key is the filter key, for the reason issue 2228 gave `fetch/7`: a
+  row the sort places outside the page the filter admitted is a row no page
+  returns. Here the filter is time, so the sort is time, with `id` breaking
+  the millisecond tie.
+
+  ## Cost
+
+  A CHANNEL window seeks `(subject, network_id, channel, server_time)` and
+  reads it in order: `id` is the rowid SQLite keeps at the tail of every index
+  entry, so `(server_time, id)` IS the index order and nothing is sorted. A DM
+  window has no `server_time` on its folded-COALESCE index, so it seeks the
+  conversation and sorts it — linear in that ONE conversation, never in the
+  network. Accepted knowingly rather than paid for with an index (DESIGN_NOTES
+  issue 2372).
+
+  `subject`, `own_nick`, `hide_presence`, the `:network` preload and the
+  page clamp are exactly `fetch/7`'s.
+  """
+  @spec fetch_by_time(
+          subject(),
+          integer(),
+          String.t(),
+          time_cursor(),
+          pos_integer(),
+          String.t() | nil,
+          boolean()
+        ) :: [Message.t()]
+  def fetch_by_time(subject, network_id, channel, {_, t} = cursor, limit, own_nick, hide_presence)
+      when is_integer(network_id) and is_integer(t) and is_integer(limit) and limit > 0 and
+             (is_binary(own_nick) or is_nil(own_nick)) and is_boolean(hide_presence) do
+    subject
+    |> window_query(network_id, channel, own_nick, hide_presence)
+    |> time_rows(cursor, min(limit, @max_limit))
+  end
+
+  defp time_rows(base, {:before, t}, limit),
+    do: base |> where([m], m.server_time < ^t) |> time_page(:desc, limit)
+
+  defp time_rows(base, {:after, t}, limit),
+    do: base |> where([m], m.server_time > ^t) |> time_page(:asc, limit)
+
+  defp time_rows(base, {:around, t}, limit) do
+    before_count = div(limit, 2)
+    older = base |> where([m], m.server_time <= ^t) |> time_page(:desc, before_count)
+    newer = base |> where([m], m.server_time > ^t) |> time_page(:asc, limit - before_count)
+    Enum.reverse(newer) ++ older
+  end
+
+  defp time_page(query, order, limit) do
+    query
+    |> order_by([m], [{^order, m.server_time}, {^order, m.id}])
+    |> limit(^limit)
+    |> preload(:network)
+    |> Repo.all()
   end
 
   @typedoc """
@@ -1462,6 +1527,18 @@ defmodule Grappa.Scrollback do
       [m],
       Identifier.nick_fold(fragment("COALESCE(?, ?)", m.dm_with, m.channel)) == ^folded_peer
     )
+  end
+
+  # The rows one window shows this subject, before any cursor: the subject
+  # partition, the network, the channel-or-DM match and the #458 presence
+  # fold. Every history read and the gap count start here, so they cannot
+  # disagree about which rows a window holds.
+  defp window_query(subject, network_id, channel, own_nick, hide_presence) do
+    Message
+    |> Subject.subject_where(subject)
+    |> where([m], m.network_id == ^network_id)
+    |> channel_or_dm_where(channel, own_nick)
+    |> maybe_exclude_presence(hide_presence)
   end
 
   defp maybe_before(query, nil), do: query

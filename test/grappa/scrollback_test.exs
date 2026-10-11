@@ -2875,6 +2875,273 @@ defmodule Grappa.ScrollbackTest do
     end
   end
 
+  # issue 2372 — the time cursors, for a client bridging IRCv3
+  # `draft/chathistory` `timestamp=` selectors. The reference below is the
+  # contract stated as data: filter on `server_time` STRICTLY, order the
+  # whole page by `(server_time, id)`, keep the `limit` rows nearest the
+  # bound. Every assertion compares the door against it, so a tie, a
+  # boundary or a clock step that the door mishandles is a set or order
+  # mismatch rather than an opinion.
+  describe "fetch_by_time/7 (issue 2372)" do
+    defp time_reference(rows, {:before, t}, limit),
+      do:
+        rows |> Enum.filter(&(&1.server_time < t)) |> Enum.sort_by(&{&1.server_time, &1.id}, :desc) |> Enum.take(limit)
+
+    defp time_reference(rows, {:after, t}, limit),
+      do: rows |> Enum.filter(&(&1.server_time > t)) |> Enum.sort_by(&{&1.server_time, &1.id}) |> Enum.take(limit)
+
+    defp time_reference(rows, {:around, t}, limit) do
+      before_count = div(limit, 2)
+      older = time_reference(Enum.filter(rows, &(&1.server_time <= t)), {:before, t + 1}, before_count)
+      newer = time_reference(rows, {:after, t}, limit - before_count)
+      Enum.reverse(newer) ++ older
+    end
+
+    defp ids(rows), do: Enum.map(rows, & &1.id)
+
+    defp seed_times(user, net, times) do
+      for st <- times do
+        {:ok, row} = ScrollbackHelpers.insert(sample(user, net, st))
+        row
+      end
+    end
+
+    test "before: strictly older than T, newest first, the `limit` nearest T", %{user: user, network: net} do
+      rows = seed_times(user, net, [10, 20, 30, 40, 50])
+
+      page = Scrollback.fetch_by_time({:user, user.id}, net.id, "#sniffo", {:before, 40}, 2, nil, false)
+
+      assert Enum.map(page, & &1.server_time) == [30, 20]
+      assert ids(page) == ids(time_reference(rows, {:before, 40}, 2))
+    end
+
+    test "after: strictly newer than T, oldest first, the `limit` nearest T", %{user: user, network: net} do
+      rows = seed_times(user, net, [10, 20, 30, 40, 50])
+
+      page = Scrollback.fetch_by_time({:user, user.id}, net.id, "#sniffo", {:after, 20}, 2, nil, false)
+
+      assert Enum.map(page, & &1.server_time) == [30, 40]
+      assert ids(page) == ids(time_reference(rows, {:after, 20}, 2))
+    end
+
+    test "around: floor(limit/2) at-or-before T plus ceil(limit/2) after, merged newest first",
+         %{user: user, network: net} do
+      rows = seed_times(user, net, [10, 20, 30, 40, 50, 60])
+
+      page = Scrollback.fetch_by_time({:user, user.id}, net.id, "#sniffo", {:around, 30}, 4, nil, false)
+
+      assert Enum.map(page, & &1.server_time) == [50, 40, 30, 20]
+      assert ids(page) == ids(time_reference(rows, {:around, 30}, 4))
+    end
+
+    # The tie is the case the issue left unmeasured. Three rows share the
+    # millisecond T: a strict bound excludes ALL of them on both sides, and
+    # among equal `server_time` the order is `id`.
+    test "a millisecond tie at T is excluded by before and after alike, and ties order by id",
+         %{user: user, network: net} do
+      rows = seed_times(user, net, [10, 20, 20, 20, 30])
+      subject = {:user, user.id}
+
+      before = Scrollback.fetch_by_time(subject, net.id, "#sniffo", {:before, 20}, 50, nil, false)
+      after_ = Scrollback.fetch_by_time(subject, net.id, "#sniffo", {:after, 20}, 50, nil, false)
+      past = Scrollback.fetch_by_time(subject, net.id, "#sniffo", {:before, 21}, 50, nil, false)
+
+      assert Enum.map(before, & &1.server_time) == [10]
+      assert Enum.map(after_, & &1.server_time) == [30]
+
+      [r10, a, b, c, _] = rows
+      assert ids(past) == [c.id, b.id, a.id, r10.id]
+    end
+
+    test "around puts the whole tie at T on the at-or-before side", %{user: user, network: net} do
+      [_, a, b, c, d] = seed_times(user, net, [10, 20, 20, 20, 30])
+
+      page = Scrollback.fetch_by_time({:user, user.id}, net.id, "#sniffo", {:around, 20}, 4, nil, false)
+
+      # floor(4/2) = 2 at-or-before (the two newest of the tie), 2 after (only d exists).
+      assert ids(page) == [d.id, c.id, b.id]
+      refute a.id in ids(page)
+    end
+
+    # issue 2228's divergent shape: the 4th row to arrive carries an OLDER
+    # `server_time` than its predecessors. A time cursor is a question about
+    # time, so it must place that row by its `server_time`, not by arrival.
+    test "a clock-stepped row is placed by server_time, not by id", %{user: user, network: net} do
+      rows = clock_step_rows(user, net)
+      subject = {:user, user.id}
+
+      before = Scrollback.fetch_by_time(subject, net.id, "#sniffo", {:before, 150}, 50, nil, false)
+      after_ = Scrollback.fetch_by_time(subject, net.id, "#sniffo", {:after, 150}, 50, nil, false)
+
+      assert Enum.map(before, & &1.body) == ["a", "STEPPED"]
+      assert Enum.map(after_, & &1.body) == ["b", "c", "e", "f"]
+      assert ids(before) == ids(time_reference(rows, {:before, 150}, 50))
+    end
+
+    property "every direction matches the reference over random times, ties and bounds",
+             %{user: user, network: net} do
+      check all(
+              times <- list_of(integer(0..12), min_length: 0, max_length: 25),
+              t <- integer(-1..14),
+              limit <- integer(1..30),
+              dir <- member_of([:before, :after, :around]),
+              max_runs: 60
+            ) do
+        channel = "#prop#{uniq()}"
+
+        rows =
+          for st <- times do
+            {:ok, row} = ScrollbackHelpers.insert(sample(user, net, st, %{channel: channel}))
+            row
+          end
+
+        page = Scrollback.fetch_by_time({:user, user.id}, net.id, channel, {dir, t}, limit, nil, false)
+
+        assert ids(page) == ids(time_reference(rows, {dir, t}, limit))
+      end
+    end
+
+    test "a DM window reads both directions of the conversation by time", %{user: user, network: net} do
+      for {st, channel, sender, body} <- [
+            {100, "vjt-peer", "vjt-grappa", "out"},
+            {200, "vjt-grappa", "vjt-peer", "in"},
+            {150, "other-peer", "vjt-grappa", "elsewhere"}
+          ] do
+        {:ok, _} =
+          Scrollback.persist_event(%{
+            user_id: user.id,
+            network_id: net.id,
+            channel: channel,
+            server_time: st,
+            kind: :privmsg,
+            sender: sender,
+            body: body,
+            meta: %{},
+            dm_with: if(channel == "vjt-grappa", do: "vjt-peer", else: channel)
+          })
+      end
+
+      page = Scrollback.fetch_by_time({:user, user.id}, net.id, "vjt-peer", {:before, 300}, 10, nil, false)
+
+      assert Enum.map(page, & &1.body) == ["in", "out"]
+    end
+
+    # The channel path gets `id` order inside a millisecond for free, from the
+    # index; the DM path SORTS (see the plan pin below), and nothing but the
+    # explicit `id` tiebreak orders a tie there.
+    test "a DM millisecond tie orders by id in both directions", %{user: user, network: net} do
+      rows =
+        for {channel, sender} <- [{"vjt-peer", "vjt-grappa"}, {"vjt-grappa", "vjt-peer"}, {"vjt-peer", "vjt-grappa"}] do
+          {:ok, row} =
+            Scrollback.persist_event(%{
+              user_id: user.id,
+              network_id: net.id,
+              channel: channel,
+              server_time: 100,
+              kind: :privmsg,
+              sender: sender,
+              body: "tie",
+              meta: %{},
+              dm_with: "vjt-peer"
+            })
+
+          row
+        end
+
+      subject = {:user, user.id}
+      older = Scrollback.fetch_by_time(subject, net.id, "vjt-peer", {:before, 101}, 10, nil, false)
+      newer = Scrollback.fetch_by_time(subject, net.id, "vjt-peer", {:after, 99}, 10, nil, false)
+
+      assert ids(older) == rows |> ids() |> Enum.reverse()
+      assert ids(newer) == ids(rows)
+    end
+
+    test "hide_presence counts the limit in visible rows", %{user: user, network: net} do
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 1, %{body: "hello"}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 2, %{kind: :join, sender: "alice", body: nil}))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, net, 3, %{kind: :quit, sender: "bob", body: "bye"}))
+
+      page = Scrollback.fetch_by_time({:user, user.id}, net.id, "#sniffo", {:before, 10}, 1, nil, true)
+
+      assert Enum.map(page, & &1.body) == ["hello"]
+    end
+
+    test "isolates by subject and network", %{user: user, network: net} do
+      {:ok, other_net} = Networks.find_or_create_network(%{slug: "freenode-#{uniq()}"})
+      {:ok, other} = Accounts.create_user(%{name: "other-#{uniq()}", password: "correct horse battery"})
+      {:ok, mine} = ScrollbackHelpers.insert(sample(user, net, 5))
+      {:ok, _} = ScrollbackHelpers.insert(sample(user, other_net, 5))
+      {:ok, _} = ScrollbackHelpers.insert(sample(other, net, 5))
+
+      page = Scrollback.fetch_by_time({:user, user.id}, net.id, "#sniffo", {:after, 0}, 50, nil, false)
+
+      assert ids(page) == [mine.id]
+    end
+
+    # The channel read must ride the existing `(subject, network_id, channel,
+    # server_time)` index for seek AND order: `id` is the rowid SQLite keeps
+    # at the tail of every index entry, so `(server_time, id)` is the index's
+    # own order and no in-memory sort is needed. The SQL is captured off the
+    # public door, not restated.
+    for {subject_kind, dir} <- [{:user, :before}, {:user, :after}, {:visitor, :before}, {:visitor, :after}] do
+      test "#{subject_kind} channel #{dir}-time read seeks the server_time index, no sort",
+           %{user: user, network: net} do
+        subject =
+          case unquote(subject_kind) do
+            :user ->
+              {:user, user.id}
+
+            :visitor ->
+              {:ok, visitor} = Grappa.Visitors.find_or_provision_anon("v-#{uniq()}", net.slug, "1.2.3.4")
+              {:visitor, visitor.id}
+          end
+
+        sql =
+          capture_sql(fn ->
+            Scrollback.fetch_by_time(subject, net.id, "#chan", {unquote(dir), 5}, 50, nil, false)
+          end)
+
+        {subject_id, column} =
+          case subject do
+            {:user, id} -> {id, "user_id"}
+            {:visitor, id} -> {id, "visitor_id"}
+          end
+
+        {:ok, %{rows: rows}} =
+          Repo.query("EXPLAIN QUERY PLAN " <> sql, [subject_id, net.id, "#chan", 5, 50])
+
+        plan = rows |> List.flatten() |> Enum.map_join("\n", &to_string/1)
+
+        assert plan =~ "messages_#{column}_network_id_channel_server_time_index",
+               "expected the (subject, network_id, channel, server_time) index, got:\n#{plan}"
+
+        refute plan =~ "TEMP B-TREE", "time-cursor read must not sort in memory, got:\n#{plan}"
+      end
+    end
+
+    # The DM half has no `server_time` index and was accepted without one
+    # (DESIGN_NOTES issue 2372): it sorts, but only the ONE conversation the
+    # folded-COALESCE seek selects. What this pins is that bound — a plan
+    # falling back to the network-wide scan would make the cost linear in the
+    # network instead, which nobody accepted.
+    test "DM time read seeks the conversation's folded index, never the network", %{user: user, network: net} do
+      sql =
+        capture_sql(fn ->
+          Scrollback.fetch_by_time({:user, user.id}, net.id, "vjt-peer", {:before, 5}, 50, nil, false)
+        end)
+
+      {:ok, %{rows: rows}} =
+        Repo.query("EXPLAIN QUERY PLAN " <> sql, [user.id, net.id, "vjt-peer", 5, 50])
+
+      plan = rows |> List.flatten() |> Enum.map_join("\n", &to_string/1)
+
+      assert plan =~ "messages_user_id_network_id_dm_coalesce_fold_id_kind_index",
+             "expected the folded-COALESCE seek, got:\n#{plan}"
+
+      refute plan =~ "messages_network_id_index", "must not scan the whole network, got:\n#{plan}"
+    end
+  end
+
   # --------------------------------------------------------------------
   # CP15 B4 — Archive surface
   # --------------------------------------------------------------------
