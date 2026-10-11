@@ -1109,3 +1109,65 @@ sidebar badge, away bundle) matches against `plain_text(body)` with the
 frame still on. A real nick still matches, because `\x01` is not `\w`.
 But the matchers are caseless, so a highlight pattern `action` (or a nick
 `Action`) fires on every `/me`. That door is left to a ruling.
+<!-- entry #2372 -->
+
+---
+
+## 2026-10-11 — #2372: time cursors on the scrollback read
+
+**What.** `GET …/messages` takes `before_time` / `after_time` /
+`around_time` beside the id cursors, through the new
+`Scrollback.fetch_by_time/7`. bicchierino needs them to answer IRCv3
+`draft/chathistory` `timestamp=` selectors: it measured every such selector
+coming back as an empty batch, because grappa could only take a row id. The
+contract was agreed with the consumer before any code was written:
+`docs/CLIENT_PROTOCOL.md` §5i, protocol 40.
+
+**One value format, epoch ms.** It is the unit every row's `server_time`
+already carries on this wire. Accepting ISO-8601 as well would double the
+validation surface (offsets, fractional precision, `Z`) to save the client
+a conversion it already does in the opposite direction, when it renders
+`time=` tags. Bounded at int64 max, because past it the bind fails inside
+exqlite and the request gets a 500 instead of a 400.
+
+**The sort key is the filter key, again.** Issue 2228 moved `fetch/7` to
+sort on `id` because its filter is on `id`: when filter and sort disagree,
+a row is lost rather than reordered. A time cursor filters on `server_time`,
+so it sorts on `(server_time, id)`, with `id` breaking the tie inside one
+millisecond. The bound is strict and applies to `server_time` alone, so a
+tie at the bound is excluded by both directions. That is the chathistory
+semantics, not something we chose; the paging advice to clients (first
+query by time, the following ones by id) follows from it. The property
+test in `scrollback_test.exs` compares the door against a reference that
+states this contract as data, over random times, ties and bounds.
+
+**Cost: channel windows are served by the existing index, DM windows are not, and that is accepted.**
+A channel window seeks `messages_<subject>_id_network_id_channel_server_time_index`.
+`id` is the rowid SQLite appends to every index entry, so
+`(server_time, id)` is already the index order: the plan reads
+`SEARCH … USING INDEX …channel_server_time_index`, with no
+`TEMP B-TREE` (pinned for both subject kinds). A DM window has no
+`server_time` on its folded-COALESCE index. Measured plan:
+
+    SEARCH m0 USING INDEX messages_user_id_network_id_dm_coalesce_fold_id_kind_index (user_id=? AND network_id=? AND <expr>=?)
+    USE TEMP B-TREE FOR ORDER BY
+
+It reads every row of that ONE conversation, in table order, and sorts
+them. The cost is linear in the conversation and never in the network.
+**No new index**: the orchestrator ruled it (not vjt, who can reverse it),
+because an index means a migration and a schema cost paid on every write,
+forever, for a case with no measured pain; DMs are small. What is pinned
+is the bound: the DM plan must seek the folded index and must never fall
+back to `messages_network_id_index`.
+
+**Detection is mandatory, not an optimisation.** A server before 40
+ignores the unknown param and answers the LATEST page with a 200. A client
+that skips the `protocol_version >= 40` check gets wrong rows with no
+error. That is why the bump carries the rule here even though
+`wire_pin`'s digest did not move: these are request params, no
+`*JSON` spec changed.
+
+**Refactor that came with it.** The four history reads (`fetch`,
+`fetch_after`, `fetch_around`, `fetch_by_time`) and `count_after` now start
+from one private `window_query/5` (subject, network, channel-or-DM,
+presence), so they cannot disagree about which rows a window holds.
