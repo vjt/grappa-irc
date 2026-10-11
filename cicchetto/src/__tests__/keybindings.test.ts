@@ -92,6 +92,26 @@ describe("keybindings", () => {
     expect(handlers.insertIntoCompose).toHaveBeenCalledWith("5");
   });
 
+  // issue 2375 — the auto-focus redirects into the compose box, and an open
+  // modal COVERS the compose box: a keystroke landing on a non-typing element
+  // inside the modal (its message area, the dialog itself, a link in a line)
+  // used to be typed, unseen, into the composer behind the scrim. Same
+  // covering question lib/globalPaste already asks of a paste.
+  it("printable key with a covering modal open does NOT dispatch insertIntoCompose (issue 2375)", async () => {
+    const [open] = createSignal(true);
+    const dispose = createRoot((d) => {
+      createOverlayLock(open, ".kb-overlay", () => {});
+      return d;
+    });
+    await flush();
+    const ev = new KeyboardEvent("keydown", { key: "a", cancelable: true });
+    window.dispatchEvent(ev);
+    expect(handlers.insertIntoCompose).not.toHaveBeenCalled();
+    // Not prevented either: the keystroke belongs to whatever the modal does.
+    expect(ev.defaultPrevented).toBe(false);
+    dispose();
+  });
+
   it("printable key when target is textarea does NOT dispatch insertIntoCompose", () => {
     const ta = document.createElement("textarea");
     document.body.appendChild(ta);

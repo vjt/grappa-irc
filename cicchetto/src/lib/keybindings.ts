@@ -20,7 +20,7 @@
 // second global keydown listener racing this one.
 
 import { isComposingKeystroke } from "./imeComposition";
-import { runTopmostOverlayEscape } from "./overlayScrollLock";
+import { overlayCount, runTopmostOverlayEscape } from "./overlayScrollLock";
 
 export type KeybindingHandlers = {
   selectChannelByIndex: (idx: number) => void; // Alt+1..9 → idx 0..8
@@ -135,7 +135,11 @@ function onKeydown(e: KeyboardEvent): void {
     // unchanged: `isComposingKeystroke` is `e.isComposing`.
     !isComposingKeystroke(e) &&
     e.key.length === 1 &&
-    !isTypingTarget(e.target)
+    !isTypingTarget(e.target) &&
+    // issue 2375 — not while a modal COVERS the compose box: the keystroke
+    // would be typed, unseen, behind the scrim. The covering question
+    // lib/globalPaste already asks of a paste.
+    overlayCount() === 0
   ) {
     e.preventDefault();
     handlers.insertIntoCompose(e.key);
