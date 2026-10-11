@@ -294,9 +294,23 @@ function sendOnPeerLine(peer: IrcPeer): Sender {
       )
       .toBe(true);
     await expect(composeTextarea(page)).toHaveValue("", { timeout: 5_000 });
-    return await page.evaluate(
-      () => (window as unknown as { __i2377WritesAtPress?: number }).__i2377WritesAtPress ?? 0,
-    );
+    const { index, before } = await page.evaluate(() => {
+      const w = window as unknown as {
+        __i2377WritesAtPress?: number;
+        __scrollProbeWrites?: { detail: string }[];
+      };
+      const i = w.__i2377WritesAtPress ?? 0;
+      return { index: i, before: (w.__scrollProbeWrites ?? []).slice(0, i) };
+    });
+    // VACUITY GUARD, second half: the peer line really ran a divider
+    // activation under the armed latch before enter — its synchronous leg is
+    // the `block:"start"` write — so a deferred leg WAS queued for the send
+    // to race. Without it a green here would mean the race never happened.
+    expect(
+      before.some((w) => w.detail.includes('"start"')),
+      `no divider activation before enter: ${JSON.stringify(before)}`,
+    ).toBe(true);
+    return index;
   };
 }
 

@@ -2538,6 +2538,7 @@ describe("ScrollbackPane", () => {
       await flushRaf();
 
       expect(scrollIntoViewSpy).not.toHaveBeenCalledWith({ block: "start" });
+      scrollIntoViewSpy.mockClear();
 
       // The echo lands and lays out: follow survived, so the applier tails.
       const proto = fixture[0];
