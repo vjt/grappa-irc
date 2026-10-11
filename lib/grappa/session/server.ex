@@ -1873,19 +1873,33 @@ defmodule Grappa.Session.Server do
 
   defp maybe_notify_session_phase(_, _), do: :ok
 
-  # Persist-then-send is intentional Phase 1. Rationale: if the persist
-  # fails (validation), we surface the changeset error to the caller
-  # without ever touching the wire — clean rollback. If the persist
-  # succeeds and the upstream send subsequently fails, the linked
-  # Client crashes, kills this Session via the link, the
-  # DynamicSupervisor (`:transient`) restarts a fresh Session — but
-  # the row is already in scrollback so the sender's view is
-  # consistent (they see what they typed). Reversing the order would
-  # give worse UX: message visible to other users on the channel but
-  # absent from the sender's own scrollback after refresh. Phase 5
-  # reconnect/backoff inside Client may revisit this when send
-  # gains an error return.
+  # Persist-then-send. If the persist fails (validation), the changeset
+  # error reaches the caller without the wire ever being touched — clean
+  # rollback. Reversing the order would be worse: a line the channel saw
+  # but the sender's own scrollback lacks after a refresh.
+  #
+  # issue 2370 — a send whose write fails or stalls costs the CALLER an
+  # error and nothing more; it used to cost the whole session (an
+  # unmatched `{:error, _}` raised, a stuck Client's call exited). Two
+  # residues are deliberate:
+  #
+  #   * with NO Client at all (`client: nil`, the Backoff-deferred respawn
+  #     window) the send is refused here, before the persist — there is
+  #     nothing to write to, so a row would be a line the operator reads
+  #     as sent that never left. This is a decision, not a necessity:
+  #     the alternative was to keep the row (consistent with the residue
+  #     below) and it can be reversed without touching anything else;
+  #   * a write that fails AFTER the persist (socket gone mid-send, or the
+  #     Client not answering in time) leaves the row in place and says so
+  #     in a warning. On `:timeout` the frame may still reach the wire —
+  #     it waits in the Client's mailbox — so deleting the row would be
+  #     the wrong guess as often as keeping it.
   @impl GenServer
+  def handle_call(request, _, %{client: nil} = state)
+      when elem(request, 0) in [:send_privmsg, :send_ctcp, :send_notice, :send_statusmsg] do
+    {:reply, {:error, :no_socket}, state}
+  end
+
   def handle_call({:send_privmsg, target, body}, _, state)
       when is_binary(target) and is_binary(body) do
     line = "PRIVMSG #{target} :#{body}"
@@ -3033,6 +3047,19 @@ defmodule Grappa.Session.Server do
 
         {:reply, :ok, state}
 
+      # issue 2370 — the Client did not answer in time. Neither branch around
+      # this one fits: the JOIN is not refused (the frame waits in the
+      # Client's mailbox and may still go out, and its echo opens the window
+      # as any JOIN echo does), and the link is not known to be down. So
+      # nothing is recorded and the caller reads the same `:timeout` (504) a
+      # stuck session would give it.
+      {:error, :timeout} = err ->
+        Logger.warning("send_join call timed out on the Client — delivery unknown",
+          channel: inspect(channels)
+        )
+
+        {:reply, err, state}
+
       # Any OTHER transport failure (`:closed`, an `:inet.posix()`): the socket
       # WAS there and the write failed, so the Client is on its way down and
       # this process with it — an in-memory queue would die before it flushed,
@@ -3605,6 +3632,12 @@ defmodule Grappa.Session.Server do
           reason: :invalid_line,
           raw: inspect(token)
         )
+
+      # issue 2370 — a PONG the transport could not write (peer RST, socket
+      # already gone) is the link dying, which the Client reports on its own
+      # path; it is not a reason to take the session down from here.
+      {:error, _} = err ->
+        maybe_log_send_failure("pong", err)
     end
 
     {:noreply, state}
@@ -4827,10 +4860,10 @@ defmodule Grappa.Session.Server do
     # Persist + broadcast via the shared Persistor (`push: false` — an
     # operator's own outbound row must not self-notify or fire the #267
     # window-counts push; that obligation is the inbound arm's alone),
-    # then relay upstream RAW (wire stays as-typed — #537). `Client.send_privmsg`
-    # returns `:ok | {:error, :invalid_line}` since S29 C1; the Session facade
-    # pre-validates so the error branch is unreachable on the documented
-    # path — forward-compat insurance against a future facade bypass.
+    # then relay upstream RAW (wire stays as-typed — #537). A failed write
+    # stops the fragment run and travels back to the caller as
+    # `{:error, reason}` (issue 2370); `send_privmsg_or_log/3` logs which
+    # kind of failure it was.
     with {:ok, message} <- Persistor.persist_and_broadcast(attrs, state, push: false),
          :ok <- send_privmsg_or_log(state.client, target, fragment) do
       persist_and_send_fragments(target, key, statusmsg, rest, state, message)
@@ -4913,8 +4946,7 @@ defmodule Grappa.Session.Server do
     end
   end
 
-  @spec send_privmsg_or_log(pid(), String.t(), String.t()) ::
-          :ok | {:error, :invalid_line}
+  @spec send_privmsg_or_log(pid(), String.t(), String.t()) :: Client.send_result()
   defp send_privmsg_or_log(client, target, body) do
     case Client.send_privmsg(client, target, body) do
       :ok ->
@@ -4926,13 +4958,17 @@ defmodule Grappa.Session.Server do
         )
 
         err
+
+      {:error, reason} = err ->
+        log_write_failed_after_persist("privmsg", target, reason)
+        err
     end
   end
 
   # #1225 — the NOTICE twin of `send_privmsg_or_log/3`. A reject AFTER the
   # persist means the facade's guard was bypassed; say so rather than losing
   # the frame in silence.
-  @spec send_notice_or_log(pid(), String.t(), String.t()) :: :ok | {:error, :invalid_line}
+  @spec send_notice_or_log(pid(), String.t(), String.t()) :: Client.send_result()
   defp send_notice_or_log(client, target, body) do
     case Client.send_notice(client, target, body) do
       :ok ->
@@ -4944,7 +4980,30 @@ defmodule Grappa.Session.Server do
         )
 
         err
+
+      {:error, reason} = err ->
+        log_write_failed_after_persist("notice", target, reason)
+        err
     end
+  end
+
+  # issue 2370 — the row is in scrollback and the write behind it did not
+  # complete. The line names which of the two that means: a transport error
+  # means the frame never left, a `:timeout` means nobody knows yet (the
+  # frame waits in the Client's mailbox and may still go out).
+  @spec log_write_failed_after_persist(String.t(), String.t(), atom()) :: :ok
+  defp log_write_failed_after_persist(verb, target, :timeout) do
+    Logger.warning("#{verb} row persisted; upstream write timed out — delivery unknown",
+      channel: target,
+      reason: inspect(:timeout)
+    )
+  end
+
+  defp log_write_failed_after_persist(verb, target, reason) do
+    Logger.warning("#{verb} row persisted; upstream write failed — not sent",
+      channel: target,
+      reason: inspect(reason)
+    )
   end
 
   # #1225 — the NOTICE twin of `handle_service_target_send/3`: wire-only, no
@@ -4952,7 +5011,7 @@ defmodule Grappa.Session.Server do
   # nickserv identify <pass>` is a fat-fingered credential, and persisting it
   # would archive the secret the PRIVMSG carve-out exists to keep out.
   @spec handle_service_target_notice(String.t(), String.t(), t()) ::
-          {:reply, {:ok, :no_persist} | {:error, :invalid_line}, t()}
+          {:reply, {:ok, :no_persist} | {:error, :invalid_line | Session.send_transport_error()}, t()}
   defp handle_service_target_notice(target, body, state) do
     case Client.send_notice(state.client, target, body) do
       :ok ->
@@ -4962,6 +5021,10 @@ defmodule Grappa.Session.Server do
         Logger.error("client rejected service-target notice", target: target)
 
         {:reply, err, state}
+
+      {:error, _} = err ->
+        maybe_log_send_failure("service_target_notice", err)
+        {:reply, err, state}
     end
   end
 
@@ -4969,6 +5032,8 @@ defmodule Grappa.Session.Server do
   # broadcast. Reply tag `{:ok, :no_persist}` keeps callers' `{:ok, _}`
   # match-shape working (e.g. a user's manual `PRIVMSG NickServ
   # :IDENTIFY` from cicchetto).
+  @spec handle_service_target_send(String.t(), String.t(), t()) ::
+          {:reply, {:ok, :no_persist} | {:error, :invalid_line | Session.send_transport_error()}, t()}
   defp handle_service_target_send(target, body, state) do
     case Client.send_privmsg(state.client, target, body) do
       :ok ->
@@ -4979,6 +5044,10 @@ defmodule Grappa.Session.Server do
           target: target
         )
 
+        {:reply, err, state}
+
+      {:error, _} = err ->
+        maybe_log_send_failure("service_target_privmsg", err)
         {:reply, err, state}
     end
   end

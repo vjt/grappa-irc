@@ -148,6 +148,42 @@ defmodule Grappa.IRC.ClientTest do
                IRCServer.wait_for_line(server, &(&1 == "PING :foo\r\n"), 1_000)
     end
 
+    # issue 2370 — a Client that does not answer within the call deadline
+    # used to EXIT the caller (`{:timeout, {GenServer, :call, …}}`), which in
+    # `Session.Server` meant the whole session died over one stuck write. The
+    # deadline is the caller's fixed 5 s, so this test costs that much wall
+    # clock; a shorter, injectable deadline would be a prod knob that exists
+    # only for the test. The frame is NOT lost: it waits in the Client's
+    # mailbox and reaches the wire once the Client runs again — which is why
+    # the result is `:timeout` (outcome unknown) and never "not sent".
+    @tag timeout: 30_000
+    test "send_line/2 answers {:error, :timeout} from a stuck Client and the frame still lands" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      client = start_client(port)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      :ok = :sys.suspend(client)
+      assert {:error, :timeout} = Client.send_line(client, "PING :stuck\r\n")
+      assert Process.alive?(client)
+
+      :ok = :sys.resume(client)
+
+      assert {:ok, "PING :stuck\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "PING :stuck\r\n"), 1_000)
+    end
+
+    # issue 2370 — the catch is for the timeout ONLY. A dead Client must still
+    # exit the caller: in `Session.Server` that death arrives over the link
+    # anyway, and answering `:timeout` for it would report a stall where
+    # there is a corpse.
+    test "send_line/2 still exits when the Client process is dead" do
+      dead = spawn(fn -> :ok end)
+      ref = Process.monitor(dead)
+      assert_receive {:DOWN, ^ref, :process, ^dead, _}
+
+      assert {:noproc, _} = catch_exit(Client.send_line(dead, "PING :x\r\n"))
+    end
+
     test "send_line/2 appends CRLF when caller forgot it" do
       # CP23 cluster `code-reload` lesson: the CTCP VERSION reply effect
       # shipped a NOTICE without a trailing \r\n; the second outbound

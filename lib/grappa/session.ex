@@ -197,8 +197,13 @@ defmodule Grappa.Session do
   caller surfaces upstream send failures (controllers map to 5xx;
   GrappaChannel's `dispatch_subject_verb` maps to a typed
   `upstream_unavailable` reply).
+
+  `:timeout` here is the Session.Server's own write to its Client not
+  answering in time (issue 2370) — the same atom, and the same 504, as
+  the REST → Session.Server call timing out: in both cases the outcome
+  is unknown, not refused.
   """
-  @type send_transport_error :: :no_socket | :closed | :inet.posix()
+  @type send_transport_error :: :no_socket | :closed | :timeout | :inet.posix()
 
   @typedoc """
   Per-channel member entry as returned by `list_members/3`. The

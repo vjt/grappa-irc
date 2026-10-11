@@ -151,12 +151,13 @@ defmodule Grappa.IRC.Client do
   # transport-level errors (`:no_socket | :closed | :inet.posix()`) are
   # honest tagged tuples from `transport_send/2` when the underlying
   # TCP/SSL socket is gone (connect_failed pre-assignment, recv-loop
-  # nilled post-tcp_closed, peer-RST race mid-SEND). All `send_*`
-  # callers should `_ = `-discard or `case`-match — the helpers never
-  # raise. See `handle_call({:send, _}, _, _)` for the U-cluster
+  # nilled post-tcp_closed, peer-RST race mid-SEND). `:timeout` is the
+  # Client itself not answering in time — outcome unknown, see
+  # `send_line/2` (issue 2370). All `send_*` callers should
+  # `_ = `-discard or `case`-match — the helpers never raise. See `handle_call({:send, _}, _, _)` for the U-cluster
   # fix history.
   @type send_result ::
-          :ok | {:error, :invalid_line | :no_socket | :closed | :inet.posix()}
+          :ok | {:error, :invalid_line | :no_socket | :closed | :timeout | :inet.posix()}
 
   @typedoc """
   What this session's transport actually IS, as one closed set (#1677).
@@ -467,6 +468,17 @@ defmodule Grappa.IRC.Client do
   don't care about delivery may `_ = `-discard the result;
   `Session.Server.terminate/2` does this for the best-effort QUIT.
 
+  A Client that does not answer within the call deadline yields
+  `{:error, :timeout}` rather than exiting the caller (issue 2370: the
+  exit took the whole `Session.Server` down over one stuck write). The
+  outcome is UNKNOWN, not "not sent": the frame is still in the
+  Client's mailbox and reaches the wire once the Client runs again, so
+  a caller must not report it as dropped. ONLY the timeout exit is
+  caught — a dead Client (`:noproc`, any other reason) still exits, and
+  the link carries that death to `Session.Server` as it always did.
+  Catching it here also keeps `line` out of the exit reason, which for
+  `OPER` would carry the password into the crash report (#961, below).
+
   A `nil` client — `Session.Server`'s honest "no upstream process
   right now", held for the whole Backoff-deferred respawn window —
   is the same "nothing to write to" condition and answers with the
@@ -481,7 +493,12 @@ defmodule Grappa.IRC.Client do
   by returning it, never by writing the frame anywhere.
   """
   @spec send_line(pid() | nil, iodata()) :: send_result()
-  def send_line(client, line) when is_pid(client), do: GenServer.call(client, {:send, line})
+  def send_line(client, line) when is_pid(client) do
+    GenServer.call(client, {:send, line})
+  catch
+    :exit, {:timeout, _} -> {:error, :timeout}
+  end
+
   def send_line(_, _), do: {:error, :no_socket}
 
   @doc """
