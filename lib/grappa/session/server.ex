@@ -1926,7 +1926,7 @@ defmodule Grappa.Session.Server do
   # services CTCP query never opened a window either — it just gains the source
   # echo now, strictly better; the inbound reply routing is unchanged).
   # (No @impl here — a continuation clause of handle_call/3, whose @impl rides
-  # the {:send_privmsg, …} clause above, mirroring the sibling {:send_topic, …}.)
+  # the no-Client refusal clause above, mirroring the sibling {:send_topic, …}.)
   def handle_call({:send_ctcp, source, ctcp_target, body}, _, state)
       when is_binary(source) and is_binary(ctcp_target) and is_binary(body) do
     line = "PRIVMSG #{ctcp_target} :#{body}"
@@ -1950,7 +1950,7 @@ defmodule Grappa.Session.Server do
   # fire. Routing through the choke point anyway is what keeps this door
   # participating automatically if the interceptor ever learns a new shape.
   # (No @impl here — a continuation clause of handle_call/3, whose @impl rides
-  # the {:send_privmsg, …} clause above.)
+  # the no-Client refusal clause above.)
   def handle_call({:send_notice, source, target, body}, _, state)
       when is_binary(source) and is_binary(target) and is_binary(body) do
     line = "NOTICE #{target} :#{body}"
@@ -1984,7 +1984,7 @@ defmodule Grappa.Session.Server do
   # wrong, and it is the tag this facade's other shape guards already use.
   #
   # (No @impl here — a continuation clause of handle_call/3, whose @impl rides
-  # the {:send_privmsg, …} clause above.)
+  # the no-Client refusal clause above.)
   def handle_call({:send_statusmsg, target, body}, _, state)
       when is_binary(target) and is_binary(body) do
     line = "PRIVMSG #{target} :#{body}"
@@ -8639,6 +8639,14 @@ defmodule Grappa.Session.Server do
   # `term()` as supertype).
   @spec maybe_log_send_failure(String.t(), :ok | {:error, atom()}) :: :ok
   defp maybe_log_send_failure(_, :ok), do: :ok
+
+  # issue 2370 — a timeout is not a failure: the frame waits in the Client's
+  # mailbox and may still go out, so the line must not say it failed.
+  defp maybe_log_send_failure(label, {:error, :timeout}) do
+    Logger.warning("#{label}: Client.send timed out — delivery unknown",
+      reason: inspect(:timeout)
+    )
+  end
 
   defp maybe_log_send_failure(label, {:error, reason}) do
     Logger.warning("#{label}: Client.send failed",

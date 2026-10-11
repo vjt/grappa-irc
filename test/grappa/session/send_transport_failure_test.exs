@@ -241,6 +241,33 @@ defmodule Grappa.Session.SendTransportFailureTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    # Fire-and-forget and wire-only paths log through one helper; a stall there
+    # must read as unknown too, never as a failed send.
+    @tag timeout: 60_000
+    test "a service-target send whose write times out is logged as delivery-unknown" do
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
+      {user, network} = setup_user_and_network(port)
+      subject = {:user, user.id}
+      pid = start_session_for(user, network)
+      welcome(server)
+
+      client = pid |> SessionStateHelpers.fetch() |> SessionStateHelpers.client()
+      :ok = :sys.suspend(client)
+
+      log =
+        capture_log(fn ->
+          assert {:error, :timeout} = Session.send_privmsg(subject, network.id, "NickServ", "INFO")
+          _ = :sys.get_state(pid)
+        end)
+
+      assert log =~ "service_target_privmsg: Client.send timed out — delivery unknown"
+      refute log =~ "Client.send failed"
+      assert Process.alive?(pid)
+
+      :ok = :sys.resume(client)
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     # The caller's own deadline expires first, so it reads `:timeout` whatever
     # the session does; the session's answer is only visible in what it logs.
     # The JOIN must be reported as delivery-unknown, not as a link that is down.
