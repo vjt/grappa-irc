@@ -224,6 +224,19 @@ defmodule GrappaWeb.FallbackControllerTest do
       assert Jason.decode!(conn.resp_body) == %{"error" => "upstream_unreachable"}
     end
 
+    # issue 2370 — an IRC verb whose upstream write found no socket used to
+    # crash the session; now the error reaches the controller, which had no
+    # clause for it and raised FunctionClauseError (a bodyless 500). The
+    # link being down is the same fact `upstream_unreachable` already names.
+    for reason <- [:no_socket, :closed] do
+      test "{:error, #{inspect(reason)}} → 502 upstream_unreachable" do
+        conn = FallbackController.call(build_conn_for_call(), {:error, unquote(reason)})
+
+        assert conn.status == 502
+        assert Jason.decode!(conn.resp_body) == %{"error" => "upstream_unreachable"}
+      end
+    end
+
     test "{:error, :internal} → 500 internal" do
       conn = FallbackController.call(build_conn_for_call(), {:error, :internal})
 

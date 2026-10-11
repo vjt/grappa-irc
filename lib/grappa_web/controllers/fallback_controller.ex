@@ -64,6 +64,8 @@ defmodule GrappaWeb.FallbackController do
            | :network_ambiguous
            | :network_unconfigured
            | :upstream_unreachable
+           | :no_socket
+           | :closed
            | :resolve_failed
            | :connect_timeout
            | :welcome_timeout
@@ -650,11 +652,16 @@ defmodule GrappaWeb.FallbackController do
     |> json(%{error: "network_unconfigured"})
   end
 
-  def call(conn, {:error, :upstream_unreachable}) do
-    conn
-    |> put_status(:bad_gateway)
-    |> json(%{error: "upstream_unreachable"})
-  end
+  # issue 2370 — `:no_socket` / `:closed` are an IRC verb's upstream write
+  # finding the link down (`Grappa.Session.send_transport_error/0`). They
+  # used to crash the session before reaching here; now that they travel
+  # back as values they need a door, and the fact they report is the one
+  # `upstream_unreachable` already names. The `:inet.posix/0` half of that
+  # union stays unmapped: it is an open set of atoms no guard can name
+  # without also catching every unrelated atom error as a 502.
+  def call(conn, {:error, :upstream_unreachable}), do: upstream_unreachable(conn)
+  def call(conn, {:error, :no_socket}), do: upstream_unreachable(conn)
+  def call(conn, {:error, :closed}), do: upstream_unreachable(conn)
 
   # U-2 (UD7): three-way split replaces pre-U-2 single `:timeout`.
   # Each carries distinct operator semantics + distinct Retry-After
@@ -913,4 +920,10 @@ defmodule GrappaWeb.FallbackController do
   end
 
   defp captcha_provider_wire, do: Grappa.Admission.captcha_provider_wire()
+
+  defp upstream_unreachable(conn) do
+    conn
+    |> put_status(:bad_gateway)
+    |> json(%{error: "upstream_unreachable"})
+  end
 end
