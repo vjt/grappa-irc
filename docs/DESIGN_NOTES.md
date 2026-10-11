@@ -1245,11 +1245,24 @@ PASSWD is committed only while the worn nick folds equal to
 `configured_nick/1` (`wearing_configured_nick?/1`, via `fold_key/2`, never
 `==`). The `+r` commit checks the same thing again on the nick holding the
 new `+r`: a REGISTER staged under A, then a rename to B and an IDENTIFY of
-B, must not commit A's staged secret on B's `+r`. Both gates are needed —
-each one is the only test that discriminates the other. This is the
-identity check #978 already made on RESETPASS's explicit target; the three
-on-send/`+r` writers of the user credential now all make it. A refused
-capture logs at `info` naming the nick, never the secret.
+B, must not commit A's staged secret on B's `+r`, and a REGISTER of B
+followed by a rename to A must not commit B's secret on A's `+r` (REGISTER
+wins the tie against `pending_auth`). A `+r` the gate refuses KEEPS the
+staged secret: it confirmed some other account, and A's registration is
+still waiting for its own `+r` — clearing it there would lose a password the
+old code happened to commit correctly. This is the identity check #978
+already made on RESETPASS's explicit target, now one helper
+(`configured_nick?/2`) for all three on-send/`+r` writers of the user
+credential. A refused capture logs at `info` naming the nick, never the
+secret.
+
+**Two bounds, reported by review and not measured.** (1) The gate reads
+`state.nick`, which at 001 is still the REQUESTED nick until EventRouter
+reconciles the welcome, so a SET PASSWD in the perform list on a 433
+fallback compares the configured nick against itself and passes. (2)
+`configured_nick/1` falls back to `state.nick` for a process predating
+#885, which makes every check pass; v1.5.13 deploys COLD, so no such
+process survives it.
 
 **Visitors are deliberately untouched.** A visitor's `+r` goes through
 `Visitors.commit_identity/4`, which writes the password AND the nick held at
