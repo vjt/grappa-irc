@@ -9328,9 +9328,9 @@ defmodule Grappa.Session.ServerTest do
       rename_own_nick(server, "grappa-alt", "grappa-test")
       own_umode(pid, "+r")
 
-      reloaded = Credentials.get_credential!(user, network)
-      assert reloaded.password_encrypted == "regpass"
-      assert reloaded.auth_method == :nickserv_identify
+      committed = Credentials.get_credential!(user, network)
+      assert committed.password_encrypted == "regpass"
+      assert committed.auth_method == :nickserv_identify
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
