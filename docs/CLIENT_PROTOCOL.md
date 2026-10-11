@@ -872,6 +872,51 @@ history under the old nick.
 
 ---
 
+### 5i. Paging scrollback by TIME (issue 2372, v40)
+
+`GET /networks/:network_id/channels/:channel_id/messages` takes three time
+cursors beside the id ones. They are built for a client that receives IRCv3
+`draft/chathistory` `timestamp=` selectors and has to turn them into a
+grappa query.
+
+| param | rows | order |
+|---|---|---|
+| `before_time=<ms>` | `server_time < ms`, the `limit` nearest `ms` | newest first |
+| `after_time=<ms>` | `server_time > ms`, the `limit` nearest `ms` | oldest first |
+| `around_time=<ms>` | `floor(limit/2)` with `server_time <= ms` + `ceil(limit/2)` with `server_time > ms` | newest first |
+
+- **One value format: decimal epoch milliseconds**, `0` up to int64 max.
+  That is the unit every row's `server_time` already carries, so you can
+  send a row's value back as it is. ISO-8601 is a `400`; convert on your
+  side (`2026-10-11T10:00:00.000Z` → `1791712800000`). So is a negative
+  number, a fraction, an empty value, or `?before_time[]=1`.
+- **One mutex over all six cursors**: any two of `before`, `after`,
+  `around`, `before_time`, `after_time` and `around_time` together is a
+  `400`.
+- **Ordered by `(server_time, id)`**, with `id` breaking a tie inside the
+  same millisecond.
+- **The bound is strict and applies to `server_time` only.** Every row
+  stamped with the bound millisecond is left out of BOTH `before_time` and
+  `after_time`. This is the chathistory BEFORE/AFTER semantics. It means
+  that paging by sending back the oldest row's `server_time` skips the
+  rows from that millisecond that did not fit in the page. **To page
+  without losing rows, make the first query by time and the following ones
+  by id** (`before=<oldest id>`, `after=<newest id>`). The two orders agree
+  as long as the server's wall clock only moves forward: `server_time` and
+  `id` are minted together, in one process, for each row. They come apart
+  only after the clock steps BACKWARDS (an NTP correction, say). A row
+  written after the step has a higher id but an older `server_time`, so
+  moving from time to id at that point can return rows past your bound or
+  skip some. It is rare, and it never happens without a clock step; if you
+  need the guarantee, filter what comes back by `server_time` yourself.
+- `limit`, the `200` ceiling, the presence hiding and the row shape are
+  the same as for the id cursors.
+
+**Check `protocol_version >= 40` before you send them. Unlike `cap` (§5e),
+this is not optional.** A server older than 40 ignores the unknown param and
+answers with the **latest** page and a `200`: wrong rows, no error. Keep
+your id-based fallback for those servers.
+
 ## 6. Rate limiting & flood protection (#630)
 
 grappa applies a **coarse per-subject inbound budget** across BOTH doors —

@@ -53,21 +53,15 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v37 -> v38 (issue 2347): a new REST pair,
- * `GET`/`PUT /me/settings/ban-mask-form`, carrying `ban_mask_form`
- * (`"nick"` | `"host"` | `"user_host"`, default `"host"`) — the ban type
- * cic's `/kb` and Kickban compose. No push kind was added, no payload
- * moved, and this client sends no bans, so nothing here changes.
- *
- * NUMBER ONLY. The v36 gap is CLOSED (issue 2338): an inbound DM is
- * filed under the row's `dm_with`, so our own rename no longer strands
- * the rows stored before it; "channel equals my nick" is kept only as the
- * fallback for a server that omits the field. The away-mention misrouting
- * v35 named is still open here.
+ * Last read, v38 -> v40 (issues 2359, 2372): v39 put the auto-away site
+ * default on `server_settings_changed` and `GET /api/server-settings`;
+ * v40 added the time cursors `before_time` / `after_time` / `around_time`
+ * (epoch ms) on `GET …/messages`. Neither is something this client reads
+ * or sends, so nothing here changes.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 39
+#define WIRE_PROTOCOL_VERSION 40
 
 #include <stdbool.h>
 #include <stddef.h>

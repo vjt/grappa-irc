@@ -293,7 +293,12 @@ let _socket: Socket | null = null;
 // type `/kb` and Kickban compose. REST only, no push. A pre-38 server 404s
 // the read, and the bundle falls back to `"host"` — the mask `/kb` always
 // sent — so `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 39;
+//
+// 40 (issue 2372) — time cursors on `GET …/messages` (`before_time` /
+// `after_time` / `around_time`, epoch ms). REQUEST params only; this bundle
+// pages by id and sends none of them, so `MIN_SERVER_PROTOCOL_VERSION`
+// stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 40;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

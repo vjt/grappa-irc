@@ -1089,7 +1089,30 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: purely additive; cic renders the bare
   # "use site default" label when the field is absent.
-  @protocol_version 39
+  #
+  # ---------------------------------------------------------------------------
+  # 40 — issue 2372: time cursors on the scrollback read
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `before_time` / `after_time` / `around_time` on `GET
+  # /networks/:network_id/channels/:channel_id/messages` — decimal epoch ms,
+  # filtered strictly on `server_time`, ordered `(server_time, id)`, in ONE
+  # mutex with the three id cursors. For a client bridging IRCv3
+  # `draft/chathistory` `timestamp=` selectors (bicchierino).
+  #
+  # REQUEST params only, so `wire_pin`'s digest does not move: no `*JSON`
+  # `@spec` and no generated shape changes, and the response rows are the
+  # id cursors' rows. Bumped on reason (1) of #1393d, and here it is not a
+  # formality but the ONLY signal there is: a server predating this IGNORES
+  # the unknown param and answers the LATEST page with a 200 — not a 400 —
+  # so a client that sends `before_time` to it gets the wrong rows silently.
+  # The `protocol_version >= 40` check is how a client avoids that.
+  #
+  # Checked for a collision before claiming 40: the one open PR that edits
+  # this file (#2102) carries 21.
+  #
+  # @min_protocol_version stays at 1: no existing client sends the params.
+  @protocol_version 40
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1130,7 +1153,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 39
+  @spec version() :: 40
   def version, do: @protocol_version
 
   @doc """
