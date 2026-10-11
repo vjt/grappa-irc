@@ -1226,3 +1226,37 @@ injectable deadline was added to production for them.
 **Out of this slice.** The nick lost across the crash is won't-fix (vjt's
 ruling on the issue). Why the Client stalled ≥5 s and who sent the second
 and third copies were not measured, and this entry claims neither.
+<!-- entry #2371 -->
+
+---
+
+## 2026-10-11 — #2371: a NickServ secret for another nick never lands in a user credential
+
+**The bug.** A user session's credential holds ONE nick and ONE NickServ
+password. REGISTER and SET PASSWD carry no nick: services act on the nick
+WORN when the line arrives. A user wearing B who registered B had B's
+password staged, committed at `+r` by `commit_user_registration/3`, and
+written next to nick A; the next reconnect IDENTIFYed A with B's password.
+SET PASSWD (optimistic on-send, #131) had the same hole by construction:
+`commit_set_passwd/2` rotated the stored secret whatever nick was worn.
+
+**The rule.** For a `{:user, _}` session, a REGISTER is staged and a SET
+PASSWD is committed only while the worn nick folds equal to
+`configured_nick/1` (`wearing_configured_nick?/1`, via `fold_key/2`, never
+`==`). The `+r` commit checks the same thing again on the nick holding the
+new `+r`: a REGISTER staged under A, then a rename to B and an IDENTIFY of
+B, must not commit A's staged secret on B's `+r`. Both gates are needed —
+each one is the only test that discriminates the other. This is the
+identity check #978 already made on RESETPASS's explicit target; the three
+on-send/`+r` writers of the user credential now all make it. A refused
+capture logs at `info` naming the nick, never the secret.
+
+**Visitors are deliberately untouched.** A visitor's `+r` goes through
+`Visitors.commit_identity/4`, which writes the password AND the nick held at
+`+r`, so the pair moves together; the user check would be wrong there too,
+since a visitor's `configured_nick` is the nick at session start and goes
+stale once `commit_identity/4` rebinds it. **Known gap, not fixed here:**
+when the nick half of `commit_identity/4` fails (a folded-nick collision,
+logged as a warning) the password is still committed, so the visitor pair can
+drift the same way. Changing that is a visitor-semantics decision and was
+not taken in this slice.
