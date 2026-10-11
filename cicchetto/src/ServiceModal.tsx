@@ -1,4 +1,4 @@
-import { type Component, createEffect, createSignal, For, Show } from "solid-js";
+import { type Component, createEffect, createSignal, For, onMount, Show } from "solid-js";
 import { createBackdropDismiss } from "./lib/backdropDismiss";
 import { casemappingForSlug } from "./lib/casemapping";
 import { friendlyError } from "./lib/friendlyError";
@@ -95,6 +95,17 @@ const ServiceModal: Component = () => {
           if (bodyRef) bodyRef.scrollTop = bodyRef.scrollHeight;
         });
 
+        // issue 2375 — the console opens from a bare `/ns`, so the next
+        // keystroke belongs to the `>` prompt. Per open, like the draft: the
+        // keyed remount re-runs it when a second service replaces the first.
+        // iOS, UNMEASURED: WebKit raises the on-screen keyboard for a
+        // programmatic focus only inside a user gesture, and whether the
+        // compose Enter / send tap that opened us still counts is not known.
+        // If it does not, the prompt is focused with the keyboard down — the
+        // same one tap as before this change, never more.
+        let inputRef: HTMLInputElement | undefined;
+        onMount(() => inputRef?.focus({ preventScroll: true }));
+
         return (
           // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape)
           // biome-ignore lint/a11y/noStaticElementInteractions: backdrop is non-interactive scrim
@@ -166,6 +177,7 @@ const ServiceModal: Component = () => {
                   &gt;
                 </span>
                 <input
+                  ref={inputRef}
                   class="service-modal-prompt-input"
                   data-testid="service-modal-input"
                   type="text"

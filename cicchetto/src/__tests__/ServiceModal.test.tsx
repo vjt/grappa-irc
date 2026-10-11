@@ -193,6 +193,34 @@ describe("ServiceModal (#290)", () => {
     expect(pipeline.sendBodyLines).not.toHaveBeenCalled();
   });
 
+  // issue 2375 — the console exists to be typed into: it opens from a bare
+  // `/ns`, so the next keystroke belongs to the `>` prompt, not to whatever
+  // held focus behind the scrim (the compose box, which the scrim covers).
+  it("focuses the `>` prompt when it opens (issue 2375)", async () => {
+    const slug = "svc-focus-open";
+    render(() => <ServiceModal />);
+    openServiceModal(slug, "NickServ");
+
+    const input = await screen.findByTestId("service-modal-input");
+    await waitFor(() => expect(document.activeElement).toBe(input));
+  });
+
+  it("re-focuses the prompt when a second service replaces the first (issue 2375)", async () => {
+    const slug = "svc-focus-switch";
+    render(() => <ServiceModal />);
+    openServiceModal(slug, "NickServ");
+    const first = await screen.findByTestId("service-modal-input");
+    await waitFor(() => expect(document.activeElement).toBe(first));
+    first.blur();
+
+    openServiceModal(slug, "ChanServ");
+    await waitFor(() =>
+      expect(screen.getByTestId("service-modal").getAttribute("data-service")).toBe("ChanServ"),
+    );
+    const second = screen.getByTestId("service-modal-input");
+    await waitFor(() => expect(document.activeElement).toBe(second));
+  });
+
   it("closes on the × button", () => {
     const slug = "svc-close";
     openServiceModal(slug, "NickServ");
