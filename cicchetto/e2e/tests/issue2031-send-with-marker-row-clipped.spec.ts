@@ -83,6 +83,7 @@
 import type { Page } from "@playwright/test";
 import {
   composeSend,
+  composeTextarea,
   loginAs,
   rowClearance,
   scrollbackDistanceFromBottom,
@@ -91,6 +92,7 @@ import {
   waitForScrollbackRefreshed,
 } from "../fixtures/cicchettoPage";
 import { fetchScrollbackPage, setReadCursorToId } from "../fixtures/grappaApi";
+import { IrcPeer } from "../fixtures/ircClient";
 import { delayedWrites, dumpScrollProbe, installScrollProbe } from "../fixtures/scrollWriteProbe";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
@@ -163,16 +165,169 @@ async function parkOnVisibleMarker(page: Page): Promise<void> {
     .toBeGreaterThan(SCROLL_BOTTOM_THRESHOLD_PX);
 }
 
+// Issue 2377 — the REPORTED shape, which `parkOnVisibleMarker` is not: the
+// marker on screen AND the last message visible at the bottom, i.e. the pane
+// already AT its tail when enter is pressed. Cursor two rows short of the tail,
+// so the divider and the two unread rows all fit in the last screenful and the
+// activation's marker jump clamps at the scroller's maximum.
+async function parkAtTailOnVisibleMarker(page: Page): Promise<void> {
+  const vjt = specUser();
+  if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+
+  const page0 = await fetchScrollbackPage(vjt.token, NETWORK_SLUG, CHANNEL);
+  expect(page0.length).toBeGreaterThanOrEqual(REST_PAGE_SIZE);
+  // Descending page: [0] is the tail, so [2] leaves exactly two rows unread.
+  const cursorRow = page0[2];
+  if (!cursorRow) throw new Error("seeded page too short for cursor placement");
+  await setReadCursorToId(vjt.token, NETWORK_SLUG, CHANNEL, cursorRow.id);
+
+  await loginAs(page, vjt);
+  await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
+  await waitForScrollbackRefreshed(page, NETWORK_SLUG, CHANNEL);
+
+  await expect
+    .poll(async () => await scrollbackLines(page).count(), { timeout: 10_000 })
+    .toBeGreaterThanOrEqual(REST_PAGE_SIZE);
+
+  const marker = page.locator('[data-testid="unread-marker"]');
+  await expect(marker).toHaveCount(1);
+  await expect(marker).toBeInViewport();
+
+  // AT the tail: the last message is on screen, nothing below the fold.
+  await expect
+    .poll(async () => (await scrollbackDistanceFromBottom(page)) ?? Number.POSITIVE_INFINITY, {
+      timeout: 10_000,
+    })
+    .toBeLessThanOrEqual(1);
+  const last = scrollbackLines(page).last();
+  const lastClearance = await rowClearance(last);
+  expect(lastClearance.overflowBelowPx).toBeLessThanOrEqual(SUBPIXEL_TOLERANCE_PX);
+}
+
+// Issue 2377 — the race that put the row under the compose, FORCED.
+//
+// Measured on the untouched tree: ONE red in twelve webkit runs of the
+// iPhone case above (and zero in six chromium), its only post-send write a
+// `scrollIntoView({block:"start"})` on the divider 39ms after enter — the
+// deferred rAF×2 leg of a marker activation queued BEFORE the send and run
+// AFTER it. That leg used to ignore that the send had revoked the latch: it
+// jumped to the far divider, turned `followMode` off, and the sent row was
+// never followed (pane 91px short, row entirely below the fold). At ~1/12 the cases
+// above cannot catch a return of it, which is how it came back unnoticed.
+//
+// So this sender MAKES the interleaving rather than waiting for it: a peer
+// line lands while the park's activation latch is armed, which queues exactly
+// such a leg, and a MutationObserver presses enter in the microtask after
+// that commit — before the two frames the leg waits. Measured on the
+// untouched tree, this final form: chromium red 3 of 3 (twice over), webkit
+// red 0 of 3 (a draft without the write slicing below went red 1 of 3, on
+// the delayed-write leg). Why webkit escapes is NOT known. The chromium case
+// is the one that holds the line; the webkit one is a guard on the reported
+// platform and must not be read as a reproduction.
+
+// An order of magnitude past the leg's two frames. The collapse it delays
+// writes nothing once the pane is at the tail (#625's guard), so the hold
+// cannot itself produce a late write for assertion (b) to see.
+const POST_HOLD_MS = 400;
+
+// A sender types and submits, and answers the index of the first probe write
+// that belongs to the send — 0 unless something wrote before enter on purpose.
+type Sender = (page: Page, body: string) => Promise<number>;
+
+const plainSend: Sender = async (page, body) => {
+  await composeSend(page, body);
+  return 0;
+};
+
+function sendOnPeerLine(peer: IrcPeer): Sender {
+  return async (page, body) => {
+    if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+    // Hold the POST's RESPONSE. The divider collapses only once it resolves
+    // (`lastOwnSend`) — and, measured, the sent row lands then too (~+450ms
+    // with the hold). A collapse inside the leg's two frames sends the leg to
+    // the tail instead of the divider: the 4-in-6 green the first draft of
+    // this sender measured on the untouched tree. A phone's round trip is
+    // never inside two frames, so the hold is the device's timing.
+    await page.route(/\/messages(\?|$)/, async (route) => {
+      if (route.request().method() === "POST") {
+        await new Promise((resolve) => setTimeout(resolve, POST_HOLD_MS));
+      }
+      await route.continue();
+    });
+    await composeTextarea(page).fill(body);
+    const trigger = `i2377 peer ${Date.now()}`;
+    await page.evaluate((triggerArg) => {
+      const list = document.querySelector('[data-testid="scrollback"]');
+      const ta = document.querySelector(".compose-box textarea");
+      if (!list || !(ta instanceof HTMLTextAreaElement)) {
+        throw new Error("sendOnPeerLine: scrollback or compose not found");
+      }
+      const w = window as unknown as {
+        __i2377Pressed?: boolean;
+        __i2377WritesAtPress?: number;
+        __scrollProbeWrites?: unknown[];
+      };
+      w.__i2377Pressed = false;
+      const obs = new MutationObserver(() => {
+        if (!list.textContent?.includes(triggerArg)) return;
+        obs.disconnect();
+        // The peer line's own (synchronous) divider write has already been
+        // recorded by now; everything from here on is the send's.
+        w.__i2377WritesAtPress = w.__scrollProbeWrites?.length ?? 0;
+        ta.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+        );
+        w.__i2377Pressed = true;
+      });
+      obs.observe(list, { childList: true, subtree: true, characterData: true });
+    }, trigger);
+    peer.privmsg(CHANNEL, trigger);
+    // VACUITY GUARD: enter was pressed BY the observer, i.e. inside the
+    // commit's microtask — not by a fallback after the leg had already run.
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(
+            () => (window as unknown as { __i2377Pressed?: boolean }).__i2377Pressed,
+          ),
+        { timeout: 10_000 },
+      )
+      .toBe(true);
+    await expect(composeTextarea(page)).toHaveValue("", { timeout: 5_000 });
+    return await page.evaluate(
+      () => (window as unknown as { __i2377WritesAtPress?: number }).__i2377WritesAtPress ?? 0,
+    );
+  };
+}
+
+async function forcedRaceCase(page: Page, tag: string): Promise<void> {
+  if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+  // The peer joins BEFORE the park, so its JOIN is history by the time the
+  // activation runs and only its PRIVMSG lands under the armed latch.
+  const peer = await IrcPeer.connect({ nick: `i2377${tag.slice(0, 3)}${Date.now() % 100_000}` });
+  try {
+    await peer.join(CHANNEL);
+    await sendWithMarkerAndAssertVisible(page, tag, parkOnVisibleMarker, sendOnPeerLine(peer));
+  } finally {
+    await peer.disconnect("i2377 done");
+  }
+}
+
 // The body of both cases. Kept as one function because the two differ ONLY in
 // the engine they run on, and a copy would let them drift into testing
 // different things on the two platforms — which is the one comparison the
 // pair exists to make.
-async function sendWithMarkerAndAssertVisible(page: Page, tag: string): Promise<void> {
-  await parkOnVisibleMarker(page);
+async function sendWithMarkerAndAssertVisible(
+  page: Page,
+  tag: string,
+  park: (page: Page) => Promise<void>,
+  send: Sender,
+): Promise<void> {
+  await park(page);
 
   await installScrollProbe(page, SAMPLE_WINDOW_MS);
   const body = `i2031 ${tag} ${Date.now()}`;
-  await composeSend(page, body);
+  const sendWriteIndex = await send(page, body);
 
   const sentLine = scrollbackLines(page).filter({ hasText: body });
   await expect(sentLine).toHaveCount(1, { timeout: 10_000 });
@@ -189,7 +344,10 @@ async function sendWithMarkerAndAssertVisible(page: Page, tag: string): Promise<
   // Let every deferred writer land before reading the terminal geometry.
   await page.waitForTimeout(SAMPLE_WINDOW_MS + 200);
 
-  const { samples, writes } = await dumpScrollProbe(page, tag);
+  const { samples, writes: allWrites } = await dumpScrollProbe(page, tag);
+  // Only what the SEND caused is the send's: the forced sender lets a peer
+  // line write first, on purpose, and that write is not "after the send".
+  const writes = allWrites.slice(sendWriteIndex);
   expect(samples.length).toBeGreaterThan(10);
 
   // ── (a) the sent row is FULLY visible in the pane that clips it ──────────
@@ -204,6 +362,13 @@ async function sendWithMarkerAndAssertVisible(page: Page, tag: string): Promise<
       `hiddenBehindCompose=${clearance.hiddenBehindComposePx?.toFixed(1) ?? "n/a"}px. ` +
       `overflowBelow>0 ⇒ SCROLL (pane short of its tail); ` +
       `overflowBelow<=0 with hiddenBehindCompose>0 ⇒ LAYOUT (pane painted under the compose).`,
+  ).toBeLessThanOrEqual(SUBPIXEL_TOLERANCE_PX);
+  // …and its TOP edge too (issue 2377): "fully inside the pane" is a box
+  // statement with two edges, and a row taller than the clearance below it
+  // could satisfy the bottom check while starting above the pane's top.
+  expect(
+    clearance.overflowAbovePx,
+    `the sent row starts above the pane's top edge: overflowAbove=${clearance.overflowAbovePx.toFixed(1)}px`,
   ).toBeLessThanOrEqual(SUBPIXEL_TOLERANCE_PX);
 
   // The same row must not be covered by the compose either — the LAYOUT face
@@ -245,7 +410,7 @@ test.describe("issue 2031 — a send with the unread marker on screen (desktop)"
   test.use({ viewport: { width: 800, height: 300 } });
 
   test("the sent row lands fully inside the pane, and nothing scrolls after", async ({ page }) => {
-    await sendWithMarkerAndAssertVisible(page, "desktop");
+    await sendWithMarkerAndAssertVisible(page, "desktop", parkOnVisibleMarker, plainSend);
   });
 });
 
@@ -256,6 +421,41 @@ test.describe("issue 2031 — a send with the unread marker on screen (iPhone)",
   test("@webkit the sent row lands fully inside the pane, and nothing scrolls after", async ({
     page,
   }) => {
-    await sendWithMarkerAndAssertVisible(page, "iphone");
+    await sendWithMarkerAndAssertVisible(page, "iphone", parkOnVisibleMarker, plainSend);
+  });
+});
+
+test.describe("issue 2377 — a send at the tail with the unread marker on screen (desktop)", () => {
+  test.use({ viewport: { width: 800, height: 300 } });
+
+  test("the sent row lands fully inside the pane, and nothing scrolls after", async ({ page }) => {
+    await sendWithMarkerAndAssertVisible(
+      page,
+      "tail-desktop",
+      parkAtTailOnVisibleMarker,
+      plainSend,
+    );
+  });
+});
+
+test.describe("issue 2377 — a send at the tail with the unread marker on screen (iPhone)", () => {
+  test("@webkit the sent row lands fully inside the pane, and nothing scrolls after", async ({
+    page,
+  }) => {
+    await sendWithMarkerAndAssertVisible(page, "tail-iphone", parkAtTailOnVisibleMarker, plainSend);
+  });
+});
+
+test.describe("issue 2377 — a send racing a queued divider jump (desktop)", () => {
+  test.use({ viewport: { width: 800, height: 300 } });
+
+  test("the revoked jump does not strand the sent row below the fold", async ({ page }) => {
+    await forcedRaceCase(page, "race-desktop");
+  });
+});
+
+test.describe("issue 2377 — a send racing a queued divider jump (iPhone)", () => {
+  test("@webkit the revoked jump does not strand the sent row below the fold", async ({ page }) => {
+    await forcedRaceCase(page, "race-iphone");
   });
 });

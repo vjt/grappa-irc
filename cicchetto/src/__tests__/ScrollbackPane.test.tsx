@@ -2512,6 +2512,52 @@ describe("ScrollbackPane", () => {
       expect(scrollIntoViewSpy).toHaveBeenCalledWith({ block: "start" });
     });
 
+    // issue 2377 — the deferred leg of a marker activation must re-check the
+    // latch it was scheduled under. An own send REVOKES the activation
+    // (`setMarkerActivationPending(false)` + follow armed), but a leg already
+    // queued in the rAF×2 still ran, jumped to the divider and — the divider
+    // being far from the tail — turned `followMode` off, so the echo that
+    // landed next was not followed and the sent row stayed under the compose.
+    // Measured in e2e (`issue2031-…` iPhone, 1 of 2): ONE write after the send,
+    // `scrollIntoView({block:"start"})` at +39ms, pane parked 91px short.
+    it("an own send inside the activation's rAF×2 revokes the divider jump, and the echo is followed (issue 2377)", async () => {
+      seedReadCursor("freenode", "#grappa", 1);
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const list = screen.getByTestId("scrollback") as HTMLDivElement;
+      // Pre-state: the divider is rendered, so the queued leg HAS a node to
+      // jump to — the jump is withheld by the revocation, not by its absence.
+      expect(screen.queryByTestId("unread-marker")).not.toBeNull();
+      Object.defineProperty(list, "scrollHeight", { value: 5000, configurable: true });
+      Object.defineProperty(list, "clientHeight", { value: 500, configurable: true });
+      Object.defineProperty(list, "scrollTop", { value: 100, writable: true, configurable: true });
+
+      // Enter pressed while the cold-mount activation's rAF×2 is still queued.
+      pushOwnSendSubmitted("freenode #grappa");
+      await Promise.resolve();
+      await flushRaf();
+
+      expect(scrollIntoViewSpy).not.toHaveBeenCalledWith({ block: "start" });
+
+      // The echo lands and lays out: follow survived, so the applier tails.
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+      setScrollback({
+        "freenode #grappa": [
+          ...fixture,
+          { ...proto, id: 4, server_time: 1_700_000_003_000, sender: "vjt", body: "my echo" },
+        ],
+      });
+      Object.defineProperty(list, "scrollHeight", { value: 5200, configurable: true });
+      Object.defineProperty(list.lastElementChild as HTMLElement, "offsetHeight", {
+        value: 20,
+        configurable: true,
+      });
+      await flushRaf();
+      await flushRaf();
+      expect(scrollIntoViewSpy).toHaveBeenCalledWith({ block: "end" });
+    });
+
     // #1229 — the content-change gate and the deferred write read the divider
     // TWO FRAMES apart. When ONE rows change both admits the marker-activation
     // intent and arms far-behind — which is exactly what crossing the unread
