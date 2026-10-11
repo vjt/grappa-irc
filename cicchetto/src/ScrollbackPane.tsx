@@ -2862,6 +2862,21 @@ const ScrollbackPane: Component<Props> = (props) => {
           if (withHide) setActivating(false);
           return;
         }
+        // issue 2377 — a "marker-or-tail" leg is scheduled UNDER the #168 latch
+        // (every caller arms `markerActivationPending` first) and runs two frames
+        // later, so it must re-check the latch here, exactly as the tail-follow
+        // poll re-checks `followMode()` each frame. Everything that clears the
+        // latch — an own send, operator input, the scroll-to-bottom gesture, a
+        // mention jump — is a newer authority that owns the scroll from then on.
+        // Unchecked, a leg queued just before enter jumped to the divider AFTER
+        // the send and, the divider being far, turned `followMode` off: the echo
+        // was then never followed and the sent row stayed under the compose
+        // (measured: one `block:"start"` write 39ms after the send, pane 91px
+        // short — the third return of the #168 / #2031 family).
+        if (mode === "marker-or-tail" && !markerActivationPending()) {
+          if (withHide) setActivating(false);
+          return;
+        }
         // #168 + issue 2032 — the DELIBERATE activations (channel-SWITCH and
         // cold-mount, both "marker-or-tail") jump to the RENDERED frozen unread
         // divider when one exists. Every RESUME does not: "tail-only" (resize,

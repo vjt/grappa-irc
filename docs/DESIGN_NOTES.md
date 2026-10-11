@@ -1273,3 +1273,50 @@ when the nick half of `commit_identity/4` fails (a folded-nick collision,
 logged as a warning) the password is still committed, so the visitor pair can
 drift the same way. Changing that is a visitor-semantics decision and was
 not taken in this slice.
+<!-- entry #2377 -->
+
+---
+
+## 2026-10-11 — #2377: a queued divider jump yields to the send that revoked it
+
+**Report.** vjt, 23:21: marker on screen, send, the divider collapses and
+the sent row sits under the compose — the third return of the family after
+#168 and #2031.
+
+**What was measured, not assumed.** On `f09882cd5` the #2031 spec runs in
+CI and is green there. Locally it went red ONCE in twelve webkit runs (zero
+in six chromium): pane 91px short, row wholly below the fold, and the only
+scroll write after enter was `scrollIntoView({block:"start"})` on the
+divider at +39ms. That is the deferred rAF×2 leg of a marker activation —
+queued under the #168 latch BEFORE the send, run AFTER it. The send had
+already revoked the latch (`setMarkerActivationPending(false)`, follow
+armed), but `scrollToActivation`'s deferred body never re-read it: it
+jumped to the far divider and set `followMode` from that distance, i.e.
+off, so the sent row that landed next was not followed and the divider's
+collapse left the pane where it was. Not introduced by any of the commits
+the issue suspected: the body before #2333 read the divider node just as
+ungated. It is a race whose rate moves with timing, which is also why no
+bisect was run — every candidate carries it.
+
+**Why the existing spec could not hold it.** Two conditions must meet: a
+rows change under the armed latch within two frames of enter (a peer line
+does it), and the POST resolving AFTER those two frames — a collapse inside
+them sends the leg to the tail, which hides the defect. Local POSTs are
+fast, a phone's never are. The new forced case builds both: a
+MutationObserver presses enter in the microtask after the peer line's
+commit, and the POST response is held 400ms. On the untouched tree it is
+red 3 of 3 on chromium, twice, and 0 of 3 on webkit (why webkit escapes is
+not known — the webkit case is a guard, not a reproduction); the regression
+cases also assert the sent row's box against the pane's
+box on BOTH edges, never a distance against `SCROLL_BOTTOM_THRESHOLD_PX`.
+
+**The rule.** A deferred write scheduled under a latch re-checks the latch
+when it runs, exactly as the tail-follow poll re-checks `followMode()`
+every frame. Everything that clears `markerActivationPending` — an own
+send, operator input, the scroll-to-bottom gesture, a mention jump — is a
+newer authority, and a "marker-or-tail" leg that finds it cleared writes
+nothing (it still reveals a hidden pane). The reported at-the-tail shape
+(divider near the tail) was measured too and did not reproduce (0 of 7
+webkit, 0 of 2 chromium): read from the code, a near divider sets
+`followMode` from a distance under the threshold, i.e. on, so the sent row
+is still followed. The case is kept as a guard.
