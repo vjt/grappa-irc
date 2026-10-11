@@ -9268,7 +9268,7 @@ defmodule Grappa.Session.ServerTest do
 
       assert is_nil(SessionStateHelpers.pending_registration_secret(SessionStateHelpers.fetch(pid)))
 
-      own_plus_r(pid)
+      own_umode(pid, "+r")
 
       reloaded = Credentials.get_credential!(user, network)
       assert reloaded.auth_method == :none
@@ -9277,7 +9277,30 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "user session: REGISTER staged on the configured nick is not committed by +r on another nick" do
+    test "user session: REGISTER of another nick is not committed by a later +r on the configured nick" do
+      {server, pid, user, network} = start_wearing_nick("grappa-alt", %{})
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg(
+                 {:user, user.id},
+                 network.id,
+                 "NickServ",
+                 "REGISTER altpass me@example.com"
+               )
+
+      # Back on the configured nick, which services identify: the secret
+      # registered for grappa-alt must not ride that +r into the credential.
+      rename_own_nick(server, "grappa-alt", "grappa-test")
+      own_umode(pid, "+r")
+
+      reloaded = Credentials.get_credential!(user, network)
+      assert reloaded.auth_method == :none
+      assert is_nil(reloaded.password_encrypted)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "user session: REGISTER staged on the configured nick waits out a +r on another nick" do
       {server, pid, user, network} = start_wearing_nick("grappa-test", %{})
 
       assert {:ok, :no_persist} =
@@ -9291,11 +9314,23 @@ defmodule Grappa.Session.ServerTest do
       assert SessionStateHelpers.pending_registration_secret(SessionStateHelpers.fetch(pid)) == "regpass"
 
       rename_own_nick(server, "grappa-test", "grappa-alt")
-      own_plus_r(pid)
+      own_umode(pid, "+r")
 
       reloaded = Credentials.get_credential!(user, network)
       assert reloaded.auth_method == :none
       assert is_nil(reloaded.password_encrypted)
+
+      # That +r confirmed grappa-alt; grappa-test's registration is still
+      # pending and commits on grappa-test's own +r.
+      assert SessionStateHelpers.pending_registration_secret(SessionStateHelpers.fetch(pid)) == "regpass"
+
+      own_umode(pid, "-r")
+      rename_own_nick(server, "grappa-alt", "grappa-test")
+      own_umode(pid, "+r")
+
+      reloaded = Credentials.get_credential!(user, network)
+      assert reloaded.password_encrypted == "regpass"
+      assert reloaded.auth_method == :nickserv_identify
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
@@ -9311,7 +9346,7 @@ defmodule Grappa.Session.ServerTest do
                  "REGISTER regpass me@example.com"
                )
 
-      own_plus_r(pid)
+      own_umode(pid, "+r")
 
       reloaded = Credentials.get_credential!(user, network)
       assert reloaded.password_encrypted == "regpass"
@@ -9378,14 +9413,14 @@ defmodule Grappa.Session.ServerTest do
       flush_session(server)
     end
 
-    # Services set +r on whatever nick the session wears now.
-    defp own_plus_r(pid) do
+    # A self umode change on whatever nick the session wears now.
+    defp own_umode(pid, change) do
       send(
         pid,
         {:irc,
          %Message{
            command: :mode,
-           params: [SessionStateHelpers.nick(SessionStateHelpers.fetch(pid)), "+r"],
+           params: [SessionStateHelpers.nick(SessionStateHelpers.fetch(pid)), change],
            prefix: {:server, "irc.example.test"},
            tags: %{}
          }}
@@ -9395,10 +9430,13 @@ defmodule Grappa.Session.ServerTest do
     end
 
     # PING/PONG round-trip: the fed line has crossed the socket, the Client
-    # and the Session mailbox by the time the PONG comes back.
+    # and the Session mailbox by the time the PONG comes back. The token is
+    # unique per call — `wait_for_line/3` also matches lines already
+    # received, so a reused token returns on the PREVIOUS flush's PONG.
     defp flush_session(server) do
-      IRCServer.feed(server, "PING :flush\r\n")
-      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+      token = "flush-#{System.unique_integer([:positive])}"
+      IRCServer.feed(server, "PING :#{token}\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :#{token}\r\n"), 1_000)
     end
   end
 

@@ -5201,7 +5201,7 @@ defmodule Grappa.Session.Server do
   # `+r` together, so their pair cannot drift this way.
   @spec maybe_stage_pending_registration(t(), String.t()) :: t()
   defp maybe_stage_pending_registration(%{subject: {:user, _}} = state, password) do
-    if wearing_configured_nick?(state) do
+    if configured_nick?(state, state.nick) do
       stage_pending_registration(state, password)
     else
       Logger.info(
@@ -5224,13 +5224,13 @@ defmodule Grappa.Session.Server do
     %{state | pending_registration_secret: password}
   end
 
-  # #2371 — does the worn nick name the credential's account? REGISTER and
-  # SET PASSWD act on the nick worn when services read the line, so this is
-  # the identity check #978 makes on RESETPASS's explicit target. Folded,
-  # never `==`: `Grappa-Test` and `grappa-test` are one account.
-  @spec wearing_configured_nick?(t()) :: boolean()
-  defp wearing_configured_nick?(state),
-    do: fold_key(state, state.nick) == fold_key(state, configured_nick(state))
+  # #978 / #2371 — does `nick` name the credential's account? RESETPASS
+  # passes its explicit target; REGISTER and SET PASSWD act on the nick worn
+  # when services read the line, so they pass `state.nick`. Folded, never
+  # `==`: `Grappa-Test` and `grappa-test` are one account.
+  @spec configured_nick?(t(), String.t()) :: boolean()
+  defp configured_nick?(state, nick),
+    do: fold_key(state, nick) == fold_key(state, configured_nick(state))
 
   # Single choke point for outbound-line NickServ-secret capture. Every
   # path that puts a line on the wire (send_privmsg, send_raw/`/quote`,
@@ -5393,7 +5393,7 @@ defmodule Grappa.Session.Server do
   # unconditional path (see `maybe_stage_pending_registration/2`).
   @spec commit_set_passwd(t(), String.t()) :: t()
   defp commit_set_passwd(%{subject: {:user, _}} = state, new_password) do
-    if wearing_configured_nick?(state) do
+    if configured_nick?(state, state.nick) do
       rotate_set_passwd(state, new_password)
     else
       Logger.info(
@@ -5454,7 +5454,7 @@ defmodule Grappa.Session.Server do
   # it is the credential we are about to write.
   @spec commit_reset_passwd(t(), String.t(), String.t()) :: t()
   defp commit_reset_passwd(state, target_nick, new_password) do
-    if fold_key(state, target_nick) == fold_key(state, configured_nick(state)) do
+    if configured_nick?(state, target_nick) do
       {result, meta} = rotate_stored_password(state, new_password)
       log_reset_passwd_commit(result, meta)
     else
@@ -7190,12 +7190,18 @@ defmodule Grappa.Session.Server do
 
     # Clear BOTH capture slots: the +r transition is consumed once. The
     # register slot (#129) is cleared here too whether it carried the
-    # committed secret or lost the register-wins tie to `pending_auth`.
+    # committed secret or lost the register-wins tie to `pending_auth` —
+    # except when the #2371 gate refused it: that +r confirmed another
+    # account, and the registration staged under the configured nick is
+    # still waiting for its own.
+    registration_left =
+      if user_registration_refused?(state), do: state.pending_registration_secret, else: nil
+
     apply_effects(rest, %{
       state
       | pending_auth: nil,
         pending_auth_timer: nil,
-        pending_registration_secret: nil
+        pending_registration_secret: registration_left
     })
   end
 
@@ -7340,7 +7346,7 @@ defmodule Grappa.Session.Server do
          } = state
        )
        when is_binary(secret) and is_function(committer, 1) do
-    if wearing_configured_nick?(state) do
+    if configured_nick?(state, state.nick) do
       run_registration_committer(user_id, committer, password)
     else
       Logger.info(
@@ -7360,6 +7366,13 @@ defmodule Grappa.Session.Server do
   defp commit_user_registration(_, _, _) do
     Logger.warning("identity_secret_confirmed effect on user session — ignored")
   end
+
+  @spec user_registration_refused?(t()) :: boolean()
+  defp user_registration_refused?(%{subject: {:user, _}, pending_registration_secret: secret} = state)
+       when is_binary(secret),
+       do: not configured_nick?(state, state.nick)
+
+  defp user_registration_refused?(_), do: false
 
   defp run_registration_committer(user_id, committer, password) do
     case committer.(password) do
