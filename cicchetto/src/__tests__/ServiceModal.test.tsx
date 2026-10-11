@@ -221,6 +221,51 @@ describe("ServiceModal (#290)", () => {
     await waitFor(() => expect(document.activeElement).toBe(second));
   });
 
+  // issue 2375 — the dialog is `aria-modal`, but Tab used to run native
+  // traversal straight out of it: the modal is mounted BEFORE the compose box
+  // in Shell's DOM, so focus walked onto the covered page, and a printable key
+  // landing on a button there was redirected into the compose box BEHIND the
+  // scrim by the irssi auto-focus. Tab now cycles inside the dialog.
+  describe("Tab stays inside the dialog (issue 2375)", () => {
+    const open = async (slug: string): Promise<{ input: HTMLElement; close: HTMLElement }> => {
+      render(() => <ServiceModal />);
+      openServiceModal(slug, "NickServ");
+      const input = await screen.findByTestId("service-modal-input");
+      await waitFor(() => expect(document.activeElement).toBe(input));
+      return { input, close: screen.getByLabelText("close") };
+    };
+
+    it("Tab from the prompt (the last stop) wraps to the first stop, the close button", async () => {
+      const { input, close } = await open("svc-trap-fwd");
+      const ev = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+      input.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(close);
+    });
+
+    it("Shift+Tab from the close button (the first stop) wraps to the prompt", async () => {
+      const { input, close } = await open("svc-trap-back");
+      close.focus();
+      const ev = new KeyboardEvent("keydown", {
+        key: "Tab",
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      close.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(true);
+      expect(document.activeElement).toBe(input);
+    });
+
+    it("Tab between two inner stops is left to the browser", async () => {
+      const { close } = await open("svc-trap-inner");
+      close.focus();
+      const ev = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+      close.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(false);
+    });
+  });
+
   it("closes on the × button", () => {
     const slug = "svc-close";
     openServiceModal(slug, "NickServ");

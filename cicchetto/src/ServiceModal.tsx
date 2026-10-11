@@ -1,6 +1,7 @@
 import { type Component, createEffect, createSignal, For, onMount, Show } from "solid-js";
 import { createBackdropDismiss } from "./lib/backdropDismiss";
 import { casemappingForSlug } from "./lib/casemapping";
+import { trapTabKey } from "./lib/focusTrap";
 import { friendlyError } from "./lib/friendlyError";
 import { nickEquals } from "./lib/nickEquals";
 import { createOverlayLock } from "./lib/overlayScrollLock";
@@ -114,7 +115,6 @@ const ServiceModal: Component = () => {
             onPointerDown={backdropDismiss.onPointerDown}
             onClick={backdropDismiss.onClick}
           >
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: inner dialog onClick only stops backdrop-click propagation; Esc closes via the shared overlay stack */}
             <div
               role="dialog"
               aria-modal="true"
@@ -123,6 +123,7 @@ const ServiceModal: Component = () => {
               data-testid="service-modal"
               data-service={st.service}
               onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => trapTabKey(e, e.currentTarget)}
               tabIndex={-1}
             >
               <header class="service-modal-header">

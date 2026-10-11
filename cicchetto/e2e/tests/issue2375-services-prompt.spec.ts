@@ -4,6 +4,11 @@
 //       straight away, without a tap. Asserted on the OUTCOME the user sees —
 //       keystrokes sent with no click land in the prompt and send — not only
 //       on `document.activeElement`.
+//   (2b) Tab stays inside the `aria-modal` dialog. Native traversal used to
+//       walk out onto the covered page (the modal precedes the compose box in
+//       Shell's DOM), where the irssi auto-focus sent the next printable key
+//       into the compose box BEHIND the scrim. Asserted as the user sees it:
+//       Tab, Shift+Tab, type — the text is in the prompt, the composer empty.
 //   (3) The typed text clears the inset #96 focus ring: the prompt's computed
 //       inline padding is wider than the ring it sits inside
 //       (`outline-offset: -2px` puts the 2px ring on the innermost 2px).
@@ -14,7 +19,7 @@
 // the programmatic focus: WebKit does so only inside a user gesture, and the
 // Playwright WebKit leg is not iOS. That needs a device.
 
-import { composeSend, loginAs, selectChannel } from "../fixtures/cicchettoPage";
+import { composeSend, composeTextarea, loginAs, selectChannel } from "../fixtures/cicchettoPage";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
@@ -58,4 +63,14 @@ test("issue 2375 — bare /ns focuses the `>` prompt, and its text clears the fo
   });
   expect(box.paddingLeft).toBeGreaterThan(box.ring);
   expect(box.paddingRight).toBeGreaterThan(box.ring);
+
+  // (2b) Tab off the last stop wraps to the close button, Shift+Tab back to
+  // the prompt; the keystrokes after that still belong to the prompt.
+  await page.keyboard.press("Tab");
+  await expect(modal.getByLabel("close")).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(prompt).toBeFocused();
+  await page.keyboard.type("INFO");
+  await expect(prompt).toHaveValue("INFO");
+  await expect(composeTextarea(page)).toHaveValue("");
 });
