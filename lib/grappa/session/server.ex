@@ -5191,9 +5191,46 @@ defmodule Grappa.Session.Server do
   # REGISTER overwrites (latest-wins, mailbox FIFO). The unconfirmed secret
   # is never persisted — the DB invariant `password_encrypted set ⟺
   # permanent` stays pristine.
+  #
+  # #2371 — a USER session stages only a REGISTER of the CONFIGURED nick.
+  # REGISTER carries no nick: services register the one worn when the line
+  # arrives, so a REGISTER sent while wearing another nick registers THAT
+  # account, and committing its secret would overwrite the configured nick's
+  # (the credential holds one nick and one password). Visitors are left out
+  # on purpose: `commit_identity/4` binds the password AND the nick held at
+  # `+r` together, so their pair cannot drift this way.
+  @spec maybe_stage_pending_registration(t(), String.t()) :: t()
+  defp maybe_stage_pending_registration(%{subject: {:user, _}} = state, password) do
+    if wearing_configured_nick?(state) do
+      stage_pending_registration(state, password)
+    else
+      Logger.info(
+        "NickServ REGISTER of #{state.nick} is not the configured nick — credential left alone (#2371)",
+        verb: :ns_capture
+      )
+
+      state
+    end
+  end
+
+  defp maybe_stage_pending_registration(state, password),
+    do: stage_pending_registration(state, password)
+
   defp stage_pending_registration(state, password) do
+    Logger.debug("staged pending NickServ registration secret (untimed, #129)",
+      verb: :ns_capture
+    )
+
     %{state | pending_registration_secret: password}
   end
+
+  # #2371 — does the worn nick name the credential's account? REGISTER and
+  # SET PASSWD act on the nick worn when services read the line, so this is
+  # the identity check #978 makes on RESETPASS's explicit target. Folded,
+  # never `==`: `Grappa-Test` and `grappa-test` are one account.
+  @spec wearing_configured_nick?(t()) :: boolean()
+  defp wearing_configured_nick?(state),
+    do: fold_key(state, state.nick) == fold_key(state, configured_nick(state))
 
   # Single choke point for outbound-line NickServ-secret capture. Every
   # path that puts a line on the wire (send_privmsg, send_raw/`/quote`,
@@ -5210,11 +5247,7 @@ defmodule Grappa.Session.Server do
   defp capture_outbound_ns_secret(state, line) do
     case NSInterceptor.intercept(line, state.nick) do
       {:capture, :register, password} ->
-        Logger.debug("staged pending NickServ registration secret (untimed, #129)",
-          verb: :ns_capture
-        )
-
-        stage_pending_registration(state, password)
+        maybe_stage_pending_registration(state, password)
 
       {:capture, :identify, password} ->
         Logger.debug("staged pending NickServ password from outbound identify",
@@ -5353,8 +5386,28 @@ defmodule Grappa.Session.Server do
   # `visitor_committer`), users via the #131 sibling `credential_committer`
   # (`Credentials.commit_password/3`). Returns `state` unchanged — the
   # commit is a side-effect (DB write), there's no capture slot to stage.
+  #
+  # #2371 — a USER session commits only while wearing the configured nick:
+  # `do_set_password` rotates the WORN nick's account, and a rotation of any
+  # other account must not land in this credential. Visitors keep the
+  # unconditional path (see `maybe_stage_pending_registration/2`).
   @spec commit_set_passwd(t(), String.t()) :: t()
-  defp commit_set_passwd(state, new_password) do
+  defp commit_set_passwd(%{subject: {:user, _}} = state, new_password) do
+    if wearing_configured_nick?(state) do
+      rotate_set_passwd(state, new_password)
+    else
+      Logger.info(
+        "SET PASSWD on #{state.nick} is not the configured nick — credential left alone (#2371)",
+        verb: :ns_set_passwd
+      )
+
+      state
+    end
+  end
+
+  defp commit_set_passwd(state, new_password), do: rotate_set_passwd(state, new_password)
+
+  defp rotate_set_passwd(state, new_password) do
     {result, meta} = rotate_stored_password(state, new_password)
     log_set_passwd_commit(result, meta)
     state
@@ -7273,20 +7326,27 @@ defmodule Grappa.Session.Server do
   # is NOT a registration — leave the credential's auth posture untouched
   # (#124's territory), same drop-and-log as before. Multi-clause so the
   # apply_effects +r arm stays flat.
-  defp commit_user_registration(user_id, password, %{
-         pending_registration_secret: secret,
-         deps: %Deps{registration_committer: committer}
-       })
+  #
+  # #2371 — and only when the nick holding the new `+r` is the configured
+  # one. The staging gate already refused a REGISTER of another nick; this
+  # arm refuses a `+r` confirming some OTHER account after a rename, which
+  # says nothing about the registration staged under the configured nick.
+  defp commit_user_registration(
+         user_id,
+         password,
+         %{
+           pending_registration_secret: secret,
+           deps: %Deps{registration_committer: committer}
+         } = state
+       )
        when is_binary(secret) and is_function(committer, 1) do
-    case committer.(password) do
-      {:ok, _} ->
-        Logger.info("user +r observed → registration password committed", user_id: user_id)
-
-      {:error, reason} ->
-        Logger.error("user +r observed but registration commit failed",
-          user_id: user_id,
-          reason: inspect(reason)
-        )
+    if wearing_configured_nick?(state) do
+      run_registration_committer(user_id, committer, password)
+    else
+      Logger.info(
+        "user +r on #{state.nick} is not the configured nick — registration not committed (#2371)",
+        user_id: user_id
+      )
     end
   end
 
@@ -7299,6 +7359,19 @@ defmodule Grappa.Session.Server do
 
   defp commit_user_registration(_, _, _) do
     Logger.warning("identity_secret_confirmed effect on user session — ignored")
+  end
+
+  defp run_registration_committer(user_id, committer, password) do
+    case committer.(password) do
+      {:ok, _} ->
+        Logger.info("user +r observed → registration password committed", user_id: user_id)
+
+      {:error, reason} ->
+        Logger.error("user +r observed but registration commit failed",
+          user_id: user_id,
+          reason: inspect(reason)
+        )
+    end
   end
 
   # #116: on a 473 (+i) / 475 (+k) failure for a channel in the boot

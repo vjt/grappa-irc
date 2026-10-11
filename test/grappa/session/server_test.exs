@@ -9250,6 +9250,158 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
+  # #2371 — REGISTER and SET PASSWD carry no nick: services act on the nick
+  # WORN when the line arrives. A user session holds ONE nick and ONE
+  # password, so a secret for any other nick must never land in it — the
+  # identity check #978 makes on RESETPASS's explicit target.
+  describe "#2371 — NickServ secrets for a nick other than the configured one" do
+    test "user session: REGISTER while wearing another nick is not staged and +r commits nothing" do
+      {_, pid, user, network} = start_wearing_nick("grappa-alt", %{})
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg(
+                 {:user, user.id},
+                 network.id,
+                 "NickServ",
+                 "REGISTER altpass me@example.com"
+               )
+
+      assert is_nil(SessionStateHelpers.pending_registration_secret(SessionStateHelpers.fetch(pid)))
+
+      own_plus_r(pid)
+
+      reloaded = Credentials.get_credential!(user, network)
+      assert reloaded.auth_method == :none
+      assert is_nil(reloaded.password_encrypted)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "user session: REGISTER staged on the configured nick is not committed by +r on another nick" do
+      {server, pid, user, network} = start_wearing_nick("grappa-test", %{})
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg(
+                 {:user, user.id},
+                 network.id,
+                 "NickServ",
+                 "REGISTER regpass me@example.com"
+               )
+
+      assert SessionStateHelpers.pending_registration_secret(SessionStateHelpers.fetch(pid)) == "regpass"
+
+      rename_own_nick(server, "grappa-test", "grappa-alt")
+      own_plus_r(pid)
+
+      reloaded = Credentials.get_credential!(user, network)
+      assert reloaded.auth_method == :none
+      assert is_nil(reloaded.password_encrypted)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "user session: REGISTER on a case variant of the configured nick commits — the compare folds" do
+      {_, pid, user, network} = start_wearing_nick("GRAPPA-TEST", %{})
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg(
+                 {:user, user.id},
+                 network.id,
+                 "NickServ",
+                 "REGISTER regpass me@example.com"
+               )
+
+      own_plus_r(pid)
+
+      reloaded = Credentials.get_credential!(user, network)
+      assert reloaded.password_encrypted == "regpass"
+      assert reloaded.auth_method == :nickserv_identify
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "user session: SET PASSWD while wearing another nick leaves the credential alone" do
+      {_, pid, user, network} =
+        start_wearing_nick("grappa-alt", %{auth_method: :nickserv_identify, password: "oldpass"})
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg(
+                 {:user, user.id},
+                 network.id,
+                 "NickServ",
+                 "SET PASSWD altold altnew"
+               )
+
+      _ = SessionStateHelpers.fetch(pid)
+      assert Credentials.get_credential!(user, network).password_encrypted == "oldpass"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "user session: SET PASSWD on a case variant of the configured nick commits" do
+      {_, pid, user, network} =
+        start_wearing_nick("GRAPPA-TEST", %{auth_method: :nickserv_identify, password: "oldpass"})
+
+      assert {:ok, :no_persist} =
+               Session.send_privmsg(
+                 {:user, user.id},
+                 network.id,
+                 "NickServ",
+                 "SET PASSWD oldpass newpass"
+               )
+
+      _ = SessionStateHelpers.fetch(pid)
+      assert Credentials.get_credential!(user, network).password_encrypted == "newpass"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # Starts a user session on a `grappa-test` credential and has the ircd
+    # rename it to `worn` after registration, the shape of a user who
+    # switched nick by hand.
+    defp start_wearing_nick(worn, cred_attrs) do
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
+      {user, network, _} = setup_user_and_network(port, cred_attrs)
+      pid = start_session_for(user, network)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      if worn != "grappa-test", do: rename_own_nick(server, "grappa-test", worn)
+      assert SessionStateHelpers.nick(SessionStateHelpers.fetch(pid)) == worn
+
+      {server, pid, user, network}
+    end
+
+    defp rename_own_nick(server, from, to) do
+      IRCServer.feed(server, ":#{from}!u@h NICK :#{to}\r\n")
+      flush_session(server)
+    end
+
+    # Services set +r on whatever nick the session wears now.
+    defp own_plus_r(pid) do
+      send(
+        pid,
+        {:irc,
+         %Message{
+           command: :mode,
+           params: [SessionStateHelpers.nick(SessionStateHelpers.fetch(pid)), "+r"],
+           prefix: {:server, "irc.example.test"},
+           tags: %{}
+         }}
+      )
+
+      _ = SessionStateHelpers.fetch(pid)
+    end
+
+    # PING/PONG round-trip: the fed line has crossed the socket, the Client
+    # and the Session mailbox by the time the PONG comes back.
+    defp flush_session(server) do
+      IRCServer.feed(server, "PING :flush\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :flush\r\n"), 1_000)
+    end
+  end
+
   describe "001 RPL_WELCOME stages pending_auth for :nickserv_identify visitors (Task 16)" do
     test "registered visitor: 001 stages pending_auth + clears one-shot field" do
       nick = "v_t16_#{System.unique_integer([:positive])}"
