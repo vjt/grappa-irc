@@ -11972,6 +11972,10 @@ html.is-ios27-band .shell {
   /* issue 2375 — the focus ring below is inset (it covers the innermost 2px),
      so a zero inline padding put the caret and first glyph ON it. */
   padding: 0.25rem 0.5rem;
+  /* issue 2375 item 4 — a `<textarea rows=1>` now (the composer's shape):
+     keep it one line tall, never user-resizable, sized by the line box. */
+  resize: none;
+  line-height: var(--line-height);
 }
 
 /* #96 — this input is the one focus surface in the app with NO cue at all:

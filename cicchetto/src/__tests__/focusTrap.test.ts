@@ -42,6 +42,20 @@ describe("trapTabKey (issue 2375)", () => {
     expect(document.activeElement).toBe(b);
   });
 
+  it("leaves a Tab an inner surface already prevented alone (the services prompt completes on it)", () => {
+    const dialog = document.createElement("div");
+    const first = document.createElement("button");
+    const last = document.createElement("textarea");
+    dialog.append(first, last);
+    document.body.append(dialog);
+    last.focus();
+    const ev = tab(false);
+    ev.preventDefault();
+    trapTabKey(ev, dialog);
+    // Off the last stop an unclaimed Tab would wrap to `first`.
+    expect(document.activeElement).toBe(last);
+  });
+
   it("ignores every key but Tab", () => {
     const dialog = document.createElement("div");
     const ev = new KeyboardEvent("keydown", { key: "Enter", cancelable: true });

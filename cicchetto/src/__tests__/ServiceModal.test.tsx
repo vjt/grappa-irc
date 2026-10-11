@@ -2,7 +2,9 @@ import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage } from "../lib/api";
 import { channelKey } from "../lib/channelKey";
+import { seedFromTest } from "../lib/members";
 import { appendToScrollback } from "../lib/scrollback";
+import { setSelectedChannel } from "../lib/selection";
 import { closeServiceModal, openServiceModal } from "../lib/serviceModal";
 import { SERVER_WINDOW_NAME } from "../lib/windowKinds";
 import ServiceModal from "../ServiceModal";
@@ -235,12 +237,15 @@ describe("ServiceModal (#290)", () => {
       return { input, close: screen.getByLabelText("close") };
     };
 
-    it("Tab from the prompt (the last stop) wraps to the first stop, the close button", async () => {
-      const { input, close } = await open("svc-trap-fwd");
+    // The prompt is the completion door (below), so Tab there is consumed
+    // like at the compose box — even with nothing to complete — and focus
+    // never reaches the edge the trap would have to wrap.
+    it("Tab on the prompt is consumed and focus stays in the prompt, even with nothing to complete", async () => {
+      const { input } = await open("svc-trap-fwd");
       const ev = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
       input.dispatchEvent(ev);
       expect(ev.defaultPrevented).toBe(true);
-      expect(document.activeElement).toBe(close);
+      expect(document.activeElement).toBe(input);
     });
 
     it("Shift+Tab from the close button (the first stop) wraps to the prompt", async () => {
@@ -263,6 +268,141 @@ describe("ServiceModal (#290)", () => {
       const ev = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
       close.dispatchEvent(ev);
       expect(ev.defaultPrevented).toBe(false);
+    });
+  });
+
+  // issue 2375 item 4 (vjt's ruling, NOT verified on a device): iOS offered
+  // Contacts addresses in the QuickType bar over the old `<input type=text>`,
+  // and the composer — a `<textarea rows=1>` — never shows it. The prompt
+  // takes the composer's shape; whether that silences the AutoFill is for
+  // vjt's iPhone on staging to say. A textarea must still behave like the old
+  // single-line field: Enter sends, and no line break ever reaches the draft.
+  describe("the prompt is a one-row textarea that still behaves single-line (issue 2375)", () => {
+    const open = async (slug: string): Promise<HTMLTextAreaElement> => {
+      render(() => <ServiceModal />);
+      openServiceModal(slug, "NickServ");
+      const el = await screen.findByTestId("service-modal-input");
+      return el as HTMLTextAreaElement;
+    };
+
+    it("renders as <textarea rows=1>", async () => {
+      const el = await open("svc-ta-shape");
+      expect(el.tagName).toBe("TEXTAREA");
+      expect(el.getAttribute("rows")).toBe("1");
+    });
+
+    it("Enter sends and is prevented, so no line break is inserted", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const el = await open("svc-ta-enter");
+      fireEvent.input(el, { target: { value: "HELP" } });
+      const ev = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+      el.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(true);
+      expect(pipeline.sendBodyLines).toHaveBeenCalledWith(
+        "svc-ta-enter",
+        "NickServ",
+        "HELP",
+        false,
+      );
+    });
+
+    it("Shift+Enter sends too — the prompt has no second line to open", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const el = await open("svc-ta-shift-enter");
+      fireEvent.input(el, { target: { value: "HELP" } });
+      const ev = new KeyboardEvent("keydown", {
+        key: "Enter",
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      el.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(true);
+      expect(pipeline.sendBodyLines).toHaveBeenCalledTimes(1);
+    });
+
+    it("an Enter that commits an IME composition does not send", async () => {
+      const pipeline = await import("../lib/sendPipeline");
+      const el = await open("svc-ta-ime");
+      fireEvent.input(el, { target: { value: "にほん" } });
+      el.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          isComposing: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      expect(pipeline.sendBodyLines).not.toHaveBeenCalled();
+    });
+
+    it("a pasted line break becomes a space, so one Enter sends one line", async () => {
+      const el = await open("svc-ta-paste");
+      fireEvent.input(el, { target: { value: "INFO\nvjt\r\nall" } });
+      expect(el.value).toBe("INFO vjt all");
+    });
+  });
+
+  // issue 2375 item 2 (vjt's ruling: B) — Tab / Shift+Tab complete nicks and
+  // channels in the prompt through the SAME engine as the compose box. The
+  // candidates are the members of the window selected behind the modal plus
+  // the channels joined on the modal's network; a line-start nick takes no
+  // `: ` (the line opens with a command, `INFO vjt`).
+  describe("Tab completes nicks and channels in the prompt (issue 2375)", () => {
+    const SLUG = "svc-complete";
+    const CHAN = "#grappa";
+
+    const open = async (): Promise<HTMLTextAreaElement> => {
+      seedFromTest(channelKey(SLUG, CHAN), [
+        { nick: "vjt", modes: [] },
+        { nick: "vjtbot", modes: [] },
+      ]);
+      setSelectedChannel({ networkSlug: SLUG, channelName: CHAN, kind: "channel" });
+      render(() => <ServiceModal />);
+      openServiceModal(SLUG, "NickServ");
+      const el = (await screen.findByTestId("service-modal-input")) as HTMLTextAreaElement;
+      await waitFor(() => expect(document.activeElement).toBe(el));
+      return el;
+    };
+
+    const tab = (el: HTMLTextAreaElement, shiftKey: boolean): void => {
+      el.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", shiftKey, bubbles: true, cancelable: true }),
+      );
+    };
+
+    const typeAtEnd = (el: HTMLTextAreaElement, value: string): void => {
+      fireEvent.input(el, { target: { value } });
+      el.setSelectionRange(value.length, value.length);
+    };
+
+    afterEach(() => setSelectedChannel(null));
+
+    it("completes a member of the selected window, with a space and no addressee colon", async () => {
+      const el = await open();
+      typeAtEnd(el, "INFO vj");
+      tab(el, false);
+      await waitFor(() => expect(el.value).toBe("INFO vjt "));
+    });
+
+    it("cycles forward and back like the compose box", async () => {
+      const el = await open();
+      typeAtEnd(el, "vj");
+      tab(el, false);
+      await waitFor(() => expect(el.value).toBe("vjt "));
+      tab(el, false);
+      await waitFor(() => expect(el.value).toBe("vjtbot "));
+      tab(el, true);
+      await waitFor(() => expect(el.value).toBe("vjt "));
+    });
+
+    it("leaves the compose draft of the selected window untouched", async () => {
+      const compose = await import("../lib/compose");
+      const el = await open();
+      typeAtEnd(el, "INFO vj");
+      tab(el, false);
+      await waitFor(() => expect(el.value).toBe("INFO vjt "));
+      expect(compose.getDraft(channelKey(SLUG, CHAN))).toBe("");
     });
   });
 

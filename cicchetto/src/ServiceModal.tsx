@@ -1,12 +1,17 @@
 import { type Component, createEffect, createSignal, For, onMount, Show } from "solid-js";
 import { createBackdropDismiss } from "./lib/backdropDismiss";
 import { casemappingForSlug } from "./lib/casemapping";
+import { type ChannelKey, channelKey } from "./lib/channelKey";
 import { trapTabKey } from "./lib/focusTrap";
 import { friendlyError } from "./lib/friendlyError";
+import { isComposingKeystroke } from "./lib/imeComposition";
 import { nickEquals } from "./lib/nickEquals";
 import { createOverlayLock } from "./lib/overlayScrollLock";
+import { selectedChannel } from "./lib/selection";
 import { sendBodyLines } from "./lib/sendPipeline";
 import { closeServiceModal, serviceMirrorRows, serviceModalState } from "./lib/serviceModal";
+import { type TabCycle, tabCompleteStep } from "./lib/tabCompletion";
+import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import { MircBody } from "./MircText";
 
 // #290 — dedicated services console modal. Opened ONLY by a bare services
@@ -104,8 +109,41 @@ const ServiceModal: Component = () => {
         // compose Enter / send tap that opened us still counts is not known.
         // If it does not, the prompt is focused with the keyboard down — the
         // same one tap as before this change, never more.
-        let inputRef: HTMLInputElement | undefined;
+        let inputRef: HTMLTextAreaElement | undefined;
         onMount(() => inputRef?.focus({ preventScroll: true }));
+
+        // issue 2375 item 2 — the prompt is the second door onto the ONE
+        // completion engine (lib/tabCompletion; the compose box is the first).
+        // Candidates come from the KEY: the window selected behind the modal
+        // when it is on this network (its members, plus the network's joined
+        // channels), else `$server`, which has no members and so offers the
+        // channels alone. Read at Tab time, not captured at open, so the set
+        // is the one the user is looking at. The cycle lives here, per open
+        // like the draft, and typing drops it — the compose door's rule.
+        let tabCycle: TabCycle | null = null;
+        const completionKey = (): ChannelKey => {
+          const sel = selectedChannel();
+          const target =
+            sel !== null && sel.networkSlug === st.networkSlug
+              ? sel.channelName
+              : SERVER_WINDOW_NAME;
+          return channelKey(st.networkSlug, target);
+        };
+        const complete = (ta: HTMLTextAreaElement, forward: boolean): void => {
+          const step = tabCompleteStep({
+            key: completionKey(),
+            input: draft(),
+            cursor: ta.selectionStart,
+            forward,
+            cycle: tabCycle,
+            // The line opens with a command (`INFO vjt`), never an addressee.
+            addressee: false,
+          });
+          if (step === null) return;
+          tabCycle = step.cycle;
+          setDraft(step.newInput);
+          queueMicrotask(() => ta.setSelectionRange(step.newCursor, step.newCursor));
+        };
 
         return (
           // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop close-on-outside; Esc via the shared overlay stack (keybindings → runTopmostOverlayEscape)
@@ -177,11 +215,18 @@ const ServiceModal: Component = () => {
                 <span class="service-modal-prompt-sigil" aria-hidden="true">
                   &gt;
                 </span>
-                <input
+                {/* issue 2375 item 4 — a one-row textarea, the composer's own
+                    shape, because iOS offered Contacts addresses in the
+                    QuickType bar over the `<input type=text>` this replaced
+                    and the composer never shows them. vjt's ruling, NOT
+                    verified on a device: if the AutoFill survives, the shape
+                    was not the trigger. A textarea keeps line breaks, so the
+                    two handlers below hold the old single-line contract. */}
+                <textarea
                   ref={inputRef}
+                  rows={1}
                   class="service-modal-prompt-input"
                   data-testid="service-modal-input"
-                  type="text"
                   autocomplete="off"
                   autocapitalize="none"
                   autocorrect="off"
@@ -191,12 +236,29 @@ const ServiceModal: Component = () => {
                   value={draft()}
                   onInput={(e) => {
                     setSendError(null);
-                    setDraft(e.currentTarget.value);
+                    tabCycle = null;
+                    // A pasted line break would ride into sendBodyLines as a
+                    // SECOND command to the service; it becomes a space, as
+                    // the old single-line field effectively did.
+                    const el = e.currentTarget;
+                    const flat = el.value.replace(/\r\n|\r|\n/g, " ");
+                    if (flat !== el.value) el.value = flat;
+                    setDraft(flat);
                   }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
+                      // issue 2041 — the Enter that commits an IME candidate
+                      // is not a send.
+                      if (isComposingKeystroke(e)) return;
+                      // Every Enter sends, Shift+Enter included: there is no
+                      // second line to open.
                       e.preventDefault();
                       send();
+                    } else if (e.key === "Tab") {
+                      // Consumed even with nothing to complete, as at the
+                      // compose box; lib/focusTrap leaves a prevented Tab alone.
+                      e.preventDefault();
+                      complete(e.currentTarget, !e.shiftKey);
                     }
                   }}
                 />

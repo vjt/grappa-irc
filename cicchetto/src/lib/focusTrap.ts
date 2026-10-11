@@ -16,9 +16,11 @@
 const TABBABLE =
   'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-/** Bind as the dialog's `onKeyDown`; ignores every key but Tab. */
+/** Bind as the dialog's `onKeyDown`; ignores every key but an unclaimed Tab. */
 export function trapTabKey(e: KeyboardEvent, dialog: HTMLElement): void {
-  if (e.key !== "Tab") return;
+  // A Tab an inner surface already owned (the services prompt completes on
+  // it) is not traversal, so there is nothing to keep in.
+  if (e.key !== "Tab" || e.defaultPrevented) return;
   const stops = Array.from(dialog.querySelectorAll<HTMLElement>(TABBABLE));
   const first = stops[0];
   const last = stops[stops.length - 1];
