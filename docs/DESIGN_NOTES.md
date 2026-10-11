@@ -1320,3 +1320,66 @@ nothing (it still reveals a hidden pane). The reported at-the-tail shape
 webkit, 0 of 2 chromium): read from the code, a near divider sets
 `followMode` from a distance under the threshold, i.e. on, so the sent row
 is still followed. The case is kept as a guard.
+<!-- entry #2375 -->
+
+---
+
+## 2026-10-11 — issue 2375: the services prompt — focus, completion, focus trap, textarea
+
+Four defects in the services console prompt (`ServiceModal.tsx`), one
+issue, reported by vjt on the iOS PWA.
+
+**Focus on open.** The prompt had no ref and no focus call. It is focused
+in `onMount` inside the keyed `Show`, so a second service replacing the
+first re-focuses too. **Unmeasured on iOS:** WebKit raises the on-screen
+keyboard for a programmatic focus only inside a user gesture, and whether
+the compose Enter / send tap that opened the modal still counts is not
+known. The worst case is the old one tap.
+
+**One completion engine, two doors (vjt's ruling, item 2 = B).** The
+matcher lived inside `compose.ts` as a closure over the compose cycle and
+wrote the compose draft itself, so only the compose box could reach it.
+`lib/tabCompletion.tabCompleteStep` is the same matcher moved intact and
+made pure with respect to the draft: the cycle goes in as an argument and
+comes back with the step, and each door writes the result where its own
+draft lives. `compose.tabComplete` stays as the compose door (the #737
+drain refusal, its cycle, `writeState`) with its old signature, so the
+existing completion tests did not change. The 20% that differs between
+the doors is one flag, `addressee`: a line-start nick gets `: ` in the
+composer and a plain space in the services prompt, whose line opens with
+a command (`INFO vjt`). The modal's candidates come from a KEY like the
+composer's: the window selected behind the modal when it is on the
+modal's network, else `$server` (no members, so channels only), read at
+Tab time. `compose.sigilsFor` moved to `casemapping.ts` as
+`chantypesForSlug`, the module that already owns the slug → id hop.
+**Not done: the swipe-right door.** On a phone the composer completes on
+swipe-right (#2356); the modal has Tab only, so on an iPhone without a
+hardware keyboard the completion is still unreachable there. The swipe
+recogniser is ~120 lines of state inside `ComposeBox`, and sharing it is
+a separate decision.
+
+**Focus trap.** `aria-modal` informs assistive tech and does not stop the
+browser's Tab traversal. The modal is mounted BEFORE the compose box in
+Shell's DOM, so Tab walked onto the covered page, and a printable key that
+landed on a button there was redirected into the compose box behind the
+scrim by the irssi auto-focus (`lib/keybindings`). `lib/focusTrap.trapTabKey`
+wraps only the two edges and leaves a Tab an inner surface already
+prevented alone, which is the prompt's case now that it completes. **Only
+this modal is enrolled.** The other modals share the defect; enrolling them
+is a follow-up, not a rider on this issue.
+
+**`<textarea rows=1>` instead of `<input type=text>` (vjt's ruling, NOT
+verified on a device).** iOS offered Contacts addresses in the QuickType
+bar over the input; the composer, a `<textarea rows=1>`, never shows them.
+The cause is a HYPOTHESIS: Safari's AutoFill classifier lives in closed
+Safari/iOS code, not in open-source WebKit, and the Playwright WebKit leg
+does not run it, so nothing here can prove the textarea silences it. vjt
+checks on an iPhone from staging; if the AutoFill survives, the shape was
+not the trigger. A textarea keeps line breaks, so the prompt keeps the old
+single-line contract by hand: every Enter sends (Shift+Enter too), an
+IME-committing Enter does not, and a pasted line break becomes a space so
+it cannot ride into `sendBodyLines` as a second command to the service.
+
+**Padding.** `padding: 0.25rem 0` against an inset #96 ring
+(`outline-offset: -2px`) put the caret and the first glyph on the ring;
+the prompt now has `0.5rem` inline.
