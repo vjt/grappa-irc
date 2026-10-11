@@ -90,6 +90,8 @@ test("issue 2375 — bare /ns focuses the `>` prompt, which completes, keeps foc
   // outline reaches inside the border edge. The outline is drawn outward from
   // the offset line, so a negative offset is exactly that reach; a ring that
   // stops being inset intrudes 0 and the bar becomes "any padding".
+  // Read while focused: the ring (and so its offset) is the focused state's.
+  await expect(prompt).toBeFocused();
   const box = await prompt.evaluate((el) => {
     const cs = getComputedStyle(el);
     return {

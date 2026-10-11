@@ -122,7 +122,9 @@ function caretLineTop(el: HTMLTextAreaElement, caret: number, cs: CSSStyleDeclar
 //
 // Three doors move the compose caret to an offset that is not the end: paste
 // (`pasteRoute.insertPastedText`) and the two tab-complete paths (`Shell`'s
-// keybinding, `ComposeBox`'s swipe gesture). None of them could reuse
+// keybinding, `ComposeBox`'s swipe gesture). Since issue 2375 the services
+// prompt's tab-complete is a fourth caller — not a compose caret, but the same
+// one-row wrapping textarea and the same question. None of them could reuse
 // `placeCaretAtEndInView`: `scrollTop = scrollHeight` is right only for a
 // caret on the LAST line, and on a caret near the top it scrolls past it —
 // the wrong fix that looks like the right one, which is why #1105 scoped

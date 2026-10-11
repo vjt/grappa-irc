@@ -87,17 +87,19 @@ describe("tabCompleteStep (issue 2375)", () => {
     });
     expect(advanced?.newInput).toBe("vjtbot ");
 
-    // …while the same text with NO cycle (another door, which never stepped)
-    // is a fresh completion of the word at the caret, not a continuation.
-    const fresh = tabCompleteStep({
+    // …while the SAME completed text handed NO cycle (another door, which
+    // never stepped) is not a continuation: the caret sits after a space, so
+    // there is no word to complete. An engine that kept its own anchor would
+    // answer `vjtbot ` here.
+    const otherDoor = tabCompleteStep({
       key: k,
-      input: "vj",
-      cursor: 2,
+      input: first?.newInput ?? "",
+      cursor: first?.newCursor ?? 0,
       forward: true,
       cycle: null,
       addressee: false,
     });
-    expect(fresh?.newInput).toBe("vjt ");
+    expect(otherDoor).toBeNull();
   });
 
   it("returns null with nothing to complete", () => {

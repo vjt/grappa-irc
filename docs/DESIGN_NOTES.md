@@ -1366,7 +1366,16 @@ scrim by the irssi auto-focus (`lib/keybindings`). `lib/focusTrap.trapTabKey`
 wraps only the two edges and leaves a Tab an inner surface already
 prevented alone, which is the prompt's case now that it completes. **Only
 this modal is enrolled.** The other modals share the defect; enrolling them
-is a follow-up, not a rider on this issue.
+is a follow-up, not a rider on this issue. The trap is not the cause,
+though, and the review said so: the auto-focus never asked whether the
+compose box was covered, so a click on the modal's message area (focusing
+the dialog itself) or on a link, then a letter, still typed behind the
+scrim. It now asks `overlayCount() === 0`, the question `lib/globalPaste`
+already asks of a paste, and that fixes it for every covering modal.
+Accepted, as at the composer: Tab and Shift+Tab are always consumed by the
+prompt, so the close button is out of keyboard reach from there (Esc
+closes), and a Tab during an IME composition still completes (Enter is
+guarded, Tab is not, at both doors).
 
 **`<textarea rows=1>` instead of `<input type=text>` (vjt's ruling, NOT
 verified on a device).** iOS offered Contacts addresses in the QuickType

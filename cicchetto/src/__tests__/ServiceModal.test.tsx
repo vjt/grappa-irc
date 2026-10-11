@@ -337,9 +337,27 @@ describe("ServiceModal (#290)", () => {
     });
 
     it("a pasted line break becomes a space, so one Enter sends one line", async () => {
+      const pipeline = await import("../lib/sendPipeline");
       const el = await open("svc-ta-paste");
       fireEvent.input(el, { target: { value: "INFO\nvjt\r\nall" } });
       expect(el.value).toBe("INFO vjt all");
+      fireEvent.keyDown(el, { key: "Enter" });
+      expect(pipeline.sendBodyLines).toHaveBeenCalledWith(
+        "svc-ta-paste",
+        "NickServ",
+        "INFO vjt all",
+        false,
+      );
+    });
+
+    // The flattened value can EQUAL the draft already held (a line break
+    // pasted over a selected space): the draft signal does not change, so the
+    // value binding writes nothing and the field must be corrected by hand.
+    it("a line break that flattens back to the current draft is still removed from the field", async () => {
+      const el = await open("svc-ta-paste-same");
+      fireEvent.input(el, { target: { value: "INFO vjt" } });
+      fireEvent.input(el, { target: { value: "INFO\nvjt" } });
+      expect(el.value).toBe("INFO vjt");
     });
   });
 

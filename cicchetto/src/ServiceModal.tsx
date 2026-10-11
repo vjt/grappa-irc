@@ -2,6 +2,7 @@ import { type Component, createEffect, createSignal, For, onMount, Show } from "
 import { createBackdropDismiss } from "./lib/backdropDismiss";
 import { casemappingForSlug } from "./lib/casemapping";
 import { type ChannelKey, channelKey } from "./lib/channelKey";
+import { placeCaretInView } from "./lib/composeCaret";
 import { trapTabKey } from "./lib/focusTrap";
 import { friendlyError } from "./lib/friendlyError";
 import { isComposingKeystroke } from "./lib/imeComposition";
@@ -142,7 +143,9 @@ const ServiceModal: Component = () => {
           if (step === null) return;
           tabCycle = step.cycle;
           setDraft(step.newInput);
-          queueMicrotask(() => ta.setSelectionRange(step.newCursor, step.newCursor));
+          // #1113 — the compose doors' caret placement: the completion can land
+          // on a wrapped line the one-row box is not showing.
+          queueMicrotask(() => placeCaretInView(ta, step.newCursor));
         };
 
         return (
