@@ -1045,11 +1045,11 @@ defmodule Grappa.Networks do
   """
   @spec connect(Credential.t()) :: {:ok, Credential.t()}
   def connect(%Credential{connection_state: state} = cred) when state in [:connected, :failing] do
-    {:ok, preload_subject_and_network(cred)}
+    {:ok, preload_credential_assocs(cred)}
   end
 
   def connect(%Credential{connection_state: from} = cred) when from in [:parked, :failed] do
-    cred = preload_subject_and_network(cred)
+    cred = preload_credential_assocs(cred)
     updated = transition!(cred, :connected, nil)
     broadcast_state_change(updated, from, :connected, nil)
     {:ok, updated}
@@ -1091,7 +1091,7 @@ defmodule Grappa.Networks do
           {:ok, Credential.t()} | {:error, :not_connected}
   def disconnect(%Credential{connection_state: from} = cred, reason)
       when from in [:connected, :failing] and is_binary(reason) do
-    cred = preload_subject_and_network(cred)
+    cred = preload_credential_assocs(cred)
     subject = subject_of(cred)
 
     _ = best_effort_quit(subject, cred.network_id, reason)
@@ -1166,7 +1166,7 @@ defmodule Grappa.Networks do
   @spec detach(Credential.t(), String.t()) ::
           {:ok, Credential.t()} | {:error, Ecto.Changeset.t() | :db_unavailable}
   def detach(%Credential{} = cred, reason) when is_binary(reason) do
-    cred = preload_subject_and_network(cred)
+    cred = preload_credential_assocs(cred)
 
     with {:ok, detached} <- cred |> park_for_detach(reason) |> Credentials.mark_detached() do
       broadcast_network_detached(detached)
@@ -1245,7 +1245,7 @@ defmodule Grappa.Networks do
   """
   @spec broadcast_network_attached(Credential.t()) :: :ok
   def broadcast_network_attached(%Credential{} = cred) do
-    cred = preload_subject_and_network(cred)
+    cred = preload_credential_assocs(cred)
     topic = Topic.user(subject_label_of(cred))
     :ok = Grappa.PubSub.broadcast_event(topic, Wire.network_attached_event(cred))
   end
@@ -1276,7 +1276,7 @@ defmodule Grappa.Networks do
 
   def mark_failed(%Credential{connection_state: from} = cred, reason)
       when from in [:connected, :failing] and is_binary(reason) do
-    cred = preload_subject_and_network(cred)
+    cred = preload_credential_assocs(cred)
     subject = subject_of(cred)
 
     :ok = Session.stop_session(subject, cred.network_id, reason)
@@ -1407,7 +1407,7 @@ defmodule Grappa.Networks do
 
   def mark_failing(%Credential{connection_state: :connected} = cred, reason)
       when is_binary(reason) do
-    cred = preload_subject_and_network(cred)
+    cred = preload_credential_assocs(cred)
     updated = transition!(cred, :failing, reason)
     broadcast_state_change(updated, :connected, :failing, reason)
     {:ok, updated}
@@ -1442,7 +1442,7 @@ defmodule Grappa.Networks do
   def mark_registered(%Credential{connection_state: :connected} = cred), do: {:ok, cred}
 
   def mark_registered(%Credential{connection_state: :failing} = cred) do
-    cred = preload_subject_and_network(cred)
+    cred = preload_credential_assocs(cred)
     updated = transition!(cred, :connected, nil)
     broadcast_state_change(updated, :failing, :connected, nil)
     {:ok, updated}
@@ -1630,12 +1630,19 @@ defmodule Grappa.Networks do
   # Preload the network (both subjects) + the User struct (user
   # credentials only — a visitor credential needs no struct load; its
   # topic label + subject tuple come from the `visitor_id` FK directly,
-  # keeping `Networks` off a `Grappa.Visitors` dep, the dirty_xref).
-  @spec preload_subject_and_network(Credential.t()) :: Credential.t()
-  defp preload_subject_and_network(%Credential{} = cred) do
+  # keeping `Networks` off a `Grappa.Visitors` dep, the dirty_xref) +
+  # `:avatar_upload`. The last one is for the caller, not for us:
+  # `connect/1` / `disconnect/2` return the credential `PATCH
+  # /networks/:slug` renders through `Wire.credential_to_json/1`, whose
+  # `avatar_url/1` has no clause for a set `avatar_upload_id` with the
+  # association unloaded (issue 2381). `Repo.preload/2` skips an
+  # already-loaded association and issues no query for a nil FK.
+  @spec preload_credential_assocs(Credential.t()) :: Credential.t()
+  defp preload_credential_assocs(%Credential{} = cred) do
     cred
     |> maybe_preload_user()
     |> maybe_preload_network()
+    |> Repo.preload(:avatar_upload)
   end
 
   defp maybe_preload_user(%Credential{user: %User{}} = cred), do: cred

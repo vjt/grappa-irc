@@ -314,6 +314,35 @@ defmodule GrappaWeb.NetworksControllerTest do
       assert cred.connection_state_reason == "manual"
     end
 
+    # issue 2381 — `Networks.disconnect/2` returned a credential without
+    # `:avatar_upload` loaded, so a credential WITH an avatar fell through
+    # both `Wire.avatar_url/1` clauses and the 200 became a 500 after the
+    # park had already happened.
+    test "parking a credential that has an avatar renders 200 with its avatar_url",
+         %{conn: conn} do
+      vjt = user_fixture(name: "vjt-park-2381-#{u()}")
+      session = session_fixture(vjt)
+      slug = "net-park-2381-#{u()}"
+      {network, _} = network_with_server(port: 9_999, slug: slug)
+      cred = credential_fixture(vjt, network)
+
+      {:ok, with_avatar} =
+        Credentials.set_avatar(cred, Grappa.UploadFixtures.bytes(:gps_png), "image/png")
+
+      expected_url = Grappa.Networks.Wire.avatar_url(with_avatar)
+      assert is_binary(expected_url)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/networks/#{slug}", %{connection_state: "parked", reason: "manual"})
+
+      body = json_response(conn, 200)
+      assert body["connection_state"] == "parked"
+      assert body["avatar_url"] == expected_url
+    end
+
     # -------------------------------------------------------------------
     # issue 2150 — the remembered leave message on the park door
     # -------------------------------------------------------------------
@@ -555,6 +584,37 @@ defmodule GrappaWeb.NetworksControllerTest do
       assert updated.connection_state == :connected
 
       # Tear down the spawned session (it was connected to the fake IRC server)
+      :ok = Grappa.Session.stop_session({:user, vjt.id}, network.id)
+    end
+
+    # issue 2381 — the connect half of the same render: `Networks.connect/1`
+    # returned the credential without `:avatar_upload` loaded.
+    test "connecting a credential that has an avatar renders 200 with its avatar_url",
+         %{conn: conn} do
+      vjt = user_fixture(name: "vjt-connect-2381-#{u()}")
+      session = session_fixture(vjt)
+      slug = "net-connect-2381-#{u()}"
+      {_, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {network, _} = network_with_server(port: port, slug: slug)
+      cred = credential_fixture(vjt, network)
+      seed_state(cred, :parked, "user-parked")
+
+      {:ok, with_avatar} =
+        Credentials.set_avatar(cred, Grappa.UploadFixtures.bytes(:gps_png), "image/png")
+
+      expected_url = Grappa.Networks.Wire.avatar_url(with_avatar)
+      assert is_binary(expected_url)
+
+      conn =
+        conn
+        |> put_bearer(session.id)
+        |> put_req_header("content-type", "application/json")
+        |> patch("/networks/#{slug}", %{connection_state: "connected"})
+
+      body = json_response(conn, 200)
+      assert body["connection_state"] == "connected"
+      assert body["avatar_url"] == expected_url
+
       :ok = Grappa.Session.stop_session({:user, vjt.id}, network.id)
     end
 
