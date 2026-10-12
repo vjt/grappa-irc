@@ -1523,3 +1523,93 @@ WebKit honours `interactive-widget=resizes-content` — recorded in the August
 entry as *"not believed to support — not verified against a current WebKit
 here"*, and falsifiable for free by watching whether `winH` moves when the
 keyboard opens.
+<!-- entry #2382 -->
+
+---
+
+## 2026-10-12 — #2382: the tail-follow settles on the true tail, not a carried extent
+
+**Report.** vjt, prod 1.5.13, iOS: sent with the unread marker on screen, and
+the sent row ended up under the compose. Intermittent; a follow-up send did not
+show it.
+
+**Not the #2377 branch.** #2377's leg (a queued divider jump) is gone: the
+send turns the latch off synchronously and `tail-follow` wins. This is a
+second mechanism in the tail-follow poll, reached through the OTHER arrival
+order. A send's two halves travel on two connections, the POST response and
+the WS echo, and nothing orders them at the client.
+
+- Echo first, POST after: the echo's poll sees growth and tails; the collapse
+  then shrinks a pane already at its tail. Healthy. This is the order #2377's
+  e2e forces by holding the POST, which is why its at-the-tail case could not
+  reproduce (0/7 webkit, 0/2 chromium).
+- POST first, echo within ~30 frames: the read cursor moves past every loaded
+  row and the divider collapses (extent −D), then the echo lands (extent +R).
+  `isSettled` compared the extent against `lastTailScrollHeight`, the extent at
+  the LAST tail write, which still held the divider. So it saw growth only if
+  R > D, and a one-line row is not taller than the divider (8px padding plus a
+  0.8em label). Neither poll settled. The #625 fail-safe then skipped its write
+  because the hidden row, R px below the fold, sat inside the 50px at-tail
+  slack. Nothing came later to repair it.
+
+It also needs a tail write made while the divider was in the list (a followed
+peer line after the operator touched the pane). Right after an activation the
+baseline is 0 and the race cannot fire. On iOS a `visualViewport` resize after
+the send (QuickType bar, keyboard) re-pins the tail through `onResize` and hides
+the defect, which fits "intermittent". Nothing in the mechanism is iOS-specific.
+
+**Cure.** `isSettled({distanceToTail, targetNodeHeight})`: the tail row has a
+box AND the pane sits more than `TAIL_SUBPIXEL_PX` (1px of rounding) above its
+true tail, read fresh every frame. The fail-safe writes only while the pane is
+behind that same tail. `lastTailScrollHeight` and its key-change reset are
+deleted. The carried baseline was the stale state, so it goes rather than being
+patched. Lowering it on an observed shrink was rejected: the collapse and the
+echo can commit in the same frame, and then no poll ever observes the shrunk
+extent.
+
+Kept: #608 §5, because a zero box or a stale pre-layout extent still reads as
+nothing below the tail. #625, because the second poll of a single send finds the
+pane at its true tail and writes nothing. Same class as #2031: the reader's
+50px slack must not decide whether to follow a row. #2031 hit it at 7px, this
+one at a whole row.
+
+**Tests.** vitest twin in `ScrollbackPane.test.tsx`: red on main (22px short,
+exactly one row), green after. A control with the row taller than the divider
+is green on main, which locates the red in the growth comparison.
+
+The e2e case in `issue2031-…spec.ts` holds the WS frame carrying the sent row
+(`routeWebSocket`) until the divider leaves the DOM, then releases it 150ms
+later. Two vacuity guards are measured in the page. First, the divider left
+before the row arrived, fewer than 30 frames apart (measured ~160ms, 0–10
+frames). Second, the row is no taller than the divider (20.97px against
+22.67px). Before the fix: chromium red 3/3 and webkit-iphone-15 red 3/3, both
+for this reason, with the pane exactly 21px short (distanceFromBottom 21) and
+the row 13.8–14.4px below the pane's edge. After the fix: 6/6 green, distance
+0, no scroll write after the send settled.
+
+Three e2e findings for the next reader:
+
+- **A send no longer always writes, and the spec's "the send wrote" guard
+  fell with it.** When the collapse and the echo commit in the same frame and
+  the row is no taller than the divider, the extent shrinks on net. The
+  browser then clamps a pane that was at its tail, and it never leaves the
+  tail: measured on the 2377 at-tail case, scrollTop 935 → 933 at distance 0
+  with zero writes. Before the cure the poll wrote anyway, a redundant tail to
+  where the pane already was. The guard existed to prove the probe was live;
+  it now passes if the send wrote OR every sample shows the pane at its true
+  tail. A dead write hook on a hidden row still fails it.
+
+- **`page.route` never saw the send's POST on webkit-iphone-15.** The trace
+  shows the POST answered 201 in 80ms while the route handler never ran. So a
+  release keyed to the POST never fired there, and the case now releases from
+  the page. The #2377 race case holds its POST through `page.route` and records
+  "webkit 0/3, cause unknown"; its hold may never have applied on webkit. That
+  is unverified, and worth checking before anyone trusts that case as a webkit
+  reproduction.
+- **On the iPhone viewport the long `i2031 <tag> <epoch>` body wraps to two
+  lines** (40.6px), which is taller than the divider. Then the race cannot
+  happen, and guard 2 rightly refused it. The 2382 cases send a short body, so
+  `sendWithMarkerAndAssertVisible` now takes the body from its caller.
+
+The device reading is still owed: the mechanism is derived from code and pinned
+in emulation, not observed on a phone.
