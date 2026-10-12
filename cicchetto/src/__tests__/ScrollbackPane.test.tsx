@@ -2822,8 +2822,8 @@ describe("ScrollbackPane", () => {
   });
 
   // #608 STEP 6 (RED-GREEN behaviour change) — the tail-follow write waits for a
-  // MEASURED settle (isSettled: the appended content's extent has GROWN vs the
-  // last tail AND the new tail row has a laid-out box) before scrolling, instead
+  // MEASURED settle (isSettled: the new tail row has a laid-out box AND the pane
+  // sits below its true tail — issue 2382) before scrolling, instead
   // of a fixed rAF×2 — which is not a layout flush on iOS WebKit and scrolled to
   // the STALE pre-layout tail (the #608 §5 off-by-one). The pure isSettled core
   // is unit-tested in scrollAuthority.test.ts; this pins the WIRING: no scroll on
@@ -2862,18 +2862,16 @@ describe("ScrollbackPane", () => {
       if (el) Object.defineProperty(el, "offsetHeight", { value: px, configurable: true });
     };
 
-    it("does not tail-follow on stale pre-layout geometry; scrolls once scrollHeight grows and the row has a box", async () => {
+    it("does not tail-follow on stale pre-layout geometry; scrolls once the row has a box below the tail", async () => {
       setScrollback({ "freenode #grappa": fixture });
       render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
       const list = screen.getByTestId("scrollback") as HTMLDivElement;
 
-      // Baseline: mount at the tail with a real extent + a laid-out tail row so
-      // the mount tail-follow SETTLES (establishes lastTailScrollHeight = 1000).
-      Object.defineProperty(list, "scrollHeight", {
-        value: 1000,
-        writable: true,
-        configurable: true,
-      });
+      // Baseline: the pane sits at its true tail with a laid-out tail row.
+      let height = 1000;
+      Object.defineProperty(list, "clientHeight", { value: 500, configurable: true });
+      Object.defineProperty(list, "scrollHeight", { get: () => height, configurable: true });
+      Object.defineProperty(list, "scrollTop", { value: 500, writable: true, configurable: true });
       setBox(list.lastElementChild, 18);
       await flushFrames(3);
       scrollIntoViewSpy.mockClear();
@@ -2890,16 +2888,22 @@ describe("ScrollbackPane", () => {
       });
       await flushFrames(3);
 
-      // NOT settled (scrollHeight has not grown, new tail box is 0) → no scroll.
+      // NOT settled (zero box) → no scroll.
       // RED pre-STEP-6: the fixed rAF×2 scrolled here regardless of layout.
       expect(scrollIntoViewSpy).not.toHaveBeenCalled();
 
-      // Layout lands: the extent grows AND the new tail row gains a box.
-      Object.defineProperty(list, "scrollHeight", { value: 1200, configurable: true });
+      // The box lands but the extent is still stale: the pane still reads as at
+      // its tail, so there is nothing below the fold to follow yet.
       setBox(list.lastElementChild, 18);
+      await flushFrames(3);
+      expect(scrollIntoViewSpy).not.toHaveBeenCalled();
+
+      // Layout lands: the extent grows, the row sits below the tail → one scroll.
+      height = 1018;
       await flushFrames(3);
 
       expect(scrollIntoViewSpy).toHaveBeenCalledWith({ block: "end" });
+      expect(list.scrollTop).toBe(height - 500);
     });
 
     // issue 2382 — the send's two halves arrive on two connections, in either
@@ -2943,6 +2947,7 @@ describe("ScrollbackPane", () => {
 
       // Enter. The POST resolves before the echo: the cursor advances past every
       // loaded row and the divider collapses. The pane stays at its (new) tail.
+      scrollIntoViewSpy.mockClear();
       pushOwnSendSubmitted("freenode #grappa");
       seedReadCursor("freenode", "#grappa", 5);
       pushOwnSend("freenode #grappa");
@@ -2962,6 +2967,9 @@ describe("ScrollbackPane", () => {
 
       // The sent row is fully above the bottom edge: the pane is at its true tail.
       expect(list.scrollHeight - list.scrollTop - list.clientHeight).toBe(0);
+      // …reached by ONE tail write (#625): the collapse's poll found the pane at
+      // its tail and wrote nothing, before the echo or at its fail-safe.
+      expect(scrollIntoViewSpy.mock.calls.filter(([arg]) => arg?.block === "end")).toHaveLength(1);
     });
   });
 

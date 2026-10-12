@@ -419,6 +419,9 @@ async function holdEchoBehindPost(page: Page): Promise<EchoHold> {
   // POST (measured — the trace shows the POST answered 201 in 80ms while the
   // route handler never ran), so a release hung on it never fired there.
   await page.exposeBinding("__i2382DividerGone", () => {
+    // Only the send's own collapse releases: a divider that left before the
+    // body was armed would otherwise disarm the hold for the echo to come.
+    if (armed === null) return;
     console.log("[#2382 hold] divider gone in the page");
     setTimeout(release, ECHO_LAG_MS);
   });

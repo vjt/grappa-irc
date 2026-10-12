@@ -116,8 +116,12 @@ export type SettleSample = {
 // Is there laid-out content below the fold to follow? The applier tails only
 // when this holds — replacing the fixed rAF×2, which is not a layout flush on
 // iOS WebKit (the #608 off-by-one root). Both conditions are required: a node
-// can be present in the DOM with a zero box before layout on iOS, and a stale
-// pre-layout extent reads as "nothing below the tail" until the row lands.
+// can be present in the DOM with a zero box before layout on iOS, and, for a
+// pane that was at its old tail, a stale pre-layout extent reads as "nothing
+// below the tail" until the row lands. A pane already more than the slack
+// above its tail (within the 50px reader slack, still following) is guarded by
+// the box alone: it is behind the tail before the row lays out, and tailing it
+// there is the follow it was owed anyway.
 //
 // issue 2382 — this used to ask "has the extent GROWN since the last tail
 // write", against a baseline the pane carried between polls. A send's two

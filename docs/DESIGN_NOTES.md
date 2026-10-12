@@ -1567,8 +1567,21 @@ patched. Lowering it on an observed shrink was rejected: the collapse and the
 echo can commit in the same frame, and then no poll ever observes the shrunk
 extent.
 
+**Accepted behaviour change.** A pane less than 50px above its tail keeps
+`followMode` on, because `onScroll` turns it off only beyond the slack. While a
+rows-change poll is running (≤30 frames), that pane is now pulled to the true
+tail even when the change added nothing, such as a divider collapse or a cursor
+advance. The old fail-safe skipped it as "at the tail". Two consequences: an
+operator nudge of ≤50px within ~0.5s of a rows change is pulled back, and a
+divider park that ended near the tail (so `followMode` stayed on) moves to the
+true tail on the next rows change, shifting the divider by up to 50px. Both
+follow from the cure: the defect lives exactly inside that 50px. Either pane
+counts as following by the product's own definition, so the next append would
+have tailed it anyway.
+
 Kept: #608 §5, because a zero box or a stale pre-layout extent still reads as
-nothing below the tail. #625, because the second poll of a single send finds the
+nothing below the tail for a pane that was at its old tail. A pane already
+inside the slack is guarded by the box check alone. #625, because the second poll of a single send finds the
 pane at its true tail and writes nothing. Same class as #2031: the reader's
 50px slack must not decide whether to follow a row. #2031 hit it at 7px, this
 one at a whole row.
