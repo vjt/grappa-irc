@@ -1626,3 +1626,72 @@ Three e2e findings for the next reader:
 
 The device reading is still owed: the mechanism is derived from code and pinned
 in emulation, not observed on a phone.
+<!-- entry #2380 -->
+
+---
+
+## 2026-10-12 — #2380: the deferred autojoin waits for the identity, not for 500ms; the drifted-welcome IDENTIFY moves to the reclaim echo
+
+**The defect.** `@autojoin_defer_ms` was 500ms, documented as the fallback for a
+`+r` that is never coming. It also cut off a `+r` that was merely late: on a
+v1.5.13 reconnect the `+r` landed 29s after 001, the fallback had already JOINed
+every channel unidentified, and ChanServ kickbanned the user on an access-list
+channel 14s later. A JOIN cannot be taken back by the later `+r` — bahamut-era
+ChanServ does not re-op on identify in channels already joined, and the ban
+stays until removed by hand.
+
+**The wait is now a ceiling, 60s (vjt ruling Q1).** ~2× the measured slow case.
+The normal case does not pay it: the release signal was already the general one,
+`:session_identity_changed, :acquired`, which fires on the `+r` umode AND on
+900 / account-notify, and it releases the JOINs the moment it lands (70ms
+measured on a prompt reconnect). Only the no-identity paths wait the ceiling,
+and on its elapse the JOINs still go out best-effort, as before (ruling Q3).
+A per-network knob was rejected: schema and admin surface for a number nobody
+tunes, when one ceiling plus the early release below covers it.
+
+**Early release on `401 NickServ` (ruling Q2).** A 401 ERR_NOSUCHNICK naming
+NickServ (folded compare) proves the IDENTIFY went nowhere — services split or
+absent — so the ceiling would be a pointless wait. It is a numeric, so this is
+not the NOTICE-text parsing #347 forbids. It is checked at the generic numeric
+door, so a 401 GhostRecovery consumes for its WHOIS probe never reaches it; a
+NickServ-less network with a ghost armed waits the ceiling, the bounded side.
+
+**Every release says why, and how long.** `deferred autojoin released: identity
+acquired` (info) or `… released unidentified: NickServ unreachable (401)` /
+`… no identity before the ceiling` (warnings — the unidentified JOIN is the harm
+the timer bounds), each with `elapsed_ms`. The fallback used to fire silently,
+which is why this took a prod log read to find. The wait is read off the live
+timer (`Process.read_timer/1`: time left while armed, `false` once fired = the
+ceiling) — no start stamp stored beside it.
+
+**Extension of #2253: the reclaim now identifies.** Pinning the 12s nick reclaim
+inside the new window found the case the ceiling alone would not have fixed, and
+it is the COMMON one at reconnect, where our own ghost still holds the nick:
+
+- the built-in `IDENTIFY <secret>` names no nick, so services check it against
+  the nick in use; at a welcome that landed on `vjt_` it went for `vjt_` — the
+  wrong account, possibly someone else's;
+- the reclaim brought `vjt` back and nothing identified it, so the JOINs would
+  have waited the full 60s and gone out unidentified anyway.
+
+The identify is MOVED, not added (vjt ruling): a welcome whose nick differs from
+the configured one (folded) and has no identity sequence armed holds the secret
+in `deferred_identify_secret` instead of sending it; the reclaim's NICK ECHO —
+never the send, the nick in use only changes when the server confirms — sends it
+once, to the configured nick, and the `+r` releases the JOINs through the
+existing signal. One-shot either way; an armed RecoverIdentity owns its own
+IDENTIFY, so the slot is dropped unsent rather than doubled; a refused reclaim
+never sends the secret at all. Same rule #2371 applies to REGISTER: the secret
+counts only on the configured nick. The slot is in `@redacted_state_keys`.
+
+**Not verified on Azzurra:** whether the fallback nick can be linked to the same
+services account, in which case the old 001 IDENTIFY on `vjt_` would have won a
+`+r` at once. If so, the cost of the move is the wait for the reclaim, ~12s.
+
+**Untouched, deliberately:** a perform list that consumes `$nickserv_pass`
+(the built-in is already suppressed there), and GhostRecovery, which still sends
+its secret at GHOST, at the 001 IDENTIFY for `<nick>_`, and after its `NICK`
+back — the same wrong-nick send, filed separately.
+
+**Sibling, filed as #2388:** `@pending_auth_timeout_ms` (10s) is sized for prompt
+services the same way; a typed visitor IDENTIFY confirmed after it is discarded.

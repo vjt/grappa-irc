@@ -205,13 +205,26 @@ defmodule Grappa.Session.Server do
   # IDENTIFY is sent async at 001 and the upstream sets the self `+r` umode
   # only AFTER 001/end-of-MOTD, so firing the autojoin JOINs on 001 races the
   # identify: +R (registered-only) channels reject the JOIN (477) and ChanServ
-  # won't +o an unidentified user. We defer the JOINs until the EARLIER of the
+  # won't +o an unidentified user. We defer the JOINs until the EARLIEST of the
   # self-MODE +r echo (EventRouter's `:session_identity_changed, :acquired` —
-  # NOT NickServ NOTICE-text parsing) OR this ~0.5s timeout — bounded so a
-  # silent/slow NickServ never hangs autojoin (JOIN best-effort on elapse).
+  # NOT NickServ NOTICE-text parsing), a 401 for NickServ (the identify went
+  # nowhere), OR this ceiling — bounded so a silent NickServ never hangs
+  # autojoin (JOIN best-effort on elapse).
+  #
+  # issue 2380 — this was 500ms, sized for a `+r` that is never coming, and so
+  # it also cut off a `+r` that was merely LATE: 29s measured on a reconnect
+  # with slow services, every channel JOINed unidentified, a ChanServ kickban on
+  # an access-list channel. A JOIN cannot be taken back by the later `+r`. The
+  # number is now a CEILING, ~2× the measured slow case; the normal case does
+  # not pay it, because the identity echo releases the JOINs the moment it lands
+  # (70ms measured on a prompt reconnect). Only the "no identity ever" paths
+  # wait it out, and those JOIN unidentified exactly as before, just later.
+  #
+  # Copied into state at init, so a hot deploy reaches a live session at its
+  # next `init` — every reconnect, which is the only moment this timer runs.
   # Opts-overridable (`:autojoin_defer_ms`) as a test seam; production inherits
   # this default.
-  @autojoin_defer_ms 500
+  @autojoin_defer_ms 60_000
 
   # #100 — sustained-reconnect reset gate. On 001 RPL_WELCOME we arm a
   # `:connection_stable` timer instead of resetting the Backoff ladder
@@ -595,13 +608,17 @@ defmodule Grappa.Session.Server do
           pending_auth_timer: reference() | nil,
           pending_registration_secret: String.t() | nil,
           pending_password: String.t() | nil,
+          # issue 2380 — the built-in identify a drifted 001 welcome held for
+          # the configured nick, sent on the reclaim's NICK echo. Read via
+          # `Map.get` (hot-reload). See `maybe_builtin_identify/4`.
+          deferred_identify_secret: String.t() | nil,
           # GH #1044 — whether a NickServ secret was staged at init. Survives
           # the one-shot clearing of `pending_password` above, which is the
           # only reason it exists; see `identify_expected?/1`.
           nickserv_secret_staged?: boolean(),
           # GH #189 — the on-connect perform list (raw text) + its `$oper_pass`
           # secret, decrypted plaintext threaded from the credential at boot.
-          # Read at 001 by `run_perform_and_identify/1`. nil when unset.
+          # Read at 001 by `run_perform_and_identify/2`. nil when unset.
           perform_list: String.t() | nil,
           oper_pass: String.t() | nil,
           # #1390 — the ten injected callbacks, bundled. See `Deps`.
@@ -1237,6 +1254,7 @@ defmodule Grappa.Session.Server do
       pending_auth_timer: nil,
       pending_registration_secret: nil,
       pending_password: pending_password_from_opts(opts),
+      deferred_identify_secret: nil,
       # GH #1044 — the STABLE record of "a NickServ secret was staged", which
       # `pending_password` stops being the moment the one-shot identify clears
       # it. Derived from the same function on the same opts, so the two cannot
@@ -1453,7 +1471,7 @@ defmodule Grappa.Session.Server do
   # `pending_password` carries the `:nickserv_identify` upstream secret
   # forward in `Session.Server` state so the single 001 handler can both
   # (a) feed the built-in `PRIVMSG NickServ :IDENTIFY <pw>` from
-  # `run_perform_and_identify/1` and (b) expand `$nickserv_pass` in the
+  # `run_perform_and_identify/2` and (b) expand `$nickserv_pass` in the
   # perform list. Both leave through the outbound choke point
   # (`capture_outbound_ns_secret → Client.send_raw`), so `NSInterceptor`
   # self-stages the +r MODE `pending_auth` rendezvous uniformly — GH #189
@@ -1692,6 +1710,7 @@ defmodule Grappa.Session.Server do
   @redacted_state_keys [
     :pending_auth,
     :pending_password,
+    :deferred_identify_secret,
     :pending_registration_secret,
     :perform_list,
     :oper_pass
@@ -3661,7 +3680,7 @@ defmodule Grappa.Session.Server do
       when is_binary(welcomed_nick) do
     state =
       state
-      |> run_perform_and_identify()
+      |> run_perform_and_identify(welcomed_nick)
       # GH #417 — re-assert any active away to the fresh (away-blind) upstream
       # connection before autojoin. No-op when :present.
       |> maybe_resend_away()
@@ -3756,13 +3775,14 @@ defmodule Grappa.Session.Server do
     {:noreply, %{state | connection_stable_timer: nil}}
   end
 
-  # #347 — the ~0.5s fallback elapsed before the self-MODE +r echo arrived
-  # (silent/slow NickServ, or a network that doesn't echo +r). Fire the
-  # deferred `:nickserv_identify` autojoin best-effort: non-+R channels join
-  # fine; a +R channel may 477 (473/475 route through the ChanServ-INVITE
-  # retry path). No-op if the +r echo already fired the JOINs (latch nil).
+  # #347 / issue 2380 — the ceiling elapsed with no identity observed (a
+  # wrong password, a network that signals identity neither by umode nor by
+  # account-notify). Fire the deferred `:nickserv_identify` autojoin
+  # best-effort: non-+R channels join fine; a +R channel may 477 (473/475 route
+  # through the ChanServ-INVITE retry path). No-op if another signal already
+  # fired the JOINs (latch nil).
   def handle_info(:autojoin_defer, state) do
-    {:noreply, fire_deferred_autojoin(state)}
+    {:noreply, fire_deferred_autojoin(state, :ceiling)}
   end
 
   # #247 — end-of-MOTD (376 RPL_ENDOFMOTD / 422 ERR_NOMOTD): arm the
@@ -4288,6 +4308,7 @@ defmodule Grappa.Session.Server do
   # `last_command_window` is NOT updated here — it's a command-send-
   # time snapshot, not a numeric-arrival-time one.
   def handle_info({:irc, %Message{command: {:numeric, _}} = msg}, state) do
+    state = maybe_release_autojoin_on_401(state, msg)
     router_state = build_router_state(state)
 
     case NumericRouter.route(msg, router_state) do
@@ -5076,8 +5097,8 @@ defmodule Grappa.Session.Server do
   # home, the perform list + `$oper_pass` still re-run but the identify does
   # not — and that is the safer half of the old split, not a loss: the +r the
   # first identify won is still held, so a second one buys nothing.
-  @spec run_perform_and_identify(t()) :: t()
-  defp run_perform_and_identify(state) do
+  @spec run_perform_and_identify(t(), String.t()) :: t()
+  defp run_perform_and_identify(state, welcomed_nick) do
     # GH #509 — one effective secret drives BOTH the `$nickserv_pass` expansion
     # and the built-in identify, so the `consumed?` suppression signal stays
     # honest whatever the source.
@@ -5100,7 +5121,7 @@ defmodule Grappa.Session.Server do
 
     lines
     |> Enum.reduce(state, &send_perform_line(&2, &1))
-    |> maybe_builtin_identify(effective_ns, consumed?)
+    |> maybe_builtin_identify(effective_ns, consumed?, welcomed_nick)
     |> Map.put(:pending_password, nil)
   end
 
@@ -5125,7 +5146,7 @@ defmodule Grappa.Session.Server do
   # wrong one (`vjt_` after a 433 fallback), so binding the live nick would
   # expand to exactly the value that fails to identify. Today `state.nick` and
   # `state.configured_nick` happen to be equal on the ordinary connect path —
-  # `run_perform_and_identify/1` runs before EventRouter reconciles 001, and a
+  # `run_perform_and_identify/2` runs before EventRouter reconciles 001, and a
   # dropped socket respawns the process with fresh opts — but that equality is
   # an ORDERING accident, not the contract. It already breaks on the defensive
   # re-welcome (a second 001 with no intervening crash, the case
@@ -5160,12 +5181,60 @@ defmodule Grappa.Session.Server do
   # scan of the line text). Routed through `send_perform_line/2` so it
   # self-stages `pending_auth` via the choke point exactly like a user-typed
   # identify.
-  @spec maybe_builtin_identify(t(), String.t() | nil, boolean()) :: t()
-  defp maybe_builtin_identify(state, secret, false) when is_binary(secret) and secret != "" do
-    send_perform_line(state, "PRIVMSG NickServ :IDENTIFY #{secret}")
+  #
+  # issue 2380 — only ever for the CONFIGURED nick. The verb names no nick, so
+  # services check it against the nick in use, and a registration that landed
+  # on a fallback (`vjt_`) used to send the secret for THAT nick — the wrong
+  # account, possibly someone else's — and then never identify the real one
+  # once the #2253 reclaim brought it back. So a drifted welcome HOLDS the
+  # identify in `deferred_identify_secret` instead; the reclaim's NICK echo
+  # sends it, once, to the right nick (`maybe_identify_on_reclaimed_nick/2`),
+  # and the `+r` that follows releases the deferred autojoin. Same rule #2371
+  # applies to REGISTER: the secret only counts on the configured nick.
+  # A GhostRecovery in flight keeps the old behaviour — it sends its own
+  # IDENTIFY after its `NICK` back, and it is not this issue's to change.
+  @spec maybe_builtin_identify(t(), String.t() | nil, boolean(), String.t()) :: t()
+  defp maybe_builtin_identify(state, secret, false, welcomed_nick)
+       when is_binary(secret) and secret != "" do
+    drifted? = fold_key(state, welcomed_nick) != fold_key(state, configured_nick(state))
+
+    if drifted? and not identity_sequence_armed?(state),
+      do: Map.put(state, :deferred_identify_secret, secret),
+      else: send_perform_line(state, "PRIVMSG NickServ :IDENTIFY #{secret}")
   end
 
-  defp maybe_builtin_identify(state, _, _), do: state
+  defp maybe_builtin_identify(state, _, _, _), do: state
+
+  # issue 2380 — extends #2253: the reclaim brought the configured nick back,
+  # so send the identify the drifted welcome held (see `maybe_builtin_identify/4`).
+  # Fires on the NICK ECHO, never on the reclaim send: until the server has
+  # confirmed the rename the nick in use is still the fallback, and an identify
+  # sent then would go to exactly the account it was held back from.
+  #
+  # One-shot: the slot is emptied whichever way this resolves, so the secret
+  # leaves at most once. If an identity sequence (RecoverIdentity) owns the
+  # nick it sends its own IDENTIFY, so the slot is dropped unsent rather than
+  # doubling it. Any rename onto the configured nick consumes it — the reclaim,
+  # or the operator's own `/nick` after a refused reclaim — because the nick in
+  # use is the right one either way. `Map.get` for #229 hot-reload safety.
+  @spec maybe_identify_on_reclaimed_nick(t(), t()) :: t()
+  defp maybe_identify_on_reclaimed_nick(%{nick: prev}, %{nick: next} = state)
+       when prev != next do
+    secret = Map.get(state, :deferred_identify_secret)
+
+    if is_binary(secret) and fold_key(state, next) == fold_key(state, configured_nick(state)),
+      do: send_held_identify(Map.put(state, :deferred_identify_secret, nil), secret),
+      else: state
+  end
+
+  defp maybe_identify_on_reclaimed_nick(_, state), do: state
+
+  @spec send_held_identify(t(), String.t()) :: t()
+  defp send_held_identify(state, secret) do
+    if identity_sequence_armed?(state),
+      do: state,
+      else: send_perform_line(state, "PRIVMSG NickServ :IDENTIFY #{secret}")
+  end
 
   # Cancel-and-arm the timed `pending_auth` rendezvous slot. Latest-wins
   # serialization for concurrent IDENTIFYs is automatic via Session.Server
@@ -5237,7 +5306,7 @@ defmodule Grappa.Session.Server do
   # the #189 on-connect perform list + built-in identify, ghost-recovery
   # flush) runs this so no NickServ-secret form can bypass capture. Since
   # #189 the built-in registration IDENTIFY at 001 also flows through here
-  # (see `run_perform_and_identify/1`) rather than being staged by hand.
+  # (see `run_perform_and_identify/2`) rather than being staged by hand.
   # The verb class from NSInterceptor picks the action: IDENTIFY-family →
   # stage timed `pending_auth`; REGISTER → stage untimed
   # `pending_registration_secret`; SET PASSWD → commit OPTIMISTICALLY
@@ -5679,7 +5748,7 @@ defmodule Grappa.Session.Server do
   # what keeps the +r MODE rendezvous (Task 15) firing for the `IDENTIFY`
   # GhostRecovery emits on `:succeeded` — same one-feature-one-code-path
   # discipline as the #189 built-in IDENTIFY at 001 (routed through the same
-  # choke point by `run_perform_and_identify/1`). A dead socket mid-recovery
+  # choke point by `run_perform_and_identify/2`). A dead socket mid-recovery
   # is survivable: the next reconnect retries GHOST + IDENTIFY from scratch,
   # and the staging that already happened is discarded on terminate/2.
   # #1390 slice 6 — the sub-machines' `lines` travel on the ONE effect grammar
@@ -6037,7 +6106,10 @@ defmodule Grappa.Session.Server do
     # #623 — a self-NICK arrives as a :nick command → this delegate path (never
     # the numeric path). Feed the recover FSM `:nick_observed` when our nick
     # just landed on the credential nick the reclaim leg is chasing.
-    {:noreply, maybe_advance_recover_on_nick(state, next_state)}
+    # issue 2380 — and send the identify a drifted welcome held, AFTER the
+    # recover step so an armed recover is seen and owns the IDENTIFY.
+    recovered = maybe_advance_recover_on_nick(state, next_state)
+    {:noreply, maybe_identify_on_reclaimed_nick(state, recovered)}
   end
 
   # CP24 bucket E web/S8: keep `seeded_channels` consistent with
@@ -6552,7 +6624,7 @@ defmodule Grappa.Session.Server do
     # recover completes on networks that never emit a registered umode.
     state =
       if transition == :acquired do
-        after_autojoin = fire_deferred_autojoin(state)
+        after_autojoin = fire_deferred_autojoin(state, :identified)
 
         # #229 hot-reload safety — `Map.get`, never `after_autojoin.recover_identity`
         # dot-access: this runs on EVERY +r (not just recover), so a session
@@ -7474,7 +7546,7 @@ defmodule Grappa.Session.Server do
   # subsumes the "perform list consumed `$nickserv_pass`" case — consumption
   # requires an effective secret, and there is only one source of it.
   #
-  # We cannot test `pending_password` itself: `run_perform_and_identify/1` has
+  # We cannot test `pending_password` itself: `run_perform_and_identify/2` has
   # already cleared it one-shot by the time this runs. #124 could therefore
   # test `auth_method`, which WAS the stable origin of that value while
   # exactly one method staged it. Since #1044 two do, and the method alone no
@@ -7504,20 +7576,75 @@ defmodule Grappa.Session.Server do
     Map.get(state, :nickserv_secret_staged?, state.auth_method == :nickserv_identify)
   end
 
-  # Single funnel for the two deferred-autojoin triggers (#347): the +r
-  # self-MODE echo and the `:autojoin_defer` fallback timer.
+  # Single funnel for the three deferred-autojoin triggers (#347, issue 2380):
+  # the identity echo, a 401 for NickServ, and the `:autojoin_defer` ceiling.
   # `autojoin_defer_timer` is the one-shot latch — a non-nil ref means the
   # JOINs are still pending, so fire them and clear the latch (cancelling +
-  # draining the fallback so it can't double-fire). A nil ref means the other
+  # draining the fallback so it can't double-fire). A nil ref means another
   # trigger already fired the loop; no-op. Guarantees exactly-once JOINs.
-  @spec fire_deferred_autojoin(t()) :: t()
-  defp fire_deferred_autojoin(%{autojoin_defer_timer: nil} = state), do: state
+  #
+  # issue 2380 — every release says which signal fired it and how long the
+  # JOINs waited; the silent fallback is why a 29s `+r` took a prod log read to
+  # find. The wait is read off the timer itself rather than a stored start
+  # stamp: `Process.read_timer/1` answers the time LEFT while the timer is
+  # live, and `false` once it has fired, which is exactly the ceiling case.
+  # The two unidentified releases are warnings: that is the harm this timer
+  # exists to bound.
+  @typep defer_release :: :identified | :services_unreachable | :ceiling
 
-  defp fire_deferred_autojoin(%{autojoin_defer_timer: timer} = state)
+  @spec fire_deferred_autojoin(t(), defer_release()) :: t()
+  defp fire_deferred_autojoin(%{autojoin_defer_timer: nil} = state, _), do: state
+
+  defp fire_deferred_autojoin(%{autojoin_defer_timer: timer} = state, signal)
        when is_reference(timer) do
+    elapsed_ms =
+      case Process.read_timer(timer) do
+        left when is_integer(left) -> state.autojoin_defer_ms - left
+        false -> state.autojoin_defer_ms
+      end
+
+    :ok = log_deferred_release(signal, elapsed_ms)
     :ok = cancel_and_drain(timer, :autojoin_defer)
     fire_join_plan(%{state | autojoin_defer_timer: nil})
   end
+
+  @spec log_deferred_release(defer_release(), non_neg_integer()) :: :ok
+  defp log_deferred_release(:identified, elapsed_ms),
+    do: Logger.info("deferred autojoin released: identity acquired", elapsed_ms: elapsed_ms)
+
+  defp log_deferred_release(:services_unreachable, elapsed_ms),
+    do:
+      Logger.warning(
+        "deferred autojoin released unidentified: NickServ unreachable (401)",
+        elapsed_ms: elapsed_ms
+      )
+
+  defp log_deferred_release(:ceiling, elapsed_ms),
+    do:
+      Logger.warning(
+        "deferred autojoin released unidentified: no identity before the ceiling",
+        elapsed_ms: elapsed_ms
+      )
+
+  # issue 2380 — a 401 ERR_NOSUCHNICK naming NickServ is the structured proof
+  # (a numeric, never NOTICE text) that the IDENTIFY went nowhere: services are
+  # split or absent, so no `+r` is coming and the ceiling would be a pointless
+  # wait. Folded compare, like every nick KEY. Reached from the generic numeric
+  # clause only, so a 401 that GhostRecovery consumes (its WHOIS probe) never
+  # gets here — a NickServ-less network with a ghost armed waits the ceiling,
+  # which is the bounded side to err on.
+  @spec maybe_release_autojoin_on_401(t(), Message.t()) :: t()
+  defp maybe_release_autojoin_on_401(
+         %{autojoin_defer_timer: timer} = state,
+         %Message{command: {:numeric, 401}, params: [_, target | _]}
+       )
+       when is_reference(timer) and is_binary(target) do
+    if fold_key(state, target) == fold_key(state, "NickServ"),
+      do: fire_deferred_autojoin(state, :services_unreachable),
+      else: state
+  end
+
+  defp maybe_release_autojoin_on_401(state, _), do: state
 
   # The registration JOIN loop — records each JOIN in-flight (CP15 window-state
   # tracking) and tolerates transport loss / invalid names. Single source of

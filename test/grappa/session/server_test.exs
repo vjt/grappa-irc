@@ -1913,7 +1913,7 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
-    test "fires autojoin on the ~0.5s fallback when no +r ever arrives" do
+    test "fires autojoin on the fallback ceiling when no +r ever arrives" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
 
       {user, network, credential} =
@@ -1974,6 +1974,109 @@ defmodule Grappa.Session.ServerTest do
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
 
+    # issue 2380 — the fallback used to be 500ms and cut off a `+r` that was
+    # merely LATE (29s measured on a reconnect with slow services), so every
+    # channel was JOINed unidentified. The production default is now a
+    # ceiling: no override here, so this is the real number under test.
+    test "production default: a +r arriving after the old 500ms still releases the JOINs" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+
+      {user, network, _} =
+        setup_user_and_network(port, %{
+          nick: "grappa-test",
+          auth_method: :nickserv_identify,
+          password: "s3cr3t-identify",
+          autojoin_channels: ["#sniffo"]
+        })
+
+      pid = start_session_for(user, network)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+      {:ok, _} =
+        IRCServer.wait_for_line(
+          server,
+          &(&1 == "PRIVMSG NickServ :IDENTIFY s3cr3t-identify\r\n"),
+          1_000
+        )
+
+      # Well past the old 500ms fallback: nothing may have JOINed yet.
+      Process.sleep(800)
+      refute Enum.any?(IRCServer.sent_lines(server), &String.starts_with?(&1, "JOIN"))
+
+      IRCServer.feed(server, ":irc.test.org MODE grappa-test :+r\r\n")
+
+      assert {:ok, "JOIN #sniffo\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"), 1_000)
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # issue 2380 — a 401 for NickServ in reply to the IDENTIFY is a structured
+    # proof (a numeric, no NOTICE text) that the identify went nowhere, so the
+    # `+r` is not coming and the ceiling would be a pointless wait. The target
+    # is matched folded: bahamut answers with the spelling it was sent, but
+    # nothing promises that.
+    for spelling <- ["NickServ", "nickserv"] do
+      test "a 401 for #{spelling} releases the deferred JOINs at once" do
+        {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+
+        {user, network, credential} =
+          setup_user_and_network(port, %{
+            nick: "grappa-test",
+            auth_method: :nickserv_identify,
+            password: "s3cr3t-identify",
+            autojoin_channels: ["#sniffo"]
+          })
+
+        pid = nickserv_plan(user, network, credential, 60_000)
+
+        :ok = IRCServer.await_handshake(server, 1_000)
+        IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+
+        Process.sleep(150)
+        refute Enum.any?(IRCServer.sent_lines(server), &String.starts_with?(&1, "JOIN"))
+
+        IRCServer.feed(
+          server,
+          ":irc.test.org 401 grappa-test #{unquote(spelling)} :No such nick/channel\r\n"
+        )
+
+        assert {:ok, "JOIN #sniffo\r\n"} =
+                 IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"), 1_000)
+
+        :ok = GenServer.stop(pid, :normal, 1_000)
+      end
+    end
+
+    test "a 401 for some other nick does NOT release the deferred JOINs" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+
+      {user, network, credential} =
+        setup_user_and_network(port, %{
+          nick: "grappa-test",
+          auth_method: :nickserv_identify,
+          password: "s3cr3t-identify",
+          autojoin_channels: ["#sniffo"]
+        })
+
+      pid = nickserv_plan(user, network, credential, 60_000)
+
+      :ok = IRCServer.await_handshake(server, 1_000)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+      IRCServer.feed(server, ":irc.test.org 401 grappa-test ChanServ :No such nick/channel\r\n")
+
+      # Positive control that the 401 was processed: a ping round-trip
+      # through the same mailbox lands after it.
+      IRCServer.feed(server, "PING :after-401\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :after-401\r\n"), 1_000)
+
+      refute Enum.any?(IRCServer.sent_lines(server), &String.starts_with?(&1, "JOIN"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
     test "SASL is unaffected: autojoin still fires immediately on 001 (no +r needed)" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
 
@@ -1997,6 +2100,81 @@ defmodule Grappa.Session.ServerTest do
                IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"), 1_000)
 
       :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
+  describe "deferred autojoin release is logged with its cause (issue 2380)" do
+    # The fallback used to release silently, which is why a 29s `+r` took a
+    # prod log read to find. Every release names the signal that fired it and
+    # how long the JOINs waited. The identified release is an `info`, so the
+    # level is lowered here (the module is `async: false`).
+    setup do
+      original = Logger.level()
+      Logger.configure(level: :info)
+      on_exit(fn -> Logger.configure(level: original) end)
+      :ok
+    end
+
+    defp deferred_session(defer_ms) do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+
+      {user, network, credential} =
+        setup_user_and_network(port, %{
+          nick: "grappa-test",
+          auth_method: :nickserv_identify,
+          password: "s3cr3t-identify",
+          autojoin_channels: ["#sniffo"]
+        })
+
+      pid = nickserv_plan(user, network, credential, defer_ms)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test :Welcome\r\n")
+      {server, pid}
+    end
+
+    defp await_join_and_stop(server, pid) do
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"), 1_000)
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a +r release logs the identity signal and the wait" do
+      log =
+        capture_log(fn ->
+          {server, pid} = deferred_session(60_000)
+          IRCServer.feed(server, ":irc.test.org MODE grappa-test :+r\r\n")
+          await_join_and_stop(server, pid)
+        end)
+
+      assert log =~ "[info] deferred autojoin released: identity acquired"
+      assert log =~ ~r/elapsed_ms=\d+/
+    end
+
+    test "a 401 NickServ release logs that the JOINs went out unidentified" do
+      log =
+        capture_log(fn ->
+          {server, pid} = deferred_session(60_000)
+
+          IRCServer.feed(
+            server,
+            ":irc.test.org 401 grappa-test NickServ :No such nick/channel\r\n"
+          )
+
+          await_join_and_stop(server, pid)
+        end)
+
+      assert log =~ "[warning] deferred autojoin released unidentified: NickServ unreachable"
+      assert log =~ ~r/elapsed_ms=\d+/
+    end
+
+    test "a ceiling release logs that no identity arrived, and the full wait" do
+      log =
+        capture_log(fn ->
+          {server, pid} = deferred_session(400)
+          await_join_and_stop(server, pid)
+        end)
+
+      assert log =~ "[warning] deferred autojoin released unidentified: no identity before the ceiling"
+      assert log =~ "elapsed_ms=400"
     end
   end
 
@@ -9400,7 +9578,11 @@ defmodule Grappa.Session.ServerTest do
       pid = start_session_for(user, network)
 
       :ok = IRCServer.await_handshake(server, 1_000)
-      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+      # The 001 barrier is the umode query every registration sends, whatever
+      # the auth method. Not the autojoin JOIN: a `:nickserv_identify`
+      # credential defers it until the identity echo or the 60s ceiling
+      # (issue 2380), and this helper feeds no `+r`.
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "MODE grappa-test\r\n"), 1_000)
 
       if worn != "grappa-test", do: rename_own_nick(server, "grappa-test", worn)
       assert SessionStateHelpers.nick(SessionStateHelpers.fetch(pid)) == worn
@@ -10892,6 +11074,92 @@ defmodule Grappa.Session.ServerTest do
       # the wire and the handler echoed it back.
       assert await_nick(pid, "grappa-test", 2_000) == "grappa-test",
              "a session that registered on a fallback nick must end up on the configured one"
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # issue 2380 — extends #2253. With the deferred-autojoin ceiling at 60s
+    # the 12s reclaim lands INSIDE the window, and on a reconnect where our own
+    # ghost still holds the nick it is the COMMON case. Before 2380 the built-in
+    # IDENTIFY left at 001 for the fallback nick (the wrong account) and nothing
+    # identified the configured one after the reclaim, so the JOINs would have
+    # waited the whole ceiling and gone out unidentified anyway. Now the
+    # identify is HELD at a drifted welcome and sent once, on the reclaim's
+    # NICK echo, to the configured nick; the `+r` then releases the JOINs.
+    defp nickserv_reclaim_session(handler) do
+      {server, port} = IRCServer.start_server(handler)
+
+      {user, network, credential} =
+        setup_user_and_network(port, %{
+          nick: "grappa-test",
+          auth_method: :nickserv_identify,
+          password: "s3cr3t-identify",
+          autojoin_channels: ["#sniffo"]
+        })
+
+      {:ok, base_plan} = SessionPlan.resolve(credential)
+
+      plan =
+        base_plan
+        |> Map.put(:nick_reclaim_ms, 150)
+        |> Map.put(:autojoin_defer_ms, 60_000)
+
+      {:ok, pid} = Session.start_session({:user, user.id}, network.id, plan)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      IRCServer.feed(server, ":irc.test.org 001 grappa-test_ :Welcome\r\n")
+      {server, pid}
+    end
+
+    @identify "PRIVMSG NickServ :IDENTIFY s3cr3t-identify\r\n"
+
+    test "a drifted welcome identifies ONCE, after the reclaim echo, then +r releases the JOINs" do
+      {server, pid} =
+        nickserv_reclaim_session(reclaim_echo_handler("grappa-test", "grappa-test_"))
+
+      assert await_nick(pid, "grappa-test", 2_000) == "grappa-test"
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == @identify), 1_000)
+
+      lines = IRCServer.sent_lines(server)
+
+      # Exactly one identify, and it left AFTER the reclaim NICK (the second
+      # `NICK grappa-test`; the first is the registration). The welcome itself
+      # sent none: the nick in use then was the fallback.
+      assert Enum.count(lines, &(&1 == @identify)) == 1
+      nick_positions = for {"NICK grappa-test\r\n", i} <- Enum.with_index(lines), do: i
+      # The first is the registration NICK, the second the reclaim.
+      assert [_, reclaim_at | _] = nick_positions
+      assert line_index(lines, @identify) > reclaim_at
+
+      # Still deferred: identify sent, no identity yet.
+      refute Enum.any?(lines, &String.starts_with?(&1, "JOIN"))
+
+      IRCServer.feed(server, ":irc.test.org MODE grappa-test :+r\r\n")
+
+      assert {:ok, "JOIN #sniffo\r\n"} =
+               IRCServer.wait_for_line(server, &(&1 == "JOIN #sniffo\r\n"), 1_000)
+
+      assert Enum.count(IRCServer.sent_lines(server), &(&1 == @identify)) == 1
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "a refused reclaim never sends the secret for the fallback nick" do
+      {server, pid} = nickserv_reclaim_session(IRCServer.passthrough_handler())
+
+      reclaim? = &(&1 == "NICK grappa-test\r\n")
+      assert await_sent_line_count(server, reclaim?, 2, 1_000) == :ok
+
+      IRCServer.feed(
+        server,
+        ":irc.test.org 437 grappa-test_ #sniffo " <>
+          ":Cannot change nickname while banned or moderated on channel\r\n"
+      )
+
+      # Barrier: the PONG proves the 437 was processed.
+      IRCServer.feed(server, "PING :after-437\r\n")
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "PONG :after-437\r\n"), 1_000)
+
+      assert SessionStateHelpers.nick(SessionStateHelpers.fetch(pid)) == "grappa-test_"
+      refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "IDENTIFY"))
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
