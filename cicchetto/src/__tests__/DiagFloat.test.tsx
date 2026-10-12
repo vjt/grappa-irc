@@ -116,3 +116,103 @@ describe("DiagFloat — resume triggers (#1791)", () => {
     expect(line).toContain("wy=");
   });
 });
+
+// #2389 — the scrollback pane on every line.
+//
+// The report: on an iOS PWA, after a return from background, the scrollback
+// does not follow the finger until a resize. The rival explanations are told
+// apart only by the PANE at the stuck instant — is the #285 gate latched
+// (`scrollback-locked`, `touch-action: none`)? is the pane hidden by the #130
+// activation flip? does the finger reach it at all (`touchmove` counted) and
+// does it scroll (`scroll` counted)? The panel recorded none of that.
+//
+// Same limit as above: these prove the WIRING (the fields land on the line,
+// the counters count the pane and only the pane, and reset per line). Nothing
+// here says anything about iOS; the device reading does.
+describe("DiagFloat — scrollback pane fields (#2389)", () => {
+  let pane: HTMLDivElement | null = null;
+
+  const mountPane = (): HTMLDivElement => {
+    const el = document.createElement("div");
+    el.setAttribute("data-testid", "scrollback");
+    el.className = "scrollback";
+    el.appendChild(document.createElement("div"));
+    Object.defineProperty(el, "scrollHeight", { configurable: true, value: 900 });
+    Object.defineProperty(el, "clientHeight", { configurable: true, value: 600 });
+    el.scrollTop = 40;
+    document.body.appendChild(el);
+    pane = el;
+    return el;
+  };
+
+  const lineFor = (ev: string): string | undefined =>
+    geometryLines().find((l) => l.includes(` ${ev} `) || l.includes(` ${ev}[`));
+
+  beforeEach(() => {
+    localStorage.setItem(DIAG_FLAG_KEY, "1");
+    setVisibility("visible");
+  });
+
+  afterEach(() => {
+    pane?.remove();
+    pane = null;
+  });
+
+  it("carries the gate class, visibility, overflow-x and the three scroll numbers", () => {
+    const el = mountPane();
+    el.classList.add("scrollback-locked");
+    el.style.visibility = "hidden";
+    el.style.overflowX = "hidden";
+    render(() => <DiagFloat />);
+    window.dispatchEvent(new Event("pageshow"));
+
+    const line = lineFor("resume:pageshow");
+    expect(line).toContain("sb=locked");
+    expect(line).toContain("vis=hidden");
+    expect(line).toContain("ox=hidden");
+    expect(line).toContain("st=40/900/600");
+    expect(line).toContain("ta=");
+  });
+
+  it("reads an unlocked pane as open", () => {
+    mountPane();
+    render(() => <DiagFloat />);
+    window.dispatchEvent(new Event("pageshow"));
+    expect(lineFor("resume:pageshow")).toContain("sb=open");
+  });
+
+  it("says the pane is absent rather than printing zeros", () => {
+    render(() => <DiagFloat />);
+    window.dispatchEvent(new Event("pageshow"));
+    const line = lineFor("resume:pageshow");
+    expect(line).toContain("sb=absent");
+    expect(line).not.toContain("st=");
+  });
+
+  it("counts touchmove and scroll on the pane only, and resets them per line", () => {
+    const el = mountPane();
+    const outside = document.createElement("div");
+    document.body.appendChild(outside);
+    render(() => <DiagFloat />);
+
+    const row = el.firstElementChild as HTMLElement;
+    for (let i = 0; i < 3; i++) row.dispatchEvent(new Event("touchmove", { bubbles: true }));
+    outside.dispatchEvent(new Event("touchmove", { bubbles: true }));
+    // `scroll` does not bubble: the instrument must catch it in capture.
+    el.dispatchEvent(new Event("scroll"));
+    el.dispatchEvent(new Event("scroll"));
+    outside.dispatchEvent(new Event("scroll"));
+
+    window.dispatchEvent(new Event("pageshow"));
+    const first = lineFor("resume:pageshow");
+    expect(first).toContain("tm=3");
+    expect(first).toContain("sc=2");
+
+    window.dispatchEvent(new Event("focus"));
+    const second = lineFor("resume:focus");
+    expect(second).toContain("tm=0");
+    expect(second).toContain("sc=0");
+
+    outside.remove();
+  });
+});

@@ -41,6 +41,44 @@ export function setDiagEnabled(on: boolean): void {
   else localStorage.removeItem(DIAG_FLAG_KEY);
 }
 
+// #2389 — the scrollback pane at the sampled instant. The report (iOS PWA,
+// after a return from background the pane ignores the finger until a resize)
+// has rivals that only the PANE separates: the #285 gate latched
+// (`scrollback-locked` → `touch-action: none`), the #130 activation hide left
+// on, or a pane that receives the touch and does not scroll. Read from the DOM
+// by test id, so the instrument stays a reader: it imports nothing from
+// ScrollbackPane and changes nothing on it. `null` when no pane is mounted
+// (home / mentions / admin), rendered as `absent` rather than as zeros.
+export const SCROLLBACK_SELECTOR = '[data-testid="scrollback"]';
+
+export interface PaneSample {
+  locked: boolean;
+  touchAction: string;
+  visibility: string;
+  overflowX: string;
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+}
+
+export function readScrollbackPane(doc: Document): PaneSample | null {
+  const el = doc.querySelector<HTMLElement>(SCROLLBACK_SELECTOR);
+  if (el === null) return null;
+  const cs = getComputedStyle(el);
+  return {
+    locked: el.classList.contains("scrollback-locked"),
+    // `getPropertyValue`, not `cs.touchAction`: the camelCase accessor is
+    // missing on engines (and jsdom) that do not model the property, and an
+    // `undefined` printed as a reading is the lie this panel exists to avoid.
+    touchAction: cs.getPropertyValue("touch-action") || "(none read)",
+    visibility: cs.visibility,
+    overflowX: cs.overflowX,
+    scrollTop: Math.round(el.scrollTop),
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+  };
+}
+
 interface Snapshot {
   ev: string;
   tgt: string;
@@ -49,7 +87,11 @@ interface Snapshot {
   winH: number;
   winY: number;
   dseT: number;
-  sbT: number;
+  pane: PaneSample | null;
+  // #2389 — `touchmove` / `scroll` events on the pane since the previous line.
+  // "The finger reaches it but nothing scrolls" is tm>0 with sc=0.
+  tm: number;
+  sc: number;
   htmlSH: number;
   htmlCH: number;
   bodySH: number;
@@ -62,6 +104,19 @@ interface Snapshot {
   t: number;
 }
 
+// #2389 — one line's pane half. `sb=locked` is the #285 gate class, `ta` the
+// touch-action the engine actually computed (the class is the intent, `ta` is
+// what WebKit applies), `st=` scrollTop/scrollHeight/clientHeight.
+function paneText(s: Snapshot): string {
+  const counts = `tm=${s.tm} sc=${s.sc}`;
+  if (s.pane === null) return `sb=absent ${counts}`;
+  const p = s.pane;
+  return (
+    `sb=${p.locked ? "locked" : "open"} ta=${p.touchAction} vis=${p.visibility} ` +
+    `ox=${p.overflowX} st=${p.scrollTop}/${p.scrollHeight}/${p.clientHeight} ${counts}`
+  );
+}
+
 const DiagFloat: Component = () => {
   const [enabled, setEnabled] = createSignal(isDiagEnabled());
   const [vvH, setVvH] = createSignal(0);
@@ -72,8 +127,18 @@ const DiagFloat: Component = () => {
   const [tick, setTick] = createSignal(0);
   const [log, setLog] = createSignal<Snapshot[]>([]);
   const t0 = performance.now();
+  // #2389 — plain counters, not signals: they are read and zeroed by `snap`,
+  // and a touchmove at frame rate must cost an increment, not a render.
+  let paneTouchMoves = 0;
+  let paneScrolls = 0;
 
   const snap = (ev: string, tgt = ""): void => {
+    // Taken and zeroed first, so each line counts exactly the interval since
+    // the line before it.
+    const tm = paneTouchMoves;
+    const sc = paneScrolls;
+    paneTouchMoves = 0;
+    paneScrolls = 0;
     const vv = window.visualViewport;
     const h = vv?.height ?? 0;
     const ot = vv?.offsetTop ?? 0;
@@ -102,7 +167,9 @@ const DiagFloat: Component = () => {
           winH: wh,
           winY: wy,
           dseT: dse,
-          sbT: -1,
+          pane: readScrollbackPane(document),
+          tm,
+          sc,
           htmlSH: html.scrollHeight,
           htmlCH: html.clientHeight,
           bodySH: body.scrollHeight,
@@ -156,6 +223,17 @@ const DiagFloat: Component = () => {
     // apart in the log.
     const onTouchStart = () => snap("touch.start");
     const onTouchEnd = () => snap("touch.end");
+    // #2389 — count, never snap: a touchmove fires at frame rate. Passive, so
+    // the listener cannot hold up or cancel the gesture it is counting.
+    // `scroll` does not bubble, hence the capture-phase listener on document.
+    const inPane = (target: EventTarget | null): boolean =>
+      target instanceof Element && target.closest(SCROLLBACK_SELECTOR) !== null;
+    const onTouchMove = (e: Event) => {
+      if (inPane(e.target)) paneTouchMoves += 1;
+    };
+    const onPaneScroll = (e: Event) => {
+      if (e.target instanceof Element && e.target.matches(SCROLLBACK_SELECTOR)) paneScrolls += 1;
+    };
     // #1791 (2026-08-26) — the resume seam. Everything above watches what a
     // FOREGROUND app emits. An app-switch RETURN reliably emits none of it:
     // that absence is the whole premise of #649's three resume triggers on the
@@ -203,6 +281,8 @@ const DiagFloat: Component = () => {
     document.addEventListener("focusout", onFocusOut);
     document.addEventListener("touchstart", onTouchStart, { passive: true });
     document.addEventListener("touchend", onTouchEnd, { passive: true });
+    document.addEventListener("touchmove", onTouchMove, { passive: true });
+    document.addEventListener("scroll", onPaneScroll, { capture: true, passive: true });
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("pageshow", onPageShow);
     window.addEventListener("focus", onWinFocus);
@@ -215,6 +295,8 @@ const DiagFloat: Component = () => {
       document.removeEventListener("focusout", onFocusOut);
       document.removeEventListener("touchstart", onTouchStart);
       document.removeEventListener("touchend", onTouchEnd);
+      document.removeEventListener("touchmove", onTouchMove);
+      document.removeEventListener("scroll", onPaneScroll, { capture: true });
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("pageshow", onPageShow);
       window.removeEventListener("focus", onWinFocus);
@@ -273,6 +355,8 @@ const DiagFloat: Component = () => {
                 <strong>{s.posHtml}</strong>
                 {s.htmlSH}/{s.htmlCH} body={s.posBody}
                 {s.bodySH}/{s.bodyCH} root={s.rootSH}/{s.rootCH}
+                {" | "}
+                {paneText(s)}
               </div>
             )}
           </For>
