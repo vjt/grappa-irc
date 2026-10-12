@@ -1,6 +1,6 @@
-// #1646 — the two scroll-edge thresholds, in one place.
+// #1646 — the scroll-edge thresholds, in one place.
 //
-// Both answer the same question at opposite edges of the same scroller: how
+// They answer the same question at the edges of the same scroller: how
 // many pixels from an edge still counts as being AT that edge. They were two
 // module-private constants in `ScrollbackPane.tsx`, and they are here because
 // that is where the concept already lived, not because a test wanted to import
@@ -36,6 +36,19 @@
 // bottom". 50px absorbs sub-pixel layout and momentum overshoot without
 // letting a genuinely scrolled-up pane claim the tail.
 export const SCROLL_BOTTOM_THRESHOLD_PX = 50;
+
+// Distance from the bottom within which the pane IS at its true tail — the
+// slack is sub-pixel rounding (a fractional `scrollTop` on a high-DPR screen),
+// nothing more.
+//
+// issue 2382 — this, not the 50px above, is what the tail-follow asks before it
+// writes. The 50px is a statement about the READER ("close enough to count as
+// reading the bottom"); the follow is a statement about a ROW ("is the line
+// that just arrived inside the pane"), and a message row is shorter than 50px.
+// Asking the reader's question there left a whole sent row under the compose
+// with every "at the tail" reader answering yes — #2031 found the same hole at
+// 7px, this issue at one row.
+export const TAIL_SUBPIXEL_PX = 1;
 
 // CP14 B2: trigger `loadMore` when the user scrolls within this many
 // pixels of the top. 200px is a standard infinite-scroll threshold —

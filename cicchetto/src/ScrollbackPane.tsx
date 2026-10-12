@@ -77,7 +77,11 @@ import {
   refreshScrollback,
   scrollbackByChannel,
 } from "./lib/scrollback";
-import { LOAD_MORE_THRESHOLD_PX, SCROLL_BOTTOM_THRESHOLD_PX } from "./lib/scrollThresholds";
+import {
+  LOAD_MORE_THRESHOLD_PX,
+  SCROLL_BOTTOM_THRESHOLD_PX,
+  TAIL_SUBPIXEL_PX,
+} from "./lib/scrollThresholds";
 import { scrollToBottomRequest } from "./lib/scrollToBottomCommand";
 import { setCursorIfAdvances, setSelectedChannel } from "./lib/selection";
 import type { Point } from "./lib/swipe";
@@ -248,11 +252,11 @@ const SCROLL_KEYS = new Set<string>([
 const SETTLE_REMEASURE_DELAYS_MS = [150, 500] as const;
 
 // #608 STEP 6 — bounded-wait cap for the measured-settle tail-follow. Each frame
-// forces a reflow and re-checks `isSettled`; if the appended content never
-// registers a measurable growth (an in-place rows change — e.g. a marker-row
-// toggle — or an already-at-tail replacement), the write fails SAFE after this
-// many frames and tails once, so a tail is never stranded waiting on a settle
-// that will not come. ~30 frames ≈ 500ms @60fps: generous headroom for a slow
+// forces a reflow and re-checks `isSettled`; if nothing laid out below the fold
+// ever shows up (an in-place rows change — e.g. a marker-row toggle — or a tail
+// row whose box never lands), the poll gives up after this many frames and tails
+// once if the pane is behind its true tail, so a tail is never stranded waiting
+// on a settle that will not come. ~30 frames ≈ 500ms @60fps: generous headroom for a slow
 // iOS layout flush, still a hard bound (condition-based-waiting: bounded).
 const SETTLE_MAX_FRAMES = 30;
 
@@ -1373,16 +1377,6 @@ const ScrollbackPane: Component<Props> = (props) => {
   // UP (scrollTop decreased → leave the tail) from a programmatic content-
   // grow above the viewport (scrollTop unchanged → keep following).
   let lastScrollTop = 0;
-  // #608 STEP 6 — the scrollHeight at the LAST tail-follow write: the baseline
-  // the measured-settle `isSettled` compares the current extent against. Using
-  // the last-tail extent (NOT a dispatch-time read, which on a fast engine
-  // already includes the just-appended row — reading scrollHeight forces layout —
-  // leaving nothing to detect as "grew") makes the settle exit reachable on BOTH
-  // a deferred iOS layout AND an immediate chromium one: "grew since we last
-  // tailed" is true the frame the new row's box lands. Reset to 0 on key change
-  // so a switched-to pane's first tail always registers growth (extent > 0).
-  // Plain let — pure mutation, no Solid reactivity.
-  let lastTailScrollHeight = 0;
   // #196 / #219-general — scrollTop snapshot captured when ANY covering
   // overlay opens, re-asserted across the overlay's open/close so a covered
   // pane never strands the reader (see the effect near the activation block
@@ -3054,11 +3048,6 @@ const ScrollbackPane: Component<Props> = (props) => {
         // must not inherit the leaving pane's timestamp.
         setLastInputEventAtMs(null);
 
-        // #608 STEP 6 — reset the measured-settle baseline for the arriving pane
-        // (a different channel has a different extent). 0 ⇒ its first tail-follow
-        // registers growth (real extent > 0) and settles once the tail lays out.
-        lastTailScrollHeight = 0;
-
         // 2026-06-01 (scroll-contamination fix): re-arm auto-follow on
         // every window activation. The `[data-testid="scrollback"]`
         // <div> is the SAME DOM node across kind transitions (Shell.tsx
@@ -3506,12 +3495,12 @@ const ScrollbackPane: Component<Props> = (props) => {
   // pre-layout geometry and scrolled to the PREVIOUS tail, the #608 §5
   // off-by-one). Each frame forces a synchronous reflow (reading `scrollHeight` +
   // the tail's `offsetHeight` are layout properties) and re-checks the pure
-  // `isSettled` core against the last-tail baseline: the extent has GROWN since we
-  // last tailed AND the new tail row has a laid-out box. Scrolls the frame that
-  // holds, updating the baseline. Bounded by `SETTLE_MAX_FRAMES` (fail-safe: a
-  // rows change with no measurable growth still tails once IF the pane is behind
-  // the tail — never strands; but #625: it does NOT fire when already at the tail,
-  // else a follow-on no-growth rows change on a single send double-scrolls).
+  // `isSettled` core: the tail row has a laid-out box AND the pane sits below its
+  // TRUE tail (issue 2382 — read fresh each frame, never against a carried
+  // baseline). Scrolls the frame that holds. Bounded by `SETTLE_MAX_FRAMES`
+  // (fail-safe: a tail row that never reports a box still tails once IF the pane
+  // is behind the tail — never strands; but #625: it does NOT fire when already
+  // at the tail, else a follow-on rows change on a single send double-scrolls).
   // Re-checks `followMode()`/`listRef` each frame (the operator may scroll up, or
   // the pane unmount, mid-wait). condition-based-waiting: wait for the real
   // layout state, not two guessed frames.
@@ -3534,33 +3523,23 @@ const ScrollbackPane: Component<Props> = (props) => {
       // re-checks above), not just the frame it was scheduled.
       if (isOverlayFrozen()) return;
       const tail = listRef.lastElementChild as HTMLElement | null;
-      const currScrollHeight = listRef.scrollHeight;
+      const distanceToTail = listRef.scrollHeight - listRef.scrollTop - listRef.clientHeight;
       const targetNodeHeight = tail?.offsetHeight ?? 0;
-      const settled = isSettled({
-        prevScrollHeight: lastTailScrollHeight,
-        currScrollHeight,
-        targetNodeHeight,
-      });
-      if (settled || frame >= SETTLE_MAX_FRAMES) {
+      if (isSettled({ distanceToTail, targetNodeHeight }) || frame >= SETTLE_MAX_FRAMES) {
         // #625 — the fail-safe must NOT fire a redundant DELAYED write. A single
         // send fires MORE THAN ONE `rows().length` change (the echo append, then
-        // a follow-on change: the marker collapse / cursor advance). Each spawns
-        // a poll sharing `lastTailScrollHeight`; the echo's poll settles first and
-        // advances the baseline to the final extent, so the follow-on poll can
-        // NEVER measure growth (`currScrollHeight > lastTailScrollHeight` is false)
-        // and runs its whole SETTLE_MAX_FRAMES budget — firing a second
-        // `scrollIntoView` ~0.5s AFTER the send ("the scroll resets after a
-        // while", the #608-regression double-scroll). When that fail-safe reaches
-        // its budget WITHOUT measured growth AND the pane is already AT the tail,
-        // there is nothing to follow — skip the write. The genuine no-flush case
-        // (fail-safe reached but the pane is still BEHIND the tail, e.g. an iOS
-        // layout that never reported growth) still tails, so nothing strands.
-        const atTail =
-          currScrollHeight - listRef.scrollTop - listRef.clientHeight <= SCROLL_BOTTOM_THRESHOLD_PX;
-        if (settled || !atTail) {
-          scrollToTail(listRef);
-        }
-        lastTailScrollHeight = listRef.scrollHeight;
+        // a follow-on change: the marker collapse / cursor advance), each with a
+        // poll of its own. The one that finds the row below the fold tails it; the
+        // other finds the pane already at its true tail, never settles, and would
+        // otherwise spend its whole budget and fire a second `scrollIntoView`
+        // ~0.5s AFTER the send ("the scroll resets after a while", the
+        // #608-regression double-scroll). So the fail-safe writes only while the
+        // pane is genuinely BEHIND the tail (a tail row whose box never landed).
+        //
+        // issue 2382 — "behind" is the TRUE tail, not `SCROLL_BOTTOM_THRESHOLD_PX`.
+        // Asked with the 50px reader slack, a sent row shorter than 50px was
+        // "already at the tail" and was left under the compose.
+        if (distanceToTail > TAIL_SUBPIXEL_PX) scrollToTail(listRef);
         return;
       }
       frame += 1;

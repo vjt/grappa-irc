@@ -16,6 +16,8 @@
 //   3. the measured-settle predicate (replaces the iOS-unreliable fixed
 //      rAF×2 — the off-by-one root).
 
+import { TAIL_SUBPIXEL_PX } from "./scrollThresholds";
+
 // The intent kinds, in precedence order high → low (from the #608 deep
 // review). `scroll-up` is deliberately NOT a kind: an operator scroll-up
 // turns `followMode` off and writes nothing.
@@ -103,20 +105,28 @@ export function nextFollowMode(current: boolean, event: FollowModeEvent): boolea
   }
 }
 
-// A geometry sample taken around a tail write: the scroll extent captured
-// before the append, the extent measured now (after forcing a reflow), and the
-// laid-out box height of the tail node (getBoundingClientRect / offsetHeight).
+// A geometry sample taken on a tail-follow frame, after forcing a reflow: how
+// far the pane sits above its true tail (scrollHeight − scrollTop −
+// clientHeight) and the laid-out box height of the tail node.
 export type SettleSample = {
-  readonly prevScrollHeight: number;
-  readonly currScrollHeight: number;
+  readonly distanceToTail: number;
   readonly targetNodeHeight: number;
 };
 
-// Has the just-appended content actually laid out? The applier tails only when
-// this holds — replacing the fixed rAF×2, which is not a layout flush on iOS
-// WebKit (the #608 off-by-one root). Both conditions are required: scrollHeight
-// alone can bump from an unrelated reflow, and a node can be present in the DOM
-// with a zero box before layout on iOS.
+// Is there laid-out content below the fold to follow? The applier tails only
+// when this holds — replacing the fixed rAF×2, which is not a layout flush on
+// iOS WebKit (the #608 off-by-one root). Both conditions are required: a node
+// can be present in the DOM with a zero box before layout on iOS, and a stale
+// pre-layout extent reads as "nothing below the tail" until the row lands.
+//
+// issue 2382 — this used to ask "has the extent GROWN since the last tail
+// write", against a baseline the pane carried between polls. A send's two
+// halves land on two connections in either order, and when the POST resolves
+// first the divider collapses BEFORE the echo arrives: the extent shrinks by
+// the divider, then grows by a row no taller than it was, so measured against
+// the baseline nothing grew and the sent row was never followed. Distance to
+// the true tail is read fresh every frame and cannot go stale; the baseline
+// went with the question.
 export function isSettled(sample: SettleSample): boolean {
-  return sample.currScrollHeight > sample.prevScrollHeight && sample.targetNodeHeight > 0;
+  return sample.targetNodeHeight > 0 && sample.distanceToTail > TAIL_SUBPIXEL_PX;
 }
