@@ -93,7 +93,12 @@ import {
 } from "../fixtures/cicchettoPage";
 import { fetchScrollbackPage, setReadCursorToId } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
-import { delayedWrites, dumpScrollProbe, installScrollProbe } from "../fixtures/scrollWriteProbe";
+import {
+  delayedWrites,
+  distanceOf,
+  dumpScrollProbe,
+  installScrollProbe,
+} from "../fixtures/scrollWriteProbe";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
@@ -122,6 +127,10 @@ const REST_PAGE_SIZE = 50;
 // There is no sub-pixel path from -6.6 to +0.2, so rounding cannot flip the
 // verdict; only the shortfall can.
 const SUBPIXEL_TOLERANCE_PX = 0;
+
+// Mirror of `lib/scrollThresholds.ts` TAIL_SUBPIXEL_PX — the pane IS at its
+// true tail within this. Used only to decide whether a send owed a write.
+const TAIL_SUBPIXEL_PX = 1;
 
 // Must outlast every #608 deferred writer: SETTLE_MAX_FRAMES (30) ≈ 0.5s,
 // SCROLL_SETTLE_DEBOUNCE_MS = 500, PRESENCE_CURSOR_SETTLE_MS = 500. Same
@@ -321,10 +330,240 @@ async function forcedRaceCase(page: Page, tag: string): Promise<void> {
   const peer = await IrcPeer.connect({ nick: `i2377${tag.slice(0, 3)}${Date.now() % 100_000}` });
   try {
     await peer.join(CHANNEL);
-    await sendWithMarkerAndAssertVisible(page, tag, parkOnVisibleMarker, sendOnPeerLine(peer));
+    await sendWithMarkerAndAssertVisible(
+      page,
+      tag,
+      parkOnVisibleMarker,
+      sendOnPeerLine(peer),
+      longBody(tag),
+    );
   } finally {
     await peer.disconnect("i2377 done");
   }
+}
+
+// Issue 2382 — the send whose POST resolves BEFORE its echo, FORCED.
+//
+// The 2377 race above holds the POST, which forces the OTHER order: echo
+// first, collapse after. That order is healthy, and so was the reported
+// at-the-tail case (0 of 7 webkit, 0 of 2 chromium) for exactly that reason.
+// The two halves of a send travel on two connections — the POST response and
+// the WS echo — and a phone delivers them in either order. When the response
+// lands first, the divider collapses (the list shrinks by its height) and
+// the echo arrives after it, growing the list by a row no taller than the
+// divider was. The tail-follow used to settle on "the extent grew since the
+// last tail write", compared that against an extent that still held the
+// divider, saw nothing grow, and left the write to the #625 fail-safe, which
+// skipped it: a row is shorter than the 50px at-tail slack.
+//
+// So this case HOLDS THE ECHO instead of the POST: the WS frame carrying the
+// sent row is kept back until the POST half has taken effect in the page (the
+// divider left the DOM), then released ECHO_LAG_MS later — well inside the
+// collapse poll's SETTLE_MAX_FRAMES.
+
+// Lag after the collapse, so the echo is a separate rows change on a later
+// frame; short enough to land inside the collapse poll's ~30 frames, which the
+// vacuity guard below checks in frames rather than trusting this number.
+const ECHO_LAG_MS = 150;
+
+// `SETTLE_MAX_FRAMES` in `ScrollbackPane.tsx`: the echo must land before the
+// collapse's poll gives up, or the race degenerates into the healthy order.
+const SETTLE_MAX_FRAMES = 30;
+
+type EchoHold = { arm: (body: string) => void };
+
+// What the page saw: the divider's height before the send, when (performance
+// clock) the divider left and the sent row arrived, and how many frames apart.
+type EchoOrder = {
+  dividerPx: number;
+  markerGoneMs: number | null;
+  rowMs: number | null;
+  framesBetween: number;
+};
+
+// Must be installed BEFORE login: `routeWebSocket` only intercepts sockets
+// opened after it. Every frame passes through verbatim except the server →
+// client frame that carries the armed body, which waits for the collapse.
+async function holdEchoBehindPost(page: Page): Promise<EchoHold> {
+  let armed: string | null = null;
+  let released = false;
+  // Each held frame keeps the connection it came on, so a reconnect between
+  // the hold and the release cannot deliver it to a socket that never joined.
+  let held: Array<() => void> = [];
+  const release = (): void => {
+    released = true;
+    console.log(`[#2382 hold] releasing ${held.length} frame(s)`);
+    for (const deliver of held) deliver();
+    held = [];
+  };
+  await page.routeWebSocket(/\/socket\/websocket/, (ws) => {
+    const server = ws.connectToServer();
+    ws.onMessage((message) => server.send(message));
+    server.onMessage((message) => {
+      if (
+        typeof message === "string" &&
+        armed !== null &&
+        !released &&
+        message.includes(JSON.stringify(armed).slice(1, -1))
+      ) {
+        console.log("[#2382 hold] holding the echo frame");
+        held.push(() => ws.send(message));
+        return;
+      }
+      ws.send(message);
+    });
+  });
+  // Released from the PAGE, when the divider leaves the DOM: that is the POST
+  // half taking effect, which is the instant the race is defined against.
+  // `page.route` cannot carry this: on webkit-iphone-15 it never saw the send's
+  // POST (measured — the trace shows the POST answered 201 in 80ms while the
+  // route handler never ran), so a release hung on it never fired there.
+  await page.exposeBinding("__i2382DividerGone", () => {
+    console.log("[#2382 hold] divider gone in the page");
+    setTimeout(release, ECHO_LAG_MS);
+  });
+  return {
+    arm: (body) => {
+      armed = body;
+    },
+  };
+}
+
+// The reported shape (marker on screen, pane at its tail) plus the one thing
+// the race needs that a bare park does not have: a tail write made WHILE the
+// divider was in the list. The park's activation lands on the divider, not the
+// tail, so the operator touches the pane (handing the activation latch back)
+// and a peer line arrives and is tail-followed.
+async function parkAtTailAfterAFollowedPeerLine(page: Page, peer: IrcPeer): Promise<void> {
+  if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+  await parkAtTailOnVisibleMarker(page);
+  await page.locator('[data-testid="scrollback"]').dispatchEvent("pointerdown");
+  const line = `i2382 peer ${Date.now()}`;
+  peer.privmsg(CHANNEL, line);
+  const peerLine = scrollbackLines(page).filter({ hasText: line });
+  await expect(peerLine).toHaveCount(1, { timeout: 10_000 });
+  // Followed: the peer line is fully inside the pane, and the divider is still
+  // there — the extent of that tail write includes it.
+  await expect
+    .poll(async () => (await rowClearance(peerLine)).overflowBelowPx, { timeout: 5_000 })
+    .toBeLessThanOrEqual(SUBPIXEL_TOLERANCE_PX);
+  await expect(page.locator('[data-testid="unread-marker"]')).toHaveCount(1);
+}
+
+function sendWithEchoBehindPost(hold: EchoHold): Sender {
+  return async (page, body) => {
+    // Record, in the page, the order the two halves really took effect in:
+    // the divider leaving the DOM (the POST half) and the sent row entering it
+    // (the echo half), plus how many frames apart.
+    await page.evaluate((bodyArg) => {
+      const list = document.querySelector('[data-testid="scrollback"]');
+      const marker = list?.querySelector('[data-testid="unread-marker"]');
+      if (!list || !(marker instanceof HTMLElement)) {
+        throw new Error("sendWithEchoBehindPost: scrollback or divider not found");
+      }
+      const w = window as unknown as { __i2382?: EchoOrder };
+      const rec: EchoOrder = {
+        dividerPx: marker.getBoundingClientRect().height,
+        markerGoneMs: null,
+        rowMs: null,
+        framesBetween: 0,
+      };
+      w.__i2382 = rec;
+      // Frames elapsed from the collapse to the row, counted by rAF.
+      const tick = (): void => {
+        if (rec.rowMs !== null) return;
+        rec.framesBetween += 1;
+        requestAnimationFrame(tick);
+      };
+      const obs = new MutationObserver(() => {
+        const now = performance.now();
+        if (rec.markerGoneMs === null && !list.querySelector('[data-testid="unread-marker"]')) {
+          rec.markerGoneMs = now;
+          requestAnimationFrame(tick);
+          (window as unknown as { __i2382DividerGone: () => void }).__i2382DividerGone();
+        }
+        if (rec.rowMs === null && list.textContent?.includes(bodyArg)) rec.rowMs = now;
+        if (rec.markerGoneMs !== null && rec.rowMs !== null) obs.disconnect();
+      });
+      obs.observe(list, { childList: true, subtree: true, characterData: true });
+    }, body);
+    hold.arm(body);
+    await composeSend(page, body);
+
+    const sentLine = scrollbackLines(page).filter({ hasText: body });
+    await expect(sentLine).toHaveCount(1, { timeout: 10_000 });
+    // Both halves observed: the row is mounted, and the divider is gone.
+    await expect(page.locator('[data-testid="unread-marker"]')).toHaveCount(0, {
+      timeout: 10_000,
+    });
+    const rec = await page.evaluate(() => (window as unknown as { __i2382: EchoOrder }).__i2382);
+    const rowPx = await sentLine.evaluate((el) => el.getBoundingClientRect().height);
+    console.log(`[#2382] order=${JSON.stringify(rec)} rowPx=${rowPx}`);
+    // VACUITY GUARD 1: the POST half took effect FIRST — the divider was gone
+    // before the sent row existed — and the row arrived inside the collapse
+    // poll's budget. Either one false and the healthy order ran instead.
+    expect(
+      rec.markerGoneMs !== null && rec.rowMs !== null && rec.markerGoneMs < rec.rowMs,
+      `the echo landed before the collapse: ${JSON.stringify(rec)}`,
+    ).toBe(true);
+    expect(
+      rec.framesBetween,
+      `the echo landed after the collapse poll gave up: ${JSON.stringify(rec)}`,
+    ).toBeLessThan(SETTLE_MAX_FRAMES);
+    // VACUITY GUARD 2: the row is no taller than the divider it replaced. A
+    // taller row grows the list past the stale extent and the old settle saw
+    // it — this geometry would be green before the cure for the wrong reason.
+    expect(
+      rowPx,
+      `row ${rowPx}px taller than divider ${rec.dividerPx}px: not the race`,
+    ).toBeLessThanOrEqual(rec.dividerPx);
+    return 0;
+  };
+}
+
+async function echoBehindPostCase(page: Page, tag: string): Promise<void> {
+  if (!CHANNEL) throw new Error("AUTOJOIN_CHANNELS empty");
+  const hold = await holdEchoBehindPost(page);
+  const peer = await IrcPeer.connect({ nick: `i2382${tag.slice(0, 3)}${Date.now() % 100_000}` });
+  try {
+    await peer.join(CHANNEL);
+    // The at-tail park leaves the last two rows unread, and its divider renders
+    // only if they are MESSAGES: left alone they would be presence rows (this
+    // peer's JOIN, among others), which count for placement but not for the
+    // unread count, and no divider would render. Two peer lines make them
+    // messages, persisted before the park reads the page.
+    const unread = [`i2382 unread a ${Date.now()}`, `i2382 unread b ${Date.now()}`];
+    for (const line of unread) peer.privmsg(CHANNEL, line);
+    await expect
+      .poll(
+        async () => {
+          const rows = (await fetchScrollbackPage(
+            specUser().token,
+            NETWORK_SLUG,
+            CHANNEL,
+          )) as Array<{ body?: string | null }>;
+          return rows[0]?.body ?? null;
+        },
+        { timeout: 10_000 },
+      )
+      .toBe(unread[1]);
+    await sendWithMarkerAndAssertVisible(
+      page,
+      tag,
+      (p) => parkAtTailAfterAFollowedPeerLine(p, peer),
+      sendWithEchoBehindPost(hold),
+      // ONE line on the iPhone's 393px: the race needs a row no taller than
+      // the divider, and the long body wraps to two (measured 40.6px vs 22.7).
+      `i2382 ${Date.now() % 100_000}`,
+    );
+  } finally {
+    await peer.disconnect("i2382 done");
+  }
+}
+
+// The sent body these cases have always used: unique per run, and long.
+function longBody(tag: string): string {
+  return `i2031 ${tag} ${Date.now()}`;
 }
 
 // The body of both cases. Kept as one function because the two differ ONLY in
@@ -336,11 +575,11 @@ async function sendWithMarkerAndAssertVisible(
   tag: string,
   park: (page: Page) => Promise<void>,
   send: Sender,
+  body: string,
 ): Promise<void> {
   await park(page);
 
   await installScrollProbe(page, SAMPLE_WINDOW_MS);
-  const body = `i2031 ${tag} ${Date.now()}`;
   const sendWriteIndex = await send(page, body);
 
   const sentLine = scrollbackLines(page).filter({ hasText: body });
@@ -408,10 +647,21 @@ async function sendWithMarkerAndAssertVisible(
   // The report's second face: "after a moment it shifts by a few pixels on its
   // own". Same invariant #625 pins on chromium; asserted here on the reported
   // platform too.
+  // The probe must be live for the empty list below to mean anything, and the
+  // proof of that used to be "the send wrote". Issue 2382 made that untrue in
+  // one honest case: when the collapse and the echo commit in the SAME frame
+  // and the row is no taller than the divider, the extent shrinks on net, the
+  // browser clamps a pane that was at its tail, and it never leaves the tail —
+  // measured on the 2377 at-tail case, scrollTop 935 → 933 at distance 0 with
+  // no write. Before the cure the poll wrote anyway, a redundant tail to where
+  // the pane already was. So: either the send wrote, or every sample shows the
+  // pane at its true tail, i.e. no write was owed. A dead probe on a hidden row
+  // fails both halves.
+  const neverLeftTheTail = samples.every((s) => distanceOf(s) <= TAIL_SUBPIXEL_PX);
   expect(
-    writes.length,
-    `expected the send's tail-follow write; writes=${JSON.stringify(writes)}`,
-  ).toBeGreaterThanOrEqual(1);
+    writes.length >= 1 || neverLeftTheTail,
+    `no tail-follow write, yet the pane left its tail; writes=${JSON.stringify(writes)}`,
+  ).toBe(true);
   expect(
     delayedWrites(writes, SETTLE_GRACE_MS),
     `scroll write(s) landed after the send settled: ${JSON.stringify(writes)}`,
@@ -424,7 +674,13 @@ test.describe("issue 2031 — a send with the unread marker on screen (desktop)"
   test.use({ viewport: { width: 800, height: 300 } });
 
   test("the sent row lands fully inside the pane, and nothing scrolls after", async ({ page }) => {
-    await sendWithMarkerAndAssertVisible(page, "desktop", parkOnVisibleMarker, plainSend);
+    await sendWithMarkerAndAssertVisible(
+      page,
+      "desktop",
+      parkOnVisibleMarker,
+      plainSend,
+      longBody("desktop"),
+    );
   });
 });
 
@@ -435,7 +691,13 @@ test.describe("issue 2031 — a send with the unread marker on screen (iPhone)",
   test("@webkit the sent row lands fully inside the pane, and nothing scrolls after", async ({
     page,
   }) => {
-    await sendWithMarkerAndAssertVisible(page, "iphone", parkOnVisibleMarker, plainSend);
+    await sendWithMarkerAndAssertVisible(
+      page,
+      "iphone",
+      parkOnVisibleMarker,
+      plainSend,
+      longBody("iphone"),
+    );
   });
 });
 
@@ -448,6 +710,7 @@ test.describe("issue 2377 — a send at the tail with the unread marker on scree
       "tail-desktop",
       parkAtTailOnVisibleMarker,
       plainSend,
+      longBody("tail-desktop"),
     );
   });
 });
@@ -456,7 +719,13 @@ test.describe("issue 2377 — a send at the tail with the unread marker on scree
   test("@webkit the sent row lands fully inside the pane, and nothing scrolls after", async ({
     page,
   }) => {
-    await sendWithMarkerAndAssertVisible(page, "tail-iphone", parkAtTailOnVisibleMarker, plainSend);
+    await sendWithMarkerAndAssertVisible(
+      page,
+      "tail-iphone",
+      parkAtTailOnVisibleMarker,
+      plainSend,
+      longBody("tail-iphone"),
+    );
   });
 });
 
@@ -471,5 +740,19 @@ test.describe("issue 2377 — a send racing a queued divider jump (desktop)", ()
 test.describe("issue 2377 — a send racing a queued divider jump (iPhone)", () => {
   test("@webkit the revoked jump does not strand the sent row below the fold", async ({ page }) => {
     await forcedRaceCase(page, "race-iphone");
+  });
+});
+
+test.describe("issue 2382 — a send whose POST resolves before its echo (desktop)", () => {
+  test.use({ viewport: { width: 800, height: 300 } });
+
+  test("the echo that lands after the divider collapsed is followed", async ({ page }) => {
+    await echoBehindPostCase(page, "echo-desktop");
+  });
+});
+
+test.describe("issue 2382 — a send whose POST resolves before its echo (iPhone)", () => {
+  test("@webkit the echo that lands after the divider collapsed is followed", async ({ page }) => {
+    await echoBehindPostCase(page, "echo-iphone");
   });
 });
