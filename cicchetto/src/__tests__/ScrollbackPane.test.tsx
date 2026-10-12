@@ -2840,6 +2840,10 @@ describe("ScrollbackPane", () => {
       // stale geometry" assertion. Reset it here (mirrors the #219-general block's
       // own resetOverlayLock) so this test owns a no-cursor baseline.
       setReadCursorStore({});
+      // Same class: the far-behind map is a module singleton too, and the #1229
+      // case above leaves `#grappa` far behind — which suppresses the divider
+      // the issue 2382 case below needs on screen.
+      setFarBehind({});
       origScrollIntoView = Element.prototype.scrollIntoView;
       scrollIntoViewSpy = vi.fn();
       // biome-ignore lint/suspicious/noExplicitAny: jsdom Element type compat
@@ -2896,6 +2900,68 @@ describe("ScrollbackPane", () => {
       await flushFrames(3);
 
       expect(scrollIntoViewSpy).toHaveBeenCalledWith({ block: "end" });
+    });
+
+    // issue 2382 — the send's two halves arrive on two connections, in either
+    // order. When the POST resolves FIRST, the divider collapses (the list
+    // shrinks by its height) and the echo lands after it, growing the list by
+    // a row no taller than the divider was. Settling on "the extent grew since
+    // the last tail write" compared the echo against an extent that still held
+    // the divider, saw no growth, and left the write to the fail-safe — which
+    // skipped it, because a row is shorter than the 50px at-tail slack. The
+    // sent row stayed entirely under the compose.
+    it("follows the echo when the POST resolves first and the divider collapses before it lands (issue 2382)", async () => {
+      setUserNick("vjt");
+      seedReadCursor("freenode", "#grappa", 1);
+      setScrollback({ "freenode #grappa": fixture });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+      const list = screen.getByTestId("scrollback") as HTMLDivElement;
+      expect(screen.queryByTestId("unread-marker")).not.toBeNull();
+      await flushFrames(3);
+      // The operator has touched the pane: the activation latch is handed back,
+      // so live appends are tail-followed rather than re-asserted to the divider.
+      list.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+
+      const CLIENT = 500;
+      const DIVIDER = 24;
+      const ROW = 22;
+      let height = 1000;
+      Object.defineProperty(list, "clientHeight", { value: CLIENT, configurable: true });
+      Object.defineProperty(list, "scrollHeight", { get: () => height, configurable: true });
+      Object.defineProperty(list, "scrollTop", { value: 0, writable: true, configurable: true });
+
+      // A peer line arrives and is tail-followed with the divider still on
+      // screen: the last tail write happened at an extent that includes it.
+      const proto = fixture[0];
+      if (!proto) throw new Error("fixture[0] missing");
+      const peer = { ...proto, id: 4, server_time: 1_700_000_003_000, sender: "alice", body: "hi" };
+      setScrollback({ "freenode #grappa": [...fixture, peer] });
+      setBox(list.lastElementChild, ROW);
+      await flushFrames(3);
+      expect(list.scrollTop).toBe(height - CLIENT);
+      expect(screen.queryByTestId("unread-marker")).not.toBeNull();
+
+      // Enter. The POST resolves before the echo: the cursor advances past every
+      // loaded row and the divider collapses. The pane stays at its (new) tail.
+      pushOwnSendSubmitted("freenode #grappa");
+      seedReadCursor("freenode", "#grappa", 5);
+      pushOwnSend("freenode #grappa");
+      await waitFor(() => {
+        expect(screen.queryByTestId("unread-marker")).toBeNull();
+      });
+      height -= DIVIDER;
+      list.scrollTop = height - CLIENT;
+      await flushFrames(2);
+
+      // The echo lands, inside the collapse's settle window, one row tall.
+      const echo = { ...proto, id: 5, server_time: 1_700_000_004_000, sender: "vjt", body: "mine" };
+      setScrollback({ "freenode #grappa": [...fixture, peer, echo] });
+      height += ROW;
+      setBox(list.lastElementChild, ROW);
+      await flushFrames(35);
+
+      // The sent row is fully above the bottom edge: the pane is at its true tail.
+      expect(list.scrollHeight - list.scrollTop - list.clientHeight).toBe(0);
     });
   });
 
