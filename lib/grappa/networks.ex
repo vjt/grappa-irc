@@ -1635,14 +1635,13 @@ defmodule Grappa.Networks do
   # `connect/1` / `disconnect/2` return the credential `PATCH
   # /networks/:slug` renders through `Wire.credential_to_json/1`, whose
   # `avatar_url/1` has no clause for a set `avatar_upload_id` with the
-  # association unloaded (issue 2381). `Repo.preload/2` skips an
-  # already-loaded association and issues no query for a nil FK.
+  # association unloaded (issue 2381).
   @spec preload_credential_assocs(Credential.t()) :: Credential.t()
   defp preload_credential_assocs(%Credential{} = cred) do
     cred
     |> maybe_preload_user()
     |> maybe_preload_network()
-    |> Repo.preload(:avatar_upload)
+    |> preload_avatar_upload()
   end
 
   defp maybe_preload_user(%Credential{user: %User{}} = cred), do: cred
@@ -1658,6 +1657,13 @@ defmodule Grappa.Networks do
 
   defp maybe_preload_network(%Credential{network_id: nid} = cred) do
     %Credential{cred | network: Repo.get!(Network, nid)}
+  end
+
+  # `Repo.preload/2` skips an already-loaded association and issues no
+  # query for a nil FK, so no `maybe_` clauses. The match narrows its
+  # struct-or-list-or-nil return for Dialyzer.
+  defp preload_avatar_upload(%Credential{} = cred) do
+    %Credential{} = Repo.preload(cred, :avatar_upload)
   end
 
   # Phoenix.PubSub.broadcast/3 returns `:ok | {:error, term()}` but
