@@ -2,41 +2,34 @@ defmodule Grappa.Push.VendorLog do
   @moduledoc """
   Records what a push service SAID when it rejected a delivery (#1321).
 
-  `Grappa.Push.Sender` logs the HTTP status of a rejected push and
-  nothing else, because the status is all it is given. A bare `400` or
+  `Grappa.Push.Sender`'s own line for a rejected push carries the HTTP
+  status and nothing else. A bare `400` or
   `403` is indistinguishable from a bad JWT, a stale application server
   key, a clock skew or an expired subscription — the services write the
   actual reason into the response BODY, and the diagnosis is one field
   long once you can read it.
 
-  ## Why a telemetry sink instead of plumbing it through the sender
+  ## Where the body comes from
 
-  There is no plumbing route. `ExNudge.send_notification/3` binds the
-  `%HTTPoison.Response{}` on the failure branch and returns
-  `{:error, {:http_error, status}}` — the response never leaves the
-  library (its own `@spec` for `send_notifications/3` promises a
-  response it does not hand back; `Grappa.Push.Sender` already documents
-  that the declared types are narrower than the returns).
+  `Grappa.Push.Sender` owns the POST since #2401 (it has to: the endpoint
+  address policy is only worth what the connection honours, and the
+  library's send call takes no transport options), so the response is in
+  hand and the sender emits it as `[:grappa, :push, :vendor_rejection]`
+  — `%{status: integer, vendor: host, body: binary}` — on every non-2xx
+  that is not the terminal 404 / 410. Until then this module had to
+  attach to `ExNudge`'s own telemetry, the one route the library left
+  for a body it never returned.
 
-  The body IS reachable, by exactly one route: the library's
-  `[:ex_nudge, :send_notification]` telemetry event carries the response
-  body as `metadata.error_reason` whenever the response was a non-2xx it
-  did not classify itself. So this module attaches there.
+  Two consequences of that split, both deliberate:
 
-  Consequences of that route, both deliberate:
-
-    * **`retry-after` is unreachable.** Response HEADERS never leave
-      `ExNudge` by any route, telemetry included. The issue asks for it;
-      it cannot be had without a change upstream, and the last release is
-      1.0.2 (2025-07-28).
-    * **Terminal and transport failures stay silent here.** The library
-      classifies 410 / 413 and transport errors itself and passes an atom
-      in place of a response, so the event carries a nil
-      `http_status_code` and no body. Those paths already log at the
-      sender with everything there is to say; a second line would add
-      noise, not information. An integer `http_status_code` is therefore
-      the exact discriminator for "a vendor body exists", and this
-      handler keys on it.
+    * **Terminal and transport failures stay silent here.** A 404 / 410
+      sweep and a transport error already log at the sender with
+      everything there is to say; a second line would add noise, not
+      information. The sender simply does not emit for them.
+    * **`retry-after` is reachable now and still not logged.** Response
+      headers were unreachable while the library owned the request; they
+      no longer are, but carrying one is its own change, not part of the
+      transport move.
 
   ## What the line may contain
 
@@ -75,7 +68,7 @@ defmodule Grappa.Push.VendorLog do
   require Logger
 
   @handler_id "grappa-push-vendor-log"
-  @event [:ex_nudge, :send_notification]
+  @event [:grappa, :push, :vendor_rejection]
 
   # Genuine config default (correct production behavior): these are small
   # error documents — a couple of hundred bytes is the whole reason, and
@@ -109,37 +102,14 @@ defmodule Grappa.Push.VendorLog do
   # Runs in the EMITTER's process (per :telemetry semantics) — the
   # `Grappa.Push.Sender` fan-out Task, never a hot path.
   @spec handle_telemetry([atom()], map(), map(), term()) :: :ok
-  def handle_telemetry(_, _, %{status: :error, http_status_code: status} = metadata, _)
-      when is_integer(status) do
-    Logger.warning("push.vendor rejected",
-      status: status,
-      vendor: host(Map.get(metadata, :endpoint)),
-      reason: reason(Map.get(metadata, :error_reason))
-    )
+  def handle_telemetry(_, _, %{status: status, vendor: vendor, body: body}, _)
+      when is_integer(status) and is_binary(vendor) and is_binary(body) do
+    Logger.warning("push.vendor rejected", status: status, vendor: vendor, reason: reason(body))
   end
 
-  def handle_telemetry(_, _, _, _), do: :ok
-
-  # The endpoint's host and nothing else — a path segment can itself be
-  # a credential. `ExNudge` hands over an endpoint it has already
-  # partially masked; this does not rely on that.
-  @spec host(term()) :: String.t()
-  defp host(endpoint) when is_binary(endpoint) do
-    case URI.parse(endpoint) do
-      %URI{host: host} when is_binary(host) -> host
-      _ -> "unknown"
-    end
-  end
-
-  defp host(_), do: "unknown"
-
-  # A body is what an integer `http_status_code` implies, but the library's
-  # declared types are already known to be narrower than what it returns
-  # (see `Grappa.Push.Sender.normalize/1`), so a non-binary reason is
-  # reported rather than crashed on.
-  @spec reason(term()) :: String.t()
-  defp reason(body) when is_binary(body), do: body |> cap() |> one_line()
-  defp reason(other), do: inspect(other)
+  # A body is vendor bytes of unbounded size and arbitrary encoding.
+  @spec reason(binary()) :: String.t()
+  defp reason(body), do: body |> cap() |> one_line()
 
   @spec cap(binary()) :: binary()
   defp cap(body) when byte_size(body) <= @max_reason_bytes, do: body

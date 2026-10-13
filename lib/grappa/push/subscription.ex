@@ -67,6 +67,17 @@ defmodule Grappa.Push.Subscription do
   but rejecting comically long values at the boundary stops
   pathological cases from filling sqlite text pages.
 
+  ## Endpoint policy (#2401)
+
+  An endpoint is a URL the server will POST to, so it is an outbound
+  request the CLIENT chose. The changeset takes `https` with a host that
+  `Grappa.Net.Ssrf.blocked_literal_host?/1` does not refuse — no loopback,
+  private, link-local or metadata literal, no `localhost`. Names are not
+  resolved here: `Grappa.Push.Sender` resolves at every delivery and dials
+  the address it checked, which is the half a rebinding name cannot pass.
+  No vendor allowlist: a UnifiedPush distributor can live on any public
+  host.
+
   ## Public API
 
   Callers receive `%Subscription{}` structs through `Grappa.Push`
@@ -80,6 +91,7 @@ defmodule Grappa.Push.Subscription do
   import Ecto.Changeset
 
   alias Grappa.Accounts.User
+  alias Grappa.Net.Ssrf
   alias Grappa.Subject
   alias Grappa.Visitors.Visitor
 
@@ -200,6 +212,7 @@ defmodule Grappa.Push.Subscription do
     |> cast(attrs, @subject ++ @required ++ @optional)
     |> validate_required(@required)
     |> validate_length(:endpoint, max: 2048)
+    |> validate_change(:endpoint, &validate_endpoint/2)
     |> validate_length(:p256dh_key, max: 256)
     |> validate_length(:auth_key, max: 64)
     |> validate_length(:user_agent, max: 512)
@@ -213,6 +226,25 @@ defmodule Grappa.Push.Subscription do
       message: "user_id and visitor_id are mutually exclusive"
     )
   end
+
+  # #2401 — the save-time half of the endpoint policy. `https` because RFC
+  # 8030 makes it the only push transport and every vendor in use speaks it;
+  # a host, and not one `Ssrf` can refuse without a lookup. A NAME that
+  # resolves privately passes here on purpose: a check at save is one the
+  # name can pass and then stop passing, so the authority is the send-time
+  # resolve-and-pin in `Grappa.Push.Sender`, and this half only keeps DNS
+  # out of the request path while refusing what is already decidable.
+  defp validate_endpoint(:endpoint, endpoint) do
+    case URI.parse(endpoint) do
+      %URI{scheme: "https", host: host} when is_binary(host) and host != "" ->
+        if Ssrf.blocked_literal_host?(host), do: endpoint_error(), else: []
+
+      _ ->
+        endpoint_error()
+    end
+  end
+
+  defp endpoint_error, do: [endpoint: "must be an https URL on a public host"]
 
   @doc """
   Rename changeset — the ONE user-writable field on a subscription (#964).
