@@ -383,7 +383,7 @@ defmodule Grappa.Networks.SessionPlan do
       # M3a — same boot-time-snapshot posture as `:restored_profile`
       # above; a live edit updates `state.avatar_url` in place via the
       # same `user_settings` bridge topic
-      # (`Credentials.set_avatar/3`/`clear_avatar/1`). `:avatar_upload`
+      # (`Credentials.set_avatar/4`/`clear_avatar/1`). `:avatar_upload`
       # is preloaded defensively here (this plan-build path doesn't
       # otherwise touch it) rather than assumed already-loaded on `cred`.
       restored_avatar_url: Networks.Wire.avatar_url(Repo.preload(cred, :avatar_upload))

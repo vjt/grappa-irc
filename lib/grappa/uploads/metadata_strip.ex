@@ -5,7 +5,7 @@ defmodule Grappa.Uploads.MetadataStrip do
   ## The guarantee
 
   Privacy is a SERVER guarantee (vjt 2026-06-10): every image and
-  video accepted by `Grappa.Uploads.create/3` has its embedded
+  video accepted by `Grappa.Uploads.create/4` has its embedded
   metadata (EXIF GPS, device Make/Model, QuickTime location atoms,
   Matroska tags) removed BEFORE the bytes touch the storage root.
   Clients never participate in the decision — cic's transcode gate

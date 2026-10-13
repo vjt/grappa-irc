@@ -760,6 +760,7 @@ defmodule GrappaWeb.UploadsControllerTest do
             mime: "text/plain",
             expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -780,6 +781,7 @@ defmodule GrappaWeb.UploadsControllerTest do
             mime: "text/plain",
             expires_at: DateTime.add(DateTime.utc_now(), -1, :second)
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 

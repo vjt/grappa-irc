@@ -250,7 +250,7 @@ defmodule GrappaWeb.NetworksController do
   Sibling of `/profile` in every respect that matters: it never bounces
   the live session either (the avatar doesn't ride the IRC handshake,
   only `Grappa.Session.EventRouter`'s CTCP AVATAR auto-reply) — see
-  `Credentials.set_avatar/3` for the live-update-without-reconnect
+  `Credentials.set_avatar/4` for the live-update-without-reconnect
   mechanism.
 
   Multipart body: `file` — binary, required, image only. Reuses the
@@ -280,14 +280,9 @@ defmodule GrappaWeb.NetworksController do
          {:ok, mime} <- validate_avatar_mime(upload),
          :ok <- check_avatar_per_file_cap(upload),
          {:ok, bytes} <- read_avatar_file(upload),
-         :ok <-
-           Uploads.check_caps(
-             Subject.to_session(subject),
-             byte_size(bytes),
-             ServerSettings.upload_caps()
-           ),
          {:ok, credential} <- fetch_credential(subject, network),
-         {:ok, updated_cred} <- Credentials.set_avatar(credential, bytes, mime) do
+         {:ok, updated_cred} <-
+           Credentials.set_avatar(credential, bytes, mime, ServerSettings.upload_caps()) do
       render(conn, :update, credential: updated_cred)
     end
   end

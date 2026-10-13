@@ -3,7 +3,7 @@ defmodule GrappaWeb.Admin.UploadsControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.Uploads
+  alias Grappa.{ServerSettings, Uploads}
 
   setup do
     root =
@@ -71,10 +71,16 @@ defmodule GrappaWeb.Admin.UploadsControllerTest do
       # live_bytes_sum arithmetic below stays exact (image/video bytes
       # are rewritten by the strip — sizes would be tool-dependent).
       {:ok, u1} =
-        Uploads.create("a", %{subject: {:user, user.id}, mime: "text/plain", expires_at: now}, storage_root: root)
+        Uploads.create(
+          "a",
+          %{subject: {:user, user.id}, mime: "text/plain", expires_at: now},
+          ServerSettings.upload_caps(), storage_root: root)
 
       {:ok, u2} =
-        Uploads.create("bb", %{subject: {:visitor, v.id}, mime: "text/plain", expires_at: now}, storage_root: root)
+        Uploads.create(
+          "bb",
+          %{subject: {:visitor, v.id}, mime: "text/plain", expires_at: now},
+          ServerSettings.upload_caps(), storage_root: root)
 
       {:ok, _} = Uploads.soft_delete(u2, DateTime.utc_now())
 
@@ -113,6 +119,7 @@ defmodule GrappaWeb.Admin.UploadsControllerTest do
             mime: "text/plain",
             expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 

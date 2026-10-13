@@ -17,9 +17,12 @@ defmodule Grappa.Uploads do
 
   ## Public surface
 
-    * `create/3` — accepts `{file_bytes, attrs, opts}`, strips
-      image/video metadata (`MetadataStrip` — fail-closed, #39),
-      writes to disk, inserts row. `attrs` carries the subject (XOR
+    * `create/4` — accepts `{file_bytes, attrs, caps, opts}`, admits
+      the write against the global disk budget AND the caller's own
+      per-subject quota (issues 2175 + 2403, both refused as
+      `:insufficient_storage`, the authoritative check in the same
+      transaction as the insert), strips image/video metadata
+      (`MetadataStrip` — fail-closed, #39), writes to disk, inserts row. `attrs` carries the subject (XOR
       user/visitor FK), `mime`, optional `charset`, optional
       `original_filename`,
       optional `expires_at`. `opts` carries `:storage_root` (DI for
@@ -29,9 +32,6 @@ defmodule Grappa.Uploads do
       reads as `:not_found` so the public GET surface has no oracle.
     * `live_bytes_sum/0` — `SUM(bytes) WHERE deleted_at IS NULL`,
       the instance-wide total the admin surface reports.
-    * `check_caps/3` — the admission check every write door calls:
-      the global disk budget AND the caller's own per-subject quota
-      (issue 2175), both refused as `:insufficient_storage`.
     * `list_expired/0` — Reaper enumeration: rows with
       `expires_at <= now()` AND `deleted_at IS NULL`.
     * `soft_delete/2` — flips `deleted_at`. The caller MUST `File.rm/1`
@@ -41,7 +41,7 @@ defmodule Grappa.Uploads do
       subject-destroying door funnels through, because the FK cascade
       takes the rows and leaves the files (issue 1890).
     * `storage_path/2` — joins `storage_root` + slug, base32-validates
-      the slug. Used by `create/3` to write, by the controller to
+      the slug. Used by `create/4` to write, by the controller to
       read, by Reaper to unlink.
     * `list_all/0` — admin REST enumeration (descending insert time,
       includes soft-deleted rows since admins want the full picture).
@@ -56,7 +56,7 @@ defmodule Grappa.Uploads do
 
   ## File-first, row-after invariant on writes; file-after, row-first on reads
 
-  - `create/3` writes the file to disk BEFORE inserting the row.
+  - `create/4` writes the file to disk BEFORE inserting the row.
     Rationale: if the row is inserted first then file write fails,
     the row dangles (a `GET /uploads/:slug` returns 200 from the row
     but the file has gone away). File-first means a write failure
@@ -246,8 +246,8 @@ defmodule Grappa.Uploads do
   end
 
   @doc """
-  Strip metadata, write the result to disk + insert a row. Returns
-  the inserted row or an error.
+  Admit, strip, write and insert one upload under `caps`. Returns the
+  inserted row or an error.
 
   Image + video bytes go through `MetadataStrip.run/2` BEFORE the
   file write — the privacy guarantee (#39) lives here in the
@@ -258,28 +258,52 @@ defmodule Grappa.Uploads do
   `{:error, {:metadata_strip, reason}}` — fail-closed, never
   stored-with-leak.
 
+  ## The caps are checked HERE, twice, and the second check is the one that counts (issue 2403)
+
+  Both ceilings (`check_caps/3`) are sums over live rows, so a door that
+  checked them and THEN called this function let two concurrent writers
+  read the same totals and both land, overshooting the cap by up to one
+  upload each. The check therefore lives inside the write, where no door
+  can split it off:
+
+    1. a cheap pre-check on the INCOMING size, before the strip — an
+       upload already over the line never reaches ffmpeg;
+    2. the strip and the file write, under no lock (#1715: a long
+       write-lock hold stalls every `persistent_term` write in the VM, so
+       the slow part must never run inside the transaction);
+    3. the AUTHORITATIVE re-check on the STORED size and the row insert,
+       in ONE `Repo.immediate_transaction/1`. `BEGIN IMMEDIATE` serialises
+       writers, so the totals this transaction reads cannot move before
+       its insert commits. A refusal here removes the file it wrote.
+
+  No reservation table: the live sum IS the reservation once the row is
+  in, and the transaction is what makes reading it and adding to it one
+  step. A crash between the file write and the insert leaves an orphan
+  file with no row — unservable (every read goes through the row), and
+  the same window the file-first ordering always had.
+
   `opts[:storage_root]` is the upload directory (typically
   `runtime/uploads`); tests inject a per-test temp path.
   `opts[:slug]` is injectable for deterministic tests; production
   callers omit it + take `mint_slug/0`.
-  `opts[:now]` is injectable for time-sensitive tests.
 
   File-write failures bubble as `{:error, {:fs, posix_reason}}` —
   the row is NOT created.
   """
-  @spec create(binary(), create_attrs(), create_opts()) ::
+  @spec create(binary(), create_attrs(), caps(), create_opts()) ::
           {:ok, Upload.t()}
+          | {:error, :insufficient_storage}
           | {:error, Ecto.Changeset.t()}
           | {:error, {:fs, File.posix()}}
           | MetadataStrip.error()
-  def create(bytes, %{subject: subject, mime: mime} = attrs, opts) when is_binary(bytes) do
+  def create(bytes, %{subject: subject, mime: mime} = attrs, caps, opts) when is_binary(bytes) do
     storage_root = Keyword.fetch!(opts, :storage_root)
     slug = Keyword.get_lazy(opts, :slug, &mint_slug/0)
     path = storage_path(storage_root, slug)
 
-    with {:ok, stored_bytes} <- MetadataStrip.run(bytes, mime),
-         :ok <- File.mkdir_p(storage_root),
-         :ok <- File.write(path, stored_bytes) do
+    with :ok <- check_caps(subject, byte_size(bytes), caps),
+         {:ok, stored_bytes} <- MetadataStrip.run(bytes, mime),
+         :ok <- write_file(storage_root, path, stored_bytes) do
       row_attrs =
         attrs
         |> Map.delete(:subject)
@@ -287,33 +311,45 @@ defmodule Grappa.Uploads do
         |> Map.put(:bytes, byte_size(stored_bytes))
         |> Subject.put_subject_id(subject)
 
-      insert_row(row_attrs, path)
-    else
-      {:error, {:metadata_strip, _}} = err ->
-        err
-
-      {:error, posix} when is_atom(posix) ->
-        {:error, {:fs, posix}}
+      admit_and_insert(row_attrs, subject, caps, path)
     end
   end
 
-  defp insert_row(row_attrs, path) do
-    case %Upload{} |> Upload.insert_changeset(row_attrs) |> Repo.insert() do
-      {:ok, _} = ok ->
-        ok
+  @spec write_file(Path.t(), Path.t(), binary()) :: :ok | {:error, {:fs, File.posix()}}
+  defp write_file(storage_root, path, stored_bytes) do
+    with :ok <- File.mkdir_p(storage_root),
+         :ok <- File.write(path, stored_bytes) do
+      :ok
+    else
+      {:error, posix} -> {:error, {:fs, posix}}
+    end
+  end
 
-      {:error, %Ecto.Changeset{}} = err ->
-        # Row insert failed AFTER the file landed on disk —
-        # roll back the file write to avoid an orphan.
+  defp admit_and_insert(%{bytes: stored_size} = row_attrs, subject, caps, path) do
+    result =
+      Repo.immediate_transaction(fn ->
+        with :ok <- check_caps(subject, stored_size, caps),
+             {:ok, row} <- %Upload{} |> Upload.insert_changeset(row_attrs) |> Repo.insert() do
+          row
+        else
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end)
+
+    # Refused or invalid AFTER the file landed on disk — remove it, so
+    # neither a quota refusal nor a bad row leaves an orphan behind.
+    case result do
+      {:ok, _} ->
+        result
+
+      {:error, _} ->
         _ = File.rm(path)
-        err
+        result
     end
   rescue
     # Sqlite reports FK violation names as nil; Ecto's
     # `assoc_constraint` can't match and raises rather than
-    # returning a changeset. Catch, rm the orphan file, and
-    # re-shape as a generic constraint error the caller can
-    # surface as 422 / 400 if it cares.
+    # returning a changeset. rm the orphan file and re-raise.
     e in Ecto.ConstraintError ->
       _ = File.rm(path)
       reraise e, __STACKTRACE__
@@ -428,39 +464,33 @@ defmodule Grappa.Uploads do
   """
   @type caps :: %{global: pos_integer(), user: pos_integer(), visitor: pos_integer()}
 
-  @doc """
-  Admission check for the boundary: may `subject` add `incoming_bytes`
-  to the store? `:ok` or `{:error, :insufficient_storage}`.
-
-  TWO ceilings, both refused with the SAME error (vjt's ruling, issue
-  2175): there is no self-service upload management yet — no listing,
-  no delete — so the only actionable path out of a per-subject refusal
-  is the same one the global cap already points at, the admin. A
-  distinct error would name an affordance that does not exist. The day
-  self-service lands this should be revisited.
-
-  * **global** — the instance's whole disk budget, every subject's
-    bytes. Unchanged behaviour; this used to be `check_global_cap/2`.
-  * **per-subject** — the caller's OWN live bytes against the ceiling
-    for their subject kind. `live_bytes_sum_for/1` counts only rows
-    with `deleted_at IS NULL`, so the quota FREES ITSELF when the
-    reaper collects an expired upload: no parallel accounting, no
-    migration, no backfill. Anyone already over the ceiling is frozen
-    out until their uploads expire.
-
-  ## Why ONE function and not two siblings
-
-  Every door that writes to the store must clear BOTH ceilings, and a
-  door that called one helper and forgot the other would look wired.
-  Issue 2175 shipped with three such doors and its own filing named
-  only two, so this is measured rather than hypothetical. Folding the
-  pair into a single call makes the half-wire unspellable: the next
-  door (issue 2089 folds DCC into this pool) either checks or does not.
-  """
+  # Admission check: may `subject` add `incoming_bytes` to the store?
+  # Private since issue 2403 — `create/4` is its only caller, and that is
+  # the point: a check a door could call apart from the write is a check
+  # two concurrent writers both pass.
+  #
+  # TWO ceilings, both refused with the SAME error (vjt's ruling, issue
+  # 2175): there is no self-service upload management yet — no listing,
+  # no delete — so the only actionable path out of a per-subject refusal
+  # is the same one the global cap already points at, the admin. A
+  # distinct error would name an affordance that does not exist. The day
+  # self-service lands this should be revisited.
+  #
+  # * global — the instance's whole disk budget, every subject's bytes.
+  # * per-subject — the caller's OWN live bytes against the ceiling for
+  #   their subject kind. `live_bytes_sum_for/1` counts only rows with
+  #   `deleted_at IS NULL`, so the quota FREES ITSELF when the reaper
+  #   collects an expired upload: no parallel accounting. Anyone already
+  #   over the ceiling is frozen out until their uploads expire.
+  #
+  # ONE function and not two siblings: every write must clear BOTH
+  # ceilings, and issue 2175 shipped three doors of which its own filing
+  # named only two. Since issue 2403 the doors cannot skip it at all —
+  # they hand `caps` to `create/4`.
   @spec check_caps(Subject.t(), non_neg_integer(), caps()) ::
           :ok | {:error, :insufficient_storage}
-  def check_caps(subject, incoming_bytes, %{global: global_cap} = caps)
-      when is_integer(incoming_bytes) and incoming_bytes >= 0 do
+  defp check_caps(subject, incoming_bytes, %{global: global_cap} = caps)
+       when is_integer(incoming_bytes) and incoming_bytes >= 0 do
     with :ok <- within(live_bytes_sum(), incoming_bytes, global_cap) do
       within(live_bytes_sum_for(subject), incoming_bytes, subject_cap(caps, subject))
     end

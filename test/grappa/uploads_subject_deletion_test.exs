@@ -9,7 +9,7 @@ defmodule Grappa.UploadsSubjectDeletionTest do
   import ExUnit.CaptureLog
   import Grappa.AuthFixtures, only: [user_fixture: 1, visitor_fixture: 1]
 
-  alias Grappa.{Accounts, Uploads, Visitors}
+  alias Grappa.{Accounts, ServerSettings, Uploads, Visitors}
 
   setup do
     root =
@@ -40,6 +40,7 @@ defmodule Grappa.UploadsSubjectDeletionTest do
           mime: "text/plain",
           expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
         },
+        ServerSettings.upload_caps(),
         storage_root: root
       )
 

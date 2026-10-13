@@ -9,6 +9,7 @@ defmodule Grappa.Uploads.ReaperTest do
   import Grappa.AuthFixtures, only: [user_fixture: 1]
 
   alias Grappa.Repo.BusyRetry
+  alias Grappa.ServerSettings
   alias Grappa.Uploads
   alias Grappa.Uploads.Reaper
 
@@ -50,6 +51,7 @@ defmodule Grappa.Uploads.ReaperTest do
             mime: "text/plain",
             expires_at: past
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -76,6 +78,7 @@ defmodule Grappa.Uploads.ReaperTest do
             mime: "text/plain",
             expires_at: DateTime.add(now, 3600, :second)
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -99,6 +102,7 @@ defmodule Grappa.Uploads.ReaperTest do
             mime: "text/plain",
             expires_at: past
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -118,6 +122,7 @@ defmodule Grappa.Uploads.ReaperTest do
             mime: "text/plain",
             expires_at: nil
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -139,6 +144,7 @@ defmodule Grappa.Uploads.ReaperTest do
             mime: "text/plain",
             expires_at: past
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -168,6 +174,7 @@ defmodule Grappa.Uploads.ReaperTest do
             mime: "text/plain",
             expires_at: past
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -179,6 +186,7 @@ defmodule Grappa.Uploads.ReaperTest do
             mime: "text/plain",
             expires_at: past
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -202,6 +210,7 @@ defmodule Grappa.Uploads.ReaperTest do
         Uploads.create(
           "img",
           %{subject: {:user, user.id}, mime: "text/plain", expires_at: past},
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -266,6 +275,7 @@ defmodule Grappa.Uploads.ReaperTest do
             mime: "text/plain",
             expires_at: past
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 

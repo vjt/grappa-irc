@@ -807,14 +807,14 @@ defmodule Grappa.Networks.Credentials do
   `Topic.user_settings/1` bridge, so `EventRouter`'s CTCP AVATAR reply
   picks it up without a session restart.
   """
-  @spec set_avatar(Credential.t(), binary(), String.t()) ::
+  @spec set_avatar(Credential.t(), binary(), String.t(), Uploads.caps()) ::
           {:ok, Credential.t()} | {:error, term()}
-  def set_avatar(%Credential{} = credential, bytes, mime)
+  def set_avatar(%Credential{} = credential, bytes, mime, caps)
       when is_binary(bytes) and is_binary(mime) do
     attrs = %{subject: credential_subject(credential), mime: mime, expires_at: nil}
 
     with {:ok, new_upload} <-
-           Uploads.create(bytes, attrs, storage_root: Uploads.storage_root()),
+           Uploads.create(bytes, attrs, caps, storage_root: Uploads.storage_root()),
          {:ok, updated} <-
            credential |> Ecto.Changeset.change(avatar_upload_id: new_upload.id) |> Repo.update() do
       :ok = retire_previous_avatar(credential.avatar_upload_id, new_upload.id)
@@ -829,7 +829,7 @@ defmodule Grappa.Networks.Credentials do
   @doc """
   M3a — clears `credential`'s avatar: retires the linked upload (if
   any) and nils the FK. No-op success when already unset. Same
-  live-broadcast shape as `set_avatar/3`.
+  live-broadcast shape as `set_avatar/4`.
   """
   @spec clear_avatar(Credential.t()) :: {:ok, Credential.t()} | {:error, term()}
   def clear_avatar(%Credential{avatar_upload_id: nil} = credential) do
@@ -862,7 +862,7 @@ defmodule Grappa.Networks.Credentials do
   # `Grappa.Uploads.Reaper`'s unlink-then-soft-delete sequence exactly
   # (an ENOENT on unlink is treated as already-gone, not an error).
   # Called ONLY after the new state (a fresh avatar_upload_id, or nil on
-  # clear) is already committed — see `set_avatar/3`/`clear_avatar/1`.
+  # clear) is already committed — see `set_avatar/4`/`clear_avatar/1`.
   # A failure here (fs error, row already gone) leaves a harmless orphan
   # row for a future admin sweep rather than raising mid-request.
   @spec retire_previous_avatar(Ecto.UUID.t() | nil, Ecto.UUID.t() | nil) :: :ok

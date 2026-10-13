@@ -38,7 +38,9 @@ defmodule GrappaWeb.UploadsController do
        from `Grappa.ServerSettings.get_upload_per_file_cap_bytes/1`
        for the derived category (image 10MiB / video 50MiB /
        document 10MiB / audio 25MiB defaults). Else 413 file_too_large.
-    4. Storage caps (`Grappa.Uploads.check_caps/3`) — the GLOBAL disk
+    4. Storage caps, checked INSIDE `Grappa.Uploads.create/4` (issue
+       2403: in the same transaction as the row insert, so two concurrent
+       uploads cannot both pass on the same totals) — the GLOBAL disk
        budget (`live_bytes_sum + byte_size <= global_cap_bytes`) AND
        the uploader's own per-subject quota (issue 2175:
        `upload.per_user_cap_bytes` / `upload.per_visitor_cap_bytes`,
@@ -46,7 +48,7 @@ defmodule GrappaWeb.UploadsController do
        the two share one error deliberately, since neither is
        self-serviceable today.
     5. Slug minted, file written, row inserted via
-       `Grappa.Uploads.create/3`.
+       `Grappa.Uploads.create/4`.
 
   Response: 201 with `%{slug, url, expires_at}` (url absolute, via
   Endpoint.url/0). Since #418 the `url` carries the media type as a file
@@ -181,9 +183,11 @@ defmodule GrappaWeb.UploadsController do
          {:ok, mime, charset, category} <- validate_mime(upload),
          :ok <- check_per_file_cap(upload, category),
          {:ok, bytes} <- read_file(upload),
-         :ok <- Uploads.check_caps(subject, byte_size(bytes), ServerSettings.upload_caps()),
          {:ok, row} <-
-           Uploads.create(bytes, build_attrs(subject, {mime, charset}, upload, ttl_seconds),
+           Uploads.create(
+             bytes,
+             build_attrs(subject, {mime, charset}, upload, ttl_seconds),
+             ServerSettings.upload_caps(),
              storage_root: storage_root()
            ) do
       conn
@@ -371,7 +375,7 @@ defmodule GrappaWeb.UploadsController do
   defp build_attrs(subject, {mime, charset}, %Plug.Upload{filename: filename}, ttl_seconds) do
     now = DateTime.utc_now()
 
-    # `:bytes` is set inside `Uploads.create/3` from the actual
+    # `:bytes` is set inside `Uploads.create/4` from the actual
     # binary size — passing 0 here would be ignored, but it's
     # cleaner to omit it entirely.
     %{

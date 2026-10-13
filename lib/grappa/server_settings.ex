@@ -355,10 +355,10 @@ defmodule Grappa.ServerSettings do
   def put_upload_per_visitor_cap_bytes(_), do: {:error, :invalid_value}
 
   @doc """
-  The ceilings `Grappa.Uploads.check_caps/3` needs, read in one place.
+  The ceilings `Grappa.Uploads.create/4` checks, read in one place.
 
   Exists so a write door spells ONE call instead of three settings
-  reads it could get half-right — the same reason `check_caps/3` is one
+  reads it could get half-right — the same reason the caps check is one
   function and not two siblings.
 
   Typed as `Grappa.Uploads.caps/0` rather than a local twin: the shape

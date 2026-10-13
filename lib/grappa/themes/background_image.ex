@@ -16,10 +16,10 @@ defmodule Grappa.Themes.BackgroundImage do
        (wall-clock timeout, scrubbed env). This DECODES the pixels and emits a
        fresh flat PNG, so any non-image bytes riding a polyglot are dropped — a
        stronger guarantee than metadata stripping alone.
-    3. **Re-host** — the re-encoded PNG is stored via `Grappa.Uploads.create/3`
+    3. **Re-host** — the re-encoded PNG is stored via `Grappa.Uploads.create/4`
        with a forced `image/png` mime and NO expiry (`expires_at` omitted → NULL
        → the Uploads Reaper never sweeps it; theme backgrounds are durable).
-       `create/3` additionally runs its own metadata strip (belt-and-braces).
+       `create/4` additionally runs its own metadata strip (belt-and-braces).
 
   The download surface serves the stored bytes with `Content-Type: image/png` +
   `nosniff`, so even a hypothetical surviving polyglot can't be script-executed
@@ -210,28 +210,22 @@ defmodule Grappa.Themes.BackgroundImage do
     # and this path consumes them too: unswept and bounded is a design choice,
     # unswept and unbounded is not.
     #
-    # issue 2175 — the per-subject quota is checked HERE and not only at the
-    # two REST doors, because this door writes a subject-attributed `uploads`
-    # row like they do, and it is the one that never gives the bytes back: an
-    # upload with a TTL frees its quota when the reaper collects, a background
-    # with `expires_at: nil` never does, and there is no self-service delete.
-    # A quota that skipped this door would not be bypassable until the next
-    # sweep — it would be bypassable permanently.
-    #
-    # Checked here rather than in the context door because the byte count only
-    # exists after the re-encode: what lands on disk is this PNG, not whatever
-    # was fetched.
+    # issue 2175 — the per-subject quota applies to this door too, because it
+    # writes a subject-attributed `uploads` row like the REST doors do, and it
+    # is the one that never gives the bytes back: an upload with a TTL frees
+    # its quota when the reaper collects, a background with `expires_at: nil`
+    # never does, and there is no self-service delete. A quota that skipped
+    # this door would be bypassable permanently. Since issue 2403 the check
+    # runs inside `Uploads.create/4`, on the bytes it stores — this PNG, not
+    # whatever was fetched.
     attrs = %{subject: subject, mime: "image/png"}
 
-    with :ok <- Uploads.check_caps(subject, byte_size(png), ServerSettings.upload_caps()) do
-      insert(attrs, png)
-    end
-  end
-
-  defp insert(attrs, png) do
-    case Uploads.create(png, attrs, storage_root: Uploads.storage_root()) do
+    case Uploads.create(png, attrs, ServerSettings.upload_caps(), storage_root: Uploads.storage_root()) do
       {:ok, %Uploads.Upload{slug: slug}} ->
         {:ok, slug}
+
+      {:error, :insufficient_storage} = refused ->
+        refused
 
       {:error, reason} ->
         # Post-reencode store failure (fs / metadata-strip / changeset) is

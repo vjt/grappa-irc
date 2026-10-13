@@ -327,7 +327,7 @@ defmodule GrappaWeb.NetworksControllerTest do
       cred = credential_fixture(vjt, network)
 
       {:ok, with_avatar} =
-        Credentials.set_avatar(cred, Grappa.UploadFixtures.bytes(:gps_png), "image/png")
+        Credentials.set_avatar(cred, Grappa.UploadFixtures.bytes(:gps_png), "image/png", ServerSettings.upload_caps())
 
       expected_url = Grappa.Networks.Wire.avatar_url(with_avatar)
       assert is_binary(expected_url)
@@ -600,7 +600,7 @@ defmodule GrappaWeb.NetworksControllerTest do
       seed_state(cred, :parked, "user-parked")
 
       {:ok, with_avatar} =
-        Credentials.set_avatar(cred, Grappa.UploadFixtures.bytes(:gps_png), "image/png")
+        Credentials.set_avatar(cred, Grappa.UploadFixtures.bytes(:gps_png), "image/png", ServerSettings.upload_caps())
 
       expected_url = Grappa.Networks.Wire.avatar_url(with_avatar)
       assert is_binary(expected_url)

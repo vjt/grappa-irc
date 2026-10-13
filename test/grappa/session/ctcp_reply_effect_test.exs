@@ -43,7 +43,7 @@ defmodule Grappa.Session.CtcpReplyEffectTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.{IRCServer, Session}
+  alias Grappa.{IRCServer, ServerSettings, Session}
   alias Grappa.Networks.{Credentials, SessionPlan}
 
   # The nick `credential_fixture/3` gives the session, and therefore the
@@ -56,7 +56,7 @@ defmodule Grappa.Session.CtcpReplyEffectTest do
   # call site the way #1397 found thirteen copies doing.
   @wire_timeout 1_000
 
-  # A real 1x1 transparent PNG. `Credentials.set_avatar/3` runs the bytes
+  # A real 1x1 transparent PNG. `Credentials.set_avatar/4` runs the bytes
   # through `Grappa.Uploads` and its fail-closed `MetadataStrip`, so a
   # placeholder string would be rejected and the arrange step would fail
   # for a reason that has nothing to do with what is under test.
@@ -156,7 +156,7 @@ defmodule Grappa.Session.CtcpReplyEffectTest do
   # `{server, pid}`.
   #
   #   * `:avatar` — set a real avatar on the credential first, through
-  #     `Credentials.set_avatar/3` (a real `Grappa.Uploads` row on the
+  #     `Credentials.set_avatar/4` (a real `Grappa.Uploads` row on the
   #     test storage root), so the resolved plan carries a real URL.
   #   * `:show_peer_profiles` — the M2 opt-in. Injected as a plan key
   #     rather than a `user_settings` row because `Session.start_session/3`
@@ -174,7 +174,13 @@ defmodule Grappa.Session.CtcpReplyEffectTest do
     _ = credential_fixture(user, network, %{})
 
     if Keyword.get(opts, :avatar, false) do
-      {:ok, _} = Credentials.set_avatar(Credentials.get_credential!(user, network), @png, "image/png")
+      {:ok, _} =
+        Credentials.set_avatar(
+          Credentials.get_credential!(user, network),
+          @png,
+          "image/png",
+          ServerSettings.upload_caps()
+        )
     end
 
     {:ok, resolved} = SessionPlan.resolve(Credentials.get_credential!(user, network))

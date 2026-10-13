@@ -3,11 +3,12 @@ defmodule Grappa.UploadsTest do
 
   import Grappa.AuthFixtures, only: [user_fixture: 1, visitor_fixture: 1]
 
+  alias Grappa.ServerSettings
   alias Grappa.Uploads
   alias Grappa.Uploads.Upload
 
   # Per-test temp storage dir — cleaned via on_exit. Tests inject
-  # into `Uploads.create/3` via the `:storage_root` opt + use it
+  # into `Uploads.create/4` via the `:storage_root` opt + use it
   # directly for storage_path/2 assertions.
   setup do
     root = Path.join(System.tmp_dir!(), "grappa_uploads_test_#{System.unique_integer([:positive])}")
@@ -74,11 +75,11 @@ defmodule Grappa.UploadsTest do
     end
   end
 
-  describe "create/3 — happy path" do
+  describe "create/4 — happy path" do
     # Lifecycle + byte-arithmetic tests use text/plain: MetadataStrip
     # passes documents through byte-identical, so File.read!/byte_size
     # assertions stay exact. Image/video bytes are REWRITTEN by the
-    # strip — those paths are pinned in "create/3 — metadata strip".
+    # strip — those paths are pinned in "create/4 — metadata strip".
     test "writes file + inserts row for user subject", %{root: root} do
       user = user_fixture([])
       bytes = "PLAIN-TEXT-BYTES"
@@ -91,7 +92,10 @@ defmodule Grappa.UploadsTest do
       }
 
       assert {:ok, %Upload{} = row} =
-               Uploads.create(bytes, attrs, storage_root: root, slug: "aaaaaaaaaaaaaaaaaaaaaaaaaa")
+               Uploads.create(bytes, attrs, ServerSettings.upload_caps(),
+                 storage_root: root,
+                 slug: "aaaaaaaaaaaaaaaaaaaaaaaaaa"
+               )
 
       assert row.slug == "aaaaaaaaaaaaaaaaaaaaaaaaaa"
       assert row.user_id == user.id
@@ -112,7 +116,7 @@ defmodule Grappa.UploadsTest do
         expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
       }
 
-      assert {:ok, %Upload{} = row} = Uploads.create(bytes, attrs, storage_root: root)
+      assert {:ok, %Upload{} = row} = Uploads.create(bytes, attrs, ServerSettings.upload_caps(), storage_root: root)
 
       assert row.visitor_id == v.id
       assert is_nil(row.user_id)
@@ -130,7 +134,7 @@ defmodule Grappa.UploadsTest do
         expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
       }
 
-      {:ok, row} = Uploads.create("x", attrs, storage_root: root)
+      {:ok, row} = Uploads.create("x", attrs, ServerSettings.upload_caps(), storage_root: root)
       assert Uploads.valid_slug?(row.slug)
     end
 
@@ -144,7 +148,7 @@ defmodule Grappa.UploadsTest do
         expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
       }
 
-      {:ok, row} = Uploads.create("x", attrs, storage_root: root)
+      {:ok, row} = Uploads.create("x", attrs, ServerSettings.upload_caps(), storage_root: root)
       # Path separators are the injection vector when the filename is
       # echoed into Content-Disposition; literal ".." chars are harmless
       # without a separator. Sanitizer strips `/` + `\`.
@@ -153,7 +157,7 @@ defmodule Grappa.UploadsTest do
     end
   end
 
-  describe "create/3 — failure rollback" do
+  describe "create/4 — failure rollback" do
     test "rolls back the file write when the row insert fails", %{root: root} do
       # Visitor with a fake (non-existent) FK → assoc_constraint
       # fails at insert time. File must NOT remain on disk.
@@ -172,23 +176,27 @@ defmodule Grappa.UploadsTest do
       slug = "bbbbbbbbbbbbbbbbbbbbbbbbbb"
 
       assert_raise Ecto.ConstraintError, fn ->
-        Uploads.create("x", attrs, storage_root: root, slug: slug)
+        Uploads.create("x", attrs, ServerSettings.upload_caps(), storage_root: root, slug: slug)
       end
 
       refute File.exists?(Path.join(root, slug))
     end
 
-    test "rejects unknown subject shape via validate_subject_xor", %{root: root} do
+    test "rejects an unknown subject shape before anything is written", %{root: root} do
       attrs = %{
         subject: nil,
         mime: "text/plain",
         expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
       }
 
-      # `Subject.put_subject_id/2` doesn't have a `nil` clause → raises.
-      assert_raise FunctionClauseError, fn ->
-        Uploads.create("x", attrs, storage_root: root)
+      # The caps pre-check is the first thing to read the subject, and
+      # `Subject.subject_where/2` refuses a `nil` one — before the strip, the
+      # file write or the insert.
+      assert_raise ArgumentError, ~r/unknown subject: nil/, fn ->
+        Uploads.create("x", attrs, ServerSettings.upload_caps(), storage_root: root)
       end
+
+      assert File.ls!(root) == []
     end
   end
 
@@ -205,6 +213,7 @@ defmodule Grappa.UploadsTest do
             mime: "text/plain",
             expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -237,6 +246,7 @@ defmodule Grappa.UploadsTest do
         Uploads.create(
           "x",
           %{subject: {:user, user.id}, mime: "text/plain", expires_at: past},
+          ServerSettings.upload_caps(),
           storage_root: Path.join(System.tmp_dir!(), "grappa_uploads_get_expired_#{System.unique_integer([:positive])}")
         )
 
@@ -261,6 +271,7 @@ defmodule Grappa.UploadsTest do
               mime: "text/plain",
               expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
             },
+            ServerSettings.upload_caps(),
             storage_root: root
           )
       end)
@@ -279,6 +290,7 @@ defmodule Grappa.UploadsTest do
             mime: "text/plain",
             expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -290,6 +302,7 @@ defmodule Grappa.UploadsTest do
             mime: "text/plain",
             expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -313,6 +326,7 @@ defmodule Grappa.UploadsTest do
             mime: "text/plain",
             expires_at: DateTime.add(now, -100, :second)
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -324,6 +338,7 @@ defmodule Grappa.UploadsTest do
             mime: "text/plain",
             expires_at: DateTime.add(now, 3600, :second)
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -335,6 +350,7 @@ defmodule Grappa.UploadsTest do
             mime: "text/plain",
             expires_at: DateTime.add(now, -100, :second)
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -345,23 +361,22 @@ defmodule Grappa.UploadsTest do
     end
   end
 
-  describe "check_caps/3 — the global ceiling" do
-    # These two are the rewritten `check_global_cap/2` pair (issue 2175
-    # folded that function into `check_caps/3`). The global ceiling is
-    # unchanged behaviour and stays asserted: the per-subject cap is an
-    # ADDITIONAL floor to clear, never a replacement.
+  describe "create/4 caps — the global ceiling" do
+    # The global ceiling stays asserted beside the per-subject one (issue
+    # 2175): the per-subject cap is an ADDITIONAL floor to clear, never a
+    # replacement.
     test "returns :ok when incoming + live_sum fits", %{root: root} do
       user = user_fixture([])
       store(root, {:user, user.id}, 4)
 
-      assert Uploads.check_caps({:user, user.id}, 10, caps(global: 100)) == :ok
+      assert admit(root, {:user, user.id}, 10, caps(global: 100)) == :ok
     end
 
     test "returns :insufficient_storage when exceeded", %{root: root} do
       user = user_fixture([])
       store(root, {:user, user.id}, 50)
 
-      assert Uploads.check_caps({:user, user.id}, 60, caps(global: 100)) ==
+      assert admit(root, {:user, user.id}, 60, caps(global: 100)) ==
                {:error, :insufficient_storage}
     end
 
@@ -373,18 +388,18 @@ defmodule Grappa.UploadsTest do
 
       # My own per-user room is untouched (0 of 1000 used), but the
       # instance budget is gone. Global must still refuse.
-      assert Uploads.check_caps({:user, me.id}, 20, caps(global: 100, user: 1000)) ==
+      assert admit(root, {:user, me.id}, 20, caps(global: 100, user: 1000)) ==
                {:error, :insufficient_storage}
     end
   end
 
-  describe "check_caps/3 — the per-subject ceiling (issue 2175)" do
+  describe "create/4 caps — the per-subject ceiling (issue 2175)" do
     test "refuses a user over their own cap while the global budget is wide open",
          %{root: root} do
       user = user_fixture([])
       store(root, {:user, user.id}, 50)
 
-      assert Uploads.check_caps({:user, user.id}, 60, caps(global: 1_000_000, user: 100)) ==
+      assert admit(root, {:user, user.id}, 60, caps(global: 1_000_000, user: 100)) ==
                {:error, :insufficient_storage}
     end
 
@@ -392,14 +407,14 @@ defmodule Grappa.UploadsTest do
       user = user_fixture([])
       store(root, {:user, user.id}, 50)
 
-      assert Uploads.check_caps({:user, user.id}, 10, caps(global: 1_000_000, user: 100)) == :ok
+      assert admit(root, {:user, user.id}, 10, caps(global: 1_000_000, user: 100)) == :ok
     end
 
     test "refuses a visitor over their own cap", %{root: root} do
       visitor = visitor_fixture([])
       store(root, {:visitor, visitor.id}, 50)
 
-      assert Uploads.check_caps({:visitor, visitor.id}, 60, caps(global: 1_000_000, visitor: 100)) ==
+      assert admit(root, {:visitor, visitor.id}, 60, caps(global: 1_000_000, visitor: 100)) ==
                {:error, :insufficient_storage}
     end
 
@@ -407,7 +422,7 @@ defmodule Grappa.UploadsTest do
       visitor = visitor_fixture([])
       store(root, {:visitor, visitor.id}, 50)
 
-      assert Uploads.check_caps({:visitor, visitor.id}, 10, caps(global: 1_000_000, visitor: 100)) ==
+      assert admit(root, {:visitor, visitor.id}, 10, caps(global: 1_000_000, visitor: 100)) ==
                :ok
     end
 
@@ -419,7 +434,7 @@ defmodule Grappa.UploadsTest do
       # 90 bytes exist, but none of them are mine: with a 100-byte
       # per-user cap I still have 100 to spend. This is the whole point
       # of the quota being per-subject rather than shared.
-      assert Uploads.check_caps({:user, me.id}, 90, caps(global: 1_000_000, user: 100)) == :ok
+      assert admit(root, {:user, me.id}, 90, caps(global: 1_000_000, user: 100)) == :ok
     end
 
     test "a user is measured against the USER cap, not the visitor one", %{root: root} do
@@ -429,7 +444,7 @@ defmodule Grappa.UploadsTest do
       # Discriminating control: 60 incoming busts the 100-byte VISITOR
       # ceiling but fits the 1000-byte USER one. Reading the wrong key
       # off the subject flips this assert.
-      assert Uploads.check_caps({:user, user.id}, 60, caps(global: 1_000_000, user: 1000, visitor: 100)) ==
+      assert admit(root, {:user, user.id}, 60, caps(global: 1_000_000, user: 1000, visitor: 100)) ==
                :ok
     end
 
@@ -437,7 +452,8 @@ defmodule Grappa.UploadsTest do
       visitor = visitor_fixture([])
       store(root, {:visitor, visitor.id}, 50)
 
-      assert Uploads.check_caps(
+      assert admit(
+               root,
                {:visitor, visitor.id},
                60,
                caps(global: 1_000_000, user: 1000, visitor: 100)
@@ -449,24 +465,26 @@ defmodule Grappa.UploadsTest do
       user = user_fixture([])
       row = store(root, {:user, user.id}, 90)
 
-      assert Uploads.check_caps({:user, user.id}, 50, caps(global: 1_000_000, user: 100)) ==
+      assert admit(root, {:user, user.id}, 50, caps(global: 1_000_000, user: 100)) ==
                {:error, :insufficient_storage}
 
       {:ok, _} = Uploads.soft_delete(row, DateTime.utc_now())
 
       # No parallel accounting to keep in sync: the sum is computed live
       # off `deleted_at IS NULL`, so reaping is what returns the room.
-      assert Uploads.check_caps({:user, user.id}, 50, caps(global: 1_000_000, user: 100)) == :ok
+      assert admit(root, {:user, user.id}, 50, caps(global: 1_000_000, user: 100)) == :ok
     end
 
     test "the boundary is EXCLUSIVE: landing exactly ON the cap is admitted", %{root: root} do
       user = user_fixture([])
       store(root, {:user, user.id}, 40)
 
-      assert Uploads.check_caps({:user, user.id}, 60, caps(global: 1_000_000, user: 100)) == :ok
-
-      assert Uploads.check_caps({:user, user.id}, 61, caps(global: 1_000_000, user: 100)) ==
+      # Refusal FIRST: an admitted upload is stored, so asking the 60 first
+      # would refuse the 61 on the 60's bytes and stop discriminating.
+      assert admit(root, {:user, user.id}, 61, caps(global: 1_000_000, user: 100)) ==
                {:error, :insufficient_storage}
+
+      assert admit(root, {:user, user.id}, 60, caps(global: 1_000_000, user: 100)) == :ok
     end
   end
 
@@ -482,6 +500,7 @@ defmodule Grappa.UploadsTest do
             mime: "text/plain",
             expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
           },
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -503,6 +522,7 @@ defmodule Grappa.UploadsTest do
         Uploads.create(
           bytes,
           %{subject: {:user, user.id}, mime: "text/plain", expires_at: future},
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -510,6 +530,7 @@ defmodule Grappa.UploadsTest do
         Uploads.create(
           bytes,
           %{subject: {:user, user.id}, mime: "text/plain", expires_at: future},
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -517,6 +538,7 @@ defmodule Grappa.UploadsTest do
         Uploads.create(
           bytes,
           %{subject: {:user, other.id}, mime: "text/plain", expires_at: future},
+          ServerSettings.upload_caps(),
           storage_root: root
         )
 
@@ -532,7 +554,7 @@ defmodule Grappa.UploadsTest do
       # NOTE: production helper reads storage_root from :persistent_term
       # (boot-time injection), not from per-test :storage_root opt. Tests
       # set the persistent_term root to the per-test temp dir so the
-      # File.rm sweep targets the same files create/3 wrote. Restore on
+      # File.rm sweep targets the same files create/4 wrote. Restore on
       # exit to avoid leaking the per-test path into sibling tests.
       original_root = Uploads.storage_root()
       :ok = Uploads.boot(root)
@@ -557,10 +579,10 @@ defmodule Grappa.UploadsTest do
     end
   end
 
-  describe "create/3 — metadata strip (#39)" do
+  describe "create/4 — metadata strip (#39)" do
     # The strip mechanics (per-format markers, fail-closed dispatch)
     # are pinned in Grappa.Uploads.MetadataStripTest; these tests pin
-    # the INTEGRATION: what create/3 stores is the stripped bytes,
+    # the INTEGRATION: what create/4 stores is the stripped bytes,
     # the row reflects the stored size, and a strip failure leaves
     # neither file nor row behind.
     import Grappa.UploadFixtures, only: [bytes: 1, refute_markers!: 2]
@@ -576,7 +598,7 @@ defmodule Grappa.UploadsTest do
         expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
       }
 
-      assert {:ok, row} = Uploads.create(input, attrs, storage_root: root)
+      assert {:ok, row} = Uploads.create(input, attrs, ServerSettings.upload_caps(), storage_root: root)
 
       stored = File.read!(Path.join(root, row.slug))
       refute stored == input
@@ -594,7 +616,7 @@ defmodule Grappa.UploadsTest do
         expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
       }
 
-      assert {:ok, row} = Uploads.create(input, attrs, storage_root: root)
+      assert {:ok, row} = Uploads.create(input, attrs, ServerSettings.upload_caps(), storage_root: root)
 
       stored = File.read!(Path.join(root, row.slug))
       refute_markers!(stored, :gps_mp4)
@@ -611,7 +633,10 @@ defmodule Grappa.UploadsTest do
       }
 
       assert {:error, {:metadata_strip, _}} =
-               Uploads.create("not actually a jpeg", attrs, storage_root: root, slug: slug)
+               Uploads.create("not actually a jpeg", attrs, ServerSettings.upload_caps(),
+                 storage_root: root,
+                 slug: slug
+               )
 
       refute File.exists?(Path.join(root, slug))
       assert Uploads.list_all() == []
@@ -692,6 +717,22 @@ defmodule Grappa.UploadsTest do
     })
   end
 
+  # One upload of `byte_count` bytes through the real write door under
+  # `caps`, reduced to the admission verdict. An admitted upload IS stored —
+  # an assert that follows sees its bytes.
+  defp admit(root, subject, byte_count, caps) do
+    attrs = %{
+      subject: subject,
+      mime: "text/plain",
+      expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
+    }
+
+    case Uploads.create(String.duplicate("a", byte_count), attrs, caps, storage_root: root) do
+      {:ok, %Upload{}} -> :ok
+      {:error, :insufficient_storage} = refused -> refused
+    end
+  end
+
   # Stores `byte_count` live bytes owned by `subject` and returns the row.
   # `text/plain` passes `MetadataStrip` through untouched, so the stored
   # size is exactly the requested one and the cap arithmetic in the
@@ -705,6 +746,7 @@ defmodule Grappa.UploadsTest do
           mime: "text/plain",
           expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
         },
+        ServerSettings.upload_caps(),
         storage_root: root
       )
 
