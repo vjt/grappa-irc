@@ -26,6 +26,8 @@ defmodule Grappa.Session.ServerTest do
   """
   use Grappa.DataCase, async: false
 
+  import Grappa.PushFixtures, only: [stored_subscription!: 2]
+
   import ExUnit.CaptureLog
   import Grappa.{AuthFixtures, MessageEventAssertions}
   import Mox
@@ -4716,8 +4718,8 @@ defmodule Grappa.Session.ServerTest do
     end
 
     defp push_subscription_fixture(user, endpoint) do
-      {:ok, sub} =
-        Grappa.Push.create({:user, user.id}, %{
+      sub =
+        stored_subscription!({:user, user.id}, %{
           endpoint: endpoint,
           p256dh_key: @push_p256dh,
           auth_key: @push_auth,

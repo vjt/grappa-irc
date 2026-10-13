@@ -20,11 +20,13 @@ defmodule Grappa.Push.TriggersTest do
   """
   use Grappa.DataCase, async: false
 
+  import Grappa.PushFixtures, only: [stored_subscription!: 2]
+
   import Grappa.AuthFixtures, only: [user_fixture: 0]
 
-  alias Grappa.{Push, UserSettings, Visitors, WSPresence}
   alias Grappa.Push.{Subscription, Triggers}
   alias Grappa.Scrollback.Message
+  alias Grappa.{UserSettings, Visitors, WSPresence}
 
   # Real P-256 client public key + auth secret (mirrors sender_test);
   # encryption preamble crashes on random bytes.
@@ -399,8 +401,8 @@ defmodule Grappa.Push.TriggersTest do
   end
 
   defp subscription_fixture(subject, endpoint) do
-    {:ok, sub} =
-      Push.create(subject, %{
+    sub =
+      stored_subscription!(subject, %{
         endpoint: endpoint,
         p256dh_key: @client_p256dh,
         auth_key: @client_auth,

@@ -31,7 +31,7 @@ defmodule Grappa.Net.ImageFetcher.Req do
   """
   @behaviour Grappa.Net.ImageFetcher
 
-  alias Grappa.Net.ImageFetcher
+  alias Grappa.Net.{ImageFetcher, Ssrf}
 
   require Logger
 
@@ -59,7 +59,7 @@ defmodule Grappa.Net.ImageFetcher.Req do
   end
 
   defp get(uri, ip, max_bytes) do
-    target = URI.to_string(%{uri | host: ip_host(ip)})
+    target = Ssrf.pinned_url(uri, ip)
 
     opts = [
       redirect: false,
@@ -167,12 +167,6 @@ defmodule Grappa.Net.ImageFetcher.Req do
         {:error, :fetch_failed}
     end
   end
-
-  # v6 addresses must be bracketed in a URL authority.
-  defp ip_host(ip) when tuple_size(ip) == 8, do: "[" <> ip_string(ip) <> "]"
-  defp ip_host(ip), do: ip_string(ip)
-
-  defp ip_string(ip), do: ip |> :inet.ntoa() |> List.to_string()
 
   # SNI + cert hostname check must target the ORIGINAL host, not the IP we dial.
   defp connect_options(%URI{scheme: "https", host: host}),

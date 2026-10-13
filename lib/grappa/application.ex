@@ -330,10 +330,10 @@ defmodule Grappa.Application do
         # allow — the fold touches no Repo.
         {Grappa.DbLatency, attach_telemetry: attach_db_latency_telemetry?()},
         # VendorLog (#1321): singleton GenServer that attaches to the
-        # `[:ex_nudge, :send_notification]` event in init/1 and logs the
-        # rejection reason a push service returned in the response body —
-        # the ONLY route by which that body leaves the library, so the
-        # sender cannot report it itself. Same slot as the sinks above and
+        # `[:grappa, :push, :vendor_rejection]` event in init/1 (emitted by
+        # `Push.Sender` since it owns the POST, #2401) and logs the
+        # rejection reason a push service returned in the response body.
+        # Same slot as the sinks above and
         # BEFORE Endpoint, so a delivery triggered by the first WS event
         # already has a handler; it holds no state at all beyond the
         # attachment, so nothing orders it against Repo/Registry. Restart:

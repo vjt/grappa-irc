@@ -3,27 +3,26 @@ defmodule Grappa.Push.SenderTest do
   Push notifications cluster B2 (2026-05-14) — Web Push delivery
   fan-out + dead-endpoint cleanup + telemetry coverage.
 
-  Strategy: real `ExNudge.send_notification/3` calls into a
-  Bypass-backed listener. The lib reads the endpoint from the
-  subscription struct itself, so swapping the production vendor URL
-  for `http://localhost:<bypass-port>/wp` exercises the full code
-  path including the ECDH encryption + JWT signing — which is why
-  the test fixture uses a REAL P-256 client public key (random bytes
-  fail at `:crypto.compute_key/4`).
+  Strategy: real deliveries into a Bypass-backed listener. The sender
+  reads the endpoint from the stored row, so a row pointing at
+  `http://localhost:<bypass-port>/wp` exercises the full code path —
+  the address check (through `Grappa.Net.Ssrf.TestResolver`, which
+  waves loopback through), the ECDH encryption + JWT signing, and the
+  POST — which is why the fixture uses a REAL P-256 client public key
+  (random bytes fail at `:crypto.compute_key/4`). Rows are written past
+  the changeset (`Grappa.PushFixtures`): Bypass is plain http on
+  loopback, which registration refuses since #2401.
 
-  These tests own the ADAPTER (#1290): every one of `ExNudge`'s
-  return shapes differs from what this module used to match, and the
-  sweep that a naive swap loses is what the 404/410 cases below pin.
-  The wire format those calls produce is pinned separately, by
-  `Grappa.Push.WireFormatTest`.
+  These tests own the RESPONSE MAPPING: the sweep that a careless
+  mapping loses is what the 404/410 cases below pin, and the send-time
+  address policy (#2401) has its own describe. The wire format is
+  pinned separately, by `Grappa.Push.WireFormatTest`.
 
   ## What this verifies
     * 200 vendor response → `:ok` + `last_used_at` bumped on the row.
     * 410 vendor response → `Push.delete_dead/1` purges the row +
       `[:grappa, :push, :delete_dead]` telemetry fires.
-    * 404 vendor response → the SAME sweep. `ex_nudge` maps only 410
-      natively; 404 is terminal per RFC 8030 §7.3 and the adapter
-      says so.
+    * 404 vendor response → the SAME sweep: terminal per RFC 8030 §7.3.
     * 503 vendor response → `{:error, {:http_error, 503}}` + Logger
       warning + telemetry tally lands in the `error` bucket.
     * Connection refused → `{:error, _}` per the no-silent-drops rule.
@@ -34,10 +33,12 @@ defmodule Grappa.Push.SenderTest do
   """
   use Grappa.DataCase, async: false
 
+  import ExUnit.CaptureLog
   import Grappa.AuthFixtures, only: [user_fixture: 0]
+  import Grappa.PushFixtures
 
-  alias Grappa.{Push, Visitors}
   alias Grappa.Push.Sender
+  alias Grappa.Visitors
 
   # Real P-256 client public key + 16-byte auth secret — NOT random
   # bytes. The lib's ECDH path (`:crypto.compute_key/4`) raises on
@@ -62,16 +63,15 @@ defmodule Grappa.Push.SenderTest do
     v
   end
 
+  # Written past the changeset: Bypass is plain http on loopback, which
+  # `Push.create/2` refuses since #2401 (see `Grappa.PushFixtures`).
   defp subscription_fixture(subject, endpoint) do
-    {:ok, sub} =
-      Push.create(subject, %{
-        endpoint: endpoint,
-        p256dh_key: @client_p256dh,
-        auth_key: @client_auth,
-        user_agent: "Mozilla/5.0 sender-test"
-      })
-
-    sub
+    stored_subscription!(subject, %{
+      endpoint: endpoint,
+      p256dh_key: @client_p256dh,
+      auth_key: @client_auth,
+      user_agent: "Mozilla/5.0 sender-test"
+    })
   end
 
   defp attach_telemetry(events) do
@@ -136,11 +136,9 @@ defmodule Grappa.Push.SenderTest do
       bypass: bypass,
       endpoint: endpoint
     } do
-      # `ex_nudge` returns the generic `{:error, {:http_error, 404}}`
-      # here — only 410 gets its own atom. If the adapter forwarded
-      # that verbatim the call would still LOG and still emit telemetry,
-      # so the regression this pins is not a missing signal: it is the
-      # missing SWEEP. The row below would survive forever and every
+      # If 404 were mapped to a plain http error the call would still
+      # LOG and still emit telemetry, so the regression this pins is not
+      # a missing signal: it is the missing SWEEP. The row below would survive forever and every
       # later fan-out would pay a round-trip for it.
       Bypass.expect_once(bypass, "POST", "/wp", fn conn ->
         Plug.Conn.resp(conn, 404, "")
@@ -191,8 +189,8 @@ defmodule Grappa.Push.SenderTest do
       # mysterious crash).
       user = user_fixture()
 
-      {:ok, sub} =
-        Push.create({:user, user.id}, %{
+      sub =
+        stored_subscription!({:user, user.id}, %{
           endpoint: endpoint,
           p256dh_key: Base.url_encode64("not-a-valid-p256-point", padding: false),
           auth_key: Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false),
@@ -201,6 +199,119 @@ defmodule Grappa.Push.SenderTest do
 
       assert {:error, {:encrypt_error, _}} = Sender.send_to_subscription(sub, @payload)
       assert %Grappa.Push.Subscription{} = Repo.get(Grappa.Push.Subscription, sub.id)
+    end
+  end
+
+  describe "send_to_subscription/2 — address policy at send time (#2401)" do
+    setup do
+      bypass = Bypass.open()
+      {:ok, bypass: bypass}
+    end
+
+    test "a stored row whose host is not a public address is refused before any request; row kept",
+         %{bypass: bypass} do
+      # 127.0.0.2 is loopback, refused by the real guard (the test resolver
+      # only waves through 127.0.0.1 / localhost so Bypass is reachable).
+      # Had the sender dialled it, Bypass would see an unexpected request.
+      endpoint = "http://127.0.0.2:#{bypass.port}/wp"
+      user = user_fixture()
+      sub = subscription_fixture({:user, user.id}, endpoint)
+
+      log =
+        capture_log(fn ->
+          assert {:error, :ssrf_blocked} = Sender.send_to_subscription(sub, @payload)
+        end)
+
+      assert log =~ "push.send endpoint refused"
+      assert %Grappa.Push.Subscription{} = Repo.get(Grappa.Push.Subscription, sub.id)
+    end
+
+    test "a non-http(s) stored endpoint is refused without a request", %{bypass: bypass} do
+      user = user_fixture()
+      sub = subscription_fixture({:user, user.id}, "ftp://localhost:#{bypass.port}/wp")
+
+      capture_log(fn ->
+        assert {:error, :ssrf_blocked} = Sender.send_to_subscription(sub, @payload)
+      end)
+    end
+
+    test "dials the address the guard returned, never re-resolving the name; Host stays the original",
+         %{bypass: bypass} do
+      # `.invalid` can never resolve (RFC 6761 §6.4). The test resolver pins
+      # `pinned.invalid` to 127.0.0.1, so the POST can only arrive if the
+      # client connected to the pinned address rather than looking the name
+      # up again — which is what closes the rebind window between check and
+      # connect.
+      test_pid = self()
+
+      Bypass.expect_once(bypass, "POST", "/wp", fn conn ->
+        send(test_pid, {:host, Plug.Conn.get_req_header(conn, "host")})
+        Plug.Conn.resp(conn, 201, "")
+      end)
+
+      user = user_fixture()
+      sub = subscription_fixture({:user, user.id}, "http://pinned.invalid:#{bypass.port}/wp")
+
+      assert :ok = Sender.send_to_subscription(sub, @payload)
+      assert_receive {:host, [host]}
+      assert host in ["pinned.invalid", "pinned.invalid:#{bypass.port}"]
+    end
+
+    test "a redirect is not followed — it is the http error it is", %{bypass: bypass} do
+      # Following it would be a second, unguarded hop. Bypass fails the test
+      # on any request to a path it was not told to expect.
+      Bypass.expect_once(bypass, "POST", "/wp", fn conn ->
+        conn
+        |> Plug.Conn.put_resp_header("location", "http://localhost:#{bypass.port}/elsewhere")
+        |> Plug.Conn.resp(307, "")
+      end)
+
+      user = user_fixture()
+      sub = subscription_fixture({:user, user.id}, "http://localhost:#{bypass.port}/wp")
+
+      capture_log(fn ->
+        assert {:error, {:http_error, 307}} = Sender.send_to_subscription(sub, @payload)
+      end)
+
+      assert %Grappa.Push.Subscription{} = Repo.get(Grappa.Push.Subscription, sub.id)
+    end
+  end
+
+  describe "send_to_subscription/2 — the vendor_rejection event (#1321, #2401)" do
+    setup do
+      bypass = Bypass.open()
+      attach_telemetry([[:grappa, :push, :vendor_rejection]])
+      {:ok, bypass: bypass}
+    end
+
+    test "a non-terminal rejection carries the status, the vendor HOST and the body — never the path",
+         %{bypass: bypass} do
+      Bypass.expect_once(bypass, "POST", "/vXrN4tPq2Ke", fn conn ->
+        Plug.Conn.resp(conn, 400, ~s({"reason":"VapidPkHashMismatch"}))
+      end)
+
+      user = user_fixture()
+      sub = subscription_fixture({:user, user.id}, "http://localhost:#{bypass.port}/vXrN4tPq2Ke")
+
+      capture_log(fn ->
+        assert {:error, {:http_error, 400}} = Sender.send_to_subscription(sub, @payload)
+      end)
+
+      assert_receive {:telemetry, [:grappa, :push, :vendor_rejection], _, metadata}
+      assert metadata == %{status: 400, vendor: "localhost", body: ~s({"reason":"VapidPkHashMismatch"})}
+    end
+
+    for status <- [201, 404, 410] do
+      test "#{status} emits no vendor_rejection — the sender already says everything", %{bypass: bypass} do
+        Bypass.expect_once(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, unquote(status), "") end)
+
+        user = user_fixture()
+        sub = subscription_fixture({:user, user.id}, "http://localhost:#{bypass.port}/wp")
+
+        capture_log(fn -> Sender.send_to_subscription(sub, @payload) end)
+
+        refute_received {:telemetry, [:grappa, :push, :vendor_rejection], _, _}
+      end
     end
   end
 
@@ -230,11 +341,6 @@ defmodule Grappa.Push.SenderTest do
       Bypass.expect(bypass, "POST", "/wp/:id", fn conn ->
         Plug.Conn.resp(conn, 201, "")
       end)
-
-      # Pre-warm the connection pool (see the note in the
-      # mixed-success/410 test below). Matches the Bypass route shape
-      # so it accepts the request — POST /wp/<anything>.
-      _ = HTTPoison.post(bypass_url <> "/wp/warm", "")
 
       user = user_fixture()
       subject = {:user, user.id}
@@ -288,16 +394,6 @@ defmodule Grappa.Push.SenderTest do
           _ -> Plug.Conn.resp(conn, 500, "unexpected")
         end
       end)
-
-      # Pre-warm the connection pool for this Bypass host:port. The
-      # Sender's Task.async_stream fan-out races two parallel requests
-      # through the SAME pool (same scheme+host+port), and a pool that
-      # is still starting answers the second one with a checkout error
-      # that tallies as `error` instead of `success`. A synchronous
-      # pre-call guarantees a ready worker before the parallel fan-out.
-      # Kept across the #1290 dependency swap: the pool is hackney's
-      # now rather than Finch's, but a cold pool races the same way.
-      _ = HTTPoison.post(bypass_url <> "/wp/warm", "")
 
       user = user_fixture()
       subject = {:user, user.id}

@@ -227,7 +227,11 @@ config :grappa, :vhost_ptr_resolver, &Grappa.PtrTestResolver.resolve/1
 # to the real `Grappa.Net.Ssrf` guard, keeping the block path honest.
 config :grappa, :themes,
   image_fetcher: Grappa.Net.ImageFetcherMock,
-  image_ssrf_resolver: Grappa.Net.ImageFetcher.TestResolver
+  image_ssrf_resolver: Grappa.Net.Ssrf.TestResolver
+
+# #2401 — the push sender dials through the same guard, so its Bypass-backed
+# delivery tests need the same loopback-permitting resolver.
+config :grappa, :push, ssrf_resolver: Grappa.Net.Ssrf.TestResolver
 
 # #543 INC-5 — source-alias command seam → a Mox so the FreeBSD/Linux adapter
 # tests assert argv + exit-mapping without a real `sudo ifconfig` / `sysctl` /

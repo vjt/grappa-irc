@@ -27,9 +27,11 @@ defmodule Grappa.Session.PresencePushTest do
   """
   use Grappa.DataCase, async: false
 
+  import Grappa.PushFixtures, only: [stored_subscription!: 2]
+
   import Grappa.AuthFixtures
 
-  alias Grappa.{IRCServer, Push, UserSettings, WSPresence}
+  alias Grappa.{IRCServer, UserSettings, WSPresence}
 
   # Real P-256 client public key + auth secret (mirrors sender_test /
   # triggers_test); the encryption preamble crashes on random bytes.
@@ -70,8 +72,8 @@ defmodule Grappa.Session.PresencePushTest do
 
     {:ok, _} = Grappa.Notify.add(subject, network.id, ["Foo"], user.name)
 
-    {:ok, _} =
-      Push.create(subject, %{
+    _ =
+      stored_subscription!(subject, %{
         endpoint: endpoint,
         p256dh_key: @client_p256dh,
         auth_key: @client_auth,

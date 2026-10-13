@@ -108,6 +108,55 @@ defmodule Grappa.PushTest do
     end
   end
 
+  describe "create/2 — endpoint policy (#2401)" do
+    # The save-time half of the policy: https, a host, and no host the
+    # sender would refuse without a lookup. The DNS-backed half runs at
+    # send time against the pinned address (`Grappa.Push.SenderTest`).
+    @refused [
+      "http://push.example/wp",
+      "ftp://push.example/wp",
+      "push.example/wp",
+      "https:///wp",
+      "https://127.0.0.1/wp",
+      "https://127.0.0.1:8080/wp",
+      "https://10.0.0.1/wp",
+      "https://192.168.1.10/wp",
+      "https://169.254.169.254/latest",
+      "https://[::1]/wp",
+      "https://[fe80::1]/wp",
+      "https://[::ffff:127.0.0.1]/wp",
+      "https://localhost/wp",
+      "https://push.localhost/wp"
+    ]
+
+    for endpoint <- @refused do
+      test "refuses #{endpoint}" do
+        user = user_fixture()
+        attrs = valid_attrs(endpoint: unquote(endpoint))
+        assert {:error, %Ecto.Changeset{errors: errors}} = Push.create({:user, user.id}, attrs)
+        assert {"must be an https URL on a public host", _} = errors[:endpoint]
+      end
+    end
+
+    # The vendors in use today, plus a self-hosted UnifiedPush
+    # distributor on a non-default port: no vendor allowlist.
+    @accepted [
+      "https://fcm.googleapis.com/fcm/send/abc",
+      "https://updates.push.services.mozilla.com/wpush/v2/abc",
+      "https://web.push.apple.com/QAbc",
+      "https://ntfy.example:8443/up/abc",
+      "https://1.1.1.1/wp"
+    ]
+
+    for endpoint <- @accepted do
+      test "accepts #{endpoint}" do
+        user = user_fixture()
+        attrs = valid_attrs(endpoint: unquote(endpoint))
+        assert {:ok, %Subscription{endpoint: unquote(endpoint)}} = Push.create({:user, user.id}, attrs)
+      end
+    end
+  end
+
   describe "create/2 — supersede prior endpoint (#181 churn dedup)" do
     # #181: a client silently drops its browser subscription (iOS SW-swap
     # / storage eviction) WITHOUT unsubscribing, so the push service keeps

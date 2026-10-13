@@ -1894,3 +1894,97 @@ is left to its own change.
 
 **Deploy class: HOT.** A behaviour callback arity and function bodies; no
 `config/*.exs`, no `defstruct`, no state-map field.
+<!-- entry #2401 -->
+
+---
+
+## 2026-10-13 — #2401: push endpoints are outbound requests a client aimed
+
+A push subscription's `endpoint` is a URL the server POSTs to on every
+notification, and the client picks it. Until now the only check on it was a
+length cap, so the destination address was the client's choice too — the
+blind-SSRF class `Grappa.Net.Ssrf` already guards for theme images (#75).
+The fix reuses that guard rather than writing a second one.
+
+**Two halves, and the second is the authority.** At save,
+`Subscription.changeset/2` takes `https` with a host that
+`Ssrf.blocked_literal_host?/1` does not refuse: no loopback, private,
+link-local or metadata IP literal (v4-mapped and NAT64 forms decoded, as
+`safe_public_ip?/1` already does), no `localhost` tree. It does NOT resolve
+names. A check at save is one a name can pass and then stop passing, so its
+only value is refusing what is decidable without a lookup; doing DNS there
+would add a network round trip to the POST and nondeterminism to every test
+for no security gain. At send, `Push.Sender` resolves the host through
+`Ssrf.resolve_safe/1` on EVERY delivery (rebind-conservative: one unsafe
+answer blocks the host) and dials the address that answered via
+`Ssrf.pinned_url/2`, keeping the original name for `Host`, SNI and the
+certificate check. There is no second lookup for a rebinding name to win.
+Redirects are not followed — a 3xx is the http error it is.
+
+**Owning the POST was the price of the pin.** `ExNudge.send_notification/3`
+hands the endpoint string to `HTTPoison.post/3` with no options, so the client
+always resolves the name itself and no check of ours can bind the connection.
+The sender keeps `ExNudge.Encryption` + `ExNudge.VAPID` for the crypto and
+sends through the new `Grappa.Net.PinnedHttp`: Mint, passive mode, ONE
+connection per request to the vetted address with `hostname:` carrying SNI and
+the certificate name, closed when the response is in. Not `Req`, measured in
+its source on the way: every distinct `connect_options` set — and a pinned
+request's carries the hostname — becomes a `Module.concat`-named Finch
+instance under `Req.FinchSupervisor` that nothing ever stops
+(`Req.Finch.finch_name/1`). With client-chosen hostnames that is an atom and a
+supervision tree per name, forever. Push volume makes a handshake per delivery
+free, and the cold-pool race the sender tests used to pre-warm around is gone
+with the pool. Bounds are explicit and fit the 10 s per-delivery Task budget:
+two 2 s DNS lookups (now `:inet.getaddrs/3`, the old ones had no timeout),
+2 s connect, a 3 s wall-clock response deadline that does not restart per
+chunk, and a 64 KiB body cap. The headers are the same RFC 8291/8292 set and
+`WireFormatTest` still decrypts the body as a receiver would. The result
+mapping is ours now (404/410 sweep, everything else an `http_error`), so the
+`normalize/1` adapter and its unknown-shape clause are gone; and
+`Push.VendorLog`, which read vendor bodies off ExNudge's own telemetry event
+because the library never returned them, now attaches to
+`[:grappa, :push, :vendor_rejection]`, emitted by the sender on non-terminal
+rejections with the host only, never the path.
+
+**`ImageFetcher.Req` keeps its `Req` transport in this change.** It dials
+pinned addresses the same way and so builds a Finch instance per hostname
+too; moving it onto `PinnedHttp` is its own change, not folded into a fix
+whose surface is push.
+
+**The guard grew the reserved v6 blocks a client can now reach:** `::/8`
+(unspecified, loopback, the deprecated IPv4-compatible `::a.b.c.d`, RFC 8215's
+local-use `64:ff9b:1::/48`), `100::/64` discard-only and `fec0::/10`
+site-local. The `::ffff:` and `64:ff9b::/96` forms are still decoded and judged
+by their v4.
+
+**A refused stored row is kept, not swept.** The verdict comes from a DNS
+answer, the one input neither we nor the vendor control; sweeping on it
+would let a resolver hiccup delete every device a subject registered. Each
+delivery re-asks and each refusal logs `push.send endpoint refused`. `http`
+is still dialled at send for rows saved before this change — the address,
+not the scheme, is what makes a request safe to send.
+
+**No vendor allowlist.** FCM, Mozilla autopush and Apple all sit on public
+`https` hosts and pass unchanged; a UnifiedPush distributor can be any public
+host. A self-hosted distributor on the bouncer's own private network is now
+refused — on a multi-tenant bouncer that is exactly the request this closes,
+and there is deliberately no opt-out.
+
+**Found on the way: `ImageFetcher.Req` double-bracketed IPv6.**
+`URI.to_string/1` already brackets a host containing `:`, so its own
+`[...]` produced `[[...]]` and a theme image on a v6-only host could not be
+fetched. The URL builder moved into `Ssrf.pinned_url/2`, which passes the
+address bare.
+
+**Test seams.** `Grappa.Net.Ssrf.TestResolver` (renamed from the image
+fetcher's) waves loopback through for Bypass and pins `pinned.invalid` to
+`127.0.0.1` — `.invalid` never resolves, so a request arriving under that
+name proves the client dialled the pinned address. `Ssrf` exports it only
+under `MIX_ENV=test`. Delivery suites write rows through
+`Grappa.PushFixtures.stored_subscription!/2`, past the changeset, because
+Bypass is plain `http` on loopback.
+
+**Deploy class: COLD.** No `Session.Server` field and no `defstruct` change,
+but `VendorLog` attaches its handler in `init/1`: a hot reload would leave it
+bound to the old event, which nothing emits any more, and vendor rejections
+would go unlogged until the next restart.

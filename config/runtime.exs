@@ -642,8 +642,9 @@ if config_env() == :prod do
   #
   # The keys live in the `:ex_nudge` application environment because
   # that's where the upstream library reads them from at request time
-  # (see `ExNudge.VAPID.get_keys/0` + the `k=` header in
-  # `ExNudge.send_notification/3`). Routing through the library's
+  # (`ExNudge.VAPID.get_keys/0`, which signs the JWT). The `k=` header is
+  # built by `Grappa.Push.Sender` from `Grappa.Push.vapid_public_key/0`
+  # since #2401. Routing through the library's
   # namespace avoids keeping a parallel `:grappa, :vapid` mirror that
   # would have to be kept in sync at boot. `Grappa.Push.boot/0` pins
   # the public key from the SAME namespace so the two consumers

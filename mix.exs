@@ -322,13 +322,13 @@ defmodule Grappa.MixProject do
       #
       # Accepted costs, priced on #1290 before the swap:
       #   * A SECOND HTTP stack — httpoison (hackney) + `jose` are
-      #     runtime deps, next to our `Req`. Release size, a second TLS
-      #     config surface, two connection pools.
-      #   * `ex_nudge` maps 410 to `{:error, :subscription_expired}` and
-      #     leaves 404 in the generic `{:error, {:http_error, 404}}`
-      #     bucket, so `Grappa.Push.Sender` adapts all three return
-      #     shapes and treats 404 as terminal itself (RFC 8030 §7.3).
-      #     See the wire + adapter sections of that module.
+      #     runtime deps, next to our `Req`. Since #2401 nothing calls
+      #     into httpoison: `Grappa.Push.Sender` uses only
+      #     `ExNudge.Encryption` + `ExNudge.VAPID` and does the POST
+      #     itself through `Grappa.Net.PinnedHttp` (the endpoint address
+      #     must be checked and DIALLED, and `send_notification/3` takes no
+      #     transport options). httpoison/hackney stay compiled and
+      #     shipped only because `ex_nudge` declares them.
       #   * VAPID config moves to the `:ex_nudge` app-env namespace.
       #     The keypair ENCODING is unchanged (base64url, unpadded, raw
       #     65-byte point + 32-byte scalar) and both libraries build the
@@ -347,13 +347,12 @@ defmodule Grappa.MixProject do
       # vulnerabilities and the full suite passes.
       #
       # What the override COSTS: it silences `ex_nudge`'s own
-      # requirement, so nothing checks that pairing any more. It holds
-      # today because `ex_nudge` touches exactly `HTTPoison.post/3` and
-      # the `%HTTPoison.Response{status_code:}` / `%HTTPoison.Error{}`
-      # shapes, all unchanged across the 2.x→3.x major. Re-verify that
-      # on any bump of either package; the risk is a silent divergence,
-      # not a resolution error, because the override is what stops the
-      # solver from complaining.
+      # requirement, so nothing checks that pairing any more. Since #2401
+      # the pairing is unexercised — the only httpoison caller is
+      # `ExNudge.send_notification/3`, which grappa no longer calls — so
+      # the override's job is purely to keep `mix deps.audit` green on
+      # code that is shipped but never run. A future `send_notification`
+      # caller would have to re-verify the 2.x→3.x shapes first.
       {:httpoison, "~> 3.0", override: true},
       {:ex_nudge, "~> 1.0"},
       {:telemetry, "~> 1.3"},
