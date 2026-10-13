@@ -31,7 +31,7 @@ defmodule Grappa.Push.WireFormatTest do
   distributor or push service accepts it; that needs real devices and
   is explicitly out of reach from a test suite.
 
-  `async: false` — `ExNudge` reads the VAPID keypair from the
+  `async: false` — `ExNudge.VAPID` reads the VAPID keypair from the
   `:ex_nudge` application environment at request time, and a sibling
   test mutates it.
   """
@@ -93,8 +93,9 @@ defmodule Grappa.Push.WireFormatTest do
       assert header(headers, "content-encoding") == "aes128gcm"
 
       # The capability `GET /api/config` publishes must name the coding
-      # actually on the wire, or a client's check is a lie. Distinct
-      # sources: the header comes from the library, the constant is ours.
+      # actually on the wire, or a client's check is a lie. Since #2401
+      # the sender writes the header FROM this constant, so the literal
+      # above is the pin and this line keeps the two from drifting apart.
       assert header(headers, "content-encoding") == Push.content_encoding()
     end
 

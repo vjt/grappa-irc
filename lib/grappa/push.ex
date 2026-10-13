@@ -75,6 +75,8 @@ defmodule Grappa.Push do
     deps: [
       Grappa.IRC,
       Grappa.Mentions,
+      Grappa.Net.PinnedHttp,
+      Grappa.Net.Ssrf,
       Grappa.Repo,
       Grappa.Scrollback,
       Grappa.Subject,

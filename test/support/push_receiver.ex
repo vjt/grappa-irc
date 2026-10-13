@@ -13,9 +13,10 @@ defmodule Grappa.PushReceiver do
   P-256 private key and an auth secret, is handed the POST body and
   nothing else, and must recover the plaintext.
   """
-  use Boundary, top_level?: true, deps: [Grappa.Push]
+  use Boundary, top_level?: true, deps: [Grappa.Push, Grappa.PushFixtures]
 
   alias Grappa.Push
+  alias Grappa.PushFixtures
 
   # RFC 8188 §2.1: salt(16) ‖ rs(4) ‖ idlen(1) ‖ keyid(idlen).
   @salt_length 16
@@ -27,17 +28,20 @@ defmodule Grappa.PushReceiver do
 
   @doc """
   Stands in for `PushManager.subscribe()`: generates a P-256 keypair and a
-  16-byte auth secret, registers the PUBLIC half for `subject` at
-  `endpoint`, and returns the subscription with the private half to
-  decrypt with.
+  16-byte auth secret, stores the PUBLIC half for `subject` at `endpoint`,
+  and returns the subscription with the private half to decrypt with.
+
+  The row goes in through `Grappa.PushFixtures.stored_subscription!/2`, not
+  `Grappa.Push.create/2`: the receiving end is a `Bypass` on loopback over
+  plain `http`, which the changeset refuses since #2401.
   """
   @spec browser_subscription(Grappa.Subject.t(), String.t()) :: {Push.Subscription.t(), client()}
   def browser_subscription(subject, endpoint) do
     {public_key, private_key} = :crypto.generate_key(:ecdh, :prime256v1)
     auth_secret = :crypto.strong_rand_bytes(@auth_secret_length)
 
-    {:ok, sub} =
-      Push.create(subject, %{
+    sub =
+      PushFixtures.stored_subscription!(subject, %{
         endpoint: endpoint,
         p256dh_key: Base.url_encode64(public_key, padding: false),
         auth_key: Base.url_encode64(auth_secret, padding: false),

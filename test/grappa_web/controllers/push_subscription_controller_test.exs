@@ -133,8 +133,8 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
 
   describe "POST /push/subscriptions — validation" do
     setup %{conn: conn} do
-      {_, session} = user_and_session()
-      {:ok, conn: put_bearer(conn, session.id)}
+      {user, session} = user_and_session()
+      {:ok, conn: put_bearer(conn, session.id), user: user}
     end
 
     test "400 on missing endpoint key", %{conn: conn} do
@@ -155,6 +155,15 @@ defmodule GrappaWeb.PushSubscriptionControllerTest do
         })
 
       assert json_response(conn, 400) == %{"error" => "bad_request"}
+    end
+
+    test "422 on an endpoint that is not https on a public host (#2401) — nothing stored",
+         %{conn: conn, user: user} do
+      conn = post(conn, "/push/subscriptions", valid_body(endpoint: "https://169.254.169.254/latest"))
+
+      assert %{"error" => "validation_failed", "field_errors" => fe} = json_response(conn, 422)
+      assert ["must be an https URL on a public host"] = fe["endpoint"]
+      assert [] = Push.list_for_subject({:user, user.id})
     end
 
     test "422 on duplicate (user_id, endpoint) — error keyed on :endpoint", %{conn: conn} do

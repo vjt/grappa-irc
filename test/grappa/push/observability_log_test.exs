@@ -28,12 +28,14 @@ defmodule Grappa.Push.ObservabilityLogTest do
   """
   use Grappa.DataCase, async: false
 
+  import Grappa.PushFixtures, only: [stored_subscription!: 2]
+
   import ExUnit.CaptureLog
   import Grappa.AuthFixtures, only: [user_fixture: 0]
 
-  alias Grappa.{Push, WSPresence}
   alias Grappa.Push.{Sender, Triggers}
   alias Grappa.Scrollback.Message
+  alias Grappa.WSPresence
 
   # Real P-256 client public key + 16-byte auth secret (mirrors
   # `sender_test.exs`). The ECDH path raises on random bytes BEFORE the
@@ -90,8 +92,8 @@ defmodule Grappa.Push.ObservabilityLogTest do
 
       user = user_fixture()
 
-      {:ok, sub} =
-        Push.create({:user, user.id}, %{
+      sub =
+        stored_subscription!({:user, user.id}, %{
           endpoint: endpoint,
           p256dh_key: @client_p256dh,
           auth_key: @client_auth,
