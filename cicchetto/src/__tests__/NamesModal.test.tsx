@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 import type { NamesReply } from "../lib/api";
+import { SELECTABLE_TEXT_CLASS } from "../lib/keepKeyboard";
 import type { MemberEntry } from "../lib/memberTypes";
 import { dismissNamesModal, setNamesReply } from "../lib/namesModal";
 import {
@@ -49,6 +50,24 @@ describe("NamesModal (#140)", () => {
     const modal = screen.getByTestId("names-modal");
     expect(modal.textContent).toContain("#bofh — 3 people");
     expect(modal.textContent).toContain("End of /NAMES list: 3");
+  });
+
+  // issue 2394 — the nick buttons ARE the grid's text. The sheet carves every
+  // modal button out of selection unless it wears the shared class, so
+  // without it /names is the one modal with nothing copyable in its body.
+  it("issue 2394 marks every nick button as copyable text", () => {
+    focusNetwork();
+    setNamesReply(
+      SLUG,
+      roster([
+        { nick: "alice", modes: ["@"] },
+        { nick: "carol", modes: [] },
+      ]),
+    );
+    render(() => <NamesModal />);
+    const nicks = screen.getByTestId("names-modal").querySelectorAll(".names-modal-nick");
+    expect(nicks).toHaveLength(2);
+    for (const nick of nicks) expect(nick).toHaveClass(SELECTABLE_TEXT_CLASS);
   });
 
   it("groups members into tiered sections with per-section counts", () => {

@@ -7,7 +7,7 @@
 // Fix: the standing re-enable is a SHAPE — `.modal-backdrop` (every viewport
 // modal, by default) and the shared `.selectable-text` class (the lookup cards,
 // the topic text) — with the controls inside them (`button`, `svg`) carved back
-// out. keepKeyboard.ts owns that list; touchSelectionPolicy.test.ts pins the
+// out unless they too wear `.selectable-text` (the /names and /who nicks). keepKeyboard.ts owns that list; touchSelectionPolicy.test.ts pins the
 // sheet to it in both directions.
 //
 // What this spec can prove is the COMPUTED cascade on both touch engines
@@ -104,8 +104,10 @@ test("@webkit @touch issue 2394 — WHOIS card and /who modal text is selectable
 
     expect(modalStyles.missing).toBe(false);
     expect(modalStyles.userhost).toBe("text");
-    // The nick is a control (it opens a query), so it is carved out with the ✕.
-    expect(modalStyles.nickButton).toBe("none");
+    // The nick is a control (it opens a query) AND the text worth copying, so
+    // it opts back in past the modal-button carve-out (the #250 reasoning);
+    // the ✕ is chrome and stays out.
+    expect(modalStyles.nickButton).toBe("text");
     expect(modalStyles.close).toBe("none");
   } finally {
     await peer.disconnect("issue 2394 done");

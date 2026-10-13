@@ -753,8 +753,10 @@ html.is-ios body {
          NEW modal is copyable by default;
        * `.selectable-text` — the opt-in class for a copyable surface that is
          not such a modal: the WHOIS / WHOWAS / LUSERS / server-info cards and
-         the topic modal's full-topic text.
-     Their controls are carved back out in the rule after the next one.
+         the topic modal's text and setter line, and the /names and /who
+         nick buttons.
+     Both get their own rule below, and their controls are carved back out
+     in the rule after it.
 
      The list lives in keepKeyboard.ts (STANDING_SELECTABLE_SURFACES +
      STANDING_SURFACE_CONTROLS): on these same surfaces keepKeyboard
@@ -776,26 +778,41 @@ html.is-ios body {
      target message is selectable in its channel), topic-bar text
      (clickable, opens the modal), all other chrome.
      Full arc: docs/DESIGN_NOTES.md 2026-06-11. */
-  html .modal-backdrop,
-  html .selectable-text,
   html input,
   html textarea {
     -webkit-user-select: text;
     user-select: text;
   }
 
+  /* issue 2394 — the standing surfaces also lift the inherited
+     `-webkit-touch-callout: none`. #1067 found that a selection made under a
+     suppressed callout has no draggable endpoints on iOS; these surfaces have
+     no long-press menu of their own for the platform's to race, which is the
+     only reason `.scrollback` keeps its callout behind the latch below. The
+     price is the native link preview on a long-pressed link inside a modal,
+     and that is a Copy affordance in its own right. NOT device-verified. */
+  html .modal-backdrop,
+  html .selectable-text {
+    -webkit-touch-callout: default;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
   /* issue 2394 — the controls inside those surfaces stay chrome: a long-press
-     on a ✕, a nick button or a tab must not pop the selection magnifier over a
+     on a ✕, a toggle or an action must not pop the selection magnifier over a
      control (the `.admin-tab-panel button` carve-out below, generalised).
      `svg` is the /links map — a pan surface (`touch-action: none`) whose node
-     labels are <text>, where a long-press must pan, not select. Inputs and
-     selects inside a modal stay selectable via their own re-enables. MUST
-     stay after the re-enable above and must match keepKeyboard.ts's
+     labels are <text>, where a long-press must pan, not select. A control
+     that IS the copyable text — the nick buttons of /names and /who — opts
+     back in with `.selectable-text` (the #250 `.nick-clickable` reasoning;
+     keepKeyboard still treats it as a control). Inputs and selects inside a
+     modal stay selectable via their own re-enables. Must match keepKeyboard.ts's
      STANDING_SURFACE_CONTROLS. */
-  html .modal-backdrop button,
-  html .modal-backdrop svg,
-  html .selectable-text button,
-  html .selectable-text svg {
+  html .modal-backdrop button:not(.selectable-text),
+  html .modal-backdrop svg:not(.selectable-text),
+  html .selectable-text button:not(.selectable-text),
+  html .selectable-text svg:not(.selectable-text) {
+    -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;
   }

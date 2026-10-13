@@ -220,6 +220,9 @@ describe("TopicBar", () => {
     fireEvent.click(screen.getByTestId("topic-strip"));
     const modal = screen.getByRole("dialog");
     expect(modal.querySelector(".topic-modal-text")).toHaveClass(SELECTABLE_TEXT_CLASS);
+    // …and so does the setter line beneath it: the topic modal is not built on
+    // `.modal-backdrop`, so nothing else would cover it.
+    expect(modal.querySelector(".topic-modal-meta")).toHaveClass(SELECTABLE_TEXT_CLASS);
   });
 
   // Control: a whitespace-only topic is a topic the wire carried, not an

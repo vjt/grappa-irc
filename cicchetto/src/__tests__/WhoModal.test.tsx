@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 import type { WhoReply, WhoUser } from "../lib/api";
 import { channelKey } from "../lib/channelKey";
+import { SELECTABLE_TEXT_CLASS } from "../lib/keepKeyboard";
 import { seedFromTest } from "../lib/members";
 import {
   __resetForTest,
@@ -112,6 +113,16 @@ describe("WhoModal (#169)", () => {
     const unknown = rowEl.querySelector(".who-modal-flag-tag-unknown");
     expect(unknown).not.toBeNull();
     expect(unknown?.textContent).toContain("Z");
+  });
+
+  // issue 2394 — the nick is a control AND the text a user copies, so it opts
+  // back into selection past the sheet's modal-button carve-out.
+  it("issue 2394 marks the nick button as copyable text", () => {
+    focusNetwork();
+    setWhoReply(SLUG, roster([row({ nick: "alice", realname: "Alice Liddell" })]));
+    render(() => <WhoModal />);
+    const nick = screen.getByTestId("who-modal-row").querySelector(".who-modal-nick");
+    expect(nick).toHaveClass(SELECTABLE_TEXT_CLASS);
   });
 
   // #176 — the realname (gecos) moves onto its OWN word-wrapping line, no

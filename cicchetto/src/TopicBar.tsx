@@ -472,7 +472,7 @@ const TopicBar: Component<Props> = (props) => {
                     </Show>
                   </p>
                   <Show when={topicEntry() !== null}>
-                    <p class="topic-modal-meta">
+                    <p class="topic-modal-meta selectable-text">
                       Set by: {topicEntry()?.set_by ?? "(unknown)"}
                       {" — "}
                       {formatSetAt(topicEntry()?.set_at ?? null)}

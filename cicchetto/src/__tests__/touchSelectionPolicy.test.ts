@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { STANDING_SELECTABLE_SURFACES, STANDING_SURFACE_CONTROLS } from "../lib/keepKeyboard";
+import {
+  SELECTABLE_TEXT_CLASS,
+  STANDING_SELECTABLE_SURFACES,
+  STANDING_SURFACE_CONTROLS,
+} from "../lib/keepKeyboard";
 import {
   coarsePointerBlocks,
   hoverGatedBlocks,
@@ -212,25 +216,27 @@ describe("issue 2394 — the standing selectable surfaces agree with keepKeyboar
     "html .admin-tab-panel",
   ];
 
-  it("re-enables every standing surface inside the gate", () => {
+  it("re-enables every standing surface inside the gate, callout included", () => {
     expect(STANDING_SELECTABLE_SURFACES.length).toBeGreaterThan(0);
     for (const surface of STANDING_SELECTABLE_SURFACES) {
-      expect(gatedDeclares(`html ${surface}`, /user-select:\s*text/), `html ${surface}`).toBe(true);
+      const selector = `html ${surface}`;
+      expect(gatedDeclares(selector, /user-select:\s*text/), selector).toBe(true);
+      // The inherited `-webkit-touch-callout: none` is what #1067 found leaves
+      // an iOS selection without draggable endpoints; these surfaces have no
+      // long-press menu of their own to race, unlike `.scrollback`.
+      expect(gatedDeclares(selector, /-webkit-touch-callout:\s*default/), selector).toBe(true);
     }
   });
 
-  it("re-excludes every control of every standing surface, after the re-enable", () => {
-    const sheet = coarse();
+  // The sheet's carve-out is `:not(.selectable-text)`: a control that IS the
+  // copyable text (a /names or /who nick) opts back in with the same class,
+  // while keepKeyboard still treats it as a control — see the comment there.
+  it("re-excludes every non-copyable control of every standing surface", () => {
     for (const surface of STANDING_SELECTABLE_SURFACES) {
       for (const control of STANDING_SURFACE_CONTROLS) {
-        const selector = `html ${surface} ${control}`;
+        const selector = `html ${surface} ${control}:not(.${SELECTABLE_TEXT_CLASS})`;
         expect(gatedDeclares(selector, /user-select:\s*none/), selector).toBe(true);
-        // The control's selector is one type selector MORE specific than the
-        // surface's, so it wins already; the source order is pinned too, the
-        // same "re-excludes stay AFTER their re-enables" rule the gate states.
-        const reEnableAt = sheet.search(new RegExp(`html \\${surface}\\s*[,{]`));
-        expect(reEnableAt, `html ${surface} re-enable`).toBeGreaterThanOrEqual(0);
-        expect(sheet.indexOf(selector), selector).toBeGreaterThan(reEnableAt);
+        expect(gatedDeclares(selector, /-webkit-touch-callout:\s*none/), selector).toBe(true);
       }
     }
   });
@@ -241,7 +247,7 @@ describe("issue 2394 — the standing selectable surfaces agree with keepKeyboar
       ...NOT_KEYBOARD_SURFACES,
     ]);
     const strays = coarseRules()
-      .filter((rule) => /user-select:\s*text/.test(rule.body))
+      .filter((rule) => /user-select:\s*(?:text|all|auto)/.test(rule.body))
       .flatMap((rule) => rule.selectors.split(",").map((one) => one.trim().replace(/\s+/g, " ")))
       .filter((sel) => !sel.startsWith("html.is-selecting") && !known.has(sel));
 

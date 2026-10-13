@@ -89,11 +89,21 @@ import { isIos } from "./platform";
 //     modal is copyable by default without anybody remembering this file;
 //   * `.selectable-text` (SELECTABLE_TEXT_CLASS) — the opt-in for a copyable
 //     surface that is not such a modal: the lookup cards, the topic text.
-// Their controls (STANDING_SURFACE_CONTROLS) are carved back out in BOTH
-// places: a long-press on a ✕ must not raise a selection magnifier, and a tap
-// on it keeps the keyboard as it always did. CSS cannot import a constant, so
-// `touchSelectionPolicy.test.ts` asserts the sheet says exactly this — both
-// directions, so a re-enable added to the sheet alone fails too.
+// Their controls (STANDING_SURFACE_CONTROLS) are carved back out, and here
+// the two policies DIFFER on purpose, the `.nick-clickable` split (#250 /
+// #354) in a new place:
+//   * KEYBOARD: every control keeps the keyboard on a tap, as it always did.
+//   * CSS: a control is unselectable — no magnifier over a ✕ — UNLESS it also
+//     wears SELECTABLE_TEXT_CLASS, because it IS the text worth copying: the
+//     nick buttons of /names and /who. The sheet's carve-out is therefore
+//     `<surface> <control>:not(.selectable-text)`.
+// The scrim ITSELF holds no text and is chrome too: the compat mousedown of
+// the tap that OPENED a modal (Send with `/banlist` typed) lands on it,
+// measured in issue1831-tap-send-modal-survives.spec.ts, and treating it as
+// text would let that tap close the keyboard.
+// CSS cannot import a constant, so `touchSelectionPolicy.test.ts` asserts the
+// sheet says exactly this — both directions, so a re-enable added to the sheet
+// alone fails too.
 export const SELECTABLE_TEXT_CLASS = "selectable-text";
 export const STANDING_SELECTABLE_SURFACES = [
   ".modal-backdrop",
@@ -179,11 +189,12 @@ export function isTextEntry(el: Element | null): el is HTMLInputElement | HTMLTe
 // rather than always fired. The exclude wins: the [Join] CTA lives inside
 // .scrollback but is a control, so it falls through to the always-fire
 // path (keyboard preserved regardless of hold duration). A modal's or a
-// card's own controls do the same (issue 2394).
+// card's own controls, and a modal's bare scrim, do the same (issue 2394).
 function isSelectableSurface(el: Element | null): boolean {
   if (el === null) return false;
   if (el.closest(SELECTABLE_TEXT_EXCLUDE) !== null) return false;
   if (el.closest(STANDING_CONTROL_EXCLUDE) !== null) return false;
+  if (el.matches(".modal-backdrop")) return false;
   return el.closest(SELECTABLE_TEXT_SURFACES) !== null;
 }
 

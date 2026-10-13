@@ -1744,26 +1744,49 @@ users on phones could not copy an IP or a hostname off the WHOIS card.
 - `.modal-backdrop` — the scrim every viewport modal is built on (14 modals
   today), so a new modal is copyable without anybody remembering this rule;
 - `.selectable-text` — an opt-in class for a copyable surface that is not such
-  a modal: the four lookup cards and the topic text, which moves off its own
-  selector onto this one.
+  a modal: the four lookup cards and the topic modal's text (which moves off its
+  own selector onto this one) and setter line.
 
-`STANDING_SURFACE_CONTROLS` (`button`, `svg`) are carved back out in the sheet
-(no selection magnifier over a ✕, a nick button or the `/links` pan map) and in
-keepKeyboard (a tap on them keeps the keyboard, as before). CSS cannot import a
-constant, so `touchSelectionPolicy.test.ts` checks both directions: every listed
-surface and control is declared inside the gate, and the gate has no unlatched
-re-enable outside the list plus the four non-keyboard ones (`input`,
-`textarea`, `select`, `.admin-tab-panel`). The old comment asking people to
-keep two lists in sync is replaced by that test. Four mutants (one CSS rule
-dropped, a stray selector added, the TS exclude dropped, the modal root
-dropped) each turn it red.
+`STANDING_SURFACE_CONTROLS` (`button`, `svg`) are carved back out, and the
+two policies split here the way #250 / #354 split `.nick-clickable`. In
+keepKeyboard every control keeps the keyboard on a tap, as before. In the sheet
+a control is unselectable (no magnifier over a ✕, a toggle or the `/links` pan
+map) unless it also wears `.selectable-text`, because it is itself the text worth
+copying. That is the case for the nick buttons of `/names` and `/who`. Without
+the opt-in the whole `/names` grid, which is nothing but nick buttons, stayed
+uncopyable. Review caught that.
+
+The bare scrim is chrome in keepKeyboard too. The compat mousedown of the tap
+that opens a modal (Send with `/banlist` typed) lands on the freshly mounted
+scrim, as measured in `issue1831-tap-send-modal-survives.spec.ts`. Treating
+the scrim as text would have let that tap close the keyboard and brought back
+#1059's Send/Enter split. Review caught that as well.
+
+The new surfaces also lift the inherited `-webkit-touch-callout: none`. #1067
+found that a selection made under a suppressed callout has no draggable
+endpoints on iOS. `.scrollback` keeps its callout behind the latch only
+because its long-press menu would race the platform's, and modals and cards
+have no such menu. The price is the native link preview on a long-pressed
+link inside a modal.
+
+CSS cannot import a constant, so `touchSelectionPolicy.test.ts` checks both
+directions. Every listed surface (text + callout) and every non-copyable
+control is declared inside the gate. The gate has no unlatched `text`/`all`/
+`auto` re-enable outside the list plus the four non-keyboard ones (`input`,
+`textarea`, `select`, `.admin-tab-panel`). That test replaces the old comment
+asking people to keep two lists in sync. Seven mutants each turn a test red:
+a CSS control rule dropped, a stray selector added, the TS exclude dropped,
+the modal root dropped, the scrim check dropped, the `:not()` opt-in dropped,
+the callout lift dropped.
 
 **Behaviour change, accepted.** With compose focused on iOS, a short tap on
 modal TEXT now dismisses the keyboard instead of keeping it. That is what the
 topic text and the scrollback have always done, and long-press keeps it so
-the selection survives. Controls are unchanged.
+the selection survives. Controls and the scrim are unchanged.
 
-**Left out, on purpose.** The media viewer (pull-to-dismiss and pinch
+**Left out, on purpose.** `/links` server names (SVG labels on a pan
+surface), the `/list` directory pane (a pane, not a modal; its rows are join
+controls), the media viewer (pull-to-dismiss and pinch
 gestures on the same surface would compete with a native selection; it needs
 a device check first), the archive modal and the theme editor (buttons and
 form fields only), and the credits.

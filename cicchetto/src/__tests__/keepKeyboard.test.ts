@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   installKeyboardPreserve,
   LONG_PRESS_MS,
+  SELECTABLE_TEXT_CLASS,
   STANDING_SELECTABLE_SURFACES,
   STANDING_SURFACE_CONTROLS,
 } from "../lib/keepKeyboard";
@@ -203,7 +204,35 @@ describe("keepKeyboard — installKeyboardPreserve", () => {
         expect(pressDefaultPrevented(el, LONG_PRESS_MS - 100)).toBe(true);
       });
     }
+
+    // A control that is ALSO copyable text (a /names or /who nick) opts back
+    // into CSS selection with the shared class, but its KEYBOARD policy stays
+    // a control's — the `.nick-clickable` split (#354).
+    it(`iOS: SHORT tap on a copyable button inside ${surface} IS still prevented (keyboard policy is a control's)`, () => {
+      stubUserAgent(IPHONE_UA);
+      input.focus();
+      const container = document.createElement("div");
+      container.className = className;
+      const nick = document.createElement("button");
+      nick.className = SELECTABLE_TEXT_CLASS;
+      container.append(nick);
+      document.body.append(container);
+      expect(pressDefaultPrevented(nick, LONG_PRESS_MS - 100)).toBe(true);
+    });
   }
+
+  // The bare scrim holds no text. The compat mousedown of the tap that OPENED
+  // a modal (Send with `/banlist` typed) lands on it — measured in
+  // issue1831-tap-send-modal-survives.spec.ts — and must keep the keyboard as
+  // the Send button would have.
+  it("iOS: SHORT tap landing on the bare .modal-backdrop scrim IS prevented (it is chrome, not text)", () => {
+    stubUserAgent(IPHONE_UA);
+    input.focus();
+    const scrim = document.createElement("div");
+    scrim.className = "modal-backdrop modal-backdrop-viewport";
+    document.body.append(scrim);
+    expect(pressDefaultPrevented(scrim, LONG_PRESS_MS - 100)).toBe(true);
+  });
 
   it("iOS: LONG-press on the .scrollback-invite-join control inside .scrollback IS prevented (it's a button, not selectable text)", () => {
     stubUserAgent(IPHONE_UA);

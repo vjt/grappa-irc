@@ -303,7 +303,7 @@ const WhoModal: Component = () => {
                           <div class="who-modal-line who-modal-line-head">
                             <button
                               type="button"
-                              class="who-modal-nick"
+                              class="who-modal-nick selectable-text"
                               onClick={() => onNickClick(b.network, u.nick)}
                             >
                               <NickText

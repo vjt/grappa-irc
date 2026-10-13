@@ -159,7 +159,7 @@ const NamesModal: Component = () => {
                             <li>
                               <button
                                 type="button"
-                                class="names-modal-nick"
+                                class="names-modal-nick selectable-text"
                                 onClick={() => onNickClick(b.network, m.nick)}
                               >
                                 <NickText nick={m.nick} prefix={toPrefix(m.modes, rank())} />
