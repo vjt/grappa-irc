@@ -1990,11 +1990,13 @@ matters for the choice below because no session-side cure can reach it.
 ### The cure: the directory against the table
 
 `Grappa.Dcc.Reaper.sweep_orphans/2` runs on every tick, after the expiry pass:
-list the spool root, keep the names shaped like a minted slug, drop those with
-a row (`Grappa.Dcc.untracked_slugs/1`), and unlink what is left if its mtime is
-older than `Grappa.Dcc.orphan_grace_seconds/0` (one hour). No new state: the
-disk already records which bytes exist and the table records which are
-accounted for, so the orphan set is their difference.
+list the spool root, keep the entries whose mtime is older than
+`Grappa.Dcc.orphan_grace_seconds/0` (one hour), keep of those the names shaped
+like a minted slug that have no row (`Grappa.Dcc.untracked_slugs/1`), and
+unlink them. Age first, rows second: the row lookup is then the last step
+before the unlink, and a tick with nothing stale asks the database nothing. No
+new state: the disk already records which bytes exist and the table records
+which are accounted for, so the orphan set is their difference.
 
 **The mtime is what separates an orphan from a transfer in flight.** Both are
 bytes with no row. `Transfer` writes on every chunk, so a live file's mtime
@@ -2034,8 +2036,24 @@ spool, counted against the budget, behind a link no one ever saw.
 yet swept do not count against the global cap. In-flight bytes were already
 uncounted before this change. Orphans are now bounded at grace + one tick.
 
+**A DCC root shared with the uploads or peer-avatars root would now be
+destructive.** Both stores name files with the same slug shape, so the orphan
+pass would unlink every upload or cached avatar older than an hour. No
+substrate ships that configuration and nothing at boot refuses it;
+`docs/OPERATIONS.md` says so where `DCC_STORAGE_ROOT` is documented. A boot
+refusal was left out: it means a guard reading two other contexts' roots for a
+misconfiguration nobody has.
+
+**`lib/grappa/application.ex` still restates the retracted line** in the
+comment above the `Grappa.Dcc.Reaper` child ("a sweep has nothing to
+enumerate"). It is left alone on purpose: `Grappa.Deploy.Preflight` classes
+ANY diff to that file as COLD, and a cold restart drops every live IRC
+session. Correct it in the next change that touches the file for its own
+reasons.
+
 **Tests.** `Grappa.Dcc.ReaperTest` drives a real `Transfer` against a loopback
-sender. It kills the reporting pid mid-transfer and the task mid-drain,
+sender (the socket verbs shared with `Grappa.Dcc.TransferTest` now live in
+`Grappa.DccTestSender`). It kills the reporting pid mid-transfer and the task mid-drain,
 asserts the defect first (bytes on disk, no row), then asserts the sweep keeps
 a fresh file and removes a stale one. It also pins that a tracked file and a
 non-slug name are never touched, and that the tick calls the pass. The session
@@ -2046,5 +2064,5 @@ the worker host, so PR CI is the only gate this ran through.
 
 **Deploy class: HOT.** Function bodies, two new public functions, a module
 attribute, comments; no migration, no `config/*.exs`, no `defstruct`, no
-state-map field. `Grappa.Dcc.Reaper`'s next tick after the reload runs the new
-pass.
+state-map field, and `lib/grappa/application.ex` untouched (see above).
+`Grappa.Dcc.Reaper`'s next tick after the reload runs the new pass.

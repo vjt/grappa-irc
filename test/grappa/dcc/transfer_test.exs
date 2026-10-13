@@ -2,9 +2,10 @@ defmodule Grappa.Dcc.TransferTest do
   use ExUnit.Case, async: true
 
   alias Grappa.Dcc.Transfer
+  alias Grappa.DccTestSender
   alias Grappa.IRC.DCC.Offer
 
-  @loopback {127, 0, 0, 1}
+  @loopback DccTestSender.loopback()
 
   setup do
     dir = Path.join(System.tmp_dir!(), "dcc-transfer-#{System.unique_integer([:positive])}")
@@ -14,37 +15,23 @@ defmodule Grappa.Dcc.TransferTest do
   end
 
   # A fake DCC sender: listens on an ephemeral loopback port, hands the
-  # caller the port, and runs `serve` against the accepted socket. This
-  # is a REAL socket on purpose — the boundary under test IS TCP, and
-  # mocking :gen_tcp would test our own mock's idea of a short read.
+  # caller the port, and runs `serve` against the accepted socket — see
+  # `Grappa.DccTestSender` for why it is a real socket and why it drains
+  # before closing.
   defp sender(serve) do
-    {:ok, listen} = :gen_tcp.listen(0, [:binary, ip: @loopback, active: false, reuseaddr: true])
-    {:ok, port} = :inet.port(listen)
+    {listen, port} = DccTestSender.listen()
 
     task =
       Task.async(fn ->
         {:ok, socket} = :gen_tcp.accept(listen, 5_000)
         result = serve.(socket)
-        # Wait for OUR side to close rather than closing first. The
-        # receiver acks every chunk, so a sender that closes with those
-        # acks still unread makes the kernel send RST instead of FIN —
-        # and an RST discards the payload still in flight. Measured: 2-3
-        # of 20 chunks vanished, read by the code under test as a short
-        # transfer that never happened.
-        drain_until_closed(socket)
+        DccTestSender.drain_until_closed(socket)
         :gen_tcp.close(socket)
         :gen_tcp.close(listen)
         result
       end)
 
     {port, task}
-  end
-
-  defp drain_until_closed(socket) do
-    case :gen_tcp.recv(socket, 0, 5_000) do
-      {:ok, _} -> drain_until_closed(socket)
-      {:error, _} -> :ok
-    end
   end
 
   # Sends, then HALF-closes. A plain `close/1` can discard whatever is

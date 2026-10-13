@@ -400,11 +400,16 @@ defmodule Grappa.Dcc do
   """
   @spec untracked_slugs([String.t()]) :: [String.t()]
   def untracked_slugs(names) when is_list(names) do
-    slugs = Enum.filter(names, &Regex.match?(@slug_regex, &1))
-    query = from(f in SpoolFile, where: f.slug in ^slugs, select: f.slug)
-    tracked = query |> Repo.all() |> MapSet.new()
+    case Enum.filter(names, &Regex.match?(@slug_regex, &1)) do
+      [] ->
+        []
 
-    Enum.reject(slugs, &MapSet.member?(tracked, &1))
+      slugs ->
+        query = from(f in SpoolFile, where: f.slug in ^slugs, select: f.slug)
+        tracked = query |> Repo.all() |> MapSet.new()
+
+        Enum.reject(slugs, &MapSet.member?(tracked, &1))
+    end
   end
 
   @doc """

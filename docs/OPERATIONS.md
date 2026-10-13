@@ -5465,6 +5465,13 @@ it.
   — a relative value is read against the BEAM's working directory, which
   the init system chooses.
 
+  🔴 **Never point it at the uploads or peer-avatars root.** Those stores
+  name their files with the same 26-character slug shape, and since issue
+  2404 the DCC reaper unlinks every slug-named file in its root that has
+  no `dcc_files` row and has not been written for an hour (see DCC spool
+  GC below). Sharing a root would delete every upload or cached avatar
+  older than that on the next tick. Nothing at boot refuses the setting.
+
   **Nothing here is permanent and nothing is unbounded.** Every row
   carries a NOT NULL `expires_at`: the accepting subject's own upload TTL,
   or a hard 72-hour ceiling when they have set none, and CLAMPED to that

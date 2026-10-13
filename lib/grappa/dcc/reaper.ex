@@ -130,20 +130,25 @@ defmodule Grappa.Dcc.Reaper do
   def sweep_orphans(storage_root, %DateTime{} = now) do
     cutoff = DateTime.to_unix(now) - Dcc.orphan_grace_seconds()
 
+    # Age BEFORE the row lookup: the lookup is then the last step between
+    # the decision and the unlink, and a tick with nothing stale — almost
+    # every tick — asks the database nothing.
     removed =
       storage_root
       |> File.ls!()
+      |> Enum.filter(&stale?(storage_root, &1, cutoff))
       |> Dcc.untracked_slugs()
       |> Enum.reduce(0, fn slug, acc ->
-        case unlink_if_stale(Path.join(storage_root, slug), cutoff) do
-          :unlinked ->
+        case File.rm(Path.join(storage_root, slug)) do
+          :ok ->
             acc + 1
 
-          :kept ->
+          # Gone since the stat: the inline cleanup got there first.
+          {:error, :enoent} ->
             acc
 
           {:error, reason} ->
-            Logger.error("dcc reaper failure", slug: slug, error: inspect(reason))
+            Logger.error("dcc reaper failure", slug: slug, error: inspect({:fs, reason}))
             acc
         end
       end)
@@ -151,23 +156,17 @@ defmodule Grappa.Dcc.Reaper do
     {:ok, removed}
   end
 
-  # The stat comes AFTER the row lookup, so a transfer that finished and
-  # got its row between the two shows a fresh mtime here and is kept.
-  # ENOENT on either step is the inline cleanup getting there first.
-  defp unlink_if_stale(path, cutoff) do
-    case File.stat(path, time: :posix) do
-      {:ok, %File.Stat{mtime: mtime}} when mtime > cutoff -> :kept
-      {:ok, _} -> unlink(path)
-      {:error, :enoent} -> :kept
-      {:error, reason} -> {:error, {:fs, reason}}
-    end
-  end
+  defp stale?(storage_root, name, cutoff) do
+    case File.stat(Path.join(storage_root, name), time: :posix) do
+      {:ok, %File.Stat{mtime: mtime}} ->
+        mtime <= cutoff
 
-  defp unlink(path) do
-    case File.rm(path) do
-      :ok -> :unlinked
-      {:error, :enoent} -> :kept
-      {:error, reason} -> {:error, {:fs, reason}}
+      {:error, :enoent} ->
+        false
+
+      {:error, reason} ->
+        Logger.error("dcc reaper failure", slug: name, error: inspect({:fs, reason}))
+        false
     end
   end
 

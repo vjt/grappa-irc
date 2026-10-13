@@ -476,13 +476,13 @@ defmodule Grappa.Application do
           #
           # A fifth sweeper rather than a branch inside an existing one,
           # per CLAUDE.md rule 6 — reuse the VERB, not the noun. It is
-          # also only ONE of this feature's reaping axes: a HELD offer is
-          # reaped by the session process that owns it (it is a peer's
-          # live TCP endpoint, worthless once that process is gone). Bytes
-          # no row points at ARE swept here since issue 2404 — the
-          # directory against the table — behind `Grappa.Dcc.Transfer`'s
-          # inline removal of an aborted partial, which stays the prompt
-          # path.
+          # also only ONE of this feature's three reaping axes, and the
+          # other two are deliberately not here: a HELD offer is reaped by
+          # the session process that owns it (it is a peer's live TCP
+          # endpoint, worthless once that process is gone), and a PARTIAL
+          # file from an aborted transfer is removed inline by
+          # `Grappa.Dcc.Transfer`, because no row is ever written for it
+          # and a sweep has nothing to enumerate.
           {Grappa.Dcc.Reaper, storage_root: dcc_storage_root(), interval_ms: reaper_interval_ms()},
 
           # #223: auth-session housekeeping GC. Sibling of Visitors.Reaper

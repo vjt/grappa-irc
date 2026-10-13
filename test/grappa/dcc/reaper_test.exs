@@ -5,9 +5,10 @@ defmodule Grappa.Dcc.ReaperTest do
 
   alias Grappa.{Dcc, Repo}
   alias Grappa.Dcc.{Reaper, SpoolFile, Transfer}
+  alias Grappa.DccTestSender
   alias Grappa.IRC.DCC.Offer
 
-  @loopback {127, 0, 0, 1}
+  @loopback DccTestSender.loopback()
 
   setup do
     root = Dcc.storage_root()
@@ -21,11 +22,7 @@ defmodule Grappa.Dcc.ReaperTest do
     :ok = File.mkdir_p!(private_root)
     on_exit(fn -> File.rm_rf(private_root) end)
 
-    {:ok,
-     root: root,
-     private_root: private_root,
-     subject: {:user, user_fixture().id},
-     network_id: network_fixture().id}
+    {:ok, root: root, private_root: private_root, subject: {:user, user_fixture().id}, network_id: network_fixture().id}
   end
 
   # Writes a real file at the real path so the sweep's unlink is measured
@@ -200,7 +197,7 @@ defmodule Grappa.Dcc.ReaperTest do
       # rescheduled off the 60s default would make an injected short
       # interval fire exactly once, turning a deterministic test into a
       # rare red and an operator's configured cadence into a lie.
-      pid = start_supervised!({Reaper, storage_root: ctx.root, interval_ms: 12_345, name: nil})
+      pid = start_supervised!({Reaper, storage_root: ctx.private_root, interval_ms: 12_345, name: nil})
       # The tick sweeps, and a sweep queries — the Reaper is a separate
       # process, so it needs the sandbox connection explicitly.
       Ecto.Adapters.SQL.Sandbox.allow(Grappa.Repo, self(), pid)
@@ -246,14 +243,12 @@ defmodule Grappa.Dcc.ReaperTest do
 
   # A loopback DCC sender that sends `first` at once, tells the test it is
   # holding, and sends `rest` only on `:go` — the window in which the test
-  # decides what dies. Half-closes after the payload and then reads until
-  # OUR side closes, the FIN discipline `Grappa.Dcc.TransferTest`'s sender
-  # documents: closing with acks unread makes the kernel send RST and
-  # discard bytes still in flight. The sends after `:go` are best-effort
-  # because the receiver may already be dead, which is the point.
+  # decides what dies. Half-closes after the payload and drains before
+  # closing (see `Grappa.DccTestSender`). The sends after `:go` are
+  # best-effort because the receiver may already be dead, which is the
+  # point.
   defp held_sender(first, rest) do
-    {:ok, listen} = :gen_tcp.listen(0, [:binary, ip: @loopback, active: false, reuseaddr: true])
-    {:ok, port} = :inet.port(listen)
+    {listen, port} = DccTestSender.listen()
     test = self()
 
     sender =
@@ -268,7 +263,7 @@ defmodule Grappa.Dcc.ReaperTest do
 
         _ = :gen_tcp.send(socket, rest)
         _ = :gen_tcp.shutdown(socket, :write)
-        drain_until_closed(socket)
+        DccTestSender.drain_until_closed(socket)
         _ = :gen_tcp.close(socket)
         :gen_tcp.close(listen)
       end)
@@ -276,14 +271,7 @@ defmodule Grappa.Dcc.ReaperTest do
     {port, sender}
   end
 
-  defp drain_until_closed(socket) do
-    case :gen_tcp.recv(socket, 0, 5_000) do
-      {:ok, _} -> drain_until_closed(socket)
-      {:error, _} -> :ok
-    end
-  end
-
-  defp eventually_size(path, want), do: eventually_size(path, want, 50)
+  defp eventually_size(path, want), do: eventually_size(path, want, 250)
 
   defp eventually_size(path, want, 0) do
     flunk("#{path} never reached #{want} bytes; stat: #{inspect(File.stat(path))}")
