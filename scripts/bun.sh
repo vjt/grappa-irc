@@ -23,8 +23,8 @@
 
 # oven/bun image, digest-pinned (#103); the tag stays for readability.
 # Refresh on an intentional bump:
-#   docker buildx imagetools inspect oven/bun:1 --format '{{.Manifest.Digest}}'
-readonly BUN_IMAGE="oven/bun:1@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4"
+#   docker buildx imagetools inspect oven/bun:<version> --format '{{.Manifest.Digest}}'
+readonly BUN_IMAGE="oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4"
 
 CICCHETTO_DIR="$SRC_ROOT/cicchetto"
 # Host bind-mount under main's runtime/, so the download cache is shared by

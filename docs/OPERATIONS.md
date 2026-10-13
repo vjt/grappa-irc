@@ -1344,13 +1344,21 @@ default `/tmp` is root-owned, so `/tmp` is mounted as a tmpfs owned by
 the dropped UID and `HOME` points at it — otherwise bun's tempdir
 writes fail.
 
-**The `oven/bun:1` image is digest-pinned (#103).** `1` is a
-major-moving tag; the tag stays for human readability and the `@sha256`
-INDEX digest enforces reproducibility while still resolving multi-arch
-(amd64 CI, arm64 dev host). Refresh only on an intentional bump:
+**The `oven/bun` image is digest-pinned (#103), and its tag names the exact
+bun version (issue 2364).** The `@sha256` INDEX digest enforces
+reproducibility while still resolving multi-arch (amd64 CI, arm64 dev host);
+the `X.Y.Z` tag in front of it says which bun those bytes are. It used to be
+`1`, a major-moving tag, which hid that `Dockerfile.release`'s `1-alpine`
+digest was bun 1.4.2 while CI tested 1.3.14 — the debian and alpine variants
+carry different digests by construction, so only the version can be compared
+across them. `test/infra/base_image_digest_pin_test.bats` fails when any
+`oven/bun` tag lacks an exact version or two of them disagree: bump
+`scripts/bun.sh`, both compose files, `ci.yml`, `Dockerfile.release` and
+`.oss-scanner/Dockerfile` together. Refresh only on an intentional bump
+(append `-alpine` for the two Dockerfiles):
 
 ```sh
-docker buildx imagetools inspect oven/bun:1 --format '{{.Manifest.Digest}}'
+docker buildx imagetools inspect oven/bun:<version> --format '{{.Manifest.Digest}}'
 ```
 
 ### `scripts/shellcheck.sh` — a derived lint set, not a list (#441)
@@ -3063,7 +3071,7 @@ external connects in.
 on an intentional bump:
 
 ```
-docker buildx imagetools inspect oven/bun:1 --format '{{.Manifest.Digest}}'
+docker buildx imagetools inspect oven/bun:<version> --format '{{.Manifest.Digest}}'
 ```
 
 `test/infra/base_image_digest_pin_test.bats` fails the build if a real

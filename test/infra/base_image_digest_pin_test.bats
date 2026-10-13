@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 #
 # Bats suite for GH #103 — supply-chain: the moving base-image tags
-# (`oven/bun:1` / `oven/bun:1-alpine` and `nginx:alpine`) MUST be pinned to a
+# (`oven/bun` and `nginx:alpine`) MUST be pinned to a
 # content digest (`image:tag@sha256:...`) for reproducible builds.
 #
 # `oven/bun:1` is a MAJOR-moving tag (it advances across bun majors) and
@@ -90,14 +90,14 @@ matched_refs() {
 }
 
 # Every `image:tag@sha256:<digest>` token in the reference set above, one per
-# line. Splitting on `@sha256:` keeps `oven/bun:1` and `oven/bun:1-alpine`
+# line. Splitting on `@sha256:` keeps `oven/bun:1.3.14` and `oven/bun:1.3.14-alpine`
 # distinct families — they are different images and carry different digests.
 pinned_tokens() {
     matched_refs | grep -oE '[a-z0-9./_-]+:[a-zA-Z0-9._-]+@sha256:[0-9a-f]{64}'
 }
 
 @test "all references to one image:tag carry the SAME digest (#1343)" {
-    # `oven/bun:1` is transcribed four times (compose.yaml, scripts/bun.sh,
+    # `oven/bun:1.3.14` is transcribed four times (compose.yaml, scripts/bun.sh,
     # .github/workflows/ci.yml, cicchetto/e2e/compose.yaml) and ci.yml states
     # the equality in prose only — the shape #441 rejected. It matters beyond
     # tidiness: scripts/bun.sh and compose.yaml bind the SAME host bun cache
@@ -117,7 +117,7 @@ pinned_tokens() {
         [ "$refs" -ge 2 ] && multi_ref_families=$((multi_ref_families + 1))
 
         if [ "$(printf '%s\n' "$digests" | grep -c .)" -gt 1 ]; then
-            # Name the FILES, not just the family (#1377). The four oven/bun:1
+            # Name the FILES, not just the family (#1377). The four oven/bun:1.3.14
             # references are textually identical, so a report of "these two
             # digests disagree" leaves the reader to grep for which of four
             # surfaces was bumped and which were not — and the whole point of
@@ -178,6 +178,42 @@ $(matched_refs | grep -F -- "$family@sha256:" | sed 's/^/    /')
         printf 'expected the literal string: %s\n' "$PINNED_FAMILIES" >&2
         printf 'nearby runbook text:\n' >&2
         grep -n 'base_image_digest_pin_test' "$runbook" >&2 || true
+        return 1
+    }
+}
+
+@test "every oven/bun reference names ONE exact bun version in its tag (issue 2364)" {
+    # A digest pins bytes, but a MOVING tag in front of it hides which bun the
+    # bytes are. Dockerfile.release pinned `oven/bun:1-alpine` at a digest
+    # that was bun 1.4.2 while CI and scripts/bun.sh tested on a
+    # `oven/bun:1` digest that was 1.3.14 — two pins, two versions, and
+    # nothing that could compare them, because the debian and alpine
+    # variants of one release carry DIFFERENT digests by construction (the
+    # same-digest test above cannot span them). The release bundle was built
+    # with a bun the test suite never ran on.
+    #
+    # So every oven/bun tag must spell the exact version, `X.Y.Z` or
+    # `X.Y.Z-alpine`, and they must all spell the SAME one. What this cannot
+    # prove offline is that a digest really belongs to its tag; the refresh
+    # command in each file's comment is what keeps that honest.
+    tags="$(pinned_tokens | grep -E '^oven/bun:' | sed -e 's/@sha256:.*//' -e 's|^oven/bun:||')"
+
+    [ "$(printf '%s\n' "$tags" | grep -c .)" -ge 2 ] || {
+        echo "expected >=2 oven/bun references, found: $tags" >&2
+        return 1
+    }
+
+    loose="$(printf '%s\n' "$tags" | grep -vE '^[0-9]+\.[0-9]+\.[0-9]+(-alpine)?$' || true)"
+    [ -z "$loose" ] || {
+        echo "oven/bun tag(s) without an exact X.Y.Z version — the digest hides which bun it is:" >&2
+        matched_refs | grep -E 'oven/bun:' | grep -vE 'oven/bun:[0-9]+\.[0-9]+\.[0-9]+(-alpine)?@' | sed 's/^/    /' >&2
+        return 1
+    }
+
+    versions="$(printf '%s\n' "$tags" | sed 's/-alpine$//' | sort -u)"
+    [ "$(printf '%s\n' "$versions" | grep -c .)" -eq 1 ] || {
+        echo "oven/bun references disagree on the bun version: $(printf '%s' "$versions" | tr '\n' ' ')" >&2
+        matched_refs | grep -E 'oven/bun:' | sed 's/^/    /' >&2
         return 1
     }
 }

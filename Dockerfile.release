@@ -16,9 +16,13 @@
 # bun's binary is musl-built on alpine, so the PWA is built in oven/bun's
 # alpine image. node_modules is .dockerignore'd and installed fresh here.
 # Digest-pinned (#103 supply-chain) — this is the alpine variant, a SEPARATE
-# tag and digest from the debian oven/bun:1 the dev scripts use. Refresh on a
-# bump: docker buildx imagetools inspect oven/bun:1-alpine --format '{{.Manifest.Digest}}'
-FROM oven/bun:1-alpine@sha256:d888c0ae6c86d7866ff10c5aafdd9077b36aee6455b33dd270fb93c0dd5cef6f AS cic
+# digest from the debian oven/bun the dev scripts and CI use, but the SAME bun
+# version: the bundle must be built by the bun the vitest suite ran on (issue
+# 2364 — this pin used to sit on `1-alpine`, which was bun 1.4.2 while CI
+# tested 1.3.14). test/infra/base_image_digest_pin_test.bats fails when the
+# oven/bun tags disagree on the version, so bump them together. Refresh:
+#   docker buildx imagetools inspect oven/bun:<version>-alpine --format '{{.Manifest.Digest}}'
+FROM oven/bun:1.3.14-alpine@sha256:5acc90a93e91ff07bf72aa90a7c9f0fa189765aec90b47bdbf2152d2196383c0 AS cic
 WORKDIR /cic
 # Lockfile + manifest first, for a cache-friendly frozen install layer.
 COPY cicchetto/package.json cicchetto/bun.lock ./

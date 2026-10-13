@@ -1695,3 +1695,33 @@ back — the same wrong-nick send, filed separately.
 
 **Sibling, filed as #2388:** `@pending_auth_timeout_ms` (10s) is sized for prompt
 services the same way; a typed visitor IDENTIFY confirmed after it is discarded.
+<!-- entry #2364 -->
+
+---
+
+## 2026-10-13 — issue 2364: the bun that builds the release is the bun the tests ran on
+
+`Dockerfile.release` stage 1 pinned `oven/bun:1-alpine` at a digest that the
+registry resolves to bun **1.4.2** (`imagetools inspect oven/bun:1.4.2-alpine`
+returns that digest), while `scripts/bun.sh`, both compose files and `ci.yml`
+pinned `oven/bun:1` at the digest of **1.3.14**. Release builds run no tests,
+so the shipped bundle came from a bun vitest never ran on — and under 1.4.2 two
+`dateFormat.test.ts` cases fail on an `Intl.DateTimeFormat` comma.
+
+**Why the existing gate could not see it.** #1343 compares digests for one
+`image:tag`. Debian and alpine builds of the same bun are different images with
+different digests by construction, and the moving `1` tag in front of each said
+nothing about which bun the bytes were, so there was nothing to compare.
+
+**Fix.** Every `oven/bun` reference now spells the exact version in its tag
+(`1.3.14`, `1.3.14-alpine`); the digests of the debian pins are unchanged (the
+registry gives `oven/bun:1.3.14` the same digest), and the release pin moves to
+the `1.3.14-alpine` digest `.oss-scanner/Dockerfile` already used. A fifth case in
+`base_image_digest_pin_test.bats` fails when an `oven/bun` tag lacks an exact
+`X.Y.Z` or two tags disagree on it. What it cannot check offline is that a
+digest belongs to its tag; the `<version>` refresh command beside each pin
+covers that. The old refresh hint (`inspect oven/bun:1`) is gone, since it now
+returns a 1.4.x digest.
+
+**Not done here:** moving to bun 1.4.x. That means fixing the two `dateFormat`
+cases first, and it is a separate decision.

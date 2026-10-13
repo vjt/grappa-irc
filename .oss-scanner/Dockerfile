@@ -12,11 +12,10 @@
 #     `.tool-versions`), with the toolchain image's apk set: exiftool +
 #     ffmpeg because Grappa.Uploads.MetadataStrip fails closed without them;
 #   - bun at the version CI tests cicchetto with: `.github/workflows/ci.yml`
-#     and `scripts/bun.sh` pin `oven/bun:1` at a digest that is bun 1.3.14,
-#     and this is the alpine build of that same version, digest-pinned
-#     (#103 supply-chain), copied in as a binary. NOT the `oven/bun:1-alpine`
-#     digest stage 1 of `Dockerfile.release` pins: that one is bun 1.4.2,
-#     and under 1.4.2 two `dateFormat.test.ts` cases fail on an
+#     and `scripts/bun.sh` pin `oven/bun:1.3.14`, and this is the alpine
+#     build of that same version, digest-pinned (#103 supply-chain), copied
+#     in as a binary — the same pin stage 1 of `Dockerfile.release` carries
+#     (issue 2364). Under bun 1.4.2 two `dateFormat.test.ts` cases fail on an
 #     `Intl.DateTimeFormat` comma that 1.3.14 does not emit — measured on
 #     debian too, so it is the version and not musl;
 #   - the cicchetto build through `infra/packaging/version.sh` and
