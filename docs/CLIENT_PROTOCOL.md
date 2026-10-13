@@ -870,6 +870,19 @@ history under the old nick.
 **Absent** means the server predates v36; fall back to comparing
 `channel` with your nick, which is correct for a row you just received.
 
+What a renamed peer's old query window DOES get (issue 2368) is one row saying where the peer
+went: a `nick_change` with `channel` = the old nick, `sender` = the old
+nick, `meta.new_nick` = the new one and **`dm_with` = `null`** — it is an
+event, not something either of you said. It is pushed on that query
+window's topic and served in its REST pages, so key it by the topic (or
+`channel`), not by `dm_with`. One row however many channels you share, and
+only when the window is open; the server never opens a window to hold it.
+It exists only when the IRC server told us about the rename, which it does
+only for a peer that shares at least one channel with you: a peer you only
+DM can rename without you, or grappa, ever seeing it. No new field or kind,
+so no protocol bump — an older client renders it as the `nick_change` it
+already knows.
+
 ---
 
 ### 5i. Paging scrollback by TIME (issue 2372, v40)

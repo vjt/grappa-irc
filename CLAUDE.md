@@ -153,9 +153,20 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   (server-consistent identity, not a fold-MATCH site). cic mirrors with
   `nickEquals` — including the INCOMING DM re-key (`subscribe.ts` →
   `canonicalQueryNick`) and the archive-visibility filter (`archive.ts` →
-  `normalizeNick`), the client twins of the #372 server fold. **A nick change writes NOTHING to the DB — a peer's or our own (issue
+  `normalizeNick`), the client twins of the #372 server fold. **A nick change MOVES NOTHING in the DB — a peer's or our own (issue
   1365, reversing #373/#514; ruling relayed from vjt on IRC #grappa,
-  comment 5934112501).** Only the UI changes. The accepted price: a
+  comment 5934112501) — and its ONE write is an INSERT (issue 2368, vjt's
+  ruling, option E).** No existing row, read cursor, mute or
+  `query_windows` row is ever UPDATEd; what a peer rename ADDS is one
+  `:nick_change` row in the OLD nick's query window (`channel = old`,
+  `dm_with` nil, `meta.new_nick`), so the conversation left behind says
+  where the peer went and cic's `<new>` button opens the new window. One
+  row however many channels are shared (`EventRouter.route_nick/3`, beside
+  the per-channel fan-out), only while that window is open (the injected
+  `query_window_open?`, folded), never for our own rename.
+  Coverage is IRC's, not ours: the ircd delivers a NICK only to
+  channel-sharing peers, so a peer we only DM renames unseen — no
+  heuristic fills that gap. The accepted price: a
   renamed peer's next message opens a NEW query window (the old one keeps
   its history under the old nick), and a mute is evaded by changing nick.
   So on `{:peer_nick_renamed, old}` `Session.Server` only demotes the
@@ -165,9 +176,7 @@ Key invariants — break only with deliberate cause + DESIGN_NOTES entry:
   (`subscribe.ts`; the members map still follows through `routeMessage`).
   The one cic cache that does react is the rail WHOIS, and it is COPIED
   to the new nick, never moved: it holds server replies about a person,
-  not window state, and both windows can show the card (#1365f). Boundary limit
-  that used to matter here and no longer does: IRC delivers a NICK only to
-  channel-sharing peers. **The inbound-DM own-nick TAG stays too:** an
+  not window state, and both windows can show the card (#1365f). **The inbound-DM own-nick TAG stays too:** an
   inbound DM is persisted at `channel = <own nick at receipt>`, and since
   issue 1365 that value is history, never re-keyed (#514's
   `rename_own_nick/4` is gone). Nothing may read it as the LIVE nick: "is

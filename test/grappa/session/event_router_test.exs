@@ -11,7 +11,7 @@ defmodule Grappa.Session.EventRouterTest do
   """
   use ExUnit.Case, async: true
 
-  alias Grappa.IRC.{Ignore, JoinFailure, Message, Parser}
+  alias Grappa.IRC.{Identifier, Ignore, JoinFailure, Message, Parser}
 
   alias Grappa.Session.{
     Deps,
@@ -2901,6 +2901,65 @@ defmodule Grappa.Session.EventRouterTest do
 
       assert {:cont, _, effects} = EventRouter.route(m, state)
       refute Enum.any?(effects, &match?({:peer_nick_renamed, _}, &1))
+    end
+
+    # issue 2368 (vjt's ruling, option E): a peer rename writes ONE extra
+    # `:nick_change` row into the OLD nick's query window, when one is open.
+    # The window is the DM read path's `COALESCE(dm_with, channel)` key, so
+    # the row lands at `channel = old nick`.
+    test "peer NICK with an open query for the old nick adds ONE row to that window" do
+      state =
+        base_state(%{
+          members: %{
+            "#italia" => %{"vjt" => [], "Alice" => []},
+            "#italia.lib" => %{"vjt" => [], "Alice" => ["+"]}
+          },
+          deps:
+            deps(fn @subject, @network_id, nick ->
+              Identifier.canonical_target(nick) == "alice"
+            end)
+        })
+
+      m = msg(:nick, ["bob"], {:nick, "Alice", "u", "h"})
+
+      assert {:cont, _, effects} = EventRouter.route(m, state)
+
+      rows = for {:persist, :nick_change, attrs} <- effects, do: attrs
+
+      assert rows |> Enum.map(& &1.channel) |> Enum.sort() == ["#italia", "#italia.lib", "Alice"]
+
+      assert [query_row] = Enum.filter(rows, &(&1.channel == "Alice"))
+      assert query_row.sender == "Alice"
+      assert query_row.meta == %{new_nick: "bob"}
+      assert query_row.dm_with == nil
+    end
+
+    test "peer NICK with NO open query for the old nick writes only the channel rows" do
+      state =
+        base_state(%{
+          members: %{"#italia" => %{"vjt" => [], "alice" => []}},
+          deps: deps(fn _, _, _ -> false end)
+        })
+
+      m = msg(:nick, ["bob"], {:nick, "alice", "u", "h"})
+
+      assert {:cont, _, effects} = EventRouter.route(m, state)
+      assert for({:persist, :nick_change, a} <- effects, do: a.channel) == ["#italia"]
+    end
+
+    test "OWN NICK writes nothing into a self window, even when one is open" do
+      state =
+        base_state(%{
+          members: %{"#italia" => %{"vjt" => [], "alice" => []}},
+          deps: deps(fn _, _, _ -> true end)
+        })
+
+      m = msg(:nick, ["vjt_"], {:nick, "vjt", "u", "h"})
+
+      assert {:cont, _, effects} = EventRouter.route(m, state)
+
+      assert for({:persist, :nick_change, a} <- effects, do: a.channel) |> Enum.sort() ==
+               ["#italia", "$server"]
     end
 
     test "NICK-self updates state.nick + fans out per channel PLUS a $server row (#61)" do

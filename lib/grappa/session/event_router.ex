@@ -148,7 +148,8 @@ defmodule Grappa.Session.EventRouter do
   host's ten injected callbacks into one `Grappa.Session.Deps` struct; before
   it, this sat loose on the state map) to decide whether a services-sender
   arrival re-keys to the service's own query window or the synthetic
-  `$server`.
+  `$server`, and (issue 2368) whether a peer's rename owes its old query
+  window a `:nick_change` row.
 
   EventRouter is a pure classifier ("No Repo, no Logger"); the fact it
   needs is a DB read (`Grappa.QueryWindows.open?/3`). Rather than alias
@@ -3266,6 +3267,15 @@ defmodule Grappa.Session.EventRouter do
   # discipline 1) and could only ever disagree with itself.
   @spec open_query_or_server(String.t(), state()) :: String.t()
   defp open_query_or_server(sender, state) do
+    if open_query?(sender, state), do: sender, else: "$server"
+  end
+
+  # Whether the operator has a query window open with `nick` — the injected
+  # `state.deps.query_window_open?` read, which folds the nick itself
+  # (`QueryWindows.open?/3`). Shared by the routing door above and the #2368
+  # rename row, which writes only into a window that already exists.
+  @spec open_query?(String.t(), state()) :: boolean()
+  defp open_query?(nick, state) do
     # Deliberately a PLAIN map pattern, not `%Deps{}`: `Deps` already
     # references this module for the `query_window_open?()` type, and matching
     # its struct here would close a compile/export cycle. A struct IS a map, so
@@ -3278,9 +3288,7 @@ defmodule Grappa.Session.EventRouter do
         _ -> fn _, _, _ -> false end
       end
 
-    if open?.(state.subject, state.network_id, sender),
-      do: sender,
-      else: "$server"
+    open?.(state.subject, state.network_id, nick)
   end
 
   # The window an inbound CTCP QUERY's visibility row lands in — the ONE
@@ -4828,9 +4836,21 @@ defmodule Grappa.Session.EventRouter do
     # `Session.Server` demotes (#378). Emitted only when the renamer is a
     # tracked member (`channels != []`) — the only case IRC delivers a
     # peer's NICK to us, mirroring the per-channel fan-out gate above.
+    #
+    # issue 2368 (vjt's ruling, option E) — the one write a peer rename makes
+    # beyond the per-channel rows: ONE more `:nick_change` row, INSERTed into
+    # the OLD nick's query window, so the conversation left behind says where
+    # the peer went. ONE however many channels we share (the fan-out above is
+    # per channel, this is per window), and only when that window is open —
+    # never minted. `channel = old_nick` is the key the DM read path resolves
+    # (`COALESCE(dm_with, channel)`, folded), and `dm_with` stays nil because
+    # the kind is not a content kind. Nothing existing moves: no row, cursor,
+    # mute or `query_windows` row (issue 1365 still holds for all of those).
+    # Coverage is exactly this gate — a peer sharing a channel with us, the
+    # only peer whose NICK the ircd delivers at all.
     peer_rename_effects =
       if not nick_eq?(old_nick, state.nick) and channels != [] do
-        [{:peer_nick_renamed, old_nick}]
+        [{:peer_nick_renamed, old_nick} | old_query_rename_row(new_state, old_nick, new_nick)]
       else
         []
       end
@@ -4844,6 +4864,19 @@ defmodule Grappa.Session.EventRouter do
      persist_effects ++
        self_server_effects ++
        visitor_persist_effects ++ peer_rename_effects ++ self_umode_effects}
+  end
+
+  # The issue 2368 row for a peer rename (see `route_nick/3`): one
+  # `:nick_change` in the old nick's query window when that window is open,
+  # nothing otherwise — never a window minted to hold it.
+  @spec old_query_rename_row(state(), String.t(), String.t()) :: [effect()]
+  defp old_query_rename_row(state, old_nick, new_nick) do
+    if open_query?(old_nick, state) do
+      {_, eff} = build_persist(state, :nick_change, old_nick, old_nick, nil, %{new_nick: new_nick})
+      [eff]
+    else
+      []
+    end
   end
 
   # Blank = empty or whitespace-only. `String.trim/1` (not `== ""`) because

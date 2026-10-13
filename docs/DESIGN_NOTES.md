@@ -1795,3 +1795,69 @@ form fields only), and the credits.
 computed cascade on both touch projects. Whether the native handles and copy
 toolbar appear is a question for a real device; Playwright webkit is not iOS,
 the same limit #589 and #1869 state.
+<!-- entry #2368 -->
+
+---
+
+## 2026-10-13 — #2368: a peer's rename writes ONE row into its old query window
+
+**Ruling (vjt, 2026-10-13, relayed by the orchestrator): option E.** When a
+peer we have an open query window with changes nick, the server INSERTs one
+`:nick_change` row into the OLD nick's query window — `* <old> is now known as
+<new>`, `<new>` a button in cic that opens and selects the query for the new
+nick. This amends issue 1365's "a nick change writes nothing to the DB" by
+exactly that INSERT: what 1365 rejected was the mass UPDATE of history, and
+nothing existing moves — no row, read cursor, mute or `query_windows` row. The
+1365 price stands (the renamed peer's next message opens a new window); the
+row only tells the old window where the peer went.
+
+**Shape.** `EventRouter.route_nick/3` emits the row beside the per-channel
+fan-out, as one more `{:persist, :nick_change, …}` at `channel = old nick`,
+`dm_with` nil (the kind is not a content kind), `meta.new_nick`. The DM read
+path already resolves a window by `COALESCE(dm_with, channel)`, folded, so the
+row lands in the window and on its topic (`Topic.channel/3` folds) with no
+new read path, no new wire field and no protocol bump: `mix grappa.wire_pin`
+digests the shape, and the shape did not change. The gate is the injected
+`query_window_open?` (`QueryWindows.open?/3`, folded) — the same seam the #400
+routing door reads, now one shared `open_query?/2` — under the same "peer
+rename" predicate the `{:peer_nick_renamed, old}` effect uses, so own renames
+write nothing here.
+
+**ONE row, not one per channel.** The fan-out is per channel because each
+channel shows the event; the query row is per WINDOW, and a peer sharing two
+channels with us still writes one. Pinned in the router suite, the
+`Session.Server` suite (real DB, two channels) and the e2e.
+
+**The persist arm's auto-open is left alone, deliberately.** The row goes
+through the ordinary `{:persist, …}` arm, which runs `maybe_open_query_window/2`
+on every row keyed `dm_with || channel` — so it calls `QueryWindows.open/4` on
+a window the router has just checked is open: an `on_conflict: :nothing` no-op
+plus one unchanged `query_windows_list` broadcast per rename. A first cut
+gated the auto-open to CONTENT kinds to drop that broadcast, on the claim that
+no event row had ever landed on a nick-shaped key. **The claim was false**
+(caught in review): a post-accept DCC transfer report — FAILED or refused by
+storage — is a `:server_event` at `channel = peer` (`Dcc.Report`), and
+`persist_dcc_report/3` relies on exactly this arm to open the query that holds
+it. The gate would have left that report in scrollback no tab leads to.
+Accepted price instead: the redundant broadcast, and a window closed from
+another device in the microseconds between the router's read and the persist
+coming back with only the rename line in it.
+
+**Also known, not addressed.** The `<new>` button is on every `nick_change`
+line, channels included — the same button the sender already was, so a click
+in a channel opens the query too. `nick_change` is a presence-hidden kind
+(#458), so on a query window whose presence pref is pinned to `hide` the row is
+left out of the REST fetch (it still arrives live — `nick_change` is never
+paused, #1769).
+
+**Coverage is IRC's, and stays IRC's.** bahamut sends a NICK only to members
+of the renamer's channels (`m_nick.c` → `sendto_common_channels`, read by w1
+on the plan comment), so a peer we only DM can rename without us seeing it.
+Nothing on the wire names the new nick in that case (WHOWAS gives the OLD
+nick's host, a 401 only says the old nick is gone), and matching a later
+WHOIS by user@host could point at the wrong person. No heuristic, by
+instruction; the gap is stated in CLAUDE.md and `docs/CLIENT_PROTOCOL.md`
+§5h.
+
+**Deploy class: HOT.** No field added to `Session.Server`'s state map or any
+`defstruct`; the server change is a pure-function arm in `EventRouter`.

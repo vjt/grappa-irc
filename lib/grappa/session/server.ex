@@ -7330,10 +7330,12 @@ defmodule Grappa.Session.Server do
   end
 
   # A PEER renamed (EventRouter observed a NICK for a tracked peer). Issue
-  # 1365 (ruling relayed from vjt): a nick change writes NOTHING to the DB —
+  # 1365 (ruling relayed from vjt): a nick change MOVES nothing in the DB —
   # the query window, DM history, read cursor and mute all stay at the old
   # nick, and the peer's next message under the new nick opens a new window.
-  # What remains is in-memory session state, which is not a DB update.
+  # Its one write, the issue 2368 row in the old query window, arrives as an
+  # ordinary `{:persist, …}` effect; what remains here is in-memory session
+  # state, which is not a DB update.
   defp apply_effects([{:peer_nick_renamed, old_nick} | rest], state) do
     # #378 — a rename is not a presence transition. The vacated nick draws a
     # 601/605/731 from the ircd, which classifies as a genuine offline flip

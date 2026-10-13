@@ -4391,13 +4391,17 @@ defmodule Grappa.Session.ServerTest do
     end
   end
 
-  describe "issue 1365 — a peer NICK change writes nothing to the DB" do
+  describe "issue 1365 + 2368 — a peer NICK change moves nothing, adds one row" do
     # The ruling (issue 1365, comment 5934112501, relayed from vjt on IRC):
     # a nick change causes NO database update; only the UI changes. The
     # accepted price is that a renamed peer's next message opens a NEW query
     # window, and that a mute is evaded by changing nick. This pins the
     # inverse of what #373 / #1340 used to pin: every nick-keyed store stays
     # at the OLD nick.
+    #
+    # Issue 2368 (vjt's ruling, option E) amends it by exactly ONE INSERT: a
+    # `:nick_change` row in the old nick's query window, so the conversation
+    # left behind says where the peer went. Nothing existing moves.
     test "window row, DM history, read cursor and mute all stay at the old nick" do
       {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
       {user, network, _} = setup_user_and_network(port)
@@ -4438,14 +4442,28 @@ defmodule Grappa.Session.ServerTest do
       IRCServer.feed(server, "PING :rename-barrier\r\n")
       assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "PONG"), 2_000)
 
-      # Nothing moved, so there is no rename to announce.
-      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :query_windows_list}}
+      # The rename row lands on a nick-shaped key, so the persist arm's
+      # idempotent auto-open re-announces the list — and it must be the SAME
+      # list: no window opened for the new nick, none renamed.
+      assert_received %Phoenix.Socket.Broadcast{
+        payload: %{
+          kind: :query_windows_list,
+          windows: %{^net_id => [%{target_nick: "Guest87449"}]}
+        }
+      }
 
       assert [%{target_nick: "Guest87449"}] = QueryWindows.list_for_subject(subject)[net_id]
 
-      assert [row] = Scrollback.fetch(subject, net_id, "Guest87449", nil, 10, own, false)
+      # Newest first: the #2368 rename row on top of the untouched DM row.
+      assert [rename_row, row] =
+               Scrollback.fetch(subject, net_id, "Guest87449", nil, 10, own, false)
+
       assert row.id == pre_row.id
       assert row.dm_with == "Guest87449"
+      assert rename_row.kind == :nick_change
+      assert rename_row.sender == "Guest87449"
+      assert rename_row.meta == %{new_nick: "NickTemporaneo"}
+      assert rename_row.dm_with == nil
       assert Scrollback.fetch(subject, net_id, "NickTemporaneo", nil, 10, own, false) == []
 
       assert %{last_read_message_id: last_read} = ReadCursor.get(subject, net_id, "Guest87449")
@@ -4455,6 +4473,82 @@ defmodule Grappa.Session.ServerTest do
       assert Grappa.UserSettings.get_notification_prefs(subject).muted_targets == %{
                "#{slug} guest87449" => %{"until" => nil}
              }
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+  end
+
+  describe "issue 2368 — the rename row in the old query window" do
+    test "two shared channels still write ONE row there, broadcast on its topic" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, _} = setup_user_and_network(port)
+      own = "grappa-test"
+      subject = {:user, user.id}
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      net_id = network.id
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      :ok =
+        Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.channel(user.name, network.slug, "alice"))
+
+      IRCServer.feed(server, ":#{own}!~g@host JOIN #uno\r\n")
+      IRCServer.feed(server, ":#{own}!~g@host JOIN #due\r\n")
+      IRCServer.feed(server, ":Alice!~a@host JOIN #uno\r\n")
+      IRCServer.feed(server, ":Alice!~a@host JOIN #due\r\n")
+      IRCServer.feed(server, ":Alice!~a@host PRIVMSG #{own} :ciao\r\n")
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       payload: %{
+                         kind: :query_windows_list,
+                         windows: %{^net_id => [%{target_nick: "Alice"}]}
+                       }
+                     },
+                     1_000
+
+      IRCServer.feed(server, ":Alice!~a@host NICK :Bea\r\n")
+      IRCServer.feed(server, "PING :rename-barrier\r\n")
+      assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "PONG"), 2_000)
+
+      assert_received %Phoenix.Socket.Broadcast{
+        payload: %{kind: :message, message: %{kind: :nick_change, sender: "Alice"}}
+      }
+
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :message}}
+
+      rows = Scrollback.fetch(subject, net_id, "Alice", nil, 10, own, false)
+      assert [%{kind: :nick_change}, %{kind: :privmsg}] = rows
+
+      for ch <- ["#uno", "#due"] do
+        rows = Scrollback.fetch(subject, net_id, ch, nil, 10, own, false)
+        assert [%{kind: :nick_change}] = Enum.filter(rows, &(&1.kind == :nick_change))
+      end
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    test "with no query window open for the old nick, only the channel row lands" do
+      {server, port} = IRCServer.start_server(IRCServer.passthrough_handler())
+      {user, network, _} = setup_user_and_network(port)
+      own = "grappa-test"
+      subject = {:user, user.id}
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+
+      IRCServer.feed(server, ":#{own}!~g@host JOIN #uno\r\n")
+      IRCServer.feed(server, ":Alice!~a@host JOIN #uno\r\n")
+      IRCServer.feed(server, ":Alice!~a@host NICK :Bea\r\n")
+      IRCServer.feed(server, "PING :rename-barrier\r\n")
+      assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "PONG"), 2_000)
+
+      assert Scrollback.fetch(subject, network.id, "Alice", nil, 10, own, false) == []
+      assert QueryWindows.list_for_subject(subject)[network.id] in [nil, []]
+
+      rows = Scrollback.fetch(subject, network.id, "#uno", nil, 10, own, false)
+      assert [%{kind: :nick_change}] = Enum.filter(rows, &(&1.kind == :nick_change))
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end
