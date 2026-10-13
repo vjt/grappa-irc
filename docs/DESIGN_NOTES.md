@@ -1894,3 +1894,63 @@ is left to its own change.
 
 **Deploy class: HOT.** A behaviour callback arity and function bodies; no
 `config/*.exs`, no `defstruct`, no state-map field.
+<!-- entry #2403 -->
+
+---
+
+## 2026-10-14 — #2403: the upload caps are checked inside the write, in one transaction
+
+Every door into the upload store — `POST /api/uploads`, the network avatar,
+the theme background — called `Uploads.check_caps/3` and then
+`Uploads.create/3`. Both ceilings (global, and per-subject since #2175) are
+sums over live rows, so two writers could read the same totals between one's
+check and the other's insert, and both land: the cap could be overshot by up
+to one upload per concurrent writer.
+
+**The check moved into the write, and the doors lost the ability to skip
+it.** `create/4` takes the caps as a required argument; `check_caps/3` is
+private. A check a door can call apart from the write is exactly the check two
+concurrent writers both pass. Inside `create/4`:
+
+1. a cheap pre-check on the INCOMING size, before the strip, so an upload
+   already over the line never reaches ffmpeg (there is no upload rate limit,
+   so dropping this would let a subject at quota burn CPU at will);
+2. the strip and the file write, under no lock;
+3. the authoritative re-check on the STORED size plus the row insert, in ONE
+   `Repo.immediate_transaction/1`. `BEGIN IMMEDIATE` serialises writers, so the
+   totals it reads cannot move before its insert commits. A refusal there
+   removes the file it wrote.
+
+**Why the slow part stays outside the transaction:** a writer parked on the
+SQLite write lock blocks `persistent_term` writes VM-wide for the length of the
+wait (#1715). Holding the lock across ffmpeg or a 50 MiB disk write would turn
+every concurrent upload into exactly that wait.
+
+**No reservation table.** The issue proposed reserving storage before
+accepting the upload; that is a second copy of the live sum, with its own
+release-on-failure housekeeping. Once the row is in, the live sum IS the
+reservation, and the transaction is what makes reading it and adding to it one
+step.
+
+**Crash window, unchanged:** a crash between the file write and the insert
+leaves a file with no row. It is unservable (every read goes through the row)
+and it is the same window the file-first ordering always had; there is no
+orphan-file sweep, and this slice does not add one.
+
+**The stored size is what counts.** The pre-check sees the incoming bytes, the
+re-check sees the stripped ones, and the row records the stripped ones — the
+sum the next writer reads is the sum of what is on disk.
+
+**Measured, not argued:** the concurrency tests force both interleavings off
+Ecto's synchronous query telemetry (the `UserSettingsConcurrencyTest` harness).
+Removing the in-transaction re-check turns three of them red, the
+pre-check-window pair with `{:stored, :stored}` — the overshoot itself.
+Removing the refusal's file cleanup turns two red. Moving the re-check in
+front of the transaction turns one red, and only through the harness (the
+in-transaction pause never arms): under the Sandbox's single connection a
+sequential re-check is indistinguishable from an atomic one, which is the
+limit `UserSettingsConcurrencyTest` already documents.
+
+**Deploy class: HOT.** Function bodies and arities only (`create/3` →
+`create/4`, `set_avatar/3` → `set_avatar/4`, all callers in the same build); no
+`config/*.exs`, no migration, no `defstruct`, no state-map field.
