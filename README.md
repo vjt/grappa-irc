@@ -75,7 +75,7 @@ flowchart LR
 
     cicchetto <-->|"HTTPS REST + WebSocket"| rest
     mobileirc <-.->|"IRC + SASL + CHATHISTORY"| irclisten
-    t1 <-->|"IRC + SASL"| azzurra
+    t1 <-->|"IRC"| azzurra
     t2 <-->|"IRC + SASL"| libera
     t3 <-->|"IRC + SASL"| other
 ```
