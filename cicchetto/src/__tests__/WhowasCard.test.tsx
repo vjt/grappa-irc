@@ -1,5 +1,6 @@
 import { render, screen } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
+import { SELECTABLE_TEXT_CLASS } from "../lib/keepKeyboard";
 import { setWhowasBundle } from "../lib/whowasCard";
 import WhowasCard from "../WhowasCard";
 
@@ -25,6 +26,13 @@ describe("WhowasCard", () => {
   it("renders no DOM node when no bundle exists for the network", () => {
     const { container } = render(() => <WhowasCard networkSlug="net-empty" />);
     expect(container.querySelector("[data-testid='whowas-card']")).toBeNull();
+  });
+
+  // issue 2394 — the shared re-enable class, or the host is uncopyable on touch.
+  it("carries the shared selectable-text class on its root", () => {
+    setWhowasBundle("net-select", FULL_BUNDLE);
+    render(() => <WhowasCard networkSlug="net-select" />);
+    expect(screen.getByTestId("whowas-card")).toHaveClass(SELECTABLE_TEXT_CLASS);
   });
 
   it("renders all fields when bundle is present and not_found: false", () => {

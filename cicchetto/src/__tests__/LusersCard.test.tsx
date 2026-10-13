@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 import LusersCard from "../LusersCard";
+import { SELECTABLE_TEXT_CLASS } from "../lib/keepKeyboard";
 import {
   applyLusersBundle,
   dismissLusersCard,
@@ -44,6 +45,13 @@ describe("LusersCard", () => {
   it("renders no DOM node when no snapshot exists for the network", () => {
     const { container } = render(() => <LusersCard networkSlug="net-empty" />);
     expect(container.querySelector("[data-testid='lusers-card']")).toBeNull();
+  });
+
+  // issue 2394 — the shared re-enable class, or the counts are uncopyable on touch.
+  it("carries the shared selectable-text class on its root", () => {
+    seed("net-select", FULL_SNAPSHOT);
+    render(() => <LusersCard networkSlug="net-select" />);
+    expect(screen.getByTestId("lusers-card")).toHaveClass(SELECTABLE_TEXT_CLASS);
   });
 
   it("renders all 12 fields when present in the snapshot", () => {

@@ -1725,3 +1725,50 @@ returns a 1.4.x digest.
 
 **Not done here:** moving to bun 1.4.x. That means fixing the two `dateFormat`
 cases first, and it is a separate decision.
+<!-- entry #2394 -->
+
+---
+
+## 2026-10-13 — issue 2394: every modal is copyable on a touch device
+
+**Defect.** Under `@media (pointer: coarse)` the sheet kills selection on
+`<html>` and re-enables it on a list of surfaces. That list named the topic
+modal's text and the form fields, and nothing else, so every modal and lookup
+card added after it — WHOIS, WHOWAS, LUSERS, the rail server card, `/who`,
+`/names`, banlist, server replies, service replies — inherited `none`. Two
+users on phones could not copy an IP or a hostname off the WHOIS card.
+
+**Fix: the standing tier is a shape, not a list.** keepKeyboard.ts now owns
+`STANDING_SELECTABLE_SURFACES`:
+
+- `.modal-backdrop` — the scrim every viewport modal is built on (14 modals
+  today), so a new modal is copyable without anybody remembering this rule;
+- `.selectable-text` — an opt-in class for a copyable surface that is not such
+  a modal: the four lookup cards and the topic text, which moves off its own
+  selector onto this one.
+
+`STANDING_SURFACE_CONTROLS` (`button`, `svg`) are carved back out in the sheet
+(no selection magnifier over a ✕, a nick button or the `/links` pan map) and in
+keepKeyboard (a tap on them keeps the keyboard, as before). CSS cannot import a
+constant, so `touchSelectionPolicy.test.ts` checks both directions: every listed
+surface and control is declared inside the gate, and the gate has no unlatched
+re-enable outside the list plus the four non-keyboard ones (`input`,
+`textarea`, `select`, `.admin-tab-panel`). The old comment asking people to
+keep two lists in sync is replaced by that test. Four mutants (one CSS rule
+dropped, a stray selector added, the TS exclude dropped, the modal root
+dropped) each turn it red.
+
+**Behaviour change, accepted.** With compose focused on iOS, a short tap on
+modal TEXT now dismisses the keyboard instead of keeping it. That is what the
+topic text and the scrollback have always done, and long-press keeps it so
+the selection survives. Controls are unchanged.
+
+**Left out, on purpose.** The media viewer (pull-to-dismiss and pinch
+gestures on the same surface would compete with a native selection; it needs
+a device check first), the archive modal and the theme editor (buttons and
+form fields only), and the credits.
+
+**Not device-verified.** `issue2394-mobile-modal-select.spec.ts` checks the
+computed cascade on both touch projects. Whether the native handles and copy
+toolbar appear is a question for a real device; Playwright webkit is not iOS,
+the same limit #589 and #1869 state.

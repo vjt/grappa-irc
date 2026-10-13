@@ -41,7 +41,7 @@ const LusersCard: Component<Props> = (props) => {
   return (
     <Show when={snapshot()} keyed>
       {(s) => (
-        <div class="lusers-card" data-testid="lusers-card">
+        <div class="lusers-card selectable-text" data-testid="lusers-card">
           <div class="lusers-card-header">
             <span class="lusers-card-title">network state</span>
             {/* P-0f — close affordance, mirror of WhoisCard / WhowasCard. */}

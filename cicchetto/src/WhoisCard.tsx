@@ -106,7 +106,7 @@ const WhoisCard: Component<Props> = (props) => {
   return (
     <Show when={bundle()}>
       {(b) => (
-        <div class="whois-card" data-testid="whois-card">
+        <div class="whois-card selectable-text" data-testid="whois-card">
           <div class="whois-card-header">
             {/* M3b — the authenticated `/networks/:id/peer_avatar/:slug`
                 path from `Grappa.Avatars`, NEVER the peer's raw declared

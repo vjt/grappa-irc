@@ -466,7 +466,7 @@ const TopicBar: Component<Props> = (props) => {
               when={editing()}
               fallback={
                 <>
-                  <p class="topic-modal-text">
+                  <p class="topic-modal-text selectable-text">
                     <Show when={!topicMissing()} fallback={"(no topic set)"}>
                       <MircBody body={topicText() ?? ""} emphasis />
                     </Show>

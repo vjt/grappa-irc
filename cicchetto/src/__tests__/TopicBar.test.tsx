@@ -57,6 +57,7 @@ vi.mock("../lib/channelEditPerm", () => ({
 }));
 vi.mock("../lib/friendlyError", () => ({ friendlyError: (_e: unknown) => "that didn't work" }));
 
+import { SELECTABLE_TEXT_CLASS } from "../lib/keepKeyboard";
 import {
   overlayCount,
   overlayEscapeDepth,
@@ -206,6 +207,19 @@ describe("TopicBar", () => {
     fireEvent.click(screen.getByTestId("topic-strip"));
     const modal = screen.getByRole("dialog");
     expect(modal.querySelector(".topic-modal-text")).toHaveTextContent("(no topic set)");
+  });
+
+  // issue 2394 — the full-topic text rides the SAME shared re-enable class as
+  // every other copyable modal surface; it used to be a selector of its own in
+  // both policy lists, which is the per-surface list that issue retired.
+  it("issue 2394 the modal's topic text carries the shared selectable-text class", () => {
+    mockTopicByChannel.mockReturnValue({
+      "freenode #italia": { text: "copy me", set_by: "vjt", set_at: "2026-05-04T10:00:00Z" },
+    });
+    render(() => <TopicBar {...baseProps()} />);
+    fireEvent.click(screen.getByTestId("topic-strip"));
+    const modal = screen.getByRole("dialog");
+    expect(modal.querySelector(".topic-modal-text")).toHaveClass(SELECTABLE_TEXT_CLASS);
   });
 
   // Control: a whitespace-only topic is a topic the wire carried, not an

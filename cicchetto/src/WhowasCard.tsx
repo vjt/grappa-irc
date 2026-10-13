@@ -41,7 +41,7 @@ const WhowasCard: Component<Props> = (props) => {
   return (
     <Show when={bundle()}>
       {(b) => (
-        <div class="whowas-card" data-testid="whowas-card">
+        <div class="whowas-card selectable-text" data-testid="whowas-card">
           <div class="whowas-card-header">
             <span class="whowas-card-title">/whowas</span>
             <NickText nick={b().target} extraClass="whowas-card-target" />

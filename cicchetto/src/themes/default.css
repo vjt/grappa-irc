@@ -715,8 +715,8 @@ html.is-ios body {
    re-enable beneath it ship together. Widening the kill without its re-enables
    regresses each of those issues on Android instead of iOS. Order is
    load-bearing too — the re-excludes (`.scrollback-invite-join`,
-   `.admin-tab-panel button`) carve out of the re-enables above them at equal
-   specificity, so they must stay AFTER them.
+   `.admin-tab-panel button`, issue 2394's standing-surface controls) carve
+   out of the re-enables above them, so they must stay AFTER them.
 
    Specificity dropped by one class when `html.is-ios X` became `html X`.
    Checked, not assumed — every `user-select` declaration in this sheet was
@@ -742,31 +742,62 @@ html.is-ios body {
   /* Dispatch-1 (2026-06-11) — selective re-enable of text selection.
      THE selectable-text policy point: the blanket kill above is
      Telegram Web K's pattern, and Telegram pairs it with re-enables on
-     every surface users copy from. New copyable surface → add its
-     selector HERE and to keepKeyboard.ts's SELECTABLE_TEXT_SURFACES
-     allowlist (#79, 2026-07-03 + 2026-07-04 rework): on these same
-     surfaces keepKeyboard DURATION-GATES its mousedown preventDefault —
-     a short tap is left un-prevented (keyboard dismisses) but a
-     long-press IS prevented (keyboard stays up so the iOS selection
-     survives). This `user-select: text` re-enable is the load-bearing
-     half — without it there is nothing to select. CSS and TS can't share
-     a constant, so the two lists MUST stay in sync — a surface added
-     here but not there stays unselectable while compose is focused.
-     (keepKeyboard's own handler stays iOS-gated — its job is the iOS
-     keyboard, not selection; see #1869 in that file.)
-     Currently: the topic modal's full-topic text, and editable fields (WebKit
-     honors inherited user-select:none inside inputs in some version
-     ranges). Scrollback message text left this list in #1869 — it is
-     latch-scoped now, see the rule below. Deliberately NOT selectable:
-     mentions rows (navigation buttons — the target message is selectable in
-     its channel), topic-bar text (clickable, opens the modal), all other
-     chrome.
+     every surface users copy from.
+
+     issue 2394 — the copyable surfaces are a SHAPE, not a list of N
+     selectors. This block used to name `.topic-modal-text` alone, so every
+     modal and lookup card added after it (WHOIS, /who, /names, banlist,
+     server replies, …) inherited the kill and nothing on it could be copied
+     off a phone:
+       * `.modal-backdrop` — the scrim every viewport modal is built on, so a
+         NEW modal is copyable by default;
+       * `.selectable-text` — the opt-in class for a copyable surface that is
+         not such a modal: the WHOIS / WHOWAS / LUSERS / server-info cards and
+         the topic modal's full-topic text.
+     Their controls are carved back out in the rule after the next one.
+
+     The list lives in keepKeyboard.ts (STANDING_SELECTABLE_SURFACES +
+     STANDING_SURFACE_CONTROLS): on these same surfaces keepKeyboard
+     DURATION-GATES its mousedown preventDefault (#79, 2026-07-03 +
+     2026-07-04 rework) — a short tap is left un-prevented (keyboard
+     dismisses) but a long-press IS prevented (keyboard stays up so the iOS
+     selection survives). This `user-select: text` re-enable is the
+     load-bearing half — without it there is nothing to select. CSS cannot
+     import a constant, so touchSelectionPolicy.test.ts asserts this sheet
+     and that list agree in BOTH directions: a surface added here alone
+     fails, as does one added there alone. (keepKeyboard's own handler stays
+     iOS-gated — its job is the iOS keyboard, not selection; see #1869 in
+     that file.)
+     Editable fields are re-enabled beside them for a different reason
+     (WebKit honors inherited user-select:none inside inputs in some version
+     ranges) and are not on the keyboard list. Scrollback message text left
+     this block in #1869 — it is latch-scoped now, see the rule below.
+     Deliberately NOT selectable: mentions rows (navigation buttons — the
+     target message is selectable in its channel), topic-bar text
+     (clickable, opens the modal), all other chrome.
      Full arc: docs/DESIGN_NOTES.md 2026-06-11. */
-  html .topic-modal-text,
+  html .modal-backdrop,
+  html .selectable-text,
   html input,
   html textarea {
     -webkit-user-select: text;
     user-select: text;
+  }
+
+  /* issue 2394 — the controls inside those surfaces stay chrome: a long-press
+     on a ✕, a nick button or a tab must not pop the selection magnifier over a
+     control (the `.admin-tab-panel button` carve-out below, generalised).
+     `svg` is the /links map — a pan surface (`touch-action: none`) whose node
+     labels are <text>, where a long-press must pan, not select. Inputs and
+     selects inside a modal stay selectable via their own re-enables. MUST
+     stay after the re-enable above and must match keepKeyboard.ts's
+     STANDING_SURFACE_CONTROLS. */
+  html .modal-backdrop button,
+  html .modal-backdrop svg,
+  html .selectable-text button,
+  html .selectable-text svg {
+    -webkit-user-select: none;
+    user-select: none;
   }
 
   /* #1869 — `.scrollback` is NOT in the list above. It is the one copyable

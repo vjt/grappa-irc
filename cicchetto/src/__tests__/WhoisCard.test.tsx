@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@solidjs/testing-library";
 import { describe, expect, it, vi } from "vitest";
 import type { WhoisBundle } from "../lib/api";
+import { SELECTABLE_TEXT_CLASS } from "../lib/keepKeyboard";
 import WhoisCard from "../WhoisCard";
 
 // P-0a — Cluster `numeric-delegation-p0` 2026-05-13. Verifies WhoisCard
@@ -50,6 +51,16 @@ const baseBundle: WhoisBundle = {
 
 const renderCard = (overrides: Partial<WhoisBundle> = {}, onDismiss?: () => void) =>
   render(() => <WhoisCard bundle={{ ...baseBundle, ...overrides }} onDismiss={onDismiss} />);
+
+// issue 2394 — on a coarse pointer the sheet kills selection on <html>; the
+// card's root must carry the shared re-enable class or the host / IP / account
+// it shows cannot be copied off a phone.
+describe("WhoisCard issue 2394 selectable text", () => {
+  it("carries the shared selectable-text class on its root", () => {
+    renderCard({ actually_host: "real.host.example", actually_ip: "192.0.2.42" });
+    expect(screen.getByTestId("whois-card")).toHaveClass(SELECTABLE_TEXT_CLASS);
+  });
+});
 
 describe("WhoisCard P-0a flags", () => {
   it("renders SSL tag when using_ssl: true", () => {

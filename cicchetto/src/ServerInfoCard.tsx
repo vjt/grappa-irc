@@ -60,7 +60,7 @@ const ServerInfoCard: Component<Props> = (props) => {
   };
 
   return (
-    <div class="rail-server-info" data-testid="rail-server-info">
+    <div class="rail-server-info selectable-text" data-testid="rail-server-info">
       <div class="rail-server-info-header">
         <span class="rail-server-info-title">{props.network.slug}</span>
       </div>

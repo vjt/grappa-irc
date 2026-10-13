@@ -1,6 +1,7 @@
 import { render, screen } from "@solidjs/testing-library";
 import { describe, expect, it } from "vitest";
 import type { ConnectionInfo, Network } from "../lib/api";
+import { SELECTABLE_TEXT_CLASS } from "../lib/keepKeyboard";
 import ServerInfoCard from "../ServerInfoCard";
 
 // #474 — the server-window rail card. Pure presentational: it takes the
@@ -49,6 +50,13 @@ const baseNet: Network = {
 };
 
 describe("ServerInfoCard", () => {
+  // issue 2394 — the shared re-enable class, or the server name is uncopyable
+  // on touch.
+  it("carries the shared selectable-text class on its root", () => {
+    render(() => <ServerInfoCard network={baseNet} now={now} />);
+    expect(screen.getByTestId("rail-server-info")).toHaveClass(SELECTABLE_TEXT_CLASS);
+  });
+
   it("renders the network slug, own nick, connected state, uptime and services", () => {
     render(() => <ServerInfoCard network={baseNet} now={now} />);
     const card = screen.getByTestId("rail-server-info");

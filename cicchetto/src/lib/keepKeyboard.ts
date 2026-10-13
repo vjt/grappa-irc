@@ -61,14 +61,13 @@ import { isIos } from "./platform";
 // firing: preventDefault cancels the focus shift AND the
 // text-selection-drag start, so on copyable text we only fire it for a
 // long-press (keep the keyboard so the selection survives) and skip it
-// for a tap (let the keyboard dismiss). This list MUST stay in sync with
+// for a tap (let the keyboard dismiss). This list MUST agree with
 // default.css's selectable-text policy — which #1869 made TWO-TIER, and
 // the tier is what decides where a new surface goes:
 //
 //   * STANDING re-enable — `user-select: text` inside
-//     `@media (pointer: coarse)`: `.topic-modal-text`, `input`,
-//     `textarea`. Surfaces with no platform long-press selection worth
-//     suppressing.
+//     `@media (pointer: coarse)`: STANDING_SELECTABLE_SURFACES below.
+//     Surfaces with no platform long-press selection worth suppressing.
 //   * LATCH-scoped — `user-select: none` standing, lifted only while
 //     `html.is-selecting` is up: `.scrollback` and the two #250 tokens
 //     inside it. On Blink a STANDING `text` here IS the platform's own
@@ -78,12 +77,35 @@ import { isIos } from "./platform";
 //
 // So a new copyable surface goes in the standing re-enable UNLESS a
 // long-press on it can raise the platform's selection UI, in which case
-// it follows `.scrollback` into the latch. Either way it must land in
-// BOTH sites or the two policies drift (same shape as the nick-fold
-// SQL/fragment invariant). See docs/DESIGN_NOTES.md 2026-06-11
-// (Dispatch-1) + 2026-07-03 (#79 v1) + 2026-07-04 (#79 long-press rework)
-// + 2026-08-30 (#1869).
-const SELECTABLE_TEXT_SURFACES = ".scrollback, .topic-modal-text";
+// it follows `.scrollback` into the latch. See docs/DESIGN_NOTES.md
+// 2026-06-11 (Dispatch-1) + 2026-07-03 (#79 v1) + 2026-07-04 (#79
+// long-press rework) + 2026-08-30 (#1869).
+//
+// issue 2394 — the standing tier is a SHAPE, not a per-surface list. It used
+// to name `.topic-modal-text` alone, so every modal and lookup card that came
+// after it (WHOIS, /who, /names, banlist, …) inherited the blanket kill and
+// could not be copied off a phone. Now:
+//   * `.modal-backdrop` — the scrim every viewport modal is built on, so a NEW
+//     modal is copyable by default without anybody remembering this file;
+//   * `.selectable-text` (SELECTABLE_TEXT_CLASS) — the opt-in for a copyable
+//     surface that is not such a modal: the lookup cards, the topic text.
+// Their controls (STANDING_SURFACE_CONTROLS) are carved back out in BOTH
+// places: a long-press on a ✕ must not raise a selection magnifier, and a tap
+// on it keeps the keyboard as it always did. CSS cannot import a constant, so
+// `touchSelectionPolicy.test.ts` asserts the sheet says exactly this — both
+// directions, so a re-enable added to the sheet alone fails too.
+export const SELECTABLE_TEXT_CLASS = "selectable-text";
+export const STANDING_SELECTABLE_SURFACES = [
+  ".modal-backdrop",
+  `.${SELECTABLE_TEXT_CLASS}`,
+] as const;
+// `svg` is the links map: a pan surface (`touch-action: none`) whose node
+// labels are <text>, where a long-press must pan and not select.
+export const STANDING_SURFACE_CONTROLS = ["button", "svg"] as const;
+const SELECTABLE_TEXT_SURFACES = [".scrollback", ...STANDING_SELECTABLE_SURFACES].join(", ");
+const STANDING_CONTROL_EXCLUDE = STANDING_SELECTABLE_SURFACES.flatMap((surface) =>
+  STANDING_SURFACE_CONTROLS.map((control) => `${surface} ${control}`),
+).join(", ");
 // Controls that live INSIDE a selectable surface whose KEYBOARD policy is
 // "always preserve on tap" — the exclude wins in isSelectableSurface, so
 // they fall through to the always-fire preventDefault path (keyboard kept
@@ -156,10 +178,12 @@ export function isTextEntry(el: Element | null): el is HTMLInputElement | HTMLTe
 // preventDefault is duration-gated (tap dismisses, long-press selects)
 // rather than always fired. The exclude wins: the [Join] CTA lives inside
 // .scrollback but is a control, so it falls through to the always-fire
-// path (keyboard preserved regardless of hold duration).
+// path (keyboard preserved regardless of hold duration). A modal's or a
+// card's own controls do the same (issue 2394).
 function isSelectableSurface(el: Element | null): boolean {
   if (el === null) return false;
   if (el.closest(SELECTABLE_TEXT_EXCLUDE) !== null) return false;
+  if (el.closest(STANDING_CONTROL_EXCLUDE) !== null) return false;
   return el.closest(SELECTABLE_TEXT_SURFACES) !== null;
 }
 

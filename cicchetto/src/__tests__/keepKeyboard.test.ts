@@ -1,6 +1,7 @@
 // Contract under test: the keyboard-preserve mousedown preventDefault
 // fires ONLY on iOS. On generic chrome it always fires (keyboard stays
-// up). On a selectable-text surface (.scrollback / .topic-modal-text) it
+// up). On a selectable-text surface (.scrollback, every .modal-backdrop modal,
+// and anything wearing the shared .selectable-text class — issue 2394) it
 // is DURATION-GATED (#79, 2026-07-04): iOS dispatches the mousedown on
 // finger-release, so the held time (touchstart → mousedown) tells a TAP
 // from a LONG-PRESS. A short TAP is NOT prevented — the focus-shift
@@ -18,7 +19,12 @@
 // KEYBOARD policy alone: a tap dismisses, a long-press keeps.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installKeyboardPreserve, LONG_PRESS_MS } from "../lib/keepKeyboard";
+import {
+  installKeyboardPreserve,
+  LONG_PRESS_MS,
+  STANDING_SELECTABLE_SURFACES,
+  STANDING_SURFACE_CONTROLS,
+} from "../lib/keepKeyboard";
 
 const IPHONE_UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
@@ -161,19 +167,43 @@ describe("keepKeyboard — installKeyboardPreserve", () => {
     expect(pressDefaultPrevented(message, LONG_PRESS_MS)).toBe(true);
   });
 
-  it("iOS: LONG-press inside .topic-modal-text IS prevented (topic text is selectable)", () => {
-    stubUserAgent(IPHONE_UA);
-    input.focus();
-    const topic = surfaceChild("topic-modal-text");
-    expect(pressDefaultPrevented(topic, LONG_PRESS_MS + 100)).toBe(true);
-  });
+  // issue 2394 — the STANDING surfaces (every modal, the shared class) follow
+  // the topic text's old keyboard policy, one test pair per surface off the
+  // production list so a surface added there is exercised here for free.
+  for (const surface of STANDING_SELECTABLE_SURFACES) {
+    const className = surface.slice(1);
 
-  it("iOS: SHORT tap inside .topic-modal-text is NOT prevented (a tap still dismisses the keyboard)", () => {
-    stubUserAgent(IPHONE_UA);
-    input.focus();
-    const topic = surfaceChild("topic-modal-text");
-    expect(pressDefaultPrevented(topic, LONG_PRESS_MS - 100)).toBe(false);
-  });
+    it(`iOS: LONG-press inside ${surface} IS prevented (its text is selectable)`, () => {
+      stubUserAgent(IPHONE_UA);
+      input.focus();
+      expect(pressDefaultPrevented(surfaceChild(className), LONG_PRESS_MS + 100)).toBe(true);
+    });
+
+    it(`iOS: SHORT tap inside ${surface} is NOT prevented (a tap still dismisses the keyboard)`, () => {
+      stubUserAgent(IPHONE_UA);
+      input.focus();
+      expect(pressDefaultPrevented(surfaceChild(className), LONG_PRESS_MS - 100)).toBe(false);
+    });
+
+    // The controls are carved back out: a modal's ✕ or a card's dismiss keeps
+    // the keyboard on a tap exactly as it did before the surface became
+    // selectable — the same always-fire path as the [Join] CTA below.
+    for (const control of STANDING_SURFACE_CONTROLS) {
+      it(`iOS: SHORT tap on a ${control} inside ${surface} IS prevented (a control keeps the keyboard)`, () => {
+        stubUserAgent(IPHONE_UA);
+        input.focus();
+        const container = document.createElement("div");
+        container.className = className;
+        const el = document.createElementNS(
+          control === "svg" ? "http://www.w3.org/2000/svg" : "http://www.w3.org/1999/xhtml",
+          control,
+        );
+        container.append(el);
+        document.body.append(container);
+        expect(pressDefaultPrevented(el, LONG_PRESS_MS - 100)).toBe(true);
+      });
+    }
+  }
 
   it("iOS: LONG-press on the .scrollback-invite-join control inside .scrollback IS prevented (it's a button, not selectable text)", () => {
     stubUserAgent(IPHONE_UA);
