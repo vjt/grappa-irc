@@ -9,8 +9,7 @@ defmodule Grappa.Uploads.ReaperTest do
   import Grappa.AuthFixtures, only: [user_fixture: 1]
 
   alias Grappa.Repo.BusyRetry
-  alias Grappa.ServerSettings
-  alias Grappa.Uploads
+  alias Grappa.{ServerSettings, Uploads}
   alias Grappa.Uploads.Reaper
 
   setup do

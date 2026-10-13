@@ -105,7 +105,7 @@ defmodule Grappa.UploadsConcurrencyTest do
   end
 
   # Between the authoritative re-check and the insert: inside the transaction.
-  defp in_transaction?(_query), do: Grappa.Repo.in_transaction?()
+  defp in_transaction?(_), do: Grappa.Repo.in_transaction?()
 
   # Between the cheap pre-check and the transaction — the issue's own window.
   # The pre-check reads the global sum, then the subject's: pausing on the

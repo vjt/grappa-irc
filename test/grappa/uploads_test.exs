@@ -3,8 +3,7 @@ defmodule Grappa.UploadsTest do
 
   import Grappa.AuthFixtures, only: [user_fixture: 1, visitor_fixture: 1]
 
-  alias Grappa.ServerSettings
-  alias Grappa.Uploads
+  alias Grappa.{ServerSettings, Uploads}
   alias Grappa.Uploads.Upload
 
   # Per-test temp storage dir — cleaned via on_exit. Tests inject
