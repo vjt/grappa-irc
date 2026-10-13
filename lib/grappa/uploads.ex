@@ -22,11 +22,11 @@ defmodule Grappa.Uploads do
       per-subject quota (issues 2175 + 2403, both refused as
       `:insufficient_storage`, the authoritative check in the same
       transaction as the insert), strips image/video metadata
-      (`MetadataStrip` — fail-closed, #39), writes to disk, inserts row. `attrs` carries the subject (XOR
-      user/visitor FK), `mime`, optional `charset`, optional
-      `original_filename`,
-      optional `expires_at`. `opts` carries `:storage_root` (DI for
-      tests) + the random-slug + clock injection seams.
+      (`MetadataStrip` — fail-closed, #39), writes to disk, inserts
+      row. `attrs` carries the subject (XOR user/visitor FK), `mime`,
+      optional `charset`, optional `original_filename`, optional
+      `expires_at`. `opts` carries `:storage_root` (DI for tests) + the
+      random-slug injection seam.
     * `get_by_slug/1` — slug → `{:ok, %Upload{}} | {:error, :not_found}`.
       Respects soft-delete + expiry: an expired or soft-deleted row
       reads as `:not_found` so the public GET surface has no oracle.
@@ -260,7 +260,7 @@ defmodule Grappa.Uploads do
 
   ## The caps are checked HERE, twice, and the second check is the one that counts (issue 2403)
 
-  Both ceilings (`check_caps/3`) are sums over live rows, so a door that
+  Both ceilings — global and per-subject — are sums over live rows, so a door that
   checked them and THEN called this function let two concurrent writers
   read the same totals and both land, overshooting the cap by up to one
   upload each. The check therefore lives inside the write, where no door

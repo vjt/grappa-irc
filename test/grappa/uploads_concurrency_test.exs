@@ -41,8 +41,8 @@ defmodule Grappa.UploadsConcurrencyTest do
 
   import Grappa.AuthFixtures, only: [user_fixture: 1]
 
-  alias Grappa.Uploads
-  alias Grappa.Uploads.Upload
+  alias Grappa.{UploadFixtures, Uploads}
+  alias Grappa.Uploads.{MetadataStrip, Upload}
 
   @handler_id {__MODULE__, :pause}
 
@@ -166,6 +166,36 @@ defmodule Grappa.UploadsConcurrencyTest do
 
       assert [%Upload{bytes: 8}] = Uploads.list_all()
       assert length(File.ls!(root)) == 1
+    end
+
+    test "the re-check counts the STORED size, not the incoming one", %{root: root} do
+      user = user_fixture([])
+      subject = {:user, user.id}
+      input = UploadFixtures.bytes(:gps_jpeg)
+      {:ok, stripped} = MetadataStrip.run(input, "image/jpeg")
+      incoming = byte_size(input)
+      stored = byte_size(stripped)
+
+      # The cap is exactly the incoming size, and the peer takes exactly the
+      # bytes the strip removes. Counted on what lands on disk the jpeg fits
+      # (peer + stored == cap); counted on what arrived it would not
+      # (peer + incoming > cap). Only the stripped jpeg distinguishes the two:
+      # `text/plain` passes through byte-identical.
+      assert stored < incoming
+      peer_bytes = incoming - stored
+      interleave(&after_precheck?/1, fn -> upload(root, subject, peer_bytes, user_caps(incoming)) end)
+
+      attrs = %{
+        subject: subject,
+        mime: "image/jpeg",
+        expires_at: DateTime.add(DateTime.utc_now(), 3600, :second)
+      }
+
+      assert {:ok, %Upload{bytes: ^stored}} =
+               Uploads.create(input, attrs, user_caps(incoming), storage_root: root)
+
+      assert_receive {:peer_done, {:ok, %Upload{}}}, 2_000
+      assert Process.get(@handler_id) == :fired, "the interleave never armed"
     end
   end
 

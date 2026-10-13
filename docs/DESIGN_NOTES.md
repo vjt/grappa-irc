@@ -1935,7 +1935,12 @@ step.
 **Crash window, unchanged:** a crash between the file write and the insert
 leaves a file with no row. It is unservable (every read goes through the row)
 and it is the same window the file-first ordering always had; there is no
-orphan-file sweep, and this slice does not add one.
+orphan-file sweep, and this slice does not add one. The same holds for any
+raise out of the transaction other than the FK `Ecto.ConstraintError` already
+handled (a `BEGIN IMMEDIATE` that exhausts `busy_timeout`, say): the exception
+propagates and the file stays. Removing it on every exception would mean a
+catch-all rescue, which the no-silent-swallow rule rules out; the old
+`Repo.insert` could raise the same way.
 
 **The stored size is what counts.** The pre-check sees the incoming bytes, the
 re-check sees the stripped ones, and the row records the stripped ones — the
@@ -1949,8 +1954,15 @@ Removing the refusal's file cleanup turns two red. Moving the re-check in
 front of the transaction turns one red, and only through the harness (the
 in-transaction pause never arms): under the Sandbox's single connection a
 sequential re-check is indistinguishable from an atomic one, which is the
-limit `UserSettingsConcurrencyTest` already documents.
+limit `UserSettingsConcurrencyTest` already documents. A fourth test pins the
+STORED size: a GPS-tagged jpeg whose stripped bytes fit under the cap while
+its incoming bytes would not — `text/plain`, which every other cap test uses,
+passes the strip byte-identical and cannot tell the two apart.
 
 **Deploy class: HOT.** Function bodies and arities only (`create/3` →
 `create/4`, `set_avatar/3` → `set_avatar/4`, all callers in the same build); no
-`config/*.exs`, no migration, no `defstruct`, no state-map field.
+`config/*.exs`, no migration, no `defstruct`, no state-map field. The arity
+change does leave a window during the per-module reload: a request that reaches
+an old caller after the new `Uploads` or `Credentials` beam has loaded raises
+`UndefinedFunctionError` once (a 500 on one upload). It lasts as long as the
+reload batch, and nothing persists from it.
