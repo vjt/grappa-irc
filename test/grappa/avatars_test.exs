@@ -24,7 +24,7 @@ defmodule Grappa.AvatarsTest do
   test "fetch_and_cache/3 stores sanitized bytes and broadcasts on success", ctx do
     Phoenix.PubSub.subscribe(Grappa.PubSub, Grappa.PubSub.Topic.peer_avatar_cache(ctx.network_id))
 
-    expect(Grappa.Net.ImageFetcherMock, :fetch, fn "http://peer.example/av.png" ->
+    expect(Grappa.Net.ImageFetcherMock, :fetch, fn "http://peer.example/av.png", _ ->
       {:ok, ctx.png, "image/png"}
     end)
 
@@ -41,34 +41,33 @@ defmodule Grappa.AvatarsTest do
   end
 
   test "fetch_and_cache/3 rejects bytes whose magic number doesn't match the claimed content-type", ctx do
-    expect(Grappa.Net.ImageFetcherMock, :fetch, fn _ -> {:ok, "not a png", "image/png"} end)
+    expect(Grappa.Net.ImageFetcherMock, :fetch, fn _, _ -> {:ok, "not a png", "image/png"} end)
 
     assert :ok = Avatars.fetch_and_cache(ctx.network_id, "spoofer", "http://peer.example/av.png")
     assert Avatars.get(ctx.network_id, "spoofer") == nil
   end
 
-  test "fetch_and_cache/3 rejects a fetch over the per-entry byte cap even though the shared fetcher allowed it", ctx do
-    oversized = String.duplicate("a", 2 * 1024 * 1024 + 1)
-    expect(Grappa.Net.ImageFetcherMock, :fetch, fn _ -> {:ok, oversized, "image/png"} end)
+  test "fetch_and_cache/3 hands the fetcher its 2 MiB per-entry cap and stores nothing past it", ctx do
+    expect(Grappa.Net.ImageFetcherMock, :fetch, fn _, 2_097_152 -> {:error, :too_large} end)
 
     assert :ok = Avatars.fetch_and_cache(ctx.network_id, "toobig", "http://peer.example/huge.png")
     assert Avatars.get(ctx.network_id, "toobig") == nil
   end
 
   test "fetch_and_cache/3 swallows a fetcher SSRF block without raising or storing anything", ctx do
-    expect(Grappa.Net.ImageFetcherMock, :fetch, fn _ -> {:error, :ssrf_blocked} end)
+    expect(Grappa.Net.ImageFetcherMock, :fetch, fn _, _ -> {:error, :ssrf_blocked} end)
 
     assert :ok = Avatars.fetch_and_cache(ctx.network_id, "blocked", "http://169.254.169.254/latest/meta")
     assert Avatars.get(ctx.network_id, "blocked") == nil
   end
 
   test "fetch_and_cache/3 replaces a prior cached row, unlinking the old file", ctx do
-    expect(Grappa.Net.ImageFetcherMock, :fetch, fn _ -> {:ok, ctx.png, "image/png"} end)
+    expect(Grappa.Net.ImageFetcherMock, :fetch, fn _, _ -> {:ok, ctx.png, "image/png"} end)
     assert :ok = Avatars.fetch_and_cache(ctx.network_id, "repeater", "http://peer.example/first.png")
     first = Avatars.get(ctx.network_id, "repeater")
     assert File.exists?(Avatars.storage_path(first.slug))
 
-    expect(Grappa.Net.ImageFetcherMock, :fetch, fn _ -> {:ok, ctx.png, "image/png"} end)
+    expect(Grappa.Net.ImageFetcherMock, :fetch, fn _, _ -> {:ok, ctx.png, "image/png"} end)
     assert :ok = Avatars.fetch_and_cache(ctx.network_id, "repeater", "http://peer.example/second.png")
     second = Avatars.get(ctx.network_id, "repeater")
 
@@ -89,7 +88,7 @@ defmodule Grappa.AvatarsTest do
     end
 
     test "returns the row for a live cached slug", ctx do
-      expect(Grappa.Net.ImageFetcherMock, :fetch, fn _ -> {:ok, ctx.png, "image/png"} end)
+      expect(Grappa.Net.ImageFetcherMock, :fetch, fn _, _ -> {:ok, ctx.png, "image/png"} end)
       assert :ok = Avatars.fetch_and_cache(ctx.network_id, "findable", "http://peer.example/av.png")
       row = Avatars.get(ctx.network_id, "findable")
 
@@ -101,7 +100,7 @@ defmodule Grappa.AvatarsTest do
     # slug alone is not that scope: a caller resolved onto network A must not
     # be handed a row cached for network B.
     test "returns :not_found for a slug cached on a DIFFERENT network", ctx do
-      expect(Grappa.Net.ImageFetcherMock, :fetch, fn _ -> {:ok, ctx.png, "image/png"} end)
+      expect(Grappa.Net.ImageFetcherMock, :fetch, fn _, _ -> {:ok, ctx.png, "image/png"} end)
       assert :ok = Avatars.fetch_and_cache(ctx.network_id, "elsewhere", "http://peer.example/av.png")
       row = Avatars.get(ctx.network_id, "elsewhere")
 
@@ -115,7 +114,7 @@ defmodule Grappa.AvatarsTest do
     end
 
     test "returns :not_found for an expired row", ctx do
-      expect(Grappa.Net.ImageFetcherMock, :fetch, fn _ -> {:ok, ctx.png, "image/png"} end)
+      expect(Grappa.Net.ImageFetcherMock, :fetch, fn _, _ -> {:ok, ctx.png, "image/png"} end)
       assert :ok = Avatars.fetch_and_cache(ctx.network_id, "stale", "http://peer.example/av.png")
       row = Avatars.get(ctx.network_id, "stale")
 

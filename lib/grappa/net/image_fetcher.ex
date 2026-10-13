@@ -6,8 +6,11 @@ defmodule Grappa.Net.ImageFetcher do
   user-supplied URL that the SERVER dials. The real implementation
   (`Grappa.Net.ImageFetcher.Req`) resolves the host through
   `Grappa.Net.Ssrf` and connects to the *resolved* IP (rebind-safe), enforces a
-  raster-only content-type allowlist, and caps the download size — never
-  raising, always returning a tagged error.
+  raster-only content-type allowlist, and caps the download at the byte limit
+  the CALLER passes — while the body streams, never after buffering it —
+  never raising, always returning a tagged error. The limit is the caller's
+  because the callers disagree on it: a theme background and a peer avatar
+  are different budgets (#2402).
 
   Isolating the network call behind a behaviour lets tests inject a
   deterministic mock (`Grappa.Net.ImageFetcherMock`, wired via
@@ -48,10 +51,10 @@ defmodule Grappa.Net.ImageFetcher do
 
     * `:ssrf_blocked`  — the host resolved to a private/loopback/metadata address.
     * `:not_raster`    — the response content-type is not an allowed raster image.
-    * `:too_large`     — the body exceeded the download cap.
+    * `:too_large`     — the declared or received body passed the caller's cap.
     * `:fetch_failed`  — DNS/connect/HTTP transport failure, redirect, or bad URL.
   """
   @type error :: {:error, :ssrf_blocked | :not_raster | :too_large | :fetch_failed}
 
-  @callback fetch(url :: String.t()) :: ok() | error()
+  @callback fetch(url :: String.t(), max_bytes :: pos_integer()) :: ok() | error()
 end

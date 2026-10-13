@@ -88,7 +88,7 @@ defmodule Grappa.Themes.BackgroundImage do
     # The fetcher has already enforced the raster allowlist + size cap + SSRF
     # guard; its errors (`:ssrf_blocked | :not_raster | :too_large |
     # :fetch_failed`) are all in our error set, so they propagate as-is.
-    case fetcher().fetch(url) do
+    case fetcher().fetch(url, @max_bytes) do
       {:ok, bytes, _} -> {:ok, bytes}
       {:error, reason} -> {:error, reason}
     end

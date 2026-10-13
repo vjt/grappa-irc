@@ -20,27 +20,21 @@ defmodule Grappa.Net.ImageFetcher.Req do
 
   ## Size cap posture
 
-  The body is buffered and its size checked after download; the download itself
-  is bounded by `@receive_timeout_ms`. A hostile server omitting `content-length`
-  and streaming indefinitely is capped by that timeout rather than a hard
-  in-flight byte ceiling — acceptable because this path is authenticated and
-  rate-limited, and the bytes are immediately re-encoded through a
-  wall-clock-bounded ffmpeg pass downstream.
-
-  **Which rate limit, named rather than assumed.** The `~5 ops/user/day`
-  figure this paragraph leans on is `Grappa.Themes`' `:theme_create` daily
-  quota, and it reaches here because `Themes.store_background/2` consumes
-  that quota BEFORE calling the fetcher (#1404) — the same quota `create/3`
-  and `copy/3` consume. The paragraph above is only true while that holds:
-  a caller reaching this module without passing through that door has no
-  such bound, and for one the in-flight byte ceiling becomes the thing to
-  build.
+  The cap is the caller's `max_bytes`, enforced WHILE the body streams
+  (#2402): a declared `content-length` over the cap is refused on the first
+  chunk, before the rest of the body is read, and every received chunk is
+  counted against the cap whatever the header claimed — a chunked or
+  length-less response is stopped the moment it passes, and the connection
+  is dropped rather than drained. At most `max_bytes` plus one chunk is ever
+  held in memory. `@receive_timeout_ms` bounds the other axis, a server that
+  sends slowly rather than much.
   """
   @behaviour Grappa.Net.ImageFetcher
 
   alias Grappa.Net.ImageFetcher
 
-  @max_bytes 8 * 1024 * 1024
+  require Logger
+
   @connect_timeout_ms 5_000
   @receive_timeout_ms 10_000
 
@@ -51,10 +45,10 @@ defmodule Grappa.Net.ImageFetcher.Req do
   @resolver Application.compile_env(:grappa, [:themes, :image_ssrf_resolver], Grappa.Net.Ssrf)
 
   @impl ImageFetcher
-  def fetch(url) when is_binary(url) do
+  def fetch(url, max_bytes) when is_binary(url) and is_integer(max_bytes) and max_bytes > 0 do
     with {:ok, uri} <- parse_http_uri(url),
          {:ok, ip} <- @resolver.resolve_safe(uri.host) do
-      get(uri, ip)
+      get(uri, ip, max_bytes)
     else
       {:error, :ssrf_blocked} = err -> err
       # DNS failure / bad URL / non-http scheme all collapse to fetch_failed —
@@ -64,7 +58,7 @@ defmodule Grappa.Net.ImageFetcher.Req do
     end
   end
 
-  defp get(uri, ip) do
+  defp get(uri, ip, max_bytes) do
     target = URI.to_string(%{uri | host: ip_host(ip)})
 
     opts = [
@@ -74,12 +68,13 @@ defmodule Grappa.Net.ImageFetcher.Req do
       cache: false,
       max_retries: 0,
       receive_timeout: @receive_timeout_ms,
+      into: capped_body(max_bytes),
       connect_options: connect_options(uri),
       headers: [{"host", uri.host}]
     ]
 
     case request(target, opts) do
-      {:ok, %Req.Response{status: 200} = resp} -> classify(resp)
+      {:ok, %Req.Response{status: 200} = resp} -> classify(resp, max_bytes)
       {:ok, %Req.Response{}} -> {:error, :fetch_failed}
       {:error, _} -> {:error, :fetch_failed}
     end
@@ -96,14 +91,58 @@ defmodule Grappa.Net.ImageFetcher.Req do
     _, _ -> {:error, :fetch_failed}
   end
 
-  defp classify(%Req.Response{body: body} = resp) do
+  defp classify(%Req.Response{body: body} = resp, max_bytes) do
     content_type = response_content_type(resp)
 
     cond do
-      byte_size(body) > @max_bytes -> {:error, :too_large}
-      content_type not in ImageFetcher.raster_content_types() -> {:error, :not_raster}
-      true -> {:ok, body, content_type}
+      Req.Response.get_private(resp, :over_cap) ->
+        log_over_cap(resp, max_bytes)
+        {:error, :too_large}
+
+      content_type not in ImageFetcher.raster_content_types() ->
+        {:error, :not_raster}
+
+      true ->
+        {:ok, body, content_type}
     end
+  end
+
+  # Req calls this per received chunk, with the status + headers already on
+  # `resp`. A non-200 is halted on its first chunk — `get/3` refuses it
+  # anyway, so its body is never worth reading.
+  defp capped_body(max_bytes) do
+    fn {:data, data}, {req, resp} ->
+      received = byte_size(resp.body) + byte_size(data)
+
+      cond do
+        resp.status != 200 ->
+          {:halt, {req, resp}}
+
+        declared_length(resp) > max_bytes or received > max_bytes ->
+          {:halt, {req, Req.Response.put_private(resp, :over_cap, received)}}
+
+        true ->
+          {:cont, {req, %{resp | body: resp.body <> data}}}
+      end
+    end
+  end
+
+  # An absent or unparseable header is 0: it bounds nothing, and the bytes
+  # are counted regardless.
+  defp declared_length(resp) do
+    with [value | _] <- Req.Response.get_header(resp, "content-length"),
+         {n, ""} <- Integer.parse(value) do
+      n
+    else
+      _ -> 0
+    end
+  end
+
+  defp log_over_cap(resp, max_bytes) do
+    Logger.info(
+      "image_fetcher: refused body past cap received_bytes=#{Req.Response.get_private(resp, :over_cap)} " <>
+        "declared_length=#{resp |> Req.Response.get_header("content-length") |> List.first("none")} cap=#{max_bytes}"
+    )
   end
 
   # Strip `; charset=…` parameters and downcase so `image/JPEG; charset=binary`

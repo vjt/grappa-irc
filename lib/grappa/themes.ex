@@ -356,10 +356,10 @@ defmodule Grappa.Themes do
   Consumes the SAME `#{@quota_bucket}` daily quota `create/3` and `copy/3` do,
   and consumes it BEFORE the fetch rather than after. That order is the whole
   point: the resource being rationed is the fetch itself — a remote GET plus an
-  ffmpeg re-encode, whose cost `ImageFetcher` bounds only after buffering — so
-  charging only for successes would leave failures running free, which is the
-  cheaper flood to mount. A subject who burns a slot on a broken URL has spent
-  one of five, which is the intended shape of a burst bound.
+  ffmpeg re-encode — so charging only for successes would leave failures
+  running free, which is the cheaper flood to mount. A subject who burns a
+  slot on a broken URL has spent one of five, which is the intended shape of
+  a burst bound.
   """
   @spec store_background(Subject.t(), BackgroundImage.source()) ::
           {:ok, String.t()} | {:error, BackgroundImage.error() | :rate_limited}

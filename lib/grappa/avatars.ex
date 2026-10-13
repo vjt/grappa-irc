@@ -93,6 +93,9 @@ defmodule Grappa.Avatars do
   # claimed URLs, so it needs its own tight ceiling independent of the
   # uploads budget.
   @global_cap_bytes 200 * 1024 * 1024
+  # Per-entry ceiling, handed to the fetcher so a bigger body is cut off
+  # while it streams (#2402) — and what keeps `check_global_cap/0`'s
+  # pre-estimate of the incoming write true.
   @max_fetch_bytes 2 * 1024 * 1024
 
   @doc """
@@ -150,8 +153,7 @@ defmodule Grappa.Avatars do
   def fetch_and_cache(network_id, nick_key, url)
       when is_integer(network_id) and is_binary(nick_key) and is_binary(url) do
     with :ok <- check_global_cap(),
-         {:ok, bytes, content_type} <- fetcher().fetch(url),
-         :ok <- check_fetch_size(bytes),
+         {:ok, bytes, content_type} <- fetcher().fetch(url, @max_fetch_bytes),
          :ok <- sniff_image_mime(bytes, content_type),
          {:ok, stripped} <- MetadataStrip.run(bytes, content_type),
          {:ok, row} <- store(network_id, nick_key, stripped, content_type) do
@@ -173,25 +175,6 @@ defmodule Grappa.Avatars do
 
     if Repo.one(query) + @max_fetch_bytes > @global_cap_bytes do
       {:error, :insufficient_storage}
-    else
-      :ok
-    end
-  end
-
-  # Review fix: `check_global_cap/0` pre-estimates the incoming write at
-  # `@max_fetch_bytes` (2MB), but the shared `Grappa.Net.ImageFetcher`
-  # allows up to its own 8MB cap — without this check, a legitimately
-  # fetched 4-8MB image would land on disk and count against the global
-  # budget for only the assumed 2MB, letting the cache's real disk usage
-  # drift past `@global_cap_bytes` over repeated fetches. Enforcing the
-  # SAME 2MB ceiling here (post-fetch, since the real size isn't known
-  # until after download) keeps the pre-check's assumption true and this
-  # cache's per-entry size genuinely independent of `Grappa.Uploads`'
-  # looser cap, per this module's own moduledoc rationale.
-  @spec check_fetch_size(binary()) :: :ok | {:error, :too_large}
-  defp check_fetch_size(bytes) when is_binary(bytes) do
-    if byte_size(bytes) > @max_fetch_bytes do
-      {:error, :too_large}
     else
       :ok
     end

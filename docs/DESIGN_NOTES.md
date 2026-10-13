@@ -1861,3 +1861,36 @@ instruction; the gap is stated in CLAUDE.md and `docs/CLIENT_PROTOCOL.md`
 
 **Deploy class: HOT.** No field added to `Session.Server`'s state map or any
 `defstruct`; the server change is a pure-function arm in `EventRouter`.
+<!-- entry #2402 -->
+
+---
+
+## 2026-10-13 — #2402: the image fetcher caps bytes while they stream, at the caller's limit
+
+`Grappa.Net.ImageFetcher.Req` used to buffer the whole response and compare
+its size afterwards, bounded only by the 10 s receive timeout. Its moduledoc
+defended that on one ground — the theme path is quota-limited (#1404) — and
+said in so many words that a caller arriving without that quota would need an
+in-flight ceiling. The peer-avatar path (M3b) is that caller: a CTCP AVATAR
+reply from any IRC peer starts the fetch, with no quota in front of it.
+
+**The fix is the in-flight ceiling, not a quota on the avatar door.** The
+response streams into a Req `into:` function: a declared `content-length` over
+the cap is refused on the first chunk, and every chunk is counted against the
+cap whatever the header said, so a chunked or length-less body is cut off the
+moment it passes and the connection is dropped rather than drained. Memory is
+bounded by the cap plus one chunk.
+
+**The cap moved from the fetcher to the caller (`fetch/2`).** The two callers
+never agreed: the fetcher held 8 MiB, the avatar cache 2 MiB, and the cache
+re-checked its own number AFTER the fetcher had already read up to 8 MiB.
+Each caller now passes its own ceiling (`BackgroundImage`'s existing
+`@max_bytes`, `Avatars`' existing `@max_fetch_bytes`), the fetcher holds none,
+and the avatar post-check is deleted — the 2 MiB is now enforced on the wire.
+
+**Not in this slice:** a cap on concurrent avatar fetches. The issue asks for
+one too; it is a different axis (how many requests, not how big one is) and
+is left to its own change.
+
+**Deploy class: HOT.** A behaviour callback arity and function bodies; no
+`config/*.exs`, no `defstruct`, no state-map field.

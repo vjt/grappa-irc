@@ -1706,7 +1706,7 @@ defmodule GrappaWeb.NetworksControllerTest do
       _ = credential_fixture(vjt, mine)
       _ = credential_fixture(vjt, theirs)
 
-      Mox.stub(Grappa.Net.ImageFetcherMock, :fetch, fn _ ->
+      Mox.stub(Grappa.Net.ImageFetcherMock, :fetch, fn _, _ ->
         {:ok, Grappa.UploadFixtures.bytes(:gps_png), "image/png"}
       end)
 
