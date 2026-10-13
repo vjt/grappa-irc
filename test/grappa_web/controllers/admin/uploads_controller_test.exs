@@ -74,13 +74,17 @@ defmodule GrappaWeb.Admin.UploadsControllerTest do
         Uploads.create(
           "a",
           %{subject: {:user, user.id}, mime: "text/plain", expires_at: now},
-          ServerSettings.upload_caps(), storage_root: root)
+          ServerSettings.upload_caps(),
+          storage_root: root
+        )
 
       {:ok, u2} =
         Uploads.create(
           "bb",
           %{subject: {:visitor, v.id}, mime: "text/plain", expires_at: now},
-          ServerSettings.upload_caps(), storage_root: root)
+          ServerSettings.upload_caps(),
+          storage_root: root
+        )
 
       {:ok, _} = Uploads.soft_delete(u2, DateTime.utc_now())
 
