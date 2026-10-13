@@ -155,6 +155,21 @@ defmodule Grappa.Dcc do
   # click on a stranger's file.
   @idle_timeout_ms 30_000
 
+  # issue 2404 — how long a spool file may sit with NO row before
+  # `Grappa.Dcc.Reaper` calls it an orphan and unlinks it.
+  #
+  # A LIVE transfer can never look this old. `Grappa.Dcc.Transfer` writes
+  # on every chunk, so the file's mtime moves at least once per
+  # `@idle_timeout_ms`, and before the first chunk the file is at most
+  # `@connect_timeout_ms + @idle_timeout_ms` (35 s) old — past either
+  # budget the transfer fails and removes the file itself. The rest of the
+  # margin covers the one gap no budget bounds: a FINISHED transfer whose
+  # result is still queued in a busy session's mailbox, waiting for the
+  # row. An hour is ~40x the longest SQLite write-lock hold logged on
+  # prod (94.1 s, 2026-09-08), which is the stall that queue would sit
+  # behind.
+  @orphan_grace_seconds 60 * 60
+
   @doc """
   Boot-time injection of the spool's storage root — mirrors
   `Grappa.Uploads.boot/1` and `Grappa.Avatars.boot/1`. Read ONCE here into
@@ -228,6 +243,14 @@ defmodule Grappa.Dcc do
   @doc "The hard retention ceiling in seconds — see the moduledoc."
   @spec max_retention_seconds() :: unquote(@max_retention_seconds)
   def max_retention_seconds, do: @max_retention_seconds
+
+  @doc """
+  How long, in seconds, a spool file with no row may sit before the
+  reaper treats it as an orphan (issue 2404). See the attribute for why
+  no live transfer can look this old.
+  """
+  @spec orphan_grace_seconds() :: unquote(@orphan_grace_seconds)
+  def orphan_grace_seconds, do: @orphan_grace_seconds
 
   @doc """
   How long a file accepted by `subject` may sit in the spool.
@@ -359,6 +382,29 @@ defmodule Grappa.Dcc do
     query = from(f in SpoolFile, where: f.expires_at <= ^now)
 
     Repo.all(query)
+  end
+
+  @doc """
+  Of `names` — the entries of a spool directory — the minted slugs that
+  NO row points at (issue 2404). `Grappa.Dcc.Reaper`'s orphan
+  enumeration: the disk against the table, so it needs no record of its
+  own.
+
+  A name that is not the minted shape is never returned, whatever it is:
+  this spool only ever writes slugs, and anything else in the directory
+  is not ours to remove.
+
+  Says nothing about AGE. A file with no row is also what every transfer
+  still in flight looks like, so the caller owns the staleness check
+  (`orphan_grace_seconds/0`).
+  """
+  @spec untracked_slugs([String.t()]) :: [String.t()]
+  def untracked_slugs(names) when is_list(names) do
+    slugs = Enum.filter(names, &Regex.match?(@slug_regex, &1))
+    query = from(f in SpoolFile, where: f.slug in ^slugs, select: f.slug)
+    tracked = query |> Repo.all() |> MapSet.new()
+
+    Enum.reject(slugs, &MapSet.member?(tracked, &1))
   end
 
   @doc """

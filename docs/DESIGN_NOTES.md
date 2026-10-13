@@ -1966,3 +1966,85 @@ change does leave a window during the per-module reload: a request that reaches
 an old caller after the new `Uploads` or `Credentials` beam has loaded raises
 `UndefinedFunctionError` once (a 500 on one upload). It lasts as long as the
 reload batch, and nothing persists from it.
+<!-- entry #2404 -->
+
+---
+
+## 2026-10-14 — #2404: the DCC reaper sweeps bytes no row points at
+
+The DCC transfer task is detached from the session on purpose (#2089: a
+stranger's socket must not widen into the session's crash boundary), and the
+`dcc_files` row is written by the SESSION when the task's one report arrives.
+Two paths leave bytes on disk that no row will ever point at, outside both the
+retention ruling and the spool budget:
+
+1. **The session ends while a transfer it accepted is still running.** The
+   task completes, the file is whole, the report goes to a dead pid without an
+   error, and no row is written.
+2. **The task is killed mid-drain** — a restart, a crash. `Transfer`'s failure
+   arm, which removes a partial, never runs.
+
+The issue named the first; the second came out of reading the code, and it
+matters for the choice below because no session-side cure can reach it.
+
+### The cure: the directory against the table
+
+`Grappa.Dcc.Reaper.sweep_orphans/2` runs on every tick, after the expiry pass:
+list the spool root, keep the names shaped like a minted slug, drop those with
+a row (`Grappa.Dcc.untracked_slugs/1`), and unlink what is left if its mtime is
+older than `Grappa.Dcc.orphan_grace_seconds/0` (one hour). No new state: the
+disk already records which bytes exist and the table records which are
+accounted for, so the orphan set is their difference.
+
+**The mtime is what separates an orphan from a transfer in flight.** Both are
+bytes with no row. `Transfer` writes on every chunk, so a live file's mtime
+moves at least once per idle timeout, and before the first chunk it is at most
+connect + idle (35 s) old: past either budget the transfer fails and removes the
+file itself. The rest of the hour is for the one gap no budget bounds, a
+finished transfer whose report is still queued in a busy session's mailbox.
+That is ~40x the longest SQLite write-lock hold logged on prod (94.1 s,
+2026-09-08). If a session somehow stalls past it, the row lands pointing at
+nothing and `GET /dcc_files/:slug` answers 404 until the row expires: a
+degraded read, never a leak.
+
+**This reverses a line #2089 called "the general rule worth keeping"**: *an
+orphan no row points at is exactly what no sweeper can find.* It held only for
+a sweep that enumerates ROWS. The inline removal in `Transfer`'s failure arm
+stays, because it frees the disk the moment a transfer is known dead; the sweep
+is the backstop for code that never reached its cleanup.
+
+### What the issue recommended, and why it is not this
+
+The issue proposed a pending-transfer record written before the file, a
+session monitor that cleans up its pending transfers, and a pass for files
+with no row. The third is this entry. The first duplicates what the disk
+already says (design discipline 1), costs a migration (COLD), and a pending row
+whose task was killed needs its own sweep — which is the orphan pass again. A
+monitor runs in a process that is still alive, so it covers path 1 and not
+path 2.
+
+Making the task insert the row itself was also weighed. It cures path 1 only,
+and it keeps for three days a file nobody was told about: the report row
+carrying the link is the session's to write, so the file would sit in the
+spool, counted against the budget, behind a link no one ever saw.
+
+### Not cured here
+
+`Grappa.Dcc.budget_available?/0` sums ROWS, so bytes in flight and orphans not
+yet swept do not count against the global cap. In-flight bytes were already
+uncounted before this change. Orphans are now bounded at grace + one tick.
+
+**Tests.** `Grappa.Dcc.ReaperTest` drives a real `Transfer` against a loopback
+sender. It kills the reporting pid mid-transfer and the task mid-drain,
+asserts the defect first (bytes on disk, no row), then asserts the sweep keeps
+a fresh file and removes a stale one. It also pins that a tracked file and a
+non-slug name are never touched, and that the tick calls the pass. The session
+itself is not in the loop: `Grappa.Dcc.Policy` refuses a loopback offer before
+a socket opens, so no offer a test can serve reaches the session's transfer
+task (the limit `Grappa.Session.DccConsentTest` documents). Docker was down on
+the worker host, so PR CI is the only gate this ran through.
+
+**Deploy class: HOT.** Function bodies, two new public functions, a module
+attribute, comments; no migration, no `config/*.exs`, no `defstruct`, no
+state-map field. `Grappa.Dcc.Reaper`'s next tick after the reload runs the new
+pass.

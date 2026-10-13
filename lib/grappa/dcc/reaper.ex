@@ -34,12 +34,22 @@ defmodule Grappa.Dcc.Reaper do
        session process (it is a peer's live TCP endpoint, worthless once
        that process is gone), and it is reaped by that process's own
        per-offer timer. A crash reaps it for free.
-    2. A DELIVERED file past its retention. This module.
-    3. A PARTIAL file from a transfer that aborted. **Not delegable to a
-       sweeper, deliberately** — `Grappa.Dcc.Transfer` removes the partial
-       spool inline on every failure arm, because the row that would let a
-       sweeper find it is never written. An orphan nobody recorded is
-       precisely what no sweep can enumerate.
+    2. A DELIVERED file past its retention. This module, `sweep/2`.
+    3. BYTES NO ROW POINTS AT. `Grappa.Dcc.Transfer` removes a partial
+       spool inline on every failure arm, and that stays the prompt path.
+       But inline cleanup only runs when the code that wrote the bytes
+       lives to reach it, and there are two ways it does not (issue 2404):
+       the session dies before it handles the transfer's result (the task
+       finishes, its report goes to a dead pid, no row is ever written),
+       and the task itself is killed mid-drain — a restart, a crash —
+       before its failure arm runs. So this module, `sweep_orphans/2`, too.
+
+  #2089 called axis 3 not delegable to a sweeper, on the ground that an
+  orphan no row points at is exactly what no sweep can find. That holds
+  only for a sweep that enumerates ROWS. The directory enumerates the
+  bytes, the table says which of them are recorded, and the difference is
+  the orphan set — derived from two things that already exist, so there
+  is no pending-transfer record to keep in step with either.
   """
 
   use Boundary, top_level?: true, deps: [Grappa.Dcc]
@@ -102,6 +112,65 @@ defmodule Grappa.Dcc.Reaper do
     end
   end
 
+  @doc """
+  Synchronous orphan sweep (issue 2404) — unlinks every spool file that
+  no row points at and that nothing has written for
+  `Grappa.Dcc.orphan_grace_seconds/0`. Returns how many it removed.
+
+  The age is the file's mtime, and it is what tells an orphan from a
+  transfer still in flight: both are bytes with no row, but a live
+  transfer writes on every chunk, so its file cannot look as old as the
+  grace (see the attribute in `Grappa.Dcc`).
+
+  `now` is injectable, as for `sweep/2`. A separate pass rather than more
+  work inside `sweep/2`: that one retires ROWS and this one has none to
+  retire, so they share no step past the unlink.
+  """
+  @spec sweep_orphans(Path.t(), DateTime.t()) :: {:ok, non_neg_integer()}
+  def sweep_orphans(storage_root, %DateTime{} = now) do
+    cutoff = DateTime.to_unix(now) - Dcc.orphan_grace_seconds()
+
+    removed =
+      storage_root
+      |> File.ls!()
+      |> Dcc.untracked_slugs()
+      |> Enum.reduce(0, fn slug, acc ->
+        case unlink_if_stale(Path.join(storage_root, slug), cutoff) do
+          :unlinked ->
+            acc + 1
+
+          :kept ->
+            acc
+
+          {:error, reason} ->
+            Logger.error("dcc reaper failure", slug: slug, error: inspect(reason))
+            acc
+        end
+      end)
+
+    {:ok, removed}
+  end
+
+  # The stat comes AFTER the row lookup, so a transfer that finished and
+  # got its row between the two shows a fresh mtime here and is kept.
+  # ENOENT on either step is the inline cleanup getting there first.
+  defp unlink_if_stale(path, cutoff) do
+    case File.stat(path, time: :posix) do
+      {:ok, %File.Stat{mtime: mtime}} when mtime > cutoff -> :kept
+      {:ok, _} -> unlink(path)
+      {:error, :enoent} -> :kept
+      {:error, reason} -> {:error, {:fs, reason}}
+    end
+  end
+
+  defp unlink(path) do
+    case File.rm(path) do
+      :ok -> :unlinked
+      {:error, :enoent} -> :kept
+      {:error, reason} -> {:error, {:fs, reason}}
+    end
+  end
+
   @impl GenServer
   def init(opts) do
     interval = Keyword.get(opts, :interval_ms, @default_interval_ms)
@@ -121,8 +190,12 @@ defmodule Grappa.Dcc.Reaper do
 
   @impl GenServer
   def handle_info(:tick, state) do
-    {:ok, n} = sweep(state.storage_root, DateTime.utc_now())
+    now = DateTime.utc_now()
+    {:ok, n} = sweep(state.storage_root, now)
     if n > 0, do: Logger.info("dcc reaper swept", affected: n)
+
+    {:ok, orphans} = sweep_orphans(state.storage_root, now)
+    if orphans > 0, do: Logger.info("dcc reaper removed spool files no row pointed at", affected: orphans)
 
     # Rescheduled from `state.interval_ms`, never from the module default:
     # a tick that rebuilt the interval from the literal would discard the

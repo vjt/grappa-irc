@@ -8128,7 +8128,10 @@ defmodule Grappa.Session.Server do
   # fetch, and for the same reason: a peer's socket dying must not widen
   # into the session's crash boundary. The task's whole contract is to
   # send ONE message back, and a task that dies without sending it costs a
-  # missing report row, never a dropped session.
+  # missing report row, never a dropped session. A report that reaches no
+  # one — this session gone before it arrives — strands bytes no row
+  # points at; `Grappa.Dcc.Reaper`'s orphan pass collects those (issue
+  # 2404), so the task needs no link back here to clean up after itself.
   #
   # The slug is minted BEFORE the dial so the bytes have a home the moment
   # the first packet lands; `Transfer.run/3` opens the file before the
@@ -8182,9 +8185,9 @@ defmodule Grappa.Session.Server do
         # Our own attrs, all of them: a minted slug, a neutralised name, an
         # integer count, a derived retention. A rejection here is a bug in
         # this function, not a runtime condition — so it is LOUD, the
-        # orphaned bytes are removed rather than left for a reaper that
-        # only ever sees rows, and the operator still gets a row saying
-        # their file did not survive storage.
+        # orphaned bytes are removed at once rather than left an hour for
+        # the reaper's orphan pass, and the operator still gets a row
+        # saying their file did not survive storage.
         # The errors are folded INTO the message, not passed as metadata:
         # the Logger metadata allowlist (`config/config.exs`) is closed and
         # deliberate, and `errors` is not on it.

@@ -136,8 +136,8 @@ defmodule Grappa.Dcc.TransferTest do
       Task.await(task, 5_000)
 
       # Issue 2089: nothing stranger-pushed persists un-reaped. An
-      # aborted transfer reaps its own temp file rather than waiting for
-      # a sweeper to notice an orphan nobody recorded.
+      # aborted transfer reaps its own temp file at once rather than
+      # waiting out the reaper's orphan grace (issue 2404).
       refute File.exists?(path)
     end
   end

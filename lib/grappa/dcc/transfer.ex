@@ -30,8 +30,11 @@ defmodule Grappa.Dcc.Transfer do
   The opposite lie is NOT forgiven. A peer that closes before the
   declared count is a `{:short_transfer, received, declared}` error, and
   the partial spool file is removed on the way out — "nothing
-  stranger-pushed persists un-reaped" has to hold on the abort path too,
-  and an orphan nobody recorded is precisely what no sweeper can find.
+  stranger-pushed persists un-reaped" has to hold on the abort path too.
+  `Grappa.Dcc.Reaper`'s orphan pass would find the bytes as well, but
+  only after its grace (issue 2404); removing them here frees the disk
+  the moment the transfer is known dead. That pass is the backstop for
+  when this arm never runs at all — the task killed mid-drain.
 
   ## The ack stream
 
@@ -164,8 +167,8 @@ defmodule Grappa.Dcc.Transfer do
     :ok = :file.close(file)
 
     # The abort arm of "nothing stranger-pushed persists un-reaped": a
-    # partial spool is removed here rather than left for a sweeper that
-    # has no row to find it by.
+    # partial spool is removed here, at once, rather than left an hour for
+    # the reaper's orphan pass to notice.
     case File.rm(path) do
       :ok -> :ok
       {:error, :enoent} -> :ok

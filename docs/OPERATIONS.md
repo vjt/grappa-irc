@@ -5492,10 +5492,12 @@ it.
   That makes `Grappa.Dcc.Reaper` the ONLY revocation — there is no
   admin-delete door onto this spool, and nothing shortens a row's
   `expires_at` once written. If an operator needs a specific file gone
-  before its retention elapses, the two verbs are removing the row from
-  `dcc_files` and unlinking the file under the spool root (`scripts/db.sh`
-  for the first); doing only the first leaves orphaned bytes no sweeper
-  will ever find, since the reaper enumerates rows.
+  before its retention elapses, remove its row from `dcc_files`
+  (`scripts/db.sh`): the URL answers 404 from that moment, and the bytes
+  left behind are unlinked by the reaper's orphan pass (see DCC spool GC
+  below) once nothing has written them for an hour — which, for a file
+  delivered earlier than that, is the next tick. Unlink the file under the
+  spool root as well only if the disk space is wanted back sooner.
 - **Config**: DB-driven (Phase 2 sub-task 2j replaced the TOML loader).
   Operator binds users + networks via mix tasks: `mix grappa.create_user`
   creates a `User` row, `mix grappa.bind_network --auth ...` writes a
@@ -5554,15 +5556,19 @@ it.
   deleting the row. No operator verb, like session GC — the sweep is
   autonomous and there is nothing operator-actionable in it.
 
-  **What it CANNOT collect, and why that is by design rather than a hole:**
-  a partial spool from a transfer that failed mid-flight. A reaper
-  enumerates ROWS, and those bytes were written before any row existed, so
-  they are invisible to it by construction. Every failure arm of
-  `Grappa.Dcc.Transfer` therefore removes its own partial file before
-  returning — the code that created an orphan owns its removal. If you
-  ever find stray files under `DCC_STORAGE_ROOT` with no matching row,
-  that is a REAL defect in that module and worth a bug report, not
-  something a sweep was supposed to clean up later.
+  **It also collects bytes NO row points at (issue 2404).** Each tick lists
+  `DCC_STORAGE_ROOT`, keeps the names shaped like a minted slug, drops
+  those with a `dcc_files` row, and unlinks whatever is left that nothing
+  has written for an hour (`Grappa.Dcc.orphan_grace_seconds/0`). A live
+  transfer writes on every chunk, so it never looks that old. Such files
+  appear when a session ends while a transfer it accepted is still
+  running (the file completes, its report reaches no one, no row is
+  written) or when a restart kills a transfer mid-file. A failed transfer
+  still removes its own partial at once; the sweep is the backstop for
+  the code that never got that far. Stray files younger than an hour are
+  normal (a transfer in flight); older ones are gone by the next tick,
+  and the line `dcc reaper removed spool files no row pointed at` counts
+  them. Anything in the root NOT shaped like a slug is never touched.
 
 ### Write-latency diagnostics (#357 — SQLite write-latency telemetry)
 
