@@ -3050,6 +3050,37 @@ describe("ScrollbackPane", () => {
       });
     });
 
+    // issue 2368 — the rename row the server writes into the OLD nick's query
+    // window names where the peer went; the NEW nick is the way to follow.
+    it("clicking the new nick on a nick_change line in a query opens the new query", async () => {
+      setScrollback({
+        "freenode alice": [
+          {
+            id: 1,
+            network: "freenode",
+            channel: "alice",
+            server_time: 1_700_000_000_000,
+            kind: "nick_change",
+            sender: "alice",
+            body: null,
+            meta: { new_nick: "bea" },
+          },
+        ],
+      });
+      render(() => <ScrollbackPane networkSlug="freenode" channelName="alice" kind="query" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.textContent).toContain("alice is now known as bea");
+      const nicks = line.querySelectorAll(".scrollback-sender");
+      expect(nicks).toHaveLength(2);
+      nicks[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      expect(mockOpenQueryWindowState).toHaveBeenCalledWith(42, "bea", expect.any(String));
+      expect(mockSetSelectedChannel).toHaveBeenCalledWith({
+        networkSlug: "freenode",
+        channelName: "bea",
+        kind: "query",
+      });
+    });
+
     it("right-clicking the sender span renders the context-menu", async () => {
       setScrollback({
         "freenode #grappa": [

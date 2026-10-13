@@ -1099,10 +1099,14 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       );
     }
     case "nick_change": {
-      const newNick = typeof msg.meta.new_nick === "string" ? msg.meta.new_nick : "?";
+      // issue 2368 — the new nick is a button too, the same one the sender
+      // gets: on the row the server writes into the OLD nick's query window it
+      // is the way to follow the peer to where it went.
+      const newNick = msg.meta.new_nick;
       return (
         <span class="scrollback-body">
-          * {recordSenderSpan(msg.sender)} is now known as <NickText nick={newNick} />
+          * {recordSenderSpan(msg.sender)} is now known as{" "}
+          {typeof newNick === "string" ? recordSenderSpan(newNick) : "?"}
         </span>
       );
     }

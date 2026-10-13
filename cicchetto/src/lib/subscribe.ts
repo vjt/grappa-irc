@@ -700,7 +700,11 @@ moduleRoot(() => {
           // caches would file the window under a nick the server's
           // `query_windows_list` does not carry — cic originating state. The
           // members map still follows the rename, via `routeMessage` above
-          // (`applyPresenceEvent`).
+          // (`applyPresenceEvent`). What tells the old window where the peer
+          // went is a ROW, not cic state: since issue 2368 the server INSERTs
+          // one `nick_change` row into the old nick's query window, which
+          // reaches this same handler on that window's own topic and lands
+          // through `routeMessage` like any other row.
           //
           // The rail's WHOIS cache is the exception, and it is COPIED, not
           // moved: it holds server replies about a person, not window state,
