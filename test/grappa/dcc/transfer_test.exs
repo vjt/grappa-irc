@@ -141,7 +141,7 @@ defmodule Grappa.Dcc.TransferTest do
       {port, task} =
         sender(fn socket ->
           :ok = :gen_tcp.send(socket, payload)
-          read_all_acks(socket, [])
+          read_acks(socket)
         end)
 
       dir = Path.join(System.tmp_dir!(), "dcc-ack-#{System.unique_integer([:positive])}")
@@ -150,7 +150,7 @@ defmodule Grappa.Dcc.TransferTest do
 
       assert {:ok, 8_000} = Transfer.run(offer(port, 8_000), Path.join(dir, "a.bin"), opts())
 
-      acks = Task.await(task, 5_000)
+      {acks, _} = Task.await(task, 5_000)
 
       refute acks == [], "expected at least one ack word"
       assert List.last(acks) == 8_000, "the final ack must be the cumulative total"
@@ -287,6 +287,9 @@ defmodule Grappa.Dcc.TransferTest do
       sender =
         Task.async(fn ->
           {:ok, socket} = :gen_tcp.accept(listen, 5_000)
+          # How our side ends the connection is part of what is asserted,
+          # so a reset must read as one rather than as a plain close.
+          :ok = :inet.setopts(socket, show_econnreset: true)
           send(test, :accepted)
 
           receive do
@@ -304,10 +307,10 @@ defmodule Grappa.Dcc.TransferTest do
             :release -> :ok
           end
 
-          acks = read_all_acks(socket, [])
+          ended = read_acks(socket)
           :gen_tcp.close(socket)
           :gen_tcp.close(listen)
-          acks
+          ended
         end)
 
       transfer = Task.async(fn -> Transfer.run(offer(port, @unread_ack_payload), path, opts()) end)
@@ -323,22 +326,27 @@ defmodule Grappa.Dcc.TransferTest do
       :ok = :inet.setopts(socket, sndbuf: 1_024)
       send(sender.pid, :go)
 
-      # Before 2405 this is where it stopped: the drain parked on an ack
-      # nobody reads, ~28 MiB in on its first CI run.
-      DccTestSender.await_size(path, @unread_ack_payload)
+      # It must finish on its own while the sender is STILL holding off.
+      # Before 2405 the drain parked on an ack nobody reads — ~28 MiB in on
+      # its first CI run — and this came back empty.
+      result = Task.yield(transfer, 15_000)
 
-      # ...and the end must not wait on the sender either. The sender is
-      # still holding off here, so the acks it never read are still queued:
-      # dropped at close, the transfer returns at once, where a graceful
-      # close would sit five seconds in `prim_inet:close/1` and then leave
-      # the port open behind it.
-      assert {:ok, @unread_ack_payload} = Task.await(transfer, 3_000)
+      assert result == {:ok, {:ok, @unread_ack_payload}},
+             "transfer: #{inspect(result)}; spooled: #{inspect(File.stat(path))}"
+
       send(sender.pid, :release)
+      {acks, ended} = Task.await(sender, 10_000)
+
+      # The acks the sender never read were DISCARDED at close: our side
+      # reset the connection. A graceful close would have waited in
+      # `prim_inet:close/1`, held the port open until the sender read them,
+      # and ended with a FIN, which reads as `:closed`.
+      assert ended == :econnreset
 
       # The last ack the sender ever got is where the acking stopped. It
       # proves the stall HAPPENED: an ack stream that ran to the end means
       # the path never filled, and the test exercised nothing.
-      stalled_at = sender |> Task.await(10_000) |> List.last()
+      stalled_at = List.last(acks)
 
       assert stalled_at < div(@unread_ack_payload, 2),
              "acks ran to #{stalled_at} of #{@unread_ack_payload} bytes: the path filled too late, or never"
@@ -384,10 +392,13 @@ defmodule Grappa.Dcc.TransferTest do
     [binary_part(bin, 0, size) | chunk_every_binary(rest, size)]
   end
 
-  defp read_all_acks(socket, acc) do
+  # Every ack word until the connection ends, and how it ended.
+  defp read_acks(socket), do: read_acks(socket, [])
+
+  defp read_acks(socket, acc) do
     case :gen_tcp.recv(socket, 4, 1_000) do
-      {:ok, <<n::unsigned-big-integer-size(32)>>} -> read_all_acks(socket, [n | acc])
-      {:error, _} -> Enum.reverse(acc)
+      {:ok, <<n::unsigned-big-integer-size(32)>>} -> read_acks(socket, [n | acc])
+      {:error, reason} -> {Enum.reverse(acc), reason}
     end
   end
 end

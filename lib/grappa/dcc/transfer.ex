@@ -74,7 +74,9 @@ defmodule Grappa.Dcc.Transfer do
   `inet_drv.c`) instead of suspending the caller. That answer means the
   sender is not reading, so acking STOPS for the rest of the transfer and
   the drain carries on — further acks would only queue behind the ones
-  it ignored, and a sender that ignores them does not need them.
+  it ignored, and a sender that ignores them does not need them. The acks
+  already queued are then DISCARDED at close (`close/1`): kept, they hold
+  the socket open until a peer that has stopped reading reads them.
   """
 
   # Top-level for now because the `Grappa.Dcc` context it will sit under
@@ -156,7 +158,7 @@ defmodule Grappa.Dcc.Transfer do
         }
 
         result = drain(xfer, 0)
-        :ok = :gen_tcp.close(socket)
+        :ok = close(socket)
         finish(result, path, file)
 
       {:error, reason} ->
@@ -236,6 +238,27 @@ defmodule Grappa.Dcc.Transfer do
   end
 
   defp now_ms, do: System.monotonic_time(:millisecond)
+
+  # Output still in the driver's queue at the end means the peer stopped
+  # reading what we send, and a plain close would wait for it twice over:
+  # in `prim_inet:close/1` (five seconds without progress, three minutes at
+  # most), then in the driver, which keeps a closing port with queued
+  # output open until it drains (`tcp_inet_flush`, OTP-7615) — for as long
+  # as the peer likes. One socket held per such transfer; and ports stuck
+  # that way are what kept the VM of issue 2405's first CI run alive 13
+  # minutes after its suite ended. A zero linger makes the driver discard
+  # the queue and the kernel reset the connection: nothing in that queue
+  # was going to be read. An empty queue closes gracefully as before, so a
+  # sender waiting for its final ack still gets it.
+  defp close(socket) do
+    case :inet.getstat(socket, [:send_pend]) do
+      {:ok, [send_pend: 0]} -> :ok
+      # Bytes queued, or a socket too broken to say: either way, no wait.
+      _ -> _ = :inet.setopts(socket, linger: {true, 0})
+    end
+
+    :gen_tcp.close(socket)
+  end
 
   defp finish({:ok, _} = ok, _, file) do
     :ok = :file.close(file)
