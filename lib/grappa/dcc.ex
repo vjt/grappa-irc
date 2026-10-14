@@ -156,15 +156,17 @@ defmodule Grappa.Dcc do
   # it, a sender dripping one byte every 29 seconds held a socket, a file
   # handle and a task for as long as it liked.
   #
-  # OURS, not ruled. 8 KiB/s is ~64 kbit/s, one ISDN B channel — the
-  # slowest link still worth calling one, so no sender actually serving a
-  # file should fall under it, while the hold it grants a trickler stays
-  # finite and proportional: 30 s on a 1 KiB offer, ~3 h 34 min at the
-  # default 100 MiB ceiling. A stranger buys those hours only on a file
-  # the operator clicked to accept, ten times a day at most
-  # (`Grappa.Dcc.Policy`). A constant, so moving it is a review comment
-  # and a HOT deploy.
-  @min_rate_bytes_per_second 8 * 1024
+  # OURS, not ruled, and sized by the slowest HONEST sender rather than the
+  # slowest link. A sender that waits for each ack moves one block per
+  # round trip whatever its bandwidth: 1 KiB blocks over a 500 ms round
+  # trip is 2 KiB/s, so a floor of ISDN's 8 KiB/s — the first value this
+  # had — would have failed it a quarter of the way through. The price is
+  # the hold a trickler gets: 30 s on a 1 KiB offer, ~14 h at the default
+  # 100 MiB ceiling, which is finite and proportional where it used to be
+  # forever, on a file the operator clicked to accept, ten times a day at
+  # most (`Grappa.Dcc.Policy`). A constant, so moving it is a review
+  # comment and a HOT deploy.
+  @min_rate_bytes_per_second 2 * 1024
 
   # issue 2404 — how long a spool file may sit with NO row before
   # `Grappa.Dcc.Reaper` calls it an orphan and unlinks it.
@@ -183,10 +185,10 @@ defmodule Grappa.Dcc do
   #
   # The hour on top covers the one gap no budget bounds: a FINISHED
   # transfer whose result is still queued in a busy session's mailbox,
-  # waiting for the row — behind, at most, a socket close that
-  # `prim_inet:close/1` caps at three minutes. An hour is ~40x the longest SQLite
-  # write-lock hold logged on prod (94.1 s, 2026-09-08), which is the
-  # stall that queue would sit behind.
+  # waiting for the row. An hour is ~40x the longest SQLite write-lock
+  # hold logged on prod (94.1 s, 2026-09-08), which is the stall that
+  # queue would sit behind. (The socket close before it no longer waits:
+  # `Grappa.Dcc.Transfer` discards acks it cannot deliver.)
   @orphan_grace_seconds div(@connect_timeout_ms + @idle_timeout_ms, 1_000) + 60 * 60
 
   @doc """

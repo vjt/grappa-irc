@@ -88,7 +88,10 @@ defmodule Grappa.Dcc.ReportTest do
 
       assert report.body =~ "12"
       assert report.body =~ "100"
+      # In seconds: the milliseconds the term carries are not a unit a
+      # reader of the row should have to divide.
       assert report.body =~ "600"
+      refute report.body =~ "600000"
     end
 
     test "distinct failures produce distinct text — a shared message would hide which one happened" do

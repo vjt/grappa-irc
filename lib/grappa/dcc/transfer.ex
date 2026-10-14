@@ -73,10 +73,17 @@ defmodule Grappa.Dcc.Transfer do
   once when its queue is past the high watermark (`tcp_sendv` in
   `inet_drv.c`) instead of suspending the caller. That answer means the
   sender is not reading, so acking STOPS for the rest of the transfer and
-  the drain carries on — further acks would only queue behind the ones
-  it ignored, and a sender that ignores them does not need them. The acks
-  already queued are then DISCARDED at close (`close/1`): kept, they hold
-  the socket open until a peer that has stopped reading reads them.
+  the drain carries on: further acks would only queue behind the ones it
+  ignored. The acks already queued are DISCARDED at close, because the
+  socket carries a zero linger from the connect until `close/1` proves the
+  queue empty — kept, they would hold the port open until a peer that has
+  stopped reading reads them, restarts included.
+
+  ⚠️ Inferred, not measured against a real client: that a sender which
+  stops reading acks does not need them. One that reads nothing until its
+  last block and then waits for a final ack equal to the size would get
+  the reset instead — after we have stored the whole file, so only its
+  own report is wrong.
   """
 
   # Top-level for now because the `Grappa.Dcc` context it will sit under
@@ -139,9 +146,12 @@ defmodule Grappa.Dcc.Transfer do
   defp deadline_ms(declared, idle_ms, min_rate), do: idle_ms + div(declared * 1_000, min_rate)
 
   defp connect_and_drain(%Offer{} = offer, path, file, connect_timeout_ms, budget) do
-    # `send_timeout: 0` is what keeps the ack from ever blocking — see the
-    # moduledoc. It is the only send this socket makes.
-    case :gen_tcp.connect(offer.ip, offer.port, [:binary, active: false, send_timeout: 0], connect_timeout_ms) do
+    # `send_timeout: 0` keeps the ack from ever blocking, and the zero
+    # linger keeps a close from ever waiting on acks — see the moduledoc
+    # and `close/1`.
+    opts = [:binary, active: false, send_timeout: 0, linger: {true, 0}]
+
+    case :gen_tcp.connect(offer.ip, offer.port, opts, connect_timeout_ms) do
       {:ok, socket} ->
         # The clock starts once the connection is up: the dial has its own
         # budget, and the deadline is for the bytes.
@@ -239,23 +249,20 @@ defmodule Grappa.Dcc.Transfer do
 
   defp now_ms, do: System.monotonic_time(:millisecond)
 
-  # Output still in the driver's queue at the end means the peer stopped
-  # reading what we send, and a plain close would wait for it twice over:
-  # in `prim_inet:close/1` (five seconds without progress, three minutes at
-  # most), then in the driver, which keeps a closing port with queued
-  # output open until it drains (`tcp_inet_flush`, OTP-7615) — for as long
-  # as the peer likes. One socket held per such transfer; and ports stuck
-  # that way are what kept the VM of issue 2405's first CI run alive 13
-  # minutes after its suite ended. A zero linger makes the driver discard
-  # the queue and the kernel reset the connection: nothing in that queue
-  # was going to be read. An empty queue closes gracefully as before, so a
-  # sender waiting for its final ack still gets it.
+  # The socket was opened with a zero linger, so ANY close — this one, or
+  # the owner dying under a restart — makes the driver discard what it
+  # still holds and the kernel reset the connection. Kept, that queue
+  # would hold the port open: the driver keeps a closing port with queued
+  # output until it drains (`tcp_inet_flush`, OTP-7615), which a peer that
+  # stopped reading decides, and the VM's own halt waits on such a port.
+  # Only a queue proven EMPTY earns the graceful close, so a sender waiting
+  # for its final ack still gets it.
   defp close(socket) do
-    case :inet.getstat(socket, [:send_pend]) do
-      {:ok, [send_pend: 0]} -> :ok
-      # Bytes queued, or a socket too broken to say: either way, no wait.
-      _ -> _ = :inet.setopts(socket, linger: {true, 0})
-    end
+    _ =
+      case :inet.getstat(socket, [:send_pend]) do
+        {:ok, [send_pend: 0]} -> :inet.setopts(socket, linger: {false, 0})
+        _ -> :ok
+      end
 
     :gen_tcp.close(socket)
   end

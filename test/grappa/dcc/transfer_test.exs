@@ -203,16 +203,16 @@ defmodule Grappa.Dcc.TransferTest do
     # The idle timeout bounds SILENCE, and each arriving byte starts it
     # again, so before 2405 nothing bounded how LONG a sender could take.
     # The deadline is the declared size at the floor rate plus one idle
-    # allowance — here 500 ms + 100 B at 1_000 B/s = 600 ms.
+    # allowance — here 1_000 ms + 100 B at 1_000 B/s = 1_100 ms.
     test "a sender trickling faster than the idle timeout is stopped at the deadline", %{path: path} do
-      # One byte every 50 ms: the 500 ms idle timeout never fires, and
-      # the 100 bytes would take five seconds.
-      {port, task} = sender(fn socket -> trickle(socket, 100, 50) end)
+      # One byte every 500 ms: the 1_000 ms idle timeout never fires, and
+      # the 100 bytes would take fifty seconds.
+      {port, task} = sender(fn socket -> trickle(socket, 100, 500) end)
 
       assert {:error, {:too_slow, received, 100, elapsed_ms}} =
                Transfer.run(offer(port, 100), path,
                  connect_timeout_ms: 2_000,
-                 idle_timeout_ms: 500,
+                 idle_timeout_ms: 1_000,
                  min_rate_bytes_per_second: 1_000
                )
 
@@ -221,7 +221,13 @@ defmodule Grappa.Dcc.TransferTest do
       # Observed, not assumed: some bytes arrived, not all of them, and
       # the time reported is at least the deadline that stopped it.
       assert received in 1..99
-      assert elapsed_ms >= 600
+      assert elapsed_ms >= 1_100
+
+      # ...and not much more. The byte at 1_000 ms leaves 100 ms, and the
+      # wait after it must be THAT, not another whole idle window: a drain
+      # that only checked the clock between chunks would sit until the
+      # byte at 1_500 ms.
+      assert elapsed_ms < 1_400, "stopped after #{elapsed_ms} ms"
 
       # The abort arm of "nothing stranger-pushed persists un-reaped".
       refute File.exists?(path)
@@ -259,37 +265,39 @@ defmodule Grappa.Dcc.TransferTest do
   end
 
   describe "run/3 — a sender that never reads its acks (issue 2405)" do
-    # The volume is arithmetic. A sender that never reads leaves every ack
-    # we send in the path between us: its receive window, our socket's
-    # send buffer, and the driver's 8 KiB queue (`INET_HIGH_WATERMARK`).
-    # Before 2405 the ack that found all three full BLOCKED, with no
-    # timeout, and the transfer with it.
+    # A sender that never reads leaves every ack we send in the path
+    # between us: its receive window, our socket's send buffer, then the
+    # driver's queue. Before 2405 the ack that found the queue past its
+    # high watermark BLOCKED, with no timeout, and the transfer with it.
     #
     # On loopback, Linux sizes our send buffer from the 64 KiB MSS
     # (`tcp_sndbuf_expand`), megabytes that would take hundreds of
     # thousands of acks to fill. So the test makes the path a narrow one:
     # the sender listens with a 1 KiB receive buffer (its own socket,
-    # advertised in the handshake), and our socket's send buffer is
-    # shrunk to the kernel floor from outside — the code under test is
-    # not told. That leaves an ESTIMATED ~11 KiB, ~2.8k acks. A `recv/3`
-    # of length 0 returns at most the driver's 9216-byte buffer, so 128
-    # MiB is at least 14.5k chunks, each acked. The assertion at the end
-    # demands the stall arrive in the first half, so a path roomier than
-    # the estimate fails loudly instead of passing without exercising
-    # anything.
+    # advertised in the handshake), and our socket's send buffer is shrunk
+    # to the kernel floor from outside — the code under test is not told.
+    # Against the old code the spool file stood at 28,436,480 bytes when
+    # the first CI run gave up on it; at most 9216 bytes per chunk (the
+    # driver's receive buffer), 128 MiB is at least 14.5k chunks, each
+    # acked, so the stall arrives early.
     @unread_ack_payload 128 * 1024 * 1024
 
     test "the transfer neither hangs nor fails: acking stops, the bytes keep landing", %{path: path} do
       test = self()
-      {listen, port} = DccTestSender.listen(recbuf: 1_024)
+
+      # The zero linger is the sender's, and it is cleanup: a red here
+      # leaves both sockets with output queued, and a port in that state
+      # does not finish closing (read in the OTP source) — the first CI run
+      # of this test measured a VM still alive 13 minutes after its suite
+      # ended. Discarding on the sender's side resets the connection, which
+      # fails our side's queued write and frees both. `show_econnreset`
+      # makes a reset read as one.
+      {listen, port} = DccTestSender.listen(recbuf: 1_024, linger: {true, 0}, show_econnreset: true)
       mib = :binary.copy("A", 1024 * 1024)
 
       sender =
         Task.async(fn ->
           {:ok, socket} = :gen_tcp.accept(listen, 5_000)
-          # How our side ends the connection is part of what is asserted,
-          # so a reset must read as one rather than as a plain close.
-          :ok = :inet.setopts(socket, show_econnreset: true)
           send(test, :accepted)
 
           receive do
@@ -300,14 +308,13 @@ defmodule Grappa.Dcc.TransferTest do
           # MiB of memory, not 128.
           :ok = :gen_tcp.send(socket, List.duplicate(mib, div(@unread_ack_payload, byte_size(mib))))
 
-          # Not a byte read until the receiver has the whole file. Reading
-          # earlier would drain the acks and release the stall this test
-          # is about.
+          # Not a byte read until the transfer is over. Reading earlier
+          # would drain the acks and release the stall this test is about.
           receive do
             :release -> :ok
           end
 
-          ended = read_acks(socket)
+          {_acks, ended} = read_acks(socket)
           :gen_tcp.close(socket)
           :gen_tcp.close(listen)
           ended
@@ -316,40 +323,31 @@ defmodule Grappa.Dcc.TransferTest do
       transfer = Task.async(fn -> Transfer.run(offer(port, @unread_ack_payload), path, opts()) end)
       assert_receive :accepted, 5_000
       socket = socket_of(transfer.pid)
-
-      # A red here leaves the two sockets deadlocked with output queued on
-      # both, and a port in that state never finishes closing: the VM then
-      # cannot exit. Measured — the first CI run of this test sat 13
-      # minutes past the end of the suite. Resetting our side frees both.
-      on_exit(fn -> abort(socket) end)
-
       :ok = :inet.setopts(socket, sndbuf: 1_024)
+      {:ok, [high_watermark: high]} = :inet.getopts(socket, [:high_watermark])
       send(sender.pid, :go)
 
-      # It must finish on its own while the sender is STILL holding off.
-      # Before 2405 the drain parked on an ack nobody reads — ~28 MiB in on
-      # its first CI run — and this came back empty.
-      result = Task.yield(transfer, 15_000)
+      # It must finish on its own while the sender is STILL holding off —
+      # before 2405 the drain parked on an ack and this never returned.
+      # Meanwhile, the driver's ack queue as seen from outside.
+      {result, most_queued} = await_watching_queue(transfer, socket, 15_000)
 
       assert result == {:ok, {:ok, @unread_ack_payload}},
              "transfer: #{inspect(result)}; spooled: #{inspect(File.stat(path))}"
 
+      # The queue reached the high watermark, which with `send_timeout: 0`
+      # only the ack that came back `:timeout` can do — so the stall
+      # HAPPENED — and then stopped growing, so acking STOPPED. An ack per
+      # chunk past that point would have added four bytes for each of the
+      # thousands of chunks left.
+      assert most_queued >= high, "the ack queue peaked at #{most_queued} bytes, under #{high}"
+      assert most_queued < high + 64, "the ack queue kept growing to #{most_queued} bytes"
+
+      # And the acks still queued at the end were DISCARDED: our side reset
+      # the connection. A graceful close would have waited on the sender to
+      # read them and ended with a FIN, which reads as `:closed`.
       send(sender.pid, :release)
-      {acks, ended} = Task.await(sender, 10_000)
-
-      # The acks the sender never read were DISCARDED at close: our side
-      # reset the connection. A graceful close would have waited in
-      # `prim_inet:close/1`, held the port open until the sender read them,
-      # and ended with a FIN, which reads as `:closed`.
-      assert ended == :econnreset
-
-      # The last ack the sender ever got is where the acking stopped. It
-      # proves the stall HAPPENED: an ack stream that ran to the end means
-      # the path never filled, and the test exercised nothing.
-      stalled_at = List.last(acks)
-
-      assert stalled_at < div(@unread_ack_payload, 2),
-             "acks ran to #{stalled_at} of #{@unread_ack_payload} bytes: the path filled too late, or never"
+      assert Task.await(sender, 10_000) == :econnreset
     end
   end
 
@@ -375,13 +373,24 @@ defmodule Grappa.Dcc.TransferTest do
     socket
   end
 
-  # Discard whatever the socket still has queued and reset it. Any process
-  # may close a port, not only its owner; one already closed is fine.
-  defp abort(socket) do
-    _ = :inet.setopts(socket, linger: {true, 0})
-    Port.close(socket)
-  rescue
-    ArgumentError -> :ok
+  # Yields on `task` in 5 ms steps, sampling the socket's driver queue
+  # (`send_pend`) at each; returns the yield and the largest sample. A
+  # sample after the socket closed is skipped, not an error.
+  defp await_watching_queue(task, socket, budget_ms), do: await_watching_queue(task, socket, budget_ms, 0)
+
+  defp await_watching_queue(_, _, budget_ms, most) when budget_ms <= 0, do: {nil, most}
+
+  defp await_watching_queue(task, socket, budget_ms, most) do
+    most =
+      case :inet.getstat(socket, [:send_pend]) do
+        {:ok, [send_pend: queued]} -> max(most, queued)
+        {:error, _} -> most
+      end
+
+    case Task.yield(task, 5) do
+      nil -> await_watching_queue(task, socket, budget_ms - 5, most)
+      result -> {result, most}
+    end
   end
 
   defp chunk_every_binary(<<>>, _), do: []
