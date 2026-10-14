@@ -5484,11 +5484,23 @@ it.
   or a hard 72-hour ceiling when they have set none, and CLAMPED to that
   ceiling when theirs is longer. Stranger-pushed bytes may not outlive the
   longest retention this deployment offers a user for their own content.
-  Three further ceilings bound the disk: 10 MiB per transfer, a 1 GiB
-  total spool budget, and 10 accepts per subject per day. They are module
-  attributes in `Grappa.Dcc` / `Grappa.Dcc.Policy`, **deliberately not
-  operator settings** — a store that fills with other people's content is
-  not a preference the holder should be able to raise.
+  Three further ceilings bound the disk: a per-transfer size, a total
+  spool budget, and 10 accepts per subject per day. The first two are
+  operator settings since issue 2185 (`dcc.max_transfer_bytes`, default
+  100 MiB; `dcc.global_cap_bytes`, default 10 GiB — `Grappa.ServerSettings`
+  holds the reasoning); the accept quota is a constant in
+  `Grappa.Dcc.Policy`.
+
+  **Time is bounded too (issue 2405).** A transfer may go 30 s without a
+  byte, and may take in total 30 s plus its declared size at 2 KiB/s —
+  ~14 h for a file at the default ceiling (the floor is set by a sender
+  that waits for each ack, not by link speed; see `Grappa.Dcc`). Past
+  either it fails, the partial file is removed, and the peer's query gets
+  a row saying which: `the sender stopped sending`, or `the sender was
+  too slow: N of the M bytes it promised arrived in S seconds`. The
+  numbers are constants in `Grappa.Dcc`, not settings. A sender that
+  never reads the acks we send no longer stalls a transfer: acking stops
+  and the bytes keep landing.
 
   Files are served through `GET /dcc_files/:slug[.ext]` — top level and
   **unauthenticated since issue 2127**, the same public surface as
@@ -5573,8 +5585,9 @@ it.
   **It also collects bytes NO row points at (issue 2404).** Each tick lists
   `DCC_STORAGE_ROOT`, keeps the names shaped like a minted slug, drops
   those with a `dcc_files` row, and unlinks whatever is left that nothing
-  has written for an hour (`Grappa.Dcc.orphan_grace_seconds/0`). A live
-  transfer writes on every chunk, so it never looks that old. Such files
+  has written for an hour and 35 s (`Grappa.Dcc.orphan_grace_seconds/0`,
+  derived from the transfer budgets since issue 2405). A live transfer
+  writes at least every 30 s, so it never looks that old. Such files
   appear when a session ends while a transfer it accepted is still
   running (the file completes, its report reaches no one, no row is
   written) or when a restart kills a transfer mid-file. A failed transfer

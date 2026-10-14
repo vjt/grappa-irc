@@ -2176,3 +2176,184 @@ state-map field. During the per-module reload, a reloaded controller can call
 read-cursor door that is a 500. On the send door it happens inside the
 detached task, so it is a crash report and the `201` is unaffected. Either way
 it lasts as long as the reload batch, and nothing persists from it.
+<!-- entry #2405 -->
+
+---
+
+## 2026-10-14 — #2405: a DCC transfer has a total deadline, and its acks never block
+
+Two holes in `Grappa.Dcc.Transfer.run/3`, both verified in the code before
+anything was changed — and a third that the first CI run of the tests found.
+
+1. **No total budget.** Each `recv/3` waited at most the idle timeout (30 s),
+   and every arriving byte started that wait again, so a sender dripping one
+   byte every 29 s held a socket, a file handle and the task indefinitely.
+   `Grappa.Dcc` already called this a known gap on `@idle_timeout_ms`.
+2. **The ack could block forever.** The cumulative-count ack was a plain
+   synchronous send with no `send_timeout`. Against a sender that never reads,
+   the acks fill its receive window, our send buffer and the inet driver's
+   8 KiB queue, and the next send suspends the task with no timeout. This
+   one also defeats any deadline: the clock is read BETWEEN waits, and a
+   parked send never returns to read it.
+
+### The deadline
+
+The drain now runs against a deadline fixed when the connection opens: one
+idle allowance plus the DECLARED size at a floor rate
+(`@min_rate_bytes_per_second`, 2 KiB/s). Every wait is the shorter of the idle
+timeout and the time left; past the deadline the transfer fails
+`{:too_slow, received, declared, elapsed_ms}` and the existing failure arm
+removes the partial. The report says what was observed — *"the sender was too
+slow: N of the M bytes it promised arrived in S seconds"* — because a bare
+"too slow" could not tell a stalled trickle from a file that was nearly there.
+
+- **Proportional to the claim, not a constant.** A fixed budget big enough for
+  the largest file the ceiling admits hands a stranger the same hours on a
+  1 KiB offer. Trusting the claim is safe here: `Grappa.Dcc.Policy` has
+  already capped it, and the stream is truncated at it, so declaring big buys
+  time only on a file the operator agreed to take.
+- **2 KiB/s is ours, not ruled, and it is sized by the slowest HONEST sender,
+  not the slowest link.** The first cut used 8 KiB/s, ISDN's 64 kbit/s; the
+  review pointed out that a sender which waits for each ack moves one block
+  per round trip whatever its bandwidth — 1 KiB blocks over a 500 ms round
+  trip is 2 KiB/s, and 8 KiB/s would have failed it a quarter of the way in.
+  The price is the hold a trickler gets: 30 s on a 1 KiB offer, ~14 h at the
+  default 100 MiB ceiling — finite and proportional where it was forever, on
+  a file a human clicked to accept, ten times a day at most.
+- **A constant, not `config/*.exs` or a `ServerSettings` key.** Config is COLD,
+  and no operator need surfaced: the size ceiling is already the knob, and the
+  deadline follows it.
+- **The clock starts after the connect**, which has its own budget.
+
+### The ack
+
+The socket is opened with `send_timeout: 0`. Read in the OTP 28 source
+(`tcp_sendv` in `erts/emulator/drivers/common/inet_drv.c`): once the driver
+queue is past its high watermark, a zero send timeout answers
+`{:error, :timeout}` at once instead of marking the port busy and suspending
+the caller; below it, the send queues and returns `:ok` as before. That
+answer means the sender is not reading, so acking STOPS for the rest of the
+transfer and the drain carries on. The alternatives were worse. A finite
+send timeout still parks the task for that long on the first stalled ack —
+a second wait between two writes, which the orphan grace below would have
+to absorb — and, kept acking, pays it again on every ack, because the driver
+clears busy on timeout and the next send refills the queue (its own comment,
+ERL-1390). Failing the transfer would turn away a sender that ignores acks
+because it does not need them, against the moduledoc's best-effort promise.
+
+### The close (the third hole)
+
+The first CI run of the red tests finished its suite — `8075 tests, 7
+failures`, the seven expected — and then the VM did not exit: the beam was
+still alive 13 minutes later, when the run was cancelled. What it measured is
+a production property, not a test artefact. A port closed with output still
+in the driver's queue does not finish closing until that output drains:
+`tcp_inet_flush` discards the queue only under a zero linger or when the
+driver is not waiting to write (OTP-7615), and `prim_inet:close/1` itself
+first waits up to three minutes (five seconds without progress). So once the
+ack fix above has a non-reading sender's acks sitting in the queue, a plain
+close holds the socket for as long as the sender likes — one socket per such
+transfer — and the two deadlocked test sockets were exactly that, twice.
+The socket is therefore opened with `linger: {true, 0}`, and `close/1` turns
+it back to graceful only when `send_pend` reads zero: an empty queue closes
+as before, so a sender waiting for its final ack still gets it; anything else
+is discarded and the connection reset — nothing in that queue was going to be
+read. The linger is set at the CONNECT and not at the close because the
+close is not the only way a socket ends: a cold deploy shuts the transfer
+task down mid-file, the owner's death closes the port, and with acks queued
+that port would be stuck the same way — holding up the restart behind it.
+The first cut only switched the linger inside `close/1`; the review caught
+the restart path.
+
+⚠️ Inferred, not measured against a real client: that a sender which stops
+reading acks does not need them. One that reads nothing until its last block
+and then waits for a final ack equal to the size would get the reset instead
+— after we stored the whole file, so only its own report is wrong.
+
+### One source with the orphan grace — and a premise corrected
+
+The brief asked that the new deadline and #2404's orphan threshold come from
+one source, on the understanding that the sweep keys on "older than the
+longest possible transfer". **It does not, and deriving the grace from the
+deadline would have been wrong.** The reaper compares the file's MTIME, so
+what must fit under the grace is the longest a live transfer can go WITHOUT
+WRITING, not how long it can run: a transfer writing every 29 s is never 35 s
+stale however long it lasts. The deadline is also proportional to an operator
+setting, so a grace built from it would turn runtime and grow to hours for no
+gain.
+
+The coupling that can drift is the grace against the per-wait budgets, and it
+had drifted in a way nobody had seen: #2404's argument (a live file's mtime
+moves at least once per idle timeout) was only true while the ack could not
+block. A parked ack froze a live transfer's mtime; an hour later the reaper
+would have unlinked the file while the task lived on, and had the sender
+ever resumed reading, the task could have finished into the unlinked inode
+and the session written a row pointing at nothing. Hole 2's
+cure is what makes the argument true. `@orphan_grace_seconds` is now
+`div(@connect_timeout_ms + @idle_timeout_ms, 1_000) + 60 * 60` — the dial plus
+one idle wait before the first chunk, one idle wait between any two, plus the
+hour #2404 sized for a finished result queued behind a slow session (now
+also behind a socket close, which `prim_inet:close/1` caps at three minutes
+when acks are still queued). `DccTest` pins the grace against the budgets.
+The value moves from 3600 s to 3635 s.
+
+### Tests
+
+TDD, with each red measured on PR CI because Docker was down on the worker.
+The test-only commit failed the seven new assertions for the right reasons:
+the trickling sender finished (`{:ok, 100}` against an expected `:too_slow`),
+the old code's spool file stood at 28,436,480 of 134,217,728 bytes when the
+test gave up on it, and the five report assertions met no clause for
+`:too_slow`. One red in between is NOT explained, and is recorded as such: on
+an intermediate commit (`d2811d81c`, like every SHA in this paragraph a
+pre-rebase commit of PR #2415) CI failed the unread-ack test with the spool
+file gone — the transfer had returned some error and its failure arm had
+removed the partial — and that version of the test could not say which error.
+It has not recurred in the thirteen runs of that test since, twelve of them
+one probe repeating it on `777a58706`; the final test prints the transfer's
+own result on failure, so a recurrence names itself.
+
+- **The deadline.** A sender trickling one byte every 500 ms against a
+  1,000 ms idle timeout that never fires, with a 1,100 ms deadline: it must
+  stop at or after 1,100 ms and BEFORE 1,400 — the byte at 1,000 ms leaves
+  100 ms, and a drain that only read the clock between chunks would wait a
+  whole idle window, to the byte at 1,500 ms. And a sender at twice the
+  floor rate that takes twice the idle allowance and must finish, which a
+  fixed budget would cut off.
+- **The sender that never reads.** On loopback, Linux sizes our send buffer
+  from the 64 KiB MSS — megabytes, hundreds of thousands of acks — so the
+  test narrows the path: the sender listens with a 1 KiB receive buffer (its
+  own socket), and our socket's send buffer is shrunk from outside through
+  its port; the code under test is not told. While the transfer runs, the
+  test samples our driver queue (`send_pend`) from outside. It must reach
+  the high watermark — with `send_timeout: 0`, only the ack that came back
+  `:timeout` can put it there, so the stall HAPPENED — and stay within a few
+  bytes of it, because an ack per chunk past that point would have added
+  four bytes for each of the thousands of chunks left: acking STOPPED. The
+  transfer must finish while the sender still holds off, and the sender must
+  then see `:econnreset` (`show_econnreset`), not the `:closed` of a FIN:
+  the queued acks were discarded, not waited on. The first cut asserted on
+  the last ack the sender read instead; the review showed that measured the
+  sender's own 1 KiB window, not our stall, since the reset destroys every
+  ack still on our side.
+- **Cleanup that cannot hang the VM.** The sender listens with
+  `linger: {true, 0}` too, so whatever kills it — a red, the end of the test —
+  discards its queue and resets the connection, which fails our side's
+  queued write and frees both ports. The first cut used an `on_exit` that
+  reset our socket; the review showed it raced the linked tasks' death and
+  lost, leaving it a no-op in exactly the run it was written for.
+  ⚠️ **Designed, not measured on the red path:** that this cleanup lets the
+  VM exit when these tests FAIL. The probe built to show it — the final
+  tests run against main's `Transfer` — died on a credo finding before the
+  suite started, and was not re-run: vjt ruled to ship without it. A green
+  run that exits proves the green path only.
+
+### Not in this slice
+
+The issue also recommends capping concurrent transfers. Today they are
+bounded by the 10-a-day accept quota per subject, each a deliberate click, and
+by the held-offer ceiling. A global cap is a separate decision.
+
+**Deploy class: HOT.** Function bodies, module attributes, one new failure
+term; no migration, no `config/*.exs`, no supervision change. A transfer
+already running keeps its old code until it ends.
