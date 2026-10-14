@@ -597,7 +597,15 @@ defmodule GrappaWeb.MessagesController do
   # write-lock contention its busy-retry would hold the 201 of a message that
   # is already on the wire. A failure is therefore not the request's, and is
   # logged instead of returned: the row stays unread, which is the state
-  # before this change, and the operator sees why.
+  # before this change, and the operator sees why. The task does not inherit
+  # the request's Logger metadata, so the line names the subject itself, with
+  # the same label the session's own lines carry.
+  #
+  # Known gap, inherited rather than introduced: on a `CASEMAPPING=rfc1459`
+  # network a DM to a nick holding `[ ] \ ~` is keyed `alice{m}` while its
+  # `dm_with` stays raw, so `ReadCursor.set/4` cannot find the row and that
+  # send logs this warning instead of advancing (the #537 niche gap CLAUDE.md
+  # lists; `POST .../read-cursor` already answers 422 for the same window).
   #
   # Placed at the web door and NOT in `Session.Server`'s persist path on
   # purpose: this door is the subject typing, while the session also sends on
@@ -616,6 +624,7 @@ defmodule GrappaWeb.MessagesController do
 
           {:error, reason} ->
             Logger.warning("read cursor not advanced after own send",
+              user: Subject.topic_label(current_subject),
               network: network.slug,
               channel: channel,
               reason: inspect(reason)

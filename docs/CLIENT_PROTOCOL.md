@@ -689,14 +689,17 @@ looking. A POST carrying **both** fields is `400 bad_request`.
 Read the recipient off `meta`, never off the row's `channel`: `channel` is the
 source window. A `:notice` row **without** `meta.notice_target` is inbound.
 
-**Every send that answers `201` also reads its window (issue 2407).** The
-server advances your read cursor on the window the echo row landed in (its
-`channel`) to that row's `id`, then broadcasts `read_cursor_set` on that
-window's topic, exactly as a `POST …/read-cursor` would. That covers a plain
-send, a DM, and the CTCP / NOTICE / ops-only echoes alike. Replying reads what
-came before it. The advance is monotonic, so a cursor already past the row
-stays put, and it arrives after the `201`, not inside it. A services target
-(`202`, no row) reads nothing.
+**A send that answers `201` also reads its window (issue 2407).** The server
+advances your read cursor on the window the echo row landed in (its `channel`)
+to that row's `id`, then broadcasts `read_cursor_set` on that window's topic,
+exactly as a `POST …/read-cursor` would. That covers a plain send, a DM, and
+the CTCP / NOTICE / ops-only echoes alike. Replying reads what came before it.
+The advance is monotonic, so a cursor already past the row stays put. It runs
+asynchronously: the `read_cursor_set` may reach you before or after the `201`,
+and is never in its body. A services target (`202`, no row) reads nothing.
+One exception: on a `CASEMAPPING=rfc1459` network, a DM to a nick holding
+`[ ] \ ~` does not advance. That is the same window a `POST …/read-cursor`
+answers `422` for.
 
 ### 5b. Ops-only / voice-only delivery (#218, #1247)
 

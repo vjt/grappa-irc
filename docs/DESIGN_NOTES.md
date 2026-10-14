@@ -2141,13 +2141,24 @@ the message is already on the wire, and a second SQLite write whose busy-retry
 holds the `201` under write-lock contention would delay a send to record a
 read. So the whole advance runs in a `Grappa.TaskSupervisor` task. A failure
 there is not the request's, so it is logged (`read cursor not advanced after
-own send`, with `network`, `channel` and `reason`), not returned. The window
-then stays unread, which is where it was before this change.
+own send`, with `user`, `network`, `channel` and `reason`), not returned. The
+window then stays unread, which is where it was before this change.
+
+**Known gap, inherited.** On a `CASEMAPPING=rfc1459` network, a DM to a nick
+holding `[ ] \ ~` is persisted at `channel = alice{m}` with `dm_with` raw
+`alice[m]`, and `ReadCursor.set/4`'s window match folds `COALESCE(dm_with,
+channel)` ASCII-only, so it cannot find the row. That send logs the warning
+instead of advancing. It is the #537 niche gap CLAUDE.md already lists (no
+prod network is rfc1459), and `POST …/read-cursor` answers `422` for the same
+window today. This change surfaces the gap; it does not widen it.
 
 **Tests.** Every persisted send now leaves a task behind, so the outbound
 suite drains `Grappa.TaskSupervisor` on exit. The drain two files already
 carried word for word moved to `Grappa.TaskSupervisorHelpers` instead of
-gaining a third copy.
+gaining a third copy. It also had to learn to re-read the children: the
+advance task starts its fan-out task only after its write lands, so a single
+snapshot taken while the first is still writing misses the second. That task
+would then run inside the NEXT case's shared sandbox.
 
 **Not here: the badge counting parted windows.** That is the other half of
 issue 2407. It is waiting on a ruling (A/B/C on the issue) because "active"
@@ -2160,6 +2171,8 @@ authors.
 
 **Deploy class: HOT.** One new module (the hot reload loads never-loaded beams)
 plus function bodies. No `config/*.exs`, no migration, no `defstruct`, no
-state-map field. During the per-module reload, a request reaching a reloaded
-controller before `ReadCursorAdvance` has loaded raises `:undef` once. It lasts
-as long as the reload batch, and nothing persists from it.
+state-map field. During the per-module reload, a reloaded controller can call
+`ReadCursorAdvance` before it has loaded, which raises `:undef` once. On the
+read-cursor door that is a 500. On the send door it happens inside the
+detached task, so it is a crash report and the `201` is unaffected. Either way
+it lasts as long as the reload batch, and nothing persists from it.

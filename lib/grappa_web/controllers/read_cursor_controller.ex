@@ -8,8 +8,9 @@ defmodule GrappaWeb.ReadCursorController do
   body `{"message_id": <int>}`. Returns 200
   `{"last_read_message_id": <int>}`.
 
-  Monotonic advance-only; the controller is a thin parse + dispatch +
-  broadcast layer over `Grappa.ReadCursor.set/4`. A stale (lower) POST
+  Monotonic advance-only; the controller is a thin parse + dispatch
+  layer over `GrappaWeb.ReadCursorAdvance.advance/4`, which writes
+  through `Grappa.ReadCursor.set/4` and fans out. A stale (lower) POST
   is clamped by the context and re-affirms the current (higher) cursor,
   so the broadcast below carries the correct id (see #233).
 
