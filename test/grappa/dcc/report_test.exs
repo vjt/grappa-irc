@@ -47,6 +47,7 @@ defmodule Grappa.Dcc.ReportTest do
           {"a refused connection", :connect_refused},
           {"a connect timeout", :connect_timeout},
           {"a stalled sender", :idle_timeout},
+          {"a sender too slow for its own declaration", {:too_slow, 12, 100, 600_000}},
           {"a truncated transfer", {:short_transfer, 40, 100}},
           {"a network error", {:tcp, :ehostunreach}},
           {"a storage error", {:fs, :enospc}}
@@ -79,11 +80,23 @@ defmodule Grappa.Dcc.ReportTest do
       assert report.body =~ "100"
     end
 
+    test "a sender stopped at the deadline reports what arrived and how long it took" do
+      # The deadline is derived, not configured, so the sentence carries
+      # what was OBSERVED — a user reading "it was too slow" alone could
+      # not tell a stalled trickle from a file that was nearly there.
+      report = Report.render({:failed, "a.bin", {:too_slow, 12, 100, 600_000}}, @peer)
+
+      assert report.body =~ "12"
+      assert report.body =~ "100"
+      assert report.body =~ "600"
+    end
+
     test "distinct failures produce distinct text — a shared message would hide which one happened" do
       failures = [
         :connect_refused,
         :connect_timeout,
         :idle_timeout,
+        {:too_slow, 12, 100, 600_000},
         {:short_transfer, 40, 100},
         {:tcp, :ehostunreach},
         {:fs, :enospc}

@@ -233,6 +233,19 @@ defmodule Grappa.DccTest do
     end
   end
 
+  describe "the transfer budgets and the orphan grace — one source (issue 2405)" do
+    test "no live transfer can leave its file unwritten for as long as the orphan grace" do
+      # The reaper tells an orphan from a transfer in flight by the file's
+      # mtime, so the grace must outlast the longest a LIVE transfer can go
+      # without writing: the dial plus one idle wait before the first
+      # chunk, one idle wait between any two. If a budget grows past the
+      # grace, the reaper unlinks a file a transfer is still writing.
+      opts = Dcc.transfer_opts()
+
+      assert Dcc.orphan_grace_seconds() * 1_000 > opts[:connect_timeout_ms] + opts[:idle_timeout_ms]
+    end
+  end
+
   describe "slugs and paths" do
     test "a minted slug is 26 lower-case base32 chars" do
       assert Dcc.mint_slug() =~ ~r/\A[a-z2-7]{26}\z/

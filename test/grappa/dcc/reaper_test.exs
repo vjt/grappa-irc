@@ -145,7 +145,7 @@ defmodule Grappa.Dcc.ReaperTest do
 
       task = start_transfer(path, slug, loopback_offer(port, 4_096), self())
       assert_receive {:sender_holding, ^sender}, 5_000
-      eventually_size(path, byte_size(first))
+      DccTestSender.await_size(path, byte_size(first))
 
       Process.exit(task, :kill)
       assert_receive {:DOWN, _, :process, ^task, :killed}, 5_000
@@ -342,7 +342,7 @@ defmodule Grappa.Dcc.ReaperTest do
   # best-effort because the receiver may already be dead, which is the
   # point.
   defp held_sender(first, rest) do
-    {listen, port} = DccTestSender.listen()
+    {listen, port} = DccTestSender.listen([])
     test = self()
 
     sender =
@@ -363,22 +363,5 @@ defmodule Grappa.Dcc.ReaperTest do
       end)
 
     {port, sender}
-  end
-
-  defp eventually_size(path, want), do: eventually_size(path, want, 250)
-
-  defp eventually_size(path, want, 0) do
-    flunk("#{path} never reached #{want} bytes; stat: #{inspect(File.stat(path))}")
-  end
-
-  defp eventually_size(path, want, tries) do
-    case File.stat(path) do
-      {:ok, %File.Stat{size: ^want}} ->
-        :ok
-
-      _ ->
-        Process.sleep(20)
-        eventually_size(path, want, tries - 1)
-    end
   end
 end
