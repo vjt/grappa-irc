@@ -33,6 +33,8 @@ import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
 const PEER_NICK = "bu-clearbuddy";
+// Its own nick: the two tests may run at once, and a shared one collides.
+const CONTROL_PEER_NICK = "bu-ctlbuddy";
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 const RUN_ID = crypto.randomUUID().slice(0, 8);
 
@@ -179,20 +181,34 @@ test("re-clicking active sidebar row does NOT POST ReadCursor (BU bug-2 idempote
   // Positive control (#1117). The zero above is only evidence if this
   // recorder can catch a cursor POST at all: `page.route` with a pattern
   // that never matches — or a handler installed on the wrong page —
-  // produces the same empty array as a working idempotency guard. Send an
-  // own message: scrollback.ts advances the cursor past the row it just
-  // persisted, so a POST goes through the very route filter asserted
-  // empty. Deliberately AFTER the assertion, so the control cannot mask
-  // the defect it guards.
-  const controlBody = `BU bug-2 recorder control ${RUN_ID}`;
-  await composeSend(page, controlBody);
-  await expect(
-    page.locator('[data-testid="scrollback-line"]', { hasText: controlBody }),
-  ).toBeVisible({ timeout: 5_000 });
-  const channelSegment = `/channels/${encodeURIComponent(CHANNEL)}/read-cursor`;
-  await expect
-    .poll(() => cursorPosts.filter((url) => url.includes(channelSegment)).length, {
-      timeout: 5_000,
-    })
-    .toBeGreaterThan(0);
+  // produces the same empty array as a working idempotency guard.
+  // Deliberately AFTER the assertion, so the control cannot mask the defect
+  // it guards.
+  //
+  // The stimulus is a PEER row followed by a switch to another real window,
+  // NOT an own send. Since issue 2407 the server advances the cursor on an
+  // own send and fans `read_cursor_set` out, which can reach cic before the
+  // 201 — and then cic's own POST is skipped as non-advancing. Measured on
+  // PR #2414: this control went red on exactly that race. The server never
+  // moves the cursor for someone else's row, so leaving the window (the
+  // pane's leave arm offers the newest visible id) or the scroll-settle that
+  // follows the arrival must POST for this channel.
+  const peer = await IrcPeer.connect({ nick: CONTROL_PEER_NICK });
+  try {
+    await peer.join(CHANNEL);
+    const controlBody = `BU bug-2 recorder control ${RUN_ID}`;
+    peer.privmsg(CHANNEL, controlBody);
+    await expect(
+      page.locator('[data-testid="scrollback-line"]', { hasText: controlBody }),
+    ).toBeVisible({ timeout: 5_000 });
+    await selectChannel(page, NETWORK_SLUG, "Server", { awaitWsReady: false });
+    const channelSegment = `/channels/${encodeURIComponent(CHANNEL)}/read-cursor`;
+    await expect
+      .poll(() => cursorPosts.filter((url) => url.includes(channelSegment)).length, {
+        timeout: 5_000,
+      })
+      .toBeGreaterThan(0);
+  } finally {
+    await peer.disconnect("BU bug-2 control done");
+  }
 });

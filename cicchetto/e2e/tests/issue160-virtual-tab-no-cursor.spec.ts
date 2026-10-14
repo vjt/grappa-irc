@@ -20,12 +20,14 @@
 // read-cursor POST returned 4xx (the fail2ban trigger). RED before the
 // setReadCursor guard (a $home 404 is captured); GREEN after.
 
-import { composeSend, loginAs, scrollbackLines, selectChannel } from "../fixtures/cicchettoPage";
+import { loginAs, scrollbackLines, selectChannel } from "../fixtures/cicchettoPage";
+import { IrcPeer } from "../fixtures/ircClient";
 import { AUTOJOIN_CHANNELS, NETWORK_SLUG } from "../fixtures/seedData";
 import { expect, specNick, specUser, test } from "../fixtures/test";
 
 const CHANNEL = AUTOJOIN_CHANNELS[0];
 const RUN_ID = crypto.randomUUID().slice(0, 8);
+const CONTROL_PEER_NICK = "i160-ctlbuddy";
 
 // The synthetic pseudo-window channel segments, URL-encoded as they appear
 // on the wire ($ → %24). $server is deliberately absent: it is a real
@@ -64,21 +66,38 @@ test.describe("#160 virtual-tab read-cursor suppression", () => {
     // Absence is only evidence once presence has been demonstrated through
     // the SAME `page.on("response")` predicate: a typo in it, or a listener
     // attached after the traffic, leaves `cursorPosts` empty and every
-    // filter of it trivially `[]`. An own send is the cheapest real
-    // stimulus — scrollback.ts advances the cursor past the row it just
-    // persisted, which POSTs for the REAL channel and is neither virtual
-    // nor 4xx, so it disturbs neither assertion.
-    const controlBody = `#160 recorder control ${RUN_ID}`;
-    await composeSend(page, controlBody);
-    await expect(
-      page.locator('[data-testid="scrollback-line"]', { hasText: controlBody }),
-    ).toBeVisible({ timeout: 5_000 });
-    const realSegment = `/channels/${encodeURIComponent(CHANNEL)}/read-cursor`;
-    await expect
-      .poll(() => cursorPosts.filter((p) => p.url.includes(realSegment)).length, {
-        timeout: 5_000,
-      })
-      .toBeGreaterThan(0);
+    // filter of it trivially `[]`. The stimulus POSTs for the REAL channel
+    // and is neither virtual nor 4xx, so it disturbs neither assertion.
+    //
+    // A PEER row followed by a switch to the real `$server` window, NOT an
+    // own send. Since issue 2407 the server advances the cursor on an own
+    // send and fans `read_cursor_set` out, which can reach cic before the
+    // 201 — and then cic's own POST is skipped as non-advancing (measured on
+    // PR #2414, where the sibling ux-5-bu control went red on that race).
+    // The server never moves the cursor for someone else's row, so the
+    // pane's leave arm (or the scroll-settle after the arrival) must POST.
+    const peer = await IrcPeer.connect({ nick: CONTROL_PEER_NICK });
+    try {
+      await peer.join(CHANNEL);
+      const controlBody = `#160 recorder control ${RUN_ID}`;
+      peer.privmsg(CHANNEL, controlBody);
+      await expect(
+        page.locator('[data-testid="scrollback-line"]', { hasText: controlBody }),
+      ).toBeVisible({ timeout: 5_000 });
+      await selectChannel(page, NETWORK_SLUG, "Server", { awaitWsReady: false });
+      const realSegment = `/channels/${encodeURIComponent(CHANNEL)}/read-cursor`;
+      await expect
+        .poll(() => cursorPosts.filter((p) => p.url.includes(realSegment)).length, {
+          timeout: 5_000,
+        })
+        .toBeGreaterThan(0);
+    } finally {
+      await peer.disconnect("#160 control done");
+    }
+
+    // Back on the real channel, with its tail row visible: the same
+    // precondition the stimulus below was written against.
+    await selectChannel(page, NETWORK_SLUG, CHANNEL, { ownNick: specNick() });
 
     // Select the Home tab — disposes the ScrollbackPane. Pre-fix, the
     // onCleanup POSTed a read-cursor for $home (404).
