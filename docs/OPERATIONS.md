@@ -5465,12 +5465,19 @@ it.
   — a relative value is read against the BEAM's working directory, which
   the init system chooses.
 
-  🔴 **Never point it at the uploads or peer-avatars root.** Those stores
-  name their files with the same 26-character slug shape, and since issue
-  2404 the DCC reaper unlinks every slug-named file in its root that has
-  no `dcc_files` row and has not been written for an hour (see DCC spool
-  GC below). Sharing a root would delete every upload or cached avatar
-  older than that on the next tick. Nothing at boot refuses the setting.
+  🔴 **Never point it at the uploads or peer-avatars root, nor above or
+  below either.** Those stores name their files with the same 26-character
+  slug shape, and since issue 2404 the DCC reaper unlinks every slug-named
+  file in its root that has no `dcc_files` row and has not been written
+  for an hour (see DCC spool GC below). So the reaper REFUSES that pass
+  whenever its root is, contains or lies inside one of the two: it removes
+  nothing and logs, at error level on every tick, `dcc reaper: orphan
+  sweep refused - the DCC root <path> overlaps the <store> root <path>`.
+  Boot does not refuse, and the expiry pass still runs, so the spool keeps
+  working; only the cleanup of unrecorded files stops until
+  `DCC_STORAGE_ROOT` gets a directory of its own. The comparison is of
+  expanded paths, not resolved ones: a symlink that makes two differently
+  named roots one directory is NOT caught.
 
   **Nothing here is permanent and nothing is unbounded.** Every row
   carries a NOT NULL `expires_at`: the accepting subject's own upload TTL,
@@ -5575,7 +5582,9 @@ it.
   the code that never got that far. Stray files younger than an hour are
   normal (a transfer in flight); older ones are gone by the next tick,
   and the line `dcc reaper removed spool files no row pointed at` counts
-  them. Anything in the root NOT shaped like a slug is never touched.
+  them. Anything in the root NOT shaped like a slug is never touched, and
+  the pass refuses to run at all on a root shared with the uploads or
+  peer-avatars store (see the DCC spool entry above).
 
 ### Write-latency diagnostics (#357 — SQLite write-latency telemetry)
 

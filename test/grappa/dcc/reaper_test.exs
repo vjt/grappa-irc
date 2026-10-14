@@ -1,9 +1,11 @@
 defmodule Grappa.Dcc.ReaperTest do
   use Grappa.DataCase, async: true
 
+  import ExUnit.CaptureLog, only: [with_log: 1]
   import Grappa.AuthFixtures, only: [network_fixture: 0, user_fixture: 0]
 
-  alias Grappa.{Dcc, Repo}
+  alias Ecto.Adapters.SQL.Sandbox
+  alias Grappa.{Avatars, Dcc, Repo, Uploads}
   alias Grappa.Dcc.{Reaper, SpoolFile, Transfer}
   alias Grappa.DccTestSender
   alias Grappa.IRC.DCC.Offer
@@ -93,7 +95,9 @@ defmodule Grappa.Dcc.ReaperTest do
     end
   end
 
-  describe "sweep_orphans/2 — issue 2404, bytes no row points at" do
+  # The orphan-logic tests below pass NO protected roots: they are about
+  # what the pass removes, and the refusal has its own describe.
+  describe "sweep_orphans/3 — issue 2404, bytes no row points at" do
     # Through a real transfer against a real loopback sender, NOT through
     # a real session: `Grappa.Dcc.Policy` refuses a loopback offer before
     # any socket is opened (the SSRF property), so no offer this test
@@ -123,10 +127,10 @@ defmodule Grappa.Dcc.ReaperTest do
       assert Dcc.untracked_slugs([slug]) == [slug]
 
       # Fresh, it is indistinguishable from a transfer in flight — kept.
-      assert {:ok, 0} = Reaper.sweep_orphans(ctx.private_root, DateTime.utc_now())
+      assert {:ok, 0} = Reaper.sweep_orphans(ctx.private_root, [], DateTime.utc_now())
       assert File.exists?(path)
 
-      assert {:ok, 1} = Reaper.sweep_orphans(ctx.private_root, past_grace())
+      assert {:ok, 1} = Reaper.sweep_orphans(ctx.private_root, [], past_grace())
       refute File.exists?(path)
     end
 
@@ -147,7 +151,7 @@ defmodule Grappa.Dcc.ReaperTest do
       assert_receive {:DOWN, _, :process, ^task, :killed}, 5_000
       assert File.stat!(path).size == byte_size(first)
 
-      assert {:ok, 1} = Reaper.sweep_orphans(ctx.private_root, past_grace())
+      assert {:ok, 1} = Reaper.sweep_orphans(ctx.private_root, [], past_grace())
       refute File.exists?(path)
 
       send(sender, :go)
@@ -167,7 +171,7 @@ defmodule Grappa.Dcc.ReaperTest do
       path = Path.join(ctx.private_root, slug)
       :ok = File.write!(path, "abcd")
 
-      assert {:ok, 0} = Reaper.sweep_orphans(ctx.private_root, past_grace())
+      assert {:ok, 0} = Reaper.sweep_orphans(ctx.private_root, [], past_grace())
       assert File.exists?(path)
     end
 
@@ -175,8 +179,63 @@ defmodule Grappa.Dcc.ReaperTest do
       path = Path.join(ctx.private_root, "README")
       :ok = File.write!(path, "operator notes")
 
-      assert {:ok, 0} = Reaper.sweep_orphans(ctx.private_root, past_grace())
+      assert {:ok, 0} = Reaper.sweep_orphans(ctx.private_root, [], past_grace())
       assert File.exists?(path)
+    end
+  end
+
+  describe "sweep_orphans/3 — refuses a root it may not own" do
+    # Every case plants a STALE, untracked, slug-named file — exactly what
+    # the pass removes when it runs — so a refusal is measured by that file
+    # surviving, not inferred from a return value.
+
+    test "a DCC root EQUAL to a protected root: nothing removed, the refusal logged", ctx do
+      path = orphan_in(ctx.private_root)
+
+      # Spelled with a trailing slash: equality is of the directory, not
+      # of the string.
+      {result, log} =
+        with_log(fn -> Reaper.sweep_orphans(ctx.private_root, [uploads: ctx.private_root <> "/"], past_grace()) end)
+
+      assert result == {:error, {:root_overlap, :uploads}}
+      assert File.exists?(path)
+      assert log =~ "orphan sweep refused"
+      assert log =~ ctx.private_root
+    end
+
+    test "a DCC root CONTAINING a protected root: nothing removed, both paths logged", ctx do
+      protected = Path.join(ctx.private_root, "uploads")
+      path = orphan_in(ctx.private_root)
+
+      {result, log} = with_log(fn -> Reaper.sweep_orphans(ctx.private_root, [uploads: protected], past_grace()) end)
+
+      assert result == {:error, {:root_overlap, :uploads}}
+      assert File.exists?(path)
+      assert log =~ "the DCC root #{ctx.private_root} "
+      assert log =~ "the uploads root #{protected} "
+    end
+
+    test "a DCC root INSIDE a protected root: nothing removed, both paths logged", ctx do
+      dcc_root = Path.join(ctx.private_root, "dcc")
+      :ok = File.mkdir_p!(dcc_root)
+      path = orphan_in(dcc_root)
+
+      {result, log} = with_log(fn -> Reaper.sweep_orphans(dcc_root, [peer_avatars: ctx.private_root], past_grace()) end)
+
+      assert result == {:error, {:root_overlap, :peer_avatars}}
+      assert File.exists?(path)
+      assert log =~ "the DCC root #{dcc_root} "
+      assert log =~ "the peer_avatars root #{ctx.private_root} "
+    end
+
+    test "a SIBLING that only shares a name prefix is no overlap — the pass runs", ctx do
+      # `<root>-uploads` begins with the same characters as `<root>` and is
+      # still not inside it. A string-prefix comparison would refuse here
+      # and disable the sweep on a correctly configured host.
+      path = orphan_in(ctx.private_root)
+
+      assert {:ok, 1} = Reaper.sweep_orphans(ctx.private_root, [uploads: ctx.private_root <> "-uploads"], past_grace())
+      refute File.exists?(path)
     end
   end
 
@@ -200,14 +259,14 @@ defmodule Grappa.Dcc.ReaperTest do
       pid = start_supervised!({Reaper, storage_root: ctx.private_root, interval_ms: 12_345, name: nil})
       # The tick sweeps, and a sweep queries — the Reaper is a separate
       # process, so it needs the sandbox connection explicitly.
-      Ecto.Adapters.SQL.Sandbox.allow(Grappa.Repo, self(), pid)
+      Sandbox.allow(Repo, self(), pid)
 
       send(pid, :tick)
       assert %{interval_ms: 12_345} = :sys.get_state(pid)
     end
 
     test "a tick sweeps orphans too, not only expired rows", ctx do
-      # Pins the WIRING: `sweep_orphans/2` green on its own proves nothing
+      # Pins the WIRING: `sweep_orphans/3` green on its own proves nothing
       # if the tick never calls it. The file is aged on disk because the
       # tick reads the real clock and `now` cannot be injected here.
       path = Path.join(ctx.private_root, Dcc.mint_slug())
@@ -215,13 +274,48 @@ defmodule Grappa.Dcc.ReaperTest do
       :ok = File.touch!(path, System.os_time(:second) - Dcc.orphan_grace_seconds() - 60)
 
       pid = start_supervised!({Reaper, storage_root: ctx.private_root, interval_ms: 60_000, name: nil})
-      Ecto.Adapters.SQL.Sandbox.allow(Grappa.Repo, self(), pid)
+      Sandbox.allow(Repo, self(), pid)
 
       send(pid, :tick)
       _ = :sys.get_state(pid)
 
       refute File.exists?(path)
     end
+
+    test "a tick refuses a DCC root inside the UPLOADS root" do
+      assert_tick_refuses_a_root_inside(Uploads.storage_root())
+    end
+
+    test "a tick refuses a DCC root inside the PEER-AVATARS root" do
+      assert_tick_refuses_a_root_inside(Avatars.storage_root())
+    end
+  end
+
+  # Pins that the tick hands `sweep_orphans/3` the REAL store roots: the
+  # refusal tests above prove nothing if the tick passes an empty list. The
+  # DCC root is a private subdirectory INSIDE the store's root, so even a
+  # regression could only unlink this test's own file, never a store's.
+  defp assert_tick_refuses_a_root_inside(store_root) do
+    dcc_root = Path.join(store_root, "dcc-guard-#{System.unique_integer([:positive])}")
+    :ok = File.mkdir_p!(dcc_root)
+    on_exit(fn -> File.rm_rf(dcc_root) end)
+
+    path = orphan_in(dcc_root)
+    :ok = File.touch!(path, System.os_time(:second) - Dcc.orphan_grace_seconds() - 60)
+
+    pid = start_supervised!({Reaper, storage_root: dcc_root, interval_ms: 60_000, name: nil})
+    Sandbox.allow(Repo, self(), pid)
+
+    send(pid, :tick)
+    _ = :sys.get_state(pid)
+
+    assert File.exists?(path)
+  end
+
+  defp orphan_in(root) do
+    path = Path.join(root, Dcc.mint_slug())
+    :ok = File.write!(path, "abcd")
+    path
   end
 
   defp past_grace, do: DateTime.add(DateTime.utc_now(), Dcc.orphan_grace_seconds() + 60, :second)

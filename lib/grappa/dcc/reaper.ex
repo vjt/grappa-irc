@@ -42,7 +42,7 @@ defmodule Grappa.Dcc.Reaper do
        the session dies before it handles the transfer's result (the task
        finishes, its report goes to a dead pid, no row is ever written),
        and the task itself is killed mid-drain — a restart, a crash —
-       before its failure arm runs. So this module, `sweep_orphans/2`, too.
+       before its failure arm runs. So this module, `sweep_orphans/3`, too.
 
   #2089 called axis 3 not delegable to a sweeper, on the ground that an
   orphan no row points at is exactly what no sweep can find. That holds
@@ -50,13 +50,30 @@ defmodule Grappa.Dcc.Reaper do
   bytes, the table says which of them are recorded, and the difference is
   the orphan set — derived from two things that already exist, so there
   is no pending-transfer record to keep in step with either.
+
+  🔴 **The orphan pass deletes what it does not recognise, so it refuses
+  to run on a root it may not own.** The uploads and peer-avatar stores
+  name their files with the same 26-character slug shape, and NONE of
+  their files has a `dcc_files` row — pointed at either root, the pass
+  would unlink every upload or cached avatar older than the grace. So it
+  first compares its root with both (`protected_roots/0`) and, if one is,
+  contains or lies inside the other, it removes nothing and logs an error
+  naming both paths, on every tick, until the operator moves
+  `DCC_STORAGE_ROOT`. The check lives HERE, beside the unlink, rather
+  than at boot: it guards the one verb that can do the damage, and it
+  arrives with a hot reload instead of waiting for a restart. The expiry
+  pass is not gated — it only ever unlinks a slug a `dcc_files` row
+  names, 128 random bits no other store will have minted.
   """
 
-  use Boundary, top_level?: true, deps: [Grappa.Dcc]
+  # issue 2404 — `Grappa.Uploads` and `Grappa.Avatars` for their storage
+  # roots alone, the two directories the orphan pass must never sweep. No
+  # cycle: neither names this module or `Grappa.Dcc`.
+  use Boundary, top_level?: true, deps: [Grappa.Avatars, Grappa.Dcc, Grappa.Uploads]
 
   use GenServer
 
-  alias Grappa.Dcc
+  alias Grappa.{Avatars, Dcc, Uploads}
   alias Grappa.Dcc.SpoolFile
 
   require Logger
@@ -64,6 +81,9 @@ defmodule Grappa.Dcc.Reaper do
   @default_interval_ms 60_000
 
   @type opts :: [interval_ms: pos_integer(), name: GenServer.name(), storage_root: Path.t()]
+
+  @typedoc "Another store's root, named for the refusal message."
+  @type protected_root :: {atom(), Path.t()}
 
   defstruct [:interval_ms, :storage_root]
   @type t :: %__MODULE__{interval_ms: pos_integer(), storage_root: Path.t()}
@@ -122,38 +142,78 @@ defmodule Grappa.Dcc.Reaper do
   transfer writes on every chunk, so its file cannot look as old as the
   grace (see the attribute in `Grappa.Dcc`).
 
+  REFUSES — removes nothing, logs an error naming both paths, returns
+  `{:error, {:root_overlap, name}}` — when `storage_root` is, contains or
+  lies inside any of `protected_roots` (see the moduledoc). The tick
+  passes `protected_roots/0`; the argument is explicit so the refusal is
+  testable on directories of the test's own.
+
   `now` is injectable, as for `sweep/2`. A separate pass rather than more
   work inside `sweep/2`: that one retires ROWS and this one has none to
   retire, so they share no step past the unlink.
   """
-  @spec sweep_orphans(Path.t(), DateTime.t()) :: {:ok, non_neg_integer()}
-  def sweep_orphans(storage_root, %DateTime{} = now) do
+  @spec sweep_orphans(Path.t(), [protected_root()], DateTime.t()) ::
+          {:ok, non_neg_integer()} | {:error, {:root_overlap, atom()}}
+  def sweep_orphans(storage_root, protected_roots, %DateTime{} = now) when is_list(protected_roots) do
+    case Enum.find(protected_roots, fn {_, root} -> overlap?(storage_root, root) end) do
+      nil ->
+        {:ok, unlink_orphans(storage_root, now)}
+
+      {name, root} ->
+        # Both paths ride in the MESSAGE: the Logger metadata allowlist
+        # (`config/config.exs`) is closed, and a path is not on it.
+        Logger.error(
+          "dcc reaper: orphan sweep refused - the DCC root #{storage_root} overlaps the #{name} root " <>
+            "#{root} (one is, contains or lies inside the other); give DCC_STORAGE_ROOT a directory of its own"
+        )
+
+        {:error, {:root_overlap, name}}
+    end
+  end
+
+  # The two other stores whose files share the slug shape, read from their
+  # own `:persistent_term` seams on every tick rather than captured at
+  # init: a value captured into the state would mean a state field, and
+  # the guard would then wait for a restart.
+  @spec protected_roots() :: [protected_root()]
+  defp protected_roots, do: [uploads: Uploads.storage_root(), peer_avatars: Avatars.storage_root()]
+
+  # One path is, or lies inside, the other — compared by SEGMENTS after
+  # `Path.expand/1`, so `/data/up` is not taken for a parent of
+  # `/data/uploads`, and a trailing slash or a `..` changes nothing. It is
+  # lexical: a symlink aliasing one root under another name is not seen.
+  defp overlap?(path, other) do
+    segments = path |> Path.expand() |> Path.split()
+    other_segments = other |> Path.expand() |> Path.split()
+    prefix?(segments, other_segments) or prefix?(other_segments, segments)
+  end
+
+  defp prefix?(path, prefix), do: Enum.take(path, length(prefix)) == prefix
+
+  defp unlink_orphans(storage_root, now) do
     cutoff = DateTime.to_unix(now) - Dcc.orphan_grace_seconds()
 
     # Age BEFORE the row lookup: the lookup is then the last step between
     # the decision and the unlink, and a tick with nothing stale — almost
     # every tick — asks the database nothing.
-    removed =
-      storage_root
-      |> File.ls!()
-      |> Enum.filter(&stale?(storage_root, &1, cutoff))
-      |> Dcc.untracked_slugs()
-      |> Enum.reduce(0, fn slug, acc ->
-        case File.rm(Path.join(storage_root, slug)) do
-          :ok ->
-            acc + 1
+    storage_root
+    |> File.ls!()
+    |> Enum.filter(&stale?(storage_root, &1, cutoff))
+    |> Dcc.untracked_slugs()
+    |> Enum.reduce(0, fn slug, acc ->
+      case File.rm(Path.join(storage_root, slug)) do
+        :ok ->
+          acc + 1
 
-          # Gone since the stat: the inline cleanup got there first.
-          {:error, :enoent} ->
-            acc
+        # Gone since the stat: the inline cleanup got there first.
+        {:error, :enoent} ->
+          acc
 
-          {:error, reason} ->
-            Logger.error("dcc reaper failure", slug: slug, error: inspect({:fs, reason}))
-            acc
-        end
-      end)
-
-    {:ok, removed}
+        {:error, reason} ->
+          Logger.error("dcc reaper failure", slug: slug, error: inspect({:fs, reason}))
+          acc
+      end
+    end)
   end
 
   defp stale?(storage_root, name, cutoff) do
@@ -193,8 +253,12 @@ defmodule Grappa.Dcc.Reaper do
     {:ok, n} = sweep(state.storage_root, now)
     if n > 0, do: Logger.info("dcc reaper swept", affected: n)
 
-    {:ok, orphans} = sweep_orphans(state.storage_root, now)
-    if orphans > 0, do: Logger.info("dcc reaper removed spool files no row pointed at", affected: orphans)
+    case sweep_orphans(state.storage_root, protected_roots(), now) do
+      {:ok, 0} -> :ok
+      {:ok, orphans} -> Logger.info("dcc reaper removed spool files no row pointed at", affected: orphans)
+      # Already logged, as an error, by the refusal itself.
+      {:error, {:root_overlap, _}} -> :ok
+    end
 
     # Rescheduled from `state.interval_ms`, never from the module default:
     # a tick that rebuilt the interval from the literal would discard the

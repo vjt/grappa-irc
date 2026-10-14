@@ -1989,7 +1989,7 @@ matters for the choice below because no session-side cure can reach it.
 
 ### The cure: the directory against the table
 
-`Grappa.Dcc.Reaper.sweep_orphans/2` runs on every tick, after the expiry pass:
+`Grappa.Dcc.Reaper.sweep_orphans/3` runs on every tick, after the expiry pass:
 list the spool root, keep the entries whose mtime is older than
 `Grappa.Dcc.orphan_grace_seconds/0` (one hour), keep of those the names shaped
 like a minted slug that have no row (`Grappa.Dcc.untracked_slugs/1`), and
@@ -2030,19 +2030,40 @@ and it keeps for three days a file nobody was told about: the report row
 carrying the link is the session's to write, so the file would sit in the
 spool, counted against the budget, behind a link no one ever saw.
 
+### The pass refuses a root it may not own
+
+The orphan pass deletes what it does not recognise, and the uploads and
+peer-avatars stores name their files with the same slug shape, none of which
+has a `dcc_files` row. A `DCC_STORAGE_ROOT` pointed at either would make the
+pass unlink every upload or cached avatar older than an hour. The first cut of
+this change only documented that; the orchestrator ruled docs-only not
+acceptable for a misconfiguration that deletes user data. So
+`sweep_orphans/3` takes the protected roots, and when its root is, contains or
+lies inside one of them it removes nothing, logs an error naming both paths,
+and returns `{:error, {:root_overlap, store}}`. It logs on every tick until
+the operator moves the root.
+
+- **In the sweep, not at boot.** It guards the one verb that can do the damage,
+  and it arrives with a hot reload. A boot check would mean touching
+  `application.ex`, which is COLD.
+- **Read per tick.** The tick reads both roots from their own
+  `:persistent_term` seams (`Uploads.storage_root/0`, `Avatars.storage_root/0`)
+  instead of capturing them at init, which would need a state field.
+- **Compared by segment after `Path.expand/1`.** `/data/up` is not taken for a
+  parent of `/data/uploads`, and a trailing slash or a `..` changes nothing.
+  Symlinks are not resolved: two names for one directory are not caught. That
+  is a known limit and is documented.
+- **The expiry pass is not gated.** It only ever unlinks a slug a `dcc_files`
+  row names, 128 random bits no other store will have minted.
+- **Not triggered by any shipped configuration.** Every shipped substrate
+  (release image, compose, the jail and Linux env examples) places the three
+  roots side by side.
+
 ### Not cured here
 
 `Grappa.Dcc.budget_available?/0` sums ROWS, so bytes in flight and orphans not
 yet swept do not count against the global cap. In-flight bytes were already
 uncounted before this change. Orphans are now bounded at grace + one tick.
-
-**A DCC root shared with the uploads or peer-avatars root would now be
-destructive.** Both stores name files with the same slug shape, so the orphan
-pass would unlink every upload or cached avatar older than an hour. No
-substrate ships that configuration and nothing at boot refuses it;
-`docs/OPERATIONS.md` says so where `DCC_STORAGE_ROOT` is documented. A boot
-refusal was left out: it means a guard reading two other contexts' roots for a
-misconfiguration nobody has.
 
 **`lib/grappa/application.ex` still restates the retracted line** in the
 comment above the `Grappa.Dcc.Reaper` child ("a sweep has nothing to
@@ -2056,7 +2077,12 @@ sender (the socket verbs shared with `Grappa.Dcc.TransferTest` now live in
 `Grappa.DccTestSender`). It kills the reporting pid mid-transfer and the task mid-drain,
 asserts the defect first (bytes on disk, no row), then asserts the sweep keeps
 a fresh file and removes a stale one. It also pins that a tracked file and a
-non-slug name are never touched, and that the tick calls the pass. The session
+non-slug name are never touched, and that the tick calls the pass. The refusal
+has one test per direction (equal, containing, inside), each planting a stale
+orphan that must survive. A sibling that only shares a name prefix must NOT be
+refused. Two tick tests (one inside the real uploads root, one inside the real
+peer-avatars root) pin that the tick passes the real roots and not an empty
+list. The session
 itself is not in the loop: `Grappa.Dcc.Policy` refuses a loopback offer before
 a socket opens, so no offer a test can serve reaches the session's transfer
 task (the limit `Grappa.Session.DccConsentTest` documents). Docker was down on
