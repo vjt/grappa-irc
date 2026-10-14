@@ -6,7 +6,10 @@ defmodule Grappa.ReadCursor do
 
   The cursor is "the newest row the operator has read". cic POSTs
   `set/4` on every settle event — focus-leave, browser-blur,
-  scroll-settle, scroll-to-bottom tap. The write is **monotonic
+  scroll-settle, scroll-to-bottom tap — and the subject's own send
+  advances it to the row it created (issue 2407: replying in a window
+  reads what came before it). Both doors go through
+  `GrappaWeb.ReadCursorAdvance.advance/4`. The write is **monotonic
   (advance-only)**: a POST carrying an id at or below the stored cursor
   is a no-op that returns the existing (higher) cursor unchanged. A
   lower id is never a deliberate backward move — it is a stale POST

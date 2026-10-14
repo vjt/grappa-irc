@@ -77,7 +77,9 @@ defmodule GrappaWeb.MessagesController do
   alias Grappa.RateLimit.TokenBucket
   alias Grappa.{Scrollback, Session}
   alias Grappa.Session.FloodAllowance
-  alias GrappaWeb.{BodyLimit, Subject}
+  alias GrappaWeb.{BodyLimit, ReadCursorAdvance, Subject}
+
+  require Logger
 
   @default_limit 50
   @max_http_limit 200
@@ -325,6 +327,11 @@ defmodule GrappaWeb.MessagesController do
   404 `not_found` for unknown slug / no credential / no session (all
   collapsed by `Plugs.ResolveNetwork` + `FallbackController`'s
   `:no_session` clause); 400 for malformed input.
+
+  issue 2407 — a send that persisted a row (every arm but a services
+  target) also advances the subject's read cursor on the window the row
+  landed in, to that row, and fans it out like a `POST .../read-cursor`:
+  replying in a window reads what came before it.
   """
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
@@ -364,7 +371,7 @@ defmodule GrappaWeb.MessagesController do
          :ok <- validate_wire_recipient_name(ctcp_target, Session.statusmsg(subject, network.id)),
          :ok <- take_send_token(subject, network.id),
          {:ok, result} <- Session.send_ctcp(subject, network.id, channel, ctcp_target, body) do
-      render_send_result(conn, result, network.slug)
+      finish_send(conn, result, network.slug)
     end
   end
 
@@ -380,14 +387,14 @@ defmodule GrappaWeb.MessagesController do
     # (a real nick or channel, or a channel at a membership level per #1301,
     # never the read-only `$server`). One send-token, as for a plain PRIVMSG.
     # A *serv recipient answers `{:ok, :no_persist}` (W12), which
-    # `render_send_result/2` already renders as 202.
+    # `finish_send/3` already renders as 202.
     with :ok <- BodyLimit.check(body),
          :ok <- validate_target_name(channel),
          :ok <-
            validate_wire_recipient_name(notice_target, Session.statusmsg(subject, network.id)),
          :ok <- take_send_token(subject, network.id),
          {:ok, result} <- Session.send_notice(subject, network.id, channel, notice_target, body) do
-      render_send_result(conn, result, network.slug)
+      finish_send(conn, result, network.slug)
     end
   end
 
@@ -431,7 +438,7 @@ defmodule GrappaWeb.MessagesController do
            ),
          :ok <- take_send_token(subject, network.id),
          {:ok, result} <- Session.send_statusmsg(subject, network.id, statusmsg_target, body) do
-      render_send_result(conn, result, network.slug)
+      finish_send(conn, result, network.slug)
     end
   end
 
@@ -456,7 +463,7 @@ defmodule GrappaWeb.MessagesController do
          :ok <- validate_post_target_name(channel),
          :ok <- take_send_token(subject, network.id),
          {:ok, result} <- Session.send_privmsg(subject, network.id, channel, body) do
-      render_send_result(conn, result, network.slug)
+      finish_send(conn, result, network.slug)
     end
   end
 
@@ -557,16 +564,66 @@ defmodule GrappaWeb.MessagesController do
   # persist boundary no longer preloads `:network` (it was a second pool
   # checkout per row on the hot write path), and this controller already
   # resolved the network from the URL.
-  defp render_send_result(conn, %Scrollback.Message{} = message, network_slug) do
+  #
+  # issue 2407 — every arm that persisted a row lands here, so this is the
+  # ONE place the subject's own send also reads the window it was typed in.
+  # Replying is a read signal, and for a client that cannot send read markers
+  # (an IRC client behind a bridge) it is the only one grappa ever gets.
+  # A `:no_persist` services send has no row and no window, so it reads
+  # nothing.
+  defp finish_send(conn, %Scrollback.Message{} = message, network_slug) do
+    :ok = advance_own_read_cursor(conn, message)
+
     conn
     |> put_status(:created)
     |> render(:show, message: message, network_slug: network_slug)
   end
 
-  defp render_send_result(conn, :no_persist, _) do
+  defp finish_send(conn, :no_persist, _) do
     conn
     |> put_status(:accepted)
     |> json(%{ok: true})
+  end
+
+  # issue 2407 — moves the cursor of the window the sent row landed in
+  # (`message.channel`: the folded key the Session wrote under, so the channel
+  # for a channel message, the peer for a DM, the SOURCE window for a CTCP or
+  # NOTICE echo, the channel behind the sigil for an ops-only one) to that
+  # row, through the same verb `ReadCursorController` uses. Multi-fragment
+  # sends reach here with the LAST fragment, so the cursor covers them all.
+  #
+  # The whole advance runs in a detached task, set included, because the send
+  # has already happened: the cursor write is a second SQLite write, and under
+  # write-lock contention its busy-retry would hold the 201 of a message that
+  # is already on the wire. A failure is therefore not the request's, and is
+  # logged instead of returned: the row stays unread, which is the state
+  # before this change, and the operator sees why.
+  #
+  # Placed at the web door and NOT in `Session.Server`'s persist path on
+  # purpose: this door is the subject typing, while the session also sends on
+  # its own (the perform list, services sub-machines), and those must never
+  # mark a window read.
+  @spec advance_own_read_cursor(Plug.Conn.t(), Scrollback.Message.t()) :: :ok
+  defp advance_own_read_cursor(conn, %Scrollback.Message{id: id, channel: channel}) do
+    current_subject = conn.assigns.current_subject
+    network = conn.assigns.network
+
+    {:ok, _} =
+      Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
+        case ReadCursorAdvance.advance(current_subject, network, channel, id) do
+          {:ok, _} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning("read cursor not advanced after own send",
+              network: network.slug,
+              channel: channel,
+              reason: inspect(reason)
+            )
+        end
+      end)
+
+    :ok
   end
 
   # #458 — "should the history reads omit presence for this channel?",
