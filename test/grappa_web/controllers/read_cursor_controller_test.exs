@@ -22,7 +22,7 @@ defmodule GrappaWeb.ReadCursorControllerTest do
   import Grappa.AuthFixtures
 
   alias Grappa.PubSub.Topic
-  alias Grappa.{ReadCursor, ScrollbackHelpers}
+  alias Grappa.{ReadCursor, ScrollbackHelpers, TaskSupervisorHelpers}
 
   defp uniq, do: System.unique_integer([:positive])
 
@@ -39,27 +39,9 @@ defmodule GrappaWeb.ReadCursorControllerTest do
     # connection. Deterministically drain the supervisor's children before
     # the sandbox owner stops (on_exit is LIFO — registered here, AFTER the
     # ConnCase owner's on_exit, so this runs first).
-    on_exit(&drain_fanout_tasks/0)
+    on_exit(&TaskSupervisorHelpers.drain_children/0)
 
     {:ok, conn: put_bearer(conn, session.id), user: user, network: network}
-  end
-
-  # Waits (bounded) for every live `Grappa.TaskSupervisor` child to exit.
-  # `Task.Supervisor.children/1` is GLOBAL — the async: false lane (no
-  # concurrent test) is load-bearing: it makes the only live children this
-  # case's read-cursor fan-out tasks.
-  defp drain_fanout_tasks do
-    Grappa.TaskSupervisor
-    |> Task.Supervisor.children()
-    |> Enum.each(fn pid ->
-      ref = Process.monitor(pid)
-
-      receive do
-        {:DOWN, ^ref, :process, ^pid, _} -> :ok
-      after
-        2_000 -> Process.demonitor(ref, [:flush])
-      end
-    end)
   end
 
   defp insert_message(user, network, channel, server_time \\ 1) do

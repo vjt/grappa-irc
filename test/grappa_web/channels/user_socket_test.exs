@@ -35,7 +35,7 @@ defmodule GrappaWeb.UserSocketTest do
   import ExUnit.CaptureLog
   import Grappa.AuthFixtures
 
-  alias Grappa.{Accounts, Protocol, PubSub.Topic}
+  alias Grappa.{Accounts, Protocol, PubSub.Topic, TaskSupervisorHelpers}
   alias GrappaWeb.UserSocket
 
   # #95 + #202 — the ONLY token source: the bearer arrives via
@@ -76,23 +76,8 @@ defmodule GrappaWeb.UserSocketTest do
   # #1618 — the client-source capture is a DETACHED `Grappa.TaskSupervisor`
   # task, so its write lands after `connect/3` has already returned. Every
   # assertion on the persisted sample waits (bounded) for the live children to
-  # exit first, and the `on_exit` twin keeps a straggler off the sandbox
-  # owner's teardown. `Task.Supervisor.children/1` is GLOBAL — the `async:
-  # false` lane is load-bearing (no concurrent case), same rationale as
-  # `GrappaWeb.ReadCursorControllerTest`'s #273 drain.
-  defp drain_capture_tasks do
-    Grappa.TaskSupervisor
-    |> Task.Supervisor.children()
-    |> Enum.each(fn pid ->
-      ref = Process.monitor(pid)
-
-      receive do
-        {:DOWN, ^ref, :process, ^pid, _} -> :ok
-      after
-        2_000 -> Process.demonitor(ref, [:flush])
-      end
-    end)
-  end
+  # exit first (`TaskSupervisorHelpers.drain_children/0`), and the `on_exit`
+  # twin keeps a straggler off the sandbox owner's teardown.
 
   describe "connect/3" do
     test "returns :error when no token is given" do
@@ -480,7 +465,7 @@ defmodule GrappaWeb.UserSocketTest do
     # this one FIRST — a #1618 capture task must not still be querying when
     # `stop_owner` pulls the shared connection out from under it.
     setup do
-      on_exit(&drain_capture_tasks/0)
+      on_exit(&TaskSupervisorHelpers.drain_children/0)
       :ok
     end
 
@@ -510,7 +495,7 @@ defmodule GrappaWeb.UserSocketTest do
                ])
 
       # #1618 — the capture is detached, so wait for it before reading.
-      drain_capture_tasks()
+      TaskSupervisorHelpers.drain_children()
 
       # The stored key equals the production derivation of the RESOLVED IP —
       # the /64 of the XFF client, NOT the loopback peer. No hardcoded bytes.
@@ -524,7 +509,7 @@ defmodule GrappaWeb.UserSocketTest do
 
       assert {:ok, _} = connect_with_peer(session.id, {203, 0, 113, 7}, [])
 
-      drain_capture_tasks()
+      TaskSupervisorHelpers.drain_children()
 
       assert Vhosts.last_client_prefix64(subject) ==
                SourceMapping.client_key({203, 0, 113, 7})
@@ -540,7 +525,7 @@ defmodule GrappaWeb.UserSocketTest do
                  {"x-forwarded-for", "203.0.113.42"}
                ])
 
-      drain_capture_tasks()
+      TaskSupervisorHelpers.drain_children()
 
       assert Vhosts.last_client_prefix64(subject) ==
                SourceMapping.client_key({203, 0, 113, 42})
@@ -559,7 +544,7 @@ defmodule GrappaWeb.UserSocketTest do
       # #1618 — drain first, so "nothing recorded" cannot pass merely because
       # a detached capture task had not got there yet: the skip must be a
       # skip, not a race we outran.
-      drain_capture_tasks()
+      TaskSupervisorHelpers.drain_children()
 
       assert Vhosts.last_client_prefix64(subject) == nil
     end
@@ -582,7 +567,7 @@ defmodule GrappaWeb.UserSocketTest do
                  }
                )
 
-      drain_capture_tasks()
+      TaskSupervisorHelpers.drain_children()
 
       assert Vhosts.last_client_prefix64(subject) == nil
     end
@@ -609,7 +594,7 @@ defmodule GrappaWeb.UserSocketTest do
   # instead of the real write.
   describe "connect/3 client-source capture is off the upgrade path (#1618)" do
     setup do
-      on_exit(&drain_capture_tasks/0)
+      on_exit(&TaskSupervisorHelpers.drain_children/0)
       :ok
     end
 
@@ -641,7 +626,7 @@ defmodule GrappaWeb.UserSocketTest do
 
       # And it is a DEFERRAL, not a drop — once the task exits the sample is
       # persisted exactly as the synchronous path persisted it.
-      drain_capture_tasks()
+      TaskSupervisorHelpers.drain_children()
 
       assert Grappa.Vhosts.last_client_prefix64({:user, user.id}) ==
                Grappa.Vhosts.SourceMapping.client_key({203, 0, 113, 7})
