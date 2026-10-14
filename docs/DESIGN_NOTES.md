@@ -2092,3 +2092,74 @@ the worker host, so PR CI is the only gate this ran through.
 attribute, comments; no migration, no `config/*.exs`, no `defstruct`, no
 state-map field, and `lib/grappa/application.ex` untouched (see above).
 `Grappa.Dcc.Reaper`'s next tick after the reload runs the new pass.
+<!-- entry #2407 -->
+
+---
+
+## 2026-10-14 — #2407: the subject's own send advances the read cursor
+
+`POST …/messages` now reads the window it writes into. A send that persisted
+a row advances the subject's read cursor on that row's window
+(`message.channel`) to the row's id, and fans it out exactly like a
+`POST …/read-cursor`: the badge, `read_cursor_set` to the other devices, the
+`window_counts` re-seed.
+
+**Why.** Before this, `ReadCursorController` was the only cursor writer, so
+the cursor moved only when cic settled. A client with no read markers (an IRC
+client behind a bridge, no `draft/read-marker`) never moves it, and replying
+in a window is the one read signal grappa gets from it. Whatever was read
+there stayed unread on every other device, and the icon badge kept the
+mentions the subject had just answered. The issue traces the stuck badge in
+#2406 to five such mentions.
+
+**One verb, two doors.** The set + fan-out moved out of
+`ReadCursorController` into `GrappaWeb.ReadCursorAdvance.advance/4`, and both
+doors call it. It lives in the web layer, not in `Grappa.ReadCursor`, because
+the fan-out needs `Push.BadgeCount`, which sits above `ReadCursor` (it reads
+the cursors), so a context-side home would close that cycle. The set is still
+`ReadCursor.set/4`: monotonic, so a cursor already past the row is re-affirmed,
+never moved back.
+
+**At the web door, not in `Session.Server`.** The persist path would catch
+every send, and that is the problem. The session also sends on its own (the
+perform list, services sub-machines), and none of that is the subject reading
+anything. `POST …/messages` is the subject typing, and it is the only send
+door (the WS has no send verb).
+
+**Every persisted arm, one place.** All four arms that write a row meet in
+`finish_send/3`: plain PRIVMSG/ACTION, DM, ops-only (#2179) and the CTCP /
+NOTICE echoes (#640, #1225). The window is the row's `channel`, the folded key
+the session wrote under. That is the channel behind the sigil for an ops-only
+line and the SOURCE window for an echo: the window the subject was typing in,
+which is the one they were reading. A services send (`:no_persist`) has no row
+and reads nothing. A multi-fragment send reaches `finish_send/3` with its last
+fragment, so the cursor covers all of them.
+
+**Detached, set included.** `ReadCursorController` keeps the set on the request
+path because its caller needs the clamped id back. The send door does not:
+the message is already on the wire, and a second SQLite write whose busy-retry
+holds the `201` under write-lock contention would delay a send to record a
+read. So the whole advance runs in a `Grappa.TaskSupervisor` task. A failure
+there is not the request's, so it is logged (`read cursor not advanced after
+own send`, with `network`, `channel` and `reason`), not returned. The window
+then stays unread, which is where it was before this change.
+
+**Tests.** Every persisted send now leaves a task behind, so the outbound
+suite drains `Grappa.TaskSupervisor` on exit. The drain two files already
+carried word for word moved to `Grappa.TaskSupervisorHelpers` instead of
+gaining a third copy.
+
+**Not here: the badge counting parted windows.** That is the other half of
+issue 2407. It is waiting on a ruling (A/B/C on the issue) because "active"
+is not one definition today: the Archive's keyset is not what cic's sidebar
+draws, and both need a session call per network.
+
+**No wire change.** `read_cursor_set` exists already; it now also follows a
+send. No protocol bump. `docs/CLIENT_PROTOCOL.md` §5a says so for client
+authors.
+
+**Deploy class: HOT.** One new module (the hot reload loads never-loaded beams)
+plus function bodies. No `config/*.exs`, no migration, no `defstruct`, no
+state-map field. During the per-module reload, a request reaching a reloaded
+controller before `ReadCursorAdvance` has loaded raises `:undef` once. It lasts
+as long as the reload batch, and nothing persists from it.
