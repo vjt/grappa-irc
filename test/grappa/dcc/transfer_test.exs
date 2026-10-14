@@ -314,7 +314,7 @@ defmodule Grappa.Dcc.TransferTest do
             :release -> :ok
           end
 
-          {_acks, ended} = read_acks(socket)
+          {_, ended} = read_acks(socket)
           :gen_tcp.close(socket)
           :gen_tcp.close(listen)
           ended
