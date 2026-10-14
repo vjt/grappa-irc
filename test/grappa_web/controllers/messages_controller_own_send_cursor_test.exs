@@ -85,6 +85,8 @@ defmodule GrappaWeb.MessagesControllerOwnSendCursorTest do
        %{conn: conn, vjt: vjt, network: network} do
     subject = {:user, vjt.id}
 
+    # Three sends spend the whole test send bucket (`config/test.exs`
+    # `:send_throttle` capacity 3); a fourth here would answer 429.
     ctcp =
       send_and_await_cursor(conn, vjt, network, "#ctcp", "%23ctcp", %{
         "body" => "\x01PING 1706743200000\x01",
