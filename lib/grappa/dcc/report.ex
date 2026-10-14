@@ -181,6 +181,14 @@ defmodule Grappa.Dcc.Report do
   defp failure_reason({:short_transfer, received, declared}),
     do: "the sender closed after #{received} of the #{declared} bytes it promised"
 
+  # Issue 2405. What was OBSERVED, not just that a limit tripped: the
+  # deadline is derived from the declared size, so "too slow" alone could
+  # not tell a stalled trickle from a file that was nearly there.
+  defp failure_reason({:too_slow, received, declared, elapsed_ms}) do
+    "the sender was too slow: #{received} of the #{declared} bytes it promised " <>
+      "arrived in #{div(elapsed_ms, 1_000)} seconds"
+  end
+
   defp failure_reason({:tcp, reason}), do: "the connection failed (#{inspect(reason)})"
   defp failure_reason({:fs, reason}), do: "it could not be stored (#{inspect(reason)})"
 

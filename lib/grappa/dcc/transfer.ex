@@ -36,6 +36,25 @@ defmodule Grappa.Dcc.Transfer do
   the moment the transfer is known dead. That pass is the backstop for
   when this arm never runs at all — the task killed mid-drain.
 
+  ## The deadline (issue 2405)
+
+  The idle timeout bounds SILENCE, and every arriving byte starts it
+  again, so on its own it never bounded how LONG a sender could take: one
+  byte every 29 seconds held a socket, a file handle and this task for as
+  long as the sender liked. So the drain also runs against a deadline
+  fixed when the connection opens — one idle allowance plus the DECLARED
+  size at the floor rate the caller passes — and every wait is the
+  shorter of the idle timeout and the time left. Past it the transfer
+  fails `{:too_slow, received, declared, elapsed_ms}`, with what was
+  observed rather than a bare atom, and the partial goes like any other.
+
+  Proportional to the claim, not a constant: a fixed budget large enough
+  for the biggest file the ceiling admits would hand a stranger the same
+  hours on a one-kilobyte offer. And the claim is safe to trust here
+  because it is already capped by `Grappa.Dcc.Policy` and the stream is
+  truncated at it — declaring big buys a sender time only up to a file
+  the operator agreed to take.
+
   ## The ack stream
 
   After every write, the receiver sends the CUMULATIVE byte count as a
@@ -44,6 +63,18 @@ defmodule Grappa.Dcc.Transfer do
   so a receiver that never acked would hang against them rather than
   fail cleanly. Sent best-effort: a failed ack does not fail a transfer
   whose bytes are arriving fine.
+
+  🔴 **And it can never block (issue 2405).** It used to be a plain
+  synchronous send: against a sender that never reads, the acks filled
+  its receive window, our send buffer and the driver queue, and the next
+  one parked this task with no timeout — no deadline could fire, because
+  the clock is only read between waits. The socket now sends with
+  `send_timeout: 0`, which the inet driver answers `{:error, :timeout}` at
+  once when its queue is past the high watermark (`tcp_sendv` in
+  `inet_drv.c`) instead of suspending the caller. That answer means the
+  sender is not reading, so acking STOPS for the rest of the transfer and
+  the drain carries on — further acks would only queue behind the ones
+  it ignored, and a sender that ignores them does not need them.
   """
 
   # Top-level for now because the `Grappa.Dcc` context it will sit under
@@ -57,7 +88,11 @@ defmodule Grappa.Dcc.Transfer do
 
   require Logger
 
-  @type opts :: [connect_timeout_ms: pos_integer(), idle_timeout_ms: pos_integer()]
+  @type opts :: [
+          connect_timeout_ms: pos_integer(),
+          idle_timeout_ms: pos_integer(),
+          min_rate_bytes_per_second: pos_integer()
+        ]
 
   @typedoc """
   Why a transfer did not complete. Every variant is REPORTABLE — issue
@@ -65,6 +100,7 @@ defmodule Grappa.Dcc.Transfer do
   """
   @type failure ::
           {:short_transfer, non_neg_integer(), non_neg_integer()}
+          | {:too_slow, non_neg_integer(), non_neg_integer(), non_neg_integer()}
           | :connect_refused
           | :connect_timeout
           | :idle_timeout
@@ -84,20 +120,42 @@ defmodule Grappa.Dcc.Transfer do
   @spec run(Offer.t(), Path.t(), opts()) :: {:ok, non_neg_integer()} | {:error, failure()}
   def run(%Offer{} = offer, path, opts) when is_binary(path) do
     connect_timeout_ms = Keyword.fetch!(opts, :connect_timeout_ms)
-    idle_timeout_ms = Keyword.fetch!(opts, :idle_timeout_ms)
+    idle_ms = Keyword.fetch!(opts, :idle_timeout_ms)
+    min_rate = Keyword.fetch!(opts, :min_rate_bytes_per_second)
+    budget = %{idle_ms: idle_ms, deadline_ms: deadline_ms(offer.size, idle_ms, min_rate)}
 
     # The filesystem is checked FIRST: there is no point opening a
     # socket to a stranger when the bytes had nowhere to go.
     case File.open(path, [:write, :binary, :raw]) do
-      {:ok, file} -> connect_and_drain(offer, path, file, connect_timeout_ms, idle_timeout_ms)
+      {:ok, file} -> connect_and_drain(offer, path, file, connect_timeout_ms, budget)
       {:error, posix} -> {:error, {:fs, posix}}
     end
   end
 
-  defp connect_and_drain(%Offer{} = offer, path, file, connect_timeout_ms, idle_timeout_ms) do
-    case :gen_tcp.connect(offer.ip, offer.port, [:binary, active: false], connect_timeout_ms) do
+  # One idle allowance — what a single stall is already granted — plus the
+  # declared size at the floor rate. See the moduledoc.
+  defp deadline_ms(declared, idle_ms, min_rate), do: idle_ms + div(declared * 1_000, min_rate)
+
+  defp connect_and_drain(%Offer{} = offer, path, file, connect_timeout_ms, budget) do
+    # `send_timeout: 0` is what keeps the ack from ever blocking — see the
+    # moduledoc. It is the only send this socket makes.
+    case :gen_tcp.connect(offer.ip, offer.port, [:binary, active: false, send_timeout: 0], connect_timeout_ms) do
       {:ok, socket} ->
-        result = drain(socket, file, offer.size, 0, idle_timeout_ms)
+        # The clock starts once the connection is up: the dial has its own
+        # budget, and the deadline is for the bytes.
+        started_at = now_ms()
+
+        xfer = %{
+          socket: socket,
+          file: file,
+          declared: offer.size,
+          idle_ms: budget.idle_ms,
+          started_at: started_at,
+          deadline_at: started_at + budget.deadline_ms,
+          acking: true
+        }
+
+        result = drain(xfer, 0)
         :ok = :gen_tcp.close(socket)
         finish(result, path, file)
 
@@ -113,31 +171,44 @@ defmodule Grappa.Dcc.Transfer do
   # `received == declared` is the ONLY success. Reaching it with bytes
   # still queued on the socket is fine and intended — we close on the
   # sender mid-push rather than store past the declaration.
-  defp drain(_, _, declared, received, _) when received >= declared do
+  defp drain(%{declared: declared}, received) when received >= declared do
     {:ok, declared}
   end
 
-  defp drain(socket, file, declared, received, idle_timeout_ms) do
+  defp drain(xfer, received) do
+    now = now_ms()
+
+    if now >= xfer.deadline_at,
+      do: {:error, {:too_slow, received, xfer.declared, now - xfer.started_at}},
+      else: receive_chunk(xfer, received, min(xfer.idle_ms, xfer.deadline_at - now))
+  end
+
+  defp receive_chunk(xfer, received, wait_ms) do
     # `recv/3` with length 0 hands back whatever has arrived, bounded by
     # the socket's receive buffer — so the clamp is against the bytes
     # STILL OWED, never a read-size of our own. Clamping to a chunk size
     # instead would silently discard the remainder of an arrived packet.
-    case :gen_tcp.recv(socket, 0, idle_timeout_ms) do
+    case :gen_tcp.recv(xfer.socket, 0, wait_ms) do
       {:ok, data} ->
-        keep = clamp(data, declared - received)
+        keep = clamp(data, xfer.declared - received)
 
-        case :file.write(file, keep) do
+        case :file.write(xfer.file, keep) do
           :ok ->
             total = received + byte_size(keep)
-            :ok = ack(socket, total)
-            drain(socket, file, declared, total, idle_timeout_ms)
+            drain(ack(xfer, total), total)
 
           {:error, posix} ->
             {:error, {:fs, posix}}
         end
 
       {:error, :closed} ->
-        {:error, {:short_transfer, received, declared}}
+        {:error, {:short_transfer, received, xfer.declared}}
+
+      # The wait was what was LEFT of the deadline, not a whole idle
+      # window, so this is the deadline: go round once more and let the
+      # clock in `drain/2` report it with what it observed.
+      {:error, :timeout} when wait_ms < xfer.idle_ms ->
+        drain(xfer, received)
 
       {:error, :timeout} ->
         {:error, :idle_timeout}
@@ -152,11 +223,19 @@ defmodule Grappa.Dcc.Transfer do
 
   # Best-effort by design: the bytes are already on disk, and a sender
   # that has stopped reading its socket must not turn a good transfer
-  # into a failure.
-  defp ack(socket, total) do
-    _ = :gen_tcp.send(socket, <<total::unsigned-big-integer-size(32)>>)
-    :ok
+  # into a failure. `:timeout` is the one answer that changes anything —
+  # it is how `send_timeout: 0` says the sender is not reading, and the
+  # moduledoc says why acking stops there for good.
+  defp ack(%{acking: false} = xfer, _), do: xfer
+
+  defp ack(xfer, total) do
+    case :gen_tcp.send(xfer.socket, <<total::unsigned-big-integer-size(32)>>) do
+      {:error, :timeout} -> %{xfer | acking: false}
+      _ -> xfer
+    end
   end
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
 
   defp finish({:ok, _} = ok, _, file) do
     :ok = :file.close(file)

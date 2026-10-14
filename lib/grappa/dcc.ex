@@ -146,29 +146,48 @@ defmodule Grappa.Dcc do
   # that a sender who vanished is reported while the operator still
   # remembers clicking accept.
   #
-  # ⚠️ Known gap, deliberately not cured here: this bounds silence, NOT
-  # duration. A sender dripping one byte every 29 seconds holds a socket,
-  # a file handle and a task for as long as it likes, and only a TOTAL
-  # budget would stop it — which `Transfer.run/3`'s opts do not carry. The
-  # exposure is bounded by `Grappa.Dcc.Policy`'s daily accept quota and by
-  # the fact that every one of those accepts cost a human a deliberate
-  # click on a stranger's file.
+  # This bounds silence, NOT duration — every arriving byte starts it
+  # again. Duration is `@min_rate_bytes_per_second`'s job (issue 2405).
   @idle_timeout_ms 30_000
+
+  # issue 2405 — the floor rate a sender must hold, on average, to finish:
+  # `Grappa.Dcc.Transfer` gives a transfer one `@idle_timeout_ms` plus its
+  # DECLARED size at this rate, and fails it `:too_slow` past that. Before
+  # it, a sender dripping one byte every 29 seconds held a socket, a file
+  # handle and a task for as long as it liked.
+  #
+  # OURS, not ruled. 8 KiB/s is ~64 kbit/s, one ISDN B channel — the
+  # slowest link still worth calling one, so no sender actually serving a
+  # file should fall under it, while the hold it grants a trickler stays
+  # finite and proportional: 30 s on a 1 KiB offer, ~3 h 34 min at the
+  # default 100 MiB ceiling. A stranger buys those hours only on a file
+  # the operator clicked to accept, ten times a day at most
+  # (`Grappa.Dcc.Policy`). A constant, so moving it is a review comment
+  # and a HOT deploy.
+  @min_rate_bytes_per_second 8 * 1024
 
   # issue 2404 — how long a spool file may sit with NO row before
   # `Grappa.Dcc.Reaper` calls it an orphan and unlinks it.
   #
-  # A LIVE transfer can never look this old. `Grappa.Dcc.Transfer` writes
-  # on every chunk, so the file's mtime moves at least once per
-  # `@idle_timeout_ms`, and before the first chunk the file is at most
-  # `@connect_timeout_ms + @idle_timeout_ms` (35 s) old — past either
-  # budget the transfer fails and removes the file itself. The rest of the
-  # margin covers the one gap no budget bounds: a FINISHED transfer whose
-  # result is still queued in a busy session's mailbox, waiting for the
-  # row. An hour is ~40x the longest SQLite write-lock hold logged on
-  # prod (94.1 s, 2026-09-08), which is the stall that queue would sit
-  # behind.
-  @orphan_grace_seconds 60 * 60
+  # 🔴 DERIVED, not chosen, from the same two budgets the transfer runs on
+  # (issue 2405), so no change to them can leave the reaper unlinking a
+  # file a live transfer is still writing. The reaper reads the file's
+  # MTIME, so what must fit under the grace is the longest a live
+  # transfer can go WITHOUT WRITING — not how long it can run. Before the
+  # first chunk that is the dial plus one idle wait; between two chunks,
+  # one idle wait, because every wait is capped by `@idle_timeout_ms` and
+  # the ack can no longer block (`Grappa.Dcc.Transfer`, "The ack
+  # stream"). Past either the transfer fails and removes the file itself.
+  # The total deadline does not enter: a transfer writing every 29 s is
+  # never 35 s stale however long it runs.
+  #
+  # The hour on top covers the one gap no budget bounds: a FINISHED
+  # transfer whose result is still queued in a busy session's mailbox,
+  # waiting for the row — behind, at most, a socket close that
+  # `prim_inet:close/1` caps at three minutes. An hour is ~40x the longest SQLite
+  # write-lock hold logged on prod (94.1 s, 2026-09-08), which is the
+  # stall that queue would sit behind.
+  @orphan_grace_seconds div(@connect_timeout_ms + @idle_timeout_ms, 1_000) + 60 * 60
 
   @doc """
   Boot-time injection of the spool's storage root — mirrors
@@ -221,8 +240,8 @@ defmodule Grappa.Dcc do
   @doc """
   The `Grappa.Dcc.Transfer.run/3` opts for a production transfer.
 
-  ONE keyword list rather than two accessors, because `run/3` `fetch!`es
-  both and a caller that assembled them by hand could satisfy the
+  ONE keyword list rather than three accessors, because `run/3` `fetch!`es
+  all of them and a caller that assembled them by hand could satisfy the
   `fetch!` while disagreeing with the house on one of them. `Transfer`
   itself deliberately holds no defaults — that is what makes it testable
   at millisecond budgets — so the production numbers have to live
@@ -234,11 +253,16 @@ defmodule Grappa.Dcc do
   # success typing too — the list is a literal, so it can never be empty.
   @spec transfer_opts() :: [
           {:connect_timeout_ms, unquote(@connect_timeout_ms)}
-          | {:idle_timeout_ms, unquote(@idle_timeout_ms)},
+          | {:idle_timeout_ms, unquote(@idle_timeout_ms)}
+          | {:min_rate_bytes_per_second, unquote(@min_rate_bytes_per_second)},
           ...
         ]
   def transfer_opts,
-    do: [connect_timeout_ms: @connect_timeout_ms, idle_timeout_ms: @idle_timeout_ms]
+    do: [
+      connect_timeout_ms: @connect_timeout_ms,
+      idle_timeout_ms: @idle_timeout_ms,
+      min_rate_bytes_per_second: @min_rate_bytes_per_second
+    ]
 
   @doc "The hard retention ceiling in seconds — see the moduledoc."
   @spec max_retention_seconds() :: unquote(@max_retention_seconds)
@@ -246,8 +270,9 @@ defmodule Grappa.Dcc do
 
   @doc """
   How long, in seconds, a spool file with no row may sit before the
-  reaper treats it as an orphan (issue 2404). See the attribute for why
-  no live transfer can look this old.
+  reaper treats it as an orphan (issue 2404). Derived from the transfer
+  budgets (issue 2405) — see the attribute for why no live transfer can
+  look this old.
   """
   @spec orphan_grace_seconds() :: unquote(@orphan_grace_seconds)
   def orphan_grace_seconds, do: @orphan_grace_seconds

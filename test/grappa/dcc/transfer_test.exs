@@ -312,15 +312,28 @@ defmodule Grappa.Dcc.TransferTest do
 
       transfer = Task.async(fn -> Transfer.run(offer(port, @unread_ack_payload), path, opts()) end)
       assert_receive :accepted, 5_000
-      :ok = :inet.setopts(socket_of(transfer.pid), sndbuf: 1_024)
+      socket = socket_of(transfer.pid)
+
+      # A red here leaves the two sockets deadlocked with output queued on
+      # both, and a port in that state never finishes closing: the VM then
+      # cannot exit. Measured — the first CI run of this test sat 13
+      # minutes past the end of the suite. Resetting our side frees both.
+      on_exit(fn -> abort(socket) end)
+
+      :ok = :inet.setopts(socket, sndbuf: 1_024)
       send(sender.pid, :go)
 
       # Before 2405 this is where it stopped: the drain parked on an ack
-      # nobody reads, a few MiB in.
+      # nobody reads, ~28 MiB in on its first CI run.
       DccTestSender.await_size(path, @unread_ack_payload)
-      send(sender.pid, :release)
 
-      assert {:ok, @unread_ack_payload} = Task.await(transfer, 10_000)
+      # ...and the end must not wait on the sender either. The sender is
+      # still holding off here, so the acks it never read are still queued:
+      # dropped at close, the transfer returns at once, where a graceful
+      # close would sit five seconds in `prim_inet:close/1` and then leave
+      # the port open behind it.
+      assert {:ok, @unread_ack_payload} = Task.await(transfer, 3_000)
+      send(sender.pid, :release)
 
       # The last ack the sender ever got is where the acking stopped. It
       # proves the stall HAPPENED: an ack stream that ran to the end means
@@ -352,6 +365,15 @@ defmodule Grappa.Dcc.TransferTest do
   defp socket_of(pid) do
     [socket] = Enum.filter(Port.list(), &(Port.info(&1, :connected) == {:connected, pid}))
     socket
+  end
+
+  # Discard whatever the socket still has queued and reset it. Any process
+  # may close a port, not only its owner; one already closed is fine.
+  defp abort(socket) do
+    _ = :inet.setopts(socket, linger: {true, 0})
+    Port.close(socket)
+  rescue
+    ArgumentError -> :ok
   end
 
   defp chunk_every_binary(<<>>, _), do: []
