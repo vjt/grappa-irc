@@ -22,7 +22,7 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
 
   import Grappa.{AuthFixtures, MessageEventAssertions}
 
-  alias Grappa.{IRCServer, PresenceFilter, PubSub.Topic, Scrollback, ScrollbackHelpers}
+  alias Grappa.{IRCServer, PresenceFilter, PubSub.Topic, Scrollback, ScrollbackHelpers, TaskSupervisorHelpers}
   alias Grappa.RateLimit.TokenBucket
 
   setup %{conn: conn} do
@@ -33,6 +33,11 @@ defmodule GrappaWeb.MessagesControllerOutboundTest do
     # mismatch is now a contract violation that would 404 every POST.
     vjt = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
     session = session_fixture(vjt)
+
+    # issue 2407 — every persisted send advances the read cursor in a
+    # detached task; keep a straggler off the sandbox owner's teardown.
+    on_exit(&TaskSupervisorHelpers.drain_children/0)
+
     {:ok, conn: put_bearer(conn, session.id), vjt: vjt}
   end
 
