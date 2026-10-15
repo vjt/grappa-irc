@@ -266,7 +266,7 @@ defmodule Grappa.MentionsTest do
     # what is scanned; the newest is one too and survives.
     test "a window over the cap keeps its NEWEST rows and reports truncated", %{user: u, network: net} do
       cap = Mentions.max_bundle_rows()
-      _oldest = insert!(msg(u, net, body: "vjt oldest", server_time: @away_start))
+      insert!(msg(u, net, body: "vjt oldest", server_time: @away_start))
       fill_window(u, net, (@away_start + 1)..(@away_start + cap - 1))
       newest = insert!(msg(u, net, body: "vjt newest", server_time: @away_start + cap))
 
