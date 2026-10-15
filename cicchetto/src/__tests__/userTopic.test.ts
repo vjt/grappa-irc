@@ -1977,6 +1977,55 @@ describe("userTopic", () => {
       expect(mw.setMentionsBundle).not.toHaveBeenCalled();
     });
 
+    // issue 2419 — `truncated` reaches the store as the server sent it…
+    it("carries truncated: true into the store", async () => {
+      const mw = await import("../lib/mentionsWindow");
+      channelMock.fireEvent({
+        kind: "mentions_bundle",
+        network: "azzurra",
+        away_started_at: "2026-05-14T08:00:00Z",
+        away_ended_at: "2026-05-14T09:00:00Z",
+        away_reason: null,
+        messages: [],
+        truncated: true,
+      });
+      expect(mw.setMentionsBundle).toHaveBeenCalledWith(
+        "azzurra",
+        expect.objectContaining({ messages: [], truncated: true }),
+      );
+    });
+
+    // …and its absence (a pre-41 server, which never truncated) as false.
+    it("reads a bundle without truncated as not truncated", async () => {
+      const mw = await import("../lib/mentionsWindow");
+      channelMock.fireEvent({
+        kind: "mentions_bundle",
+        network: "azzurra",
+        away_started_at: "2026-05-14T08:00:00Z",
+        away_ended_at: "2026-05-14T09:00:00Z",
+        away_reason: null,
+        messages: [goodMessage],
+      });
+      expect(mw.setMentionsBundle).toHaveBeenCalledWith(
+        "azzurra",
+        expect.objectContaining({ truncated: false }),
+      );
+    });
+
+    it("drops bundle when truncated is not a boolean", async () => {
+      const mw = await import("../lib/mentionsWindow");
+      channelMock.fireEvent({
+        kind: "mentions_bundle",
+        network: "azzurra",
+        away_started_at: "2026-05-14T08:00:00Z",
+        away_ended_at: "2026-05-14T09:00:00Z",
+        away_reason: null,
+        messages: [goodMessage],
+        truncated: "yes",
+      });
+      expect(mw.setMentionsBundle).not.toHaveBeenCalled();
+    });
+
     it("accepts body: null (away-period notice rows)", async () => {
       const mw = await import("../lib/mentionsWindow");
       channelMock.fireEvent({

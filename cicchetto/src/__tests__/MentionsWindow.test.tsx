@@ -55,6 +55,7 @@ const makeBundle = (overrides: Partial<MentionsBundle> = {}): MentionsBundle => 
   away_ended_at: "2026-05-05T10:30:00.000Z",
   away_reason: "lunch",
   messages: [MSG0, MSG1],
+  truncated: false,
   ...overrides,
 });
 
@@ -121,6 +122,54 @@ describe("MentionsWindow", () => {
       />
     ));
     expect(screen.getByTestId("mentions-header").textContent).not.toContain("·");
+  });
+
+  // issue 2419 — the server searched only the newest part of a long away. The
+  // header says so; a whole bundle says nothing.
+  it("says older mentions may be missing when the bundle is truncated", () => {
+    render(() => (
+      <MentionsWindow
+        bundle={makeBundle({ truncated: true })}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
+    ));
+    const notice = within(screen.getByTestId("mentions-header")).getByTestId("mentions-truncated");
+    expect(notice.textContent).toContain("older mentions may be missing");
+    // The rows the server did scan still render beside the notice.
+    expect(screen.getAllByTestId("mentions-row")).toHaveLength(2);
+  });
+
+  it("shows no truncation notice for a bundle that covers the whole away", () => {
+    render(() => (
+      <MentionsWindow
+        bundle={makeBundle()}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
+    ));
+    expect(screen.queryByTestId("mentions-truncated")).toBeNull();
+  });
+
+  // A truncated window whose scanned part held no mention still arrives: the
+  // notice is then the only thing the window has to say.
+  it("renders the notice for a truncated bundle with no row", () => {
+    render(() => (
+      <MentionsWindow
+        bundle={makeBundle({ truncated: true, messages: [] })}
+        ownNick="vjt"
+        onMentionClicked={vi.fn()}
+        onClose={vi.fn()}
+        railOpener={null}
+      />
+    ));
+    expect(screen.getByTestId("mentions-truncated")).toBeTruthy();
+    expect(screen.getByTestId("mentions-header").textContent).toContain("0 messages in 0 channels");
+    expect(screen.queryAllByTestId("mentions-row")).toHaveLength(0);
   });
 
   it("groups rows under a per-channel label (#188 item 2)", () => {

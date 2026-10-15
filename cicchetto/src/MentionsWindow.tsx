@@ -29,12 +29,17 @@ import NickText from "./NickText";
 
 export type MentionsRow = MentionsBundleMessage;
 
+// `truncated` (issue 2419, protocol 41): the away window held more rows than
+// the server scans, so only its newest part was searched and older mentions
+// may be missing. Normalised to a boolean at the wire boundary (userTopic.ts):
+// a pre-41 server omits it and never truncated.
 export type MentionsBundle = {
   network_slug: string;
   away_started_at: string;
   away_ended_at: string;
   away_reason: string | null;
   messages: MentionsRow[];
+  truncated: boolean;
 };
 
 // `messageId` is `null` when the server predates protocol 35 and sent no id:
@@ -157,6 +162,17 @@ const MentionsWindow: Component<Props> = (props) => {
               {" · "}
               <MircBody body={props.bundle.away_reason ?? ""} emphasis />
             </Show>
+          </div>
+        </Show>
+        {/* issue 2419 — the server searched only the newest part of a long
+            away. Say so, or the list passes for all of it; this is also all a
+            truncated bundle with no row has to show. */}
+        <Show when={props.bundle.truncated}>
+          <div
+            class="mentions-header-meta mentions-truncated muted"
+            data-testid="mentions-truncated"
+          >
+            only the most recent part of this away was searched — older mentions may be missing
           </div>
         </Show>
       </div>

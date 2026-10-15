@@ -35,6 +35,7 @@ const fixture = (slug: string): MentionsBundle => ({
   away_started_at: "2026-05-08T10:00:00Z",
   away_ended_at: "2026-05-08T11:00:00Z",
   away_reason: null,
+  truncated: false,
   messages: [
     {
       server_time: 1,

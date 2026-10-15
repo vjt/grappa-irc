@@ -878,6 +878,7 @@ const Shell: Component = () => {
                         away_ended_at: "",
                         away_reason: null,
                         messages: [],
+                        truncated: false,
                       }
                     }
                     ownNick={ownNickForSlug(selectedChannel()?.networkSlug ?? "")}
@@ -1186,6 +1187,7 @@ const Shell: Component = () => {
                       away_ended_at: "",
                       away_reason: null,
                       messages: [],
+                      truncated: false,
                     }
                   }
                   ownNick={ownNickForSlug(selectedChannel()?.networkSlug ?? "")}

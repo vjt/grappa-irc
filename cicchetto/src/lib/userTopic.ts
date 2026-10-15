@@ -984,6 +984,8 @@ moduleRoot(() => {
             away_ended_at: payload.away_ended_at,
             away_reason: payload.away_reason,
             messages: payload.messages,
+            // issue 2419 — absent from a pre-41 server, which never truncated.
+            truncated: payload.truncated ?? false,
           };
           setMentionsBundle(payload.network, bundle);
           const currentSel = untrack(selectedChannel);
