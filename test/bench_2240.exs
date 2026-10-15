@@ -12,6 +12,14 @@
 # against a stock database reproduces the "today" column only. The `opt2`
 # command still stands on its own: it builds its shape inline.
 #
+# ⚠️ Issue 2419 changed what this harness measures. The query now seeks a
+# PARTIAL `(user_id, network_id, server_time)` index
+# (`messages_away_window_user_idx`) and stops at `max_bundle_rows/0 + 1`
+# rows, newest first, so on a migrated database every command measures the
+# capped read, `count_of/2` counts at most that many rows, and `opt2`'s
+# equivalence check holds only for windows under the cap. The 2026-09-18
+# numbers describe the uncapped, unindexed read that no longer exists.
+#
 #   scripts/mix.sh --env=dev run --no-start test/bench_2240.exs <db> <cmd> [args]
 #
 # <cmd> is one of `plan`, `sweep <reps>`, `wide`, `opt2 <window>`,
@@ -180,7 +188,7 @@ IO.puts("sqlite_stat_tables=#{stat}  (0 == planner on default estimates, as prod
 
 case argv do
   ["plan" | _] ->
-    {rows, queries} =
+    {%{messages: rows}, queries} =
       B.capture(fn ->
         Grappa.Mentions.aggregate_mentions(
           B.user(),
@@ -218,7 +226,7 @@ case argv do
         for _ <- 1..(reps + 1) do
           t0 = System.monotonic_time()
 
-          {rows, queries} =
+          {%{messages: rows}, queries} =
             B.capture(fn ->
               Grappa.Mentions.aggregate_mentions(B.user(), B.net(), start_ms, B.t_end(), [], B.nick())
             end)
@@ -246,7 +254,7 @@ case argv do
     for {label, days} <- ladder do
       start_ms = B.t_end() - days * 24 * 3_600_000
 
-      {rows, queries} =
+      {%{messages: rows}, queries} =
         B.capture(fn ->
           Grappa.Mentions.aggregate_mentions(B.user(), B.net(), start_ms, B.t_end(), [], B.nick())
         end)
@@ -328,7 +336,7 @@ case argv do
 
     {pid, ref} =
       spawn_monitor(fn ->
-        rows =
+        %{messages: rows} =
           Grappa.Mentions.aggregate_mentions(B.user(), B.net(), start_ms, B.t_end(), [], B.nick())
 
         send(parent, {:done, length(rows), :erts_debug.size(rows)})

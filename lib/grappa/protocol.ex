@@ -1112,7 +1112,31 @@ defmodule Grappa.Protocol do
   # this file (#2102) carries 21.
   #
   # @min_protocol_version stays at 1: no existing client sends the params.
-  @protocol_version 40
+  #
+  # ---------------------------------------------------------------------------
+  # 41 — issue 2419: the away bundle is capped, and says so
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `truncated` (boolean) on the `mentions_bundle` push
+  # (`Session.Wire.mentions_bundle_payload`). `Mentions.aggregate_mentions/6`
+  # now loads at most `Mentions.max_bundle_rows/0` content rows of the away
+  # window, the newest ones; `true` means the window held more and its older
+  # part was never scanned. A truncated bundle is pushed even when the part
+  # that was scanned holds no mention, which a pre-41 server never did.
+  # Generated shape, so `wire_pin` sees it. Bumped on the #1393d rule: a
+  # client that tells the user "older mentions were not checked" cannot learn
+  # that from a server predating the field.
+  #
+  # `optional(...)` in the typespec for the reason 35 gives: the `--cic`-first
+  # deploy would otherwise make a new bundle reject every away bundle of a
+  # pre-41 server. A client treats the key's absence as `false`, which is what
+  # a pre-41 server meant: it never truncated.
+  #
+  # Checked for a collision before claiming 41: no open PR edits this file's
+  # version (the one that touches it, #2102, carries 21).
+  #
+  # @min_protocol_version stays at 1: an old bundle drops the undeclared key.
+  @protocol_version 41
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1153,7 +1177,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 40
+  @spec version() :: 41
   def version, do: @protocol_version
 
   @doc """

@@ -298,7 +298,13 @@ let _socket: Socket | null = null;
 // `after_time` / `around_time`, epoch ms). REQUEST params only; this bundle
 // pages by id and sends none of them, so `MIN_SERVER_PROTOCOL_VERSION`
 // stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 40;
+//
+// 41 (issue 2419) — `truncated` on `mentions_bundle`: the away window held
+// more rows than the server scans, so older mentions may be missing. The
+// mentions window says so. Generated OPTIONAL and read as `false` when
+// absent — a pre-41 server never truncated — so `MIN_SERVER_PROTOCOL_VERSION`
+// stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 41;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

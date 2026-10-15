@@ -65,7 +65,7 @@ defmodule Grappa.MentionsTest do
       insert!(msg(u, net, body: "outside before", server_time: @away_start - 1))
       insert!(msg(u, net, body: "outside after", server_time: @away_end + 1))
 
-      result =
+      %{messages: result} =
         Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, ["grappa"], "vjt")
 
       assert result == []
@@ -74,7 +74,7 @@ defmodule Grappa.MentionsTest do
     test "returns nothing when body does not match any pattern", %{user: u, network: net} do
       insert!(msg(u, net, body: "hello world", server_time: @away_start + 100))
 
-      result =
+      %{messages: result} =
         Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, ["grappa"], "vjt")
 
       assert result == []
@@ -84,7 +84,7 @@ defmodule Grappa.MentionsTest do
       m = insert!(msg(u, net, body: "hello vjt, welcome back", server_time: @away_start + 100))
       mid = m.id
 
-      result =
+      %{messages: result} =
         Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt")
 
       assert [%Message{id: ^mid}] = result
@@ -94,7 +94,7 @@ defmodule Grappa.MentionsTest do
       m = insert!(msg(u, net, body: "grappa is cool", server_time: @away_start + 100))
       mid = m.id
 
-      result =
+      %{messages: result} =
         Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, ["grappa"], "nobody")
 
       assert [%Message{id: ^mid}] = result
@@ -106,7 +106,7 @@ defmodule Grappa.MentionsTest do
       insert!(msg(u, net, body: "vjt late", server_time: @away_end + 1))
       mid = m.id
 
-      result =
+      %{messages: result} =
         Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt")
 
       assert [%Message{id: ^mid}] = result
@@ -116,7 +116,7 @@ defmodule Grappa.MentionsTest do
       m = insert!(msg(u, net, body: "VJT are you there?", server_time: @away_start + 1))
       mid = m.id
 
-      result =
+      %{messages: result} =
         Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt")
 
       assert [%Message{id: ^mid}] = result
@@ -126,7 +126,7 @@ defmodule Grappa.MentionsTest do
       # "vjt123" should NOT match own_nick "vjt"
       insert!(msg(u, net, body: "vjt123 is great", server_time: @away_start + 1))
 
-      result =
+      %{messages: result} =
         Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt")
 
       assert result == []
@@ -136,7 +136,7 @@ defmodule Grappa.MentionsTest do
       # "grappax" should NOT match pattern "grappa"
       insert!(msg(u, net, body: "grappax is different", server_time: @away_start + 1))
 
-      result =
+      %{messages: result} =
         Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, ["grappa"], "nobody")
 
       assert result == []
@@ -147,7 +147,7 @@ defmodule Grappa.MentionsTest do
       m2 = insert!(msg(u, net, body: "vjt second", server_time: @away_start + 200))
       m3 = insert!(msg(u, net, body: "vjt third", server_time: @away_start + 300))
 
-      result =
+      %{messages: result} =
         Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt")
 
       assert Enum.map(result, & &1.id) == [m1.id, m2.id, m3.id]
@@ -168,7 +168,7 @@ defmodule Grappa.MentionsTest do
         body: "vjt is away"
       })
 
-      result =
+      %{messages: result} =
         Mentions.aggregate_mentions(u1.id, net.id, @away_start, @away_end, [], "vjt")
 
       assert result == []
@@ -181,7 +181,7 @@ defmodule Grappa.MentionsTest do
       # :join has no body, should never match
       insert!(msg(u, net, kind: :join, body: nil, server_time: @away_start + 1))
 
-      result =
+      %{messages: result} =
         Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, ["vjt"], "vjt")
 
       assert result == []
@@ -192,7 +192,7 @@ defmodule Grappa.MentionsTest do
       _ = insert!(msg(u, net, body: "nothing here", server_time: @away_start + 100))
       m2 = insert!(msg(u, net, body: "irssi vibes", server_time: @away_start + 150))
 
-      result =
+      %{messages: result} =
         Mentions.aggregate_mentions(
           u.id,
           net.id,
@@ -212,12 +212,131 @@ defmodule Grappa.MentionsTest do
       m_at_start = insert!(msg(u, net, body: "vjt boundary start", server_time: @away_start))
       m_at_end = insert!(msg(u, net, body: "vjt boundary end", server_time: @away_end))
 
-      result =
+      %{messages: result} =
         Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt")
 
       ids = Enum.map(result, & &1.id)
       assert m_at_start.id in ids
       assert m_at_end.id in ids
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # issue 2419 — the bundle is capped, says so, and seeks its own index
+  # ---------------------------------------------------------------------------
+
+  # Rows that fill the away window without naming anybody: same subject,
+  # network and channel as `msg/3`'s defaults.
+  defp fill_window(user, network, server_times) do
+    ScrollbackHelpers.insert_filler(
+      %{user_id: user.id, network_id: network.id, channel: "#grappa", sender: "alice"},
+      server_times
+    )
+  end
+
+  # The one statement `aggregate_mentions/6` sends, off Ecto's telemetry: the
+  # SQL the function EMITS, never a restatement of it (the #1372 rule). The
+  # handler is VM-global, so it keeps only what THIS process ran.
+  defp capture_query(fun) do
+    ref = make_ref()
+    test_pid = self()
+
+    :telemetry.attach(
+      {__MODULE__, ref},
+      [:grappa, :repo, :query],
+      fn _, _, meta, _ ->
+        if self() == test_pid, do: send(test_pid, {ref, meta.query, meta.params})
+      end,
+      nil
+    )
+
+    try do
+      fun.()
+    after
+      :telemetry.detach({__MODULE__, ref})
+    end
+
+    assert_received {^ref, sql, params}
+    refute_received {^ref, _, _}
+    {sql, params}
+  end
+
+  describe "aggregate_mentions/6 — the cap (issue 2419)" do
+    # One row more than the cap. The oldest is a mention and falls outside
+    # what is scanned; the newest is one too and survives.
+    test "a window over the cap keeps its NEWEST rows and reports truncated", %{user: u, network: net} do
+      cap = Mentions.max_bundle_rows()
+      _oldest = insert!(msg(u, net, body: "vjt oldest", server_time: @away_start))
+      fill_window(u, net, (@away_start + 1)..(@away_start + cap - 1))
+      newest = insert!(msg(u, net, body: "vjt newest", server_time: @away_start + cap))
+
+      %{messages: messages, truncated: truncated} =
+        Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt")
+
+      assert Enum.map(messages, & &1.id) == [newest.id]
+      assert truncated
+    end
+
+    # Exactly the cap: the whole window is scanned, the oldest row included,
+    # and nothing is reported missing. Separates the cap from an off-by-one.
+    test "a window of exactly the cap is scanned whole and not truncated", %{user: u, network: net} do
+      cap = Mentions.max_bundle_rows()
+      oldest = insert!(msg(u, net, body: "vjt oldest", server_time: @away_start))
+      fill_window(u, net, (@away_start + 1)..(@away_start + cap - 1))
+
+      assert %{messages: [%Message{id: id}], truncated: false} =
+               Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt")
+
+      assert id == oldest.id
+    end
+
+    # The only mention sits in the part that was not scanned. The result has
+    # no row to show and still has to say the window was cut.
+    test "a truncated window with no mention in the scanned part still reports truncated", %{
+      user: u,
+      network: net
+    } do
+      cap = Mentions.max_bundle_rows()
+      insert!(msg(u, net, body: "vjt oldest", server_time: @away_start))
+      fill_window(u, net, (@away_start + 1)..(@away_start + cap))
+
+      assert %{messages: [], truncated: true} =
+               Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt")
+    end
+
+    # Arm 1 of 2: the plan. A seek on the time range in index order, so the
+    # LIMIT stops the scan; a TEMP B-TREE would mean SQLite reads the whole
+    # window to sort it, which is the cost the index exists to remove.
+    test "seeks messages_away_window_user_idx on the time range, with no sort", %{user: u, network: net} do
+      {sql, params} =
+        capture_query(fn ->
+          Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt")
+        end)
+
+      {:ok, %{rows: rows}} = Repo.query("EXPLAIN QUERY PLAN " <> sql, params)
+      plan = rows |> List.flatten() |> Enum.map_join("\n", &to_string/1)
+
+      assert plan =~ "SEARCH m0 USING INDEX messages_away_window_user_idx",
+             "expected the away-window index, got:\n#{plan}"
+
+      assert plan =~ "AND server_time>? AND server_time<?)",
+             "expected the index to seek the time range, got:\n#{plan}"
+
+      refute plan =~ "TEMP B-TREE", "the away-window read must not sort in memory, got:\n#{plan}"
+    end
+
+    # Arm 2 of 2: the predicate SQLite stored. The index is partial on the
+    # content kinds and only a query carrying the SAME literal list can use
+    # it, so a content kind added to `Message.content_kinds/0` without a
+    # migration that rebuilds the index goes red here, by name.
+    test "the index's stored predicate carries the query's content-kind list" do
+      {:ok, %{rows: [[ddl]]}} =
+        Repo.query("SELECT sql FROM sqlite_master WHERE name = ?", ["messages_away_window_user_idx"])
+
+      assert ddl =~ Mentions.away_window_kind_sql(),
+             "the stored predicate no longer matches the query's kind list:\n#{ddl}"
+
+      assert ddl =~ "user_id IS NOT NULL"
     end
   end
 
@@ -262,7 +381,7 @@ defmodule Grappa.MentionsTest do
         )
       )
 
-      assert Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt") == []
+      assert Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt").messages == []
     end
 
     test "an ircd NOTICE spelling own nick is not aggregated", %{user: u, network: net} do
@@ -276,7 +395,7 @@ defmodule Grappa.MentionsTest do
         )
       )
 
-      assert Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt") == []
+      assert Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt").messages == []
     end
 
     test "a peer's NOTICE spelling own nick IS still aggregated", %{user: u, network: net} do
@@ -290,7 +409,7 @@ defmodule Grappa.MentionsTest do
           )
         )
 
-      result = Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt")
+      %{messages: result} = Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt")
       assert Enum.map(result, & &1.id) == [m.id]
     end
 
@@ -314,7 +433,7 @@ defmodule Grappa.MentionsTest do
                @away_end,
                ["grappa"],
                "nobody"
-             ) == []
+             ).messages == []
     end
   end
 
@@ -331,7 +450,7 @@ defmodule Grappa.MentionsTest do
         )
       )
 
-      assert Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt") == []
+      assert Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt").messages == []
     end
 
     test "the exclusion folds ASCII — an own row sent as VJT is still own", %{
@@ -346,7 +465,7 @@ defmodule Grappa.MentionsTest do
         )
       )
 
-      assert Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt") == []
+      assert Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt").messages == []
     end
 
     test "an own row carrying a /hilight word is not aggregated either", %{user: u, network: net} do
@@ -360,7 +479,7 @@ defmodule Grappa.MentionsTest do
         )
       )
 
-      assert Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, ["deploy"], "vjt") ==
+      assert Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, ["deploy"], "vjt").messages ==
                []
     end
 
@@ -376,7 +495,7 @@ defmodule Grappa.MentionsTest do
           )
         )
 
-      result = Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt")
+      %{messages: result} = Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, [], "vjt")
       assert Enum.map(result, & &1.id) == [m.id]
     end
   end
@@ -436,7 +555,7 @@ defmodule Grappa.MentionsTest do
             insert!(msg(u, net, body: body, server_time: @away_start + i))
           end
 
-        result =
+        %{messages: result} =
           Mentions.aggregate_mentions(u.id, net.id, @away_start, @away_end, patterns, own_nick)
 
         # Independently compute expected matches using Elixir Regex
@@ -679,6 +798,7 @@ defmodule Grappa.MentionsTest do
       bodies =
         user.id
         |> Mentions.aggregate_mentions(network.id, @away_start, @away_end, ["QUACK"], "")
+        |> Map.fetch!(:messages)
         |> Enum.map(& &1.body)
 
       assert bodies == [@color <> "15QUACK!"]
@@ -690,7 +810,7 @@ defmodule Grappa.MentionsTest do
       # body, control bytes and all — cic renders the colours from it.
       insert!(msg(user, network, body: @color <> "15QUACK!"))
 
-      [row] = Mentions.aggregate_mentions(user.id, network.id, @away_start, @away_end, ["QUACK"], "")
+      %{messages: [row]} = Mentions.aggregate_mentions(user.id, network.id, @away_start, @away_end, ["QUACK"], "")
 
       assert row.body == @color <> "15QUACK!"
     end

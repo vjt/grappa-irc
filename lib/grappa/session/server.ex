@@ -8803,8 +8803,9 @@ defmodule Grappa.Session.Server do
   # `mentions_bundle` event on the user-level PubSub topic when matches exist.
   # The broadcast fires on BOTH explicit-away and auto-away cancel paths since
   # both ultimately call this helper. Zero-match result suppresses the broadcast
-  # (no empty-window noise per spec #19). The broadcast must read away metadata
-  # BEFORE the unset mutator clears it.
+  # (no empty-window noise per spec #19) unless the bundle is truncated (issue
+  # 2419). The broadcast must read away metadata BEFORE the unset mutator
+  # clears it.
   #
   # S4.2: `label` is a UUID string when labeled-response cap is active;
   # `nil` otherwise.
@@ -9089,7 +9090,8 @@ defmodule Grappa.Session.Server do
   end
 
   # C8: aggregate mentions during the away interval and broadcast
-  # `mentions_bundle` on the user-level PubSub topic when matches exist.
+  # `mentions_bundle` on the user-level PubSub topic when matches exist, or
+  # when the window was too large to scan whole (issue 2419).
   # Only runs for user sessions (not visitors); silently skips when
   # `started_at` is nil (present state — should not happen in normal flow
   # but guards against double-unset edge cases).
@@ -9105,7 +9107,7 @@ defmodule Grappa.Session.Server do
         away_end_ms = System.system_time(:millisecond)
         watchlist = UserSettings.get_highlight_patterns({:user, user_id})
 
-        messages =
+        %{messages: messages, truncated: truncated} =
           Mentions.aggregate_mentions(
             user_id,
             state.network_id,
@@ -9115,7 +9117,10 @@ defmodule Grappa.Session.Server do
             state.nick
           )
 
-        if messages != [] do
+        # issue 2419 — a truncated window broadcasts even with no match in
+        # the part that was scanned: its older part may still hold mentions,
+        # and staying silent would hide that.
+        if messages != [] or truncated do
           away_started_iso = DateTime.to_iso8601(started_at)
           away_ended_iso = DateTime.to_iso8601(DateTime.utc_now())
 
@@ -9127,7 +9132,8 @@ defmodule Grappa.Session.Server do
                 away_started_iso,
                 away_ended_iso,
                 AwayState.reason(state.away_state),
-                messages
+                messages,
+                truncated
               )
             )
         end

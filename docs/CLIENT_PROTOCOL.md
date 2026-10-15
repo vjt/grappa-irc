@@ -942,6 +942,23 @@ this is not optional.** A server older than 40 ignores the unknown param and
 answers with the **latest** page and a `200`: wrong rows, no error. Keep
 your id-based fallback for those servers.
 
+### 5j. The away bundle is capped, and says so (issue 2419, v41)
+
+From v41 the `mentions_bundle` payload carries **`truncated`** (boolean).
+The server scans at most a fixed number of content rows of the away window
+(`Grappa.Mentions.max_bundle_rows/0`, 20,000 today), the NEWEST ones. When
+the window held more, `truncated` is `true`: the older part of the window
+was never scanned, so it may hold mentions that are not in `messages`.
+Tell the user, and point them at the channels' own history for the rest.
+
+A truncated bundle is pushed even when `messages` is empty — the scanned
+part held no mention, the unscanned part still might. Before v41 an empty
+bundle was never pushed, so a client that assumed `messages` is non-empty
+must stop assuming it.
+
+**Absent** means the server predates v41; read it as `false`. Such a server
+never truncated: it loaded the whole window, however large.
+
 ## 6. Rate limiting & flood protection (#630)
 
 grappa applies a **coarse per-subject inbound budget** across BOTH doors —
@@ -1312,7 +1329,7 @@ forever.
 | `links_bundle` | requester | `/LINKS` answer |
 | `lusers_bundle` | user | `/LUSERS` answer — **fans out to every connection**, because the server also emits it unsolicited at connect (§4) |
 | `members_seeded` | channel | pre-sorted member list on 366 RPL_ENDOFNAMES |
-| `mentions_bundle` | user | cross-channel mention summary, fired on the auto-away → present transition. From v35 each row carries `id` and `dm_with` (§5g) |
+| `mentions_bundle` | user | cross-channel mention summary, fired on the auto-away → present transition. From v35 each row carries `id` and `dm_with` (§5g); from v41 the payload carries `truncated` (§5j) |
 | `message` | channel | a scrollback row; its own `message.kind` (`privmsg`, `notice`, `join`, `part`, `quit`, `nick_change`, `mode`, …) is a **different axis** from this one. From v36 it carries `dm_with` (§5h); v34-v36 also carried `dm_conversation_id`, removed in v37 (§5f) |
 | `names_reply` | requester | `/NAMES` answer |
 | `network_attached` | user | the subject re-attached a network binding (§4e) |

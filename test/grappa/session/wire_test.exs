@@ -16,7 +16,7 @@ defmodule Grappa.Session.WireTest do
       contract.
     * `kind:` is ALWAYS a string literal at the wire boundary.
       `Message.kind()` (Ecto.Enum atom) is converted at the Wire fn
-      that touches it (`mentions_bundle/5`).
+      that touches it (`mentions_bundle/6`).
   """
   use ExUnit.Case, async: true
 
@@ -799,7 +799,7 @@ defmodule Grappa.Session.WireTest do
     end
   end
 
-  describe "mentions_bundle/5" do
+  describe "mentions_bundle/6" do
     test "projects each Message.t() to {id, server_time, channel, dm_with, sender, body, kind}; kind atom passes through" do
       m1 = %Message{
         id: 41,
@@ -825,7 +825,8 @@ defmodule Grappa.Session.WireTest do
           "2026-05-08T08:00:00.000Z",
           "2026-05-08T08:05:00.000Z",
           "afk",
-          [m1, m2]
+          [m1, m2],
+          false
         )
 
       assert payload == %{
@@ -853,7 +854,8 @@ defmodule Grappa.Session.WireTest do
                    body: "vjt: pong",
                    kind: :action
                  }
-               ]
+               ],
+               truncated: false
              }
     end
 
@@ -872,7 +874,7 @@ defmodule Grappa.Session.WireTest do
       }
 
       %{messages: [row]} =
-        Wire.mentions_bundle("azzurra", "2026-05-08T08:00:00.000Z", "2026-05-08T08:05:00.000Z", nil, [dm])
+        Wire.mentions_bundle("azzurra", "2026-05-08T08:00:00.000Z", "2026-05-08T08:05:00.000Z", nil, [dm], false)
 
       assert row.id == 77
       assert row.channel == "vjt"
@@ -881,10 +883,27 @@ defmodule Grappa.Session.WireTest do
 
     test "tolerates nil away_reason" do
       payload =
-        Wire.mentions_bundle("azzurra", "2026-05-08T08:00:00.000Z", "2026-05-08T08:05:00.000Z", nil, [])
+        Wire.mentions_bundle("azzurra", "2026-05-08T08:00:00.000Z", "2026-05-08T08:05:00.000Z", nil, [], false)
 
       assert payload.away_reason == nil
       assert payload.messages == []
+    end
+
+    # issue 2419 — the flag rides the payload as given, including on a bundle
+    # with no row: that is the shape a truncated window with no mention in
+    # its scanned part produces.
+    test "carries truncated as given, also on an empty bundle" do
+      payload =
+        Wire.mentions_bundle("azzurra", "2026-05-08T08:00:00.000Z", "2026-05-08T08:05:00.000Z", nil, [], true)
+
+      assert payload.truncated == true
+      assert payload.messages == []
+    end
+
+    test "refuses a truncated flag that is not a boolean" do
+      assert_raise FunctionClauseError, fn ->
+        apply(Wire, :mentions_bundle, ["azzurra", "from", "to", nil, [], nil])
+      end
     end
   end
 
@@ -1296,7 +1315,7 @@ defmodule Grappa.Session.WireTest do
         Wire.join_failed("net", "#c", "r", 473),
         Wire.kicked("net", "#c", "by", "r"),
         Wire.away_confirmed("net", :present),
-        Wire.mentions_bundle("net", "from", "to", nil, []),
+        Wire.mentions_bundle("net", "from", "to", nil, [], false),
         Wire.whois_bundle("net", "alice", %WhoisAccum{}, nil),
         Wire.peer_away("net", "alice", "Gone fishing"),
         Wire.invite_ack("net", "#italia", "alice"),

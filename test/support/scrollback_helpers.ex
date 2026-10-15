@@ -35,4 +35,26 @@ defmodule Grappa.ScrollbackHelpers do
     |> Message.changeset(attrs)
     |> Repo.insert()
   end
+
+  @doc """
+  issue 2419 — inserts one `:privmsg` row per value in `server_times`, each
+  carrying `attrs` (subject, network, channel, sender) and the body
+  `"filler <server_time>"`, which names no nick a test watches for.
+
+  `Repo.insert_all/2` in chunks: the away-bundle cap needs tens of thousands
+  of rows, and a changeset round-trip each would dominate the suite. That
+  bypasses `Message.changeset/2`, so `attrs` must already be what the
+  changeset would store (a folded channel, a real sender).
+  """
+  @spec insert_filler(map(), Enumerable.t()) :: :ok
+  def insert_filler(attrs, server_times) do
+    now = DateTime.utc_now()
+
+    server_times
+    |> Enum.map(fn t ->
+      Map.merge(attrs, %{server_time: t, kind: :privmsg, body: "filler #{t}", meta: %{}, inserted_at: now})
+    end)
+    |> Enum.chunk_every(2_000)
+    |> Enum.each(&Repo.insert_all(Message, &1))
+  end
 end

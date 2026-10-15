@@ -38,7 +38,7 @@ defmodule Grappa.Session.Wire do
     * `kind:` is ALWAYS a string literal (the JSON-wire convention
       established by CLAUDE.md "kind: STRING JSON-wire convention").
       `Message.kind()` (Ecto.Enum atom) is converted at the Wire
-      boundary inside `mentions_bundle/5`.
+      boundary inside `mentions_bundle/6`.
     * Network discriminator on the wire is `:network` carrying the
       slug (string), NOT the integer `network_id` — same convention
       as `Scrollback.Wire`. Exception: `own_nick_changed/2` carries
@@ -47,7 +47,7 @@ defmodule Grappa.Session.Wire do
 
   ## Mentions bundle decision (arch review A8)
 
-  The `mentions_bundle/5` per-message map is a deliberately-stripped
+  The `mentions_bundle/6` per-message map is a deliberately-stripped
   projection of `Scrollback.Message` — `%{id, server_time, channel,
   dm_with, sender, body, kind}`. The bundle is a cross-channel summary
   view: it still carries no network (the payload names it once) and no
@@ -64,6 +64,10 @@ defmodule Grappa.Session.Wire do
   `dm_with` (RAW, like the column; `nil` off a DM) beside `channel`,
   which keeps its meaning. Both are `optional` in the typespec because
   a server predating 35 omits them; see `mentions_bundle_message/0`.
+
+  Issue 2419 (protocol 41) put `truncated` on the payload: the window
+  held more content rows than `Grappa.Mentions.max_bundle_rows/0` and
+  its older part was not scanned. `optional` for the same reason.
   """
 
   alias Grappa.IRC.LineSplit
@@ -581,13 +585,22 @@ defmodule Grappa.Session.Wire do
           required(:kind) => Message.kind()
         }
 
+  @typedoc """
+  The away bundle. `truncated` (issue 2419, protocol 41) is `true` when the
+  window held more content rows than `Grappa.Mentions.max_bundle_rows/0`:
+  only the newest were scanned, so older mentions may exist that
+  `messages` does not carry. `optional` for the reason
+  `mentions_bundle_message/0` gives: a server predating 41 omits it. This
+  server always emits it.
+  """
   @type mentions_bundle_payload :: %{
-          kind: :mentions_bundle,
-          network: String.t(),
-          away_started_at: String.t(),
-          away_ended_at: String.t(),
-          away_reason: String.t() | nil,
-          messages: [mentions_bundle_message()]
+          required(:kind) => :mentions_bundle,
+          required(:network) => String.t(),
+          required(:away_started_at) => String.t(),
+          required(:away_ended_at) => String.t(),
+          required(:away_reason) => String.t() | nil,
+          required(:messages) => [mentions_bundle_message()],
+          optional(:truncated) => boolean()
         }
 
   @typedoc """
@@ -1616,20 +1629,22 @@ defmodule Grappa.Session.Wire do
   of `Scrollback.Wire.t/0`. `Message.kind()` (atom) passes through the
   Wire boundary unchanged (Jason stringifies at the JSON edge) so
   codegen pins the same literal union — callers pass `Message.t()`
-  instances unchanged (S14).
+  instances unchanged (S14). `truncated` is
+  `Grappa.Mentions.aggregate_mentions/6`'s flag, passed through.
   """
-  @spec mentions_bundle(String.t(), String.t(), String.t(), String.t() | nil, [Message.t()]) ::
+  @spec mentions_bundle(String.t(), String.t(), String.t(), String.t() | nil, [Message.t()], boolean()) ::
           mentions_bundle_payload()
-  def mentions_bundle(network_slug, away_started_at, away_ended_at, away_reason, messages)
+  def mentions_bundle(network_slug, away_started_at, away_ended_at, away_reason, messages, truncated)
       when is_binary(network_slug) and is_binary(away_started_at) and
-             is_binary(away_ended_at) and is_list(messages) do
+             is_binary(away_ended_at) and is_list(messages) and is_boolean(truncated) do
     %{
       kind: :mentions_bundle,
       network: network_slug,
       away_started_at: away_started_at,
       away_ended_at: away_ended_at,
       away_reason: away_reason,
-      messages: Enum.map(messages, &project_bundle_message/1)
+      messages: Enum.map(messages, &project_bundle_message/1),
+      truncated: truncated
     }
   end
 

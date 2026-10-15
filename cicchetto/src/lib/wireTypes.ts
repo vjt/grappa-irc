@@ -1291,6 +1291,7 @@ export type SessionWireMentionsBundlePayload = {
   away_ended_at: string;
   away_reason: string | null;
   messages: SessionWireMentionsBundleMessage[];
+  truncated?: boolean;
 };
 
 export type SessionWireWhoisExtraLine = {

@@ -34,6 +34,7 @@ defmodule Grappa.Session.ServerTest do
 
   alias Grappa.{
     IRCServer,
+    Mentions,
     PubSub.Topic,
     QueryWindows,
     ReadCursor,
@@ -12817,13 +12818,51 @@ defmodule Grappa.Session.ServerTest do
                          kind: :mentions_bundle,
                          network: _,
                          away_reason: "lunch",
-                         messages: messages
+                         messages: messages,
+                         truncated: false
                        }
                      },
                      1_000
 
       assert messages != []
       assert Enum.any?(messages, &(&1.channel == "#grappa"))
+
+      :ok = GenServer.stop(pid, :normal, 1_000)
+    end
+
+    # issue 2419 — one content row more than the cap, none naming anybody.
+    # The scanned part holds no mention, and the bundle still has to go out:
+    # the part that was not scanned may hold some.
+    test "unset_explicit_away broadcasts a truncated mentions_bundle even with no match" do
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":server", "grappa-test"))
+      {user, network, _} = setup_user_and_network(port)
+
+      pid = start_session_for(user, network)
+      :ok = IRCServer.await_handshake(server, 1_000)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "JOIN"), 1_000)
+
+      Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+
+      :ok = Session.set_explicit_away({:user, user.id}, network.id, "lunch")
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "AWAY :"), 1_000)
+
+      # Taken after the away started and before it ends, so every row sits
+      # inside the window the unset aggregates.
+      now = System.system_time(:millisecond)
+
+      Grappa.ScrollbackHelpers.insert_filler(
+        %{user_id: user.id, network_id: network.id, channel: "#grappa", sender: "alice"},
+        List.duplicate(now, Mentions.max_bundle_rows() + 1)
+      )
+
+      :ok = Session.unset_explicit_away({:user, user.id}, network.id)
+      {:ok, _} = IRCServer.wait_for_line(server, &(&1 == "AWAY\r\n"), 1_000)
+
+      assert_receive %Phoenix.Socket.Broadcast{
+                       event: "event",
+                       payload: %{kind: :mentions_bundle, messages: [], truncated: true}
+                     },
+                     5_000
 
       :ok = GenServer.stop(pid, :normal, 1_000)
     end

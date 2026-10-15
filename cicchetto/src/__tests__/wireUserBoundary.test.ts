@@ -1618,6 +1618,9 @@ describe("#1393 — user-topic boundary census", () => {
             "network/null": "reject",
             "network/swap": "accept",
             "network/wrong-type": "reject",
+            "truncated/drop": "accept",
+            "truncated/null": "reject",
+            "truncated/wrong-type": "reject",
           },
           "returns": {
             "away_ended_at": "sample",
@@ -1636,6 +1639,7 @@ describe("#1393 — user-topic boundary census", () => {
               },
             ],
             "network": "sample",
+            "truncated": true,
           },
         },
         {

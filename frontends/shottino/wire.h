@@ -53,15 +53,16 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v38 -> v40 (issues 2359, 2372): v39 put the auto-away site
- * default on `server_settings_changed` and `GET /api/server-settings`;
- * v40 added the time cursors `before_time` / `after_time` / `around_time`
- * (epoch ms) on `GET …/messages`. Neither is something this client reads
- * or sends, so nothing here changes.
+ * Last read, v40 -> v41 (issue 2419): `truncated` on `mentions_bundle`,
+ * true when the away window held more rows than the server scans, so
+ * older mentions may be missing; a truncated bundle can now arrive with
+ * no message at all. This client does not read the key yet: it prints
+ * the rows it gets and still skips an empty bundle, so a truncated one
+ * says nothing here about what it left out.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 40
+#define WIRE_PROTOCOL_VERSION 41
 
 #include <stdbool.h>
 #include <stddef.h>

@@ -1013,7 +1013,7 @@ export type RecoverResultReason =
 // Mirror of the events fanned out on the user-level PubSub topic
 // (`Topic.user(user_name)`), pinned by:
 //   * `Grappa.Session.Wire.{channels_changed/0, own_nick_changed/2,
-//      away_confirmed/2, mentions_bundle/5}` (CP16 B1)
+//      away_confirmed/2, mentions_bundle/6}` (CP16 B1)
 //   * `Grappa.Networks.Wire.connection_state_changed_event/4`
 //      (CP16 B3)
 //   * `lib/grappa_web/channels/grappa_channel.ex` `query_windows_list`
@@ -1037,6 +1037,9 @@ export type WireUserEvent =
       away_ended_at: string;
       away_reason: string | null;
       messages: MentionsBundleMessage[];
+      // issue 2419 (v41) — only the newest part of the window was scanned.
+      // Optional: a pre-41 server omits it.
+      truncated?: boolean;
     }
   | { kind: "away_confirmed"; network: string; state: "present" | "away" }
   | { kind: "own_nick_changed"; network_id: number; nick: string }

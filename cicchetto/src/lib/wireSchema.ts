@@ -1203,7 +1203,9 @@ export const S_SessionWireMentionsBundlePayload = {
     away_ended_at: "s",
     away_reason: { u: ["s", "z"] },
     messages: { a: S_SessionWireMentionsBundleMessage },
+    truncated: "b",
   },
+  q: ["truncated"],
 } as const;
 
 // Grappa.Session.Wire.names_reply_payload/0

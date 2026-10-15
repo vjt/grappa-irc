@@ -5,10 +5,10 @@ defmodule Grappa.Mentions do
 
   ## Design — two-step: DB then in-memory regex
 
-  **Step 1 — DB**: fetch all content-bearing messages in the away
-  interval for `(user_id, network_id)`. The kind filter
-  (`:privmsg | :notice | :action`) drops presence-event rows (`:join`,
-  `:part`, etc.) that never carry a body.
+  **Step 1 — DB**: fetch the NEWEST content-bearing messages in the away
+  interval for `(user_id, network_id)`, at most `max_bundle_rows/0` of
+  them. The kind filter (`:privmsg | :notice | :action`) drops
+  presence-event rows (`:join`, `:part`, etc.) that never carry a body.
 
   **Step 2 — in-memory regex**: apply word-boundary, case-insensitive
   matching against `watchlist_patterns` (union with `own_nick`) using
@@ -16,79 +16,62 @@ defmodule Grappa.Mentions do
   (it requires a user-defined function registration that `ecto_sqlite3`
   does not wire up), so the regex gate has to live in Elixir.
 
-  ## 🔴 Step 1 is NOT index-backed, and its cost is the ACCOUNT (issue 2240)
+  ## 🔴 The bundle is CAPPED, and says so (issue 2419)
 
-  This moduledoc used to claim that
-  `messages_user_id_network_id_channel_server_time_index` made step 1 an
-  index range scan, that the `server_time` range "still benefits from the
-  index", and that step 2 runs "in sub-millisecond time". **All three were
-  measured false** (DESIGN_NOTES 2026-09-18).
+  Step 1 loads at most `max_bundle_rows/0` content rows: the newest ones
+  in the window. When the window holds more, the result carries
+  `truncated: true` and the older part of the window was never scanned.
+  The client is told, instead of being handed a bundle that silently
+  lacks those mentions.
 
-  With `channel` unconstrained, `server_time` sits behind a column the
-  query does not bind, so there is nothing for the range to seek. SQLite
-  picks a different index than the one named above and cannot even serve
-  the ORDER BY from it:
+  Before the cap there was no `LIMIT`, so every content row in the window
+  was materialised before the regex ran. Measured under issue 2240 at a
+  full-year window on a 1.94M-row partition: **2.27 GB of peak heap to
+  deliver 4.6 MB**. At twice that partition the call did not complete: it
+  raised out of the rescue-free `handle_call` (the session died) or, given
+  more time, exhausted the host (DESIGN_NOTES 2026-09-18). It still runs
+  SYNCHRONOUSLY in that `handle_call` (`Session.Server.unset_away_internal/2`,
+  fired by a tab foregrounding after the auto-away debounce), which is why
+  the bound lives here and not in a caller.
 
-      SEARCH m0 USING INDEX messages_archive_user_idx (user_id=? AND network_id=?)
-      USE TEMP B-TREE FOR ORDER BY
+  **The newest end survives** because the bundle answers "what did I
+  miss": a cap that kept the oldest rows would answer a month away with
+  its first day.
 
-  The consequence is that **the cost tracks the size of the account's
-  history, not the length of the away window**: on a 1.94M-row partition a
-  one-HOUR away returning 206 rows and a one-DAY away returning 24x as
-  many cost the SAME 87-99 ms (two independent runs). The floor is linear
-  at ~0.047 ms per 1,000 partition rows. Step 2 is not free either — at a
-  full-year window it is 5.3 s, comparable to step 1.
+  **Why 20,000.** The issue 2240 heap figures run 1.2-1.5 KB per loaded
+  row (173.8 MB for 148,880 rows at 30 days, 7.6 MB for 4,962 at one
+  day), so one call stays near 25-30 MB. That is derived from those
+  figures, not measured at the cap. Every returned row is a loaded row,
+  so the same number bounds the wire payload.
 
-  Two further properties, both load-bearing for anyone touching this:
+  ## Step 1 seeks `messages_away_window_user_idx` (issue 2419)
 
-    * it runs SYNCHRONOUSLY in the session GenServer
-      (`Session.Server.unset_away_internal/2` is called from a
-      `handle_call` arm), fired by a tab FOREGROUNDING after the
-      auto-away debounce — not by the rare deliberate `/away`;
-    * there is NO `LIMIT`, so every content row in the window is
-      materialised before the regex runs. Measured peak heap of the
-      calling process at a full-year window on that partition:
-      **2.27 GB, to deliver 4.6 MB**. At twice that partition size the
-      call does not complete at all — under prod's pinned timeout it
-      raises out of the rescue-free `handle_call` and the session dies;
-      given more budget it exhausts the host instead. **That happens
-      with an index on `server_time` present as well**, which is why an
-      index is not a fix for it.
+      SEARCH m0 USING INDEX messages_away_window_user_idx
+        (user_id=? AND network_id=? AND server_time>? AND server_time<?)
 
-  Options, their measured numbers, and what none of them fixes are in
-  DESIGN_NOTES 2026-09-18. The harness that produced them is
-  `test/bench_2240.exs`.
+  The index orders rows by `(server_time, id)` (`id` is the rowid, the
+  implicit last column of every index), so it serves the `ORDER BY` and
+  SQLite stops after `max_bundle_rows/0 + 1` rows: the cost is the cap,
+  not the window and not the account. Without it the query planned
+  `SEARCH … messages_archive_user_idx (user_id=? AND network_id=?)` plus a
+  temp B-tree over the whole window, with a floor set by the ACCOUNT's
+  history: a one-hour and a one-day away both cost ~90 ms on 1.94M rows
+  (issue 2240).
 
-  ## The index was BUILT and MEASURED, and then declined (2026-09-19)
-
-  Do not re-derive this. `(user_id, network_id, server_time)` was
-  implemented, and it works: **162x at a one-hour window, 11.8x at a
-  day, 1.4x at a year, and the temp B-tree above disappears** because
-  `id` is the rowid and so the index's implicit trailing column. It is
-  a real win. It was declined anyway, on two measured grounds:
-
-    * **it steals the plan of the #393 folded-COALESCE DM read** — the
-      hot path that saturated the prod SQLite pool at 409 ms mean and
-      whose cure was making it sargable. That read is
-      `ORDER BY server_time DESC LIMIT 50` and the #393 index carries
-      `id` after the fold, not `server_time`, so it seeks the peer
-      exactly and then SORTS; the new index offers the ordering for
-      free, and with no `sqlite_stat*` SQLite trades the exact seek for
-      the skipped sort and walks the account backwards filtering. Fine
-      for a peer you spoke to an hour ago; #393 again for a cold DM.
-    * **the win, while real, is the SMALL leg.** It moves an ~87 ms
-      floor to sub-millisecond. The leg that carries the weight is the
-      absent `LIMIT` above, which no index touches.
-
-  So the trade was a latency improvement against re-lighting a fixed
-  production incident, and it was not taken. **A `server_time`-ordered
-  variant of the #393 DM family does win the seek back — measured** —
-  but that is a second index on the highest-write-rate table with an
-  unmeasured write cost; it is filed as backlog, not deferred silently.
-
-  🔴 **If you are about to add this index: it is not a new idea, and the
-  reason it is absent is not that nobody tried.** Read the entries
-  first, and price the DM read.
+  🔴 **The index is PARTIAL on the content kinds, and this query must
+  spell that list as LITERAL SQL.** The plain `(user_id, network_id,
+  server_time)` index was built and declined under issue 2240 because it
+  took the DM reads' plans (DESIGN_NOTES 2026-09-19). Measured again for
+  issue 2419, it still does: `Scrollback.fetch_by_time/7` on a DM window
+  walks the account in time order instead of seeking the conversation.
+  SQLite uses a partial index only for a query that carries the index's
+  predicate term, so the `kind IN (...)` term keeps every other read off
+  it. A bound `in ^list` (`kind IN (?,?,?)`) does NOT carry it: measured,
+  that plans as if the index were absent. The query's fragment carries the
+  literal, built from `Message.content_kinds/0` at compile time; the
+  migration holds a frozen copy, and `Grappa.MentionsTest` pins the two
+  together. A new content kind therefore needs a migration that rebuilds
+  the index.
 
   ## Watchlist matching rule
 
@@ -182,8 +165,24 @@ defmodule Grappa.Mentions do
   # restating it — a new content kind lands once in `Message`.
   @content_kinds Message.content_kinds()
 
+  # issue 2419 — the content kinds as a LITERAL SQL list, the only spelling
+  # the partial index `messages_away_window_user_idx` answers to (see the
+  # moduledoc). Built from the SSOT at compile time; never a bound list.
+  @content_kinds_sql_list "(" <> Enum.map_join(@content_kinds, ",", &"'#{&1}'") <> ")"
+  @content_kind_in_fragment "? IN " <> @content_kinds_sql_list
+
+  # issue 2419 — see the moduledoc's "The bundle is CAPPED" section.
+  @max_bundle_rows 20_000
+
+  @typedoc """
+  issue 2419 — what one away window yields: the mentions, oldest first, and
+  whether the window held more content rows than `max_bundle_rows/0`, in
+  which case its older part was never scanned.
+  """
+  @type bundle :: %{messages: [Message.t()], truncated: boolean()}
+
   @doc """
-  Returns all scrollback messages for `user_id` on `network_id` that
+  Returns the scrollback messages for `user_id` on `network_id` that
   occurred between `away_start_ms` and `away_end_ms` (inclusive,
   epoch milliseconds) and whose `body` case-insensitively matches
   `own_nick` or any pattern from `watchlist_patterns` at a word
@@ -191,6 +190,10 @@ defmodule Grappa.Mentions do
 
   `watchlist_patterns` may be an empty list — in that case only
   `own_nick` matches are returned.
+
+  Only the newest `max_bundle_rows/0` content rows of the window are
+  scanned. `truncated` is `true` when the window held more, so mentions
+  older than the scanned part may exist and are not in `messages`.
 
   Messages are returned in `server_time ASC` order (chronological).
 
@@ -201,10 +204,6 @@ defmodule Grappa.Mentions do
   not a mention, your own line naming yourself is not one either, and the
   away bundle must agree with the badge that counted it. Both exclusions
   arrive through the shared `mention_row?/3`.
-
-  ⚠️ The DB step is NOT index-backed and the result set is NOT typically
-  small — see the moduledoc's "Step 1 is NOT index-backed" section and
-  DESIGN_NOTES 2026-09-18 (issue 2240) before changing anything here.
   """
   @spec aggregate_mentions(
           Ecto.UUID.t(),
@@ -213,7 +212,7 @@ defmodule Grappa.Mentions do
           integer(),
           [String.t()],
           String.t()
-        ) :: [Message.t()]
+        ) :: bundle()
   def aggregate_mentions(user_id, network_id, away_start_ms, away_end_ms, watchlist_patterns, own_nick)
       when is_binary(user_id) and
              is_integer(network_id) and
@@ -221,16 +220,19 @@ defmodule Grappa.Mentions do
              is_integer(away_end_ms) and
              is_list(watchlist_patterns) and
              is_binary(own_nick) do
-    # Step 1: DB — time-window + kind filter. NOT an index range scan, and
-    # unbounded: see the moduledoc (issue 2240).
-    rows =
+    # Step 1: DB — the newest content rows of the window, one past the cap so
+    # an overflow is visible. Index-ordered, so SQLite stops at the LIMIT.
+    newest_first =
       Message
       |> where([m], m.user_id == ^user_id)
       |> where([m], m.network_id == ^network_id)
       |> where([m], m.server_time >= ^away_start_ms and m.server_time <= ^away_end_ms)
-      |> where([m], m.kind in ^@content_kinds)
-      |> order_by([m], asc: m.server_time, asc: m.id)
+      |> where([m], fragment(@content_kind_in_fragment, m.kind))
+      |> order_by([m], desc: m.server_time, desc: m.id)
+      |> limit(^(@max_bundle_rows + 1))
       |> Repo.all()
+
+    {scanned, overflow} = Enum.split(newest_first, @max_bundle_rows)
 
     # Step 2: in-memory row-level filter through the shared `mention_row?/3`.
     # Compile all pattern regexes once before the loop — avoids
@@ -238,8 +240,30 @@ defmodule Grappa.Mentions do
     # the same reason.
     compiled = build_matchers([own_nick | watchlist_patterns])
     own_folded = Identifier.canonical_target(own_nick)
-    Enum.filter(rows, &mention_row?(&1, own_folded, compiled))
+
+    messages =
+      scanned
+      |> Enum.filter(&mention_row?(&1, own_folded, compiled))
+      |> Enum.reverse()
+
+    %{messages: messages, truncated: overflow != []}
   end
+
+  @doc """
+  issue 2419 — the most content rows one away bundle loads. Above it the
+  bundle is `truncated`.
+  """
+  @spec max_bundle_rows() :: 20_000
+  def max_bundle_rows, do: @max_bundle_rows
+
+  @doc """
+  issue 2419 — the `kind IN (...)` term `aggregate_mentions/6` emits, over the
+  bare column. `messages_away_window_user_idx`'s stored predicate must carry
+  it byte for byte, or SQLite stops using the index; `Grappa.MentionsTest`
+  pins the two together.
+  """
+  @spec away_window_kind_sql() :: String.t()
+  def away_window_kind_sql, do: "kind IN " <> @content_kinds_sql_list
 
   # ---------------------------------------------------------------------------
   # Single-message predicate (push notifications B4)
