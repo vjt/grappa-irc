@@ -2414,3 +2414,129 @@ with the open question about the doors that take a channel OR a nick.
 **Deploy class: HOT** for the server (one module attribute and its doc; no
 migration, no `config/*.exs`, no supervision change), plus the cic bundle for
 the invite-link parser.
+<!-- entry #2419 -->
+
+---
+
+## 2026-10-15 — #2419: the away bundle loads at most 20,000 rows and says so, and seeks a PARTIAL index because the plain one still steals the DM reads
+
+Issue 2240 measured `Grappa.Mentions.aggregate_mentions/6` (2026-09-18) and
+#2240b declined the plain `(user_id, network_id, server_time)` index
+(2026-09-19), leaving the severe leg open: no `LIMIT`, every content row of
+the away window materialised inside the session's `handle_call`, 2.27 GB of
+peak heap at a full-year window and a dead session at twice that partition.
+vjt's ask on issue 2419 is two things: an index so the time range seeks, and a
+hard cap on what the bundle loads, explicit in the result so the client knows
+it was cut.
+
+### The cap
+
+`Mentions.max_bundle_rows/0` is **20,000 content rows LOADED**. The query reads
+`ORDER BY server_time DESC, id DESC LIMIT 20001`, keeps the first 20,000, and
+the 20,001st existing is what `truncated: true` means. The regex runs over the
+kept rows, which are then reversed so the bundle stays oldest first. Every
+returned row is a loaded row, so one number bounds the heap and the wire
+payload alike; that is the literal reading of "the number of messages the
+bundle loads/returns".
+
+Three judgment calls, none put to vjt as a fork because the ask's wording
+settles the direction; named here so they can be reversed by name:
+
+1. **The NEWEST end survives.** The bundle answers "what did I miss". A cap
+   that kept the oldest rows would answer a month away with its first day.
+2. **A truncated bundle broadcasts even with zero mentions.** Today a bundle
+   with no match is suppressed (spec #19, no empty-window noise). Kept for an
+   uncut window. For a cut one, silence would read as "nothing mentioned
+   you" while the unscanned part may hold mentions, which is exactly the
+   silent drop the ask forbids.
+3. **20,000 is DERIVED, not measured at the cap.** Issue 2240's heap figures
+   run 1.2-1.5 KB per loaded row (173.8 MB for 148,880 rows at 30 days,
+   7.6 MB for 4,962 at one day), so one call stays near 25-30 MB.
+
+On the wire: `truncated` on `mentions_bundle`, `optional` in
+`Session.Wire.mentions_bundle_payload` because a server predating it omits it,
+always emitted by this one. Protocol 40 → 41. cic renders a notice in the
+mentions header and reads an absent field as `false`. shottino carries the new
+number and does NOT render the flag (stated in `wire.h`); a follow-up if
+wanted.
+
+### The index: three shapes measured, the partial one taken
+
+Bench: host `sqlite3` 3.51.0, SQL written by hand to mirror what Ecto emits,
+400,000 rows in one partition over 365 days (360,460 content rows), the
+production `messages` schema and indexes, no `sqlite_stat*` (prod carries
+none). CI runs exqlite's 3.53.3, so the plan pins in `Grappa.MentionsTest` and
+`Grappa.ScrollbackTest` are the arbiter, not this bench.
+
+- **I — plain `(user_id, network_id, server_time) WHERE user_id IS NOT NULL`,
+  the #2240b shape: STILL steals.** Not only the #393 cold-DM read #2240b
+  found: `Scrollback.fetch_by_time/7` on a DM window (issue 2372, which
+  landed after #2240b) loses the fold seek in three shapes (before, after,
+  before with `hide_presence`) and plans
+  `SEARCH … (user_id=? AND network_id=? AND server_time<?)` — the whole
+  account walked in time order, filtered for the peer.
+  `ScrollbackTest`'s DM time pin now covers both `:before` and `:after`, which
+  is what turns red under this shape.
+- **K — `(user_id, network_id, kind, server_time)`: steals nothing, bounds
+  nothing.** Three `kind` values are three ranges, and their union is not in
+  `server_time` order, so the plan keeps `USE TEMP B-TREE FOR ORDER BY`: the
+  whole window is read and sorted before the `LIMIT` applies.
+- **P — `messages_away_window_user_idx`, `(user_id, network_id, server_time)
+  WHERE user_id IS NOT NULL AND kind IN ('privmsg','notice','action')`:
+  taken.** The aggregate plans
+  `SEARCH m0 USING INDEX messages_away_window_user_idx (user_id=? AND network_id=? AND server_time>? AND server_time<?)`
+  with no sort, and twelve DM and channel read shapes keep their plans.
+
+**Why P is invisible to every other read, and why the query spells the list
+LITERALLY.** SQLite uses a partial index only for a query whose WHERE carries
+the index predicate's term, and the only query that writes `kind IN
+('privmsg','notice','action')` as literal SQL is this one. What Ecto emits for
+`m.kind in ^list` is `kind IN (?,?,?)`, and that, measured, plans as if P were
+absent. `Grappa.Mentions` therefore builds the literal from
+`Message.content_kinds/0` at compile time and passes it to `fragment/1`. The
+migration holds a FROZEN copy of the list (a migration is history), and
+`MentionsTest` pins the stored predicate against
+`Mentions.away_window_kind_sql/0`: a new content kind without a migration
+that rebuilds the index goes red by name instead of silently falling off the
+index.
+
+Timing on the bench, warm, the body forced out of every row:
+
+| | 1h window | full year, no cap | full year, capped |
+|---|---|---|---|
+| no new index | 13-14 ms | 436-490 ms | 379-437 ms |
+| P | 0.000 ms | 53 ms | 4 ms |
+
+The last column on the first row is the reason the cap and the index are ONE
+change: a `LIMIT` without the index still sorts the whole window first, and
+the index without a `LIMIT` still materialises it.
+
+Write cost, WAL frames for one 50,000-row insert transaction: no new index
+6,768, P 6,993 (+3.3%), I 7,042 (+4.0%). P is the cheaper of the two because
+presence rows skip it. Not comparable to #2240b's +9.2% WAL pages: a different
+bench and a different measure.
+
+### Deploy class: HOT, and the build holds the write lock
+
+An expand-only `create index` is HOT for `Preflight.classify_migration/1`, and
+the migration is on `PreflightTest`'s `@expected_hot` list. The hot path runs
+migrations on the live pool BEFORE it reloads modules, so the build happens
+while sessions write, and for its whole duration every writer waits on the
+lock — with the #1715 consequence for anything that does a `persistent_term`
+write in that window. The build took 0.49-0.51 s on the 400,000-row bench
+(three runs, host NVMe). Production's `messages` holds ~5.2M rows (the
+`20261002001215` migration's figure); linear scaling alone gives ~6.5 s on
+this host, and prod is a different substrate. **Not measured on prod.**
+
+The migration's stamp was minted with `date -u +%Y%m%d%H%M%S`, not
+`mix ecto.gen.migration`: Docker was down on the worker host, so no `mix`
+ran there. Same UTC-to-the-second shape.
+
+### Not measured
+
+- BEAM heap at the cap (the 20,000 is derived, see above).
+- Production message rates, so how often a real away crosses the cap.
+- The planner of exqlite's 3.53.3 against this bench's 3.51.0: the CI plan
+  pins answer that.
+- Nothing ran locally on the server side: every Elixir red and green in this
+  slice comes from PR CI.
