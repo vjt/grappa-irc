@@ -83,6 +83,11 @@ test("issue2418 — a scrollback selection survives an unread-badge update in an
     const body = ((await row.locator(".scrollback-body").textContent()) ?? "").trim();
     expect(body.length).toBeGreaterThan(0);
     expect(selected).toContain(body);
+    // Attribution: the node is still the one the handle was taken from, right
+    // before the trigger. A rebuild of THIS window between the handle and the
+    // drag (a late catch-up, a hydration) fails here, not below as if the
+    // arrival had done it.
+    expect(await rowNode.evaluate((el) => el.isConnected)).toBe(true);
 
     peer.privmsg(ELSEWHERE, `issue2418 traffic elsewhere ${Date.now()}`);
     await expect(sidebarMessageBadge(page, NETWORK_SLUG, ELSEWHERE)).toBeVisible({
