@@ -2516,17 +2516,35 @@ Write cost, WAL frames for one 50,000-row insert transaction: no new index
 presence rows skip it. Not comparable to #2240b's +9.2% WAL pages: a different
 bench and a different measure.
 
-### Deploy class: HOT, and the build holds the write lock
+### Deploy class: HOT, and the build DROPS scrollback rows while it runs
 
 An expand-only `create index` is HOT for `Preflight.classify_migration/1`, and
 the migration is on `PreflightTest`'s `@expected_hot` list. The hot path runs
-migrations on the live pool BEFORE it reloads modules, so the build happens
-while sessions write, and for its whole duration every writer waits on the
-lock — with the #1715 consequence for anything that does a `persistent_term`
-write in that window. The build took 0.49-0.51 s on the 400,000-row bench
-(three runs, host NVMe). Production's `messages` holds ~5.2M rows (the
-`20261002001215` migration's figure); linear scaling alone gives ~6.5 s on
-this host, and prod is a different substrate. **Not measured on prod.**
+migrations on the live pool BEFORE it reloads modules, so the build runs while
+sessions write, holding the write lock throughout.
+
+**A writer does not wait out the build.** On 2026-10-15 prod's `busy_timeout`
+was 300 ms and the `BusyRetry` budget 1,500 ms (`config/runtime.exs` and
+`config/config.exs` are the SSOT; these values move). Past the budget
+`Scrollback.with_pool_retry/1` degrades the row to `:persist_unavailable`:
+logged and counted, but not stored. A web write answers 503 instead. So a
+build longer than the budget DROPS the IRC rows that arrive in all but its last
+~1.5 s.
+
+Build time, three runs each on the host's NVMe:
+
+- 0.49-0.51 s on the 400,000-row bench (360,460 content rows);
+- 2.02-2.10 s on a copy of `runtime/bench2320-1m.db` (1.2M rows, all content,
+  one user).
+
+Production's `messages` holds ~5.2M rows, the figure the `20261002001215`
+migration quotes. Growing n·log n from the second point puts the build near
+10 s on this host if every row were content. Prod is a different substrate.
+**Not measured on prod.** That leaves the deployer a choice:
+
+- accept a drop window of that order on a hot deploy;
+- or take this migration on a cold deploy, where the node is down for the
+  whole restart and the IRC traffic of that time is never received at all.
 
 The migration's stamp was minted with `date -u +%Y%m%d%H%M%S`, not
 `mix ecto.gen.migration`: Docker was down on the worker host, so no `mix`

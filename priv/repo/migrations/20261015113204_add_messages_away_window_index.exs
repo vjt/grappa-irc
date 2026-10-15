@@ -41,8 +41,16 @@ defmodule Grappa.Repo.Migrations.AddMessagesAwayWindowIndex do
 
   HOT: a bare `create index` in `change/0` is an expand op for
   `Grappa.Deploy.Preflight.classify_migration/1`, and this file is on
-  `PreflightTest`'s pinned HOT list. The build itself holds the write lock
-  for as long as it scans `messages`.
+  `PreflightTest`'s pinned HOT list.
+
+  ⚠️ The build holds the write lock for as long as it scans `messages`, on
+  the live pool of a hot deploy, and a writer does not wait that long: past
+  the `BusyRetry` budget a scrollback row is degraded to
+  `:persist_unavailable` and not stored. Measured on the host: 2.0-2.1 s
+  for 1.2M rows, which puts prod's ~5.2M near 10 s; not measured on prod.
+  The rows arriving during that window, less its last ~1.5 s, are lost.
+  DESIGN_NOTES (issue 2419) has the numbers and the cold-deploy
+  alternative.
   """
   use Ecto.Migration
 
