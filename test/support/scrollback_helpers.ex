@@ -41,8 +41,9 @@ defmodule Grappa.ScrollbackHelpers do
   carrying `attrs` (subject, network, channel, sender) and the body
   `"filler <server_time>"`, which names no nick a test watches for.
 
-  `Repo.insert_all/2` in chunks: the away-bundle cap needs tens of thousands
-  of rows, and a changeset round-trip each would dominate the suite. That
+  `Repo.insert_all/2` in chunks: the away-bundle cap and the network-purge
+  batches need thousands to tens of thousands of rows, and a changeset
+  round-trip each would dominate the suite. That
   bypasses `Message.changeset/2`, so `attrs` must already be what the
   changeset would store (a folded channel, a real sender).
   """

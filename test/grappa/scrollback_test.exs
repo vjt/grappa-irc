@@ -3738,24 +3738,10 @@ defmodule Grappa.ScrollbackTest do
   end
 
   defp bulk_insert(user, net, n) do
-    now = DateTime.utc_now()
-
-    1..n
-    |> Enum.map(fn i ->
-      %{
-        user_id: user.id,
-        network_id: net.id,
-        channel: "#bulk",
-        sender: "alice",
-        body: "line #{i}",
-        kind: :privmsg,
-        meta: %{},
-        server_time: i,
-        inserted_at: now
-      }
-    end)
-    |> Enum.chunk_every(500)
-    |> Enum.each(&Repo.insert_all(Message, &1))
+    ScrollbackHelpers.insert_filler(
+      %{user_id: user.id, network_id: net.id, channel: "#bulk", sender: "alice"},
+      1..n
+    )
   end
 
   # #379 (P0, 2026-07-22) — CP29 R-2 index regression. R-2 switched the
