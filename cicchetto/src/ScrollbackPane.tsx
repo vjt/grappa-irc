@@ -1371,14 +1371,17 @@ function sameRows(prev: Row[], next: Row[]): boolean {
   return prev.length === next.length && prev.every((row, i) => samePlainData(row, next[i]));
 }
 
-// Rows are plain data: primitives and plain objects (the store's message, an
-// invite entry, a topic line). `===` first, so a message row's `msg` compares
-// by store reference for free and only the objects a run built fresh are
-// walked. Anything this cannot prove equal reads as changed, which is the
-// pre-2418 behaviour, never a stale render.
+// Rows are plain data: primitives, arrays and plain objects (the store's
+// message, an invite entry, a topic line). `===` first, so a message row's
+// `msg` compares by store reference for free and only the objects a run built
+// fresh are walked. Anything this cannot prove equal reads as changed, which
+// is the pre-2418 behaviour, never a stale render: that is why a Date, a Map
+// or a class instance (state outside its own keys) is refused, not walked.
 export function samePlainData(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  const shape = plainShape(a);
+  if (shape === null || shape !== plainShape(b)) return false;
   const aRecord = a as Record<string, unknown>;
   const bRecord = b as Record<string, unknown>;
   const keys = Object.keys(aRecord);
@@ -1386,6 +1389,11 @@ export function samePlainData(a: unknown, b: unknown): boolean {
     keys.length === Object.keys(bRecord).length &&
     keys.every((k) => Object.hasOwn(bRecord, k) && samePlainData(aRecord[k], bRecord[k]))
   );
+}
+
+function plainShape(value: object): "array" | "object" | null {
+  if (Array.isArray(value)) return "array";
+  return Object.getPrototypeOf(value) === Object.prototype ? "object" : null;
 }
 
 const ScrollbackPane: Component<Props> = (props) => {
