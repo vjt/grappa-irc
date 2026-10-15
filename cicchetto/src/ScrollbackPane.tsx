@@ -1353,6 +1353,41 @@ function rowTime(row: Row | undefined): number | null {
   }
 }
 
+/**
+ * issue 2418 — the `rows()` memo's equality. The memo reads whole-window
+ * records (`scrollbackByChannel`, `topicByChannel`, the members map, the
+ * presence prefs, …), so a write for ANY window re-runs it, and every run
+ * builds fresh row objects. Without this the ref-keyed `<For>` replaced every
+ * row node on traffic for another window, which collapsed a live selection
+ * (removing the node a Range boundary sits in moves the boundary out) and the
+ * native Copy wrote nothing.
+ *
+ * One guard at the `<For>`'s only input instead of a per-window slice of each
+ * input: it holds for every record the memo reads, including the next one
+ * added. A run that changes what this window renders still notifies, so the
+ * scroll logic that reacts to a real change sees exactly what it saw before.
+ */
+function sameRows(prev: Row[], next: Row[]): boolean {
+  return prev.length === next.length && prev.every((row, i) => samePlainData(row, next[i]));
+}
+
+// Rows are plain data: primitives and plain objects (the store's message, an
+// invite entry, a topic line). `===` first, so a message row's `msg` compares
+// by store reference for free and only the objects a run built fresh are
+// walked. Anything this cannot prove equal reads as changed, which is the
+// pre-2418 behaviour, never a stale render.
+function samePlainData(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  const aRecord = a as Record<string, unknown>;
+  const bRecord = b as Record<string, unknown>;
+  const keys = Object.keys(aRecord);
+  return (
+    keys.length === Object.keys(bRecord).length &&
+    keys.every((k) => Object.hasOwn(bRecord, k) && samePlainData(aRecord[k], bRecord[k]))
+  );
+}
+
 const ScrollbackPane: Component<Props> = (props) => {
   let listRef!: HTMLDivElement;
   // Every settle writer in this component answers the SAME question — "what
@@ -1862,7 +1897,7 @@ const ScrollbackPane: Component<Props> = (props) => {
   //   acquisition. The sessionTopId bound prevents NEW arrivals during the
   //   focus session from spawning a fresh marker — they're live-read by
   //   definition.
-  const rows = createMemo((): Row[] => {
+  const projectRows = (): Row[] => {
     const allMsgs = messages() ?? [];
     // #222 — render-layer presence filter. On a "large" channel the
     // join/part/quit/nick_change/mode rows are pure noise; suppress them by
@@ -2170,7 +2205,11 @@ const ScrollbackPane: Component<Props> = (props) => {
       result.splice(insertAt, 0, row);
     }
     return result;
-  });
+  };
+  // issue 2418 — `equals: sameRows`: a run that renders the same rows notifies
+  // nobody, so the `<For>` keeps its nodes (and the operator's selection) when
+  // the traffic was for another window.
+  const rows = createMemo(projectRows, undefined, { equals: sameRows });
 
   // #360 — refresh the mention badge after every rows() recreation (a live
   // message, the switch-time `refreshScrollback` catch-up, a cross-device
