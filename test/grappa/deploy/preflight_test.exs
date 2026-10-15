@@ -1211,6 +1211,11 @@ defmodule Grappa.Deploy.PreflightTest do
     # default, no backfill — so it deploys HOT. Measured by the classifier
     # here, which is the point of the pin: the entry was added because this
     # test failed, not to make it pass.)
+    # (issue 2419's `20261015113204_add_messages_away_window_index` is one bare
+    # `create index(..., where: ...)` in `change/0`, the same shape as
+    # `20260522073826_add_archive_covering_indexes`, so it is HOT by the
+    # classifier's own rule. Listed from reading that rule, before this test
+    # had run against it.)
     @migrations_glob "priv/repo/migrations/*.exs"
     @expected_hot ~w(
       20260425000000_init
@@ -1254,6 +1259,7 @@ defmodule Grappa.Deploy.PreflightTest do
       20260828230305_add_profile_fields_to_network_credentials
       20260829145052_create_peer_avatars
       20260919140437_add_detached_at_to_network_credentials
+      20261015113204_add_messages_away_window_index
     )
 
     test "every migration on disk classifies, and the HOT set is exactly the pinned one" do

@@ -3124,21 +3124,29 @@ defmodule Grappa.ScrollbackTest do
     # folded-COALESCE seek selects. What this pins is that bound — a plan
     # falling back to the network-wide scan would make the cost linear in the
     # network instead, which nobody accepted.
-    test "DM time read seeks the conversation's folded index, never the network", %{user: user, network: net} do
-      sql =
-        capture_sql(fn ->
-          Scrollback.fetch_by_time({:user, user.id}, net.id, "vjt-peer", {:before, 5}, 50, nil, false)
-        end)
+    #
+    # issue 2419 — and an index that orders the ACCOUNT by `server_time` must
+    # not win this plan either. The plain `(user_id, network_id, server_time)`
+    # shape does, in both directions (measured), which is why the away-window
+    # index is partial on the content kinds: this read carries no such term.
+    for dir <- [:before, :after] do
+      test "DM #{dir}-time read seeks the conversation's folded index, never the network or the account",
+           %{user: user, network: net} do
+        sql =
+          capture_sql(fn ->
+            Scrollback.fetch_by_time({:user, user.id}, net.id, "vjt-peer", {unquote(dir), 5}, 50, nil, false)
+          end)
 
-      {:ok, %{rows: rows}} =
-        Repo.query("EXPLAIN QUERY PLAN " <> sql, [user.id, net.id, "vjt-peer", 5, 50])
+        {:ok, %{rows: rows}} =
+          Repo.query("EXPLAIN QUERY PLAN " <> sql, [user.id, net.id, "vjt-peer", 5, 50])
 
-      plan = rows |> List.flatten() |> Enum.map_join("\n", &to_string/1)
+        plan = rows |> List.flatten() |> Enum.map_join("\n", &to_string/1)
 
-      assert plan =~ "messages_user_id_network_id_dm_coalesce_fold_id_kind_index",
-             "expected the folded-COALESCE seek, got:\n#{plan}"
+        assert plan =~ "messages_user_id_network_id_dm_coalesce_fold_id_kind_index",
+               "expected the folded-COALESCE seek, got:\n#{plan}"
 
-      refute plan =~ "messages_network_id_index", "must not scan the whole network, got:\n#{plan}"
+        refute plan =~ "messages_network_id_index", "must not scan the whole network, got:\n#{plan}"
+      end
     end
   end
 
