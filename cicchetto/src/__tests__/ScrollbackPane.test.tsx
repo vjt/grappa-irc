@@ -7864,3 +7864,150 @@ describe("issue 2086 reply-quote dimming in the pane", () => {
     expect(row).toHaveTextContent("shift << 2 gives four");
   });
 });
+
+// issue 2418 — a native Copy over a scrollback selection was lost whenever
+// traffic landed in ANOTHER window. The `rows()` memo reads whole-window
+// records (`scrollbackByChannel`, `topicByChannel`, …), so a write for any key
+// re-ran it; every run built fresh row objects, and the ref-keyed `<For>`
+// replaced every row node. Removing the node a Range boundary sits in moves
+// the boundary to the parent (DOM spec, which jsdom implements), so the
+// selection collapsed and the browser's Copy wrote nothing.
+//
+// What has to survive is the operator's state, so these assert the row NODE
+// and the live selection's TEXT, not how often anything re-ran.
+describe("issue 2418 — a change in another window keeps this pane's rows and selection", () => {
+  const HERE = "freenode #grappa" as ChannelKey; // channelKey mock shape: `${slug} ${name}`
+  const ELSEWHERE = "freenode #other" as ChannelKey;
+  const elsewhereRow = (id: number): ScrollbackMessage => ({
+    id,
+    network: "freenode",
+    channel: "#other",
+    server_time: 1_700_000_100_000 + id,
+    kind: "privmsg",
+    sender: "carol",
+    body: `elsewhere ${id}`,
+    meta: {},
+  });
+
+  const mount = () =>
+    render(() => <ScrollbackPane networkSlug="freenode" channelName="#grappa" kind="channel" />);
+
+  // The write a live arrival makes: a new record, this window's array untouched.
+  const arriveElsewhere = () =>
+    setScrollback((prev) => ({
+      ...prev,
+      [ELSEWHERE]: [...(prev[ELSEWHERE] ?? []), elsewhereRow(11)],
+    }));
+
+  // The operator's drag, done the way the browser records it: one Range in the
+  // document selection, spanning the first row's contents.
+  const selectFirstRow = (): { row: HTMLElement; text: string } => {
+    const row = screen.getAllByTestId("scrollback-line")[0] as HTMLElement;
+    const range = document.createRange();
+    range.selectNodeContents(row);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    const text = selection?.toString() ?? "";
+    // Pre-state: the selection really holds the row, or "unchanged" below
+    // would be comparing two empty strings.
+    expect(text).toContain("hello");
+    return { row, text };
+  };
+
+  const expectRowAndSelectionKept = (row: HTMLElement, text: string) => {
+    expect(row.isConnected).toBe(true);
+    expect(screen.getAllByTestId("scrollback-line")[0]).toBe(row);
+    expect(window.getSelection()?.toString()).toBe(text);
+  };
+
+  const ownJoin: ScrollbackMessage = {
+    id: 4,
+    network: "freenode",
+    channel: "#grappa",
+    server_time: 1_700_000_003_000,
+    kind: "join",
+    sender: "vjt",
+    body: null,
+    meta: {},
+  };
+  const noTopic = { text: null, set_by: null, set_at: null };
+
+  beforeEach(() => {
+    setScrollback({ [HERE]: fixture, [ELSEWHERE]: [elsewhereRow(10)] });
+  });
+
+  afterEach(() => {
+    window.getSelection()?.removeAllRanges();
+    setUserNick(null);
+    // The topic store is a real module singleton: reset both keys so a seed
+    // cannot leak into a sibling suite (a null-text entry renders no line).
+    seedTopic(HERE, noTopic);
+    seedTopic(ELSEWHERE, noTopic);
+  });
+
+  // The reported trigger: the arrival that bumps another window's badge.
+  it("an arrival in another window leaves the rows and the selection in place", () => {
+    mount();
+    const { row, text } = selectFirstRow();
+
+    arriveElsewhere();
+
+    expectRowAndSelectionKept(row, text);
+  });
+
+  // A second whole-window record the memo reads, so the guard is shown to sit
+  // on the rows and not on the one store the report happened to name.
+  it("a topic change in another channel leaves the rows and the selection in place", () => {
+    mount();
+    const { row, text } = selectFirstRow();
+
+    seedTopic(ELSEWHERE, { text: "a topic somewhere else", set_by: "carol", set_at: null });
+
+    expectRowAndSelectionKept(row, text);
+  });
+
+  // The on-JOIN topic line is rebuilt as a fresh object on every run. A guard
+  // that compared rows by reference alone would call it changed every time and
+  // rebuild the pane anyway — in every channel that carries a topic line.
+  it("an arrival elsewhere keeps the rows while this pane carries a topic line", () => {
+    setUserNick("vjt");
+    setScrollback((prev) => ({ ...prev, [HERE]: [...fixture, ownJoin] }));
+    seedTopic(HERE, { text: "the topic here", set_by: "alice", set_at: null });
+    mount();
+    expect(screen.getByTestId("topic-join-line")).toHaveTextContent("the topic here");
+    const { row, text } = selectFirstRow();
+
+    arriveElsewhere();
+
+    expectRowAndSelectionKept(row, text);
+  });
+
+  // Controls: the guard must not swallow a change that IS this window's.
+  it("an arrival in this window still renders", () => {
+    mount();
+    expect(screen.getAllByTestId("scrollback-line")).toHaveLength(3);
+
+    setScrollback((prev) => ({
+      ...prev,
+      [HERE]: [...fixture, { ...(fixture[0] as ScrollbackMessage), id: 5, body: "fresh here" }],
+    }));
+
+    expect(screen.getAllByTestId("scrollback-line")).toHaveLength(4);
+    expect(screen.getByText("fresh here")).toBeInTheDocument();
+  });
+
+  // The topic row keeps its id across a topic edit, so a guard that compared
+  // ids (or stopped at the row's top level) would keep the stale text here.
+  it("a topic edit on this channel still re-renders the topic line", () => {
+    setUserNick("vjt");
+    setScrollback((prev) => ({ ...prev, [HERE]: [...fixture, ownJoin] }));
+    seedTopic(HERE, { text: "the old topic", set_by: "alice", set_at: null });
+    mount();
+    expect(screen.getByTestId("topic-join-line")).toHaveTextContent("the old topic");
+
+    seedTopic(HERE, { text: "the new topic", set_by: "alice", set_at: null });
+
+    expect(screen.getByTestId("topic-join-line")).toHaveTextContent("the new topic");
+  });
+});
