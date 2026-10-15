@@ -342,6 +342,7 @@ import { appendTopicShow } from "../lib/topicShow";
 import { dismissWhoisCard, setWhoisBundle } from "../lib/whoisCard";
 import ScrollbackPane, {
   resetAutoFocusedJoinsForTest,
+  samePlainData,
   shouldLockScrollGate,
   shouldRescueUnderfillLoadOlder,
 } from "../ScrollbackPane";
@@ -8009,5 +8010,40 @@ describe("issue 2418 — a change in another window keeps this pane's rows and s
     seedTopic(HERE, { text: "the new topic", set_by: "alice", set_at: null });
 
     expect(screen.getByTestId("topic-join-line")).toHaveTextContent("the new topic");
+  });
+});
+
+// issue 2418 — the comparator behind the `rows()` guard. Reading "equal" when
+// the render would differ is the one failure it must never have: the pane
+// would keep a stale row. So anything whose state is not a plain object's own
+// keys (a Date, a Map, a class instance) must read as CHANGED, never equal.
+describe("samePlainData — the rows() guard's comparator (issue 2418)", () => {
+  it("reads equal plain data built twice as equal", () => {
+    expect(
+      samePlainData(
+        { a: 1, line: { text: "t", meta: null } },
+        { a: 1, line: { text: "t", meta: null } },
+      ),
+    ).toBe(true);
+  });
+
+  it("reads a change inside a nested object as a change", () => {
+    expect(samePlainData({ line: { text: "old" } }, { line: { text: "new" } })).toBe(false);
+  });
+
+  it("never reads a key present on one side only as equal, even when undefined", () => {
+    expect(samePlainData({ a: undefined }, { b: undefined })).toBe(false);
+  });
+
+  it("reads two different Dates as changed", () => {
+    expect(samePlainData({ at: new Date(1) }, { at: new Date(2) })).toBe(false);
+  });
+
+  it("reads two different Maps as changed", () => {
+    expect(samePlainData({ m: new Map([["k", 1]]) }, { m: new Map([["k", 2]]) })).toBe(false);
+  });
+
+  it("reads an array and an object with the same index keys as changed", () => {
+    expect(samePlainData(["x"], { 0: "x" })).toBe(false);
   });
 });

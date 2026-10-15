@@ -1376,7 +1376,7 @@ function sameRows(prev: Row[], next: Row[]): boolean {
 // by store reference for free and only the objects a run built fresh are
 // walked. Anything this cannot prove equal reads as changed, which is the
 // pre-2418 behaviour, never a stale render.
-function samePlainData(a: unknown, b: unknown): boolean {
+export function samePlainData(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
   const aRecord = a as Record<string, unknown>;
