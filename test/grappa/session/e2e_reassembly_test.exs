@@ -182,9 +182,9 @@ defmodule Grappa.Session.E2eReassemblyTest do
     # 32 such messages are 2016 fragments for 2016 bytes of chunk — far
     # under 32 KiB if only chunk bytes counted.
     tiny =
-      for n <- 1..32, fragment <- tiny_fragments(String.pad_leading("#{n}", 11, "A")) |> Enum.drop(-1) do
-        fragment
-      end
+      Enum.flat_map(1..32, fn n ->
+        "#{n}" |> String.pad_leading(11, "A") |> tiny_fragments() |> Enum.drop(-1)
+      end)
 
     assert length(tiny) == 2016
     {_, results} = feed(E2eReassembly.new(), "flooder", tiny, 0)
