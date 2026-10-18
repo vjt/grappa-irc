@@ -646,7 +646,7 @@ Check `protocol_version >= 28`. ⚠️ There is no 27 — the shape moved twice
 before this version was published, and the pin gate requires a number per
 move. Nothing ever spoke 27.
 
-### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42)
+### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43)
 
 An encrypted query is a conversation grappa carries and cannot read. The
 endpoints (cicchetto, or a bot using the shared Python package) run Olm via
@@ -656,7 +656,7 @@ vodozemac; on IRC the traffic is CTCP inside PRIVMSG to the peer's nick,
 fragments, and hands you one event per whole message:
 
 ```json
-{"kind": "e2e_message", "network": "azzurra", "from": "vjt-claude",
+{"kind": "e2e_message", "network": "azzurra", "id": 4711, "from": "vjt-claude",
  "verb": "pkmsg", "msgid": "q83vEjRWeJA", "payload": "eyJ2IjoxLCJpZCI6…"}
 ```
 
@@ -665,12 +665,41 @@ cut it, never decoded on the server. `verb` is one of `keys`, `pkmsg`,
 `msg`, `nack`. `from` is a routing hint only: pin the peer on its KEY, never
 its nick.
 
-🔴 **This event is the only copy you will ever get.** An E2E line is never
-stored — not in scrollback, not in search, not in a push payload — so
-nothing replays it and `GET …/messages` will never return it. A client that
-was not on the socket when it arrived missed it (the offline queue that
-closes this gap is a later slice of 2430; check for it before relying on
-it). Keep your own decrypted copy if you want history; that is the design.
+`id` (v43) names the entry in your **offline queue**. Every whole message
+from a peer is queued for you before it is pushed, connected or not, and
+stays there until you acknowledge it or it expires:
+
+| route | answer |
+|---|---|
+| `GET /networks/:network_id/e2e/inbox?after=<id>` | **200** `{"messages": [e2e_message…]}` — oldest first, at most 100; page with the last `id` you got (`after` absent = from the start) |
+| `POST /networks/:network_id/e2e/inbox/ack` `{"ids": [<id>…]}` | **204** — those entries are deleted; idempotent; 1 to 100 positive integers, else 400 `bad_request` |
+
+🔴 **Delivery is AT LEAST ONCE: dedupe by `id`.** On connect, drain the
+inbox page by page; keep handling `e2e_message` pushes as they come. The
+same entry can reach you both ways, and again after a lost ack. `id` is
+never reused, so it tells a repeat from a new message. Ack an entry once
+you have processed it, including one you could not decrypt (after you have
+NACKed it): an unacked entry stays until it expires.
+
+What the queue holds is ciphertext; grappa holds no key. An E2E line is
+still never stored anywhere else — not in scrollback, not in search, not in
+a push payload — so `GET …/messages` will never return one. Keep your own
+decrypted copy if you want history; that is the design.
+
+The queue is bounded per network: an entry expires **7 days** after it
+arrived, and a peer cannot hold more than 1 MiB of your queue (4 MiB in
+total, each entry charged its payload plus 256 bytes). A message that does
+not fit is not queued and not pushed. For both, YOU are told — the sender
+never is, by ruling: once an hour grappa writes one row per peer into that
+peer's query window (opening it), a `server_event` with no body and
+`meta.e2e_undeliverable` = how many messages from that peer you will never
+read. Only `pkmsg` and `msg` are counted; key material and NACKs expire
+silently. cicchetto words it "*** <peer> sent you N encrypted messages that
+cannot be read here".
+
+A queued `pkmsg` or `msg` also raises a Web Push notification, under the
+same private-message preferences and mute as a DM: the title is the peer's
+nick, the body "encrypted message", nothing else.
 
 Sending:
 
@@ -716,7 +745,7 @@ A `KEYREQ` addressed to you is not delivered as an event: grappa will answer
 it from the key bundle it hosts for you (a later slice of 2430). Until that
 lands it is dropped.
 
-Check `protocol_version >= 42`.
+Check `protocol_version >= 42`, and `>= 43` for the offline queue and `id`.
 
 ---
 
@@ -1393,7 +1422,7 @@ forever.
 | `directory_complete` | user | the `/LIST` channel-directory scan finished |
 | `directory_failed` | user | the `/LIST` scan failed or timed out |
 | `directory_progress` | user | `/LIST` scan progress count |
-| `e2e_message` | user | one whole end-to-end encrypted message from a peer, payload never decoded or stored (§4f) |
+| `e2e_message` | user | one whole end-to-end encrypted message from a peer, payload never decoded; queued until acked (§4f) |
 | `invite_ack` | user | 341 RPL_INVITING — an INVITE you sent was accepted by the ircd |
 | `isupport_changed` | user | the network's 005 capability set (§5c, §5) |
 | `join_failed` | user | the window reached `:failed`, with reason + numeric |
