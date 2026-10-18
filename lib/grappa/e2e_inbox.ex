@@ -69,15 +69,15 @@ defmodule Grappa.E2eInbox do
   @type attrs :: %{sender: String.t(), verb: Entry.verb(), msgid: String.t(), payload: String.t()}
 
   @doc "Bytes one subject's queue on one network may hold, overhead included."
-  @spec max_bytes() :: pos_integer()
+  @spec max_bytes() :: 4_194_304
   def max_bytes, do: @max_bytes
 
   @doc "The share of `max_bytes/0` one sender may hold."
-  @spec max_sender_bytes() :: pos_integer()
+  @spec max_sender_bytes() :: 1_048_576
   def max_sender_bytes, do: @max_sender_bytes
 
   @doc "What each row costs against the bounds on top of its payload."
-  @spec row_overhead_bytes() :: pos_integer()
+  @spec row_overhead_bytes() :: 256
   def row_overhead_bytes, do: @row_overhead_bytes
 
   @doc """
@@ -89,11 +89,11 @@ defmodule Grappa.E2eInbox do
   def message_verb?(verb), do: verb in @message_verbs
 
   @doc "The most entries `list/3` returns at once."
-  @spec page_size() :: pos_integer()
+  @spec page_size() :: 100
   def page_size, do: @page_size
 
   @doc "How long a message waits for a client before it is dropped."
-  @spec ttl_seconds() :: pos_integer()
+  @spec ttl_seconds() :: 604_800
   def ttl_seconds, do: @ttl_seconds
 
   @doc """
@@ -216,8 +216,13 @@ defmodule Grappa.E2eInbox do
     if Repo.exists?(expired), do: Repo.BusyRetry.run(fn -> expire_transaction(expired) end), else: {:ok, []}
   end
 
+  # Nothing inside rolls back, so the transaction can only commit; a raise
+  # (a busy lock) propagates to `BusyRetry` as it would anyway.
   @spec expire_transaction(Ecto.Query.t()) :: {:ok, [{String.t(), pos_integer()}]}
-  defp expire_transaction(expired), do: Repo.immediate_transaction(fn -> delete_expired(expired) end)
+  defp expire_transaction(expired) do
+    {:ok, _} = committed = Repo.immediate_transaction(fn -> delete_expired(expired) end)
+    committed
+  end
 
   # Inside the transaction: who sent what, then the delete.
   @spec delete_expired(Ecto.Query.t()) :: [{String.t(), pos_integer()}]
