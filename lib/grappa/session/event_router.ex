@@ -95,7 +95,7 @@ defmodule Grappa.Session.EventRouter do
   in `Session.Server.handle_info` — out of this router's scope.
   """
 
-  alias Grappa.IRC.{CTCP, DCC, Identifier, Ignore, JoinFailure, Message}
+  alias Grappa.IRC.{CTCP, DCC, E2E, Identifier, Ignore, JoinFailure, Message}
   alias Grappa.IRC.DCC.Offer
   alias Grappa.{Mentions, Scrollback, Session}
   alias Grappa.RateLimit.TokenBucket
@@ -339,6 +339,10 @@ defmodule Grappa.Session.EventRouter do
           | {:presence_error, :list_full, detail :: String.t()}
           | {:presence_command_unknown, :monitor | :watch | :ison}
           | {:peer_nick_renamed, old_nick :: String.t()}
+          # issue 2430 — one well-formed E2E line addressed to us. `from` is
+          # the RAW nick (display); `Session.Server` folds it for the
+          # reassembly key.
+          | {:e2e_fragment, from :: String.t(), E2E.Fragment.t()}
 
   @doc """
   Classifies one inbound `Grappa.IRC.Message` against the current
@@ -378,22 +382,68 @@ defmodule Grappa.Session.EventRouter do
   """
   @spec route(Message.t(), state()) :: {:cont, state(), [effect()]}
   def route(%Message{} = msg, state) do
-    if ignored?(msg, state) do
+    cond do
       # #162 — dropped at the door. No persist effect, so no row, no
       # broadcast, and no push: the "zero pushes emitted" requirement on the
       # issue holds by construction rather than by a second gate.
-      {:cont, state, []}
-    else
-      isupport = Map.get(state, :isupport, ISupport.default())
+      ignored?(msg, state) ->
+        {:cont, state, []}
 
-      {msg, statusmsg_level} = strip_statusmsg_target(msg, ISupport.statusmsg(isupport))
+      e2e?(msg) ->
+        route_e2e(msg, state)
 
-      msg
-      |> canonicalize_channel_params(ISupport.casemapping(isupport))
-      |> do_route(state)
-      |> tag_statusmsg(statusmsg_level)
+      true ->
+        isupport = Map.get(state, :isupport, ISupport.default())
+
+        {msg, statusmsg_level} = strip_statusmsg_target(msg, ISupport.statusmsg(isupport))
+
+        msg
+        |> canonicalize_channel_params(ISupport.casemapping(isupport))
+        |> do_route(state)
+        |> tag_statusmsg(statusmsg_level)
     end
   end
+
+  # issue 2430 — every inbound E2E line stops HERE, before any arm that
+  # could persist it. One door rather than a guard per arm: a PRIVMSG to a
+  # channel, a NOTICE, a CTCP-reply NOTICE and a malformed frame each have
+  # their own persisting arm further down, and "never stored" has to hold
+  # for all of them. `E2E.framed?/1` is the wide classifier on purpose — a
+  # malformed E2E line is still one. (`Scrollback.Message` refuses such a
+  # body as well; that is the backstop, this is the route.)
+  @spec e2e?(Message.t()) :: boolean()
+  defp e2e?(%Message{command: cmd, params: [_, body]}) when cmd in [:privmsg, :notice] and is_binary(body),
+    do: E2E.framed?(body)
+
+  defp e2e?(_), do: false
+
+  # Only one shape is delivered: a well-formed PRIVMSG addressed to our own
+  # nick, from somebody else. The rest is dropped without a trace, each for
+  # a stated reason —
+  #
+  #   * a CHANNEL target: there is no channel encryption yet (Megolm is
+  #     later), so nobody here can read it;
+  #   * our OWN line echoed back (`echo-message`): we sent it, the client
+  #     has its plaintext, and decrypting our own ciphertext is not a thing;
+  #   * a NOTICE: the agreed wire is PRIVMSG only (2430);
+  #   * a malformed frame, including the dropped `OFFLINE` verb.
+  #
+  # Reassembly is NOT done here: it needs the clock and a buffer that
+  # outlives one line, which `Session.Server` owns.
+  @spec route_e2e(Message.t(), state()) :: {:cont, state(), [effect()]}
+  defp route_e2e(%Message{command: :privmsg, params: [target, body]} = msg, state) do
+    sender = Message.sender_nick(msg)
+
+    with true <- nick_eq?(target, state.nick),
+         false <- nick_eq?(sender, state.nick),
+         {:ok, fragment} <- E2E.parse(body) do
+      {:cont, state, [{:e2e_fragment, sender, fragment}]}
+    else
+      _ -> {:cont, state, []}
+    end
+  end
+
+  defp route_e2e(%Message{}, state), do: {:cont, state, []}
 
   # #162 — the /ignore delivery filter. Pure: reads `state.ignores`, which
   # Session.Server loads at init and re-syncs on mutation — already COMPILED

@@ -15,6 +15,7 @@ defmodule Grappa.IRC.E2ETest do
       # Malformed (no fields at all) is still an E2E line: the never-persist
       # rule must catch it as surely as a well-formed one.
       assert E2E.framed?("\x01E2E garbage")
+      assert E2E.framed?("\x01E2E\x01")
     end
 
     test "false for other CTCP verbs and plain text" do
