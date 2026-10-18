@@ -2,17 +2,19 @@ defmodule GrappaWeb.E2eController do
   @moduledoc """
   The send door for end-to-end encrypted queries (issue 2430).
 
-  The client encrypts; grappa frames, paces and relays. The receive half
-  is not a REST resource at all: a peer's message arrives as an
-  `e2e_message` event on the user topic and is never stored, so there is
-  nothing here to GET.
+  The client encrypts; grappa frames, paces and relays. A peer's message
+  arrives as an `e2e_message` event on the user topic the moment it is
+  queued (`Grappa.E2eInbox`); the queue itself is the resource below, so a
+  client that was not connected can fetch what waits and acknowledge what
+  it has read. It is never scrollback.
 
   Same `:authn` + `ResolveNetwork` pipeline as every other
   `/networks/:network_id/*` route, so ownership is asserted the same way.
   """
   use GrappaWeb, :controller
 
-  alias Grappa.Session
+  alias Grappa.{E2eInbox, Session}
+  alias Grappa.Session.Wire, as: SessionWire
   alias GrappaWeb.Subject
 
   # The wire spells verbs lowercase, like every other closed set on it; the
@@ -54,6 +56,51 @@ defmodule GrappaWeb.E2eController do
   end
 
   def create(_, _), do: {:error, :bad_request}
+
+  @doc """
+  `GET /networks/:network_id/e2e/inbox` — the messages waiting for this
+  subject on this network, oldest first, at most `E2eInbox.page_size/0`.
+  Each is the `e2e_message` the user topic pushes, `id` included.
+  `?after=<id>` pages past the last id seen; 400 for one that is not a
+  non-negative integer.
+  """
+  @spec inbox(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request}
+  def inbox(conn, params) do
+    with {:ok, after_id} <- cursor(Map.get(params, "after", "0")) do
+      network = conn.assigns.network
+      entries = E2eInbox.list(Subject.to_session(conn.assigns.current_subject), network.id, after_id)
+      json(conn, %{messages: Enum.map(entries, &SessionWire.e2e_message(network.slug, &1))})
+    end
+  end
+
+  @doc """
+  `POST /networks/:network_id/e2e/inbox/ack` — `{ids}`: the client has
+  read these; they are deleted. 204. An id that is gone already, or is not
+  this subject's, is skipped. 400 unless `ids` is a non-empty list of
+  positive integers, at most a page long.
+  """
+  @spec ack(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request | :db_unavailable}
+  def ack(conn, %{"ids" => [_ | _] = ids}) do
+    if length(ids) <= E2eInbox.page_size() and Enum.all?(ids, &(is_integer(&1) and &1 > 0)) do
+      with :ok <- E2eInbox.ack(Subject.to_session(conn.assigns.current_subject), conn.assigns.network.id, ids) do
+        send_resp(conn, :no_content, "")
+      end
+    else
+      {:error, :bad_request}
+    end
+  end
+
+  def ack(_, _), do: {:error, :bad_request}
+
+  @spec cursor(term()) :: {:ok, non_neg_integer()} | {:error, :bad_request}
+  defp cursor(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {n, ""} when n >= 0 -> {:ok, n}
+      _ -> {:error, :bad_request}
+    end
+  end
+
+  defp cursor(_), do: {:error, :bad_request}
 
   # The wire spells closed sets lowercase; anything else is a 400.
   @spec fetch(%{String.t() => atom()}, term()) :: {:ok, atom()} | {:error, :bad_request}

@@ -1156,7 +1156,34 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: an old bundle ignores an event kind it
   # does not know, and never calls the new route.
-  @protocol_version 42
+  #
+  # ---------------------------------------------------------------------------
+  # 43 — issue 2430: the offline queue for encrypted messages
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `id` on the `e2e_message` push — the message's id in the offline
+  # queue (`Grappa.E2eInbox`); `GET /networks/:network_id/e2e/inbox`
+  # (`?after=<id>` → `{messages: [e2e_message…]}`, the same shape the push
+  # carries) and `POST /networks/:network_id/e2e/inbox/ack` (`{ids}` → 204);
+  # and the `e2e_undeliverable` key on the scrollback meta allowlist (the
+  # recipient-only notice row: a `server_event` in the peer's query window,
+  # its value how many messages from that peer were never read). Generated
+  # shape, so `wire_pin` sees the event field and the meta key. Bumped on the
+  # #1393d rule: a client that acknowledges messages needs the id, and one
+  # that fetches the queue on connect cannot do it against a server predating
+  # the route.
+  #
+  # `id` is REQUIRED in the typespec, not `optional(...)` as 35 and 41 chose,
+  # and that is safe for the reason those two were not: no shipped client
+  # reads `e2e_message` yet (42's cic arm validates it and consumes nothing),
+  # so no bundle can be stranded by an older server omitting it.
+  #
+  # Checked for a collision before claiming 43: the one open PR that edits
+  # this file (#2102) still carries 21.
+  #
+  # @min_protocol_version stays at 1: an old bundle ignores the extra field,
+  # the new routes and the meta key it does not know.
+  @protocol_version 43
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1197,7 +1224,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 42
+  @spec version() :: 43
   def version, do: @protocol_version
 
   @doc """

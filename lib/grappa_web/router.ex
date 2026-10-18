@@ -650,11 +650,14 @@ defmodule GrappaWeb.Router do
     # the ACCEPT, which already happened before any byte was written; the
     # guard is the 26-char slug's 128 bits. See the top-level scope for
     # the full reasoning.
-    # issue 2430 — the send half of an end-to-end encrypted query. Only a
-    # POST: the receive half is the `e2e_message` user-topic event, and
-    # nothing is stored for a GET to read. Per-network like everything here
+    # issue 2430 — an end-to-end encrypted query: the send door, and the
+    # offline queue a peer's messages wait in (the user topic pushes each
+    # as it is queued; these two let a client that was away fetch what
+    # waits and acknowledge what it read). Per-network like everything here
     # (one identity key per network), so ResolveNetwork proves ownership.
     post "/e2e/messages", E2eController, :create
+    get "/e2e/inbox", E2eController, :inbox
+    post "/e2e/inbox/ack", E2eController, :ack
 
     get "/dcc_offers", DccOffersController, :index
     post "/dcc_offers/:offer_id/accept", DccOffersController, :accept

@@ -1067,6 +1067,7 @@ export const S_SessionWireE2eVerb = { e: [...SESSION_WIRE_E2E_VERB] } as const;
 export const S_SessionWireE2eMessagePayload = {
   o: {
     kind: { l: "e2e_message" },
+    id: "i",
     network: "s",
     from: "s",
     verb: S_SessionWireE2eVerb,

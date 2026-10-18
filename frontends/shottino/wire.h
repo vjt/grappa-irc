@@ -53,16 +53,16 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v41 -> v42 (issue 2430): the `e2e_message` user-topic push
- * (a peer's end-to-end encrypted message, payload still base64 and never
- * decryptable here) and `POST /networks/:id/e2e/messages`. A terminal
- * holds no Olm account, so this client neither reads the event nor sends
- * one; an encrypted query is simply invisible here, which is the honest
- * outcome for a client without the key.
+ * Last read, v42 -> v43 (issue 2430): `id` on the `e2e_message` push,
+ * the offline-queue routes `GET /networks/:id/e2e/inbox` and `POST
+ * /networks/:id/e2e/inbox/ack`, and the `e2e_undeliverable` scrollback meta
+ * key. A terminal holds no Olm account, so it neither reads the queue nor
+ * acknowledges it; the notice row (a `server_event` with no body) renders
+ * here as a bare `---` line, since this client does not read that key.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 42
+#define WIRE_PROTOCOL_VERSION 43
 
 #include <stdbool.h>
 #include <stddef.h>

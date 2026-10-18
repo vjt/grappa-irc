@@ -100,6 +100,7 @@ export const SCROLLBACK_META_TKEY = [
   "statusmsg",
   "nick_fallback",
   "link_failure",
+  "e2e_undeliverable",
   "structural",
 ] as const;
 export type ScrollbackMetaTKey = (typeof SCROLLBACK_META_TKEY)[number];
@@ -1256,6 +1257,7 @@ export type SessionWireE2eVerb = (typeof SESSION_WIRE_E2E_VERB)[number];
 
 export type SessionWireE2eMessagePayload = {
   kind: "e2e_message";
+  id: number;
   network: string;
   from: string;
   verb: SessionWireE2eVerb;
