@@ -131,8 +131,10 @@ defmodule Grappa.Session.E2ePacerTest do
     end
 
     test "the budget comes back once the urgent window has passed" do
-      {:ok, [], urgent, _} = E2ePacer.enqueue(E2ePacer.new(), "a", "a", :control, lines(9, @cheap), 0, @held)
-      {:ok, [], both, _} = E2ePacer.enqueue(urgent, "b", "b", :text, lines(9, @cheap), 0, @held)
+      # b's text is queued FIRST, so on a tie b's older lines win: a can be
+      # first at the end only because its line is urgent again.
+      {:ok, [], text, _} = E2ePacer.enqueue(E2ePacer.new(), "b", "b", :text, lines(9, @cheap), 0, @held)
+      {:ok, [], both, _} = E2ePacer.enqueue(text, "a", "a", :control, lines(9, @cheap), 0, @held)
 
       spent =
         Enum.reduce(0..(E2ePacer.urgent_budget() - 1), both, fn i, acc ->
@@ -144,6 +146,24 @@ defmodule Grappa.Session.E2ePacerTest do
       assert {[{"b", _}], turned, _} = E2ePacer.release(spent, 20_000, 8_000)
       # ...and once a's first urgent line is 60 s old, a's next is urgent again.
       assert {[{"a", _}], _, _} = E2ePacer.release(turned, E2ePacer.urgent_window_ms(), 8_000)
+    end
+
+    test "a peer whose queue empties keeps its spent budget until the window has passed" do
+      {:ok, [], text, _} = E2ePacer.enqueue(E2ePacer.new(), "b", "b", :text, lines(9, @cheap), 0, @held)
+      {:ok, [], both, _} = E2ePacer.enqueue(text, "a", "a", :control, lines(E2ePacer.urgent_budget(), @cheap), 0, @held)
+
+      spent =
+        Enum.reduce(0..(E2ePacer.urgent_budget() - 1), both, fn i, acc ->
+          {[{"a", _}], acc, _} = E2ePacer.release(acc, i * 2_500, 8_000)
+          acc
+        end)
+
+      # a has nothing left and its FLUD window has emptied; a release that
+      # fits nothing still tidies the lanes, and forgetting a's there would
+      # hand a fresh budget to the next KEYREQ.
+      {[], tidied, _} = E2ePacer.release(spent, 25_000, @held)
+      {:ok, [], again, _} = E2ePacer.enqueue(tidied, "a", "a", :control, [{"KEYREQ", @cheap}], 30_000, @held)
+      assert {[{"b", _}], _, _} = E2ePacer.release(again, 30_000, 8_000)
     end
 
     test "text takes turns across peers instead of draining in queue order" do
