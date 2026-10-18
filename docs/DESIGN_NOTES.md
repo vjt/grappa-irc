@@ -2622,10 +2622,8 @@ vendored source: a sender's count keeps accumulating while its `first_msg` is
 no older than 3 s in integer seconds, so a second burst of 3 exactly 3 s after
 the first still counts the first one. "3 per 3 s" is therefore unsafe (w2's
 simulation: 2588 of 3000 trials blocked); 3 per 6 s blocked none even with 2 s
-of jitter. `Session.E2ePacer` enforces that per folded recipient nick, queue
-capped at 128 lines, and refuses a message WHOLE when it does not fit (429).
-Half a message is discarded by the receiver, so accepting it would only spend
-the window. The irc-olm package uses the same default.
+of jitter. `Session.E2ePacer` enforces that per folded recipient nick. The
+irc-olm package uses the same default.
 
 **Per connection, never past the fake-lag ceiling.** Code review of this slice
 found that FLUD pacing alone still gets the SENDER killed. bahamut charges
@@ -2646,12 +2644,40 @@ minutes; slow delivery is accepted by the ruling. A line costlier than the
 gate on its own (only where LINELEN is far over 512) goes once the bank is
 empty, or it would never go.
 
-**Short messages first** (w2's addition, in the same ruling). A single-line
-message (KEYREQ, NACK, the endpoints' CHAL/ACK) goes ahead of the remaining
-lines of every longer message, to any recipient. A CHAL expires 15 s after it
-is made and would expire behind a five-minute message. Overtaking is safe:
-reassembly is per msgid, and w2 measured vodozemac decrypting a message
-overtaken by up to 40 later ones.
+**Measured on the e2e testnet bahamut** (2430, comment 6253827407), with raw
+clients sending 400-byte E2E-shaped CTCP lines (5 s each):
+- 3 lines per 6 s alone: Excess Flood at t = 18 s, on the **12th** full line.
+  That is worse than the 14th the source arithmetic gives. Charging matched
+  `parse.c:236`, but queued lines were parsed one every ~5 s, about one line
+  later than the `< 10` gate alone predicts. The cause is inferred (`timeofday`
+  refreshed per loop iteration), not established.
+- The bank rule: 20 of 20 lines, no disconnect, each parsed 0 to 1 s after it
+  was sent. At most one line ever waited unparsed.
+
+The bank is read through a call into `Client`, with a 250 ms deadline. The
+client stops answering while it connects (up to 30 s per address) or sits on
+a stuck write. A timeout reads as a FULL bank, so nothing is released and the
+pacer asks again one line's cost later. The exit is caught for issue 2370's
+reason: an uncaught one took the session down. A dead client still exits.
+
+At most 128 lines wait on the whole CONNECTION, about ten minutes of drip.
+The bank serialises every recipient, so a per-recipient cap would have meant
+N recipients times ten minutes of session state. A message that does not fit
+is refused WHOLE (429): the receiver discards half a message, so accepting it
+would only spend the bank on lines nobody can use.
+
+**Control first, text in order** (w2's addition, in the same ruling). A
+CONTROL message (KEYREQ, NACK, grappa's own KEYS, and a MSG/PKMSG the client
+marks as carrying a CHAL or an ACK) goes ahead of every queued text line, to
+any recipient. A CHAL expires 15 s after it is made and would expire behind a
+five-minute message. Overtaking is safe for decryption: reassembly is per
+msgid, and w2 measured vodozemac decrypting a message overtaken by up to 40
+later ones. Text never reorders, or the peer would display two messages
+backwards. The first cut classified by line count, which let a short TEXT
+message overtake a long one; w2 caught it. grappa cannot see inside an
+encrypted message, so the client says: an optional `priority` on the send door
+(`control | text`, default `text`), with `keyreq`/`nack` control whatever it
+says.
 
 **And the receiver's window counts from the LAST fragment** (same ruling).
 The draft's 60 s from the first fragment, 64 fragments and the pacing above
@@ -2692,9 +2718,23 @@ until it lands an inbound KEYREQ is logged at debug and dropped, and
   FLUD rule, so a probe landing during a burst can take the slot the pacer
   leaves free. They are charged to the fake-lag bank like every frame, so the
   connection rule still sees them.
-- The bank is a MODEL, charged when grappa writes, while bahamut charges when
-  it parses. Past the gate the model runs ahead of the real bank, which only
-  makes E2E wait longer than it has to.
+- The bank is a MODEL. It over-counts every frame by the verb, its space and
+  the CRLF, and past the gate it runs ahead of the real bank (it charges when
+  grappa writes, bahamut when it parses); both only make E2E wait longer. It
+  can also run BEHIND by a little: bahamut stamps `since` at read time,
+  including network latency, compares in whole seconds, and adds 2 s for an
+  ERR_TARGETTOFAST that the model does not see. The margin is about one line,
+  nowhere near 2560 bytes, so "no E2E line ever waits unparsed" is close to
+  exact rather than exact.
+- A 60 s pause in a message's drip still loses it at the receiver: a
+  reconnect mid-message, or the user's own traffic holding the bank that long.
+- Counting the window from the last fragment lets a peer keep one partial
+  message alive for about an hour (a NEW index every 59 s, 63 times) where it
+  used to be 60 s. The memory caps are unchanged, so it costs memory no
+  sooner, but holding the 1 MiB total is about 30x cheaper for an attacker.
+  bahamut's FLUD makes that moot on Azzurra; other networks have no such
+  limit. An absolute cap counted from the first fragment would be a new rule,
+  so it would need a ruling.
 - A line the socket refuses is logged and lost, never retried: a retry would
   land outside the window the pacer just accounted for, and the receiver
   discards the incomplete message either way.

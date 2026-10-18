@@ -686,22 +686,28 @@ them by two rules from bahamut's source:
 - **at most 3 lines per 6 s per recipient**. bahamut blocks every CTCP to a
   client that receives more than 4 in 3 s, for 15 s, silently;
 - **never past the connection's fake-lag ceiling**. bahamut charges each
-  line `2 + len/120` s, stops reading a client at 10 s of debt, and
-  disconnects one whose unread backlog passes 2560 bytes. Everything the
+  line `2 + len/120` s, stops PARSING a client at 10 s of debt while it
+  keeps reading the socket, and disconnects one whose unparsed backlog
+  passes 2560 bytes. Everything the
   connection sends counts, your own messages included. A full line costs
   5 s, so a long message drips at about one line per 5 s: a 64-line message
   takes about five minutes. That is accepted by ruling, and receivers wait
   60 s from a message's LAST line, not its first.
 
-A single-line message (a `keyreq`, a `nack`, a short `msg`) goes ahead of the
-remaining lines of any longer one. So 202 means accepted: lines may still be
-waiting when it returns, and nobody ever tells the sender what happened next
-(no "delivered", no "expired", by ruling).
-400 `bad_request` for a channel target, an unknown verb or a non-base64
-payload; 400 `invalid_line` for a CR, LF or NUL in `target`; 413 `too_large`
+An optional `"priority"` field takes `"control"` or `"text"`; absent means
+`"text"`. A control message goes ahead of every queued text line, so a CHAL
+or an ACK is not stuck behind a long message. Text never reorders, so the
+peer never displays two messages backwards. `keyreq` and `nack` are control
+whatever the field says. grappa cannot see inside a `msg`/`pkmsg`, so set
+`"control"` on the one that carries a CHAL or an ACK. At most 128 lines wait
+on the whole connection. So 202 means accepted: lines may still be waiting
+when it returns, and nobody ever tells the sender what happened next (no
+"delivered", no "expired", by ruling).
+400 `bad_request` for a channel target, an unknown verb or priority, or a
+non-base64 payload; 400 `invalid_line` for a CR, LF or NUL in `target`; 413 `too_large`
 for a payload over 32 KiB (what a receiver buffers per sender, so it could
 never be reassembled) or one that needs more than 64 lines; 429
-`rate_limited` when the recipient's queue cannot take the whole message;
+`rate_limited` when the connection's queue cannot take the whole message;
 404 `not_found` with no session on the network; 502 `upstream_unreachable`
 while the upstream link is down; 504 `session_timeout` if the session does
 not answer.
