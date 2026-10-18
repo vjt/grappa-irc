@@ -229,6 +229,22 @@ defmodule Grappa.Scrollback.MessageTest do
       assert {"may only be set on :privmsg or :action rows", _} = cs.errors[:dm_with]
     end
 
+    # issue 2430 — an E2E line is never stored, whichever door tried. The
+    # EventRouter drops inbound ones before any arm; this is the backstop
+    # every other writer (the outbound echo, a mix task, a future facade)
+    # runs into. Every kind, because the rule is about the BODY.
+    test "rejects any row whose body is an E2E line, well-formed or not" do
+      for kind <- [:privmsg, :notice, :action],
+          body <- ["\x01E2E MSG q83vEjRWeJA 1/1 eyJ2IjoxfQ==\x01", "\x01E2E\x01"] do
+        cs = Message.changeset(%Message{}, %{@valid_attrs | kind: kind, body: body})
+        refute cs.valid?, "expected #{inspect(kind)} with #{inspect(body)} to be refused"
+        assert {"is an E2E line, which is never stored", _} = cs.errors[:body]
+      end
+
+      # Other CTCP keeps being stored, frame and all.
+      assert Message.changeset(%Message{}, %{@valid_attrs | body: "\x01VERSION\x01"}).valid?
+    end
+
     test "rejects an unknown kind" do
       cs = Message.changeset(%Message{}, %{@valid_attrs | kind: :ctcp})
       refute cs.valid?
