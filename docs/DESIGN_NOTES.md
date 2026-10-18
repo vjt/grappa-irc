@@ -2741,3 +2741,105 @@ until it lands an inbound KEYREQ is logged at debug and dropped, and
 - New `Session.Server` state fields (`e2e_reassembly`, `e2e_pacer` and their
   timers): a COLD deploy, which the preflight derives from
   `LongLivedModules` (both modules are listed).
+<!-- entry #2430b -->
+
+---
+
+## 2026-10-18 — #2430: an offline queue for encrypted messages, a notice for the recipient only, and a push
+
+Second grappa slice of issue 2430. a1 delivered a peer's whole encrypted
+message once, on the user topic, and kept nothing: a client that was not on
+the socket missed it. This slice closes that gap with `Grappa.E2eInbox`, tells
+the recipient when messages expired or were refused, and notifies a device.
+Protocol 43 (`id` on `e2e_message`; `GET /networks/:network_id/e2e/inbox` and
+`POST …/e2e/inbox/ack`).
+
+### Every message is queued, connected client or not
+
+The draft asks for a queue "while no cicchetto is connected". grappa cannot
+know that a connected client has actually processed a message: a background
+tab, a reload in the middle of a push, a socket that is up while the app is
+not. So `Session.Server` puts EVERY complete inbound message (all verbs but
+KEYREQ, which grappa will answer itself in a3) in the queue first, then
+broadcasts it with the queue's `id`. The client acknowledges ids it has
+processed, and fetches what is waiting when it connects. That is at-least-once
+delivery: the same entry can arrive by push and by fetch, and again after a
+lost acknowledgement. The `id` (AUTOINCREMENT, so never reused after a delete)
+is what the client dedupes on. One path instead of two, and "while no client
+is connected" is a special case of it.
+
+A message the queue refuses is not broadcast either. A client must never hold
+a message it cannot acknowledge, or the two halves of the contract disagree.
+
+### Whole messages, not raw lines
+
+The draft says the queue holds "raw lines". It holds the reassembled message
+instead, in the shape the client already consumes (`e2e_message`). Raw lines
+would make the client parse IRC, which the one-parser invariant forbids. The
+payload stays
+opaque: grappa stores the base64 string and never decodes it.
+
+### Bounds and TTL are judgment calls
+
+Each row is charged its payload plus 256 bytes, so a flood of tiny messages is
+bounded too. A subject's queue on one network holds 4 MiB, and one sender
+(case-folded, so `Bob` and `bob` count as one) 1 MiB of it, so one peer
+cannot crowd out everyone else. The check and the insert are one immediate
+transaction, so two arrivals cannot both take the last room. An entry expires
+after 7 days. None of these numbers comes from the spec; they are sized so
+that a week offline with a few talkative peers fits, and a hostile peer costs
+at most 1 MiB per subject and network.
+
+### The recipient is told, and only the recipient
+
+`Session.Server` sweeps the queue at init and then hourly. It drops what
+expired, adds the messages the queue refused since the last sweep, and writes
+ONE row per sender: a `:server_event` in that sender's query window
+(`channel` = the folded nick, `sender` = the raw nick, no `dm_with`, no body,
+`meta.e2e_undeliverable` = the count). It goes through the `{:persist, …}`
+effect, which opens the query window like any nick-keyed row. The row is
+typed, not text: cicchetto words it ("*** bob sent you 2 encrypted messages
+that cannot be read here", `data-testid="e2e-undeliverable"`). Only PKMSG and
+MSG are counted: key material and NACKs are the protocol talking to itself.
+Nothing is ever sent to the sender (vjt's ruling, 2430 19:3x).
+
+The refused counts live in session state, not in the database. A crash loses
+a count, never a message, and the number it would have shown is advisory.
+
+### A push, gated like a DM
+
+A queued PKMSG or MSG raises a third push trigger class,
+`Push.Triggers.dispatch_e2e/2`. `should_notify_e2e?/3` applies the mute
+first, then `private_messages_all` or the folded nick in
+`private_messages_only`, and the foreground gate applies as for the other two
+classes. The payload says only who: the title is the nick, the body
+"encrypted message", with the DM tag and URL and no badge. Nothing in a push
+can carry content grappa cannot read.
+
+### A sender that is not a nick
+
+Reading this slice before review showed that the queue's changeset refuses a sender
+that is not a nick, and that three such senders are reachable from the wire: a
+server prefix, a prefix-less line (`*`) and a nick longer than our 30-character
+key. The refusal came back as `{:error, changeset}`, which the session did not
+match, so any of them killed the session. `EventRouter.route_e2e/2` now drops
+an E2E line whose sender is not a nick, next to the other drop reasons.
+
+### Testing the sweep end to end
+
+The TTL is seven days and the sweep hourly, so the e2e spec cannot wait for
+either. A dev/test-only door, `POST /networks/:network_id/e2e/inbox/expire`
+(compile-gated like the read-cursor force door), ages the caller's entries past
+the TTL and sends the session its own `:e2e_inbox_sweep` tick, so the spec
+watches the production expiry, row and window. `fixtures/push.ts` gained a
+generic delivery proof (`awaitPushDeliveryAfter`/`assertNoPushDeliveryAfter`):
+an encrypted message is never a scrollback row, so the existing proof
+(`assertMessagePersisted`) could never pass for it.
+
+### Known gaps
+
+- Queue rows outlive an unbind of the network. They are bounded by the cap and
+  swept if the network is bound again; nothing else reads them.
+- shottino has no arm for the notice and renders the row as a bare `---`.
+- New `Session.Server` state fields (`e2e_inbox_timer`, `e2e_unqueued`): a
+  COLD deploy, as a1 already was.
