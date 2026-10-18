@@ -654,7 +654,7 @@ defmodule GrappaWeb.Router do
     # POST: the receive half is the `e2e_message` user-topic event, and
     # nothing is stored for a GET to read. Per-network like everything here
     # (one identity key per network), so ResolveNetwork proves ownership.
-    post "/e2e/messages", E2EController, :create
+    post "/e2e/messages", E2eController, :create
 
     get "/dcc_offers", DccOffersController, :index
     post "/dcc_offers/:offer_id/accept", DccOffersController, :accept

@@ -8077,7 +8077,7 @@ defmodule Grappa.Session.EventRouterTest do
     # client puts on the wire.
     defp e2e_line(verb, msgid) do
       payload = Base.encode64(~s({"v":1,"body":"#{String.duplicate("x", 900)}"}))
-      {:ok, [first | _]} = Grappa.IRC.E2E.fragment(verb, msgid, payload, 300)
+      {:ok, [first | _]} = Grappa.IRC.E2e.fragment(verb, msgid, payload, 300)
       first
     end
 
@@ -8085,7 +8085,7 @@ defmodule Grappa.Session.EventRouterTest do
 
     test "a PRIVMSG to our nick becomes one :e2e_fragment effect and nothing is persisted" do
       line = e2e_line(:msg, "q83vEjRWeJA")
-      {:ok, fragment} = Grappa.IRC.E2E.parse(line)
+      {:ok, fragment} = Grappa.IRC.E2e.parse(line)
 
       assert {:cont, _, [{:e2e_fragment, "vjt-claude", ^fragment}]} =
                EventRouter.route(msg(:privmsg, ["vjt", line], @peer), base_state())

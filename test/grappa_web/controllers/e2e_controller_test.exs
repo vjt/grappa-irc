@@ -1,4 +1,4 @@
-defmodule GrappaWeb.E2EControllerTest do
+defmodule GrappaWeb.E2eControllerTest do
   @moduledoc """
   `POST /networks/:network_id/e2e/messages` (issue 2430) — the send door
   of an end-to-end encrypted query.
@@ -16,7 +16,7 @@ defmodule GrappaWeb.E2EControllerTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.IRC.E2E
+  alias Grappa.IRC.E2e
   alias Grappa.IRCServer
 
   @payload Base.encode64(~s({"v":1}))
@@ -48,7 +48,7 @@ defmodule GrappaWeb.E2EControllerTest do
     conn = post(conn, "/networks/#{network.slug}/e2e/messages", %{target: "alice", verb: "keyreq", payload: @payload})
 
     assert %{"msgid" => msgid} = json_response(conn, 202)
-    assert E2E.msgid?(msgid)
+    assert E2e.msgid?(msgid)
 
     assert {:ok, line} = IRCServer.wait_for_line(server, &String.contains?(&1, msgid), 1_000)
     assert line == "PRIVMSG alice :\x01E2E KEYREQ #{msgid} 1/1 #{@payload}\x01\r\n"

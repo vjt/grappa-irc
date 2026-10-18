@@ -1,4 +1,4 @@
-defmodule Grappa.Session.E2ESessionTest do
+defmodule Grappa.Session.E2eSessionTest do
   @moduledoc """
   issue 2430 — end-to-end encrypted query lines through a REAL session.
 
@@ -23,7 +23,7 @@ defmodule Grappa.Session.E2ESessionTest do
   import Ecto.Query
   import Grappa.AuthFixtures
 
-  alias Grappa.IRC.{E2E, LineSplit}
+  alias Grappa.IRC.{E2e, LineSplit}
   alias Grappa.{IRCServer, Repo, Session}
   alias Grappa.Networks.{Credentials, SessionPlan}
   alias Grappa.PubSub.Topic
@@ -39,7 +39,7 @@ defmodule Grappa.Session.E2ESessionTest do
   # The peer's client cuts its lines against its own budget; any budget
   # that fits the wire will do, the receiver must not care.
   defp peer_lines(verb, msgid, payload) do
-    {:ok, lines} = E2E.fragment(verb, msgid, payload, LineSplit.frame_budget(@nick, 512))
+    {:ok, lines} = E2e.fragment(verb, msgid, payload, LineSplit.frame_budget(@nick, 512))
     Enum.map(lines, &":alice!u@h PRIVMSG #{@nick} :#{&1}\r\n")
   end
 
@@ -109,7 +109,7 @@ defmodule Grappa.Session.E2ESessionTest do
       payload = payload(300)
 
       assert {:ok, msgid} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, payload)
-      assert E2E.msgid?(msgid)
+      assert E2e.msgid?(msgid)
 
       total = hd(await_fragments(server, msgid, 1)).total
       assert total <= 3
@@ -144,7 +144,7 @@ defmodule Grappa.Session.E2ESessionTest do
       _ = await_fragments(server, msgid, 3)
 
       # The 4th line is due 6 s after the first; it must not be on the wire
-      # now. (The release itself is pinned in `E2EPacerTest` with a clock.)
+      # now. (The release itself is pinned in `E2ePacerTest` with a clock.)
       assert {:error, :timeout} =
                IRCServer.wait_for_line(server, &String.contains?(&1, "#{msgid} 4/"), 300)
     end
@@ -186,7 +186,7 @@ defmodule Grappa.Session.E2ESessionTest do
     |> Enum.filter(&String.contains?(&1, " #{msgid} "))
     |> Enum.map(fn line ->
       ["PRIVMSG alice", body] = line |> String.trim_trailing("\r\n") |> String.split(" :", parts: 2)
-      {:ok, fragment} = E2E.parse(body)
+      {:ok, fragment} = E2e.parse(body)
       fragment
     end)
   end

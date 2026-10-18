@@ -1,4 +1,4 @@
-defmodule Grappa.IRC.E2E do
+defmodule Grappa.IRC.E2e do
   @moduledoc """
   The IRC framing of end-to-end encrypted queries (issue 2430).
 
@@ -20,7 +20,7 @@ defmodule Grappa.IRC.E2E do
   there is ONE IRC parser and it is on the server: cicchetto consumes
   typed events and never touches `\\x01`. Both hold at once by putting the
   cut in the right place — grappa parses the frame and reassembles the
-  fragments (`Grappa.Session.E2EReassembly`), and what it hands the client
+  fragments (`Grappa.Session.E2eReassembly`), and what it hands the client
   is the verb, the msgid and the payload STRING, untouched. The ciphertext
   is never re-encoded: the only operations on it are slicing a base64
   string on the way out and concatenating the slices on the way in.
@@ -49,7 +49,7 @@ defmodule Grappa.IRC.E2E do
   """
 
   alias Grappa.IRC.CTCP
-  alias Grappa.IRC.E2E.Fragment
+  alias Grappa.IRC.E2e.Fragment
 
   @typedoc """
   The E2E verbs, closed. Draft 7 also listed `OFFLINE`; vjt dropped it

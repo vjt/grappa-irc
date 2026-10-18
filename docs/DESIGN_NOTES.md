@@ -2577,8 +2577,8 @@ outbound ones. Protocol 42 (`e2e_message` on the user topic,
 The draft has grappa pass E2E lines through untouched. That collides with the
 one-parser invariant: cicchetto never parses IRC and never sees `\x01`. Both
 hold once the cut is placed at the payload: grappa parses the OUTER frame
-(`Grappa.IRC.E2E`, verb/msgid/fraction/chunk) and joins the chunks of a message
-(`Session.E2EReassembly`), and what the client receives is the verb, the msgid
+(`Grappa.IRC.E2e`, verb/msgid/fraction/chunk) and joins the chunks of a message
+(`Session.E2eReassembly`), and what the client receives is the verb, the msgid
 and the payload string, never decoded and never re-encoded. Slicing a base64
 string on the way out and concatenating on the way in are the only operations
 grappa performs on the ciphertext.
@@ -2589,7 +2589,7 @@ grappa performs on the ciphertext.
 NOTICE, a CTCP-reply NOTICE and a malformed frame. Each of those has its own
 persisting arm in `EventRouter`, so a guard per arm would be one forgotten arm
 away from a leak. Instead `EventRouter.route/2` stops every PRIVMSG/NOTICE whose
-body is a CTCP frame with verb `E2E` (`E2E.framed?/1`, deliberately wider than
+body is a CTCP frame with verb `E2E` (`E2e.framed?/1`, deliberately wider than
 `parse/1`: a broken E2E line is still one) before any of them run. Only a
 well-formed PRIVMSG addressed to our own nick, from someone else, becomes an
 effect. Channel targets (no channel encryption yet), our own `echo-message`
@@ -2620,7 +2620,7 @@ vendored source: a sender's count keeps accumulating while its `first_msg` is
 no older than 3 s in integer seconds, so a second burst of 3 exactly 3 s after
 the first still counts the first one. "3 per 3 s" is therefore unsafe (w2's
 simulation: 2588 of 3000 trials blocked); 3 per 6 s blocked none even with 2 s
-of jitter. `Session.E2EPacer` enforces that per folded recipient nick, queue
+of jitter. `Session.E2ePacer` enforces that per folded recipient nick, queue
 capped at 128 lines, and refuses a message WHOLE when it does not fit (429).
 Half a message is discarded by the receiver, so accepting it would only spend
 the window. The irc-olm package uses the same default.

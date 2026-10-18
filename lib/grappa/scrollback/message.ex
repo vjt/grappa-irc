@@ -108,7 +108,7 @@ defmodule Grappa.Scrollback.Message do
   import Ecto.Changeset
 
   alias Grappa.Accounts.User
-  alias Grappa.IRC.{E2E, Identifier}
+  alias Grappa.IRC.{E2e, Identifier}
   alias Grappa.Networks.Network
   alias Grappa.Scrollback.Meta
   alias Grappa.Subject
@@ -565,12 +565,12 @@ defmodule Grappa.Scrollback.Message do
   # which read this table. `EventRouter.route/2` stops inbound E2E lines
   # before any persisting arm; this is the backstop for every OTHER writer
   # (an outbound echo, a mix task, a future facade), keyed on the body for
-  # every kind. `E2E.framed?/1` is the wide classifier: a malformed E2E line
+  # every kind. `E2e.framed?/1` is the wide classifier: a malformed E2E line
   # is still one.
   @spec validate_not_e2e(Ecto.Changeset.t()) :: Ecto.Changeset.t()
   defp validate_not_e2e(changeset) do
     validate_change(changeset, :body, fn :body, body ->
-      if E2E.framed?(body), do: [body: "is an E2E line, which is never stored"], else: []
+      if E2e.framed?(body), do: [body: "is an E2E line, which is never stored"], else: []
     end)
   end
 
