@@ -108,7 +108,7 @@ defmodule Grappa.Scrollback.Message do
   import Ecto.Changeset
 
   alias Grappa.Accounts.User
-  alias Grappa.IRC.Identifier
+  alias Grappa.IRC.{E2E, Identifier}
   alias Grappa.Networks.Network
   alias Grappa.Scrollback.Meta
   alias Grappa.Subject
@@ -502,6 +502,7 @@ defmodule Grappa.Scrollback.Message do
     |> validate_identifier(:channel, &valid_target?/1)
     |> validate_identifier(:sender, &Identifier.valid_sender?/1)
     |> validate_body_for_kind()
+    |> validate_not_e2e()
     |> validate_dm_with_for_kind()
     |> assoc_constraint(:user)
     |> assoc_constraint(:visitor)
@@ -557,6 +558,20 @@ defmodule Grappa.Scrollback.Message do
       kind when kind in @body_required_kinds -> validate_required(changeset, [:body])
       _ -> changeset
     end
+  end
+
+  # issue 2430 — an end-to-end encrypted query line is NEVER stored: not in
+  # scrollback, so not in search and not in a push payload either, all of
+  # which read this table. `EventRouter.route/2` stops inbound E2E lines
+  # before any persisting arm; this is the backstop for every OTHER writer
+  # (an outbound echo, a mix task, a future facade), keyed on the body for
+  # every kind. `E2E.framed?/1` is the wide classifier: a malformed E2E line
+  # is still one.
+  @spec validate_not_e2e(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  defp validate_not_e2e(changeset) do
+    validate_change(changeset, :body, fn :body, body ->
+      if E2E.framed?(body), do: [body: "is an E2E line, which is never stored"], else: []
+    end)
   end
 
   # M8 fix 2026-05-08: enforce per-kind discipline on `:dm_with`.
