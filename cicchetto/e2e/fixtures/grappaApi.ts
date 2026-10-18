@@ -1546,3 +1546,56 @@ export async function setQuitPartReason(token: string, reason: string | null): P
     );
   }
 }
+
+// issue 2430 — one entry of the offline queue of end-to-end encrypted
+// messages, as `GET /networks/:slug/e2e/inbox` lists it (the same shape the
+// `e2e_message` push carries).
+export type E2eInboxEntry = {
+  id: number;
+  from: string;
+  verb: "keys" | "pkmsg" | "msg" | "nack";
+  msgid: string;
+  payload: string;
+};
+
+export async function fetchE2eInbox(token: string, networkSlug: string): Promise<E2eInboxEntry[]> {
+  const res = await fetch(
+    `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/e2e/inbox`,
+    {
+      headers: { authorization: `Bearer ${token}` },
+    },
+  );
+  if (!res.ok) throw new Error(`fetchE2eInbox: ${res.status} ${await res.text()}`);
+  return ((await res.json()) as { messages: E2eInboxEntry[] }).messages;
+}
+
+// Polls the queue until `msgid` is in it: the proof that a peer's encrypted
+// message reached grappa, which never makes it a scrollback row.
+export async function awaitE2eQueued(
+  token: string,
+  networkSlug: string,
+  msgid: string,
+  timeoutMs = 10_000,
+): Promise<E2eInboxEntry> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const hit = (await fetchE2eInbox(token, networkSlug)).find((e) => e.msgid === msgid);
+    if (hit) return hit;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`awaitE2eQueued: ${msgid} never reached the offline queue within ${timeoutMs}ms`);
+}
+
+// Test-only door (dev/test builds): ages the caller's queue past its TTL
+// and runs the session's own sweep, so the recipient-only "undeliverable"
+// notice is written now instead of seven days from now.
+export async function expireE2eInbox(token: string, networkSlug: string): Promise<void> {
+  const res = await fetch(
+    `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/e2e/inbox/expire`,
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    },
+  );
+  if (res.status !== 204) throw new Error(`expireE2eInbox: ${res.status} ${await res.text()}`);
+}

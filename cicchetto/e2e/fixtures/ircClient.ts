@@ -407,6 +407,25 @@ export class IrcPeer {
     this.client.raw(["PRIVMSG", targetNick, ctcp]);
   }
 
+  // issue 2430 — one end-to-end encrypted message, as a peer's client would
+  // put it on the wire: a single-fragment `E2E` CTCP inside a PRIVMSG,
+  // `<0x01>E2E <VERB> <msgid> 1/1 <chunk><0x01>`. The chunk is the padded
+  // standard base64 of the payload, which here is the WHOLE payload.
+  //
+  // Raw for the reason `dccSend` is raw: what grappa parses
+  // (`Grappa.IRC.E2e.parse/1`) is the wire text, so the spec owns it. The
+  // payload needs no real Olm inside — grappa never reads it, and nobody in
+  // this harness holds a key. Fire-and-forget: grappa answers nothing to
+  // the sender, by ruling.
+  e2eSend(
+    targetNick: string,
+    verb: "KEYS" | "PKMSG" | "MSG" | "NACK",
+    msgid: string,
+    payloadB64: string,
+  ): void {
+    this.client.raw(["PRIVMSG", targetNick, `\u0001E2E ${verb} ${msgid} 1/1 ${payloadB64}\u0001`]);
+  }
+
   // Set channel modes. Resolves once upstream echoes the MODE event for
   // the target channel matching the requested raw_modes string.
   // Examples: `mode("#chan", "+i")`, `mode("#chan", "+o", "nick")`,
