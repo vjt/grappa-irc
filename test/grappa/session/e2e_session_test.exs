@@ -25,10 +25,10 @@ defmodule Grappa.Session.E2eSessionTest do
 
   alias Grappa.{E2eInbox, IRCServer, Push, QueryWindows, Repo, Session}
   alias Grappa.IRC.{E2e, LineSplit}
-  alias Grappa.Session.E2ePacer
   alias Grappa.Networks.{Credentials, SessionPlan}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Message
+  alias Grappa.Session.E2ePacer
 
   @nick "grappa-test"
 
