@@ -687,14 +687,16 @@ a push payload — so `GET …/messages` will never return one. Keep your own
 decrypted copy if you want history; that is the design.
 
 The queue is bounded per network: an entry expires **7 days** after it
-arrived, and a peer cannot hold more than 1 MiB of your queue (4 MiB in
+arrived, and one nick cannot hold more than 1 MiB of your queue (4 MiB in
 total, each entry charged its payload plus 256 bytes). A message that does
 not fit is not queued and not pushed. For both, YOU are told — the sender
 never is, by ruling: once an hour grappa writes one row per peer into that
 peer's query window (opening it), a `server_event` with no body and
 `meta.e2e_undeliverable` = how many messages from that peer you will never
-read. Only `pkmsg` and `msg` are counted; key material and NACKs expire
-silently. cicchetto words it "*** <peer> sent you N encrypted messages that
+read. Only `pkmsg` and `msg` are counted; key material and NACKs expire,
+or are refused, silently. Because a refused message is never pushed either,
+a client that never acks stops receiving a peer's messages once that peer's
+share is full. cicchetto words it "*** <peer> sent you N encrypted messages that
 cannot be read here".
 
 A queued `pkmsg` or `msg` also raises a Web Push notification, under the
