@@ -146,4 +146,31 @@ defmodule Grappa.IRC.FakeLagTest do
       assert sample.commands_10s == 11
     end
   end
+
+  # issue 2430 — the three readings `Grappa.Session.E2ePacer` paces against,
+  # through `Grappa.IRC.Client`.
+  describe "bank_ms/2, cost_ms/1, ceiling_ms/0 — what E2E pacing reads" do
+    test "a connection that has sent nothing owes nothing" do
+      assert FakeLag.bank_ms(FakeLag.new(), @t0) == 0
+    end
+
+    test "the bank is the debt left at the reading, and drains to zero, never below" do
+      {state, _} = FakeLag.record(FakeLag.new(), 400, @t0)
+
+      assert FakeLag.bank_ms(state, @t0) == 5_000
+      assert FakeLag.bank_ms(state, @t0 + 1_500) == 3_500
+      assert FakeLag.bank_ms(state, @t0 + 60_000) == 0
+    end
+
+    test "cost is the record/3 arithmetic, in ms" do
+      assert FakeLag.cost_ms(119) == 2_000
+      assert FakeLag.cost_ms(120) == 3_000
+      assert FakeLag.cost_ms(404) == 5_000
+    end
+
+    test "the ceiling is the drain gate the samples measure headroom from" do
+      {_, sample} = FakeLag.record(FakeLag.new(), 64, @t0)
+      assert FakeLag.ceiling_ms() == round(sample.ceiling_s * 1_000)
+    end
+  end
 end
