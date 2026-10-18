@@ -321,20 +321,26 @@ export async function awaitPushDelivery(
   stimulus: PushStimulus,
   opts: { timeoutMs?: number; intervalMs?: number } = {},
 ): Promise<CaughtDelivery[]> {
-  const quoted = `<${stimulus.sender}> ${JSON.stringify(stimulus.body)} → ${stimulus.window}`;
+  return awaitPushDeliveryAfter(id, scrollbackProof(stimulus), opts);
+}
 
+/**
+ * `awaitPushDelivery` for a stimulus whose proof is not a scrollback row.
+ * issue 2430: an end-to-end encrypted message is never one — grappa queues
+ * it opaque (`awaitE2eQueued`) — so `assertMessagePersisted` could never
+ * pass for it, and the wait would accuse the stimulus of a push it did send.
+ */
+export async function awaitPushDeliveryAfter(
+  id: string,
+  proof: DeliveryProof,
+  opts: { timeoutMs?: number; intervalMs?: number },
+): Promise<CaughtDelivery[]> {
   try {
-    await assertMessagePersisted({
-      token: stimulus.token,
-      networkSlug: stimulus.networkSlug,
-      channel: stimulus.window,
-      sender: stimulus.sender,
-      body: stimulus.body,
-    });
+    await proof.delivered();
   } catch (cause) {
     throw new Error(
       `awaitPushDelivery: the stimulus never reached grappa, so a missing push for ` +
-        `id=${id} says nothing about the push pipeline — ${quoted}\n  cause: ${
+        `id=${id} says nothing about the push pipeline — ${proof.describe}\n  cause: ${
           cause instanceof Error ? cause.message : String(cause)
         }`,
     );
@@ -353,7 +359,7 @@ export async function awaitPushDelivery(
   }
   throw new Error(
     `awaitPushDelivery: the stimulus reached grappa but no delivery landed for id=${id} ` +
-      `within ${timeoutMs}ms of the proof — ${quoted}`,
+      `within ${timeoutMs}ms of the proof — ${proof.describe}`,
   );
 }
 
@@ -373,6 +379,32 @@ export type PushStimulus = {
   sender: string;
   body: string;
 };
+
+/**
+ * What proves a stimulus reached grappa, whatever kind of thing it is.
+ * `describe` is quoted back on failure so the reader sees WHICH stimulus was
+ * supposed to arrive; `delivered` resolves once it provably has, and rejects
+ * with the reason when it has not.
+ */
+export type DeliveryProof = {
+  readonly describe: string;
+  readonly delivered: () => Promise<void>;
+};
+
+// The proof for a message grappa keeps as a scrollback row: the row itself.
+function scrollbackProof(stimulus: PushStimulus): DeliveryProof {
+  return {
+    describe: `<${stimulus.sender}> ${JSON.stringify(stimulus.body)} → ${stimulus.window}`,
+    delivered: () =>
+      assertMessagePersisted({
+        token: stimulus.token,
+        networkSlug: stimulus.networkSlug,
+        channel: stimulus.window,
+        sender: stimulus.sender,
+        body: stimulus.body,
+      }),
+  };
+}
 
 /**
  * Asserts NO deliveries have landed for `id` by the end of `windowMs`,
@@ -402,28 +434,28 @@ export async function assertNoPushDelivery(
   stimulus: PushStimulus,
   windowMs = 1_500,
 ): Promise<void> {
+  await assertNoPushDeliveryAfter(id, scrollbackProof(stimulus), windowMs);
+}
+
+/**
+ * `assertNoPushDelivery` for a stimulus whose proof is not a scrollback row
+ * — see `awaitPushDeliveryAfter`.
+ */
+export async function assertNoPushDeliveryAfter(
+  id: string,
+  proof: DeliveryProof,
+  windowMs: number,
+): Promise<void> {
   await assertNoPushAfterStimulus(
     {
-      stimulusDelivered: () =>
-        assertMessagePersisted({
-          token: stimulus.token,
-          networkSlug: stimulus.networkSlug,
-          channel: stimulus.window,
-          sender: stimulus.sender,
-          body: stimulus.body,
-        }),
+      stimulusDelivered: proof.delivered,
       deliveryCount: async () => {
         const res = await fetch(`${PUSH_CATCHER_URL}/received/${encodeURIComponent(id)}`);
         if (!res.ok) return 0;
         return ((await res.json()) as CatcherResponse).deliveries.length;
       },
     },
-    {
-      id,
-      stimulus: `<${stimulus.sender}> "${stimulus.body}" → ${stimulus.window}`,
-      windowMs,
-      pollMs: 100,
-    },
+    { id, stimulus: proof.describe, windowMs, pollMs: 100 },
   );
 }
 

@@ -24,12 +24,13 @@
 // fired, which is a second way to pass without observing anything.
 //
 // Free of `fetch` by construction (the caller adapts the push-catcher and the
-// scrollback REST view to `PushAbsenceProbes`) for the reason `whoisWait.ts`
+// REST view that proves the stimulus — the scrollback, or for an end-to-end
+// encrypted message the offline queue — to `PushAbsenceProbes`) for the reason `whoisWait.ts`
 // gives: the instrument a claim is judged by has to be provable itself.
 
 export type PushAbsenceProbes = {
-  // Resolves once the stimulus is provably in grappa's scrollback; rejects
-  // with the reason when it is not.
+  // Resolves once the stimulus is provably in grappa; rejects with the
+  // reason when it is not.
   stimulusDelivered(): Promise<void>;
   // Deliveries the push-catcher has recorded for the subscription so far.
   deliveryCount(): Promise<number>;
