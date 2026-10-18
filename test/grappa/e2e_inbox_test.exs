@@ -102,10 +102,12 @@ defmodule Grappa.E2eInboxTest do
   describe "caps" do
     test "one sender cannot hold more than its share; another sender still gets in",
          %{subject: subject, network: network} do
-      fill!(subject, network.id, "alice", E2eInbox.max_sender_bytes() - 1_000)
+      fill!(subject, network.id, "Alice", E2eInbox.max_sender_bytes() - 1_000)
 
       # 1 000 bytes left in alice's share: a row costing 1 000 fits, the next
-      # one does not — whatever case the nick arrives in.
+      # one does not — whatever case the nick arrives in. The share is
+      # filled under a spelling neither later message uses, so the fold has
+      # to hold on the STORED side too, not only on the arriving one.
       _ = put!(subject, network.id, message("alice", :msg, payload_costing(1_000)))
       assert {:error, :full} = E2eInbox.put(subject, network.id, message("ALICE", :msg, payload_costing(300)))
 
