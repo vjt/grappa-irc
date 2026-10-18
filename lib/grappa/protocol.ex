@@ -1136,7 +1136,27 @@ defmodule Grappa.Protocol do
   # version (the one that touches it, #2102, carries 21).
   #
   # @min_protocol_version stays at 1: an old bundle drops the undeclared key.
-  @protocol_version 41
+  #
+  # ---------------------------------------------------------------------------
+  # 42 — issue 2430: end-to-end encrypted queries, the relay half
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: the `e2e_message` push on the user topic
+  # (`Session.Wire.e2e_message_payload`) — one whole peer message, its E2E
+  # lines reassembled server-side, the payload base64 untouched and never
+  # stored. And `POST /networks/:network_id/e2e/messages` (`{target, verb,
+  # payload}` → 202 `{msgid}`), the send half. Generated shape, so
+  # `wire_pin` sees the event. Bumped on the #1393d rule: a client that
+  # offers an encrypted query must know the server relays one, and a server
+  # predating this persists an inbound E2E line as a plain PRIVMSG row and
+  # 404s the send.
+  #
+  # Checked for a collision before claiming 42: no open PR edits this file's
+  # version (#2102 still carries 21).
+  #
+  # @min_protocol_version stays at 1: an old bundle ignores an event kind it
+  # does not know, and never calls the new route.
+  @protocol_version 42
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1177,7 +1197,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 41
+  @spec version() :: 42
   def version, do: @protocol_version
 
   @doc """

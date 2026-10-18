@@ -9,10 +9,10 @@ unread set is a work list instead of invisible weight. It is regenerated
 by `mix grappa.gen_wire_types` and held by the same `--check` that holds
 the two TypeScript artefacts, so it cannot go stale quietly.
 
-    generated                 199
+    generated                 201
     imported by cicchetto     65
     reachable at runtime      133
-    never read                66
+    never read                68
 
 "Reachable" counts a schema nested inside an imported one: the validator
 walks it, so it is load-bearing even though no module names it.
@@ -62,6 +62,8 @@ wire shape cic does not consume at all.
 - S_SessionWireChannelCreatedPayload
 - S_SessionWireChannelModesChangedPayload
 - S_SessionWireChannelModesWire
+- S_SessionWireE2eMessagePayload
+- S_SessionWireE2eVerb
 - S_SessionWireIsupportChangedPayload
 - S_SessionWireJoinFailedPayload
 - S_SessionWireJoinedPayload

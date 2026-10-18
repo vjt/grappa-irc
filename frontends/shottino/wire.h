@@ -53,16 +53,16 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v40 -> v41 (issue 2419): `truncated` on `mentions_bundle`,
- * true when the away window held more rows than the server scans, so
- * older mentions may be missing; a truncated bundle can now arrive with
- * no message at all. This client does not read the key yet: it prints
- * the rows it gets and still skips an empty bundle, so a truncated one
- * says nothing here about what it left out.
+ * Last read, v41 -> v42 (issue 2430): the `e2e_message` user-topic push
+ * (a peer's end-to-end encrypted message, payload still base64 and never
+ * decryptable here) and `POST /networks/:id/e2e/messages`. A terminal
+ * holds no Olm account, so this client neither reads the event nor sends
+ * one; an encrypted query is simply invisible here, which is the honest
+ * outcome for a client without the key.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 41
+#define WIRE_PROTOCOL_VERSION 42
 
 #include <stdbool.h>
 #include <stddef.h>

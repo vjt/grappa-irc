@@ -304,7 +304,13 @@ let _socket: Socket | null = null;
 // mentions window says so. Generated OPTIONAL and read as `false` when
 // absent — a pre-41 server never truncated — so `MIN_SERVER_PROTOCOL_VERSION`
 // stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 41;
+//
+// 42 (issue 2430) — the `e2e_message` user-topic push and the
+// `POST …/e2e/messages` send door: the relay half of end-to-end encrypted
+// queries. This bundle does not read the event yet (the Olm side is a later
+// slice), and an unknown kind is ignored, so `MIN_SERVER_PROTOCOL_VERSION`
+// stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 42;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //
