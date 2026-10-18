@@ -3971,7 +3971,9 @@ defmodule Grappa.Session.Server do
     {:noreply, state}
   end
 
-  # issue 2430 — frees the memory of E2E messages that will never complete.
+  # issue 2430 — the offline queue's sweep (`sweep_e2e_inbox/1`): first at
+  # init, then hourly. A tick sent from outside (the dev/test expiry door)
+  # re-arms the timer like the timer's own.
   def handle_info(:e2e_inbox_sweep, state) do
     _ = if state.e2e_inbox_timer, do: Process.cancel_timer(state.e2e_inbox_timer)
     timer = Process.send_after(self(), :e2e_inbox_sweep, @e2e_inbox_sweep_ms)
@@ -3979,6 +3981,7 @@ defmodule Grappa.Session.Server do
     {:noreply, sweep_e2e_inbox(%{state | e2e_inbox_timer: timer})}
   end
 
+  # issue 2430 — frees the memory of E2E messages that will never complete.
   def handle_info(:e2e_reassembly_sweep, state) do
     {buffer, _} = E2eReassembly.expire(state.e2e_reassembly, System.monotonic_time(:millisecond))
     {:noreply, arm_e2e_reassembly_sweep(%{state | e2e_reassembly: buffer, e2e_reassembly_timer: nil})}
@@ -8095,11 +8098,11 @@ defmodule Grappa.Session.Server do
       # Debug: the sender decides how often a full queue refuses.
       {:error, :full} ->
         Logger.debug("e2e message not queued: queue full", sender: from)
-        count_unqueued(state, from)
+        count_unqueued(state, from, verb)
 
       {:error, :db_unavailable} ->
         Logger.warning("e2e message not queued: database unavailable", sender: from)
-        count_unqueued(state, from)
+        count_unqueued(state, from, verb)
     end
   end
 
@@ -8108,23 +8111,32 @@ defmodule Grappa.Session.Server do
   # gates (prefs, mute, a device on screen) live in Triggers, as for the
   # other two trigger classes.
   @spec maybe_push_e2e(t(), E2eInbox.Entry.t()) :: :ok
-  defp maybe_push_e2e(state, %E2eInbox.Entry{verb: verb, sender: sender}) when verb in [:pkmsg, :msg] do
-    PushTriggers.dispatch_e2e(sender, %{
-      subject: state.subject,
-      subject_label: state.subject_label,
-      network_slug: state.network_slug,
-      own_nick: state.nick
-    })
+  defp maybe_push_e2e(state, %E2eInbox.Entry{verb: verb, sender: sender}) do
+    if E2eInbox.message_verb?(verb) do
+      PushTriggers.dispatch_e2e(sender, %{
+        subject: state.subject,
+        subject_label: state.subject_label,
+        network_slug: state.network_slug,
+        own_nick: state.nick
+      })
+    else
+      :ok
+    end
   end
 
-  defp maybe_push_e2e(_, %E2eInbox.Entry{}), do: :ok
+  # A refused PKMSG or MSG is counted for the recipient's notice. Refused
+  # key material and NACKs are not, as when they expire: there was no
+  # message to tell anyone about.
+  @spec count_unqueued(t(), String.t(), E2eInbox.Entry.verb()) :: t()
+  defp count_unqueued(state, from, verb) do
+    if E2eInbox.message_verb?(verb) do
+      unqueued =
+        Map.update(state.e2e_unqueued, fold_key(state, from), {from, 1}, fn {_, n} -> {from, n + 1} end)
 
-  @spec count_unqueued(t(), String.t()) :: t()
-  defp count_unqueued(state, from) do
-    unqueued =
-      Map.update(state.e2e_unqueued, fold_key(state, from), {from, 1}, fn {_, n} -> {from, n + 1} end)
-
-    %{state | e2e_unqueued: unqueued}
+      %{state | e2e_unqueued: unqueued}
+    else
+      state
+    end
   end
 
   # Drops what waited past the queue's TTL, then tells the recipient — and
