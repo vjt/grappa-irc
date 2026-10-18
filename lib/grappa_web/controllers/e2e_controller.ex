@@ -23,8 +23,8 @@ defmodule GrappaWeb.E2eController do
   `POST /networks/:network_id/e2e/messages` — `{target, verb, payload}`.
 
   **202, not 201.** Nothing is created and nothing is stored; the lines may
-  still be waiting for the recipient's FLUD window when this returns, and
-  IRC never confirms delivery. The body carries the `msgid` grappa chose,
+  still be waiting in the pacer when this returns, and IRC never confirms
+  delivery. The body carries the `msgid` grappa chose,
   which is what a peer's `NACK` will name.
 
   400 `bad_request` for a target that is not a nick, a verb outside

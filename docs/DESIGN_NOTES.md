@@ -2603,18 +2603,20 @@ refusing the row covers both.
 ### Reassembly lives in the session, in memory only
 
 Reassembly needs a clock and a buffer that outlives one line, so it sits in
-`Session.Server` state, not in the pure router. Caps: 60 s per message, 64
-fragments (the wire's `n` ceiling), 32 KiB buffered per sender, 1 MiB total.
-Nothing is persisted. An incomplete message is discarded by the protocol
+`Session.Server` state, not in the pure router. Caps: 64 fragments (the wire's
+`n` ceiling), 32 KiB buffered per sender and 1 MiB in total, each fragment
+charged its chunk plus 64 bytes so 1-byte chunks cannot pile up map entries,
+and 60 s without a new fragment. A fragment refused by a cap takes its message
+with it, since that message can no longer complete. Nothing is persisted. An incomplete message is discarded by the protocol
 anyway, so a crash that loses the buffer ends the same way a timeout would. The
 completed message is broadcast once on the user topic, the only topic every
 client holds: a stranger opening a session has no window anyone is subscribed
 to. It is the only copy. Nothing replays it, and the offline queue (next slice)
 is what covers a client that is not connected.
 
-### Outbound: 3 lines per 6 s per recipient
+### Outbound: two pacing rules from bahamut's source, short messages first
 
-bahamut compiles in FLUD (`s_user.c` `check_for_flud/4`, 4 CTCPs in 3 s,
+**Per recipient, 3 lines in any 6 s.** bahamut compiles in FLUD (`s_user.c` `check_for_flud/4`, 4 CTCPs in 3 s,
 15 s block, silent for the sender). An E2E line is a CTCP. Read from the
 vendored source: a sender's count keeps accumulating while its `first_msg` is
 no older than 3 s in integer seconds, so a second burst of 3 exactly 3 s after
@@ -2625,11 +2627,41 @@ capped at 128 lines, and refuses a message WHOLE when it does not fit (429).
 Half a message is discarded by the receiver, so accepting it would only spend
 the window. The irc-olm package uses the same default.
 
-The pacer is kept for queries even though a typical query message is a few
-lines and never waits. vjt ruled (2430, 19:3x) that the throttle and an
-"exchange in progress" UI matter only for future small encrypted channels; the
-pacer stays as a no-op-unless-long safety net, and no UI notice is attached to
-it for queries.
+**Per connection, never past the fake-lag ceiling.** Code review of this slice
+found that FLUD pacing alone still gets the SENDER killed. bahamut charges
+every PRIVMSG `2 + len/120` s (`parse.c:236`). It parses a client's recvQ only
+while that bank is under 10 s (`s_bsd.c:1657`), but it keeps reading the
+socket. A non-oper whose unparsed recvQ passes 2560 bytes is disconnected for
+"Excess Flood" (`s_bsd.c:1795`). A full E2E line costs 5 s, so 3 lines per 6 s
+grows the backlog by about 120 bytes/s, and the kill lands around the 14th
+full line to one recipient. w1 and w2 derived that independently from the
+source (2430, comments 6253508111 and 6253527827). vjt ruled option A (2430,
+20:3x): a line is released only while the bank plus its own cost stays at or
+under 10 s, so no E2E line ever waits unparsed in the recvQ. The bank comes
+from `Grappa.IRC.FakeLag` through `Client.fake_lag_bank_ms/1`. It already
+modelled every frame on the connection, which made it the obvious source; it
+only reported until now. So E2E backs off while the user talks. A long message
+drips at about one full line per 5 s, and a 64-line message takes about five
+minutes; slow delivery is accepted by the ruling. A line costlier than the
+gate on its own (only where LINELEN is far over 512) goes once the bank is
+empty, or it would never go.
+
+**Short messages first** (w2's addition, in the same ruling). A single-line
+message (KEYREQ, NACK, the endpoints' CHAL/ACK) goes ahead of the remaining
+lines of every longer message, to any recipient. A CHAL expires 15 s after it
+is made and would expire behind a five-minute message. Overtaking is safe:
+reassembly is per msgid, and w2 measured vodozemac decrypting a message
+overtaken by up to 40 later ones.
+
+**And the receiver's window counts from the LAST fragment** (same ruling).
+The draft's 60 s from the first fragment, 64 fragments and the pacing above
+cannot all hold: at one line per 5 s, only about 13 full lines arrive inside
+60 s from the first. Only a fragment that adds to the message resets the
+clock. A repeated index does not, so a peer cannot keep a dead message alive
+by resending one line.
+
+No UI notice is attached to the wait for queries: vjt ruled (2430, 19:3x) that
+an "exchange in progress" notice belongs to future small encrypted channels.
 
 Lines are sized by `LineSplit.frame_budget/2`, the worst-case relayed-prefix
 budget, which is never larger than the draft's "own mask + 14", so the ircd
@@ -2640,9 +2672,10 @@ cannot truncate a line on relay.
 The send door takes `{target, verb, payload}`. `verb` is one of `keyreq`,
 `pkmsg`, `msg`, `nack`. KEYS is grappa's to send once it hosts key bundles
 (a later slice). `payload` is the base64 of the agreed JSON, validated only as
-base64 characters, never decoded. The reply is **202 with the msgid grappa
-minted**: accepted, not delivered. Lines may still be waiting for the
-recipient's window, IRC never confirms delivery, and vjt ruled out any
+base64 characters, never decoded, and refused at the door past 32 KiB (what a
+receiver buffers per sender, so it could never be reassembled). The reply is
+**202 with the msgid grappa minted**: accepted, not delivered. Lines may still
+be waiting in the pacer, IRC never confirms delivery, and vjt ruled out any
 sender-side notice (2430, 19:3x: no delivered/expired/undeliverable, and the
 draft's `OFFLINE` verb is dropped, so a line carrying it is malformed here).
 
@@ -2656,8 +2689,12 @@ until it lands an inbound KEYREQ is logged at debug and dropped, and
 ### Known gaps
 
 - grappa's own lazy CTCP USERINFO/AVATAR probes on a peer's JOIN bypass the
-  pacer, so a probe landing during a burst can take the slot the pacer leaves
-  free.
+  FLUD rule, so a probe landing during a burst can take the slot the pacer
+  leaves free. They are charged to the fake-lag bank like every frame, so the
+  connection rule still sees them.
+- The bank is a MODEL, charged when grappa writes, while bahamut charges when
+  it parses. Past the gate the model runs ahead of the real bank, which only
+  makes E2E wait longer than it has to.
 - A line the socket refuses is logged and lost, never retried: a retry would
   land outside the window the pacer just accounted for, and the receiver
   discards the incomplete message either way.

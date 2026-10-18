@@ -565,8 +565,8 @@ defmodule Grappa.Session.Server do
           e2e_reassembly: E2eReassembly.t(),
           e2e_reassembly_timer: reference() | nil,
           # issue 2430: outbound E2E lines waiting for their recipient's
-          # FLUD window (3 lines per 6 s, see `Grappa.Session.E2ePacer`),
-          # and the timer of the next release.
+          # FLUD window or for room in the connection's fake-lag bank (see
+          # `Grappa.Session.E2ePacer`), and the timer of the next release.
           e2e_pacer: E2ePacer.t(),
           e2e_pacer_timer: reference() | nil,
           # CP15 B2: in-flight JOINs awaiting upstream confirmation
@@ -1978,7 +1978,7 @@ defmodule Grappa.Session.Server do
   # no query window opens, and `LineSplit` never sees it — the frame is
   # `E2e.fragment/4`'s, sized against the same worst-case relay budget. The
   # lines go through `E2ePacer`, so the reply means ACCEPTED: some lines may
-  # still be waiting for the recipient's FLUD window when it returns.
+  # still be waiting in the pacer when it returns.
   # (No @impl here — a continuation clause of handle_call/3, whose @impl
   # rides the no-Client refusal clause above.)
   def handle_call({:send_e2e, target, verb, payload}, _, state)
