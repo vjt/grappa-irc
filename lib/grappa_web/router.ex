@@ -771,6 +771,11 @@ defmodule GrappaWeb.Router do
       pipe_through [:api, :authn, :resolve_network]
 
       post "/channels/:channel_id/read-cursor/force", TestReadCursorController, :force
+
+      # issue 2430 — expire the caller's offline queue of encrypted messages
+      # now, through the production sweep, so the e2e spec sees the
+      # recipient-only "undeliverable" notice (`TestE2eInboxController`).
+      post "/e2e/inbox/expire", TestE2eInboxController, :expire
     end
   end
 
