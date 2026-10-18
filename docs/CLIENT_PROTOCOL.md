@@ -686,8 +686,13 @@ client that receives more than 4 in 3 s, for 15 s, silently. So 202 means
 accepted: lines may still be waiting when it returns, and nobody ever tells
 the sender what happened next (no "delivered", no "expired", by ruling).
 400 `bad_request` for a channel target, an unknown verb or a non-base64
-payload; 413 `too_large` past 64 lines; 429 `rate_limited` when the
-recipient's queue cannot take the whole message.
+payload; 400 `invalid_line` for a CR, LF or NUL in `target`; 413 `too_large`
+for a payload over 32 KiB (what a receiver buffers per sender, so it could
+never be reassembled) or one that needs more than 64 lines; 429
+`rate_limited` when the recipient's queue cannot take the whole message;
+404 `not_found` with no session on the network; 502 `upstream_unreachable`
+while the upstream link is down; 504 `session_timeout` if the session does
+not answer.
 
 A `KEYREQ` addressed to you is not delivered as an event: grappa will answer
 it from the key bundle it hosts for you (a later slice of 2430). Until that

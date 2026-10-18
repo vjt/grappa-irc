@@ -10,7 +10,7 @@ defmodule Grappa.Session.E2ePacerTest do
     assert releases == [{"vjt-Claude", "line1"}, {"vjt-Claude", "line2"}, {"vjt-Claude", "line3"}]
   end
 
-  test "a 4th line waits until the first leaves the 6 s window, then one line per slot" do
+  test "a 4th line waits until the first leaves the 6 s window, then the freed slots go at once" do
     {:ok, first, pacer, wait} = E2ePacer.enqueue(E2ePacer.new(), "vjt-claude", "vjt-claude", lines(5), 0)
     assert length(first) == 3
     assert wait == 6_000
