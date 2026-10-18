@@ -10,9 +10,10 @@ defmodule Grappa.Push.Triggers do
   after a successful `Scrollback.persist_event/1` for a `:privmsg` or
   `:action` row — it owns the post-persist obligations (#369 A3), which is
   why the call moved off `Session.Server`'s `apply_effects/2` `:persist`
-  arm. `dispatch_presence/4` is the one Push entry point `Session.Server`
-  still calls directly: a presence transition persists no row, so there is
-  nothing for `Persistor` to be the guardian of.
+  arm. `dispatch_presence/4` and `dispatch_e2e/2` are the Push entry
+  points `Session.Server` still calls directly: a presence transition and
+  an end-to-end encrypted message persist no row, so there is nothing for
+  `Persistor` to be the guardian of.
 
   Both calls are fire-and-forget — Triggers hands the work to
   `Grappa.TaskSupervisor` so the hot path stays sub-millisecond and Sender
@@ -85,6 +86,14 @@ defmodule Grappa.Push.Triggers do
   The two classes are deliberately orthogonal — the watch list curates
   WHO, the prefs gate push-vs-toast-only globally, and neither pref is a
   member of `UserSettings`' at-least-one-trigger set (see there for why).
+
+  ## The third trigger class — encrypted messages (issue 2430)
+
+  An end-to-end encrypted message is never a row and grappa cannot read
+  it, so it arrives through `dispatch_e2e/2`, not `Persistor`, and is gated
+  as what it is to the user: a private message from a nick. The mute
+  first, then the private-message prefs (`should_notify_e2e?/3`, sharing
+  their helpers with the row path); the payload says who and nothing else.
 
   #395 — the kind gate reads `Message.notify_kinds/0` (a subset of
   `Message.content_kinds/0`, derived from ONE projection declaration) via
@@ -459,9 +468,7 @@ defmodule Grappa.Push.Triggers do
   @spec should_notify_e2e?(String.t(), String.t(), prefs()) :: boolean()
   def should_notify_e2e?(nick, network_slug, prefs)
       when is_binary(nick) and is_binary(network_slug) and is_map(prefs) do
-    not Map.has_key?(Map.get(prefs, :muted_targets, %{}), Identifier.channel_key(network_slug, nick)) and
-      (Map.get(prefs, :private_messages_all, false) or
-         Identifier.canonical_target(nick) in Map.get(prefs, :private_messages_only, []))
+    not muted_target?(network_slug, nick, prefs) and dm_from?(nick, prefs)
   end
 
   # ---------------------------------------------------------------------------
@@ -592,28 +599,28 @@ defmodule Grappa.Push.Triggers do
   # predicate pure and the shared truth-table free of a `now` column.
   defp muted?(%Message{channel: channel, sender: sender} = message, network_slug, prefs)
        when is_binary(channel) and is_binary(sender) and is_binary(network_slug) do
-    target = if Message.dm?(message), do: sender, else: channel
-
-    Map.has_key?(
-      Map.get(prefs, :muted_targets, %{}),
-      Identifier.channel_key(network_slug, target)
-    )
+    muted_target?(network_slug, if(Message.dm?(message), do: sender, else: channel), prefs)
   end
 
   defp muted?(_, _, _), do: false
 
-  defp dm_match?(%Message{} = message, prefs) do
-    Map.get(prefs, :private_messages_all, false) or
-      sender_in_whitelist?(message, prefs)
-  end
+  # The mute on one conversation — a channel, or a peer's nick for a DM —
+  # keyed per network. Shared by the row path and the encrypted path.
+  defp muted_target?(network_slug, target, prefs),
+    do: Map.has_key?(Map.get(prefs, :muted_targets, %{}), Identifier.channel_key(network_slug, target))
 
-  defp sender_in_whitelist?(%Message{sender: sender}, prefs) when is_binary(sender) do
+  defp dm_match?(%Message{sender: sender}, prefs), do: dm_from?(sender, prefs)
+
+  # The private-message prefs for a message from `nick`. Shared by the row
+  # path and the encrypted path.
+  defp dm_from?(nick, prefs) when is_binary(nick) do
     # Fold the sender through the ASCII nick SSOT (#121/#525) — never a bare
     # String.downcase, which Unicode-over-folds non-ASCII and diverges from
     # the ASCII fold. Brackets `[ ] \ ~` are NOT folded, so foo[bar] and
     # foo{bar} are DELIBERATELY distinct (CASEMAPPING=ascii). The stored
     # list is canonicalized to the same fold by UserSettings.normalize_list.
-    Identifier.canonical_target(sender) in Map.get(prefs, :private_messages_only, [])
+    Map.get(prefs, :private_messages_all, false) or
+      Identifier.canonical_target(nick) in Map.get(prefs, :private_messages_only, [])
   end
 
   defp channel_match?(%Message{} = message, prefs, own_nick, patterns) do
