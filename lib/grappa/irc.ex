@@ -41,6 +41,10 @@ defmodule Grappa.IRC do
       CTCP,
       DCC,
       DCC.Offer,
+      # issue 2430 — the E2E query CTCP frame (parse / fragment), and the
+      # parsed line `Session.E2EReassembly` buffers
+      E2E,
+      E2E.Fragment,
       Identifier,
       Identity,
       # issue 2294 — a /ignore entry: a Mask plus an optional text glob
