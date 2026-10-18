@@ -195,7 +195,8 @@ defmodule GrappaWeb.E2eControllerTest do
       assert id == b.id
       assert json_response(get(conn, path, %{after: b.id}), 200)["messages"] == []
 
-      for bad <- ["x", "-1", "1.5", ""] do
+      # Past int64 the bind would fail inside exqlite: a 500, not a 400.
+      for bad <- ["x", "-1", "1.5", "", "9223372036854775808"] do
         assert json_response(get(conn, path, %{after: bad}), 400) == %{"error" => "bad_request"}, inspect(bad)
       end
     end
@@ -250,6 +251,7 @@ defmodule GrappaWeb.E2eControllerTest do
             %{ids: [-1]},
             %{ids: ["1"]},
             %{ids: [1.5]},
+            %{ids: [9_223_372_036_854_775_808]},
             %{ids: too_many}
           ] do
         assert json_response(post(conn, path, body), 400) == %{"error" => "bad_request"}, inspect(body)

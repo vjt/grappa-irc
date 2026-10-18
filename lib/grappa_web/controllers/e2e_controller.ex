@@ -22,6 +22,11 @@ defmodule GrappaWeb.E2eController do
   @verbs Map.new(Session.e2e_send_verbs(), &{Atom.to_string(&1), &1})
   @priorities Map.new(Session.e2e_priorities(), &{Atom.to_string(&1), &1})
 
+  # The int64 the id column is. A larger integer would fail its bind inside
+  # exqlite — a 500 for what is a malformed request — so the queue routes
+  # refuse it as one.
+  @max_id 9_223_372_036_854_775_807
+
   @doc """
   `POST /networks/:network_id/e2e/messages` — `{target, verb, payload}`, plus
   an optional `priority`.
@@ -81,7 +86,7 @@ defmodule GrappaWeb.E2eController do
   """
   @spec ack(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request | :db_unavailable}
   def ack(conn, %{"ids" => [_ | _] = ids}) do
-    if length(ids) <= E2eInbox.page_size() and Enum.all?(ids, &(is_integer(&1) and &1 > 0)) do
+    if length(ids) <= E2eInbox.page_size() and Enum.all?(ids, &(is_integer(&1) and &1 > 0 and &1 <= @max_id)) do
       with :ok <- E2eInbox.ack(Subject.to_session(conn.assigns.current_subject), conn.assigns.network.id, ids) do
         send_resp(conn, :no_content, "")
       end
@@ -95,7 +100,7 @@ defmodule GrappaWeb.E2eController do
   @spec cursor(term()) :: {:ok, non_neg_integer()} | {:error, :bad_request}
   defp cursor(value) when is_binary(value) do
     case Integer.parse(value) do
-      {n, ""} when n >= 0 -> {:ok, n}
+      {n, ""} when n >= 0 and n <= @max_id -> {:ok, n}
       _ -> {:error, :bad_request}
     end
   end
