@@ -20,14 +20,16 @@ defmodule Grappa.Session.E2EReassemblyTest do
   defp payload(bytes), do: Base.encode64(:crypto.strong_rand_bytes(bytes))
 
   defp feed(buffer, sender, fragments, now_ms) do
-    Enum.reduce(fragments, {buffer, []}, fn fragment, {buffer, out} ->
-      case E2EReassembly.put(buffer, sender, fragment, now_ms) do
-        {:complete, message, buffer} -> {buffer, [{:complete, message} | out]}
-        {:pending, buffer} -> {buffer, [:pending | out]}
-        {:dropped, reason, buffer} -> {buffer, [{:dropped, reason} | out]}
-      end
-    end)
-    |> then(fn {buffer, out} -> {buffer, Enum.reverse(out)} end)
+    {final, results} =
+      Enum.reduce(fragments, {buffer, []}, fn fragment, {acc, out} ->
+        case E2EReassembly.put(acc, sender, fragment, now_ms) do
+          {:complete, message, next} -> {next, [{:complete, message} | out]}
+          {:pending, next} -> {next, [:pending | out]}
+          {:dropped, reason, next} -> {next, [{:dropped, reason} | out]}
+        end
+      end)
+
+    {final, Enum.reverse(results)}
   end
 
   test "a single-line message completes at once and buffers nothing" do
@@ -45,11 +47,11 @@ defmodule Grappa.Session.E2EReassemblyTest do
     frags = fragments(:msg, "q83vEjRWeJA", payload)
     assert length(frags) > 2
 
-    [first | rest] = frags
-    {buffer, results} = feed(E2EReassembly.new(), "vjt-claude", Enum.reverse(rest) ++ [first], 0)
+    # Last line first, first line last.
+    {buffer, results} = feed(E2EReassembly.new(), "vjt-claude", Enum.reverse(frags), 0)
 
     assert List.last(results) == {:complete, %{verb: :msg, msgid: "q83vEjRWeJA", payload: payload}}
-    assert Enum.drop(results, -1) |> Enum.all?(&(&1 == :pending))
+    assert Enum.all?(Enum.drop(results, -1), &(&1 == :pending))
     assert E2EReassembly.empty?(buffer)
   end
 
@@ -59,10 +61,10 @@ defmodule Grappa.Session.E2EReassemblyTest do
     [a1 | a_rest] = fragments(:msg, "q83vEjRWeJA", payload_a)
     [b1 | b_rest] = fragments(:msg, "q83vEjRWeJA", payload_b)
 
-    {buffer, _} = feed(E2EReassembly.new(), "alice", [a1], 0)
-    {buffer, _} = feed(buffer, "bob", [b1], 0)
-    {buffer, a_out} = feed(buffer, "alice", a_rest, 0)
-    {_, b_out} = feed(buffer, "bob", b_rest, 0)
+    {alice_started, _} = feed(E2EReassembly.new(), "alice", [a1], 0)
+    {both_started, _} = feed(alice_started, "bob", [b1], 0)
+    {alice_done, a_out} = feed(both_started, "alice", a_rest, 0)
+    {_, b_out} = feed(alice_done, "bob", b_rest, 0)
 
     assert {:complete, %{payload: ^payload_a}} = List.last(a_out)
     assert {:complete, %{payload: ^payload_b}} = List.last(b_out)
@@ -79,15 +81,15 @@ defmodule Grappa.Session.E2EReassemblyTest do
   test "a fragment contradicting its message (other verb or total) drops the whole message" do
     [f1, f2 | _] = fragments(:msg, "q83vEjRWeJA", payload(800))
 
-    {buffer, [:pending, {:dropped, :inconsistent}]} =
+    {other_verb, [:pending, {:dropped, :inconsistent}]} =
       feed(E2EReassembly.new(), "vjt-claude", [f1, %{f2 | verb: :pkmsg}], 0)
 
-    assert E2EReassembly.empty?(buffer)
+    assert E2EReassembly.empty?(other_verb)
 
-    {buffer, [:pending, {:dropped, :inconsistent}]} =
+    {other_total, [:pending, {:dropped, :inconsistent}]} =
       feed(E2EReassembly.new(), "vjt-claude", [f1, %{f2 | total: f2.total + 1}], 0)
 
-    assert E2EReassembly.empty?(buffer)
+    assert E2EReassembly.empty?(other_total)
   end
 
   test "expire/2 discards a message whose first fragment is 60 s old, and only that one" do
@@ -95,23 +97,23 @@ defmodule Grappa.Session.E2EReassemblyTest do
     [new1 | _] = fragments(:msg, "BBBBBBBBBBB", payload(800))
     timeout = E2EReassembly.timeout_ms()
 
-    {buffer, _} = feed(E2EReassembly.new(), "vjt-claude", [old1], 0)
-    {buffer, _} = feed(buffer, "vjt-claude", [new1], 1_000)
+    {old_only, _} = feed(E2EReassembly.new(), "vjt-claude", [old1], 0)
+    {both, _} = feed(old_only, "vjt-claude", [new1], 1_000)
 
-    assert {^buffer, 0} = E2EReassembly.expire(buffer, timeout - 1)
-    {buffer, 1} = E2EReassembly.expire(buffer, timeout)
-    refute E2EReassembly.empty?(buffer)
-    assert {buffer, 1} = E2EReassembly.expire(buffer, timeout + 1_000)
-    assert E2EReassembly.empty?(buffer)
+    assert {^both, 0} = E2EReassembly.expire(both, timeout - 1)
+    {new_only, 1} = E2EReassembly.expire(both, timeout)
+    refute E2EReassembly.empty?(new_only)
+    assert {drained, 1} = E2EReassembly.expire(new_only, timeout + 1_000)
+    assert E2EReassembly.empty?(drained)
   end
 
   test "a late fragment after expiry starts over and never completes the old message" do
     [f1, f2 | rest] = fragments(:msg, "q83vEjRWeJA", payload(800))
     timeout = E2EReassembly.timeout_ms()
 
-    {buffer, _} = feed(E2EReassembly.new(), "vjt-claude", [f1], 0)
-    {buffer, 1} = E2EReassembly.expire(buffer, timeout)
-    {_, results} = feed(buffer, "vjt-claude", [f2 | rest], timeout)
+    {started, _} = feed(E2EReassembly.new(), "vjt-claude", [f1], 0)
+    {expired, 1} = E2EReassembly.expire(started, timeout)
+    {_, results} = feed(expired, "vjt-claude", [f2 | rest], timeout)
 
     # Without fragment 1 the message cannot complete: nothing is delivered.
     assert Enum.all?(results, &(&1 == :pending))

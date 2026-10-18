@@ -46,18 +46,18 @@ defmodule Grappa.Session.E2EPacerTest do
   end
 
   test "lines go out in the order they were queued, across messages" do
-    {:ok, _, pacer, _} = E2EPacer.enqueue(E2EPacer.new(), "p", "p", ["a1", "a2", "a3", "a4"], 0)
-    {:ok, [], pacer, _} = E2EPacer.enqueue(pacer, "p", "p", ["b1"], 100)
-    assert {[{"p", "a4"}, {"p", "b1"}], _, nil} = E2EPacer.release(pacer, 6_100)
+    {:ok, _, first, _} = E2EPacer.enqueue(E2EPacer.new(), "p", "p", ["a1", "a2", "a3", "a4"], 0)
+    {:ok, [], second, _} = E2EPacer.enqueue(first, "p", "p", ["b1"], 100)
+    assert {[{"p", "a4"}, {"p", "b1"}], _, nil} = E2EPacer.release(second, 6_100)
   end
 
   test "a message that would overflow the 128-line queue is refused whole" do
-    {:ok, _, pacer, _} = E2EPacer.enqueue(E2EPacer.new(), "p", "p", lines(64), 0)
-    {:ok, _, pacer, _} = E2EPacer.enqueue(pacer, "p", "p", lines(64), 0)
-    assert {:error, :queue_full} = E2EPacer.enqueue(pacer, "p", "p", lines(10), 0)
+    {:ok, _, half, _} = E2EPacer.enqueue(E2EPacer.new(), "p", "p", lines(64), 0)
+    {:ok, _, full, _} = E2EPacer.enqueue(half, "p", "p", lines(64), 0)
+    assert {:error, :queue_full} = E2EPacer.enqueue(full, "p", "p", lines(10), 0)
     # 3 went out at once, so 125 wait: 3 more fit, 4 do not.
-    assert {:error, :queue_full} = E2EPacer.enqueue(pacer, "p", "p", lines(4), 0)
-    assert {:ok, [], _, _} = E2EPacer.enqueue(pacer, "p", "p", lines(3), 0)
+    assert {:error, :queue_full} = E2EPacer.enqueue(full, "p", "p", lines(4), 0)
+    assert {:ok, [], _, _} = E2EPacer.enqueue(full, "p", "p", lines(3), 0)
   end
 
   test "an idle recipient is forgotten once its window empties" do
@@ -79,8 +79,8 @@ defmodule Grappa.Session.E2EPacerTest do
         {pacer, sent ++ List.duplicate(at, length(out)), wake_at(at, wait)}
       end)
 
-    {_, sent, _} = run_until(pacer, sent, wake, :infinity)
-    sent
+    {_, all_sent, _} = run_until(pacer, sent, wake, :infinity)
+    all_sent
   end
 
   defp run_until(pacer, sent, nil, _), do: {pacer, sent, nil}
