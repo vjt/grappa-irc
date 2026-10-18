@@ -90,7 +90,7 @@ defmodule GrappaWeb do
         GrappaWeb.BodyLimit
       ] ++
         if(Mix.env() in [:dev, :test],
-          do: [Grappa.TestSupport.SubjectProvision, Grappa.TestSupport.SubjectReset],
+          do: [Grappa.TestSupport.E2eInboxExpiry, Grappa.TestSupport.SubjectProvision, Grappa.TestSupport.SubjectReset],
           else: []
         ),
     # `PasskeyOrigin` joins `Endpoint` on the export list for the same

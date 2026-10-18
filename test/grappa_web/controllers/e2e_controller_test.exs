@@ -14,10 +14,12 @@ defmodule GrappaWeb.E2eControllerTest do
   """
   use GrappaWeb.ConnCase, async: false
 
+  import Ecto.Query
   import Grappa.AuthFixtures
 
-  alias Grappa.{E2eInbox, IRCServer}
+  alias Grappa.{E2eInbox, IRCServer, Repo}
   alias Grappa.IRC.E2e
+  alias Grappa.Scrollback.Message
   alias Grappa.Session.Wire, as: SessionWire
 
   @payload Base.encode64(~s({"v":1}))
@@ -219,6 +221,20 @@ defmodule GrappaWeb.E2eControllerTest do
       assert [%E2eInbox.Entry{id: id}] = E2eInbox.list({:user, vjt.id}, network.id, 0)
       assert id == kept.id
       assert [%E2eInbox.Entry{}] = E2eInbox.list({:user, other.id}, network.id, 0)
+    end
+
+    test "the test-only expire door runs the session's sweep: the queue empties, the recipient is told",
+         %{conn: conn, vjt: vjt} do
+      {_, network} = live_network(vjt)
+      _ = queue!(vjt, network, "alice", :msg)
+
+      conn = post(conn, "/networks/#{network.slug}/e2e/inbox/expire")
+
+      assert response(conn, 204) == ""
+      assert E2eInbox.list({:user, vjt.id}, network.id, 0) == []
+
+      assert [%Message{kind: :server_event, channel: "alice", meta: %{e2e_undeliverable: 1}}] =
+               Message |> where([m], m.network_id == ^network.id and m.kind == :server_event) |> Repo.all()
     end
 
     test "POST ack refuses what is not a short list of ids", %{conn: conn, vjt: vjt} do
