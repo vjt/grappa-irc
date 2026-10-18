@@ -5,8 +5,10 @@ defmodule Grappa.E2eInbox.Entry do
   2430).
 
   `payload` is the base64 the peer cut into chunks, joined and NOT
-  decoded: grappa holds no key and never reads it. `sender` is the RAW
-  nick, a routing hint only — the client pins the peer on its key.
+  decoded: grappa holds no key and never reads it. `bytes` is its size,
+  derived here, so the queue's bounds are summed without reading a
+  payload. `sender` is the RAW nick, a routing hint only — the client pins
+  the peer on its key.
 
   Exactly one of `:user_id` / `:visitor_id` is set, enforced by
   `Grappa.Subject.validate_xor/1` and the `e2e_inbox_subject_xor` CHECK,
@@ -39,6 +41,7 @@ defmodule Grappa.E2eInbox.Entry do
           sender: String.t() | nil,
           verb: verb() | nil,
           msgid: String.t() | nil,
+          bytes: non_neg_integer() | nil,
           payload: String.t() | nil,
           inserted_at: DateTime.t() | nil
         }
@@ -51,6 +54,7 @@ defmodule Grappa.E2eInbox.Entry do
     field :sender, :string
     field :verb, Ecto.Enum, values: @verbs
     field :msgid, :string
+    field :bytes, :integer
     field :payload, :string
 
     timestamps(type: :utc_datetime, updated_at: false)
@@ -62,8 +66,9 @@ defmodule Grappa.E2eInbox.Entry do
 
   @doc """
   Builds an insert changeset. Every field is required; the sender must be
-  a nick, the msgid the agreed 11-character token, and the payload no
-  longer than the receiver's per-message bound.
+  a nick, the msgid a token `Grappa.IRC.E2e.msgid?/1` accepts, and the
+  payload no longer than the receiver's per-message bound. `bytes` is
+  derived from the payload, never cast.
   """
   @spec changeset(t(), map()) :: Ecto.Changeset.t()
   def changeset(entry, attrs) do
@@ -77,6 +82,7 @@ defmodule Grappa.E2eInbox.Entry do
       if E2e.msgid?(msgid), do: [], else: [msgid: "is not a msgid"]
     end)
     |> validate_length(:payload, max: E2e.max_payload_bytes(), count: :bytes)
+    |> put_bytes()
     |> Subject.validate_xor()
     |> assoc_constraint(:user)
     |> assoc_constraint(:visitor)
@@ -85,5 +91,13 @@ defmodule Grappa.E2eInbox.Entry do
       name: :e2e_inbox_subject_xor,
       message: "user_id and visitor_id are mutually exclusive"
     )
+  end
+
+  @spec put_bytes(Ecto.Changeset.t()) :: Ecto.Changeset.t()
+  defp put_bytes(changeset) do
+    case fetch_change(changeset, :payload) do
+      {:ok, payload} -> put_change(changeset, :bytes, byte_size(payload))
+      :error -> changeset
+    end
   end
 end

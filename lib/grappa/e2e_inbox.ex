@@ -25,8 +25,10 @@ defmodule Grappa.E2eInbox do
   Each row is charged its payload plus `row_overhead_bytes/0`, so a flood
   of tiny messages is bounded too. A subject's queue on one network holds
   at most `max_bytes/0`, and one sender (case-folded) at most
-  `max_sender_bytes/0` of it, so one peer cannot fill the queue against
-  everybody else. Past either bound `put/3` refuses with `{:error, :full}`.
+  `max_sender_bytes/0` of it, so one nick cannot fill the queue against
+  everybody else. It is per NICK, the only identity grappa sees: a peer
+  using several nicks can still fill the whole queue. Past either bound
+  `put/3` refuses with `{:error, :full}`.
 
   A row older than `ttl_seconds/0` is dropped by `expire/3`, which the
   session runs; the session then tells the recipient — and only the
@@ -59,8 +61,8 @@ defmodule Grappa.E2eInbox do
   @ttl_seconds 7 * 24 * 60 * 60
 
   # The two verbs that carry something a person wrote. Key material and
-  # NACKs expire too, but nobody is told about them: they are the protocol
-  # talking to itself.
+  # NACKs expire too, but nobody is told about them and nothing is pushed
+  # for them: they are the protocol talking to itself.
   @message_verbs [:pkmsg, :msg]
 
   @typedoc "What `put/3` stores: one whole message, as the session reassembled it."
@@ -77,6 +79,14 @@ defmodule Grappa.E2eInbox do
   @doc "What each row costs against the bounds on top of its payload."
   @spec row_overhead_bytes() :: pos_integer()
   def row_overhead_bytes, do: @row_overhead_bytes
+
+  @doc """
+  True for the verbs that carry something a person wrote (PKMSG, MSG):
+  the ones the recipient is told about when they go unread, and pushed
+  for when they arrive. Key material and NACKs are neither.
+  """
+  @spec message_verb?(Entry.verb()) :: boolean()
+  def message_verb?(verb), do: verb in @message_verbs
 
   @doc "The most entries `list/3` returns at once."
   @spec page_size() :: pos_integer()
@@ -121,14 +131,14 @@ defmodule Grappa.E2eInbox do
       Entry
       |> partition(entry)
       |> select([e], {
-        coalesce(sum(fragment("length(?) + ?", e.payload, ^@row_overhead_bytes)), 0),
+        coalesce(sum(e.bytes + ^@row_overhead_bytes), 0),
         coalesce(
           sum(
             fragment(
-              "CASE WHEN ? = ? THEN length(?) + ? ELSE 0 END",
+              "CASE WHEN ? = ? THEN ? + ? ELSE 0 END",
               Identifier.nick_fold(e.sender),
               ^folded,
-              e.payload,
+              e.bytes,
               ^@row_overhead_bytes
             )
           ),
@@ -190,7 +200,10 @@ defmodule Grappa.E2eInbox do
   NACKs are dropped without being counted.
 
   One transaction: an acknowledgement racing the sweep either lands first
-  (the row is not counted) or finds nothing to delete, never both.
+  (the row is not counted) or finds nothing to delete, never both. The
+  write lock is taken only when something has expired: every session
+  sweeps at start, and a boot must not queue every session behind a lock
+  to delete nothing.
   """
   @spec expire(Subject.t(), integer(), DateTime.t()) ::
           {:ok, [{String.t(), pos_integer()}]} | {:error, :db_unavailable}
@@ -200,13 +213,18 @@ defmodule Grappa.E2eInbox do
       |> Subject.subject_where(subject)
       |> where([e], e.network_id == ^network_id and e.inserted_at < ^cutoff)
 
-    Repo.BusyRetry.run(fn ->
-      Repo.immediate_transaction(fn ->
-        rows = expired |> order_by([e], asc: e.id) |> select([e], {e.sender, e.verb}) |> Repo.all()
-        {_, _} = Repo.delete_all(expired)
-        unread_by_sender(rows)
-      end)
-    end)
+    if Repo.exists?(expired), do: Repo.BusyRetry.run(fn -> expire_transaction(expired) end), else: {:ok, []}
+  end
+
+  @spec expire_transaction(Ecto.Query.t()) :: {:ok, [{String.t(), pos_integer()}]}
+  defp expire_transaction(expired), do: Repo.immediate_transaction(fn -> delete_expired(expired) end)
+
+  # Inside the transaction: who sent what, then the delete.
+  @spec delete_expired(Ecto.Query.t()) :: [{String.t(), pos_integer()}]
+  defp delete_expired(expired) do
+    rows = expired |> order_by([e], asc: e.id) |> select([e], {e.sender, e.verb}) |> Repo.all()
+    {_, _} = Repo.delete_all(expired)
+    unread_by_sender(rows)
   end
 
   # One entry per folded sender, keeping the last spelling seen; the rows
@@ -214,7 +232,7 @@ defmodule Grappa.E2eInbox do
   @spec unread_by_sender([{String.t(), Entry.verb()}]) :: [{String.t(), pos_integer()}]
   defp unread_by_sender(rows) do
     rows
-    |> Enum.filter(fn {_, verb} -> verb in @message_verbs end)
+    |> Enum.filter(fn {_, verb} -> message_verb?(verb) end)
     |> Enum.group_by(fn {sender, _} -> Identifier.canonical_target(sender) end, fn {sender, _} -> sender end)
     |> Enum.map(fn {_, senders} -> {List.last(senders), length(senders)} end)
   end
