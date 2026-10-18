@@ -1,4 +1,4 @@
-defmodule GrappaWeb.E2EController do
+defmodule GrappaWeb.E2eController do
   @moduledoc """
   The send door for end-to-end encrypted queries (issue 2430).
 
@@ -47,7 +47,7 @@ defmodule GrappaWeb.E2EController do
 
   def create(_, _), do: {:error, :bad_request}
 
-  @spec fetch_verb(String.t()) :: {:ok, Grappa.IRC.E2E.verb()} | {:error, :bad_request}
+  @spec fetch_verb(String.t()) :: {:ok, Grappa.IRC.E2e.verb()} | {:error, :bad_request}
   defp fetch_verb(verb) do
     case Map.fetch(@verbs, verb) do
       {:ok, _} = ok -> ok

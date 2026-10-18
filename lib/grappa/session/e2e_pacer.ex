@@ -1,4 +1,4 @@
-defmodule Grappa.Session.E2EPacer do
+defmodule Grappa.Session.E2ePacer do
   @moduledoc """
   Paces outbound E2E lines per recipient (issue 2430). Pure data;
   `Grappa.Session.Server` holds one in its state, sends what it releases

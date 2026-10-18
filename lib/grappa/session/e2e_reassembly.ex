@@ -1,4 +1,4 @@
-defmodule Grappa.Session.E2EReassembly do
+defmodule Grappa.Session.E2eReassembly do
   @moduledoc """
   Buffers the fragments of inbound E2E messages until each is whole
   (issue 2430). Pure data; `Grappa.Session.Server` holds one in its state
@@ -15,7 +15,7 @@ defmodule Grappa.Session.E2EReassembly do
 
     * a message not complete within 60 s of its FIRST fragment is
       discarded (`expire/2`);
-    * at most `Grappa.IRC.E2E.max_fragments/0` fragments (the parser
+    * at most `Grappa.IRC.E2e.max_fragments/0` fragments (the parser
       already refuses a larger `n`);
     * at most 32 KiB of chunks buffered per sender across all of its
       messages in flight — the bot side picked the same 32 KiB;
@@ -32,21 +32,21 @@ defmodule Grappa.Session.E2EReassembly do
   or nothing.
   """
 
-  alias Grappa.IRC.E2E
-  alias Grappa.IRC.E2E.Fragment
+  alias Grappa.IRC.E2e
+  alias Grappa.IRC.E2e.Fragment
 
   @timeout_ms 60_000
   @max_sender_bytes 32 * 1024
   @max_total_bytes 1024 * 1024
 
   @typedoc "A whole message, ready to hand to the client."
-  @type message :: %{verb: E2E.verb(), msgid: String.t(), payload: String.t()}
+  @type message :: %{verb: E2e.verb(), msgid: String.t(), payload: String.t()}
 
   @typedoc "Why a fragment was not buffered (or what it took down with it)."
   @type drop_reason :: :sender_cap | :total_cap | :inconsistent
 
   @typep entry :: %{
-           verb: E2E.verb(),
+           verb: E2e.verb(),
            total: pos_integer(),
            parts: %{pos_integer() => String.t()},
            bytes: non_neg_integer(),

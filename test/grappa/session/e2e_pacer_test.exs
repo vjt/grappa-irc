@@ -1,27 +1,27 @@
-defmodule Grappa.Session.E2EPacerTest do
+defmodule Grappa.Session.E2ePacerTest do
   use ExUnit.Case, async: true
 
-  alias Grappa.Session.E2EPacer
+  alias Grappa.Session.E2ePacer
 
   defp lines(n), do: for(i <- 1..n, do: "line#{i}")
 
   test "up to 3 lines go out at once, with nothing left to wait for" do
-    assert {:ok, releases, _, nil} = E2EPacer.enqueue(E2EPacer.new(), "vjt-claude", "vjt-Claude", lines(3), 0)
+    assert {:ok, releases, _, nil} = E2ePacer.enqueue(E2ePacer.new(), "vjt-claude", "vjt-Claude", lines(3), 0)
     assert releases == [{"vjt-Claude", "line1"}, {"vjt-Claude", "line2"}, {"vjt-Claude", "line3"}]
   end
 
   test "a 4th line waits until the first leaves the 6 s window, then one line per slot" do
-    {:ok, first, pacer, wait} = E2EPacer.enqueue(E2EPacer.new(), "vjt-claude", "vjt-claude", lines(5), 0)
+    {:ok, first, pacer, wait} = E2ePacer.enqueue(E2ePacer.new(), "vjt-claude", "vjt-claude", lines(5), 0)
     assert length(first) == 3
     assert wait == 6_000
 
     # Nothing is released a millisecond early.
-    assert {[], pacer, 1} = E2EPacer.release(pacer, 5_999)
-    assert {[{"vjt-claude", "line4"}, {"vjt-claude", "line5"}], pacer, nil} = E2EPacer.release(pacer, 6_000)
+    assert {[], pacer, 1} = E2ePacer.release(pacer, 5_999)
+    assert {[{"vjt-claude", "line4"}, {"vjt-claude", "line5"}], pacer, nil} = E2ePacer.release(pacer, 6_000)
 
     # The first burst has left the window but lines 4-5 (sent at 6 s) have
     # not, so a new message gets exactly one slot now.
-    assert {:ok, [{"vjt-claude", "x"}], _, _} = E2EPacer.enqueue(pacer, "vjt-claude", "vjt-claude", ["x", "y"], 6_000)
+    assert {:ok, [{"vjt-claude", "x"}], _, _} = E2ePacer.enqueue(pacer, "vjt-claude", "vjt-claude", ["x", "y"], 6_000)
   end
 
   test "no 6 s window ever holds more than 3 releases to one recipient" do
@@ -39,32 +39,32 @@ defmodule Grappa.Session.E2EPacerTest do
   end
 
   test "recipients are paced independently" do
-    {:ok, a, pacer, _} = E2EPacer.enqueue(E2EPacer.new(), "alice", "alice", lines(4), 0)
-    {:ok, b, _, _} = E2EPacer.enqueue(pacer, "bob", "bob", lines(4), 0)
+    {:ok, a, pacer, _} = E2ePacer.enqueue(E2ePacer.new(), "alice", "alice", lines(4), 0)
+    {:ok, b, _, _} = E2ePacer.enqueue(pacer, "bob", "bob", lines(4), 0)
     assert length(a) == 3
     assert length(b) == 3
   end
 
   test "lines go out in the order they were queued, across messages" do
-    {:ok, _, first, _} = E2EPacer.enqueue(E2EPacer.new(), "p", "p", ["a1", "a2", "a3", "a4"], 0)
-    {:ok, [], second, _} = E2EPacer.enqueue(first, "p", "p", ["b1"], 100)
-    assert {[{"p", "a4"}, {"p", "b1"}], _, nil} = E2EPacer.release(second, 6_100)
+    {:ok, _, first, _} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", ["a1", "a2", "a3", "a4"], 0)
+    {:ok, [], second, _} = E2ePacer.enqueue(first, "p", "p", ["b1"], 100)
+    assert {[{"p", "a4"}, {"p", "b1"}], _, nil} = E2ePacer.release(second, 6_100)
   end
 
   test "a message that would overflow the 128-line queue is refused whole" do
-    {:ok, _, half, _} = E2EPacer.enqueue(E2EPacer.new(), "p", "p", lines(64), 0)
-    {:ok, _, full, _} = E2EPacer.enqueue(half, "p", "p", lines(64), 0)
-    assert {:error, :queue_full} = E2EPacer.enqueue(full, "p", "p", lines(10), 0)
+    {:ok, _, half, _} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", lines(64), 0)
+    {:ok, _, full, _} = E2ePacer.enqueue(half, "p", "p", lines(64), 0)
+    assert {:error, :queue_full} = E2ePacer.enqueue(full, "p", "p", lines(10), 0)
     # 3 went out at once, so 125 wait: 3 more fit, 4 do not.
-    assert {:error, :queue_full} = E2EPacer.enqueue(full, "p", "p", lines(4), 0)
-    assert {:ok, [], _, _} = E2EPacer.enqueue(full, "p", "p", lines(3), 0)
+    assert {:error, :queue_full} = E2ePacer.enqueue(full, "p", "p", lines(4), 0)
+    assert {:ok, [], _, _} = E2ePacer.enqueue(full, "p", "p", lines(3), 0)
   end
 
   test "an idle recipient is forgotten once its window empties" do
-    {:ok, _, pacer, nil} = E2EPacer.enqueue(E2EPacer.new(), "p", "p", lines(3), 0)
-    assert {[], %E2EPacer{lanes: lanes}, nil} = E2EPacer.release(pacer, 5_999)
+    {:ok, _, pacer, nil} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", lines(3), 0)
+    assert {[], %E2ePacer{lanes: lanes}, nil} = E2ePacer.release(pacer, 5_999)
     assert Map.has_key?(lanes, "p")
-    assert {[], %E2EPacer{lanes: lanes}, nil} = E2EPacer.release(pacer, 6_000)
+    assert {[], %E2ePacer{lanes: lanes}, nil} = E2ePacer.release(pacer, 6_000)
     assert lanes == %{}
   end
 
@@ -73,9 +73,9 @@ defmodule Grappa.Session.E2EPacerTest do
   # asked.
   defp simulate(arrivals) do
     {pacer, sent, wake} =
-      Enum.reduce(arrivals, {E2EPacer.new(), [], nil}, fn {at, count}, {pacer, sent, wake} ->
+      Enum.reduce(arrivals, {E2ePacer.new(), [], nil}, fn {at, count}, {pacer, sent, wake} ->
         {pacer, sent, _} = run_until(pacer, sent, wake, at)
-        {:ok, out, pacer, wait} = E2EPacer.enqueue(pacer, "p", "p", lines(count), at)
+        {:ok, out, pacer, wait} = E2ePacer.enqueue(pacer, "p", "p", lines(count), at)
         {pacer, sent ++ List.duplicate(at, length(out)), wake_at(at, wait)}
       end)
 
@@ -87,7 +87,7 @@ defmodule Grappa.Session.E2EPacerTest do
   defp run_until(pacer, sent, wake, limit) when limit != :infinity and wake > limit, do: {pacer, sent, wake}
 
   defp run_until(pacer, sent, wake, limit) do
-    {out, pacer, wait} = E2EPacer.release(pacer, wake)
+    {out, pacer, wait} = E2ePacer.release(pacer, wake)
     run_until(pacer, sent ++ List.duplicate(wake, length(out)), wake_at(wake, wait), limit)
   end
 

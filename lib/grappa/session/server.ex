@@ -97,7 +97,7 @@ defmodule Grappa.Session.Server do
   }
 
   alias Grappa.Dcc.{Policy, Report, Transfer}
-  alias Grappa.IRC.{AuthFSM, Client, CTCP, E2E, Identifier, Ignore, LineSplit, Message}
+  alias Grappa.IRC.{AuthFSM, Client, CTCP, E2e, Identifier, Ignore, LineSplit, Message}
   alias Grappa.IRC.DCC.Offer
   alias Grappa.Net.SourceAliasManager
   alias Grappa.PubSub.Topic
@@ -112,8 +112,8 @@ defmodule Grappa.Session.Server do
     DccOffers,
     Deps,
     DirectoryIngest,
-    E2EPacer,
-    E2EReassembly,
+    E2ePacer,
+    E2eReassembly,
     EventRouter,
     FloodAllowance,
     GhostRecovery,
@@ -561,13 +561,13 @@ defmodule Grappa.Session.Server do
           # discarded by the protocol anyway, so a crash that loses it has
           # the outcome a timeout would have had. The sweep timer is armed
           # while anything is buffered, and only to free the memory —
-          # `E2EReassembly.expire/2` runs before every fragment as well.
-          e2e_reassembly: E2EReassembly.t(),
+          # `E2eReassembly.expire/2` runs before every fragment as well.
+          e2e_reassembly: E2eReassembly.t(),
           e2e_reassembly_timer: reference() | nil,
           # issue 2430: outbound E2E lines waiting for their recipient's
-          # FLUD window (3 lines per 6 s, see `Grappa.Session.E2EPacer`),
+          # FLUD window (3 lines per 6 s, see `Grappa.Session.E2ePacer`),
           # and the timer of the next release.
-          e2e_pacer: E2EPacer.t(),
+          e2e_pacer: E2ePacer.t(),
           e2e_pacer_timer: reference() | nil,
           # CP15 B2: in-flight JOINs awaiting upstream confirmation
           # (self-JOIN echo) or failure numeric (471/473/474/475/403/405).
@@ -1232,9 +1232,9 @@ defmodule Grappa.Session.Server do
       show_peer_profiles: Map.get(opts, :show_peer_profiles, false),
       window_state: WindowState.new(),
       dcc_offers: DccOffers.new(),
-      e2e_reassembly: E2EReassembly.new(),
+      e2e_reassembly: E2eReassembly.new(),
       e2e_reassembly_timer: nil,
-      e2e_pacer: E2EPacer.new(),
+      e2e_pacer: E2ePacer.new(),
       e2e_pacer_timer: nil,
       in_flight_joins: %{},
       awaiting_invite: MapSet.new(),
@@ -1976,8 +1976,8 @@ defmodule Grappa.Session.Server do
   # PRIVMSG in any sense the rest of this module knows: nothing is persisted
   # (`Scrollback.Message` would refuse the body anyway), nothing is echoed,
   # no query window opens, and `LineSplit` never sees it — the frame is
-  # `E2E.fragment/4`'s, sized against the same worst-case relay budget. The
-  # lines go through `E2EPacer`, so the reply means ACCEPTED: some lines may
+  # `E2e.fragment/4`'s, sized against the same worst-case relay budget. The
+  # lines go through `E2ePacer`, so the reply means ACCEPTED: some lines may
   # still be waiting for the recipient's FLUD window when it returns.
   # (No @impl here — a continuation clause of handle_call/3, whose @impl
   # rides the no-Client refusal clause above.)
@@ -3937,7 +3937,7 @@ defmodule Grappa.Session.Server do
   # outlived a `Process.cancel_timer/1` (already in the mailbox) is
   # harmless: a release with nothing due releases nothing.
   def handle_info(:e2e_pacer_tick, state) do
-    {releases, pacer, wait} = E2EPacer.release(state.e2e_pacer, System.monotonic_time(:millisecond))
+    {releases, pacer, wait} = E2ePacer.release(state.e2e_pacer, System.monotonic_time(:millisecond))
 
     state =
       %{state | e2e_pacer: pacer, e2e_pacer_timer: nil}
@@ -3949,7 +3949,7 @@ defmodule Grappa.Session.Server do
 
   # issue 2430 — frees the memory of E2E messages that will never complete.
   def handle_info(:e2e_reassembly_sweep, state) do
-    {buffer, _} = E2EReassembly.expire(state.e2e_reassembly, System.monotonic_time(:millisecond))
+    {buffer, _} = E2eReassembly.expire(state.e2e_reassembly, System.monotonic_time(:millisecond))
     {:noreply, arm_e2e_reassembly_sweep(%{state | e2e_reassembly: buffer, e2e_reassembly_timer: nil})}
   end
 
@@ -8019,13 +8019,13 @@ defmodule Grappa.Session.Server do
 
   # Expiry first, so the caps count only messages that can still complete.
   # The sender is keyed folded, like every nick KEY, and shown raw.
-  @spec receive_e2e_fragment(t(), String.t(), E2E.Fragment.t()) :: t()
+  @spec receive_e2e_fragment(t(), String.t(), E2e.Fragment.t()) :: t()
   defp receive_e2e_fragment(state, from, fragment) do
     now = System.monotonic_time(:millisecond)
-    {live, _} = E2EReassembly.expire(state.e2e_reassembly, now)
+    {live, _} = E2eReassembly.expire(state.e2e_reassembly, now)
 
     buffer =
-      case E2EReassembly.put(live, fold_key(state, from), fragment, now) do
+      case E2eReassembly.put(live, fold_key(state, from), fragment, now) do
         {:complete, message, buffer} ->
           :ok = deliver_e2e(state, from, message)
           buffer
@@ -8045,7 +8045,7 @@ defmodule Grappa.Session.Server do
   # nothing replays it. KEYREQ is not delivered — grappa answers key
   # requests itself from the bundle it hosts (a later 2430 slice); until
   # that lands there is nothing to answer with, and no client could either.
-  @spec deliver_e2e(t(), String.t(), E2EReassembly.message()) :: :ok
+  @spec deliver_e2e(t(), String.t(), E2eReassembly.message()) :: :ok
   defp deliver_e2e(_, from, %{verb: :keyreq}) do
     Logger.debug("e2e KEYREQ from #{from} dropped: no key bundle is hosted")
   end
@@ -8056,10 +8056,10 @@ defmodule Grappa.Session.Server do
 
   @spec arm_e2e_reassembly_sweep(t()) :: t()
   defp arm_e2e_reassembly_sweep(%{e2e_reassembly_timer: nil} = state) do
-    if E2EReassembly.empty?(state.e2e_reassembly) do
+    if E2eReassembly.empty?(state.e2e_reassembly) do
       state
     else
-      timer = Process.send_after(self(), :e2e_reassembly_sweep, E2EReassembly.timeout_ms())
+      timer = Process.send_after(self(), :e2e_reassembly_sweep, E2eReassembly.timeout_ms())
       %{state | e2e_reassembly_timer: timer}
     end
   end
@@ -8068,16 +8068,16 @@ defmodule Grappa.Session.Server do
 
   # `{:error, :rate_limited}` when the recipient's queue cannot take the
   # whole message — the pacer refuses it whole rather than send half.
-  @spec queue_e2e_send(t(), String.t(), E2E.verb(), String.t()) ::
+  @spec queue_e2e_send(t(), String.t(), E2e.verb(), String.t()) ::
           {{:ok, String.t()} | {:error, :too_large | :rate_limited}, t()}
   defp queue_e2e_send(state, target, verb, payload) do
-    msgid = E2E.new_msgid()
+    msgid = E2e.new_msgid()
     linelen = ISupport.linelen(Map.get(state, :isupport, ISupport.default()))
     now = System.monotonic_time(:millisecond)
 
-    with {:ok, lines} <- E2E.fragment(verb, msgid, payload, LineSplit.frame_budget(target, linelen)),
+    with {:ok, lines} <- E2e.fragment(verb, msgid, payload, LineSplit.frame_budget(target, linelen)),
          {:ok, releases, pacer, wait} <-
-           E2EPacer.enqueue(state.e2e_pacer, fold_key(state, target), target, lines, now) do
+           E2ePacer.enqueue(state.e2e_pacer, fold_key(state, target), target, lines, now) do
       state =
         %{state | e2e_pacer: pacer}
         |> send_e2e_releases(releases)
@@ -8093,7 +8093,7 @@ defmodule Grappa.Session.Server do
   # A line the socket refuses is lost, and so is the message it belonged to
   # (the receiver discards it incomplete); said in the log, never retried —
   # a retry would land outside the window the pacer just accounted for.
-  @spec send_e2e_releases(t(), [E2EPacer.release()]) :: t()
+  @spec send_e2e_releases(t(), [E2ePacer.release()]) :: t()
   defp send_e2e_releases(state, []), do: state
 
   defp send_e2e_releases(%{client: nil} = state, releases) do
