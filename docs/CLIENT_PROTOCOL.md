@@ -726,19 +726,28 @@ them by two rules from bahamut's source:
   60 s from a message's LAST line, not its first.
 
 An optional `"priority"` field takes `"control"` or `"text"`; absent means
-`"text"`. A control message goes ahead of every queued text line, so a CHAL
-or an ACK is not stuck behind a long message. Text never reorders, so the
-peer never displays two messages backwards. `keyreq` and `nack` are control
-whatever the field says. grappa cannot see inside a `msg`/`pkmsg`, so set
-`"control"` on the one that carries a CHAL or an ACK. At most 128 lines wait
-on the whole connection. So 202 means accepted: lines may still be waiting
-when it returns, and nobody ever tells the sender what happened next (no
+`"text"`. A control message goes ahead of the text queued for the SAME
+peer, so a CHAL or an ACK is not stuck behind a long message, but only up
+to a budget: at most 8 control lines per peer in any 60 s go ahead; past
+that they wait their turn like text. Peers are served in turn, whoever was
+served longest ago first, so one long conversation does not hold up
+another. Text to one peer never reorders, so the peer never displays two
+messages backwards. `keyreq` and `nack` are control whatever the field
+says. grappa cannot see inside a `msg`/`pkmsg`, so set `"control"` on the
+one that carries a CHAL or an ACK.
+
+What may wait is bounded: per peer, 32 text MESSAGES and 32 control lines;
+on the whole connection, 128 lines. A message that would pass any of these
+is refused WHOLE with the 429 below, and nothing of it is sent: tell your
+user, or hold it and try again later (vjt's ruling: refused, never silently
+dropped). So 202 means accepted: lines may still be waiting when it
+returns, and nobody ever tells the sender what happened next (no
 "delivered", no "expired", by ruling).
 400 `bad_request` for a channel target, an unknown verb or priority, or a
 non-base64 payload; 400 `invalid_line` for a CR, LF or NUL in `target`; 413 `too_large`
 for a payload over 32 KiB (what a receiver buffers per sender, so it could
 never be reassembled) or one that needs more than 64 lines; 429
-`rate_limited` when the connection's queue cannot take the whole message;
+`rate_limited` when the peer's or the connection's queue cannot take the whole message;
 404 `not_found` with no session on the network; 502 `upstream_unreachable`
 while the upstream link is down; 504 `session_timeout` if the session does
 not answer.

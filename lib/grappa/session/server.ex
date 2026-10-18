@@ -8201,8 +8201,9 @@ defmodule Grappa.Session.Server do
 
   defp arm_e2e_reassembly_sweep(state), do: state
 
-  # `{:error, :rate_limited}` when the connection's queue cannot take the
-  # whole message — the pacer refuses it whole rather than send half.
+  # `{:error, :rate_limited}` when the peer's queue or the connection's
+  # cannot take the whole message — the pacer refuses it whole rather than
+  # send half, and the caller is told (vjt's ruling, 2430).
   @spec queue_e2e_send(t(), String.t(), E2e.verb(), E2ePacer.class(), String.t()) ::
           {{:ok, String.t()} | {:error, :too_large | :rate_limited}, t()}
   defp queue_e2e_send(state, target, verb, class, payload) do

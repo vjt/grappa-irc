@@ -971,9 +971,10 @@ defmodule Grappa.Session do
   line per 5 s. Nothing is persisted, echoed or pushed, and no query window
   opens.
 
-  `priority` decides the pacer queue. `:control` goes ahead of every queued
-  text line; `:text` keeps its order behind earlier text, so a peer never
-  displays two messages backwards. KEYREQ and NACK are control whatever
+  `priority` decides the pacer queue. `:control` goes ahead of the text
+  queued for the same peer, within that peer's urgent budget
+  (`Grappa.Session.E2ePacer`); `:text` keeps its order behind earlier text,
+  so a peer never displays two messages backwards. KEYREQ and NACK are control whatever
   `priority` says. A MSG or PKMSG is whatever the client says, since only
   the client knows that one carries a CHAL or an ACK.
 
@@ -984,7 +985,8 @@ defmodule Grappa.Session do
   a nick, a verb outside `e2e_send_verbs/0`, a priority outside
   `e2e_priorities/0`, or a payload that is not base64; `{:error, :too_large}` past `E2e.max_payload_bytes/0` or when the
   payload needs more than 64 lines;
-  `{:error, :rate_limited}` when the connection's queue (128 lines) cannot take it whole.
+  `{:error, :rate_limited}` when the peer's queue (32 text messages, 32
+  control lines) or the connection's (128 lines) cannot take it whole.
   """
   @spec send_e2e(subject(), integer(), String.t(), E2e.verb(), E2ePacer.class(), String.t()) ::
           {:ok, String.t()}
