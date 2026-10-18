@@ -25,6 +25,7 @@ defmodule Grappa.Session.E2eSessionTest do
 
   alias Grappa.{E2eInbox, IRCServer, Push, QueryWindows, Repo, Session}
   alias Grappa.IRC.{E2e, LineSplit}
+  alias Grappa.Session.E2ePacer
   alias Grappa.Networks.{Credentials, SessionPlan}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Message
@@ -250,6 +251,25 @@ defmodule Grappa.Session.E2eSessionTest do
   end
 
   describe "outbound" do
+    # The pacer's lanes are keyed on the folded nick (the session folds),
+    # and nothing else pins that: two spellings of one peer must share one
+    # queue, or each spelling gets its own FLUD window and its own bound.
+    # The per-peer text bound is what tells one lane from two here.
+    test "two spellings of one nick share one queue: its bound refuses both" do
+      {_, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      small = Base.encode64(~s({"v":1}))
+
+      refused =
+        Enum.find(1..(E2ePacer.max_text_messages() + 10), fn _ ->
+          Session.send_e2e(subject, network.id, "Bob", :msg, :text, small) == {:error, :rate_limited}
+        end)
+
+      assert refused, "Bob's queue never filled"
+      assert {:error, :rate_limited} = Session.send_e2e(subject, network.id, "bob", :msg, :text, small)
+      assert {:ok, _} = Session.send_e2e(subject, network.id, "carol", :msg, :text, small)
+    end
+
     test "a message goes out as lines that fit the relay, reassemble, wait on the fake-lag bank, and are never stored" do
       {server, _, user, network} = connected_session()
       payload = payload(800)
