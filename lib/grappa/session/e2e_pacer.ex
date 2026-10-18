@@ -23,17 +23,24 @@ defmodule Grappa.Session.E2ePacer do
   3` is false at the boundary), so it lands at 6 > 4; integer seconds and
   arrival jitter make it worse. w2's simulation: 3-per-3 s blocked 2588 of
   3000 trials, 3-per-6 s blocked none even at 2 s of jitter. So at most 3
-  lines reach one recipient in any 6 s window: a burst of 3, then one
-  line every 2 s, with one of bahamut's 4 slots left for whoever else is
-  talking to them. The Python package (irc-olm) uses the same default.
+  lines reach one recipient in any 6 s window. With a long message
+  queued that is a burst of 3, then the next 3 once the oldest of them is
+  6 s old, and so on. One of bahamut's 4 slots stays free for whoever else
+  is talking to them. The Python package (irc-olm) uses the same default.
 
   Known gap, not covered here: grappa's own lazy CTCP USERINFO/AVATAR
   probes on a peer's JOIN do not go through this pacer, so a probe landing
   during a burst can still take that spare slot.
 
-  `Grappa.IRC.Client`'s fake-lag pacing does not cover this: it bounds
-  OUR output towards the server as a whole ("Excess Flood"), not what one
-  recipient receives.
+  Nothing here bounds OUR output towards the server as a whole. bahamut
+  charges every PRIVMSG `2 + len/120` s of fake lag, parses a client's
+  recvQ only while that bank is under 10 s, and disconnects a non-oper
+  whose unparsed recvQ passes 2560 bytes ("Excess Flood"). A full E2E line
+  costs 5 s, so a long enough message paced here can still get the
+  connection killed (about 14 full lines to one recipient, by arithmetic
+  from the source). `Grappa.IRC.FakeLag` models that bank per frame but
+  only measures it; it holds nothing back. A connection-wide release rule
+  is under discussion on 2430.
 
   The key is the recipient's folded nick (the caller folds); lines keep
   the raw target they were queued with, which is what goes on the wire.

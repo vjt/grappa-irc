@@ -3934,13 +3934,14 @@ defmodule Grappa.Session.Server do
   end
 
   # issue 2430 — the next outbound E2E line's window opened. A tick that
-  # outlived a `Process.cancel_timer/1` (already in the mailbox) is
-  # harmless: a release with nothing due releases nothing.
+  # outlived a `Process.cancel_timer/1` (already in the mailbox) releases
+  # nothing that is not due, and the stored timer is left for
+  # `arm_e2e_pacer/2` to cancel, so a stale tick never orphans the live one.
   def handle_info(:e2e_pacer_tick, state) do
     {releases, pacer, wait} = E2ePacer.release(state.e2e_pacer, System.monotonic_time(:millisecond))
 
     state =
-      %{state | e2e_pacer: pacer, e2e_pacer_timer: nil}
+      %{state | e2e_pacer: pacer}
       |> send_e2e_releases(releases)
       |> arm_e2e_pacer(wait)
 
@@ -8033,8 +8034,9 @@ defmodule Grappa.Session.Server do
         {:pending, buffer} ->
           buffer
 
+        # Debug, not info: the sender decides how often this fires.
         {:dropped, reason, buffer} ->
-          Logger.info("e2e message #{fragment.msgid} from #{from} dropped: #{reason}")
+          Logger.debug("e2e message dropped", sender: from, reason: reason)
           buffer
       end
 
@@ -8047,7 +8049,7 @@ defmodule Grappa.Session.Server do
   # that lands there is nothing to answer with, and no client could either.
   @spec deliver_e2e(t(), String.t(), E2eReassembly.message()) :: :ok
   defp deliver_e2e(_, from, %{verb: :keyreq}) do
-    Logger.debug("e2e KEYREQ from #{from} dropped: no key bundle is hosted")
+    Logger.debug("e2e KEYREQ dropped: no key bundle is hosted", sender: from)
   end
 
   defp deliver_e2e(state, from, %{verb: verb, msgid: msgid, payload: payload}) do
@@ -8105,7 +8107,7 @@ defmodule Grappa.Session.Server do
     Enum.each(releases, fn {target, body} ->
       case Client.send_privmsg(client, target, body) do
         :ok -> :ok
-        {:error, reason} -> Logger.warning("e2e line to #{target} not sent: #{inspect(reason)}")
+        {:error, reason} -> Logger.warning("e2e line not sent", target: target, reason: inspect(reason))
       end
     end)
 

@@ -1267,9 +1267,9 @@ export type WireUserEvent =
   // field. Carries the generated shape verbatim — cic widens nothing here.
   | SessionWireWhoisAvatarReadyPayload
   // issue 2430 — one whole inbound E2E message, reassembled server-side.
-  // Opaque to grappa (`payload` is the decoded JSON text, never parsed
-  // there); the cic E2E lib (slice c) is its only reader. Generated shape
-  // verbatim.
+  // `payload` is the standard base64 of the payload JSON exactly as the
+  // peer cut it: grappa joins the chunks and never decodes them. The cic
+  // E2E lib (slice c) is its only reader. Generated shape verbatim.
   | SessionWireE2eMessagePayload
   | ({ kind: "names_reply" } & NamesReply)
   | ({ kind: "who_reply" } & WhoReply)

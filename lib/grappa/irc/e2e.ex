@@ -72,9 +72,9 @@ defmodule Grappa.IRC.E2e do
   @max_msgid_bytes 24
   @max_payload_bytes 32 * 1024
 
-  @doc "Every verb, in wire spelling order. For validators that need the closed set."
+  @doc "Every verb. For validators that need the closed set."
   @spec verbs() :: [verb(), ...]
-  def verbs, do: [:keyreq, :keys, :pkmsg, :msg, :nack]
+  def verbs, do: Map.values(@verbs)
 
   @doc "The most fragments one logical message may span."
   @spec max_fragments() :: pos_integer()
