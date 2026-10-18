@@ -8022,10 +8022,10 @@ defmodule Grappa.Session.Server do
   @spec receive_e2e_fragment(t(), String.t(), E2E.Fragment.t()) :: t()
   defp receive_e2e_fragment(state, from, fragment) do
     now = System.monotonic_time(:millisecond)
-    {buffer, _} = E2EReassembly.expire(state.e2e_reassembly, now)
+    {live, _} = E2EReassembly.expire(state.e2e_reassembly, now)
 
     buffer =
-      case E2EReassembly.put(buffer, fold_key(state, from), fragment, now) do
+      case E2EReassembly.put(live, fold_key(state, from), fragment, now) do
         {:complete, message, buffer} ->
           :ok = deliver_e2e(state, from, message)
           buffer

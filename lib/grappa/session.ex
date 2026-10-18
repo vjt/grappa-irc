@@ -971,15 +971,17 @@ defmodule Grappa.Session do
   def send_e2e(subject, network_id, target, verb, payload)
       when is_subject(subject) and is_integer(network_id) and is_binary(target) and is_atom(verb) and
              is_binary(payload) do
+    with :ok <- validate_e2e_send(target, verb, payload) do
+      call_session(subject, network_id, {:send_e2e, target, verb, payload})
+    end
+  end
+
+  @spec validate_e2e_send(String.t(), E2E.verb(), String.t()) :: :ok | {:error, :invalid_line | :bad_request}
+  defp validate_e2e_send(target, verb, payload) do
     cond do
-      not Identifier.safe_line_token?(target) ->
-        {:error, :invalid_line}
-
-      not (Identifier.valid_nick?(target) and verb in @e2e_send_verbs and E2E.chunk?(payload)) ->
-        {:error, :bad_request}
-
-      true ->
-        call_session(subject, network_id, {:send_e2e, target, verb, payload})
+      not Identifier.safe_line_token?(target) -> {:error, :invalid_line}
+      Identifier.valid_nick?(target) and verb in @e2e_send_verbs and E2E.chunk?(payload) -> :ok
+      true -> {:error, :bad_request}
     end
   end
 

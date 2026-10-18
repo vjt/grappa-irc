@@ -23,8 +23,8 @@ defmodule Grappa.Session.E2ESessionTest do
   import Ecto.Query
   import Grappa.AuthFixtures
 
-  alias Grappa.{IRCServer, Repo, Session}
   alias Grappa.IRC.{E2E, LineSplit}
+  alias Grappa.{IRCServer, Repo, Session}
   alias Grappa.Networks.{Credentials, SessionPlan}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Message
@@ -111,8 +111,7 @@ defmodule Grappa.Session.E2ESessionTest do
       assert {:ok, msgid} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, payload)
       assert E2E.msgid?(msgid)
 
-      fragments = await_fragments(server, msgid, 1)
-      total = hd(fragments).total
+      total = hd(await_fragments(server, msgid, 1)).total
       assert total <= 3
       fragments = await_fragments(server, msgid, total)
 
@@ -192,7 +191,11 @@ defmodule Grappa.Session.E2ESessionTest do
     end)
   end
 
-  defp rows(network), do: Repo.aggregate(from(m in Message, where: m.network_id == ^network.id), :count)
+  defp rows(network) do
+    Message
+    |> where([m], m.network_id == ^network.id)
+    |> Repo.aggregate(:count)
+  end
 
   defp connected_session do
     {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", @nick))
