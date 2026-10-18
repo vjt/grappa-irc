@@ -2871,3 +2871,68 @@ an encrypted message is never a scrollback row, so the existing proof
 - shottino has no arm for the notice and renders the row as a bare `---`.
 - New `Session.Server` state fields (`e2e_inbox_timer`, `e2e_unqueued`): a
   COLD deploy, as a1 already was.
+<!-- entry #2430c -->
+
+---
+
+## 2026-10-19 — #2430: the E2E pacer bounds each peer, and urgent lines go first only within a budget
+
+Follow-up to `#2430a`, which shipped vjt's option A with w2's "control always
+first". w2's review of the same rule in irc-olm (PR #2) found two problems.
+grappa had both, because it implements the same rule:
+
+- **Skipped keys.** vodozemac keeps 40 skipped message keys. An urgent message
+  that overtakes more than 40 queued text messages to the same peer leaves
+  the oldest of them undecryptable (w2 measured it: 45 queued, 5 lost; 60
+  queued, 20 lost). Nothing bounded the queue per peer, only per connection
+  (128 lines).
+- **Urgent flood.** "Urgent always first" lets anyone holding a pinned nick
+  starve text: a KEYREQ every 10 s draws a KEYS, a junk MSG every ~3 s draws
+  a NACK, and each answer jumps the queue.
+
+vjt approved departing from "control always first" (2430, comment
+6255346375, relayed): the per-peer queue is bounded, and when it is full the
+send is refused and the LOCAL sender is told; nothing is silently dropped,
+and nothing goes to the peer. The numbers are w2's, as the ruling says.
+`Session.E2ePacer` now applies irc-olm's rule:
+
+- **Bounds, refused whole.** Per peer, at most 32 text MESSAGES and 32 urgent
+  lines wait, and the connection keeps its 128 lines. The text bound counts
+  messages, not lines, because each one is an Olm message: that is the count
+  the 40 skipped keys are spent on. A message frees its place when its LAST
+  line is released. Past any bound `enqueue/7` refuses the whole message
+  (`{:error, :queue_full}`), and the send door answers 429 `rate_limited`, so
+  the client can tell its user. Nothing of the message is sent: the receiver
+  discards an incomplete message anyway.
+- **Urgent within a budget.** Per peer, at most 8 urgent lines RELEASED in any
+  60 s rank ahead of text. Past the budget, that peer's urgent lines rank
+  with text.
+- **Peers in turn.** Every peer with a free FLUD slot offers one head line,
+  its oldest urgent line if it has one, else its oldest text line. Heads rank
+  by priority (urgent within budget first), then by when the peer was last
+  served (never served, or quiet past its FLUD window, first), then by queue
+  order. The global text FIFO across peers is gone; text is round-robin,
+  longest-served-ago first. Within one peer, urgent comes before text and each
+  queue stays FIFO, so text to a peer still never reorders.
+- **Strict ranking.** When the best head does not fit the fake-lag bank,
+  nothing behind it overtakes. Otherwise a stream of cheap lines could hold a
+  full line back for ever.
+
+Two things w2 asked to be checked rather than changed:
+
+- **No busy loop.** The wake is computed for the line the next release would
+  try. A bank wait is at least 1 ms (the bank is non-zero whenever a line
+  does not fit), and a FLUD wait is positive (sends are pruned to under 6 s
+  old). The new property test drives the pacer with random arrivals of both
+  classes, refuses any wake under 1 ms, and requires every line to go out.
+- **Case-fold.** The session already keys lanes on `fold_key/2`, but no test
+  pinned it. `Bob` and `bob` now share one queue, and its bound refuses both.
+
+Not answered here, carried to slice a3 from w2: grappa's own KEYS answers
+are rate-limited per folded nick (at most once per 30 s; a one-time key at
+most once per nick per minute, else the fallback; 30 OTKs per hour
+globally).
+
+The lane and item shapes in `E2ePacer` changed, and it is in
+`LongLivedModules`, so this is a COLD deploy, as a1 and a2 already were. No
+wire shape changed: same 429, same error code, protocol stays 43.

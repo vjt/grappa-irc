@@ -37,14 +37,17 @@ defmodule GrappaWeb.E2eController do
   which is what a peer's `NACK` will name.
 
   `priority` is `control` or `text`, and absent means `text`. A `control`
-  message goes ahead of every queued text line; text keeps its order. Set
+  message goes ahead of the text queued for the same peer, within a
+  per-peer budget (`Grappa.Session.E2ePacer`); text keeps its order. Set
   `control` on a MSG/PKMSG that carries a CHAL or an ACK: grappa cannot see
   inside it. `keyreq` and `nack` are control whatever it says.
 
   400 `bad_request` for a target that is not a nick, a verb outside
   `keyreq | pkmsg | msg | nack`, a priority outside `control | text`, or a
   payload that is not base64; 413 `too_large` past 32 KiB or 64 lines; 429
-  `rate_limited` when the connection's queue cannot take the whole message.
+  `rate_limited` when the peer's queue (32 text messages, 32 control lines)
+  or the connection's (128 lines) cannot take the whole message: refused
+  whole and told, never silently dropped.
   """
   @spec create(Plug.Conn.t(), map()) ::
           Plug.Conn.t()
