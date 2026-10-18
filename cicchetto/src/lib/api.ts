@@ -84,6 +84,7 @@ import type {
   SessionLogWireT,
   SessionWireBanlistBundlePayload,
   SessionWireBanlistEntry,
+  SessionWireE2eMessagePayload,
   SessionWireLinksBundlePayload,
   SessionWireLinksEntry,
   SessionWireMentionsBundleMessage,
@@ -1265,6 +1266,11 @@ export type WireUserEvent =
   // the incremental patch for that case: same `(network, nick)` key, one
   // field. Carries the generated shape verbatim — cic widens nothing here.
   | SessionWireWhoisAvatarReadyPayload
+  // issue 2430 — one whole inbound E2E message, reassembled server-side.
+  // Opaque to grappa (`payload` is the decoded JSON text, never parsed
+  // there); the cic E2E lib (slice c) is its only reader. Generated shape
+  // verbatim.
+  | SessionWireE2eMessagePayload
   | ({ kind: "names_reply" } & NamesReply)
   | ({ kind: "who_reply" } & WhoReply)
   | ({ kind: "server_reply" } & ServerReply)

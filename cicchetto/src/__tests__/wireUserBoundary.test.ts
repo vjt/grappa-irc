@@ -314,6 +314,7 @@ const HAND_SWITCH_ARMS = [
   "directory_complete",
   "directory_failed",
   "directory_progress",
+  "e2e_message",
   "invite_ack",
   "isupport_changed",
   "join_failed",
@@ -741,11 +742,11 @@ describe("#1393 — user-topic boundary census", () => {
       censusedNotInSwitch: [...censused].filter((k) => !handSwitch.has(k)),
     }).toMatchInlineSnapshot(`
       {
-        "censused": 50,
+        "censused": 51,
         "censusedNotInSwitch": [
           "whois_avatar_ready",
         ],
-        "handArms": 49,
+        "handArms": 50,
         "inSwitchNotCensused": [],
       }
     `);
@@ -772,9 +773,9 @@ describe("#1393 — user-topic boundary census", () => {
       divergent,
     }).toMatchInlineSnapshot(`
       {
-        "armsAtParity": 42,
-        "armsCensused": 51,
-        "armsWithSchema": 50,
+        "armsAtParity": 43,
+        "armsCensused": 52,
+        "armsWithSchema": 51,
         "brokenOracles": [],
         "divergent": [
           {
@@ -910,10 +911,10 @@ describe("#1393 — user-topic boundary census", () => {
       divergent,
     }).toMatchInlineSnapshot(`
       {
-        "armsAtValueParity": 50,
-        "comparablePairs": 50,
+        "armsAtValueParity": 51,
+        "comparablePairs": 51,
         "divergent": [],
-        "pairs": 51,
+        "pairs": 52,
         "skippedOneSideRejected": 1,
       }
     `);
