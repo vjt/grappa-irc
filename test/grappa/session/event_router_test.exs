@@ -8099,7 +8099,11 @@ defmodule Grappa.Session.EventRouterTest do
     end
 
     test "a malformed E2E line is dropped, never persisted as a plain PRIVMSG" do
-      for body <- ["\x01E2E MSG q83vEjRWeJA 0/1 eyJ2IjoxfQ==\x01", "\x01E2E OFFLINE q83vEjRWeJA 1/1 eyJ2IjoxfQ==\x01", "\x01E2E\x01"] do
+      for body <- [
+            "\x01E2E MSG q83vEjRWeJA 0/1 eyJ2IjoxfQ==\x01",
+            "\x01E2E OFFLINE q83vEjRWeJA 1/1 eyJ2IjoxfQ==\x01",
+            "\x01E2E\x01"
+          ] do
         assert {:cont, _, []} = EventRouter.route(msg(:privmsg, ["vjt", body], @peer), base_state()), body
       end
     end

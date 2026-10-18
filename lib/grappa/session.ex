@@ -128,7 +128,7 @@ defmodule Grappa.Session do
     # drifts. It is a pure module with no process or state behind it.
     exports: [NSInterceptor, Server, Wire]
 
-  alias Grappa.IRC.{AuthFSM, CTCP, Identifier, Ignore}
+  alias Grappa.IRC.{AuthFSM, CTCP, E2E, Identifier, Ignore}
   alias Grappa.Session.{Deps, FloodAllowance, ISupport, Server, Wire}
   alias Grappa.UserSettings
 
@@ -931,6 +931,55 @@ defmodule Grappa.Session do
       {"ACTION", _} -> false
       {_, _} -> true
       :none -> false
+    end
+  end
+
+  # issue 2430 — the E2E verbs a client may send. KEYS is absent because
+  # grappa answers key requests itself from the bundle it hosts, so a client
+  # never answers one; the draft's OFFLINE was dropped by vjt.
+  @e2e_send_verbs [:keyreq, :pkmsg, :msg, :nack]
+
+  @doc """
+  issue 2430 — the E2E verbs `send_e2e/5` accepts, for the web door to
+  map its strings onto. One list, so the controller and the facade cannot
+  disagree on the closed set.
+  """
+  @spec e2e_send_verbs() :: [E2E.verb(), ...]
+  def e2e_send_verbs, do: @e2e_send_verbs
+
+  @doc """
+  issue 2430 — sends one end-to-end encrypted message to `target` (a nick).
+
+  `payload` is what the client built: the standard base64 of the agreed
+  JSON payload, which grappa never decodes. The session picks the msgid,
+  cuts the payload into `\\x01E2E …\\x01` lines sized for the worst-case
+  relayed prefix, and hands them to the per-recipient pacer (3 lines per
+  6 s, bahamut's FLUD). Nothing is persisted, echoed or pushed, and no
+  query window opens.
+
+  `{:ok, msgid}` means ACCEPTED, not delivered: lines may still be waiting
+  for the recipient's window, and IRC never confirms delivery anyway (vjt
+  ruled out any sender-side notice, 2430). `{:error, :invalid_line}` for a
+  CR/LF/NUL in `target`; `{:error, :bad_request}` for a target that is not
+  a nick, a verb outside `e2e_send_verbs/0`, or a payload that is not
+  base64; `{:error, :too_large}` when the payload needs more than 64 lines;
+  `{:error, :rate_limited}` when the recipient's queue cannot take it whole.
+  """
+  @spec send_e2e(subject(), integer(), String.t(), E2E.verb(), String.t()) ::
+          {:ok, String.t()}
+          | {:error, :no_session | :no_socket | :timeout | :invalid_line | :bad_request | :too_large | :rate_limited}
+  def send_e2e(subject, network_id, target, verb, payload)
+      when is_subject(subject) and is_integer(network_id) and is_binary(target) and is_atom(verb) and
+             is_binary(payload) do
+    cond do
+      not Identifier.safe_line_token?(target) ->
+        {:error, :invalid_line}
+
+      not (Identifier.valid_nick?(target) and verb in @e2e_send_verbs and E2E.chunk?(payload)) ->
+        {:error, :bad_request}
+
+      true ->
+        call_session(subject, network_id, {:send_e2e, target, verb, payload})
     end
   end
 

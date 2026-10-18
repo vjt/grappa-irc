@@ -544,6 +544,25 @@ defmodule Grappa.Session.Wire do
           resolution: :accepted | :refused | :expired
         }
 
+  # issue 2430 — the verbs grappa hands the client. KEYREQ is not among
+  # them: grappa answers key requests itself from the bundle it hosts, so a
+  # client never sees one (until that slice lands, an inbound KEYREQ is
+  # dropped).
+  @type e2e_verb :: :keys | :pkmsg | :msg | :nack
+
+  # issue 2430 — one whole E2E message from a peer, reassembled from its
+  # lines. `payload` is the base64 the peer cut into chunks, joined and
+  # NOT decoded: grappa holds no key and never reads it. `from` is the RAW
+  # nick, a routing hint only — the client pins the peer on its key.
+  @type e2e_message_payload :: %{
+          kind: :e2e_message,
+          network: String.t(),
+          from: String.t(),
+          verb: e2e_verb(),
+          msgid: String.t(),
+          payload: String.t()
+        }
+
   @type join_failed_payload :: %{
           kind: :join_failed,
           network: String.t(),
@@ -1564,6 +1583,22 @@ defmodule Grappa.Session.Wire do
       offer_id: offer_id,
       resolution: resolution
     }
+  end
+
+  @doc """
+  issue 2430 — a peer's end-to-end encrypted message, whole.
+
+  Broadcast on `Topic.user(...)`: an encrypted query has no window the
+  client is guaranteed to be subscribed to (a stranger opening a session
+  is the first thing it ever hears from them), and the user topic is the
+  one every client holds. The payload is never stored, so this event is
+  the only copy the client gets; nothing replays it.
+  """
+  @spec e2e_message(String.t(), String.t(), e2e_verb(), String.t(), String.t()) :: e2e_message_payload()
+  def e2e_message(network_slug, from, verb, msgid, payload)
+      when is_binary(network_slug) and is_binary(from) and verb in [:keys, :pkmsg, :msg, :nack] and
+             is_binary(msgid) and is_binary(payload) do
+    %{kind: :e2e_message, network: network_slug, from: from, verb: verb, msgid: msgid, payload: payload}
   end
 
   @doc """
