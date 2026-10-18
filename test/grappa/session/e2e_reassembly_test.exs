@@ -19,6 +19,18 @@ defmodule Grappa.Session.E2eReassemblyTest do
 
   defp payload(bytes), do: Base.encode64(:crypto.strong_rand_bytes(bytes))
 
+  # One byte of chunk per line: the frame around a `64/64` chunk is 28
+  # bytes, so a 29-byte budget leaves 1, and a 64-char payload needs all 64.
+  defp tiny_fragments(msgid) do
+    {:ok, lines} = E2e.fragment(:msg, msgid, String.duplicate("QUFB", 16), 29)
+    64 = length(lines)
+
+    Enum.map(lines, fn line ->
+      {:ok, fragment} = E2e.parse(line)
+      fragment
+    end)
+  end
+
   defp feed(buffer, sender, fragments, now_ms) do
     {final, results} =
       Enum.reduce(fragments, {buffer, []}, fn fragment, {acc, out} ->
@@ -136,6 +148,49 @@ defmodule Grappa.Session.E2eReassemblyTest do
     # Another sender is not affected by the flooder's cap.
     [other | _] = fragments(:msg, "q83vEjRWeJA", payload(800))
     assert {:pending, _} = E2eReassembly.put(buffer, "vjt-claude", other, 0)
+  end
+
+  test "a fragment the sender cap refuses takes its partial message with it" do
+    # M1 is started, then the sender fills its allowance with messages held
+    # one fragment short. M1's next fragment is refused, and M1 can never
+    # complete any more: keeping it would only hold the bytes of a dead
+    # message against the sender's next ones.
+    [m1_first, m1_second | _] = fragments(:msg, "M1M1M1M1M1M", payload(800))
+
+    held =
+      for n <- 1..200 do
+        [first | _] = fragments(:msg, String.pad_leading("#{n}", 11, "A"), payload(800))
+        first
+      end
+
+    {started, [:pending]} = feed(E2eReassembly.new(), "flooder", [m1_first], 0)
+    {full, results} = feed(started, "flooder", held, 0)
+    assert {:dropped, :sender_cap} in results
+
+    assert {:dropped, :sender_cap, after_drop} = E2eReassembly.put(full, "flooder", m1_second, 0)
+
+    # M1's buffered fragment is gone, so a fragment of the same size fits
+    # where it did not before.
+    [fresh | _] = fragments(:msg, "FRESHFRESHF", payload(800))
+    assert {:dropped, :sender_cap, _} = E2eReassembly.put(full, "flooder", fresh, 0)
+    assert {:pending, _} = E2eReassembly.put(after_drop, "flooder", fresh, 0)
+  end
+
+  test "every fragment is charged a fixed overhead, so 1-byte chunks cannot pile up" do
+    # A budget that leaves exactly one byte of chunk per line: a 64-char
+    # payload becomes 64 one-byte fragments. Held one short of complete,
+    # 32 such messages are 2016 fragments for 2016 bytes of chunk — far
+    # under 32 KiB if only chunk bytes counted.
+    tiny =
+      for n <- 1..32, fragment <- tiny_fragments(String.pad_leading("#{n}", 11, "A")) |> Enum.drop(-1) do
+        fragment
+      end
+
+    assert length(tiny) == 2016
+    {_, results} = feed(E2eReassembly.new(), "flooder", tiny, 0)
+
+    assert {:dropped, :sender_cap} in results
+    assert Enum.count(results, &(&1 == :pending)) < 1_000
   end
 
   test "completing a message gives its bytes back to the sender's allowance" do

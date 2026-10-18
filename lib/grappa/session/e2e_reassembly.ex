@@ -17,10 +17,20 @@ defmodule Grappa.Session.E2eReassembly do
       discarded (`expire/2`);
     * at most `Grappa.IRC.E2e.max_fragments/0` fragments (the parser
       already refuses a larger `n`);
-    * at most 32 KiB of chunks buffered per sender across all of its
-      messages in flight — the bot side picked the same 32 KiB;
+    * at most `Grappa.IRC.E2e.max_payload_bytes/0` (32 KiB) buffered per
+      sender across all of its messages in flight — the bot side picked
+      the same 32 KiB;
     * at most 1024 KiB buffered in total, so many senders cannot add up
       to what one is refused.
+
+  Each fragment is charged its chunk plus a fixed 64-byte overhead
+  against both caps. Counting chunk bytes alone let 1-byte chunks pile up
+  ~32k map entries per sender for 32 KiB of "data"; a legitimate 64-line
+  message on a 512-byte wire is ~28 KiB with the overhead, under the cap.
+
+  A fragment refused by a cap takes the message it belongs to with it:
+  that message can no longer complete, and keeping it would hold its bytes
+  against the sender's next messages until it expired.
 
   A fragment that contradicts the message it claims to belong to (another
   verb, another total) drops the whole message: there is no telling which
@@ -36,8 +46,8 @@ defmodule Grappa.Session.E2eReassembly do
   alias Grappa.IRC.E2e.Fragment
 
   @timeout_ms 60_000
-  @max_sender_bytes 32 * 1024
   @max_total_bytes 1024 * 1024
+  @fragment_overhead_bytes 64
 
   @typedoc "A whole message, ready to hand to the client."
   @type message :: %{verb: E2e.verb(), msgid: String.t(), payload: String.t()}
@@ -133,15 +143,16 @@ defmodule Grappa.Session.E2eReassembly do
   @spec add(t(), String.t(), {String.t(), String.t()}, entry(), Fragment.t()) ::
           {:complete, message(), t()} | {:pending, t()} | {:dropped, drop_reason(), t()}
   defp add(buffer, sender, key, entry, fragment) do
-    size = byte_size(fragment.chunk)
+    size = byte_size(fragment.chunk) + @fragment_overhead_bytes
     sender_bytes = Map.get(buffer.sender_bytes, sender, 0) + size
 
+    # `remove/2` is a no-op for a message not buffered yet.
     cond do
-      sender_bytes > @max_sender_bytes ->
-        {:dropped, :sender_cap, buffer}
+      sender_bytes > E2e.max_payload_bytes() ->
+        {:dropped, :sender_cap, remove(buffer, key)}
 
       buffer.total_bytes + size > @max_total_bytes ->
-        {:dropped, :total_cap, buffer}
+        {:dropped, :total_cap, remove(buffer, key)}
 
       true ->
         entry = %{entry | parts: Map.put(entry.parts, fragment.index, fragment.chunk), bytes: entry.bytes + size}
