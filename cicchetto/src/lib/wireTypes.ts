@@ -1023,6 +1023,7 @@ export const SESSION_WIRE_WIRE_EVENT_KIND = [
   "window_invite_declined",
   "dcc_offer",
   "dcc_offer_resolved",
+  "e2e_message",
   "join_failed",
   "kicked",
   "away_confirmed",

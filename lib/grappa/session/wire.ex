@@ -110,6 +110,7 @@ defmodule Grappa.Session.Wire do
           | :window_invite_declined
           | :dcc_offer
           | :dcc_offer_resolved
+          | :e2e_message
           | :join_failed
           | :kicked
           | :away_confirmed
