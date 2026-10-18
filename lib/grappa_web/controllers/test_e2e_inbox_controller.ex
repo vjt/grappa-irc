@@ -19,6 +19,10 @@ if Mix.env() in [:dev, :test] do
     alias Grappa.TestSupport.E2eInboxExpiry
     alias GrappaWeb.Subject
 
+    @doc """
+    Ages the caller's queue on the resolved network past the TTL and runs
+    the session's sweep; 204 once the sweep has run.
+    """
     @spec expire(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :no_session}
     def expire(conn, _) do
       with :ok <- E2eInboxExpiry.expire_now(Subject.to_session(conn.assigns.current_subject), conn.assigns.network.id) do
