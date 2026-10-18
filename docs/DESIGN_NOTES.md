@@ -2783,12 +2783,24 @@ opaque: grappa stores the base64 string and never decodes it.
 
 Each row is charged its payload plus 256 bytes, so a flood of tiny messages is
 bounded too. A subject's queue on one network holds 4 MiB, and one sender
-(case-folded, so `Bob` and `bob` count as one) 1 MiB of it, so one peer
+(case-folded, so `Bob` and `bob` count as one) 1 MiB of it, so one nick
 cannot crowd out everyone else. The check and the insert are one immediate
 transaction, so two arrivals cannot both take the last room. An entry expires
 after 7 days. None of these numbers comes from the spec; they are sized so
-that a week offline with a few talkative peers fits, and a hostile peer costs
-at most 1 MiB per subject and network.
+that a week offline with a few talkative peers fits. The per-sender share is
+per NICK, the only identity grappa sees, so a peer with four nicks can still
+fill the queue (see Known gaps).
+
+The check runs inside the write lock on every arrival, so it must not read
+payloads: a payload is up to 32 KiB, it lives in overflow pages, and
+`length()` of TEXT reads the value (up to 4 MiB per arrival, under the lock).
+`Entry` derives a `bytes` column instead, and the check sums that. `payload`
+is the LAST column of the table, because SQLite reads a record's columns in
+order: a column stored after it (`inserted_at`, which expiry filters on)
+would mean walking the same overflow chain. Expiry takes the write lock only
+when something has expired; every session sweeps at init, and a boot must not
+queue all of them behind the lock to delete nothing. Both came out of code
+review.
 
 ### The recipient is told, and only the recipient
 
@@ -2800,8 +2812,11 @@ ONE row per sender: a `:server_event` in that sender's query window
 effect, which opens the query window like any nick-keyed row. The row is
 typed, not text: cicchetto words it ("*** bob sent you 2 encrypted messages
 that cannot be read here", `data-testid="e2e-undeliverable"`). Only PKMSG and
-MSG are counted: key material and NACKs are the protocol talking to itself.
-Nothing is ever sent to the sender (vjt's ruling, 2430 19:3x).
+MSG are counted, whether they expired or were refused
+(`E2eInbox.message_verb?/1`): key material and NACKs are the protocol talking
+to itself. Review caught the refused path counting every verb, which told the
+recipient about a message that never existed. Nothing is ever sent to the
+sender (vjt's ruling, 2430 19:3x).
 
 The refused counts live in session state, not in the database. A crash loses
 a count, never a message, and the number it would have shown is advisory.
@@ -2838,6 +2853,19 @@ an encrypted message is never a scrollback row, so the existing proof
 
 ### Known gaps
 
+- The per-sender share is per nick. A peer using several nicks fills the whole
+  4 MiB, and everyone else's messages are refused (and counted in the notice)
+  until entries are acked or expire. grappa has no better identity for a peer
+  than its nick; the key is the client's.
+- A refused message is not pushed even to a connected client, because the
+  client could not acknowledge it. A client that never acks (cicchetto until
+  slice c, or a consumer written for protocol 42) therefore stops getting a
+  peer's messages once that peer's share is full, for up to a week.
+- The notice count is advisory and can be off by a little. A count is lost
+  when a crash takes the session state, or when the notice row fails to
+  persist after the expiry committed. A write that committed but whose reply
+  was lost (`:connection_closed`) is counted as refused while the row stays
+  queued, so it can be counted twice.
 - Queue rows outlive an unbind of the network. They are bounded by the cap and
   swept if the network is bound again; nothing else reads them.
 - shottino has no arm for the notice and renders the row as a bare `---`.
