@@ -135,7 +135,7 @@ defmodule Grappa.Session.E2eSessionTest do
       assert Enum.all?(lines, &(byte_size(&1) <= 512 - reserve))
     end
 
-    test "past 3 lines the rest waits for the recipient's FLUD window" do
+    test "past 3 lines the rest waits for the recipient's FLUD window, then the timer sends it" do
       {server, _, user, network} = connected_session()
       {:ok, msgid} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, payload(1_500))
 
@@ -144,9 +144,14 @@ defmodule Grappa.Session.E2eSessionTest do
       _ = await_fragments(server, msgid, 3)
 
       # The 4th line is due 6 s after the first; it must not be on the wire
-      # now. (The release itself is pinned in `E2ePacerTest` with a clock.)
+      # now. (The window arithmetic is pinned in `E2ePacerTest` with a clock.)
       assert {:error, :timeout} =
                IRCServer.wait_for_line(server, &String.contains?(&1, "#{msgid} 4/"), 300)
+
+      # ...and it does go out once the window opens: nothing but the
+      # session's own pacer timer can put it there, so this is the test that
+      # the tick is armed and handled.
+      assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "#{msgid} 4/"), 8_000)
     end
 
     test "refuses what is not a nick, a verb a client may not send, and a non-base64 payload" do

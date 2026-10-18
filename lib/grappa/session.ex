@@ -962,7 +962,8 @@ defmodule Grappa.Session do
   ruled out any sender-side notice, 2430). `{:error, :invalid_line}` for a
   CR/LF/NUL in `target`; `{:error, :bad_request}` for a target that is not
   a nick, a verb outside `e2e_send_verbs/0`, or a payload that is not
-  base64; `{:error, :too_large}` when the payload needs more than 64 lines;
+  base64; `{:error, :too_large}` past `E2e.max_payload_bytes/0` or when the
+  payload needs more than 64 lines;
   `{:error, :rate_limited}` when the recipient's queue cannot take it whole.
   """
   @spec send_e2e(subject(), integer(), String.t(), E2e.verb(), String.t()) ::
@@ -976,10 +977,14 @@ defmodule Grappa.Session do
     end
   end
 
-  @spec validate_e2e_send(String.t(), E2e.verb(), String.t()) :: :ok | {:error, :invalid_line | :bad_request}
+  # The size check runs before the session is asked, so a payload no
+  # receiver could hold is never copied into its mailbox.
+  @spec validate_e2e_send(String.t(), E2e.verb(), String.t()) ::
+          :ok | {:error, :invalid_line | :bad_request | :too_large}
   defp validate_e2e_send(target, verb, payload) do
     cond do
       not Identifier.safe_line_token?(target) -> {:error, :invalid_line}
+      byte_size(payload) > E2e.max_payload_bytes() -> {:error, :too_large}
       Identifier.valid_nick?(target) and verb in @e2e_send_verbs and E2e.chunk?(payload) -> :ok
       true -> {:error, :bad_request}
     end

@@ -79,6 +79,30 @@ defmodule GrappaWeb.E2eControllerTest do
     assert json_response(conn, 413) == %{"error" => "too_large"}
   end
 
+  test "413 for a payload no receiver can hold, decided before any session is asked", %{conn: conn, vjt: vjt} do
+    # No session runs for this network: a refusal that needed one would
+    # come back as something else. 32 KiB is what a receiver buffers per
+    # sender (2430), so a larger payload can never be reassembled.
+    {network, _} = network_with_server(port: unique_port(), slug: "idle-#{u()}")
+    _ = credential_fixture(vjt, network, %{nick: "grappa-test", autojoin_channels: []})
+    huge = String.duplicate("QUFB", div(E2e.max_payload_bytes(), 4) + 1)
+
+    conn = post(conn, "/networks/#{network.slug}/e2e/messages", %{target: "alice", verb: "msg", payload: huge})
+    assert json_response(conn, 413) == %{"error" => "too_large"}
+  end
+
+  test "429 rate_limited when the recipient's queue cannot take the whole message", %{conn: conn, vjt: vjt} do
+    {_, network} = live_network(vjt)
+    path = "/networks/#{network.slug}/e2e/messages"
+    # About 55 lines each on a 512-byte wire: 3 go out at once, the rest
+    # queue. Two fit in the 128-line queue, the third does not.
+    payload = Base.encode64(:crypto.strong_rand_bytes(15_000))
+
+    assert %{"msgid" => _} = json_response(post(conn, path, %{target: "alice", verb: "msg", payload: payload}), 202)
+    assert %{"msgid" => _} = json_response(post(conn, path, %{target: "alice", verb: "msg", payload: payload}), 202)
+    assert json_response(post(conn, path, %{target: "alice", verb: "msg", payload: payload}), 429)["error"] == "rate_limited"
+  end
+
   test "another subject's network is not reachable", %{conn: conn, vjt: vjt} do
     other = user_fixture(name: "other-#{u()}")
     {network, _} = network_with_server(port: unique_port(), slug: "other-#{u()}")
