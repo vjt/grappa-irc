@@ -70,6 +70,7 @@ defmodule Grappa.Session.Wire do
   its older part was not scanned. `optional` for the same reason.
   """
 
+  alias Grappa.E2eInbox
   alias Grappa.IRC.LineSplit
   alias Grappa.Scrollback.Message
 
@@ -557,6 +558,7 @@ defmodule Grappa.Session.Wire do
   # nick, a routing hint only — the client pins the peer on its key.
   @type e2e_message_payload :: %{
           kind: :e2e_message,
+          id: pos_integer(),
           network: String.t(),
           from: String.t(),
           verb: e2e_verb(),
@@ -1587,19 +1589,28 @@ defmodule Grappa.Session.Wire do
   end
 
   @doc """
-  issue 2430 — a peer's end-to-end encrypted message, whole.
+  issue 2430 — a peer's end-to-end encrypted message, whole, as it waits in
+  the offline queue (`Grappa.E2eInbox`).
 
-  Broadcast on `Topic.user(...)`: an encrypted query has no window the
-  client is guaranteed to be subscribed to (a stranger opening a session
-  is the first thing it ever hears from them), and the user topic is the
-  one every client holds. The payload is never stored, so this event is
-  the only copy the client gets; nothing replays it.
+  Pushed on `Topic.user(...)` the moment it is queued: an encrypted query
+  has no window the client is guaranteed to be subscribed to (a stranger
+  opening a session is the first thing it ever hears from them), and the
+  user topic is the one every client holds. The SAME shape is what
+  `GET /networks/:network_id/e2e/inbox` lists, so a client handles a pushed
+  message and a fetched one alike. `id` is the queue's: the client
+  acknowledges it, and tells a redelivery from a new message by it.
   """
-  @spec e2e_message(String.t(), String.t(), e2e_verb(), String.t(), String.t()) :: e2e_message_payload()
-  def e2e_message(network_slug, from, verb, msgid, payload)
-      when is_binary(network_slug) and is_binary(from) and verb in [:keys, :pkmsg, :msg, :nack] and
-             is_binary(msgid) and is_binary(payload) do
-    %{kind: :e2e_message, network: network_slug, from: from, verb: verb, msgid: msgid, payload: payload}
+  @spec e2e_message(String.t(), E2eInbox.Entry.t()) :: e2e_message_payload()
+  def e2e_message(network_slug, %E2eInbox.Entry{} = entry) when is_binary(network_slug) do
+    %{
+      kind: :e2e_message,
+      id: entry.id,
+      network: network_slug,
+      from: entry.sender,
+      verb: entry.verb,
+      msgid: entry.msgid,
+      payload: entry.payload
+    }
   end
 
   @doc """

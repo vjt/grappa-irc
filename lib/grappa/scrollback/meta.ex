@@ -135,6 +135,16 @@ defmodule Grappa.Scrollback.Meta do
                                                                   for a human, so an old client renders
                                                                   it with no change; the structured copy
                                                                   is what a future client would style.)
+      :server_event (e2e undeliverable) →  %{e2e_undeliverable: pos_integer()}
+                                                                 (issue 2430: this many end-to-end
+                                                                  encrypted messages from `sender` were
+                                                                  never read — they waited past the
+                                                                  offline queue's TTL, or the queue
+                                                                  refused them. Written by
+                                                                  Session.Server's sweep in the peer's
+                                                                  query window (`channel` = the peer,
+                                                                  `dm_with` nil), told to the recipient
+                                                                  only. No body: the client words it.)
       :notice  | :privmsg           →  %{ctcp_verb: String.t(), ctcp_args: String.t()}
                                                                  (#591: a CTCP frame classified by
                                                                   Grappa.IRC.CTCP.verb_args/1 — a peer's
@@ -245,11 +255,12 @@ defmodule Grappa.Scrollback.Meta do
             | :statusmsg
             | :nick_fallback
             | :link_failure
+            | :e2e_undeliverable
             | :structural
           ) => term()
         }
 
-  @known_keys ~w[target new_nick modes args numeric severity who who_target names names_target raw_verb raw_sender raw_params sender_user sender_host sender_prefix sender_kind ctcp_verb ctcp_args ctcp_target notice_target statusmsg nick_fallback link_failure structural]a
+  @known_keys ~w[target new_nick modes args numeric severity who who_target names names_target raw_verb raw_sender raw_params sender_user sender_host sender_prefix sender_kind ctcp_verb ctcp_args ctcp_target notice_target statusmsg nick_fallback link_failure e2e_undeliverable structural]a
 
   @doc """
   The atom-key allowlist. Exposed so the test suite can assert that
@@ -283,6 +294,7 @@ defmodule Grappa.Scrollback.Meta do
           | :statusmsg
           | :nick_fallback
           | :link_failure
+          | :e2e_undeliverable
           | :structural,
           ...
         ]
