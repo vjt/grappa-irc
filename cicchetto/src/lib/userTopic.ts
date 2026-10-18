@@ -96,6 +96,7 @@ import {
   S_SessionWireDirectoryCompletePayload,
   S_SessionWireDirectoryFailedPayload,
   S_SessionWireDirectoryProgressPayload,
+  S_SessionWireE2eMessagePayload,
   S_SessionWireInviteAckPayload,
   S_SessionWireLinksBundlePayload,
   S_SessionWireMentionsBundlePayload,
@@ -508,6 +509,10 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       // M3b — incremental patch for a peer avatar fetch that completed
       // AFTER the whois_bundle it belongs to was already sent.
       return validate(S_SessionWireWhoisAvatarReadyPayload, r);
+    case "e2e_message":
+      // issue 2430 — validated here so a well-formed push is not counted as
+      // a wire drop; the dispatch arm below consumes nothing yet.
+      return validate(S_SessionWireE2eMessagePayload, r);
     case "names_reply":
       // #140 — /names roster bundle. A malformed member element drops the
       // whole payload rather than rendering a half-typed row, which is the
@@ -1251,6 +1256,12 @@ moduleRoot(() => {
           // M3b — patch the open /whois card's avatar_url if it's still
           // showing this nick; silent no-op otherwise (see whoisCard.ts).
           patchWhoisAvatarUrl(payload.network, payload.nick, payload.avatar_url);
+          return;
+
+        case "e2e_message":
+          // issue 2430 — no reader yet: the Olm layer that decrypts this
+          // lands with the cic E2E slices. Until then an inbound encrypted
+          // message is dropped here, on purpose and in one place.
           return;
 
         case "names_reply": {
