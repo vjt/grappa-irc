@@ -100,6 +100,28 @@ defmodule Grappa.Session.E2eSessionTest do
       assert rows(network) == 0
     end
 
+    # The queue keys a message on its sender's nick, and refuses a row
+    # whose sender is not one. A server prefix, a prefix-less line (`*`)
+    # and a nick past our 30-character key are all reachable from the wire,
+    # so they are dropped where the line is routed, not left to kill the
+    # session at the queue.
+    test "an E2E line whose sender is not a nick is dropped and the session survives" do
+      {server, pid, user, network} = connected_session()
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      [line] = peer_lines(:msg, "q83vEjRWeJA", Base.encode64(~s({"v":1})))
+      body = line |> String.split(" :", parts: 2) |> List.last()
+
+      IRCServer.feed(server, ":irc.example.net PRIVMSG #{@nick} :#{body}")
+      IRCServer.feed(server, "PRIVMSG #{@nick} :#{body}")
+      IRCServer.feed(server, ":#{String.duplicate("a", 31)}!u@h PRIVMSG #{@nick} :#{body}")
+      IRCServer.feed(server, line)
+
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, from: "alice"}}, @wire_timeout
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message}}
+      assert Process.alive?(pid)
+      assert [%E2eInbox.Entry{sender: "alice"}] = E2eInbox.list({:user, user.id}, network.id, 0)
+    end
+
     test "a KEYREQ is not handed to the client (grappa will answer it itself)" do
       {server, _, user, network} = connected_session()
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
