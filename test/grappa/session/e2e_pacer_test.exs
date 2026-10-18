@@ -1,5 +1,6 @@
 defmodule Grappa.Session.E2ePacerTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias Grappa.IRC.Client
   alias Grappa.Session.E2ePacer
@@ -8,6 +9,8 @@ defmodule Grappa.Session.E2ePacerTest do
   # ~400-byte line a 512-byte wire carries) — what bahamut charges, in ms.
   @cheap 2_000
   @full 5_000
+  # A bank at the ceiling holds every line: what is enqueued stays queued.
+  @held 10_000
 
   defp lines(n, cost), do: for(i <- 1..n, do: {"line#{i}", cost})
 
@@ -78,6 +81,86 @@ defmodule Grappa.Session.E2ePacerTest do
       {:ok, [_, _], pacer, _} = E2ePacer.enqueue(E2ePacer.new(), "alice", "alice", :text, lines(2, @full), 0, 0)
       # alice's two lines filled the bank (the caller reads 10 s back).
       assert {:ok, [], _, 5_000} = E2ePacer.enqueue(pacer, "bob", "bob", :text, lines(1, @full), 0, 10_000)
+    end
+  end
+
+  describe "per peer bounds (issue 2430, vjt's ruling 6255346375)" do
+    test "at most 32 text messages wait for one peer, counted in messages, not lines" do
+      pacer =
+        Enum.reduce(1..E2ePacer.max_text_messages(), E2ePacer.new(), fn n, acc ->
+          {:ok, [], acc, _} = E2ePacer.enqueue(acc, "p", "p", :text, sim_lines(2, @cheap, "m#{n}"), 0, @held)
+          acc
+        end)
+
+      # 64 lines wait, far under the connection's 128: it is the message
+      # count that refuses, and only for this peer.
+      assert {:error, :queue_full} = E2ePacer.enqueue(pacer, "p", "p", :text, lines(1, @cheap), 0, @held)
+      assert {:ok, [], _, _} = E2ePacer.enqueue(pacer, "q", "q", :text, lines(1, @cheap), 0, @held)
+      # Urgent traffic has its own bound: a full text queue does not hold back a KEYREQ.
+      assert {:ok, [], _, _} = E2ePacer.enqueue(pacer, "p", "p", :control, [{"KEYREQ", @cheap}], 0, @held)
+    end
+
+    test "a message frees its place once its LAST line is released" do
+      pacer =
+        Enum.reduce(1..E2ePacer.max_text_messages(), E2ePacer.new(), fn n, acc ->
+          {:ok, [], acc, _} = E2ePacer.enqueue(acc, "p", "p", :text, sim_lines(2, @cheap, "m#{n}"), 0, @held)
+          acc
+        end)
+
+      # Room for exactly one 2 s line: the first message's first line.
+      {[_], half, _} = E2ePacer.release(pacer, 0, 8_000)
+      assert {:error, :queue_full} = E2ePacer.enqueue(half, "p", "p", :text, lines(1, @cheap), 0, @held)
+
+      {[_], whole, _} = E2ePacer.release(half, 1, 8_000)
+      assert {:ok, [], _, _} = E2ePacer.enqueue(whole, "p", "p", :text, lines(1, @cheap), 1, @held)
+    end
+
+    test "at most 32 urgent lines wait for one peer, and a message that would pass it is refused whole" do
+      {:ok, [], pacer, _} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", :control, lines(31, @cheap), 0, @held)
+      assert {:error, :queue_full} = E2ePacer.enqueue(pacer, "p", "p", :control, lines(2, @cheap), 0, @held)
+      assert {:ok, [], _, _} = E2ePacer.enqueue(pacer, "p", "p", :control, lines(1, @cheap), 0, @held)
+    end
+  end
+
+  describe "urgent within a budget, peers in turn" do
+    test "urgent lines go ahead of another peer's text only up to the budget, then the two take turns" do
+      {:ok, [], urgent, _} = E2ePacer.enqueue(E2ePacer.new(), "a", "a", :control, lines(12, @cheap), 0, @held)
+      {:ok, [], both, _} = E2ePacer.enqueue(urgent, "b", "b", :text, lines(12, @cheap), 0, @held)
+
+      assert one_per_step(both, 12) == List.duplicate("a", E2ePacer.urgent_budget()) ++ ["b", "a", "b", "a"]
+    end
+
+    test "the budget comes back once the urgent window has passed" do
+      {:ok, [], urgent, _} = E2ePacer.enqueue(E2ePacer.new(), "a", "a", :control, lines(9, @cheap), 0, @held)
+      {:ok, [], both, _} = E2ePacer.enqueue(urgent, "b", "b", :text, lines(9, @cheap), 0, @held)
+
+      spent =
+        Enum.reduce(0..(E2ePacer.urgent_budget() - 1), both, fn i, acc ->
+          {[{"a", _}], acc, _} = E2ePacer.release(acc, i * 2_500, 8_000)
+          acc
+        end)
+
+      # Budget spent: b, served never, goes first...
+      assert {[{"b", _}], turned, _} = E2ePacer.release(spent, 20_000, 8_000)
+      # ...and once a's first urgent line is 60 s old, a's next is urgent again.
+      assert {[{"a", _}], _, _} = E2ePacer.release(turned, E2ePacer.urgent_window_ms(), 8_000)
+    end
+
+    test "text takes turns across peers instead of draining in queue order" do
+      {:ok, [], long, _} = E2ePacer.enqueue(E2ePacer.new(), "a", "a", :text, lines(5, @cheap), 0, @held)
+      {:ok, [], both, _} = E2ePacer.enqueue(long, "b", "b", :text, lines(1, @cheap), 1, @held)
+
+      # b's one line waits behind a's first only, not behind all five.
+      assert one_per_step(both, 6) == ["a", "b", "a", "a", "a", "a"]
+    end
+  end
+
+  property "whenever lines wait the pacer asks to be woken, and waking it then sends every line" do
+    # No busy loop and no stall: `wake_at/2` refuses a wait under 1 ms, and
+    # a `nil` wait with lines still queued would end the run short.
+    check all(arrivals <- arrivals()) do
+      sent = simulate(arrivals)
+      assert length(sent) == Enum.sum(for {_, _, _, n, _} <- arrivals, do: n)
     end
   end
 
@@ -158,11 +241,11 @@ defmodule Grappa.Session.E2ePacerTest do
     # messages of mixed line costs arriving at irregular times for two
     # recipients.
     arrivals = [
-      {0, "p", 4, @full},
-      {500, "q", 1, @cheap},
-      {2_500, "p", 5, 3_000},
-      {9_000, "q", 6, @full},
-      {9_100, "p", 1, @cheap}
+      {0, "p", :text, 4, @full},
+      {500, "q", :text, 1, @cheap},
+      {2_500, "p", :text, 5, 3_000},
+      {9_000, "q", :text, 6, @full},
+      {9_100, "p", :text, 1, @cheap}
     ]
 
     sent = simulate(arrivals)
@@ -190,12 +273,12 @@ defmodule Grappa.Session.E2ePacerTest do
     done =
       arrivals
       |> Enum.with_index()
-      |> Enum.reduce(start, fn {{at, key, count, cost}, n}, acc ->
+      |> Enum.reduce(start, fn {{at, key, class, count, cost}, n}, acc ->
         caught_up = run_until(acc, at)
         bank = bank(caught_up.since, at)
 
         {:ok, out, pacer, wait} =
-          E2ePacer.enqueue(caught_up.pacer, key, key, :text, sim_lines(count, cost, "m#{n}"), at, bank)
+          E2ePacer.enqueue(caught_up.pacer, key, key, class, sim_lines(count, cost, "m#{n}"), at, bank)
 
         %{record(caught_up, out, at) | pacer: pacer, wake: wake_at(at, wait)}
       end)
@@ -224,5 +307,41 @@ defmodule Grappa.Session.E2ePacerTest do
   defp bank(since, now), do: max(since - now, 0)
 
   defp wake_at(_, nil), do: nil
-  defp wake_at(now, wait), do: now + wait
+  # A wait under 1 ms would be a busy loop: the session re-arms its timer
+  # with it and asks again at once.
+  defp wake_at(now, wait) when is_integer(wait) and wait >= 1, do: now + wait
+
+  # One line per step: each release sees a bank with room for exactly one
+  # 2 s line, and steps are 2.5 s apart, so no peer's FLUD window (3 in
+  # 6 s) is ever what decides. Returns the peer served at each step.
+  defp one_per_step(pacer, steps) do
+    {out, _} =
+      Enum.map_reduce(0..(steps - 1), pacer, fn i, acc ->
+        {[{key, _}], acc, _} = E2ePacer.release(acc, i * 2_500, 8_000)
+        {key, acc}
+      end)
+
+    out
+  end
+
+  # Up to 12 messages at increasing times, to two or three peers, either
+  # class, under every per-peer and connection bound.
+  defp arrivals do
+    gen all(
+          steps <-
+            list_of(
+              tuple(
+                {integer(0..4_000), member_of(["p", "q", "r"]), member_of([:control, :text]), integer(1..2),
+                 member_of([1_000, @cheap, 3_000, @full])}
+              ),
+              min_length: 1,
+              max_length: 12
+            )
+        ) do
+      {arrivals, _} =
+        Enum.map_reduce(steps, 0, fn {gap, key, class, n, cost}, at -> {{at + gap, key, class, n, cost}, at + gap} end)
+
+      arrivals
+    end
+  end
 end
