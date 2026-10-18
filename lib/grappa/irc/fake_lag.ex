@@ -104,8 +104,14 @@ defmodule Grappa.IRC.FakeLag do
   and the registration burst on each (re)connect. Modest per session;
   multiply by sessions before enabling debug on a busy node.
 
-  Diagnostic instrumentation: it changes nothing about what is sent or
-  when. Pure — the caller supplies the clock reading.
+  Diagnostic instrumentation for every frame but one kind. Since issue
+  2430 `Grappa.Session.E2ePacer` releases end-to-end encrypted query lines
+  against `bank_ms/2` (read through `Grappa.IRC.Client.fake_lag_bank_ms/1`),
+  so an E2E line never waits unparsed in the ircd's recvQ, where 2560
+  bytes get the connection killed for Excess Flood. Nothing else is held
+  back. That use rides on the divergence noted above: a model that runs
+  AHEAD of the real bank past the gate only makes the pacer wait longer.
+  Pure — the caller supplies the clock reading.
   """
 
   # The recvQ-drain gate bahamut applies is `since - now < 10` seconds, so
@@ -117,7 +123,8 @@ defmodule Grappa.IRC.FakeLag do
   # The same ten seconds seen as a ceiling: at or past it, bahamut stops
   # draining our recvQ, which is the moment a queued command starts
   # waiting on the clock instead of on the server.
-  @ceiling_s 10.0
+  @ceiling_ms 10_000
+  @ceiling_s @ceiling_ms / 1_000
 
   # `2 + len/120` from parse.c, in the C's own integer arithmetic.
   @flat_cost_s 2
@@ -180,8 +187,26 @@ defmodule Grappa.IRC.FakeLag do
   defp bank_base(nil, now_ms), do: now_ms
   defp bank_base(since_ms, now_ms) when is_integer(since_ms), do: max(since_ms, now_ms)
 
-  @spec cost_ms(pos_integer()) :: pos_integer()
-  defp cost_ms(bytes), do: (@flat_cost_s + div(bytes, @bytes_per_second)) * 1_000
+  @doc """
+  What bahamut charges for a frame of `bytes` (CRLF included), in ms:
+  `2 + len/120` seconds, in the C's integer arithmetic.
+  """
+  @spec cost_ms(non_neg_integer()) :: pos_integer()
+  def cost_ms(bytes) when is_integer(bytes) and bytes >= 0,
+    do: (@flat_cost_s + div(bytes, @bytes_per_second)) * 1_000
+
+  @doc """
+  The modelled bank at `now_ms`: how far bahamut's `since` runs ahead of
+  the clock, in ms. 0 on a connection that has sent nothing, or has been
+  quiet for longer than its debt.
+  """
+  @spec bank_ms(t(), integer()) :: non_neg_integer()
+  def bank_ms(%__MODULE__{since_ms: nil}, now_ms) when is_integer(now_ms), do: 0
+  def bank_ms(%__MODULE__{since_ms: since_ms}, now_ms) when is_integer(now_ms), do: max(since_ms - now_ms, 0)
+
+  @doc "The drain gate, in ms: at or past it, bahamut stops parsing our recvQ."
+  @spec ceiling_ms() :: 10_000
+  def ceiling_ms, do: @ceiling_ms
 
   @spec prune([{integer(), pos_integer()}], integer()) :: [{integer(), pos_integer()}]
   defp prune(window, now_ms), do: Enum.filter(window, fn {at, _} -> now_ms - at <= @window_ms end)

@@ -513,11 +513,36 @@ defmodule Grappa.IRC.Client do
   @spec send_privmsg(pid(), String.t(), String.t()) :: send_result()
   def send_privmsg(client, target, body) do
     if target != "" and Identifier.safe_line_token?(target) and Identifier.safe_line_token?(body) do
-      send_line(client, "PRIVMSG #{target} :#{body}\r\n")
+      send_line(client, privmsg_frame(target, body))
     else
       reject_invalid_line(:privmsg)
     end
   end
+
+  @spec privmsg_frame(String.t(), String.t()) :: String.t()
+  defp privmsg_frame(target, body), do: "PRIVMSG #{target} :#{body}\r\n"
+
+  @doc """
+  issue 2430 — what bahamut will charge, in ms of fake lag, for the frame
+  `send_privmsg/3` writes for `target` and `body`
+  (`Grappa.IRC.FakeLag.cost_ms/1`). `Grappa.Session.E2ePacer` paces E2E
+  lines with it.
+  """
+  @spec privmsg_cost_ms(String.t(), String.t()) :: pos_integer()
+  def privmsg_cost_ms(target, body) when is_binary(target) and is_binary(body),
+    do: FakeLag.cost_ms(byte_size(privmsg_frame(target, body)))
+
+  @doc """
+  issue 2430 — this connection's modelled fake-lag bank right now, in ms
+  (`Grappa.IRC.FakeLag.bank_ms/2` over every frame this client has
+  written). What `Grappa.Session.E2ePacer` checks before releasing a line.
+  """
+  @spec fake_lag_bank_ms(pid()) :: non_neg_integer()
+  def fake_lag_bank_ms(client), do: GenServer.call(client, :fake_lag_bank_ms)
+
+  @doc "issue 2430 — bahamut's drain gate, in ms (`Grappa.IRC.FakeLag.ceiling_ms/0`)."
+  @spec fake_lag_ceiling_ms() :: 10_000
+  def fake_lag_ceiling_ms, do: FakeLag.ceiling_ms()
 
   @doc """
   Sends `NOTICE <target> :<body>\\r\\n` (#1225). Same guards as
@@ -1414,6 +1439,10 @@ defmodule Grappa.IRC.Client do
   end
 
   @impl GenServer
+  def handle_call(:fake_lag_bank_ms, _, state) do
+    {:reply, FakeLag.bank_ms(state.fake_lag, System.monotonic_time(:millisecond)), state}
+  end
+
   def handle_call({:send, line}, _, state) do
     # transport_send returns {:error, :no_socket | :closed | _} when
     # the socket is nil (connect_failed pre-assignment, or recv-loop
