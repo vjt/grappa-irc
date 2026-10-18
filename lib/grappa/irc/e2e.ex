@@ -77,7 +77,7 @@ defmodule Grappa.IRC.E2e do
   def verbs, do: Map.values(@verbs)
 
   @doc "The most fragments one logical message may span."
-  @spec max_fragments() :: pos_integer()
+  @spec max_fragments() :: 64
   def max_fragments, do: @max_fragments
 
   @doc """
@@ -85,7 +85,7 @@ defmodule Grappa.IRC.E2e do
   figure both implementations took (2430). A larger payload can never be
   reassembled, so a sender refuses it outright.
   """
-  @spec max_payload_bytes() :: pos_integer()
+  @spec max_payload_bytes() :: 32_768
   def max_payload_bytes, do: @max_payload_bytes
 
   @doc """
