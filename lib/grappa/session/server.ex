@@ -3938,7 +3938,8 @@ defmodule Grappa.Session.Server do
   # nothing that is not due, and the stored timer is left for
   # `arm_e2e_pacer/2` to cancel, so a stale tick never orphans the live one.
   def handle_info(:e2e_pacer_tick, state) do
-    {releases, pacer, wait} = E2ePacer.release(state.e2e_pacer, System.monotonic_time(:millisecond))
+    {releases, pacer, wait} =
+      E2ePacer.release(state.e2e_pacer, System.monotonic_time(:millisecond), e2e_bank_ms(state))
 
     state =
       %{state | e2e_pacer: pacer}
@@ -8053,7 +8054,7 @@ defmodule Grappa.Session.Server do
   end
 
   defp deliver_e2e(state, from, %{verb: verb, msgid: msgid, payload: payload}) do
-    Broadcaster.to_user(state, SessionWire.e2e_message(state.network_slug, from, verb, msgid, payload))
+    :ok = Broadcaster.to_user(state, SessionWire.e2e_message(state.network_slug, from, verb, msgid, payload))
   end
 
   @spec arm_e2e_reassembly_sweep(t()) :: t()
@@ -8077,9 +8078,10 @@ defmodule Grappa.Session.Server do
     linelen = ISupport.linelen(Map.get(state, :isupport, ISupport.default()))
     now = System.monotonic_time(:millisecond)
 
-    with {:ok, lines} <- E2e.fragment(verb, msgid, payload, LineSplit.frame_budget(target, linelen)),
+    with {:ok, bodies} <- E2e.fragment(verb, msgid, payload, LineSplit.frame_budget(target, linelen)),
+         lines = Enum.map(bodies, &{&1, Client.privmsg_cost_ms(target, &1)}),
          {:ok, releases, pacer, wait} <-
-           E2ePacer.enqueue(state.e2e_pacer, fold_key(state, target), target, lines, now) do
+           E2ePacer.enqueue(state.e2e_pacer, fold_key(state, target), target, lines, now, e2e_bank_ms(state)) do
       state =
         %{state | e2e_pacer: pacer}
         |> send_e2e_releases(releases)
@@ -8113,6 +8115,13 @@ defmodule Grappa.Session.Server do
 
     state
   end
+
+  # The connection's fake-lag bank, read from the client that charges every
+  # frame. With no client there is nothing to pace against, and nothing a
+  # release could be written to either (`send_e2e_releases/2` says so).
+  @spec e2e_bank_ms(t()) :: non_neg_integer()
+  defp e2e_bank_ms(%{client: nil}), do: 0
+  defp e2e_bank_ms(%{client: client}), do: Client.fake_lag_bank_ms(client)
 
   @spec arm_e2e_pacer(t(), non_neg_integer() | nil) :: t()
   defp arm_e2e_pacer(state, wait) do

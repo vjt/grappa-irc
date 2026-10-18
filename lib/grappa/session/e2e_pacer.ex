@@ -1,10 +1,14 @@
 defmodule Grappa.Session.E2ePacer do
   @moduledoc """
-  Paces outbound E2E lines per recipient (issue 2430). Pure data;
-  `Grappa.Session.Server` holds one in its state, sends what it releases
-  and arms a timer for the next release.
+  Paces outbound E2E lines (issue 2430). Pure data: `Grappa.Session.Server`
+  holds one in its state, reads the connection's fake-lag bank from
+  `Grappa.IRC.Client` before every release, sends what is released and arms
+  a timer for the next one.
 
-  ## Why per recipient, and why 3 in 6 s
+  Every line obeys two rules, both read from bahamut's source, plus an
+  order.
+
+  ## Per recipient: at most 3 lines in any 6 s (FLUD)
 
   bahamut — Azzurra, all of prod — compiles in `FLUD`
   (`bahamut/src/s_user.c` `check_for_flud/4`, `FLUD_NUM 4`, `FLUD_TIME 3`,
@@ -23,35 +27,63 @@ defmodule Grappa.Session.E2ePacer do
   3` is false at the boundary), so it lands at 6 > 4; integer seconds and
   arrival jitter make it worse. w2's simulation: 3-per-3 s blocked 2588 of
   3000 trials, 3-per-6 s blocked none even at 2 s of jitter. So at most 3
-  lines reach one recipient in any 6 s window. With a long message
-  queued that is a burst of 3, then the next 3 once the oldest of them is
-  6 s old, and so on. One of bahamut's 4 slots stays free for whoever else
-  is talking to them. The Python package (irc-olm) uses the same default.
+  lines reach one recipient in any 6 s window. On its own that rule allows
+  a burst of 3, then the next 3 once the oldest of them is 6 s old. One of
+  bahamut's 4 slots stays free for whoever else is talking to them. The Python package (irc-olm) uses the same default.
 
   Known gap, not covered here: grappa's own lazy CTCP USERINFO/AVATAR
   probes on a peer's JOIN do not go through this pacer, so a probe landing
   during a burst can still take that spare slot.
 
-  Nothing here bounds OUR output towards the server as a whole. bahamut
-  charges every PRIVMSG `2 + len/120` s of fake lag, parses a client's
-  recvQ only while that bank is under 10 s, and disconnects a non-oper
-  whose unparsed recvQ passes 2560 bytes ("Excess Flood"). A full E2E line
-  costs 5 s, so a long enough message paced here can still get the
-  connection killed (about 14 full lines to one recipient, by arithmetic
-  from the source). `Grappa.IRC.FakeLag` models that bank per frame but
-  only measures it; it holds nothing back. A connection-wide release rule
-  is under discussion on 2430.
+  ## Per connection: never past the fake-lag ceiling
 
-  The key is the recipient's folded nick (the caller folds); lines keep
-  the raw target they were queued with, which is what goes on the wire.
+  bahamut charges every PRIVMSG `2 + len/120` s of fake lag
+  (`src/parse.c:236`). It parses a client's recvQ only while that bank is
+  under 10 s (`src/s_bsd.c:1657`), but it keeps reading the socket, and a
+  non-oper whose unparsed recvQ passes 2560 bytes is disconnected for
+  "Excess Flood" (`src/s_bsd.c:1795`). A full E2E line costs 5 s, so the
+  FLUD rule alone still gets the connection killed around the 14th full
+  line to one recipient (w1 and w2 each derived it from the source; 2430).
+
+  vjt's ruling on 2430 (option A): a line is released only when the bank
+  plus the line's own cost stays at or under the ceiling
+  (`Grappa.IRC.Client.fake_lag_ceiling_ms/0`). No E2E line then ever waits
+  unparsed in the ircd's recvQ. The bank comes from `Grappa.IRC.FakeLag`
+  through `Client.fake_lag_bank_ms/1`, which records EVERY frame on the
+  connection: registration, PONGs, the user's own messages. So E2E backs
+  off while the user is talking, never the other way round. After the
+  first two full lines a long message drips at one line per 5 s. A 64-line
+  message takes about five minutes; slow delivery is accepted by the
+  ruling, and receivers count their 60 s window from the LAST fragment.
+
+  A line costlier than the ceiling on its own (possible only where LINELEN
+  is far over 512) goes out once the bank is empty: bahamut parses any line
+  that arrives under the gate, and holding it for room that can never open
+  would hold it forever.
+
+  ## Short messages first
+
+  A single-line message (KEYREQ, NACK, and the CHAL/ACK the endpoints
+  exchange) goes ahead of the remaining lines of every longer message, to
+  any recipient. A CHAL expires 15 s after it is made: behind a 64-line
+  message it would expire in this queue. Overtaking is safe. Reassembly is
+  per msgid, and w2 measured vodozemac decrypting a message overtaken by up
+  to 40 later ones (2430). Otherwise lines leave in the order they were
+  queued.
+
+  The lane key is the recipient's folded nick (the caller folds). Lines
+  keep the raw target they were queued with, which is what goes on the
+  wire.
 
   ## Bounded
 
-  At most 128 lines wait per recipient; past that `enqueue/5` refuses
-  the whole message rather than accept part of it — a half-sent message
-  is discarded by the receiver's reassembly anyway, so accepting it would
-  only spend the window on lines nobody can use.
+  At most 128 lines wait per recipient. Past that `enqueue/6` refuses the
+  whole message rather than accept part of it: a half-sent message is
+  discarded by the receiver's reassembly anyway, so accepting it would only
+  spend the window on lines nobody can use.
   """
+
+  alias Grappa.IRC.Client
 
   @window_ms 6_000
   @per_window 3
@@ -60,89 +92,131 @@ defmodule Grappa.Session.E2ePacer do
   @typedoc "A line released for sending: the raw target and the PRIVMSG body."
   @type release :: {target :: String.t(), body :: binary()}
 
-  @typep lane :: %{sent: [integer()], queue: :queue.queue(release())}
+  @typedoc "A line to queue: the PRIVMSG body and what bahamut will charge for it, in ms."
+  @type line :: {body :: binary(), cost_ms :: pos_integer()}
 
-  @enforce_keys [:lanes]
+  # `seq` is the enqueue order across every lane, so "the order they were
+  # queued" holds across recipients as well as within one.
+  @typep item :: {seq :: non_neg_integer(), target :: String.t(), body :: binary(), cost_ms :: pos_integer()}
+  @typep lane :: %{sent: [integer()], short: :queue.queue(item()), long: :queue.queue(item())}
+
+  @enforce_keys [:lanes, :seq]
   defstruct @enforce_keys
 
-  @type t :: %__MODULE__{lanes: %{String.t() => lane()}}
+  @type t :: %__MODULE__{lanes: %{String.t() => lane()}, seq: non_neg_integer()}
 
   @doc "An idle pacer."
   @spec new() :: t()
-  def new, do: %__MODULE__{lanes: %{}}
+  # Same call as `Grappa.IRC.FakeLag.new/0`: the success typing is the
+  # empty singleton, and the result is stored in a field typed `t()`.
+  @dialyzer {:nowarn_function, new: 0}
+  def new, do: %__MODULE__{lanes: %{}, seq: 0}
 
   @doc """
-  Queues `bodies` for `target` (folded `key`) at monotonic `now_ms` and
-  releases whatever the window allows right away.
+  Queues the `lines` of one message for `target` (folded `key`) at
+  monotonic `now_ms`, with the connection's current fake-lag bank
+  `bank_ms`, and releases whatever both rules allow right away.
 
   Returns the releases to send now and the delay in ms until the next
-  release is due (`nil` when nothing is left waiting anywhere).
+  release could be due (`nil` when nothing is left waiting anywhere).
   `{:error, :queue_full}` leaves the pacer unchanged.
   """
-  @spec enqueue(t(), String.t(), String.t(), [binary(), ...], integer()) ::
-          {:ok, [release()], t(), non_neg_integer() | nil} | {:error, :queue_full}
-  def enqueue(%__MODULE__{} = pacer, key, target, [_ | _] = bodies, now_ms) do
-    lane = Map.get(pacer.lanes, key, %{sent: [], queue: :queue.new()})
+  @spec enqueue(t(), String.t(), String.t(), [line(), ...], integer(), non_neg_integer()) ::
+          {:ok, [release()], t(), pos_integer() | nil} | {:error, :queue_full}
+  def enqueue(%__MODULE__{} = pacer, key, target, [_ | _] = lines, now_ms, bank_ms) do
+    lane = Map.get(pacer.lanes, key, %{sent: [], short: :queue.new(), long: :queue.new()})
 
-    if :queue.len(lane.queue) + length(bodies) > @max_queued do
+    if :queue.len(lane.short) + :queue.len(lane.long) + length(lines) > @max_queued do
       {:error, :queue_full}
     else
-      queue = Enum.reduce(bodies, lane.queue, &:queue.in({target, &1}, &2))
-      pacer = %{pacer | lanes: Map.put(pacer.lanes, key, %{lane | queue: queue})}
-      {releases, pacer, wait} = release(pacer, now_ms)
+      {items, seq} = Enum.map_reduce(lines, pacer.seq, fn {body, cost}, n -> {{n, target, body, cost}, n + 1} end)
+
+      lane =
+        case items do
+          [single] -> %{lane | short: :queue.in(single, lane.short)}
+          _ -> %{lane | long: Enum.reduce(items, lane.long, &:queue.in/2)}
+        end
+
+      {releases, pacer, wait} = release(%{pacer | lanes: Map.put(pacer.lanes, key, lane), seq: seq}, now_ms, bank_ms)
       {:ok, releases, pacer, wait}
     end
   end
 
   @doc """
-  Releases every line whose window has opened at `now_ms`, across all
-  recipients. Returns the releases, the pacer, and the delay until the
-  next one (`nil` when the pacer is idle).
-  """
-  @spec release(t(), integer()) :: {[release()], t(), non_neg_integer() | nil}
-  def release(%__MODULE__{} = pacer, now_ms) do
-    {releases, lanes, waits} =
-      Enum.reduce(pacer.lanes, {[], %{}, []}, fn {key, lane}, {releases, lanes, waits} ->
-        {out, lane} = drain(lane, now_ms)
+  Releases every line both rules allow at `now_ms`, given the connection's
+  fake-lag bank `bank_ms` at that moment. Each release is charged to the
+  bank before the next is considered, as `Grappa.IRC.FakeLag` will charge
+  it once it is written.
 
-        case classify(lane, now_ms) do
-          :drop -> {releases ++ out, lanes, waits}
-          {:keep, nil} -> {releases ++ out, Map.put(lanes, key, lane), waits}
-          {:keep, wait} -> {releases ++ out, Map.put(lanes, key, lane), [wait | waits]}
-        end
+  Returns the releases, the pacer, and the delay until the next release
+  could be due (`nil` when the pacer is idle). The caller re-reads the
+  bank when that delay is up: other traffic may have spent the room.
+  """
+  @spec release(t(), integer(), non_neg_integer()) :: {[release()], t(), pos_integer() | nil}
+  def release(%__MODULE__{} = pacer, now_ms, bank_ms) do
+    lanes =
+      Map.new(pacer.lanes, fn {key, lane} ->
+        {key, %{lane | sent: Enum.filter(lane.sent, &(now_ms - &1 < @window_ms))}}
       end)
 
-    {releases, %{pacer | lanes: lanes}, if(waits == [], do: nil, else: Enum.min(waits))}
+    {releases, lanes, wait} = drain(lanes, now_ms, bank_ms, [])
+    {releases, %{pacer | lanes: Map.reject(lanes, fn {_, lane} -> idle?(lane) end)}, wait}
   end
 
-  @spec drain(lane(), integer()) :: {[release()], lane()}
-  defp drain(lane, now_ms) do
-    sent = Enum.filter(lane.sent, &(now_ms - &1 < @window_ms))
-    drain(%{lane | sent: sent}, now_ms, [])
-  end
+  @spec drain(%{String.t() => lane()}, integer(), non_neg_integer(), [release()]) ::
+          {[release()], %{String.t() => lane()}, pos_integer() | nil}
+  defp drain(lanes, now_ms, bank_ms, acc) do
+    case next(lanes) do
+      nil ->
+        {Enum.reverse(acc), lanes, flud_wait(lanes, now_ms)}
 
-  @spec drain(lane(), integer(), [release()]) :: {[release()], lane()}
-  defp drain(lane, now_ms, acc) do
-    with true <- length(lane.sent) < @per_window,
-         {{:value, release}, queue} <- :queue.out(lane.queue) do
-      drain(%{lane | sent: [now_ms | lane.sent], queue: queue}, now_ms, [release | acc])
-    else
-      _ -> {Enum.reverse(acc), lane}
+      {key, queue, {_, target, body, cost}} ->
+        if bank_ms == 0 or bank_ms + cost <= Client.fake_lag_ceiling_ms() do
+          lane = Map.fetch!(lanes, key)
+          lane = %{lane | queue => :queue.drop(Map.fetch!(lane, queue)), sent: [now_ms | lane.sent]}
+          drain(Map.put(lanes, key, lane), now_ms, bank_ms + cost, [{target, body} | acc])
+        else
+          # Room opens when the bank has drained by the excess, or when it
+          # is empty, whichever comes first.
+          {Enum.reverse(acc), lanes, min(bank_ms + cost - Client.fake_lag_ceiling_ms(), bank_ms)}
+        end
     end
   end
 
-  # After a drain, `sent` holds only sends inside the window. A lane with
-  # lines still queued is full (the drain stopped on the window), so its
-  # next slot opens when its oldest send leaves the window. A lane with
-  # nothing queued but recent sends must STAY, or a new message would get a
-  # fresh window while the ircd still counts the old lines; it needs no
-  # timer, the next enqueue re-reads it. Only a lane with neither goes.
-  @spec classify(lane(), integer()) :: {:keep, pos_integer() | nil} | :drop
-  defp classify(lane, now_ms) do
-    cond do
-      not :queue.is_empty(lane.queue) -> {:keep, Enum.min(lane.sent) + @window_ms - now_ms}
-      lane.sent != [] -> {:keep, nil}
-      true -> :drop
-    end
+  # The next line to consider among recipients with a free FLUD slot: the
+  # oldest single-line message, else the oldest line of a longer one.
+  @spec next(%{String.t() => lane()}) :: {String.t(), :short | :long, item()} | nil
+  defp next(lanes) do
+    open = Enum.filter(lanes, fn {_, lane} -> length(lane.sent) < @per_window end)
+    oldest(open, :short) || oldest(open, :long)
   end
+
+  @spec oldest([{String.t(), lane()}], :short | :long) :: {String.t(), :short | :long, item()} | nil
+  defp oldest(lanes, queue) do
+    lanes
+    |> Enum.flat_map(fn {key, lane} ->
+      case :queue.peek(Map.fetch!(lane, queue)) do
+        {:value, item} -> [{key, queue, item}]
+        :empty -> []
+      end
+    end)
+    |> Enum.min_by(fn {_, _, {seq, _, _, _}} -> seq end, fn -> nil end)
+  end
+
+  # Nothing could go: every lane with lines waiting has its FLUD window
+  # full, and its next slot opens when its oldest send leaves the window.
+  @spec flud_wait(%{String.t() => lane()}, integer()) :: pos_integer() | nil
+  defp flud_wait(lanes, now_ms) do
+    lanes
+    |> Map.values()
+    |> Enum.reject(&(:queue.is_empty(&1.short) and :queue.is_empty(&1.long)))
+    |> Enum.map(&(Enum.min(&1.sent) + @window_ms - now_ms))
+    |> Enum.min(fn -> nil end)
+  end
+
+  # A lane with nothing waiting but recent sends must STAY, or a new
+  # message would get a fresh window while the ircd still counts the old
+  # lines. Only a lane with neither goes.
+  @spec idle?(lane()) :: boolean()
+  defp idle?(lane), do: lane.sent == [] and :queue.is_empty(lane.short) and :queue.is_empty(lane.long)
 end
