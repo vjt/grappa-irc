@@ -214,6 +214,30 @@ defmodule Grappa.Push.Payload do
   defp presence_verb(:offline), do: "went offline"
 
   @doc """
+  Builds a notification payload for an end-to-end encrypted message from
+  `nick` on `network_slug` (issue 2430).
+
+  Pure function of its two arguments, and there is nothing else it could
+  say: grappa holds no key, so the only plaintext it has is who sent it.
+  The spec's wording — "encrypted message from X" — split the way every DM
+  notification is: the nick on top, what arrived below.
+
+  `tag` and `url` are the DM ones `build/2` writes for the same nick, so an
+  encrypted banner coalesces with that peer's plaintext DM banner and opens
+  the same conversation. No badge: the message is not a row, so nothing
+  counts it as unread.
+  """
+  @spec build_e2e(nick :: String.t(), network_slug :: String.t()) :: t()
+  def build_e2e(nick, network_slug) when is_binary(nick) and is_binary(network_slug) do
+    %{
+      title: MircFormat.plain_text(nick),
+      body: "encrypted message",
+      tag: "#{network_slug}:#{nick}",
+      url: build_url(network_slug, nick)
+    }
+  end
+
+  @doc """
   Stamps the PWA icon-badge count onto a built payload (door #1,
   2026-06-21).
 

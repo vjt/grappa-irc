@@ -8089,6 +8089,7 @@ defmodule Grappa.Session.Server do
     case E2eInbox.put(state.subject, state.network_id, %{sender: from, verb: verb, msgid: msgid, payload: payload}) do
       {:ok, entry} ->
         :ok = Broadcaster.to_user(state, SessionWire.e2e_message(state.network_slug, entry))
+        :ok = maybe_push_e2e(state, entry)
         state
 
       # Debug: the sender decides how often a full queue refuses.
@@ -8101,6 +8102,22 @@ defmodule Grappa.Session.Server do
         count_unqueued(state, from)
     end
   end
+
+  # The OS notification for a queued message that a person wrote — PKMSG or
+  # MSG. Key material and NACKs are the protocol talking to itself. The
+  # gates (prefs, mute, a device on screen) live in Triggers, as for the
+  # other two trigger classes.
+  @spec maybe_push_e2e(t(), E2eInbox.Entry.t()) :: :ok
+  defp maybe_push_e2e(state, %E2eInbox.Entry{verb: verb, sender: sender}) when verb in [:pkmsg, :msg] do
+    PushTriggers.dispatch_e2e(sender, %{
+      subject: state.subject,
+      subject_label: state.subject_label,
+      network_slug: state.network_slug,
+      own_nick: state.nick
+    })
+  end
+
+  defp maybe_push_e2e(_, %E2eInbox.Entry{}), do: :ok
 
   @spec count_unqueued(t(), String.t()) :: t()
   defp count_unqueued(state, from) do

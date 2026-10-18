@@ -22,6 +22,7 @@ defmodule Grappa.Push.TriggersTest do
 
   import Grappa.AuthFixtures, only: [user_fixture: 0]
 
+  alias Grappa.IRC.Identifier
   alias Grappa.{Push, UserSettings, Visitors, WSPresence}
   alias Grappa.Push.{Subscription, Triggers}
   alias Grappa.Scrollback.Message
@@ -880,6 +881,93 @@ defmodule Grappa.Push.TriggersTest do
     test "both default OFF — presence push is opt-in" do
       refute Triggers.should_notify_presence?(:online, default_prefs())
       refute Triggers.should_notify_presence?(:offline, default_prefs())
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # issue 2430 — a THIRD trigger class: an end-to-end encrypted message. It is
+  # not a row (never stored, so nothing for `should_notify?/5` to read), and
+  # grappa cannot see inside it, so it is gated as what it is to the user: a
+  # private message from a nick. The DM prefs and the per-network mute decide.
+  # ---------------------------------------------------------------------------
+
+  describe "should_notify_e2e?/3 — pure predicate" do
+    test "follows the private-message prefs, folding the nick like the whitelist does" do
+      assert Triggers.should_notify_e2e?("alice", @slug, prefs(private_messages_all: true))
+      refute Triggers.should_notify_e2e?("alice", @slug, prefs(private_messages_all: false))
+
+      only_alice = prefs(private_messages_all: false, private_messages_only: ["alice"])
+      assert Triggers.should_notify_e2e?("ALICE", @slug, only_alice)
+      refute Triggers.should_notify_e2e?("bob", @slug, only_alice)
+    end
+
+    test "a muted conversation stays silent, on that network only" do
+      muted =
+        prefs(
+          private_messages_all: true,
+          muted_targets: %{Identifier.channel_key("azzurra", "alice") => %{"until" => nil}}
+        )
+
+      refute Triggers.should_notify_e2e?("Alice", "azzurra", muted)
+      assert Triggers.should_notify_e2e?("Alice", "libera", muted)
+    end
+  end
+
+  describe "dispatch_e2e/2 — gates" do
+    setup do
+      :ok = WSPresence.reset_for_test()
+      bypass = Bypass.open()
+      {:ok, bypass: bypass, endpoint: "http://localhost:#{bypass.port}/wp"}
+    end
+
+    test "with the private-message pref on and no visible device, it pushes", %{bypass: bypass, endpoint: endpoint} do
+      attach_telemetry([[:grappa, :push, :send, :start], [:grappa, :push, :send, :stop]])
+      Bypass.expect(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
+
+      user = user_fixture()
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
+      :ok = with_presence_prefs(subject, private_messages_all: true)
+
+      assert :ok = Triggers.dispatch_e2e("alice", presence_ctx(subject, user.name))
+
+      assert_receive {:telemetry, [:grappa, :push, :send, :start], %{count: 1}, %{subject: ^subject}}, 2_000
+      assert_receive {:telemetry, [:grappa, :push, :send, :stop], _, %{subject: ^subject}}, 2_000
+    end
+
+    test "with the pref off, nothing is sent and nothing is reported withheld", %{bypass: bypass, endpoint: endpoint} do
+      attach_telemetry([[:grappa, :push, :send, :start], [:grappa, :push, :suppressed]])
+      Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 500, "should-not-happen") end)
+
+      user = user_fixture()
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
+      :ok = with_presence_prefs(subject, private_messages_all: false)
+
+      assert :ok = Triggers.dispatch_e2e("alice", presence_ctx(subject, user.name))
+
+      refute_receive {:telemetry, _, _, _}, 300
+    end
+
+    test "a visible device withholds it, and says so", %{bypass: bypass, endpoint: endpoint} do
+      attach_telemetry([[:grappa, :push, :send, :start], [:grappa, :push, :suppressed]])
+      Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 500, "should-not-happen") end)
+
+      user = user_fixture()
+      subject = {:user, user.id}
+      _ = subscription_fixture(subject, endpoint)
+      :ok = with_presence_prefs(subject, private_messages_all: true)
+
+      device = spawn(fn -> Process.sleep(:infinity) end)
+      :ok = WSPresence.register(user.name, device)
+      :ok = WSPresence.set_visibility(user.name, device, true)
+
+      assert :ok = Triggers.dispatch_e2e("alice", presence_ctx(subject, user.name))
+
+      assert_receive {:telemetry, [:grappa, :push, :suppressed], %{count: 1}, %{reason: :foreground_visible}}, 2_000
+      refute_receive {:telemetry, [:grappa, :push, :send, :start], _, _}, 300
+
+      Process.exit(device, :kill)
     end
   end
 

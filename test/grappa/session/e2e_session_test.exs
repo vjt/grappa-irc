@@ -23,13 +23,18 @@ defmodule Grappa.Session.E2eSessionTest do
   import Ecto.Query
   import Grappa.AuthFixtures
 
-  alias Grappa.{E2eInbox, IRCServer, QueryWindows, Repo, Session}
+  alias Grappa.{E2eInbox, IRCServer, Push, QueryWindows, Repo, Session}
   alias Grappa.IRC.{E2e, LineSplit}
   alias Grappa.Networks.{Credentials, SessionPlan}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Message
 
   @nick "grappa-test"
+
+  # A real P-256 client key and auth secret (as in `Grappa.Push.TriggersTest`):
+  # the web-push encryption runs on them before anything is sent.
+  @client_p256dh "BCfaYE5dGabdzef68MI0SN24b4Gsf1t_N3ftUlWaFGzkuudjHLor0CRjosM3c7SLZ7PfFufpsFUh8vsO1t8wCHs"
+  @client_auth "3aw2ceVFv0OIBXxAvkAlSA"
   @wire_timeout 1_000
 
   # The padded base64 of a JSON payload, the agreed 2430 shape; big enough
@@ -153,6 +158,39 @@ defmodule Grappa.Session.E2eSessionTest do
       assert QueryWindows.open?(subject, network.id, "alice")
       assert QueryWindows.open?(subject, network.id, "bob")
       refute QueryWindows.open?(subject, network.id, "carol")
+    end
+
+    test "a queued PKMSG or MSG pushes a notification; key material and NACKs do not" do
+      {server, _, user, network} = connected_session()
+      bypass = Bypass.open()
+      Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
+
+      {:ok, _} =
+        Push.create({:user, user.id}, %{
+          endpoint: "http://localhost:#{bypass.port}/wp",
+          p256dh_key: @client_p256dh,
+          auth_key: @client_auth,
+          user_agent: "Mozilla/5.0 e2e-session-test"
+        })
+
+      test_pid = self()
+      handler = "e2e-push-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler,
+        [:grappa, :push, :send, :stop],
+        fn _, _, meta, _ -> send(test_pid, {:pushed, meta}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      Enum.each(peer_lines(:keys, "AAAAAAAAAAA", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
+      Enum.each(peer_lines(:nack, "BBBBBBBBBBB", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
+      refute_receive {:pushed, _}, 500
+
+      Enum.each(peer_lines(:msg, "CCCCCCCCCCC", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
+      assert_receive {:pushed, %{subject: {:user, _}}}, 2_000
     end
 
     test "a session sweeps what expired while it was down as soon as it starts" do

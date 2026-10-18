@@ -337,6 +337,38 @@ defmodule Grappa.Push.PayloadTest do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # build_e2e/2 — an end-to-end encrypted message (issue 2430)
+  # ---------------------------------------------------------------------------
+
+  describe "build_e2e/2" do
+    test "says who wrote, never what: there is no ciphertext to show and no plaintext to have" do
+      payload = Payload.build_e2e("Alice", "azzurra")
+
+      assert payload.title == "Alice"
+      assert payload.body == "encrypted message"
+    end
+
+    test "coalesces with, and opens, the same conversation as a plaintext DM from that nick" do
+      dm =
+        Payload.build(
+          %Message{channel: "vjt", dm_with: "Alice", sender: "Alice", kind: :privmsg, body: "hi"},
+          "azzurra"
+        )
+
+      payload = Payload.build_e2e("Alice", "azzurra")
+
+      assert payload.tag == dm.tag
+      assert payload.url == dm.url
+    end
+
+    test "badge is OMITTED — the message is not a row, so it is not unread anywhere" do
+      payload = Payload.build_e2e("alice", "azzurra")
+
+      assert Enum.sort(Map.keys(payload)) == [:body, :tag, :title, :url]
+    end
+  end
+
   describe "build_presence/3 — tag disjointness from message tags" do
     # The collision this guards is a function of the nick and channel
     # GRAMMARS, not of one example: a bare-nick presence tag would equal the
