@@ -206,7 +206,9 @@ defmodule Grappa.IRC.FakeLag do
   """
   @spec bank_ms(t(), integer()) :: non_neg_integer()
   def bank_ms(%__MODULE__{since_ms: nil}, now_ms) when is_integer(now_ms), do: 0
-  def bank_ms(%__MODULE__{since_ms: since_ms}, now_ms) when is_integer(now_ms), do: max(since_ms - now_ms, 0)
+
+  def bank_ms(%__MODULE__{since_ms: since_ms}, now_ms) when is_integer(since_ms) and is_integer(now_ms),
+    do: max(since_ms - now_ms, 0)
 
   @doc "The drain gate, in ms: at or past it, bahamut stops parsing our recvQ."
   @spec ceiling_ms() :: 10_000
