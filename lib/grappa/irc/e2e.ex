@@ -70,6 +70,7 @@ defmodule Grappa.IRC.E2e do
 
   @max_fragments 64
   @max_msgid_bytes 24
+  @max_payload_bytes 32 * 1024
 
   @doc "Every verb, in wire spelling order. For validators that need the closed set."
   @spec verbs() :: [verb(), ...]
@@ -78,6 +79,14 @@ defmodule Grappa.IRC.E2e do
   @doc "The most fragments one logical message may span."
   @spec max_fragments() :: pos_integer()
   def max_fragments, do: @max_fragments
+
+  @doc """
+  The most payload bytes a receiver buffers from one sender: 32 KiB, the
+  figure both implementations took (2430). A larger payload can never be
+  reassembled, so a sender refuses it outright.
+  """
+  @spec max_payload_bytes() :: pos_integer()
+  def max_payload_bytes, do: @max_payload_bytes
 
   @doc """
   True iff `body` is a CTCP frame whose verb is `E2E`, whatever follows.
