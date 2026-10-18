@@ -4974,6 +4974,41 @@ describe("ScrollbackPane", () => {
   // (WALLOPS / KILL / ERROR / CHGHOST / INVITE) works identically.
   // Migration backfills historical rows; new rows arrive with the
   // typed kind.
+  // issue 2430 — the recipient-only notice that end-to-end encrypted
+  // messages from a peer were never read (they expired in the offline
+  // queue, or it refused them). The server writes a typed row and no body;
+  // the words are ours. It sits in the peer's query window.
+  describe("e2e undeliverable notice (issue 2430)", () => {
+    const notice = (count: number): ScrollbackMessage => ({
+      id: 300,
+      network: "azzurra",
+      channel: "alice",
+      server_time: 300,
+      kind: "server_event",
+      sender: "Alice",
+      body: null,
+      meta: { e2e_undeliverable: count },
+    });
+
+    it("says who sent how many, in the peer's query window", () => {
+      setScrollback({ "azzurra alice": [notice(3)] });
+      render(() => <ScrollbackPane networkSlug="azzurra" channelName="alice" kind="query" />);
+      const line = screen.getByTestId("scrollback-line");
+      expect(line.querySelector('[data-testid="e2e-undeliverable"]')).not.toBeNull();
+      expect(line).toHaveTextContent(
+        "Alice sent you 3 encrypted messages that cannot be read here",
+      );
+    });
+
+    it("counts one in the singular", () => {
+      setScrollback({ "azzurra alice": [notice(1)] });
+      render(() => <ScrollbackPane networkSlug="azzurra" channelName="alice" kind="query" />);
+      expect(screen.getByTestId("scrollback-line")).toHaveTextContent(
+        "Alice sent you 1 encrypted message that cannot be read here",
+      );
+    });
+  });
+
   describe("server_event raw-event rendering (B6.11 HIGH-7)", () => {
     it("kind=server_event with raw_verb=WALLOPS renders 'Wallops from <sender>: <text>'", () => {
       setScrollback({

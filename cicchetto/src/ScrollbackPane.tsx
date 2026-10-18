@@ -1170,6 +1170,19 @@ const renderBody = (msg: ScrollbackMessage, handlers: NickHandlers): JSX.Element
       );
     }
     case "server_event": {
+      // issue 2430 — end-to-end encrypted messages from this peer that were
+      // never read: they waited past the offline queue's TTL, or the queue
+      // refused them. Told to the recipient only, in the peer's query
+      // window. A typed row with no body — the server never words it.
+      const undeliverable = msg.meta.e2e_undeliverable;
+      if (typeof undeliverable === "number") {
+        return (
+          <span class="scrollback-body" data-testid="e2e-undeliverable">
+            *** {recordSenderSpan(msg.sender)} sent you {undeliverable} encrypted{" "}
+            {undeliverable === 1 ? "message" : "messages"} that cannot be read here
+          </span>
+        );
+      }
       // No-silent-drops B6.11 (HIGH-7) — typed kind for catch-all
       // rows. EventRouter's fallthrough now writes :server_event
       // (was: :notice + meta.raw_verb). Both flow through the same
