@@ -19,6 +19,14 @@ defmodule Grappa.Repo.Migrations.CreateE2eInbox do
   # `sender` is the RAW nick, like every nick column (CLAUDE.md, GH #121):
   # the per-sender cap folds it at read time with `lower()`, the same
   # expression `Grappa.IRC.Identifier.nick_fold/1` emits.
+  #
+  # `payload` is the LAST column on purpose, and `bytes` (its size) exists
+  # for the same reason. A payload is up to 32 KiB, so it spills into
+  # overflow pages, and SQLite reads a record's columns in order: any
+  # column stored after it, and `length(payload)` itself, means walking
+  # that chain. The cap check runs inside the write lock on every arrival
+  # (`SUM(bytes)` over the partition) and expiry filters on `inserted_at`;
+  # with the payload last, neither reads one.
   def change do
     execute(
       """
@@ -30,8 +38,9 @@ defmodule Grappa.Repo.Migrations.CreateE2eInbox do
         "sender" TEXT NOT NULL,
         "verb" TEXT NOT NULL,
         "msgid" TEXT NOT NULL,
-        "payload" TEXT NOT NULL,
+        "bytes" INTEGER NOT NULL,
         "inserted_at" TEXT NOT NULL,
+        "payload" TEXT NOT NULL,
         CONSTRAINT "e2e_inbox_subject_xor" CHECK ((user_id IS NULL) <> (visitor_id IS NULL)),
         CONSTRAINT "e2e_inbox_verb" CHECK (verb IN ('keys', 'pkmsg', 'msg', 'nack'))
       )
