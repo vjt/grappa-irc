@@ -344,6 +344,34 @@ defmodule Grappa.Push.Triggers do
 
   def dispatch_presence(_, _, :initial, _), do: :ok
 
+  @doc """
+  Dispatches the Web Push for an end-to-end encrypted message from `nick`
+  (issue 2430) — the third trigger class.
+
+  Same fire-and-forget shape as the two above, and the same foreground
+  gate. The message is never a row and grappa cannot read it, so it is
+  gated as what it is to the user — a private message from a nick — by
+  `should_notify_e2e?/3`, and the payload says only who sent it
+  (`Payload.build_e2e/2`).
+  """
+  @spec dispatch_e2e(String.t(), ctx()) :: :ok
+  def dispatch_e2e(nick, ctx) when is_binary(nick) and is_map(ctx) do
+    %{subject: subject, subject_label: subject_label, network_slug: network_slug} = ctx
+
+    # Discarded, not matched: same reason as the two dispatchers above.
+    _ =
+      Task.Supervisor.start_child(Grappa.TaskSupervisor, fn ->
+        prefs = UserSettings.get_notification_prefs(subject)
+
+        if should_notify_e2e?(nick, network_slug, prefs) and
+             not foreground_visible?(subject, subject_label, network_slug) do
+          Push.Sender.send_to_subject(subject, Payload.build_e2e(nick, network_slug))
+        end
+      end)
+
+    :ok
+  end
+
   # ---------------------------------------------------------------------------
   # Public — pure predicate (testable in isolation)
   # ---------------------------------------------------------------------------
@@ -417,6 +445,24 @@ defmodule Grappa.Push.Triggers do
 
   def should_notify_presence?(:offline, prefs) when is_map(prefs),
     do: Map.fetch!(prefs, :presence_offline)
+
+  @doc """
+  Returns `true` when an end-to-end encrypted message from `nick`, received
+  on `network_slug`, should push, given `prefs` (issue 2430). Pure.
+
+  The DM half of `should_notify?/5`, minus what does not apply: there is
+  no row, so no own-row test (grappa never delivers our own echo) and no
+  body to mention anyone in. The per-network mute still wins, and the
+  private-message prefs decide — `private_messages_all`, or the folded
+  nick in `private_messages_only`.
+  """
+  @spec should_notify_e2e?(String.t(), String.t(), prefs()) :: boolean()
+  def should_notify_e2e?(nick, network_slug, prefs)
+      when is_binary(nick) and is_binary(network_slug) and is_map(prefs) do
+    not Map.has_key?(Map.get(prefs, :muted_targets, %{}), Identifier.channel_key(network_slug, nick)) and
+      (Map.get(prefs, :private_messages_all, false) or
+         Identifier.canonical_target(nick) in Map.get(prefs, :private_messages_only, []))
+  end
 
   # ---------------------------------------------------------------------------
   # Private
