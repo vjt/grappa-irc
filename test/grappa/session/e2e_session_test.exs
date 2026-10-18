@@ -159,6 +159,22 @@ defmodule Grappa.Session.E2eSessionTest do
       assert length(notices(network)) == 1
     end
 
+    test "refused key material and NACKs are not counted: there was no message to tell about" do
+      {server, pid, user, network} = connected_session()
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      fill_share!({:user, user.id}, network.id, "alice")
+
+      Enum.each(peer_lines(:keys, "AAAAAAAAAAA", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
+      Enum.each(peer_lines(:nack, "BBBBBBBBBBB", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
+      Enum.each(bob_lines(:msg, "CCCCCCCCCCC", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, from: "bob"}}, @wire_timeout
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, from: "alice"}}
+
+      sweep(pid)
+
+      assert notices(network) == []
+    end
+
     test "the sweep drops what expired and leaves one notice per sender, in that sender's query window" do
       {_, pid, user, network} = connected_session()
       subject = {:user, user.id}
