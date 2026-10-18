@@ -1362,7 +1362,7 @@ defmodule Grappa.Session.WireTest do
         rendered
         |> Map.delete(:wire_event_kind)
         |> Enum.flat_map(fn {_, text} ->
-          ~r/kind:\s*:([a-z_]+)/
+          ~r/kind:\s*:([a-z0-9_]+)/
           |> Regex.scan(text, capture: :all_but_first)
           |> List.flatten()
           |> Enum.map(&String.to_existing_atom/1)
@@ -1384,7 +1384,7 @@ defmodule Grappa.Session.WireTest do
   end
 
   defp kind_atoms(text) do
-    ~r/:([a-z_]+)/
+    ~r/:([a-z0-9_]+)/
     |> Regex.scan(text, capture: :all_but_first)
     |> List.flatten()
     |> Enum.map(&String.to_existing_atom/1)
