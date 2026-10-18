@@ -104,54 +104,40 @@ defmodule Grappa.Session.E2eSessionTest do
   end
 
   describe "outbound" do
-    test "a message goes out as E2E lines that reassemble to the payload, and nothing is stored" do
+    test "a message goes out as lines that fit the relay, reassemble, wait on the fake-lag bank, and are never stored" do
       {server, _, user, network} = connected_session()
-      payload = payload(300)
+      payload = payload(450)
 
       assert {:ok, msgid} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, payload)
       assert E2e.msgid?(msgid)
 
-      total = hd(await_fragments(server, msgid, 1)).total
-      assert total <= 3
-      fragments = await_fragments(server, msgid, total)
+      # A full line costs 5 s of bahamut fake lag and registration left
+      # several seconds in the bank, so the lines wait on the CONNECTION's
+      # bank (read from the client): two FULL lines leave at least 5 s
+      # apart, more if anything else was sent in between. The per-recipient
+      # FLUD rule alone would send three at once. Lines 1 and 2 of a 3+ line
+      # message are both full; the last one may be short and cheaper.
+      {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "#{msgid} 1/"), 10_000)
+      first_at = System.monotonic_time(:millisecond)
+      [%{total: total}] = sent_fragments(server, msgid)
+      assert total >= 3
+      {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "#{msgid} 2/"), 10_000)
+      gap = System.monotonic_time(:millisecond) - first_at
+      assert gap >= 4_500, "the second line left #{gap} ms after the first"
+      {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "#{msgid} #{total}/"), 5_500 * total)
 
+      fragments = sent_fragments(server, msgid)
       assert Enum.all?(fragments, &(&1.verb == :msg))
       assert fragments |> Enum.sort_by(& &1.index) |> Enum.map_join(& &1.chunk) == payload
-      assert rows(network) == 0
-    end
-
-    test "every line fits the relayed frame on a 512-byte wire" do
-      {server, _, user, network} = connected_session()
-      {:ok, msgid} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, payload(200))
-
-      [first | _] = await_fragments(server, msgid, 1)
-      assert length(await_fragments(server, msgid, first.total)) == first.total
-      lines = server |> IRCServer.sent_lines() |> Enum.filter(&String.contains?(&1, msgid))
 
       # The ircd relays `:<nick>!<user>@<host> PRIVMSG alice :<body>\r\n`; the
       # budget reserved the worst-case prefix, so the client's own line is
       # shorter than 512 by at least that reserve.
       reserve = LineSplit.relay_frame_overhead("alice") - byte_size("PRIVMSG alice :\r\n")
+      lines = server |> IRCServer.sent_lines() |> Enum.filter(&String.contains?(&1, msgid))
       assert Enum.all?(lines, &(byte_size(&1) <= 512 - reserve))
-    end
 
-    test "past 3 lines the rest waits for the recipient's FLUD window, then the timer sends it" do
-      {server, _, user, network} = connected_session()
-      {:ok, msgid} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, payload(1_500))
-
-      [first | _] = await_fragments(server, msgid, 1)
-      assert first.total > 3
-      _ = await_fragments(server, msgid, 3)
-
-      # The 4th line is due 6 s after the first; it must not be on the wire
-      # now. (The window arithmetic is pinned in `E2ePacerTest` with a clock.)
-      assert {:error, :timeout} =
-               IRCServer.wait_for_line(server, &String.contains?(&1, "#{msgid} 4/"), 300)
-
-      # ...and it does go out once the window opens: nothing but the
-      # session's own pacer timer can put it there, so this is the test that
-      # the tick is armed and handled.
-      assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "#{msgid} 4/"), 8_000)
+      assert rows(network) == 0
     end
 
     test "refuses what is not a nick, a verb a client may not send, and a non-base64 payload" do
@@ -167,9 +153,11 @@ defmodule Grappa.Session.E2eSessionTest do
       assert {:error, :invalid_line} = Session.send_e2e(subject, network.id, "alice\r\nQUIT", :msg, good)
     end
 
-    test "a payload past 64 lines is refused before anything is sent" do
+    test "a payload that needs more than 64 lines is refused before anything is sent" do
       {server, _, user, network} = connected_session()
-      huge = Base.encode64(:crypto.strong_rand_bytes(30_000))
+      # Under the 32 KiB door bound, so it is the session's cut that refuses.
+      huge = Base.encode64(:crypto.strong_rand_bytes(20_000))
+      assert byte_size(huge) < E2e.max_payload_bytes()
 
       assert {:error, :too_large} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, huge)
       refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "E2E"))
@@ -181,11 +169,8 @@ defmodule Grappa.Session.E2eSessionTest do
     end
   end
 
-  # Waits until `count` lines of message `msgid` are on the wire, then
-  # returns every one of them parsed, in wire order.
-  defp await_fragments(server, msgid, count) do
-    {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "#{msgid} #{count}/"), @wire_timeout)
-
+  # Every line of message `msgid` on the wire so far, parsed, in wire order.
+  defp sent_fragments(server, msgid) do
     server
     |> IRCServer.sent_lines()
     |> Enum.filter(&String.contains?(&1, " #{msgid} "))
