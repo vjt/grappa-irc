@@ -87,6 +87,9 @@ defmodule Grappa.Session do
       Grappa.Dcc.Policy,
       Grappa.Dcc.Report,
       Grappa.Dcc.Transfer,
+      # issue 2430 — `Session.Server` queues each whole inbound E2E message
+      # and sweeps what expired; `Session.Wire` renders an entry.
+      Grappa.E2eInbox,
       Grappa.IRC,
       Grappa.Log,
       Grappa.Mentions,

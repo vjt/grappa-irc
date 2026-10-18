@@ -23,8 +23,8 @@ defmodule Grappa.Session.E2eSessionTest do
   import Ecto.Query
   import Grappa.AuthFixtures
 
+  alias Grappa.{E2eInbox, IRCServer, QueryWindows, Repo, Session}
   alias Grappa.IRC.{E2e, LineSplit}
-  alias Grappa.{IRCServer, Repo, Session}
   alias Grappa.Networks.{Credentials, SessionPlan}
   alias Grappa.PubSub.Topic
   alias Grappa.Scrollback.Message
@@ -55,8 +55,13 @@ defmodule Grappa.Session.E2eSessionTest do
 
       assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message} = event}, @wire_timeout
 
+      # The id is the queue's: the client acknowledges it, and a redelivery
+      # carries the same one.
+      assert [%E2eInbox.Entry{id: id, payload: ^payload}] = E2eInbox.list({:user, user.id}, network.id, 0)
+
       assert event == %{
                kind: :e2e_message,
+               id: id,
                network: network.slug,
                from: "alice",
                verb: :pkmsg,
@@ -99,7 +104,72 @@ defmodule Grappa.Session.E2eSessionTest do
 
       assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, msgid: "BBBBBBBBBBB"}}, @wire_timeout
       refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, msgid: "AAAAAAAAAAA"}}
+      assert [%E2eInbox.Entry{msgid: "BBBBBBBBBBB"}] = E2eInbox.list({:user, user.id}, network.id, 0)
       assert rows(network) == 0
+    end
+  end
+
+  describe "offline queue" do
+    test "a message the queue refuses is not pushed, and the recipient is told on the next sweep" do
+      {server, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      fill_share!(subject, network.id, "alice")
+
+      Enum.each(peer_lines(:msg, "q83vEjRWeJA", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
+      Enum.each(peer_lines(:msg, "BBBBBBBBBBB", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
+      # bob's message is the barrier: once it is out, alice's lines are in.
+      Enum.each(bob_lines(:msg, "CCCCCCCCCCC", Base.encode64(~s({"v":1}))), &IRCServer.feed(server, &1))
+      assert_receive %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, from: "bob"}}, @wire_timeout
+      refute_received %Phoenix.Socket.Broadcast{payload: %{kind: :e2e_message, from: "alice"}}
+
+      sweep(pid)
+
+      assert [notice] = notices(network)
+      assert {notice.channel, notice.sender, notice.meta} == {"alice", "alice", %{e2e_undeliverable: 2}}
+      # Told once: the count went out with the notice.
+      sweep(pid)
+      assert length(notices(network)) == 1
+    end
+
+    test "the sweep drops what expired and leaves one notice per sender, in that sender's query window" do
+      {_, pid, user, network} = connected_session()
+      subject = {:user, user.id}
+      old = Enum.map(["Alice", "alice", "bob"], &put_entry!(subject, network.id, &1, :msg))
+      keys = put_entry!(subject, network.id, "carol", :keys)
+      fresh = put_entry!(subject, network.id, "alice", :msg)
+      Enum.each([keys | old], &age!(&1, E2eInbox.ttl_seconds() + 60))
+
+      sweep(pid)
+
+      assert [%E2eInbox.Entry{id: id}] = E2eInbox.list(subject, network.id, 0)
+      assert id == fresh.id
+
+      # Not scrollback content: no body, no DM thread — a typed row the
+      # client renders, filed under the peer's query window.
+      assert [a, b] = Enum.sort_by(notices(network), & &1.channel)
+      assert {a.channel, a.sender, a.dm_with, a.body, a.meta} == {"alice", "alice", nil, nil, %{e2e_undeliverable: 2}}
+      assert {b.channel, b.sender, b.meta} == {"bob", "bob", %{e2e_undeliverable: 1}}
+      assert QueryWindows.open?(subject, network.id, "alice")
+      assert QueryWindows.open?(subject, network.id, "bob")
+      refute QueryWindows.open?(subject, network.id, "carol")
+    end
+
+    test "a session sweeps what expired while it was down as soon as it starts" do
+      user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
+      {server, port} = IRCServer.start_server(IRCServer.welcome_handler(":irc", @nick))
+      {network, _} = network_with_server(port: port, slug: "test-#{System.unique_integer([:positive])}")
+      _ = credential_fixture(user, network, %{})
+      subject = {:user, user.id}
+      entry = put_entry!(subject, network.id, "alice", :pkmsg)
+      age!(entry, E2eInbox.ttl_seconds() + 60)
+
+      pid = start_session!(user, network)
+      :ok = IRCServer.await_handshake(server, @wire_timeout)
+      _ = :sys.get_state(pid)
+
+      assert [%Message{channel: "alice", meta: %{e2e_undeliverable: 1}}] = notices(network)
+      assert E2eInbox.list(subject, network.id, 0) == []
     end
   end
 
@@ -201,6 +271,53 @@ defmodule Grappa.Session.E2eSessionTest do
     end)
   end
 
+  defp bob_lines(verb, msgid, payload) do
+    {:ok, lines} = E2e.fragment(verb, msgid, payload, LineSplit.frame_budget(@nick, 512))
+    Enum.map(lines, &":bob!u@h PRIVMSG #{@nick} :#{&1}\r\n")
+  end
+
+  defp put_entry!(subject, network_id, sender, verb) do
+    {:ok, entry} =
+      E2eInbox.put(subject, network_id, %{sender: sender, verb: verb, msgid: "q83vEjRWeJA", payload: "eyJ2IjoxfQ"})
+
+    entry
+  end
+
+  # Fills `sender`'s share of the queue to the byte, so their next message
+  # is refused while anybody else's still fits.
+  defp fill_share!(subject, network_id, sender) do
+    full = E2e.max_payload_bytes() + E2eInbox.row_overhead_bytes()
+    rest = rem(E2eInbox.max_sender_bytes(), full)
+    sizes = [rest | List.duplicate(full, div(E2eInbox.max_sender_bytes(), full))]
+
+    Enum.each(sizes, fn size ->
+      payload = String.duplicate("A", size - E2eInbox.row_overhead_bytes())
+
+      {:ok, _} =
+        E2eInbox.put(subject, network_id, %{sender: sender, verb: :msg, msgid: "q83vEjRWeJA", payload: payload})
+    end)
+  end
+
+  defp age!(%E2eInbox.Entry{id: id}, seconds) do
+    at = DateTime.truncate(DateTime.add(DateTime.utc_now(), -seconds, :second), :second)
+    {1, _} = E2eInbox.Entry |> where([e], e.id == ^id) |> Repo.update_all(set: [inserted_at: at])
+    :ok
+  end
+
+  # The production tick, delivered now; the state read after it is the
+  # barrier that says the session has handled it.
+  defp sweep(pid) do
+    send(pid, :e2e_inbox_sweep)
+    _ = :sys.get_state(pid)
+    :ok
+  end
+
+  defp notices(network) do
+    Message
+    |> where([m], m.network_id == ^network.id and m.kind == :server_event)
+    |> Repo.all()
+  end
+
   defp rows(network) do
     Message
     |> where([m], m.network_id == ^network.id)
@@ -217,14 +334,17 @@ defmodule Grappa.Session.E2eSessionTest do
 
     _ = credential_fixture(user, network, %{})
 
-    {:ok, plan} = SessionPlan.resolve(Credentials.get_credential!(user, network))
-
-    subject = {:user, user.id}
-    {:ok, pid} = Session.start_session(subject, network.id, plan)
-    on_exit(fn -> Session.stop_session(subject, network.id) end)
-
+    pid = start_session!(user, network)
     :ok = IRCServer.await_handshake(server, @wire_timeout)
 
     {server, pid, user, network}
+  end
+
+  defp start_session!(user, network) do
+    subject = {:user, user.id}
+    {:ok, plan} = SessionPlan.resolve(Credentials.get_credential!(user, network))
+    {:ok, pid} = Session.start_session(subject, network.id, plan)
+    on_exit(fn -> Session.stop_session(subject, network.id) end)
+    pid
   end
 end

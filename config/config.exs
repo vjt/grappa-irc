@@ -504,6 +504,11 @@ config :logger, :console,
     # satisfy the known_keys↔metadata sync test even though no Logger
     # call carries it today.
     :link_failure,
+    # issue 2430 — how many end-to-end encrypted messages from a peer were
+    # never read, on the recipient-only notice row. In the allowlist to
+    # satisfy the known_keys↔metadata sync test even though no Logger call
+    # carries it today.
+    :e2e_undeliverable,
     # issue 2176 — the denoise classification of a `:mode` row: present and
     # `true` when the line changed the CHANNEL (a ban, a key, a limit, a
     # flag) rather than a member's status prefix. In the allowlist to

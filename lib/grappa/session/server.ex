@@ -86,6 +86,7 @@ defmodule Grappa.Session.Server do
   alias Grappa.{
     ChannelDirectory,
     Dcc,
+    E2eInbox,
     Log,
     Mentions,
     QueryWindows,
@@ -202,6 +203,12 @@ defmodule Grappa.Session.Server do
   # ~600× the happy path — long enough to never refuse a legitimately-slow
   # reply, short enough that a stuck request self-heals on the next user retry.
   @links_stale_ms 10_000
+
+  # issue 2430 — how often the session sweeps its offline queue
+  # (`Grappa.E2eInbox`): drops what waited past the TTL and tells the
+  # recipient. Hourly against a 7-day TTL, so a notice lands at most an hour
+  # late; the first sweep runs at init.
+  @e2e_inbox_sweep_ms 60 * 60 * 1_000
 
   # #347 — deferred-autojoin fallback for `:nickserv_identify`. NickServ
   # IDENTIFY is sent async at 001 and the upstream sets the self `+r` umode
@@ -569,6 +576,13 @@ defmodule Grappa.Session.Server do
           # `Grappa.Session.E2ePacer`), and the timer of the next release.
           e2e_pacer: E2ePacer.t(),
           e2e_pacer_timer: reference() | nil,
+          # issue 2430: the hourly sweep of the offline queue
+          # (`Grappa.E2eInbox`), and the messages the queue REFUSED since the
+          # last one, per folded sender: `{raw nick, count}`. The sweep tells
+          # the recipient about both, then empties this. Memory only: a crash
+          # loses the counts of refused messages, never a stored message.
+          e2e_inbox_timer: reference() | nil,
+          e2e_unqueued: %{String.t() => {String.t(), pos_integer()}},
           # CP15 B2: in-flight JOINs awaiting upstream confirmation
           # (self-JOIN echo) or failure numeric (471/473/474/475/403/405).
           # Keyed by lowercase channel so the failure-numeric correlation
@@ -1236,6 +1250,8 @@ defmodule Grappa.Session.Server do
       e2e_reassembly_timer: nil,
       e2e_pacer: E2ePacer.new(),
       e2e_pacer_timer: nil,
+      e2e_inbox_timer: nil,
+      e2e_unqueued: %{},
       in_flight_joins: %{},
       awaiting_invite: MapSet.new(),
       # UX-4 bucket A — canonicalise the autojoin list at boot so the
@@ -1483,6 +1499,11 @@ defmodule Grappa.Session.Server do
     # nick so `current_nick/2` returns `{:ok, nick}` for a live session
     # from the moment it registers, before any reconcile/rename.
     :ok = publish_live_nick(state.subject, state.network_id, state.nick)
+
+    # issue 2430 — the first offline-queue sweep, as soon as the session is
+    # up: whatever expired while it was down is told to the recipient now,
+    # not an hour from now. The handler arms the hourly timer.
+    send(self(), :e2e_inbox_sweep)
 
     {:ok, state, {:continue, {:start_client, client_opts(opts)}}}
   end
@@ -3951,6 +3972,13 @@ defmodule Grappa.Session.Server do
   end
 
   # issue 2430 — frees the memory of E2E messages that will never complete.
+  def handle_info(:e2e_inbox_sweep, state) do
+    _ = if state.e2e_inbox_timer, do: Process.cancel_timer(state.e2e_inbox_timer)
+    timer = Process.send_after(self(), :e2e_inbox_sweep, @e2e_inbox_sweep_ms)
+
+    {:noreply, sweep_e2e_inbox(%{state | e2e_inbox_timer: timer})}
+  end
+
   def handle_info(:e2e_reassembly_sweep, state) do
     {buffer, _} = E2eReassembly.expire(state.e2e_reassembly, System.monotonic_time(:millisecond))
     {:noreply, arm_e2e_reassembly_sweep(%{state | e2e_reassembly: buffer, e2e_reassembly_timer: nil})}
@@ -8027,35 +8055,109 @@ defmodule Grappa.Session.Server do
     now = System.monotonic_time(:millisecond)
     {live, _} = E2eReassembly.expire(state.e2e_reassembly, now)
 
-    buffer =
-      case E2eReassembly.put(live, fold_key(state, from), fragment, now) do
-        {:complete, message, buffer} ->
-          :ok = deliver_e2e(state, from, message)
-          buffer
+    case E2eReassembly.put(live, fold_key(state, from), fragment, now) do
+      {:complete, message, buffer} ->
+        deliver_e2e(arm_e2e_reassembly_sweep(%{state | e2e_reassembly: buffer}), from, message)
 
-        {:pending, buffer} ->
-          buffer
+      {:pending, buffer} ->
+        arm_e2e_reassembly_sweep(%{state | e2e_reassembly: buffer})
 
-        # Debug, not info: the sender decides how often this fires.
-        {:dropped, reason, buffer} ->
-          Logger.debug("e2e message dropped", sender: from, reason: reason)
-          buffer
-      end
-
-    arm_e2e_reassembly_sweep(%{state | e2e_reassembly: buffer})
+      # Debug, not info: the sender decides how often this fires.
+      {:dropped, reason, buffer} ->
+        Logger.debug("e2e message dropped", sender: from, reason: reason)
+        arm_e2e_reassembly_sweep(%{state | e2e_reassembly: buffer})
+    end
   end
 
-  # The whole message is the ONLY copy the client gets: never stored, so
-  # nothing replays it. KEYREQ is not delivered — grappa answers key
-  # requests itself from the bundle it hosts (a later 2430 slice); until
-  # that lands there is nothing to answer with, and no client could either.
-  @spec deliver_e2e(t(), String.t(), E2eReassembly.message()) :: :ok
-  defp deliver_e2e(_, from, %{verb: :keyreq}) do
+  # A whole message is queued (`Grappa.E2eInbox`), then pushed with the
+  # queue's id: the client acknowledges that id, and one that was not
+  # connected fetches the queue when it connects. KEYREQ is not delivered —
+  # grappa answers key requests itself from the bundle it hosts (a later
+  # 2430 slice); until that lands there is nothing to answer with, and no
+  # client could either.
+  #
+  # A message the queue refuses is not pushed either: one path, so a client
+  # never holds a message it cannot acknowledge. The refusal is counted per
+  # sender and told to the recipient on the next sweep.
+  @spec deliver_e2e(t(), String.t(), E2eReassembly.message()) :: t()
+  defp deliver_e2e(state, from, %{verb: :keyreq}) do
     Logger.debug("e2e KEYREQ dropped: no key bundle is hosted", sender: from)
+    state
   end
 
   defp deliver_e2e(state, from, %{verb: verb, msgid: msgid, payload: payload}) do
-    :ok = Broadcaster.to_user(state, SessionWire.e2e_message(state.network_slug, from, verb, msgid, payload))
+    case E2eInbox.put(state.subject, state.network_id, %{sender: from, verb: verb, msgid: msgid, payload: payload}) do
+      {:ok, entry} ->
+        :ok = Broadcaster.to_user(state, SessionWire.e2e_message(state.network_slug, entry))
+        state
+
+      # Debug: the sender decides how often a full queue refuses.
+      {:error, :full} ->
+        Logger.debug("e2e message not queued: queue full", sender: from)
+        count_unqueued(state, from)
+
+      {:error, :db_unavailable} ->
+        Logger.warning("e2e message not queued: database unavailable", sender: from)
+        count_unqueued(state, from)
+    end
+  end
+
+  @spec count_unqueued(t(), String.t()) :: t()
+  defp count_unqueued(state, from) do
+    unqueued =
+      Map.update(state.e2e_unqueued, fold_key(state, from), {from, 1}, fn {_, n} -> {from, n + 1} end)
+
+    %{state | e2e_unqueued: unqueued}
+  end
+
+  # Drops what waited past the queue's TTL, then tells the recipient — and
+  # only the recipient — who sent messages that were never read: what
+  # expired plus what the queue refused since the last sweep, ONE row per
+  # sender, in that sender's query window. The row is typed, not text
+  # (`meta.e2e_undeliverable` = how many; no body), so the client words it.
+  # The `{:persist, …}` arm opens the query window, as it does for every
+  # nick-keyed row. A database that does not answer keeps the refused
+  # counts for the next sweep.
+  @spec sweep_e2e_inbox(t()) :: t()
+  defp sweep_e2e_inbox(state) do
+    cutoff = DateTime.add(DateTime.utc_now(), -E2eInbox.ttl_seconds(), :second)
+
+    case E2eInbox.expire(state.subject, state.network_id, cutoff) do
+      {:ok, expired} ->
+        expired
+        |> Enum.reduce(state.e2e_unqueued, &add_unread(state, &1, &2))
+        |> Map.values()
+        |> Enum.reduce(%{state | e2e_unqueued: %{}}, &persist_e2e_undeliverable/2)
+
+      {:error, :db_unavailable} ->
+        Logger.warning("e2e inbox sweep skipped: database unavailable")
+        state
+    end
+  end
+
+  # Folds one sender's expired count into the refused counts, keeping the
+  # latest spelling.
+  @spec add_unread(t(), {String.t(), pos_integer()}, %{String.t() => {String.t(), pos_integer()}}) ::
+          %{String.t() => {String.t(), pos_integer()}}
+  defp add_unread(state, {sender, n}, acc),
+    do: Map.update(acc, fold_key(state, sender), {sender, n}, fn {_, m} -> {sender, m + n} end)
+
+  @spec persist_e2e_undeliverable({String.t(), pos_integer()}, t()) :: t()
+  defp persist_e2e_undeliverable({sender, count}, state) do
+    attrs =
+      Session.put_subject_id(
+        %{
+          network_id: state.network_id,
+          channel: sender,
+          server_time: System.system_time(:millisecond),
+          sender: sender,
+          body: nil,
+          meta: %{e2e_undeliverable: count}
+        },
+        state.subject
+      )
+
+    apply_effects([{:persist, :server_event, attrs}], state)
   end
 
   @spec arm_e2e_reassembly_sweep(t()) :: t()
