@@ -530,15 +530,28 @@ defmodule Grappa.IRC.Client do
   """
   @spec privmsg_cost_ms(String.t(), String.t()) :: pos_integer()
   def privmsg_cost_ms(target, body) when is_binary(target) and is_binary(body),
-    do: FakeLag.cost_ms(byte_size(privmsg_frame(target, body)))
+    do: target |> privmsg_frame(body) |> byte_size() |> FakeLag.cost_ms()
+
+  @bank_read_timeout_ms 250
 
   @doc """
   issue 2430 — this connection's modelled fake-lag bank right now, in ms
   (`Grappa.IRC.FakeLag.bank_ms/2` over every frame this client has
   written). What `Grappa.Session.E2ePacer` checks before releasing a line.
+
+  `{:error, :timeout}` when the client does not answer within
+  #{@bank_read_timeout_ms} ms. The reply is a map lookup, so a client that misses that is
+  mid-connect (up to 30 s per address, in `handle_continue`) or stuck on a
+  write. Neither is a moment to send. The timeout exit is caught for the
+  reason `send_line/2` catches it: issue 2370, where it took the whole
+  `Session.Server` down. A dead client still exits.
   """
-  @spec fake_lag_bank_ms(pid()) :: non_neg_integer()
-  def fake_lag_bank_ms(client), do: GenServer.call(client, :fake_lag_bank_ms)
+  @spec fake_lag_bank_ms(pid()) :: {:ok, non_neg_integer()} | {:error, :timeout}
+  def fake_lag_bank_ms(client) when is_pid(client) do
+    {:ok, GenServer.call(client, :fake_lag_bank_ms, @bank_read_timeout_ms)}
+  catch
+    :exit, {:timeout, _} -> {:error, :timeout}
+  end
 
   @doc "issue 2430 — bahamut's drain gate, in ms (`Grappa.IRC.FakeLag.ceiling_ms/0`)."
   @spec fake_lag_ceiling_ms() :: 10_000

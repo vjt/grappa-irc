@@ -1981,9 +1981,9 @@ defmodule Grappa.Session.Server do
   # still be waiting in the pacer when it returns.
   # (No @impl here — a continuation clause of handle_call/3, whose @impl
   # rides the no-Client refusal clause above.)
-  def handle_call({:send_e2e, target, verb, payload}, _, state)
-      when is_binary(target) and is_atom(verb) and is_binary(payload) do
-    {reply, state} = queue_e2e_send(state, target, verb, payload)
+  def handle_call({:send_e2e, target, verb, class, payload}, _, state)
+      when is_binary(target) and is_atom(verb) and is_atom(class) and is_binary(payload) do
+    {reply, state} = queue_e2e_send(state, target, verb, class, payload)
     {:reply, reply, state}
   end
 
@@ -3933,7 +3933,8 @@ defmodule Grappa.Session.Server do
     {:noreply, expire_dcc_offer(state, offer_id)}
   end
 
-  # issue 2430 — the next outbound E2E line's window opened. A tick that
+  # issue 2430 — a FLUD slot or room in the fake-lag bank may have opened
+  # for the next outbound E2E line. A tick that
   # outlived a `Process.cancel_timer/1` (already in the mailbox) releases
   # nothing that is not due, and the stored timer is left for
   # `arm_e2e_pacer/2` to cancel, so a stale tick never orphans the live one.
@@ -8069,11 +8070,11 @@ defmodule Grappa.Session.Server do
 
   defp arm_e2e_reassembly_sweep(state), do: state
 
-  # `{:error, :rate_limited}` when the recipient's queue cannot take the
+  # `{:error, :rate_limited}` when the connection's queue cannot take the
   # whole message — the pacer refuses it whole rather than send half.
-  @spec queue_e2e_send(t(), String.t(), E2e.verb(), String.t()) ::
+  @spec queue_e2e_send(t(), String.t(), E2e.verb(), E2ePacer.class(), String.t()) ::
           {{:ok, String.t()} | {:error, :too_large | :rate_limited}, t()}
-  defp queue_e2e_send(state, target, verb, payload) do
+  defp queue_e2e_send(state, target, verb, class, payload) do
     msgid = E2e.new_msgid()
     linelen = ISupport.linelen(Map.get(state, :isupport, ISupport.default()))
     now = System.monotonic_time(:millisecond)
@@ -8081,7 +8082,7 @@ defmodule Grappa.Session.Server do
     with {:ok, bodies} <- E2e.fragment(verb, msgid, payload, LineSplit.frame_budget(target, linelen)),
          lines = Enum.map(bodies, &{&1, Client.privmsg_cost_ms(target, &1)}),
          {:ok, releases, pacer, wait} <-
-           E2ePacer.enqueue(state.e2e_pacer, fold_key(state, target), target, lines, now, e2e_bank_ms(state)) do
+           E2ePacer.enqueue(state.e2e_pacer, fold_key(state, target), target, class, lines, now, e2e_bank_ms(state)) do
       state =
         %{state | e2e_pacer: pacer}
         |> send_e2e_releases(releases)
@@ -8109,6 +8110,9 @@ defmodule Grappa.Session.Server do
     Enum.each(releases, fn {target, body} ->
       case Client.send_privmsg(client, target, body) do
         :ok -> :ok
+        # Issue 2370: a timeout means the line is still in the client's
+        # mailbox and goes out late, not that it was dropped.
+        {:error, :timeout} -> Logger.warning("e2e line send timed out, delivery unknown", target: target)
         {:error, reason} -> Logger.warning("e2e line not sent", target: target, reason: inspect(reason))
       end
     end)
@@ -8118,10 +8122,19 @@ defmodule Grappa.Session.Server do
 
   # The connection's fake-lag bank, read from the client that charges every
   # frame. With no client there is nothing to pace against, and nothing a
-  # release could be written to either (`send_e2e_releases/2` says so).
+  # release could be written to either (`send_e2e_releases/2` says so). A
+  # client that does not answer (mid-connect, or a stuck write) reads as a
+  # FULL bank: nothing is released, and the pacer asks again one line's cost
+  # later.
   @spec e2e_bank_ms(t()) :: non_neg_integer()
   defp e2e_bank_ms(%{client: nil}), do: 0
-  defp e2e_bank_ms(%{client: client}), do: Client.fake_lag_bank_ms(client)
+
+  defp e2e_bank_ms(%{client: client}) do
+    case Client.fake_lag_bank_ms(client) do
+      {:ok, bank_ms} -> bank_ms
+      {:error, :timeout} -> Client.fake_lag_ceiling_ms()
+    end
+  end
 
   @spec arm_e2e_pacer(t(), non_neg_integer() | nil) :: t()
   defp arm_e2e_pacer(state, wait) do

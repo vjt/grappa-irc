@@ -58,8 +58,11 @@ defmodule Grappa.IRC.FakeLag do
   `cost = 2 + div(bytes, 120)` seconds — **integer** division, mirroring
   the C. A 64-byte PRIVMSG and a 119-byte one cost the same flat 2s; the
   step to 3s lands at 120 bytes. `bytes` is the frame as written to the
-  socket, CRLF included, which can only differ from what bahamut counts
-  within two bytes of a 120-byte boundary.
+  socket. bahamut counts only what follows the verb (`i = bufend - s`,
+  `parse.c:217`, after `packet.c` has turned the CRLF into a NUL), so the
+  model OVER-counts by the verb, its space and the CRLF: 10 bytes on a
+  PRIVMSG. It can charge a step early near a 120-byte boundary, never late.
+  Since issue 2430 E2E pacing relies on that direction.
 
   The bank advances `since = max(since, now) + cost`, so idling drains it
   and it never goes negative: a connection quiet for longer than its debt
@@ -188,8 +191,9 @@ defmodule Grappa.IRC.FakeLag do
   defp bank_base(since_ms, now_ms) when is_integer(since_ms), do: max(since_ms, now_ms)
 
   @doc """
-  What bahamut charges for a frame of `bytes` (CRLF included), in ms:
-  `2 + len/120` seconds, in the C's integer arithmetic.
+  What a frame of `bytes` (as written, CRLF included) is charged, in ms:
+  `2 + len/120` seconds in the C's integer arithmetic. Never less than
+  bahamut charges; see "The arithmetic" above.
   """
   @spec cost_ms(non_neg_integer()) :: pos_integer()
   def cost_ms(bytes) when is_integer(bytes) and bytes >= 0,

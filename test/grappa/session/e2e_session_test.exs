@@ -106,24 +106,24 @@ defmodule Grappa.Session.E2eSessionTest do
   describe "outbound" do
     test "a message goes out as lines that fit the relay, reassemble, wait on the fake-lag bank, and are never stored" do
       {server, _, user, network} = connected_session()
-      payload = payload(450)
+      payload = payload(800)
 
-      assert {:ok, msgid} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, payload)
+      assert {:ok, msgid} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, :text, payload)
       assert E2e.msgid?(msgid)
 
-      # A full line costs 5 s of bahamut fake lag and registration left
-      # several seconds in the bank, so the lines wait on the CONNECTION's
-      # bank (read from the client): two FULL lines leave at least 5 s
-      # apart, more if anything else was sent in between. The per-recipient
-      # FLUD rule alone would send three at once. Lines 1 and 2 of a 3+ line
-      # message are both full; the last one may be short and cheaper.
+      # A full line costs 5 s of bahamut fake lag, and the lines wait on the
+      # CONNECTION's bank, read from the client. Whatever the bank held at
+      # the start, line 2 leaves it at the 10 s ceiling, so line 3 (full, in
+      # a 4+ line message) leaves at least 5 s after line 2. The
+      # per-recipient FLUD rule alone would have sent three lines at once.
       {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "#{msgid} 1/"), 10_000)
-      first_at = System.monotonic_time(:millisecond)
       [%{total: total}] = sent_fragments(server, msgid)
-      assert total >= 3
+      assert total >= 4
       {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "#{msgid} 2/"), 10_000)
-      gap = System.monotonic_time(:millisecond) - first_at
-      assert gap >= 4_500, "the second line left #{gap} ms after the first"
+      second_at = System.monotonic_time(:millisecond)
+      {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "#{msgid} 3/"), 10_000)
+      gap = System.monotonic_time(:millisecond) - second_at
+      assert gap >= 4_500, "line 3 left #{gap} ms after line 2"
       {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "#{msgid} #{total}/"), 5_500 * total)
 
       fragments = sent_fragments(server, msgid)
@@ -140,17 +140,37 @@ defmodule Grappa.Session.E2eSessionTest do
       assert rows(network) == 0
     end
 
-    test "refuses what is not a nick, a verb a client may not send, and a non-base64 payload" do
+    test "a client that cannot answer holds the line instead of killing the session" do
+      # The bank read is a call into the client, and the client stops
+      # answering while it connects (up to 30 s per address) or sits on a
+      # stuck write. Issue 2370's lesson: that must never take the session
+      # down. Here the session queues the line and asks again later.
+      {server, pid, user, network} = connected_session()
+      # Registration's own last write (the umode query) must be done first,
+      # or the session is still inside THAT call when the client freezes.
+      {:ok, _} = IRCServer.wait_for_line(server, &String.starts_with?(&1, "MODE "), 1_000)
+      client = :sys.get_state(pid).client
+      :ok = :sys.suspend(client)
+
+      assert {:ok, msgid} = Session.send_e2e({:user, user.id}, network.id, "alice", :keyreq, :control, "eyJ2IjoxfQ==")
+      assert Process.alive?(pid)
+
+      :ok = :sys.resume(client)
+      assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, msgid), 10_000)
+    end
+
+    test "refuses what is not a nick, a verb a client may not send, an unknown priority, and a non-base64 payload" do
       {_, _, user, network} = connected_session()
       subject = {:user, user.id}
       good = Base.encode64(~s({"v":1}))
 
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "#italia", :msg, good)
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :keys, good)
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :offline, good)
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, "not base64!")
-      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, "")
-      assert {:error, :invalid_line} = Session.send_e2e(subject, network.id, "alice\r\nQUIT", :msg, good)
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "#italia", :msg, :text, good)
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :keys, :text, good)
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :offline, :text, good)
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :urgent, good)
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :text, "not base64!")
+      assert {:error, :bad_request} = Session.send_e2e(subject, network.id, "alice", :msg, :text, "")
+      assert {:error, :invalid_line} = Session.send_e2e(subject, network.id, "alice\r\nQUIT", :msg, :text, good)
     end
 
     test "a payload that needs more than 64 lines is refused before anything is sent" do
@@ -159,13 +179,13 @@ defmodule Grappa.Session.E2eSessionTest do
       huge = Base.encode64(:crypto.strong_rand_bytes(20_000))
       assert byte_size(huge) < E2e.max_payload_bytes()
 
-      assert {:error, :too_large} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, huge)
+      assert {:error, :too_large} = Session.send_e2e({:user, user.id}, network.id, "alice", :msg, :text, huge)
       refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "E2E"))
     end
 
     test "with no session the send is refused, not swallowed" do
       user = user_fixture(name: "vjt-#{System.unique_integer([:positive])}")
-      assert {:error, :no_session} = Session.send_e2e({:user, user.id}, 999_999, "alice", :msg, "eyJ2IjoxfQ==")
+      assert {:error, :no_session} = Session.send_e2e({:user, user.id}, 999_999, "alice", :msg, :text, "eyJ2IjoxfQ==")
     end
   end
 

@@ -129,7 +129,7 @@ defmodule Grappa.Session do
     exports: [NSInterceptor, Server, Wire]
 
   alias Grappa.IRC.{AuthFSM, CTCP, E2e, Identifier, Ignore}
-  alias Grappa.Session.{Deps, FloodAllowance, ISupport, Server, Wire}
+  alias Grappa.Session.{Deps, E2ePacer, FloodAllowance, ISupport, Server, Wire}
   alias Grappa.UserSettings
 
   require Logger
@@ -939,13 +939,22 @@ defmodule Grappa.Session do
   # never answers one; the draft's OFFLINE was dropped by vjt.
   @e2e_send_verbs [:keyreq, :pkmsg, :msg, :nack]
 
+  # KEYREQ and NACK are control by what they are; grappa cannot see inside
+  # MSG/PKMSG, so for those the client says.
+  @e2e_control_verbs [:keyreq, :nack]
+  @e2e_priorities [:control, :text]
+
   @doc """
-  issue 2430 — the E2E verbs `send_e2e/5` accepts, for the web door to
+  issue 2430 — the E2E verbs `send_e2e/6` accepts, for the web door to
   map its strings onto. One list, so the controller and the facade cannot
   disagree on the closed set.
   """
   @spec e2e_send_verbs() :: [E2e.verb(), ...]
   def e2e_send_verbs, do: @e2e_send_verbs
+
+  @doc "issue 2430 — the priorities `send_e2e/6` accepts. Same reason as `e2e_send_verbs/0`."
+  @spec e2e_priorities() :: [E2ePacer.class(), ...]
+  def e2e_priorities, do: @e2e_priorities
 
   @doc """
   issue 2430 — sends one end-to-end encrypted message to `target` (a nick).
@@ -959,35 +968,43 @@ defmodule Grappa.Session do
   line per 5 s. Nothing is persisted, echoed or pushed, and no query window
   opens.
 
+  `priority` decides the pacer queue. `:control` goes ahead of every queued
+  text line; `:text` keeps its order behind earlier text, so a peer never
+  displays two messages backwards. KEYREQ and NACK are control whatever
+  `priority` says. A MSG or PKMSG is whatever the client says, since only
+  the client knows that one carries a CHAL or an ACK.
+
   `{:ok, msgid}` means ACCEPTED, not delivered: lines may still be waiting
   in the pacer, and IRC never confirms delivery anyway (vjt
   ruled out any sender-side notice, 2430). `{:error, :invalid_line}` for a
   CR/LF/NUL in `target`; `{:error, :bad_request}` for a target that is not
-  a nick, a verb outside `e2e_send_verbs/0`, or a payload that is not
-  base64; `{:error, :too_large}` past `E2e.max_payload_bytes/0` or when the
+  a nick, a verb outside `e2e_send_verbs/0`, a priority outside
+  `e2e_priorities/0`, or a payload that is not base64; `{:error, :too_large}` past `E2e.max_payload_bytes/0` or when the
   payload needs more than 64 lines;
-  `{:error, :rate_limited}` when the recipient's queue cannot take it whole.
+  `{:error, :rate_limited}` when the connection's queue (128 lines) cannot take it whole.
   """
-  @spec send_e2e(subject(), integer(), String.t(), E2e.verb(), String.t()) ::
+  @spec send_e2e(subject(), integer(), String.t(), E2e.verb(), E2ePacer.class(), String.t()) ::
           {:ok, String.t()}
           | {:error, :no_session | :no_socket | :timeout | :invalid_line | :bad_request | :too_large | :rate_limited}
-  def send_e2e(subject, network_id, target, verb, payload)
+  def send_e2e(subject, network_id, target, verb, priority, payload)
       when is_subject(subject) and is_integer(network_id) and is_binary(target) and is_atom(verb) and
-             is_binary(payload) do
-    with :ok <- validate_e2e_send(target, verb, payload) do
-      call_session(subject, network_id, {:send_e2e, target, verb, payload})
+             is_atom(priority) and is_binary(payload) do
+    with :ok <- validate_e2e_send(target, verb, priority, payload) do
+      class = if verb in @e2e_control_verbs, do: :control, else: priority
+      call_session(subject, network_id, {:send_e2e, target, verb, class, payload})
     end
   end
 
   # The size check runs before the session is asked, so a payload no
   # receiver could hold is never copied into its mailbox.
-  @spec validate_e2e_send(String.t(), E2e.verb(), String.t()) ::
+  @spec validate_e2e_send(String.t(), E2e.verb(), E2ePacer.class(), String.t()) ::
           :ok | {:error, :invalid_line | :bad_request | :too_large}
-  defp validate_e2e_send(target, verb, payload) do
+  defp validate_e2e_send(target, verb, priority, payload) do
     cond do
       not Identifier.safe_line_token?(target) -> {:error, :invalid_line}
       byte_size(payload) > E2e.max_payload_bytes() -> {:error, :too_large}
-      Identifier.valid_nick?(target) and verb in @e2e_send_verbs and E2e.chunk?(payload) -> :ok
+      not (verb in @e2e_send_verbs and priority in @e2e_priorities) -> {:error, :bad_request}
+      Identifier.valid_nick?(target) and E2e.chunk?(payload) -> :ok
       true -> {:error, :bad_request}
     end
   end

@@ -54,7 +54,32 @@ defmodule GrappaWeb.E2eControllerTest do
     assert line == "PRIVMSG alice :\x01E2E KEYREQ #{msgid} 1/1 #{@payload}\x01\r\n"
   end
 
-  test "400 for a verb outside the client set, a non-nick target, a non-base64 payload", %{conn: conn, vjt: vjt} do
+  test "control goes ahead of queued text: a msg marked control, and a keyreq whatever it says", %{conn: conn, vjt: vjt} do
+    {server, network} = live_network(vjt)
+    path = "/networks/#{network.slug}/e2e/messages"
+    long = Base.encode64(:crypto.strong_rand_bytes(1_200))
+
+    # A long text message: its full lines drip one per 5 s on the
+    # connection's fake-lag bank, so line 2 is seconds away.
+    %{"msgid" => long_id} = json_response(post(conn, path, %{target: "alice", verb: "msg", payload: long}), 202)
+    {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, "#{long_id} 1/"), 10_000)
+
+    # A CHAL/ACK carrier marked control, and a keyreq that asks for text.
+    %{"msgid" => ack_id} =
+      json_response(post(conn, path, %{target: "alice", verb: "msg", payload: @payload, priority: "control"}), 202)
+
+    %{"msgid" => keyreq_id} =
+      json_response(post(conn, path, %{target: "alice", verb: "keyreq", payload: @payload, priority: "text"}), 202)
+
+    {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, ack_id), 10_000)
+    {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, keyreq_id), 10_000)
+    refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, "#{long_id} 2/"))
+  end
+
+  test "400 for a verb outside the client set, an unknown priority, a non-nick target, a non-base64 payload", %{
+    conn: conn,
+    vjt: vjt
+  } do
     {_, network} = live_network(vjt)
     path = "/networks/#{network.slug}/e2e/messages"
 
@@ -65,7 +90,9 @@ defmodule GrappaWeb.E2eControllerTest do
           %{target: "#italia", verb: "msg", payload: @payload},
           %{target: "alice", verb: "msg", payload: "not base64!"},
           %{target: "alice", verb: "msg"},
-          %{target: "alice", verb: "msg", payload: 42}
+          %{target: "alice", verb: "msg", payload: 42},
+          %{target: "alice", verb: "msg", payload: @payload, priority: "urgent"},
+          %{target: "alice", verb: "msg", payload: @payload, priority: "CONTROL"}
         ] do
       assert json_response(post(conn, path, body), 400) == %{"error" => "bad_request"}, inspect(body)
     end

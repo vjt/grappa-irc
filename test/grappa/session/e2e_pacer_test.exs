@@ -14,13 +14,15 @@ defmodule Grappa.Session.E2ePacerTest do
   describe "per recipient: 3 lines in any 6 s (FLUD)" do
     test "up to 3 cheap lines go out at once, with nothing left to wait for" do
       assert {:ok, releases, _, nil} =
-               E2ePacer.enqueue(E2ePacer.new(), "vjt-claude", "vjt-Claude", lines(3, @cheap), 0, 0)
+               E2ePacer.enqueue(E2ePacer.new(), "vjt-claude", "vjt-Claude", :text, lines(3, @cheap), 0, 0)
 
       assert releases == [{"vjt-Claude", "line1"}, {"vjt-Claude", "line2"}, {"vjt-Claude", "line3"}]
     end
 
     test "a 4th line waits until the first leaves the 6 s window, then the freed slots go at once" do
-      {:ok, first, pacer, wait} = E2ePacer.enqueue(E2ePacer.new(), "vjt-claude", "vjt-claude", lines(5, @cheap), 0, 0)
+      {:ok, first, pacer, wait} =
+        E2ePacer.enqueue(E2ePacer.new(), "vjt-claude", "vjt-claude", :text, lines(5, @cheap), 0, 0)
+
       assert length(first) == 3
       assert wait == 6_000
 
@@ -31,12 +33,12 @@ defmodule Grappa.Session.E2ePacerTest do
       # The first burst has left the window but lines 4-5 (sent at 6 s) have
       # not, so a new message gets exactly one slot now.
       assert {:ok, [{"vjt-claude", "x"}], _, _} =
-               E2ePacer.enqueue(pacer, "vjt-claude", "vjt-claude", [{"x", @cheap}, {"y", @cheap}], 6_000, 0)
+               E2ePacer.enqueue(pacer, "vjt-claude", "vjt-claude", :text, [{"x", @cheap}, {"y", @cheap}], 6_000, 0)
     end
 
     test "recipients are paced independently" do
-      {:ok, a, pacer, _} = E2ePacer.enqueue(E2ePacer.new(), "alice", "alice", lines(4, 1_000), 0, 0)
-      {:ok, b, _, _} = E2ePacer.enqueue(pacer, "bob", "bob", lines(4, 1_000), 0, 0)
+      {:ok, a, pacer, _} = E2ePacer.enqueue(E2ePacer.new(), "alice", "alice", :text, lines(4, 1_000), 0, 0)
+      {:ok, b, _, _} = E2ePacer.enqueue(pacer, "bob", "bob", :text, lines(4, 1_000), 0, 0)
       assert length(a) == 3
       assert length(b) == 3
     end
@@ -48,7 +50,7 @@ defmodule Grappa.Session.E2ePacerTest do
     end
 
     test "full lines: two go at once, then each waits until the bank has room for it" do
-      {:ok, first, pacer, wait} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", lines(3, @full), 0, 0)
+      {:ok, first, pacer, wait} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", :text, lines(3, @full), 0, 0)
       # 0 + 5 s, then 5 + 5 = 10 s: both fit. A third would make 15.
       assert first == [{"p", "line1"}, {"p", "line2"}]
       assert wait == 5_000
@@ -60,54 +62,90 @@ defmodule Grappa.Session.E2ePacerTest do
 
     test "a bank already filled by other traffic holds even the first line" do
       # The user just sent something: 7.7 s of debt the pacer did not make.
-      assert {:ok, [], pacer, 2_700} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", lines(1, @full), 0, 7_700)
+      assert {:ok, [], pacer, 2_700} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", :text, lines(1, @full), 0, 7_700)
       assert {[{"p", "line1"}], _, nil} = E2ePacer.release(pacer, 2_700, 5_000)
     end
 
     test "a line costlier than the ceiling goes out once the bank is empty, never stuck" do
       # Only possible where LINELEN is far over 512. bahamut parses any line
       # that arrives under the gate, so an empty bank is room enough.
-      {:ok, [], pacer, wait} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", lines(1, 12_000), 0, 3_000)
+      {:ok, [], pacer, wait} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", :text, lines(1, 12_000), 0, 3_000)
       assert wait == 3_000
       assert {[{"p", "line1"}], _, nil} = E2ePacer.release(pacer, 3_000, 0)
     end
 
     test "the bank is shared: a line to one recipient uses room another would have had" do
-      {:ok, [_, _], pacer, _} = E2ePacer.enqueue(E2ePacer.new(), "alice", "alice", lines(2, @full), 0, 0)
+      {:ok, [_, _], pacer, _} = E2ePacer.enqueue(E2ePacer.new(), "alice", "alice", :text, lines(2, @full), 0, 0)
       # alice's two lines filled the bank (the caller reads 10 s back).
-      assert {:ok, [], _, 5_000} = E2ePacer.enqueue(pacer, "bob", "bob", lines(1, @full), 0, 10_000)
+      assert {:ok, [], _, 5_000} = E2ePacer.enqueue(pacer, "bob", "bob", :text, lines(1, @full), 0, 10_000)
     end
   end
 
-  describe "short messages first" do
-    test "a single-line message goes ahead of the rest of a longer one, across recipients" do
-      {:ok, [_, _], pacer, _} = E2ePacer.enqueue(E2ePacer.new(), "alice", "alice", lines(5, @full), 0, 0)
-      {:ok, [], pacer, _} = E2ePacer.enqueue(pacer, "bob", "bob", [{"KEYREQ", @cheap}], 100, 9_900)
+  describe "control first, text in order" do
+    test "a control message goes ahead of the queued text of a longer one, across recipients" do
+      {:ok, [_, _], started, _} = E2ePacer.enqueue(E2ePacer.new(), "alice", "alice", :text, lines(5, @full), 0, 0)
+      {:ok, [], queued, _} = E2ePacer.enqueue(started, "bob", "bob", :control, [{"KEYREQ", @cheap}], 100, 9_900)
 
-      # Room for one more line opens: bob's short message takes it, though
+      # Room for one more line opens: bob's control message takes it, though
       # alice's line 3 was queued first.
-      assert {[{"bob", "KEYREQ"}], pacer, _} = E2ePacer.release(pacer, 5_000, 5_000)
-      assert {[{"alice", "line3"}], _, _} = E2ePacer.release(pacer, 6_000, 3_000)
+      assert {[{"bob", "KEYREQ"}], after_control, _} = E2ePacer.release(queued, 5_000, 5_000)
+      assert {[{"alice", "line3"}], _, _} = E2ePacer.release(after_control, 6_000, 3_000)
+    end
+
+    test "a short text message does not overtake a long one queued before it" do
+      # The peer would display the two backwards: text never reorders.
+      {:ok, [_, _], started, _} = E2ePacer.enqueue(E2ePacer.new(), "alice", "alice", :text, lines(3, @full), 0, 0)
+      {:ok, [], queued, _} = E2ePacer.enqueue(started, "alice", "alice", :text, [{"short", @cheap}], 100, 9_900)
+
+      assert {[{"alice", "line3"}], after_long, _} = E2ePacer.release(queued, 5_000, 5_000)
+      assert {[{"alice", "short"}], _, _} = E2ePacer.release(after_long, 10_000, 3_000)
+    end
+
+    test "a multi-line control message keeps its lines in order, ahead of text" do
+      {:ok, [_, _], started, _} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", :text, lines(4, @full), 0, 0)
+
+      {:ok, [], queued, _} =
+        E2ePacer.enqueue(started, "p", "p", :control, [{"c1", @cheap}, {"c2", @cheap}], 0, 10_000)
+
+      assert {[{"p", "c1"}, {"p", "c2"}], _, _} = E2ePacer.release(queued, 6_000, 4_000)
     end
 
     test "otherwise lines leave in the order they were queued, across messages" do
-      {:ok, _, first, _} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", lines(4, @cheap), 0, 0)
-      {:ok, [], second, _} = E2ePacer.enqueue(first, "p", "p", [{"b1", @cheap}, {"b2", @cheap}], 100, 0)
+      {:ok, _, first, _} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", :text, lines(4, @cheap), 0, 0)
+      {:ok, [], second, _} = E2ePacer.enqueue(first, "p", "p", :text, [{"b1", @cheap}, {"b2", @cheap}], 100, 0)
       assert {[{"p", "line4"}, {"p", "b1"}, {"p", "b2"}], _, nil} = E2ePacer.release(second, 6_100, 0)
     end
   end
 
+  test "the 128-line cap is per connection: lines waiting for one recipient count against another" do
+    {:ok, _, half, _} = E2ePacer.enqueue(E2ePacer.new(), "alice", "alice", :text, lines(64, @cheap), 0, 0)
+    {:ok, _, full, _} = E2ePacer.enqueue(half, "bob", "bob", :text, lines(64, @cheap), 0, 0)
+    # 6 went out at once (3 each), so 122 wait: 6 more fit, 7 do not.
+    assert {:error, :queue_full} = E2ePacer.enqueue(full, "carol", "carol", :text, lines(7, @cheap), 0, 0)
+    assert {:ok, _, _, _} = E2ePacer.enqueue(full, "carol", "carol", :text, lines(6, @cheap), 0, 0)
+  end
+
+  test "a bank-blocked wake comes early when a recipient with an older line gets its FLUD slot back first" do
+    # alice: 4 one-second lines at 0 s, 3 go, the 4th waits for her window
+    # (6 s). bob: a full line at 5 s against a bank other traffic filled.
+    {:ok, [_, _, _], started, 6_000} = E2ePacer.enqueue(E2ePacer.new(), "alice", "alice", :text, lines(4, 1_000), 0, 0)
+
+    # bob alone would wait 4.5 s for the bank; alice's older line fits at
+    # 6 s (bank 8.5 + 1 <= 10), one second from now.
+    assert {:ok, [], _, 1_000} = E2ePacer.enqueue(started, "bob", "bob", :text, lines(1, @full), 5_000, 9_500)
+  end
+
   test "a message that would overflow the 128-line queue is refused whole" do
-    {:ok, _, half, _} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", lines(64, @cheap), 0, 0)
-    {:ok, _, full, _} = E2ePacer.enqueue(half, "p", "p", lines(64, @cheap), 0, 0)
-    assert {:error, :queue_full} = E2ePacer.enqueue(full, "p", "p", lines(10, @cheap), 0, 0)
+    {:ok, _, half, _} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", :text, lines(64, @cheap), 0, 0)
+    {:ok, _, full, _} = E2ePacer.enqueue(half, "p", "p", :text, lines(64, @cheap), 0, 0)
+    assert {:error, :queue_full} = E2ePacer.enqueue(full, "p", "p", :text, lines(10, @cheap), 0, 0)
     # 3 went out at once, so 125 wait: 3 more fit, 4 do not.
-    assert {:error, :queue_full} = E2ePacer.enqueue(full, "p", "p", lines(4, @cheap), 0, 0)
-    assert {:ok, [], _, _} = E2ePacer.enqueue(full, "p", "p", lines(3, @cheap), 0, 0)
+    assert {:error, :queue_full} = E2ePacer.enqueue(full, "p", "p", :text, lines(4, @cheap), 0, 0)
+    assert {:ok, [], _, _} = E2ePacer.enqueue(full, "p", "p", :text, lines(3, @cheap), 0, 0)
   end
 
   test "an idle recipient is forgotten once its window empties" do
-    {:ok, _, pacer, nil} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", lines(3, @cheap), 0, 0)
+    {:ok, _, pacer, nil} = E2ePacer.enqueue(E2ePacer.new(), "p", "p", :text, lines(3, @cheap), 0, 0)
     assert {[], %E2ePacer{lanes: lanes}, nil} = E2ePacer.release(pacer, 5_999, 0)
     assert Map.has_key?(lanes, "p")
     assert {[], %E2ePacer{lanes: lanes}, nil} = E2ePacer.release(pacer, 6_000, 0)
@@ -155,7 +193,10 @@ defmodule Grappa.Session.E2ePacerTest do
       |> Enum.reduce(start, fn {{at, key, count, cost}, n}, acc ->
         caught_up = run_until(acc, at)
         bank = bank(caught_up.since, at)
-        {:ok, out, pacer, wait} = E2ePacer.enqueue(caught_up.pacer, key, key, sim_lines(count, cost, "m#{n}"), at, bank)
+
+        {:ok, out, pacer, wait} =
+          E2ePacer.enqueue(caught_up.pacer, key, key, :text, sim_lines(count, cost, "m#{n}"), at, bank)
+
         %{record(caught_up, out, at) | pacer: pacer, wake: wake_at(at, wait)}
       end)
 
