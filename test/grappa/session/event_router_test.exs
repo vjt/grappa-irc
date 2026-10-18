@@ -8071,4 +8071,61 @@ defmodule Grappa.Session.EventRouterTest do
       assert {:cont, _, [_ | _]} = EventRouter.route(nickserv, state)
     end
   end
+
+  describe "issue 2430 — E2E query lines" do
+    # A real line, cut by the production fragmenter: the shape the peer's
+    # client puts on the wire.
+    defp e2e_line(verb, msgid) do
+      payload = Base.encode64(~s({"v":1,"body":"#{String.duplicate("x", 900)}"}))
+      {:ok, [first | _]} = Grappa.IRC.E2E.fragment(verb, msgid, payload, 300)
+      first
+    end
+
+    @peer {:nick, "vjt-claude", "claude", "bot.example"}
+
+    test "a PRIVMSG to our nick becomes one :e2e_fragment effect and nothing is persisted" do
+      line = e2e_line(:msg, "q83vEjRWeJA")
+      {:ok, fragment} = Grappa.IRC.E2E.parse(line)
+
+      assert {:cont, _, [{:e2e_fragment, "vjt-claude", ^fragment}]} =
+               EventRouter.route(msg(:privmsg, ["vjt", line], @peer), base_state())
+    end
+
+    test "our nick matches folded, like every other self-target check" do
+      line = e2e_line(:pkmsg, "q83vEjRWeJA")
+
+      assert {:cont, _, [{:e2e_fragment, "vjt-claude", _}]} =
+               EventRouter.route(msg(:privmsg, ["VJT", line], @peer), base_state())
+    end
+
+    test "a malformed E2E line is dropped, never persisted as a plain PRIVMSG" do
+      for body <- ["\x01E2E MSG q83vEjRWeJA 0/1 eyJ2IjoxfQ==\x01", "\x01E2E OFFLINE q83vEjRWeJA 1/1 eyJ2IjoxfQ==\x01", "\x01E2E\x01"] do
+        assert {:cont, _, []} = EventRouter.route(msg(:privmsg, ["vjt", body], @peer), base_state()), body
+      end
+    end
+
+    test "an E2E line to a channel is dropped: channel encryption does not exist yet" do
+      line = e2e_line(:msg, "q83vEjRWeJA")
+      assert {:cont, _, []} = EventRouter.route(msg(:privmsg, ["#italia", line], @peer), base_state())
+      assert {:cont, _, []} = EventRouter.route(msg(:privmsg, ["@#italia", line], @peer), base_state())
+    end
+
+    test "our own E2E line echoed back (echo-message) is dropped" do
+      line = e2e_line(:msg, "q83vEjRWeJA")
+      own = {:nick, "vjt", "vjt", "grappa.example"}
+      assert {:cont, _, []} = EventRouter.route(msg(:privmsg, ["vjt-claude", line], own), base_state())
+      assert {:cont, _, []} = EventRouter.route(msg(:privmsg, ["vjt", line], own), base_state())
+    end
+
+    test "an E2E line inside a NOTICE is dropped: the agreed wire uses PRIVMSG only" do
+      line = e2e_line(:msg, "q83vEjRWeJA")
+      assert {:cont, _, []} = EventRouter.route(msg(:notice, ["vjt", line], @peer), base_state())
+      assert {:cont, _, []} = EventRouter.route(msg(:notice, ["#italia", line], @peer), base_state())
+    end
+
+    test "an ignored sender's E2E line is dropped like the rest of their traffic" do
+      line = e2e_line(:msg, "q83vEjRWeJA")
+      assert {:cont, _, []} = EventRouter.route(msg(:privmsg, ["vjt", line], @peer), ignoring(["vjt-claude!*@*"]))
+    end
+  end
 end

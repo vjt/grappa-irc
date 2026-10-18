@@ -80,16 +80,16 @@ defmodule Grappa.IRC.E2E do
   def max_fragments, do: @max_fragments
 
   @doc """
-  True iff `body` opens with the E2E CTCP frame `\\x01E2E `.
+  True iff `body` is a CTCP frame whose verb is `E2E`, whatever follows.
 
   This is the classifier for the never-persist rule, and it is deliberately
-  wider than `parse/1`: a MALFORMED E2E line is still an E2E line, and must
-  no more land in scrollback than a well-formed one. Keyed on the opening
-  frame only, like `Grappa.IRC.CTCP.action?/1`.
+  wider than `parse/1`: a MALFORMED E2E line (a bare `\\x01E2E\\x01`, a
+  dropped verb, a broken fraction) is still an E2E line, and must no more
+  land in scrollback than a well-formed one. The verb comes from
+  `CTCP.verb_args/1`, the one CTCP frame parser.
   """
   @spec framed?(binary()) :: boolean()
-  def framed?(<<0x01, "E2E ", _::binary>>), do: true
-  def framed?(_), do: false
+  def framed?(body) when is_binary(body), do: match?({"E2E", _}, CTCP.verb_args(body))
 
   @doc """
   Parses one E2E line body (the PRIVMSG trailing parameter).
