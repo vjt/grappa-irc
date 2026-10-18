@@ -2558,3 +2558,109 @@ ran there. Same UTC-to-the-second shape.
   pins answer that.
 - Nothing ran locally on the server side: every Elixir red and green in this
   slice comes from PR CI.
+<!-- entry #2430a -->
+
+---
+
+## 2026-10-18 — #2430: grappa frames, reassembles and paces end-to-end encrypted query lines, and never stores one
+
+First grappa slice of the E2E query work (issue 2430, draft 7, plus the payload
+proposal agreed on the issue). Olm runs in the endpoints (cicchetto via
+vodozemac, bots via its Python binding); grappa holds no key. This slice is the
+relay: recognise the `\x01E2E <verb> <msgid> <i>/<n> <chunk>\x01` line, keep it
+out of every store, reassemble inbound messages for the client, frame and pace
+outbound ones. Protocol 42 (`e2e_message` on the user topic,
+`POST /networks/:network_id/e2e/messages`).
+
+### grappa parses the frame, contrary to the draft's "byte for byte"
+
+The draft has grappa pass E2E lines through untouched. That collides with the
+one-parser invariant: cicchetto never parses IRC and never sees `\x01`. Both
+hold once the cut is placed at the payload: grappa parses the OUTER frame
+(`Grappa.IRC.E2E`, verb/msgid/fraction/chunk) and joins the chunks of a message
+(`Session.E2EReassembly`), and what the client receives is the verb, the msgid
+and the payload string, never decoded and never re-encoded. Slicing a base64
+string on the way out and concatenating on the way in are the only operations
+grappa performs on the ciphertext.
+
+### Never stored, by one door and one backstop
+
+"Never stored" has to hold for a PRIVMSG to us, a PRIVMSG to a channel, a
+NOTICE, a CTCP-reply NOTICE and a malformed frame. Each of those has its own
+persisting arm in `EventRouter`, so a guard per arm would be one forgotten arm
+away from a leak. Instead `EventRouter.route/2` stops every PRIVMSG/NOTICE whose
+body is a CTCP frame with verb `E2E` (`E2E.framed?/1`, deliberately wider than
+`parse/1`: a broken E2E line is still one) before any of them run. Only a
+well-formed PRIVMSG addressed to our own nick, from someone else, becomes an
+effect. Channel targets (no channel encryption yet), our own `echo-message`
+copy, NOTICEs (the wire is PRIVMSG only) and malformed frames are dropped.
+
+`Scrollback.Message.changeset/2` refuses an E2E body for every kind. That is the
+backstop for writers that do not go through the router (an outbound echo, a mix
+task, a future facade). Scrollback is what search and push payloads read, so
+refusing the row covers both.
+
+### Reassembly lives in the session, in memory only
+
+Reassembly needs a clock and a buffer that outlives one line, so it sits in
+`Session.Server` state, not in the pure router. Caps: 60 s per message, 64
+fragments (the wire's `n` ceiling), 32 KiB buffered per sender, 1 MiB total.
+Nothing is persisted. An incomplete message is discarded by the protocol
+anyway, so a crash that loses the buffer ends the same way a timeout would. The
+completed message is broadcast once on the user topic, the only topic every
+client holds: a stranger opening a session has no window anyone is subscribed
+to. It is the only copy. Nothing replays it, and the offline queue (next slice)
+is what covers a client that is not connected.
+
+### Outbound: 3 lines per 6 s per recipient
+
+bahamut compiles in FLUD (`s_user.c` `check_for_flud/4`, 4 CTCPs in 3 s,
+15 s block, silent for the sender). An E2E line is a CTCP. Read from the
+vendored source: a sender's count keeps accumulating while its `first_msg` is
+no older than 3 s in integer seconds, so a second burst of 3 exactly 3 s after
+the first still counts the first one. "3 per 3 s" is therefore unsafe (w2's
+simulation: 2588 of 3000 trials blocked); 3 per 6 s blocked none even with 2 s
+of jitter. `Session.E2EPacer` enforces that per folded recipient nick, queue
+capped at 128 lines, and refuses a message WHOLE when it does not fit (429).
+Half a message is discarded by the receiver, so accepting it would only spend
+the window. The irc-olm package uses the same default.
+
+The pacer is kept for queries even though a typical query message is a few
+lines and never waits. vjt ruled (2430, 19:3x) that the throttle and an
+"exchange in progress" UI matter only for future small encrypted channels; the
+pacer stays as a no-op-unless-long safety net, and no UI notice is attached to
+it for queries.
+
+Lines are sized by `LineSplit.frame_budget/2`, the worst-case relayed-prefix
+budget, which is never larger than the draft's "own mask + 14", so the ircd
+cannot truncate a line on relay.
+
+### What the client sends, and what it is told
+
+The send door takes `{target, verb, payload}`. `verb` is one of `keyreq`,
+`pkmsg`, `msg`, `nack`. KEYS is grappa's to send once it hosts key bundles
+(a later slice). `payload` is the base64 of the agreed JSON, validated only as
+base64 characters, never decoded. The reply is **202 with the msgid grappa
+minted**: accepted, not delivered. Lines may still be waiting for the
+recipient's window, IRC never confirms delivery, and vjt ruled out any
+sender-side notice (2430, 19:3x: no delivered/expired/undeliverable, and the
+draft's `OFFLINE` verb is dropped, so a line carrying it is malformed here).
+
+### Inbound KEYREQ is dropped in this slice
+
+A KEYREQ is answered by grappa from the bundle it hosts for the subject,
+whether or not cicchetto is connected. That bundle store is a later slice, so
+until it lands an inbound KEYREQ is logged at debug and dropped, and
+`e2e_message.verb` does not include `keyreq`.
+
+### Known gaps
+
+- grappa's own lazy CTCP USERINFO/AVATAR probes on a peer's JOIN bypass the
+  pacer, so a probe landing during a burst can take the slot the pacer leaves
+  free.
+- A line the socket refuses is logged and lost, never retried: a retry would
+  land outside the window the pacer just accounted for, and the receiver
+  discards the incomplete message either way.
+- New `Session.Server` state fields (`e2e_reassembly`, `e2e_pacer` and their
+  timers): a COLD deploy, which the preflight derives from
+  `LongLivedModules` (both modules are listed).
