@@ -100,7 +100,9 @@ defmodule GrappaWeb.E2eControllerTest do
 
     assert %{"msgid" => _} = json_response(post(conn, path, %{target: "alice", verb: "msg", payload: payload}), 202)
     assert %{"msgid" => _} = json_response(post(conn, path, %{target: "alice", verb: "msg", payload: payload}), 202)
-    assert json_response(post(conn, path, %{target: "alice", verb: "msg", payload: payload}), 429)["error"] == "rate_limited"
+
+    assert json_response(post(conn, path, %{target: "alice", verb: "msg", payload: payload}), 429)["error"] ==
+             "rate_limited"
   end
 
   test "another subject's network is not reachable", %{conn: conn, vjt: vjt} do
