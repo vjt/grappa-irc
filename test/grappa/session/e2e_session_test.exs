@@ -183,7 +183,7 @@ defmodule Grappa.Session.E2eSessionTest do
     end
 
     test "a queued PKMSG or MSG pushes a notification; key material and NACKs do not" do
-      {server, _, user, network} = connected_session()
+      {server, _, user, _} = connected_session()
       bypass = Bypass.open()
       Bypass.stub(bypass, "POST", "/wp", fn conn -> Plug.Conn.resp(conn, 201, "") end)
 
