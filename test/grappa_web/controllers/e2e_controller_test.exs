@@ -16,8 +16,9 @@ defmodule GrappaWeb.E2eControllerTest do
 
   import Grappa.AuthFixtures
 
+  alias Grappa.{E2eInbox, IRCServer}
   alias Grappa.IRC.E2e
-  alias Grappa.IRCServer
+  alias Grappa.Session.Wire, as: SessionWire
 
   @payload Base.encode64(~s({"v":1}))
 
@@ -140,5 +141,103 @@ defmodule GrappaWeb.E2eControllerTest do
 
     conn = post(conn, "/networks/#{network.slug}/e2e/messages", %{target: "alice", verb: "msg", payload: @payload})
     assert conn.status == 404
+  end
+
+  describe "the offline queue" do
+    # No session runs: the queue is a resource of its own, read and acked
+    # straight through the context. Entries go in the way the session puts
+    # them.
+    defp idle_network(vjt) do
+      {network, _} = network_with_server(port: unique_port(), slug: "inbox-#{u()}")
+      _ = credential_fixture(vjt, network, %{nick: "grappa-test", autojoin_channels: []})
+      network
+    end
+
+    defp queue!(user, network, sender, verb) do
+      {:ok, entry} =
+        E2eInbox.put({:user, user.id}, network.id, %{
+          sender: sender,
+          verb: verb,
+          msgid: "q83vEjRWeJA",
+          payload: @payload
+        })
+
+      entry
+    end
+
+    test "GET lists what waits, oldest first, in the same shape the push carries", %{conn: conn, vjt: vjt} do
+      network = idle_network(vjt)
+      a = queue!(vjt, network, "alice", :pkmsg)
+      b = queue!(vjt, network, "bob", :msg)
+
+      conn = get(conn, "/networks/#{network.slug}/e2e/inbox")
+
+      # Through the production renderer and the JSON encoder, the way the
+      # push leaves too: one shape for a pushed message and a fetched one.
+      expected =
+        [a, b]
+        |> Enum.map(&SessionWire.e2e_message(network.slug, &1))
+        |> Jason.encode!()
+        |> Jason.decode!()
+
+      assert json_response(conn, 200) == %{"messages" => expected}
+    end
+
+    test "GET pages past ?after, and refuses a cursor that is not a count", %{conn: conn, vjt: vjt} do
+      network = idle_network(vjt)
+      a = queue!(vjt, network, "alice", :msg)
+      b = queue!(vjt, network, "alice", :msg)
+      path = "/networks/#{network.slug}/e2e/inbox"
+
+      assert [%{"id" => id}] = json_response(get(conn, path, %{after: a.id}), 200)["messages"]
+      assert id == b.id
+      assert json_response(get(conn, path, %{after: b.id}), 200)["messages"] == []
+
+      for bad <- ["x", "-1", "1.5", ""] do
+        assert json_response(get(conn, path, %{after: bad}), 400) == %{"error" => "bad_request"}, inspect(bad)
+      end
+    end
+
+    test "GET shows a subject only its own queue", %{conn: conn, vjt: vjt} do
+      network = idle_network(vjt)
+      other = user_fixture(name: "other-#{u()}")
+      _ = queue!(other, network, "alice", :msg)
+
+      assert json_response(get(conn, "/networks/#{network.slug}/e2e/inbox"), 200)["messages"] == []
+    end
+
+    test "POST ack deletes the named entries; someone else's ids are out of reach", %{conn: conn, vjt: vjt} do
+      network = idle_network(vjt)
+      mine = queue!(vjt, network, "alice", :msg)
+      kept = queue!(vjt, network, "alice", :msg)
+      other = user_fixture(name: "other-#{u()}")
+      theirs = queue!(other, network, "alice", :msg)
+
+      conn = post(conn, "/networks/#{network.slug}/e2e/inbox/ack", %{ids: [mine.id, theirs.id]})
+
+      assert response(conn, 204) == ""
+      assert [%E2eInbox.Entry{id: id}] = E2eInbox.list({:user, vjt.id}, network.id, 0)
+      assert id == kept.id
+      assert [%E2eInbox.Entry{}] = E2eInbox.list({:user, other.id}, network.id, 0)
+    end
+
+    test "POST ack refuses what is not a short list of ids", %{conn: conn, vjt: vjt} do
+      network = idle_network(vjt)
+      path = "/networks/#{network.slug}/e2e/inbox/ack"
+      too_many = Enum.to_list(1..(E2eInbox.page_size() + 1))
+
+      for body <- [
+            %{},
+            %{ids: []},
+            %{ids: "1"},
+            %{ids: [0]},
+            %{ids: [-1]},
+            %{ids: ["1"]},
+            %{ids: [1.5]},
+            %{ids: too_many}
+          ] do
+        assert json_response(post(conn, path, body), 400) == %{"error" => "bad_request"}, inspect(body)
+      end
+    end
   end
 end

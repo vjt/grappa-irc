@@ -310,7 +310,14 @@ let _socket: Socket | null = null;
 // queries. This bundle does not read the event yet (the Olm side is a later
 // slice), and an unknown kind is ignored, so `MIN_SERVER_PROTOCOL_VERSION`
 // stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 42;
+//
+// 43 (issue 2430) — the offline queue: `id` on `e2e_message`,
+// `GET …/e2e/inbox` + `POST …/e2e/inbox/ack`, and the `e2e_undeliverable`
+// meta key on the recipient-only notice row, which this bundle renders. The
+// queue routes are not called yet (the Olm side is a later slice), and a
+// server without the key just never writes such a row, so
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 43;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

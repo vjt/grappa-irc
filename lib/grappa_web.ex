@@ -36,6 +36,9 @@ defmodule GrappaWeb do
         # stranger'"'"'s bytes are a separate trust domain from `Grappa.Uploads`,
         # so they get their own context and their own authenticated route.
         Grappa.Dcc,
+        # issue 2430 — the offline queue of encrypted messages is a REST
+        # resource of its own (`E2eController.inbox/2`, `ack/2`).
+        Grappa.E2eInbox,
         Grappa.Health,
         Grappa.HotReload,
         Grappa.IRC,
