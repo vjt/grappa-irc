@@ -681,10 +681,22 @@ Sending:
 `target` is a nick; `verb` is `keyreq`, `pkmsg`, `msg` or `nack` (lowercase);
 `payload` is the base64 you built. grappa picks the msgid (a peer's `NACK`
 names it), cuts the lines against the worst-case relayed prefix, and paces
-them at **3 lines per 6 s per recipient** — bahamut blocks every CTCP to a
-client that receives more than 4 in 3 s, for 15 s, silently. So 202 means
-accepted: lines may still be waiting when it returns, and nobody ever tells
-the sender what happened next (no "delivered", no "expired", by ruling).
+them by two rules from bahamut's source:
+
+- **at most 3 lines per 6 s per recipient**. bahamut blocks every CTCP to a
+  client that receives more than 4 in 3 s, for 15 s, silently;
+- **never past the connection's fake-lag ceiling**. bahamut charges each
+  line `2 + len/120` s, stops reading a client at 10 s of debt, and
+  disconnects one whose unread backlog passes 2560 bytes. Everything the
+  connection sends counts, your own messages included. A full line costs
+  5 s, so a long message drips at about one line per 5 s: a 64-line message
+  takes about five minutes. That is accepted by ruling, and receivers wait
+  60 s from a message's LAST line, not its first.
+
+A single-line message (a `keyreq`, a `nack`, a short `msg`) goes ahead of the
+remaining lines of any longer one. So 202 means accepted: lines may still be
+waiting when it returns, and nobody ever tells the sender what happened next
+(no "delivered", no "expired", by ruling).
 400 `bad_request` for a channel target, an unknown verb or a non-base64
 payload; 400 `invalid_line` for a CR, LF or NUL in `target`; 413 `too_large`
 for a payload over 32 KiB (what a receiver buffers per sender, so it could

@@ -953,12 +953,14 @@ defmodule Grappa.Session do
   `payload` is what the client built: the standard base64 of the agreed
   JSON payload, which grappa never decodes. The session picks the msgid,
   cuts the payload into `\\x01E2E …\\x01` lines sized for the worst-case
-  relayed prefix, and hands them to the per-recipient pacer (3 lines per
-  6 s, bahamut's FLUD). Nothing is persisted, echoed or pushed, and no
-  query window opens.
+  relayed prefix, and hands them to `Grappa.Session.E2ePacer`: at most 3
+  lines per 6 s per recipient (bahamut's FLUD), and never past the
+  connection's fake-lag ceiling, so a long message drips at about one full
+  line per 5 s. Nothing is persisted, echoed or pushed, and no query window
+  opens.
 
   `{:ok, msgid}` means ACCEPTED, not delivered: lines may still be waiting
-  for the recipient's window, and IRC never confirms delivery anyway (vjt
+  in the pacer, and IRC never confirms delivery anyway (vjt
   ruled out any sender-side notice, 2430). `{:error, :invalid_line}` for a
   CR/LF/NUL in `target`; `{:error, :bad_request}` for a target that is not
   a nick, a verb outside `e2e_send_verbs/0`, or a payload that is not
