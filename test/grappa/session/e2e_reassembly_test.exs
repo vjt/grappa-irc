@@ -104,7 +104,7 @@ defmodule Grappa.Session.E2eReassemblyTest do
     assert E2eReassembly.empty?(other_total)
   end
 
-  test "expire/2 discards a message whose first fragment is 60 s old, and only that one" do
+  test "expire/2 discards a message whose last fragment is 60 s old, and only that one" do
     [old1 | _] = fragments(:msg, "AAAAAAAAAAA", payload(800))
     [new1 | _] = fragments(:msg, "BBBBBBBBBBB", payload(800))
     timeout = E2eReassembly.timeout_ms()
@@ -117,6 +117,37 @@ defmodule Grappa.Session.E2eReassemblyTest do
     refute E2eReassembly.empty?(new_only)
     assert {drained, 1} = E2eReassembly.expire(new_only, timeout + 1_000)
     assert E2eReassembly.empty?(drained)
+  end
+
+  test "a message whose fragments keep coming outlives 60 s from its first, and completes" do
+    # The sender's fake-lag pacing drips a long message at one line per
+    # 5 s: well past 60 s from the first line, never 60 s from the last.
+    payload = payload(3_000)
+    frags = fragments(:msg, "q83vEjRWeJA", payload)
+    # More than 13 lines 5 s apart: the last lands past 60 s.
+    assert length(frags) > 13
+
+    {buffer, results} =
+      frags
+      |> Enum.with_index()
+      |> Enum.reduce({E2eReassembly.new(), []}, fn {fragment, i}, {acc, out} ->
+        now = i * 5_000
+        {live, _} = E2eReassembly.expire(acc, now)
+        {next, [result]} = feed(live, "vjt-claude", [fragment], now)
+        {next, [result | out]}
+      end)
+
+    assert {:complete, %{payload: ^payload}} = hd(results)
+    assert E2eReassembly.empty?(buffer)
+  end
+
+  test "a repeated fragment does not keep a message alive" do
+    [f1, f2 | _] = fragments(:msg, "q83vEjRWeJA", payload(800))
+    timeout = E2eReassembly.timeout_ms()
+
+    {started, _} = feed(E2eReassembly.new(), "vjt-claude", [f1, f2], 0)
+    {repeated, [:pending]} = feed(started, "vjt-claude", [f2], timeout - 1)
+    assert {_, 1} = E2eReassembly.expire(repeated, timeout)
   end
 
   test "a late fragment after expiry starts over and never completes the old message" do

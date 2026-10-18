@@ -13,8 +13,13 @@ defmodule Grappa.Session.E2eReassembly do
 
   ## Caps (the draft's anti-flood rules, all enforced here)
 
-    * a message not complete within 60 s of its FIRST fragment is
-      discarded (`expire/2`);
+    * a message that gets no new fragment for 60 s is discarded
+      (`expire/2`). The window counts from the LAST accepted fragment, not
+      the first (vjt's ruling on 2430, option A): senders pace against
+      bahamut's fake lag, which drips a long message at one line per 5 s,
+      so a window counted from the first fragment would discard every
+      message longer than about 13 lines. A repeated index does not reset
+      the clock; only a fragment that adds to the message does;
     * at most `Grappa.IRC.E2e.max_fragments/0` fragments (the parser
       already refuses a larger `n`);
     * at most `Grappa.IRC.E2e.max_payload_bytes/0` (32 KiB) buffered per
@@ -60,7 +65,7 @@ defmodule Grappa.Session.E2eReassembly do
            total: pos_integer(),
            parts: %{pos_integer() => String.t()},
            bytes: non_neg_integer(),
-           first_ms: integer()
+           last_ms: integer()
          }
 
   @enforce_keys [:entries, :sender_bytes, :total_bytes]
@@ -72,12 +77,15 @@ defmodule Grappa.Session.E2eReassembly do
           total_bytes: non_neg_integer()
         }
 
-  @doc "How long a message may take to complete, in ms."
-  @spec timeout_ms() :: pos_integer()
+  @doc "How long a message may go without a new fragment, in ms."
+  @spec timeout_ms() :: 60_000
   def timeout_ms, do: @timeout_ms
 
   @doc "An empty buffer."
   @spec new() :: t()
+  # Same call as `Grappa.IRC.FakeLag.new/0`: the success typing is the
+  # empty singleton, and the result is stored in a field typed `t()`.
+  @dialyzer {:nowarn_function, new: 0}
   def new, do: %__MODULE__{entries: %{}, sender_bytes: %{}, total_bytes: 0}
 
   @doc "True when nothing is buffered — the caller stops its sweep timer."
@@ -106,28 +114,28 @@ defmodule Grappa.Session.E2eReassembly do
     key = {sender, fragment.msgid}
 
     case Map.fetch(buffer.entries, key) do
-      :error -> add(buffer, sender, key, new_entry(fragment, now_ms), fragment)
-      {:ok, entry} -> extend(buffer, sender, key, entry, fragment)
+      :error -> add(buffer, sender, key, new_entry(fragment, now_ms), fragment, now_ms)
+      {:ok, entry} -> extend(buffer, sender, key, entry, fragment, now_ms)
     end
   end
 
   @doc """
-  Discards every message whose first fragment is older than
-  `timeout_ms/0` at `now_ms`. Returns the buffer and how many messages went.
+  Discards every message whose last accepted fragment is `timeout_ms/0` or
+  more old at `now_ms`. Returns the buffer and how many messages went.
   """
   @spec expire(t(), integer()) :: {t(), non_neg_integer()}
   def expire(%__MODULE__{} = buffer, now_ms) do
-    {stale, _} = Enum.split_with(buffer.entries, fn {_, entry} -> now_ms - entry.first_ms >= @timeout_ms end)
+    {stale, _} = Enum.split_with(buffer.entries, fn {_, entry} -> now_ms - entry.last_ms >= @timeout_ms end)
     {Enum.reduce(stale, buffer, fn {key, _}, acc -> remove(acc, key) end), length(stale)}
   end
 
   @spec new_entry(Fragment.t(), integer()) :: entry()
   defp new_entry(fragment, now_ms),
-    do: %{verb: fragment.verb, total: fragment.total, parts: %{}, bytes: 0, first_ms: now_ms}
+    do: %{verb: fragment.verb, total: fragment.total, parts: %{}, bytes: 0, last_ms: now_ms}
 
-  @spec extend(t(), String.t(), {String.t(), String.t()}, entry(), Fragment.t()) ::
+  @spec extend(t(), String.t(), {String.t(), String.t()}, entry(), Fragment.t(), integer()) ::
           {:complete, message(), t()} | {:pending, t()} | {:dropped, drop_reason(), t()}
-  defp extend(buffer, sender, key, entry, fragment) do
+  defp extend(buffer, sender, key, entry, fragment, now_ms) do
     cond do
       entry.verb != fragment.verb or entry.total != fragment.total ->
         {:dropped, :inconsistent, remove(buffer, key)}
@@ -136,13 +144,13 @@ defmodule Grappa.Session.E2eReassembly do
         {:pending, buffer}
 
       true ->
-        add(buffer, sender, key, entry, fragment)
+        add(buffer, sender, key, entry, fragment, now_ms)
     end
   end
 
-  @spec add(t(), String.t(), {String.t(), String.t()}, entry(), Fragment.t()) ::
+  @spec add(t(), String.t(), {String.t(), String.t()}, entry(), Fragment.t(), integer()) ::
           {:complete, message(), t()} | {:pending, t()} | {:dropped, drop_reason(), t()}
-  defp add(buffer, sender, key, entry, fragment) do
+  defp add(buffer, sender, key, entry, fragment, now_ms) do
     size = byte_size(fragment.chunk) + @fragment_overhead_bytes
     sender_bytes = Map.get(buffer.sender_bytes, sender, 0) + size
 
@@ -155,7 +163,13 @@ defmodule Grappa.Session.E2eReassembly do
         {:dropped, :total_cap, remove(buffer, key)}
 
       true ->
-        entry = %{entry | parts: Map.put(entry.parts, fragment.index, fragment.chunk), bytes: entry.bytes + size}
+        entry = %{
+          entry
+          | parts: Map.put(entry.parts, fragment.index, fragment.chunk),
+            bytes: entry.bytes + size,
+            last_ms: now_ms
+        }
+
         buffer = put_entry(buffer, sender, key, entry, size)
 
         if map_size(entry.parts) == entry.total do
