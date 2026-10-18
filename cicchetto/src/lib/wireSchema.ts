@@ -27,6 +27,7 @@ import {
   SCROLLBACK_MESSAGE_KIND,
   SESSION_LOG_EVENT,
   SESSION_WINDOW_STATE_WINDOW_STATE,
+  SESSION_WIRE_E2E_VERB,
   SESSION_WIRE_RECOVER_OUTCOME,
   SESSION_WIRE_RECOVER_REASON,
   SESSION_WIRE_RECOVER_STATUS,
@@ -1057,6 +1058,21 @@ export const S_SessionWireDirectoryFailedPayload = {
 // Grappa.Session.Wire.directory_progress_payload/0
 export const S_SessionWireDirectoryProgressPayload = {
   o: { kind: { l: "directory_progress" }, network: "s", count: "i" },
+} as const;
+
+// Grappa.Session.Wire.e2e_verb/0
+export const S_SessionWireE2eVerb = { e: [...SESSION_WIRE_E2E_VERB] } as const;
+
+// Grappa.Session.Wire.e2e_message_payload/0
+export const S_SessionWireE2eMessagePayload = {
+  o: {
+    kind: { l: "e2e_message" },
+    network: "s",
+    from: "s",
+    verb: S_SessionWireE2eVerb,
+    msgid: "s",
+    payload: "s",
+  },
 } as const;
 
 // Grappa.Session.Wire.invite_ack_payload/0

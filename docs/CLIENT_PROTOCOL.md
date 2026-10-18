@@ -646,6 +646,55 @@ Check `protocol_version >= 28`. ⚠️ There is no 27 — the shape moved twice
 before this version was published, and the pin gate requires a number per
 move. Nothing ever spoke 27.
 
+### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42)
+
+An encrypted query is a conversation grappa carries and cannot read. The
+endpoints (cicchetto, or a bot using the shared Python package) run Olm via
+vodozemac; on IRC the traffic is CTCP inside PRIVMSG to the peer's nick,
+`\x01E2E <verb> <msgid> <i>/<n> <chunk>\x01`, in the format agreed on issue
+2430. **You never see those lines.** grappa parses them, reassembles the
+fragments, and hands you one event per whole message:
+
+```json
+{"kind": "e2e_message", "network": "azzurra", "from": "vjt-claude",
+ "verb": "pkmsg", "msgid": "q83vEjRWeJA", "payload": "eyJ2IjoxLCJpZCI6…"}
+```
+
+`payload` is the standard base64 of the payload JSON, exactly as the peer
+cut it, never decoded on the server. `verb` is one of `keys`, `pkmsg`,
+`msg`, `nack`. `from` is a routing hint only: pin the peer on its KEY, never
+its nick.
+
+🔴 **This event is the only copy you will ever get.** An E2E line is never
+stored — not in scrollback, not in search, not in a push payload — so
+nothing replays it and `GET …/messages` will never return it. A client that
+was not on the socket when it arrived missed it (the offline queue that
+closes this gap is a later slice of 2430; check for it before relying on
+it). Keep your own decrypted copy if you want history; that is the design.
+
+Sending:
+
+| route | answer |
+|---|---|
+| `POST /networks/:network_id/e2e/messages` `{"target", "verb", "payload"}` | **202** `{"msgid": "…"}` — accepted, not delivered |
+
+`target` is a nick; `verb` is `keyreq`, `pkmsg`, `msg` or `nack` (lowercase);
+`payload` is the base64 you built. grappa picks the msgid (a peer's `NACK`
+names it), cuts the lines against the worst-case relayed prefix, and paces
+them at **3 lines per 6 s per recipient** — bahamut blocks every CTCP to a
+client that receives more than 4 in 3 s, for 15 s, silently. So 202 means
+accepted: lines may still be waiting when it returns, and nobody ever tells
+the sender what happened next (no "delivered", no "expired", by ruling).
+400 `bad_request` for a channel target, an unknown verb or a non-base64
+payload; 413 `too_large` past 64 lines; 429 `rate_limited` when the
+recipient's queue cannot take the whole message.
+
+A `KEYREQ` addressed to you is not delivered as an event: grappa will answer
+it from the key bundle it hosts for you (a later slice of 2430). Until that
+lands it is dropped.
+
+Check `protocol_version >= 42`.
+
 ---
 
 ## 5. Wire format
@@ -1321,6 +1370,7 @@ forever.
 | `directory_complete` | user | the `/LIST` channel-directory scan finished |
 | `directory_failed` | user | the `/LIST` scan failed or timed out |
 | `directory_progress` | user | `/LIST` scan progress count |
+| `e2e_message` | user | one whole end-to-end encrypted message from a peer, payload never decoded or stored (§4f) |
 | `invite_ack` | user | 341 RPL_INVITING — an INVITE you sent was accepted by the ircd |
 | `isupport_changed` | user | the network's 005 capability set (§5c, §5) |
 | `join_failed` | user | the window reached `:failed`, with reason + numeric |

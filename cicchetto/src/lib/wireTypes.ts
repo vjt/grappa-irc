@@ -1250,6 +1250,18 @@ export type SessionWireDccOfferResolvedPayload = {
   resolution: "accepted" | "refused" | "expired";
 };
 
+export const SESSION_WIRE_E2E_VERB = ["keys", "pkmsg", "msg", "nack"] as const;
+export type SessionWireE2eVerb = (typeof SESSION_WIRE_E2E_VERB)[number];
+
+export type SessionWireE2eMessagePayload = {
+  kind: "e2e_message";
+  network: string;
+  from: string;
+  verb: SessionWireE2eVerb;
+  msgid: string;
+  payload: string;
+};
+
 export type SessionWireJoinFailedPayload = {
   kind: "join_failed";
   network: string;
@@ -1497,6 +1509,7 @@ export type WireSessionEvent =
   | SessionWireWindowInviteDeclinedPayload
   | SessionWireDccOfferPayload
   | SessionWireDccOfferResolvedPayload
+  | SessionWireE2eMessagePayload
   | SessionWireJoinFailedPayload
   | SessionWireKickedPayload
   | SessionWireAwayConfirmedPayload
