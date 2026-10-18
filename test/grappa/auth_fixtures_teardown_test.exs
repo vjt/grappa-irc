@@ -44,6 +44,16 @@ defmodule Grappa.AuthFixturesTeardownTest do
 
     spawned = start_visitor_session_for(visitor, network)
     :ok = IRCServer.await_handshake(server, 5_000)
+    # Let the session finish its start-up work before the kill: it sweeps
+    # the offline queue as soon as it starts (issue 2430), a DB read, and a
+    # process killed while it holds the sandbox's shared connection takes
+    # that connection down with it (logged as "client … exited"). Measured:
+    # red 3 in 8 runs, on the `terminate_child` positive control, and green
+    # 5 of 5 with the sweep removed; how the dropped connection reaches the
+    # supervisor's restart is inferred, not observed (probes moved the
+    # timing and never reproduced it). The state read is queued behind the
+    # sweep, so once it answers the session holds no connection.
+    _ = :sys.get_state(spawned)
 
     # The pre-state: without it a teardown that never had anything to do
     # would read as a teardown that worked.
