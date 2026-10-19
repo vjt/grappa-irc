@@ -419,11 +419,43 @@ export class IrcPeer {
   // the sender, by ruling.
   e2eSend(
     targetNick: string,
-    verb: "KEYS" | "PKMSG" | "MSG" | "NACK",
+    verb: "KEYREQ" | "KEYS" | "PKMSG" | "MSG" | "NACK",
     msgid: string,
     payloadB64: string,
   ): void {
     this.client.raw(["PRIVMSG", targetNick, `\u0001E2E ${verb} ${msgid} 1/1 ${payloadB64}\u0001`]);
+  }
+
+  // issue 2430 — the next whole `E2E <verb>` message `fromNick` sends this
+  // peer, its fragments (`i/n`, any order) joined back into the padded base64
+  // of the payload. What a peer's client does on receipt; grappa frames its
+  // own KEYS answers this way, so the spec reads them as a peer would.
+  awaitE2e(fromNick: string, verb: string, timeoutMs: number): Promise<string> {
+    const line = new RegExp(
+      `^(?:@\\S+ )?:([^!\\s]+)!\\S+ PRIVMSG \\S+ :\u0001E2E ${verb} (\\S+) (\\d+)/(\\d+) (\\S+)\u0001$`,
+    );
+    const fragments = new Map<string, string[]>();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.client.removeListener("raw", handler);
+        reject(new Error(`IrcPeer: no whole E2E ${verb} from ${fromNick} within ${timeoutMs}ms`));
+      }, timeoutMs);
+      // irc-framework hands `raw` the line WITH its CRLF (it slices up to
+      // and including the `\n`), so the end anchor needs it stripped.
+      const handler = (event: { line: string; from_server: boolean }) => {
+        const m = event.from_server ? line.exec(event.line.replace(/\r?\n$/, "")) : null;
+        if (!m || m[1]?.toLowerCase() !== fromNick.toLowerCase()) return;
+        const [, , msgid = "", i = "0", n = "0", chunk = ""] = m;
+        const parts = fragments.get(msgid) ?? new Array<string>(Number(n)).fill("");
+        parts[Number(i) - 1] = chunk;
+        fragments.set(msgid, parts);
+        if (parts.some((part) => part === "")) return;
+        clearTimeout(timer);
+        this.client.removeListener("raw", handler);
+        resolve(parts.join(""));
+      };
+      this.client.on("raw", handler);
+    });
   }
 
   // Set channel modes. Resolves once upstream echoes the MODE event for

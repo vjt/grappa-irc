@@ -1586,6 +1586,22 @@ export async function awaitE2eQueued(
   throw new Error(`awaitE2eQueued: ${msgid} never reached the offline queue within ${timeoutMs}ms`);
 }
 
+// issue 2430 — what the key bundle grappa hosts for this subject on the
+// network still holds. cic fills it; a peer's KEYREQ takes a one-time key.
+export async function fetchE2eKeys(
+  token: string,
+  networkSlug: string,
+): Promise<{ one_time_keys: number; fallback: boolean }> {
+  const res = await fetch(
+    `${GRAPPA_BASE_URL}/networks/${encodeURIComponent(networkSlug)}/e2e/keys`,
+    {
+      headers: { authorization: `Bearer ${token}` },
+    },
+  );
+  if (!res.ok) throw new Error(`fetchE2eKeys: ${res.status} ${await res.text()}`);
+  return (await res.json()) as { one_time_keys: number; fallback: boolean };
+}
+
 // Test-only door (dev/test builds): ages the caller's queue past its TTL
 // and runs the session's own sweep, so the recipient-only "undeliverable"
 // notice is written now instead of seven days from now.
