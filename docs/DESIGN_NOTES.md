@@ -2986,12 +2986,14 @@ the fallback key when they run out. Until now an inbound KEYREQ was dropped in
   will), and the pacer's room (`E2ePacer.enqueue/7` is pure, so its answer is
   committed only once the key is spent; the code review caught the first cut
   consuming before the pacer, where a full queue burned a key per retry).
-  `E2eKeys.next/3` picks without removing; `consume/1` removes, by id AND
-  kind, and answers `:gone` for a key the client cleared or replaced in
-  between, the fallback key included, so a key of an old account is never
-  sent after the client started over. That rests on ids never being reused:
-  the table is `AUTOINCREMENT`, like `e2e_inbox` (SQLite's plain rowid hands
-  the deleted largest id out again, measured red in the context test). A
+  `E2eKeys.next/3` picks without removing; `consume/1` removes by id, and
+  answers `:gone` for a key the client cleared or replaced in between, the
+  fallback key included, so a key of an old account is never sent after the
+  client started over. That rests on ids never being reused: the table is
+  `AUTOINCREMENT`, like `e2e_inbox` (SQLite's plain rowid hands the deleted
+  largest id out again, measured red in the context test). The id alone is
+  enough: a kind match beside it refused nothing a row can reach (a row
+  never changes kind; removing the match killed no test), so it went. A
   consume that answers `:db_unavailable` may still have deleted the key, so
   the nick is counted as handed one, and nothing is sent.
 - **Refusals are silent and forgotten.** A KEYREQ past a limit or with no

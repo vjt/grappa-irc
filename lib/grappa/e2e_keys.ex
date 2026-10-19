@@ -182,11 +182,11 @@ defmodule Grappa.E2eKeys do
   bundle is never sent after.
   """
   #
-  # By id AND kind: ids are never reused (the table is `AUTOINCREMENT`), and
-  # the kind keeps a one-time key's consume from ever deleting a fallback.
+  # By id alone: ids are never reused (the table is `AUTOINCREMENT`) and a
+  # row never changes kind, so the id names the very key that was picked.
   @spec consume(Key.t()) :: :ok | {:error, :gone | :db_unavailable}
   def consume(%Key{kind: :otk, id: id}) do
-    case Repo.BusyRetry.run(fn -> {:ok, Repo.delete_all(where(Key, [k], k.id == ^id and k.kind == :otk))} end) do
+    case Repo.BusyRetry.run(fn -> {:ok, Repo.delete_all(where(Key, [k], k.id == ^id))} end) do
       {:ok, {1, _}} -> :ok
       {:ok, {0, _}} -> {:error, :gone}
       {:error, :db_unavailable} = err -> err
@@ -194,7 +194,7 @@ defmodule Grappa.E2eKeys do
   end
 
   def consume(%Key{kind: :fallback, id: id}) do
-    if Repo.exists?(where(Key, [k], k.id == ^id and k.kind == :fallback)), do: :ok, else: {:error, :gone}
+    if Repo.exists?(where(Key, [k], k.id == ^id)), do: :ok, else: {:error, :gone}
   end
 
   @doc """
