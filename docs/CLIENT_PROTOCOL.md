@@ -760,7 +760,7 @@ for your fallback key, each the base64 you would send yourself:
 
 | route | answer |
 |---|---|
-| `POST /networks/:network_id/e2e/keys` `{"one_time_keys": [<payload>…], "fallback": <payload>}` | **200** `{"one_time_keys": N, "fallback": true\|false}` — one-time keys are ADDED; a fallback key REPLACES the one held; either field may be absent, not both |
+| `POST /networks/:network_id/e2e/keys` `{"one_time_keys": [<payload>…], "fallback": <payload>}` | **200** `{"one_time_keys": N, "fallback": true\|false}` — one-time keys are ADDED, each once (one already held is skipped, so retrying an upload is safe); a fallback key REPLACES the one held; either field may be absent or `null`, not both |
 | `GET /networks/:network_id/e2e/keys` | **200** the same `{one_time_keys, fallback}`: what is left to hand out |
 | `DELETE /networks/:network_id/e2e/keys` | **204** — the whole bundle is dropped (do this when you start over with a new account, so no peer is handed a key of the old one) |
 
@@ -770,11 +770,12 @@ fallback key, which stays. **Replenish when `one_time_keys` runs low**: on
 connect, and after a `pkmsg` reaches you (each one used up a one-time key).
 The keys themselves never come back out of grappa.
 
-Answers are rate-limited, so a stranger can drain neither your bundle nor
-your connection: per nick (case-folded), one answer per 30 s, and a one-time
-key at most once a minute (else the fallback key); per connection, at most
-30 one-time keys an hour, and answers spend at most 22 s of fake-lag bank in
-any 60 s. A request past a limit, or with no bundle, goes unanswered; the
+Answers are rate-limited, so a stranger can only slowly drain your bundle,
+and cannot use it to starve your connection: per nick (case-folded), one
+answer per 30 s, and a one-time key at most once a minute (else the fallback
+key); per connection, at most 30 one-time keys an hour (someone cycling
+nicks can still take those 30, so keep the bundle topped up), and answers
+spend at most 22 s of fake-lag bank in any 60 s. A request past a limit, or with no bundle, goes unanswered; the
 peer asks again later. The answer is paced as control.
 
 The bundle holds at most 50 one-time keys and one fallback key; a payload
