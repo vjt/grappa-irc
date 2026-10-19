@@ -599,6 +599,13 @@ export type CicWireBundleHashPayload = {
   version?: string;
 };
 
+// === Grappa.E2eKeys.Wire ===
+
+export type E2eKeysWireStatus = {
+  one_time_keys: number;
+  fallback: boolean;
+};
+
 // === Grappa.LiveIntrospection.AdminWire ===
 
 export type LiveIntrospectionAdminWireLiveStateJson = {

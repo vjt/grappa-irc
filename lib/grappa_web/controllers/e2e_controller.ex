@@ -13,7 +13,8 @@ defmodule GrappaWeb.E2eController do
   """
   use GrappaWeb, :controller
 
-  alias Grappa.{E2eInbox, Session}
+  alias Grappa.{E2eInbox, E2eKeys, Session}
+  alias Grappa.E2eKeys.Wire, as: E2eKeysWire
   alias Grappa.Session.Wire, as: SessionWire
   alias GrappaWeb.Subject
 
@@ -100,6 +101,61 @@ defmodule GrappaWeb.E2eController do
   end
 
   def ack(_, _), do: {:error, :bad_request}
+
+  @doc """
+  `GET /networks/:network_id/e2e/keys` — what this subject's key bundle on
+  this network still holds: `{one_time_keys, fallback}`. grappa hands the
+  keys out to peers that ask; a client replenishes when the count runs
+  low. The keys themselves never come back out.
+  """
+  @spec keys(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def keys(conn, _) do
+    status = E2eKeys.status(Subject.to_session(conn.assigns.current_subject), conn.assigns.network.id)
+    json(conn, E2eKeysWire.status(status))
+  end
+
+  @doc """
+  `POST /networks/:network_id/e2e/keys` — `{one_time_keys, fallback}`, both
+  optional but not both absent: KEYS payloads the client built and signed,
+  one per one-time key, and one for the fallback key. One-time keys are
+  added; a fallback key replaces the one held. 200 with what the bundle
+  then holds, as `GET` answers it.
+
+  400 `bad_request` for an upload with nothing in it, a field of the wrong
+  type, or a payload that is not base64 or is over 1 KiB; 413 `too_large`
+  when the bundle would hold more than 50 one-time keys. Either way nothing
+  is stored.
+  """
+  @spec upload_keys(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :bad_request | :too_large | :db_unavailable}
+  def upload_keys(conn, params) do
+    with {:ok, upload} <- upload_params(params),
+         {:ok, status} <-
+           E2eKeys.upload(Subject.to_session(conn.assigns.current_subject), conn.assigns.network.id, upload) do
+      json(conn, E2eKeysWire.status(status))
+    end
+  end
+
+  @doc """
+  `DELETE /networks/:network_id/e2e/keys` — drops this subject's whole
+  bundle on this network: what a client does when it starts over with a
+  new account, so no peer is handed a key of the old one. 204.
+  """
+  @spec clear_keys(Plug.Conn.t(), map()) :: Plug.Conn.t() | {:error, :db_unavailable}
+  def clear_keys(conn, _) do
+    with :ok <- E2eKeys.clear(Subject.to_session(conn.assigns.current_subject), conn.assigns.network.id) do
+      send_resp(conn, :no_content, "")
+    end
+  end
+
+  @spec upload_params(map()) :: {:ok, E2eKeys.upload()} | {:error, :bad_request}
+  defp upload_params(params) do
+    otks = Map.get(params, "one_time_keys", [])
+    fallback = Map.get(params, "fallback")
+
+    if is_list(otks) and Enum.all?(otks, &is_binary/1) and (is_binary(fallback) or is_nil(fallback)),
+      do: {:ok, %{one_time_keys: otks, fallback: fallback}},
+      else: {:error, :bad_request}
+  end
 
   @spec cursor(term()) :: {:ok, non_neg_integer()} | {:error, :bad_request}
   defp cursor(value) when is_binary(value) do

@@ -658,6 +658,9 @@ defmodule GrappaWeb.Router do
     post "/e2e/messages", E2eController, :create
     get "/e2e/inbox", E2eController, :inbox
     post "/e2e/inbox/ack", E2eController, :ack
+    get "/e2e/keys", E2eController, :keys
+    post "/e2e/keys", E2eController, :upload_keys
+    delete "/e2e/keys", E2eController, :clear_keys
 
     get "/dcc_offers", DccOffersController, :index
     post "/dcc_offers/:offer_id/accept", DccOffersController, :accept
