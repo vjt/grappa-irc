@@ -65,6 +65,10 @@ describe("keysPayload", () => {
     const payload = keysPayload(account, fallback, true);
 
     expect(decode(payload).otk).toMatchObject({ key: fallback, fallback: true });
+    // One byte shorter than a one-time key's JSON ("true" vs "false"), so
+    // between the two payloads one needs base64 padding: it is kept.
+    expect(payload).toMatch(/^[A-Za-z0-9+/]+={0,2}$/);
+    expect(payload.length % 4).toBe(0);
     expect(payload.length).toBeLessThanOrEqual(1024);
     account.free();
   });
@@ -95,6 +99,9 @@ describe("topUp", () => {
 
     expect(upload).toEqual({ one_time_keys: expect.any(Array), fallback: null });
     expect(upload?.one_time_keys).toHaveLength(3);
+    // ...and generates no more than it sends: a key generated past grappa's
+    // room would be marked published without ever reaching it.
+    expect(account.one_time_keys()).toHaveLength(3);
     account.free();
   });
 
@@ -118,6 +125,8 @@ describe("topUp", () => {
     const sent = upload?.one_time_keys.map((p) => decode(p).otk.key) ?? [];
     expect(sent).toHaveLength(10);
     expect(sent.slice(0, 5)).toEqual(pending);
+    // Five new ones, not ten: the five pending count towards the room.
+    expect(account.one_time_keys()).toHaveLength(10);
     // An unconfirmed fallback key is the newest one: it goes up even though
     // grappa already holds one.
     expect(decode(upload?.fallback ?? "").otk.key).toBe(account.fallback_key());
