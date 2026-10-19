@@ -1,0 +1,129 @@
+defmodule Grappa.Session.E2eKeyAnswers do
+  @moduledoc """
+  How often grappa answers a peer's KEYREQ with KEYS for its subject
+  (issue 2430). Pure data: `Grappa.Session.Server` holds one in its state
+  and asks it before every answer.
+
+  Anyone on the network can send a KEYREQ, and every answer costs the
+  subject two things: a one-time key from the bundle it uploaded (each is
+  handed out once, then only the fallback key is left until a client
+  replenishes), and fake-lag bank on the connection, the bank the user's
+  own messages and every other E2E line wait on. So the answers are
+  bounded on both, with w2's numbers (agreed on 2430, the same irc-olm
+  uses):
+
+    * per folded nick, one KEYS answer per `nick_interval_ms/0`, and a
+      one-time key in it at most once per `otk_interval_ms/0` (else the
+      fallback key);
+    * per connection, at most `otks_per_hour/0` one-time keys an hour;
+    * per connection, KEYS answers spend at most `bank_budget_ms/0` of
+      fake-lag bank in any `bank_window_ms/0`. The per-nick limits alone
+      leave the aggregate open to anyone with several nicks, and the
+      pacer's per-peer urgent budget bounds one peer, not all of them;
+      a bank budget across peers is the bound on what they can draw
+      together (agreed with w2 on 2430).
+
+  A request past a bound is not answered and not remembered: the peer asks
+  again later. Remembering it would be state a stranger controls.
+
+  What is kept is bounded by the windows, never by how many nicks ever
+  asked: every call drops what has left its window.
+  """
+
+  @nick_interval_ms 30_000
+  @otk_interval_ms 60_000
+  @otks_per_hour 30
+  @hour_ms 3_600_000
+  @bank_budget_ms 22_000
+  @bank_window_ms 60_000
+
+  @typedoc "What an answer carries: a one-time key, or the fallback key."
+  @type kind :: :otk | :fallback
+
+  # `answered`: folded nick => when it was last answered. `otk_given`:
+  # folded nick => when it last got a one-time key. `otks`: when each
+  # one-time key of the last hour went out. `spent`: `{at, cost_ms}` of each
+  # answer in the bank window.
+  @enforce_keys [:answered, :otk_given, :otks, :spent]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          answered: %{String.t() => integer()},
+          otk_given: %{String.t() => integer()},
+          otks: [integer()],
+          spent: [{integer(), non_neg_integer()}]
+        }
+
+  @doc "How often one nick gets a KEYS answer."
+  @spec nick_interval_ms() :: 30_000
+  def nick_interval_ms, do: @nick_interval_ms
+
+  @doc "How often one nick gets a one-time key."
+  @spec otk_interval_ms() :: 60_000
+  def otk_interval_ms, do: @otk_interval_ms
+
+  @doc "One-time keys the connection hands out in any hour."
+  @spec otks_per_hour() :: 30
+  def otks_per_hour, do: @otks_per_hour
+
+  @doc "Fake-lag bank KEYS answers may spend in any `bank_window_ms/0`."
+  @spec bank_budget_ms() :: 22_000
+  def bank_budget_ms, do: @bank_budget_ms
+
+  @doc "The sliding window `bank_budget_ms/0` is counted over."
+  @spec bank_window_ms() :: 60_000
+  def bank_window_ms, do: @bank_window_ms
+
+  @doc "Nothing answered yet."
+  @spec new() :: t()
+  def new, do: %__MODULE__{answered: %{}, otk_given: %{}, otks: [], spent: []}
+
+  @doc """
+  Whether the folded nick `key` may be answered at monotonic `now_ms`, and
+  with what: `{:ok, :otk}` when it may have a one-time key, `{:ok,
+  :fallback}` when only the fallback key, `{:error, :too_soon}` when it
+  was answered less than `nick_interval_ms/0` ago.
+  """
+  @spec admit(t(), String.t(), integer()) :: {:ok, kind()} | {:error, :too_soon}
+  def admit(%__MODULE__{} = answers, key, now_ms) when is_binary(key) and is_integer(now_ms) do
+    cond do
+      within?(Map.get(answers.answered, key), @nick_interval_ms, now_ms) -> {:error, :too_soon}
+      within?(Map.get(answers.otk_given, key), @otk_interval_ms, now_ms) -> {:ok, :fallback}
+      Enum.count(answers.otks, &within?(&1, @hour_ms, now_ms)) >= @otks_per_hour -> {:ok, :fallback}
+      true -> {:ok, :otk}
+    end
+  end
+
+  @doc """
+  True when an answer costing `cost_ms` of fake-lag bank fits the
+  connection's KEYS budget at `now_ms`.
+  """
+  @spec afford?(t(), non_neg_integer(), integer()) :: boolean()
+  def afford?(%__MODULE__{} = answers, cost_ms, now_ms) when is_integer(cost_ms) and is_integer(now_ms) do
+    spent = for {at, cost} <- answers.spent, within?(at, @bank_window_ms, now_ms), reduce: 0, do: (n -> n + cost)
+    spent + cost_ms <= @bank_budget_ms
+  end
+
+  @doc """
+  Records an answer to `key` carrying a `kind` key and costing `cost_ms`,
+  sent at `now_ms`, and drops whatever has left its window.
+  """
+  @spec record(t(), String.t(), kind(), non_neg_integer(), integer()) :: t()
+  def record(%__MODULE__{} = answers, key, kind, cost_ms, now_ms)
+      when is_binary(key) and kind in [:otk, :fallback] and is_integer(cost_ms) and is_integer(now_ms) do
+    otk_given = if kind == :otk, do: Map.put(answers.otk_given, key, now_ms), else: answers.otk_given
+    otks = if kind == :otk, do: [now_ms | answers.otks], else: answers.otks
+
+    %__MODULE__{
+      answered:
+        answers.answered |> Map.put(key, now_ms) |> Map.filter(fn {_, at} -> within?(at, @nick_interval_ms, now_ms) end),
+      otk_given: Map.filter(otk_given, fn {_, at} -> within?(at, @otk_interval_ms, now_ms) end),
+      otks: Enum.filter(otks, &within?(&1, @hour_ms, now_ms)),
+      spent: Enum.filter([{now_ms, cost_ms} | answers.spent], fn {at, _} -> within?(at, @bank_window_ms, now_ms) end)
+    }
+  end
+
+  @spec within?(integer() | nil, pos_integer(), integer()) :: boolean()
+  defp within?(nil, _, _), do: false
+  defp within?(at, window_ms, now_ms), do: now_ms - at < window_ms
+end
