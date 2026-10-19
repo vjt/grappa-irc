@@ -145,7 +145,10 @@ describe("syncKeyBundle", () => {
 });
 
 describe("mountKeyBundleSync", () => {
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+  // A sync runs real vodozemac and WebCrypto, so how long it takes depends on
+  // the machine: wait for what it does, never for a fixed time. Every "did
+  // not happen" below is read after something that happens later.
+  const until = (assertion: () => void) => vi.waitFor(assertion, { timeout: 4000 });
 
   // The signals are module state: each case starts from no network list, and
   // uses its own subject, since the page-wide record of synced slots stays.
@@ -165,7 +168,7 @@ describe("mountKeyBundleSync", () => {
       { id: 1, slug: "azzurra" },
       { id: 2, slug: "libera" },
     ]);
-    await settle();
+    await until(() => expect(api.uploadE2eKeys).toHaveBeenCalledTimes(2));
     expect(
       vi
         .mocked(api.uploadE2eKeys)
@@ -174,24 +177,21 @@ describe("mountKeyBundleSync", () => {
     ).toEqual(["azzurra", "libera"]);
 
     // A refetch of the same list syncs nothing again: no second look at
-    // either bundle (a sync of a known account starts with a GET).
+    // either bundle (a sync of a known account starts with a GET), read once
+    // the network that appears afterwards has been synced.
     setList([
       { id: 1, slug: "azzurra" },
       { id: 2, slug: "libera" },
     ]);
-    await settle();
-    expect(api.getE2eKeys).not.toHaveBeenCalled();
-    expect(api.clearE2eKeys).toHaveBeenCalledTimes(2);
-    expect(api.uploadE2eKeys).toHaveBeenCalledTimes(2);
-
     setList([
       { id: 1, slug: "azzurra" },
       { id: 2, slug: "libera" },
       { id: 3, slug: "oftc" },
     ]);
-    await settle();
+    await until(() => expect(api.uploadE2eKeys).toHaveBeenCalledTimes(3));
     expect(vi.mocked(api.uploadE2eKeys).mock.calls.map((call) => call[1])).toContain("oftc");
-    expect(api.uploadE2eKeys).toHaveBeenCalledTimes(3);
+    expect(api.getE2eKeys).not.toHaveBeenCalled();
+    expect(api.clearE2eKeys).toHaveBeenCalledTimes(3);
     dispose();
   });
 
@@ -205,17 +205,18 @@ describe("mountKeyBundleSync", () => {
       return d;
     });
     setList([{ id: 1, slug: "azzurra" }]);
-    await settle();
+    // The warning is the failed attempt's last step.
+    await until(() =>
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("azzurra"), expect.anything()),
+    );
     expect(api.uploadE2eKeys).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("azzurra"), expect.anything());
 
     setList([{ id: 1, slug: "azzurra" }]);
-    await settle();
-    expect(api.uploadE2eKeys).toHaveBeenCalledTimes(1);
+    await until(() => expect(api.uploadE2eKeys).toHaveBeenCalledTimes(1));
     dispose();
   });
 
-  it("does nothing while logged out", async () => {
+  it("does nothing while logged out, and syncs once logged in", async () => {
     setBearer(null);
     setMe(null);
     const dispose = createRoot((d) => {
@@ -223,9 +224,12 @@ describe("mountKeyBundleSync", () => {
       return d;
     });
     setList([{ id: 1, slug: "azzurra" }]);
-    await settle();
-    expect(api.clearE2eKeys).not.toHaveBeenCalled();
-    expect(api.getE2eKeys).not.toHaveBeenCalled();
+    setMe({ kind: "user", id: "c3" });
+    setBearer("tok");
+    await until(() => expect(api.uploadE2eKeys).toHaveBeenCalledTimes(1));
+    // One new account, one clear: nothing ran with the list alone.
+    expect(api.clearE2eKeys).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.clearE2eKeys).mock.calls.map((call) => call[0])).toEqual(["tok"]);
     dispose();
   });
 });
