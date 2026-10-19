@@ -142,7 +142,7 @@ defmodule Grappa.Session.E2eSessionTest do
     end
 
     test "a nick asking again within 30 s is not answered; another nick is, with the next key" do
-      {server, _, user, network} = connected_session()
+      {server, pid, user, network} = connected_session()
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
       subject = {:user, user.id}
       fallback = keys_payload(true)
@@ -152,6 +152,9 @@ defmodule Grappa.Session.E2eSessionTest do
       # free to take a one-time key next time — unless she asks too soon.
       keyreq!(server, "alice")
       assert await_keys(server, "alice") == fallback
+      # Recorded as what she got, not what she was allowed: a one-time key
+      # stays hers to take once the 30 s are up.
+      refute Map.has_key?(:sys.get_state(pid).e2e_key_answers.otk_given, "alice")
 
       otk = keys_payload(false)
       {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: [otk], fallback: nil})
@@ -167,9 +170,9 @@ defmodule Grappa.Session.E2eSessionTest do
       {server, _, user, network} = connected_session()
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
       subject = {:user, user.id}
-      payload = keys_payload(false)
+      [payload | _] = payloads = for _ <- 1..9, do: keys_payload(false)
       asking = for n <- 1..9, do: "peer#{n}"
-      {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: List.duplicate(payload, 9), fallback: nil})
+      {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: payloads, fallback: nil})
 
       # What one answer costs, from the framing and the fake-lag cost the
       # session uses: every nick here has the same length, so every answer
@@ -203,6 +206,27 @@ defmodule Grappa.Session.E2eSessionTest do
       # The whole answer is out while the text still drips: it did not wait
       # behind the text in alice's queue.
       refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, " #{text} #{total}/#{total} "))
+    end
+
+    test "a KEYREQ the pacer cannot take spends no one-time key" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: [keys_payload(false)], fallback: nil})
+
+      # Fill alice's urgent queue with our own KEYREQs, one control line each.
+      small = Base.encode64(~s({"v":1}))
+
+      refused =
+        Enum.find(1..(E2ePacer.max_urgent_lines() + 10), fn _ ->
+          Session.send_e2e(subject, network.id, "alice", :keyreq, :control, small) == {:error, :rate_limited}
+        end)
+
+      assert refused, "alice's urgent queue never filled"
+
+      keyreq!(server, "alice")
+
+      assert E2eKeys.status(subject, network.id).one_time_keys == 1
     end
 
     test "with no bundle a KEYREQ goes unanswered and the session carries on" do
@@ -435,7 +459,6 @@ defmodule Grappa.Session.E2eSessionTest do
     end
   end
 
-  # Every line of message `msgid` on the wire so far, parsed, in wire order.
   # A KEYS payload as the agreed 2430 shape builds it: padded standard
   # base64 of JSON whose keys and signatures are unpadded base64. About
   # 450 bytes, two lines on a 512-byte wire, like a real one.
@@ -486,6 +509,7 @@ defmodule Grappa.Session.E2eSessionTest do
     end
   end
 
+  # Every line of message `msgid` on the wire so far, parsed, in wire order.
   defp sent_fragments(server, msgid) do
     server
     |> IRCServer.sent_lines()

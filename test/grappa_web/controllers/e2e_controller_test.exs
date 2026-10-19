@@ -292,6 +292,20 @@ defmodule GrappaWeb.E2eControllerTest do
       assert E2eKeys.status({:user, vjt.id}, network.id) == %{one_time_keys: 0, fallback: false}
     end
 
+    test "a fallback-only upload is fine, and a null field reads as absent", %{conn: conn, vjt: vjt} do
+      network = bundle_network(vjt)
+      path = "/networks/#{network.slug}/e2e/keys"
+
+      assert json_response(post(conn, path, %{fallback: keys_payload(true)}), 200) ==
+               %{"one_time_keys" => 0, "fallback" => true}
+
+      assert json_response(post(conn, path, %{one_time_keys: nil, fallback: keys_payload(true)}), 200) ==
+               %{"one_time_keys" => 0, "fallback" => true}
+
+      assert json_response(post(conn, path, %{one_time_keys: [keys_payload(false)], fallback: nil}), 200) ==
+               %{"one_time_keys" => 1, "fallback" => true}
+    end
+
     test "400 for an upload that is empty, malformed or not base64; 413 past 50 one-time keys",
          %{conn: conn, vjt: vjt} do
       network = bundle_network(vjt)

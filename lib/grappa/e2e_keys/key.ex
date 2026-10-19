@@ -24,8 +24,9 @@ defmodule Grappa.E2eKeys.Key do
   @kinds [:otk, :fallback]
 
   # A KEYS payload is about 450 bytes; this leaves room for fields a later
-  # payload version adds, and keeps every answer to three lines or fewer,
-  # so one always fits the connection's KEYS budget
+  # payload version adds, and keeps every answer within four lines on a
+  # 512-byte wire (three below a 25-byte nick), about 17 s of fake lag at
+  # worst, so one always fits the connection's KEYS budget
   # (`Grappa.Session.E2eKeyAnswers.bank_budget_ms/0`).
   @max_payload_bytes 1024
 

@@ -10,7 +10,7 @@ defmodule Grappa.E2eKeysTest do
 
   import Grappa.AuthFixtures
 
-  alias Grappa.E2eKeys
+  alias Grappa.{E2eKeys, Repo, Subject}
   alias Grappa.E2eKeys.Key
 
   # A KEYS payload as the agreed 2430 shape builds it: padded standard
@@ -130,6 +130,58 @@ defmodule Grappa.E2eKeysTest do
 
     test "with nothing uploaded there is nothing to hand out", %{subject: subject, network: network} do
       assert {:error, :empty} = E2eKeys.next(subject, network.id, :otk)
+    end
+  end
+
+  describe "a key picked before the bundle changed" do
+    test "is not handed out once the client replaced its fallback key", %{subject: subject, network: network} do
+      {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: otks(2), fallback: keys_payload(true)})
+      {:ok, old} = E2eKeys.next(subject, network.id, :fallback)
+
+      {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: [], fallback: keys_payload(true)})
+
+      assert {:error, :gone} = E2eKeys.consume(old)
+    end
+
+    test "a one-time key is not handed out once the client started over, and the new bundle is untouched",
+         %{subject: subject, network: network} do
+      {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: otks(1), fallback: nil})
+      {:ok, old} = E2eKeys.next(subject, network.id, :otk)
+
+      :ok = E2eKeys.clear(subject, network.id)
+      {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: [], fallback: keys_payload(true)})
+
+      assert {:error, :gone} = E2eKeys.consume(old)
+      assert E2eKeys.status(subject, network.id) == %{one_time_keys: 0, fallback: true}
+    end
+  end
+
+  describe "duplicates" do
+    test "a one-time key uploaded twice is held once, so a retried upload hands no key out twice",
+         %{subject: subject, network: network} do
+      [a, b] = otks(2)
+
+      assert {:ok, %{one_time_keys: 2}} =
+               E2eKeys.upload(subject, network.id, %{one_time_keys: [a, b, a], fallback: nil})
+
+      # The client never saw the answer and sends the same batch again.
+      assert {:ok, %{one_time_keys: 2}} = E2eKeys.upload(subject, network.id, %{one_time_keys: [a, b], fallback: nil})
+    end
+
+    test "a retried batch does not count against the bound twice", %{subject: subject, network: network} do
+      batch = otks(E2eKeys.max_one_time_keys())
+      {:ok, %{one_time_keys: 50}} = E2eKeys.upload(subject, network.id, %{one_time_keys: batch, fallback: nil})
+      assert {:ok, %{one_time_keys: 50}} = E2eKeys.upload(subject, network.id, %{one_time_keys: batch, fallback: nil})
+    end
+
+    test "the table itself holds one fallback key per subject and network, for users and visitors alike",
+         %{subject: subject, network: network} do
+      for owner <- [subject, {:visitor, visitor_fixture().id}] do
+        attrs = Subject.put_subject_id(%{network_id: network.id, kind: :fallback, payload: keys_payload(true)}, owner)
+        insert = fn -> Repo.insert!(Key.changeset(%Key{}, attrs)) end
+        insert.()
+        assert_raise Ecto.ConstraintError, insert
+      end
     end
   end
 

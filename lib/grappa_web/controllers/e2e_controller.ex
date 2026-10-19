@@ -118,10 +118,11 @@ defmodule GrappaWeb.E2eController do
 
   @doc """
   `POST /networks/:network_id/e2e/keys` — `{one_time_keys, fallback}`, both
-  optional but not both absent: KEYS payloads the client built and signed,
-  one per one-time key, and one for the fallback key. One-time keys are
-  added; a fallback key replaces the one held. 200 with what the bundle
-  then holds, as `GET` answers it.
+  optional (absent or `null`) but not both: KEYS payloads the client built
+  and signed, one per one-time key, and one for the fallback key. One-time
+  keys are added, each once (a key already held is skipped, so a retried
+  upload is harmless); a fallback key replaces the one held. 200 with what
+  the bundle then holds, as `GET` answers it.
 
   400 `bad_request` for an upload with nothing in it, a field of the wrong
   type, or a payload that is not base64 or is over 1 KiB; 413 `too_large`
@@ -151,7 +152,8 @@ defmodule GrappaWeb.E2eController do
 
   @spec upload_params(map()) :: {:ok, E2eKeys.upload()} | {:error, :bad_request}
   defp upload_params(params) do
-    otks = Map.get(params, "one_time_keys", [])
+    # Absent and `null` mean the same, for both fields.
+    otks = Map.get(params, "one_time_keys") || []
     fallback = Map.get(params, "fallback")
 
     if is_list(otks) and Enum.all?(otks, &is_binary/1) and (is_binary(fallback) or is_nil(fallback)),

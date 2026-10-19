@@ -11,12 +11,20 @@ defmodule Grappa.Repo.Migrations.CreateE2eKeys do
   # Raw SQL for the table body, like `create_e2e_inbox`: the subject XOR
   # and the kind set are CHECK constraints, which `Ecto.Migration`'s DSL
   # cannot express inline. `payload` is last for the same reason as there:
-  # the count and the oldest-key lookup never read one.
+  # the count and the oldest-key lookup never read one (only an upload does,
+  # to skip the one-time keys already held).
+  #
+  # `AUTOINCREMENT` is load-bearing, as in `e2e_inbox`. The session picks a
+  # key, then consumes it by id once it is sure to send it; in between the
+  # client may replace its fallback key or start over with a new bundle.
+  # SQLite's plain rowid hands the largest id out again once that row is
+  # deleted, so the new account's key could take the old key's id and the
+  # old key would be sent. With `AUTOINCREMENT` an id is never reused.
   def change do
     execute(
       """
       CREATE TABLE "e2e_keys" (
-        "id" INTEGER PRIMARY KEY,
+        "id" INTEGER PRIMARY KEY AUTOINCREMENT,
         "user_id" TEXT NULL CONSTRAINT "e2e_keys_user_id_fkey" REFERENCES "users"("id") ON DELETE CASCADE,
         "visitor_id" TEXT NULL CONSTRAINT "e2e_keys_visitor_id_fkey" REFERENCES "visitors"("id") ON DELETE CASCADE,
         "network_id" INTEGER NOT NULL CONSTRAINT "e2e_keys_network_id_fkey" REFERENCES "networks"("id") ON DELETE CASCADE,
