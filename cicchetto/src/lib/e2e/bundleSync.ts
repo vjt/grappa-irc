@@ -93,11 +93,11 @@ declare global {
   interface Window {
     /**
      * TEST-ONLY (issue 2430, for the interop suite): deletes this browser's
-     * E2E state, every account and the key that seals them. The next sync
-     * starts each network over with a new identity and replaces the bundle
-     * grappa holds. Ships in the bundle like the other `__cic_*` hooks; it
-     * grants nothing a script in this origin could not do with
-     * `indexedDB.deleteDatabase`.
+     * E2E state, every account and the key that seals them. This page does
+     * not sync again; the next page load starts each network over with a new
+     * identity and replaces the bundle grappa holds. Ships in the bundle like
+     * the other `__cic_*` hooks; it grants nothing a script in this origin
+     * could not do with `indexedDB.deleteDatabase`.
      */
     __cic_e2eResetForTests?: () => Promise<void>;
   }
@@ -106,7 +106,6 @@ declare global {
 if (typeof window !== "undefined") {
   window.__cic_e2eResetForTests = () =>
     new Promise<void>((resolve, reject) => {
-      synced.clear();
       const request = indexedDB.deleteDatabase(E2E_DATABASE);
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error);
