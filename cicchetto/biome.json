@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["src/**", "e2e/**", "*.ts", "*.tsx", "*.json"]
+    "includes": ["src/**", "e2e/**", "*.ts", "*.tsx", "*.json", "!src/lib/e2e/vodozemac"]
   },
   "formatter": {
     "enabled": true,

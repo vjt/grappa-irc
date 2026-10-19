@@ -392,6 +392,7 @@ scripts/format.sh --check    # mix format --check-formatted (CI mode)
 scripts/check.sh             # full mix ci.check (every gate)
 scripts/bats.sh              # bats suite for bin/grappa
 scripts/bun.sh <cmd>         # bun in oven/bun:1 oneshot against cicchetto/ (install / add / run test / run check / run build)
+scripts/wasm.sh [--check]    # rebuild the vendored vodozemac binding (cicchetto/src/lib/e2e/vodozemac/) in the pinned rust image, as linux/amd64; --check fails on drift (CI: wasm.yml)
 scripts/testnet.sh up|down|status|logs|probe|shell  # e2e testnet stack standalone (no Playwright)
 scripts/integration.sh       # full e2e suite (testnet + grappa + nginx + Playwright)
 scripts/db.sh                # sqlite3 RO against runtime/grappa_dev.db
@@ -3076,7 +3077,7 @@ docker buildx imagetools inspect oven/bun:<version> --format '{{.Manifest.Digest
 
 `test/infra/base_image_digest_pin_test.bats` fails the build if a real
 image reference in a tracked build file loses its `@sha256:` — for the
-families it covers, and only those. The pattern is `oven/bun:|nginx:alpine`,
+families it covers, and only those. The pattern is `oven/bun:|nginx:alpine|(^|[^a-z])rust:`,
 and the suite asserts that this sentence quotes it verbatim (#1408 D-S9),
 so widening the gate forces the claim to move with it.
 

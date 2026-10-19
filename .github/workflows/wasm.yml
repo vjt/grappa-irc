@@ -1,0 +1,45 @@
+name: wasm
+
+# The vodozemac binding cicchetto vendors (issue 2430): cicchetto imports the
+# wasm-bindgen output committed under cicchetto/src/lib/e2e/vodozemac/, built
+# from the Rust source in cicchetto/wasm/vodozemac-binding/. This job rebuilds
+# it from that source with the same pinned toolchain a developer uses
+# (scripts/wasm.sh: a digest-pinned rust image, run as linux/amd64) and fails
+# if the committed bytes differ — so the binary nobody can review is exactly
+# what the source anyone can review builds.
+#
+# Path-filtered: nothing outside these paths changes what the build writes.
+# The script is the toolchain pin (image, platform, wasm-bindgen-cli).
+# The runner is amd64, so the build runs natively here; on an arm64 laptop
+# the same script emulates amd64 (the platform is part of the pin, see the
+# script).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cicchetto/wasm/**"
+      - "cicchetto/src/lib/e2e/vodozemac/**"
+      - "scripts/wasm.sh"
+      - ".github/workflows/wasm.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "cicchetto/wasm/**"
+      - "cicchetto/src/lib/e2e/vodozemac/**"
+      - "scripts/wasm.sh"
+      - ".github/workflows/wasm.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rebuild:
+    name: vodozemac binding (rebuild --check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Rebuild the binding and compare with the vendored copy
+        run: scripts/wasm.sh --check

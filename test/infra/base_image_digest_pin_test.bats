@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 #
 # Bats suite for GH #103 — supply-chain: the moving base-image tags
-# (`oven/bun` and `nginx:alpine`) MUST be pinned to a
+# (`oven/bun`, `nginx:alpine`, and since issue 2430 the `rust` image
+# scripts/wasm.sh builds the vodozemac binding in) MUST be pinned to a
 # content digest (`image:tag@sha256:...`) for reproducible builds.
 #
 # `oven/bun:1` is a MAJOR-moving tag (it advances across bun majors) and
@@ -50,8 +51,9 @@ REPO_ROOT="$BATS_TEST_DIRNAME/../.."
 #     test-fixture images that never reach an operator.
 #
 # Adding a family here REQUIRES amending the runbook line the last test
-# reads; that is the whole point of the pin.
-PINNED_FAMILIES='oven/bun:|nginx:alpine'
+# reads; that is the whole point of the pin. `rust:` is anchored on a
+# non-letter so prose like `trust:` is not an image reference.
+PINNED_FAMILIES='oven/bun:|nginx:alpine|(^|[^a-z])rust:'
 
 # Every reference to a pinned family in tracked build files, minus comments
 # and the docs/test prose trees. git grep -n → `path:line:content`.
@@ -68,7 +70,7 @@ matched_refs() {
         done
 }
 
-@test "every oven/bun and nginx:alpine image reference is digest-pinned (#103)" {
+@test "every oven/bun, nginx:alpine and rust image reference is digest-pinned (#103)" {
     refs="$(matched_refs)"
 
     # Guard against a vacuous pass: if the grep matches nothing the assertion
