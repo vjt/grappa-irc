@@ -175,6 +175,43 @@ defmodule Grappa.Session.E2ePacerTest do
     end
   end
 
+  describe "the wake follows the ranking, not only the line it tried" do
+    test "a peer whose FLUD window empties ranks as never served, and the pacer wakes for it" do
+      # a sent at 0 s, b at 1 s and kept a cheap line queued; a then queues a
+      # full line. At 4 s a ranks first (served longest ago) but its line
+      # does not fit a 9 s bank.
+      {:ok, [_], a_sent, _} = E2ePacer.enqueue(E2ePacer.new(), "a", "a", :text, [{"a1", @cheap}], 0, 0)
+
+      {:ok, [{"b", "b1"}], b_sent, _} =
+        E2ePacer.enqueue(a_sent, "b", "b", :text, [{"b1", @cheap}, {"b2", @cheap}], 1_000, 7_000)
+
+      {:ok, [], queued, _} = E2ePacer.enqueue(b_sent, "a", "a", :text, [{"a2", @full}], 2_000, @held)
+
+      # At 7 s b's send leaves its window too: both read never served, b's
+      # line is the older one and fits a 6 s bank. Waiting for a's bank
+      # room (8 s) would send it a second late.
+      assert first_release(queued, 4_000, 9_000) == {7_000, [{"b", "b2"}]}
+    end
+
+    test "a peer whose spent urgent budget comes back ranks first again, and the pacer wakes for it" do
+      # b's full line is queued FIRST: while a is past its budget, b's
+      # older line ranks ahead of a's urgent one.
+      {:ok, [], text, _} = E2ePacer.enqueue(E2ePacer.new(), "b", "b", :text, [{"full", @full}], 0, @held)
+      budget = E2ePacer.urgent_budget()
+      {:ok, [], both, _} = E2ePacer.enqueue(text, "a", "a", :control, lines(budget + 1, @cheap), 0, @held)
+
+      spent =
+        Enum.reduce(0..(budget - 1), both, fn i, acc ->
+          {[{"a", _}], acc, _} = E2ePacer.release(acc, i * 2_500, 8_000)
+          acc
+        end)
+
+      # At 58 s b's line waits for bank room until 62.5 s. a's first urgent
+      # release turns 60 s old at 60 s; a's line is urgent again and fits.
+      assert first_release(spent, 58_000, 9_500) == {E2ePacer.urgent_window_ms(), [{"a", "line#{budget + 1}"}]}
+    end
+  end
+
   property "whenever lines wait the pacer asks to be woken, and waking it then sends every line" do
     # No busy loop and no stall: `wake_at/2` refuses a wait under 1 ms, and
     # a `nil` wait with lines still queued would end the run short.
@@ -279,6 +316,15 @@ defmodule Grappa.Session.E2ePacerTest do
     for {t, _, bank_before, cost} <- sent do
       assert bank_before == 0 or bank_before + cost <= Client.fake_lag_ceiling_ms(),
              "released at #{t} with a #{bank_before} ms bank and a #{cost} ms line"
+    end
+  end
+
+  # Follows the wakes the pacer asks for while a bank other traffic filled
+  # drains in real time, until something is released: when, and what.
+  defp first_release(pacer, now, bank) do
+    case E2ePacer.release(pacer, now, bank) do
+      {[], next, wait} when is_integer(wait) -> first_release(next, now + wait, max(bank - wait, 0))
+      {out, _, _} -> {now, out}
     end
   end
 
