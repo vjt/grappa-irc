@@ -184,6 +184,27 @@ defmodule Grappa.Session.E2eSessionTest do
       assert E2eKeys.status(subject, network.id).one_time_keys == 9 - fit
     end
 
+    test "the answer goes as control: ahead of the text already waiting for that peer" do
+      {server, _, user, network} = connected_session()
+      subject = {:user, user.id}
+      :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
+      {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: [keys_payload(false)], fallback: nil})
+
+      # A long text message to alice: its first lines fill the bank, the
+      # rest wait on it at about one line per 5 s.
+      {:ok, text} = Session.send_e2e(subject, network.id, "alice", :msg, :text, payload(1600))
+      {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, " #{text} 1/"), 10_000)
+      [%{total: total} | _] = sent_fragments(server, text)
+      assert total >= 6
+
+      keyreq!(server, "alice")
+      _ = await_keys(server, "alice")
+
+      # The whole answer is out while the text still drips: it did not wait
+      # behind the text in alice's queue.
+      refute Enum.any?(IRCServer.sent_lines(server), &String.contains?(&1, " #{text} #{total}/#{total} "))
+    end
+
     test "with no bundle a KEYREQ goes unanswered and the session carries on" do
       {server, pid, user, network} = connected_session()
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
