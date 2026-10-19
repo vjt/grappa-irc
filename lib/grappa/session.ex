@@ -90,6 +90,8 @@ defmodule Grappa.Session do
       # issue 2430 — `Session.Server` queues each whole inbound E2E message
       # and sweeps what expired; `Session.Wire` renders an entry.
       Grappa.E2eInbox,
+      # issue 2430 — `Session.Server` answers a KEYREQ from the hosted bundle.
+      Grappa.E2eKeys,
       Grappa.IRC,
       Grappa.Log,
       Grappa.Mentions,

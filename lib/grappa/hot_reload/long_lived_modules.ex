@@ -182,8 +182,9 @@ defmodule Grappa.HotReload.LongLivedModules do
     Grappa.Session.DccOffers,
     Grappa.Session.Deps,
     Grappa.Session.DirectoryIngest,
-    # issue 2430 — the E2E reassembly buffer and outbound pacer, both held
-    # whole in `Session.Server` state.
+    # issue 2430 — the E2E reassembly buffer, the outbound pacer and the
+    # KEYS answer limits, all held whole in `Session.Server` state.
+    Grappa.Session.E2eKeyAnswers,
     Grappa.Session.E2ePacer,
     Grappa.Session.E2eReassembly,
     Grappa.Session.GhostRecovery,
@@ -246,6 +247,7 @@ defmodule Grappa.HotReload.LongLivedModules do
           | Grappa.Session.DccOffers
           | Grappa.Session.Deps
           | Grappa.Session.DirectoryIngest
+          | Grappa.Session.E2eKeyAnswers
           | Grappa.Session.E2ePacer
           | Grappa.Session.E2eReassembly
           | Grappa.Session.GhostRecovery
