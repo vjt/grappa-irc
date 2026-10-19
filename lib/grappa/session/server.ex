@@ -87,6 +87,7 @@ defmodule Grappa.Session.Server do
     ChannelDirectory,
     Dcc,
     E2eInbox,
+    E2eKeys,
     Log,
     Mentions,
     QueryWindows,
@@ -113,6 +114,7 @@ defmodule Grappa.Session.Server do
     DccOffers,
     Deps,
     DirectoryIngest,
+    E2eKeyAnswers,
     E2ePacer,
     E2eReassembly,
     EventRouter,
@@ -583,6 +585,11 @@ defmodule Grappa.Session.Server do
           # loses the counts of refused messages, never a stored message.
           e2e_inbox_timer: reference() | nil,
           e2e_unqueued: %{String.t() => {String.t(), pos_integer()}},
+          # issue 2430: the KEYS answers grappa sent for the subject, per
+          # nick and in all (`Grappa.Session.E2eKeyAnswers`), so a stranger
+          # can neither drain the bundle nor the connection's bank. Memory
+          # only: a crash grants fresh limits, never a key twice.
+          e2e_key_answers: E2eKeyAnswers.t(),
           # CP15 B2: in-flight JOINs awaiting upstream confirmation
           # (self-JOIN echo) or failure numeric (471/473/474/475/403/405).
           # Keyed by lowercase channel so the failure-numeric correlation
@@ -1252,6 +1259,7 @@ defmodule Grappa.Session.Server do
       e2e_pacer_timer: nil,
       e2e_inbox_timer: nil,
       e2e_unqueued: %{},
+      e2e_key_answers: E2eKeyAnswers.new(),
       in_flight_joins: %{},
       awaiting_invite: MapSet.new(),
       # UX-4 bucket A — canonicalise the autojoin list at boot so the
@@ -8074,18 +8082,42 @@ defmodule Grappa.Session.Server do
 
   # A whole message is queued (`Grappa.E2eInbox`), then pushed with the
   # queue's id: the client acknowledges that id, and one that was not
-  # connected fetches the queue when it connects. KEYREQ is not delivered —
-  # grappa answers key requests itself from the bundle it hosts (a later
-  # 2430 slice); until that lands there is nothing to answer with, and no
-  # client could either.
+  # connected fetches the queue when it connects.
   #
   # A message the queue refuses is not pushed either: one path, so a client
   # never holds a message it cannot acknowledge. The refusal is counted per
   # sender and told to the recipient on the next sweep.
+  #
+  # KEYREQ is never delivered: grappa answers it itself, from the bundle
+  # the subject's client uploaded (`Grappa.E2eKeys`), connected client or
+  # not — one path. The answer is checked against `E2eKeyAnswers` twice:
+  # who may have what before a key is picked, and the bank budget against
+  # the answer's real cost before the key is spent, so a refusal never
+  # wastes a one-time key. The answer goes as CONTROL: the peer is waiting
+  # on it to start a session. Every refusal is silent to the peer, who asks
+  # again later, and logged at debug: the peer decides how often it fires.
   @spec deliver_e2e(t(), String.t(), E2eReassembly.message()) :: t()
   defp deliver_e2e(state, from, %{verb: :keyreq}) do
-    Logger.debug("e2e KEYREQ dropped: no key bundle is hosted", sender: from)
-    state
+    now = System.monotonic_time(:millisecond)
+    key = fold_key(state, from)
+
+    with {:ok, kind} <- E2eKeyAnswers.admit(state.e2e_key_answers, key, now),
+         {:ok, bundle_key} <- E2eKeys.next(state.subject, state.network_id, kind),
+         {:ok, lines} <- e2e_lines(state, from, :keys, E2e.new_msgid(), bundle_key.payload),
+         cost = lines |> Enum.map(&elem(&1, 1)) |> Enum.sum(),
+         :ok <- afford_keys(state, cost, now),
+         :ok <- E2eKeys.consume(bundle_key),
+         {:ok, state} <- enqueue_e2e(state, from, :control, lines, now) do
+      %{state | e2e_key_answers: E2eKeyAnswers.record(state.e2e_key_answers, key, bundle_key.kind, cost, now)}
+    else
+      {:error, :db_unavailable} ->
+        Logger.warning("e2e KEYREQ not answered: database unavailable", sender: from)
+        state
+
+      {:error, reason} ->
+        Logger.debug("e2e KEYREQ not answered", sender: from, reason: reason)
+        state
+    end
   end
 
   defp deliver_e2e(state, from, %{verb: verb, msgid: msgid, payload: payload}) do
@@ -8208,23 +8240,40 @@ defmodule Grappa.Session.Server do
           {{:ok, String.t()} | {:error, :too_large | :rate_limited}, t()}
   defp queue_e2e_send(state, target, verb, class, payload) do
     msgid = E2e.new_msgid()
-    linelen = ISupport.linelen(Map.get(state, :isupport, ISupport.default()))
-    now = System.monotonic_time(:millisecond)
 
-    with {:ok, bodies} <- E2e.fragment(verb, msgid, payload, LineSplit.frame_budget(target, linelen)),
-         lines = Enum.map(bodies, &{&1, Client.privmsg_cost_ms(target, &1)}),
-         {:ok, releases, pacer, wait} <-
-           E2ePacer.enqueue(state.e2e_pacer, fold_key(state, target), target, class, lines, now, e2e_bank_ms(state)) do
-      state =
-        %{state | e2e_pacer: pacer}
-        |> send_e2e_releases(releases)
-        |> arm_e2e_pacer(wait)
-
+    with {:ok, lines} <- e2e_lines(state, target, verb, msgid, payload),
+         {:ok, state} <- enqueue_e2e(state, target, class, lines, System.monotonic_time(:millisecond)) do
       {{:ok, msgid}, state}
     else
       {:error, :too_large} -> {{:error, :too_large}, state}
       {:error, :queue_full} -> {{:error, :rate_limited}, state}
     end
+  end
+
+  # The lines of one message to `target`, each with what bahamut will
+  # charge for it.
+  @spec e2e_lines(t(), String.t(), E2e.verb(), String.t(), String.t()) ::
+          {:ok, [E2ePacer.line(), ...]} | {:error, :too_large}
+  defp e2e_lines(state, target, verb, msgid, payload) do
+    linelen = ISupport.linelen(Map.get(state, :isupport, ISupport.default()))
+
+    with {:ok, bodies} <- E2e.fragment(verb, msgid, payload, LineSplit.frame_budget(target, linelen)),
+         do: {:ok, Enum.map(bodies, &{&1, Client.privmsg_cost_ms(target, &1)})}
+  end
+
+  # Hands the lines to the pacer and sends what it releases now.
+  @spec enqueue_e2e(t(), String.t(), E2ePacer.class(), [E2ePacer.line(), ...], integer()) ::
+          {:ok, t()} | {:error, :queue_full}
+  defp enqueue_e2e(state, target, class, lines, now) do
+    with {:ok, releases, pacer, wait} <-
+           E2ePacer.enqueue(state.e2e_pacer, fold_key(state, target), target, class, lines, now, e2e_bank_ms(state)) do
+      {:ok, %{state | e2e_pacer: pacer} |> send_e2e_releases(releases) |> arm_e2e_pacer(wait)}
+    end
+  end
+
+  @spec afford_keys(t(), non_neg_integer(), integer()) :: :ok | {:error, :over_budget}
+  defp afford_keys(state, cost, now) do
+    if E2eKeyAnswers.afford?(state.e2e_key_answers, cost, now), do: :ok, else: {:error, :over_budget}
   end
 
   # A line the socket refuses is lost, and so is the message it belonged to
