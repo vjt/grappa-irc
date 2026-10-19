@@ -166,6 +166,32 @@ defmodule Grappa.Session.E2ePacerTest do
       assert {[{"b", _}], _, _} = E2ePacer.release(again, 30_000, 8_000)
     end
 
+    test "past its budget a peer's urgent line still goes ahead of its own text" do
+      {:ok, [], urgent, _} =
+        E2ePacer.enqueue(E2ePacer.new(), "a", "a", :control, lines(E2ePacer.urgent_budget(), @cheap), 0, @held)
+
+      spent =
+        Enum.reduce(0..(E2ePacer.urgent_budget() - 1), urgent, fn i, acc ->
+          {[{"a", _}], acc, _} = E2ePacer.release(acc, i * 2_500, 8_000)
+          acc
+        end)
+
+      # The text is queued BEFORE the NACK, so queue order alone would send
+      # it first. The budget ranks a against other peers, never against itself.
+      {:ok, [], text, _} = E2ePacer.enqueue(spent, "a", "a", :text, [{"text", @cheap}], 20_000, @held)
+      {:ok, [], both, _} = E2ePacer.enqueue(text, "a", "a", :control, [{"NACK", @cheap}], 20_000, @held)
+      assert {[{"a", "NACK"}], _, _} = E2ePacer.release(both, 20_000, 8_000)
+    end
+
+    test "a best head that does not fit the bank holds back a cheaper line from another peer" do
+      {:ok, [], full, _} = E2ePacer.enqueue(E2ePacer.new(), "a", "a", :text, [{"full", @full}], 0, 7_000)
+
+      # b's line would fit (7 + 2 <= 10 s), but a's ranks first, so nothing goes...
+      assert {:ok, [], both, 2_000} = E2ePacer.enqueue(full, "b", "b", :text, [{"cheap", @cheap}], 0, 7_000)
+      # ...until a's fits, and then b's no longer does.
+      assert {[{"a", "full"}], _, _} = E2ePacer.release(both, 2_000, 5_000)
+    end
+
     test "text takes turns across peers instead of draining in queue order" do
       {:ok, [], long, _} = E2ePacer.enqueue(E2ePacer.new(), "a", "a", :text, lines(5, @cheap), 0, @held)
       {:ok, [], both, _} = E2ePacer.enqueue(long, "b", "b", :text, lines(1, @cheap), 1, @held)
@@ -214,10 +240,12 @@ defmodule Grappa.Session.E2ePacerTest do
 
   property "whenever lines wait the pacer asks to be woken, and waking it then sends every line" do
     # No busy loop and no stall: `wake_at/2` refuses a wait under 1 ms, and
-    # a `nil` wait with lines still queued would end the run short.
+    # a `nil` wait with lines still queued would end the run short. Both
+    # rules hold for urgent lines as much as for text.
     check all(arrivals <- arrivals()) do
       sent = simulate(arrivals)
       assert length(sent) == Enum.sum(for {_, _, _, n, _} <- arrivals, do: n)
+      assert_rules(sent)
     end
   end
 
@@ -307,7 +335,11 @@ defmodule Grappa.Session.E2ePacerTest do
 
     sent = simulate(arrivals)
     assert length(sent) == 17
+    assert_rules(sent)
+  end
 
+  # Both rules, over every release a simulation recorded.
+  defp assert_rules(sent) do
     for {t, key, _, _} <- sent do
       in_window = Enum.count(sent, fn {u, k, _, _} -> k == key and u >= t and u < t + 6_000 end)
       assert in_window <= 3, "#{in_window} releases to #{key} in the window starting at #{t}"
