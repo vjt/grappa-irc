@@ -173,12 +173,15 @@ describe("mountKeyBundleSync", () => {
         .sort(),
     ).toEqual(["azzurra", "libera"]);
 
-    // A refetch of the same list syncs nothing again.
+    // A refetch of the same list syncs nothing again: no second look at
+    // either bundle (a sync of a known account starts with a GET).
     setList([
       { id: 1, slug: "azzurra" },
       { id: 2, slug: "libera" },
     ]);
     await settle();
+    expect(api.getE2eKeys).not.toHaveBeenCalled();
+    expect(api.clearE2eKeys).toHaveBeenCalledTimes(2);
     expect(api.uploadE2eKeys).toHaveBeenCalledTimes(2);
 
     setList([
