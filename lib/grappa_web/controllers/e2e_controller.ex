@@ -6,7 +6,9 @@ defmodule GrappaWeb.E2eController do
   arrives as an `e2e_message` event on the user topic the moment it is
   queued (`Grappa.E2eInbox`); the queue itself is the resource below, so a
   client that was not connected can fetch what waits and acknowledge what
-  it has read. It is never scrollback.
+  it has read. It is never scrollback. The key bundle grappa answers a
+  peer's KEYREQ from (`Grappa.E2eKeys`) is a resource too: the client
+  uploads it, reads what is left, and drops it.
 
   Same `:authn` + `ResolveNetwork` pipeline as every other
   `/networks/:network_id/*` route, so ownership is asserted the same way.

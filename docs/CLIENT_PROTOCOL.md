@@ -646,7 +646,7 @@ Check `protocol_version >= 28`. ⚠️ There is no 27 — the shape moved twice
 before this version was published, and the pin gate requires a number per
 move. Nothing ever spoke 27.
 
-### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43)
+### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44)
 
 An encrypted query is a conversation grappa carries and cannot read. The
 endpoints (cicchetto, or a bot using the shared Python package) run Olm via
@@ -753,11 +753,38 @@ never be reassembled) or one that needs more than 64 lines; 429
 while the upstream link is down; 504 `session_timeout` if the session does
 not answer.
 
-A `KEYREQ` addressed to you is not delivered as an event: grappa will answer
-it from the key bundle it hosts for you (a later slice of 2430). Until that
-lands it is dropped.
+**Your key bundle (v44).** A `KEYREQ` addressed to you is never delivered
+as an event: grappa answers it itself, connected client or not, from a
+bundle you upload. Build and sign one KEYS payload per one-time key, and one
+for your fallback key, each the base64 you would send yourself:
 
-Check `protocol_version >= 42`, and `>= 43` for the offline queue and `id`.
+| route | answer |
+|---|---|
+| `POST /networks/:network_id/e2e/keys` `{"one_time_keys": [<payload>…], "fallback": <payload>}` | **200** `{"one_time_keys": N, "fallback": true\|false}` — one-time keys are ADDED; a fallback key REPLACES the one held; either field may be absent, not both |
+| `GET /networks/:network_id/e2e/keys` | **200** the same `{one_time_keys, fallback}`: what is left to hand out |
+| `DELETE /networks/:network_id/e2e/keys` | **204** — the whole bundle is dropped (do this when you start over with a new account, so no peer is handed a key of the old one) |
+
+grappa never reads a payload. When a peer asks, it sends the OLDEST one-time
+key and deletes it, so each goes out once; when they run out it sends the
+fallback key, which stays. **Replenish when `one_time_keys` runs low**: on
+connect, and after a `pkmsg` reaches you (each one used up a one-time key).
+The keys themselves never come back out of grappa.
+
+Answers are rate-limited, so a stranger can drain neither your bundle nor
+your connection: per nick (case-folded), one answer per 30 s, and a one-time
+key at most once a minute (else the fallback key); per connection, at most
+30 one-time keys an hour, and answers spend at most 22 s of fake-lag bank in
+any 60 s. A request past a limit, or with no bundle, goes unanswered; the
+peer asks again later. The answer is paced as control.
+
+The bundle holds at most 50 one-time keys and one fallback key; a payload
+is at most 1 KiB. 400 `bad_request` for an upload with nothing in it, a field
+of the wrong type, or a payload that is not base64 or is too long; 413
+`too_large` when the bundle would pass 50 one-time keys. Either way nothing
+is stored.
+
+Check `protocol_version >= 42`, `>= 43` for the offline queue and `id`, and
+`>= 44` for the key bundle.
 
 ---
 
