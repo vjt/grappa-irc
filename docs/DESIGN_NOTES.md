@@ -2906,7 +2906,8 @@ and nothing goes to the peer. The numbers are w2's, as the ruling says.
   discards an incomplete message anyway.
 - **Urgent within a budget.** Per peer, at most 8 urgent lines RELEASED in any
   60 s rank ahead of text. Past the budget, that peer's urgent lines rank
-  with text.
+  with other peers' text. The budget ranks a peer against OTHER peers only:
+  within one peer, urgent still goes before its own text.
 - **Peers in turn.** Every peer with a free FLUD slot offers one head line,
   its oldest urgent line if it has one, else its oldest text line. Heads rank
   by priority (urgent within budget first), then by when the peer was last
@@ -2920,11 +2921,19 @@ and nothing goes to the peer. The numbers are w2's, as the ruling says.
 
 Two things w2 asked to be checked rather than changed:
 
-- **No busy loop.** The wake is computed for the line the next release would
-  try. A bank wait is at least 1 ms (the bank is non-zero whenever a line
-  does not fit), and a FLUD wait is positive (sends are pruned to under 6 s
-  old). The new property test drives the pacer with random arrivals of both
-  classes, refuses any wake under 1 ms, and requires every line to go out.
+- **No busy loop, no late wake.** The wake is the earliest moment the next
+  release could differ: bank room for the best head, a FLUD slot coming
+  back, or a rank changing with time alone, when a peer's last send leaves
+  its FLUD window (it then ranks as never served) or its spent urgent budget
+  comes back. The code review of this slice found the last two missing: a
+  line that would then rank first and fit waited for the bank room of the
+  head ahead of it, a bounded delay (one second in its example). Both are in
+  the wake now; waking early costs one release call that sends nothing. Every
+  wait is at least 1 ms: the bank is non-zero whenever a line does not fit,
+  and sends are pruned to under 6 s old, urgent releases to under 60 s. The
+  new property test drives the pacer with random arrivals of both classes,
+  refuses any wake under 1 ms, requires every line to go out, and checks
+  both rules on every release, urgent lines included.
 - **Case-fold.** The session already keys lanes on `fold_key/2`, but no test
   pinned it. `Bob` and `bob` now share one queue, and its bound refuses both.
 

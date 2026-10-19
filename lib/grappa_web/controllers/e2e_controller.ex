@@ -37,8 +37,9 @@ defmodule GrappaWeb.E2eController do
   which is what a peer's `NACK` will name.
 
   `priority` is `control` or `text`, and absent means `text`. A `control`
-  message goes ahead of the text queued for the same peer, within a
-  per-peer budget (`Grappa.Session.E2ePacer`); text keeps its order. Set
+  message always goes ahead of the text queued for the same peer, and ahead
+  of other peers' lines within a per-peer budget
+  (`Grappa.Session.E2ePacer`); text keeps its order. Set
   `control` on a MSG/PKMSG that carries a CHAL or an ACK: grappa cannot see
   inside it. `keyreq` and `nack` are control whatever it says.
 
