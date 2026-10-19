@@ -2945,3 +2945,59 @@ globally).
 The lane and item shapes in `E2ePacer` changed, and it is in
 `LongLivedModules`, so this is a COLD deploy, as a1 and a2 already were. No
 wire shape changed: same 429, same error code, protocol stays 43.
+<!-- entry #2430d -->
+
+---
+
+## 2026-10-19 — #2430: grappa hosts the key bundle and answers KEYREQ itself
+
+Slice a3. The spec's key distribution: a client uploads a bundle (signed
+one-time keys plus one fallback key), and grappa answers key requests for the
+user even while every client is closed, handing out each one-time key once and
+the fallback key when they run out. Until now an inbound KEYREQ was dropped in
+`Session.Server.deliver_e2e/3`.
+
+- **Opaque storage.** `Grappa.E2eKeys`, table `e2e_keys` per (subject,
+  network): one row per KEYS payload the client built and signed. grappa never
+  reads one. A swapped key is caught by the peer's pin on the identity key that
+  signs it; withholding is the accepted denial of service. Bounds: 50 one-time
+  keys (vodozemac's ceiling on published keys), one fallback key (a new one
+  replaces the old), 1 KiB per payload so an answer stays within three lines.
+  An upload past a bound is refused whole.
+- **One path.** grappa answers every KEYREQ, connected client or not, and never
+  hands one to a client; the answer is paced as CONTROL. REST: `GET`, `POST`
+  and `DELETE /networks/:network_id/e2e/keys`, each answering `{one_time_keys,
+  fallback}`. Protocol 44.
+- **Limits** (`Session.E2eKeyAnswers`). Per folded nick, one KEYS answer per
+  30 s and a one-time key at most once a minute, else the fallback; 30 one-time
+  keys an hour per connection: w2's numbers, agreed on 2430. **Plus a
+  connection-wide budget of 22 s of fake-lag bank per 60 s on KEYS answers.**
+  That one closes the gap a1b left: the pacer's urgent budget bounds one peer,
+  so several nicks could draw answers without limit and starve the user's own
+  text. w2 agreed that a bank-seconds budget across peers is the fix; 22 s is
+  irc-olm's total for what peers draw (REACTIVE), and may move when w2 posts
+  its final pacer rule.
+- **No one-time key wasted on a refusal.** The session asks the limits twice:
+  `admit/3` before a key is picked, `afford?/3` with the answer's REAL cost
+  (the framed lines, priced as bahamut will) before the key is consumed.
+  `E2eKeys.next/3` picks without removing; `consume/1` removes, and answers
+  `:gone` for a key the client cleared or replaced in between, the fallback key
+  included, so a key of an old account is never sent after the client started
+  over.
+- **Refusals are silent and forgotten.** A KEYREQ past a limit or with no
+  bundle goes unanswered and the peer asks again; it is not remembered, which
+  would be state a stranger controls. What `E2eKeyAnswers` keeps is bounded by
+  its windows, not by how many nicks ever asked.
+
+Not taken from the slice plan: the plan said "AutoReplyBudget-capped". The bank
+budget bounds the same quantity more tightly, and sharing the CTCP auto-reply
+token would let a CTCP VERSION flood deny key requests.
+
+Known gaps: a client that stays connected replenishes only on its own schedule
+(cic: on connect and after each PKMSG it receives; slice b); the limits live in
+memory, so a session restart grants fresh ones (never a key twice: consumption
+is in the database).
+
+`Session.Server` state gained `e2e_key_answers`, and `E2eKeyAnswers` is a
+LongLivedModules state helper, so this is a COLD deploy, as a1, a2 and a1b
+were.
