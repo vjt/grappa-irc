@@ -17,7 +17,15 @@ defmodule Grappa.E2eKeys do
   At most `max_one_time_keys/0` one-time keys are held (vodozemac's own
   ceiling on the keys an account publishes) and one fallback key; a new
   fallback key replaces the old. Each payload is at most
-  `max_payload_bytes/0`. An upload past any bound is refused whole.
+  `max_payload_bytes/0`. An upload past any bound is refused whole. A
+  one-time key already held is skipped rather than stored twice, so a
+  client retrying an upload whose answer it lost never has one key handed
+  to two peers.
+
+  Known gap: a one-time key handed out between an upload and its retry is
+  stored again by the retry. The peer that later gets it opens a session
+  the client can no longer decrypt (the key is gone from its account), and
+  recovers through NACK and a re-key.
 
   ## Boundary
 
@@ -67,6 +75,11 @@ defmodule Grappa.E2eKeys do
           {:ok, status()} | {:error, :bad_request | :too_large | :db_unavailable}
   def upload({_, _} = subject, network_id, %{one_time_keys: otks, fallback: fallback})
       when is_integer(network_id) and is_list(otks) and (is_binary(fallback) or is_nil(fallback)) do
+    # A one-time key is one payload: the same one twice is the same key, and
+    # handing it to two peers breaks the second one's session.
+    otks = Enum.uniq(otks)
+
+    # An upload that could never fit is refused before a changeset is built.
     if length(otks) > @max_one_time_keys do
       {:error, :too_large}
     else
@@ -78,7 +91,6 @@ defmodule Grappa.E2eKeys do
     end
   end
 
-  # An upload that could never fit is refused before a changeset is built.
   @spec store_valid(Subject.t(), integer(), [Ecto.Changeset.t()]) ::
           {:ok, status()} | {:error, :bad_request | :too_large | :db_unavailable}
   defp store_valid(_, _, []), do: {:error, :bad_request}
@@ -96,21 +108,32 @@ defmodule Grappa.E2eKeys do
   end
 
   # The count check and the inserts are one transaction, so two uploads
-  # cannot both squeeze into the last room.
+  # cannot both squeeze into the last room. A one-time key already held is
+  # skipped, not stored twice: a client that never saw the answer to an
+  # upload sends the same batch again, and it costs nothing against the
+  # bound.
   @spec upload_transaction(Subject.t(), integer(), [Ecto.Changeset.t(), ...]) ::
           {:ok, status()} | {:error, :too_large}
   defp upload_transaction(subject, network_id, changesets) do
     Repo.immediate_transaction(fn ->
-      adding = Enum.count(changesets, &(Ecto.Changeset.get_field(&1, :kind) == :otk))
+      held = subject |> kind(network_id, :otk) |> select([k], k.payload) |> Repo.all() |> MapSet.new()
+      new = Enum.reject(changesets, &held_otk?(&1, held))
+      adding = Enum.count(new, &(Ecto.Changeset.get_field(&1, :kind) == :otk))
 
-      if count_otks(subject, network_id) + adding > @max_one_time_keys,
+      if MapSet.size(held) + adding > @max_one_time_keys,
         do: Repo.rollback(:too_large),
-        else: store(subject, network_id, changesets)
+        else: store(subject, network_id, new)
     end)
   end
 
+  @spec held_otk?(Ecto.Changeset.t(), MapSet.t(String.t())) :: boolean()
+  defp held_otk?(changeset, held),
+    do:
+      Ecto.Changeset.get_field(changeset, :kind) == :otk and
+        MapSet.member?(held, Ecto.Changeset.get_field(changeset, :payload))
+
   # Inside the transaction: a new fallback key replaces the old one.
-  @spec store(Subject.t(), integer(), [Ecto.Changeset.t(), ...]) :: status()
+  @spec store(Subject.t(), integer(), [Ecto.Changeset.t()]) :: status()
   defp store(subject, network_id, changesets) do
     if Enum.any?(changesets, &(Ecto.Changeset.get_field(&1, :kind) == :fallback)),
       do: {_, _} = Repo.delete_all(kind(subject, network_id, :fallback))
@@ -158,9 +181,12 @@ defmodule Grappa.E2eKeys do
   a newer fallback key — so a key picked before the client changed its
   bundle is never sent after.
   """
+  #
+  # By id AND kind: ids are never reused (the table is `AUTOINCREMENT`), and
+  # the kind keeps a one-time key's consume from ever deleting a fallback.
   @spec consume(Key.t()) :: :ok | {:error, :gone | :db_unavailable}
   def consume(%Key{kind: :otk, id: id}) do
-    case Repo.BusyRetry.run(fn -> {:ok, Repo.delete_all(where(Key, [k], k.id == ^id))} end) do
+    case Repo.BusyRetry.run(fn -> {:ok, Repo.delete_all(where(Key, [k], k.id == ^id and k.kind == :otk))} end) do
       {:ok, {1, _}} -> :ok
       {:ok, {0, _}} -> {:error, :gone}
       {:error, :db_unavailable} = err -> err
@@ -168,7 +194,7 @@ defmodule Grappa.E2eKeys do
   end
 
   def consume(%Key{kind: :fallback, id: id}) do
-    if Repo.exists?(where(Key, [k], k.id == ^id)), do: :ok, else: {:error, :gone}
+    if Repo.exists?(where(Key, [k], k.id == ^id and k.kind == :fallback)), do: :ok, else: {:error, :gone}
   end
 
   @doc """
