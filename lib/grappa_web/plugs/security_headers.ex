@@ -84,9 +84,15 @@ defmodule GrappaWeb.Plugs.SecurityHeaders do
       in `radioStations.test.ts` (`CSP_FEED_HOSTS`), because neither side can
       see the other: the plug does not know what the table holds, and the
       browser bundle cannot read this header.
-    * `script-src 'self' 'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM='
+    * `script-src 'self' 'wasm-unsafe-eval'
+      'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM='
       https://challenges.cloudflare.com https://*.hcaptcha.com` — Vite modules +
-      the Turnstile / hCaptcha widget loaders. Each loader injects a small
+      the Turnstile / hCaptcha widget loaders. `'wasm-unsafe-eval'` (issue 2430)
+      lets cic compile its vodozemac binding, the WebAssembly Olm library of
+      end-to-end encrypted queries; without it `WebAssembly.instantiate` is
+      refused. It allows WebAssembly compilation ONLY — never widen it to
+      `'unsafe-eval'`, which also turns on `eval()` / `new Function()`. The
+      module itself is a same-origin asset, fetched under `connect-src 'self'`. Each loader injects a small
       INLINE bootstrap `<script>` that `script-src` blocks unless allowlisted;
       we pin it by sha256 (CSP3 hash-source) rather than relax to
       `'unsafe-inline'`, keeping our own first-party inline scripts forbidden.
@@ -156,7 +162,7 @@ defmodule GrappaWeb.Plugs.SecurityHeaders do
 
   import Plug.Conn
 
-  @csp "default-src 'self'; connect-src 'self' https://challenges.cloudflare.com https://*.hcaptcha.com https://litterbox.catbox.moe https://api.somafm.com https://kohina.brona.dk; script-src 'self' 'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM=' https://challenges.cloudflare.com https://*.hcaptcha.com; style-src 'self' 'unsafe-inline' https://*.hcaptcha.com; img-src 'self' data: blob: https:; font-src 'self'; manifest-src 'self'; media-src 'self' blob: https:; worker-src 'self' blob:; frame-src https://challenges.cloudflare.com https://*.hcaptcha.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+  @csp "default-src 'self'; connect-src 'self' https://challenges.cloudflare.com https://*.hcaptcha.com https://litterbox.catbox.moe https://api.somafm.com https://kohina.brona.dk; script-src 'self' 'wasm-unsafe-eval' 'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM=' https://challenges.cloudflare.com https://*.hcaptcha.com; style-src 'self' 'unsafe-inline' https://*.hcaptcha.com; img-src 'self' data: blob: https:; font-src 'self'; manifest-src 'self'; media-src 'self' blob: https:; worker-src 'self' blob:; frame-src https://challenges.cloudflare.com https://*.hcaptcha.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 
   # HTTP header names are lower-cased (HTTP/2 + Plug convention); the VALUES
   # are byte-identical to the retired nginx snippet.
