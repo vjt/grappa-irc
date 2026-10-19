@@ -76,6 +76,9 @@ defmodule Grappa.Session.E2eKeyAnswers do
 
   @doc "Nothing answered yet."
   @spec new() :: t()
+  # Same call as `Grappa.IRC.FakeLag.new/0`: the success typing is the
+  # empty singleton, and the result is stored in a field typed `t()`.
+  @dialyzer {:nowarn_function, new: 0}
   def new, do: %__MODULE__{answered: %{}, otk_given: %{}, otks: [], spent: []}
 
   @doc """

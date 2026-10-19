@@ -135,8 +135,9 @@ defmodule Grappa.E2eKeys do
   # Inside the transaction: a new fallback key replaces the old one.
   @spec store(Subject.t(), integer(), [Ecto.Changeset.t()]) :: status()
   defp store(subject, network_id, changesets) do
-    if Enum.any?(changesets, &(Ecto.Changeset.get_field(&1, :kind) == :fallback)),
-      do: {_, _} = Repo.delete_all(kind(subject, network_id, :fallback))
+    _ =
+      if Enum.any?(changesets, &(Ecto.Changeset.get_field(&1, :kind) == :fallback)),
+        do: Repo.delete_all(kind(subject, network_id, :fallback))
 
     Enum.each(changesets, &Repo.insert!/1)
     status(subject, network_id)
