@@ -22,10 +22,11 @@ defmodule GrappaWeb.Plugs.SecurityHeadersTest do
 
   # The plug's Content-Security-Policy SSOT (was byte-identical to the
   # deleted nginx snippet; #607 widened media-src to https:, #1240 img-src,
-  # #1695 added ONE connect-src host, 1883 added `blob:` to img-src). If the
+  # #1695 added ONE connect-src host, 1883 added `blob:` to img-src, issue
+  # 2430 added `'wasm-unsafe-eval'` to script-src). If the
   # app must change the policy, change it in ONE place (the plug) and update
   # this pin deliberately.
-  @golden_csp "default-src 'self'; connect-src 'self' https://challenges.cloudflare.com https://*.hcaptcha.com https://litterbox.catbox.moe https://api.somafm.com https://kohina.brona.dk; script-src 'self' 'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM=' https://challenges.cloudflare.com https://*.hcaptcha.com; style-src 'self' 'unsafe-inline' https://*.hcaptcha.com; img-src 'self' data: blob: https:; font-src 'self'; manifest-src 'self'; media-src 'self' blob: https:; worker-src 'self' blob:; frame-src https://challenges.cloudflare.com https://*.hcaptcha.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+  @golden_csp "default-src 'self'; connect-src 'self' https://challenges.cloudflare.com https://*.hcaptcha.com https://litterbox.catbox.moe https://api.somafm.com https://kohina.brona.dk; script-src 'self' 'wasm-unsafe-eval' 'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM=' https://challenges.cloudflare.com https://*.hcaptcha.com; style-src 'self' 'unsafe-inline' https://*.hcaptcha.com; img-src 'self' data: blob: https:; font-src 'self'; manifest-src 'self'; media-src 'self' blob: https:; worker-src 'self' blob:; frame-src https://challenges.cloudflare.com https://*.hcaptcha.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 
   defp sent(status) do
     :get
@@ -169,6 +170,28 @@ defmodule GrappaWeb.Plugs.SecurityHeadersTest do
 
       assert MapSet.equal?(missing, MapSet.new()),
              "img-src lost " <> inspect(MapSet.to_list(missing)) <> " — blob: is an addition."
+    end
+  end
+
+  describe "issue 2430 — WebAssembly compilation on script-src" do
+    # cic runs vodozemac (the Olm library of end-to-end encrypted queries) as
+    # WebAssembly. Without a source that allows it, `script-src` refuses
+    # `WebAssembly.instantiate` outright and every E2E feature is dead in the
+    # browser while the unit tests, which run in node, stay green.
+    test "script-src admits WebAssembly compilation" do
+      assert MapSet.member?(directives()["script-src"], "'wasm-unsafe-eval'"),
+             "script-src must carry 'wasm-unsafe-eval' — without it the browser refuses to " <>
+               "compile cic's vodozemac binding."
+    end
+
+    # 'wasm-unsafe-eval' allows compiling WebAssembly and nothing else.
+    # 'unsafe-eval' would be the lazy spelling of the same need, and it also
+    # turns on `eval()` and `new Function()` for every script on the page.
+    test "script-src still refuses JavaScript eval and inline scripts" do
+      refused = MapSet.intersection(directives()["script-src"], MapSet.new(["'unsafe-eval'", "'unsafe-inline'"]))
+
+      assert MapSet.equal?(refused, MapSet.new()),
+             "script-src gained " <> inspect(MapSet.to_list(refused)) <> " — only WebAssembly was asked for."
     end
   end
 
