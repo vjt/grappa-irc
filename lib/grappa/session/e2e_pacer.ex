@@ -263,7 +263,7 @@ defmodule Grappa.Session.E2ePacer do
   defp drain(lanes, now_ms, bank_ms, acc) do
     case next(lanes) do
       nil ->
-        {Enum.reverse(acc), lanes, flud_wait(lanes, now_ms)}
+        {Enum.reverse(acc), lanes, lanes |> wakes(now_ms) |> Enum.min(fn -> nil end)}
 
       {key, queue, {_, target, body, cost, _} = item} ->
         if bank_ms == 0 or bank_ms + cost <= Client.fake_lag_ceiling_ms() do
@@ -271,10 +271,10 @@ defmodule Grappa.Session.E2ePacer do
           drain(Map.put(lanes, key, lane), now_ms, bank_ms + cost, [{target, body} | acc])
         else
           # Room opens when the bank has drained by the excess, or when it
-          # is empty, whichever comes first. A recipient whose FLUD window
-          # reopens sooner may hold an older line that fits by then.
+          # is empty, whichever comes first. Another line may be due sooner:
+          # see `wakes/2`.
           bank_wait = min(bank_ms + cost - Client.fake_lag_ceiling_ms(), bank_ms)
-          {Enum.reverse(acc), lanes, min(bank_wait, flud_wait(lanes, now_ms) || bank_wait)}
+          {Enum.reverse(acc), lanes, Enum.min([bank_wait | wakes(lanes, now_ms)])}
         end
     end
   end
@@ -320,15 +320,32 @@ defmodule Grappa.Session.E2ePacer do
     end
   end
 
-  # When the next FLUD slot opens on a recipient that has lines waiting but
-  # a full window: when its oldest send leaves the window.
-  @spec flud_wait(%{String.t() => lane()}, integer()) :: pos_integer() | nil
-  defp flud_wait(lanes, now_ms) do
+  # Every delay, short of bank room, after which the next release could
+  # differ, over the lanes with lines waiting. Waking early costs one call
+  # that releases nothing; waking late holds a line that could have gone.
+  @spec wakes(%{String.t() => lane()}, integer()) :: [pos_integer()]
+  defp wakes(lanes, now_ms) do
     lanes
     |> Map.values()
-    |> Enum.filter(&(length(&1.sent) >= @per_window and not waiting_empty?(&1)))
-    |> Enum.map(&(Enum.min(&1.sent) + @window_ms - now_ms))
-    |> Enum.min(fn -> nil end)
+    |> Enum.reject(&waiting_empty?/1)
+    |> Enum.flat_map(&changes/1)
+    |> Enum.map(&(&1 - now_ms))
+  end
+
+  # A full FLUD window gets a slot back when its oldest send leaves it. An
+  # open one offers a head whose rank changes with time alone: when the
+  # peer's last send leaves the window it ranks as never served, and when
+  # its `urgent_budget/0`-th newest urgent release leaves the urgent window
+  # its urgent head is urgent again.
+  @spec changes(lane()) :: [integer()]
+  defp changes(%{sent: sent}) when length(sent) >= @per_window, do: [Enum.min(sent) + @window_ms]
+
+  defp changes(lane) do
+    served = if lane.sent == [], do: [], else: [Enum.max(lane.sent) + @window_ms]
+
+    if :queue.is_empty(lane.control) or length(lane.urgent_sent) < @urgent_budget,
+      do: served,
+      else: [Enum.at(Enum.sort(lane.urgent_sent, :desc), @urgent_budget - 1) + @urgent_window_ms | served]
   end
 
   @spec queued(t()) :: non_neg_integer()
