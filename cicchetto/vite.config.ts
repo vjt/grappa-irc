@@ -245,7 +245,14 @@ export default defineConfig({
         // deliberate: the choice is a server pref that can change on another
         // device, so "precache what they picked" would go stale silently, and
         // the alternative to 43 KB is bookkeeping nobody can verify offline.
-        globPatterns: ["**/*.{js,css,html,svg,png,mp3,webmanifest,ico}"],
+        //
+        // Issue 2430 — `wasm` joined for the reason every lazy `js` chunk is
+        // already here: it is CODE, loaded on demand by a precached chunk
+        // (the vodozemac binding, ~165 KB raw). The two must come from the
+        // same build: left to the network, a page still running the previous
+        // bundle after a deploy would fetch a hashed `.wasm` the server no
+        // longer has, and end-to-end encryption would die until a reload.
+        globPatterns: ["**/*.{js,css,html,svg,png,mp3,webmanifest,ico,wasm}"],
         // #1739 — the vendored station logos are NOT shell, and leaving them
         // to the pattern above would have precached them HALF: 7 `.png` plus
         // one `.svg` are matched by it and 14 `.jpg` are not, so the offline
