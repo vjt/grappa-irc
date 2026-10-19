@@ -2962,8 +2962,11 @@ the fallback key when they run out. Until now an inbound KEYREQ was dropped in
   reads one. A swapped key is caught by the peer's pin on the identity key that
   signs it; withholding is the accepted denial of service. Bounds: 50 one-time
   keys (vodozemac's ceiling on published keys), one fallback key (a new one
-  replaces the old), 1 KiB per payload so an answer stays within three lines.
-  An upload past a bound is refused whole.
+  replaces the old), 1 KiB per payload so an answer stays within four lines
+  (about 17 s of bank at worst, inside the budget below). An upload past a
+  bound is refused whole. A one-time key already held is skipped, not stored
+  twice: a client retrying an upload whose answer it lost would otherwise
+  have one key handed to two peers.
 - **One path.** grappa answers every KEYREQ, connected client or not, and never
   hands one to a client; the answer is paced as CONTROL. REST: `GET`, `POST`
   and `DELETE /networks/:network_id/e2e/keys`, each answering `{one_time_keys,
@@ -2977,13 +2980,20 @@ the fallback key when they run out. Until now an inbound KEYREQ was dropped in
   text. w2 agreed that a bank-seconds budget across peers is the fix; 22 s is
   irc-olm's total for what peers draw (REACTIVE), and may move when w2 posts
   its final pacer rule.
-- **No one-time key wasted on a refusal.** The session asks the limits twice:
-  `admit/3` before a key is picked, `afford?/3` with the answer's REAL cost
-  (the framed lines, priced as bahamut will) before the key is consumed.
-  `E2eKeys.next/3` picks without removing; `consume/1` removes, and answers
-  `:gone` for a key the client cleared or replaced in between, the fallback key
-  included, so a key of an old account is never sent after the client started
-  over.
+- **No one-time key wasted on a refusal.** Consuming the key is the LAST
+  step, after every check that can refuse: `admit/3` before a key is picked,
+  `afford?/3` with the answer's REAL cost (the framed lines, priced as bahamut
+  will), and the pacer's room (`E2ePacer.enqueue/7` is pure, so its answer is
+  committed only once the key is spent; the code review caught the first cut
+  consuming before the pacer, where a full queue burned a key per retry).
+  `E2eKeys.next/3` picks without removing; `consume/1` removes, by id AND
+  kind, and answers `:gone` for a key the client cleared or replaced in
+  between, the fallback key included, so a key of an old account is never
+  sent after the client started over. That rests on ids never being reused:
+  the table is `AUTOINCREMENT`, like `e2e_inbox` (SQLite's plain rowid hands
+  the deleted largest id out again, measured red in the context test). A
+  consume that answers `:db_unavailable` may still have deleted the key, so
+  the nick is counted as handed one, and nothing is sent.
 - **Refusals are silent and forgotten.** A KEYREQ past a limit or with no
   bundle goes unanswered and the peer asks again; it is not remembered, which
   would be state a stranger controls. What `E2eKeyAnswers` keeps is bounded by
@@ -2993,10 +3003,22 @@ Not taken from the slice plan: the plan said "AutoReplyBudget-capped". The bank
 budget bounds the same quantity more tightly, and sharing the CTCP auto-reply
 token would let a CTCP VERSION flood deny key requests.
 
-Known gaps: a client that stays connected replenishes only on its own schedule
-(cic: on connect and after each PKMSG it receives; slice b); the limits live in
-memory, so a session restart grants fresh ones (never a key twice: consumption
-is in the database).
+Known gaps, recorded rather than fixed:
+
+- A client that stays connected replenishes only on its own schedule (cic: on
+  connect and after each PKMSG it receives, since each one used up a one-time
+  key; slice b). No event announces the count falling; the PKMSG is the event.
+- The limits live in memory, so a session restart grants fresh ones (never a
+  key twice: consumption is in the database).
+- A one-time key handed out between an upload and its retry is stored again;
+  the peer that later gets it recovers through NACK and a re-key.
+- The bundle is keyed on (subject, network), like the offline queue, so it
+  survives `unbind_credential/2` and a later rebind serves the old keys until
+  the client clears or replenishes on connect.
+- Someone cycling nicks can still take the 30 one-time keys an hour; the
+  limits slow a drain, they do not stop one.
+- `E2eKeys.next/3` reads with a bare `Repo.one`, so a database that does not
+  answer at all crashes the session, as the other session-side reads do.
 
 `Session.Server` state gained `e2e_key_answers`, and `E2eKeyAnswers` is a
 LongLivedModules state helper, so this is a COLD deploy, as a1, a2 and a1b
