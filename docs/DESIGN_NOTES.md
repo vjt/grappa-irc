@@ -3025,3 +3025,94 @@ Known gaps, recorded rather than fixed:
 `Session.Server` state gained `e2e_key_answers`, and `E2eKeyAnswers` is a
 LongLivedModules state helper, so this is a COLD deploy, as a1, a2 and a1b
 were.
+<!-- entry #2430e -->
+
+---
+
+## 2026-10-19 — #2430: cic runs vodozemac as WebAssembly and keeps its key bundle on grappa
+
+Slice b, the first cic slice. cic now holds an Olm account per (subject,
+network) and fills the bundle grappa answers a peer's KEYREQ from (a3). No
+wire changed: cic consumes a3's routes, so the protocol stays 44.
+
+- **The binding is vendored, and rebuilt bit for bit in CI.** vjt ruled a thin
+  wasm-bindgen binding over vodozemac. Its Rust source is
+  `cicchetto/wasm/vodozemac-binding` with its `Cargo.lock`; what cic imports is
+  the wasm-bindgen output committed under `cicchetto/src/lib/e2e/vodozemac/`,
+  so no cic build (docker, `Dockerfile.release`, the FreeBSD jail's npm) needs
+  Rust. `scripts/wasm.sh` rebuilds it in a digest-pinned rust image with
+  wasm-bindgen-cli built from crates.io at the locked version; `--check`
+  fails on any byte of difference, and the path-filtered `wasm` workflow runs
+  it, so the binary nobody can review is what the reviewable source builds.
+  It binds only what this slice calls (the account, its keys, signing, the
+  pickle as JSON); later slices add sessions and SAS and rebuild.
+- **The build platform is part of the pin.** Measured: the same image and
+  source build a raw wasm 566 bytes apart on an arm64 and an amd64 host (code
+  layout, not paths), while each host rebuilds its own bytes exactly. So
+  `wasm.sh` always runs the container as linux/amd64, natively on the CI
+  runner, emulated on an arm64 laptop. No wasm-opt: 5% smaller (298,772 →
+  284,001 bytes on the probe) for a second tool to pin. The artefact is
+  168,111 bytes, 68,568 gzipped. The digest-pin bats guard now covers the
+  `rust` family (anchored so `trust:` is not an image reference).
+- **CSP gains `'wasm-unsafe-eval'` and nothing else.** Without it the browser
+  refuses `WebAssembly.instantiate` while every node test stays green. It
+  allows WebAssembly compilation only; `'unsafe-eval'` would also turn on
+  `eval()` for the page, and a test pins that neither it nor
+  `'unsafe-inline'` came along.
+- **Loaded on demand, precached.** `loadOlm()` is a dynamic import plus one
+  fetch of the hashed `.wasm`, kept out of the boot bundle. The service worker
+  now precaches `wasm` for the reason it precaches every lazy `js` chunk: the
+  module and the glue that loads it must come from the same build, or a page
+  still on the previous bundle after a deploy asks for a `.wasm` the server
+  no longer has.
+- **The account is sealed under a non-extractable key, one writer at a
+  time.** IndexedDB database `grappa-e2e`: the pickle (vodozemac's JSON),
+  AES-GCM-sealed under a key WebCrypto created non-extractable, the slot
+  (`<kind>:<id>:<network id>`) as additional data. A copied profile alone
+  never opens it, and a record moved to another slot does not open there.
+  Every load-change-store of an account runs under an exclusive Web Lock
+  named after its slot, so two tabs never store over each other and lose a
+  published one-time key; the wrapping key is created under a lock of its
+  own. A record that cannot be opened starts the slot over, with a console
+  warning; peers will see a new identity.
+- **Filling the bundle.** Once per page load per (subject, network), and for a
+  network that appears later; it waits for no IRC link, since grappa keeps the
+  bundle per binding. A NEW account first `DELETE`s whatever grappa holds (keys
+  of an account that is gone: a peer handed one opens a session nobody can
+  decrypt); a known one `GET`s what is left. It tops up to 50 one-time keys
+  and a fallback key. The account is stored with its new keys BEFORE they are
+  uploaded, so grappa never holds a key whose private half was not kept, and
+  they are marked published only once grappa has them, so a failed upload
+  resends the same keys. Keys never confirmed go before new ones (grappa skips
+  a key it holds), and no more than grappa's room is sent, so an upload is
+  never refused for size.
+- **The test-only wipe w2 asked for** is `window.__cic_e2eResetForTests()`: it
+  deletes the database; the next page load starts each network over with a new
+  identity and replaces grappa's bundle. It ships in the bundle like the other
+  `__cic_*` hooks and grants nothing a same-origin script could not do with
+  `indexedDB.deleteDatabase`.
+
+The e2e spec reads all of this as a peer would: a real IRC peer sends KEYREQ,
+reassembles grappa's KEYS answer and verifies both signatures with node's
+Ed25519; the identity is the same after a reload (`GET` then `POST`) and new
+after the wipe (`DELETE` then `POST`). It is two tests with two asks each,
+not one with three: a3's per-connection budget lets KEYS answers spend 22 s of
+fake-lag bank per minute, one two-line answer costs about 8 s, and the third
+ask on one session was refused — the budget doing its job. Interop tests
+(w2's) meet the same bound: about two KEYS answers per subject and network
+per minute, from all peers together; a refused KEYREQ gets no answer and
+must be asked again later.
+
+Known gaps, recorded rather than fixed:
+
+- The refill after each received PKMSG (each used up a one-time key) comes
+  with slice c, which reads PKMSGs. Until then a client that stays open
+  refills only on its next page load.
+- The wipe races a sync already running on the page: call it once the page
+  has settled.
+- A browser without Web Locks, IndexedDB or a secure context cannot hold an
+  account; the sync fails with a console warning and the network simply has
+  no bundle.
+
+Client-only: no server state, no deploy class beyond the cic bundle. The CSP
+change is a header literal, HOT.
