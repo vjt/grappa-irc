@@ -10,9 +10,9 @@ by `mix grappa.gen_wire_types` and held by the same `--check` that holds
 the two TypeScript artefacts, so it cannot go stale quietly.
 
     generated                 202
-    imported by cicchetto     66
-    reachable at runtime      135
-    never read                67
+    imported by cicchetto     67
+    reachable at runtime      136
+    never read                66
 
 "Reachable" counts a schema nested inside an imported one: the validator
 walks it, so it is load-bearing even though no module names it.
@@ -35,7 +35,6 @@ wire shape cic does not consume at all.
 - S_BootJSONChannelTree
 - S_BootJSONHeads
 - S_CicWireBundleHashPayload
-- S_E2eKeysWireStatus
 - S_ErrorTokensChannelErrorToken
 - S_ErrorTokensRestErrorToken
 - S_ErrorTokensSharedErrorToken
