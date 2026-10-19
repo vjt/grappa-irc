@@ -1183,7 +1183,25 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: an old bundle ignores the extra field,
   # the new routes and the meta key it does not know.
-  @protocol_version 43
+  #
+  # ---------------------------------------------------------------------------
+  # 44 — issue 2430: the hosted key bundle
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `GET`, `POST` and `DELETE /networks/:network_id/e2e/keys`. The
+  # client uploads the KEYS payloads it built and signed (`{one_time_keys,
+  # fallback}`), grappa answers a peer's KEYREQ from them itself, connected
+  # client or not, and every route answers `{one_time_keys, fallback}`
+  # (`Grappa.E2eKeys.Wire.status`) so the client knows when to replenish.
+  # Generated shape, so `wire_pin` sees it. Bumped on the #1393d rule: a
+  # client that uploads its bundle on connect cannot do it against a server
+  # predating the routes.
+  #
+  # Checked for a collision before claiming 44: the one open PR that edits
+  # this file (#2102) still carries 21.
+  #
+  # @min_protocol_version stays at 1: an old bundle never calls the routes.
+  @protocol_version 44
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1224,7 +1242,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 43
+  @spec version() :: 44
   def version, do: @protocol_version
 
   @doc """

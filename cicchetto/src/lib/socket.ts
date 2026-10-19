@@ -317,7 +317,12 @@ let _socket: Socket | null = null;
 // queue routes are not called yet (the Olm side is a later slice), and a
 // server without the key just never writes such a row, so
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 43;
+//
+// 44 (issue 2430) — the hosted key bundle: `GET`/`POST`/`DELETE
+// …/e2e/keys`, answering `{one_time_keys, fallback}`. Not called yet (the
+// Olm account is a later slice), so `MIN_SERVER_PROTOCOL_VERSION` stays
+// at 9.
+export const CLIENT_PROTOCOL_VERSION = 44;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

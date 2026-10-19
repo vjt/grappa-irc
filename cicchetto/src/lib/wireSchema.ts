@@ -529,6 +529,9 @@ export const S_CicWireBundleHashPayload = {
   q: ["version"],
 } as const;
 
+// Grappa.E2eKeys.Wire.status/0
+export const S_E2eKeysWireStatus = { o: { one_time_keys: "i", fallback: "b" } } as const;
+
 // Grappa.IRC.AuthFSM.auth_method/0
 export const S_IRCAuthFSMAuthMethod = { e: [...IRCAUTH_FSMAUTH_METHOD] } as const;
 

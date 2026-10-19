@@ -67,15 +67,26 @@ defmodule Grappa.E2eKeys do
           {:ok, status()} | {:error, :bad_request | :too_large | :db_unavailable}
   def upload({_, _} = subject, network_id, %{one_time_keys: otks, fallback: fallback})
       when is_integer(network_id) and is_list(otks) and (is_binary(fallback) or is_nil(fallback)) do
-    changesets =
-      Enum.map(otks, &changeset(subject, network_id, :otk, &1)) ++
-        if(fallback, do: [changeset(subject, network_id, :fallback, fallback)], else: [])
+    if length(otks) > @max_one_time_keys do
+      {:error, :too_large}
+    else
+      changesets =
+        Enum.map(otks, &changeset(subject, network_id, :otk, &1)) ++
+          if(fallback, do: [changeset(subject, network_id, :fallback, fallback)], else: [])
 
-    cond do
-      changesets == [] -> {:error, :bad_request}
-      not Enum.all?(changesets, & &1.valid?) -> {:error, :bad_request}
-      true -> Repo.BusyRetry.run(fn -> upload_transaction(subject, network_id, changesets) end)
+      store_valid(subject, network_id, changesets)
     end
+  end
+
+  # An upload that could never fit is refused before a changeset is built.
+  @spec store_valid(Subject.t(), integer(), [Ecto.Changeset.t()]) ::
+          {:ok, status()} | {:error, :bad_request | :too_large | :db_unavailable}
+  defp store_valid(_, _, []), do: {:error, :bad_request}
+
+  defp store_valid(subject, network_id, changesets) do
+    if Enum.all?(changesets, & &1.valid?),
+      do: Repo.BusyRetry.run(fn -> upload_transaction(subject, network_id, changesets) end),
+      else: {:error, :bad_request}
   end
 
   @spec changeset(Subject.t(), integer(), Key.kind(), term()) :: Ecto.Changeset.t()

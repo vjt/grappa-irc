@@ -39,6 +39,10 @@ defmodule GrappaWeb do
         # issue 2430 — the offline queue of encrypted messages is a REST
         # resource of its own (`E2eController.inbox/2`, `ack/2`).
         Grappa.E2eInbox,
+        # issue 2430 — the hosted key bundle, upload / status / clear
+        # (`E2eController.keys/2` and siblings), and its wire projection.
+        Grappa.E2eKeys,
+        Grappa.E2eKeys.Wire,
         Grappa.Health,
         Grappa.HotReload,
         Grappa.IRC,

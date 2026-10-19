@@ -17,7 +17,7 @@ defmodule GrappaWeb.E2eControllerTest do
   import Ecto.Query
   import Grappa.AuthFixtures
 
-  alias Grappa.{E2eInbox, IRCServer, Repo}
+  alias Grappa.{E2eInbox, E2eKeys, IRCServer, Repo}
   alias Grappa.IRC.E2e
   alias Grappa.Scrollback.Message
   alias Grappa.Session.Wire, as: SessionWire
@@ -256,6 +256,76 @@ defmodule GrappaWeb.E2eControllerTest do
           ] do
         assert json_response(post(conn, path, body), 400) == %{"error" => "bad_request"}, inspect(body)
       end
+    end
+  end
+
+  describe "the key bundle" do
+    # A KEYS payload as the agreed 2430 shape builds it; grappa never reads
+    # it, the client does.
+    defp keys_payload(fallback?) do
+      b64 = &Base.encode64(:crypto.strong_rand_bytes(&1), padding: false)
+      id = ~s({"curve25519":"#{b64.(32)}","ed25519":"#{b64.(32)}","sig":"#{b64.(64)}"})
+      Base.encode64(~s({"v":1,"id":#{id},"otk":{"key":"#{b64.(32)}","fallback":#{fallback?},"sig":"#{b64.(64)}"}}))
+    end
+
+    defp bundle_network(vjt) do
+      {network, _} = network_with_server(port: unique_port(), slug: "keys-#{u()}")
+      _ = credential_fixture(vjt, network, %{nick: "grappa-test", autojoin_channels: []})
+      network
+    end
+
+    test "POST uploads, GET reads what is left, DELETE drops it all", %{conn: conn, vjt: vjt} do
+      network = bundle_network(vjt)
+      path = "/networks/#{network.slug}/e2e/keys"
+
+      assert json_response(get(conn, path), 200) == %{"one_time_keys" => 0, "fallback" => false}
+
+      body = %{one_time_keys: [keys_payload(false), keys_payload(false)], fallback: keys_payload(true)}
+      assert json_response(post(conn, path, body), 200) == %{"one_time_keys" => 2, "fallback" => true}
+
+      # Replenishing adds one-time keys; leaving out the fallback key keeps it.
+      assert json_response(post(conn, path, %{one_time_keys: [keys_payload(false)]}), 200) ==
+               %{"one_time_keys" => 3, "fallback" => true}
+
+      assert json_response(get(conn, path), 200) == %{"one_time_keys" => 3, "fallback" => true}
+      assert response(delete(conn, path), 204) == ""
+      assert E2eKeys.status({:user, vjt.id}, network.id) == %{one_time_keys: 0, fallback: false}
+    end
+
+    test "400 for an upload that is empty, malformed or not base64; 413 past 50 one-time keys",
+         %{conn: conn, vjt: vjt} do
+      network = bundle_network(vjt)
+      path = "/networks/#{network.slug}/e2e/keys"
+
+      for body <- [
+            %{},
+            %{one_time_keys: []},
+            %{one_time_keys: "x"},
+            %{one_time_keys: [1]},
+            %{one_time_keys: ["not base64!"]},
+            %{fallback: 1},
+            %{fallback: String.duplicate("A", E2eKeys.max_payload_bytes() + 1)}
+          ] do
+        assert json_response(post(conn, path, body), 400) == %{"error" => "bad_request"}, inspect(body)
+      end
+
+      too_many = for _ <- 1..(E2eKeys.max_one_time_keys() + 1), do: keys_payload(false)
+      assert json_response(post(conn, path, %{one_time_keys: too_many}), 413) == %{"error" => "too_large"}
+      assert E2eKeys.status({:user, vjt.id}, network.id) == %{one_time_keys: 0, fallback: false}
+    end
+
+    test "another subject's bundle is out of reach", %{conn: conn, vjt: vjt} do
+      other = user_fixture(name: "other-#{u()}")
+      {network, _} = network_with_server(port: unique_port(), slug: "other-#{u()}")
+      _ = credential_fixture(other, network, %{nick: "someone"})
+      {:ok, _} = E2eKeys.upload({:user, other.id}, network.id, %{one_time_keys: [keys_payload(false)], fallback: nil})
+      _ = vjt
+      path = "/networks/#{network.slug}/e2e/keys"
+
+      assert get(conn, path).status == 404
+      assert post(conn, path, %{one_time_keys: [keys_payload(false)]}).status == 404
+      assert delete(conn, path).status == 404
+      assert E2eKeys.status({:user, other.id}, network.id) == %{one_time_keys: 1, fallback: false}
     end
   end
 end
