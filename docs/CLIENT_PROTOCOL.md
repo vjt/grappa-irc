@@ -726,12 +726,13 @@ them by two rules from bahamut's source:
   60 s from a message's LAST line, not its first.
 
 An optional `"priority"` field takes `"control"` or `"text"`; absent means
-`"text"`. A control message goes ahead of the text queued for the SAME
-peer, so a CHAL or an ACK is not stuck behind a long message, but only up
-to a budget: at most 8 control lines per peer in any 60 s go ahead; past
-that they wait their turn like text. Peers are served in turn, whoever was
-served longest ago first, so one long conversation does not hold up
-another. Text to one peer never reorders, so the peer never displays two
+`"text"`. A control message always goes ahead of the text queued for the
+SAME peer, so a CHAL or an ACK is not stuck behind a long message. Ahead
+of OTHER peers' lines it goes only within a budget: at most 8 control lines
+per peer in any 60 s; past that, that peer takes its turn with the others
+(its control lines still before its own text). Peers are served in turn,
+whoever was served longest ago first, so one long conversation does not
+hold up another. Text to one peer never reorders, so the peer never displays two
 messages backwards. `keyreq` and `nack` are control whatever the field
 says. grappa cannot see inside a `msg`/`pkmsg`, so set `"control"` on the
 one that carries a CHAL or an ACK.
