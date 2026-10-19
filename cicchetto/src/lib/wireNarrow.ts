@@ -16,6 +16,7 @@ import {
   S_AdminEventsWireEvent,
   S_AdminOverviewWireT,
   S_ChannelDirectoryWireIndexPayload,
+  S_E2eKeysWireStatus,
   S_LiveIntrospectionAdminWireIndexPayload,
   S_MeJSONMeJson,
   S_NetworksFeaturedChannelsAdminWireIndexPayload,
@@ -43,6 +44,7 @@ import type {
   AccountsAdminWireT,
   AdminOverviewWireT,
   ChannelDirectoryWireIndexPayload,
+  E2eKeysWireStatus,
   LiveIntrospectionAdminWireIndexPayload,
   MeJSONMeJson,
   NetworksFeaturedChannelsAdminWireIndexPayload,
@@ -914,6 +916,11 @@ export function narrowFeaturedChannelsResponse(
 /** `GET /networks/:slug/directory`. */
 export function narrowDirectoryPageResponse(raw: unknown): ChannelDirectoryWireIndexPayload {
   return narrowRest(S_ChannelDirectoryWireIndexPayload, raw, "channel directory page");
+}
+
+/** `GET` / `POST /networks/:slug/e2e/keys` (issue 2430): what the key bundle holds. */
+export function narrowE2eKeysStatus(raw: unknown): E2eKeysWireStatus {
+  return narrowRest(S_E2eKeysWireStatus, raw, "key bundle status");
 }
 
 // ── #1400 slice 1 — the doors whose envelope was already generated ──

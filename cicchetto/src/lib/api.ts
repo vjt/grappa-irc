@@ -33,6 +33,7 @@ import {
   narrowChannelListResponse,
   narrowCredentialResponse,
   narrowDirectoryPageResponse,
+  narrowE2eKeysStatus,
   narrowFeaturedChannelsResponse,
   narrowMembersIndexResponse,
   narrowMeResponse,
@@ -52,6 +53,7 @@ import type {
   ChannelDirectoryStatus,
   ChannelDirectoryWireEntry,
   ChannelDirectoryWireIndexPayload,
+  E2eKeysWireStatus,
   LiveIntrospectionAdminWireT,
   NetworksAdminWireT,
   NetworksCredentialConnectionState,
@@ -2553,6 +2555,42 @@ export async function listDirectory(
 export async function refreshDirectory(token: string, networkSlug: string): Promise<void> {
   const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/directory/refresh`, {
     method: "POST",
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
+// issue 2430 — the key bundle grappa hosts for this subject on `networkSlug`
+// and hands out to peers (CLIENT_PROTOCOL §4f). `getE2eKeys` answers what is
+// left; `uploadE2eKeys` adds one-time keys (one grappa already holds is
+// skipped) and replaces the fallback key, answering what it then holds;
+// `clearE2eKeys` drops the whole bundle, for an account that starts over.
+// `lib/e2e/bundleSync.ts` is the only caller.
+export async function getE2eKeys(token: string, networkSlug: string): Promise<E2eKeysWireStatus> {
+  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/e2e/keys`, {
+    headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+  return narrowE2eKeysStatus(await res.json());
+}
+
+export async function uploadE2eKeys(
+  token: string,
+  networkSlug: string,
+  upload: { one_time_keys: string[]; fallback: string | null },
+): Promise<E2eKeysWireStatus> {
+  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/e2e/keys`, {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify(upload),
+  });
+  if (!res.ok) throw await readError(res);
+  return narrowE2eKeysStatus(await res.json());
+}
+
+export async function clearE2eKeys(token: string, networkSlug: string): Promise<void> {
+  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/e2e/keys`, {
+    method: "DELETE",
     headers: buildHeaders(token),
   });
   if (!res.ok) throw await readError(res);
