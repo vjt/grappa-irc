@@ -81,6 +81,38 @@ describe("chatStore", () => {
     expect(Object.keys(await chats.chats(SLOT))).toEqual(["bob"]);
   });
 
+  it("never moves a sent message back to waiting: a re-send after a NACK waits for keys, the row stays sent", async () => {
+    const chats = chatStore(memoryVault(), memoryLock());
+    const out: ChatRow = {
+      kind: "out",
+      id: "t1",
+      at: 1,
+      body: "hi",
+      state: "sending",
+      reason: null,
+    };
+    await chats.apply(SLOT, [add("bob", out, false)]);
+    const move = (state: "queued" | "sending" | "sent" | "failed"): ChatChange => ({
+      op: "out",
+      nick: "bob",
+      id: "t1",
+      state,
+      reason: state === "failed" ? "keys-timeout" : null,
+    });
+    const state = async () => (await chats.rows(SLOT, "bob"))[0];
+
+    await chats.apply(SLOT, [move("queued")]);
+    expect(await state()).toEqual({ ...out, state: "queued" });
+    await chats.apply(SLOT, [move("sent")]);
+    await chats.apply(SLOT, [move("queued")]);
+    await chats.apply(SLOT, [move("sending")]);
+    expect(await state()).toEqual({ ...out, state: "sent" });
+
+    // Lost after all (the re-send never reached the device): failed.
+    await chats.apply(SLOT, [move("failed")]);
+    expect(await state()).toEqual({ ...out, state: "failed", reason: "keys-timeout" });
+  });
+
   it("reopens a closed chat on a new row, and `read` clears its count", async () => {
     const chats = chatStore(memoryVault(), memoryLock());
     await chats.apply(SLOT, [add("Bob", inRow("in:1:0", "one"))]);

@@ -12,9 +12,10 @@
 //
 // When things happen:
 //   * a network shows up in the list after login, and the user topic joins
-//     (every reconnect): drain its inbox;
+//     (every reconnect): drain this device's inbox there;
 //   * an `e2e_message` arrives: drain that network's (the push only says
-//     there is something; the drain takes it in id order, with the rest);
+//     there is something, and reaches every device of the user; the drain
+//     takes what is this device's, in id order, with the rest);
 //   * messages wait for keys: a tick every few seconds reports the ones
 //     that waited too long;
 //   * a drain opened pre-key messages: refill the key bundle;
@@ -25,27 +26,40 @@
 //
 // An order challenge is answered inside the drain (`e2e/client.ts`), against
 // the device's send log (`e2e/orders.ts`) and the network's 005 `NETWORK=`.
+//
+// An identity is never replaced silently (`e2e/identity.ts`): when grappa
+// holds one this browser cannot speak for, the network reads "elsewhere"
+// (`identityElsewhere`), nothing runs on it, and the window offers the two
+// ways out: pairing this browser with a device that holds the identity, or,
+// confirmed, starting a new one here (`replaceEncryptedIdentity`).
 
 import { createEffect, createSignal, onCleanup } from "solid-js";
-import { ApiError, ackE2eInbox, listE2eInbox, sendE2e } from "./api";
+import { ApiError, ackE2eDeviceInbox, listE2eDeviceInbox, sendE2e } from "./api";
 import { token } from "./auth";
 import { browserE2e } from "./e2e/browser";
-import { accountSlot, syncKeyBundle } from "./e2e/bundleSync";
 import type { Chat, ChatRow, DoorRefusal, SendDropped } from "./e2e/chatStore";
 import {
   type Door,
   type E2eClient,
   type E2eContext,
   e2eClient,
+  IdentityElsewhereError,
   NoAccountError,
   type PeerTrust,
   type Report,
 } from "./e2e/client";
+import type { PinOutcome } from "./e2e/engine";
+import { accountSlot, type IdentityState, replaceIdentity, syncIdentity } from "./e2e/identity";
 import { type OrderScope, sendLog, subjectKey } from "./e2e/orders";
 import type { SasStep, SasView } from "./e2e/sas";
 import { fold } from "./e2e/wire";
 import { identityScopedStore } from "./identityScopedStore";
-import { casemappingForNetwork, chantypesForNetwork, isupportForNetwork } from "./isupport";
+import {
+  casemappingForNetwork,
+  chantypesForNetwork,
+  frameBudgetBaseForNetwork,
+  isupportForNetwork,
+} from "./isupport";
 import { networkBySlug, networks, user } from "./networks";
 import type { SessionWireE2eDropReason } from "./wireTypes";
 
@@ -81,6 +95,9 @@ const refusalOf = (err: unknown): DoorRefusal => {
   if (err instanceof ApiError && err.status === 429) return "rate-limited";
   if (err instanceof ApiError && err.status === 413) return "too-large";
   if (err instanceof ApiError && err.status === 422 && err.code === "too_late") return "too-late";
+  if (err instanceof ApiError && err.status === 422 && err.code === "unknown_device") {
+    return "unknown-device";
+  }
   return "refused";
 };
 
@@ -91,25 +108,30 @@ const DROPPED: Record<SessionWireE2eDropReason, SendDropped> = {
   session_ended: "session-ended",
 };
 
-function door(bearer: string, slug: string): Door {
-  return {
+/** grappa's doors for the subject's device `did` on the network: its own inbox, and the send door. */
+const doors =
+  (bearer: string, slug: string) =>
+  (did: string): Door => ({
     inbox: async (after) =>
-      (await listE2eInbox(bearer, slug, after)).messages.map((m) => ({
+      (await listE2eDeviceInbox(bearer, slug, did, after)).messages.map((m) => ({
         id: m.id,
         from: m.from,
+        fromDid: m.from_did,
         verb: m.verb,
         msgid: m.msgid,
         payload: m.payload,
       })),
-    ack: (ids) => ackE2eInbox(bearer, slug, ids),
+    ack: (ids) => ackE2eDeviceInbox(bearer, slug, did, ids),
     send: async (out) => {
       try {
         return await sendE2e(bearer, slug, {
           target: out.target,
           verb: out.verb,
+          from: out.from,
+          to: out.to,
           payload: out.payload,
           priority: out.priority,
-          ...(out.expiresAt === undefined ? {} : { expires_at: out.expiresAt }),
+          expiresAt: out.expiresAt ?? null,
         });
       } catch (err) {
         // The client marks the message failed with the reason; the cause
@@ -118,7 +140,13 @@ function door(bearer: string, slug: string): Door {
         return { refused: refusalOf(err) };
       }
     },
-  };
+  });
+
+// The window says it: an identity held elsewhere is where the network stands,
+// not a failure to log every time something tries to run on it.
+function unlessElsewhere(err: unknown): undefined {
+  if (!(err instanceof IdentityElsewhereError)) throw err;
+  return undefined;
 }
 
 type Changed = { slug: string; slot: string; chats: string[] };
@@ -129,6 +157,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   const [trustByChat, setTrustByChat] = createSignal<Record<string, PeerTrust | null>>({});
   const [ownKeyBySlug, setOwnKeyBySlug] = createSignal<Record<string, string>>({});
   const [sasByChat, setSasByChat] = createSignal<Record<string, SasView | null>>({});
+  /** Networks whose identity grappa holds and this browser cannot speak for. */
+  const [elsewhereBySlug, setElsewhereBySlug] = createSignal<Record<string, true>>({});
   /** Chats a window showed: kept current. Others are read when shown. */
   const loaded = new Set<string>();
   /** Networks with something waiting on the clock: messages waiting for keys, a SAS. */
@@ -142,6 +172,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     setTrustByChat({});
     setOwnKeyBySlug({});
     setSasByChat({});
+    setElsewhereBySlug({});
     loaded.clear();
     waiting.clear();
     drainAgain.clear();
@@ -171,23 +202,56 @@ const exports_ = identityScopedStore((onIdentityChange) => {
       ctx: {
         slot,
         ownNick: network.nick,
-        door: door(bearer, slug),
+        frameBudgetBase: frameBudgetBaseForNetwork(network.id),
+        door: doors(bearer, slug),
         orders: (chal, challenger, at) => sendLog.confirms(chal, challenger, scope, at),
       },
     };
   }
 
-  // An operation on the network's account. A slot without one is synced
-  // first (only the bundle sync creates an account), then tried again.
+  /** Where a sync, or an operation, found the network's identity: what the window shows. */
+  function identitySynced(slug: string, state: IdentityState): void {
+    setElsewhereBySlug((prev) => {
+      if ((prev[slug] === true) === (state === "elsewhere")) return prev;
+      const next = { ...prev };
+      if (state === "elsewhere") next[slug] = true;
+      else delete next[slug];
+      return next;
+    });
+  }
+
+  const identityElsewhere = (slug: string): boolean => elsewhereBySlug()[slug] === true;
+
+  async function sync(slug: string): Promise<IdentityState> {
+    const c = contextFor(slug);
+    const { accounts } = await browserE2e();
+    const state = await syncIdentity(accounts, c.bearer, c.slot, slug);
+    identitySynced(slug, state);
+    return state;
+  }
+
+  // An operation on the network's identity. A slot without an account is
+  // synced first (only the identity sync makes one), then tried again, once.
+  // An identity held elsewhere runs nothing, and is not tried again: only the
+  // user moves it (pairing, or a new identity). A 404 from this device's
+  // doors says grappa holds the device no more (another device replaced the
+  // identity, or revoked this one): the sync works out where it stands.
   async function run<T>(slug: string, op: (client: E2eClient, ctx: E2eContext) => Promise<T>) {
+    if (identityElsewhere(slug)) throw new IdentityElsewhereError(`identity elsewhere on ${slug}`);
     const c = contextFor(slug);
     const { olm, accounts, chats, sas } = await browserE2e();
     const client = e2eClient(olm, accounts, chats, Date.now, sas);
     try {
       return await op(client, c.ctx);
     } catch (err) {
+      if (err instanceof IdentityElsewhereError) identitySynced(slug, "elsewhere");
+      if (err instanceof ApiError && err.status === 404 && (await sync(slug)) === "elsewhere") {
+        throw new IdentityElsewhereError(`identity elsewhere on ${slug}`);
+      }
       if (!(err instanceof NoAccountError)) throw err;
-      await syncKeyBundle(accounts, c.bearer, c.slot, slug);
+      if ((await sync(slug)) === "elsewhere") {
+        throw new IdentityElsewhereError(`identity elsewhere on ${slug}`);
+      }
       return op(client, c.ctx);
     }
   }
@@ -202,7 +266,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     const identity =
       shown.length === 0
         ? undefined
-        : await run(slug, (client, ctx) => client.identity(ctx, shown));
+        : await run(slug, (client, ctx) => client.identity(ctx, shown)).catch(unlessElsewhere);
     const index = await chats.chats(slot);
     setChatsBySlug((prev) => ({ ...prev, [slug]: index }));
     if (identity === undefined) return;
@@ -231,22 +295,26 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     channel?.postMessage(message);
   }
 
+  // Pre-key messages spent one-time keys: the sync refills the bundle. A
+  // payload refused as from a device grappa does not list: the sync works out
+  // where the identity stands.
   async function afterReport(slug: string, report: Report): Promise<void> {
     if (report.waiting) waiting.add(slug);
     else waiting.delete(slug);
     await changed(slug, report.chats);
-    if (report.pkmsgs > 0) {
-      const c = contextFor(slug);
-      const { accounts } = await browserE2e();
-      await syncKeyBundle(accounts, c.bearer, c.slot, slug);
-    }
+    if (report.pkmsgs > 0 || report.unknownDevice) await sync(slug);
   }
 
   channel?.addEventListener("message", (event: MessageEvent<Changed>) => {
     const { slug, slot, chats } = event.data;
     // Another identity's tab (a different login in the same browser) is not ours.
     if (networkBySlug(slug) === undefined || contextFor(slug).slot !== slot) return;
-    void refresh(slug, chats).catch((err: unknown) => {
+    void (async () => {
+      // That tab may have started a new identity here, or paired this
+      // browser: a network this tab holds elsewhere is synced again first.
+      if (identityElsewhere(slug)) await sync(slug);
+      await refresh(slug, chats);
+    })().catch((err: unknown) => {
       console.warn(`[e2e] could not read the chats another tab changed on ${slug}`, err);
     });
   });
@@ -264,7 +332,9 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         const report = await run(slug, (client, ctx) => client.drain(ctx));
         await afterReport(slug, report);
       } while (drainAgain.has(slug));
-    })().finally(() => draining.delete(slug));
+    })()
+      .catch(unlessElsewhere)
+      .finally(() => draining.delete(slug));
     draining.set(slug, drain);
     return drain;
   }
@@ -277,10 +347,21 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     }
   }
 
+  // Each network on its own: one that fails is logged and tried again on the
+  // next tick, and never holds up the ones after it.
   async function tickWaiting(): Promise<void> {
     for (const slug of [...waiting]) {
-      const report = await run(slug, (client, ctx) => client.tick(ctx));
-      await afterReport(slug, report);
+      // A network that left the list (detached) has nothing left to tick here.
+      if (networkBySlug(slug) === undefined) {
+        waiting.delete(slug);
+        continue;
+      }
+      try {
+        await afterReport(slug, await run(slug, (client, ctx) => client.tick(ctx)));
+      } catch (err) {
+        if (err instanceof IdentityElsewhereError) waiting.delete(slug);
+        else console.warn(`[e2e] could not check what waits on ${slug}`, err);
+      }
     }
   }
 
@@ -329,18 +410,42 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     await afterReport(slug, report);
   }
 
-  /** Pins `key` to `nick`: `verified` when pasted, not when taken off the alarm. */
+  /** Pins the master `key` to `nick`: `verified` when pasted, not when taken off the alarm. */
   async function pinEncryptedKey(
     slug: string,
     nick: string,
     key: string,
     verified: boolean,
-  ): Promise<"pinned" | "bad-key" | "own-key"> {
-    const { result, chats } = await run(slug, (client, ctx) =>
+  ): Promise<PinOutcome> {
+    const { result, ...report } = await run(slug, (client, ctx) =>
       client.pin(ctx, nick, key, verified),
     );
-    if (result === "pinned") await changed(slug, chats);
+    // A pin asks the nick for its list, which may wait on the clock.
+    if (result === "pinned") await afterReport(slug, report);
     return result;
+  }
+
+  /**
+   * DESTRUCTIVE, and only for the user's confirmed choice: deletes this
+   * account's identity for the network on grappa and starts a new one here
+   * (`replaceIdentity`). Then the network runs as any other: its inbox is
+   * drained, and the windows it shows read the new identity. The flag the
+   * choice was made on may be stale (another tab started a new identity, or
+   * paired this browser): a sync first, and an identity this browser speaks
+   * for after all is kept, never deleted.
+   */
+  async function replaceEncryptedIdentity(slug: string): Promise<void> {
+    if ((await sync(slug)) === "elsewhere") {
+      const c = contextFor(slug);
+      const { accounts } = await browserE2e();
+      await replaceIdentity(accounts, c.bearer, c.slot, slug);
+      identitySynced(slug, "ready");
+    }
+    const shown = [...loaded].flatMap((id) =>
+      id.startsWith(`${slug} `) ? [id.slice(slug.length + 1)] : [],
+    );
+    await refresh(slug, shown);
+    await drainE2e(slug);
   }
 
   /** The user's step in the emoji comparison with `nick`. */
@@ -355,8 +460,14 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     msgid: string,
     reason: SessionWireE2eDropReason,
   ): Promise<void> {
-    const report = await run(slug, (client, ctx) => client.dropped(ctx, msgid, DROPPED[reason]));
-    await afterReport(slug, report);
+    // Every device of the user hears it: on a network held elsewhere it is
+    // another device's, and nothing of it is this browser's.
+    try {
+      const report = await run(slug, (client, ctx) => client.dropped(ctx, msgid, DROPPED[reason]));
+      await afterReport(slug, report);
+    } catch (err) {
+      unlessElsewhere(err);
+    }
   }
 
   /** The open encrypted chats of a network, in the order they were first opened. */
@@ -386,11 +497,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
    */
   function mountEncryptedChats(): void {
     const drained = new Set<string>();
-    const tick = setInterval(() => {
-      void tickWaiting().catch((err: unknown) => {
-        console.warn("[e2e] could not check the messages waiting for keys", err);
-      });
-    }, TICK_MS);
+    // `tickWaiting` logs each network's failure itself, and goes on.
+    const tick = setInterval(() => void tickWaiting(), TICK_MS);
     onCleanup(() => clearInterval(tick));
     onIdentityChange(() => drained.clear());
     createEffect(() => {
@@ -417,6 +525,9 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     readEncryptedChat,
     sendEncrypted,
     pinEncryptedKey,
+    replaceEncryptedIdentity,
+    identitySynced,
+    identityElsewhere,
     verifyEncrypted,
     encryptedSendDropped,
     encryptedChatsFor,
@@ -439,6 +550,9 @@ export const encryptedChatHasRows = exports_.encryptedChatHasRows;
 export const readEncryptedChat = exports_.readEncryptedChat;
 export const sendEncrypted = exports_.sendEncrypted;
 export const pinEncryptedKey = exports_.pinEncryptedKey;
+export const replaceEncryptedIdentity = exports_.replaceEncryptedIdentity;
+export const identitySynced = exports_.identitySynced;
+export const identityElsewhere = exports_.identityElsewhere;
 export const verifyEncrypted = exports_.verifyEncrypted;
 export const encryptedSendDropped = exports_.encryptedSendDropped;
 export const encryptedChatsFor = exports_.encryptedChatsFor;

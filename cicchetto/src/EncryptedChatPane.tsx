@@ -45,10 +45,12 @@ import NickText from "./NickText";
 // takes no slash commands (everything typed goes to the peer, encrypted).
 //
 // Bots are pinned by hand (2430 ruling 6253162964): the user reads the bot's
-// key off the bot and pastes it here; our own key is shown, copyable, for the
-// other direction. People verify each other by comparing emoji (SAS,
-// `lib/e2e/sas.ts`); a key the alarm showed can be taken unverified, to be
-// verified that way (fork 7, 2430 comment 6339695571).
+// master key off the bot and pastes it here; our own master is shown,
+// copyable, for the other direction. People verify each other by comparing
+// emoji (SAS, `lib/e2e/sas.ts`); a key the alarm showed can be taken
+// unverified, to be verified that way (fork 7, 2430 comment 6339695571).
+// A key here is always a master: what a peer pins, whichever of its devices
+// writes (wire v2).
 //
 // The chat lives only on this device, so its search does too (2430: "client
 // side only, no server index"): a filter over the rows the window already
@@ -69,9 +71,10 @@ const FAILURE_LABEL: Record<OutFailure, string> = {
   "queue-full": "too many messages are waiting for this peer",
   "keys-timeout": "no keys came from the peer",
   "too-long": "it is too long",
+  "no-budget": "the network is not connected yet, so it could not be sized",
   "key-mismatch": "the peer answered with another key",
   "nack-from-another-nick": "another nick refused it",
-  "unpinned-key": "the peer's key is not the pinned one",
+  "unpinned-key": "it was for a device the peer's key does not vouch for",
   repinned: "the peer was pinned to another key",
   "resend-failed": "it could not be sent again",
   "rekey-throttled": "a new session was started too recently",
@@ -81,6 +84,7 @@ const FAILURE_LABEL: Record<OutFailure, string> = {
   // an ACK carries one; an ACK has no row. Kept so the map stays total over
   // the reasons the door and the drop push can name.
   "too-late": "its deadline had passed",
+  "unknown-device": "this device is no longer part of your encryption identity",
   refused: "grappa refused it",
   late: "its deadline passed before it could go",
   "send-failed": "the connection failed while sending it",
@@ -109,10 +113,10 @@ const SAS_REASON: Record<SasCancelReason, string> = {
 const reasonText = (reason: string): string =>
   (SAS_REASON as Record<string, string | undefined>)[reason] ?? `"${reason}"`;
 
-// `pinned` is the key the chat's nick is pinned to. An `in` row carries the
-// key that wrote it, which is not always that one: a known peer writing from
-// another nick is read as itself (the engine moves no pin), so a message can
-// land in a nick's chat written with ANOTHER key. Such a row says so.
+// `pinned` is the master the chat's nick is pinned to. An `in` row carries the
+// master whose device wrote it, which is not always that one: a message can
+// land in a nick's chat written under ANOTHER master (one kept from before the
+// nick was pinned to a new one). Such a row says so.
 const EncryptedRow: Component<{
   row: ChatRow;
   peer: string;
@@ -226,6 +230,8 @@ const EncryptedRow: Component<{
     </Switch>
   </li>
 );
+
+const devicesText = (n: number): string => (n === 1 ? "1 device" : `${n} devices`);
 
 // What the panel shows for a SAS, from the window's view of it.
 type SasPanelPhase = "waiting" | "asked" | "exchanging" | "compare" | "elsewhere" | "confirmed";
@@ -477,8 +483,16 @@ const EncryptedChatPane: Component<Props> = (props) => {
           <div class="e2e-key-line">
             {display()}'s key:{" "}
             <code class="e2e-key" data-testid="e2e-peer-key">
-              {peerTrust()?.ed25519 ?? "none yet"}
+              {peerTrust()?.master ?? "none yet"}
             </code>
+            <Show when={peerTrust()}>
+              {(peer) => (
+                <span class="e2e-peer-devices" data-testid="e2e-peer-devices">
+                  {" "}
+                  ({devicesText(peer().devices)})
+                </span>
+              )}
+            </Show>
           </div>
           <form class="e2e-pin" onSubmit={(event) => void submitPin(event)}>
             <input
@@ -541,7 +555,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
             <EncryptedRow
               row={row}
               peer={display()}
-              pinned={peerTrust()?.ed25519}
+              pinned={peerTrust()?.master}
               onAccept={acceptKey}
             />
           )}
