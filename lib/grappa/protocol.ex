@@ -1275,7 +1275,44 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: nothing an older client sent changed
   # meaning.
-  @protocol_version 48
+  #
+  # ---------------------------------------------------------------------------
+  # 49 — issue 2430 MD-1: one E2E identity, several devices (wire v2)
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `POST`/`GET /networks/:network_id/e2e/devices` (a device registers
+  # its id block, grappa answers its `did`: unpadded base64url, 11
+  # characters, so a path carries it as it is; 2430 comment 6348464388),
+  # `DELETE .../e2e/devices/:did`
+  # (an unlisted device), `PUT`/`GET .../e2e/list` (the master's signed
+  # device list), the `from` and `to` device addresses on the send door
+  # (both REQUIRED, `did` or `*`), the `reactive` priority, `from_did` and
+  # `to_did` on `e2e_message`, the `e2e_device` key on the undeliverable
+  # notice's meta, and the error tokens `too_many_devices`,
+  # `master_mismatch`, `stale_list`, `listed_device` (409) and
+  # `unknown_device` (422).
+  #
+  # MOVED, which is a removal in the #1626 sense: the queue and the bundle
+  # are per device now, so `GET`/`POST .../e2e/inbox(/ack)` became
+  # `.../e2e/devices/:did/inbox(/ack)` and `GET`/`POST .../e2e/keys` became
+  # `.../e2e/devices/:did/keys` (`DELETE .../e2e/keys` stays, and drops the
+  # whole identity). The send door's `payload` is the compact JSON text the
+  # frame carries, no longer its base64, and the frame itself gained the two
+  # addresses (`Grappa.IRC.E2e`). vjt ruled these removals covered by his
+  # multi-device ruling (2430 comment 6348339431, on 6344779758 and the wire
+  # v2 comments that implement it). They land on a feature no release
+  # carries: the first E2E commit (d7d3d006f) postdates v1.5.14, the last
+  # tag, E2E ships in v1.6, and the freeze keeps it off every deployed
+  # grappa, so no bundle in the field can be stranded. cicchetto's E2E
+  # client moves to the new shape in the same landing.
+  #
+  # Checked for a collision before claiming 49: X1 (#2451) took 48 and
+  # merged first; the one open PR that edits this file (#2102) still
+  # carries 21.
+  #
+  # @min_protocol_version stays at 1: no client outside this landing ever
+  # spoke the old E2E shape, and every other door is untouched.
+  @protocol_version 49
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1316,7 +1353,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 48
+  @spec version() :: 49
   def version, do: @protocol_version
 
   @doc """

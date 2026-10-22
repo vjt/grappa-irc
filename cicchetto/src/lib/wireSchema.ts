@@ -532,6 +532,19 @@ export const S_CicWireBundleHashPayload = {
   q: ["version"],
 } as const;
 
+// Grappa.E2eKeys.Wire.device/0
+export const S_E2eKeysWireDevice = {
+  o: { did: "s", ed25519: "s", curve25519: "s", sig: "s" },
+} as const;
+
+// Grappa.E2eKeys.Wire.device_list/0
+export const S_E2eKeysWireDeviceList = {
+  o: { master: "s", ver: "i", devices: { a: "s" }, sig: "s" },
+} as const;
+
+// Grappa.E2eKeys.Wire.devices/0
+export const S_E2eKeysWireDevices = { o: { devices: { a: S_E2eKeysWireDevice } } } as const;
+
 // Grappa.E2eKeys.Wire.status/0
 export const S_E2eKeysWireStatus = { o: { one_time_keys: "i", fallback: "b" } } as const;
 
@@ -1123,6 +1136,8 @@ export const S_SessionWireE2eMessagePayload = {
     id: "i",
     network: "s",
     from: "s",
+    from_did: "s",
+    to_did: "s",
     verb: S_SessionWireE2eVerb,
     msgid: "s",
     payload: "s",
@@ -1805,6 +1820,11 @@ export const S_ErrorTokensRestErrorToken = {
     { l: "theme_cap_reached" },
     { l: "list_full" },
     { l: "too_late" },
+    { l: "too_many_devices" },
+    { l: "master_mismatch" },
+    { l: "stale_list" },
+    { l: "unknown_device" },
+    { l: "listed_device" },
     { l: "invalid_mask" },
     { l: "invalid_text_pattern" },
     { l: "not_raster" },

@@ -101,6 +101,7 @@ export const SCROLLBACK_META_TKEY = [
   "nick_fallback",
   "link_failure",
   "e2e_undeliverable",
+  "e2e_device",
   "structural",
 ] as const;
 export type ScrollbackMetaTKey = (typeof SCROLLBACK_META_TKEY)[number];
@@ -600,6 +601,24 @@ export type CicWireBundleHashPayload = {
 };
 
 // === Grappa.E2eKeys.Wire ===
+
+export type E2eKeysWireDevice = {
+  did: string;
+  ed25519: string;
+  curve25519: string;
+  sig: string;
+};
+
+export type E2eKeysWireDevices = {
+  devices: E2eKeysWireDevice[];
+};
+
+export type E2eKeysWireDeviceList = {
+  master: string;
+  ver: number;
+  devices: string[];
+  sig: string;
+};
 
 export type E2eKeysWireStatus = {
   one_time_keys: number;
@@ -1318,6 +1337,8 @@ export type SessionWireE2eMessagePayload = {
   id: number;
   network: string;
   from: string;
+  from_did: string;
+  to_did: string;
   verb: SessionWireE2eVerb;
   msgid: string;
   payload: string;
@@ -1842,6 +1863,11 @@ export const ERROR_TOKENS_REST_ERROR_TOKEN = [
   "theme_cap_reached",
   "list_full",
   "too_late",
+  "too_many_devices",
+  "master_mismatch",
+  "stale_list",
+  "unknown_device",
+  "listed_device",
   "invalid_mask",
   "invalid_text_pattern",
   "not_raster",

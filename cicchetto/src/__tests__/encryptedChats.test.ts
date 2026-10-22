@@ -106,6 +106,9 @@ beforeEach(() => {
       ...m,
       kind: "e2e_message" as const,
       network: slug,
+      // The fake bouncer does not model devices; the wire requires both dids.
+      from_did: "If4x36FUomE",
+      to_did: "Qm9iRGV2aWM",
     })),
   }));
   vi.mocked(api.ackE2eInbox).mockImplementation((_t, _s, ids) => door().ack(ids));

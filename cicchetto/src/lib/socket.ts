@@ -345,7 +345,15 @@ let _socket: Socket | null = null;
 // user-topic `e2e_pairing_message` / `e2e_pairing_closed`. A pre-48 server
 // answers the doors 404, which `/pair` reports as a failed join, so
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
-export const CLIENT_PROTOCOL_VERSION = 48;
+//
+// 49 (issue 2430 MD-1) — one E2E identity, several devices: `…/e2e/devices`
+// and `…/e2e/list`, the queue and the bundle moved under
+// `…/e2e/devices/:did/`, `from`/`to` on the send door, the payload sent as
+// compact JSON text, `from_did`/`to_did` on `e2e_message`, `e2e_device` on
+// the undeliverable meta. No release ever carried E2E, so the E2E client
+// moves to this shape in the same landing (MD-2) rather than speaking both;
+// nothing else here changed, so `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 49;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

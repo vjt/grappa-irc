@@ -53,15 +53,14 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v47 -> v48 (issue 2430, X1): the pairing relay, the
- * `/e2e/pairings` REST doors and the user-topic `e2e_pairing_message` /
- * `e2e_pairing_closed`. A terminal holds no E2E identity to pair a device
- * into, and wire_narrow drops a kind it does not know, so nothing it reads
- * changed.
+ * Last read, v48 -> v49 (issue 2430 MD-1): the E2E doors went per
+ * device (`/e2e/devices`, `/e2e/list`, `from`/`to` on the send door,
+ * `from_did`/`to_did` on `e2e_message`). A terminal speaks no E2E and
+ * ignores that push, so nothing it reads changed.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 48
+#define WIRE_PROTOCOL_VERSION 49
 
 #include <stdbool.h>
 #include <stddef.h>
