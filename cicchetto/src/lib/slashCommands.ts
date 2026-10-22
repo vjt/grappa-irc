@@ -150,6 +150,8 @@ export type SlashCommand =
   // (inline execute) — no unsolicited popup for power users.
   | { kind: "service-modal"; service: string }
   | { kind: "query"; target: string | null }
+  // issue 2430 — /equery <nick>: open (and focus) an encrypted query.
+  | { kind: "equery"; target: string | null }
   | { kind: "quit"; reason: string | null }
   | { kind: "disconnect"; network: string | null; reason: string | null }
   | { kind: "connect"; network: string }
@@ -738,6 +740,11 @@ const DISPATCH: Readonly<Record<string, Handler>> = {
   },
 
   // /q is an alias for /query — registered as separate key below.
+
+  equery: (_verb, rest) => {
+    const [target] = tokens(rest);
+    return { kind: "equery", target: target ?? null };
+  },
 
   quit: (_verb, rest) => ({ kind: "quit", reason: rest === "" ? null : rest }),
 

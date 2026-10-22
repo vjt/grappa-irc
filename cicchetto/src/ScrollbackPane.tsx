@@ -4944,6 +4944,7 @@ const ScrollbackPane: Component<Props> = (props) => {
             targetNick={cm().targetNick}
             targetHost={cm().targetHost}
             ownModes={ownModes()}
+            ownNick={userNick()}
             position={{ x: cm().x, y: cm().y }}
             onClose={() => setContextMenu(null)}
           />

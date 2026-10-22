@@ -1,8 +1,11 @@
-import { postJoin, postPart } from "../api";
+import { ownNickForNetwork, postJoin, postPart } from "../api";
+import { casemappingForSlug } from "../casemapping";
 import { setQuery } from "../channelDirectory";
 import { canonicalChannel } from "../channelKey";
 import { isChannelName } from "../chantypes";
-import { networkIdBySlug } from "../networks";
+import { openEncryptedWindow } from "../encryptedWindow";
+import { networkBySlug, networkIdBySlug, user } from "../networks";
+import { nickEquals } from "../nickEquals";
 import { canonicalQueryNick, openQueryWindowState } from "../queryWindows";
 import { selectedChannel, setSelectedChannel } from "../selection";
 import { isServicesSender } from "../servicesSender";
@@ -187,5 +190,31 @@ export const queryCommand: CommandHandler<"query"> = async (cmd, ctx) => {
   const canonical = canonicalQueryNick(networkId, cmd.target);
   openQueryWindowState(networkId, canonical, new Date().toISOString());
   setSelectedChannel({ networkSlug: ctx.networkSlug, channelName: canonical, kind: "query" });
+  return { ok: true };
+};
+
+/**
+ * issue 2430 — `/equery <nick>`: open an encrypted query with `nick` and focus
+ * it (the window is cic-local, see `encryptedWindow.ts`). No bare close, unlike
+ * `/query`: the encrypted window has no compose box that takes commands, and
+ * its × closes it. A channel, a services nick or our own nick has no
+ * encrypted query.
+ */
+export const equeryCommand: CommandHandler<"equery"> = async (cmd, ctx) => {
+  if (cmd.target === null) return { error: "/equery <nick> required" };
+  const networkId = ctx.requireNetworkId(ctx.networkSlug, "equery");
+  if (typeof networkId !== "number") return networkId;
+  if (isChannelName(cmd.target, ctx.sigils())) {
+    return { error: `/equery: ${cmd.target} is a channel; an encrypted query is with one nick` };
+  }
+  if (isServicesSender(cmd.target)) {
+    return { error: `/equery: ${cmd.target} is a services nick` };
+  }
+  const net = networkBySlug(ctx.networkSlug);
+  const own = net ? ownNickForNetwork(net, user()) : null;
+  if (own && nickEquals(cmd.target, own, casemappingForSlug(ctx.networkSlug))) {
+    return { error: "/equery: that is your own nick" };
+  }
+  await openEncryptedWindow(ctx.networkSlug, cmd.target);
   return { ok: true };
 };

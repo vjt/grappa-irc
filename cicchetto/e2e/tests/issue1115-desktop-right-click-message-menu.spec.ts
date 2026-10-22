@@ -36,8 +36,10 @@ function uniqueBody(tag: string): string {
 }
 
 const menu = (page: Page) => page.locator(".context-menu");
+// Whole label, not a substring: issue 2430 put "Encrypted query" on the nick
+// menu, so `hasText: "Query"` resolved two rows (same idiom as issue 2346's).
 const menuItem = (page: Page, label: string) =>
-  page.locator(".context-menu .context-menu-item", { hasText: label });
+  page.locator(".context-menu .context-menu-item", { hasText: new RegExp(`^${label}$`) });
 const rowWith = (page: Page, body: string) =>
   page.locator('[data-testid="scrollback-line"]', { hasText: body });
 

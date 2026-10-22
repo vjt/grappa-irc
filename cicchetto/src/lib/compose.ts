@@ -68,6 +68,7 @@ import {
 import { topicClearCommand, topicSetCommand, topicShowCommand } from "./commands/topic";
 import {
   cycleCommand,
+  equeryCommand,
   joinCommand,
   listCommand,
   partCommand,
@@ -941,6 +942,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
         }
         case "query": {
           result = await queryCommand(cmd, ctx);
+          break;
+        }
+        case "equery": {
+          result = await equeryCommand(cmd, ctx);
           break;
         }
         case "quit":

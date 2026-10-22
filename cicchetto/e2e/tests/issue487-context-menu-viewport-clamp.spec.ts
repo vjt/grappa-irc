@@ -93,11 +93,12 @@ test.describe("#487 context menu viewport clamp", () => {
     // overflowed BOTH edges, so the flip math was genuinely exercised.
     // #1192 added the CTCP group between WHOIS and Query, so the nick menu is
     // nine rows; issue 2346 replaced the one Ban row with Ban nick / Ban host
-    // / Kickban (disabled without @, never hidden), so it is eleven. Kept as
+    // / Kickban (disabled without @, never hidden), so it was eleven, and
+    // issue 2430 added "Encrypted query" above Query: twelve. Kept as
     // an exact count, not a `>=`: this number is the precondition that the
     // menu really is tall enough to overflow, and a loosened assertion would
     // stop noticing if the menu ever shrank.
-    expect(g.itemCount).toBe(11);
+    expect(g.itemCount).toBe(12);
     expect(g.height).toBeGreaterThan(0);
     expect(vp.height - 4 + g.height).toBeGreaterThan(g.innerHeight);
     expect(vp.width - 4 + g.width).toBeGreaterThan(g.innerWidth);
@@ -110,7 +111,9 @@ test.describe("#487 context menu viewport clamp", () => {
     // The last item (Query) sits inside the fold → clickable. Still Query after
     // #1192: the CTCP group went in ABOVE it, deliberately, so this proof stays
     // a proof — a drill-down row would swap the list instead of closing, and
-    // the click below would assert nothing.
+    // the click below would assert nothing. Issue 2430's "Encrypted query"
+    // went above it for the same reason: on our own nick, which this spec
+    // right-clicks, it is disabled and a click on it would never land.
     expect(g.lastItemBottom).toBeLessThanOrEqual(g.innerHeight);
 
     // Actionability proof: the last item is hit-testable (not covered / off

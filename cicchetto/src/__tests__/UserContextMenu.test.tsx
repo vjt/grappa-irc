@@ -9,7 +9,8 @@ import { pressAndClick } from "./helpers/pointerEvents";
 //      kickban/WHOIS/CTCP/query — issue 2346 replaced the bare "ban").
 //   2. When own nick has @-mode, op-gated items are enabled.
 //   3. When own nick lacks @-mode, op-gated items are disabled (not hidden).
-//   4. WHOIS + Query are always enabled regardless of modes.
+//   4. WHOIS + Query are always enabled regardless of modes; Encrypted query
+//      too, unless the nick is our own (issue 2430).
 //   5. Clicking an enabled item fires the correct socket push.
 //   6. Clicking outside fires onClose.
 //   7. Pressing Escape fires onClose.
@@ -25,6 +26,7 @@ const mockResolveUserhost = vi.fn();
 const mockOpenQueryWindowState = vi.fn();
 const mockSetSelectedChannel = vi.fn();
 const mockSendCtcpQuery = vi.fn();
+const mockOpenEncryptedWindow = vi.fn();
 
 vi.mock("../lib/socket", () => ({
   pushChannelOp: (...args: unknown[]) => mockPushChannelOp(...args),
@@ -51,6 +53,12 @@ vi.mock("../lib/networks", () => ({
   // through this map, so the mock has to carry it.
   networkIdBySlug: () => undefined,
   networks: vi.fn(() => [{ id: 42, slug: "freenode", inserted_at: "x", updated_at: "y" }]),
+}));
+
+// issue 2430 — the encrypted window's door is a boundary spy here; what it
+// does is pinned in encryptedWindow's own tests.
+vi.mock("../lib/encryptedWindow", () => ({
+  openEncryptedWindow: (...args: unknown[]) => mockOpenEncryptedWindow(...args),
 }));
 
 vi.mock("../lib/queryWindows", () => ({
@@ -86,6 +94,8 @@ const baseProps = {
   targetNick: "alice",
   targetHost: null as string | null,
   ownModes: [] as string[],
+  // issue 2430 — our own nick on the network gates "Encrypted query".
+  ownNick: "Me" as string | null,
   position: { x: 100, y: 200 },
   onClose: vi.fn(),
 };
@@ -93,6 +103,7 @@ const baseProps = {
 beforeEach(() => {
   vi.clearAllMocks();
   mockSendCtcpQuery.mockResolvedValue(undefined);
+  mockOpenEncryptedWindow.mockResolvedValue(undefined);
   for (const m of [
     mockPushChannelOp,
     mockPushChannelDeop,
@@ -108,8 +119,8 @@ beforeEach(() => {
 });
 
 describe("UserContextMenu", () => {
-  describe("renders all 11 items", () => {
-    it("shows Op, Deop, Voice, Devoice, Kick, Ban nick, Ban host, Kickban, WHOIS, CTCP, Query", () => {
+  describe("renders all 12 items", () => {
+    it("shows Op, Deop, Voice, Devoice, Kick, Ban nick, Ban host, Kickban, WHOIS, CTCP, Encrypted query, Query", () => {
       render(() => <UserContextMenu {...baseProps} />);
       expect(screen.getByRole("button", { name: /^op$/i })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /^deop$/i })).toBeInTheDocument();
@@ -125,6 +136,18 @@ describe("UserContextMenu", () => {
       // #1192 — the shell appends the ▸, so the accessible name carries it.
       expect(screen.getByRole("button", { name: /^ctcp ▸$/i })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /^query$/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^encrypted query$/i })).toBeInTheDocument();
+    });
+
+    // #1192 put CTCP above Query so the LAST row stays an always-enabled verb
+    // that closes the menu: the #487 viewport-clamp e2e clicks the last row on
+    // our own nick, where "Encrypted query" (issue 2430) is disabled.
+    it("keeps Query as the last row, with Encrypted query above it", () => {
+      render(() => <UserContextMenu {...baseProps} />);
+      const labels = [...document.querySelectorAll(".context-menu-item")].map((b) =>
+        b.textContent?.trim(),
+      );
+      expect(labels.slice(-2)).toEqual(["Encrypted query", "Query"]);
     });
   });
 
@@ -153,6 +176,12 @@ describe("UserContextMenu", () => {
       render(() => <UserContextMenu {...baseProps} ownModes={[]} />);
       expect(screen.getByRole("button", { name: /^whois$/i })).not.toBeDisabled();
       expect(screen.getByRole("button", { name: /^query$/i })).not.toBeDisabled();
+      expect(screen.getByRole("button", { name: /^encrypted query$/i })).not.toBeDisabled();
+    });
+
+    it("Encrypted query is disabled on our own nick, in any case", () => {
+      render(() => <UserContextMenu {...baseProps} targetNick="ME" />);
+      expect(screen.getByRole("button", { name: /^encrypted query$/i })).toBeDisabled();
     });
   });
 
@@ -257,6 +286,12 @@ describe("UserContextMenu", () => {
         channelName: "alice",
         kind: "query",
       });
+    });
+
+    it("Encrypted query opens the encrypted window with the nick", async () => {
+      render(() => <UserContextMenu {...baseProps} />);
+      pressAndClick(screen.getByRole("button", { name: /^encrypted query$/i }));
+      expect(mockOpenEncryptedWindow).toHaveBeenCalledWith("freenode", "alice");
     });
 
     it("CTCP drills into the six verbs instead of acting", async () => {
