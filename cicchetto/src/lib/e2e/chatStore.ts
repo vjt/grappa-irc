@@ -81,6 +81,8 @@ export type ChatStore = {
   open(slot: string, nick: string): Promise<void>;
   /** Hides the chat; its rows stay. */
   close(slot: string, nick: string): Promise<void>;
+  /** Deletes the chat: its rows and its entry. A later row starts it over, empty. */
+  remove(slot: string, nick: string): Promise<void>;
   read(slot: string, nick: string): Promise<void>;
 };
 
@@ -198,6 +200,18 @@ export function chatStore(vault: Vault, lock: Lock): ChatStore {
       withIndex(slot, async (index) => {
         const chat = index.chats[fold(nick)];
         if (chat !== undefined) chat.open = false;
+      }),
+
+    // The record goes before the index that names it: a tab dying in between
+    // leaves an entry whose rows read as none (deleting again finishes it),
+    // never sealed rows that no index names and nothing would delete.
+    remove: (slot, nick) =>
+      withIndex(slot, async (index) => {
+        const key = fold(nick);
+        const chat = index.chats[key];
+        if (chat === undefined) return;
+        await vault.remove(chatKey(chat.id));
+        delete index.chats[key];
       }),
 
     read: (slot, nick) =>

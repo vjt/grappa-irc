@@ -15,6 +15,9 @@ export function memoryVault(): MemoryVault {
     store: async (slot, sealed) => {
       records.set(slot, sealed);
     },
+    remove: async (slot) => {
+      records.delete(slot);
+    },
     wrappingKey: () => {
       key ??= crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, [
         "encrypt",
