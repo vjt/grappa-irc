@@ -49,9 +49,27 @@ function subjectNameFor(testInfo: TestInfo): string {
   return `s${digest.slice(0, 8)}`;
 }
 
-export async function provisionSpecSubject(testInfo: TestInfo): Promise<SpecSubject> {
+export function provisionSpecSubject(testInfo: TestInfo): Promise<SpecSubject> {
+  return provision(testInfo, subjectNameFor(testInfo), true);
+}
+
+// issue 2430 — a SECOND subject in the same test, for specs about two people
+// talking through grappa, each in a browser of their own (an encrypted query
+// needs two real engines with two real accounts). Named off the title path
+// plus `role`, so it is as stable and as distinct as the test's own subject,
+// and `p`-prefixed so it can never be one. Nothing is seeded: the scrollback
+// calibration above is the test subject's, not the peer's. The CALLER tears
+// it down (`teardownSpecSubject`, in a `finally`): the auto-fixture only
+// knows its own.
+export function provisionPeerSubject(testInfo: TestInfo, role: string): Promise<SpecSubject> {
+  const digest = createHash("sha1")
+    .update([...testInfo.titlePath, role].join("\u0000"))
+    .digest("hex");
+  return provision(testInfo, `p${digest.slice(0, 8)}`, false);
+}
+
+async function provision(testInfo: TestInfo, name: string, seed: boolean): Promise<SpecSubject> {
   const admin = getSeededAdmin();
-  const name = subjectNameFor(testInfo);
 
   const res = await fetch(`${GRAPPA_BASE_URL}/admin/test/subject`, {
     method: "POST",
@@ -62,17 +80,19 @@ export async function provisionSpecSubject(testInfo: TestInfo): Promise<SpecSubj
       network_slug: NETWORK_SLUG,
       nick: name,
       autojoin_channels: AUTOJOIN_CHANNELS,
-      seed: AUTOJOIN_CHANNELS.map((channel) => ({
-        name: channel,
-        seed_count: SEED_COUNT,
-        seed_sender: SEED_SENDER,
-      })),
+      seed: seed
+        ? AUTOJOIN_CHANNELS.map((channel) => ({
+            name: channel,
+            seed_count: SEED_COUNT,
+            seed_sender: SEED_SENDER,
+          }))
+        : [],
     }),
   });
 
   if (res.status !== 201) {
     throw new Error(
-      `provisionSpecSubject(${name}) failed: ${res.status} ${await res.text()}\n` +
+      `provision(${name}) failed: ${res.status} ${await res.text()}\n` +
         `  test: ${testInfo.titlePath.join(" | ")}`,
     );
   }
