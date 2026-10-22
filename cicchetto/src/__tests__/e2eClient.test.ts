@@ -8,7 +8,13 @@
 import { describe, expect, it } from "vitest";
 import { type AccountStore, accountStore } from "../lib/e2e/accountStore";
 import { type ChatRow, type ChatStore, chatStore, type DoorRefusal } from "../lib/e2e/chatStore";
-import { type Door, type E2eContext, e2eClient, type InboxMessage } from "../lib/e2e/client";
+import {
+  type Door,
+  type E2eContext,
+  e2eClient,
+  type InboxMessage,
+  NoAccountError,
+} from "../lib/e2e/client";
 import { OUTQ_TTL_MS, type Outbound } from "../lib/e2e/engine";
 import { topUp } from "../lib/e2e/keyBundle";
 import { base64Unpadded, fold } from "../lib/e2e/wire";
@@ -323,5 +329,48 @@ describe("e2eClient", () => {
       expect.objectContaining({ kind: "key_alarm", nick: "Bob", presented: expect.any(String) }),
     );
     expect(await bodies(a, "bob")).not.toContain("it's me, honest");
+  });
+
+  it("pins a key by hand: the chat says so, and the identity reads verified", async () => {
+    const { a, b } = await pair();
+    const key = await b.accounts.withAccount(SLOT, async ({ account }) => account.ed25519_key());
+
+    expect(await a.client.pin(a.ctx, "Bob", key)).toEqual({ result: "pinned", chats: ["bob"] });
+
+    expect(await rowsOf(a, "bob")).toEqual([
+      expect.objectContaining({ kind: "pinned", nick: "Bob", ed25519: key }),
+    ]);
+    const own = await a.accounts.withAccount(SLOT, async ({ account }) => account.ed25519_key());
+    expect(await a.client.identity(a.ctx, ["bob", "carol"])).toEqual({
+      own,
+      peers: { bob: { ed25519: key, verified: true }, carol: null },
+    });
+  });
+
+  it("writes nothing for a key it refuses", async () => {
+    const { a } = await pair();
+
+    expect(await a.client.pin(a.ctx, "bob", "not a key")).toEqual({ result: "bad-key", chats: [] });
+
+    expect(await a.chats.chats(SLOT)).toEqual({});
+  });
+
+  it("never creates an account: that is the bundle sync's, which clears grappa's stale keys", async () => {
+    const w = new World();
+    const vault = memoryVault();
+    const lock = memoryLock();
+    const client = e2eClient(
+      olm(),
+      accountStore(olm(), vault, lock),
+      chatStore(memoryVault(), lock),
+      () => w.now,
+    );
+    const ctx = { slot: SLOT, ownNick: "alice", door: w.grappa.door("alice") };
+
+    await expect(client.drain(ctx)).rejects.toBeInstanceOf(NoAccountError);
+    await expect(client.send(ctx, "bob", "hi")).rejects.toBeInstanceOf(NoAccountError);
+    await expect(client.identity(ctx, ["bob"])).rejects.toBeInstanceOf(NoAccountError);
+
+    expect(vault.records.size).toBe(0);
   });
 });
