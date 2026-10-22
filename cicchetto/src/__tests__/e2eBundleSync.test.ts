@@ -113,6 +113,28 @@ describe("syncKeyBundle", () => {
     );
   });
 
+  // On a fresh login the drain meets the slot before the page's own sync has
+  // made the account, and asks for a sync too: it must join the running one,
+  // not queue a second behind it (measured: a GET of the status nobody needed,
+  // the issue2430 key-bundle spec's red on c2).
+  it("a sync asked for while one runs for the slot joins it; the next one runs again", async () => {
+    const store = accountStore(olm(), memoryVault(), memoryLock());
+    vi.mocked(api.getE2eKeys).mockResolvedValue({ one_time_keys: 50, fallback: true });
+
+    await Promise.all([
+      syncKeyBundle(store, "tok", SLOT, "azzurra"),
+      syncKeyBundle(store, "tok", SLOT, "azzurra"),
+    ]);
+
+    expect(api.clearE2eKeys).toHaveBeenCalledTimes(1);
+    expect(api.getE2eKeys).not.toHaveBeenCalled();
+    expect(api.uploadE2eKeys).toHaveBeenCalledTimes(1);
+
+    // Joined while it runs, never remembered after: a later ask syncs again.
+    await syncKeyBundle(store, "tok", SLOT, "azzurra");
+    expect(api.getE2eKeys).toHaveBeenCalledTimes(1);
+  });
+
   it("a failed clear stores no account, so the next sync starts over and clears again", async () => {
     const store = accountStore(olm(), memoryVault(), memoryLock());
     vi.mocked(api.clearE2eKeys).mockRejectedValueOnce(new Error("offline"));

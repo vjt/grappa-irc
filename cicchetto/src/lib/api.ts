@@ -33,7 +33,9 @@ import {
   narrowChannelListResponse,
   narrowCredentialResponse,
   narrowDirectoryPageResponse,
+  narrowE2eInboxResponse,
   narrowE2eKeysStatus,
+  narrowE2eSentResponse,
   narrowFeaturedChannelsResponse,
   narrowMembersIndexResponse,
   narrowMeResponse,
@@ -86,7 +88,9 @@ import type {
   SessionLogWireT,
   SessionWireBanlistBundlePayload,
   SessionWireBanlistEntry,
+  SessionWireE2eInboxPayload,
   SessionWireE2eMessagePayload,
+  SessionWireE2eSentPayload,
   SessionWireLinksBundlePayload,
   SessionWireLinksEntry,
   SessionWireMentionsBundleMessage,
@@ -2592,6 +2596,53 @@ export async function clearE2eKeys(token: string, networkSlug: string): Promise<
   const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/e2e/keys`, {
     method: "DELETE",
     headers: buildHeaders(token),
+  });
+  if (!res.ok) throw await readError(res);
+}
+
+// issue 2430 — grappa's doors for encrypted messages (CLIENT_PROTOCOL §4f):
+// the send door (grappa frames and paces the payload, and names it with the
+// msgid a peer's NACK will quote), the offline queue's pages, oldest first,
+// and its acknowledgement. Not through `sendPipeline`: its 429 retry loop
+// would re-send a payload whose ratchet step the caller already recorded,
+// and a refusal here is an answer the user must see (the peer's queue is
+// full), not a hiccup to ride out. `lib/encryptedChats.ts` is the only caller.
+export async function sendE2e(
+  token: string,
+  networkSlug: string,
+  out: { target: string; verb: string; payload: string; priority: string },
+): Promise<SessionWireE2eSentPayload> {
+  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/e2e/messages`, {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify(out),
+  });
+  if (!res.ok) throw await readError(res);
+  return narrowE2eSentResponse(await res.json());
+}
+
+export async function listE2eInbox(
+  token: string,
+  networkSlug: string,
+  after: number,
+): Promise<SessionWireE2eInboxPayload> {
+  const res = await fetch(
+    `/networks/${encodeURIComponent(networkSlug)}/e2e/inbox?after=${encodeURIComponent(after)}`,
+    { headers: buildHeaders(token) },
+  );
+  if (!res.ok) throw await readError(res);
+  return narrowE2eInboxResponse(await res.json());
+}
+
+export async function ackE2eInbox(
+  token: string,
+  networkSlug: string,
+  ids: number[],
+): Promise<void> {
+  const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/e2e/inbox/ack`, {
+    method: "POST",
+    headers: buildHeaders(token),
+    body: JSON.stringify({ ids }),
   });
   if (!res.ok) throw await readError(res);
 }

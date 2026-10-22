@@ -4,23 +4,18 @@
 //
 // Once per page load and per (subject, network), and again for a network
 // that appears later: the bundle needs no live IRC link (grappa stores it per
-// binding), so this does not wait for one. The other refill point, after each
-// PKMSG this client receives (each used up a one-time key), comes with the
-// slice that reads PKMSGs.
+// binding), so this does not wait for one. The chat glue
+// (`lib/encryptedChats.ts`) calls `syncKeyBundle` too: after a drain that
+// opened pre-key messages (each used up a one-time key), and for a slot with
+// no account yet, since only a sync may create one (`client.ts`).
 
 import { createEffect } from "solid-js";
 import { clearE2eKeys, getE2eKeys, uploadE2eKeys } from "../api";
 import { token } from "../auth";
 import { networks, user } from "../networks";
-import {
-  type AccountStore,
-  accountStore,
-  E2E_DATABASE,
-  indexedDbVault,
-  webLock,
-} from "./accountStore";
+import { type AccountStore, E2E_DATABASE } from "./accountStore";
+import { browserE2e } from "./browser";
 import { topUp } from "./keyBundle";
-import { loadOlm } from "./olm";
 
 const NOTHING_HELD = { one_time_keys: 0, fallback: false };
 
@@ -28,6 +23,9 @@ const NOTHING_HELD = { one_time_keys: 0, fallback: false };
 export function accountSlot(subject: { kind: string; id: string }, networkId: number): string {
   return `${subject.kind}:${subject.id}:${networkId}`;
 }
+
+// Syncs running on this page, by slot, while they run.
+const running = new Map<string, Promise<void>>();
 
 /**
  * Brings the bundle grappa holds for `slot` on `networkSlug` up to full.
@@ -38,8 +36,27 @@ export function accountSlot(subject: { kind: string; id: string }, networkId: nu
  * with its new keys BEFORE they are uploaded, so grappa never holds a key
  * whose private half was not kept, and marked published only once grappa
  * has them; an upload that fails is resent, the same keys, next time.
+ *
+ * Asked for while a sync for the slot runs, it joins that one: on a fresh
+ * login the drain meets the slot before the page's sync has made the account
+ * and would otherwise queue a second sync behind it. Joining loses nothing a
+ * caller needs: a sync still running takes the account lock after whatever
+ * the caller did under it (a drain that spent a one-time key), so it sees it.
  */
-export async function syncKeyBundle(
+export function syncKeyBundle(
+  store: AccountStore,
+  bearer: string,
+  slot: string,
+  networkSlug: string,
+): Promise<void> {
+  const inFlight = running.get(slot);
+  if (inFlight !== undefined) return inFlight;
+  const sync = runSync(store, bearer, slot, networkSlug).finally(() => running.delete(slot));
+  running.set(slot, sync);
+  return sync;
+}
+
+async function runSync(
   store: AccountStore,
   bearer: string,
   slot: string,
@@ -57,15 +74,6 @@ export async function syncKeyBundle(
   });
 }
 
-let browserStore: Promise<AccountStore> | undefined;
-
-function store(): Promise<AccountStore> {
-  browserStore ??= loadOlm().then((olm) =>
-    accountStore(olm, indexedDbVault(webLock, "accounts"), webLock),
-  );
-  return browserStore;
-}
-
 // Slots synced (or syncing) on this page. A failed sync leaves the set, so the
 // next change to the network list tries it again.
 const synced = new Set<string>();
@@ -81,8 +89,8 @@ export function mountKeyBundleSync(): void {
       const slot = accountSlot(me, network.id);
       if (synced.has(slot)) continue;
       synced.add(slot);
-      void store()
-        .then((s) => syncKeyBundle(s, bearer, slot, network.slug))
+      void browserE2e()
+        .then(({ accounts }) => syncKeyBundle(accounts, bearer, slot, network.slug))
         .catch((err: unknown) => {
           synced.delete(slot);
           console.warn(`[e2e] key bundle sync failed for ${network.slug}`, err);
@@ -95,9 +103,9 @@ declare global {
   interface Window {
     /**
      * TEST-ONLY (issue 2430, for the interop suite): deletes this browser's
-     * E2E state, every account and the key that seals them. This page does
-     * not sync again; the next page load starts each network over with a new
-     * identity and replaces the bundle grappa holds. Ships in the bundle like
+     * E2E state, every account and the key that seals them. The next E2E
+     * operation on this page, or the next page load, starts each network
+     * over with a new identity and replaces the bundle grappa holds. Ships in the bundle like
      * the other `__cic_*` hooks; it grants nothing a script in this origin
      * could not do with `indexedDB.deleteDatabase`.
      */
