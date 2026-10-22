@@ -60,7 +60,9 @@ export async function syncKeyBundle(
 let browserStore: Promise<AccountStore> | undefined;
 
 function store(): Promise<AccountStore> {
-  browserStore ??= loadOlm().then((olm) => accountStore(olm, indexedDbVault(webLock), webLock));
+  browserStore ??= loadOlm().then((olm) =>
+    accountStore(olm, indexedDbVault(webLock, "accounts"), webLock),
+  );
   return browserStore;
 }
 
