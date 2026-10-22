@@ -256,8 +256,8 @@ export function e2eClient(
     return { changes, outbound, chats: touched };
   }
 
-  // Steps 2–4 for an operation outside the drain: `changes`, then what the
-  // verifier made, then its steps.
+  // Steps 2–4 for what an operation made: `changes` and what the verifier
+  // made, then `outbound` and the verifier's steps.
   async function finish(
     ctx: E2eContext,
     engine: Engine,
@@ -265,14 +265,14 @@ export function e2eClient(
     state: E2eState,
     persist: () => Promise<void>,
     changes: ChatChange[],
+    outbound: Outbound[],
   ): Promise<Report> {
     const sas = sasOutput(engine, verifier);
     const touched = new Set(sas.chats);
     for (const key of await chats.apply(ctx.slot, [...sas.changes, ...changes])) touched.add(key);
     await persist();
-    for (const key of await chats.apply(ctx.slot, await flush(engine, ctx.door, sas.outbound))) {
-      touched.add(key);
-    }
+    const sent = await flush(engine, ctx.door, [...outbound, ...sas.outbound]);
+    for (const key of await chats.apply(ctx.slot, sent)) touched.add(key);
     return { chats: [...touched], pkmsgs: 0, waiting: waitsOnTheClock(state) };
   }
 
@@ -313,9 +313,18 @@ export function e2eClient(
           await ctx.door.ack(page.map((m) => m.id));
           after = last.id;
         }
-        const ticked = changesFor(engine.tick().events, now(), null);
-        for (const key of await chats.apply(ctx.slot, ticked)) touched.add(key);
-        return { chats: [...touched], pkmsgs, waiting: waitsOnTheClock(state) };
+        const ticked = engine.tick();
+        const end = await finish(
+          ctx,
+          engine,
+          verifier,
+          state,
+          persist,
+          changesFor(ticked.events, now(), null),
+          ticked.outbound,
+        );
+        for (const key of end.chats) touched.add(key);
+        return { chats: [...touched], pkmsgs, waiting: end.waiting };
       }),
 
     send: (ctx, nick, body) =>
@@ -345,9 +354,17 @@ export function e2eClient(
 
     tick: (ctx) =>
       withEngine(ctx, async (engine, state, persist, verifier) => {
-        const changes = changesFor(engine.tick().events, now(), null);
+        const ticked = engine.tick();
         verifier.tick(await host.alive());
-        return finish(ctx, engine, verifier, state, persist, changes);
+        return finish(
+          ctx,
+          engine,
+          verifier,
+          state,
+          persist,
+          changesFor(ticked.events, now(), null),
+          ticked.outbound,
+        );
       }),
 
     pin: (ctx, nick, key, verified) =>
@@ -367,16 +384,22 @@ export function e2eClient(
           nick,
           ed25519: peer.ed25519,
         };
-        const report = await finish(ctx, engine, verifier, state, persist, [
-          { op: "add", nick, unread: false, row },
-        ]);
+        const report = await finish(
+          ctx,
+          engine,
+          verifier,
+          state,
+          persist,
+          [{ op: "add", nick, unread: false, row }],
+          [],
+        );
         return { result, chats: report.chats };
       }),
 
     verify: (ctx, nick, step) =>
       withEngine(ctx, async (engine, state, persist, verifier) => {
         await verifier.step(nick, step);
-        return finish(ctx, engine, verifier, state, persist, []);
+        return finish(ctx, engine, verifier, state, persist, [], []);
       }),
 
     identity: (ctx, nicks) =>
@@ -389,7 +412,7 @@ export function e2eClient(
             peer === undefined ? null : { ed25519: peer.ed25519, verified: peer.verified };
           sas[fold(nick)] = verifier.view(nick);
         }
-        if (!verifier.idle()) await finish(ctx, engine, verifier, state, persist, []);
+        if (!verifier.idle()) await finish(ctx, engine, verifier, state, persist, [], []);
         return { own: engine.fingerprint(), peers, sas };
       }),
   };
