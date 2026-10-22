@@ -88,6 +88,21 @@ const STATION_LOGO_PATH = "/radio-logos/groovesalad.png";
 const STATION_SONGS = "https://api.somafm.com/songs/groovesalad.json";
 const SONGS_PREFIX = "https://api.somafm.com/songs/";
 
+// The canned stream must outlast the transport step (d), or the clip ENDING
+// stops the element instead of the tap or the lock-screen pause. An MPEG-1
+// Layer III frame is 1152 samples, 26.1 ms at 44.1 kHz; 1,200 frames is
+// 31.3 s (the element reports `duration` 31.275), about 500 KB.
+//
+// Measured, not assumed: this used to be 8 frames, 0.2085 s. The tap started
+// playback at t=0.06 and the clip ended about 190 ms later, so any stall over
+// that between the tap and the first `playbackState` read left the session
+// "paused" for good — the intermittent red at the "playing" poll. With a
+// 500 ms wait inserted after the tap, 8 frames failed 3 of 3 (media events:
+// play, playing, then pause + ended at t=0.208) and 1,200 frames passed 3 of 3.
+// It also made (d) vacuous whenever the clip had already ended: the pause
+// action then found an element that had stopped by itself.
+const STREAM_FRAMES = 1200;
+
 const TRACK_TITLE = "Structures from Silence";
 const TRACK_ARTIST = "Steve Roach";
 
@@ -209,7 +224,7 @@ test("@webkit @touch #1702 — the lock screen is told the track, the station an
   // mediate in a way that defeats interception), so it stays here — same
   // posture as #682.
   await page.route("https://ice.somafm.com/**", async (route) => {
-    await route.fulfill({ status: 200, contentType: "audio/mpeg", body: silentMp3(8) });
+    await route.fulfill({ status: 200, contentType: "audio/mpeg", body: silentMp3(STREAM_FRAMES) });
   });
   // #1739 — the logo stub is GONE rather than retargeted. Nothing requests
   // api.somafm.com for artwork any more (the picker and this lock screen both
@@ -317,6 +332,8 @@ test("@webkit @touch #1702 — the lock screen is told the track, the station an
     (window as unknown as Probe).__msActions?.[action]?.();
   }, "pause");
   await expect(audio).toHaveJSProperty("paused", true);
+  // Stopped by the action, not by the end of the canned stream.
+  await expect(audio).toHaveJSProperty("ended", false);
   await expect
     .poll(async () => await page.evaluate(() => navigator.mediaSession?.playbackState))
     .toBe("paused");
