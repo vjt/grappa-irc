@@ -4,7 +4,7 @@
 // IndexedDB and Web Locks, and the keys are real vodozemac keys.
 import { createRoot, createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Lock, Sealed, Vault } from "../lib/e2e/accountStore";
+import { memoryLock, memoryVault } from "./helpers/e2eVault";
 import { olm } from "./helpers/olm";
 
 vi.mock("../lib/api", () => ({
@@ -20,31 +20,12 @@ vi.mock("../lib/auth", () => ({ token: () => bearer() }));
 vi.mock("../lib/networks", () => ({ user: () => me(), networks: () => list() }));
 vi.mock("../lib/e2e/olm", () => ({ loadOlm: async () => olm() }));
 
-function memoryVault(): Vault {
-  const records = new Map<string, Sealed>();
-  let key: Promise<CryptoKey> | undefined;
-  return {
-    load: async (slot) => records.get(slot),
-    store: async (slot, sealed) => {
-      records.set(slot, sealed);
-    },
-    wrappingKey: () => {
-      key ??= crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, [
-        "encrypt",
-        "decrypt",
-      ]);
-      return key;
-    },
-  };
-}
-
-const memoryLock: Lock = <T>(_name: string, fn: () => Promise<T>) => fn();
-
 // The browser store is IndexedDB + Web Locks, which jsdom has neither of.
 vi.mock("../lib/e2e/accountStore", async (importOriginal) => {
   const real = await importOriginal<typeof import("../lib/e2e/accountStore")>();
+  const { memoryLock, memoryVault } = await import("./helpers/e2eVault");
   const vault = memoryVault();
-  return { ...real, indexedDbVault: () => vault, webLock: memoryLock };
+  return { ...real, indexedDbVault: () => vault, webLock: memoryLock() };
 });
 
 const api = await import("../lib/api");
@@ -71,7 +52,7 @@ afterEach(() => {
 
 describe("syncKeyBundle", () => {
   it("a new account drops grappa's old bundle first, then uploads a full one", async () => {
-    const store = accountStore(olm(), memoryVault(), memoryLock);
+    const store = accountStore(olm(), memoryVault(), memoryLock());
 
     await syncKeyBundle(store, "tok", SLOT, "azzurra");
 
@@ -87,7 +68,7 @@ describe("syncKeyBundle", () => {
   });
 
   it("a known account asks grappa what is left and sends only that, never clearing", async () => {
-    const store = accountStore(olm(), memoryVault(), memoryLock);
+    const store = accountStore(olm(), memoryVault(), memoryLock());
     await syncKeyBundle(store, "tok", SLOT, "azzurra");
     vi.mocked(api.clearE2eKeys).mockClear();
     vi.mocked(api.getE2eKeys).mockResolvedValue({ one_time_keys: 47, fallback: true });
@@ -104,7 +85,7 @@ describe("syncKeyBundle", () => {
   });
 
   it("sends nothing when grappa's bundle is full", async () => {
-    const store = accountStore(olm(), memoryVault(), memoryLock);
+    const store = accountStore(olm(), memoryVault(), memoryLock());
     await syncKeyBundle(store, "tok", SLOT, "azzurra");
     vi.mocked(api.getE2eKeys).mockResolvedValue({ one_time_keys: 50, fallback: true });
 
@@ -114,7 +95,7 @@ describe("syncKeyBundle", () => {
   });
 
   it("keeps the keys of a failed upload, and sends the same ones next time", async () => {
-    const store = accountStore(olm(), memoryVault(), memoryLock);
+    const store = accountStore(olm(), memoryVault(), memoryLock());
     vi.mocked(api.uploadE2eKeys).mockRejectedValueOnce(new Error("503"));
 
     await expect(syncKeyBundle(store, "tok", SLOT, "azzurra")).rejects.toThrow("503");
@@ -133,7 +114,7 @@ describe("syncKeyBundle", () => {
   });
 
   it("a failed clear stores no account, so the next sync starts over and clears again", async () => {
-    const store = accountStore(olm(), memoryVault(), memoryLock);
+    const store = accountStore(olm(), memoryVault(), memoryLock());
     vi.mocked(api.clearE2eKeys).mockRejectedValueOnce(new Error("offline"));
 
     await expect(syncKeyBundle(store, "tok", SLOT, "azzurra")).rejects.toThrow("offline");

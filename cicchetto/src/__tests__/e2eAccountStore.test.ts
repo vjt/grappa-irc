@@ -4,47 +4,10 @@
 // twins with the same contract, and everything else is real: the vodozemac
 // binding, and WebCrypto's AES-GCM.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { accountStore, type Lock, type Sealed, type Vault } from "../lib/e2e/accountStore";
+import { accountStore } from "../lib/e2e/accountStore";
 import { newState } from "../lib/e2e/engine";
+import { memoryLock, memoryVault } from "./helpers/e2eVault";
 import { olm } from "./helpers/olm";
-
-function memoryVault(): Vault & { records: Map<string, Sealed>; rekey(): void } {
-  const records = new Map<string, Sealed>();
-  let key: Promise<CryptoKey> | undefined;
-  return {
-    records,
-    load: async (slot) => records.get(slot),
-    store: async (slot, sealed) => {
-      records.set(slot, sealed);
-    },
-    wrappingKey: () => {
-      key ??= crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, [
-        "encrypt",
-        "decrypt",
-      ]);
-      return key;
-    },
-    // The wrapping key is gone (its store was cleared on its own): what is
-    // sealed under the old one can no longer be opened.
-    rekey: () => {
-      key = undefined;
-    },
-  };
-}
-
-// One holder per name at a time, the rest queued in order: what
-// `navigator.locks.request(name, fn)` guarantees for an exclusive lock.
-function memoryLock(): Lock {
-  const tails = new Map<string, Promise<unknown>>();
-  return <T>(name: string, fn: () => Promise<T>): Promise<T> => {
-    const run = (tails.get(name) ?? Promise.resolve()).then(fn, fn);
-    tails.set(
-      name,
-      run.catch(() => undefined),
-    );
-    return run;
-  };
-}
 
 const SLOT = "user:0b5e:1";
 
