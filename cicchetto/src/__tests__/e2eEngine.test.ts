@@ -1014,6 +1014,74 @@ describe("renamed peers", () => {
   });
 });
 
+describe("pins by hand", () => {
+  it("verifies a key pinned before first contact, and the first contact goes to it", () => {
+    const { w, a, b } = twoPeers();
+    const key = b.account.ed25519_key();
+
+    expect(w.engine(a).pin("bob", key)).toBe("pinned");
+    expect(w.engine(a).pinned("bob")).toEqual({
+      ed25519: key,
+      curve25519: null,
+      nick: "bob",
+      proven: false,
+      verified: true,
+    });
+
+    w.text(a, "bob", "hello");
+
+    expect(texts(b)).toEqual(["hello"]);
+    expect(w.engine(a).pinned("bob")).toEqual({
+      ed25519: key,
+      curve25519: b.account.curve25519_key(),
+      nick: "bob",
+      proven: false,
+      verified: true,
+    });
+  });
+
+  it("verifies the key trusted on first use, sessions kept", () => {
+    const { w, a, b } = twoPeers();
+    w.text(a, "bob", "hello");
+    const sessions = a.state.sessions;
+
+    expect(w.engine(a).pin("BOB", b.account.ed25519_key())).toBe("pinned");
+
+    expect(w.engine(a).pinned("bob")?.verified).toBe(true);
+    expect(a.state.sessions).toEqual(sessions);
+    w.text(a, "bob", "again");
+    expect(texts(b)).toEqual(["hello", "again"]);
+  });
+
+  it("moves the nick to the key pinned by hand, and the new key is the one written to", () => {
+    const { w, a, b } = twoPeers();
+    w.text(a, "bob", "hello");
+    // Bob's storage was wiped; he prints his new key and alice pastes it.
+    const b2 = w.join("bob");
+    w.now += REKEY_INTERVAL_MS;
+
+    expect(w.engine(a).pin("bob", b2.account.ed25519_key())).toBe("pinned");
+    w.text(a, "bob", "welcome back");
+
+    expect(texts(b2)).toEqual(["welcome back"]);
+    expect(ofKind(a, "key_alarm")).toEqual([]);
+    expect(a.state.pins.bob).toBe(b2.account.ed25519_key());
+    // The old key is still a peer, no longer behind the nick.
+    expect(a.state.peers[b.account.ed25519_key()]?.verified).toBe(false);
+  });
+
+  it("refuses what is not an Ed25519 key, and our own", () => {
+    const { w, a } = twoPeers();
+    const engine = w.engine(a);
+
+    expect(engine.pin("bob", "not a key")).toBe("bad-key");
+    expect(engine.pin("bob", `${"A".repeat(42)}`)).toBe("bad-key");
+    expect(engine.pin("bob", KEY_OF_33_BYTES)).toBe("bad-key");
+    expect(engine.pin("bob", a.account.ed25519_key())).toBe("own-key");
+    expect(a.state.pins).toEqual({});
+  });
+});
+
 function decodeOtk(payload: string): string {
   return (decodePayload(payload).otk as { key: string }).key;
 }

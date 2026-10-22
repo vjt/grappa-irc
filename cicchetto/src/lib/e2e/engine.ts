@@ -253,6 +253,33 @@ export class Engine {
     return Object.values(this.state.peers).find((p) => fold(p.nick) === fold(nick));
   }
 
+  /**
+   * Pins `ed25519` to `nick` by hand, verified: the user pasted the key a
+   * peer printed (a bot: 2430 ruling 6253162964), or compared a SAS. The one
+   * way a pin moves to another key (`identify` never does it). The key's
+   * sessions stay; a key never seen learns its curve from its first signed
+   * id block. The key is the spelling vodozemac prints: 43 characters of
+   * unpadded standard base64.
+   */
+  pin(nick: string, ed25519: string): "pinned" | "bad-key" | "own-key" {
+    if (!/^[A-Za-z0-9+/]{43}$/.test(ed25519)) return "bad-key";
+    let ed: string;
+    try {
+      ed = rejecting(() => this.olm.canonical_ed25519(ed25519));
+    } catch (err) {
+      if (!(err instanceof Rejected)) throw err;
+      return "bad-key";
+    }
+    if (ed === this.account.ed25519_key()) return "own-key";
+    const known = this.state.peers[ed];
+    this.state.peers[ed] =
+      known === undefined
+        ? { ed25519: ed, curve25519: null, nick, proven: false, verified: true }
+        : { ...known, verified: true };
+    this.state.pins[fold(nick)] = ed;
+    return "pinned";
+  }
+
   // --- sending -----------------------------------------------------------
 
   /**
