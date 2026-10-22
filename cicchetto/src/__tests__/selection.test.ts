@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScrollbackMessage } from "../lib/api";
 import { channelKey } from "../lib/channelKey";
 
@@ -1616,6 +1616,85 @@ describe("selection store", () => {
   // opened (captured as a back target on the non-list → list
   // transition); when that window is gone, it falls through the same
   // MRU → server → home chain as the close-window picker.
+  // issue 2430 — an encrypted window (cic-local) is live while its chat is
+  // open in the device's chat index. The index is stubbed with a signal here:
+  // the real one sits on IndexedDB and the vodozemac binding.
+  describe("encrypted windows (issue 2430)", () => {
+    const net = {
+      kind: "user" as const,
+      id: 1,
+      slug: "freenode",
+      nick: "alice",
+      connection_state: "connected" as const,
+      connection_state_reason: null,
+      connection_state_changed_at: null,
+      inserted_at: "",
+      updated_at: "",
+    };
+    const bob = { networkSlug: "freenode", channelName: "$e2e:Bob", kind: "encrypted" as const };
+    const grappa = { networkSlug: "freenode", channelName: "#grappa", kind: "channel" as const };
+
+    async function setup(token: string) {
+      vi.resetModules();
+      const { createSignal } = await import("solid-js");
+      const [open, setOpen] = createSignal(true);
+      vi.doMock("../lib/encryptedChats", () => ({
+        encryptedChat: (slug: string, nick: string) => {
+          if (slug !== "freenode") return undefined;
+          if (nick.toLowerCase() === "bob") return { nick: "Bob", open: open(), unread: 0 };
+          if (nick.toLowerCase() === "carol") return { nick: "Carol", open: false, unread: 0 };
+          return undefined;
+        },
+      }));
+      const api = await import("../lib/api");
+      vi.mocked(api.listMessages).mockResolvedValue([]);
+      vi.mocked(api.listNetworks).mockResolvedValue([net]);
+      vi.mocked(api.listChannels).mockResolvedValue([
+        { name: "#grappa", joined: true, source: "autojoin" },
+      ]);
+      const auth = await import("../lib/auth");
+      const sel = await import("../lib/selection");
+      const networks = await import("../lib/networks");
+      auth.setToken(token);
+      await vi.waitFor(() => {
+        expect(networks.channelsBySlug()?.freenode?.length).toBe(1);
+      });
+      return { sel, setOpen };
+    }
+
+    afterEach(() => {
+      vi.doUnmock("../lib/encryptedChats");
+    });
+
+    it("closing the chat moves the focus on, as a closed query does", async () => {
+      const { sel, setOpen } = await setup("tokE2e1");
+      sel.setSelectedChannel(grappa);
+      sel.setSelectedChannel(bob);
+      expect(sel.selectedChannel()).toEqual(bob);
+
+      setOpen(false);
+
+      await vi.waitFor(() => expect(sel.selectedChannel()).toEqual(grappa));
+    });
+
+    it("the $list overlay closes back to an open encrypted window, and not to a closed one", async () => {
+      const { sel } = await setup("tokE2e2");
+      const list = { networkSlug: "freenode", channelName: "$list", kind: "list" as const };
+      sel.setSelectedChannel(bob);
+      sel.setSelectedChannel(list);
+      sel.closeToPreviousWindow("freenode");
+      expect(sel.selectedChannel()).toEqual(bob);
+
+      // Carol's chat is closed: focused anyway (a selection the close-watcher
+      // never saw live is left alone), it is no window to go back to.
+      const carol = { ...bob, channelName: "$e2e:Carol" };
+      sel.setSelectedChannel(carol);
+      sel.setSelectedChannel(list);
+      sel.closeToPreviousWindow("freenode");
+      expect(sel.selectedChannel()).not.toEqual(carol);
+    });
+  });
+
   describe("closeToPreviousWindow — $list overlay back (#125)", () => {
     type Conn = "connected" | "parked" | "failed";
     const userNet = (slug: string, id: number, conn: Conn) => ({
