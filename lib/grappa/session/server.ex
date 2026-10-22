@@ -2010,9 +2010,9 @@ defmodule Grappa.Session.Server do
   # still be waiting in the pacer when it returns.
   # (No @impl here — a continuation clause of handle_call/3, whose @impl
   # rides the no-Client refusal clause above.)
-  def handle_call({:send_e2e, target, verb, class, payload}, _, state)
-      when is_binary(target) and is_atom(verb) and is_atom(class) and is_binary(payload) do
-    {reply, state} = queue_e2e_send(state, target, verb, class, payload)
+  def handle_call({:send_e2e, target, verb, lane, payload}, _, state)
+      when is_binary(target) and is_atom(verb) and is_atom(lane) and is_binary(payload) do
+    {reply, state} = queue_e2e_send(state, target, verb, lane, payload)
     {:reply, reply, state}
   end
 
@@ -3968,15 +3968,10 @@ defmodule Grappa.Session.Server do
   # nothing that is not due, and the stored timer is left for
   # `arm_e2e_pacer/2` to cancel, so a stale tick never orphans the live one.
   def handle_info(:e2e_pacer_tick, state) do
-    {releases, pacer, wait} =
+    {releases, lost, pacer, wait} =
       E2ePacer.release(state.e2e_pacer, System.monotonic_time(:millisecond), e2e_bank_ms(state))
 
-    state =
-      %{state | e2e_pacer: pacer}
-      |> send_e2e_releases(releases)
-      |> arm_e2e_pacer(wait)
-
-    {:noreply, state}
+    {:noreply, commit_paced(state, releases, lost, pacer, wait)}
   end
 
   # issue 2430 — the offline queue's sweep (`sweep_e2e_inbox/1`): first at
@@ -8090,28 +8085,30 @@ defmodule Grappa.Session.Server do
   #
   # KEYREQ is never delivered: grappa answers it itself, from the bundle
   # the subject's client uploaded (`Grappa.E2eKeys`), connected client or
-  # not — one path. The answer goes as CONTROL: the peer is waiting on it
-  # to start a session. Consuming the key is the LAST step, after every
-  # check that can refuse — who may have what (`E2eKeyAnswers.admit/3`),
-  # the bank budget against the answer's real cost, and the pacer's room
-  # (`E2ePacer.enqueue/7` is pure, so its answer is only committed once
-  # the key is spent) — so a refusal never wastes a one-time key. Every
-  # refusal is silent to the peer, who asks again later, and logged at
-  # debug: the peer decides how often it fires.
+  # not — one path. The answer is REACTIVE in the pacer: what a peer draws
+  # from us, ahead of text within its budgets. Consuming the key is the
+  # LAST step, after every check that can refuse — who may have what
+  # (`E2eKeyAnswers.admit/3`), the bank budget against the answer's real
+  # cost, and the pacer's room (`E2ePacer.enqueue/7` is pure, so its answer
+  # is only committed once the key is spent) — so a refusal never wastes a
+  # one-time key. Every refusal is silent to the peer, who asks again
+  # later, and logged at debug: the peer decides how often it fires.
   @spec deliver_e2e(t(), String.t(), E2eReassembly.message()) :: t()
   defp deliver_e2e(state, from, %{verb: :keyreq}) do
     now = System.monotonic_time(:millisecond)
     key = fold_key(state, from)
+    msgid = E2e.new_msgid()
 
     with {:ok, kind} <- E2eKeyAnswers.admit(state.e2e_key_answers, key, now),
          {:ok, bundle_key} <- E2eKeys.next(state.subject, state.network_id, kind),
-         {:ok, lines} <- e2e_lines(state, from, :keys, E2e.new_msgid(), bundle_key.payload),
+         {:ok, lines} <- e2e_lines(state, from, :keys, msgid, bundle_key.payload),
          cost = lines |> Enum.map(&elem(&1, 1)) |> Enum.sum(),
          :ok <- afford_keys(state, cost, now),
-         {:ok, releases, pacer, wait} <- pace_e2e(state, from, :control, lines, now),
+         message = %{msgid: msgid, verb: :keys, lane: :reactive, deadline_ms: nil},
+         {:ok, releases, lost, pacer, wait} <- pace_e2e(state, from, message, lines, now),
          :ok <- E2eKeys.consume(bundle_key) do
       answers = E2eKeyAnswers.record(state.e2e_key_answers, key, bundle_key.kind, cost, now)
-      commit_paced(%{state | e2e_key_answers: answers}, releases, pacer, wait)
+      commit_paced(%{state | e2e_key_answers: answers}, releases, lost, pacer, wait)
     else
       # Only the consume answers this, and its delete may have landed all
       # the same (a connection lost after the commit). Count the nick as
@@ -8120,6 +8117,12 @@ defmodule Grappa.Session.Server do
       {:error, :db_unavailable} ->
         Logger.warning("e2e KEYREQ not answered: database unavailable", sender: from)
         %{state | e2e_key_answers: E2eKeyAnswers.record(state.e2e_key_answers, key, :otk, 0, now)}
+
+      # A KEYS is no Olm message, so the refusal left no gap to keep, and
+      # the pacer it hands back is let go.
+      {:error, reason, _} ->
+        Logger.debug("e2e KEYREQ not answered", sender: from, reason: reason)
+        state
 
       {:error, reason} ->
         Logger.debug("e2e KEYREQ not answered", sender: from, reason: reason)
@@ -8242,18 +8245,21 @@ defmodule Grappa.Session.Server do
 
   # `{:error, :rate_limited}` when the peer's queue or the connection's
   # cannot take the whole message — the pacer refuses it whole rather than
-  # send half, and the caller is told (vjt's ruling, 2430).
-  @spec queue_e2e_send(t(), String.t(), E2e.verb(), E2ePacer.class(), String.t()) ::
+  # send half, and the caller is told (vjt's ruling, 2430). The pacer a
+  # refusal hands back is kept: it counts a refused MSG/PKMSG as a gap.
+  @spec queue_e2e_send(t(), String.t(), E2e.verb(), E2ePacer.lane(), String.t()) ::
           {{:ok, String.t()} | {:error, :too_large | :rate_limited}, t()}
-  defp queue_e2e_send(state, target, verb, class, payload) do
+  defp queue_e2e_send(state, target, verb, lane, payload) do
     msgid = E2e.new_msgid()
+    message = %{msgid: msgid, verb: verb, lane: lane, deadline_ms: nil}
 
     with {:ok, lines} <- e2e_lines(state, target, verb, msgid, payload),
-         {:ok, releases, pacer, wait} <- pace_e2e(state, target, class, lines, System.monotonic_time(:millisecond)) do
-      {{:ok, msgid}, commit_paced(state, releases, pacer, wait)}
+         {:ok, releases, lost, pacer, wait} <-
+           pace_e2e(state, target, message, lines, System.monotonic_time(:millisecond)) do
+      {{:ok, msgid}, commit_paced(state, releases, lost, pacer, wait)}
     else
       {:error, :too_large} -> {{:error, :too_large}, state}
-      {:error, :queue_full} -> {{:error, :rate_limited}, state}
+      {:error, :queue_full, pacer} -> {{:error, :rate_limited}, %{state | e2e_pacer: pacer}}
     end
   end
 
@@ -8269,17 +8275,23 @@ defmodule Grappa.Session.Server do
   end
 
   # Asks the pacer to take the lines. Pure: nothing is sent and the state
-  # is untouched until `commit_paced/4`, so a caller can still back out.
-  @spec pace_e2e(t(), String.t(), E2ePacer.class(), [E2ePacer.line(), ...], integer()) ::
-          {:ok, [E2ePacer.release()], E2ePacer.t(), pos_integer() | nil} | {:error, :queue_full}
-  defp pace_e2e(state, target, class, lines, now),
-    do: E2ePacer.enqueue(state.e2e_pacer, fold_key(state, target), target, class, lines, now, e2e_bank_ms(state))
+  # is untouched until `commit_paced/5`, so a caller can still back out.
+  @spec pace_e2e(t(), String.t(), E2ePacer.message(), [E2ePacer.line(), ...], integer()) ::
+          {:ok, [E2ePacer.release()], [E2ePacer.lost()], E2ePacer.t(), pos_integer() | nil}
+          | {:error, :queue_full | :too_late, E2ePacer.t()}
+  defp pace_e2e(state, target, message, lines, now),
+    do: E2ePacer.enqueue(state.e2e_pacer, fold_key(state, target), target, message, lines, now, e2e_bank_ms(state))
 
-  # Commits what the pacer decided: its new state, the lines it released
-  # now, and the wake for the next.
-  @spec commit_paced(t(), [E2ePacer.release()], E2ePacer.t(), pos_integer() | nil) :: t()
-  defp commit_paced(state, releases, pacer, wait),
-    do: %{state | e2e_pacer: pacer} |> send_e2e_releases(releases) |> arm_e2e_pacer(wait)
+  # Commits what the pacer decided: its new state, the messages it dropped
+  # as too late, the lines it released now, and the wake for the next.
+  @spec commit_paced(t(), [E2ePacer.release()], [E2ePacer.lost()], E2ePacer.t(), pos_integer() | nil) :: t()
+  defp commit_paced(state, releases, lost, pacer, wait) do
+    Enum.each(lost, fn {target, msgid, verb} ->
+      Logger.warning("e2e #{verb} dropped unsent: too late to be answered", target: target, msgid: msgid)
+    end)
+
+    %{state | e2e_pacer: pacer} |> send_e2e_releases(releases) |> arm_e2e_pacer(wait)
+  end
 
   @spec afford_keys(t(), non_neg_integer(), integer()) :: :ok | {:error, :over_budget}
   defp afford_keys(state, cost, now) do
@@ -8298,7 +8310,7 @@ defmodule Grappa.Session.Server do
   end
 
   defp send_e2e_releases(%{client: client} = state, releases) do
-    Enum.each(releases, fn {target, body} ->
+    Enum.each(releases, fn {target, _, _, body} ->
       case Client.send_privmsg(client, target, body) do
         :ok -> :ok
         # Issue 2370: a timeout means the line is still in the client's

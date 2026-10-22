@@ -20,6 +20,7 @@ defmodule GrappaWeb.E2eControllerTest do
   alias Grappa.{E2eInbox, E2eKeys, IRCServer, Repo}
   alias Grappa.IRC.E2e
   alias Grappa.Scrollback.Message
+  alias Grappa.Session.E2ePacer
   alias Grappa.Session.Wire, as: SessionWire
 
   @payload Base.encode64(~s({"v":1}))
@@ -124,11 +125,12 @@ defmodule GrappaWeb.E2eControllerTest do
   test "429 rate_limited when the recipient's queue cannot take the whole message", %{conn: conn, vjt: vjt} do
     {_, network} = live_network(vjt)
     path = "/networks/#{network.slug}/e2e/messages"
-    # About 55 lines each on a 512-byte wire: 3 go out at once, the rest
-    # queue. Two fit in the 128-line queue, the third does not.
+    # About 55 full lines each on a 512-byte wire, some 330 s of fake-lag
+    # bank: the first fits the 480 s of text a connection queues, the
+    # second does not.
     payload = Base.encode64(:crypto.strong_rand_bytes(15_000))
+    assert E2ePacer.max_backlog_ms() == 480_000
 
-    assert %{"msgid" => _} = json_response(post(conn, path, %{target: "alice", verb: "msg", payload: payload}), 202)
     assert %{"msgid" => _} = json_response(post(conn, path, %{target: "alice", verb: "msg", payload: payload}), 202)
 
     assert json_response(post(conn, path, %{target: "alice", verb: "msg", payload: payload}), 429)["error"] ==

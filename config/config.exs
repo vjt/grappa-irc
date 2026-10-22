@@ -509,6 +509,9 @@ config :logger, :console,
     # satisfy the known_keys↔metadata sync test even though no Logger call
     # carries it today.
     :e2e_undeliverable,
+    # issue 2430 — the msgid of an outbound end-to-end encrypted message the
+    # pacer dropped unsent, so the log line matches what the sender is told.
+    :msgid,
     # issue 2176 — the denoise classification of a `:mode` row: present and
     # `true` when the line changed the CHANNEL (a ban, a key, a limit, a
     # flag) rather than a member's status prefix. In the allowlist to
