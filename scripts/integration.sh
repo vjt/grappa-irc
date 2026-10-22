@@ -215,8 +215,10 @@ e2e_export_uid
 cd "$E2E_DIR"
 
 # Build the runner image — e2e-suite-specific, not part of the testnet
-# stack contract, hence separate from `testnet up`.
-docker compose build playwright-runner
+# stack contract, hence separate from `testnet up`. The #2430 e2e-bot too:
+# `compose run` builds a dependency only when its image is MISSING, so a
+# changed e2e-bot/ would otherwise run as the stale image a previous run left.
+docker compose build playwright-runner e2e-bot
 
 # Run the test suite; `compose run` exit code propagates. `--name
 # e2e-runner` keeps the container's docker-DNS PTR SHORT — do not drop it.

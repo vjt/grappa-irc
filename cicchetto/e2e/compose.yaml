@@ -628,6 +628,8 @@ services:
         condition: service_healthy
       push-catcher:
         condition: service_healthy
+      e2e-bot:
+        condition: service_healthy
       # GH #349 — the registration-wizard e2e polls mailpit's HTTP API
       # for the NickServ confirmation mail. Distroless image → no
       # healthcheck; service_started is enough (boots sub-second, nothing
@@ -691,6 +693,9 @@ services:
       # Specs GET /api/v1/messages (list) + /api/v1/message/{id} (body)
       # to extract the NickServ confirmation code/link.
       E2E_MAILPIT_URL: http://mailpit:8025
+      # #2430 — control API of the e2e-bot service (claude-ircbot on irc-olm),
+      # which the interop specs drive: see fixtures/e2eBot.ts.
+      E2E_BOT_URL: http://e2e-bot:8080
       # #1773 — the SAME payload cicchetto-build-test baked into the bundle.
       # The credits spec reads it here and compares it against what the modal
       # paints: without it the spec could only assert a shape, and a shape
@@ -746,6 +751,36 @@ services:
         aliases: [push-catcher]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/healthz >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      start_period: 5s
+      retries: 10
+
+  # #2430 interop — claude-ircbot's bot.py on the irc-olm engine, the bot
+  # side of the E2E query protocol, driven over HTTP by control.py (see
+  # e2e-bot/control.py and fixtures/e2eBot.ts). It IDLES until a spec POSTs
+  # /start: no other spec ever meets an extra client on the testnet, which is
+  # why it needs no compose profile. The code under test is fetched at
+  # pinned, checksummed commits (e2e-bot/Dockerfile). Leaf TLS port, self-
+  # signed cert: verification off, as for any test fixture. Reachable only
+  # intra-network; publishes nothing.
+  e2e-bot:
+    build:
+      context: ./e2e-bot
+    image: grappa-e2e-bot:dev
+    container_name: grappa-e2e-bot
+    pull_policy: never
+    environment:
+      IRC_HOST: bahamut-test
+      IRC_PORT: "6697"
+      IRC_TLS_VERIFY: "0"
+      IRC_IDENT: e2ebot
+      BOT_E2E_NETWORK: azzurra-testnet
+    networks:
+      grappa-e2e:
+        aliases: [e2e-bot]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2)"]
       interval: 5s
       timeout: 3s
       start_period: 5s
