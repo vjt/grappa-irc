@@ -60,7 +60,8 @@ export type AccountStore = {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-async function seal(key: CryptoKey, slot: string, plain: string): Promise<Sealed> {
+/** Seals `plain` under `key` for `slot`, the AES-GCM additional data. */
+export async function seal(key: CryptoKey, slot: string, plain: string): Promise<Sealed> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   // The slot is the additional data: a record copied under another slot does
   // not open there.
@@ -72,7 +73,8 @@ async function seal(key: CryptoKey, slot: string, plain: string): Promise<Sealed
   return { iv, ciphertext };
 }
 
-async function open(key: CryptoKey, slot: string, sealed: Sealed): Promise<string> {
+/** Opens what `seal` sealed for `slot`; throws if the key or the slot is not the one. */
+export async function open(key: CryptoKey, slot: string, sealed: Sealed): Promise<string> {
   const plain = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: sealed.iv, additionalData: encoder.encode(slot) },
     key,
@@ -156,13 +158,18 @@ function committed(tx: IDBTransaction): Promise<void> {
   });
 }
 
+/** The object stores of sealed records: Olm accounts, and the chats read with them (`chatStore.ts`). */
+export type VaultStore = "accounts" | "chats";
+
 // One connection per operation, closed after it: a held connection would
 // block `indexedDB.deleteDatabase` (the test-only wipe) until the tab closed.
+// Version 2 added `chats`; an upgrade creates whichever store is missing.
 async function withDatabase<T>(fn: (db: IDBDatabase) => Promise<T>): Promise<T> {
-  const request = indexedDB.open(E2E_DATABASE, 1);
+  const request = indexedDB.open(E2E_DATABASE, 2);
   request.onupgradeneeded = () => {
-    request.result.createObjectStore("keys");
-    request.result.createObjectStore("accounts");
+    for (const name of ["keys", "accounts", "chats"]) {
+      if (!request.result.objectStoreNames.contains(name)) request.result.createObjectStore(name);
+    }
   };
   const db = await settle(request);
   try {
@@ -188,11 +195,14 @@ function get<T>(storeName: string, key: string): Promise<T | undefined> {
   );
 }
 
-/** The browser's vault: IndexedDB, the wrapping key created once under `lock`. */
-export function indexedDbVault(lock: Lock): Vault {
+/**
+ * The browser's vault over one object store of IndexedDB. Every store seals
+ * under the same wrapping key, created once under `lock`.
+ */
+export function indexedDbVault(lock: Lock, store: VaultStore): Vault {
   return {
-    load: (slot) => get<Sealed>("accounts", slot),
-    store: (slot, sealed) => put("accounts", slot, sealed),
+    load: (slot) => get<Sealed>(store, slot),
+    store: (slot, sealed) => put(store, slot, sealed),
     // Two tabs creating the key at once would each seal under their own, and
     // one of them would overwrite the other's: a lock makes it one key.
     wrappingKey: () =>
