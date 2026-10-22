@@ -3268,3 +3268,93 @@ Known gaps, recorded rather than fixed:
   nick pinned to another key arrives with that nick.
 
 Client-only, no deploy class beyond the cic bundle.
+<!-- entry #2430g -->
+
+---
+
+## 2026-10-22 — #2430: encrypted queries in cic — the drain, the chats, the window
+
+Slice c2: cic drains grappa's encrypted inbox through the engine, sends through
+the send door, keeps the decrypted chats on the device and shows them in an
+encrypted query window. Protocol 45, a declaration-only bump: the inbox page and
+the send door's 202 get Session.Wire builders so cic narrows them with the
+generated schema (#1400); the bytes are the ones 42/43 answered, and the #1393d
+rule bumps on the generated shape. The pacer port that was to be 45 becomes 46.
+
+- **The chats are the device's, sealed, and nothing about them is in the
+  record keys.** `lib/e2e/chatStore.ts`, in a second IndexedDB store of the
+  same database under the same wrapping key: one index record per slot (folded
+  nick → a random chat id, the nick as last spelled, open, unread) and one
+  record per chat under its random id, so the keys say nothing about who the
+  chats are with. Every change runs under a per-slot Web Lock. An inbox
+  message, once decrypted and acknowledged, exists nowhere else (its session
+  key is spent), so this is not a cache and lost storage is lost history, as
+  2430 accepts. 1,000 rows per chat, oldest first out.
+- **Crash ordering, in one place.** `lib/e2e/client.ts` runs every operation
+  under the account lock in the order that keeps a crash anywhere harmless:
+  the engine works; what the user must see is written to the chats (a
+  decrypted message is down before the state that spent its key); the state
+  is stored before any of its ciphertext leaves (a ratchet step is never sent
+  twice from a reloaded state); the payloads go to the send door one at a
+  time, each answer recorded; the inbox is acknowledged last. A message
+  processed twice finds its rows already written (row ids derive from the
+  inbox id), and one at or below the stored watermark (`E2eState.inbox`) is
+  only acknowledged again: grappa's inbox ids are AUTOINCREMENT and never come
+  back. Each ordering test fails the step AFTER the one it guards, and each was
+  checked against the swapped-order mutant.
+- **The caller names each message.** The engine takes a tag per message
+  (`send(nick, inner, tag)`) and reports it back on `send_queued` and
+  `send_failed.tags`, so an out-row moves queued → sent / failed by its own id
+  without the engine knowing rows exist.
+- **Only the bundle sync makes an account.** A client operation on a slot with
+  no account throws `NoAccountError`; the glue syncs the bundle and retries. A
+  new account must first clear the bundle grappa still holds for the slot
+  (keys of an account that is gone), and only the sync does that in order.
+  A sync asked for while one runs for the slot joins it: on a fresh login the
+  drain meets the slot before the page's own sync has made the account, and a
+  second sync queued behind the first was measured in the e2e run as one extra
+  status read.
+- **A pin by hand is verified and moves the pin.** `Engine.pin` refuses what is
+  not a 43-character Ed25519 key and our own key; a pin is written to the chat
+  as a row, and the trust badge reads an alarm since the last pin as an alarm.
+  A received message written with a key other than the nick's pinned one (a
+  known peer on another nick, read as itself) says so on its row.
+- **When cic drains.** As each network shows up after login (the user topic's
+  join can come before the network list), on every user-topic (re)join
+  (nothing re-announces what queued while no cic was connected), and on every
+  `e2e_message` push, which only says something is there. Drains asked for
+  while one runs coalesce into one more run. Every tab drains the same inbox;
+  the tab that changed a chat says so on a BroadcastChannel and the others
+  read it again. A send door refusal is the message's failure reason (429
+  rate-limited — the peer's queue is full, ruling 6255346375 — 413 too-large,
+  anything else refused), shown to the local sender only.
+- **The window is cic-local: `$e2e:<nick>`, kind `"encrypted"`.** grappa knows
+  nothing of it, so it has no scrollback and its name is virtual (no read
+  cursor, no `/messages`); the `$` keeps it apart from the plaintext query with
+  the same peer. Selection treats it as a query treats its row (restorable
+  while open, the close-watcher moves on when it closes), but it is NOT
+  persisted as the last-focused window: a reload lands elsewhere and nothing
+  about an encrypted conversation reaches localStorage. Opened by `/equery
+  <nick>`, the member menu's "Encrypted query", or a first inbound message.
+- **Its own pane and compose line, not ScrollbackPane + ComposeBox.**
+  ComposeBox persists drafts in sessionStorage and keeps a history; a
+  plaintext draft at rest is what an encrypted query must not leave behind.
+  The pane's line keeps nothing once the text is handed to the engine and
+  takes no slash commands: everything typed goes to the peer, encrypted.
+
+Tested: the chat store, the client between two engines over a fake grappa
+(inbox paging, KEYREQ from the uploaded bundle, refusals, the three crash
+orders), the glue over the same fake grappa with the real bundle sync, the
+window kind in selection, the pane, the rows and /equery; and end to end with
+two grappa users in two browsers, real Olm both ways through a real ircd
+(`issue2430-encrypted-query.spec.ts`). The offline-queue spec now keeps its
+page from draining (`holdE2eInbox`): it is about grappa's queue, which a
+logged-in cic empties within milliseconds.
+
+Not in c2: SAS (slice d), CHAL/ACK (slice e), the pacer port and `expires_at`
+(next, protocol 46), key export. Known gaps: an encrypted window is not
+restored after a reload (above, on purpose); no push text names the peer
+beyond grappa's "encrypted message".
+
+Client-only apart from the declaration-only protocol bump: HOT, plus the cic
+bundle.
