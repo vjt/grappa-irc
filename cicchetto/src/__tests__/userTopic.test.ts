@@ -465,6 +465,9 @@ describe("userTopic", () => {
         topiclen: null,
         // #1108 — this envelope carried no budget, so none is seeded.
         frameBudgetBase: null,
+        // issue 2430 — nor a network name: an order challenge then goes
+        // unanswered, never matched against a guess.
+        network: null,
       });
     });
 

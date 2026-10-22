@@ -100,6 +100,7 @@ describe("availableModes", () => {
       channellen: null,
       topiclen: null,
       frameBudgetBase: null,
+      network: null,
     };
     const modes = availableModes(isupport);
     const z = modes.find((m) => m.letter === "Z");
@@ -189,6 +190,7 @@ describe("editorSigils", () => {
       channellen: null,
       topiclen: null,
       frameBudgetBase: null,
+      network: null,
     };
     const e = editorSigils(isupport);
     expect(e.has("~")).toBe(true); // founder
@@ -211,6 +213,7 @@ describe("editorSigils", () => {
       channellen: null,
       topiclen: null,
       frameBudgetBase: null,
+      network: null,
     };
     const e = editorSigils(isupport);
     expect(e.has("@")).toBe(true);

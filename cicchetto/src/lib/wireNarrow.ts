@@ -328,6 +328,9 @@ export function narrowIsupportChanged(
     // predates the budget, and cic's own rule for an unknown budget is to
     // show no warning at all.
     frame_budget_base: typeof r.frame_budget_base === "number" ? r.frame_budget_base : null,
+    // issue 2430 — absent or malformed is "no name": an order challenge is
+    // then answered nowhere, never matched against a guess.
+    network: typeof r.network === "string" && r.network !== "" ? r.network : null,
   };
 }
 

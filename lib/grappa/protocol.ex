@@ -1236,7 +1236,24 @@ defmodule Grappa.Protocol do
   #
   # @min_protocol_version stays at 1: nothing an older client sent changed
   # meaning.
-  @protocol_version 46
+  #
+  # ---------------------------------------------------------------------------
+  # 47 — issue 2430: the network's own name on `isupport_changed`
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: `network` on the `isupport_changed` payload, the 005 `NETWORK=`
+  # value verbatim, or null when the network advertised none
+  # (`ISupport.network/1`). A bot's order challenge names the network by that
+  # token, and the client answers the challenge only on an exact match, so it
+  # needs the value grappa already parsed and kept off the wire. A typed fact,
+  # not the raw token archive, which still never crosses.
+  #
+  # Checked for a collision before claiming 47: the one open PR that edits
+  # this file (#2102) still carries 21, and issue 2430's slice f takes no
+  # number.
+  #
+  # @min_protocol_version stays at 1: an older client ignores the new key.
+  @protocol_version 47
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1277,7 +1294,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 46
+  @spec version() :: 47
   def version, do: @protocol_version
 
   @doc """

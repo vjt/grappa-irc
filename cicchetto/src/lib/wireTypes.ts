@@ -1085,6 +1085,7 @@ export type SessionWireIsupportChangedPayload = {
   nicklen: number | null;
   channellen: number | null;
   topiclen: number | null;
+  network: string | null;
   frame_budget_base: number;
 };
 

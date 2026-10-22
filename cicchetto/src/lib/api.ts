@@ -797,6 +797,10 @@ export type WireChannelEvent =
       // permissively on purpose: the wire is additive-only, so a server
       // predating the field must still seed the capability table.
       frame_budget_base: number | null;
+      // issue 2430 — the 005 `NETWORK=` value, what an order challenge
+      // names. `null` when unadvertised or from a server predating it: an
+      // order challenge then goes unanswered (fail closed).
+      network: string | null;
     }
   // UX-5 BJ (2026-05-19) — recognized-but-ignored. Pre-BJ the JoinBanner
   // consumed this via `seedChannelCreated` for the "Channel was created
@@ -1139,6 +1143,10 @@ export type WireUserEvent =
       // permissively on purpose: the wire is additive-only, so a server
       // predating the field must still seed the capability table.
       frame_budget_base: number | null;
+      // issue 2430 — the 005 `NETWORK=` value, what an order challenge
+      // names. `null` when unadvertised or from a server predating it: an
+      // order challenge then goes unanswered (fail closed).
+      network: string | null;
     }
   | {
       // CP17 — server-driven `:pending` window-state origination.

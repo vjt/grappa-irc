@@ -646,7 +646,7 @@ Check `protocol_version >= 28`. ⚠️ There is no 27 — the shape moved twice
 before this version was published, and the pin gate requires a number per
 move. Nothing ever spoke 27.
 
-### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44; pacer and `expires_at` v46)
+### 4f. End-to-end encrypted queries — the relay half (issue 2430, v42; offline queue v43; key bundle v44; pacer and `expires_at` v46; network name v47)
 
 An encrypted query is a conversation grappa carries and cannot read. The
 endpoints (cicchetto, or a bot using the shared Python package) run Olm via
@@ -761,6 +761,15 @@ order going unconfirmed. Anywhere else, or not a positive integer,
 `expires_at` is a 400. Before 46 a server ignores the field, so check
 `protocol_version >= 46` before relying on it.
 
+**The network an order names (v47).** A CHAL's `network` is the bot's own
+005 `NETWORK=` token, not grappa's slug. `isupport_changed` carries the same
+token as `network`, as advertised and undecoded (do not unescape `\xHH`), or
+`null` when the network advertised none (or the server predates 47, where the
+key is absent). Compare the two exactly
+before you ACK, and answer nothing when yours is `null`: with nothing to
+compare, an ACK could confirm an order seen on another network where
+someone else wears your nick.
+
 What may wait is bounded: per peer, 32 text MESSAGES (counting the
 `msg`/`pkmsg` refused or dropped behind queued text, each of which leaves the
 receiver a message key to skip) and 32 lines in each of the urgent and
@@ -838,8 +847,8 @@ of the wrong type, or a payload that is not base64 or is too long; 413
 is stored.
 
 Check `protocol_version >= 42`, `>= 43` for the offline queue and `id`,
-`>= 44` for the key bundle, and `>= 46` for `expires_at`, `too_late` and
-`e2e_send_dropped`.
+`>= 44` for the key bundle, `>= 46` for `expires_at`, `too_late` and
+`e2e_send_dropped`, and `>= 47` for `network` on `isupport_changed`.
 
 ---
 

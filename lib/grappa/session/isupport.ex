@@ -585,6 +585,22 @@ defmodule Grappa.Session.ISupport do
   def linelen(isupport) when is_map(isupport), do: Map.get(isupport, :linelen, @default_linelen)
 
   @doc """
+  The network's own name, the advertised `NETWORK=` value verbatim and
+  undecoded (issue 2430), or `nil` when the network did not name itself (no
+  token, a valueless `NETWORK`, an empty value, or a `-NETWORK`). A bot's order challenge carries the name its own
+  005 gave it, and a client answers only an exact match, so absent stays
+  `nil` rather than a guess: a client with nothing to compare answers
+  nothing. Read off the archive (`raw/1`), not a second parse.
+  """
+  @spec network(t()) :: String.t() | nil
+  def network(isupport) when is_map(isupport) do
+    case raw(isupport) do
+      %{"NETWORK" => name} when is_binary(name) and name != "" -> name
+      _ -> nil
+    end
+  end
+
+  @doc """
   Every token the upstream advertised, verbatim — see `t:raw/0` for what
   this is for and the two boundaries it must respect. Empty before the
   first 005.

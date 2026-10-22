@@ -516,6 +516,13 @@ const DECLARED_TOLERANCES = {
       quote: "absent or malformed means ABSENT",
       why: "#1108, recorded intentional by #1406 and named by vjt's ruling. The /mode toggles this payload seeds must survive a server predating the budget, and cic's own rule for an unknown budget is to show no warning at all.",
     },
+    network: {
+      ops: ["drop", "wrong-type"],
+      covers: "any-unusable-value",
+      file: "wireNarrow",
+      quote: 'absent or malformed is "no name"',
+      why: "issue 2430, protocol 47 — a server predating the field omits it (drop). A mistyped one (wrong-type) must not cost the envelope: rejecting it would throw away the capability table the /mode toggles read, for a field only order challenges consume. Both degrade to null, which answers no challenge (fail closed), as frame_budget_base does.",
+    },
   },
   lusers_bundle: Object.fromEntries(
     LUSERS_COUNTS.map((field) => [field, LUSERS_COUNT_TOLERANCE]),
@@ -813,8 +820,8 @@ describe("#1393 — user-topic boundary census", () => {
           },
           {
             "arm": "isupport_changed",
-            "handAcceptsSchemaRejects": "casemapping/drop, casemapping/null, casemapping/wrong-type, casemapping/swap, maxlist/drop, maxlist/null, maxlist/wrong-type, maxlist.key/null, maxlist.key/wrong-type, nicklen/drop, nicklen/wrong-type, channellen/drop, channellen/wrong-type, topiclen/drop, topiclen/wrong-type, frame_budget_base/drop, frame_budget_base/null, frame_budget_base/wrong-type",
-            "mutations": 81,
+            "handAcceptsSchemaRejects": "casemapping/drop, casemapping/null, casemapping/wrong-type, casemapping/swap, maxlist/drop, maxlist/null, maxlist/wrong-type, maxlist.key/null, maxlist.key/wrong-type, nicklen/drop, nicklen/wrong-type, channellen/drop, channellen/wrong-type, topiclen/drop, topiclen/wrong-type, network/drop, network/wrong-type, frame_budget_base/drop, frame_budget_base/null, frame_budget_base/wrong-type",
+            "mutations": 85,
             "schema": "S_SessionWireIsupportChangedPayload",
             "schemaAcceptsHandRejects": "-",
             "schemaRejectsValid": false,
@@ -1373,6 +1380,10 @@ describe("#1393 — user-topic boundary census", () => {
             "maxlist/drop": "accept",
             "maxlist/null": "accept",
             "maxlist/wrong-type": "accept",
+            "network/drop": "accept",
+            "network/null": "accept",
+            "network/swap": "accept",
+            "network/wrong-type": "accept",
             "network_id/drop": "reject",
             "network_id/null": "reject",
             "network_id/wrong-type": "reject",
@@ -1423,6 +1434,7 @@ describe("#1393 — user-topic boundary census", () => {
             "maxlist": {
               "key": 1,
             },
+            "network": "sample",
             "network_id": 1,
             "nicklen": 1,
             "prefix": {
@@ -2439,8 +2451,8 @@ describe("#1393 — user-topic boundary census", () => {
       stale: [...declared].filter((k) => !observed.has(k)).sort(),
     }).toMatchInlineSnapshot(`
       {
-        "declared": 72,
-        "measured": 72,
+        "declared": 74,
+        "measured": 74,
         "stale": [],
         "unexplained": [],
       }
@@ -2504,7 +2516,7 @@ describe("#1393 — user-topic boundary census", () => {
       noWrittenReason: entries.filter((e) => e.covers === "none").map((e) => `${e.arm} ${e.path}`),
     }).toMatchInlineSnapshot(`
       {
-        "deliberate": 31,
+        "deliberate": 32,
         "noWrittenReason": [],
         "widerThanItsWrittenReason": [],
       }
