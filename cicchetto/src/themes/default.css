@@ -4839,6 +4839,7 @@ html.is-ios27-band .shell {
 }
 
 .e2e-pin-input,
+.e2e-search-input,
 .e2e-compose-input {
   flex: 1;
   min-width: 0;
@@ -4848,6 +4849,21 @@ html.is-ios27-band .shell {
   color: var(--fg);
   background: var(--bg-alt);
   border: 1px solid var(--border);
+}
+
+/* issue 2430 slice f — the chat's own tools: a search over the rows it
+   holds, how many messages match, and "delete this chat" (the archive's
+   two-tap button) at the far end. */
+.e2e-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85em;
+}
+
+.e2e-delete-chat {
+  margin-left: auto;
 }
 
 .e2e-copy,

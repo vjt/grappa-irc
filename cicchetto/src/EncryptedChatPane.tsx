@@ -1,10 +1,12 @@
 import { type Component, createEffect, createSignal, For, Match, on, Show, Switch } from "solid-js";
+import InlineConfirmButton from "./InlineConfirmButton";
 import { copyText } from "./lib/clipboard";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import type { ChatRow, OutFailure } from "./lib/e2e/chatStore";
 import type { SasCancelReason, SasStep, SasView } from "./lib/e2e/sas";
 import { SAS_EMOJI } from "./lib/e2e/sasEmoji";
 import {
+  deleteEncryptedChat,
   encryptedChat,
   encryptedRows,
   encryptedSas,
@@ -37,6 +39,11 @@ import NickText from "./NickText";
 // other direction. People verify each other by comparing emoji (SAS,
 // `lib/e2e/sas.ts`); a key the alarm showed can be taken unverified, to be
 // verified that way (fork 7, 2430 comment 6339695571).
+//
+// The chat lives only on this device, so its search does too (2430: "client
+// side only, no server index"): a filter over the rows the window already
+// holds decrypted, at most `CHAT_ROWS_MAX`. "Delete this chat" takes two
+// taps, on the same button the archive deletes grappa's DM history with.
 
 type Props = { networkSlug: string; nick: string };
 
@@ -304,11 +311,17 @@ const SasPanel: Component<{
   );
 };
 
+// The messages, in and out: what a search looks through and counts.
+const messageBody = (row: ChatRow): string | null =>
+  row.kind === "in" || row.kind === "out" ? row.body : null;
+
 const EncryptedChatPane: Component<Props> = (props) => {
   const [draft, setDraft] = createSignal("");
   const [pin, setPin] = createSignal("");
   const [pinError, setPinError] = createSignal<string | null>(null);
   const [copyError, setCopyError] = createSignal<string | null>(null);
+  const [query, setQuery] = createSignal("");
+  const [deleteArmed, setDeleteArmed] = createSignal(false);
   let list: HTMLOListElement | undefined;
 
   const display = () => encryptedChat(props.networkSlug, props.nick)?.nick ?? props.nick;
@@ -316,10 +329,21 @@ const EncryptedChatPane: Component<Props> = (props) => {
   const peerTrust = () => encryptedTrust(props.networkSlug, props.nick);
   const trust = () => trustOf(rows(), peerTrust());
 
+  // While searching, only the messages that hold what was typed, in any case.
+  const needle = () => query().trim().toLowerCase();
+  const messages = () => rows().filter((row) => messageBody(row) !== null);
+  const shown = () => {
+    const n = needle();
+    if (n === "") return rows();
+    return messages().filter((row) => messageBody(row)?.toLowerCase().includes(n));
+  };
+
   createEffect(
     on(
       () => [props.networkSlug, props.nick] as const,
       ([slug, nick]) => {
+        setQuery("");
+        setDeleteArmed(false);
         void loadEncryptedChat(slug, nick).catch((err: unknown) => {
           console.warn(`[e2e] could not load the encrypted chat with ${nick}`, err);
         });
@@ -337,7 +361,7 @@ const EncryptedChatPane: Component<Props> = (props) => {
   });
 
   createEffect(
-    on(rows, () => {
+    on(shown, () => {
       if (list !== undefined) list.scrollTop = list.scrollHeight;
     }),
   );
@@ -374,6 +398,14 @@ const EncryptedChatPane: Component<Props> = (props) => {
   const sasStep = (step: SasStep) => {
     void verifyEncrypted(props.networkSlug, props.nick, step).catch((err: unknown) => {
       console.warn(`[e2e] could not ${step} the emoji comparison with ${props.nick}`, err);
+    });
+  };
+
+  // The window goes with the chat: the close-watcher moves focus, as after a close.
+  const deleteChat = () => {
+    setDeleteArmed(false);
+    void deleteEncryptedChat(props.networkSlug, props.nick).catch((err: unknown) => {
+      console.warn(`[e2e] could not delete the encrypted chat with ${props.nick}`, err);
     });
   };
 
@@ -456,9 +488,40 @@ const EncryptedChatPane: Component<Props> = (props) => {
             )}
           </Show>
         </div>
+        <div class="e2e-tools">
+          <input
+            type="search"
+            class="e2e-search-input"
+            data-testid="e2e-search-input"
+            aria-label={`search the chat with ${display()}`}
+            placeholder="search this chat"
+            autocomplete="off"
+            value={query()}
+            onInput={(event) => setQuery(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              event.preventDefault();
+              setQuery("");
+            }}
+          />
+          <Show when={needle() !== ""}>
+            <span class="e2e-search-count muted" data-testid="e2e-search-count">
+              {shown().length} of {messages().length} messages
+            </span>
+          </Show>
+          <InlineConfirmButton
+            idleLabel="delete this chat"
+            confirmLabel="really delete?"
+            armed={deleteArmed()}
+            onArm={() => setDeleteArmed(true)}
+            onConfirm={deleteChat}
+            testId="e2e-delete-chat"
+            extraClass="e2e-delete-chat"
+          />
+        </div>
       </header>
       <ol class="e2e-rows" ref={list}>
-        <For each={rows()}>
+        <For each={shown()}>
           {(row) => (
             <EncryptedRow
               row={row}
