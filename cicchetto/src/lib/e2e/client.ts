@@ -21,9 +21,9 @@
 
 import type { AccountStore } from "./accountStore";
 import type { ChatChange, ChatStore, DoorRefusal } from "./chatStore";
-import { type E2eEvent, Engine, type Outbound } from "./engine";
+import { type E2eEvent, type E2eState, Engine, type Outbound } from "./engine";
 import type { Olm } from "./olm";
-import type { ReceiveVerb } from "./wire";
+import { fold, type ReceiveVerb } from "./wire";
 
 /** One whole message grappa holds for us (the `e2e_message` wire shape, minus its envelope). */
 export type InboxMessage = {
@@ -52,6 +52,9 @@ export type E2eContext = { slot: string; ownNick: string; door: Door };
  */
 export type Report = { chats: string[]; pkmsgs: number; waiting: boolean };
 
+/** Who a nick is pinned to, as the user sees it. */
+export type PeerTrust = { ed25519: string; verified: boolean };
+
 export type E2eClient = {
   /** Takes every message waiting in the inbox. */
   drain(ctx: E2eContext): Promise<Report>;
@@ -59,7 +62,25 @@ export type E2eClient = {
   send(ctx: E2eContext, nick: string, body: string): Promise<Report>;
   /** Reports messages that waited too long for keys. */
   tick(ctx: E2eContext): Promise<Report>;
+  /** Pins `key` to `nick` by hand (`Engine.pin`); a pin is written to their chat. */
+  pin(
+    ctx: E2eContext,
+    nick: string,
+    key: string,
+  ): Promise<{ result: ReturnType<Engine["pin"]>; chats: string[] }>;
+  /** Our Ed25519 key, and the key each of `nicks` is pinned to (by folded nick). */
+  identity(
+    ctx: E2eContext,
+    nicks: string[],
+  ): Promise<{ own: string; peers: Record<string, PeerTrust | null> }>;
 };
+
+/**
+ * The slot has no account yet. Only the bundle sync creates one, because a
+ * new account must first clear whatever bundle grappa still holds for the
+ * slot (keys of an account that is gone): sync, then try again.
+ */
+export class NoAccountError extends Error {}
 
 /** The chat changes `events` make; rows from the inbox message `inbox` get ids derived from it. */
 function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatChange[] {
@@ -162,10 +183,21 @@ export function e2eClient(
     return changes;
   }
 
+  // An operation on the slot's account, which must exist already.
+  function withEngine<T>(
+    ctx: E2eContext,
+    fn: (engine: Engine, state: E2eState, persist: () => Promise<void>) => Promise<T>,
+  ): Promise<T> {
+    return accounts.withAccount(ctx.slot, async ({ account, state, created, persist }) => {
+      // Throwing stores nothing: the account just made is dropped again.
+      if (created) throw new NoAccountError(`no E2E account for ${ctx.slot} yet`);
+      return fn(new Engine(olm, account, state, ctx.ownNick, now), state, persist);
+    });
+  }
+
   return {
     drain: (ctx) =>
-      accounts.withAccount(ctx.slot, async ({ account, state, persist }) => {
-        const engine = new Engine(olm, account, state, ctx.ownNick, now);
+      withEngine(ctx, async (engine, state, persist) => {
         const touched = new Set<string>();
         let pkmsgs = 0;
         let after = 0;
@@ -197,8 +229,7 @@ export function e2eClient(
       }),
 
     send: (ctx, nick, body) =>
-      accounts.withAccount(ctx.slot, async ({ account, state, persist }) => {
-        const engine = new Engine(olm, account, state, ctx.ownNick, now);
+      withEngine(ctx, async (engine, state, persist) => {
         const tag = crypto.randomUUID();
         const res = engine.send(nick, { t: "text", body }, tag);
         const touched = new Set(
@@ -223,11 +254,41 @@ export function e2eClient(
       }),
 
     tick: (ctx) =>
-      accounts.withAccount(ctx.slot, async ({ account, state }) => {
-        const engine = new Engine(olm, account, state, ctx.ownNick, now);
+      withEngine(ctx, async (engine, state) => {
         const changes = changesFor(engine.tick().events, now(), null);
         const touched = await chats.apply(ctx.slot, changes);
         return { chats: touched, pkmsgs: 0, waiting: Object.keys(state.outq).length > 0 };
+      }),
+
+    pin: (ctx, nick, key) =>
+      withEngine(ctx, async (engine) => {
+        const result = engine.pin(nick, key);
+        if (result !== "pinned") return { result, chats: [] };
+        // The key as the engine spells it: a paste may carry non-zero padding bits.
+        const peer = engine.pinned(nick);
+        if (peer === undefined) throw new Error("a pin just set is not there");
+        const row = {
+          kind: "pinned" as const,
+          id: crypto.randomUUID(),
+          at: now(),
+          nick,
+          ed25519: peer.ed25519,
+        };
+        return {
+          result,
+          chats: await chats.apply(ctx.slot, [{ op: "add", nick, unread: false, row }]),
+        };
+      }),
+
+    identity: (ctx, nicks) =>
+      withEngine(ctx, async (engine) => {
+        const peers: Record<string, PeerTrust | null> = {};
+        for (const nick of nicks) {
+          const peer = engine.pinned(nick);
+          peers[fold(nick)] =
+            peer === undefined ? null : { ed25519: peer.ed25519, verified: peer.verified };
+        }
+        return { own: engine.fingerprint(), peers };
       }),
   };
 }

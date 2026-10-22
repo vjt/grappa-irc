@@ -38,7 +38,9 @@ export type ChatRow =
   /** "X sent you an encrypted message that cannot be read here" (2430 "Delivery"). */
   | { kind: "undecryptable"; id: string; at: number; nick: string }
   /** A key other than the pinned one, on this nick: ignored, and shown. */
-  | { kind: "key_alarm"; id: string; at: number; nick: string; presented: string };
+  | { kind: "key_alarm"; id: string; at: number; nick: string; presented: string }
+  /** The user pinned this key to the nick by hand: it is the one written to now. */
+  | { kind: "pinned"; id: string; at: number; nick: string; ed25519: string };
 
 export type Chat = { nick: string; open: boolean; unread: number };
 
