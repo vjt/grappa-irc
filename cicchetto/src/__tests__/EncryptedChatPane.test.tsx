@@ -26,6 +26,7 @@ const readEncryptedChat = vi.hoisted(() => vi.fn());
 const sendEncrypted = vi.hoisted(() => vi.fn());
 const pinEncryptedKey = vi.hoisted(() => vi.fn());
 const verifyEncrypted = vi.hoisted(() => vi.fn());
+const deleteEncryptedChat = vi.hoisted(() => vi.fn());
 const copyText = vi.hoisted(() => vi.fn());
 
 vi.mock("../lib/encryptedChats", async (importOriginal) => ({
@@ -40,6 +41,7 @@ vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   sendEncrypted,
   pinEncryptedKey,
   verifyEncrypted,
+  deleteEncryptedChat,
 }));
 vi.mock("../lib/documentVisibility", () => ({ isDocumentVisible: () => visible() }));
 vi.mock("../lib/clipboard", () => ({ copyText }));
@@ -56,6 +58,7 @@ beforeEach(() => {
     sendEncrypted,
     copyText,
     verifyEncrypted,
+    deleteEncryptedChat,
   ]) {
     fn.mockResolvedValue(undefined);
   }
@@ -303,6 +306,62 @@ describe("EncryptedChatPane", () => {
     fireEvent.input(screen.getByTestId("e2e-compose-input"), { target: { value: "   " } });
     fireEvent.click(screen.getByTestId("e2e-compose-send"));
     expect(sendEncrypted).not.toHaveBeenCalled();
+  });
+
+  it("searches the messages as typed, any case, notices hidden, counted; Esc shows all again", () => {
+    setRows([
+      { kind: "in", id: "1", at, nick: "Bob", ed25519: KEY, body: "Ciao, the CODES are ready" },
+      { kind: "out", id: "2", at, body: "which codes?", state: "sent", reason: null },
+      { kind: "pinned", id: "3", at, nick: "Bob", ed25519: KEY },
+      { kind: "in", id: "4", at, nick: "Bob", ed25519: KEY, body: "never mind" },
+      { kind: "undecryptable", id: "5", at, nick: "Bob" },
+    ]);
+    renderPane();
+    const input = screen.getByTestId("e2e-search-input") as HTMLInputElement;
+    const shown = () => screen.getAllByTestId("e2e-row").map((r) => r.dataset.rowKind);
+    expect(screen.queryByTestId("e2e-search-count")).toBeNull();
+
+    fireEvent.input(input, { target: { value: " codes " } });
+    expect(shown()).toEqual(["in", "out"]);
+    expect(screen.getByTestId("e2e-search-count").textContent).toBe("2 of 3 messages");
+
+    fireEvent.input(input, { target: { value: "nothing like it" } });
+    expect(screen.queryAllByTestId("e2e-row")).toEqual([]);
+    expect(screen.getByTestId("e2e-search-count").textContent).toBe("0 of 3 messages");
+
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(input.value).toBe("");
+    expect(shown()).toEqual(["in", "out", "pinned", "in", "undecryptable"]);
+    expect(screen.queryByTestId("e2e-search-count")).toBeNull();
+  });
+
+  it("deletes the chat on the second tap only: the first arms the button", () => {
+    renderPane();
+    const button = screen.getByTestId("e2e-delete-chat");
+    expect(button.textContent).toBe("delete this chat");
+
+    fireEvent.click(button);
+    expect(button.textContent).toBe("really delete?");
+    expect(deleteEncryptedChat).not.toHaveBeenCalled();
+
+    fireEvent.click(button);
+    expect(deleteEncryptedChat).toHaveBeenCalledWith("azzurra", "bob");
+    expect(button.textContent).toBe("delete this chat");
+  });
+
+  it("another chat in the pane starts with no search and the delete disarmed", () => {
+    const [nick, setNick] = createSignal("bob");
+    render(() => <EncryptedChatPane networkSlug="azzurra" nick={nick()} />);
+    const input = screen.getByTestId("e2e-search-input") as HTMLInputElement;
+    fireEvent.input(input, { target: { value: "codes" } });
+    fireEvent.click(screen.getByTestId("e2e-delete-chat"));
+
+    setNick("carol");
+
+    expect(input.value).toBe("");
+    expect(screen.getByTestId("e2e-delete-chat").textContent).toBe("delete this chat");
+    fireEvent.click(screen.getByTestId("e2e-delete-chat"));
+    expect(deleteEncryptedChat).not.toHaveBeenCalled();
   });
 
   it("marks what arrives read while the page is visible, and not while it is hidden", () => {
