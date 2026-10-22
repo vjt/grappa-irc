@@ -840,6 +840,60 @@ describe("recovery", () => {
   });
 });
 
+describe("a deleted chat", () => {
+  it("forgets the nick's plaintext, waiting or kept for a re-send, and nobody else's", () => {
+    const { w, a } = twoPeers();
+    w.join("carol");
+    w.text(a, "bob", "sent to bob");
+    w.text(a, "carol", "sent to carol");
+    w.text(a, "dave", "waits for dave");
+    w.text(a, "erin", "waits for erin");
+    const engine = w.engine(a);
+
+    engine.forget("BOB");
+    engine.forget("Dave");
+
+    expect(a.state.sent.map((s) => s.nick)).toEqual(["carol"]);
+    expect(Object.keys(a.state.outq)).toEqual(["erin"]);
+    const kept = JSON.stringify(a.state);
+    expect(kept).not.toMatch(/sent to bob|waits for dave/);
+    expect(kept).toMatch(/sent to carol/);
+  });
+
+  it("never sends a message forgotten while it waited for keys", () => {
+    const { w, a, b } = twoPeers();
+    const engine = w.engine(a);
+    const waiting = engine.send("bob", { t: "text", body: "never" }, "never");
+
+    engine.forget("bob");
+    w.out(a, waiting); // grappa answers the KEYREQ only now
+
+    expect(texts(b)).toEqual([]);
+    expect(failures(a)).toEqual([]);
+    expect(a.state.outq).toEqual({});
+  });
+
+  it("has nothing to re-send for a NACK of a forgotten message", () => {
+    const { w, a, b } = twoPeers();
+    w.text(a, "bob", "one");
+    const pkmsg = w.wire.find((d) => d.verb === "pkmsg");
+    if (pkmsg === undefined) throw new Error("no PKMSG");
+
+    w.engine(a).forget("bob");
+    w.deliver({
+      to: a,
+      from: "bob",
+      verb: "nack",
+      msgid: newMsgid(),
+      payload: encodePayload({ v: 1, ref: pkmsg.msgid }),
+      priority: "control",
+    });
+
+    expect(drops(a)).toEqual(["unknown-nack-ref"]);
+    expect(texts(b)).toEqual(["one"]);
+  });
+});
+
 describe("curves", () => {
   it("refuses a second key on a curve a pre-key message proved", () => {
     const { w, a, b } = twoPeers();
