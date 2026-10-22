@@ -664,13 +664,22 @@ defmodule GrappaWeb.Router do
     # issue 2430 — an end-to-end encrypted query: the send door, and the
     # offline queue a peer's messages wait in (the user topic pushes each
     # as it is queued; these two let a client that was away fetch what
-    # waits and acknowledge what it read). Per-network like everything here
-    # (one identity key per network), so ResolveNetwork proves ownership.
+    # waits and acknowledge what it read), and the E2E identity a peer's
+    # KEYREQ is answered from (multi-device: each device registers itself
+    # and uploads its own keys, the master's signed list names them).
+    # Per-network like everything here (a device has one identity per
+    # network), so ResolveNetwork proves ownership; a `:did` route resolves
+    # the device inside the subject, so another subject's is a 404.
     post "/e2e/messages", E2eController, :create
-    get "/e2e/inbox", E2eController, :inbox
-    post "/e2e/inbox/ack", E2eController, :ack
-    get "/e2e/keys", E2eController, :keys
-    post "/e2e/keys", E2eController, :upload_keys
+    post "/e2e/devices", E2eController, :register_device
+    get "/e2e/devices", E2eController, :devices
+    delete "/e2e/devices/:did", E2eController, :remove_device
+    get "/e2e/devices/:did/inbox", E2eController, :inbox
+    post "/e2e/devices/:did/inbox/ack", E2eController, :ack
+    get "/e2e/devices/:did/keys", E2eController, :keys
+    post "/e2e/devices/:did/keys", E2eController, :upload_keys
+    put "/e2e/list", E2eController, :put_list
+    get "/e2e/list", E2eController, :list
     delete "/e2e/keys", E2eController, :clear_keys
 
     get "/dcc_offers", DccOffersController, :index

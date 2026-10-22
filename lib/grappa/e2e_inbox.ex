@@ -1,13 +1,17 @@
 defmodule Grappa.E2eInbox do
   @moduledoc """
-  The offline queue for end-to-end encrypted queries (issue 2430).
+  The offline queue for end-to-end encrypted queries (issue 2430), one
+  per device (multi-device, wire v2).
 
   A peer's whole message — reassembled from its IRC lines by
-  `Grappa.Session.Server`, still ciphertext — is put here, and the session
-  then pushes it to the subject's clients with its `id`. A client that has
-  read it acknowledges the id and the row is deleted. A client that was
-  not connected fetches what is waiting when it connects. Delivery is
-  therefore at least once: a client that read a message but whose
+  `Grappa.Session.Server`, still ciphertext — is put in the queue of the
+  device its frame names (`<to>`), or of every listed device when it names
+  `*`: such a message carries one encrypted body per device, and each
+  device decrypts only its own. The session then pushes each row to the
+  subject's clients with its `id` and its device. The device that has read
+  it acknowledges the id and the row is deleted. A device that was not
+  connected fetches what is waiting when it connects. Delivery is
+  therefore at least once: a device that read a message but whose
   acknowledgement was lost sees it again, and tells it from a new one by
   the id, which is never reused.
 
@@ -23,33 +27,35 @@ defmodule Grappa.E2eInbox do
   ## Bounds
 
   Each row is charged its payload plus `row_overhead_bytes/0`, so a flood
-  of tiny messages is bounded too. A subject's queue on one network holds
-  at most `max_bytes/0`, and one sender (case-folded) at most
-  `max_sender_bytes/0` of it, so one nick cannot fill the queue against
-  everybody else. It is per NICK, the only identity grappa sees: a peer
-  using several nicks can still fill the whole queue. Past either bound
-  `put/3` refuses with `{:error, :full}`.
+  of tiny messages is bounded too. A device's queue holds at most
+  `max_bytes/0`, and one sender (case-folded) at most `max_sender_bytes/0`
+  of it, so one nick cannot fill the queue against everybody else. It is
+  per NICK, the only identity grappa sees: a peer using several nicks can
+  still fill the whole queue. Past either bound `put/2` refuses with
+  `{:error, :full}`; a message to `*` is refused only at the devices whose
+  queue is full.
 
   A row older than `ttl_seconds/0` is dropped by `expire/3`, which the
   session runs; the session then tells the recipient — and only the
-  recipient — who sent messages that were never read.
+  recipient — who sent messages that a device never read.
 
   ## Boundary
 
-  Deps: `Grappa.IRC` (the nick fold and the E2E wire rules the schema
-  validates), `Grappa.Repo`, `Grappa.Subject`. The `belongs_to` references
-  in `Entry` carry no edge.
+  Deps: `Grappa.E2eKeys` (the device a queue belongs to), `Grappa.IRC`
+  (the nick fold and the E2E wire rules the schema validates),
+  `Grappa.Repo`, `Grappa.Subject`.
   """
 
   use Boundary,
     top_level?: true,
-    deps: [Grappa.IRC, Grappa.Repo, Grappa.Subject],
+    deps: [Grappa.E2eKeys, Grappa.IRC, Grappa.Repo, Grappa.Subject],
     exports: [Entry]
 
   import Ecto.Query
 
   alias Grappa.E2eInbox.Entry
-  alias Grappa.IRC.Identifier
+  alias Grappa.E2eKeys.Device
+  alias Grappa.IRC.{E2e, Identifier}
   alias Grappa.{Repo, Subject}
 
   require Identifier
@@ -65,10 +71,16 @@ defmodule Grappa.E2eInbox do
   # for them: they are the protocol talking to itself.
   @message_verbs [:pkmsg, :msg]
 
-  @typedoc "What `put/3` stores: one whole message, as the session reassembled it."
-  @type attrs :: %{sender: String.t(), verb: Entry.verb(), msgid: String.t(), payload: String.t()}
+  @typedoc "What `put/2` stores: one whole message, as the session reassembled it."
+  @type attrs :: %{
+          sender: String.t(),
+          from_did: E2e.address(),
+          verb: Entry.verb(),
+          msgid: String.t(),
+          payload: String.t()
+        }
 
-  @doc "Bytes one subject's queue on one network may hold, overhead included."
+  @doc "Bytes one device's queue may hold, overhead included."
   @spec max_bytes() :: 4_194_304
   def max_bytes, do: @max_bytes
 
@@ -88,7 +100,7 @@ defmodule Grappa.E2eInbox do
   @spec message_verb?(Entry.verb()) :: boolean()
   def message_verb?(verb), do: verb in @message_verbs
 
-  @doc "The most entries `list/3` returns at once."
+  @doc "The most entries `list/2` returns at once."
   @spec page_size() :: 100
   def page_size, do: @page_size
 
@@ -97,39 +109,42 @@ defmodule Grappa.E2eInbox do
   def ttl_seconds, do: @ttl_seconds
 
   @doc """
-  Queues one whole message for `subject` on `network_id`.
+  Queues one whole message for `device`.
 
-  `{:error, :full}` when the row would take the subject's queue past
+  `{:error, :full}` when the row would take the device's queue past
   `max_bytes/0`, or the sender's share past `max_sender_bytes/0`; the
   check and the insert are one transaction, so two arrivals cannot both
-  squeeze into the last room. `{:error, :db_unavailable}` when the write
-  lock stays taken past the retry budget.
+  squeeze into the last room. `{:error, :gone}` when the device was
+  revoked or dropped since the caller read it: a list put or a clear can
+  commit in between, and SQLite names no constraint for the foreign key it
+  then refuses, so nothing else could tell. `{:error, :db_unavailable}`
+  when the write lock stays taken past the retry budget.
   """
-  @spec put(Subject.t(), integer(), attrs()) ::
-          {:ok, Entry.t()} | {:error, :full | :db_unavailable | Ecto.Changeset.t()}
-  def put({_, _} = subject, network_id, %{sender: sender, payload: payload} = attrs)
-      when is_integer(network_id) and is_binary(sender) and is_binary(payload) do
-    changeset =
-      Entry.changeset(%Entry{}, attrs |> Map.put(:network_id, network_id) |> Subject.put_subject_id(subject))
+  @spec put(Device.t(), attrs()) ::
+          {:ok, Entry.t()} | {:error, :full | :gone | :db_unavailable | Ecto.Changeset.t()}
+  def put(%Device{id: device_id}, %{sender: sender, payload: payload} = attrs)
+      when is_binary(sender) and is_binary(payload) do
+    changeset = Entry.changeset(%Entry{}, Map.put(attrs, :device_id, device_id))
 
     if changeset.valid?, do: Repo.BusyRetry.run(fn -> insert_transaction(changeset) end), else: {:error, changeset}
   end
 
-  @spec insert_transaction(Ecto.Changeset.t()) :: {:ok, Entry.t()} | {:error, :full | Ecto.Changeset.t()}
+  @spec insert_transaction(Ecto.Changeset.t()) :: {:ok, Entry.t()} | {:error, :full | :gone | Ecto.Changeset.t()}
   defp insert_transaction(changeset), do: Repo.immediate_transaction(fn -> insert(changeset) end)
 
-  # Inside the transaction: the usage check, then the insert, each refusal
-  # a rollback so the transaction answers `{:error, reason}`. The two sums
-  # are one scan of the partition.
+  # Inside the transaction: the device is still there, the usage check,
+  # then the insert, each refusal a rollback so the transaction answers
+  # `{:error, reason}`. The two sums are one scan of the device's queue.
   @spec insert(Ecto.Changeset.t()) :: Entry.t()
   defp insert(changeset) do
     entry = Ecto.Changeset.apply_changes(changeset)
+    _ = if not Repo.exists?(where(Device, [d], d.id == ^entry.device_id)), do: Repo.rollback(:gone)
     cost = byte_size(entry.payload) + @row_overhead_bytes
     folded = Identifier.canonical_target(entry.sender)
 
     {total, sender_total} =
       Entry
-      |> partition(entry)
+      |> where([e], e.device_id == ^entry.device_id)
       |> select([e], {
         coalesce(sum(e.bytes + ^@row_overhead_bytes), 0),
         coalesce(
@@ -158,33 +173,28 @@ defmodule Grappa.E2eInbox do
   defp unwrap_or_rollback({:error, changeset}), do: Repo.rollback(changeset)
 
   @doc """
-  The entries waiting for `subject` on `network_id` with an id above
-  `after_id`, oldest first, at most `page_size/0` of them. A client pages
-  with the last id it was given.
+  The entries waiting for `device` with an id above `after_id`, oldest
+  first, at most `page_size/0` of them. A device pages with the last id it
+  was given.
   """
-  @spec list(Subject.t(), integer(), non_neg_integer()) :: [Entry.t()]
-  def list({_, _} = subject, network_id, after_id)
-      when is_integer(network_id) and is_integer(after_id) and after_id >= 0 do
+  @spec list(Device.t(), non_neg_integer()) :: [Entry.t()]
+  def list(%Device{id: device_id}, after_id) when is_integer(after_id) and after_id >= 0 do
     Entry
-    |> Subject.subject_where(subject)
-    |> where([e], e.network_id == ^network_id and e.id > ^after_id)
+    |> where([e], e.device_id == ^device_id and e.id > ^after_id)
     |> order_by([e], asc: e.id)
     |> limit(^@page_size)
     |> Repo.all()
   end
 
   @doc """
-  Deletes the entries in `ids` that belong to `subject` on `network_id`.
-  An id that is not there — already acknowledged, expired, or someone
-  else's — is skipped: acknowledging is idempotent, and another subject's
-  rows are out of reach.
+  Deletes the entries in `ids` that wait for `device`. An id that is not
+  there — already acknowledged, expired, or another device's — is skipped:
+  acknowledging is idempotent, and another device's rows are out of reach,
+  so one device acknowledging never takes a message from another.
   """
-  @spec ack(Subject.t(), integer(), [pos_integer()]) :: :ok | {:error, :db_unavailable}
-  def ack({_, _} = subject, network_id, ids) when is_integer(network_id) and is_list(ids) do
-    query =
-      Entry
-      |> Subject.subject_where(subject)
-      |> where([e], e.network_id == ^network_id and e.id in ^ids)
+  @spec ack(Device.t(), [pos_integer()]) :: :ok | {:error, :db_unavailable}
+  def ack(%Device{id: device_id}, ids) when is_list(ids) do
+    query = where(Entry, [e], e.device_id == ^device_id and e.id in ^ids)
 
     case Repo.BusyRetry.run(fn -> {:ok, Repo.delete_all(query)} end) do
       {:ok, {_, _}} -> :ok
@@ -193,11 +203,11 @@ defmodule Grappa.E2eInbox do
   end
 
   @doc """
-  Drops every entry of `subject` on `network_id` queued before `cutoff`,
-  and says who sent the messages that were never read: one
-  `{sender, count}` per person (case-folded, under the spelling they used
-  last), counting only the verbs that carry a message. Key material and
-  NACKs are dropped without being counted.
+  Drops every entry queued before `cutoff` for the devices of `subject` on
+  `network_id`, and says who sent the messages a device never read: one
+  `{sender, did, count}` per person and device (the person case-folded,
+  under the spelling they used last), counting only the verbs that carry a
+  message. Key material and NACKs are dropped without being counted.
 
   One transaction: an acknowledgement racing the sweep either lands first
   (the row is not counted) or finds nothing to delete, never both. The
@@ -206,46 +216,43 @@ defmodule Grappa.E2eInbox do
   to delete nothing.
   """
   @spec expire(Subject.t(), integer(), DateTime.t()) ::
-          {:ok, [{String.t(), pos_integer()}]} | {:error, :db_unavailable}
+          {:ok, [{String.t(), String.t(), pos_integer()}]} | {:error, :db_unavailable}
   def expire({_, _} = subject, network_id, %DateTime{} = cutoff) when is_integer(network_id) do
-    expired =
-      Entry
-      |> Subject.subject_where(subject)
-      |> where([e], e.network_id == ^network_id and e.inserted_at < ^cutoff)
+    devices = Device |> Subject.subject_where(subject) |> where([d], d.network_id == ^network_id) |> select([d], d.id)
+    expired = where(Entry, [e], e.device_id in subquery(devices) and e.inserted_at < ^cutoff)
 
     if Repo.exists?(expired), do: Repo.BusyRetry.run(fn -> expire_transaction(expired) end), else: {:ok, []}
   end
 
   # Nothing inside rolls back, so the transaction can only commit; a raise
   # (a busy lock) propagates to `BusyRetry` as it would anyway.
-  @spec expire_transaction(Ecto.Query.t()) :: {:ok, [{String.t(), pos_integer()}]}
+  @spec expire_transaction(Ecto.Query.t()) :: {:ok, [{String.t(), String.t(), pos_integer()}]}
   defp expire_transaction(expired) do
     {:ok, _} = committed = Repo.immediate_transaction(fn -> delete_expired(expired) end)
     committed
   end
 
-  # Inside the transaction: who sent what, then the delete.
-  @spec delete_expired(Ecto.Query.t()) :: [{String.t(), pos_integer()}]
+  # Inside the transaction: who sent what to which device, then the delete.
+  @spec delete_expired(Ecto.Query.t()) :: [{String.t(), String.t(), pos_integer()}]
   defp delete_expired(expired) do
-    rows = expired |> order_by([e], asc: e.id) |> select([e], {e.sender, e.verb}) |> Repo.all()
+    rows =
+      expired
+      |> join(:inner, [e], d in Device, on: d.id == e.device_id)
+      |> order_by([e], asc: e.id)
+      |> select([e, d], {e.sender, d.did, e.verb})
+      |> Repo.all()
+
     {_, _} = Repo.delete_all(expired)
     unread_by_sender(rows)
   end
 
-  # One entry per folded sender, keeping the last spelling seen; the rows
-  # arrive oldest first.
-  @spec unread_by_sender([{String.t(), Entry.verb()}]) :: [{String.t(), pos_integer()}]
+  # One entry per folded sender and device, keeping the last spelling
+  # seen; the rows arrive oldest first.
+  @spec unread_by_sender([{String.t(), String.t(), Entry.verb()}]) :: [{String.t(), String.t(), pos_integer()}]
   defp unread_by_sender(rows) do
     rows
-    |> Enum.filter(fn {_, verb} -> message_verb?(verb) end)
-    |> Enum.group_by(fn {sender, _} -> Identifier.canonical_target(sender) end, fn {sender, _} -> sender end)
-    |> Enum.map(fn {_, senders} -> {List.last(senders), length(senders)} end)
+    |> Enum.filter(fn {_, _, verb} -> message_verb?(verb) end)
+    |> Enum.group_by(fn {sender, did, _} -> {Identifier.canonical_target(sender), did} end)
+    |> Enum.map(fn {{_, did}, rows} -> {rows |> List.last() |> elem(0), did, length(rows)} end)
   end
-
-  @spec partition(Ecto.Queryable.t(), Entry.t()) :: Ecto.Query.t()
-  defp partition(queryable, %Entry{user_id: user_id, visitor_id: nil, network_id: network_id}),
-    do: queryable |> Subject.subject_where({:user, user_id}) |> where([e], e.network_id == ^network_id)
-
-  defp partition(queryable, %Entry{user_id: nil, visitor_id: visitor_id, network_id: network_id}),
-    do: queryable |> Subject.subject_where({:visitor, visitor_id}) |> where([e], e.network_id == ^network_id)
 end

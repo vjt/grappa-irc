@@ -96,6 +96,11 @@ defmodule GrappaWeb.FallbackController do
            | :theme_cap_reached
            | :list_full
            | :too_late
+           | :too_many_devices
+           | :master_mismatch
+           | :stale_list
+           | :unknown_device
+           | :listed_device
            | :invalid_mask
            | :invalid_text_pattern
            | :not_raster
@@ -318,6 +323,46 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:unprocessable_entity)
     |> json(%{error: "too_late"})
+  end
+
+  # issue 2430, multi-device — the E2E identity refuses a change that
+  # conflicts with what it holds: a fifth device, a list under another
+  # master (an account starts over with `DELETE .../e2e/keys`), a list
+  # whose version does not rise, the removal of a device the list names.
+  # 409, each its own token, since the client resolves each differently:
+  # remove an unlisted device, start over, re-read the list and sign a
+  # higher version, or sign a list that leaves the device out.
+  def call(conn, {:error, :too_many_devices}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "too_many_devices"})
+  end
+
+  def call(conn, {:error, :master_mismatch}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "master_mismatch"})
+  end
+
+  def call(conn, {:error, :stale_list}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "stale_list"})
+  end
+
+  def call(conn, {:error, :listed_device}) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "listed_device"})
+  end
+
+  # issue 2430, multi-device — a well-signed list naming a key no device of
+  # the subject registered there. 422: the request is well formed, the
+  # value is refused.
+  def call(conn, {:error, :unknown_device}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "unknown_device"})
   end
 
   # #162 — an /ignore mask that does not parse as `nick!user@host` (bad

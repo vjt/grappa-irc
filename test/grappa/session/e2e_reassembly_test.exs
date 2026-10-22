@@ -6,10 +6,21 @@ defmodule Grappa.Session.E2eReassemblyTest do
 
   @budget 300
 
+  # Two device ids, and the addresses each verb carries (wire v2).
+  @alice "If4x36FUomE"
+  @bob "AaZaARRDyBk"
+  @addresses %{
+    keyreq: {@alice, "*"},
+    keys: {"*", @bob},
+    pkmsg: {@alice, @bob},
+    msg: {@alice, "*"},
+    nack: {@alice, @bob}
+  }
+
   # Real lines, cut by the production fragmenter and read back by the
   # production parser — never hand-built fragments.
   defp fragments(verb, msgid, payload) do
-    {:ok, lines} = E2e.fragment(verb, msgid, payload, @budget)
+    {:ok, lines} = E2e.fragment(verb, msgid, Map.fetch!(@addresses, verb), payload, @budget)
 
     Enum.map(lines, fn line ->
       {:ok, fragment} = E2e.parse(line)
@@ -17,12 +28,14 @@ defmodule Grappa.Session.E2eReassemblyTest do
     end)
   end
 
-  defp payload(bytes), do: Base.encode64(:crypto.strong_rand_bytes(bytes))
+  # Compact JSON text, what a v2 frame carries.
+  defp payload(bytes), do: ~s({"v":2,"body":"#{Base.encode64(:crypto.strong_rand_bytes(bytes))}"})
 
-  # One byte of chunk per line: the frame around a `64/64` chunk is 28
-  # bytes, so a 29-byte budget leaves 1, and a 64-char payload needs all 64.
+  # One byte of chunk per line: the frame around a `64/64` chunk from one
+  # device to another is 52 bytes, so a 53-byte budget leaves 1, and a
+  # 64-char payload needs all 64.
   defp tiny_fragments(msgid) do
-    {:ok, lines} = E2e.fragment(:msg, msgid, String.duplicate("QUFB", 16), 29)
+    {:ok, lines} = E2e.fragment(:msg, msgid, {@alice, @bob}, String.duplicate("abcd", 16), 53)
     64 = length(lines)
 
     Enum.map(lines, fn line ->
@@ -45,10 +58,10 @@ defmodule Grappa.Session.E2eReassemblyTest do
   end
 
   test "a single-line message completes at once and buffers nothing" do
-    payload = Base.encode64(~s({"v":1}))
+    payload = ~s({"v":2})
     [fragment] = fragments(:keyreq, "q83vEjRWeJA", payload)
 
-    assert {:complete, %{verb: :keyreq, msgid: "q83vEjRWeJA", payload: ^payload}, buffer} =
+    assert {:complete, %{verb: :keyreq, msgid: "q83vEjRWeJA", from: @alice, to: "*", payload: ^payload}, buffer} =
              E2eReassembly.put(E2eReassembly.new(), "vjt-claude", fragment, 0)
 
     assert E2eReassembly.empty?(buffer)
@@ -62,7 +75,9 @@ defmodule Grappa.Session.E2eReassemblyTest do
     # Last line first, first line last.
     {buffer, results} = feed(E2eReassembly.new(), "vjt-claude", Enum.reverse(frags), 0)
 
-    assert List.last(results) == {:complete, %{verb: :msg, msgid: "q83vEjRWeJA", payload: payload}}
+    assert List.last(results) ==
+             {:complete, %{verb: :msg, msgid: "q83vEjRWeJA", from: @alice, to: "*", payload: payload}}
+
     assert Enum.all?(Enum.drop(results, -1), &(&1 == :pending))
     assert E2eReassembly.empty?(buffer)
   end
@@ -90,18 +105,31 @@ defmodule Grappa.Session.E2eReassemblyTest do
     assert {:complete, %{payload: ^payload}} = List.last(results)
   end
 
-  test "a fragment contradicting its message (other verb or total) drops the whole message" do
+  test "a fragment contradicting its message (other verb, total, from or to) drops the whole message" do
     [f1, f2 | _] = fragments(:msg, "q83vEjRWeJA", payload(800))
 
-    {other_verb, [:pending, {:dropped, :inconsistent}]} =
-      feed(E2eReassembly.new(), "vjt-claude", [f1, %{f2 | verb: :pkmsg}], 0)
+    for contradiction <- [%{f2 | verb: :pkmsg}, %{f2 | total: f2.total + 1}, %{f2 | from: @bob}, %{f2 | to: @bob}] do
+      {buffer, [:pending, {:dropped, :inconsistent}]} = feed(E2eReassembly.new(), "vjt-claude", [f1, contradiction], 0)
+      assert E2eReassembly.empty?(buffer)
+    end
+  end
 
-    assert E2eReassembly.empty?(other_verb)
+  test "pending?/4 is true while a message of that verb from that sender is part-way in, and not once it timed out" do
+    [k1 | k_rest] = fragments(:keys, "q83vEjRWeJA", payload(800))
+    refute E2eReassembly.pending?(E2eReassembly.new(), "alice", :keys, 0)
 
-    {other_total, [:pending, {:dropped, :inconsistent}]} =
-      feed(E2eReassembly.new(), "vjt-claude", [f1, %{f2 | total: f2.total + 1}], 0)
+    {partial, _} = feed(E2eReassembly.new(), "alice", [k1], 0)
+    assert E2eReassembly.pending?(partial, "alice", :keys, 0)
+    refute E2eReassembly.pending?(partial, "bob", :keys, 0)
+    refute E2eReassembly.pending?(partial, "alice", :msg, 0)
 
-    assert E2eReassembly.empty?(other_total)
+    # Still held — no sweep has run — but no longer arriving.
+    timeout = E2eReassembly.timeout_ms()
+    assert E2eReassembly.pending?(partial, "alice", :keys, timeout - 1)
+    refute E2eReassembly.pending?(partial, "alice", :keys, timeout)
+
+    {whole, _} = feed(partial, "alice", k_rest, 0)
+    refute E2eReassembly.pending?(whole, "alice", :keys, 0)
   end
 
   test "expire/2 discards a message whose last fragment is 60 s old, and only that one" do

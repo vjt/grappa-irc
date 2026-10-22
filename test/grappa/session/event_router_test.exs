@@ -8076,8 +8076,8 @@ defmodule Grappa.Session.EventRouterTest do
     # A real line, cut by the production fragmenter: the shape the peer's
     # client puts on the wire.
     defp e2e_line(verb, msgid) do
-      payload = Base.encode64(~s({"v":1,"body":"#{String.duplicate("x", 900)}"}))
-      {:ok, [first | _]} = Grappa.IRC.E2e.fragment(verb, msgid, payload, 300)
+      payload = ~s({"v":2,"body":"#{String.duplicate("x", 900)}"})
+      {:ok, [first | _]} = Grappa.IRC.E2e.fragment(verb, msgid, {"If4x36FUomE", "AaZaARRDyBk"}, payload, 300)
       first
     end
 
@@ -8100,8 +8100,10 @@ defmodule Grappa.Session.EventRouterTest do
 
     test "a malformed E2E line is dropped, never persisted as a plain PRIVMSG" do
       for body <- [
-            "\x01E2E MSG q83vEjRWeJA 0/1 eyJ2IjoxfQ==\x01",
-            "\x01E2E OFFLINE q83vEjRWeJA 1/1 eyJ2IjoxfQ==\x01",
+            "\x01E2E MSG q83vEjRWeJA 0/1 If4x36FUomE AaZaARRDyBk {}\x01",
+            "\x01E2E OFFLINE q83vEjRWeJA 1/1 If4x36FUomE AaZaARRDyBk {}\x01",
+            # A v1 line, which names no device (wire v2 is flag-day).
+            "\x01E2E MSG q83vEjRWeJA 1/1 eyJ2IjoxfQ==\x01",
             "\x01E2E\x01"
           ] do
         assert {:cont, _, []} = EventRouter.route(msg(:privmsg, ["vjt", body], @peer), base_state()), body

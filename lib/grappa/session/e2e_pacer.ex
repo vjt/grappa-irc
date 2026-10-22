@@ -11,7 +11,9 @@ defmodule Grappa.Session.E2ePacer do
   `Pacer` function by function (`_rank`, `_budget_rank`, `_allowed`,
   `_ahead`, `_order_before`, `_next`, `_limit`, `_drop_at`,
   `next_wakeup`), in integer milliseconds on the monotonic clock instead of
-  float seconds. The two answer alike on the same inputs.
+  float seconds. The two answer alike on the same inputs, but for one
+  local rule (2430 comment 6346384093, O2 (c)): a KEYS's reactive budgets
+  scale to its own cost.
 
   ## Per recipient: at most 3 lines in any 6 s (FLUD)
 
@@ -55,14 +57,16 @@ defmodule Grappa.Session.E2ePacer do
 
   * URGENT: KEYREQ, and a MSG/PKMSG the client marks `priority: "control"`
     because it carries a CHAL or an ACK (grappa cannot see inside it).
-  * REACTIVE: what a peer draws from us, by outer verb: KEYS (grappa's own
-    answer to a KEYREQ) and NACK.
+  * REACTIVE: what a peer draws from us: KEYS (grappa's own answer to a
+    KEYREQ) and NACK by outer verb, and a MSG/PKMSG the client marks
+    `priority: "reactive"` because it answers the peer's protocol state
+    (wire v2's `t:list` and `t:listreq`).
   * TEXT: every other MSG/PKMSG.
 
   `lane/2` is the one mapping. Once an urgent or a text message's first
   line has left, no other message of its lane starts until it ends: one
   urgent and one text message are under way at a time, connection-wide.
-  KEYS and NACKs are FIFO per target and may interleave across targets.
+  REACTIVE messages are FIFO per target and may interleave across targets.
   Within a target each lane keeps its order, so a short message never
   overtakes a long one sent before it.
 
@@ -70,7 +74,9 @@ defmodule Grappa.Session.E2ePacer do
   `budget_window_ms/0`, counted on all of a message's lines when its first
   is due: URGENT `urgent_budget_ms/0` for the whole connection, whoever
   gives the orders; REACTIVE `reactive_budget_ms/0` per target and
-  `reactive_total_ms/0` for the connection. Past its budget a message
+  `reactive_total_ms/0` for the connection, each raised to a KEYS's own
+  cost for that KEYS (one covers every device of the user it describes,
+  wire v2, O2 (c)). Past its budget a message
   waits behind text, and still goes when no text line can (the bank would
   idle otherwise). A target that drew nothing else from a lane in the
   window may take the connection `fresh_allowance_ms/0` further, one
@@ -154,12 +160,17 @@ defmodule Grappa.Session.E2ePacer do
   @past_budget 10
 
   @lanes [:urgent, :reactive, :text]
+  @priorities [:control, :reactive, :text]
 
   @typedoc "Where a message waits: see the moduledoc."
   @type lane :: :urgent | :reactive | :text
 
-  @typedoc "What the client says of a MSG/PKMSG: `:control` when it carries a CHAL or an ACK."
-  @type priority :: :control | :text
+  @typedoc """
+  What the client says of a MSG/PKMSG: `:control` when it carries a CHAL or
+  an ACK, `:reactive` when it answers the peer's protocol state (the
+  device list a peer asked for, wire v2), `:text` otherwise.
+  """
+  @type priority :: :control | :reactive | :text
 
   @typedoc "A line to queue: the PRIVMSG body and what bahamut will charge for it, in ms."
   @type line :: {body :: binary(), cost_ms :: pos_integer()}
@@ -300,12 +311,13 @@ defmodule Grappa.Session.E2ePacer do
   @doc """
   The lane for a message of `verb` with the client's `priority`: KEYS and
   NACK are REACTIVE and KEYREQ URGENT whatever it says; a MSG/PKMSG is
-  URGENT when `:control`, TEXT when `:text`.
+  URGENT when `:control`, REACTIVE when `:reactive`, TEXT when `:text`.
   """
   @spec lane(E2e.verb(), priority()) :: lane()
-  def lane(verb, priority) when verb in [:keys, :nack] and priority in [:control, :text], do: :reactive
-  def lane(:keyreq, priority) when priority in [:control, :text], do: :urgent
+  def lane(verb, priority) when verb in [:keys, :nack] and priority in @priorities, do: :reactive
+  def lane(:keyreq, priority) when priority in @priorities, do: :urgent
   def lane(verb, :control) when verb in [:pkmsg, :msg], do: :urgent
+  def lane(verb, :reactive) when verb in [:pkmsg, :msg], do: :reactive
   def lane(verb, :text) when verb in [:pkmsg, :msg], do: :text
 
   @doc "An idle pacer."
@@ -414,6 +426,21 @@ defmodule Grappa.Session.E2ePacer do
         lane <- @lanes,
         %{last?: true} = item <- Map.fetch!(lanes, lane),
         do: {item.target, item.msgid, item.verb}
+  end
+
+  @doc """
+  True while a message of `verb` to the folded `key` still has a line
+  waiting. The session asks it before answering a KEYREQ: a KEYS for
+  several devices outlasts the asker's retry, and a second one behind the
+  first would only double the bank it costs (wire v2, 2430 comment
+  6346384093, O2 (a)).
+  """
+  @spec waiting?(t(), String.t(), E2e.verb()) :: boolean()
+  def waiting?(%__MODULE__{queues: queues}, key, verb) when is_binary(key) do
+    case Map.fetch(queues, key) do
+      {:ok, lanes} -> Enum.any?(@lanes, fn lane -> Enum.any?(Map.fetch!(lanes, lane), &(&1.verb == verb)) end)
+      :error -> false
+    end
   end
 
   @doc """
@@ -775,7 +802,7 @@ defmodule Grappa.Session.E2ePacer do
     fresh = spent == 0 and lines == length(q)
 
     cond do
-      past_budget?(pacer, lane, spent, cost, fresh, now) ->
+      past_budget?(pacer, {lane, hd(q).verb}, spent, cost, fresh, now) ->
         @past_budget
 
       lane == :urgent ->
@@ -795,13 +822,29 @@ defmodule Grappa.Session.E2ePacer do
   # Whether a message of `cost` overruns the target's budget, which holds
   # `spent`, or the connection's, unless a `fresh` target's allowance
   # covers it.
-  @spec past_budget?(t(), :urgent | :reactive, non_neg_integer(), pos_integer(), boolean(), integer()) :: boolean()
-  defp past_budget?(pacer, lane, spent, cost, fresh, now) do
-    {per_target, total} = budgets(lane)
+  @spec past_budget?(
+          t(),
+          {:urgent | :reactive, E2e.verb()},
+          non_neg_integer(),
+          pos_integer(),
+          boolean(),
+          integer()
+        ) :: boolean()
+  defp past_budget?(pacer, {lane, verb}, spent, cost, fresh, now) do
+    {per_target, total} = budgets(lane, verb, cost)
 
     spent + cost > per_target or
       (spent_in(pacer, {:connection, lane}, now) + cost > total and not (fresh and allowed?(pacer, lane, cost, now)))
   end
+
+  # A KEYS covers every listed device of the user it describes (wire v2),
+  # so one can cost more than the reactive budgets, sized for v1's two-line
+  # KEYS, hold at all. They scale to the KEYS itself (2430 comment
+  # 6346384093, O2 (c)): only what else its windows hold puts it past them.
+  # A grappa-side rule; irc-olm sizes its own.
+  @spec budgets(:urgent | :reactive, E2e.verb(), pos_integer()) :: {pos_integer(), pos_integer()}
+  defp budgets(:reactive, :keys, cost), do: {max(@reactive_budget_ms, cost), max(@reactive_total_ms, cost)}
+  defp budgets(lane, _, _), do: budgets(lane)
 
   @spec budgets(:urgent) :: {36_000, 36_000}
   @spec budgets(:reactive) :: {18_000, 22_000}

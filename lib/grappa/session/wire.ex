@@ -555,22 +555,29 @@ defmodule Grappa.Session.Wire do
   @type e2e_verb :: :keys | :pkmsg | :msg | :nack
 
   # issue 2430 — one whole E2E message from a peer, reassembled from its
-  # lines. `payload` is the base64 the peer cut into chunks, joined and
-  # NOT decoded: grappa holds no key and never reads it. `from` is the RAW
-  # nick, a routing hint only — the client pins the peer on its key.
+  # lines. `payload` is the compact JSON text the peer cut into chunks,
+  # joined and NOT parsed: grappa holds no key and never reads it. `from`
+  # is the RAW nick, a routing hint only — the client pins the peer on its
+  # master key. Wire v2 (multi-device): `from_did` is the sending device as
+  # the frame named it (`*` on a KEYS, which describes a user), and
+  # `to_did` the device whose queue the copy waits in, which is the only
+  # device that reads and acknowledges it.
   @type e2e_message_payload :: %{
           kind: :e2e_message,
           id: pos_integer(),
           network: String.t(),
           from: String.t(),
+          from_did: String.t(),
+          to_did: String.t(),
           verb: e2e_verb(),
           msgid: String.t(),
           payload: String.t()
         }
 
   @typedoc """
-  issue 2430 — `GET /networks/:network_id/e2e/inbox`: a page of the offline
-  queue, oldest first, each message the `e2e_message` the user topic pushes.
+  issue 2430 — `GET /networks/:network_id/e2e/devices/:did/inbox`: a page
+  of that device's offline queue, oldest first, each message the
+  `e2e_message` the user topic pushes.
   """
   @type e2e_inbox_payload :: %{messages: [e2e_message_payload()]}
 
@@ -1632,17 +1639,21 @@ defmodule Grappa.Session.Wire do
   has no window the client is guaranteed to be subscribed to (a stranger
   opening a session is the first thing it ever hears from them), and the
   user topic is the one every client holds. The SAME shape is what
-  `GET /networks/:network_id/e2e/inbox` lists, so a client handles a pushed
-  message and a fetched one alike. `id` is the queue's: the client
-  acknowledges it, and tells a redelivery from a new message by it.
+  `GET /networks/:network_id/e2e/devices/:did/inbox` lists, so a client
+  handles a pushed message and a fetched one alike. `id` is the queue's:
+  the device acknowledges it, and tells a redelivery from a new message by
+  it. `to_did` is the device whose queue the copy waits in: every client
+  of the subject hears the push, and a device takes only its own.
   """
-  @spec e2e_message(String.t(), E2eInbox.Entry.t()) :: e2e_message_payload()
-  def e2e_message(network_slug, %E2eInbox.Entry{} = entry) when is_binary(network_slug) do
+  @spec e2e_message(String.t(), String.t(), E2eInbox.Entry.t()) :: e2e_message_payload()
+  def e2e_message(network_slug, to_did, %E2eInbox.Entry{} = entry) when is_binary(network_slug) and is_binary(to_did) do
     %{
       kind: :e2e_message,
       id: entry.id,
       network: network_slug,
       from: entry.sender,
+      from_did: entry.from_did,
+      to_did: to_did,
       verb: entry.verb,
       msgid: entry.msgid,
       payload: entry.payload
@@ -1650,13 +1661,14 @@ defmodule Grappa.Session.Wire do
   end
 
   @doc """
-  issue 2430 — a page of the offline queue, in the envelope
-  `GET /networks/:network_id/e2e/inbox` answers: each message through
-  `e2e_message/2`, so a fetched one and a pushed one are one shape.
+  issue 2430 — a page of a device's offline queue, in the envelope
+  `GET /networks/:network_id/e2e/devices/:did/inbox` answers: each message
+  through `e2e_message/3`, so a fetched one and a pushed one are one shape.
   """
-  @spec e2e_inbox(String.t(), [E2eInbox.Entry.t()]) :: e2e_inbox_payload()
-  def e2e_inbox(network_slug, entries) when is_binary(network_slug) and is_list(entries) do
-    %{messages: Enum.map(entries, &e2e_message(network_slug, &1))}
+  @spec e2e_inbox(String.t(), String.t(), [E2eInbox.Entry.t()]) :: e2e_inbox_payload()
+  def e2e_inbox(network_slug, to_did, entries)
+      when is_binary(network_slug) and is_binary(to_did) and is_list(entries) do
+    %{messages: Enum.map(entries, &e2e_message(network_slug, to_did, &1))}
   end
 
   @doc "issue 2430 — the send door's answer: the msgid grappa chose."
