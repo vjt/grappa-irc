@@ -944,9 +944,9 @@ defmodule Grappa.Session do
   # never answers one; the draft's OFFLINE was dropped by vjt.
   @e2e_send_verbs [:keyreq, :pkmsg, :msg, :nack]
 
-  # KEYREQ and NACK are control by what they are; grappa cannot see inside
-  # MSG/PKMSG, so for those the client says.
-  @e2e_control_verbs [:keyreq, :nack]
+  # grappa cannot see inside MSG/PKMSG, so for those the client says which
+  # carry a CHAL or an ACK; KEYREQ and NACK have their lane by what they
+  # are (`E2ePacer.lane/2`).
   @e2e_priorities [:control, :text]
 
   @doc """
@@ -958,7 +958,7 @@ defmodule Grappa.Session do
   def e2e_send_verbs, do: @e2e_send_verbs
 
   @doc "issue 2430 — the priorities `send_e2e/6` accepts. Same reason as `e2e_send_verbs/0`."
-  @spec e2e_priorities() :: [E2ePacer.class(), ...]
+  @spec e2e_priorities() :: [E2ePacer.priority(), ...]
   def e2e_priorities, do: @e2e_priorities
 
   @doc """
@@ -973,13 +973,13 @@ defmodule Grappa.Session do
   line per 5 s. Nothing is persisted, echoed or pushed, and no query window
   opens.
 
-  `priority` decides the pacer queue. `:control` always goes ahead of the
-  text queued for the same peer, and ahead of other peers' lines within
-  that peer's urgent budget (`Grappa.Session.E2ePacer`); `:text` keeps its
-  order behind earlier text, so a peer never displays two messages
-  backwards. KEYREQ and NACK are control whatever
-  `priority` says. A MSG or PKMSG is whatever the client says, since only
-  the client knows that one carries a CHAL or an ACK.
+  `priority` decides the pacer lane (`Grappa.Session.E2ePacer.lane/2`). A
+  `:control` MSG or PKMSG is URGENT: it goes ahead of text within the
+  connection's urgent budget, as KEYREQ does whatever `priority` says. A
+  `:text` one keeps its order behind earlier text, so a peer never
+  displays two messages backwards. NACK is REACTIVE whatever `priority`
+  says: ahead of text within a per-peer and a per-connection budget. Only
+  the client knows that a MSG or PKMSG carries a CHAL or an ACK.
 
   `{:ok, msgid}` means ACCEPTED, not delivered: lines may still be waiting
   in the pacer, and IRC never confirms delivery anyway (vjt
@@ -989,23 +989,22 @@ defmodule Grappa.Session do
   `e2e_priorities/0`, or a payload that is not base64; `{:error, :too_large}` past `E2e.max_payload_bytes/0` or when the
   payload needs more than 64 lines;
   `{:error, :rate_limited}` when the peer's queue (32 text messages, 32
-  control lines) or the connection's (128 lines) cannot take it whole.
+  lines in each of the urgent and reactive lanes) or the connection's (128
+  lines, 480 s of text) cannot take it whole.
   """
-  @spec send_e2e(subject(), integer(), String.t(), E2e.verb(), E2ePacer.class(), String.t()) ::
+  @spec send_e2e(subject(), integer(), String.t(), E2e.verb(), E2ePacer.priority(), String.t()) ::
           {:ok, String.t()}
           | {:error, :no_session | :no_socket | :timeout | :invalid_line | :bad_request | :too_large | :rate_limited}
   def send_e2e(subject, network_id, target, verb, priority, payload)
       when is_subject(subject) and is_integer(network_id) and is_binary(target) and is_atom(verb) and
              is_atom(priority) and is_binary(payload) do
-    with :ok <- validate_e2e_send(target, verb, priority, payload) do
-      class = if verb in @e2e_control_verbs, do: :control, else: priority
-      call_session(subject, network_id, {:send_e2e, target, verb, class, payload})
-    end
+    with :ok <- validate_e2e_send(target, verb, priority, payload),
+         do: call_session(subject, network_id, {:send_e2e, target, verb, E2ePacer.lane(verb, priority), payload})
   end
 
   # The size check runs before the session is asked, so a payload no
   # receiver could hold is never copied into its mailbox.
-  @spec validate_e2e_send(String.t(), E2e.verb(), E2ePacer.class(), String.t()) ::
+  @spec validate_e2e_send(String.t(), E2e.verb(), E2ePacer.priority(), String.t()) ::
           :ok | {:error, :invalid_line | :bad_request | :too_large}
   defp validate_e2e_send(target, verb, priority, payload) do
     cond do

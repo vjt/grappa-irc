@@ -187,7 +187,7 @@ defmodule Grappa.Session.E2eSessionTest do
       assert E2eKeys.status(subject, network.id).one_time_keys == 9 - fit
     end
 
-    test "the answer goes as control: ahead of the text already waiting for that peer" do
+    test "the answer is reactive: ahead of the text already waiting for that peer" do
       {server, _, user, network} = connected_session()
       subject = {:user, user.id}
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
@@ -214,15 +214,16 @@ defmodule Grappa.Session.E2eSessionTest do
       :ok = Phoenix.PubSub.subscribe(Grappa.PubSub, Topic.user(user.name))
       {:ok, _} = E2eKeys.upload(subject, network.id, %{one_time_keys: [keys_payload(false)], fallback: nil})
 
-      # Fill alice's urgent queue with our own KEYREQs, one control line each.
+      # Fill alice's reactive lane, where the answer would go, with our
+      # own NACKs: one line each.
       small = Base.encode64(~s({"v":1}))
 
       refused =
-        Enum.find(1..(E2ePacer.max_urgent_lines() + 10), fn _ ->
-          Session.send_e2e(subject, network.id, "alice", :keyreq, :control, small) == {:error, :rate_limited}
+        Enum.find(1..(E2ePacer.max_lane_lines() + 10), fn _ ->
+          Session.send_e2e(subject, network.id, "alice", :nack, :text, small) == {:error, :rate_limited}
         end)
 
-      assert refused, "alice's urgent queue never filled"
+      assert refused, "alice's reactive lane never filled"
 
       keyreq!(server, "alice")
 
