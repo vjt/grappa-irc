@@ -13,6 +13,7 @@ import { onDirectoryComplete, onDirectoryFailed, onDirectoryProgress } from "./c
 import { channelKey } from "./channelKey";
 import { holdDccOffer, resolveDccOffer } from "./dccOffers";
 import { diagPush } from "./diagLog";
+import { drainE2e, drainEveryNetwork } from "./encryptedChats";
 import { setSeveredForFlood } from "./floodSever";
 import { refreshHighlights } from "./highlightList";
 import { patchHomeNetwork } from "./home";
@@ -950,6 +951,10 @@ moduleRoot(() => {
       void refreshNotificationPrefs().catch((err) =>
         console.warn("[userTopic] notification-prefs hydrate failed", err),
       );
+      // issue 2430 — whatever encrypted messages waited while no cic was
+      // connected sit in grappa's offline queue, and no push re-announces
+      // them: drain every network's inbox on every (re)join.
+      drainEveryNetwork();
     });
     channel.on("event", (raw: unknown) => {
       const payload = narrowUserEvent(raw);
@@ -1259,9 +1264,12 @@ moduleRoot(() => {
           return;
 
         case "e2e_message":
-          // issue 2430 — no reader yet: the Olm layer that decrypts this
-          // lands with the cic E2E slices. Until then an inbound encrypted
-          // message is dropped here, on purpose and in one place.
+          // issue 2430 — the push says a message is queued; the drain takes
+          // it from the inbox, in id order with anything else waiting, so a
+          // missed push never leaves a gap (encryptedChats.ts).
+          void drainE2e(payload.network).catch((err: unknown) =>
+            console.warn(`[userTopic] encrypted inbox drain failed on ${payload.network}`, err),
+          );
           return;
 
         case "names_reply": {

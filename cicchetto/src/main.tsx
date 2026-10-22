@@ -26,6 +26,7 @@ import { diagPush } from "./lib/diagLog";
 import { mountDisplayPrefsSync } from "./lib/displayPrefs";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import { mountKeyBundleSync } from "./lib/e2e/bundleSync";
+import { mountEncryptedChats } from "./lib/encryptedChats";
 import { applyFontSizeFromStorage } from "./lib/fontSize";
 import { installGlobalPaste } from "./lib/globalPaste";
 import { HIDDEN_TICK_MS, installHiddenProbe } from "./lib/hiddenProbe";
@@ -123,6 +124,7 @@ moduleRoot(() => mountDisplayPrefsSync());
 // (subject, network); the vodozemac binding loads on the first sync. Own root,
 // like the token effects above.
 moduleRoot(() => mountKeyBundleSync());
+moduleRoot(() => mountEncryptedChats());
 
 // PWA icon badge foreground reconcile (#badge-orphan, 2026-06-21) — the
 // SW push path (door #1) writes `setAppBadge` directly off-signal while

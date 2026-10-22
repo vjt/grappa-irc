@@ -31,6 +31,8 @@ import {
   S_SessionLogWireListResult,
   S_SessionLogWireSessionsResult,
   S_SessionLogWireT,
+  S_SessionWireE2eInboxPayload,
+  S_SessionWireE2eSentPayload,
   S_SessionWireMembersIndexPayload,
   S_ThemesWireActivePair,
   S_ThemesWireIndexPayload,
@@ -60,6 +62,8 @@ import type {
   SessionLogWireListResult,
   SessionLogWireSessionsResult,
   SessionLogWireT,
+  SessionWireE2eInboxPayload,
+  SessionWireE2eSentPayload,
   SessionWireMembersIndexPayload,
   ThemesWireActivePair,
   ThemesWireIndexPayload,
@@ -921,6 +925,16 @@ export function narrowDirectoryPageResponse(raw: unknown): ChannelDirectoryWireI
 /** `GET` / `POST /networks/:slug/e2e/keys` (issue 2430): what the key bundle holds. */
 export function narrowE2eKeysStatus(raw: unknown): E2eKeysWireStatus {
   return narrowRest(S_E2eKeysWireStatus, raw, "key bundle status");
+}
+
+/** `GET /networks/:slug/e2e/inbox` (issue 2430): a page of the offline queue. */
+export function narrowE2eInboxResponse(raw: unknown): SessionWireE2eInboxPayload {
+  return narrowRest(S_SessionWireE2eInboxPayload, raw, "encrypted inbox page");
+}
+
+/** `POST /networks/:slug/e2e/messages` (issue 2430): the msgid grappa chose. */
+export function narrowE2eSentResponse(raw: unknown): SessionWireE2eSentPayload {
+  return narrowRest(S_SessionWireE2eSentPayload, raw, "encrypted send");
 }
 
 // ── #1400 slice 1 — the doors whose envelope was already generated ──
