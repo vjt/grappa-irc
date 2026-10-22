@@ -112,6 +112,7 @@ defmodule Grappa.Session.Wire do
           | :dcc_offer
           | :dcc_offer_resolved
           | :e2e_message
+          | :e2e_send_dropped
           | :join_failed
           | :kicked
           | :away_confirmed
@@ -577,6 +578,23 @@ defmodule Grappa.Session.Wire do
   grappa named the message with, which a peer's `NACK` will name.
   """
   @type e2e_sent_payload :: %{msgid: String.t()}
+
+  # issue 2430 — why an accepted outbound E2E message was dropped unsent:
+  # an order's answer that could no longer be back by its `expires_at`, a
+  # line that failed to reach the socket, or the session ending with the
+  # message still queued.
+  @type e2e_drop_reason :: :late | :send_failed | :session_ended
+
+  # issue 2430 — an outbound E2E message the send door accepted (202) and
+  # the session then dropped unsent. `target` is the RAW nick it was sent
+  # to, `msgid` the one the 202 carried.
+  @type e2e_send_dropped_payload :: %{
+          kind: :e2e_send_dropped,
+          network: String.t(),
+          target: String.t(),
+          msgid: String.t(),
+          reason: e2e_drop_reason()
+        }
 
   @type join_failed_payload :: %{
           kind: :join_failed,
@@ -1638,6 +1656,21 @@ defmodule Grappa.Session.Wire do
   @doc "issue 2430 — the send door's answer: the msgid grappa chose."
   @spec e2e_sent(String.t()) :: e2e_sent_payload()
   def e2e_sent(msgid) when is_binary(msgid), do: %{msgid: msgid}
+
+  @doc """
+  issue 2430 — an outbound end-to-end encrypted message the send door
+  accepted and the session dropped unsent, so the sender is never left
+  believing a 202 went out. Pushed on `Topic.user(...)`, where the sender
+  learned nothing else about it: the 202 means accepted, not delivered,
+  and IRC confirms no delivery either. A refusal at the door is its own
+  error and never reaches here.
+  """
+  @spec e2e_send_dropped(String.t(), String.t(), String.t(), e2e_drop_reason()) :: e2e_send_dropped_payload()
+  def e2e_send_dropped(network_slug, target, msgid, reason)
+      when is_binary(network_slug) and is_binary(target) and is_binary(msgid) and
+             reason in [:late, :send_failed, :session_ended] do
+    %{kind: :e2e_send_dropped, network: network_slug, target: target, msgid: msgid, reason: reason}
+  end
 
   @doc """
   CP15 B2 — JOIN failure numeric (471/473/474/475/403/405)

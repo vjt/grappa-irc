@@ -98,6 +98,7 @@ import {
   S_SessionWireDirectoryFailedPayload,
   S_SessionWireDirectoryProgressPayload,
   S_SessionWireE2eMessagePayload,
+  S_SessionWireE2eSendDroppedPayload,
   S_SessionWireInviteAckPayload,
   S_SessionWireLinksBundlePayload,
   S_SessionWireMentionsBundlePayload,
@@ -514,6 +515,11 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       // issue 2430 — validated here so a well-formed push is not counted as
       // a wire drop; the dispatch arm below consumes nothing yet.
       return validate(S_SessionWireE2eMessagePayload, r);
+    case "e2e_send_dropped":
+      // issue 2430 (protocol 46) — validated here so a well-formed push is
+      // not counted as a wire drop; the dispatch arm below consumes nothing
+      // yet.
+      return validate(S_SessionWireE2eSendDroppedPayload, r);
     case "names_reply":
       // #140 — /names roster bundle. A malformed member element drops the
       // whole payload rather than rendering a half-typed row, which is the
@@ -1270,6 +1276,13 @@ moduleRoot(() => {
           void drainE2e(payload.network).catch((err: unknown) =>
             console.warn(`[userTopic] encrypted inbox drain failed on ${payload.network}`, err),
           );
+          return;
+
+        case "e2e_send_dropped":
+          // issue 2430 — no reader yet: what grappa accepted and then could
+          // not send is the E2E engine's to act on (an order left
+          // unconfirmed, a message to send again), and it lands with the
+          // cic CHAL/ACK slice. Ignored here, on purpose and in one place.
           return;
 
         case "names_reply": {

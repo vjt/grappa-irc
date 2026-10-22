@@ -102,6 +102,36 @@ defmodule GrappaWeb.E2eControllerTest do
     end
   end
 
+  test "expires_at: a control msg/pkmsg's deadline in unix seconds; 400 elsewhere or not an integer, 422 too_late once it cannot be met",
+       %{conn: conn, vjt: vjt} do
+    {server, network} = live_network(vjt)
+    path = "/networks/#{network.slug}/e2e/messages"
+    soon = System.os_time(:second) + 15
+    ack = %{target: "alice", verb: "msg", payload: @payload, priority: "control"}
+
+    for body <- [
+          Map.put(ack, :expires_at, "#{soon}"),
+          Map.put(ack, :expires_at, soon + 0.5),
+          Map.put(ack, :expires_at, 0),
+          Map.put(ack, :expires_at, -soon),
+          Map.put(%{ack | priority: "text"}, :expires_at, soon),
+          ack |> Map.delete(:priority) |> Map.put(:expires_at, soon),
+          Map.put(%{ack | verb: "keyreq"}, :expires_at, soon),
+          Map.put(%{ack | verb: "nack"}, :expires_at, soon)
+        ] do
+      assert json_response(post(conn, path, body), 400) == %{"error" => "bad_request"}, inspect(body)
+    end
+
+    late = Map.put(ack, :expires_at, System.os_time(:second))
+    assert json_response(post(conn, path, late), 422) == %{"error" => "too_late"}
+
+    %{"msgid" => msgid} = json_response(post(conn, path, Map.put(ack, :expires_at, soon)), 202)
+    assert {:ok, _} = IRCServer.wait_for_line(server, &String.contains?(&1, msgid), 1_000)
+
+    # null is absent.
+    assert %{"msgid" => _} = json_response(post(conn, path, Map.put(ack, :expires_at, nil)), 202)
+  end
+
   test "413 too_large for a payload past 64 lines", %{conn: conn, vjt: vjt} do
     {_, network} = live_network(vjt)
     huge = Base.encode64(:crypto.strong_rand_bytes(30_000))

@@ -45,29 +45,48 @@ defmodule GrappaWeb.E2eController do
   MSG/PKMSG that carries a CHAL or an ACK: grappa cannot see inside it.
   `keyreq` is urgent and `nack` reactive whatever it says.
 
+  `expires_at` (optional, protocol 46) is the deadline of the order a
+  `control` MSG/PKMSG answers, in unix seconds: the CHAL's own
+  `expires_at`. grappa starts the message only if its last line can leave
+  2 s before it, so the answer can still be back in time.
+
   400 `bad_request` for a target that is not a nick, a verb outside
-  `keyreq | pkmsg | msg | nack`, a priority outside `control | text`, or a
-  payload that is not base64; 413 `too_large` past 32 KiB or 64 lines; 429
-  `rate_limited` when the peer's queue (32 text messages, 32 lines in each
-  of the urgent and reactive lanes) or the connection's (128 lines, 480 s
-  of text) cannot take the whole message: refused whole and told, never
-  silently dropped.
+  `keyreq | pkmsg | msg | nack`, a priority outside `control | text`, a
+  payload that is not base64, or an `expires_at` that is not a positive
+  integer or rides anything but a `control` MSG/PKMSG; 413 `too_large`
+  past 32 KiB or 64 lines; 422 `too_late` when `expires_at` can already no
+  longer be met; 429 `rate_limited` when the peer's queue (32 text
+  messages, 32 lines in each of the urgent and reactive lanes) or the
+  connection's (128 urgent and reactive lines, 480 s of text) cannot take
+  the whole message:
+  refused whole and told, never silently dropped.
   """
   @spec create(Plug.Conn.t(), map()) ::
-          Plug.Conn.t()
-          | {:error, :bad_request | :invalid_line | :no_session | :no_socket | :timeout | :too_large | :rate_limited}
+          Plug.Conn.t() | {:error, Session.e2e_send_error()}
   def create(conn, %{"target" => target, "verb" => verb, "payload" => payload} = params)
       when is_binary(target) and is_binary(verb) and is_binary(payload) do
     subject = Subject.to_session(conn.assigns.current_subject)
 
     with {:ok, verb} <- fetch(@verbs, verb),
          {:ok, priority} <- fetch(@priorities, Map.get(params, "priority", "text")),
-         {:ok, msgid} <- Session.send_e2e(subject, conn.assigns.network.id, target, verb, priority, payload) do
+         {:ok, expires_at} <- expires_at(params),
+         {:ok, msgid} <- Session.send_e2e(subject, conn.assigns.network.id, target, verb, priority, payload, expires_at) do
       conn |> put_status(:accepted) |> json(SessionWire.e2e_sent(msgid))
     end
   end
 
   def create(_, _), do: {:error, :bad_request}
+
+  # Absent or null is no deadline; anything else must be an integer, which
+  # `Session.send_e2e/7` judges.
+  @spec expires_at(map()) :: {:ok, integer() | nil} | {:error, :bad_request}
+  defp expires_at(params) do
+    case Map.get(params, "expires_at") do
+      nil -> {:ok, nil}
+      seconds when is_integer(seconds) -> {:ok, seconds}
+      _ -> {:error, :bad_request}
+    end
+  end
 
   @doc """
   `GET /networks/:network_id/e2e/inbox` — the messages waiting for this

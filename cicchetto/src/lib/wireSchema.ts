@@ -27,6 +27,7 @@ import {
   SCROLLBACK_MESSAGE_KIND,
   SESSION_LOG_EVENT,
   SESSION_WINDOW_STATE_WINDOW_STATE,
+  SESSION_WIRE_E2E_DROP_REASON,
   SESSION_WIRE_E2E_VERB,
   SESSION_WIRE_RECOVER_OUTCOME,
   SESSION_WIRE_RECOVER_REASON,
@@ -1063,6 +1064,9 @@ export const S_SessionWireDirectoryProgressPayload = {
   o: { kind: { l: "directory_progress" }, network: "s", count: "i" },
 } as const;
 
+// Grappa.Session.Wire.e2e_drop_reason/0
+export const S_SessionWireE2eDropReason = { e: [...SESSION_WIRE_E2E_DROP_REASON] } as const;
+
 // Grappa.Session.Wire.e2e_verb/0
 export const S_SessionWireE2eVerb = { e: [...SESSION_WIRE_E2E_VERB] } as const;
 
@@ -1082,6 +1086,17 @@ export const S_SessionWireE2eMessagePayload = {
 // Grappa.Session.Wire.e2e_inbox_payload/0
 export const S_SessionWireE2eInboxPayload = {
   o: { messages: { a: S_SessionWireE2eMessagePayload } },
+} as const;
+
+// Grappa.Session.Wire.e2e_send_dropped_payload/0
+export const S_SessionWireE2eSendDroppedPayload = {
+  o: {
+    kind: { l: "e2e_send_dropped" },
+    network: "s",
+    target: "s",
+    msgid: "s",
+    reason: S_SessionWireE2eDropReason,
+  },
 } as const;
 
 // Grappa.Session.Wire.e2e_sent_payload/0
@@ -1742,6 +1757,7 @@ export const S_ErrorTokensRestErrorToken = {
     { l: "too_many_attempts" },
     { l: "theme_cap_reached" },
     { l: "list_full" },
+    { l: "too_late" },
     { l: "invalid_mask" },
     { l: "invalid_text_pattern" },
     { l: "not_raster" },

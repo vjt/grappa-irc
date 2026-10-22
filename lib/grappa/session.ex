@@ -211,6 +211,13 @@ defmodule Grappa.Session do
   @type send_transport_error :: :no_socket | :closed | :timeout | :inet.posix()
 
   @typedoc """
+  issue 2430 — every way `send_e2e/7` refuses a message, named once so
+  its REST door states the same set.
+  """
+  @type e2e_send_error ::
+          :no_session | :no_socket | :timeout | :invalid_line | :bad_request | :too_large | :rate_limited | :too_late
+
+  @typedoc """
   Per-channel member entry as returned by `list_members/3`. The
   per-row shape is the canonical contract that the WS
   `members_seeded` event AND the REST `/members` snapshot both
@@ -981,40 +988,72 @@ defmodule Grappa.Session do
   says: ahead of text within a per-peer and a per-connection budget. Only
   the client knows that a MSG or PKMSG carries a CHAL or an ACK.
 
+  `expires_at` is the deadline of the order a `:control` MSG or PKMSG
+  answers, in unix seconds (the CHAL's own `expires_at`), or `nil`. The
+  message then starts only if its last line can leave
+  `E2ePacer.ack_margin_ms/0` before that instant, so the answer can still
+  be back in time; one that waits past that point is dropped unsent. The
+  deadline is the bot's clock read against this host's: a skew moves the
+  drop instant, and either way the order fails closed.
+
   `{:ok, msgid}` means ACCEPTED, not delivered: lines may still be waiting
-  in the pacer, and IRC never confirms delivery anyway (vjt
-  ruled out any sender-side notice, 2430). `{:error, :invalid_line}` for a
-  CR/LF/NUL in `target`; `{:error, :bad_request}` for a target that is not
-  a nick, a verb outside `e2e_send_verbs/0`, a priority outside
-  `e2e_priorities/0`, or a payload that is not base64; `{:error, :too_large}` past `E2e.max_payload_bytes/0` or when the
-  payload needs more than 64 lines;
+  in the pacer, and IRC never confirms delivery anyway. A message the
+  session drops after accepting it (too late for its `expires_at`, a line
+  that failed to go out, or the session ending first) is announced on the
+  user topic (`Grappa.Session.Wire.e2e_send_dropped/4`), never dropped
+  silently.
+
+  `{:error, :invalid_line}` for a CR/LF/NUL in `target`;
+  `{:error, :bad_request}` for a target that is not a nick, a verb outside
+  `e2e_send_verbs/0`, a priority outside `e2e_priorities/0`, a payload that
+  is not base64, or an `expires_at` that is not positive or rides anything
+  but a `:control` MSG or PKMSG; `{:error, :too_large}` past
+  `E2e.max_payload_bytes/0` or when the payload needs more than 64 lines;
   `{:error, :rate_limited}` when the peer's queue (32 text messages, 32
   lines in each of the urgent and reactive lanes) or the connection's (128
-  lines, 480 s of text) cannot take it whole.
+  urgent and reactive lines, 480 s of text) cannot take it whole;
+  `{:error, :too_late}` when `expires_at` can already no longer be met.
   """
-  @spec send_e2e(subject(), integer(), String.t(), E2e.verb(), E2ePacer.priority(), String.t()) ::
-          {:ok, String.t()}
-          | {:error, :no_session | :no_socket | :timeout | :invalid_line | :bad_request | :too_large | :rate_limited}
-  def send_e2e(subject, network_id, target, verb, priority, payload)
+  @spec send_e2e(subject(), integer(), String.t(), E2e.verb(), E2ePacer.priority(), String.t(), integer() | nil) ::
+          {:ok, String.t()} | {:error, e2e_send_error()}
+  def send_e2e(subject, network_id, target, verb, priority, payload, expires_at)
       when is_subject(subject) and is_integer(network_id) and is_binary(target) and is_atom(verb) and
-             is_atom(priority) and is_binary(payload) do
-    with :ok <- validate_e2e_send(target, verb, priority, payload),
-         do: call_session(subject, network_id, {:send_e2e, target, verb, E2ePacer.lane(verb, priority), payload})
+             is_atom(priority) and is_binary(payload) and (is_nil(expires_at) or is_integer(expires_at)) do
+    with :ok <- validate_e2e_send(target, verb, priority, payload, expires_at) do
+      call_session(subject, network_id, {:send_e2e, target, verb, E2ePacer.lane(verb, priority), payload, expires_at})
+    end
   end
 
   # The size check runs before the session is asked, so a payload no
   # receiver could hold is never copied into its mailbox.
-  @spec validate_e2e_send(String.t(), E2e.verb(), E2ePacer.priority(), String.t()) ::
+  @spec validate_e2e_send(String.t(), E2e.verb(), E2ePacer.priority(), String.t(), integer() | nil) ::
           :ok | {:error, :invalid_line | :bad_request | :too_large}
-  defp validate_e2e_send(target, verb, priority, payload) do
+  defp validate_e2e_send(target, verb, priority, payload, expires_at) do
     cond do
-      not Identifier.safe_line_token?(target) -> {:error, :invalid_line}
-      byte_size(payload) > E2e.max_payload_bytes() -> {:error, :too_large}
-      not (verb in @e2e_send_verbs and priority in @e2e_priorities) -> {:error, :bad_request}
-      Identifier.valid_nick?(target) and E2e.chunk?(payload) -> :ok
-      true -> {:error, :bad_request}
+      not Identifier.safe_line_token?(target) ->
+        {:error, :invalid_line}
+
+      byte_size(payload) > E2e.max_payload_bytes() ->
+        {:error, :too_large}
+
+      not (verb in @e2e_send_verbs and priority in @e2e_priorities) ->
+        {:error, :bad_request}
+
+      not deadline_ok?(verb, priority, expires_at) ->
+        {:error, :bad_request}
+
+      Identifier.valid_nick?(target) and E2e.chunk?(payload) ->
+        :ok
+
+      true ->
+        {:error, :bad_request}
     end
   end
+
+  # Only an order's CHAL or ACK has a deadline, and it is an instant.
+  @spec deadline_ok?(E2e.verb(), E2ePacer.priority(), integer() | nil) :: boolean()
+  defp deadline_ok?(_, _, nil), do: true
+  defp deadline_ok?(verb, priority, expires_at), do: expires_at > 0 and priority == :control and verb in [:pkmsg, :msg]
 
   @doc """
   #1225 — sends the operator's own outbound NOTICE (`/notice`) and self-echoes

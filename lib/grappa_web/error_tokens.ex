@@ -98,6 +98,9 @@ defmodule GrappaWeb.ErrorTokens do
           | :too_many_attempts
           | :theme_cap_reached
           | :list_full
+          # issue 2430 — 422: an E2E order's answer whose `expires_at` can
+          # already no longer be met (`E2eController.create/2`).
+          | :too_late
           # #162 — 422: a `/ignore` mask that `Grappa.IRC.Mask.normalize/1`
           # rejects (empty, whitespace, CRLF, bad `nick!user@host` order).
           | :invalid_mask

@@ -404,6 +404,19 @@ defmodule Grappa.Session.E2ePacer do
   end
 
   @doc """
+  Every message with a line still waiting, once each: what would be lost
+  unsent if the pacer went away now. A message's lines leave in order, so
+  its last line waits as long as any of it does.
+  """
+  @spec pending(t()) :: [lost()]
+  def pending(%__MODULE__{queues: queues}) do
+    for {_, lanes} <- queues,
+        lane <- @lanes,
+        %{last?: true} = item <- Map.fetch!(lanes, lane),
+        do: {item.target, item.msgid, item.verb}
+  end
+
+  @doc """
   Drops what is left of message `msgid` to the folded `key`: one of its
   lines failed to go out, so its receiver can never complete it.
   """

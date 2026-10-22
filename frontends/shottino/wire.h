@@ -53,14 +53,15 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v44 -> v45 (issue 2430): the encrypted-message doors'
- * envelopes (the inbox page, the send door's `{msgid}`) are declared in
- * the generated shape; the bytes did not change, and a terminal never
- * calls those doors, so nothing it reads changed.
+ * Last read, v45 -> v46 (issue 2430): the encrypted send door's optional
+ * `expires_at`, its 422 `too_late`, and the user-topic `e2e_send_dropped`
+ * push. A terminal never calls that door and does not narrow the push,
+ * which it drops as any kind it does not know, so nothing it reads
+ * changed.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 45
+#define WIRE_PROTOCOL_VERSION 46
 
 #include <stdbool.h>
 #include <stddef.h>

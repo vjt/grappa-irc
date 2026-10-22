@@ -269,6 +269,11 @@ function friendlyKnown(err: ApiError, code: ErrorTokensRestErrorToken): string {
       // per-network cap (`Grappa.Notify.max_entries/0`). A bounded
       // resource, not a rate — the recourse is pruning, not waiting.
       return "Your watch list for this network is full. Remove an entry first.";
+    case "too_late":
+      // issue 2430 — 422 from `POST /networks/:id/e2e/messages`: an order's
+      // answer (`expires_at`) that could no longer reach the bot in time. The
+      // order goes unconfirmed; resending cannot help, giving it again can.
+      return "Too late to confirm that order. Give the order again.";
     case "invalid_mask":
       // #162 — `/ignore` mask rejected by `Grappa.IRC.Mask.normalize/2`
       // (empty, whitespace, or not `nick!user@host`). A bare nick is

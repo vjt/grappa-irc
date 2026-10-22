@@ -1219,7 +1219,24 @@ defmodule Grappa.Protocol do
   # this file (#2102) still carries 21.
   #
   # @min_protocol_version stays at 1: the bytes did not change.
-  @protocol_version 45
+  #
+  # 46 — issue 2430: an order's answer deadline and the drop push
+  # ---------------------------------------------------------------------------
+  #
+  # ADDED: the send door's optional `expires_at` request field (unix
+  # seconds, a positive integer, on a `control` MSG/PKMSG only), the
+  # `too_late` error token (422, a deadline already out of reach at the
+  # door), and the user-topic push `e2e_send_dropped` {network, target,
+  # msgid, reason: late | send_failed | session_ended}, which announces a
+  # message the session drops after its 202. A client that never sends
+  # `expires_at` sees the bytes it saw at 45, plus a push it may ignore.
+  #
+  # Checked for a collision before claiming 46: the one open PR that edits
+  # this file (#2102) still carries 21.
+  #
+  # @min_protocol_version stays at 1: nothing an older client sent changed
+  # meaning.
+  @protocol_version 46
   @min_protocol_version 1
 
   @doc "The protocol version the server currently speaks."
@@ -1260,7 +1277,7 @@ defmodule Grappa.Protocol do
   # duplicated constant is positive evidence that the OTHER sites were
   # decided for you. Grep every site for the OLD number before continuing,
   # including the ones that are not Elixir.
-  @spec version() :: 45
+  @spec version() :: 46
   def version, do: @protocol_version
 
   @doc """

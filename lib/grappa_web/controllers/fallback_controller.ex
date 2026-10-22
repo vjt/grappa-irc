@@ -90,6 +90,7 @@ defmodule GrappaWeb.FallbackController do
            | :too_many_attempts
            | :theme_cap_reached
            | :list_full
+           | :too_late
            | :invalid_mask
            | :invalid_text_pattern
            | :not_raster
@@ -302,6 +303,16 @@ defmodule GrappaWeb.FallbackController do
     conn
     |> put_status(:unprocessable_entity)
     |> json(%{error: "list_full"})
+  end
+
+  # issue 2430 — an E2E order's answer whose `expires_at` can already no
+  # longer be met: its last line could not leave 2 s before the deadline.
+  # 422, well-formed and refused, and its own token: the client learns the
+  # order will go unconfirmed, which a retry cannot change.
+  def call(conn, {:error, :too_late}) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "too_late"})
   end
 
   # #162 — an /ignore mask that does not parse as `nick!user@host` (bad
