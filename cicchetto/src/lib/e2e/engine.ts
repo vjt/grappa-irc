@@ -118,6 +118,11 @@ export type E2eState = {
   /** Oldest first. */
   sent: Sent[];
   nextRef: number;
+  /**
+   * The last inbox id processed (`client.ts`). Not the engine's: kept here so
+   * it is stored with what processing that message changed, in one record.
+   */
+  inbox: number;
 };
 
 export function newState(): E2eState {
@@ -132,6 +137,7 @@ export function newState(): E2eState {
     rekeyAt: {},
     sent: [],
     nextRef: 1,
+    inbox: 0,
   };
 }
 
