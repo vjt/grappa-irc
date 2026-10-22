@@ -3,6 +3,8 @@ import { createSignal } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat, ChatRow } from "../lib/e2e/chatStore";
 import type { PeerTrust } from "../lib/e2e/client";
+import type { SasView } from "../lib/e2e/sas";
+import { SAS_EMOJI } from "../lib/e2e/sasEmoji";
 
 // issue 2430 — the encrypted query pane. The chat glue (lib/encryptedChats)
 // is the boundary: its reads are signals here and its verbs are spies, so
@@ -17,11 +19,13 @@ const [rows, setRows] = createSignal<ChatRow[] | undefined>(undefined);
 const [trust, setTrust] = createSignal<PeerTrust | null>(null);
 const [own, setOwn] = createSignal<string | undefined>(undefined);
 const [visible, setVisible] = createSignal(true);
+const [sas, setSas] = createSignal<SasView | null>(null);
 
 const loadEncryptedChat = vi.hoisted(() => vi.fn());
 const readEncryptedChat = vi.hoisted(() => vi.fn());
 const sendEncrypted = vi.hoisted(() => vi.fn());
 const pinEncryptedKey = vi.hoisted(() => vi.fn());
+const verifyEncrypted = vi.hoisted(() => vi.fn());
 const copyText = vi.hoisted(() => vi.fn());
 
 vi.mock("../lib/encryptedChats", async (importOriginal) => ({
@@ -29,11 +33,13 @@ vi.mock("../lib/encryptedChats", async (importOriginal) => ({
   encryptedChat: () => chat(),
   encryptedRows: () => rows(),
   encryptedTrust: () => trust(),
+  encryptedSas: () => sas(),
   ownKey: () => own(),
   loadEncryptedChat,
   readEncryptedChat,
   sendEncrypted,
   pinEncryptedKey,
+  verifyEncrypted,
 }));
 vi.mock("../lib/documentVisibility", () => ({ isDocumentVisible: () => visible() }));
 vi.mock("../lib/clipboard", () => ({ copyText }));
@@ -44,7 +50,13 @@ const at = 1_700_000_000_000;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  for (const fn of [loadEncryptedChat, readEncryptedChat, sendEncrypted, copyText]) {
+  for (const fn of [
+    loadEncryptedChat,
+    readEncryptedChat,
+    sendEncrypted,
+    copyText,
+    verifyEncrypted,
+  ]) {
     fn.mockResolvedValue(undefined);
   }
   pinEncryptedKey.mockResolvedValue("pinned");
@@ -53,6 +65,7 @@ beforeEach(() => {
   setTrust(null);
   setOwn(OWN);
   setVisible(true);
+  setSas(null);
 });
 
 const renderPane = () => render(() => <EncryptedChatPane networkSlug="azzurra" nick="bob" />);
@@ -92,6 +105,12 @@ describe("EncryptedChatPane", () => {
       { kind: "undecryptable", id: "5", at, nick: "Bob" },
       { kind: "key_alarm", id: "6", at, nick: "Bob", presented: OWN },
       { kind: "pinned", id: "7", at, nick: "Bob", ed25519: KEY },
+      { kind: "accepted", id: "8", at, nick: "Bob", ed25519: KEY },
+      { kind: "sas_asked", id: "9", at, nick: "Bob", by: "you" },
+      { kind: "sas_asked", id: "10", at, nick: "Bob", by: "peer" },
+      { kind: "sas_cancelled", id: "11", at, nick: "Bob", by: "you", reason: "timeout" },
+      { kind: "sas_cancelled", id: "12", at, nick: "Bob", by: "peer", reason: "its own words" },
+      { kind: "verified", id: "13", at, nick: "Bob", ed25519: KEY },
     ]);
     renderPane();
     const shown = screen.getAllByTestId("e2e-row");
@@ -103,6 +122,12 @@ describe("EncryptedChatPane", () => {
       "undecryptable",
       "key_alarm",
       "pinned",
+      "accepted",
+      "sas_asked",
+      "sas_asked",
+      "sas_cancelled",
+      "sas_cancelled",
+      "verified",
     ]);
     for (const row of shown) expect(row.querySelector(".encrypted-marker")).not.toBeNull();
     expect(shown[0]?.textContent).toContain("ciao");
@@ -114,6 +139,100 @@ describe("EncryptedChatPane", () => {
     );
     expect(shown[5]?.textContent).toContain(OWN);
     expect(shown[6]?.textContent).toContain(`you pinned Bob to ${KEY}`);
+    expect(shown[7]?.textContent).toContain(`you took ${KEY} as Bob's key, not verified`);
+    expect(shown[8]?.textContent).toContain("you asked Bob to compare emoji");
+    expect(shown[9]?.textContent).toContain("Bob asked to compare emoji with you");
+    expect(shown[10]?.textContent).toContain(
+      "the emoji comparison stopped: no answer in 10 minutes",
+    );
+    expect(shown[11]?.textContent).toContain('Bob stopped the emoji comparison: "its own words"');
+    expect(shown[12]?.textContent).toContain(`you verified Bob's key ${KEY} by comparing emoji`);
+  });
+
+  it("the alarm offers to take the new key, unverified, until it is the pinned one", () => {
+    setTrust({ ed25519: KEY, verified: true });
+    setRows([{ kind: "key_alarm", id: "a", at, nick: "Bob", presented: OWN }]);
+    renderPane();
+
+    fireEvent.click(screen.getByTestId("e2e-alarm-accept"));
+    expect(pinEncryptedKey).toHaveBeenCalledWith("azzurra", "bob", OWN, false);
+
+    setTrust({ ed25519: OWN, verified: false });
+    expect(screen.queryByTestId("e2e-alarm-accept")).toBeNull();
+  });
+
+  it("offers an emoji comparison for a key not verified, and none for a verified key or no key", () => {
+    renderPane();
+    expect(screen.queryByTestId("e2e-sas-start")).toBeNull();
+
+    setTrust({ ed25519: KEY, verified: false });
+    fireEvent.click(screen.getByTestId("e2e-sas-start"));
+    expect(verifyEncrypted).toHaveBeenCalledWith("azzurra", "bob", "start");
+
+    setTrust({ ed25519: KEY, verified: true });
+    expect(screen.queryByTestId("e2e-sas-start")).toBeNull();
+  });
+
+  const view = (over: Partial<SasView>): SasView => ({
+    role: "a",
+    phase: "started",
+    confirmed: false,
+    here: true,
+    emoji: null,
+    ...over,
+  });
+
+  it.each([
+    [view({ phase: "started" }), "waiting", "A bot never answers: pin the key it prints instead"],
+    [view({ phase: "keyed" }), "waiting", "waiting for Bob to accept"],
+    [view({ role: "b", phase: "asked", here: false }), "asked", "Bob asks to compare emoji"],
+    [view({ role: "b", phase: "accepted" }), "exchanging", "exchanging keys with Bob"],
+    [view({ phase: "compare", here: false }), "elsewhere", "open in another tab"],
+    [view({ phase: "compare", confirmed: true }), "confirmed", "waiting for Bob to confirm"],
+  ])("a SAS (%o) reads %s, and can be cancelled", (shown, phase, text) => {
+    setTrust({ ed25519: KEY, verified: false });
+    setSas(shown);
+    renderPane();
+    const panel = screen.getByTestId("e2e-sas");
+    expect(panel.dataset.phase).toBe(phase);
+    expect(panel.textContent).toContain(text);
+    expect(screen.queryByTestId("e2e-sas-start")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("e2e-sas-cancel"));
+    expect(verifyEncrypted).toHaveBeenCalledWith("azzurra", "bob", "cancel");
+  });
+
+  it("a request is accepted from the panel", () => {
+    setSas(view({ role: "b", phase: "asked", here: false }));
+    renderPane();
+    fireEvent.click(screen.getByTestId("e2e-sas-accept"));
+    expect(verifyEncrypted).toHaveBeenCalledWith("azzurra", "bob", "accept");
+  });
+
+  it("shows the 7 emoji in order, each with its name, and sends the human's answer", () => {
+    const emoji = [0, 29, 63, 1, 2, 3, 4];
+    setSas(view({ phase: "compare", emoji }));
+    renderPane();
+
+    expect(screen.getByTestId("e2e-sas").dataset.phase).toBe("compare");
+    const shown = screen.getAllByTestId("e2e-sas-emoji");
+    expect(shown.map((e) => e.dataset.index)).toEqual(emoji.map(String));
+    expect(shown.map((e) => e.textContent)).toEqual(
+      emoji.map((i) => `${SAS_EMOJI[i]?.[0]}${SAS_EMOJI[i]?.[1]}`),
+    );
+    expect(shown[0]?.textContent).toBe("🐶Dog");
+
+    fireEvent.click(screen.getByTestId("e2e-sas-match"));
+    expect(verifyEncrypted).toHaveBeenCalledWith("azzurra", "bob", "match");
+    fireEvent.click(screen.getByTestId("e2e-sas-mismatch"));
+    expect(verifyEncrypted).toHaveBeenCalledWith("azzurra", "bob", "mismatch");
+  });
+
+  it("while the emoji are worked out, the comparison reads as exchanging keys", () => {
+    setSas(view({ phase: "compare", emoji: null }));
+    renderPane();
+    expect(screen.getByTestId("e2e-sas").dataset.phase).toBe("exchanging");
+    expect(screen.queryByTestId("e2e-sas-match")).toBeNull();
   });
 
   it("a message written with another key than the nick's pinned one says so", () => {
@@ -151,7 +270,7 @@ describe("EncryptedChatPane", () => {
     fireEvent.click(screen.getByTestId("e2e-pin-submit"));
 
     await vi.waitFor(() => expect(input.value).toBe(""));
-    expect(pinEncryptedKey).toHaveBeenCalledWith("azzurra", "bob", KEY);
+    expect(pinEncryptedKey).toHaveBeenCalledWith("azzurra", "bob", KEY, true);
     expect(screen.queryByTestId("e2e-pin-error")).toBeNull();
   });
 

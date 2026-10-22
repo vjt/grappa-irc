@@ -20,7 +20,9 @@ vi.mock("../lib/auth", () => ({ token: () => bearer() }));
 vi.mock("../lib/networks", () => ({ user: () => me(), networks: () => list() }));
 vi.mock("../lib/e2e/olm", () => ({ loadOlm: async () => olm() }));
 
-// The browser store is IndexedDB + Web Locks, which jsdom has neither of.
+// The browser store is IndexedDB + Web Locks, which jsdom has neither of,
+// and the page holds a Web Lock while it lives (`e2e/browser.ts`).
+(await import("./helpers/e2eVault")).installPageLocks();
 vi.mock("../lib/e2e/accountStore", async (importOriginal) => {
   const real = await importOriginal<typeof import("../lib/e2e/accountStore")>();
   const { memoryLock, memoryVault } = await import("./helpers/e2eVault");

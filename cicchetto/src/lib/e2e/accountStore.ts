@@ -103,7 +103,9 @@ export function accountStore(olm: Olm, vault: Vault, lock: Lock): AccountStore {
     if (sealed === undefined) return undefined;
     try {
       const record = parseRecord(await open(key, slot, sealed));
-      return { account: olm.Account.from_pickle(record.account), state: record.state };
+      // A field the state gained since the record was sealed starts empty.
+      const state = { ...newState(), ...record.state };
+      return { account: olm.Account.from_pickle(record.account), state };
     } catch (err) {
       // The wrapping key that sealed it is gone, or the record is damaged (or
       // a bare pickle from before the state joined it): it can never be

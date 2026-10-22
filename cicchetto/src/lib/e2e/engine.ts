@@ -16,8 +16,8 @@
 // Trust: the pin is on the KEY, never on the nick (2430 "Identity"). A bot
 // pins only keys its operator pasted; a person in cic has no configuration
 // to paste into, so the first key a nick presents is pinned (trust on first
-// use) and is "unverified" until the user pins it by hand or compares a SAS
-// (later slices). A different key on a pinned nick is an alarm, ignored,
+// use) and is "unverified" until the user pastes it by hand or compares a SAS
+// (`sas.ts`). A different key on a pinned nick is an alarm, ignored,
 // never a silent replace; only the user re-pinning moves a pin.
 //
 // State: ALL of it is `E2eState`, plain JSON the caller seals and stores with
@@ -30,6 +30,7 @@
 
 import { identityBlock } from "./keyBundle";
 import type { Olm } from "./olm";
+import type { SasRecord } from "./sas";
 import type { Account } from "./vodozemac/vodozemac_binding";
 import {
   base64Unpadded,
@@ -123,6 +124,8 @@ export type E2eState = {
    * it is stored with what processing that message changed, in one record.
    */
   inbox: number;
+  /** Ed25519 → the SAS running with that key (`sas.ts`): its public half. */
+  sas: Record<string, SasRecord>;
 };
 
 export function newState(): E2eState {
@@ -138,6 +141,7 @@ export function newState(): E2eState {
     sent: [],
     nextRef: 1,
     inbox: 0,
+    sas: {},
   };
 }
 
@@ -211,14 +215,21 @@ type Bound = Peer & { curve25519: string };
 /** vodozemac refused something that came off the wire. */
 class Rejected extends Error {}
 
-// A vodozemac call on wire input. Its refusals (wasm-bindgen's JsError, a
-// plain Error) become `Rejected`; anything else, a trap above all, is a bug
-// here or in the binding and is thrown on.
+/**
+ * Whether `err` is vodozemac refusing its input: wasm-bindgen's JsError, a
+ * plain Error. Anything else, a trap above all, is a bug here or in the
+ * binding, and must be thrown on.
+ */
+export function refusedByVodozemac(err: unknown): err is Error {
+  return err instanceof Error && err.constructor === Error;
+}
+
+// A vodozemac call on wire input: its refusals become `Rejected`.
 function rejecting<T>(fn: () => T): T {
   try {
     return fn();
   } catch (err) {
-    if (err instanceof Error && err.constructor === Error) throw new Rejected(err.message);
+    if (refusedByVodozemac(err)) throw new Rejected(err.message);
     throw err;
   }
 }
@@ -254,14 +265,16 @@ export class Engine {
   }
 
   /**
-   * Pins `ed25519` to `nick` by hand, verified: the user pasted the key a
-   * peer printed (a bot: 2430 ruling 6253162964), or compared a SAS. The one
-   * way a pin moves to another key (`identify` never does it). The key's
+   * Pins `ed25519` to `nick` by hand: the one way a pin moves to another key
+   * (`identify` never does it). `verified` when the user pasted the key the
+   * peer printed (a bot: 2430 ruling 6253162964); not when the user only
+   * took a key the alarm showed, which a SAS then verifies (fork 7, 2430
+   * comment 6339695571). Taking a key never unverifies it. The key's
    * sessions stay; a key never seen learns its curve from its first signed
    * id block. The key is the spelling vodozemac prints: 43 characters of
    * unpadded standard base64.
    */
-  pin(nick: string, ed25519: string): "pinned" | "bad-key" | "own-key" {
+  pin(nick: string, ed25519: string, verified: boolean): "pinned" | "bad-key" | "own-key" {
     if (!/^[A-Za-z0-9+/]{43}$/.test(ed25519)) return "bad-key";
     let ed: string;
     try {
@@ -274,10 +287,21 @@ export class Engine {
     const known = this.state.peers[ed];
     this.state.peers[ed] =
       known === undefined
-        ? { ed25519: ed, curve25519: null, nick, proven: false, verified: true }
-        : { ...known, verified: true };
+        ? { ed25519: ed, curve25519: null, nick, proven: false, verified }
+        : { ...known, verified: known.verified || verified };
     this.state.pins[fold(nick)] = ed;
     return "pinned";
+  }
+
+  /** A SAS confirmed `ed25519` (`sas.ts`): verified, wherever it is pinned. */
+  verify(ed25519: string): void {
+    const peer = this.state.peers[ed25519];
+    if (peer !== undefined) this.state.peers[ed25519] = { ...peer, verified: true };
+  }
+
+  /** Our Curve25519 identity key: what a SAS binds besides the Ed25519 one. */
+  curve(): string {
+    return this.account.curve25519_key();
   }
 
   // --- sending -----------------------------------------------------------

@@ -1,63 +1,21 @@
 // issue 2430 — cic's E2E client between grappa's three doors (the inbox, its
 // acknowledgement, the send door) and what the user sees (the chat history).
-// Two clients over a fake grappa (`helpers/e2eGrappa.ts`). The engines, the
+// Two clients over a fake grappa (`helpers/e2eClients.ts`): the engines, the
 // account store and the chat store are the real ones over in-memory twins of
 // IndexedDB and Web Locks.
 import { describe, expect, it } from "vitest";
-import { type AccountStore, accountStore } from "../lib/e2e/accountStore";
-import { type ChatRow, type ChatStore, chatStore } from "../lib/e2e/chatStore";
-import { type E2eContext, e2eClient, NoAccountError } from "../lib/e2e/client";
+import { accountStore } from "../lib/e2e/accountStore";
+import { chatStore } from "../lib/e2e/chatStore";
+import { e2eClient, NoAccountError } from "../lib/e2e/client";
 import { OUTQ_TTL_MS } from "../lib/e2e/engine";
-import { Grappa, publishBundle } from "./helpers/e2eGrappa";
-import { type MemoryVault, memoryLock, memoryVault } from "./helpers/e2eVault";
+import { pair, rowsOf, type Side, SLOT, World } from "./helpers/e2eClients";
+import { memoryLock, memoryVault } from "./helpers/e2eVault";
 import { olm } from "./helpers/olm";
 
-const SLOT = "user:0b5e:1";
-
-type Side = {
-  nick: string;
-  ctx: E2eContext;
-  vault: MemoryVault;
-  chatVault: MemoryVault;
-  accounts: AccountStore;
-  chats: ChatStore;
-  client: ReturnType<typeof e2eClient>;
-};
-
-class World {
-  now = 1_700_000_000_000;
-  grappa = new Grappa();
-
-  /** A cic on `nick`, with its key bundle on grappa. */
-  async join(nick: string): Promise<Side> {
-    const vault = memoryVault();
-    const lock = memoryLock();
-    const accounts = accountStore(olm(), vault, lock);
-    const chatVault = memoryVault();
-    const chats = chatStore(chatVault, lock);
-    await publishBundle(this.grappa, nick, accounts, SLOT);
-    return {
-      nick,
-      ctx: { slot: SLOT, ownNick: nick, door: this.grappa.door(nick) },
-      vault,
-      chatVault,
-      accounts,
-      chats,
-      client: e2eClient(olm(), accounts, chats, () => this.now),
-    };
-  }
-}
-
-const rowsOf = (side: Side, nick: string): Promise<ChatRow[]> => side.chats.rows(SLOT, nick);
 const bodies = async (side: Side, nick: string) =>
   (await rowsOf(side, nick)).map((r) => (r.kind === "in" || r.kind === "out" ? r.body : r.kind));
 const states = async (side: Side, nick: string) =>
   (await rowsOf(side, nick)).flatMap((r) => (r.kind === "out" ? [[r.state, r.reason]] : []));
-
-async function pair(): Promise<{ w: World; a: Side; b: Side }> {
-  const w = new World();
-  return { w, a: await w.join("alice"), b: await w.join("Bob") };
-}
 
 describe("e2eClient", () => {
   it("sends through the keys, the peer reads it in its chat, and both inboxes empty", async () => {
@@ -260,7 +218,10 @@ describe("e2eClient", () => {
     const { a, b } = await pair();
     const key = await b.accounts.withAccount(SLOT, async ({ account }) => account.ed25519_key());
 
-    expect(await a.client.pin(a.ctx, "Bob", key)).toEqual({ result: "pinned", chats: ["bob"] });
+    expect(await a.client.pin(a.ctx, "Bob", key, true)).toEqual({
+      result: "pinned",
+      chats: ["bob"],
+    });
 
     expect(await rowsOf(a, "bob")).toEqual([
       expect.objectContaining({ kind: "pinned", nick: "Bob", ed25519: key }),
@@ -269,13 +230,49 @@ describe("e2eClient", () => {
     expect(await a.client.identity(a.ctx, ["bob", "carol"])).toEqual({
       own,
       peers: { bob: { ed25519: key, verified: true }, carol: null },
+      sas: { bob: null, carol: null },
+    });
+  });
+
+  it("takes the alarm's key unverified: the chat says so, and the identity reads not verified", async () => {
+    const { a, b } = await pair();
+    const key = await b.accounts.withAccount(SLOT, async ({ account }) => account.ed25519_key());
+
+    expect(await a.client.pin(a.ctx, "Bob", key, false)).toEqual({
+      result: "pinned",
+      chats: ["bob"],
+    });
+
+    expect(await rowsOf(a, "bob")).toEqual([
+      expect.objectContaining({ kind: "accepted", nick: "Bob", ed25519: key }),
+    ]);
+    expect((await a.client.identity(a.ctx, ["bob"])).peers).toEqual({
+      bob: { ed25519: key, verified: false },
+    });
+  });
+
+  it("taking a key already verified (under another nick) says it is pinned, not unverified", async () => {
+    const { a, b } = await pair();
+    const key = await b.accounts.withAccount(SLOT, async ({ account }) => account.ed25519_key());
+    await a.client.pin(a.ctx, "carol", key, true);
+
+    await a.client.pin(a.ctx, "Bob", key, false);
+
+    expect(await rowsOf(a, "bob")).toEqual([
+      expect.objectContaining({ kind: "pinned", nick: "Bob", ed25519: key }),
+    ]);
+    expect((await a.client.identity(a.ctx, ["bob"])).peers).toEqual({
+      bob: { ed25519: key, verified: true },
     });
   });
 
   it("writes nothing for a key it refuses", async () => {
     const { a } = await pair();
 
-    expect(await a.client.pin(a.ctx, "bob", "not a key")).toEqual({ result: "bad-key", chats: [] });
+    expect(await a.client.pin(a.ctx, "bob", "not a key", true)).toEqual({
+      result: "bad-key",
+      chats: [],
+    });
 
     expect(await a.chats.chats(SLOT)).toEqual({});
   });
@@ -289,6 +286,7 @@ describe("e2eClient", () => {
       accountStore(olm(), vault, lock),
       chatStore(memoryVault(), lock),
       () => w.now,
+      { page: "page-0", secrets: new Map(), alive: async () => new Set(["page-0"]) },
     );
     const ctx = { slot: SLOT, ownNick: "alice", door: w.grappa.door("alice") };
 

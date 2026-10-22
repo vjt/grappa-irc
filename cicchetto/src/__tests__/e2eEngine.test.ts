@@ -1019,7 +1019,7 @@ describe("pins by hand", () => {
     const { w, a, b } = twoPeers();
     const key = b.account.ed25519_key();
 
-    expect(w.engine(a).pin("bob", key)).toBe("pinned");
+    expect(w.engine(a).pin("bob", key, true)).toBe("pinned");
     expect(w.engine(a).pinned("bob")).toEqual({
       ed25519: key,
       curve25519: null,
@@ -1045,7 +1045,7 @@ describe("pins by hand", () => {
     w.text(a, "bob", "hello");
     const sessions = a.state.sessions;
 
-    expect(w.engine(a).pin("BOB", b.account.ed25519_key())).toBe("pinned");
+    expect(w.engine(a).pin("BOB", b.account.ed25519_key(), true)).toBe("pinned");
 
     expect(w.engine(a).pinned("bob")?.verified).toBe(true);
     expect(a.state.sessions).toEqual(sessions);
@@ -1060,7 +1060,7 @@ describe("pins by hand", () => {
     const b2 = w.join("bob");
     w.now += REKEY_INTERVAL_MS;
 
-    expect(w.engine(a).pin("bob", b2.account.ed25519_key())).toBe("pinned");
+    expect(w.engine(a).pin("bob", b2.account.ed25519_key(), true)).toBe("pinned");
     w.text(a, "bob", "welcome back");
 
     expect(texts(b2)).toEqual(["welcome back"]);
@@ -1070,14 +1070,57 @@ describe("pins by hand", () => {
     expect(a.state.peers[b.account.ed25519_key()]?.verified).toBe(false);
   });
 
+  it("accepts a key unverified: the nick moves to it, and it is written to", () => {
+    const { w, a } = twoPeers();
+    w.text(a, "bob", "hello");
+    // Bob's storage was wiped, and his new key raised the alarm: alice takes
+    // it on its word (fork 7, 2430 comment 6339695571), to verify it by SAS.
+    const b2 = w.join("bob");
+    w.now += REKEY_INTERVAL_MS;
+
+    expect(w.engine(a).pin("bob", b2.account.ed25519_key(), false)).toBe("pinned");
+    w.text(a, "bob", "welcome back");
+
+    expect(texts(b2)).toEqual(["welcome back"]);
+    expect(w.engine(a).pinned("bob")).toEqual({
+      ed25519: b2.account.ed25519_key(),
+      curve25519: b2.account.curve25519_key(),
+      nick: "bob",
+      proven: false,
+      verified: false,
+    });
+  });
+
+  it("accepting by hand never takes a verification away", () => {
+    const { w, a, b } = twoPeers();
+    w.engine(a).pin("bob", b.account.ed25519_key(), true);
+
+    w.engine(a).pin("bob", b.account.ed25519_key(), false);
+
+    expect(w.engine(a).pinned("bob")?.verified).toBe(true);
+  });
+
+  it("verifies a key a SAS confirmed, and moves no pin", () => {
+    const { w, a, b } = twoPeers();
+    w.text(a, "bob", "hello");
+    const pins = { ...a.state.pins };
+
+    w.engine(a).verify(b.account.ed25519_key());
+    w.engine(a).verify(a.account.ed25519_key());
+
+    expect(w.engine(a).pinned("bob")?.verified).toBe(true);
+    expect(a.state.pins).toEqual(pins);
+    expect(Object.keys(a.state.peers)).toEqual([b.account.ed25519_key()]);
+  });
+
   it("refuses what is not an Ed25519 key, and our own", () => {
     const { w, a } = twoPeers();
     const engine = w.engine(a);
 
-    expect(engine.pin("bob", "not a key")).toBe("bad-key");
-    expect(engine.pin("bob", `${"A".repeat(42)}`)).toBe("bad-key");
-    expect(engine.pin("bob", KEY_OF_33_BYTES)).toBe("bad-key");
-    expect(engine.pin("bob", a.account.ed25519_key())).toBe("own-key");
+    expect(engine.pin("bob", "not a key", true)).toBe("bad-key");
+    expect(engine.pin("bob", `${"A".repeat(42)}`, true)).toBe("bad-key");
+    expect(engine.pin("bob", KEY_OF_33_BYTES, true)).toBe("bad-key");
+    expect(engine.pin("bob", a.account.ed25519_key(), true)).toBe("own-key");
     expect(a.state.pins).toEqual({});
   });
 });
