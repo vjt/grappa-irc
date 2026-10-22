@@ -89,7 +89,7 @@ class World {
   }
 
   send(side: Side, nick: string, inner: Record<string, unknown>, tag: string): void {
-    this.out(side, this.engine(side).send(nick, inner, tag));
+    this.out(side, this.engine(side).send(nick, inner, tag, null));
   }
 
   /** Tagged with its body, or its length for a long one. */
@@ -224,7 +224,7 @@ describe("first contact", () => {
 
   it("puts the agreed payloads on the wire: KEYREQ {v}, PKMSG with our signed id block", () => {
     const { w, a, b } = twoPeers();
-    const first = w.engine(a).send("bob", { t: "text", body: "hello" }, "hello");
+    const first = w.engine(a).send("bob", { t: "text", body: "hello" }, "hello", null);
 
     expect(first.outbound).toEqual([
       { target: "bob", verb: "keyreq", payload: encodePayload({ v: 1 }), priority: "control" },
@@ -243,8 +243,8 @@ describe("first contact", () => {
   it("sends everything queued before the keys came, in order, each a PKMSG on the one session", () => {
     const { w, a, b } = twoPeers();
     const engine = w.engine(a);
-    const one = engine.send("bob", { t: "text", body: "one" }, "one");
-    const two = engine.send("bob", { t: "text", body: "two" }, "two");
+    const one = engine.send("bob", { t: "text", body: "one" }, "one", null);
+    const two = engine.send("bob", { t: "text", body: "two" }, "two", null);
 
     // One KEYREQ for both.
     expect(one.outbound.map((o) => o.verb)).toEqual(["keyreq"]);
@@ -259,7 +259,7 @@ describe("first contact", () => {
   it("refuses to send to our own nick, before asking anyone for keys", () => {
     const { w, a } = twoPeers();
 
-    const res = w.engine(a).send("ALICE", { t: "text", body: "me" }, "me");
+    const res = w.engine(a).send("ALICE", { t: "text", body: "me" }, "me", null);
 
     expect(res.outbound).toEqual([]);
     expect(res.events).toEqual([
@@ -315,6 +315,54 @@ describe("an established session", () => {
 
     expect(w.wire.at(-1)).toMatchObject({ verb: "pkmsg", priority: "control" });
     expect(ofKind(b, "received").at(-1)?.inner).toEqual({ t: "chal", nonce: "n" });
+  });
+
+  // 2430 "Authorising orders": an ACK must reach the bot before its CHAL
+  // expires, so it carries the CHAL's deadline to grappa's door, and keeps it
+  // on a re-send after a NACK. Nothing else carries one.
+  it("an order's answer takes its deadline to the door, on a re-send too", () => {
+    const { w, a, b } = twoPeers();
+    w.text(a, "bob", "hello");
+    w.text(b, "alice", "hi");
+
+    w.out(b, w.engine(b).send("alice", { t: "ack", nonce: "n" }, "ack", 1_700_000_015));
+    const ack = w.outs.at(-1);
+    expect(ack).toMatchObject({ verb: "msg", priority: "control", expiresAt: 1_700_000_015 });
+    expect(w.outs.filter((o) => o.tag !== "ack" && o.expiresAt !== undefined)).toEqual([]);
+
+    // alice cannot read it (her session is gone): she NACKs, Bob re-sends.
+    const msgid = w.wire.at(-1)?.msgid ?? "";
+    w.out(a, {
+      events: [],
+      outbound: [
+        {
+          target: "Bob",
+          verb: "nack",
+          payload: encodePayload({ v: 1, ref: msgid }),
+          priority: "control",
+        },
+      ],
+    });
+    expect(w.outs.at(-1)).toMatchObject({
+      tag: "ack",
+      priority: "control",
+      expiresAt: 1_700_000_015,
+    });
+  });
+
+  // `e2e_send_dropped`: grappa accepted the message, then dropped it unsent.
+  it("forgets a message grappa dropped after accepting it, and says whose it was", () => {
+    const { w, a } = twoPeers();
+    w.text(a, "bob", "lost");
+    const msgid = w.wire.at(-1)?.msgid ?? "";
+    const engine = w.engine(a);
+
+    const dropped = engine.dropped(msgid);
+    expect(dropped?.tag).toBe("lost");
+    expect(fold(dropped?.nick ?? "")).toBe("bob");
+    expect(engine.dropped(msgid)).toBeUndefined();
+    expect(engine.dropped("bm90LW91cnM")).toBeUndefined();
+    expect(a.state.sent.filter((s) => s.msgid === msgid)).toEqual([]);
   });
 
   it("refuses a message grappa would refuse for length, and the session is unharmed", () => {
@@ -519,10 +567,10 @@ describe("keys", () => {
     const { w, a } = twoPeers();
     const engine = w.engine(a);
 
-    const first = engine.send("nobody", { t: "text", body: "one" }, "one");
-    const soon = engine.send("nobody", { t: "text", body: "two" }, "two");
+    const first = engine.send("nobody", { t: "text", body: "one" }, "one", null);
+    const soon = engine.send("nobody", { t: "text", body: "two" }, "two", null);
     w.now += 30_000;
-    const later = engine.send("nobody", { t: "text", body: "three" }, "three");
+    const later = engine.send("nobody", { t: "text", body: "three" }, "three", null);
 
     expect(first.outbound.map((o) => o.verb)).toEqual(["keyreq"]);
     expect(soon.outbound).toEqual([]);
@@ -806,7 +854,7 @@ describe("recovery", () => {
     const { w, a } = twoPeers();
     w.text(a, "bob", "one");
     const engine = w.engine(a);
-    const refused = engine.send("bob", { t: "text", body: "refused" }, "refused");
+    const refused = engine.send("bob", { t: "text", body: "refused" }, "refused", null);
     const ref = refused.outbound[0]?.ref;
     if (ref === undefined) throw new Error("no ref");
     expect(a.state.sent.map((s) => s.ref)).toContain(ref);
@@ -863,7 +911,7 @@ describe("a deleted chat", () => {
   it("never sends a message forgotten while it waited for keys", () => {
     const { w, a, b } = twoPeers();
     const engine = w.engine(a);
-    const waiting = engine.send("bob", { t: "text", body: "never" }, "never");
+    const waiting = engine.send("bob", { t: "text", body: "never" }, "never", null);
 
     engine.forget("bob");
     w.out(a, waiting); // grappa answers the KEYREQ only now

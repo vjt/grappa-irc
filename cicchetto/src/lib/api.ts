@@ -2625,7 +2625,7 @@ export async function clearE2eKeys(token: string, networkSlug: string): Promise<
 export async function sendE2e(
   token: string,
   networkSlug: string,
-  out: { target: string; verb: string; payload: string; priority: string },
+  out: { target: string; verb: string; payload: string; priority: string; expires_at?: number },
 ): Promise<SessionWireE2eSentPayload> {
   const res = await fetch(`/networks/${encodeURIComponent(networkSlug)}/e2e/messages`, {
     method: "POST",

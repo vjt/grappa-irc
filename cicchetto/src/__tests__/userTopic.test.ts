@@ -166,6 +166,12 @@ vi.mock("../lib/umodes", () => ({
   seedUmodes: vi.fn(),
 }));
 
+vi.mock("../lib/encryptedChats", () => ({
+  drainE2e: vi.fn(async () => undefined),
+  drainEveryNetwork: vi.fn(),
+  encryptedSendDropped: vi.fn(async () => undefined),
+}));
+
 vi.mock("../lib/supportedUmodes", () => ({
   seedSupportedUmodes: vi.fn(),
 }));
@@ -287,6 +293,19 @@ describe("userTopic", () => {
     const qw = await import("../lib/queryWindows");
     channelMock.fireEvent({ kind: "channels_changed" });
     expect(qw.setQueryWindowsByNetwork).not.toHaveBeenCalled();
+  });
+
+  // issue 2430 — grappa accepted an encrypted message and dropped it unsent.
+  it("hands e2e_send_dropped to the encrypted chats, by network, msgid and reason", async () => {
+    const encrypted = await import("../lib/encryptedChats");
+    channelMock.fireEvent({
+      kind: "e2e_send_dropped",
+      network: "azzurra",
+      target: "vjt-claude",
+      msgid: "Zm9vYmFyMDE",
+      reason: "late",
+    });
+    expect(encrypted.encryptedSendDropped).toHaveBeenCalledWith("azzurra", "Zm9vYmFyMDE", "late");
   });
 
   // BUG1-FIX: own_nick_changed event updates network nick in memory.

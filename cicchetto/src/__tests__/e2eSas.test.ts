@@ -4,10 +4,9 @@
 // as the real thing does; a peer that misbehaves is played by sending its
 // inner message by hand on its real session (`inject`).
 import { describe, expect, it, vi } from "vitest";
-import { Engine } from "../lib/e2e/engine";
 import { SAS_TIMEOUT_MS, type SasRecord, type SasStep } from "../lib/e2e/sas";
 import { base64Unpadded, fold } from "../lib/e2e/wire";
-import { pair, rowsOf, type Side, SLOT, type World } from "./helpers/e2eClients";
+import { chat, inject, pair, rowsOf, type Side, SLOT } from "./helpers/e2eClients";
 import { olm } from "./helpers/olm";
 
 const keyOf = (side: Side) =>
@@ -38,23 +37,6 @@ const sasRows = async (side: Side, nick: string) =>
 
 const recordOf = (side: Side, peer: string): Promise<SasRecord | undefined> =>
   side.accounts.withAccount(SLOT, async ({ state }) => state.sas[peer]);
-
-/** A message each way, so each side holds a session and the other's key. */
-async function chat(a: Side, b: Side): Promise<void> {
-  await a.client.send(a.ctx, b.nick, "hello");
-  await a.client.drain(a.ctx);
-  await b.client.drain(b.ctx);
-  await b.client.send(b.ctx, a.nick, "hi");
-  await a.client.drain(a.ctx);
-}
-
-/** `side` sends `inner` to `nick` on its session, outside any SAS of its own. */
-async function inject(w: World, side: Side, nick: string, inner: Record<string, unknown>) {
-  await side.accounts.withAccount(SLOT, async ({ account, state }) => {
-    const engine = new Engine(olm(), account, state, side.nick, () => w.now);
-    for (const out of engine.send(nick, inner, "injected").outbound) await side.ctx.door.send(out);
-  });
-}
 
 /** alice asks, Bob accepts, and the keys go both ways: both compare. */
 async function toCompare(a: Side, b: Side): Promise<void> {

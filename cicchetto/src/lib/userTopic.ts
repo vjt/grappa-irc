@@ -13,7 +13,7 @@ import { onDirectoryComplete, onDirectoryFailed, onDirectoryProgress } from "./c
 import { channelKey } from "./channelKey";
 import { holdDccOffer, resolveDccOffer } from "./dccOffers";
 import { diagPush } from "./diagLog";
-import { drainE2e, drainEveryNetwork } from "./encryptedChats";
+import { drainE2e, drainEveryNetwork, encryptedSendDropped } from "./encryptedChats";
 import { setSeveredForFlood } from "./floodSever";
 import { refreshHighlights } from "./highlightList";
 import { patchHomeNetwork } from "./home";
@@ -516,9 +516,8 @@ export function narrowUserEvent(raw: unknown): WireUserEvent | null {
       // a wire drop; the dispatch arm below consumes nothing yet.
       return validate(S_SessionWireE2eMessagePayload, r);
     case "e2e_send_dropped":
-      // issue 2430 (protocol 46) — validated here so a well-formed push is
-      // not counted as a wire drop; the dispatch arm below consumes nothing
-      // yet.
+      // issue 2430 (protocol 46) — a message grappa accepted and then
+      // dropped unsent; the dispatch arm below hands it to the E2E client.
       return validate(S_SessionWireE2eSendDroppedPayload, r);
     case "names_reply":
       // #140 — /names roster bundle. A malformed member element drops the
@@ -1279,10 +1278,17 @@ moduleRoot(() => {
           return;
 
         case "e2e_send_dropped":
-          // issue 2430 — no reader yet: what grappa accepted and then could
-          // not send is the E2E engine's to act on (an order left
-          // unconfirmed, a message to send again), and it lands with the
-          // cic CHAL/ACK slice. Ignored here, on purpose and in one place.
+          // issue 2430 — grappa accepted a message and dropped it unsent:
+          // its row turns failed, or, for an order's ACK, the loss is logged
+          // (encryptedChats.ts). Every client of the user hears it; the one
+          // that sent the message is the one that knows its msgid.
+          void encryptedSendDropped(payload.network, payload.msgid, payload.reason).catch(
+            (err: unknown) =>
+              console.warn(
+                `[userTopic] could not mark a dropped encrypted message on ${payload.network}`,
+                err,
+              ),
+          );
           return;
 
         case "names_reply": {

@@ -19,14 +19,19 @@
 //     that waited too long;
 //   * a drain opened pre-key messages: refill the key bundle;
 //   * a SAS is under way: the same tick ends it when its time runs out, or
-//     when the page that held its secret went away (`e2e/sas.ts`).
+//     when the page that held its secret went away (`e2e/sas.ts`);
+//   * grappa drops a message it had accepted (`e2e_send_dropped`): its row
+//     turns failed.
+//
+// An order challenge is answered inside the drain (`e2e/client.ts`), against
+// the device's send log (`e2e/orders.ts`) and the network's 005 `NETWORK=`.
 
 import { createEffect, createSignal, onCleanup } from "solid-js";
 import { ApiError, ackE2eInbox, listE2eInbox, sendE2e } from "./api";
 import { token } from "./auth";
 import { browserE2e } from "./e2e/browser";
 import { accountSlot, syncKeyBundle } from "./e2e/bundleSync";
-import type { Chat, ChatRow, DoorRefusal } from "./e2e/chatStore";
+import type { Chat, ChatRow, DoorRefusal, SendDropped } from "./e2e/chatStore";
 import {
   type Door,
   type E2eClient,
@@ -36,10 +41,13 @@ import {
   type PeerTrust,
   type Report,
 } from "./e2e/client";
+import { sendLog } from "./e2e/orders";
 import type { SasStep, SasView } from "./e2e/sas";
 import { fold } from "./e2e/wire";
 import { identityScopedStore } from "./identityScopedStore";
+import { casemappingForNetwork, isupportForNetwork } from "./isupport";
 import { networkBySlug, networks, user } from "./networks";
+import type { SessionWireE2eDropReason } from "./wireTypes";
 
 /** How often what waits on the clock is checked: messages waiting for keys (a minute), SASes (10). */
 export const TICK_MS = 5_000;
@@ -72,7 +80,15 @@ type Ctx = { ctx: E2eContext; bearer: string; slot: string };
 const refusalOf = (err: unknown): DoorRefusal => {
   if (err instanceof ApiError && err.status === 429) return "rate-limited";
   if (err instanceof ApiError && err.status === 413) return "too-large";
+  if (err instanceof ApiError && err.status === 422 && err.code === "too_late") return "too-late";
   return "refused";
+};
+
+/** The `e2e_send_dropped` reasons, as a row's failure. */
+const DROPPED: Record<SessionWireE2eDropReason, SendDropped> = {
+  late: "late",
+  send_failed: "send-failed",
+  session_ended: "session-ended",
 };
 
 function door(bearer: string, slug: string): Door {
@@ -93,6 +109,7 @@ function door(bearer: string, slug: string): Door {
           verb: out.verb,
           payload: out.payload,
           priority: out.priority,
+          ...(out.expiresAt === undefined ? {} : { expires_at: out.expiresAt }),
         });
       } catch (err) {
         // The client marks the message failed with the reason; the cause
@@ -141,7 +158,21 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     const network = networkBySlug(slug);
     if (!bearer || !me || network === undefined) throw new Error(`no network ${slug} to use`);
     const slot = accountSlot(me, network.id);
-    return { bearer, slot, ctx: { slot, ownNick: network.nick, door: door(bearer, slug) } };
+    const scope = {
+      slug,
+      network: isupportForNetwork(network.id).network,
+      casemapping: casemappingForNetwork(network.id),
+    };
+    return {
+      bearer,
+      slot,
+      ctx: {
+        slot,
+        ownNick: network.nick,
+        door: door(bearer, slug),
+        orders: (chal, at) => sendLog.confirms(chal, scope, at),
+      },
+    };
   }
 
   // An operation on the network's account. A slot without one is synced
@@ -316,6 +347,16 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     await afterReport(slug, report);
   }
 
+  /** grappa dropped `msgid` after accepting it (`e2e_send_dropped`). */
+  async function encryptedSendDropped(
+    slug: string,
+    msgid: string,
+    reason: SessionWireE2eDropReason,
+  ): Promise<void> {
+    const report = await run(slug, (client, ctx) => client.dropped(ctx, msgid, DROPPED[reason]));
+    await afterReport(slug, report);
+  }
+
   /** The open encrypted chats of a network, in the order they were first opened. */
   const encryptedChatsFor = (slug: string): EncryptedChatEntry[] =>
     Object.entries(chatsBySlug()[slug] ?? {})
@@ -375,6 +416,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     sendEncrypted,
     pinEncryptedKey,
     verifyEncrypted,
+    encryptedSendDropped,
     encryptedChatsFor,
     encryptedChat,
     encryptedRows,
@@ -396,6 +438,7 @@ export const readEncryptedChat = exports_.readEncryptedChat;
 export const sendEncrypted = exports_.sendEncrypted;
 export const pinEncryptedKey = exports_.pinEncryptedKey;
 export const verifyEncrypted = exports_.verifyEncrypted;
+export const encryptedSendDropped = exports_.encryptedSendDropped;
 export const encryptedChatsFor = exports_.encryptedChatsFor;
 export const encryptedChat = exports_.encryptedChat;
 export const encryptedRows = exports_.encryptedRows;

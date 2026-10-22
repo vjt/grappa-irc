@@ -10,7 +10,9 @@
 // (its own slug and slot) and a fresh grappa.
 import { createRoot, createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Outbound } from "../lib/e2e/engine";
+import { Engine, type Outbound } from "../lib/e2e/engine";
+import { sendLog } from "../lib/e2e/orders";
+import { DEFAULT_ISUPPORT, seedIsupport } from "../lib/isupport";
 import { Grappa, publishBundle } from "./helpers/e2eGrappa";
 import { memoryLock, memoryVault } from "./helpers/e2eVault";
 import { olm } from "./helpers/olm";
@@ -18,9 +20,11 @@ import { olm } from "./helpers/olm";
 vi.mock("../lib/api", () => {
   class ApiError extends Error {
     readonly status: number;
+    readonly code: string;
     constructor(status: number, code: string) {
       super(`${status} ${code}`);
       this.status = status;
+      this.code = code;
     }
   }
   return {
@@ -76,8 +80,14 @@ const { accountSlot } = await import("../lib/e2e/bundleSync");
 const chats = await import("../lib/encryptedChats");
 
 const ME = { kind: "user", id: "0b5e" };
-/** The send door's refusals as grappa's FallbackController answers them. */
-const STATUS: Record<string, number> = { "rate-limited": 429, "too-large": 413, refused: 400 };
+/** The send door's refusals as grappa's FallbackController answers them: status, token. */
+const STATUS: Record<string, number> = {
+  "rate-limited": 429,
+  "too-large": 413,
+  "too-late": 422,
+  refused: 400,
+};
+const CODE: Record<string, string> = { "too-late": "too_late" };
 
 let grappa: Grappa;
 let net: Net;
@@ -102,7 +112,7 @@ beforeEach(() => {
   vi.mocked(api.sendE2e).mockImplementation(async (_t, _s, out) => {
     const answer = await door().send(out as Outbound);
     if ("refused" in answer) {
-      throw new api.ApiError(STATUS[answer.refused] ?? 500, answer.refused);
+      throw new api.ApiError(STATUS[answer.refused] ?? 500, CODE[answer.refused] ?? answer.refused);
     }
     return answer;
   });
@@ -134,11 +144,24 @@ async function bob() {
     secrets: new Map(),
     alive: async () => new Set(["bob-page"]),
   });
-  const ctx = { slot: "bob-slot", ownNick: "Bob", door: grappa.door("Bob") };
+  const ctx = {
+    slot: "bob-slot",
+    ownNick: "Bob",
+    door: grappa.door("Bob"),
+    orders: async () => false,
+  };
   const bodies = async () =>
     (await store.rows("bob-slot", net.nick)).flatMap((r) => (r.kind === "in" ? [r.body] : []));
   const fingerprint = async () => (await client.identity(ctx, [])).own;
-  return { client, ctx, bodies, fingerprint };
+  // An inner message of Bob's own making, on his session: a bot's CHAL.
+  const inject = (inner: Record<string, unknown>) =>
+    accounts.withAccount("bob-slot", async ({ account, state }) => {
+      const engine = new Engine(olm(), account, state, "Bob", Date.now);
+      for (const out of engine.send(net.nick, inner, "chal", null).outbound) {
+        await ctx.door.send(out);
+      }
+    });
+  return { client, ctx, bodies, fingerprint, inject };
 }
 
 const outStates = () =>
@@ -196,7 +219,7 @@ describe("encrypted chats", () => {
     expect(await b.bodies()).toEqual(["ciao bob"]);
   });
 
-  it.each(["rate-limited", "too-large", "refused"] as const)(
+  it.each(["rate-limited", "too-large", "too-late", "refused"] as const)(
     "a send door refusal (%s) marks the message failed with its reason",
     async (reason) => {
       vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -211,6 +234,81 @@ describe("encrypted chats", () => {
       expect(outStates()).toEqual([["ciao bob", "failed", reason]]);
     },
   );
+
+  // 2430 "Authorising orders": Bob, playing a bot, saw "Bob: ping" from
+  // alice in #grappa and asks her cic whether she sent it.
+  describe("an order challenge", () => {
+    const LINE = "Bob: ping";
+    const sha256 = async (body: string) =>
+      Array.from(
+        new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))),
+        (b) => b.toString(16).padStart(2, "0"),
+      ).join("");
+    const chal = async () => ({
+      t: "chal",
+      network: "AzzurraNet",
+      channel: "#grappa",
+      sender_mask: "alice!~alice@azzurra.example",
+      line_sha256: await sha256(LINE),
+      nonce: "bm9uY2Uwbm9uY2Uw",
+      expires_at: Math.floor(Date.now() / 1000) + 15,
+    });
+    const acks = () =>
+      vi.mocked(api.sendE2e).mock.calls.filter(([, , out]) => out.expires_at !== undefined);
+
+    async function talking() {
+      await chats.drainE2e(net.slug);
+      const b = await bob();
+      await b.client.send(b.ctx, net.nick, "ciao alice");
+      await b.client.drain(b.ctx);
+      await chats.drainE2e(net.slug);
+      return b;
+    }
+
+    it("is ACKed with its deadline when this device sent the line on that network", async () => {
+      const b = await talking();
+      seedIsupport(net.id, { ...DEFAULT_ISUPPORT, network: "AzzurraNet" });
+      sendLog.record({ slug: net.slug, target: "#grappa", body: LINE, at: Date.now() });
+      const asked = await chal();
+
+      await b.inject(asked);
+      await chats.drainE2e(net.slug);
+
+      expect(acks()).toEqual([
+        [
+          "tok",
+          net.slug,
+          expect.objectContaining({ priority: "control", expires_at: asked.expires_at }),
+        ],
+      ]);
+    });
+
+    it("goes unanswered on a network that never said its name (fail closed)", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const b = await talking();
+      seedIsupport(net.id, { ...DEFAULT_ISUPPORT, network: null });
+      sendLog.record({ slug: net.slug, target: "#grappa", body: LINE, at: Date.now() });
+
+      await b.inject(await chal());
+      await chats.drainE2e(net.slug);
+
+      expect(acks()).toEqual([]);
+      expect(grappa.inboxes.get(net.nick)).toEqual([]);
+    });
+  });
+
+  it("a message grappa dropped after accepting it turns failed with the reason", async () => {
+    await chats.drainE2e(net.slug);
+    await bob();
+    await chats.loadEncryptedChat(net.slug, "Bob");
+    await chats.sendEncrypted(net.slug, "Bob", "ciao bob");
+    await chats.drainE2e(net.slug);
+    const msgid = grappa.sends.at(-1)?.msgid ?? "";
+
+    await chats.encryptedSendDropped(net.slug, msgid, "session_ended");
+
+    expect(outStates()).toEqual([["ciao bob", "failed", "session-ended"]]);
+  });
 
   it("pins Bob's key by hand: the pin is shown and the badge reads verified", async () => {
     await chats.drainE2e(net.slug);
@@ -392,7 +490,7 @@ describe("encrypted chats", () => {
         alive: async () => new Set(),
       });
       await other.verify(
-        { slot: slot(), ownNick: net.nick, door: grappa.door(net.nick) },
+        { slot: slot(), ownNick: net.nick, door: grappa.door(net.nick), orders: async () => false },
         "Bob",
         "start",
       );

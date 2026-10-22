@@ -77,7 +77,11 @@ const FAILURE_LABEL: Record<OutFailure, string> = {
   "rekey-throttled": "a new session was started too recently",
   "rate-limited": "grappa's queue for this peer is full",
   "too-large": "it is too large",
+  "too-late": "its deadline had passed",
   refused: "grappa refused it",
+  late: "its deadline passed before it could go",
+  "send-failed": "the connection failed while sending it",
+  "session-ended": "the connection to the network ended before it went",
 };
 
 const PIN_ERROR: Record<"bad-key" | "own-key", string> = {
