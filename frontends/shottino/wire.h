@@ -53,14 +53,14 @@
  * bump is READ (what moved, does a terminal care) rather than slept
  * through — nine bumps went by unnoticed before the pin existed.
  *
- * Last read, v43 -> v44 (issue 2430): the hosted key bundle routes
- * `GET`/`POST`/`DELETE /networks/:id/e2e/keys`, answering `{one_time_keys,
- * fallback}`. A terminal holds no Olm account, so it has no bundle to
- * upload and never calls them; nothing it reads changed.
+ * Last read, v44 -> v45 (issue 2430): the encrypted-message doors'
+ * envelopes (the inbox page, the send door's `{msgid}`) are declared in
+ * the generated shape; the bytes did not change, and a terminal never
+ * calls those doors, so nothing it reads changed.
  *
  * Replace this note at the next bump rather than appending to it — the
  * question the pin asks is about the CURRENT gap, not a changelog. */
-#define WIRE_PROTOCOL_VERSION 44
+#define WIRE_PROTOCOL_VERSION 45
 
 #include <stdbool.h>
 #include <stddef.h>

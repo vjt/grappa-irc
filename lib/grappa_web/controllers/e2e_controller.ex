@@ -63,7 +63,7 @@ defmodule GrappaWeb.E2eController do
     with {:ok, verb} <- fetch(@verbs, verb),
          {:ok, priority} <- fetch(@priorities, Map.get(params, "priority", "text")),
          {:ok, msgid} <- Session.send_e2e(subject, conn.assigns.network.id, target, verb, priority, payload) do
-      conn |> put_status(:accepted) |> json(%{msgid: msgid})
+      conn |> put_status(:accepted) |> json(SessionWire.e2e_sent(msgid))
     end
   end
 
@@ -81,7 +81,7 @@ defmodule GrappaWeb.E2eController do
     with {:ok, after_id} <- cursor(Map.get(params, "after", "0")) do
       network = conn.assigns.network
       entries = E2eInbox.list(Subject.to_session(conn.assigns.current_subject), network.id, after_id)
-      json(conn, %{messages: Enum.map(entries, &SessionWire.e2e_message(network.slug, &1))})
+      json(conn, SessionWire.e2e_inbox(network.slug, entries))
     end
   end
 

@@ -314,15 +314,21 @@ let _socket: Socket | null = null;
 // 43 (issue 2430) — the offline queue: `id` on `e2e_message`,
 // `GET …/e2e/inbox` + `POST …/e2e/inbox/ack`, and the `e2e_undeliverable`
 // meta key on the recipient-only notice row, which this bundle renders. The
-// queue routes are not called yet (the Olm side is a later slice), and a
-// server without the key just never writes such a row, so
+// E2E client (`lib/e2e/client.ts`) drains and acknowledges the queue; against
+// an older server the routes 404 and the drain is retried on the next
+// connect, and a server without the key just never writes such a row, so
 // `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
 //
 // 44 (issue 2430) — the hosted key bundle: `GET`/`POST`/`DELETE
-// …/e2e/keys`, answering `{one_time_keys, fallback}`. Not called yet (the
-// Olm account is a later slice), so `MIN_SERVER_PROTOCOL_VERSION` stays
-// at 9.
-export const CLIENT_PROTOCOL_VERSION = 44;
+// …/e2e/keys`, answering `{one_time_keys, fallback}`. Called by the bundle
+// sync (`lib/e2e/bundleSync.ts`), which logs and retries on failure, so
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+//
+// 45 (issue 2430) — the inbox page and the send door's answer are declared
+// in the generated shape (`SessionWireE2eInboxPayload`,
+// `SessionWireE2eSentPayload`); the bytes are the ones 42 and 43 sent, so
+// `MIN_SERVER_PROTOCOL_VERSION` stays at 9.
+export const CLIENT_PROTOCOL_VERSION = 45;
 
 // #193 — force the correct WS scheme from the page origin, absolutely.
 //

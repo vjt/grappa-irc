@@ -1079,6 +1079,14 @@ export const S_SessionWireE2eMessagePayload = {
   },
 } as const;
 
+// Grappa.Session.Wire.e2e_inbox_payload/0
+export const S_SessionWireE2eInboxPayload = {
+  o: { messages: { a: S_SessionWireE2eMessagePayload } },
+} as const;
+
+// Grappa.Session.Wire.e2e_sent_payload/0
+export const S_SessionWireE2eSentPayload = { o: { msgid: "s" } } as const;
+
 // Grappa.Session.Wire.invite_ack_payload/0
 export const S_SessionWireInviteAckPayload = {
   o: { kind: { l: "invite_ack" }, network: "s", channel: "s", peer: "s" },
