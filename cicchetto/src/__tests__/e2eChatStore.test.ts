@@ -131,6 +131,62 @@ describe("chatStore", () => {
     expect(await chats.rows(SLOT, "bob")).toHaveLength(2);
   });
 
+  it("deletes a chat: its rows and its entry go, its record leaves the vault, the others stay", async () => {
+    const vault = memoryVault();
+    const chats = chatStore(vault, memoryLock());
+    await chats.apply(SLOT, [
+      add("Bob", inRow("in:1:0", "one")),
+      add("carol", { kind: "undecryptable", id: "in:2:0", at: 2, nick: "carol" }),
+    ]);
+    expect(vault.records.size).toBe(3);
+
+    await chats.remove(SLOT, "BOB");
+
+    expect(await chats.chats(SLOT)).toEqual({ carol: { nick: "carol", open: true, unread: 1 } });
+    expect(await chats.rows(SLOT, "bob")).toEqual([]);
+    expect(await chats.rows(SLOT, "carol")).toHaveLength(1);
+    // The index and carol's record: bob's sealed rows are gone, not orphaned.
+    expect(vault.records.size).toBe(2);
+  });
+
+  it("starts a deleted chat over, empty, when it is written to again", async () => {
+    const chats = chatStore(memoryVault(), memoryLock());
+    await chats.apply(SLOT, [add("bob", inRow("in:1:0", "one"))]);
+    await chats.remove(SLOT, "bob");
+
+    await chats.apply(SLOT, [add("Bob", inRow("in:2:0", "two"))]);
+
+    expect((await chats.rows(SLOT, "bob")).map((r) => r.id)).toEqual(["in:2:0"]);
+    expect(await chats.chats(SLOT)).toEqual({ bob: { nick: "Bob", open: true, unread: 1 } });
+  });
+
+  it("deleting a chat that is not there changes nothing", async () => {
+    const vault = memoryVault();
+    const chats = chatStore(vault, memoryLock());
+    await chats.apply(SLOT, [add("bob", inRow("in:1:0", "one"))]);
+
+    await chats.remove(SLOT, "carol");
+
+    expect(Object.keys(await chats.chats(SLOT))).toEqual(["bob"]);
+    expect(vault.records.size).toBe(2);
+  });
+
+  it("a delete in one tab and a write in another both land", async () => {
+    const vault = memoryVault();
+    const lock = memoryLock();
+    const tab1 = chatStore(vault, lock);
+    const tab2 = chatStore(vault, lock);
+    await tab1.apply(SLOT, [add("bob", inRow("in:1:0", "one"))]);
+
+    await Promise.all([
+      tab2.remove(SLOT, "bob"),
+      tab1.apply(SLOT, [add("carol", inRow("in:2:0", "two"))]),
+    ]);
+
+    expect(Object.keys(await tab1.chats(SLOT))).toEqual(["carol"]);
+    expect(await tab2.rows(SLOT, "carol")).toHaveLength(1);
+  });
+
   it("says nothing in the clear: opaque keys, sealed records", async () => {
     const vault = memoryVault();
     const chats = chatStore(vault, memoryLock());

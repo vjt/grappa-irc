@@ -28,6 +28,8 @@ export type Sealed = { iv: Uint8Array<ArrayBuffer>; ciphertext: ArrayBuffer };
 export type Vault = {
   load(slot: string): Promise<Sealed | undefined>;
   store(slot: string, sealed: Sealed): Promise<void>;
+  /** Deletes what is stored under `slot`; nothing stored there is fine. */
+  remove(slot: string): Promise<void>;
   /** The AES-GCM key every account is sealed under, created on first use. */
   wrappingKey(): Promise<CryptoKey>;
 };
@@ -191,6 +193,14 @@ async function put(storeName: string, key: string, value: unknown): Promise<void
   });
 }
 
+async function del(storeName: string, key: string): Promise<void> {
+  await withDatabase(async (db) => {
+    const tx = db.transaction(storeName, "readwrite");
+    tx.objectStore(storeName).delete(key);
+    await committed(tx);
+  });
+}
+
 function get<T>(storeName: string, key: string): Promise<T | undefined> {
   return withDatabase((db) =>
     settle(db.transaction(storeName, "readonly").objectStore(storeName).get(key)),
@@ -205,6 +215,7 @@ export function indexedDbVault(lock: Lock, store: VaultStore): Vault {
   return {
     load: (slot) => get<Sealed>(store, slot),
     store: (slot, sealed) => put(store, slot, sealed),
+    remove: (slot) => del(store, slot),
     // Two tabs creating the key at once would each seal under their own, and
     // one of them would overwrite the other's: a lock makes it one key.
     wrappingKey: () =>
