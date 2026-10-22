@@ -14,6 +14,7 @@ import {
   newState,
   OUTQ_MAX,
   OUTQ_TTL_MS,
+  type Outbound,
   REKEY_INTERVAL_MS,
   type Result,
   SENT_MEMORY_MS,
@@ -60,6 +61,8 @@ class World {
   sides = new Map<string, Side>();
   /** Every delivery grappa made, in order. */
   wire: Delivery[] = [];
+  /** Every payload an engine handed to grappa, with who handed it, in order. */
+  outs: (Outbound & { by: string })[] = [];
   /** Rewrites a delivery on its way (a tampering network, a lost state). */
   before: (d: Delivery) => Delivery = (d) => d;
 
@@ -85,12 +88,13 @@ class World {
     return new Engine(olm(), side.account, side.state, side.nick, () => this.now);
   }
 
-  send(side: Side, nick: string, inner: Record<string, unknown>): void {
-    this.out(side, this.engine(side).send(nick, inner));
+  send(side: Side, nick: string, inner: Record<string, unknown>, tag: string): void {
+    this.out(side, this.engine(side).send(nick, inner, tag));
   }
 
+  /** Tagged with its body, or its length for a long one. */
   text(side: Side, nick: string, body: string): void {
-    this.send(side, nick, { t: "text", body });
+    this.send(side, nick, { t: "text", body }, body.length <= 24 ? body : `len:${body.length}`);
   }
 
   tick(side: Side): void {
@@ -101,6 +105,7 @@ class World {
   out(side: Side, res: Result): void {
     side.events.push(...res.events);
     for (const o of res.outbound) {
+      this.outs.push({ ...o, by: side.nick });
       const to = this.sides.get(fold(o.target));
       if (o.verb === "keyreq") {
         if (to !== undefined) {
@@ -147,7 +152,7 @@ const texts = (side: Side): unknown[] =>
 const ofKind = <K extends E2eEvent["kind"]>(side: Side, kind: K) =>
   side.events.filter((e): e is Extract<E2eEvent, { kind: K }> => e.kind === kind);
 
-const failures = (side: Side) => ofKind(side, "send_failed").map((e) => [e.reason, e.lost]);
+const failures = (side: Side) => ofKind(side, "send_failed").map((e) => [e.reason, e.tags]);
 const drops = (side: Side) => ofKind(side, "dropped").map((e) => e.reason);
 const verbsTo = (w: World, side: Side) => w.wire.filter((d) => d.to === side).map((d) => d.verb);
 
@@ -194,7 +199,9 @@ describe("first contact", () => {
 
     w.text(a, "bob", "hello");
 
-    expect(ofKind(a, "send_queued")).toEqual([{ kind: "send_queued", nick: "bob", queued: 1 }]);
+    expect(ofKind(a, "send_queued")).toEqual([
+      { kind: "send_queued", nick: "bob", queued: 1, tag: "hello" },
+    ]);
     expect(verbsTo(w, a)).toEqual(["keys"]);
     expect(verbsTo(w, b)).toEqual(["pkmsg"]);
     expect(texts(b)).toEqual(["hello"]);
@@ -217,7 +224,7 @@ describe("first contact", () => {
 
   it("puts the agreed payloads on the wire: KEYREQ {v}, PKMSG with our signed id block", () => {
     const { w, a, b } = twoPeers();
-    const first = w.engine(a).send("bob", { t: "text", body: "hello" });
+    const first = w.engine(a).send("bob", { t: "text", body: "hello" }, "hello");
 
     expect(first.outbound).toEqual([
       { target: "bob", verb: "keyreq", payload: encodePayload({ v: 1 }), priority: "control" },
@@ -236,8 +243,8 @@ describe("first contact", () => {
   it("sends everything queued before the keys came, in order, each a PKMSG on the one session", () => {
     const { w, a, b } = twoPeers();
     const engine = w.engine(a);
-    const one = engine.send("bob", { t: "text", body: "one" });
-    const two = engine.send("bob", { t: "text", body: "two" });
+    const one = engine.send("bob", { t: "text", body: "one" }, "one");
+    const two = engine.send("bob", { t: "text", body: "two" }, "two");
 
     // One KEYREQ for both.
     expect(one.outbound.map((o) => o.verb)).toEqual(["keyreq"]);
@@ -252,11 +259,11 @@ describe("first contact", () => {
   it("refuses to send to our own nick, before asking anyone for keys", () => {
     const { w, a } = twoPeers();
 
-    const res = w.engine(a).send("ALICE", { t: "text", body: "me" });
+    const res = w.engine(a).send("ALICE", { t: "text", body: "me" }, "me");
 
     expect(res.outbound).toEqual([]);
     expect(res.events).toEqual([
-      { kind: "send_failed", nick: "ALICE", reason: "own-nick", lost: 1 },
+      { kind: "send_failed", nick: "ALICE", reason: "own-nick", tags: ["me"] },
     ]);
   });
 });
@@ -304,7 +311,7 @@ describe("an established session", () => {
     const { w, a, b } = twoPeers();
     w.text(a, "bob", "hello");
 
-    w.send(a, "bob", { t: "chal", nonce: "n" });
+    w.send(a, "bob", { t: "chal", nonce: "n" }, "chal");
 
     expect(w.wire.at(-1)).toMatchObject({ verb: "pkmsg", priority: "control" });
     expect(ofKind(b, "received").at(-1)?.inner).toEqual({ t: "chal", nonce: "n" });
@@ -317,7 +324,7 @@ describe("an established session", () => {
 
     w.text(a, "bob", "x".repeat(20_000));
 
-    expect(failures(a)).toEqual([["too-long", 1]]);
+    expect(failures(a)).toEqual([["too-long", ["len:20000"]]]);
     expect(w.wire.length).toBe(before);
     w.text(a, "bob", "y".repeat(5_000));
     expect(texts(b)).toEqual(["hello", "y".repeat(5_000)]);
@@ -362,7 +369,7 @@ describe("keys", () => {
     // The message waits for keys that never come, and says so.
     w.now += OUTQ_TTL_MS;
     w.tick(a);
-    expect(failures(a)).toEqual([["keys-timeout", 1]]);
+    expect(failures(a)).toEqual([["keys-timeout", ["hello"]]]);
     expect(a.state.outq).toEqual({});
   });
 
@@ -417,7 +424,7 @@ describe("keys", () => {
         presented: b2.account.ed25519_key(),
       },
     ]);
-    expect(failures(a)).toEqual([["key-mismatch", 1]]);
+    expect(failures(a)).toEqual([["key-mismatch", ["are you there?"]]]);
     expect(texts(b2)).toEqual([]);
     // The pin did not move.
     expect(a.state.pins.bob).toBe(b.account.ed25519_key());
@@ -474,7 +481,26 @@ describe("keys", () => {
     expect(texts(b)).toContain("fine");
   });
 
-  it("gives up on a queue the peer never answers, and reports how many messages it lost", () => {
+  it("hands each message's tag to grappa with it: after its queue, and again on its re-send", () => {
+    const { w, a, b } = twoPeers();
+    w.text(a, "bob", "hello");
+    b.state.sessions = {};
+    w.now += REKEY_INTERVAL_MS;
+
+    w.text(a, "bob", "two");
+
+    expect(w.outs.filter((o) => o.by === "alice").map((o) => [o.verb, o.tag])).toEqual([
+      ["keyreq", undefined],
+      ["pkmsg", "hello"],
+      // Still a pre-key message: bob never answered on the first session.
+      ["pkmsg", "two"],
+      ["keyreq", undefined],
+      ["pkmsg", "two"],
+    ]);
+    expect(texts(b)).toEqual(["hello", "two"]);
+  });
+
+  it("gives up on a queue the peer never answers, and names the messages it lost", () => {
     const { w, a } = twoPeers();
 
     w.text(a, "nobody", "one");
@@ -485,7 +511,7 @@ describe("keys", () => {
     w.now += 1;
     w.tick(a);
 
-    expect(failures(a)).toEqual([["keys-timeout", 2]]);
+    expect(failures(a)).toEqual([["keys-timeout", ["one", "two"]]]);
     expect(a.state.outq).toEqual({});
   });
 
@@ -493,10 +519,10 @@ describe("keys", () => {
     const { w, a } = twoPeers();
     const engine = w.engine(a);
 
-    const first = engine.send("nobody", { t: "text", body: "one" });
-    const soon = engine.send("nobody", { t: "text", body: "two" });
+    const first = engine.send("nobody", { t: "text", body: "one" }, "one");
+    const soon = engine.send("nobody", { t: "text", body: "two" }, "two");
     w.now += 30_000;
-    const later = engine.send("nobody", { t: "text", body: "three" });
+    const later = engine.send("nobody", { t: "text", body: "three" }, "three");
 
     expect(first.outbound.map((o) => o.verb)).toEqual(["keyreq"]);
     expect(soon.outbound).toEqual([]);
@@ -514,7 +540,7 @@ describe("keys", () => {
 
     w.text(a, "bob", "for bob only");
 
-    expect(failures(a)).toEqual([["key-mismatch", 1]]);
+    expect(failures(a)).toEqual([["key-mismatch", ["for bob only"]]]);
     expect(verbsTo(w, b)).toEqual(["pkmsg"]);
     expect(texts(c)).toEqual(["hello carol"]);
   });
@@ -525,7 +551,7 @@ describe("keys", () => {
     for (let i = 0; i <= OUTQ_MAX; i++) w.text(a, "nobody", `m${i}`);
 
     expect(a.state.outq.nobody).toHaveLength(OUTQ_MAX);
-    expect(failures(a)).toEqual([["queue-full", 1]]);
+    expect(failures(a)).toEqual([["queue-full", ["m16"]]]);
   });
 });
 
@@ -715,7 +741,7 @@ describe("recovery", () => {
       "replayed-session",
       "session-creation",
     ]);
-    expect(failures(a)).toEqual([["resend-failed", 1]]);
+    expect(failures(a)).toEqual([["resend-failed", ["two"]]]);
     expect(texts(b)).toEqual(["one"]);
   });
 
@@ -726,7 +752,7 @@ describe("recovery", () => {
 
     w.text(a, "bob", "two");
 
-    expect(failures(a)).toEqual([["rekey-throttled", 1]]);
+    expect(failures(a)).toEqual([["rekey-throttled", ["two"]]]);
     expect(ofKind(a, "rekeying")).toEqual([]);
     expect(verbsTo(w, a)).toEqual(["keys", "nack"]);
   });
@@ -770,7 +796,7 @@ describe("recovery", () => {
       priority: "control",
     });
 
-    expect(failures(a)).toEqual([["nack-from-another-nick", 1]]);
+    expect(failures(a)).toEqual([["nack-from-another-nick", ["one"]]]);
     // Reported against the nick it was sent to (as the KEYS spelled it).
     expect(ofKind(a, "send_failed")[0]?.nick).toBe("Bob");
     expect(texts(b)).toEqual(["one"]);
@@ -780,7 +806,7 @@ describe("recovery", () => {
     const { w, a } = twoPeers();
     w.text(a, "bob", "one");
     const engine = w.engine(a);
-    const refused = engine.send("bob", { t: "text", body: "refused" });
+    const refused = engine.send("bob", { t: "text", body: "refused" }, "refused");
     const ref = refused.outbound[0]?.ref;
     if (ref === undefined) throw new Error("no ref");
     expect(a.state.sent.map((s) => s.ref)).toContain(ref);
@@ -966,7 +992,7 @@ describe("renamed peers", () => {
       priority: "control",
     });
 
-    expect(failures(a)).toEqual([["repinned", 1]]);
+    expect(failures(a)).toEqual([["repinned", ["to bobby"]]]);
     expect(a.state.pins.bobby).toBe(d.account.ed25519_key());
     expect(a.state.peers[b.account.ed25519_key()]?.nick).toBe("bob");
   });
