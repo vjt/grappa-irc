@@ -3,7 +3,7 @@ import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { closeAudio, playAudio } from "../lib/audioPlayer";
 import { setShowBottomBar } from "../lib/showBottomBar";
-import { LIST_WINDOW_NAME } from "../lib/windowKinds";
+import { encryptedWindowName, LIST_WINDOW_NAME } from "../lib/windowKinds";
 import { nestedRuleBodies } from "./helpers/themeCss";
 import { swipeHorizontally } from "./helpers/touchEvents";
 
@@ -197,6 +197,15 @@ vi.mock("../lib/networks", () => ({
 // railWhois. Shell's integration tests cover LAYOUT, not that fetch (railWhois
 // + RailContext own it), so stub it to a no-op — otherwise the real store
 // hits networkIdBySlug (not on this file's networks mock) and pushWhois.
+// issue 2430 — the encrypted pane as a bare input: what the tests below ask
+// is whether Shell gives each encrypted window a pane of its own, and an
+// uncontrolled input keeps whatever was typed in it for as long as it lives.
+vi.mock("../EncryptedChatPane", () => ({
+  default: (props: { networkSlug: string; nick: string }) => (
+    <input data-testid="e2e-pane-stub" data-slug={props.networkSlug} data-nick={props.nick} />
+  ),
+}));
+
 vi.mock("../lib/railWhois", () => ({
   requestRailWhois: () => {},
   railWhoisFor: () => undefined,
@@ -2239,4 +2248,43 @@ describe("#1766 — the mobile window bar is opt-out, and the ☰ ships with the
     expect(screen.queryByLabelText(/open windows sidebar/i)).toBeNull();
     expect(container.querySelector(".topic-bar")?.children.length).toBe(2);
   });
+});
+
+// issue 2430 — the encrypted pane keeps per-chat state (a draft, a key being
+// pasted, a search): it must never carry it into another chat. Shell gives
+// every encrypted window its own pane, so a switch is a fresh mount rather
+// than the same pane re-pointed at another peer, which would send Bob's draft
+// to Carol, or pin Bob's pasted key to Carol as verified.
+describe("issue 2430 — one encrypted pane per encrypted window", () => {
+  it.each([false, true])(
+    "another chat, or the same nick on another network, mounts a fresh pane; the same window keeps it (mobile: %s)",
+    async (mobile) => {
+      mobileState.value = mobile;
+      const select = (networkSlug: string, nick: string) =>
+        selectionState.setSelSig({
+          networkSlug,
+          channelName: encryptedWindowName(nick),
+          kind: "encrypted",
+        });
+      select("freenode", "Bob");
+      render(() => <Shell />);
+      const pane = () => screen.getByTestId("e2e-pane-stub") as HTMLInputElement;
+      await waitFor(() => expect(pane().dataset.nick).toBe("Bob"));
+      fireEvent.input(pane(), { target: { value: "for Bob only" } });
+
+      // The same window selected again (a second tap on its row) keeps it.
+      select("freenode", "Bob");
+      await Promise.resolve();
+      expect(pane().value).toBe("for Bob only");
+
+      select("freenode", "carol");
+      await waitFor(() => expect(pane().dataset.nick).toBe("carol"));
+      expect(pane().value).toBe("");
+      fireEvent.input(pane(), { target: { value: "for carol on freenode" } });
+
+      select("libera", "carol");
+      await waitFor(() => expect(pane().dataset.slug).toBe("libera"));
+      expect(pane().value).toBe("");
+    },
+  );
 });

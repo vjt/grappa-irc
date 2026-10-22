@@ -342,8 +342,6 @@ const EncryptedChatPane: Component<Props> = (props) => {
     on(
       () => [props.networkSlug, props.nick] as const,
       ([slug, nick]) => {
-        setQuery("");
-        setDeleteArmed(false);
         void loadEncryptedChat(slug, nick).catch((err: unknown) => {
           console.warn(`[e2e] could not load the encrypted chat with ${nick}`, err);
         });
