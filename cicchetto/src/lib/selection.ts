@@ -1,6 +1,7 @@
 import { createEffect, createMemo, createSignal, on, untrack } from "solid-js";
 import { token } from "./auth";
 import { type ChannelKey, canonicalChannel, channelKey, decodeChannelKey } from "./channelKey";
+import { encryptedChat } from "./encryptedChats";
 import { identityScopedStore } from "./identityScopedStore";
 import { casemappingForNetwork } from "./isupport";
 import { saveLastFocused } from "./lastFocusedChannel";
@@ -23,6 +24,7 @@ import {
 import { countsAsUnreadEvent, type UnreadRowContext, unreadMessagesAfter } from "./unreadCount";
 import { unreadRowContextFor } from "./unreadRowContext";
 import {
+  encryptedWindowPeer,
   HOME_WINDOW_NAME,
   HOME_WINDOW_SLUG,
   kindHasScrollback,
@@ -290,6 +292,14 @@ const exports = identityScopedStore((onIdentityChange) => {
     return { networkSlug: HOME_WINDOW_SLUG, channelName: HOME_WINDOW_NAME, kind: "home" };
   };
 
+  // issue 2430 — an encrypted window is live while its chat is open in the
+  // device's chat index (lib/encryptedChats.ts): its × closes the chat, and
+  // the close-watcher below moves the focus as it does for a closed query.
+  const encryptedWindowOpen = (sel: NonNullable<SelectedChannel>): boolean => {
+    const peer = encryptedWindowPeer(sel.channelName);
+    return peer !== null && encryptedChat(sel.networkSlug, peer)?.open === true;
+  };
+
   // True if `sel` is still a window we can focus. Pseudo-windows
   // (home/admin/mentions) and a known server network are always
   // restorable; channel/query only while present in their live store.
@@ -325,6 +335,8 @@ const exports = identityScopedStore((onIdentityChange) => {
         }
         return false;
       }
+      case "encrypted":
+        return encryptedWindowOpen(sel);
       case "list":
         return false;
     }
@@ -962,13 +974,14 @@ const exports = identityScopedStore((onIdentityChange) => {
   createEffect(() => {
     const sel = selectedChannel();
     if (!sel) return;
-    if (sel.kind !== "channel" && sel.kind !== "query") return;
+    if (sel.kind !== "channel" && sel.kind !== "query" && sel.kind !== "encrypted") return;
 
     const cbs = channelsBySlug() ?? {};
     const qwbn = queryWindowsByNetwork();
     const selKey = channelKey(sel.networkSlug, sel.channelName);
 
     const stillLive = (() => {
+      if (sel.kind === "encrypted") return encryptedWindowOpen(sel);
       if (sel.kind === "channel") {
         const list = cbs[sel.networkSlug] ?? [];
         // Decode the canonical name via selKey rather than reusing

@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  encryptedWindowName,
+  encryptedWindowPeer,
   type GroupedWindows,
+  isVirtualWindowName,
   kindHasScrollback,
   orderWindows,
+  SERVER_WINDOW_NAME,
   type Window,
   type WindowKind,
 } from "../lib/windowKinds";
@@ -159,7 +163,8 @@ describe("kindHasScrollback", () => {
     expect(kindHasScrollback("server")).toBe(true);
   });
 
-  it("is false for synthetic / ephemeral kinds (home, admin, mentions, list)", () => {
+  it("is false for synthetic / ephemeral / cic-local kinds (home, admin, mentions, list, encrypted)", () => {
+    expect(kindHasScrollback("encrypted")).toBe(false);
     expect(kindHasScrollback("home")).toBe(false);
     expect(kindHasScrollback("admin")).toBe(false);
     expect(kindHasScrollback("mentions")).toBe(false);
@@ -167,7 +172,16 @@ describe("kindHasScrollback", () => {
   });
 
   it("partitions every WindowKind (exhaustive, no kind left unclassified)", () => {
-    const all: WindowKind[] = ["channel", "query", "server", "list", "mentions", "home", "admin"];
+    const all: WindowKind[] = [
+      "channel",
+      "query",
+      "server",
+      "list",
+      "mentions",
+      "home",
+      "admin",
+      "encrypted",
+    ];
     const backed = all.filter(kindHasScrollback);
     expect(backed.sort()).toEqual(["channel", "query", "server"].sort());
   });
@@ -176,5 +190,22 @@ describe("kindHasScrollback", () => {
   // fetching /messages for it 404s → fail2ban ban cascade in production.
   test("the list window has no scrollback (no /messages fetch)", () => {
     expect(kindHasScrollback("list")).toBe(false);
+  });
+});
+
+// issue 2430 — the encrypted query window is cic-local: no channel row on the
+// server, so no read cursor and no `/messages` for it, ever.
+describe("encrypted windows", () => {
+  it("name a peer and give it back, spelled as given", () => {
+    expect(encryptedWindowPeer(encryptedWindowName("Bob[m]"))).toBe("Bob[m]");
+    expect(encryptedWindowPeer("Bob")).toBeNull();
+    expect(encryptedWindowPeer("#grappa")).toBeNull();
+  });
+
+  it("are virtual; the plaintext query with the same peer is not", () => {
+    expect(isVirtualWindowName(encryptedWindowName("Bob"))).toBe(true);
+    expect(isVirtualWindowName("Bob")).toBe(false);
+    expect(isVirtualWindowName("#grappa")).toBe(false);
+    expect(isVirtualWindowName(SERVER_WINDOW_NAME)).toBe(false);
   });
 });

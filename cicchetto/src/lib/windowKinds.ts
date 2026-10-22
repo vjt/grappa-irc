@@ -9,6 +9,7 @@
 //   :mentions  → "mentions"
 //   :home      → "home"         (UX-4 bucket B — identity-scoped, NOT per-network)
 //   :admin     → "admin"        (UX-4 bucket N — identity-scoped, NOT per-network, admin-only)
+//   (none)     → "encrypted"    (issue 2430 — cic-local: an encrypted query, see ENCRYPTED_WINDOW_PREFIX)
 //
 // `Window` is the cicchetto-side representation of a single tab entry.
 // `networkId` is the integer FK from the server `Network` schema;
@@ -28,7 +29,15 @@
 // (the active-pane dispatcher in Shell.tsx branches on them) without
 // forcing every orderWindows-callsite to special-case their absence.
 
-export type WindowKind = "channel" | "query" | "server" | "list" | "mentions" | "home" | "admin";
+export type WindowKind =
+  | "channel"
+  | "query"
+  | "server"
+  | "list"
+  | "mentions"
+  | "home"
+  | "admin"
+  | "encrypted";
 
 // grappa-irc#81 — which window kinds are backed by a real server
 // scrollback channel and may therefore fetch the `/messages` REST
@@ -56,6 +65,7 @@ const KIND_HAS_SCROLLBACK: Record<WindowKind, boolean> = {
   mentions: false,
   home: false,
   admin: false,
+  encrypted: false,
 };
 
 // `null` (no selected window) is not backed — lets callers pass a
@@ -101,6 +111,26 @@ export const HOME_WINDOW_NAME = "$home";
 export const ADMIN_WINDOW_SLUG = "$admin";
 export const ADMIN_WINDOW_NAME = "$admin";
 
+// issue 2430 — the encrypted query window (kind = "encrypted"): one per
+// (network, peer nick), named `$e2e:<nick>`. It exists in cic only — grappa
+// relays its E2E lines and knows nothing of a window, its rows are the
+// device's own (lib/e2e/chatStore.ts) and so is whether it is open — so it
+// has no server-side channel row: virtual for the read cursor and the
+// `/messages` fetch. The `$` keeps it apart from the plaintext query with
+// the same peer (a different channelKey) and from any IRC name.
+export const ENCRYPTED_WINDOW_PREFIX = "$e2e:";
+
+export function encryptedWindowName(nick: string): string {
+  return `${ENCRYPTED_WINDOW_PREFIX}${nick}`;
+}
+
+/** The peer nick of an encrypted window's name, or null when it names another window. */
+export function encryptedWindowPeer(channelName: string): string | null {
+  return channelName.startsWith(ENCRYPTED_WINDOW_PREFIX)
+    ? channelName.slice(ENCRYPTED_WINDOW_PREFIX.length)
+    : null;
+}
+
 // grappa-irc#160 — the name-side twin of `kindHasScrollback`, for the
 // boundary that has only the channel NAME (setReadCursor), not the kind.
 // A read-cursor / `/messages` request for one of these synthetic
@@ -125,9 +155,13 @@ const VIRTUAL_WINDOW_NAMES: ReadonlySet<string> = new Set([
 
 // True when `channelName` is a synthetic pseudo-window with no server-side
 // channel row (see VIRTUAL_WINDOW_NAMES). Empty string is the `mentions`
-// pseudo-window's channelName — also virtual.
+// pseudo-window's channelName — also virtual; so is every encrypted window.
 export function isVirtualWindowName(channelName: string): boolean {
-  return channelName === "" || VIRTUAL_WINDOW_NAMES.has(channelName);
+  return (
+    channelName === "" ||
+    VIRTUAL_WINDOW_NAMES.has(channelName) ||
+    encryptedWindowPeer(channelName) !== null
+  );
 }
 
 export type Window = {
@@ -155,8 +189,9 @@ const KIND_RANK: Record<WindowKind, number> = {
   server: 0,
   channel: 1,
   query: 2,
-  list: 3,
-  mentions: 4,
+  encrypted: 3,
+  list: 4,
+  mentions: 5,
 };
 
 /**
