@@ -4763,6 +4763,151 @@ html.is-ios27-band .shell {
   overscroll-behavior: contain;
 }
 
+/* issue 2430 — the encrypted query pane (EncryptedChatPane.tsx). Its own
+   layout, on the mentions window's frame: a fixed header (peer, trust, the
+   two keys and the pin form), a scrolling row list, and a compose line that
+   mirrors the compose box without being one. */
+.e2e-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  color: var(--fg);
+  max-height: var(--viewport-height, 100dvh);
+}
+
+.e2e-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.e2e-header-main {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.e2e-heading {
+  font-size: 1.15em;
+  font-weight: bold;
+}
+
+.e2e-trust {
+  font-size: 0.85em;
+  padding: 0 0.4em;
+  border: 1px solid currentColor;
+}
+
+.e2e-trust-verified {
+  color: var(--accent);
+}
+
+.e2e-trust-unverified {
+  color: var(--muted);
+}
+
+.e2e-trust-alarm,
+.e2e-error,
+.e2e-row-alarm {
+  color: var(--error, #e06c75);
+}
+
+.e2e-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85em;
+}
+
+/* A key is 43 characters with no break opportunity: let it wrap anywhere
+   rather than widen the pane on a phone. */
+.e2e-key {
+  word-break: break-all;
+  color: var(--fg);
+}
+
+.e2e-pin {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.e2e-pin-input,
+.e2e-compose-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+}
+
+.e2e-copy,
+.e2e-pin-submit,
+.e2e-compose-send {
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  padding: 0 1rem;
+  min-height: var(--tap-min);
+  font-family: var(--font-mono);
+  font-size: var(--font-size);
+  cursor: pointer;
+}
+
+.e2e-copy:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.e2e-rows {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 0.5rem 1rem;
+  list-style: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+.e2e-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5em;
+  line-height: var(--line-height);
+  overflow-wrap: anywhere;
+}
+
+.encrypted-marker {
+  font-size: 0.8em;
+}
+
+.e2e-row-own {
+  color: var(--accent);
+}
+
+.e2e-row-notice,
+.e2e-row-state {
+  color: var(--muted);
+}
+
+.e2e-compose {
+  display: flex;
+  border-top: 1px solid var(--border);
+  padding: 0.5rem;
+  gap: 0.5rem;
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
 .mentions-group {
   border-bottom: 1px solid var(--border);
 }
