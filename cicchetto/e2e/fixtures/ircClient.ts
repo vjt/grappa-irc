@@ -227,7 +227,7 @@ export class IrcPeer {
     let done = false;
     this.client.on("raw", (event: { line: string; from_server: boolean }) => {
       if (done || !event.from_server || event.line[0] !== ":") return;
-      const line = event.line;
+      const line = stripEol(event.line);
       // ":asker!user@host PRIVMSG <me> :\x01PING <token>\x01"
       if (!line.includes(" PRIVMSG ")) return;
       const at = line.indexOf(marker);
@@ -440,10 +440,9 @@ export class IrcPeer {
         this.client.removeListener("raw", handler);
         reject(new Error(`IrcPeer: no whole E2E ${verb} from ${fromNick} within ${timeoutMs}ms`));
       }, timeoutMs);
-      // irc-framework hands `raw` the line WITH its CRLF (it slices up to
-      // and including the `\n`), so the end anchor needs it stripped.
+      // The end anchor needs the line ending stripped (`stripEol`).
       const handler = (event: { line: string; from_server: boolean }) => {
-        const m = event.from_server ? line.exec(event.line.replace(/\r?\n$/, "")) : null;
+        const m = event.from_server ? line.exec(stripEol(event.line)) : null;
         if (!m || m[1]?.toLowerCase() !== fromNick.toLowerCase()) return;
         const [, , msgid = "", i = "0", n = "0", chunk = ""] = m;
         const parts = fragments.get(msgid) ?? new Array<string>(Number(n)).fill("");
@@ -684,7 +683,10 @@ export class IrcPeer {
   // the peer's own outbound frames. Used by the #153 visitor-verbs spec
   // to prove a visitor's /mode and /quote reached upstream AND took
   // effect — the peer only sees the line if bahamut applied and relayed
-  // it.
+  // it. The pattern is tested against, and the promise resolves with, the line
+  // WITHOUT the CRLF irc-framework hands `raw` (see `stripEol`): with it,
+  // a plain end anchor (`$`) never matches and the waiter times out on a line
+  // that did arrive (#2430, measured on the testnet).
   waitForLine(pattern: RegExp, label: string, timeoutMs = 8_000): Promise<string> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -692,10 +694,11 @@ export class IrcPeer {
         reject(new Error(`IrcPeer: timeout waiting for ${label} (${timeoutMs}ms)`));
       }, timeoutMs);
       const handler = (event: { line: string; from_server: boolean }) => {
-        if (!event.from_server || !pattern.test(event.line)) return;
+        const line = stripEol(event.line);
+        if (!event.from_server || !pattern.test(line)) return;
         clearTimeout(timer);
         this.client.removeListener("raw", handler);
-        resolve(event.line);
+        resolve(line);
       };
       this.client.on("raw", handler);
     });
@@ -719,6 +722,14 @@ export class IrcPeer {
 // emits no longer compiles (the `rpl_youreoper` trap this file documents under
 // `oper()`), and the payload type follows from the name instead of from
 // whatever the call site guessed.
+// irc-framework hands `raw` the line WITH its line ending: the net transport
+// slices up to and including the `\n`. Every reader here matches or slices the
+// line without it, stripped the way the library's own parser strips it
+// (irclineparser.js), so a stray `\r\r\n` cannot survive either.
+function stripEol(line: string): string {
+  return line.replace(/[\r\n]+$/, "");
+}
+
 function once<E extends IrcEventName>(
   client: Client,
   event: E,
