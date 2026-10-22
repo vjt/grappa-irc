@@ -167,6 +167,12 @@ export class Session {
      */
     static from_pickle(pickle: string): Session;
     /**
+     * Whether this session has decrypted a message from the peer: true on
+     * an inbound session from the start, on an outbound one after the first
+     * answer. Until then `encrypt` yields pre-key messages.
+     */
+    has_received_message(): boolean;
+    /**
      * The whole session, ratchet keys included, as JSON. The caller
      * encrypts it before it is stored anywhere.
      */
@@ -192,6 +198,11 @@ export function canonical_ed25519(key: string): string;
  * The session id a pre-key message (as bytes) belongs to.
  */
 export function pre_key_session_id(message: Uint8Array): string;
+
+/**
+ * SHA-256 of `data`: the device ids and the binding hash are cut from it.
+ */
+export function sha256(data: Uint8Array): Uint8Array;
 
 /**
  * Whether `signature` is `key`'s Ed25519 signature over `message` (as
@@ -239,8 +250,10 @@ export interface InitOutput {
     readonly session_decrypt: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly session_encrypt: (a: number, b: number, c: number, d: number) => void;
     readonly session_from_pickle: (a: number, b: number, c: number) => void;
+    readonly session_has_received_message: (a: number) => number;
     readonly session_pickle: (a: number, b: number) => void;
     readonly session_session_id: (a: number, b: number) => void;
+    readonly sha256: (a: number, b: number, c: number) => void;
     readonly verify_ed25519: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
     readonly __wbindgen_export: (a: number) => void;
     readonly __wbindgen_add_to_stack_pointer: (a: number) => number;

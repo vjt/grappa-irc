@@ -11,6 +11,7 @@ use vodozemac::olm::{
 };
 use vodozemac::sas::{EstablishedSas as VodozemacEstablishedSas, Sas as VodozemacSas};
 use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, Ed25519Signature, base64_decode};
+use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 
 /// An Olm account: the identity keys, the one-time keys and the fallback key.
@@ -154,6 +155,13 @@ impl Session {
         self.0.session_id()
     }
 
+    /// Whether this session has decrypted a message from the peer: true on
+    /// an inbound session from the start, on an outbound one after the first
+    /// answer. Until then `encrypt` yields pre-key messages.
+    pub fn has_received_message(&self) -> bool {
+        self.0.has_received_message()
+    }
+
     /// Encrypts `plaintext`: a pre-key message (type 0) until the peer has
     /// answered on this session, a normal message (type 1) after.
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Encrypted, JsError> {
@@ -249,6 +257,12 @@ pub fn verify_ed25519(key: &str, message: &str, signature: &str) -> bool {
     let Ok(key) = ed25519(key) else { return false };
     let Ok(signature) = Ed25519Signature::from_base64(signature) else { return false };
     key.verify(message.as_bytes(), &signature).is_ok()
+}
+
+/// SHA-256 of `data`: the device ids and the binding hash are cut from it.
+#[wasm_bindgen]
+pub fn sha256(data: &[u8]) -> Vec<u8> {
+    Sha256::digest(data).to_vec()
 }
 
 /// The one spelling of an Ed25519 key: vodozemac's unpadded base64.

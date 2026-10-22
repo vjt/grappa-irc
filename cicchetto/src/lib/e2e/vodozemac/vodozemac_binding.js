@@ -587,6 +587,16 @@ export class Session {
         }
     }
     /**
+     * Whether this session has decrypted a message from the peer: true on
+     * an inbound session from the start, on an outbound one after the first
+     * answer. Until then `encrypt` yields pre-key messages.
+     * @returns {boolean}
+     */
+    has_received_message() {
+        const ret = wasm.session_has_received_message(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
      * The whole session, ratchet keys included, as JSON. The caller
      * encrypts it before it is stored anywhere.
      * @returns {string}
@@ -724,6 +734,27 @@ export function pre_key_session_id(message) {
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
         wasm.__wbindgen_export4(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * SHA-256 of `data`: the device ids and the binding hash are cut from it.
+ * @param {Uint8Array} data
+ * @returns {Uint8Array}
+ */
+export function sha256(data) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.sha256(retptr, ptr0, len0);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v2 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export4(r0, r1 * 1, 1);
+        return v2;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
     }
 }
 
