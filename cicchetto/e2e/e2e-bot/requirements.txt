@@ -1,0 +1,13 @@
+# e2e-bot's third-party Python, hash-locked: the Dockerfile installs it with
+# `--require-hashes --only-binary=:all:`, so a changed wheel fails the build.
+#
+# vodozemac is the version irc-olm pins itself (its pyproject.toml). Two
+# wheels: linux/amd64 for CI, linux/arm64 for a dev host's docker. tzdata
+# because bot.py builds ZoneInfo("Europe/Rome") at import: python:3.12-slim
+# ships Debian's tzdata today, but the tag floats and this wheel is the floor.
+# Hashes from https://pypi.org/pypi/<name>/<version>/json.
+vodozemac==0.10.0 \
+    --hash=sha256:937a3b9d8fae1c9c7cc5bcf1f78212a8a0e28362f719790f6b95bc909e84b37c \
+    --hash=sha256:b11f50b9049a5750a41d849227912c48df63d3a56174f5708c416d0f7854c9cf
+tzdata==2026.5 \
+    --hash=sha256:b683bd1b6659ddcd810ff02ad09ba821d4bf1065072805063eb35c49617905ac

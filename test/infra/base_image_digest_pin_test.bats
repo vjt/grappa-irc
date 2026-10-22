@@ -41,14 +41,17 @@ REPO_ROOT="$BATS_TEST_DIRNAME/../.."
 #     freeze it and stop security patches flowing. Proved instead by
 #     infra/docker/assert-abi-lockstep.sh.
 #   - locally built images (`grappa:latest`, `grappa:e2e`,
-#     `grappa-shottino:latest`, `grappa-e2e-push-catcher:dev`) — never
+#     `grappa-shottino:latest`, `grappa-e2e-push-catcher:dev`,
+#     `grappa-e2e-bot:dev`) — never
 #     pulled, so there are no bytes to pin.
 #   - own-org tags resolved from a variable (`ghcr.io/vjt/bahamut`,
 #     `ghcr.io/vjt/services`, `ghcr.io/vjt/grappa`) — a literal digest
 #     cannot express `${BAHAMUT_TAG:-main}`.
 #   - e2e-only third parties (`debian:trixie`, `node:22-alpine`,
-#     `alpine:3.20`, `axllent/mailpit`, the playwright runner base) —
-#     test-fixture images that never reach an operator.
+#     `alpine:3.20`, `axllent/mailpit`, `python:3.12-slim` under the #2430
+#     e2e-bot, the playwright runner base) — test-fixture images that never
+#     reach an operator. (The e2e-bot's CODE under test is still pinned:
+#     checksummed ADDs and a hash-locked requirements file.)
 #
 # Adding a family here REQUIRES amending the runbook line the last test
 # reads; that is the whole point of the pin. `rust:` is anchored on a
