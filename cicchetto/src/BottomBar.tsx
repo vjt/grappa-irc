@@ -1,15 +1,17 @@
 import { type Component, createEffect, For, on } from "solid-js";
 import CloseButton from "./CloseButton";
 import { channelKey } from "./lib/channelKey";
+import { encryptedChatsFor } from "./lib/encryptedChats";
+import { closeEncryptedWindow, encryptedWindowSelected } from "./lib/encryptedWindow";
 import { channelsBySlug, networks } from "./lib/networks";
 import { queryWindowsByNetwork } from "./lib/queryWindows";
 import { requestScrollToBottom } from "./lib/scrollToBottomCommand";
 import { isActiveSelection, selectedChannel, setSelectedChannel } from "./lib/selection";
 import { closeQueryWindow, confirmDisconnectNetwork, confirmLeaveChannel } from "./lib/windowClose";
 import type { WindowKind } from "./lib/windowKinds";
-import { SERVER_WINDOW_NAME } from "./lib/windowKinds";
+import { encryptedWindowName, SERVER_WINDOW_NAME } from "./lib/windowKinds";
 import NickText from "./NickText";
-import WindowBadges from "./WindowBadges";
+import WindowBadges, { EncryptedUnreadBadge } from "./WindowBadges";
 
 // BottomBar: mobile-only window picker rendered UNDER ComposeBox.
 //
@@ -236,6 +238,36 @@ const BottomBar: Component<Props> = (props) => {
                     </>
                   );
                 }}
+              </For>
+
+              {/* issue 2430 — encrypted query windows (see the Sidebar twin). */}
+              <For each={encryptedChatsFor(network.slug)}>
+                {(chat) => (
+                  <>
+                    <button
+                      type="button"
+                      role="tab"
+                      class="bottom-bar-tab bottom-bar-tab-with-close"
+                      classList={{ selected: encryptedWindowSelected(network.slug, chat.key) }}
+                      data-window-name={encryptedWindowName(chat.nick)}
+                      onClick={() =>
+                        handleClick(network.slug, encryptedWindowName(chat.nick), "encrypted")
+                      }
+                    >
+                      <span class="encrypted-marker" aria-hidden="true">
+                        🔒
+                      </span>
+                      <NickText nick={chat.nick} extraClass="bottom-bar-tab-nick" />
+                      <span class="sr-only"> (encrypted)</span>
+                      <EncryptedUnreadBadge count={chat.unread} variant="bottom-bar" />
+                    </button>
+                    <CloseButton
+                      class="bottom-bar-close"
+                      ariaLabel={`Close encrypted query with ${chat.nick}`}
+                      onConfirm={() => closeEncryptedWindow(network.slug, chat.nick)}
+                    />
+                  </>
+                )}
               </For>
             </div>
           );

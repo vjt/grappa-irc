@@ -150,4 +150,23 @@ const WindowBadges: Component<Props> = (props) => {
   );
 };
 
+// issue 2430 — the unread count of an encrypted window. Its number is the
+// device's own (the chat index, lib/encryptedChats.ts: grappa never sees the
+// rows), so none of the server-backed state above applies — no far-behind
+// freeze, no events, no mentions, no mute — but it is the same badge, spoken
+// the same way.
+export const EncryptedUnreadBadge: Component<{ count: number; variant: WindowBadgesVariant }> = (
+  props,
+) => (
+  <Show when={props.count > 0}>
+    <span
+      class={BADGE_CLASSES[props.variant].messages}
+      role="img"
+      aria-label={badgeLabel(props.count, "messages", false)}
+    >
+      {props.count}
+    </span>
+  </Show>
+);
+
 export default WindowBadges;
