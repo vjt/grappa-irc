@@ -3172,3 +3172,99 @@ downloads its compose plugin from GitHub on every run; vendoring the files
 would trade this for a drift check.
 
 Test infrastructure only: no server or cic change, nothing to deploy.
+<!-- entry #2430f -->
+
+---
+
+## 2026-10-22 — #2430: cic's E2E engine — trust on first use, one sealed state
+
+Slice c1. Slice c was split (2430 comment 6333417572): c1 is the engine and
+its storage, with no transport and no UI; c2 drains the inbox, sends through
+the send door and opens the encrypted query window. No wire changed: the
+protocol stays 44.
+
+- **The binding grows to sessions.** Outbound and inbound sessions, encrypt
+  and decrypt, session pickles, the session id a pre-key message names,
+  Ed25519 verification and the canonical spelling of a key. Every key that
+  comes off the wire is parsed by the binding as exactly 32 bytes before
+  vodozemac sees it: 0.11.1's `from_base64` still accepts any 44-character
+  input and PANICS when it decodes to 33 bytes, and a panic in the browser is
+  a trap that leaves the module unusable. The artefact goes from 168,111 to
+  297,198 bytes.
+- **A port of irc-olm's engine, minus grappa's half.** `lib/e2e/engine.ts`
+  follows irc-olm `engine.py` @ 77688e5 (w2's reference for the same wire)
+  verb for verb: queue and KEYREQ, pin and curve checks on KEYS and PKMSG,
+  the seen-session set against replays, NACK, one re-send on a new session,
+  at most one new session per peer per minute. Answering KEYREQ (from the
+  bundle) and framing stay grappa's, and grappa names each message: the
+  engine hands out a local `ref` per message-carrying payload, and the
+  caller reports grappa's msgid back (`sent`) or that grappa refused the send
+  (`discard`), so a later NACK can name the message.
+- **Trust on first use, because a person has nothing to paste.** vjt's ruling
+  (6253162964) has bots pin printed keys and humans compare a SAS; a first
+  contact must work before either. So the first key a nick presents is
+  pinned to that nick, `verified: false` until the user pins it by hand or a
+  SAS confirms it (later slices). A NEW key on a pinned nick raises
+  `key_alarm` and is ignored; nothing but the user moves a pin. A key we
+  already know, on another nick, is that peer renamed, as in irc-olm: it is
+  read as ITSELF (the `received` event carries the peer's key, not just the
+  nick) and moves no pin.
+- **cic NACKs where irc-olm stays silent: a nick with no pin.** irc-olm NACKs
+  only where the claimed key is pinned, since a bot talks to nothing else.
+  Here a nick with no pin is where trust on first use would put the key, so
+  an undecryptable message from it is NACKed too, and so is a MSG on a curve
+  we hold no session for. Without that, a peer whose storage was wiped drops
+  what it cannot read without a word, the sender never re-keys, and never
+  meets the new key it must raise the alarm for (2430 "Session recovery": the
+  peer shows the alarm, never auto-accepts). A nick pinned to ANOTHER key
+  still gets no NACK. A NACK goes back to the nick the message came from, and
+  only a sender holding the record acts on it; what this costs is a line per
+  junk message, which grappa's pacer bounds per peer.
+- **All the state is one JSON object, sealed with the account in one
+  record.** irc-olm keeps the queues, the KEYREQ times and the plaintexts for
+  a re-send in memory; here they are part of `E2eState` with the peers, pins,
+  session pickles and seen set. Every cic tab drains the same inbox, and the
+  tab that takes a KEYS or a NACK off it must see what another tab asked for
+  or sent; queued messages also survive a reload. The record holds the
+  account pickle and the state together because they change together: a
+  pre-key message uses up a one-time key of the account AND opens a session
+  in the state, and storing one without the other leaves a session nobody can
+  reopen or a key that opens one twice. Same AES-GCM seal, slot lock and
+  `persist()` as slice b; a record that does not read as `{account, state:
+  {v: 1}}` (a bare pickle from slice b's dev builds included) starts the slot
+  over, as an unopenable one always did.
+- **Only wire rejections are swallowed.** A payload that does not decode or
+  lacks a field, and anything vodozemac refuses (its errors arrive as plain
+  `Error`s and become drops), are reported as `dropped` / `undecryptable`
+  events. A trap, a type error or a broken invariant is thrown.
+- **Closed sets are types.** Drop reasons, send failures and undecryptable
+  reasons are string-literal unions, and the events carry them.
+
+Tested between two and three real engines over a fake grappa (real
+vodozemac, the real uploaded bundle, grappa's KEYREQ answer and msgid
+naming): first contact, MSG both ways, a JSON round trip of state and
+account, replays (on a held session and after it is gone), the alarm from
+either side, the curve-claim and proof rules, re-keying after a NACK and its
+limits, a message queued for one key never going to another, keys of 33
+bytes in 44 characters. A mutation pass over the engine, the store and the
+wire helpers killed 48 of 48; its four first-round survivors became three
+new tests and one deleted line (a `length % 4` check `atob` already makes).
+
+Not in c1, on purpose: CHAL/ACK handling (slice e: the engine delivers any
+typed inner message); `fk`/`tk` in the first inner message (ruling 6263227492
+is conditional on w2, who has not answered; the PKMSG inner shape stays open);
+the pacer port and `expires_at` (next slice, protocol 45).
+
+Known gaps, recorded rather than fixed:
+
+- Trust on first use cannot see a relay: a key that claims another's curve
+  and relays its one-time key reads as itself until that curve's holder
+  proves it with a pre-key message. The SAS (slice d) is what closes it; the
+  bot path closes it with printed keys.
+- The sent memory holds up to 1,200 plaintexts for 30 minutes (irc-olm's
+  numbers), sealed in the record and rewritten with it on every operation.
+  Sized for a full pacer backlog; a person sends far less.
+- c2 must show who a `received` came from by KEY: a known key writing from a
+  nick pinned to another key arrives with that nick.
+
+Client-only, no deploy class beyond the cic bundle.
