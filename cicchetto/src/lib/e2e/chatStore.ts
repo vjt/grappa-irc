@@ -40,7 +40,22 @@ export type ChatRow =
   /** A key other than the pinned one, on this nick: ignored, and shown. */
   | { kind: "key_alarm"; id: string; at: number; nick: string; presented: string }
   /** The user pinned this key to the nick by hand: it is the one written to now. */
-  | { kind: "pinned"; id: string; at: number; nick: string; ed25519: string };
+  | { kind: "pinned"; id: string; at: number; nick: string; ed25519: string }
+  /** The user took this key for the nick, unverified (the alarm's "accept"): written to now. */
+  | { kind: "accepted"; id: string; at: number; nick: string; ed25519: string }
+  /** A SAS began (`sas.ts`): we asked, or the peer did. */
+  | { kind: "sas_asked"; id: string; at: number; nick: string; by: "you" | "peer" }
+  /** A SAS ended without a match, with the reason its canceller gave. */
+  | {
+      kind: "sas_cancelled";
+      id: string;
+      at: number;
+      nick: string;
+      by: "you" | "peer";
+      reason: string;
+    }
+  /** A SAS matched on both sides: this key is verified. */
+  | { kind: "verified"; id: string; at: number; nick: string; ed25519: string };
 
 export type Chat = { nick: string; open: boolean; unread: number };
 

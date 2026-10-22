@@ -14,6 +14,9 @@
 //      forgotten when grappa refused it;
 //   5. inbox messages are acknowledged last.
 //
+// SAS steps (`sas.ts`) ride the same order: the verifier changes the state
+// and queues its steps, which go through the engine like any message.
+//
 // A message processed again (the tab died after 2) finds its rows already
 // written, and one past the stored watermark (`E2eState.inbox`) is skipped:
 // it is only acknowledged again. grappa's inbox ids never come back
@@ -23,6 +26,7 @@ import type { AccountStore } from "./accountStore";
 import type { ChatChange, ChatStore, DoorRefusal } from "./chatStore";
 import { type E2eEvent, type E2eState, Engine, type Outbound } from "./engine";
 import type { Olm } from "./olm";
+import { isSas, SAS_TAG, type SasHost, type SasStep, type SasView, Verifier } from "./sas";
 import { fold, type ReceiveVerb } from "./wire";
 
 /** One whole message grappa holds for us (the `e2e_message` wire shape, minus its envelope). */
@@ -46,9 +50,10 @@ export type Door = {
 export type E2eContext = { slot: string; ownNick: string; door: Door };
 
 /**
- * What an operation changed: the chats it wrote to (folded nicks), how many
+ * What an operation changed: the chats it changed (folded nicks), how many
  * pre-key messages it opened (each spent a one-time key: time to refill the
- * bundle), and whether messages still wait for keys (time to tick).
+ * bundle), and whether something waits on the clock (time to tick):
+ * messages waiting for keys, or a SAS.
  */
 export type Report = { chats: string[]; pkmsgs: number; waiting: boolean };
 
@@ -67,12 +72,22 @@ export type E2eClient = {
     ctx: E2eContext,
     nick: string,
     key: string,
+    verified: boolean,
   ): Promise<{ result: ReturnType<Engine["pin"]>; chats: string[] }>;
-  /** Our Ed25519 key, and the key each of `nicks` is pinned to (by folded nick). */
+  /** The user's step in the SAS with the key `nick` is pinned to (`sas.ts`). */
+  verify(ctx: E2eContext, nick: string, step: SasStep): Promise<Report>;
+  /**
+   * Our Ed25519 key, and for each of `nicks` (by folded nick) the key it is
+   * pinned to and the SAS under way with that key.
+   */
   identity(
     ctx: E2eContext,
     nicks: string[],
-  ): Promise<{ own: string; peers: Record<string, PeerTrust | null> }>;
+  ): Promise<{
+    own: string;
+    peers: Record<string, PeerTrust | null>;
+    sas: Record<string, SasView | null>;
+  }>;
 };
 
 /**
@@ -127,11 +142,17 @@ function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatC
         }
         break;
       case "send_queued":
-        changes.push({ op: "out", nick: e.nick, id: e.tag, state: "queued", reason: null });
+        if (e.tag !== SAS_TAG) {
+          changes.push({ op: "out", nick: e.nick, id: e.tag, state: "queued", reason: null });
+        }
         break;
       case "send_failed":
         for (const tag of e.tags) {
-          changes.push({ op: "out", nick: e.nick, id: tag, state: "failed", reason: e.reason });
+          if (tag === SAS_TAG) {
+            sasStepLost(e.nick, e.reason);
+          } else {
+            changes.push({ op: "out", nick: e.nick, id: tag, state: "failed", reason: e.reason });
+          }
         }
         break;
       case "dropped":
@@ -149,11 +170,20 @@ function changesFor(events: E2eEvent[], at: number, inbox: number | null): ChatC
   return changes;
 }
 
+// A SAS step has no row to mark: the SAS waits for it until its time runs out.
+function sasStepLost(nick: string, reason: string): void {
+  console.warn(`[e2e] a SAS step to ${nick} was not sent (${reason}); the SAS will time out`);
+}
+
+const waitsOnTheClock = (state: E2eState): boolean =>
+  Object.keys(state.outq).length > 0 || Object.keys(state.sas).length > 0;
+
 export function e2eClient(
   olm: Olm,
   accounts: AccountStore,
   chats: ChatStore,
   now: () => number,
+  host: SasHost,
 ): E2eClient {
   // Steps 4 for `outbound`: what the send door answered, as chat changes.
   async function flush(engine: Engine, door: Door, outbound: Outbound[]): Promise<ChatChange[]> {
@@ -163,6 +193,15 @@ export function e2eClient(
       if (out.ref === undefined || out.tag === undefined) {
         if ("refused" in answer) {
           console.warn(`[e2e] grappa refused a ${out.verb} to ${out.target}: ${answer.refused}`);
+        }
+        continue;
+      }
+      if (out.tag === SAS_TAG) {
+        if ("refused" in answer) {
+          engine.discard(out.ref);
+          sasStepLost(out.target, answer.refused);
+        } else {
+          engine.sent(out.ref, answer.msgid);
         }
         continue;
       }
@@ -186,18 +225,60 @@ export function e2eClient(
   // An operation on the slot's account, which must exist already.
   function withEngine<T>(
     ctx: E2eContext,
-    fn: (engine: Engine, state: E2eState, persist: () => Promise<void>) => Promise<T>,
+    fn: (
+      engine: Engine,
+      state: E2eState,
+      persist: () => Promise<void>,
+      verifier: Verifier,
+    ) => Promise<T>,
   ): Promise<T> {
     return accounts.withAccount(ctx.slot, async ({ account, state, created, persist }) => {
       // Throwing stores nothing: the account just made is dropped again.
       if (created) throw new NoAccountError(`no E2E account for ${ctx.slot} yet`);
-      return fn(new Engine(olm, account, state, ctx.ownNick, now), state, persist);
+      const engine = new Engine(olm, account, state, ctx.ownNick, now);
+      return fn(engine, state, persist, new Verifier(olm, engine, state, host, now));
     });
+  }
+
+  // The steps the verifier queued, through the engine: their payloads, and
+  // the chat changes the verifier made.
+  function sasOutput(
+    engine: Engine,
+    verifier: Verifier,
+  ): { changes: ChatChange[]; outbound: Outbound[]; chats: string[] } {
+    const { sends, changes, chats: touched } = verifier.take();
+    const outbound: Outbound[] = [];
+    for (const { nick, inner } of sends) {
+      const res = engine.send(nick, inner, SAS_TAG);
+      changes.push(...changesFor(res.events, now(), null));
+      outbound.push(...res.outbound);
+    }
+    return { changes, outbound, chats: touched };
+  }
+
+  // Steps 2–4 for an operation outside the drain: `changes`, then what the
+  // verifier made, then its steps.
+  async function finish(
+    ctx: E2eContext,
+    engine: Engine,
+    verifier: Verifier,
+    state: E2eState,
+    persist: () => Promise<void>,
+    changes: ChatChange[],
+  ): Promise<Report> {
+    const sas = sasOutput(engine, verifier);
+    const touched = new Set(sas.chats);
+    for (const key of await chats.apply(ctx.slot, [...sas.changes, ...changes])) touched.add(key);
+    await persist();
+    for (const key of await chats.apply(ctx.slot, await flush(engine, ctx.door, sas.outbound))) {
+      touched.add(key);
+    }
+    return { chats: [...touched], pkmsgs: 0, waiting: waitsOnTheClock(state) };
   }
 
   return {
     drain: (ctx) =>
-      withEngine(ctx, async (engine, state, persist) => {
+      withEngine(ctx, async (engine, state, persist, verifier) => {
         const touched = new Set<string>();
         let pkmsgs = 0;
         let after = 0;
@@ -213,8 +294,17 @@ export function e2eClient(
             if (m.verb === "pkmsg") pkmsgs += 1;
             changes.push(...changesFor(res.events, now(), m.id));
             outbound.push(...res.outbound);
+            for (const [i, e] of res.events.entries()) {
+              if (e.kind === "received" && isSas(e.inner)) {
+                await verifier.receive(e.nick, e.peer.ed25519, e.inner, `in:${m.id}:${i}`);
+              }
+            }
             state.inbox = m.id;
           }
+          const sas = sasOutput(engine, verifier);
+          changes.push(...sas.changes);
+          outbound.push(...sas.outbound);
+          for (const key of sas.chats) touched.add(key);
           for (const key of await chats.apply(ctx.slot, changes)) touched.add(key);
           await persist();
           const sent = await flush(engine, ctx.door, outbound);
@@ -225,7 +315,7 @@ export function e2eClient(
         }
         const ticked = changesFor(engine.tick().events, now(), null);
         for (const key of await chats.apply(ctx.slot, ticked)) touched.add(key);
-        return { chats: [...touched], pkmsgs, waiting: Object.keys(state.outq).length > 0 };
+        return { chats: [...touched], pkmsgs, waiting: waitsOnTheClock(state) };
       }),
 
     send: (ctx, nick, body) =>
@@ -250,45 +340,57 @@ export function e2eClient(
         )) {
           touched.add(key);
         }
-        return { chats: [...touched], pkmsgs: 0, waiting: Object.keys(state.outq).length > 0 };
+        return { chats: [...touched], pkmsgs: 0, waiting: waitsOnTheClock(state) };
       }),
 
     tick: (ctx) =>
-      withEngine(ctx, async (engine, state) => {
+      withEngine(ctx, async (engine, state, persist, verifier) => {
         const changes = changesFor(engine.tick().events, now(), null);
-        const touched = await chats.apply(ctx.slot, changes);
-        return { chats: touched, pkmsgs: 0, waiting: Object.keys(state.outq).length > 0 };
+        verifier.tick(await host.alive());
+        return finish(ctx, engine, verifier, state, persist, changes);
       }),
 
-    pin: (ctx, nick, key) =>
-      withEngine(ctx, async (engine) => {
-        const result = engine.pin(nick, key);
+    pin: (ctx, nick, key, verified) =>
+      withEngine(ctx, async (engine, state, persist, verifier) => {
+        const before = engine.pinned(nick)?.ed25519;
+        const result = engine.pin(nick, key, verified);
         if (result !== "pinned") return { result, chats: [] };
         // The key as the engine spells it: a paste may carry non-zero padding bits.
         const peer = engine.pinned(nick);
         if (peer === undefined) throw new Error("a pin just set is not there");
+        if (before !== undefined && before !== peer.ed25519) verifier.repinned(before);
+        // Taking a key someone already verified pins a verified key.
         const row = {
-          kind: "pinned" as const,
+          kind: peer.verified ? ("pinned" as const) : ("accepted" as const),
           id: crypto.randomUUID(),
           at: now(),
           nick,
           ed25519: peer.ed25519,
         };
-        return {
-          result,
-          chats: await chats.apply(ctx.slot, [{ op: "add", nick, unread: false, row }]),
-        };
+        const report = await finish(ctx, engine, verifier, state, persist, [
+          { op: "add", nick, unread: false, row },
+        ]);
+        return { result, chats: report.chats };
+      }),
+
+    verify: (ctx, nick, step) =>
+      withEngine(ctx, async (engine, state, persist, verifier) => {
+        await verifier.step(nick, step);
+        return finish(ctx, engine, verifier, state, persist, []);
       }),
 
     identity: (ctx, nicks) =>
-      withEngine(ctx, async (engine) => {
+      withEngine(ctx, async (engine, state, persist, verifier) => {
         const peers: Record<string, PeerTrust | null> = {};
+        const sas: Record<string, SasView | null> = {};
         for (const nick of nicks) {
           const peer = engine.pinned(nick);
           peers[fold(nick)] =
             peer === undefined ? null : { ed25519: peer.ed25519, verified: peer.verified };
+          sas[fold(nick)] = verifier.view(nick);
         }
-        return { own: engine.fingerprint(), peers };
+        if (!verifier.idle()) await finish(ctx, engine, verifier, state, persist, []);
+        return { own: engine.fingerprint(), peers, sas };
       }),
   };
 }

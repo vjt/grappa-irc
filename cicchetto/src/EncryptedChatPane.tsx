@@ -2,9 +2,12 @@ import { type Component, createEffect, createSignal, For, Match, on, Show, Switc
 import { copyText } from "./lib/clipboard";
 import { isDocumentVisible } from "./lib/documentVisibility";
 import type { ChatRow, OutFailure } from "./lib/e2e/chatStore";
+import type { SasCancelReason, SasStep, SasView } from "./lib/e2e/sas";
+import { SAS_EMOJI } from "./lib/e2e/sasEmoji";
 import {
   encryptedChat,
   encryptedRows,
+  encryptedSas,
   encryptedTrust,
   loadEncryptedChat,
   ownKey,
@@ -13,6 +16,7 @@ import {
   sendEncrypted,
   type Trust,
   trustOf,
+  verifyEncrypted,
 } from "./lib/encryptedChats";
 import { formatTimestamp } from "./lib/timeFormat";
 import NickText from "./NickText";
@@ -30,7 +34,9 @@ import NickText from "./NickText";
 //
 // Bots are pinned by hand (2430 ruling 6253162964): the user reads the bot's
 // key off the bot and pastes it here; our own key is shown, copyable, for the
-// other direction. SAS between humans is a later slice.
+// other direction. People verify each other by comparing emoji (SAS,
+// `lib/e2e/sas.ts`); a key the alarm showed can be taken unverified, to be
+// verified that way (fork 7, 2430 comment 6339695571).
 
 type Props = { networkSlug: string; nick: string };
 
@@ -62,13 +68,33 @@ const PIN_ERROR: Record<"bad-key" | "own-key", string> = {
   "own-key": "that is your own key",
 };
 
+const SAS_REASON: Record<SasCancelReason, string> = {
+  user: "cancelled",
+  mismatch: "the emoji did not match",
+  timeout: "no answer in 10 minutes",
+  "unexpected-message": "a step came out of order",
+  "commitment-mismatch": "a key was not the one promised",
+  "mac-mismatch": "the confirmation did not match",
+  "key-changed": "the nick was pinned to another key",
+  "page-gone": "the page running it was closed or reloaded",
+  "bad-key": "a key could not be used",
+};
+
+// A reason that is not one of ours is the peer's own words: quoted, so
+// that it does not read as cic's.
+const reasonText = (reason: string): string =>
+  (SAS_REASON as Record<string, string | undefined>)[reason] ?? `"${reason}"`;
+
 // `pinned` is the key the chat's nick is pinned to. An `in` row carries the
 // key that wrote it, which is not always that one: a known peer writing from
 // another nick is read as itself (the engine moves no pin), so a message can
 // land in a nick's chat written with ANOTHER key. Such a row says so.
-const EncryptedRow: Component<{ row: ChatRow; peer: string; pinned: string | undefined }> = (
-  props,
-) => (
+const EncryptedRow: Component<{
+  row: ChatRow;
+  peer: string;
+  pinned: string | undefined;
+  onAccept: (key: string) => void;
+}> = (props) => (
   <li class="e2e-row" data-testid="e2e-row" data-row-kind={props.row.kind}>
     <span class="e2e-row-time scrollback-time">{formatTimestamp(props.row.at)}</span>
     <span class="encrypted-marker" aria-hidden="true">
@@ -116,7 +142,18 @@ const EncryptedRow: Component<{ row: ChatRow; peer: string; pinned: string | und
         {(row) => (
           <span class="e2e-row-notice e2e-row-alarm">
             {row().nick} spoke with a key that is not the pinned one, and was ignored:{" "}
-            <code class="e2e-key">{row().presented}</code>. If it is theirs, pin it above.
+            <code class="e2e-key">{row().presented}</code>. If it is theirs, take it and verify it
+            by comparing emoji, or pin the key they give you above.{" "}
+            <Show when={row().presented !== props.pinned}>
+              <button
+                type="button"
+                class="e2e-sas-button"
+                data-testid="e2e-alarm-accept"
+                onClick={() => props.onAccept(row().presented)}
+              >
+                take this key (not verified)
+              </button>
+            </Show>
           </span>
         )}
       </Match>
@@ -127,9 +164,145 @@ const EncryptedRow: Component<{ row: ChatRow; peer: string; pinned: string | und
           </span>
         )}
       </Match>
+      <Match when={props.row.kind === "accepted" && props.row}>
+        {(row) => (
+          <span class="e2e-row-notice">
+            you took <code class="e2e-key">{row().ed25519}</code> as {props.peer}'s key, not
+            verified: compare emoji to verify it
+          </span>
+        )}
+      </Match>
+      <Match when={props.row.kind === "sas_asked" && props.row}>
+        {(row) => (
+          <span class="e2e-row-notice">
+            {row().by === "you"
+              ? `you asked ${props.peer} to compare emoji`
+              : `${props.peer} asked to compare emoji with you`}
+          </span>
+        )}
+      </Match>
+      <Match when={props.row.kind === "sas_cancelled" && props.row}>
+        {(row) => (
+          <span class="e2e-row-notice">
+            {row().by === "you"
+              ? "the emoji comparison stopped"
+              : `${props.peer} stopped the emoji comparison`}
+            : {reasonText(row().reason)}
+          </span>
+        )}
+      </Match>
+      <Match when={props.row.kind === "verified" && props.row}>
+        {(row) => (
+          <span class="e2e-row-notice">
+            you verified {props.peer}'s key <code class="e2e-key">{row().ed25519}</code> by
+            comparing emoji
+          </span>
+        )}
+      </Match>
     </Switch>
   </li>
 );
+
+// What the panel shows for a SAS, from the window's view of it.
+type SasPanelPhase = "waiting" | "asked" | "exchanging" | "compare" | "elsewhere" | "confirmed";
+
+function panelPhase(view: SasView): SasPanelPhase {
+  switch (view.phase) {
+    case "started":
+    case "keyed":
+      return "waiting";
+    case "asked":
+      return "asked";
+    case "accepted":
+      return "exchanging";
+    case "compare":
+      if (view.confirmed) return "confirmed";
+      if (!view.here) return "elsewhere";
+      return view.emoji === null ? "exchanging" : "compare";
+  }
+}
+
+// The SAS with the peer: a button to start one, or where it stands with what
+// the user can do about it. A bot never answers a request (irc-olm drops
+// SAS), so the wait says what to do instead.
+const SasPanel: Component<{
+  view: SasView | null;
+  peer: string;
+  canStart: boolean;
+  onStep: (step: SasStep) => void;
+}> = (props) => {
+  const button = (step: SasStep, label: string) => (
+    <button
+      type="button"
+      class="e2e-sas-button"
+      data-testid={`e2e-sas-${step}`}
+      onClick={() => props.onStep(step)}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <Show
+      when={props.view}
+      fallback={
+        <Show when={props.canStart}>
+          <div class="e2e-sas">{button("start", "verify by comparing emoji")}</div>
+        </Show>
+      }
+    >
+      {(view) => (
+        <div class="e2e-sas" data-testid="e2e-sas" data-phase={panelPhase(view())}>
+          <Switch>
+            <Match when={panelPhase(view()) === "waiting"}>
+              <span>
+                waiting for {props.peer} to accept the emoji comparison. A bot never answers: pin
+                the key it prints instead.
+              </span>
+              {button("cancel", "cancel")}
+            </Match>
+            <Match when={panelPhase(view()) === "asked"}>
+              <span>{props.peer} asks to compare emoji with you.</span>
+              {button("accept", "accept")}
+              {button("cancel", "decline")}
+            </Match>
+            <Match when={panelPhase(view()) === "exchanging"}>
+              <span>exchanging keys with {props.peer}…</span>
+              {button("cancel", "cancel")}
+            </Match>
+            <Match when={panelPhase(view()) === "elsewhere"}>
+              <span>the emoji comparison is open in another tab.</span>
+              {button("cancel", "cancel")}
+            </Match>
+            <Match when={panelPhase(view()) === "confirmed"}>
+              <span>waiting for {props.peer} to confirm the emoji…</span>
+              {button("cancel", "cancel")}
+            </Match>
+            <Match when={panelPhase(view()) === "compare"}>
+              <span>
+                does {props.peer} see these emoji, in this order? Compare them out of band (voice,
+                in person).
+              </span>
+              <ol class="e2e-sas-emoji-list">
+                <For each={view().emoji ?? []}>
+                  {(index) => (
+                    <li class="e2e-sas-emoji" data-testid="e2e-sas-emoji" data-index={index}>
+                      <span class="e2e-sas-glyph" aria-hidden="true">
+                        {SAS_EMOJI[index]?.[0]}
+                      </span>
+                      <span>{SAS_EMOJI[index]?.[1]}</span>
+                    </li>
+                  )}
+                </For>
+              </ol>
+              {button("match", "they match")}
+              {button("mismatch", "they don't match")}
+            </Match>
+          </Switch>
+        </div>
+      )}
+    </Show>
+  );
+};
 
 const EncryptedChatPane: Component<Props> = (props) => {
   const [draft, setDraft] = createSignal("");
@@ -183,13 +356,25 @@ const EncryptedChatPane: Component<Props> = (props) => {
     event.preventDefault();
     const key = pin().trim();
     if (key === "") return;
-    const result = await pinEncryptedKey(props.networkSlug, props.nick, key);
+    const result = await pinEncryptedKey(props.networkSlug, props.nick, key, true);
     if (result === "pinned") {
       setPin("");
       setPinError(null);
     } else {
       setPinError(PIN_ERROR[result]);
     }
+  };
+
+  const acceptKey = (key: string) => {
+    void pinEncryptedKey(props.networkSlug, props.nick, key, false).catch((err: unknown) => {
+      console.warn(`[e2e] could not take the new key of ${props.nick}`, err);
+    });
+  };
+
+  const sasStep = (step: SasStep) => {
+    void verifyEncrypted(props.networkSlug, props.nick, step).catch((err: unknown) => {
+      console.warn(`[e2e] could not ${step} the emoji comparison with ${props.nick}`, err);
+    });
   };
 
   const copyOwn = async () => {
@@ -219,6 +404,12 @@ const EncryptedChatPane: Component<Props> = (props) => {
             {TRUST_LABEL[trust()]}
           </span>
         </div>
+        <SasPanel
+          view={encryptedSas(props.networkSlug, props.nick)}
+          peer={display()}
+          canStart={peerTrust()?.verified === false}
+          onStep={sasStep}
+        />
         <div class="e2e-keys muted">
           <div class="e2e-key-line">
             your key:{" "}
@@ -268,7 +459,14 @@ const EncryptedChatPane: Component<Props> = (props) => {
       </header>
       <ol class="e2e-rows" ref={list}>
         <For each={rows()}>
-          {(row) => <EncryptedRow row={row} peer={display()} pinned={peerTrust()?.ed25519} />}
+          {(row) => (
+            <EncryptedRow
+              row={row}
+              peer={display()}
+              pinned={peerTrust()?.ed25519}
+              onAccept={acceptKey}
+            />
+          )}
         </For>
       </ol>
       <form class="e2e-compose" data-testid="e2e-compose" onSubmit={send}>

@@ -207,6 +207,32 @@ describe("accountStore", () => {
     old.free();
   });
 
+  it("opens a record sealed before a state field existed, with that field empty", async () => {
+    const vault = memoryVault();
+    const store = accountStore(olm(), vault, memoryLock());
+    const old = new (olm().Account)();
+    // The state as slice c2 stored it: no `sas`.
+    const { sas: _sas, ...before } = { ...newState(), pins: { bob: "K" }, inbox: 7 };
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(SLOT) },
+      await vault.wrappingKey(),
+      new TextEncoder().encode(JSON.stringify({ account: old.pickle(), state: before })),
+    );
+    vault.records.set(SLOT, { iv, ciphertext });
+
+    const opened = await store.withAccount(SLOT, async ({ account, state, created }) => ({
+      created,
+      ed25519: account.ed25519_key(),
+      state,
+    }));
+
+    expect(opened.created).toBe(false);
+    expect(opened.ed25519).toBe(old.ed25519_key());
+    expect(opened.state).toEqual({ ...newState(), pins: { bob: "K" }, inbox: 7 });
+    old.free();
+  });
+
   it("two sessions on one slot never interleave, so neither loses the other's keys", async () => {
     const store = accountStore(olm(), memoryVault(), memoryLock());
     await store.withAccount(SLOT, async () => undefined);

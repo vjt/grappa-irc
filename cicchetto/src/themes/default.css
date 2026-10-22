@@ -4852,7 +4852,8 @@ html.is-ios27-band .shell {
 
 .e2e-copy,
 .e2e-pin-submit,
-.e2e-compose-send {
+.e2e-compose-send,
+.e2e-sas-button {
   background: var(--accent);
   color: var(--bg);
   border: none;
@@ -4866,6 +4867,39 @@ html.is-ios27-band .shell {
 .e2e-copy:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* issue 2430 slice d — the SAS panel: where the emoji comparison stands,
+   with its buttons, and while comparing the 7 emoji, each over its name, in
+   a row that wraps on a phone. */
+.e2e-sas {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85em;
+}
+
+.e2e-sas-emoji-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.e2e-sas-emoji {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 3.5rem;
+}
+
+.e2e-sas-glyph {
+  font-size: 2em;
+  line-height: 1.2;
 }
 
 .e2e-rows {

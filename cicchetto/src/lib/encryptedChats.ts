@@ -17,7 +17,9 @@
 //     there is something; the drain takes it in id order, with the rest);
 //   * messages wait for keys: a tick every few seconds reports the ones
 //     that waited too long;
-//   * a drain opened pre-key messages: refill the key bundle.
+//   * a drain opened pre-key messages: refill the key bundle;
+//   * a SAS is under way: the same tick ends it when its time runs out, or
+//     when the page that held its secret went away (`e2e/sas.ts`).
 
 import { createEffect, createSignal, onCleanup } from "solid-js";
 import { ApiError, ackE2eInbox, listE2eInbox, sendE2e } from "./api";
@@ -34,26 +36,31 @@ import {
   type PeerTrust,
   type Report,
 } from "./e2e/client";
+import type { SasStep, SasView } from "./e2e/sas";
 import { fold } from "./e2e/wire";
 import { identityScopedStore } from "./identityScopedStore";
 import { networkBySlug, networks, user } from "./networks";
 
-/** How often messages waiting for keys are checked (they give up after a minute). */
+/** How often what waits on the clock is checked: messages waiting for keys (a minute), SASes (10). */
 export const TICK_MS = 5_000;
 
 /** What the window's trust badge says about the key behind the nick. */
 export type Trust = "verified" | "unverified" | "alarm";
 
+/** The rows after which an earlier alarm is answered: the user chose or checked the key. */
+const ANSWERS_ALARM = new Set<ChatRow["kind"]>(["pinned", "accepted", "verified"]);
+
 /**
- * The badge: an alarm since the last pin by hand is an alarm (a new key spoke
- * for the nick and was ignored); otherwise the pinned key's own standing.
- * No key yet reads as unverified.
+ * The badge: an alarm since the user last chose or checked the key (pinned
+ * it, took it, verified it by SAS) is an alarm: a new key spoke for the nick
+ * and was ignored. Otherwise the pinned key's own standing. No key yet reads
+ * as unverified.
  */
 export function trustOf(rows: readonly ChatRow[], peer: PeerTrust | null): Trust {
   for (let i = rows.length - 1; i >= 0; i--) {
     const row = rows[i];
     if (row?.kind === "key_alarm") return "alarm";
-    if (row?.kind === "pinned") break;
+    if (row !== undefined && ANSWERS_ALARM.has(row.kind)) break;
   }
   return peer?.verified === true ? "verified" : "unverified";
 }
@@ -104,9 +111,10 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   const [rowsByChat, setRowsByChat] = createSignal<Record<string, ChatRow[]>>({});
   const [trustByChat, setTrustByChat] = createSignal<Record<string, PeerTrust | null>>({});
   const [ownKeyBySlug, setOwnKeyBySlug] = createSignal<Record<string, string>>({});
+  const [sasByChat, setSasByChat] = createSignal<Record<string, SasView | null>>({});
   /** Chats a window showed: kept current. Others are read when shown. */
   const loaded = new Set<string>();
-  /** Networks with messages waiting for keys. */
+  /** Networks with something waiting on the clock: messages waiting for keys, a SAS. */
   const waiting = new Set<string>();
   const draining = new Map<string, Promise<void>>();
   const drainAgain = new Set<string>();
@@ -116,6 +124,7 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     setRowsByChat({});
     setTrustByChat({});
     setOwnKeyBySlug({});
+    setSasByChat({});
     loaded.clear();
     waiting.clear();
     drainAgain.clear();
@@ -139,8 +148,8 @@ const exports_ = identityScopedStore((onIdentityChange) => {
   // first (only the bundle sync creates an account), then tried again.
   async function run<T>(slug: string, op: (client: E2eClient, ctx: E2eContext) => Promise<T>) {
     const c = contextFor(slug);
-    const { olm, accounts, chats } = await browserE2e();
-    const client = e2eClient(olm, accounts, chats, Date.now);
+    const { olm, accounts, chats, sas } = await browserE2e();
+    const client = e2eClient(olm, accounts, chats, Date.now, sas);
     try {
       return await op(client, c.ctx);
     } catch (err) {
@@ -150,30 +159,37 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     }
   }
 
-  // Reads the network's chat index again, and the rows and trust of the
-  // touched chats a window has shown.
+  // Reads the network's chat index again, and the trust, SAS and rows of
+  // the touched chats a window has shown. Identity first: working out a
+  // SAS's emoji may end it (a key that makes no secret), and write that down.
   async function refresh(slug: string, touched: readonly string[]): Promise<void> {
     const { slot } = contextFor(slug);
     const { chats } = await browserE2e();
+    const shown = touched.filter((key) => loaded.has(`${slug} ${key}`));
+    const identity =
+      shown.length === 0
+        ? undefined
+        : await run(slug, (client, ctx) => client.identity(ctx, shown));
     const index = await chats.chats(slot);
     setChatsBySlug((prev) => ({ ...prev, [slug]: index }));
-    const shown = touched.filter((key) => loaded.has(`${slug} ${key}`));
-    if (shown.length === 0) return;
+    if (identity === undefined) return;
     const rows = await Promise.all(shown.map((key) => chats.rows(slot, key)));
-    setRowsByChat((prev) => {
-      const next = { ...prev };
-      shown.forEach((key, i) => {
-        next[`${slug} ${key}`] = rows[i] ?? [];
-      });
-      return next;
-    });
-    const { own, peers } = await run(slug, (client, ctx) => client.identity(ctx, shown));
-    setOwnKeyBySlug((prev) => ({ ...prev, [slug]: own }));
-    setTrustByChat((prev) => {
-      const next = { ...prev };
-      for (const key of shown) next[`${slug} ${key}`] = peers[key] ?? null;
-      return next;
-    });
+    const ids = shown.map((key) => `${slug} ${key}`);
+    const each =
+      <T>(of: (key: string, i: number) => T) =>
+      (prev: Record<string, T>) => {
+        const next = { ...prev };
+        shown.forEach((key, i) => {
+          next[ids[i] as string] = of(key, i);
+        });
+        return next;
+      };
+    setRowsByChat(each((_key, i) => rows[i] ?? []));
+    setOwnKeyBySlug((prev) => ({ ...prev, [slug]: identity.own }));
+    setTrustByChat(each((key) => identity.peers[key] ?? null));
+    setSasByChat(each((key) => identity.sas[key] ?? null));
+    // A SAS another tab runs waits on this tab's clock too: that tab may go.
+    if (Object.values(identity.sas).some((view) => view !== null)) waiting.add(slug);
   }
 
   async function changed(slug: string, touched: readonly string[]): Promise<void> {
@@ -265,14 +281,24 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     await afterReport(slug, report);
   }
 
+  /** Pins `key` to `nick`: `verified` when pasted, not when taken off the alarm. */
   async function pinEncryptedKey(
     slug: string,
     nick: string,
     key: string,
+    verified: boolean,
   ): Promise<"pinned" | "bad-key" | "own-key"> {
-    const { result, chats } = await run(slug, (client, ctx) => client.pin(ctx, nick, key));
+    const { result, chats } = await run(slug, (client, ctx) =>
+      client.pin(ctx, nick, key, verified),
+    );
     if (result === "pinned") await changed(slug, chats);
     return result;
+  }
+
+  /** The user's step in the emoji comparison with `nick`. */
+  async function verifyEncrypted(slug: string, nick: string, step: SasStep): Promise<void> {
+    const report = await run(slug, (client, ctx) => client.verify(ctx, nick, step));
+    await afterReport(slug, report);
   }
 
   /** The open encrypted chats of a network, in the order they were first opened. */
@@ -291,6 +317,9 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     trustByChat()[chatId(slug, nick)] ?? null;
 
   const ownKey = (slug: string): string | undefined => ownKeyBySlug()[slug];
+
+  const encryptedSas = (slug: string, nick: string): SasView | null =>
+    sasByChat()[chatId(slug, nick)] ?? null;
 
   /**
    * Drains each network's inbox once per login, as the network list brings
@@ -328,10 +357,12 @@ const exports_ = identityScopedStore((onIdentityChange) => {
     readEncryptedChat,
     sendEncrypted,
     pinEncryptedKey,
+    verifyEncrypted,
     encryptedChatsFor,
     encryptedChat,
     encryptedRows,
     encryptedTrust,
+    encryptedSas,
     ownKey,
     mountEncryptedChats,
   };
@@ -345,9 +376,11 @@ export const closeEncryptedChat = exports_.closeEncryptedChat;
 export const readEncryptedChat = exports_.readEncryptedChat;
 export const sendEncrypted = exports_.sendEncrypted;
 export const pinEncryptedKey = exports_.pinEncryptedKey;
+export const verifyEncrypted = exports_.verifyEncrypted;
 export const encryptedChatsFor = exports_.encryptedChatsFor;
 export const encryptedChat = exports_.encryptedChat;
 export const encryptedRows = exports_.encryptedRows;
 export const encryptedTrust = exports_.encryptedTrust;
+export const encryptedSas = exports_.encryptedSas;
 export const ownKey = exports_.ownKey;
 export const mountEncryptedChats = exports_.mountEncryptedChats;
