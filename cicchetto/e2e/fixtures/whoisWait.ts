@@ -34,6 +34,9 @@ export type WhoisAwayOptions = {
   timeoutMs: number;
 };
 
+/** One WHOIS round-trip, asking whether its replies about `nick` carry `numeric` (issue 2430: a 307 says the nick is registered). */
+export type WhoisNumericOptions = WhoisAwayOptions & { numeric: string };
+
 // The numeric of a WHOIS reply line that is ABOUT `nick`, or null.
 //
 // Server numerics are `:<prefix> <numeric> <requester> <subject> …`, so the
@@ -52,10 +55,19 @@ export function whoisNumericFor(line: string, nick: string): string | null {
 }
 
 export function awaitWhoisAway(source: WhoisSource, opts: WhoisAwayOptions): Promise<boolean> {
-  const { nick, timeoutMs } = opts;
+  return awaitWhoisNumeric(source, { ...opts, numeric: "301" });
+}
+
+// Whether the WHOIS replies about `nick` carry `numeric` before their 318:
+// the shape above, for any one reply.
+export function awaitWhoisNumeric(
+  source: WhoisSource,
+  opts: WhoisNumericOptions,
+): Promise<boolean> {
+  const { nick, numeric, timeoutMs } = opts;
 
   return new Promise((resolve, reject) => {
-    let sawAway = false;
+    let saw = false;
 
     const settle = (finish: () => void) => {
       clearTimeout(timer);
@@ -67,8 +79,8 @@ export function awaitWhoisAway(source: WhoisSource, opts: WhoisAwayOptions): Pro
       settle(() =>
         reject(
           new Error(
-            `whoisAway: no 318 RPL_ENDOFWHOIS for ${nick} within ${timeoutMs}ms — ` +
-              `the WHOIS went unanswered, so "away" is unknown, not false`,
+            `whois ${numeric}: no 318 RPL_ENDOFWHOIS for ${nick} within ${timeoutMs}ms — ` +
+              `the WHOIS went unanswered, so whether it carries a ${numeric} is unknown, not false`,
           ),
         ),
       );
@@ -76,22 +88,24 @@ export function awaitWhoisAway(source: WhoisSource, opts: WhoisAwayOptions): Pro
 
     const handler = (event: RawLineEvent) => {
       if (!event.from_server) return;
-      switch (whoisNumericFor(event.line, nick)) {
-        case "301":
-          sawAway = true;
-          return;
+      const got = whoisNumericFor(event.line, nick);
+      if (got === numeric) {
+        saw = true;
+        return;
+      }
+      switch (got) {
         case "401":
           settle(() =>
             reject(
               new Error(
-                `whoisAway: 401 ERR_NOSUCHNICK for ${nick} — nobody by that nick is on ` +
+                `whois ${numeric}: 401 ERR_NOSUCHNICK for ${nick} — nobody by that nick is on ` +
                   `the network, so this WHOIS says nothing about the session under test`,
               ),
             ),
           );
           return;
         case "318":
-          settle(() => resolve(sawAway));
+          settle(() => resolve(saw));
           return;
         default:
       }

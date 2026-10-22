@@ -43,13 +43,17 @@
 // a message under way within 46 s, an order challenge answered within 15 s.
 
 import { composeSend, selectChannel, sidebarWindow } from "../fixtures/cicchettoPage";
-import { botCmd, botEvents, botPins, botWaitFor, test } from "../fixtures/e2eBot";
+import { botCmd, botEvents, botPins, test as botTest, botWaitFor } from "../fixtures/e2eBot";
 import { boot, e2eWindow, equery, ownKey, pin, row, send } from "../fixtures/encryptedQuery";
 import { joinChannel, sendPrivmsg } from "../fixtures/grappaApi";
 import { IrcPeer } from "../fixtures/ircClient";
 import { awaitMail, extractFromMail } from "../fixtures/mailpit";
 import { NETWORK_SLUG } from "../fixtures/seedData";
-import { provisionPeerSubject, teardownSpecSubject } from "../fixtures/specSubject";
+import {
+  provisionPeerSubject,
+  type SpecSubject,
+  teardownSpecSubject,
+} from "../fixtures/specSubject";
 import { expect } from "../fixtures/test";
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -69,28 +73,53 @@ const AUTH_CODE_RE = /AUTH (\d+)/;
 // One WHOIS round trip: it sits behind bahamut's fake-lag bank, ~10 s cap.
 const WHOIS_ASK = 15_000;
 
-// Registration, a bot start, the browser boot, then six exchanges each
-// bounded by the figures above.
-test.setTimeout(480_000);
+// The waits below, each at its bound, add up to about ten minutes (mail 45 s,
+// registration 30 s, the bot's start 45 s, VERIFIED 15 s, then the six
+// exchanges); they never all run to their bound, but the budget must not cut
+// one short.
+const BUDGET = 720_000;
+
+// The cic subject, torn down by its fixture, so a timeout deletes it too (a
+// `finally` in the test body does not run on one, fixtures/e2eBot.ts). Its
+// nick is named per run: NickServ keeps a nick registered for as long as the
+// testnet lives. A red run gets cic's `[e2e]` console lines attached: what
+// it decided about each challenge.
+const test = botTest.extend<{ cic: SpecSubject; e2eConsole: string[] }>({
+  // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture-dependency declaration
+  cic: async ({}, use, testInfo) => {
+    const cic = await provisionPeerSubject(testInfo, `cic-${Date.now().toString(36)}`);
+    await use(cic);
+    await teardownSpecSubject(cic);
+  },
+  e2eConsole: [
+    async ({ page }, use, testInfo) => {
+      const lines: string[] = [];
+      page.on("console", (m) => {
+        if (m.text().startsWith("[e2e]")) lines.push(m.text());
+      });
+      await use(lines);
+      if (testInfo.status !== testInfo.expectedStatus) {
+        await testInfo.attach("cic [e2e] console", {
+          body: lines.join("\n"),
+          contentType: "text/plain",
+        });
+      }
+    },
+    { auto: true },
+  ],
+});
+
+test.setTimeout(BUDGET);
 
 // Whether `nick` is registered as the bot will see it: a WHOIS whose replies
-// carry a 307 before their 318. Asked again until one does — services set
-// +r over the server link a moment after they accept the code.
+// carry a 307. Asked again until one does, half a second apart — services
+// set +r over the server link a moment after they accept the code. A 401
+// (the nick is not on the network) rejects at once.
 async function awaitRegistered(peer: IrcPeer, nick: string, timeoutMs: number): Promise<void> {
-  const about = (numeric: string) => new RegExp(`^:\\S+ ${numeric} \\S+ ${escapeRe(nick)} `, "i");
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    let registered = false;
-    peer.waitForLine(about("307"), "307", WHOIS_ASK).then(
-      () => {
-        registered = true;
-      },
-      () => {},
-    );
-    const end = peer.waitForLine(about("318"), `the end of WHOIS ${nick}`, WHOIS_ASK);
-    peer.whois(nick);
-    await end;
-    if (registered) return;
+    if (await peer.whoisRegistered(nick)) return;
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error(`${nick} is not registered with NickServ after ${timeoutMs}ms`);
 }
@@ -111,148 +140,138 @@ const orderVerdict = (nick: string, body: string): RegExp =>
 test("cicchetto and the irc-olm bot talk in an encrypted query: pinned by hand both ways, both directions, long messages, an order confirmed and one refused", async ({
   page,
   e2eBot,
-}, testInfo) => {
+  cic,
+}) => {
   const run = Date.now().toString(36);
-  // A subject of its own, named per run: its nick gets registered with
-  // NickServ, which keeps a nick registered for as long as the testnet lives.
-  const cic = await provisionPeerSubject(testInfo, `cic-${run}`);
+  // 1. Register the cic user's nick through grappa, the way a client would,
+  //    and wait until a WHOIS says so.
+  const email = `${cic.nick}-${run}@example.com`;
+  await sendPrivmsg(cic.user.token, NETWORK_SLUG, "NickServ", `REGISTER ${NS_PASSWORD} ${email}`);
+  const code = extractFromMail(await awaitMail(email, { timeoutMs: 45_000 }), AUTH_CODE_RE);
+  await sendPrivmsg(cic.user.token, NETWORK_SLUG, "NickServ", `AUTH ${code}`);
+  const witness = await IrcPeer.connect({ nick: `iw${run}` });
   try {
-    // 1. Register the cic user's nick through grappa, the way a client would,
-    //    and wait until a WHOIS says so.
-    const email = `${cic.nick}-${run}@example.com`;
-    await sendPrivmsg(cic.user.token, NETWORK_SLUG, "NickServ", `REGISTER ${NS_PASSWORD} ${email}`);
-    const code = extractFromMail(await awaitMail(email, { timeoutMs: 45_000 }), AUTH_CODE_RE);
-    await sendPrivmsg(cic.user.token, NETWORK_SLUG, "NickServ", `AUTH ${code}`);
-    const witness = await IrcPeer.connect({ nick: `iw${run}` });
-    try {
-      await awaitRegistered(witness, cic.nick, 30_000);
-    } finally {
-      await witness.disconnect("done");
-    }
-
-    // The bot comes up trusting the cic nick from any host, and asks its
-    // WHOIS on connect: VERIFIED is layer 1 satisfied.
-    const bot = await e2eBot.start({ nick: `ib${run}`, trust: [`${cic.nick} *`], dmallow: [] });
-    await botWaitFor(
-      new RegExp(` VERIFIED ${escapeRe(cic.nick)}$`, "i"),
-      bot.since,
-      WHOIS_ASK,
-      "VERIFIED",
-    );
-
-    // 2. Pins, both ways, by hand.
-    await boot(page, cic.user);
-    await equery(page, cic.nick, bot.nick);
-    await pin(page, bot.ed25519);
-    await botPins({ [cic.nick]: await ownKey(page) });
-
-    // 3. cic → bot, first contact.
-    const hello = "hello bot";
-    await send(page, hello);
-    await expect(row(page, "out", hello).getByTestId("e2e-row-state")).toHaveAttribute(
-      "data-state",
-      "sent",
-      { timeout: KEYS_BOUND },
-    );
-    await botWaitFor(
-      new RegExp(` MSG TRUSTED ENCRYPTED=1 FROM=${escapeRe(cic.nick)} .* BODY=${escapeRe(hello)}$`),
-      bot.since,
-      UNDER_WAY_BOUND,
-      "cic's first message",
-    );
-
-    // 4. bot → cic.
-    const reply = "hello cic";
-    await botCmd(`ESAY ${cic.nick} ${reply}`);
-    await expect(row(page, "in", reply)).toHaveCount(1, { timeout: UNDER_WAY_BOUND });
-
-    // 5. Longer than a line, both ways.
-    const longOut = longBody("cic");
-    expect(new TextEncoder().encode(longOut).length).toBeGreaterThan(1024);
-    await send(page, longOut);
-    await botWaitFor(
-      new RegExp(
-        ` MSG TRUSTED ENCRYPTED=1 FROM=${escapeRe(cic.nick)} .* BODY=${escapeRe(longOut)}$`,
-      ),
-      bot.since,
-      UNDER_WAY_BOUND,
-      "cic's long message",
-    );
-    const longIn = longBody("bot");
-    await botCmd(`ESAY ${cic.nick} ${longIn}`);
-    await expect(row(page, "in", longIn)).toHaveCount(1, { timeout: UNDER_WAY_BOUND });
-
-    // Both in one channel. The bot has to be there before an order is said,
-    // or it never hears it.
-    const chan = `#e2e-interop-${run}`;
-    await botCmd(`JOIN ${chan}`);
-    const joined = await botWaitFor(
-      new RegExp(` JOIN ${escapeRe(bot.nick)} .* ${escapeRe(chan)}$`, "i"),
-      bot.since,
-      UNDER_WAY_BOUND,
-      "the bot's JOIN",
-    );
-    await joinChannel(cic.user.token, NETWORK_SLUG, chan);
-    await selectChannel(page, NETWORK_SLUG, chan, { ownNick: cic.nick });
-
-    // 6. An order cic sent: challenged, ACKed, confirmed.
-    const order = `${bot.nick}: ping`;
-    await composeSend(page, order);
-    await botWaitFor(
-      new RegExp(` ORDER_HELD FROM=${escapeRe(cic.nick)} .* TO=${escapeRe(chan)} `, "i"),
-      joined.n + 1,
-      UNDER_WAY_BOUND,
-      "the order held",
-    );
-    const confirmed = await botWaitFor(
-      orderVerdict(cic.nick, order),
-      joined.n + 1,
-      ORDER_VERDICT,
-      "the verdict on the order cic sent",
-    );
-    expect(confirmed.line).toMatch(/ MSG TRUSTED CONFIRMED=1 /);
-
-    // 7. An order in cic's nick that cic did not send: another client of
-    //    the same user, as far as cic can tell. Challenged the same way,
-    //    never ACKed, refused when the challenge expires.
-    const forged = `${bot.nick}: not from cic`;
-    await sendPrivmsg(cic.user.token, NETWORK_SLUG, chan, forged);
-    await botWaitFor(
-      new RegExp(` ORDER_HELD FROM=${escapeRe(cic.nick)} .* TO=${escapeRe(chan)} `, "i"),
-      confirmed.n + 1,
-      UNDER_WAY_BOUND,
-      "the REST order held",
-    );
-    const refused = await botWaitFor(
-      orderVerdict(cic.nick, forged),
-      confirmed.n + 1,
-      ORDER_VERDICT,
-      "the verdict on the REST order",
-    );
-    expect(refused.line).toMatch(/ MSG UNTRUSTED WHY=no-ack /);
-
-    // Nothing went wrong on the bot's side along the way, and the window the
-    // absences are read over holds the whole exchange.
-    const lines = (await botEvents(bot.since)).map((e) => e.line);
-    expect(lines.filter((l) => / E2E_PINS_LOADED N=1$/.test(l))).toHaveLength(1);
-    // One verdict per order: no late ACK turned the refused one around.
-    expect(lines.filter((l) => orderVerdict(cic.nick, forged).test(l))).toHaveLength(1);
-    expect(
-      lines.filter((l) =>
-        / (E2E_KEY_ALARM|E2E_UNDECRYPTABLE|E2E_SEND_FAILED|E2E_DROPPED|E2E_PINS_WRITABLE|ORDER_ACK_REJECTED|DISCONNECTED|FATAL)( |$)/.test(
-          l,
-        ),
-      ),
-    ).toEqual([]);
-    // Back in the query: the absences below are read off its pane.
-    await sidebarWindow(page, NETWORK_SLUG, e2eWindow(bot.nick)).locator("button").first().click();
-    await expect(page.getByTestId("e2e-pane")).toBeVisible();
-    await expect(row(page, "in", longIn)).toHaveCount(1);
-    await expect(
-      page.locator('[data-testid="e2e-row"][data-row-kind="undecryptable"]'),
-    ).toHaveCount(0);
-    await expect(page.getByTestId("e2e-peer-trust")).toHaveAttribute("data-trust", "verified");
+    await awaitRegistered(witness, cic.nick, 30_000);
   } finally {
-    await teardownSpecSubject(cic);
+    await witness.disconnect("done");
   }
+
+  // The bot comes up trusting the cic nick from any host, and asks its
+  // WHOIS on connect: VERIFIED is layer 1 satisfied.
+  const bot = await e2eBot.start({ nick: `ib${run}`, trust: [`${cic.nick} *`], dmallow: [] });
+  await botWaitFor(
+    new RegExp(` VERIFIED ${escapeRe(cic.nick)}$`, "i"),
+    bot.since,
+    WHOIS_ASK,
+    "VERIFIED",
+  );
+
+  // 2. Pins, both ways, by hand.
+  await boot(page, cic.user);
+  await equery(page, cic.nick, bot.nick);
+  await pin(page, bot.ed25519);
+  await botPins({ [cic.nick]: await ownKey(page) });
+
+  // 3. cic → bot, first contact.
+  const hello = "hello bot";
+  await send(page, hello);
+  await expect(row(page, "out", hello).getByTestId("e2e-row-state")).toHaveAttribute(
+    "data-state",
+    "sent",
+    { timeout: KEYS_BOUND },
+  );
+  await botWaitFor(
+    new RegExp(` MSG TRUSTED ENCRYPTED=1 FROM=${escapeRe(cic.nick)} .* BODY=${escapeRe(hello)}$`),
+    bot.since,
+    UNDER_WAY_BOUND,
+    "cic's first message",
+  );
+
+  // 4. bot → cic.
+  const reply = "hello cic";
+  await botCmd(`ESAY ${cic.nick} ${reply}`);
+  await expect(row(page, "in", reply)).toHaveCount(1, { timeout: UNDER_WAY_BOUND });
+
+  // 5. Longer than a line, both ways.
+  const longOut = longBody("cic");
+  expect(new TextEncoder().encode(longOut).length).toBeGreaterThan(1024);
+  await send(page, longOut);
+  await botWaitFor(
+    new RegExp(` MSG TRUSTED ENCRYPTED=1 FROM=${escapeRe(cic.nick)} .* BODY=${escapeRe(longOut)}$`),
+    bot.since,
+    UNDER_WAY_BOUND,
+    "cic's long message",
+  );
+  const longIn = longBody("bot");
+  await botCmd(`ESAY ${cic.nick} ${longIn}`);
+  await expect(row(page, "in", longIn)).toHaveCount(1, { timeout: UNDER_WAY_BOUND });
+
+  // Both in one channel. The bot has to be there before an order is said,
+  // or it never hears it.
+  const chan = `#e2e-interop-${run}`;
+  await botCmd(`JOIN ${chan}`);
+  const joined = await botWaitFor(
+    new RegExp(` JOIN ${escapeRe(bot.nick)} .* ${escapeRe(chan)}$`, "i"),
+    bot.since,
+    UNDER_WAY_BOUND,
+    "the bot's JOIN",
+  );
+  await joinChannel(cic.user.token, NETWORK_SLUG, chan);
+  await selectChannel(page, NETWORK_SLUG, chan, { ownNick: cic.nick });
+
+  // 6. An order cic sent: challenged, ACKed, confirmed.
+  const order = `${bot.nick}: ping`;
+  await composeSend(page, order);
+  await botWaitFor(
+    new RegExp(` ORDER_HELD FROM=${escapeRe(cic.nick)} .* TO=${escapeRe(chan)} `, "i"),
+    joined.n + 1,
+    UNDER_WAY_BOUND,
+    "the order held",
+  );
+  const confirmed = await botWaitFor(
+    orderVerdict(cic.nick, order),
+    joined.n + 1,
+    ORDER_VERDICT,
+    "the verdict on the order cic sent",
+  );
+  expect(confirmed.line).toMatch(/ MSG TRUSTED CONFIRMED=1 /);
+
+  // 7. An order in cic's nick that cic did not send: another client of
+  //    the same user, as far as cic can tell. Challenged the same way,
+  //    never ACKed, refused when the challenge expires.
+  const forged = `${bot.nick}: not from cic`;
+  await sendPrivmsg(cic.user.token, NETWORK_SLUG, chan, forged);
+  await botWaitFor(
+    new RegExp(` ORDER_HELD FROM=${escapeRe(cic.nick)} .* TO=${escapeRe(chan)} `, "i"),
+    confirmed.n + 1,
+    UNDER_WAY_BOUND,
+    "the REST order held",
+  );
+  const refused = await botWaitFor(
+    orderVerdict(cic.nick, forged),
+    confirmed.n + 1,
+    ORDER_VERDICT,
+    "the verdict on the REST order",
+  );
+  expect(refused.line).toMatch(/ MSG UNTRUSTED WHY=no-ack /);
+
+  // Nothing went wrong on the bot's side along the way, and the window the
+  // absences are read over holds the whole exchange.
+  const lines = (await botEvents(bot.since)).map((e) => e.line);
+  expect(lines.filter((l) => / E2E_PINS_LOADED N=1$/.test(l))).toHaveLength(1);
+  expect(
+    lines.filter((l) =>
+      / (E2E_KEY_ALARM|E2E_UNDECRYPTABLE|E2E_SEND_FAILED|E2E_DROPPED|E2E_PINS_WRITABLE|ORDER_ACK_REJECTED|DISCONNECTED|FATAL)( |$)/.test(
+        l,
+      ),
+    ),
+  ).toEqual([]);
+  // Back in the query: the absences below are read off its pane.
+  await sidebarWindow(page, NETWORK_SLUG, e2eWindow(bot.nick)).locator("button").first().click();
+  await expect(page.getByTestId("e2e-pane")).toBeVisible();
+  await expect(row(page, "in", longIn)).toHaveCount(1);
+  await expect(page.locator('[data-testid="e2e-row"][data-row-kind="undecryptable"]')).toHaveCount(
+    0,
+  );
+  await expect(page.getByTestId("e2e-peer-trust")).toHaveAttribute("data-trust", "verified");
 });

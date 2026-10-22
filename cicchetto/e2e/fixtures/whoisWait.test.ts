@@ -9,7 +9,12 @@
 // nick is not on the network, or the 301 belonged to somebody else.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { awaitWhoisAway, type RawLineEvent, type WhoisSource } from "./whoisWait";
+import {
+  awaitWhoisAway,
+  awaitWhoisNumeric,
+  type RawLineEvent,
+  type WhoisSource,
+} from "./whoisWait";
 
 type FakeSource = WhoisSource & {
   server: (line: string) => void;
@@ -151,5 +156,32 @@ describe("awaitWhoisAway", () => {
     await vi.advanceTimersByTimeAsync(1_001);
     await timedOut;
     expect(silent.attached()).toBe(0);
+  });
+});
+
+// issue 2430 — the same round-trip for another reply: a 307 says the nick is
+// registered with NickServ, which is what the bot's trust layer reads.
+describe("awaitWhoisNumeric", () => {
+  const REGISTERED = `:leaf4.azzurra.chat 307 i2430-witness ${NICK} :has identified for this nick`;
+
+  it("is true when the asked numeric precedes the 318, false when the 318 comes alone", async () => {
+    const yes = fakeSource();
+    const registered = awaitWhoisNumeric(yes, { nick: NICK, numeric: "307", timeoutMs: 1_000 });
+    yes.server(REGISTERED);
+    yes.server(END);
+    expect(await registered).toBe(true);
+
+    const no = fakeSource();
+    const unregistered = awaitWhoisNumeric(no, { nick: NICK, numeric: "307", timeoutMs: 1_000 });
+    no.server(AWAY);
+    no.server(END);
+    expect(await unregistered).toBe(false);
+  });
+
+  it("rejects on 401, naming the numeric it was asked for", async () => {
+    const source = fakeSource();
+    const wait = awaitWhoisNumeric(source, { nick: NICK, numeric: "307", timeoutMs: 1_000 });
+    source.server(`:leaf4.azzurra.chat 401 i2430-witness ${NICK} :No such nick/channel`);
+    expect(await failureOf(wait)).toContain("whois 307: 401 ERR_NOSUCHNICK");
   });
 });

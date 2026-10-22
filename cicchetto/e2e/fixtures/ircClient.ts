@@ -16,7 +16,7 @@
 
 import { Client, type IrcEventMap, type IrcEventName } from "irc-framework";
 import { awaitPrivmsg } from "./privmsgWait";
-import { awaitWhoisAway } from "./whoisWait";
+import { awaitWhoisAway, awaitWhoisNumeric } from "./whoisWait";
 
 const HOST = process.env.E2E_IRC_HOST ?? "bahamut-test";
 const PORT = Number(process.env.E2E_IRC_PORT ?? "6667");
@@ -363,6 +363,12 @@ export class IrcPeer {
   // It is a condition-wait — it resolves the instant the 318 lands.
   whoisAway(nick: string, timeoutMs = WHOIS_TIMEOUT_MS): Promise<boolean> {
     return awaitWhoisAway(this.client, { nick, timeoutMs });
+  }
+
+  // issue 2430 — "is `nick` registered with NickServ RIGHT NOW": a 307 in
+  // one correlated WHOIS round-trip, as `whoisAway` asks for a 301.
+  whoisRegistered(nick: string): Promise<boolean> {
+    return awaitWhoisNumeric(this.client, { nick, numeric: "307", timeoutMs: WHOIS_TIMEOUT_MS });
   }
 
   async part(channel: string, reason: string): Promise<void> {
